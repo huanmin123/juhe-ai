@@ -27,6 +27,7 @@ let wakeResolver: (() => void) | undefined
 // Go remains the only writer of outcomes/current state/leases.
 export function startAccountHealthJobsOutcomeProjectionRuntime(): void {
   if (runtimeConfig.processRole !== 'db-service'
+    || runtimeConfig.blueGreenOwnerMode !== 'active'
     || runtimeConfig.accountHealthJobs.owner !== 'go'
     || !runtimeConfig.accountHealthJobs.projectionEnabled
     || runPromise) return

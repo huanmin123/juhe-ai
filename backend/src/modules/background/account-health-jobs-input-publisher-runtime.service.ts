@@ -13,7 +13,10 @@ let wakeResolver: (() => void) | undefined
 // It publishes durable, signed inputs; it never probes, calls Go/Gateway, or
 // writes the account health state owned by the projector.
 export function startAccountHealthJobsInputPublisherRuntime(): void {
-  if (runtimeConfig.processRole !== 'db-service' || !runtimeConfig.accountHealthJobs.inputPublisherEnabled || runPromise) return
+  if (runtimeConfig.processRole !== 'db-service'
+    || runtimeConfig.blueGreenOwnerMode !== 'active'
+    || !runtimeConfig.accountHealthJobs.inputPublisherEnabled
+    || runPromise) return
   stopping = false
   runPromise = runPublisherLoop().finally(() => {
     runPromise = undefined

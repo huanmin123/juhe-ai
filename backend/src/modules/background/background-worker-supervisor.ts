@@ -58,7 +58,9 @@ const workerStartupReadyTimeoutMs = 1_500
 const workerStartupStaggerMs = 250
 
 export function startBackgroundWorkerSupervisor(): void {
-  if (runtimeConfig.processRole !== 'server' || !runtimeConfig.topology.backgroundWorkerSupervisorEnabled) {
+  if (runtimeConfig.processRole !== 'server'
+    || runtimeConfig.blueGreenOwnerMode !== 'active'
+    || !runtimeConfig.topology.backgroundWorkerSupervisorEnabled) {
     return
   }
 
@@ -278,7 +280,7 @@ function supervisedWorkerState(key: string): SupervisedWorkerState {
 }
 
 export function getBackgroundWorkerSupervisorRuntime(): BackgroundWorkerSupervisorProcessRuntime[] {
-  if (!runtimeConfig.topology.backgroundWorkerSupervisorEnabled) return []
+  if (runtimeConfig.blueGreenOwnerMode !== 'active' || !runtimeConfig.topology.backgroundWorkerSupervisorEnabled) return []
   return supervisedWorkerSpecs.map((spec) => {
     const state = supervisedWorkerState(spec.key)
     return {

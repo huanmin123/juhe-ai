@@ -56,6 +56,12 @@ if (childMode) {
     assert.equal(runtimeConfig.topology.logWorkerReplicas, 3)
     assert.equal(currentProcessEventLoopRole(), 'gateway:gateway-2')
     assert.deepEqual(processes, [])
+  } else if (childMode === 'performance-drain') {
+    assert.equal(runtimeConfig.runtimeMode, 'performance')
+    assert.equal(runtimeConfig.performanceNodeRole, 'combined')
+    assert.equal(runtimeConfig.blueGreenOwnerMode, 'drain')
+    assert.equal(runtimeConfig.topology.backgroundWorkerSupervisorEnabled, true)
+    assert.deepEqual(processes, [])
   } else if (childMode === 'performance-control-replica') {
     assert.equal(runtimeConfig.performanceNodeRole, 'control-replica')
     assert.equal(runtimeConfig.instanceId, 'control-2')
@@ -159,6 +165,10 @@ try {
     JUHE_AI_GATEWAY_REPLICAS: '5',
     JUHE_AI_USAGE_WORKER_REPLICAS: '4',
     JUHE_AI_LOG_WORKER_REPLICAS: '3'
+  })
+  runChild('performance-drain', {
+    ...performanceEnv(),
+    JUHE_AI_BLUE_GREEN_OWNER_MODE: 'drain'
   })
   runChild('performance-control-replica', {
     ...performanceEnv(),

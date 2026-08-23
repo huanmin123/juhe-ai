@@ -10,6 +10,7 @@ import { loadRuntimeBaseEnv, loadRuntimeEnvFile } from './runtime-base-env.js'
 export interface RuntimeConfig {
   runtimeMode: RuntimeMode
   performanceNodeRole: PerformanceNodeRole
+  blueGreenOwnerMode: BlueGreenOwnerMode
   processRole: ProcessRole
   workerRole: WorkerRuntimeRole
   instanceId: string
@@ -88,6 +89,7 @@ export interface RuntimeConfig {
     deploymentEpoch?: string
   }
   postgres: {
+    schemaOwner?: PostgresSchemaOwner
     url?: string
     poolMax: number
     jitEnabled: boolean
@@ -360,8 +362,10 @@ export interface RuntimeConfig {
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent'
 export type RuntimeMode = 'standalone' | 'performance'
 export type PerformanceNodeRole = 'combined' | 'gateway' | 'control' | 'control-replica'
+export type BlueGreenOwnerMode = 'active' | 'standby' | 'drain'
 export type ProcessRole = 'server' | 'worker' | 'db-service'
 export type DatabaseDriver = 'sqlite' | 'postgres'
+export type PostgresSchemaOwner = 'node' | 'goose'
 export type CacheDriver = 'memory' | 'redis'
 export type RuntimeStateDriver = 'memory' | 'redis'
 export type QueueDriver = 'memory' | 'redis_stream'
@@ -444,6 +448,7 @@ const configuredRuntimeMode = runtimeModeConfig('JUHE_AI_RUNTIME_MODE', hasPerfo
 const configuredPerformanceNodeRole = configuredRuntimeMode === 'performance'
   ? performanceNodeRoleConfig('JUHE_AI_PERFORMANCE_NODE_ROLE', 'combined')
   : 'combined'
+const configuredBlueGreenOwnerMode = blueGreenOwnerModeConfig('JUHE_AI_BLUE_GREEN_OWNER_MODE', 'active')
 const configuredProcessRole = processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server')
 const defaultModelCheckProbeRetryDelayMs = isScriptEntryRuntime() ? 0 : 65000
 const configuredDatabaseDriver = databaseDriverConfig(
@@ -541,6 +546,7 @@ assertRuntimeModeDrivers({
 export const runtimeConfig: RuntimeConfig = {
   runtimeMode: configuredRuntimeMode,
   performanceNodeRole: configuredPerformanceNodeRole,
+  blueGreenOwnerMode: configuredBlueGreenOwnerMode,
   processRole: configuredProcessRole,
   workerRole: workerRoleConfig('JUHE_AI_WORKER_ROLE', 'worker'),
   instanceId: runtimeInstanceIdConfig('JUHE_AI_INSTANCE_ID', configuredRuntimeMode),
@@ -614,6 +620,7 @@ export const runtimeConfig: RuntimeConfig = {
     deploymentEpoch: optionalStringConfig('JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH')
   },
   postgres: {
+    schemaOwner: parsePostgresSchemaOwner(rawStringConfig('JUHE_AI_POSTGRES_SCHEMA_OWNER')),
     url: configuredPostgresUrl,
     poolMax: numberConfig('JUHE_AI_DB_POOL_MAX', 50, 1, 500),
     // Interactive API reads are short OLTP queries. JIT compilation adds a
@@ -991,6 +998,13 @@ export function parseOwnerLockEnabled(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === 'true'
 }
 
+export function parsePostgresSchemaOwner(value: string | undefined): PostgresSchemaOwner | undefined {
+  const normalized = value?.trim().toLowerCase()
+  if (!normalized) return undefined
+  if (normalized === 'node' || normalized === 'goose') return normalized
+  throw new Error('JUHE_AI_POSTGRES_SCHEMA_OWNER 只能配置为 node 或 goose')
+}
+
 function runtimeModeConfig(name: string, fallback: RuntimeMode): RuntimeMode {
   const value = rawStringConfig(name)?.toLowerCase()
   if (!value) return fallback
@@ -1003,6 +1017,13 @@ function performanceNodeRoleConfig(name: string, fallback: PerformanceNodeRole):
   if (!value) return fallback
   if (value === 'combined' || value === 'gateway' || value === 'control' || value === 'control-replica') return value
   throw new Error(`${name} 只能配置为 combined、gateway、control 或 control-replica`)
+}
+
+function blueGreenOwnerModeConfig(name: string, fallback: BlueGreenOwnerMode): BlueGreenOwnerMode {
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
+  if (value === 'active' || value === 'standby' || value === 'drain') return value
+  throw new Error(`${name} 只能配置为 active、standby 或 drain`)
 }
 
 function runtimeInstanceIdConfig(name: string, runtimeMode: RuntimeMode): string {

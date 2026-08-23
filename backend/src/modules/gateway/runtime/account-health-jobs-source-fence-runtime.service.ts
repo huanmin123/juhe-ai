@@ -12,8 +12,9 @@ let runPromise: Promise<void> | undefined
 let wakeTimer: NodeJS.Timeout | undefined
 let cursor: AccountHealthJobsOutcomeCursor | undefined
 
-// The Gateway owns only the source-fence runtime settlement. It reads the Go
-// outcome store and never writes business accounts or dispatches a probe.
+// The active Node server owns only the source-fence runtime settlement. It
+// reads the Go outcome store and never writes business accounts or dispatches
+// a probe.
 export function startAccountHealthJobsSourceFenceConsumerRuntime(): void {
   if (!isGatewayConsumerEnabled() || runPromise) return
   stopping = false
@@ -72,9 +73,12 @@ export function sourceFenceOutcomeCursor(outcome: Pick<Awaited<ReturnType<typeof
 
 function isGatewayConsumerEnabled(): boolean {
   if (runtimeConfig.processRole !== 'server'
+    || runtimeConfig.blueGreenOwnerMode !== 'active'
     || runtimeConfig.accountHealthJobs.owner !== 'go'
     || !runtimeConfig.accountHealthJobs.sourceFenceConsumerEnabled) return false
-  return runtimeConfig.runtimeMode !== 'performance' || runtimeConfig.performanceNodeRole === 'gateway'
+  return runtimeConfig.runtimeMode !== 'performance'
+    || runtimeConfig.performanceNodeRole === 'gateway'
+    || runtimeConfig.performanceNodeRole === 'combined'
 }
 
 function outcomeStoreSource(): AccountHealthJobsStoreSource {
