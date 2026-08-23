@@ -99,8 +99,8 @@ func TestPostgresCurrentStateCASRegression(t *testing.T) {
 	late := Outcome{OutcomeID: unique + "-revision", RequestID: unique + "-revision-request", AccountID: revisionAccount, Outcome: OutcomeUpstreamFailed, ObservedAt: observed.Add(time.Second), InputVersion: 5, ConfigRevision: 9, DispatchRevision: 13, AccountStatus: "temporary_unavailable"}
 	appendStoreOutcome(t, store, lease, late)
 	state, found, err := store.LoadCurrentState(ctx, revisionAccount)
-	if err != nil || !found || state.OutcomeID != unique+"-baseline" || state.ConfigRevision != 8 {
-		t.Fatalf("PostgreSQL revision CAS miss must preserve state: found=%t state=%#v err=%v", found, state, err)
+	if err != nil || !found || state.OutcomeID != late.OutcomeID || state.ConfigRevision != 9 || state.DispatchRevision != 13 {
+		t.Fatalf("PostgreSQL newer revision must replace current state: found=%t state=%#v err=%v", found, state, err)
 	}
 
 	cooldownAccount := unique + "-cooldown"
@@ -197,6 +197,45 @@ func TestSQLiteNewInputEpochAppliesProjectionAfterStatusChange(t *testing.T) {
 	}
 }
 
+func TestSQLiteNewConfigEpochAppliesProjectionAfterStatusChange(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	observed := time.Now().UTC().Round(0)
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "new-config-baseline", RequestID: "new-config-baseline-request", AccountID: "new-config-account",
+		Outcome: OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 4, ConfigRevision: 1, DispatchRevision: 1,
+		AccountStatus: "temporary_unavailable", NextDueAt: ptrTime(observed.Add(5 * time.Minute)), FailureCount: 1,
+	})
+	next := observed.Add(time.Second)
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "new-config-projected", RequestID: "new-config-projected-request", AccountID: "new-config-account",
+		Outcome: OutcomeUpstreamFailed, ObservedAt: next, InputVersion: 4, ConfigRevision: 2, DispatchRevision: 1,
+		AccountStatus: "pending_test", NextDueAt: ptrTime(next.Add(5 * time.Minute)), FailureCount: 1,
+		Projection: &Projection{
+			TargetAccountID: "new-config-account", TransitionKind: "health_failure", InputVersion: 4,
+			ConfigRevision: 2, DispatchRevision: 1, ExpectedAccountStatus: "pending_test",
+		},
+	})
+
+	state, found, err := store.LoadCurrentState(context.Background(), "new-config-account")
+	if err != nil || !found {
+		t.Fatalf("new config epoch current state missing: found=%t err=%v", found, err)
+	}
+	if state.ConfigRevision != 2 || state.AccountStatus != "pending_test" {
+		t.Fatalf("new config epoch must replace stale state: %#v", state)
+	}
+	var payload []byte
+	if err := store.db.QueryRowContext(context.Background(), `SELECT payload FROM account_health_outcomes WHERE request_id=?`, "new-config-projected-request").Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var stored Outcome
+	if err := json.Unmarshal(payload, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Projection == nil {
+		t.Fatal("accepted new config epoch must retain the Node-applicable projection")
+	}
+}
+
 func TestRenewOwnerLeaseWriteGateHonorsDeadline(t *testing.T) {
 	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite3")})
 	if err != nil {
@@ -222,28 +261,28 @@ func TestRenewOwnerLeaseWriteGateHonorsDeadline(t *testing.T) {
 	}
 }
 
-func TestSQLiteCurrentStateCASRejectsRevisionMismatchButKeepsOutcome(t *testing.T) {
+func TestSQLiteCurrentStateCASAppliesNewerRevisionAndRejectsOlderOutcome(t *testing.T) {
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()
 	observed := time.Now().UTC().Round(0)
 	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "baseline", RequestID: "baseline-request", AccountID: "account-revision", Outcome: OutcomeSuccess, ObservedAt: observed, InputVersion: 5, ConfigRevision: 8, DispatchRevision: 13, AccountStatus: "active"})
 
-	late := projectedHealthCASOutcome("revision-mismatch", "revision-mismatch-request", "account-revision", observed.Add(time.Second), 5, 9, 13)
+	late := projectedHealthCASOutcome("revision-newer", "revision-newer-request", "account-revision", observed.Add(time.Second), 5, 9, 13)
 	appendStoreOutcome(t, store, lease, late)
-	dispatchMismatch := projectedHealthCASOutcome("dispatch-mismatch", "dispatch-mismatch-request", "account-revision", observed.Add(2*time.Second), 5, 8, 14)
+	dispatchMismatch := projectedHealthCASOutcome("dispatch-older", "dispatch-older-request", "account-revision", observed.Add(2*time.Second), 5, 8, 12)
 	appendStoreOutcome(t, store, lease, dispatchMismatch)
 
 	state, found, err := store.LoadCurrentState(ctx, late.AccountID)
-	if err != nil || !found || state.OutcomeID != "baseline" || state.ConfigRevision != 8 || state.AccountStatus != "active" {
-		t.Fatalf("revision-mismatched outcome must not overwrite current state: found=%t state=%#v err=%v", found, state, err)
+	if err != nil || !found || state.OutcomeID != "revision-newer" || state.ConfigRevision != 9 || state.DispatchRevision != 13 || state.AccountStatus != "temporary_unavailable" {
+		t.Fatalf("newer config revision must replace current state: found=%t state=%#v err=%v", found, state, err)
 	}
 	if exists, err := store.HasRequest(ctx, late.RequestID); err != nil || !exists {
-		t.Fatalf("CAS-missed outcome must remain auditable: exists=%t err=%v", exists, err)
+		t.Fatalf("newer revision outcome must remain auditable: exists=%t err=%v", exists, err)
 	}
 	if exists, err := store.HasRequest(ctx, dispatchMismatch.RequestID); err != nil || !exists {
-		t.Fatalf("dispatch CAS-missed outcome must remain auditable: exists=%t err=%v", exists, err)
+		t.Fatalf("older revision outcome must remain auditable: exists=%t err=%v", exists, err)
 	}
-	assertStoredOutcomeProjectionStripped(t, store, late.RequestID)
+	assertStoredOutcomeProjectionPresent(t, store, late.RequestID)
 	assertStoredOutcomeProjectionStripped(t, store, dispatchMismatch.RequestID)
 }
 
@@ -432,5 +471,20 @@ func assertStoredOutcomeProjectionStripped(t *testing.T, store *Store, requestID
 	}
 	if stored.Projection != nil {
 		t.Fatalf("CAS-missed outcome %q must not retain a Node-applicable projection: %#v", requestID, stored.Projection)
+	}
+}
+
+func assertStoredOutcomeProjectionPresent(t *testing.T, store *Store, requestID string) {
+	t.Helper()
+	var payload []byte
+	if err := store.db.QueryRowContext(context.Background(), `SELECT payload FROM account_health_outcomes WHERE request_id=?`, requestID).Scan(&payload); err != nil {
+		t.Fatalf("read accepted outcome payload %q: %v", requestID, err)
+	}
+	var stored Outcome
+	if err := json.Unmarshal(payload, &stored); err != nil {
+		t.Fatalf("decode accepted outcome payload %q: %v", requestID, err)
+	}
+	if stored.Projection == nil {
+		t.Fatalf("accepted outcome %q must retain a Node-applicable projection", requestID)
 	}
 }
