@@ -1390,6 +1390,8 @@ function canReadAccountTestSession(row: AccountTestSessionRow, access?: AccessSc
 }
 
 function accountTestTaskFromRow(row: AccountTestTaskRow): AccountTestTask {
+  const queuedAt = databaseDateTimeIso(row.queued_at, 'account_test_tasks.queued_at')
+  const queuedDeadlineAt = accountTestTaskQueuedDeadlineAt(queuedAt)
   return {
     id: row.id,
     sessionId: row.session_id ?? undefined,
@@ -1407,11 +1409,16 @@ function accountTestTaskFromRow(row: AccountTestTaskRow): AccountTestTask {
     result: accountTestResult(row.result_json),
     cancelRequested: databaseBoolean(row.cancel_requested),
     createdAt: databaseDateTimeIso(row.created_at, 'account_test_tasks.created_at'),
-    queuedAt: databaseDateTimeIso(row.queued_at, 'account_test_tasks.queued_at'),
+    queuedAt,
+    queuedDeadlineAt,
     startedAt: databaseOptionalDateTimeIso(row.started_at, 'account_test_tasks.started_at'),
     finishedAt: databaseOptionalDateTimeIso(row.finished_at, 'account_test_tasks.finished_at'),
     updatedAt: databaseDateTimeIso(row.updated_at, 'account_test_tasks.updated_at')
   }
+}
+
+function accountTestTaskQueuedDeadlineAt(queuedAt: string): string {
+  return new Date(Date.parse(queuedAt) + runtimeConfig.background.accountTestQueuedMaxWaitMs).toISOString()
 }
 
 function databaseBoolean(value: unknown): boolean {

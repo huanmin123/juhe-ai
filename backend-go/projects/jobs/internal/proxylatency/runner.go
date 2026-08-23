@@ -15,25 +15,39 @@ type inputLoader interface {
 }
 
 type RunnerStatus struct {
-	OwnerHeld     bool
-	LastCycleAt   time.Time
-	LastSuccess   time.Time
-	LastError     string
-	Inputs        int
-	Executed      int
-	ProxyFailures int
+	OwnerHeld         bool
+	LastCycleAt       time.Time
+	LastSuccess       time.Time
+	LastError         string
+	Inputs            int
+	Executed          int
+	ProxyFailures     int
+	Selected          int
+	Target            int
+	Claimed           int
+	Started           int
+	Processed         int
+	SkippedLeases     int
+	Deferred          int
+	ExecutionFailures int
+	ReleaseFailures   int
+	Partial           bool
 }
 
 // Runner is the J3a owner loop. The ordering in runCycle is intentional:
-// owner lease -> read-only LoadDue -> Store IssueInput -> proxy lease ->
-// ExecuteIssuedInput. No upstream request is possible before all fences hold.
+// owner lease -> read-only candidate-pool LoadDue -> proxy lease ->
+// Store IssueInput -> ExecuteIssuedInput. No upstream request is possible
+// before all fences hold; busy proxy leases are skipped so the candidate pool
+// can provide deferred/partial metrics instead of turning contention into a
+// synthetic execution failure.
 type Runner struct {
-	cfg    RuntimeConfig
-	store  *Store
-	reader inputLoader
-	logger *slog.Logger
-	mu     sync.RWMutex
-	status RunnerStatus
+	cfg        RuntimeConfig
+	store      *Store
+	reader     inputLoader
+	logger     *slog.Logger
+	mu         sync.RWMutex
+	status     RunnerStatus
+	ownerLease *OwnerLease
 	// These hooks keep lifecycle failure paths executable in unit tests while
 	// production defaults remain the Store methods.
 	renewOwnerLease    func(context.Context, OwnerLease, time.Duration) error
@@ -93,9 +107,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			continue
 		}
+		r.setOwnerLease(lease)
 		r.setOwnerHeld(true)
 		err = r.runOwned(ctx, lease)
 		r.setOwnerHeld(false)
+		r.clearOwnerLease()
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		releaseErr := r.releaseOwnerLease(releaseCtx, lease)
 		cancel()
@@ -119,6 +135,98 @@ func (r *Runner) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// RunManual executes one explicit proxy snapshot without entering the periodic
+// candidate scheduler. It reuses the currently-held owner fence when the
+// periodic loop is active; otherwise it acquires a short-lived owner lease.
+// This keeps manual diagnostics available during Go ownership while preserving
+// the same owner/proxy fences and committed outcome semantics as periodic work.
+func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTestReport, error) {
+	if r == nil || r.store == nil {
+		return ProxyTestReport{}, errors.New("J3a manual runner 未初始化")
+	}
+	if err := request.Validate(r.cfg.ManualDeadline); err != nil {
+		return ProxyTestReport{}, err
+	}
+	now := r.now()
+	deadline := r.cfg.ManualDeadline
+	if request.DeadlineMS > 0 && time.Duration(request.DeadlineMS)*time.Millisecond < deadline {
+		deadline = time.Duration(request.DeadlineMS) * time.Millisecond
+	}
+	if deadline <= 0 {
+		return ProxyTestReport{}, errors.New("J3a manual deadline 无效")
+	}
+	// Node preserves a 200 report with an unknown synthetic base item when no
+	// enabled provider supplies a target. There is no upstream work to fence or
+	// persist in this branch; returning the report directly keeps that boundary
+	// without weakening the jobs Store's normal non-empty-target contract.
+	if len(request.Targets) == 0 {
+		return request.Report(Outcome{ProxyID: request.ProxyID, ObservedAt: now, OverallStatus: OverallUnknown}), nil
+	}
+	owner, reused := r.currentOwnerLease()
+	if !reused {
+		acquired, ok, err := r.store.AcquireOwnerLease(ctx, r.cfg.InstanceID, r.cfg.OwnerLease)
+		if err != nil {
+			return ProxyTestReport{}, err
+		}
+		if !ok {
+			return ProxyTestReport{}, ErrOwnerLeaseHeld
+		}
+		owner = acquired
+	}
+	if !reused {
+		defer func() { _ = r.store.ReleaseOwnerLease(context.Background(), owner) }()
+	}
+	// The durable Store input contract intentionally requires a 1..15 minute
+	// expiry window. Manual execution keeps its stricter probe deadline in the
+	// execution context while issuing a bounded one-minute durable snapshot.
+	draftDeadline := deadline
+	if draftDeadline < time.Minute {
+		draftDeadline = time.Minute
+	}
+	draft := request.InputDraft(now, draftDeadline)
+	issued, err := r.store.IssueInput(ctx, draft)
+	if err != nil {
+		return ProxyTestReport{}, err
+	}
+	proxy, acquired, err := r.store.AcquireProxyLease(ctx, owner, issued.ProxyID, r.cfg.ProxyLease)
+	if err != nil {
+		return ProxyTestReport{}, err
+	}
+	if !acquired {
+		return ProxyTestReport{}, ErrProxyLeaseHeld
+	}
+	defer func() { _ = r.store.ReleaseProxyLease(context.Background(), proxy) }()
+	execCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	proxyURL, err := proxyURLForIssuedInput(issued, r.cfg.CredentialSecret)
+	if err != nil {
+		return ProxyTestReport{}, err
+	}
+	defer clearProxyURL(&proxyURL)
+	outbound := make(chan manualOutboundInfo, 1)
+	go func() {
+		info, ok := probeManualOutbound(execCtx, proxyURL, deadline)
+		if !ok {
+			outbound <- manualOutboundInfo{}
+			return
+		}
+		outbound <- info
+	}()
+	outcome, _, err := ExecuteIssuedInput(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: deadline, Now: r.cfg.Now})
+	if err != nil {
+		return ProxyTestReport{}, err
+	}
+	report := request.Report(outcome)
+	info := <-outbound
+	if info.IP != "" {
+		report.OutboundIP = info.IP
+	}
+	if info.Region != "" {
+		report.OutboundRegion = info.Region
+	}
+	return report, nil
 }
 
 func (r *Runner) runOwned(ctx context.Context, lease OwnerLease) error {
@@ -186,98 +294,164 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 		r.recordCycle(attempt, 0, 0, 1, err)
 		return err
 	}
-	drafts, err := r.reader.LoadDue(ctx, r.cfg.InputLimit)
+	drafts, err := r.reader.LoadDue(ctx, r.candidatePoolLimit())
 	if err != nil {
 		r.recordCycle(attempt, 0, 0, 1, err)
 		return err
 	}
-	inputs, executed, failures := 0, 0, 0
-	var cycleErr error
-	for _, draft := range drafts {
-		if err := ctx.Err(); err != nil {
-			return errors.Join(cycleErr, err)
-		}
-		if err := r.store.VerifyOwnerLease(ctx, owner); err != nil {
-			cycleErr = errors.Join(cycleErr, err)
-			r.recordCycle(attempt, inputs, executed, failures+1, cycleErr)
-			return cycleErr
-		}
-		issued, err := r.store.IssueInput(ctx, draft)
-		if err != nil {
-			failures++
-			cycleErr = errors.Join(cycleErr, err)
-			r.logger.Warn("J3a IssueInput failed", "error", err)
-			continue
-		}
-		inputs++
-		acquireProxy := r.acquireProxyLease
-		if acquireProxy == nil {
-			acquireProxy = r.store.AcquireProxyLease
-		}
-		proxy, acquired, err := acquireProxy(ctx, owner, issued.ProxyID, r.cfg.ProxyLease)
-		if err != nil {
-			failures++
-			cycleErr = errors.Join(cycleErr, err)
-			r.logger.Warn("J3a proxy lease failed", "proxyID", issued.ProxyID, "error", err)
-			if fatalLeaseError(err) {
-				r.recordCycle(attempt, inputs, executed, failures, cycleErr)
-				return cycleErr
+	counts := &cycleCounts{selected: len(drafts), target: minInt(r.batchSize(), len(drafts))}
+	cycleCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var mu sync.Mutex
+	nextCandidate := 0
+	var cycleErrs []error
+	var fatalErr error
+	worker := func() {
+		for {
+			if cycleCtx.Err() != nil {
+				return
 			}
-			continue
-		}
-		if !acquired {
-			failures++
-			cycleErr = errors.Join(cycleErr, ErrProxyLeaseHeld)
-			continue
-		}
-		proxyWindow := executionWindowUntil(r.now(), issued.ExpiresAt, proxy.LeaseUntil)
-		if proxyWindow <= 0 {
-			failures++
+			mu.Lock()
+			if counts.started >= counts.target || nextCandidate >= len(drafts) {
+				mu.Unlock()
+				return
+			}
+			index := nextCandidate
+			nextCandidate++
+			mu.Unlock()
+			draft := drafts[index]
+			if err := r.store.VerifyOwnerLease(cycleCtx, owner); err != nil {
+				mu.Lock()
+				cycleErrs = append(cycleErrs, err)
+				if fatalLeaseError(err) && fatalErr == nil {
+					fatalErr = err
+					cancel()
+				}
+				counts.failures++
+				counts.executionFailures++
+				mu.Unlock()
+				return
+			}
+			acquireProxy := r.acquireProxyLease
+			if acquireProxy == nil {
+				acquireProxy = r.store.AcquireProxyLease
+			}
+			proxy, acquired, err := acquireProxy(cycleCtx, owner, draft.ProxyID, r.cfg.ProxyLease)
+			if err != nil {
+				mu.Lock()
+				cycleErrs = append(cycleErrs, err)
+				counts.failures++
+				counts.executionFailures++
+				if fatalLeaseError(err) && fatalErr == nil {
+					fatalErr = err
+					cancel()
+				}
+				mu.Unlock()
+				continue
+			}
+			if !acquired {
+				mu.Lock()
+				counts.skippedLeases++
+				mu.Unlock()
+				continue
+			}
+			mu.Lock()
+			counts.claimed++
+			if counts.started >= counts.target {
+				mu.Unlock()
+				r.releaseProxyLease(context.Background(), proxy)
+				continue
+			}
+			counts.started++
+			mu.Unlock()
+
+			issued, err := r.store.IssueInput(cycleCtx, draft)
+			if err != nil {
+				mu.Lock()
+				counts.failures++
+				counts.executionFailures++
+				cycleErrs = append(cycleErrs, err)
+				mu.Unlock()
+				r.releaseProxyLease(context.Background(), proxy)
+				r.logger.Warn("J3a IssueInput failed", "error", err)
+				continue
+			}
+			mu.Lock()
+			counts.inputs++
+			mu.Unlock()
+			proxyWindow := executionWindowUntil(r.now(), issued.ExpiresAt, proxy.LeaseUntil)
+			if proxyWindow <= 0 {
+				mu.Lock()
+				counts.failures++
+				counts.executionFailures++
+				cycleErrs = append(cycleErrs, errors.New("J3a proxy execution window expired"))
+				mu.Unlock()
+				r.releaseProxyLease(context.Background(), proxy)
+				continue
+			}
+			execCtx, execCancel := context.WithTimeout(cycleCtx, proxyWindow)
+			execute := r.executeIssuedInput
+			if execute == nil {
+				execute = ExecuteIssuedInput
+			}
+			_, committed, execErr := execute(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, Now: r.cfg.Now})
+			execCancel()
 			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			releaseErr := r.releaseProxyLease(releaseCtx, proxy)
 			releaseCancel()
+			mu.Lock()
 			if releaseErr != nil {
-				cycleErr = errors.Join(cycleErr, releaseErr)
+				counts.releaseFailures++
+				counts.failures++
+				cycleErrs = append(cycleErrs, releaseErr)
 			}
-			continue
-		}
-		execCtx, execCancel := context.WithTimeout(ctx, proxyWindow)
-		execute := r.executeIssuedInput
-		if execute == nil {
-			execute = ExecuteIssuedInput
-		}
-		_, committed, err := execute(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, Now: r.cfg.Now})
-		execCancel()
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		releaseErr := r.releaseProxyLease(releaseCtx, proxy)
-		cancel()
-		if releaseErr != nil {
-			cycleErr = errors.Join(cycleErr, releaseErr)
-			r.recordError(releaseErr)
-		}
-		if err != nil {
-			cycleErr = errors.Join(cycleErr, err)
-			if errors.Is(err, ErrOwnerLeaseLost) || errors.Is(err, ErrProxyLeaseLost) {
-				r.recordCycle(attempt, inputs, executed, failures+1, cycleErr)
-				return cycleErr
+			if execErr != nil {
+				counts.executionFailures++
+				counts.failures++
+				cycleErrs = append(cycleErrs, execErr)
+				if fatalLeaseError(execErr) && fatalErr == nil {
+					fatalErr = execErr
+					cancel()
+				}
+			} else {
+				counts.processed++
+				if committed {
+					counts.executed++
+				}
 			}
-			failures++
-			r.logger.Warn("J3a proxy execution failed", "proxyID", issued.ProxyID, "error", err)
-			continue
-		}
-		if committed {
-			executed++
+			mu.Unlock()
+			if execErr != nil {
+				r.logger.Warn("J3a proxy execution failed", "proxyID", issued.ProxyID, "error", execErr)
+			}
+			mu.Lock()
+			fatal := fatalErr != nil
+			mu.Unlock()
+			if fatal {
+				return
+			}
 		}
 	}
-	if failures > 0 {
-		if cycleErr == nil {
-			cycleErr = errors.New("J3a cycle had proxy failures")
-		}
-		r.recordCycle(attempt, inputs, executed, failures, cycleErr)
-	} else if cycleErr != nil {
-		r.recordCycle(attempt, inputs, executed, failures, cycleErr)
-	} else {
-		r.recordCycle(attempt, inputs, executed, failures, nil)
+	workers := minInt(r.workerConcurrency(), maxInt(1, counts.target))
+	var wg sync.WaitGroup
+	for index := 0; index < workers; index++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); worker() }()
+	}
+	wg.Wait()
+	counts.deferred = maxInt(0, counts.target-counts.started)
+	cycleErr := error(nil)
+	if len(cycleErrs) > 0 {
+		cycleErr = errors.Join(cycleErrs...)
+	}
+	if fatalErr != nil {
+		cycleErr = errors.Join(cycleErr, fatalErr)
+	}
+	if cycleErr == nil && (counts.deferred > 0 || counts.releaseFailures > 0) {
+		cycleErr = errors.New("J3a cycle partial completion")
+	}
+	r.recordCycleSummary(attempt, counts, cycleErr)
+	if fatalErr != nil {
+		return cycleErr
 	}
 	return nil
 }
@@ -287,12 +461,31 @@ func fatalLeaseError(err error) bool {
 }
 
 func (r *Runner) recordCycle(attempt time.Time, inputs, executed, failures int, cycleErr error) {
+	r.recordCycleSummary(attempt, &cycleCounts{inputs: inputs, executed: executed, failures: failures}, cycleErr)
+}
+
+type cycleCounts struct {
+	selected, target, claimed, started, processed, skippedLeases, deferred int
+	inputs, executed, failures, executionFailures, releaseFailures         int
+}
+
+func (r *Runner) recordCycleSummary(attempt time.Time, counts *cycleCounts, cycleErr error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.status.LastCycleAt = attempt
-	r.status.Inputs = inputs
-	r.status.Executed += executed
-	r.status.ProxyFailures = failures
+	r.status.Inputs = counts.inputs
+	r.status.Executed += counts.executed
+	r.status.ProxyFailures = counts.failures
+	r.status.Selected = counts.selected
+	r.status.Target = counts.target
+	r.status.Claimed = counts.claimed
+	r.status.Started = counts.started
+	r.status.Processed = counts.processed
+	r.status.SkippedLeases = counts.skippedLeases
+	r.status.Deferred = counts.deferred
+	r.status.ExecutionFailures = counts.executionFailures
+	r.status.ReleaseFailures = counts.releaseFailures
+	r.status.Partial = counts.deferred > 0 || counts.executionFailures > 0 || counts.releaseFailures > 0
 	if cycleErr == nil {
 		r.status.LastSuccess = r.now()
 		r.status.LastError = ""
@@ -301,7 +494,65 @@ func (r *Runner) recordCycle(attempt time.Time, inputs, executed, failures int, 
 	}
 }
 
+func (r *Runner) batchSize() int {
+	if r.cfg.BatchSize > 0 {
+		return r.cfg.BatchSize
+	}
+	if r.cfg.InputLimit > 0 {
+		return r.cfg.InputLimit
+	}
+	return 1
+}
+
+func (r *Runner) candidatePoolLimit() int {
+	factor := r.cfg.CandidatePoolFactor
+	if factor <= 0 {
+		factor = 1
+	}
+	limit := r.batchSize() * factor
+	if r.cfg.InputLimit > 0 && r.cfg.InputLimit < limit {
+		limit = r.cfg.InputLimit
+	}
+	return maxInt(1, limit)
+}
+
+func (r *Runner) workerConcurrency() int {
+	if r.cfg.WorkerConcurrency > 0 {
+		return r.cfg.WorkerConcurrency
+	}
+	return 1
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
 func (r *Runner) setOwnerHeld(value bool) { r.mu.Lock(); r.status.OwnerHeld = value; r.mu.Unlock() }
+func (r *Runner) setOwnerLease(lease OwnerLease) {
+	r.mu.Lock()
+	copy := lease
+	r.ownerLease = &copy
+	r.mu.Unlock()
+}
+func (r *Runner) clearOwnerLease() { r.mu.Lock(); r.ownerLease = nil; r.mu.Unlock() }
+func (r *Runner) currentOwnerLease() (OwnerLease, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.ownerLease == nil || !r.status.OwnerHeld {
+		return OwnerLease{}, false
+	}
+	return *r.ownerLease, true
+}
 func (r *Runner) recordError(err error) {
 	if err == nil {
 		return

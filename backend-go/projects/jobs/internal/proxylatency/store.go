@@ -30,6 +30,7 @@ const (
 
 var (
 	ErrOwnerLeaseLost  = errors.New("proxy-latency owner lease 已丢失")
+	ErrOwnerLeaseHeld  = errors.New("proxy-latency owner lease 被其他活动 owner 持有")
 	ErrProxyLeaseLost  = errors.New("proxy-latency proxy lease 已丢失")
 	ErrProxyLeaseHeld  = errors.New("proxy-latency proxy lease 被其他活动 owner 持有")
 	ErrRequestConflict = errors.New("proxy-latency request outcome 身份冲突")

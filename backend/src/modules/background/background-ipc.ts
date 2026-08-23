@@ -298,6 +298,9 @@ export function sendAccountTestTasksToWorker(taskIds: string[]): boolean {
   if (normalizedIds.length === 0) {
     return true
   }
+  if (!opsWorkerProcess || !opsWorkerProcess.connected || !opsWorkerReady) {
+    return false
+  }
   return sendBackgroundWorkerMessage({
     type: 'background_worker_account_test_tasks',
     taskIds: normalizedIds

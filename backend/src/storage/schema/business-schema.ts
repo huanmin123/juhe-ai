@@ -252,6 +252,26 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL
     );
 
+    -- J3a is a read-only consumer of Go committed outcomes.  Node owns only
+    -- the fenced business projection, durable disposition receipts and its
+    -- monotonic jobs-store cursor; it never writes proxy-latency outcomes.
+    CREATE TABLE IF NOT EXISTS proxy_latency_projection_receipts (
+      outcome_id TEXT PRIMARY KEY,
+      proxy_id TEXT NOT NULL,
+      input_version INTEGER NOT NULL CHECK (input_version >= 1),
+      disposition TEXT NOT NULL CHECK (disposition IN ('applied', 'stale', 'ignored', 'rejected')),
+      reason TEXT,
+      applied_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS proxy_latency_projection_cursors (
+      consumer_key TEXT PRIMARY KEY,
+      stored_at TEXT,
+      outcome_id TEXT,
+      updated_at TEXT NOT NULL,
+      CHECK ((stored_at IS NULL AND outcome_id IS NULL) OR (stored_at IS NOT NULL AND outcome_id IS NOT NULL))
+    );
+
     CREATE TABLE IF NOT EXISTS response_inspection_policies (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,

@@ -890,6 +890,7 @@ export interface AccountTestTask {
   cancelRequested?: boolean
   createdAt: string
   queuedAt: string
+  queuedDeadlineAt?: string
   startedAt?: string
   finishedAt?: string
   updatedAt: string

@@ -3,6 +3,7 @@ import type { AccountListItem, AccountTestResult, AccountTestTask } from '@/type
 import { type AccountTestEndpointMode, failedAccountTestResult } from './accountTestFlow'
 import {
   accountTestTaskMaxWaitMs,
+  accountTestTaskQueuedDeadlineMs,
   accountTestTaskRemainingWaitMs,
   parseTaskTime,
   waitForPollDelay
@@ -93,7 +94,11 @@ export async function waitForAccountTestResult(options: WaitForAccountTestResult
       task
     })
     if (timeoutResult) {
-      await cancelTask(task.id, account)
+      try {
+        await cancelTask(task.id, account)
+      } catch (cancelError) {
+        timeoutResult.message = `${timeoutResult.message}；停止后台任务失败：${cancelError instanceof Error ? cancelError.message : '未知错误'}`
+      }
       onTaskSettled?.(task.id)
       return timeoutResult
     }
@@ -109,6 +114,28 @@ export function accountTestTaskTimeoutResult(input: {
   model: string
   task: AccountTestTask
 }): AccountTestResult | undefined {
+  if (input.task.status === 'queued') {
+    const queuedDeadlineMs = accountTestTaskQueuedDeadlineMs(input.task)
+    if (queuedDeadlineMs === undefined) {
+      return failedAccountTestResult({
+        account: input.account,
+        error: new Error(input.task.queuedAt
+          ? `后台测试任务 queuedAt 无法严格解析：${input.task.queuedAt}`
+          : '后台测试任务缺少 queuedAt，无法计算排队窗口'),
+        model: input.task.model ?? input.model,
+        testEndpointMode: input.testEndpointMode,
+        startedAt: undefined
+      })
+    }
+    if (Date.now() < queuedDeadlineMs) return undefined
+    return failedAccountTestResult({
+      account: input.account,
+      error: new Error('后台 worker 未在排队窗口内接收账号测试任务，已自动停止'),
+      model: input.task.model ?? input.model,
+      testEndpointMode: input.testEndpointMode,
+      startedAt: undefined
+    })
+  }
   if (input.task.status !== 'running') {
     return undefined
   }

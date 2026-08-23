@@ -14,7 +14,10 @@ const (
 	defaultProxyLatencyInterval     = time.Minute
 	defaultProxyLatencyOwnerLease   = 90 * time.Second
 	defaultProxyLatencyProxyLease   = 75 * time.Second
-	defaultProxyLatencyProbeLimit   = 64
+	defaultProxyLatencyBatchSize    = 20
+	defaultProxyLatencyPoolFactor   = 4
+	defaultProxyLatencyConcurrency  = 4
+	defaultProxyLatencyProbeLimit   = defaultProxyLatencyBatchSize * defaultProxyLatencyPoolFactor
 	defaultProxyLatencyProbeTimeout = 30 * time.Second
 )
 
@@ -33,12 +36,18 @@ type RuntimeConfig struct {
 	PostgresPool              *pgpool.Handle
 	InputPostgresPool         *pgpool.Handle
 	InputLimit                int
+	BatchSize                 int
+	CandidatePoolFactor       int
+	WorkerConcurrency         int
 	InputTTL                  time.Duration
 	Interval                  time.Duration
 	OwnerLease                time.Duration
 	ProxyLease                time.Duration
 	ProbeTimeout              time.Duration
 	CredentialSecret          string
+	ManualEnabled             bool
+	ManualHTTPSecret          string
+	ManualDeadline            time.Duration
 	Now                       func() time.Time
 }
 
@@ -86,6 +95,15 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.InputLimit, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_LIMIT", defaultProxyLatencyProbeLimit, 1, 1024); err != nil {
 		return RuntimeConfig{}, err
 	}
+	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_BATCH_SIZE", defaultProxyLatencyBatchSize, 1, 1024); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.CandidatePoolFactor, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_CANDIDATE_POOL_FACTOR", defaultProxyLatencyPoolFactor, 1, 100); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.WorkerConcurrency, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY", defaultProxyLatencyConcurrency, 1, 128); err != nil {
+		return RuntimeConfig{}, err
+	}
 	if cfg.InputTTL, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_TTL", 5*time.Minute, time.Minute, 15*time.Minute); err != nil {
 		return RuntimeConfig{}, err
 	}
@@ -107,6 +125,16 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET"))
 	if cfg.CredentialSecret == "" {
 		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET")
+	}
+	cfg.ManualEnabled = strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_MANUAL_ENABLED")), "true")
+	if cfg.ManualEnabled {
+		cfg.ManualHTTPSecret = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_MANUAL_HTTP_SECRET"))
+		if len(cfg.ManualHTTPSecret) < 32 {
+			return RuntimeConfig{}, errors.New("启用 J3a manual bridge 时 JUHE_AI_PROXY_LATENCY_MANUAL_HTTP_SECRET 至少 32 字符")
+		}
+		if cfg.ManualDeadline, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_MANUAL_DEADLINE", 25*time.Second, time.Second, 25*time.Second); err != nil {
+			return RuntimeConfig{}, err
+		}
 	}
 	return cfg, nil
 }

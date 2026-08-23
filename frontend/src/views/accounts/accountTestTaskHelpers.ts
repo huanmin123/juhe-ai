@@ -4,6 +4,8 @@ import { serverDateTimeTimestamp } from '@/shared/formatters'
 import type { AccountTestTask } from '@/types/domain'
 
 export const accountTestPollIntervalMs = 3000
+/** Compatibility fallback when older DTOs omit queuedDeadlineAt; server responses normally provide it. */
+export const accountTestLegacyQueuedFallbackMaxWaitMs = 10 * 60_000
 export const accountDiagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000] as const
 export const accountImageDiagnosticAttemptTimeoutsMs = [120_000] as const
 
@@ -23,6 +25,14 @@ export function accountTestTaskRemainingWaitMs(task: AccountTestTask, nowMs = Da
     return 0
   }
   return Math.max(0, accountTestTaskMaxWaitMs(task.testEndpointMode) - (nowMs - startedAt))
+}
+
+export function accountTestTaskQueuedDeadlineMs(task: AccountTestTask): number | undefined {
+  if (task.status !== 'queued') return undefined
+  const deadline = parseTaskTime(task.queuedDeadlineAt)
+  if (deadline !== undefined) return deadline
+  const queuedAt = parseTaskTime(task.queuedAt)
+  return queuedAt === undefined ? undefined : queuedAt + accountTestLegacyQueuedFallbackMaxWaitMs
 }
 
 export function parseTaskTime(value?: string): number | undefined {
