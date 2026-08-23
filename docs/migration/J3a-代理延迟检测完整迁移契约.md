@@ -1,6 +1,6 @@
 # J3a 代理延迟检测完整迁移契约
 
-> 状态：Go 周期 executor、Go loopback manual bridge、Node committed-outcome reader/projector、Node scheduler owner gate 与 handoff 证据已接入并通过本地回归；Go owner 仍保持关闭，未授权生产切换。`master@982468590` 是历史取证基线；`master@53a79b74a` 是本轮最终实现审计快照。外部 dev PG/PgBouncer 重跑、active-path-zero、真实 owner handoff、重启/回滚和生产/L4 仍是独立门禁。
+> 状态：Go 周期 executor、Go loopback manual bridge、Node committed-outcome reader/projector、Node scheduler owner gate 与 handoff 证据已接入并通过本地回归；Go owner 仍保持关闭，未授权生产切换。`master@982468590` 是历史取证基线；`master@90cfc1f52` 是本轮最终实现审计快照。外部 dev PG/PgBouncer 重跑、active-path-zero、真实 owner handoff、重启/回滚和生产/L4 仍是独立门禁。
 
 ## 1. Owner 与范围
 
