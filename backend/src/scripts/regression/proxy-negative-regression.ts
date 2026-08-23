@@ -329,21 +329,56 @@ function createDirectUpstreamServer(): http.Server {
   return http.createServer((req, res) => {
     directUpstreamHitCount += 1
     if (req.url === '/v1/responses') {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({
-        id: 'resp_proxy_negative',
-        object: 'response',
-        status: 'completed',
-        model: proxyRegressionModel,
-        output: [{
-          type: 'message',
-          content: [{ type: 'output_text', text: 'juhe' }]
-        }],
-        usage: {
-          input_tokens: 1,
-          output_tokens: 1
+      const chunks: Buffer[] = []
+      req.on('data', (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)))
+      req.on('end', () => {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'responses probe must use POST' }))
+          return
         }
-      }))
+        if (req.headers.authorization !== 'Bearer sk-proxy-negative') {
+          res.writeHead(401, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'responses probe authorization mismatch' }))
+          return
+        }
+        let body: Record<string, unknown>
+        try {
+          const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('body must be an object')
+          body = parsed as Record<string, unknown>
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'responses probe body must be valid JSON' }))
+          return
+        }
+        const firstInput = Array.isArray(body.input) && body.input.length > 0 && typeof body.input[0] === 'object' && body.input[0] !== null
+          ? body.input[0] as Record<string, unknown>
+          : undefined
+        const content = Array.isArray(firstInput?.content) && firstInput.content.length > 0 && typeof firstInput.content[0] === 'object' && firstInput.content[0] !== null
+          ? firstInput.content[0] as Record<string, unknown>
+          : undefined
+        if (body.model !== proxyRegressionModel || content?.text !== '只能回复：juhe') {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'responses probe request contract mismatch' }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          id: 'resp_proxy_negative',
+          object: 'response',
+          status: 'completed',
+          model: proxyRegressionModel,
+          output: [{
+            type: 'message',
+            content: [{ type: 'output_text', text: 'juhe' }]
+          }],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1
+          }
+        }))
+      })
       return
     }
     res.writeHead(200, { 'content-type': 'application/json' })
