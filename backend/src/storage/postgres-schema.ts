@@ -66,6 +66,11 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   },
   {
     schemaName: 'juhe_business',
+    source: 'account-test-task-queued-deadline-pg-column',
+    sql: 'ALTER TABLE account_test_tasks ADD COLUMN IF NOT EXISTS queued_deadline_at timestamptz'
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((name COLLATE "C"), id)'
   },
@@ -1117,7 +1122,7 @@ function transformAccountRuntimeTablesForPostgres(sql: string, schemaName: Postg
   if (schemaName === 'juhe_business' && /^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+account_test_tasks\s*\(/i.test(normalized)) {
     return postgresTimestampColumns(
       sql.replace(/\bcancel_requested\s+integer\s+NOT\s+NULL\s+DEFAULT\s+0\b/i, 'cancel_requested boolean NOT NULL DEFAULT false'),
-      ['queued_at', 'started_at', 'finished_at', 'created_at', 'updated_at']
+      ['queued_at', 'queued_deadline_at', 'started_at', 'finished_at', 'created_at', 'updated_at']
     )
   }
   if (schemaName === 'juhe_business' && /^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+account_test_sessions\s*\(/i.test(normalized)) {

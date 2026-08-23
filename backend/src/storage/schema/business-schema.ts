@@ -905,6 +905,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       error_message TEXT,
       cancel_requested INTEGER NOT NULL DEFAULT 0,
       queued_at TEXT NOT NULL,
+      queued_deadline_at TEXT,
       started_at TEXT,
       finished_at TEXT,
       created_at TEXT NOT NULL,
@@ -1638,6 +1639,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
   ensureExternalIntegrationSourceIndexes(database)
   ensureOidcProviderSchema(database)
   ensureAuthorizationInstanceIndexes(database)
+  ensureAccountTestTaskQueuedDeadlineSchema(database)
+}
+
+function ensureAccountTestTaskQueuedDeadlineSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(account_test_tasks)').all() as Array<{ name?: unknown }>
+  if (columns.length === 0 || columns.some((column) => column.name === 'queued_deadline_at')) return
+  database.exec('ALTER TABLE account_test_tasks ADD COLUMN queued_deadline_at TEXT')
 }
 
 /**

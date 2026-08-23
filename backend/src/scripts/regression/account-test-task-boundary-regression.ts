@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { resolve } from 'node:path'
+
+import { applyBusinessSchema } from '../../storage/schema/business-schema.js'
 
 const backendRoot = resolve('src')
 const frontendRoot = resolve('..', 'frontend', 'src')
@@ -172,6 +175,26 @@ assert.match(
   /账户测试会话只能包含一个账户任务/,
   '每个会话必须只承载一个账户任务，防止重新引入批量测试'
 )
+assert.match(
+  taskRepository,
+  /queued_deadline_at/,
+  '账户测试任务必须持久化排队截止时间字段'
+)
+assert.match(
+  taskRepository,
+  /const queuedDeadlineAt = accountTestTaskQueuedDeadlineAt\(now\)/,
+  '账户测试任务必须在创建时快照排队截止时间'
+)
+assert.match(
+  taskRepository,
+  /row\.queued_deadline_at/,
+  '账户测试任务读取必须优先使用持久化排队截止时间'
+)
+assert.match(
+  taskRepository,
+  /queued_deadline_at\s+IS\s+NOT\s+NULL[\s\S]*queued_deadline_at\s+<=/,
+  '账户测试任务过期 sweep 必须按持久化排队截止时间收口'
+)
 assert.doesNotMatch(
   postgresTaskRepository,
   /cancel_requested\s*=\s*[01]/,
@@ -262,7 +285,22 @@ assert.doesNotMatch(
   '账户页不得保留批量测试入口或批量测试状态'
 )
 
+assertSqliteQueuedDeadlineUpgrade()
+
 console.log('account-test-task-boundary-regression passed')
+
+function assertSqliteQueuedDeadlineUpgrade(): void {
+  const database = new DatabaseSync(':memory:')
+  try {
+    applyBusinessSchema(database)
+    database.exec('ALTER TABLE account_test_tasks DROP COLUMN queued_deadline_at')
+    applyBusinessSchema(database)
+    const columns = database.prepare('PRAGMA table_info(account_test_tasks)').all() as Array<{ name?: unknown }>
+    assert(columns.some((column) => column.name === 'queued_deadline_at'), 'SQLite 旧表必须幂等补齐 queued_deadline_at')
+  } finally {
+    database.close()
+  }
+}
 
 function source(root: string, ...segments: string[]): string {
   return readFileSync(resolve(root, ...segments), 'utf8')

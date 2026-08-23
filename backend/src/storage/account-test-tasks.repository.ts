@@ -85,6 +85,7 @@ interface AccountTestTaskRow {
   error_message: string | null
   cancel_requested: number | boolean
   queued_at: string | Date
+  queued_deadline_at: string | Date | null
   started_at: string | Date | null
   finished_at: string | Date | null
   created_at: string | Date
@@ -231,6 +232,7 @@ export function createAccountTestTask(input: CreateAccountTestTaskInput): Accoun
   cleanupExpiredAccountTestTasks()
 
   const now = nowIso()
+  const queuedDeadlineAt = accountTestTaskQueuedDeadlineAt(now)
   const id = newId('accttest')
   const sessionId = normalizedOptionalText(input.sessionId)
   if (sessionId) {
@@ -241,9 +243,9 @@ export function createAccountTestTask(input: CreateAccountTestTaskInput): Accoun
       id, account_id, account_name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
       request_system_account_id, request_role, request_system_account_filter_id,
       diagnostics, model, test_endpoint_mode, draft_account_encrypted, status, status_message,
-      cancel_requested, queued_at, created_at, updated_at
+      cancel_requested, queued_at, queued_deadline_at, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?, ?)
   `).run(
     id,
     input.account.id,
@@ -261,6 +263,7 @@ export function createAccountTestTask(input: CreateAccountTestTaskInput): Accoun
     accountTestEndpointMode(input.testEndpointMode) ?? null,
     encryptedDraftAccount(input.draftAccount),
     now,
+    queuedDeadlineAt,
     now,
     now
   )
@@ -339,14 +342,17 @@ export function failExpiredQueuedAccountTestTasks(maxQueuedMs: number, limit = 2
     LEFT JOIN account_test_sessions s ON s.id = st.session_id
     WHERE t.status = 'queued'
       AND t.cancel_requested = 0
-      AND t.queued_at < ?
+      AND (
+        (t.queued_deadline_at IS NOT NULL AND t.queued_deadline_at <= ?)
+        OR (t.queued_deadline_at IS NULL AND t.queued_at < ?)
+      )
       AND (
         st.session_id IS NULL
         OR s.status = 'running'
       )
     ORDER BY t.queued_at ASC, t.id ASC
     LIMIT ?
-  `).all(queuedCutoff, safeLimit) as unknown as Array<{ id: string }>
+  `).all(nowIso(), queuedCutoff, safeLimit) as unknown as Array<{ id: string }>
   const taskIds = rows.map((row) => row.id)
   if (taskIds.length === 0) {
     return []
@@ -719,6 +725,7 @@ export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInp
 
   const client = await accountTestTaskDatabaseClient()
   const now = nowIso()
+  const queuedDeadlineAt = accountTestTaskQueuedDeadlineAt(now)
   const id = newId('accttest')
   const sessionId = normalizedOptionalText(input.sessionId)
   await client.transaction(async (tx) => {
@@ -730,9 +737,9 @@ export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInp
         id, account_id, account_name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
         request_system_account_id, request_role, request_system_account_filter_id,
         diagnostics, model, test_endpoint_mode, draft_account_encrypted, status, status_message,
-        cancel_requested, queued_at, created_at, updated_at
+        cancel_requested, queued_at, queued_deadline_at, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', false, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', false, ?, ?, ?, ?)
     `, [
       id,
       input.account.id,
@@ -750,6 +757,7 @@ export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInp
       accountTestEndpointMode(input.testEndpointMode) ?? null,
       encryptedDraftAccount(input.draftAccount),
       now,
+      queuedDeadlineAt,
       now,
       now
     ])
@@ -863,14 +871,17 @@ export async function failExpiredQueuedAccountTestTasksAsync(maxQueuedMs: number
     LEFT JOIN ${accountTestTable(client, 'account_test_sessions')} s ON s.id = st.session_id
     WHERE t.status = 'queued'
       AND t.cancel_requested = false
-      AND t.queued_at < ?
+      AND (
+        (t.queued_deadline_at IS NOT NULL AND t.queued_deadline_at <= ?)
+        OR (t.queued_deadline_at IS NULL AND t.queued_at < ?)
+      )
       AND (
         st.session_id IS NULL
         OR s.status = 'running'
       )
     ORDER BY t.queued_at ASC, t.id ASC
     LIMIT ?
-  `, [queuedCutoff, safeLimit])
+  `, [nowIso(), queuedCutoff, safeLimit])
   const taskIds = rows.map((row) => row.id)
   if (taskIds.length === 0) {
     return []
@@ -1391,7 +1402,9 @@ function canReadAccountTestSession(row: AccountTestSessionRow, access?: AccessSc
 
 function accountTestTaskFromRow(row: AccountTestTaskRow): AccountTestTask {
   const queuedAt = databaseDateTimeIso(row.queued_at, 'account_test_tasks.queued_at')
-  const queuedDeadlineAt = accountTestTaskQueuedDeadlineAt(queuedAt)
+  const queuedDeadlineAt = row.queued_deadline_at === null || row.queued_deadline_at === undefined
+    ? accountTestTaskQueuedDeadlineAt(queuedAt)
+    : databaseDateTimeIso(row.queued_deadline_at, 'account_test_tasks.queued_deadline_at')
   return {
     id: row.id,
     sessionId: row.session_id ?? undefined,

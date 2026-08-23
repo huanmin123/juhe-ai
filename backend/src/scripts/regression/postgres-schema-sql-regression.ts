@@ -324,6 +324,7 @@ assert.doesNotMatch(sql, /ALTER TABLE (?:audit_logs|audit_payload_refs)\b/, 'Nod
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 范围窗口 dirty 表必须包含 generation 和首次标脏时间')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 账号范围窗口 dirty 表必须包含 generation 和首次标脏时间')
 assert.match(sql, /ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text/, 'PostgreSQL 使用记录当前迁移必须保留上游响应模型列')
+assert.match(sql, /ALTER TABLE account_test_tasks ADD COLUMN IF NOT EXISTS queued_deadline_at timestamptz/, 'PostgreSQL 账户测试任务必须保留排队截止时间列')
 assert.match(usageRecordUpstreamResponseModelMigration, /if \(!offlineConfirmed\)/, '上游响应模型列迁移必须要求显式离线确认')
 assert.match(usageRecordUpstreamResponseModelMigration, /ALTER TABLE juhe_usage\.usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text/, '上游响应模型列迁移必须包含幂等 PostgreSQL DDL')
 assert.match(usageRecordUpstreamResponseModelMigration, /listUsageRecordShardLocations\(\)/, '上游响应模型列迁移必须枚举 SQLite 已注册 usage shard')
@@ -343,6 +344,7 @@ for (const pattern of retiredPostgresSchemaPatterns) {
 assert.match(sql, /DROP INDEX IF EXISTS idx_usage_records_created_at/, 'PostgreSQL 使用记录分区迁移必须清理已替代的历史索引')
 const schemaWithoutCurrentRuntimeUpgrades = sql
   .replace(/ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text;/g, '')
+  .replace(/ALTER TABLE account_test_tasks ADD COLUMN IF NOT EXISTS queued_deadline_at timestamptz;/g, '')
   .replace(/ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized';/g, '')
   .replace(/ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text;/g, '')
 assert.doesNotMatch(schemaWithoutCurrentRuntimeUpgrades, /\bALTER TABLE\b[\s\S]+\bADD COLUMN\b/i, 'PostgreSQL schema 不应包含截止线前的运行时补列语句')

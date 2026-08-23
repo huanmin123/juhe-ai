@@ -24,7 +24,7 @@ const baseConfig = {
   }
 }
 
-assert.equal(NODE_POSTGRES_SCHEMA_CONTRACT_VERSION, 93)
+assert.equal(NODE_POSTGRES_SCHEMA_CONTRACT_VERSION, 94)
 assert.equal(parsePostgresSchemaOwner('node'), 'node')
 assert.equal(parsePostgresSchemaOwner('goose'), 'goose')
 
@@ -35,7 +35,7 @@ assert.throws(
     missingIndexes: [],
     gooseLedgerPresent: false
   }),
-  /schema contract 93 不完整/
+  /schema contract 94 不完整/
 )
 assert.throws(
   () => validatePostgresNodeSchemaPreflight({
@@ -91,7 +91,7 @@ async function assertMissingOwnerFailsClosed(): Promise<void> {
 
 async function assertGooseOwnerDelegatesToStrictGate(): Promise<void> {
   const results = [
-    { rows: [{ version_id: '93', is_applied: true }] },
+    { rows: [{ version_id: '94', is_applied: true }] },
     { rows: [] }
   ]
   const pool: PostgresSchemaOwnerGatePool = {

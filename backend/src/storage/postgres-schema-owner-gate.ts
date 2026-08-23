@@ -13,7 +13,7 @@ import {
  * create tables, update goose_db_version, or infer a Goose history from an
  * already-populated Node database.
  */
-export const NODE_POSTGRES_SCHEMA_CONTRACT_VERSION = 93
+export const NODE_POSTGRES_SCHEMA_CONTRACT_VERSION = 94
 
 export const POSTGRES_NODE_SCHEMA_PREFLIGHT_QUERY = `
 SELECT
@@ -46,7 +46,18 @@ SELECT
         AND a.attname = 'confirmation_failure_evidence_keys_json'
         AND a.attnum > 0
         AND NOT a.attisdropped
-    ) THEN 'juhe_business.account_circuit_incidents.confirmation_failure_evidence_keys_json' END
+    ) THEN 'juhe_business.account_circuit_incidents.confirmation_failure_evidence_keys_json' END,
+    CASE WHEN NOT EXISTS (
+      SELECT 1
+      FROM pg_catalog.pg_attribute a
+      INNER JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'juhe_business'
+        AND c.relname = 'account_test_tasks'
+        AND a.attname = 'queued_deadline_at'
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+    ) THEN 'juhe_business.account_test_tasks.queued_deadline_at' END
   ], NULL) AS missing_columns,
   ARRAY_REMOVE(ARRAY[
     CASE WHEN NOT EXISTS (

@@ -4,7 +4,8 @@
 
 > 2026-08-23 当前结论：本仓库 `master` 已不包含历史 `backend-go/db/migrations`，当前业务 schema 仍由 Node 的 `applyPostgresSchema()` 管理；生产和演练库缺少 `public.goose_db_version` 时，不得用手工 SQL 补账，也不得把旧 Goose catalog 当作 Node 数据库的历史证明。
 
-- 当前发布契约版本为 `93`，但它是统一的 PostgreSQL schema contract 版本，不等同于当前数据库已经存在 Goose ledger `93`。
+- 当前发布契约版本为 `94`，但它是统一的 PostgreSQL schema contract 版本，不等同于当前数据库已经存在 Goose ledger `94`。
+- `juhe_business.account_test_tasks.queued_deadline_at` 属于本次 Node-owned contract 94；Node 初始化以幂等 DDL 补列，任务创建时写入截止时间快照，worker sweep 和 API 读取均优先使用该快照。
 - Node-owned 部署使用只读 `postgres:schema-preflight` / `enforcePostgresSchemaOwnerGate()`，校验关键关系、列、索引并拒绝混合 Goose ledger；该入口不执行 DDL、不写业务数据、不写 `goose_db_version`。
 - Goose-owned 部署只有在正式 migration catalog 恢复、独立 Contract release 和演练验证完成后，才设置 `JUHE_AI_POSTGRES_SCHEMA_OWNER=goose`，继续使用严格的 Goose ledger gate；当前不允许通过此模式接管现有 Node 库。
 - `JUHE_AI_OWNER_LOCK_ENABLED=true` 时必须显式配置 `JUHE_AI_POSTGRES_SCHEMA_OWNER=node|goose`；缺失、非法或混合状态一律 fail-closed。
