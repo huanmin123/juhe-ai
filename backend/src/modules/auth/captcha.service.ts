@@ -266,54 +266,27 @@ function forgetCaptchaAnswerForTest(captchaId: string): void {
 }
 
 function renderCaptchaImage(answer: string): string {
-  const width = 144
-  const height = 46
+  const width = 108
+  const height = 52
   const pixels = createPixelBuffer(width, height)
-
-  for (let index = 0; index < 6; index += 1) {
-    drawLine(
-      pixels,
-      width,
-      height,
-      randomInt(0, width),
-      randomInt(0, height),
-      randomInt(0, width),
-      randomInt(0, height),
-      37,
-      99,
-      235,
-      randomInt(32, 72)
-    )
-  }
-
-  for (let index = 0; index < 28; index += 1) {
-    drawRect(
-      pixels,
-      width,
-      height,
-      randomInt(4, width - 4),
-      randomInt(4, height - 4),
-      randomInt(1, 3),
-      randomInt(1, 3),
-      14,
-      165,
-      233,
-      randomInt(42, 108)
-    )
-  }
-
+  const glyphScale = 2
+  const glyphWidth = 5 * glyphScale
+  const glyphGap = 8
+  const glyphCount = [...answer].length
+  const textWidth = glyphCount * glyphWidth + Math.max(0, glyphCount - 1) * glyphGap
+  const startX = Math.max(0, Math.trunc((width - textWidth) / 2))
   for (const [index, char] of [...answer].entries()) {
     drawGlyph(
       pixels,
       width,
       height,
       char,
-      13 + index * 24 + randomInt(-2, 3),
-      8 + randomInt(-2, 3),
-      4,
-      randomInt(15, 45),
-      randomInt(35, 75),
-      randomInt(65, 105)
+      startX + index * (glyphWidth + glyphGap),
+      19,
+      glyphScale,
+      34,
+      40,
+      43
     )
   }
 
@@ -359,9 +332,7 @@ function createPixelBuffer(width: number, height: number): Buffer {
   const pixels = Buffer.alloc(width * height * 4)
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const blue = 242 + Math.trunc((x / Math.max(1, width - 1)) * 10)
-      const green = 246 + Math.trunc((y / Math.max(1, height - 1)) * 6)
-      setPixel(pixels, width, x, y, 239, green, blue, 255)
+      setPixel(pixels, width, x, y, 255, 255, 255, 255)
     }
   }
   return pixels
@@ -385,8 +356,8 @@ function drawGlyph(
     for (const [columnIndex, value] of [...row].entries()) {
       if (value !== '1') continue
       const blockX = startX + columnIndex * scale
-      const blockY = startY + rowIndex * scale + Math.trunc(Math.sin((columnIndex + rowIndex) / 2))
-      drawRect(pixels, width, height, blockX, blockY, scale, scale, red, green, blue, 242)
+      const blockY = startY + rowIndex * scale
+      drawRect(pixels, width, height, blockX, blockY, scale, scale, red, green, blue, 255)
     }
   }
 }

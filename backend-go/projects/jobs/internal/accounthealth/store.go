@@ -553,12 +553,12 @@ WHERE (juhe_jobs.account_health_current_state.input_version < EXCLUDED.input_ver
 	   OR (juhe_jobs.account_health_current_state.input_version = EXCLUDED.input_version
        AND juhe_jobs.account_health_current_state.config_revision = EXCLUDED.config_revision
        AND juhe_jobs.account_health_current_state.dispatch_revision = EXCLUDED.dispatch_revision
-	   AND juhe_jobs.account_health_current_state.observed_at <= EXCLUDED.observed_at)`
-		query += `)`
+	   AND juhe_jobs.account_health_current_state.observed_at <= EXCLUDED.observed_at`
 		if outcome.Projection != nil {
 			query += ` AND juhe_jobs.account_health_current_state.account_status = $18`
 			args = append(args, outcome.Projection.ExpectedAccountStatus)
 		}
+		query += `))`
 	} else {
 		query = `INSERT INTO account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -567,12 +567,12 @@ WHERE (account_health_current_state.input_version < excluded.input_version
 	   OR (account_health_current_state.input_version = excluded.input_version
        AND account_health_current_state.config_revision = excluded.config_revision
        AND account_health_current_state.dispatch_revision = excluded.dispatch_revision
-	   AND account_health_current_state.observed_at <= excluded.observed_at)`
-		query += `)`
+	   AND account_health_current_state.observed_at <= excluded.observed_at`
 		if outcome.Projection != nil {
 			query += ` AND account_health_current_state.account_status = ?`
 			args = append(args, outcome.Projection.ExpectedAccountStatus)
 		}
+		query += `))`
 	}
 	return execCurrentStateCAS(ctx, tx, query, args...)
 }

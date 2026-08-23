@@ -160,6 +160,43 @@ func TestSQLiteStoreOwnerLeaseAndIdempotentOutcome(t *testing.T) {
 	}
 }
 
+func TestSQLiteNewInputEpochAppliesProjectionAfterStatusChange(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	observed := time.Now().UTC().Round(0)
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "new-epoch-baseline", RequestID: "new-epoch-baseline-request", AccountID: "new-epoch-account",
+		Outcome: OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
+		AccountStatus: "temporary_unavailable", NextDueAt: ptrTime(observed.Add(time.Minute)), FailureCount: 3,
+	})
+
+	next := observed.Add(time.Second)
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "new-epoch-projected", RequestID: "new-epoch-projected-request", AccountID: "new-epoch-account",
+		Outcome: OutcomeUpstreamFailed, ObservedAt: next, InputVersion: 2, ConfigRevision: 2, DispatchRevision: 2,
+		AccountStatus: "pending_test", NextDueAt: ptrTime(next.Add(5 * time.Minute)), FailureCount: 1,
+		Projection: &Projection{
+			TargetAccountID: "new-epoch-account", TransitionKind: "health_failure", InputVersion: 2,
+			ConfigRevision: 2, DispatchRevision: 2, ExpectedAccountStatus: "pending_test",
+		},
+	})
+
+	state, found, err := store.LoadCurrentState(context.Background(), "new-epoch-account")
+	if err != nil || !found || state.OutcomeID != "new-epoch-projected" || state.InputVersion != 2 || state.AccountStatus != "pending_test" {
+		t.Fatalf("new input epoch must replace stale status and current state: found=%t state=%#v err=%v", found, state, err)
+	}
+	var payload []byte
+	if err := store.db.QueryRowContext(context.Background(), `SELECT payload FROM account_health_outcomes WHERE request_id=?`, "new-epoch-projected-request").Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var stored Outcome
+	if err := json.Unmarshal(payload, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Projection == nil {
+		t.Fatal("accepted new input epoch must retain the Node-applicable projection")
+	}
+}
+
 func TestRenewOwnerLeaseWriteGateHonorsDeadline(t *testing.T) {
 	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite3")})
 	if err != nil {
