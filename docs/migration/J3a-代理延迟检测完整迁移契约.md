@@ -1,6 +1,6 @@
 # J3a 代理延迟检测完整迁移契约
 
-> 状态：Go 周期 executor、Go loopback manual bridge、Node committed-outcome reader/projector、Node scheduler owner gate 与 handoff 证据已接入并通过本地回归；Go owner 仍保持关闭，未授权生产切换。`master@982468590` 是历史取证基线；`master@90cfc1f52` 是本轮最终实现审计快照。外部 dev PG/PgBouncer 重跑、active-path-zero、真实 owner handoff、重启/回滚和生产/L4 仍是独立门禁。
+> 状态：Go 周期 executor、Go loopback manual bridge、Node committed-outcome reader/projector、Node scheduler owner gate 与 handoff 证据已接入；本轮在 dev scratch 经 PgBouncer `6432` 重跑 Go required smoke，并验证 Node PG reader/projector 的 applied/stale、receipt、cursor、CAS 与 replay。Go owner 仍保持关闭，未授权生产切换。`master@982468590` 是历史取证基线；`master@90cfc1f52` 是此前实现审计快照；当前工作树包含本轮三文件契约修复。真实 Node→Go→Node 进程编排、active-path-zero、owner handoff、重启/回滚和生产/L4 仍是独立门禁。
 
 ## 1. Owner 与范围
 
@@ -48,7 +48,7 @@ Node projector 已实现：只读 `committed` jobs outcomes，按 `(stored_at, o
 
 Header 模式边界：HTTP forward proxy 请求携带 `accept`、`user-agent`、目标 `host`、`connection: close`、`proxy-connection: close` 与代理认证。HTTPS 经 HTTP(S) proxy 时，`host`、`proxy-connection` 与代理认证只属于 CONNECT 握手；隧道内目标请求只携带 `accept` 与 `user-agent`。SOCKS 隧道同样不得收到 forward-proxy 头。
 
-已完成且仅在本地 Go 测试（SQLite jobs Store + SQL contract）验证的基础域包括：proxy URL / stored `socks5` 与 `socks5h` 的 Node-effective 远端 DNS 映射、禁止重定向、Node probe request headers、512 KiB 收集上限并持续 drain 到完整 framing、CONNECT response header 64 KiB 上限、成功/neutral/upstream failure/probe task failure 分类、owner/proxy lease、request 级 execution claim、Store 签发的 durable `request_id/input_version`、持久化深拷贝 snapshot、issued-input identity/expiry fence、executor timeout 不越过 input expiry、payload SHA-256 digest 及 replay poison 校验，以及 outcome 的 trigger、RFC3339 UTC config revision 和 lease token 持久字段。最小 executor 只消费 Store 已签发且由 claim 交付的 input：先验证 live owner/proxy lease 与持久 payload，再逐 target 直接请求，且只把脱敏 item 写入 outcome；首次执行前的 input、解密、lease、取消或 claim 失败不伪造 committed outcome。已提交 request 只读回原 outcome，不再次请求上游；同一 request 并发执行返回明确 in-flight，不重复请求。password envelope 仅在 executor 内存中解密为 proxy URL，不进入 outcome、Store 错误或日志。PostgreSQL reader 已实现 `REPEATABLE READ READ ONLY` 与 transaction-local timeout；既有 dev 隔离 scratch smoke 已经通过 PgBouncer `6432` required 验收并清理，详见 [L3-PG 真实验收报告](../reports/J3a代理延迟检测L3-PG真实验收报告-2026-08-22.md)。本轮深度对照未重跑该外部 smoke；该证据只覆盖 jobs/reader 基础域，不代表跨运行时闭环或生产。
+已完成且仅在本地 Go 测试（SQLite jobs Store + SQL contract）验证的基础域包括：proxy URL / stored `socks5` 与 `socks5h` 的 Node-effective 远端 DNS 映射、禁止重定向、Node probe request headers、512 KiB 收集上限并持续 drain 到完整 framing、CONNECT response header 64 KiB 上限、成功/neutral/upstream failure/probe task failure 分类、owner/proxy lease、request 级 execution claim、Store 签发的 durable `request_id/input_version`、持久化深拷贝 snapshot、issued-input identity/expiry fence、executor timeout 不越过 input expiry、payload SHA-256 digest 及 replay poison 校验，以及 outcome 的 trigger、RFC3339 UTC config revision 和 lease token 持久字段。最小 executor 只消费 Store 已签发且由 claim 交付的 input：先验证 live owner/proxy lease 与持久 payload，再逐 target 直接请求，且只把脱敏 item 写入 outcome；首次执行前的 input、解密、lease、取消或 claim 失败不伪造 committed outcome。已提交 request 只读回原 outcome，不再次请求上游；同一 request 并发执行返回明确 in-flight，不重复请求。password envelope 仅在 executor 内存中解密为 proxy URL，不进入 outcome、Store 错误或日志。PostgreSQL reader 已实现 `REPEATABLE READ READ ONLY` 与 transaction-local timeout；本轮 dev scratch 已经通过 PgBouncer `6432` required 验收并清理，并额外完成 Node PG reader/projector 的 applied/stale、receipt、cursor、CAS/replay 验证，详见 [L3-PG 真实验收报告](../reports/J3a代理延迟检测L3-PG真实验收报告-2026-08-22.md)。该证据不代表真实 Node→Go→Node 进程闭环或生产。
 
 这仍不构成生产 owner 切换。jobs supervisor/health、Node outcome reader/projector、手动 bridge、Node scheduler 条件注册和 shutdown drain 已加入并通过本地回归；Go owner gate 仍要求显式配置、外部验收、active-path-zero、旧 owner manifest 与回滚证据。
 
@@ -58,11 +58,11 @@ Header 模式边界：HTTP forward proxy 请求携带 `accept`、`user-agent`、
 
 配置缺失、非法 duration/limit、非 PostgreSQL jobs Store 或缺少 owner gate/credential secret 均 fail-closed；默认关闭时不打开数据库、不创建 runner。jobs `/health` 增加 `proxyLatencyEnabled`、`proxyLatencyReady`、`proxyLatencyOwnerHeld`、最近周期/成功/错误、输入/执行/失败计数和 J3a readiness 汇总；启用后必须完成至少一轮无失败 cycle 才 ready，owner/lease 丢失或失败周期不得伪造成功状态。
 
-本批仍不翻转 owner、不启动 Docker/Redis、不访问生产；Node projector/manual bridge 已实现但只在显式 Go-owner gate 下工作。本轮本地测试覆盖同一 manual/outcome golden、投影 receipt/cursor/CAS/replay、scheduler 条件注册与 drain wiring；真实 dev PG/PgBouncer、跨进程运行时重启/回滚和生产/L4 仍不得以本地证据替代。
+本批仍不翻转 owner、不启动 Docker/Redis、不访问生产；Node projector/manual bridge 已实现但只在显式 Go-owner gate 下工作。本轮已在一次性 dev scratch 验证 Go PgBouncer required smoke 与 Node PG reader/projector；真实 Node→Go→Node 进程编排、运行时重启/回滚和生产/L4 仍不得以该证据替代。
 
 ## 8. L2 验收与非目标
 
-L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS、取消/超时/response cap/full drain、CONNECT header、非 2xx、lease、execution claim 并发、持久 snapshot TOCTOU、重复 request、旧 revision/observed CAS、SQLite 单 writer 和 Node projector payload/metadata 双校验。当前本地命令已覆盖 proxylatency package/race/vet/jobs 全量、Node typecheck、manual/outcome golden、projector receipt/cursor/CAS/replay、handoff gate 与 proxy/scheduler regressions；既有 dev PG/PgBouncer smoke 已在独立报告中通过，但本轮未重跑。跨进程 Node→Go→Node、Docker/Redis、Jenkins、GitOps、真实 owner handoff 和生产/L4 属于后续门禁，未完成前不得翻转 owner gate。
+L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS、取消/超时/response cap/full drain、CONNECT header、非 2xx、lease、execution claim 并发、持久 snapshot TOCTOU、重复 request、旧 revision/observed CAS、SQLite 单 writer 和 Node projector payload/metadata 双校验。当前本地命令已覆盖 proxylatency package/race/vet/jobs 全量、Node typecheck、manual/outcome golden、projector receipt/cursor/CAS/replay、handoff gate 与 proxy/scheduler regressions；本轮 dev PgBouncer `6432` required smoke 与 Node PG reader/projector 已实际通过并清理。跨进程 Node→Go→Node、Docker/Redis、Jenkins、GitOps、真实 owner handoff 和生产/L4 属于后续门禁，未完成前不得翻转 owner gate。
 
 ## 9. Node↔Go 深度对照门
 
@@ -101,5 +101,5 @@ Node `proxy-latency-refresh` 的事实配置为 60 秒间隔、4 分钟初始延
 ## 12. 证据与提交边界
 
 - 报告中的“通过”统一解释为 Node 源码事实或 Go 本地验证；没有同一 fixture 的 Node/Go runtime golden 就标记为 `cross-runtime-unverified`。
-- 既有 dev PgBouncer smoke 的真实结果只由 `docs/reports/J3a代理延迟检测L3-PG真实验收报告-2026-08-22.md` 支持；本轮未新增外部运行。
+- 本轮 dev PgBouncer smoke 与 Node PG reader/projector 的真实结果以本次受控验证记录为准；scratch 数据库、角色、临时 PgBouncer 认证和 outcome/receipt/cursor fixture 均已清理。该证据不扩展为进程级 handoff 或生产结论。
 - 本轮主分支提交 allowlist 仅包含本契约、L3-PG 验收方案、两份计划、Node-Go 深度对照报告及三个对应 `README.md` 索引；`docs/migration/后台任务迁移总设计与路线图.md`、`backend-go/projects/jobs/internal/proxylatency/transport.go`、`transport_test.go` 以及其他 dirty worktree 文件均明确排除。

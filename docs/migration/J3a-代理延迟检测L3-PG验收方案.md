@@ -1,6 +1,6 @@
 # J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案
 
-> 状态：既有 dev 隔离 scratch 已经通过 PgBouncer `6432` 的 required smoke 并完成清理；本轮深度对照未重跑外部 smoke。该历史证据只覆盖 jobs Store、reader、lease、input/claim/outcome、权限与事务，不包含 Node→Go→Node projector/readback、生产/L4、Docker/Redis 或 owner handoff。该方案不翻转 Go owner、不停止 Node owner，也不替代后续真实依赖、投影和部署门禁。
+> 状态：本轮（2026-08-23）已在一次性 dev scratch 经 PgBouncer `6432` 重跑 required jobs/reader smoke，并以同一 scratch 的 Node PostgreSQL reader/projector 验证 applied/stale、receipt、cursor 与 replay；测试后数据库、角色和 PgBouncer 临时认证均已清理。该证据仍不包含真实 Node→Go→Node 进程编排、manual bridge、active-path-zero、owner handoff、生产/L4、Docker/Redis 或回滚。该方案不翻转 Go owner、不停止 Node owner，也不替代后续部署门禁。
 
 ## 1. 目的与硬边界
 

@@ -8,9 +8,9 @@
 - [后台任务迁移总设计与路线图](后台任务迁移总设计与路线图.md)：后台任务的完整迁移顺序、Go jobs 直连上游探活边界、PostgreSQL / SQLite 数据边界和切换门禁。
 - [J3 候选任务 L1 语义冻结](J3-候选任务L1语义冻结.md)：冻结 J3a 代理延迟检测、J3b 模型检测和 J3c 质量检查的候选边界；账号复制不属于当前后台候选。
 - [J3a 代理延迟检测完整迁移契约](J3a-代理延迟检测完整迁移契约.md)：冻结 J3a 的输入、结果、lease、投影与 L2 实施边界；owner gate 仍关闭。
-- [J3a 代理延迟检测 Node-Go 深度对照报告](../reports/J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)：逐项记录 Node 失败写回、手动 ProxyTestReport、scheduler 生命周期、Go local evidence 与本地接线结果；真实 PG readback、owner handoff/active-path-zero、生产切换仍未完成。
+- [J3a 代理延迟检测 Node-Go 深度对照报告](../reports/J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)：逐项记录 Node 失败写回、手动 ProxyTestReport、scheduler 生命周期、Go local evidence、本轮 dev PG reader/projector 验证与本地接线结果；真实 Node→Go→Node 进程 readback、owner handoff/active-path-zero、生产切换仍未完成。
 - [J3a 代理延迟检测 Node-Go 深度对照计划](../plans/计划-20260822T140000000Z-J3a代理延迟检测Node-Go深度对照.md)：维护 Node 机制补缺、跨运行时门禁和主分支精确 staging allowlist。
-- [J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案](J3a-代理延迟检测L3-PG验收方案.md)：历史 dev scratch 经 PgBouncer `6432` 的 required smoke 已通过并完成清理；本轮未重跑，生产、跨运行时闭环、owner handoff 与 L4 仍未完成。
+- [J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案](J3a-代理延迟检测L3-PG验收方案.md)：2026-08-23 dev scratch 经 PgBouncer `6432` required smoke 与 Node PG reader/projector applied/stale、receipt、cursor、CAS/replay 已通过并清理；真实进程闭环、生产、owner handoff 与 L4 仍未完成。
 - [J1 账号健康探活完整迁移契约](J1-账号健康探活完整迁移契约.md)：冻结账号健康探活与冷却复测的完整 owner、SQLite/PG 输入输出协议、直接上游探活、Gateway source fence、切换和归档边界。
 - [J2 余额刷新完整迁移契约](J2-余额刷新完整迁移契约.md)：冻结周期刷新、首次探测补偿、手动刷新、单 API Key、provider adapter、快照/CAS 与 SQLite/PG owner 边界；当前完成 L2 Go jobs、Node projector 与显式 Go-owner bridge，发布前门禁仍以契约为准。
 - [Go 三项目部署与验证计划](Go三项目部署与验证计划.md)：当前兼容部署、隔离开发验证、后续 jobs-only candidate 与生产 handover 的分层验收。

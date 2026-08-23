@@ -126,12 +126,12 @@ try {
   const jobsPath = join(tempDir, 'jobs.sqlite')
   const jobs = new DatabaseSync(jobsPath)
   jobsDatabase = jobs
-  jobs.exec('CREATE TABLE proxy_latency_outcomes (outcome_id TEXT PRIMARY KEY, request_id TEXT, proxy_id TEXT, input_version INTEGER, config_revision TEXT, trigger TEXT, owner_fence_token INTEGER, proxy_fence_token INTEGER, overall_status TEXT, observed_at TEXT, payload TEXT, committed INTEGER, stored_at TEXT)')
+  jobs.exec('CREATE TABLE proxy_latency_outcomes (outcome_id TEXT PRIMARY KEY, request_id TEXT, proxy_id TEXT, input_version INTEGER, config_revision TEXT, trigger TEXT, owner_fence_token INTEGER, proxy_fence_token INTEGER, observed_at TEXT, stored_at TEXT, payload TEXT, payload_digest TEXT, committed INTEGER)')
   const goldenPath = resolve(import.meta.dirname, '../../../../backend-go/projects/jobs/internal/proxylatency/testdata/j3a-outcome-golden.json')
   const payload = readFileSync(goldenPath, 'utf8')
   const goldenOutcome = JSON.parse(payload) as Record<string, unknown>
   jobs.prepare('INSERT INTO proxy_latency_outcomes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
-    goldenOutcome.outcome_id, goldenOutcome.request_id, goldenOutcome.proxy_id, goldenOutcome.input_version, goldenOutcome.config_revision, goldenOutcome.trigger, goldenOutcome.owner_fence_token, goldenOutcome.proxy_fence_token, goldenOutcome.overall_status, goldenOutcome.observed_at, payload, 1, '2026-08-23T00:00:05.123457Z'
+    goldenOutcome.outcome_id, goldenOutcome.request_id, goldenOutcome.proxy_id, goldenOutcome.input_version, goldenOutcome.config_revision, goldenOutcome.trigger, goldenOutcome.owner_fence_token, goldenOutcome.proxy_fence_token, goldenOutcome.observed_at, '2026-08-23T00:00:05.123457Z', payload, 'golden-digest', 1
   )
   const source = await listProxyLatencyJobsOutcomes({ mode: 'sqlite', databasePath: jobsPath }, { limit: 10 })
   assert.equal(source.length, 1)

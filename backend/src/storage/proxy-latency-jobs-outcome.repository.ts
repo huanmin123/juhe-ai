@@ -63,7 +63,7 @@ export async function listProxyLatencyJobsOutcomes(
     await connection.query('SET LOCAL statement_timeout = 5000')
     const rows = options.after
       ? await connection.query(`
-        SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,overall_status,
+        SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,
           to_char(observed_at::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS observed_at,payload,
           to_char(stored_at::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at
         FROM juhe_jobs.proxy_latency_outcomes
@@ -72,7 +72,7 @@ export async function listProxyLatencyJobsOutcomes(
         ORDER BY stored_at ASC,outcome_id ASC LIMIT $3
       `, [options.after.storedAt, options.after.outcomeId, options.limit])
       : await connection.query(`
-        SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,overall_status,
+        SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,
           to_char(observed_at::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS observed_at,payload,
           to_char(stored_at::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at
         FROM juhe_jobs.proxy_latency_outcomes
@@ -102,8 +102,8 @@ function readSqlite(path: string, after: ProxyLatencyJobsOutcomeCursor | undefin
   try {
     database.exec('PRAGMA query_only = ON')
     const rows = after
-      ? database.prepare(`SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,overall_status,observed_at,payload,stored_at AS storage_observed_at FROM proxy_latency_outcomes WHERE committed=1 AND (stored_at > ? OR (stored_at = ? AND outcome_id > ?)) ORDER BY stored_at ASC,outcome_id ASC LIMIT ?`).all(after.storedAt, after.storedAt, after.outcomeId, limit)
-      : database.prepare(`SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,overall_status,observed_at,payload,stored_at AS storage_observed_at FROM proxy_latency_outcomes WHERE committed=1 ORDER BY stored_at ASC,outcome_id ASC LIMIT ?`).all(limit)
+      ? database.prepare(`SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,payload,stored_at AS storage_observed_at FROM proxy_latency_outcomes WHERE committed=1 AND (stored_at > ? OR (stored_at = ? AND outcome_id > ?)) ORDER BY stored_at ASC,outcome_id ASC LIMIT ?`).all(after.storedAt, after.storedAt, after.outcomeId, limit)
+      : database.prepare(`SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,payload,stored_at AS storage_observed_at FROM proxy_latency_outcomes WHERE committed=1 ORDER BY stored_at ASC,outcome_id ASC LIMIT ?`).all(limit)
     return rows.map(decodeRow)
   } finally {
     database.close()
@@ -124,7 +124,6 @@ function decodeRow(row: unknown): ProxyLatencyJobsOutcome {
     || record.trigger !== outcome.trigger
     || Number(record.owner_fence_token) !== outcome.ownerFenceToken
     || Number(record.proxy_fence_token) !== outcome.proxyFenceToken
-    || record.overall_status !== outcome.overallStatus
     || !samePreciseInstant(record.observed_at, outcome.observedAt)) {
     throw new Error('J3a outcome 行元数据与 payload 不一致')
   }

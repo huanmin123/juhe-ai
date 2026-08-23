@@ -213,7 +213,7 @@ func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration 
 		err = s.db.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_owner_leases(lease_key,owner_id,fence_token,lease_until,updated_at)
 VALUES('proxy-latency-owner',$1,1,$2,$3)
 ON CONFLICT(lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_jobs.proxy_latency_owner_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=EXCLUDED.updated_at
-WHERE juhe_jobs.proxy_latency_owner_leases.lease_until<=$3
+WHERE juhe_jobs.proxy_latency_owner_leases.lease_until<=statement_timestamp()
 RETURNING fence_token`, ownerID, now.Add(duration), now).Scan(&token)
 	} else {
 		nowText := now.Format(time.RFC3339Nano)
@@ -305,9 +305,9 @@ func (s *Store) AcquireProxyLease(ctx context.Context, owner OwnerLease, proxyID
 		err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_proxy_leases(proxy_id,owner_id,fence_token,lease_until,updated_at)
 VALUES($1,$2,1,$3,$4)
 ON CONFLICT(proxy_id) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_jobs.proxy_latency_proxy_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=EXCLUDED.updated_at
-WHERE juhe_jobs.proxy_latency_proxy_leases.lease_until<=$4 OR NOT EXISTS(
+WHERE juhe_jobs.proxy_latency_proxy_leases.lease_until<=statement_timestamp() OR NOT EXISTS(
  SELECT 1 FROM juhe_jobs.proxy_latency_owner_leases owner_lease
- WHERE owner_lease.lease_key='proxy-latency-owner' AND owner_lease.owner_id=juhe_jobs.proxy_latency_proxy_leases.owner_id AND owner_lease.lease_until>$4
+ WHERE owner_lease.lease_key='proxy-latency-owner' AND owner_lease.owner_id=juhe_jobs.proxy_latency_proxy_leases.owner_id AND owner_lease.lease_until>statement_timestamp()
 )
 RETURNING fence_token`, proxyID, owner.OwnerID, now.Add(duration), now).Scan(&token)
 	} else {
