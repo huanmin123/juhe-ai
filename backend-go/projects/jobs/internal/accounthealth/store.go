@@ -545,6 +545,9 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (account_id) DO NOTHING
 func (s *Store) upsertCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
 	args := currentStateArgs(outcome, s.mode)
 	var query string
+	// The expected status fences a replay in the same input epoch. A newer
+	// input epoch must be allowed to replace stale jobs state, even when the
+	// previous epoch ended in a different status.
 	if s.mode == StorePostgres {
 		query = `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$4)
