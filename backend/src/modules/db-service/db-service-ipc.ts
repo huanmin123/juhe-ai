@@ -95,6 +95,7 @@ let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopReq
 let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let pendingStatsWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let pendingGatewayApiKeyCacheInvalidationRequests = new Map<string, PendingRequest>()
+let pendingAccountTestDispatchRequests = new Map<string, PendingAccountTestDispatchRequest>()
 let timedOutRequestCount = 0
 let rejectedRequestCount = 0
 let failedRequestCount = 0
@@ -129,6 +130,11 @@ interface PendingOpenAIAccountTrafficMigrationRuntimeRequest {
 
 interface PendingProcessEventLoopRequest {
   resolve: (sample: ProcessEventLoopSample | undefined) => void
+  timeout: NodeJS.Timeout
+}
+
+interface PendingAccountTestDispatchRequest {
+  resolve: (accepted: boolean) => void
   timeout: NodeJS.Timeout
 }
 
@@ -595,6 +601,11 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
     return true
   }
 
+  if (record.type === 'background_worker_account_test_tasks_response' && typeof record.requestId === 'string') {
+    finishAccountTestDispatchRequest(record.requestId, record.ok === true)
+    return true
+  }
+
   if (record.type === 'db_service_gateway_api_key_cache_invalidation_response' && typeof record.requestId === 'string') {
     finishGatewayApiKeyCacheInvalidationRequest(record.requestId, record.ok === true
       ? { ok: true }
@@ -736,8 +747,8 @@ function handleDbServiceMessage(message: unknown): void {
       }
       break
     case 'background_worker_account_test_tasks':
-      if (runtimeConfig.processRole === 'server' && Array.isArray(record.taskIds)) {
-        void forwardAccountTestTasksToWorker(record.taskIds)
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && Array.isArray(record.taskIds)) {
+        void forwardAccountTestTasksToWorker(record.requestId, record.taskIds)
       }
       break
     case 'background_worker_account_test_cancel':
@@ -805,6 +816,11 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingStatsWriteRequests.delete(requestId)
+  }
+  for (const [requestId, pending] of pendingAccountTestDispatchRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve(false)
+    pendingAccountTestDispatchRequests.delete(requestId)
   }
   for (const [requestId, pending] of pendingGatewayApiKeyCacheInvalidationRequests) {
     clearTimeout(pending.timeout)
@@ -1143,6 +1159,39 @@ function sendToDbServiceProcess(child: ChildProcess, message: DbServiceParentMes
   } catch (error) {
     markDbServiceIpcBroken(error, child)
   }
+}
+
+export async function requestAccountTestTasksToWorker(taskIds: string[]): Promise<boolean> {
+  if (runtimeConfig.processRole !== 'db-service' || !process.send || process.connected === false) {
+    return false
+  }
+  const normalizedIds = taskIds.map(normalizedString).filter((taskId): taskId is string => Boolean(taskId))
+  if (normalizedIds.length === 0) {
+    return true
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<boolean>((resolve) => {
+    const timeout = setTimeout(() => {
+      finishAccountTestDispatchRequest(requestId, false)
+    }, requestTimeoutMs)
+    pendingAccountTestDispatchRequests.set(requestId, { resolve, timeout })
+    sendDbServiceChildMessage({
+      type: 'background_worker_account_test_tasks',
+      requestId,
+      taskIds: normalizedIds
+    }, () => finishAccountTestDispatchRequest(requestId, false))
+  })
+}
+
+function finishAccountTestDispatchRequest(requestId: string, accepted: boolean): void {
+  const pending = pendingAccountTestDispatchRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+  clearTimeout(pending.timeout)
+  pendingAccountTestDispatchRequests.delete(requestId)
+  pending.resolve(accepted)
 }
 
 async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
@@ -1665,15 +1714,42 @@ function assertDbServiceParentIpcAvailable(operation: string): void {
   }
 }
 
-async function forwardAccountTestTasksToWorker(taskIds: unknown[]): Promise<void> {
-  const backgroundIpc = await import('../background/background-ipc.js')
+async function forwardAccountTestTasksToWorker(requestId: string, taskIds: unknown[]): Promise<void> {
   const normalizedIds = taskIds.map(normalizedString).filter((taskId): taskId is string => Boolean(taskId))
-  if (normalizedIds.length > 0 && !backgroundIpc.sendAccountTestTasksToWorker(normalizedIds)) {
+  const child = dbServiceProcess
+  if (!child) {
+    return
+  }
+  let accepted = normalizedIds.length === 0
+  let errorMessage = '后台 ops-worker 未就绪，账号测试任务未能投递'
+  try {
+    const backgroundIpc = await import('../background/background-ipc.js')
+    accepted = accepted || backgroundIpc.sendAccountTestTasksToWorker(normalizedIds)
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : String(error)
+    logger.error(errorLogFields(error, {
+      event: 'db_service_account_test_tasks_forward_exception',
+      itemCount: normalizedIds.length
+    }), 'DB service 转发账号测试任务到后台 worker 时发生异常')
+  }
+  if (!accepted) {
     logger.warn({
       event: 'db_service_account_test_tasks_forward_failed',
       itemCount: normalizedIds.length
     }, 'DB service 转发账号测试任务到后台 worker 失败')
   }
+  sendToDbServiceProcess(child, accepted
+    ? {
+        type: 'background_worker_account_test_tasks_response',
+        requestId,
+        ok: true
+      }
+    : {
+        type: 'background_worker_account_test_tasks_response',
+        requestId,
+        ok: false,
+        errorMessage
+      })
 }
 
 async function forwardAccountTestCancelToWorker(taskId: string): Promise<void> {

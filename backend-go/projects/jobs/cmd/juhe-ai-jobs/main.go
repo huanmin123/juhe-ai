@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -325,7 +326,7 @@ func main() {
 				return proxylatency.RunnerStatus{}, true
 			}
 			return j3Runner.Snapshot()
-		}),
+		}, j3Config.ManualEnabled, j3Config.ManualHTTPSecret, j3Runner),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -449,6 +450,62 @@ func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tabl
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(manualHandoverResult(envelope.Input, record.Snapshot, record.NextRefreshAt, true, manualOutcome(record.Snapshot.Status)))
 	})
+	manualEnabled := false
+	manualSecret := ""
+	var manualRunner *proxylatency.Runner
+	if len(j3) > 4 {
+		if value, ok := j3[4].(bool); ok {
+			manualEnabled = value
+		}
+	}
+	if len(j3) > 5 {
+		if value, ok := j3[5].(string); ok {
+			manualSecret = value
+		}
+	}
+	if len(j3) > 6 {
+		manualRunner, _ = j3[6].(*proxylatency.Runner)
+	}
+	mux.HandleFunc("/proxy-latency/manual", func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || !manualEnabled || manualRunner == nil {
+			http.NotFound(response, request)
+			return
+		}
+		if !matchesAccountBalanceManualSecret(request, manualSecret) {
+			response.Header().Set("WWW-Authenticate", `Bearer realm="juhe-ai-jobs"`)
+			http.Error(response, "J3a manual bridge 未授权", http.StatusUnauthorized)
+			return
+		}
+		request.Body = http.MaxBytesReader(response, request.Body, 512<<10)
+		var envelope struct {
+			Input proxylatency.ManualRequest `json:"input"`
+		}
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&envelope); err != nil {
+			http.Error(response, "J3a manual input 无效", http.StatusBadRequest)
+			return
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			http.Error(response, "J3a manual input 不得包含尾随 JSON", http.StatusBadRequest)
+			return
+		}
+		report, err := manualRunner.RunManual(request.Context(), envelope.Input)
+		if err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, proxylatency.ErrOwnerLeaseHeld) || errors.Is(err, proxylatency.ErrProxyLeaseHeld) {
+				response.Header().Set("Retry-After", "1")
+				status = http.StatusServiceUnavailable
+			} else if strings.Contains(err.Error(), "schema") || strings.Contains(err.Error(), "字段") || strings.Contains(err.Error(), "无效") {
+				status = http.StatusBadRequest
+			}
+			http.Error(response, err.Error(), status)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{"schemaVersion": 1, "job": "proxy-latency", "report": report})
+	})
 	return mux
 }
 
@@ -505,6 +562,8 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 	proxyLatencySnapshot := func() (proxylatency.RunnerStatus, bool) {
 		return proxyLatencyStatus(), proxyLatencyReady()
 	}
+	proxyLatencyManualEnabled := false
+	proxyLatencyManualReady := true
 	if len(j2) > 0 {
 		if value, ok := j2[0].(bool); ok {
 			accountBalanceEnabled = value
@@ -535,6 +594,16 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 			proxyLatencySnapshot = value
 		}
 	}
+	if len(j2) > 6 {
+		if value, ok := j2[6].(bool); ok {
+			proxyLatencyManualEnabled = value
+		}
+	}
+	if len(j2) > 7 {
+		if value, ok := j2[7].(string); ok {
+			proxyLatencyManualReady = proxyLatencyManualEnabled && len(value) >= 32
+		}
+	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
 			http.NotFound(response, request)
@@ -549,24 +618,36 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 		response.Header().Set("Content-Type", "application/json")
 		ready := runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady
 		_ = json.NewEncoder(response).Encode(map[string]any{
-			"ready":                     ready,
-			"ownerReady":                ready,
-			"ownerMode":                 ownerMode,
-			"runtimeLogOwnerHeld":       runtimeLogOwnerHeld,
-			"tableMonitorReady":         tableMonitorIsReady,
-			"accountHealthEnabled":      accountHealthEnabled,
-			"accountHealthReady":        accountHealthIsReady,
-			"accountBalanceEnabled":     accountBalanceEnabled,
-			"accountBalanceReady":       accountBalanceIsReady,
-			"proxyLatencyEnabled":       proxyLatencyEnabled,
-			"proxyLatencyReady":         proxyLatencyIsReady,
-			"proxyLatencyOwnerHeld":     proxyStatus.OwnerHeld,
-			"proxyLatencyLastCycleAt":   proxylatencyTime(proxyStatus.LastCycleAt),
-			"proxyLatencyLastSuccessAt": proxylatencyTime(proxyStatus.LastSuccess),
-			"proxyLatencyLastError":     proxyStatus.LastError,
-			"proxyLatencyInputs":        proxyStatus.Inputs,
-			"proxyLatencyExecuted":      proxyStatus.Executed,
-			"proxyLatencyFailures":      proxyStatus.ProxyFailures,
+			"ready":                         ready,
+			"ownerReady":                    ready,
+			"ownerMode":                     ownerMode,
+			"runtimeLogOwnerHeld":           runtimeLogOwnerHeld,
+			"tableMonitorReady":             tableMonitorIsReady,
+			"accountHealthEnabled":          accountHealthEnabled,
+			"accountHealthReady":            accountHealthIsReady,
+			"accountBalanceEnabled":         accountBalanceEnabled,
+			"accountBalanceReady":           accountBalanceIsReady,
+			"proxyLatencyEnabled":           proxyLatencyEnabled,
+			"proxyLatencyReady":             proxyLatencyIsReady,
+			"proxyLatencyManualEnabled":     proxyLatencyManualEnabled,
+			"proxyLatencyManualReady":       !proxyLatencyManualEnabled || proxyLatencyManualReady,
+			"proxyLatencyOwnerHeld":         proxyStatus.OwnerHeld,
+			"proxyLatencyLastCycleAt":       proxylatencyTime(proxyStatus.LastCycleAt),
+			"proxyLatencyLastSuccessAt":     proxylatencyTime(proxyStatus.LastSuccess),
+			"proxyLatencyLastError":         proxyStatus.LastError,
+			"proxyLatencyInputs":            proxyStatus.Inputs,
+			"proxyLatencyExecuted":          proxyStatus.Executed,
+			"proxyLatencyFailures":          proxyStatus.ProxyFailures,
+			"proxyLatencySelected":          proxyStatus.Selected,
+			"proxyLatencyTarget":            proxyStatus.Target,
+			"proxyLatencyClaimed":           proxyStatus.Claimed,
+			"proxyLatencyStarted":           proxyStatus.Started,
+			"proxyLatencyProcessed":         proxyStatus.Processed,
+			"proxyLatencySkippedLeases":     proxyStatus.SkippedLeases,
+			"proxyLatencyDeferred":          proxyStatus.Deferred,
+			"proxyLatencyExecutionFailures": proxyStatus.ExecutionFailures,
+			"proxyLatencyReleaseFailures":   proxyStatus.ReleaseFailures,
+			"proxyLatencyPartial":           proxyStatus.Partial,
 		})
 	})
 }

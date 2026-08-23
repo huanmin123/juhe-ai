@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "job": "proxy-latency",
+  "report": {
+    "proxyId": "proxy-golden",
+    "proxyName": "Golden proxy",
+    "score": 90,
+    "grade": "A",
+    "status": "warning",
+    "passedCount": 1,
+    "warningCount": 1,
+    "failedCount": 0,
+    "baseLatencyMs": 40,
+    "testedAt": "2026-08-23T00:00:05.123456Z",
+    "items": [
+      {
+        "name": "基础连通性",
+        "status": "warning",
+        "latencyMs": 40,
+        "message": "部分供应商默认地址完成传输检测（1/2）"
+      },
+      {
+        "name": "OpenAI",
+        "status": "passed",
+        "httpStatus": 200,
+        "latencyMs": 40,
+        "message": "HTTP 200（传输完整，状态码仅供诊断）",
+        "targetUrl": "https://api.openai.com/v1"
+      },
+      {
+        "name": "Gemini",
+        "status": "unknown",
+        "message": "deadline",
+        "targetUrl": "https://generativelanguage.googleapis.com/v1"
+      }
+    ],
+    "message": "代理可用，存在 1 项告警"
+  }
+}

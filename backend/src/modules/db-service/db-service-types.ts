@@ -1297,6 +1297,17 @@ export type DbServiceParentMessage =
     errorMessage: string
   }
   | {
+    type: 'background_worker_account_test_tasks_response'
+    requestId: string
+    ok: true
+  }
+  | {
+    type: 'background_worker_account_test_tasks_response'
+    requestId: string
+    ok: false
+    errorMessage: string
+  }
+  | {
     type: 'db_service_gateway_api_key_cache_invalidation_response'
     requestId: string
     ok: true
@@ -1378,6 +1389,7 @@ export type DbServiceChildMessage =
   }
   | {
     type: 'background_worker_account_test_tasks'
+    requestId: string
     taskIds: string[]
   }
   | {

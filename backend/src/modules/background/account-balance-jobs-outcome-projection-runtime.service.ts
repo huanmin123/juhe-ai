@@ -31,7 +31,11 @@ export function accountBalanceJobsOutcomeProjectionRuntimeReady(): boolean {
 /** This runtime is opt-in and deliberately separate from the legacy Node
  * scheduler.  It cannot be enabled without a Go-owned J2 deployment. */
 export function startAccountBalanceJobsOutcomeProjectionRuntime(): void {
-  if (runtimeConfig.processRole !== 'db-service' || !accountBalanceGoOwnerEnabled() || process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_PROJECTION_ENABLED?.trim().toLowerCase() !== 'true' || running) return
+  if (runtimeConfig.processRole !== 'db-service'
+    || runtimeConfig.blueGreenOwnerMode === 'drain'
+    || !accountBalanceGoOwnerEnabled()
+    || process.env.JUHE_AI_ACCOUNT_BALANCE_JOBS_PROJECTION_ENABLED?.trim().toLowerCase() !== 'true'
+    || running) return
   if (runtimeConfig.databaseDriver !== 'postgres') {
     throw new Error('J2 outcome projector 仅支持 PostgreSQL 业务/统计原子投影；SQLite owner 切换保持关闭')
   }

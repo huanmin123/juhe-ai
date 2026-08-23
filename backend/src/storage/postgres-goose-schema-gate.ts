@@ -77,7 +77,7 @@ export interface PostgresGooseSchemaReadPool {
   ): Promise<{ rows: unknown[] }>
 }
 
-type PostgresGooseSchemaGatePoolFactory = (
+export type PostgresGooseSchemaGatePoolFactory = (
   config: PostgresGooseSchemaGatePoolConfig
 ) => PostgresGooseSchemaGatePool | Promise<PostgresGooseSchemaGatePool>
 

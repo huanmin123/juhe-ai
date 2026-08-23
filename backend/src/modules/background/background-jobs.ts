@@ -56,6 +56,7 @@ import { DATA_RETENTION_CLEANUP_INTERVAL_MINUTES } from './data-retention-cleanu
 import { runAccountBalanceRefresh } from './account-balance-refresh.job.js'
 import { runAccountBalanceAutoDetectionRecovery } from './account-balance-auto-detect.service.js'
 import { accountBalanceNodeOwnerEnabled } from './account-balance-handover.js'
+import { proxyLatencyNodeOwnerEnabled } from './proxy-latency-handover.js'
 import {
   backgroundTaskRunReconcileInitialDelayMs,
   backgroundTaskRunReconcileIntervalMs,
@@ -366,7 +367,11 @@ function scheduleBackgroundJobs(): void {
         })
       }
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-recovery'), intervalMs: 5 * secondMs, initialDelayMs: 5 * secondMs, task: runScheduledAccountCircuitRecovery })
-      scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runProxyLatencyRefresh(signal) })
+      if (proxyLatencyNodeOwnerEnabled()) {
+        scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runProxyLatencyRefresh(signal) })
+      } else {
+        logger.info({ event: 'proxy_latency_node_owner_drained', owner: 'go' }, 'J3a Go owner 模式已停止 Node proxy-latency scheduler')
+      }
       scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 90 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runOpenAIOAuthAccessTokenRefresh(signal) })
       return
     default:

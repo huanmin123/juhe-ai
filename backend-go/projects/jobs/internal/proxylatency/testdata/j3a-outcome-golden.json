@@ -1,0 +1,29 @@
+{
+  "outcome_id": "j3a-golden-outcome",
+  "request_id": "j3a-golden-request",
+  "proxy_id": "proxy-golden",
+  "observed_at": "2026-08-23T00:00:05.123456Z",
+  "input_version": 1,
+  "config_revision": "2026-08-23T00:00:00.123456Z",
+  "trigger": "periodic",
+  "owner_fence_token": 7,
+  "proxy_fence_token": 11,
+  "overall_status": "warning",
+  "items": [
+    {
+      "provider": "openai",
+      "profile_id": "profile-openai",
+      "status": "passed",
+      "outcome": "complete_success",
+      "http_status": 200,
+      "latency_ms": 40
+    },
+    {
+      "provider": "gemini",
+      "profile_id": "profile-gemini",
+      "status": "unknown",
+      "outcome": "probe_task_failure",
+      "error_code": "deadline"
+    }
+  ]
+}

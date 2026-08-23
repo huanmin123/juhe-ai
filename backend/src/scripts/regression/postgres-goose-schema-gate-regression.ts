@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
-import { parseOwnerLockEnabled } from '../../config/runtime.js'
+import { parseOwnerLockEnabled, parsePostgresSchemaOwner } from '../../config/runtime.js'
 import { CURRENT_RELEASE_SCHEMA_VERSION } from '../../shared/release-schema-version.js'
 import {
   EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION,
@@ -259,7 +259,7 @@ async function assertPreservesOperationAndCloseErrors(): Promise<void> {
 async function assertServerStartupOrder(): Promise<void> {
   const source = await readFile(resolve(process.cwd(), 'src/server.ts'), 'utf8')
   const installIndex = source.indexOf('installProcessLogHandlers()')
-  const gateIndex = source.indexOf('await enforcePostgresGooseSchemaGate()', installIndex)
+  const gateIndex = source.indexOf('await enforcePostgresSchemaOwnerGate()', installIndex)
   const eventLoopIndex = source.indexOf('startProcessEventLoopMonitor()', installIndex)
   const dbSupervisorIndex = source.indexOf('startDbServiceSupervisor(', installIndex)
   const workerSupervisorIndex = source.indexOf('startBackgroundWorkerSupervisor()', installIndex)
@@ -282,6 +282,11 @@ async function assertServerStartupOrder(): Promise<void> {
 async function assertRuntimeConfigContract(): Promise<void> {
   const source = await readFile(resolve(process.cwd(), 'src/config/runtime.ts'), 'utf8')
   assert.match(source, /ownerLock:\s*{[\s\S]*?enabled:\s*parseOwnerLockEnabled\(rawStringConfig\('JUHE_AI_OWNER_LOCK_ENABLED'\)\)[\s\S]*?}/)
+  assert.match(source, /schemaOwner:\s*parsePostgresSchemaOwner\(rawStringConfig\('JUHE_AI_POSTGRES_SCHEMA_OWNER'\)\)/)
+  assert.equal(parsePostgresSchemaOwner('node'), 'node')
+  assert.equal(parsePostgresSchemaOwner('GOOSE'), 'goose')
+  assert.equal(parsePostgresSchemaOwner(undefined), undefined)
+  assert.throws(() => parsePostgresSchemaOwner('sqlite'), /JUHE_AI_POSTGRES_SCHEMA_OWNER/)
 }
 
 function createSequencedPool(results: QueryResult[], onEnd: () => void): PostgresGooseSchemaGatePool {

@@ -26,6 +26,38 @@ func TestLoadRuntimeConfigEnabledRequiresCompletePostgresConfig(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeConfigUsesNodeBatchAndCandidatePoolDefaults(t *testing.T) {
+	env := map[string]string{
+		"JUHE_AI_PROXY_LATENCY_ENABLED":            "true",
+		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":         "go",
+		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":        "jobs-test",
+		"JUHE_AI_PROXY_LATENCY_STORE":              "postgres",
+		"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":       "postgres://jobs",
+		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL": "postgres://business",
+		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":  "credential-secret",
+	}
+	cfg, err := LoadRuntimeConfig(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.InputLimit != 80 || cfg.BatchSize != 20 || cfg.CandidatePoolFactor != 4 || cfg.WorkerConcurrency != 4 {
+		t.Fatalf("unexpected Node-aligned scheduler defaults: %+v", cfg)
+	}
+}
+
+func TestRunnerBatchAndCandidatePoolLimits(t *testing.T) {
+	runner := &Runner{cfg: RuntimeConfig{InputLimit: 80, BatchSize: 20, CandidatePoolFactor: 4, WorkerConcurrency: 4}}
+	if got := runner.batchSize(); got != 20 {
+		t.Fatalf("batch size=%d, want 20", got)
+	}
+	if got := runner.candidatePoolLimit(); got != 80 {
+		t.Fatalf("candidate pool=%d, want 80", got)
+	}
+	if got := runner.workerConcurrency(); got != 4 {
+		t.Fatalf("worker concurrency=%d, want 4", got)
+	}
+}
+
 type fakeInputReader struct {
 	drafts []InputDraft
 	err    error
@@ -63,6 +95,9 @@ func TestRunnerCycleOrdersLeasesAndIsolatesProxyFailures(t *testing.T) {
 	status := runner.Status()
 	if status.Inputs != 1 || status.ProxyFailures != 1 || status.Executed != 1 || runner.Ready() || status.LastSuccess.IsZero() == false || status.LastError == "" {
 		t.Fatalf("unexpected status=%+v ready=%v", status, runner.Ready())
+	}
+	if status.Selected != 2 || status.Target != 2 || status.Started != 2 || status.Processed != 1 || status.Deferred != 0 || !status.Partial {
+		t.Fatalf("scheduler counters lost failure/partial semantics: %+v", status)
 	}
 }
 

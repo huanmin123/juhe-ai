@@ -16,6 +16,7 @@ import {
   type AccountTestDraftSnapshot,
 } from '../../storage/account-test-tasks.repository.js'
 import { requestBackgroundWorkerDbService, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
+import { requestAccountTestTasksToWorker } from '../db-service/db-service-ipc.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountDiagnosticAttempt, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
@@ -62,7 +63,7 @@ const manualAccountTestQueue = createRetryQueue<AccountTestQueueItem>({
   }
 })
 
-export function dispatchAccountTestTasks(taskIds: string[]): boolean {
+export async function dispatchAccountTestTasks(taskIds: string[]): Promise<boolean> {
   const normalizedIds = taskIds.map(normalizedString).filter((taskId): taskId is string => Boolean(taskId))
   if (normalizedIds.length === 0) {
     return true
@@ -74,7 +75,7 @@ export function dispatchAccountTestTasks(taskIds: string[]): boolean {
     return true
   }
   if (runtimeConfig.processRole === 'db-service') {
-    return sendAccountTestTasksFromDbService(normalizedIds)
+    return await requestAccountTestTasksToWorker(normalizedIds)
   }
   return sendAccountTestTasksToWorker(normalizedIds)
 }
@@ -1044,32 +1045,6 @@ function failedAccountTestResult(
     durationMs: options.durationMs,
     accountStatus: account.status,
     accountFailureEligible: options.accountFailureEligible ?? false
-  }
-}
-
-function sendAccountTestTasksFromDbService(taskIds: string[]): boolean {
-  if (!process.send || process.connected === false) {
-    return false
-  }
-  try {
-    process.send({
-      type: 'background_worker_account_test_tasks',
-      taskIds
-    }, (error) => {
-      if (error) {
-        logger.warn(errorLogFields(error, {
-          event: 'account_test_task_db_service_dispatch_failed',
-          taskCount: taskIds.length
-        }), 'DB service 投递账号测试任务到父进程失败')
-      }
-    })
-    return true
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'account_test_task_db_service_dispatch_failed',
-      taskCount: taskIds.length
-    }), 'DB service 投递账号测试任务到父进程失败')
-    return false
   }
 }
 

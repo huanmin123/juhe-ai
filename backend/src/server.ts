@@ -58,7 +58,7 @@ import {
   getPendingGatewayFailureUsageFinalizationCount,
   waitForGatewayFailureUsageFinalizationsIdle
 } from './modules/gateway/usage/failure-finalization.service.js'
-import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
+import { enforcePostgresSchemaOwnerGate } from './storage/postgres-schema-owner-gate.js'
 import { prewarmGatewayApiKeyValidationCacheAsync } from './storage/gateway-api-key.repository.js'
 import { startAccountHealthJobsSourceFenceConsumerRuntime, stopAccountHealthJobsSourceFenceConsumerRuntime } from './modules/gateway/runtime/account-health-jobs-source-fence-runtime.service.js'
 import { resolveRuntimeReadiness } from './shared/runtime-readiness.js'
@@ -139,7 +139,7 @@ const parseGatewayRawBody = wrapGatewayRawBodyParser(
 
 installProcessLogHandlers()
 startLogMaintenance()
-await enforcePostgresGooseSchemaGate()
+await enforcePostgresSchemaOwnerGate()
 if (runtimeConfig.auth.captchaDisabled) {
   logger.warn({
     event: 'auth_captcha_disabled',

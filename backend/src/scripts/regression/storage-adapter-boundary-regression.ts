@@ -247,7 +247,8 @@ function assertNoUnexpectedRawDriverImports(files: string[]): void {
   const allowedDriverFiles = new Set([
     'shared/redis-client.ts',
     'storage/postgres-client.ts',
-    'storage/postgres-goose-schema-gate.ts'
+    'storage/postgres-goose-schema-gate.ts',
+    'storage/postgres-schema-owner-gate.ts'
   ])
   const offenders: Array<{ file: string; line: number; text: string }> = []
   for (const filePath of files) {

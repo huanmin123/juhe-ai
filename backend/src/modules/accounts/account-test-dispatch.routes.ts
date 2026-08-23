@@ -127,7 +127,7 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
         testEndpointMode: selection.testEndpointMode,
         draftAccount
       })
-      if (!dispatchAccountTestTasks([task.id])) {
+      if (!(await dispatchAccountTestTasks([task.id]))) {
         await failAccountTestTaskAsync(task.id, '后台 worker 暂不可用，账号测试任务未能投递')
         res.status(503).json({ message: '后台 worker 暂不可用，账号测试任务未能投递' })
         return

@@ -21,7 +21,7 @@ function isLoopbackRemoteAddress(remoteAddress: string | undefined): boolean {
 
 export interface AccountTestDispatchRouterOptions {
   secret: string
-  dispatch: (taskId: string) => boolean
+  dispatch: (taskId: string) => boolean | Promise<boolean>
 }
 
 type BodyParserError = Error & {
@@ -46,7 +46,9 @@ export function createAccountTestDispatchRouter(options: AccountTestDispatchRout
     requireIdentityContentEncoding,
     express.raw({ type: () => true, limit: rawBodyLimitBytes, inflate: false }),
     handleBodyParserError,
-    (req: Request, res: Response, next: NextFunction) => handleDispatch(req, res, next, options)
+    (req: Request, res: Response, next: NextFunction) => {
+      void handleDispatch(req, res, next, options)
+    }
   )
   return router
 }
@@ -92,12 +94,12 @@ function handleBodyParserError(error: BodyParserError, req: Request, res: Respon
   res.status(Number(status)).json({ message: Number(status) === 413 ? '请求体过大' : '请求体无效' })
 }
 
-function handleDispatch(
+async function handleDispatch(
   req: Request,
   res: Response,
   next: NextFunction,
   options: AccountTestDispatchRouterOptions
-): void {
+): Promise<void> {
   const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
   if (!hasValidSignature(req, options.secret, rawBody)) {
     res.status(401).json({ message: '认证失败' })
@@ -109,7 +111,7 @@ function handleDispatch(
     return
   }
   try {
-    if (!options.dispatch(taskId)) {
+    if (!(await options.dispatch(taskId))) {
       res.status(503).json({ message: '服务暂不可用' })
       return
     }

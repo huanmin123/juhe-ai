@@ -68,6 +68,8 @@ const allowedProjectionValueKeys = new Set([
   'health_check_failure_count'
 ])
 
+const accountHealthProjectionAdvisoryLockKey = 'juhe-ai:account-health-projection:v1'
+
 // This repository is deliberately not a task runner. Go owns every J1 task,
 // retry, lease and outcome. Node only applies a completed, immutable outcome
 // through the business SQLite single writer or the same PG transaction path.
@@ -121,6 +123,9 @@ export async function projectAccountHealthJobsOutcomeAsync(
   const base = resultBase(outcome)
   let changed = false
   const result = await client.transaction<AccountHealthProjectionResult>(async (tx) => {
+    if (tx.driver === 'postgres') {
+      await tx.execute('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [accountHealthProjectionAdvisoryLockKey])
+    }
     const existing = await findReceiptAsync(tx, outcome.outcome_id)
     if (existing) return receiptResult(existing)
     const validation = validateProjection(outcome)
