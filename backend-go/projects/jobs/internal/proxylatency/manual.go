@@ -107,6 +107,38 @@ func (request ManualRequest) InputDraft(now time.Time, deadline time.Duration) I
 	}
 }
 
+// ValidateOutcome checks the boundary between the durable Go outcome and the
+// richer Node management report.  The executor normally guarantees these
+// identities, but the bridge must fail closed if a future outcome decoder or
+// replay path ever supplies an undeclared provider/profile.
+func (request ManualRequest) ValidateOutcome(outcome Outcome) error {
+	if outcome.ProxyID != request.ProxyID || outcome.Trigger != TriggerManual {
+		return errors.New("J3a manual outcome identity 不匹配")
+	}
+	if len(outcome.Items) == 0 {
+		return errors.New("J3a manual outcome items 为空")
+	}
+	declared := make(map[string]ManualTarget, len(request.Targets))
+	for _, target := range request.Targets {
+		declared[target.Provider] = target
+	}
+	seen := make(map[string]struct{}, len(outcome.Items))
+	for _, item := range outcome.Items {
+		target, ok := declared[item.Provider]
+		if !ok || target.ProfileID != item.ProfileID {
+			return fmt.Errorf("J3a manual outcome provider/profile 未声明: %s/%s", item.Provider, item.ProfileID)
+		}
+		if _, duplicate := seen[item.Provider]; duplicate {
+			return fmt.Errorf("J3a manual outcome provider 重复: %s", item.Provider)
+		}
+		seen[item.Provider] = struct{}{}
+	}
+	if SummarizeItems(outcome.Items) != outcome.OverallStatus {
+		return errors.New("J3a manual outcome overall status 不匹配")
+	}
+	return nil
+}
+
 func (request ManualRequest) Report(outcome Outcome) ProxyTestReport {
 	nameByProvider := make(map[string]ManualTarget, len(request.Targets))
 	for _, target := range request.Targets {

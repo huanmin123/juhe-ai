@@ -218,6 +218,9 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTes
 	if err != nil {
 		return ProxyTestReport{}, err
 	}
+	if err := request.ValidateOutcome(outcome); err != nil {
+		return ProxyTestReport{}, err
+	}
 	report := request.Report(outcome)
 	info := <-outbound
 	if info.IP != "" {
