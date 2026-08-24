@@ -42,6 +42,18 @@ type postgresStore struct {
 	pool *pgxpool.Pool
 }
 
+// rollbackPostgresTx must not reuse the caller's context.  F1/F2 database
+// operations are bounded by a short cycle context; when that context expires,
+// pgx will otherwise reject Rollback as already canceled and return the pooled
+// connection with an open transaction.  The leaked transaction can retain
+// relation locks and make the other owner (notably F2 table-monitor) fail
+// readiness indefinitely.
+func rollbackPostgresTx(tx pgx.Tx) {
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = tx.Rollback(rollbackCtx)
+}
+
 func OpenStore(ctx context.Context, config Config) (Store, error) {
 	switch config.Mode {
 	case ModeSQLite:
@@ -336,7 +348,7 @@ func (store *postgresStore) ReplaceCursor(ctx context.Context, lease OwnerLease,
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackPostgresTx(tx)
 	if err := verifyPostgresOwnerLease(ctx, tx, lease); err != nil {
 		return err
 	}
@@ -359,7 +371,7 @@ func (store *postgresStore) CopyCursor(ctx context.Context, lease OwnerLease, cu
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackPostgresTx(tx)
 	if err := verifyPostgresOwnerLease(ctx, tx, lease); err != nil {
 		return err
 	}
@@ -374,7 +386,7 @@ func (store *postgresStore) Commit(ctx context.Context, lease OwnerLease, record
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackPostgresTx(tx)
 	if err := verifyPostgresOwnerLease(ctx, tx, lease); err != nil {
 		return err
 	}
@@ -400,7 +412,7 @@ func (store *postgresStore) VerifyOwnerLease(ctx context.Context, lease OwnerLea
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackPostgresTx(tx)
 	if err := verifyPostgresOwnerLease(ctx, tx, lease); err != nil {
 		return err
 	}
@@ -412,7 +424,7 @@ func (store *postgresStore) WithOwnerLeaseFence(ctx context.Context, lease Owner
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackPostgresTx(tx)
 	if err := verifyPostgresOwnerLease(ctx, tx, lease); err != nil {
 		return err
 	}
@@ -1270,31 +1282,31 @@ func cleanupPostgres(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, 
 			return result, err
 		}
 		if err := verifyPostgresOwnerLease(ctx, tx, lease); err != nil {
-			tx.Rollback(ctx)
+			rollbackPostgresTx(tx)
 			return result, err
 		}
 		rows, err := tx.Query(ctx, "SELECT id, time::text, level, COALESCE(event, '') FROM juhe_dataset.runtime_logs WHERE time < $1 ORDER BY time ASC, id ASC LIMIT $2", cutoff, batchLimit)
 		if err != nil {
-			tx.Rollback(ctx)
+			rollbackPostgresTx(tx)
 			return result, err
 		}
 		ids, deleted, err := scanPostgresFacetRows(rows)
 		rows.Close()
 		if err != nil {
-			tx.Rollback(ctx)
+			rollbackPostgresTx(tx)
 			return result, err
 		}
 		if len(ids) == 0 {
-			tx.Rollback(ctx)
+			rollbackPostgresTx(tx)
 			break
 		}
 		args := stringArgs(ids)
 		if _, err := tx.Exec(ctx, "DELETE FROM juhe_dataset.runtime_logs WHERE id IN ("+dollarMarks(1, len(ids))+")", args...); err != nil {
-			tx.Rollback(ctx)
+			rollbackPostgresTx(tx)
 			return result, err
 		}
 		if err := decrementPostgresFacets(ctx, tx, deleted, cutoff); err != nil {
-			tx.Rollback(ctx)
+			rollbackPostgresTx(tx)
 			return result, err
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -1311,13 +1323,13 @@ func cleanupPostgres(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, 
 			return result, err
 		}
 		if err := verifyPostgresOwnerLease(ctx, tx, lease); err != nil {
-			tx.Rollback(ctx)
+			rollbackPostgresTx(tx)
 			return result, err
 		}
 		query := `DELETE FROM juhe_dataset.runtime_log_file_cursors WHERE ctid IN (SELECT ctid FROM juhe_dataset.runtime_log_file_cursors WHERE updated_at < $1 AND cursor_offset >= file_size AND last_error_message IS NULL ORDER BY updated_at ASC, ctid ASC LIMIT $2)`
 		deleted, err := tx.Exec(ctx, query, cutoff, batchLimit)
 		if err != nil {
-			tx.Rollback(ctx)
+			rollbackPostgresTx(tx)
 			return result, err
 		}
 		count := deleted.RowsAffected()
