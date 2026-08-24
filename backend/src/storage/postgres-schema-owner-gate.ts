@@ -89,6 +89,7 @@ export interface PostgresSchemaOwnerGateConfig {
   schemaOwner?: PostgresSchemaOwner
   databaseDriver: DatabaseDriver
   postgres: {
+    schemaOwner?: PostgresSchemaOwner
     url?: string
     connectionTimeoutMs: number
     statementTimeoutMs: number
@@ -142,7 +143,7 @@ export async function enforcePostgresSchemaOwnerGate(
     return
   }
 
-  const schemaOwner = config.schemaOwner
+  const schemaOwner = config.schemaOwner ?? config.postgres.schemaOwner
   if (!schemaOwner) {
     throw new Error('PostgreSQL schema owner 未显式配置；请设置 JUHE_AI_POSTGRES_SCHEMA_OWNER=node 或 goose')
   }

@@ -48,6 +48,7 @@ assert.throws(
 )
 
 await assertNodeOwnerDoesNotCreateLedger()
+await assertNestedRuntimeConfigOwnerIsHonored()
 await assertMissingOwnerFailsClosed()
 await assertGooseOwnerDelegatesToStrictGate()
 await assertServerUsesOwnerGateBeforeListeners()
@@ -78,6 +79,24 @@ async function assertNodeOwnerDoesNotCreateLedger(): Promise<void> {
   await enforcePostgresSchemaOwnerGate(baseConfig, () => pool)
   assert.equal(queryCount, 1)
   assert.equal(ended, true)
+}
+
+async function assertNestedRuntimeConfigOwnerIsHonored(): Promise<void> {
+  let queried = false
+  const pool: PostgresSchemaOwnerGatePool = {
+    async query(text) {
+      queried = true
+      assert.equal(text, POSTGRES_NODE_SCHEMA_PREFLIGHT_QUERY)
+      return { rows: [{ missing_relations: [], missing_columns: [], missing_indexes: [], goose_ledger_present: false }] } as never
+    },
+    async end() {}
+  }
+  await enforcePostgresSchemaOwnerGate({
+    ...baseConfig,
+    schemaOwner: undefined,
+    postgres: { ...baseConfig.postgres, schemaOwner: 'node' }
+  }, () => pool)
+  assert.equal(queried, true)
 }
 
 async function assertMissingOwnerFailsClosed(): Promise<void> {
