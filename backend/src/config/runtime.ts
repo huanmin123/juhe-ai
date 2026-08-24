@@ -442,6 +442,10 @@ const configuredPerformanceNodeRole = configuredRuntimeMode === 'performance'
   ? performanceNodeRoleConfig('JUHE_AI_PERFORMANCE_NODE_ROLE', 'combined')
   : 'combined'
 const configuredBlueGreenOwnerMode = blueGreenOwnerModeConfig('JUHE_AI_BLUE_GREEN_OWNER_MODE', 'active')
+const configuredBackgroundWorkerSupervisorEnabled = booleanConfig(
+  'JUHE_AI_BACKGROUND_WORKER_SUPERVISOR_ENABLED',
+  true
+)
 const configuredProcessRole = processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server')
 const defaultModelCheckProbeRetryDelayMs = isScriptEntryRuntime() ? 0 : 65000
 const configuredDatabaseDriver = databaseDriverConfig(
@@ -545,8 +549,11 @@ export const runtimeConfig: RuntimeConfig = {
   instanceId: runtimeInstanceIdConfig('JUHE_AI_INSTANCE_ID', configuredRuntimeMode),
   workerReplicaIndex: numberConfig('JUHE_AI_WORKER_REPLICA_INDEX', 0, 0, 63),
   topology: {
-    backgroundWorkerSupervisorEnabled: configuredRuntimeMode === 'standalone'
-      || (configuredPerformanceNodeRole !== 'gateway' && configuredPerformanceNodeRole !== 'control-replica'),
+    // Candidate slots disable this explicitly. It remains a second, independent
+    // guard even if an owner-mode value is accidentally overridden at runtime.
+    backgroundWorkerSupervisorEnabled: configuredBackgroundWorkerSupervisorEnabled
+      && (configuredRuntimeMode === 'standalone'
+        || (configuredPerformanceNodeRole !== 'gateway' && configuredPerformanceNodeRole !== 'control-replica')),
     controlReplicas: configuredRuntimeMode === 'performance'
       ? numberConfig('JUHE_AI_CONTROL_REPLICAS', 1, 1, 3)
       : 1,

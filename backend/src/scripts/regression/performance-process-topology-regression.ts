@@ -62,6 +62,17 @@ if (childMode) {
     assert.equal(runtimeConfig.blueGreenOwnerMode, 'drain')
     assert.equal(runtimeConfig.topology.backgroundWorkerSupervisorEnabled, true)
     assert.deepEqual(processes, [])
+  } else if (childMode === 'performance-standby') {
+    assert.equal(runtimeConfig.runtimeMode, 'performance')
+    assert.equal(runtimeConfig.performanceNodeRole, 'combined')
+    assert.equal(runtimeConfig.blueGreenOwnerMode, 'standby')
+    assert.equal(runtimeConfig.topology.backgroundWorkerSupervisorEnabled, true)
+    assert.deepEqual(processes, [])
+  } else if (childMode === 'performance-supervisor-disabled') {
+    assert.equal(runtimeConfig.runtimeMode, 'performance')
+    assert.equal(runtimeConfig.blueGreenOwnerMode, 'active')
+    assert.equal(runtimeConfig.topology.backgroundWorkerSupervisorEnabled, false)
+    assert.deepEqual(processes, [])
   } else if (childMode === 'performance-control-replica') {
     assert.equal(runtimeConfig.performanceNodeRole, 'control-replica')
     assert.equal(runtimeConfig.instanceId, 'control-2')
@@ -169,6 +180,14 @@ try {
   runChild('performance-drain', {
     ...performanceEnv(),
     JUHE_AI_BLUE_GREEN_OWNER_MODE: 'drain'
+  })
+  runChild('performance-standby', {
+    ...performanceEnv(),
+    JUHE_AI_BLUE_GREEN_OWNER_MODE: 'standby'
+  })
+  runChild('performance-supervisor-disabled', {
+    ...performanceEnv(),
+    JUHE_AI_BACKGROUND_WORKER_SUPERVISOR_ENABLED: 'false'
   })
   runChild('performance-control-replica', {
     ...performanceEnv(),
