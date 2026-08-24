@@ -8,7 +8,8 @@ pipeline {
   }
 
   parameters {
-    booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '仅手动运行：将已验证的 test 三镜像晋级到 prod。')
+    booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '仅手动运行：在 activeSlot=prod-a 时将已验证的 test 三镜像晋级到 prod-B；activeSlot=prod-b 时 fail-closed。')
+    booleanParam(name: 'REVERSE_DEPLOY_PROD', defaultValue: false, description: '仅手动运行：明确创建 prod-B stable -> prod-A candidate 的反向蓝绿 release intent；只写候选，不切 owner 或 stable Service。')
     booleanParam(name: 'ROLLBACK_PROD', defaultValue: false, description: '仅手动运行：从已验证的 prod 三镜像历史中选择一个版本回滚。')
   }
 
@@ -56,18 +57,18 @@ pipeline {
     }
 
     stage('检查手动发布参数') {
-      when { expression { params.DEPLOY_PROD || rollbackRequested() } }
+      when { expression { params.DEPLOY_PROD || reverseDeployRequested() || rollbackRequested() } }
       steps {
         script {
-          if (params.DEPLOY_PROD && rollbackRequested()) {
-            error 'DEPLOY_PROD 与 ROLLBACK_PROD 不能同时选择。'
+          if ([params.DEPLOY_PROD, reverseDeployRequested(), rollbackRequested()].findAll { it }.size() > 1) {
+            error 'DEPLOY_PROD、REVERSE_DEPLOY_PROD 与 ROLLBACK_PROD 只能选择一个。'
           }
         }
       }
     }
 
     stage('构建前端与 Node 产物') {
-      when { expression { !params.DEPLOY_PROD && !rollbackRequested() } }
+      when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
       steps {
         withCredentials([usernamePassword(credentialsId: 'harbor-platform-push', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
           sh '''#!/bin/sh
@@ -101,7 +102,7 @@ pipeline {
     }
 
     stage('构建并推送三镜像') {
-      when { expression { !params.DEPLOY_PROD && !rollbackRequested() } }
+      when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
       steps {
         script {
           env.NODE_IMAGE = "${env.HARBOR_REGISTRY}/${env.HARBOR_REPOSITORY_NODE}:${env.SOURCE_COMMIT}"
@@ -155,7 +156,7 @@ pipeline {
     }
 
     stage('写入 test release state') {
-      when { expression { !params.DEPLOY_PROD && !rollbackRequested() } }
+      when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
       steps {
         script {
           writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-ci')
@@ -164,7 +165,7 @@ pipeline {
     }
 
     stage('验证 test') {
-      when { expression { !params.DEPLOY_PROD && !rollbackRequested() } }
+      when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
       steps {
         script {
           def release = [
@@ -180,7 +181,7 @@ pipeline {
     }
 
     stage('读取已验证 test') {
-      when { expression { params.DEPLOY_PROD && !rollbackRequested() } }
+      when { expression { (params.DEPLOY_PROD || reverseDeployRequested()) && !rollbackRequested() } }
       steps {
         script {
           def release = readVerifiedTestRelease()
@@ -196,11 +197,27 @@ pipeline {
       when { expression { params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
         script {
+          assertStandardProdPromotionAllowed()
           def release = readVerifiedTestRelease()
           if (release.sourceCommit != env.SOURCE_COMMIT || release.nodeDigest != env.NODE_DIGEST || release.jobsDigest != env.JOBS_DIGEST || release.gatewayDigest != env.GATEWAY_DIGEST) {
             error 'test release state 在晋级期间发生变化，拒绝写入 prod。'
           }
           writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-prod-promotion')
+        }
+      }
+    }
+
+    stage('写入 prod 反向候选状态') {
+      when { expression { reverseDeployRequested() } }
+      steps {
+        script {
+          assertReverseProdIntentAllowed()
+          def release = readVerifiedTestRelease()
+          if (release.sourceCommit != env.SOURCE_COMMIT || release.nodeDigest != env.NODE_DIGEST || release.jobsDigest != env.JOBS_DIGEST || release.gatewayDigest != env.GATEWAY_DIGEST) {
+            error 'test release state 在反向候选写入期间发生变化，拒绝写入 prod candidate。'
+          }
+          writeReverseReleaseState(env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST)
+          currentBuild.description = "反向蓝绿候选已写入：prod-b stable -> prod-a candidate，source=${env.SOURCE_COMMIT}；等待 gate/UAT/owner handoff/stable switch"
         }
       }
     }
@@ -236,7 +253,7 @@ pipeline {
     }
 
     stage('验证 prod') {
-      when { expression { (params.DEPLOY_PROD && !rollbackRequested()) || rollbackRequested() } }
+      when { expression { (params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested()) || rollbackRequested() } }
       steps {
         script {
           waitForIngress('prod')
@@ -258,6 +275,26 @@ def validHarborDigestImage(value) {
 }
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
 def rollbackRequested() { return params.ROLLBACK_PROD }
+def reverseDeployRequested() { return params.REVERSE_DEPLOY_PROD }
+
+def assertStandardProdPromotionAllowed() {
+  refreshPlatformReleaseWorkspace()
+  def activeSlot = metadataValue('prod', 'activeSlot')
+  def candidateSlot = metadataValue('prod', 'candidateSlot')
+  if (activeSlot != 'prod-a' || candidateSlot != 'prod-b') {
+    error "普通 DEPLOY_PROD 只允许 A stable -> B candidate；当前 activeSlot=${activeSlot}, candidateSlot=${candidateSlot}。请使用明确的 REVERSE_DEPLOY_PROD 创建 B stable -> A candidate intent，禁止误入旧单槽位路径。"
+  }
+}
+
+def assertReverseProdIntentAllowed() {
+  refreshPlatformReleaseWorkspace()
+  def activeSlot = metadataValue('prod', 'activeSlot')
+  def candidateSlot = metadataValue('prod', 'candidateSlot')
+  def candidateGate = metadataValue('prod', 'candidateGate')
+  if (activeSlot != 'prod-b' || candidateSlot != 'prod-a' || candidateGate != 'blocked') {
+    error "反向发布 intent 只允许当前 B stable -> A candidate 且 candidateGate=blocked；实际 activeSlot=${activeSlot}, candidateSlot=${candidateSlot}, candidateGate=${candidateGate}。"
+  }
+}
 
 def readHarborBaseImages() {
   if (!fileExists(env.HARBOR_BASE_IMAGES_FILE)) {
@@ -410,6 +447,59 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       echo 'release state 已是目标 source commit 与不可变 digest；继续执行验证，不重复提交。'
     else
       git commit -m '[skip ci] release(juhe-ai-${environmentName}): ${sourceCommit}'
+      GIT_SSH_COMMAND="ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts" git push origin HEAD:'${env.RELEASE_BRANCH}'
+    fi
+  """
+}
+
+def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest) {
+  if (!validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest)) error '反向候选发布状态字段不合法。'
+  refreshPlatformReleaseWorkspace()
+  def overlay = "${releaseWorkspace()}/apps/juhe-ai/overlays/prod"
+  // Top-level fields describe the active slot. In this reverse orientation,
+  // B is active and its source/digests are held in the pre-existing candidate
+  // fields until A replaces them as the new candidate.
+  def activeSourceCommit = metadataValue('prod', 'candidateSourceCommit')
+  def activeNodeDigest = metadataValue('prod', 'candidateNodeImageDigest')
+  def activeJobsDigest = metadataValue('prod', 'candidateJobsImageDigest')
+  def activeGatewayDigest = metadataValue('prod', 'candidateGatewayImageDigest')
+  if (!validCommit(activeSourceCommit) || !validDigest(activeNodeDigest) || !validDigest(activeJobsDigest) || !validDigest(activeGatewayDigest)) {
+    error '当前 prod-B active release state 缺少合法的 source/digest；拒绝创建反向候选。'
+  }
+  // In the reverse orientation the primary image names are prod-A. The
+  // stable prod-B candidate aliases are intentionally left untouched.
+  replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai', nodeDigest)
+  replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-jobs', jobsDigest)
+  replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-gateway', gatewayDigest)
+  sh """#!/bin/sh
+    set -eu
+    cd '${releaseWorkspace()}'
+    sed -i \\
+      -e 's|^  sourceCommit: ".*"|  sourceCommit: "${activeSourceCommit}"|' \\
+      -e 's|^  nodeImageDigest: ".*"|  nodeImageDigest: "${activeNodeDigest}"|' \\
+      -e 's|^  jobsImageDigest: ".*"|  jobsImageDigest: "${activeJobsDigest}"|' \\
+      -e 's|^  gatewayImageDigest: ".*"|  gatewayImageDigest: "${activeGatewayDigest}"|' \\
+      -e 's|^  candidateSourceCommit: ".*"|  candidateSourceCommit: "${sourceCommit}"|' \\
+      -e 's|^  candidateNodeImageDigest: ".*"|  candidateNodeImageDigest: "${nodeDigest}"|' \\
+      -e 's|^  candidateJobsImageDigest: ".*"|  candidateJobsImageDigest: "${jobsDigest}"|' \\
+      -e 's|^  candidateGatewayImageDigest: ".*"|  candidateGatewayImageDigest: "${gatewayDigest}"|' \\
+      -e 's|^  activeSlot: ".*"|  activeSlot: "prod-b"|' \\
+      -e 's|^  candidateSlot: ".*"|  candidateSlot: "prod-a"|' \\
+      -e 's|^  candidateGate: ".*"|  candidateGate: "blocked"|' \\
+      -e 's|^  candidateVerification.status: ".*"|  candidateVerification.status: "pending"|' \\
+      -e 's|^  candidateVerification.sourceCommit: ".*"|  candidateVerification.sourceCommit: ""|' \\
+      -e 's|^  releaseMode: ".*"|  releaseMode: "reverse-blue-green"|' \\
+      -e 's|^  releaseActor: ".*"|  releaseActor: "jenkins-prod-reverse-intent"|' \\
+      -e 's|^  verification.status: ".*"|  verification.status: "pending"|' \\
+      -e 's|^  verification.sourceCommit: ".*"|  verification.sourceCommit: ""|' \\
+      '${overlay}/release-metadata.yaml'
+    git config user.name platform-jenkins
+    git config user.email jenkins@jh.huanmin.top
+    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml'
+    if git diff --cached --quiet; then
+      echo '反向 prod candidate release intent 已是目标状态；不重复提交。'
+    else
+      git commit -m '[skip ci] release(juhe-ai-prod): reverse candidate ${sourceCommit}'
       GIT_SSH_COMMAND="ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts" git push origin HEAD:'${env.RELEASE_BRANCH}'
     fi
   """
