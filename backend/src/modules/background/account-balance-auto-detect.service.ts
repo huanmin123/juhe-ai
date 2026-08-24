@@ -130,7 +130,7 @@ async function autoDetectAccountBalanceCandidateWithLease(
     return await completeAccountBalanceDetectionIntent(candidate, null) ? 'unsupported' : 'stale'
   }
   if (attempt.kind === 'retry') {
-    const retryAt = new Date(Date.now() + detectionRetryMinutes * 60_000).toISOString()
+    const retryAt = new Date(Date.now() + passiveScheduleDelayMs(detectionRetryMinutes * 60_000)).toISOString()
     const deferred = await completeAccountBalanceDetectionIntent(candidate, retryAt)
     if (deferred) {
       logger.warn(errorLogFields(attempt.error, {

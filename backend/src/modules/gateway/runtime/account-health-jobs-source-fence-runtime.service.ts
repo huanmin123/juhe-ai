@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { passiveScheduleDelayMs } from '../../../shared/passive-schedule-jitter.js'
 import {
   listAccountHealthJobsOutcomes,
   type AccountHealthJobsOutcomeCursor,
@@ -97,6 +98,6 @@ function waitForNextTick(delayMs: number): Promise<void> {
     wakeTimer = setTimeout(() => {
       wakeTimer = undefined
       resolve()
-    }, delayMs)
+    }, passiveScheduleDelayMs(delayMs))
   })
 }

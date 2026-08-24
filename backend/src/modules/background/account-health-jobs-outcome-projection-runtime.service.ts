@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import {
   currentAccountHealthProjectionCursor,
   currentAccountHealthProjectionCursorAsync,
@@ -113,6 +114,6 @@ function waitForNextTick(delayMs: number): Promise<void> {
       wakeTimer = undefined
       wakeResolver = undefined
       resolve()
-    }, delayMs)
+    }, passiveScheduleDelayMs(delayMs))
   })
 }

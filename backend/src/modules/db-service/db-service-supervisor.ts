@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import { forwardSupervisorOutput } from '../../shared/supervisor-output.js'
 import {
   createSupervisorRestartState,
@@ -140,9 +141,15 @@ function startDbServiceProcess(): void {
 
 function startDbServiceHealthMonitor(child: ChildProcess): void {
   clearDbServiceHealthProbeTimer()
-  dbServiceHealthTimer = setInterval(() => {
-    void probeDbServiceHealth(child)
-  }, dbServiceHealthProbeIntervalMs)
+  scheduleDbServiceHealthProbe(child)
+}
+
+function scheduleDbServiceHealthProbe(child: ChildProcess): void {
+  if (stopping || dbServiceProcess !== child || child.killed) return
+  dbServiceHealthTimer = setTimeout(() => {
+    dbServiceHealthTimer = undefined
+    void probeDbServiceHealth(child).finally(() => scheduleDbServiceHealthProbe(child))
+  }, passiveScheduleDelayMs(dbServiceHealthProbeIntervalMs))
   dbServiceHealthTimer.unref()
 }
 
@@ -223,7 +230,7 @@ function isSameRunningDbServiceChild(child: ChildProcess, childPid: number): boo
 
 function clearDbServiceHealthProbeTimer(): void {
   if (dbServiceHealthTimer) {
-    clearInterval(dbServiceHealthTimer)
+    clearTimeout(dbServiceHealthTimer)
     dbServiceHealthTimer = undefined
   }
 }

@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../config/runtime.js'
 import { logger } from './logger.js'
+import { passiveScheduleDelayMs } from './passive-schedule-jitter.js'
 import { canonicalizeRfc3339Instant, requiredRfc3339Instant } from './rfc3339.js'
 import {
   buildProcessEventLoopSample,
@@ -126,7 +127,7 @@ function scheduleNextPublish(): void {
     publishTimer = undefined
     if (!publisherStarted) return
     void publishCurrentProcessMetrics().finally(() => scheduleNextPublish())
-  }, delayMs)
+  }, passiveScheduleDelayMs(delayMs))
   publishTimer.unref()
 }
 

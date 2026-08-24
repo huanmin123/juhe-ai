@@ -1,6 +1,7 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import type { AccountSummary, AccountSupportedEndpointMode, AccountTestApiKeyPoolItemResult, AccountTestResult } from '../../domain/types.js'
 import { logger, errorLogFields } from '../../shared/logger.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
@@ -152,9 +153,11 @@ function startAccountTestSessionStaleSweep(): void {
   if (accountTestSessionStaleSweepTimer) {
     return
   }
-  accountTestSessionStaleSweepTimer = setInterval(() => {
+  accountTestSessionStaleSweepTimer = setTimeout(() => {
+    accountTestSessionStaleSweepTimer = undefined
     sweepManualAccountTestQueue()
-  }, 2_000)
+    startAccountTestSessionStaleSweep()
+  }, passiveScheduleDelayMs(2_000))
   accountTestSessionStaleSweepTimer.unref()
 }
 

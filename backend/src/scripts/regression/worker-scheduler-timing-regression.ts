@@ -67,6 +67,31 @@ async function verifyCoalesceOneKeepsFixedRatePhase(): Promise<void> {
   scheduler.stop()
 }
 
+async function verifyPassiveFixedRateNeverSchedulesImmediateCatchup(): Promise<void> {
+  const clock = new FakeClock()
+  const scheduler = new WorkerScheduler({
+    stableInstanceId: 'passive-catchup',
+    workerRole: 'stats-worker',
+    clock,
+    random: () => 0
+  })
+  scheduler.schedule({
+    name: 'passive-catchup',
+    intervalMs: 10,
+    initialDelayMs: 1,
+    passiveJitter: true,
+    task: async () => {
+      await new Promise<void>((resolve) => clock.setTimeout(resolve, 50))
+    }
+  })
+  await clock.advanceBy(1)
+  await clock.advanceBy(50)
+  const snapshot = scheduler.snapshots().find((item) => item.name === 'passive-catchup')
+  assert(snapshot?.nextRunAt, '被动 fixed-rate 任务必须保留下一次调度时间')
+  assert.ok(Date.parse(snapshot.nextRunAt) > Date.parse(snapshot.lastFinishedAt ?? snapshot.nextRunAt), '过期补偿不得把被动 fixed-rate 下一轮压成立即执行')
+  scheduler.stop()
+}
+
 async function verifyResourceLaneAndOverdue(): Promise<void> {
   const clock = new FakeClock()
   const scheduler = new WorkerScheduler({ clock })
@@ -413,6 +438,7 @@ class FakeClock implements WorkerSchedulerClock {
 }
 
 await verifyCoalesceOneKeepsFixedRatePhase()
+await verifyPassiveFixedRateNeverSchedulesImmediateCatchup()
 await verifyResourceLaneAndOverdue()
 await verifyTimeoutKeepsLane()
 await verifyFixedDelay()

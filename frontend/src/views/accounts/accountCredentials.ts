@@ -8,6 +8,7 @@ import {
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
+import { loadAccountQuotaRecoveryPolicy } from './accountQuotaRecoveryPolicyTypes'
 import { compactAccountCredentials } from './accountFormDefaults'
 import { writeAccountGptRequestOverrides } from './accountGptRequestOverrides'
 
@@ -45,7 +46,7 @@ export function buildAccountCredentials(input: {
   writeAccountErrorPolicyToCredentials(credentials, input.errorPolicyRules)
   writeAccountResponseInspectionRulesToCredentials(credentials, input.responseInspectionRules)
   if (input.form.quotaRecoveryPolicy && Object.keys(input.form.quotaRecoveryPolicy).length) {
-    credentials.quota_recovery_policy = input.form.quotaRecoveryPolicy
+    credentials.quota_recovery_policy = loadAccountQuotaRecoveryPolicy(input.form.quotaRecoveryPolicy)
   }
   return credentials
 }

@@ -1,9 +1,10 @@
 /**
  * Global policy for passive, periodic business work.
  *
- * This is deliberately not used for control-plane timers (leases, queue
- * projection, request timeouts, heartbeats, or event-driven recovery). Those
- * timers have freshness/ownership semantics that a random delay would change.
+ * Lease renewal, request timeouts, heartbeats, and event-driven recovery do
+ * not use it because their freshness/ownership semantics require an exact
+ * deadline. Passive polling and periodic scans, including queue/projector
+ * polling, must use it to prevent same-phase fleets from converging.
  */
 export const passiveScheduleJitterPolicy = {
   subMinuteWindowMs: 30_000,

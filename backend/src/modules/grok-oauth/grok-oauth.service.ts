@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { OAuthUpstreamResponseError, isOAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { requestProviderOAuthToken } from '../providers/drivers/_shared/provider-oauth-token-transport.js'
 import { convertGrokSSOToOAuth } from './grok-sso-device-flow.js'
@@ -414,11 +415,19 @@ function grokOAuthSessionStore(): GrokOAuthSessionStore {
 
 class GrokOAuthMemorySessionStore implements GrokOAuthSessionStore {
   private readonly entries = new Map<string, { value: GrokOAuthSession; expiresAt: number }>()
-  private readonly cleanupTimer: NodeJS.Timeout
+  private cleanupTimer: NodeJS.Timeout
 
   constructor() {
-    this.cleanupTimer = setInterval(() => this.cleanup(), 60_000)
-    this.cleanupTimer.unref()
+    this.cleanupTimer = this.scheduleNextCleanup()
+  }
+
+  private scheduleNextCleanup(): NodeJS.Timeout {
+    const timer = setTimeout(() => {
+      this.cleanup()
+      this.cleanupTimer = this.scheduleNextCleanup()
+    }, passiveScheduleDelayMs(60_000))
+    timer.unref()
+    return timer
   }
 
   async getJson<T>(key: string): Promise<T | undefined> {

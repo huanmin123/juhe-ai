@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { passiveScheduleDelayMs, passiveScheduleNotBeforeDelayMs } from '../../../shared/passive-schedule-jitter.js'
 import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createPostgresDatabaseClient } from '../../../storage/database-client.js'
@@ -371,7 +372,6 @@ const recoveryProbeRetryDelayMs = runtimeConfig.gateway.automaticProbeRecoveryRe
 const recoveryProbePrecheckFailureThreshold = runtimeConfig.gateway.automaticProbeRecoveryPrecheckFailureThreshold
 const recoveryProbeAccountMinIntervalMs = runtimeConfig.gateway.automaticProbeRecoveryAccountMinIntervalMs
 const recoveryProbeScopeMinIntervalMs = runtimeConfig.gateway.automaticProbeRecoveryScopeMinIntervalMs
-const recoveryProbeJitterMs = runtimeConfig.gateway.automaticProbeRecoveryJitterMs
 const distributedRecoveryProbeStateTtlMs = Math.max(localSuppressionMaxMs, precheckSuppressionGuardMs) + 5 * 60_000
 const distributedRecoveryProbeSweepIntervalMs = runtimeConfig.gateway.automaticProbeSweepIntervalMs
 const distributedRecoveryProbeSweepBatchSize = runtimeConfig.gateway.automaticProbeSweepBatchSize
@@ -396,7 +396,7 @@ const precheckStates = new Map<string, PrecheckState>()
 const recoveryProbeStates = new Map<string, RecoveryProbeState>()
 const recoveryProbeTimers = new Map<string, NodeJS.Timeout>()
 const precheckRunTimers = new Map<string, NodeJS.Timeout>()
-const precheckConcurrencyDrainWaits = new Map<string, { unsubscribe: () => void; timer: NodeJS.Timeout }>()
+const precheckConcurrencyDrainWaits = new Map<string, { unsubscribe: () => void; timer?: NodeJS.Timeout }>()
 const runtimeProbeGenerationCounters = new Map<string, number>()
 const recoveryProbeLastStartedAtByScope = new Map<string, number>()
 const configuredPolicyAvoidancesMemory = new Map<string, ConfiguredPolicyAvoidanceState>()
@@ -783,7 +783,7 @@ async function recordDistributedGatewayAccountFailureForPrecheck(
 
 function ensureDistributedRecoveryProbeSweeper(): void {
   if (runtimeConfig.runtimeStateDriver !== 'redis' || runtimeConfig.processRole !== 'server') return
-  scheduleDistributedRecoveryProbeSweep(distributedRecoveryProbeSweepIntervalMs)
+  scheduleDistributedRecoveryProbeSweep(passiveScheduleDelayMs(distributedRecoveryProbeSweepIntervalMs))
 }
 
 function scheduleDistributedRecoveryProbeSweep(delayMs: number): void {
@@ -807,7 +807,7 @@ function scheduleDistributedRecoveryProbeSweep(delayMs: number): void {
 async function runDistributedRecoveryProbeSweep(): Promise<void> {
   if (runtimeConfig.runtimeStateDriver !== 'redis' || runtimeConfig.processRole !== 'server') return
   if (distributedRecoveryProbeSweepRunning) {
-    scheduleDistributedRecoveryProbeSweep(distributedRecoveryProbeSweepIntervalMs)
+    scheduleDistributedRecoveryProbeSweep(passiveScheduleDelayMs(distributedRecoveryProbeSweepIntervalMs))
     return
   }
   distributedRecoveryProbeSweepRunning = true
@@ -820,7 +820,7 @@ async function runDistributedRecoveryProbeSweep(): Promise<void> {
     }), 'Redis 运行态账号恢复探针 sweep 失败')
   } finally {
     distributedRecoveryProbeSweepRunning = false
-    scheduleDistributedRecoveryProbeSweep(distributedRecoveryProbeSweepIntervalMs)
+    scheduleDistributedRecoveryProbeSweep(passiveScheduleDelayMs(distributedRecoveryProbeSweepIntervalMs))
   }
 }
 
@@ -873,10 +873,11 @@ async function runGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void>
     }
     if (result.transportOutcome.kind === 'unknown') {
       latest.running = false
-      latest.nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
+      const retryDelayMs = recoveryProbeRetry()
+      latest.nextProbeAtMs = Date.now() + retryDelayMs
       latest.probePresentation = runtimeProbeScheduledPresentation(latest.probePresentation.lastObservation, latest.nextProbeAtMs)
       recoveryProbeStates.set(runtimeKey, latest)
-      scheduleRecoveryProbeTimer(runtimeKey, recoveryProbeRetryDelayMs)
+      scheduleRecoveryProbeTimer(runtimeKey, retryDelayMs)
       logger.info({
         event: 'gateway_account_recovery_probe_inconclusive_rescheduled',
         accountId: latest.account.id,
@@ -954,8 +955,9 @@ async function runGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void>
     }
     if (latest) {
       latest.running = false
-      latest.nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
-      scheduleRecoveryProbeTimer(runtimeKey, recoveryProbeRetryDelayMs)
+      const retryDelayMs = recoveryProbeRetry()
+      latest.nextProbeAtMs = Date.now() + retryDelayMs
+      scheduleRecoveryProbeTimer(runtimeKey, retryDelayMs)
     }
     logger.warn(errorLogFields(error, {
       event: 'gateway_account_recovery_probe_exception',
@@ -1036,7 +1038,7 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
     try {
       const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(state, timeoutMs))
       if (result.transportOutcome.kind === 'unknown') {
-        const nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
+        const nextProbeAtMs = Date.now() + recoveryProbeRetry()
         const rescheduled = await commitDistributedRecoveryProbeRun({
           ...claimedState,
           nextProbeAtMs,
@@ -1122,7 +1124,7 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
     }
   } catch (error) {
     if (claimedState && runId) {
-      const nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
+      const nextProbeAtMs = Date.now() + recoveryProbeRetry()
       await commitDistributedRecoveryProbeRun({
         ...claimedState,
         nextProbeAtMs,
@@ -1199,12 +1201,12 @@ async function runDistributedGatewayAccountPrecheck(
       const attempt = state.attemptCount
       state = {
         ...state,
-        nextProbeAtMs: Date.now() + precheckSuppressionMs(),
+        nextProbeAtMs: Date.now() + passiveScheduleNotBeforeDelayMs(precheckSuppressionMs()),
         probePresentation: { lastObservation: state.probePresentation.lastObservation, schedule: { state: 'running' } }
       }
       const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(distributedStateWithAccount(state, account), timeoutMs))
       if (result.transportOutcome.kind === 'unknown') {
-        const nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
+        const nextProbeAtMs = Date.now() + recoveryProbeRetry()
         await commitDistributedRecoveryProbeRun({
           ...state,
           attemptCount: attempt,
@@ -1264,7 +1266,7 @@ async function runDistributedGatewayAccountPrecheck(
       await commitDistributedRecoveryProbeRun({
         ...state,
         reason,
-        nextProbeAtMs: Date.now() + precheckConcurrencyDrainPollMs,
+        nextProbeAtMs: Date.now() + passiveScheduleDelayMs(precheckConcurrencyDrainPollMs),
         probePresentation: { lastObservation: state.probePresentation.lastObservation, schedule: { state: 'none' } }
       }, runId)
       return
@@ -1293,7 +1295,7 @@ async function runDistributedGatewayAccountPrecheck(
     await clearDistributedRecoveryProbeRun(runtimeKey, generation, runId)
     if (markResult.updated) clearGatewayRuntimeCache()
   } catch (error) {
-    const nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
+    const nextProbeAtMs = Date.now() + recoveryProbeRetry()
     await commitDistributedRecoveryProbeRun({
       ...state,
       nextProbeAtMs,
@@ -1345,16 +1347,22 @@ function promoteRecoveryProbeToPrecheck(runtimeKey: string, state: RecoveryProbe
 
 function recoveryProbeDelayMs(delayMs: number | undefined): number {
   if (typeof delayMs === 'number' && Number.isFinite(delayMs)) {
-    return Math.max(1000, Math.min(Math.trunc(delayMs), recoveryProbeRetryDelayMs))
+    // A supplied suppression delay is a not-before boundary. It may be
+    // smeared later, but a negative offset must never probe early.
+    return passiveScheduleNotBeforeDelayMs(Math.max(1000, Math.min(Math.trunc(delayMs), recoveryProbeRetryDelayMs)))
   }
-  return 3000
+  return passiveScheduleDelayMs(3000)
 }
 
 function recoveryProbeFollowupDelayMs(observedForMs: number): number {
   if (observedForMs < localDegradationMinObservationMs) {
-    return Math.max(1000, Math.min(recoveryProbeRetryDelayMs, localDegradationMinObservationMs - observedForMs))
+    return passiveScheduleNotBeforeDelayMs(Math.max(1000, Math.min(recoveryProbeRetryDelayMs, localDegradationMinObservationMs - observedForMs)))
   }
-  return recoveryProbeRetryDelayMs
+  return recoveryProbeDelayMs(recoveryProbeRetryDelayMs)
+}
+
+function recoveryProbeRetry(): number {
+  return recoveryProbeDelayMs(recoveryProbeRetryDelayMs)
 }
 
 function nextRuntimeProbeGeneration(runtimeKey: string): number {
@@ -1381,7 +1389,7 @@ function recoveryProbeBudgetWaitMs(state: RecoveryProbeState, now: number): numb
     waitMs = Math.max(waitMs, lastStartedAtMs + scope.minIntervalMs - now)
   }
   if (waitMs <= 0) return 0
-  return Math.ceil(waitMs) + randomRecoveryProbeJitterMs()
+  return passiveScheduleNotBeforeDelayMs(Math.ceil(waitMs))
 }
 
 function markRecoveryProbeStarted(state: RecoveryProbeState, now: number): void {
@@ -1422,9 +1430,6 @@ function normalizedRecoveryProbeBaseUrlScope(value: string): string {
   }
 }
 
-function randomRecoveryProbeJitterMs(): number {
-  return Math.floor(Math.random() * recoveryProbeJitterMs)
-}
 
 function rescheduleLatestRecoveryProbeAfterStaleResult(runtimeKey: string, staleGeneration: number, event: string): void {
   const latest = recoveryProbeStates.get(runtimeKey)
@@ -2623,7 +2628,7 @@ function clearPrecheckConcurrencyDrainWait(runtimeKey: string): void {
     return
   }
   wait.unsubscribe()
-  clearInterval(wait.timer)
+  if (wait.timer) clearTimeout(wait.timer)
   precheckConcurrencyDrainWaits.delete(runtimeKey)
 }
 
@@ -2697,9 +2702,18 @@ function schedulePrecheckAfterConcurrencyDrain(runtimeKey: string, accountConcur
       tryResume()
     }
   })
-  const timer = setInterval(tryResume, precheckConcurrencyDrainPollMs)
-  timer.unref()
-  precheckConcurrencyDrainWaits.set(runtimeKey, { unsubscribe, timer })
+  const wait: { unsubscribe: () => void; timer?: NodeJS.Timeout } = { unsubscribe }
+  precheckConcurrencyDrainWaits.set(runtimeKey, wait)
+  const schedulePoll = (): void => {
+    if (precheckConcurrencyDrainWaits.get(runtimeKey) !== wait) return
+    wait.timer = setTimeout(() => {
+      wait.timer = undefined
+      tryResume()
+      schedulePoll()
+    }, passiveScheduleDelayMs(precheckConcurrencyDrainPollMs))
+    wait.timer.unref()
+  }
+  schedulePoll()
   tryResume()
 }
 
@@ -2739,11 +2753,12 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       }
       stateAfterResult.running = false
       if (result.transportOutcome.kind === 'unknown') {
+        const retryDelayMs = recoveryProbeRetry()
         stateAfterResult.probePresentation = runtimeProbeScheduledPresentation(
           stateAfterResult.probePresentation?.lastObservation,
-          Date.now() + recoveryProbeRetryDelayMs
+          Date.now() + retryDelayMs
         )
-        scheduleGatewayAccountPrecheckRun(runtimeKey, recoveryProbeRetryDelayMs)
+        scheduleGatewayAccountPrecheckRun(runtimeKey, retryDelayMs)
         logger.info({
           event: 'gateway_account_precheck_inconclusive_rescheduled',
           accountId: latestState.account.id,

@@ -11,6 +11,7 @@ import {
   buildAccountSavePayload,
   validateAccountSaveForm
 } from '../../src/views/accounts/accountSavePayload'
+import { defaultAccountQuotaRecoverySchedule } from '../../src/views/accounts/accountQuotaRecoveryPolicyTypes'
 import {
   buildAccountAdvancedUpdatePatch,
   buildAccountBasicEditSnapshot,
@@ -533,6 +534,38 @@ assert.equal(
   buildAccountAdvancedUpdatePatch(advancedBaseline, advancedBaseline, 11),
   undefined,
   '高级编辑没有变化时不得产生更新请求体'
+)
+const quotaPolicyForm = defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
+quotaPolicyForm.quotaRecoveryPolicy = {
+  api_key: defaultAccountQuotaRecoverySchedule('api_key')
+}
+const quotaPolicyBaseline = buildAccountSavePayload({
+  accounts: [],
+  form: quotaPolicyForm,
+  errorPolicyRules: [],
+  responseInspectionRules: []
+})
+quotaPolicyForm.quotaRecoveryPolicy.api_key!.duration_minutes = 61
+const quotaPolicyCurrent = buildAccountSavePayload({
+  accounts: [],
+  form: quotaPolicyForm,
+  errorPolicyRules: [],
+  responseInspectionRules: []
+})
+assert.equal(
+  (quotaPolicyBaseline.credentials.quota_recovery_policy as { api_key: { duration_minutes: number } }).api_key.duration_minutes,
+  60,
+  '配额策略编辑基线不得与当前表单共享嵌套对象'
+)
+assert.deepEqual(
+  buildAccountAdvancedUpdatePatch(quotaPolicyCurrent, quotaPolicyBaseline, 11),
+  {
+    credentialsPatch: {
+      quota_recovery_policy: quotaPolicyCurrent.credentials.quota_recovery_policy
+    },
+    expectedConfigRevision: 11
+  },
+  '修改配额策略嵌套字段必须产生 quota_recovery_policy credentialsPatch'
 )
 const advancedPriorityChanged = structuredClone(advancedBaseline)
 advancedPriorityChanged.priority += 1

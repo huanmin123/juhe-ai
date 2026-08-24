@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { currentAccountBalanceProjectionCursorAsync, advanceAccountBalanceProjectionCursorAsync } from '../../storage/account-balance-projection-cursor.repository.js'
 import { listAccountBalanceJobsOutcomes, type AccountBalanceJobsStoreSource } from '../../storage/account-balance-jobs-outcome.repository.js'
@@ -63,7 +64,7 @@ async function loop(source: AccountBalanceJobsStoreSource): Promise<void> {
       projectionReadyUntil = 0
       logger.error(errorLogFields(error, { event: 'account_balance_jobs_outcome_projection_failed', consumerKey }), 'J2 outcome 投影失败，将保留游标并重试')
     }
-    if (!stopping) await new Promise<void>((resolve) => setTimeout(resolve, delay))
+    if (!stopping) await new Promise<void>((resolve) => setTimeout(resolve, passiveScheduleDelayMs(delay)))
   }
 }
 

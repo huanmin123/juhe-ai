@@ -13,7 +13,7 @@
     </div>
 
     <a-form-item label="恢复模式">
-      <a-select v-model:value="schedule.reset_strategy" :disabled="readonly" style="width: 220px">
+      <a-select :value="schedule.reset_strategy" :disabled="readonly" style="width: 220px" @update:value="updateSchedule('reset_strategy', $event)">
         <a-select-option value="duration">固定时长后恢复探测</a-select-option>
         <a-select-option value="daily">每日时间点恢复</a-select-option>
         <a-select-option value="weekly">每周时间点恢复</a-select-option>
@@ -21,39 +21,40 @@
     </a-form-item>
 
     <a-form-item v-if="schedule.reset_strategy === 'duration'" label="恢复间隔（分钟）">
-      <a-input-number v-model:value="schedule.duration_minutes" :disabled="readonly" :min="30" :max="10080" :precision="0" />
+      <a-input-number :value="schedule.duration_minutes" :disabled="readonly" :min="30" :max="10080" :precision="0" @update:value="updateSchedule('duration_minutes', $event)" />
       <span class="quota-recovery-inline-help">建议 60；jitter_minutes固定15、实际0–15 分钟稳定错峰</span>
     </a-form-item>
     <a-form-item v-else-if="schedule.reset_strategy === 'daily'" label="每日恢复时间">
-      <a-input-number v-model:value="schedule.daily_reset_hour" :disabled="readonly" :min="0" :max="23" :precision="0" />
+      <a-input-number :value="schedule.daily_reset_hour" :disabled="readonly" :min="0" :max="23" :precision="0" @update:value="updateSchedule('daily_reset_hour', $event)" />
       <span class="quota-recovery-inline-help">{{ schedule.timezone }} {{ String(schedule.daily_reset_hour).padStart(2, '0') }}:00，jitter_minutes固定15、实际0–15 分钟稳定错峰</span>
     </a-form-item>
     <a-form-item v-else label="每周恢复时间">
       <a-space>
-        <a-select v-model:value="schedule.weekly_reset_day" :disabled="readonly" style="width: 120px">
+        <a-select :value="schedule.weekly_reset_day" :disabled="readonly" style="width: 120px" @update:value="updateSchedule('weekly_reset_day', $event)">
           <a-select-option v-for="item in weekdays" :key="item.value" :value="item.value">{{ item.label }}</a-select-option>
         </a-select>
-        <a-input-number v-model:value="schedule.weekly_reset_hour" :disabled="readonly" :min="0" :max="23" :precision="0" />
+        <a-input-number :value="schedule.weekly_reset_hour" :disabled="readonly" :min="0" :max="23" :precision="0" @update:value="updateSchedule('weekly_reset_hour', $event)" />
       </a-space>
     </a-form-item>
 
     <a-form-item label="时区">
-      <a-input v-model:value="schedule.timezone" :disabled="readonly" placeholder="UTC 或 IANA 时区，例如 Asia/Shanghai" />
+      <a-input :value="schedule.timezone" :disabled="readonly" placeholder="UTC 或 IANA 时区，例如 Asia/Shanghai" @update:value="updateSchedule('timezone', $event)" />
     </a-form-item>
     <a-form-item label="错峰范围（分钟）">
-      <a-input-number v-model:value="schedule.jitter_minutes" disabled :min="15" :max="15" :precision="0" />
+      <a-input-number :value="schedule.jitter_minutes" disabled :min="15" :max="15" :precision="0" />
       <span class="quota-recovery-inline-help">jitter_minutes固定15、实际0–15 分钟稳定错峰，账户不能关闭或修改</span>
     </a-form-item>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed } from 'vue'
 
 import {
   defaultAccountQuotaRecoverySchedule,
   ensureAccountQuotaRecoverySchedule,
-  type AccountQuotaRecoveryPolicyForm
+  type AccountQuotaRecoveryPolicyForm,
+  type AccountQuotaRecoveryScheduleForm
 } from './accountQuotaRecoveryPolicyTypes'
 
 const props = withDefaults(defineProps<{
@@ -70,6 +71,13 @@ function scheduleKey() {
   return props.accountType === 'api_key' ? 'api_key' : props.accountType === 'google_oauth' ? 'google_oauth' : 'oauth'
 }
 const schedule = computed(() => policy.value?.[scheduleKey()] ?? defaultAccountQuotaRecoverySchedule(props.accountType))
+function updateSchedule<K extends keyof AccountQuotaRecoveryScheduleForm>(
+  key: K,
+  value: AccountQuotaRecoveryScheduleForm[K] | null
+) {
+  if (value === null) return
+  ensureSchedule()[key] = value
+}
 const accountTypeLabel = computed(() => props.accountType === 'api_key' ? 'API Key' : props.accountType === 'google_oauth' ? 'Google OAuth' : 'OAuth')
 const weekdays = [
   { value: 0, label: '周日' },
@@ -81,9 +89,6 @@ const weekdays = [
   { value: 6, label: '周六' }
 ]
 
-watch([policy, () => props.accountType], () => {
-  ensureSchedule()
-}, { immediate: true })
 </script>
 
 <style scoped>

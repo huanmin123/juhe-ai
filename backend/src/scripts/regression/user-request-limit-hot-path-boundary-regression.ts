@@ -9,7 +9,7 @@ const businessSchemaSource = readFileSync('src/storage/schema/business-schema.ts
 assert.doesNotMatch(counterSource, /\basync\b|\bawait\b|\bPromise\b/, '纯内存限流器禁止 async、await 和 Promise')
 assert.doesNotMatch(counterSource, /redis-client|repository|database|db-service|usage-stats-helpers|fetch\s*\(/, '纯内存限流器禁止导入远程状态或存储依赖')
 assert.match(coordinatorSource, /getRedisClient/, 'Redis 只能由后台协调器访问')
-assert.match(coordinatorSource, /setInterval[\s\S]*unref/, '后台协调 timer 必须 unref')
+assert.match(coordinatorSource, /setTimeout[\s\S]*unref/, '后台协调 timer 必须 unref')
 assert.match(coordinatorSource, /HINCRBY[\s\S]*__total/, 'Redis 汇总必须按实例累计值差量推进单调总数')
 assert.match(coordinatorSource, /HGET[\s\S]*field[\s\S]*delta/, 'Redis 重试必须读取实例上次累计值并只应用正差量')
 assert.doesNotMatch(coordinatorSource, /HVALS/, 'Redis 后台同步不得按实例字段全量求和')

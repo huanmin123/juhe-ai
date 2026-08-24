@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from './logger.js'
+import { passiveScheduleDelayMs } from './passive-schedule-jitter.js'
 import {
   redisStreamDrainContracts,
   inspectRedisStreamDrain,
@@ -70,7 +71,7 @@ function scheduleNextRefresh(): void {
   refreshTimer = setTimeout(() => {
     refreshTimer = undefined
     void refreshRedisStreamMetrics().finally(scheduleNextRefresh)
-  }, refreshIntervalMs)
+  }, passiveScheduleDelayMs(refreshIntervalMs))
   refreshTimer.unref()
 }
 

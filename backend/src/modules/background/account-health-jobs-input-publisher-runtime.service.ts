@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import {
   publishNextAccountHealthJobsInputFromBusinessOutbox
 } from './account-health-jobs-input-publisher.service.js'
@@ -59,6 +60,6 @@ function waitForNextPublisherTick(delayMs: number): Promise<void> {
       wakeTimer = undefined
       wakeResolver = undefined
       resolve()
-    }, delayMs)
+    }, passiveScheduleDelayMs(delayMs))
   })
 }

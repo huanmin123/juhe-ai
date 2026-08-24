@@ -108,7 +108,7 @@ try {
   assert.equal(summary.lastFailureAt, observedAt, '摘要应选择最近的非空失败时间')
   assert.equal(summary.lastErrorCode, 'stable_tie_winner', '同一失败时间应按 key_index 稳定选择')
   assert.equal(summary.lastTraceId, 'trace-key-0', 'traceId 必须与选中的最近失败属于同一 observation')
-  assert.equal(summary.nextProbeAt, firstProbeAt, '下次检查应选择不可用 Key 中最早的非空计划')
+  assert.equal(summary.nextProbeAt, firstProbeAt, '已过去的上游冷却截止应保持为可被随机外层扫描立即领取的最早计划')
 
   const details = runtimeStates.loadAccountApiKeyRuntimeDetailsByAccountIds([account.id]).get(account.id)
   assert.equal(details?.[0]?.lastTraceId, 'trace-key-0', 'Key 明细应返回最近失败 traceId')
@@ -751,13 +751,20 @@ try {
     observedAt: '2026-01-02T00:00:00.000Z'
   }).changed, true, '明确 reset_at 必须进入显式恢复模式')
   const explicitQuotaRow = database.prepare(`
-    SELECT recovery_started_at, last_error_code, next_probe_at
+    SELECT recovery_started_at, last_error_code, cooldown_until, next_probe_at
     FROM account_api_key_runtime_states
     WHERE account_id = ? AND key_fingerprint = ?
-  `).get(account.id, entries[1]!.fingerprint) as { recovery_started_at: string | null; last_error_code: string | null; next_probe_at: string | null }
+  `).get(account.id, entries[1]!.fingerprint) as { recovery_started_at: string | null; last_error_code: string | null; cooldown_until: string | null; next_probe_at: string | null }
   assert.equal(explicitQuotaRow.recovery_started_at, null, '明确 reset_at 不得启动 30 天通用观察窗口')
   assert.equal(explicitQuotaRow.last_error_code, API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE)
-  assert.equal(explicitQuotaRow.next_probe_at, '2030-01-01T00:00:00.000Z')
+  assert.equal(explicitQuotaRow.cooldown_until, '2030-01-01T00:00:00.000Z', '明确 reset_at 必须原样保存为 cooldown_until')
+  const explicitQuotaNextProbeAt = explicitQuotaRow.next_probe_at
+  assert(explicitQuotaNextProbeAt, '明确 reset_at 必须保留被动复测时间')
+  assert.ok(
+    Date.parse(explicitQuotaNextProbeAt) > Date.parse('2030-01-01T00:00:00.000Z')
+      && Date.parse(explicitQuotaNextProbeAt) <= Date.parse('2030-01-01T08:00:00.000Z'),
+    '明确 reset_at 的被动复测必须在截止后随机错峰，且不超过周级最大 8 小时'
+  )
   assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
     account: selected[1],
     status: 'rate_limited',
@@ -773,7 +780,7 @@ try {
     WHERE account_id = ? AND key_fingerprint = ?
   `).get(account.id, entries[1]!.fingerprint) as { last_error_code: string | null; next_probe_at: string | null }
   assert.equal(afterGenericAttempt.last_error_code, API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE, '被拒绝的 generic 写入不得改写显式 provenance')
-  assert.equal(afterGenericAttempt.next_probe_at, '2030-01-01T00:00:00.000Z', '被拒绝的 generic 写入不得改写未来显式复测时间')
+  assert.equal(afterGenericAttempt.next_probe_at, explicitQuotaRow.next_probe_at, '被拒绝的 generic 写入不得改写未来显式复测时间')
 
   console.log('账户内 API Key 探测摘要回归通过')
 } finally {

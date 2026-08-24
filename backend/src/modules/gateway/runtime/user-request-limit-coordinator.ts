@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { getRedisClient, invalidateRedisClient, type RedisCommandClient } from '../../../shared/redis-client.js'
 import { logger } from '../../../shared/logger.js'
+import { passiveScheduleDelayMs } from '../../../shared/passive-schedule-jitter.js'
 import { userRequestLimitCounter, type UserRequestLimitDirtySnapshot, type UserRequestLimitSyncResult } from './user-request-limit-counter.js'
 
 const syncIntervalMs = 1_000
@@ -43,16 +44,24 @@ return result
 export function startUserRequestLimitCoordinator(): void {
   if (started) return
   started = true
-  coordinatorTimer = setInterval(() => {
+  scheduleNextCoordinatorSync()
+}
+
+function scheduleNextCoordinatorSync(): void {
+  if (!started || coordinatorTimer) return
+  coordinatorTimer = setTimeout(() => {
+    coordinatorTimer = undefined
+    if (!started) return
     userRequestLimitCounter.cleanupExpired()
     logCapacityPressure()
     if (runtimeConfig.runtimeStateDriver === 'redis') void synchronizeDirtyCounters()
-  }, syncIntervalMs)
+    scheduleNextCoordinatorSync()
+  }, passiveScheduleDelayMs(syncIntervalMs))
   coordinatorTimer.unref?.()
 }
 
 export async function stopUserRequestLimitCoordinator(timeoutMs = redisCommandTimeoutMs): Promise<boolean> {
-  if (coordinatorTimer) clearInterval(coordinatorTimer)
+  if (coordinatorTimer) clearTimeout(coordinatorTimer)
   coordinatorTimer = undefined
   started = false
   const deadlineAtMs = Date.now() + Math.max(1, timeoutMs)

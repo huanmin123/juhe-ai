@@ -1024,6 +1024,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   const nextProbeAt = cooldownUntil !== undefined && status === 'rate_limited'
     ? passiveProbeNotBeforeAt(cooldownUntil)
     : passiveProbeRetryAt(nextBackoffSeconds)
+  const persistedCooldownUntil = cooldownUntil ?? nextProbeAt
   const errorCode = input.errorCode
     ?? (input.quotaRecoveryMode === 'explicit_reset'
       ? API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE
@@ -1081,7 +1082,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           target.systemAccountId,
           target.keyIndex,
           status,
-          nextProbeAt,
+          persistedCooldownUntil,
           nextProbeAt,
           nextBackoffSeconds,
           ...(input.breakQuotaRecoveryWindow === true || input.quotaRecoveryMode !== undefined
@@ -1122,7 +1123,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           target.keyFingerprint,
           target.keyIndex,
           status,
-          nextProbeAt,
+          persistedCooldownUntil,
           nextProbeAt,
           nextBackoffSeconds,
           recoveryStartedAt,
@@ -1190,6 +1191,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   const nextProbeAt = cooldownUntil !== undefined && status === 'rate_limited'
     ? passiveProbeNotBeforeAt(cooldownUntil)
     : passiveProbeRetryAt(nextBackoffSeconds)
+  const persistedCooldownUntil = cooldownUntil ?? nextProbeAt
   const errorCode = input.errorCode
     ?? (input.quotaRecoveryMode === 'explicit_reset'
       ? API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE
@@ -1209,8 +1211,21 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       THEN LEAST(${maxProbeBackoffSeconds}, current_state.probe_backoff_seconds * 2)
     ELSE ${initialProbeBackoffSeconds}
   END)`
+  const atomicPassiveWindowMsSql = `(CASE
+    WHEN ${atomicNextBackoffSql} < 60
+      THEN LEAST(30_000, GREATEST(1, FLOOR(${atomicNextBackoffSql} * 500)))
+    WHEN ${atomicNextBackoffSql} < 3600 THEN 30_000
+    ELSE 1_800_000
+  END)`
+  // Sample once per write. Repeating PostgreSQL random() in the two column
+  // assignments would produce two different schedules for the same state.
+  const atomicPassiveSignUnitSql = Math.random().toString()
+  const atomicPassiveMagnitudeUnitSql = Math.random().toString()
   const atomicNextProbeAtSql = `to_char(
-    (statement_timestamp() + ${atomicNextBackoffSql} * INTERVAL '1 second') AT TIME ZONE 'UTC',
+    (statement_timestamp()
+      + ${atomicNextBackoffSql} * INTERVAL '1 second'
+      + ((CASE WHEN ${atomicPassiveSignUnitSql} < 0.5 THEN -1 ELSE 1 END)
+        * (1 + FLOOR(${atomicPassiveMagnitudeUnitSql} * ${atomicPassiveWindowMsSql}))) * INTERVAL '1 millisecond') AT TIME ZONE 'UTC',
     'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
   )`
   const useInputCooldownSql = cooldownUntil !== undefined && status === 'rate_limited' ? 'TRUE' : 'FALSE'
@@ -1259,7 +1274,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       target.systemAccountId,
       target.keyIndex,
       status,
-      nextProbeAt,
+      persistedCooldownUntil,
       nextProbeAt,
       ...(input.breakQuotaRecoveryWindow === true || input.quotaRecoveryMode !== undefined
         ? [recoveryStartedAt]
@@ -1340,7 +1355,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
     target.keyFingerprint,
     target.keyIndex,
     status,
-    nextProbeAt,
+    persistedCooldownUntil,
     nextProbeAt,
     nextBackoffSeconds,
     recoveryStartedAt,
@@ -2104,7 +2119,10 @@ function passiveProbeRetryAt(delaySeconds: number): string {
 function passiveProbeNotBeforeAt(deadlineAt: string): string {
   const now = Date.now()
   const deadlineMs = requiredRfc3339Timestamp(deadlineAt, 'cooldownUntil')
-  const intervalMs = Math.max(1, deadlineMs - now)
+  // An already elapsed upstream deadline is immediately eligible; the outer
+  // passive scheduler still supplies its own fresh offset before dispatch.
+  if (deadlineMs <= now) return new Date(deadlineMs).toISOString()
+  const intervalMs = deadlineMs - now
   return new Date(now + passiveScheduleNotBeforeDelayMs(intervalMs)).toISOString()
 }
 

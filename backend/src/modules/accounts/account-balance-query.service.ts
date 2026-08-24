@@ -467,7 +467,7 @@ async function persistBalanceRefreshIfCurrent(
 
 export async function deferAccountBalanceRefreshCandidate(
   candidate: AccountBalanceRefreshCandidate,
-  retryAt = new Date(Date.now() + 60_000).toISOString()
+  retryAt = new Date(Date.now() + passiveScheduleDelayMs(60_000)).toISOString()
 ): Promise<boolean> {
   return await commitBalanceRefresh({
     accountId: candidate.id,

@@ -3,6 +3,7 @@ import type { AgentOptions } from 'node:http'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { OAuthUpstreamResponseError } from '../../shared/oauth-upstream-response-error.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
@@ -69,7 +70,7 @@ export class OpenAIOAuthMemorySessionStore implements OpenAIOAuthSessionStore {
   private readonly now: () => number
   private readonly maxEntries: number
   private readonly maxOwnerSessions: number
-  private readonly cleanupTimer: NodeJS.Timeout
+  private cleanupTimer: NodeJS.Timeout
 
   constructor(options: OpenAIOAuthMemorySessionStoreOptions = {}) {
     this.now = options.now ?? Date.now
@@ -80,8 +81,16 @@ export class OpenAIOAuthMemorySessionStore implements OpenAIOAuthSessionStore {
       openAIOAuthMemorySessionCleanupIntervalMs,
       'cleanupIntervalMs'
     )
-    this.cleanupTimer = setInterval(() => this.maintain(), cleanupIntervalMs)
-    this.cleanupTimer.unref()
+    this.cleanupTimer = this.scheduleNextMaintenance(cleanupIntervalMs)
+  }
+
+  private scheduleNextMaintenance(intervalMs: number): NodeJS.Timeout {
+    const timer = setTimeout(() => {
+      this.maintain()
+      this.cleanupTimer = this.scheduleNextMaintenance(intervalMs)
+    }, passiveScheduleDelayMs(intervalMs))
+    timer.unref()
+    return timer
   }
 
   get size(): number {

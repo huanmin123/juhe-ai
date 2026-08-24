@@ -348,7 +348,10 @@ export class WorkerScheduler {
       if (state.scheduleMode === 'fixedRate') {
         let nextScheduledAtMs = nextFixedRateTargetMs(scheduledAtMs, state.intervalMs, this.clock.now())
         if (state.passiveJitter) {
-          nextScheduledAtMs += passiveScheduleOffsetMs(state.intervalMs, this.random)
+          nextScheduledAtMs = Math.max(
+            this.clock.now() + 1,
+            nextScheduledAtMs + passiveScheduleOffsetMs(state.intervalMs, this.random)
+          )
         }
         this.scheduleRegularTimer(name, state, nextScheduledAtMs)
       }
