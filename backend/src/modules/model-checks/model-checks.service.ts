@@ -21,7 +21,8 @@ import {
   type ModelCheckRunListResult,
   type ModelCheckRunRequest,
   type ModelCheckRunStatus,
-  type ModelCheckTargetType
+  type ModelCheckTargetType,
+  type AccountHealthCheckEndpointMode
 } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
 import { createTraceId } from '../../shared/request-context.js'
@@ -102,6 +103,10 @@ import {
   type RunGatewayProbeOptions
 } from './model-checks-gateway-probe.js'
 import {
+  isTerminalModelCheckProbeFailure,
+  modelCheckProbeMaxAttempts
+} from './model-checks-probe-retry.js'
+import {
   isModelCheckSupportedProtocolProfile,
   modelCheckSupportedProtocolLabel
 } from './model-checks.provider-capabilities.js'
@@ -109,6 +114,8 @@ import {
   configuredModelCheckModelsForAccount,
   findModelCheckProfileForAccount,
   findModelCheckProfileForAccountModel,
+  modelCheckEndpointModeIsStreaming,
+  modelCheckEndpointModesForProfile,
   pairedModelForProfile,
   sameModelCheckComparisonProfile,
   type ModelCheckProtocolProfile
@@ -160,6 +167,8 @@ type ModelCheckTarget = {
   modelCheckProfile: ModelCheckProtocolProfile
   identity: OpenAIGatewayRequestIdentity
   candidateAccounts?: OpenAIAccountSecret[]
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
+  probeStream: boolean
   accountId?: string
   groupId?: string
   apiKeyId?: string
@@ -396,6 +405,8 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         providerProtocolProfileId: target.providerProtocolProfileId,
         modelCheckProfileId: target.modelCheckProfile.id,
         modelCheckProtocol: target.modelCheckProfile.protocol,
+        healthCheckEndpointMode: target.healthCheckEndpointMode,
+        trustedComparisonHealthCheckEndpointMode: comparison?.healthCheckEndpointMode,
         model,
         profile,
         triggerKind,
@@ -427,7 +438,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         trustedComparison,
         comparisonTargetId: comparison?.targetId,
         startedAtMs,
-        reason: '同一探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        reason: '同一探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据'
       })
       throw new ModelCheckRunAlreadyFinishedError()
     } else if (profile === 'quick') {
@@ -443,6 +454,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
             profileMode: 'quick',
             prefix: 'target',
             observationEnabled: false,
+            stream: target.probeStream,
             signal,
             runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
           })
@@ -460,7 +472,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           trustedComparison,
           comparisonTargetId: comparison?.targetId,
           startedAtMs,
-          reason: '可信对比探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+          reason: '可信对比探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据'
         })
         throw new ModelCheckRunAlreadyFinishedError()
       }
@@ -475,6 +487,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
             profileMode: 'quick',
             prefix: 'trusted_comparison',
             observationEnabled: false,
+            stream: comparison.probeStream,
             signal,
             runProbe: async (request, itemKey) => await runModelCheckProbeRequest(comparison, request, itemKey, signal, progress)
           })
@@ -493,7 +506,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           trustedComparison,
           comparisonTargetId: comparison?.targetId,
           startedAtMs,
-          reason: '跨模型探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+          reason: '跨模型探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据'
         })
         throw new ModelCheckRunAlreadyFinishedError()
       }
@@ -510,7 +523,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           trustedComparison,
           comparisonTargetId: comparison?.targetId,
           startedAtMs,
-          reason: '可信对比探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+          reason: '可信对比探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据'
         })
         throw new ModelCheckRunAlreadyFinishedError()
       }
@@ -569,6 +582,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           baseUrl: target.candidateAccounts[0].baseUrl,
           credentialMode: target.candidateAccounts[0].type,
           probeSetVersion: effectiveProbeSetVersion,
+          stream: target.probeStream,
           signal,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
@@ -581,6 +595,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           baseUrl: target.candidateAccounts[0].baseUrl,
           credentialMode: target.candidateAccounts[0].type,
           probeSetVersion: effectiveProbeSetVersion,
+          stream: target.probeStream,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
     if (identityObservation && hasTerminalNon200Probe([identityObservation.item])) {
@@ -592,7 +607,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         trustedComparison,
         comparisonTargetId: comparison?.targetId,
         startedAtMs,
-        reason: '身份探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        reason: '身份探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据'
       })
       throw new ModelCheckRunAlreadyFinishedError()
     }
@@ -608,7 +623,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         trustedComparison,
         comparisonTargetId: comparison?.targetId,
         startedAtMs,
-        reason: '跨模型探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        reason: '跨模型探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据'
       })
       throw new ModelCheckRunAlreadyFinishedError()
     }
@@ -618,6 +633,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           model,
           prefix: 'target',
           signal,
+          stream: target.probeStream,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
     if (gpt56Juice?.item) emitModelCheckItemProgress(progress, gpt56Juice.item)
@@ -637,7 +653,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         comparisonTargetId: comparison?.targetId,
         startedAtMs,
         probeSetVersion: effectiveProbeSetVersion,
-        reason: 'GPT-5.6 Juice 专项探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        reason: 'GPT-5.6 Juice 专项探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据'
       })
       throw new ModelCheckRunAlreadyFinishedError()
     }
@@ -655,7 +671,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         trustedComparison,
         comparisonTargetId: comparison?.targetId,
         startedAtMs,
-        reason: '可信对比探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        reason: '可信对比探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据'
       })
       throw new ModelCheckRunAlreadyFinishedError()
     }
@@ -686,7 +702,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         trustedComparison,
         comparisonTargetId: comparison?.targetId,
         startedAtMs,
-        reason: '分布相似度探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据'
+        reason: '分布相似度探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据'
       })
       throw new ModelCheckRunAlreadyFinishedError()
     }
@@ -1340,6 +1356,7 @@ async function resolveAccountTargetAsync(accountId: string, model: string, acces
   if (!candidate) {
     throw new ModelCheckRequestError(400, '账户不在当前分组或凭据不可用，无法执行模型检测')
   }
+  const healthCheckEndpointMode = resolveModelCheckEndpointMode(candidate, modelCheckProfile)
   return {
     targetType: 'account',
     targetId: account.id,
@@ -1353,12 +1370,29 @@ async function resolveAccountTargetAsync(accountId: string, model: string, acces
       groupId: account.boundGroupId
     },
     candidateAccounts: [candidate],
+    healthCheckEndpointMode,
+    probeStream: modelCheckEndpointModeIsStreaming(healthCheckEndpointMode),
     accountId: account.id,
     groupId: account.boundGroupId,
     accountConfigRevision: account.configRevision,
     ownPhysicalAccount: account.accessType !== 'authorized'
       && (account.ownerSystemAccountId ?? account.systemAccountId) === systemAccountId
   }
+}
+
+function resolveModelCheckEndpointMode(
+  candidate: OpenAIAccountSecret,
+  profile: ModelCheckProtocolProfile
+): AccountHealthCheckEndpointMode {
+  const endpointMode = candidate.healthCheckEndpointMode
+  const supportedModes = candidate.supportedEndpointModes ?? []
+  if (!supportedModes.includes(endpointMode)) {
+    throw new ModelCheckRequestError(400, `账户检查请求形态 ${endpointMode} 未在账户支持协议中启用，无法执行模型检测`)
+  }
+  if (!modelCheckEndpointModesForProfile(profile).includes(endpointMode)) {
+    throw new ModelCheckRequestError(400, `账户检查请求形态 ${endpointMode} 与 ${profile.protocolLabel} 模型检测协议不匹配；请调整账户检查请求形态后重试`)
+  }
+  return endpointMode
 }
 
 function effectiveAccountTargetSystemAccountId(account: AccountSummary, access?: AccessScope): string {
@@ -1431,23 +1465,26 @@ async function executeProbeSuite(
   const items: ModelCheckItemCreateInput[] = []
   // quick and full profiles share the same transport retry boundary.
   const quickProbeOptions: RunGatewayProbeOptions | undefined = undefined
+  const probeStream = target.probeStream
 
-  const basicRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: false })
+  const basicRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: probeStream })
   const basic = await runModelCheckProbeRequest(target, basicRequest, basicProbeItemKey(profile, prefix), signal, progress, quickProbeOptions)
-  const basicItem = evaluateBasicForProfile(profile, basic, model, prefix)
+  const basicItem = evaluateBasicForProfile(profile, basic, model, prefix, probeStream)
   pushProbeItem(items, basicItem, progress)
   if (!basic.success) {
     if (profileMode === 'full') pushProbeItem(items, evaluateUsageShapeProbe([basic], prefix), progress)
     return { items, basic }
   }
-  const streamRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: STREAM-OK', { maxOutputTokens: 16, stream: true })
-  const stream = await runModelCheckProbeRequest(target, streamRequest, streamProbeItemKey(profile, prefix), signal, progress, quickProbeOptions)
-  pushProbeItem(items, evaluateStreamForProfile(profile, stream, model, prefix), progress)
-  if (isTerminalNon200Probe(stream)) return { items, basic, behavior: undefined }
-
+  let stream: GatewayProbeResult | undefined
+  if (probeStream) {
+    const streamRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: STREAM-OK', { maxOutputTokens: 16, stream: true })
+    stream = await runModelCheckProbeRequest(target, streamRequest, streamProbeItemKey(profile, prefix), signal, progress, quickProbeOptions)
+    pushProbeItem(items, evaluateStreamForProfile(profile, stream, model, prefix), progress)
+    if (isTerminalNon200Probe(stream)) return { items, basic, behavior: undefined }
+  }
   const structured = await runModelCheckProbeRequest(
     target,
-    createModelCheckStructuredOutputRequest(profile.protocol, model),
+    createModelCheckStructuredOutputRequest(profile.protocol, model, { stream: probeStream }),
     `${prefix}.structured_output`,
     signal,
     progress,
@@ -1458,7 +1495,7 @@ async function executeProbeSuite(
 
   const tool = await runModelCheckProbeRequest(
     target,
-    createModelCheckToolCallingRequest(profile.protocol, model),
+    createModelCheckToolCallingRequest(profile.protocol, model, { stream: probeStream }),
     `${prefix}.tool_calling`,
     signal,
     progress,
@@ -1467,7 +1504,7 @@ async function executeProbeSuite(
   pushProbeItem(items, evaluateToolCallingProbe(tool, model, prefix), progress)
   if (isTerminalNon200Probe(tool)) return { items, basic, behavior: undefined }
 
-  pushProbeItem(items, evaluateUsageShapeProbe([basic, stream, structured, tool], prefix), progress)
+  pushProbeItem(items, evaluateUsageShapeProbe([basic, ...(stream ? [stream] : []), structured, tool], prefix), progress)
 
   if (profileMode === 'quick') return { items, basic, behavior: undefined }
 
@@ -1475,7 +1512,7 @@ async function executeProbeSuite(
   for (const definition of behaviorProbeDefinitions) {
     const request = createModelCheckProbeRequest(profile.protocol, model, definition.prompt, {
       maxOutputTokens: definition.maxOutputTokens,
-      stream: false
+      stream: probeStream
     })
     const result = await runModelCheckProbeRequest(target, request, `${prefix}.behavior.${definition.key}`, signal, progress, quickProbeOptions)
     behaviorObservations.push({ definition, result })
@@ -1492,7 +1529,7 @@ async function executeProbeSuite(
   for (const definition of longContextProbeDefinitionsForModel(target.providerCode, model)) {
     const longContext = await runModelCheckProbeRequest(
       target,
-      createModelCheckLongContextRequest(profile.protocol, model, definition),
+      createModelCheckLongContextRequest(profile.protocol, model, definition, { stream: probeStream }),
       `${prefix}.long_context.${definition.key}`,
       signal,
       progress,
@@ -1510,7 +1547,7 @@ async function executeProbeSuite(
   for (let index = 1; index <= 3; index += 1) {
     const request = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly one uppercase word: VECTOR', {
       maxOutputTokens: 16,
-      stream: false
+      stream: probeStream
     })
     const stabilityResult = await runModelCheckProbeRequest(target, request, `${prefix}.stability_${index}`, signal, progress, quickProbeOptions)
     stabilityResults.push(stabilityResult)
@@ -1541,7 +1578,7 @@ async function executeCrossModelComparison(target: ModelCheckTarget, targetSuite
   }
   const request = createModelCheckProbeRequest(target.modelCheckProfile.protocol, pairedModel, 'Reply with exactly: CROSS-MODEL-OK', {
     maxOutputTokens: 16,
-    stream: false
+    stream: target.probeStream
   })
   const pairedBasic = await runModelCheckProbeRequest(target, request, `${prefix}.cross_model`, signal, progress)
   const item = evaluateCrossModelComparisonProbe(targetSuite.basic, pairedBasic, model, pairedModel, prefix)
@@ -1559,12 +1596,13 @@ async function executeDistributionSimilarityComparison(
   const pairs: DistributionProbePair[] = []
   for (const definition of distributionProbeDefinitions) {
     for (let sampleIndex = 1; sampleIndex <= distributionSampleCount; sampleIndex += 1) {
-      const request = createModelCheckDistributionProbeRequest(target.modelCheckProfile.protocol, model, definition)
+      const request = createModelCheckDistributionProbeRequest(target.modelCheckProfile.protocol, model, definition, { stream: target.probeStream })
       const targetResult = await runModelCheckProbeRequest(target, request, `target.distribution.${definition.key}.${sampleIndex}`, signal, progress)
       if (isTerminalNon200Probe(targetResult)) {
         return terminalDistributionSimilarityItem([{ definition, sampleIndex, target: targetResult, comparison: targetResult }], model, targetResult)
       }
-      const comparisonResult = await runModelCheckProbeRequest(comparison, request, `trusted_comparison.distribution.${definition.key}.${sampleIndex}`, signal, progress)
+      const comparisonRequest = createModelCheckDistributionProbeRequest(comparison.modelCheckProfile.protocol, model, definition, { stream: comparison.probeStream })
+      const comparisonResult = await runModelCheckProbeRequest(comparison, comparisonRequest, `trusted_comparison.distribution.${definition.key}.${sampleIndex}`, signal, progress)
       pairs.push({ definition, sampleIndex, target: targetResult, comparison: comparisonResult })
       if (isTerminalNon200Probe(comparisonResult)) {
         return terminalDistributionSimilarityItem(pairs, model, comparisonResult)
@@ -1602,15 +1640,15 @@ function streamProbeItemKey(profile: ModelCheckProtocolProfile, prefix: ModelChe
   return profile.protocol === 'openai_responses' ? `${prefix}.responses_stream` : `${prefix}.protocol_stream`
 }
 
-function evaluateBasicForProfile(profile: ModelCheckProtocolProfile, result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
+function evaluateBasicForProfile(profile: ModelCheckProtocolProfile, result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix, stream: boolean): ModelCheckItemCreateInput {
   if (profile.protocol === 'openai_responses') {
-    return evaluateBasicResponsesProbe(result, model, prefix)
+    return evaluateBasicResponsesProbe(result, model, prefix, { stream })
   }
   return evaluateBasicProtocolProbe(result, model, prefix, {
     itemKey: basicProbeItemKey(profile, prefix),
     itemType: 'protocol_basic',
-    successMessage: `${profile.protocolLabel} 非流式调用可用`,
-    failurePrefix: `${profile.protocolLabel} 非流式调用失败`
+    successMessage: `${profile.protocolLabel} ${stream ? '流式' : '非流式'}调用可用`,
+    failurePrefix: `${profile.protocolLabel} ${stream ? '流式' : '非流式'}调用失败`
   })
 }
 
@@ -1713,10 +1751,11 @@ function hasTerminalNon200Probe(items: ModelCheckItemCreateInput[]): boolean {
     const evidence = recordValue(item.evidenceSummary)
     const attemptCount = integerValue(evidence?.attemptCount)
     const httpStatus = integerValue(evidence?.httpStatus)
-    return attemptCount !== undefined && attemptCount >= 2 && httpStatus !== undefined && httpStatus !== 200
+    const retryMaxAttempts = integerValue(evidence?.retryMaxAttempts) ?? modelCheckProbeMaxAttempts
+    return attemptCount !== undefined && attemptCount >= retryMaxAttempts && httpStatus !== undefined && httpStatus !== 200
   })
 }
 
 function isTerminalNon200Probe(result: GatewayProbeResult): boolean {
-  return (result.attemptCount ?? 0) >= 2 && result.statusCode !== 200
+  return isTerminalModelCheckProbeFailure(result)
 }

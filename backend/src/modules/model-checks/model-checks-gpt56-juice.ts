@@ -3,6 +3,7 @@ import { createHash, randomInt } from 'node:crypto'
 import type { ModelCheckItemCreateInput } from '../../storage/repositories.js'
 import type { GatewayProbeResult } from './model-checks-evaluation.js'
 import { createGpt56JuiceProbeRequest, type ModelCheckProbeRequest } from './model-checks.payloads.js'
+import { isTerminalModelCheckProbeFailure } from './model-checks-probe-retry.js'
 
 export const gpt56JuiceProbeVersion = 'gpt56-juice-v2'
 export const gpt56JuiceModels = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const
@@ -218,6 +219,7 @@ export async function executeGpt56JuiceProbes(input: {
   model: string
   prefix: 'target'
   signal?: AbortSignal
+  stream?: boolean
   runProbe: (request: ModelCheckProbeRequest, itemKey: string) => Promise<GatewayProbeResult>
 }): Promise<{ item?: ModelCheckItemCreateInput; observations: Gpt56JuiceObservation[] }> {
   if (!isGpt56JuiceModel(input.model)) return { observations: [] }
@@ -229,7 +231,8 @@ export async function executeGpt56JuiceProbes(input: {
     const result = await input.runProbe(
       createGpt56JuiceProbeRequest(input.model, plan.prompt, {
         reasoningEffort: plan.effort,
-        instructions: plan.instructions
+        instructions: plan.instructions,
+        stream: input.stream
       }),
       itemKey
     )
@@ -510,7 +513,7 @@ function signatureMatches(signature: string, value: string): boolean {
 }
 
 function isTerminalNon200(result: GatewayProbeResult): boolean {
-  return (result.attemptCount ?? 0) >= 2 && result.statusCode !== 200
+  return isTerminalModelCheckProbeFailure(result)
 }
 
 function retryEvidence(result: GatewayProbeResult): Record<string, unknown> {

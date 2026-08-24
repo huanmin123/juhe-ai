@@ -18,7 +18,7 @@ import {
   normalizeProviderToken,
   type ProviderProtocolProfileDefinition
 } from '../../domain/provider-protocol.js'
-import type { AccountModelMapping } from '../../domain/types.js'
+import type { AccountHealthCheckEndpointMode, AccountModelMapping, AccountSupportedEndpointMode } from '../../domain/types.js'
 import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1/model-mapping.js'
 
 export type ModelCheckProbeProtocol = 'openai_responses' | 'openai_chat' | 'anthropic_messages' | 'gemini_native'
@@ -148,6 +148,25 @@ export const probeSetVersion = 'multi-provider-model-check-v4-gpt56-preview'
 export const quickProbeSetVersion = 'multi-provider-model-check-quick-v2-light-suite'
 export const distributionSampleCount = 5
 export const modelCheckSupportedProtocolLabel = 'OpenAI Responses / OpenAI Chat Completions / Anthropic Messages / Gemini native'
+
+/**
+ * Model checks must use the endpoint family selected on the account.  This
+ * keeps a Responses account from being probed through an unrelated Chat or
+ * native endpoint and makes the JSON/SSE choice an account configuration,
+ * rather than a hard-coded property of the probe suite.
+ */
+export function modelCheckEndpointModesForProfile(
+  profile: ModelCheckProtocolProfile
+): readonly AccountSupportedEndpointMode[] {
+  if (profile.protocol === 'openai_responses') return ['responses_json', 'responses_sse']
+  if (profile.protocol === 'openai_chat') return ['chat_json', 'chat_sse']
+  if (profile.protocol === 'anthropic_messages') return ['messages_json', 'messages_sse']
+  return ['generate_content_json', 'generate_content_sse']
+}
+
+export function modelCheckEndpointModeIsStreaming(mode: AccountHealthCheckEndpointMode): boolean {
+  return mode.endsWith('_sse')
+}
 
 export function normalizeModelCheckModel(value: unknown): string | undefined {
   const text = typeof value === 'string' ? value.trim() : ''

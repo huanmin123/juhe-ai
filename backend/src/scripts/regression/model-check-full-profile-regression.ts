@@ -34,6 +34,7 @@ let upstreamResponseRequestCount = 0
 let tokenIntegrityRequestCount = 0
 let gpt56JuiceRequestCount = 0
 let forceGpt56JuiceMismatch = false
+let observedStreamFlags: boolean[] = []
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
@@ -76,7 +77,8 @@ try {
   assert.equal(quickRun.profile, 'quick', '省略 profile 时必须使用快速检测')
   assert(!quickRun.checks.some((item) => item.itemKey === 'target.gpt56_juice'), 'GPT-5.6 快速检测不得执行 Juice 专项探针')
   assert.equal(gpt56JuiceRequestCount, 0, 'GPT-5.6 快速检测不得向上游发送 Juice 专项请求')
-  assert.equal(upstreamResponseRequestCount, 8, '快速检测应执行基础、流式、结构化、工具、三点 Token 与配对跨模型请求')
+  assert.equal(upstreamResponseRequestCount, 8, '快速检测应只使用账户选定形态执行基础、同形态语义、结构化、工具、三点 Token 与配对跨模型请求')
+  assert(observedStreamFlags.length > 0 && observedStreamFlags.every(Boolean), 'Responses SSE 账户的全部快速探针必须使用流式形态')
   for (const itemKey of ['target.responses_basic', 'target.responses_stream', 'target.structured_output', 'target.tool_calling', 'target.usage_shape', 'target.token_integrity', 'target.cross_model']) {
     assert(quickRun.checks.some((item) => item.itemKey === itemKey), `快速检测必须包含 ${itemKey}`)
   }
@@ -90,8 +92,21 @@ try {
   assert(!quickRun.checks.some((item) => ['behavior_probe', 'long_context', 'stability', 'distribution_similarity'].includes(item.itemType)), '快速检测不得执行行为、长上下文、稳定性或分布探针')
   assert.equal(quickRun.resultSummary.trustedComparison, false)
   assert.notEqual(quickRun.level, 'high_confidence', '快速检测不允许输出高可信结论')
+  repositories.updateAccount(account.id, { healthCheckEndpointMode: 'responses_json' }, { systemAccountId: 'sys_admin', role: 'admin' })
+  observedStreamFlags = []
+  const jsonModeRun = await runModelCheck({
+    targetType: 'account',
+    targetId: account.id,
+    model: 'gpt-5.6-sol'
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  assert.equal(jsonModeRun.requestSummary.healthCheckEndpointMode, 'responses_json', '检测记录必须保存账户选定的 JSON 请求形态')
+  assert(observedStreamFlags.length > 0 && observedStreamFlags.every((stream) => !stream), 'Responses JSON 账户不得被模型检测附带请求 SSE')
+  assert(!jsonModeRun.checks.some((item) => item.itemKey === 'target.responses_stream'), 'JSON 主形态不得出现 SSE 探针项')
+
+  repositories.updateAccount(account.id, { healthCheckEndpointMode: 'responses_sse' }, { systemAccountId: 'sys_admin', role: 'admin' })
   upstreamResponseRequestCount = 0
   tokenIntegrityRequestCount = 0
+  observedStreamFlags = []
   forceGpt56JuiceMismatch = true
 
   const progressItemKeys: string[] = []
@@ -201,11 +216,12 @@ function createMockUpstream(): http.Server {
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         upstreamResponseRequestCount += 1
+        observedStreamFlags.push(body.stream === true)
         if (JSON.stringify(body).includes('Controlled token integrity probe')) tokenIntegrityRequestCount += 1
         if (Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content')) gpt56JuiceRequestCount += 1
         const outputText = outputForProbe(body)
         if (body.stream === true) {
-          sendStream(res, String(body.model ?? 'gpt-5.6-sol'), outputText)
+          sendStream(res, String(body.model ?? 'gpt-5.6-sol'), outputText, Array.isArray(body.tools))
         } else {
           sendJson(res, responsePayload(body, outputText))
         }
@@ -244,7 +260,7 @@ function responsePayload(body: Record<string, unknown>, outputText: string): Rec
   }
 }
 
-function sendStream(res: http.ServerResponse, model: string, outputText: string): void {
+function sendStream(res: http.ServerResponse, model: string, outputText: string, hasTool = false): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
@@ -256,6 +272,14 @@ function sendStream(res: http.ServerResponse, model: string, outputText: string)
     response: {
       status: 'completed',
       model,
+      ...(hasTool ? {
+        output: [{
+          type: 'function_call',
+          call_id: 'call_model_check',
+          name: 'record_model_check',
+          arguments: JSON.stringify({ code: 'ok', count: 1 })
+        }]
+      } : {}),
       usage: {
         input_tokens: 12,
         output_tokens: 4,

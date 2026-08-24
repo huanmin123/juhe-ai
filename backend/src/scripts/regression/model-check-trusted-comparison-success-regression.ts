@@ -105,7 +105,7 @@ try {
   assert.equal(quickDetail.trustedComparison, true)
   assert.equal(quickDetail.trustedComparisonAvailable, true)
   assert.equal(quickDetail.level, 'likely', '快速可信对比通过后仍只能给出初步可信结论')
-  assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic'), '快速检测不应展示可信对比基础连通评分项')
+  assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic' && item.status === 'passed'), '快速检测也应记录可信对比账户按其配置请求形态执行的基础连通项')
   for (const itemKey of [
     'target.responses_stream',
     'target.structured_output',
@@ -178,7 +178,7 @@ function createMockUpstream(basicResponseModel?: () => string | undefined): http
         const requestedModel = String(body.model ?? 'gpt-5.5')
         const responseModel = outputText === 'OK-MODEL-CHECK' ? basicResponseModel?.() ?? requestedModel : requestedModel
         if (body.stream === true) {
-          sendStream(res, responseModel, outputText)
+          sendStream(res, responseModel, outputText, Array.isArray(body.tools))
         } else {
           sendJson(res, responsePayload(body, outputText, responseModel))
         }
@@ -217,7 +217,7 @@ function responsePayload(body: Record<string, unknown>, outputText: string, resp
   }
 }
 
-function sendStream(res: http.ServerResponse, model: string, outputText: string): void {
+function sendStream(res: http.ServerResponse, model: string, outputText: string, hasTool: boolean): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
@@ -229,6 +229,18 @@ function sendStream(res: http.ServerResponse, model: string, outputText: string)
     response: {
       status: 'completed',
       model,
+      output: hasTool
+        ? [{
+            type: 'function_call',
+            call_id: 'call_model_check',
+            name: 'record_model_check',
+            arguments: JSON.stringify({ code: 'ok', count: 1 })
+          }]
+        : [{
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: outputText }]
+          }],
       usage: {
         input_tokens: 12,
         output_tokens: 4,
@@ -241,6 +253,8 @@ function sendStream(res: http.ServerResponse, model: string, outputText: string)
 
 function outputForProbe(body: Record<string, unknown>): string {
   const text = JSON.stringify(body).toUpperCase()
+  const identityOutput = outputForIdentityCanary(body)
+  if (identityOutput) return identityOutput
   if (text.includes('STREAM-OK')) return 'STREAM-OK'
   if (text.includes('QUARTZ')) return 'QUARTZ'
   if (text.includes('BETA')) return '{"sum":83,"code":"BETA"}'
@@ -261,6 +275,44 @@ function outputForProbe(body: Record<string, unknown>): string {
   if (text.includes('北区=17')) return 'IOTA 17 23'
   if (body.text || text.includes('JSON')) return '{"status":"ok","value":7}'
   return 'OK-MODEL-CHECK'
+}
+
+function outputForIdentityCanary(body: Record<string, unknown>): string | undefined {
+  const input = Array.isArray(body.input) ? body.input[0] : undefined
+  const content = input && typeof input === 'object' && !Array.isArray(input)
+    ? (input as Record<string, unknown>).content
+    : undefined
+  const firstContent = Array.isArray(content) && content[0] && typeof content[0] === 'object' && !Array.isArray(content[0])
+    ? content[0] as Record<string, unknown>
+    : undefined
+  const prompt = typeof firstContent?.text === 'string' ? firstContent.text : ''
+  if (!prompt.includes('CANARY-')) return undefined
+  const tag = prompt.match(/tag"?\s*[:=]\s*"?(CANARY-[A-Z0-9-]+)"?/i)?.[1]
+  if (!tag) return undefined
+  if (prompt.includes('result 等于')) {
+    const match = prompt.match(/result 等于\s*(-?\d+)\s*\+\s*(-?\d+)/)
+    return match ? JSON.stringify({ result: Number(match[1]) + Number(match[2]), tag }) : undefined
+  }
+  if (prompt.includes('过滤为大于') && prompt.includes('升序')) {
+    return `[1, 2, 3].filter((value) => value > 1).sort((left, right) => left - right) // ${tag}`
+  }
+  if (prompt.includes('largest 是')) {
+    const match = prompt.match(/largest 是\s*([\d、]+)中第二大值加\s*(-?\d+)/)
+    if (!match) return undefined
+    const values = match[1].split('、').map(Number).sort((left, right) => right - left)
+    return JSON.stringify({ largest: (values[1] ?? 0) + Number(match[2]), tag })
+  }
+  if (prompt.includes('中间结论错误地声称')) {
+    const match = prompt.match(/声称\s*(-?\d+)\+(-?\d+)=/)
+    return match ? JSON.stringify({ correct: Number(match[1]) + Number(match[2]), tag }) : undefined
+  }
+  if (prompt.includes('队列超时') && prompt.includes('queue timeout')) return JSON.stringify({ zh: '队列超时', en: 'queue timeout', tag })
+  if (prompt.includes('action 枚举') && prompt.includes('ids 数组')) {
+    const match = prompt.match(/ids 数组\s*\[([\d,\s]+)\]/)
+    return match ? JSON.stringify({ action: 'inspect', payload: { ids: match[1].split(',').map((value) => Number(value.trim())), dryRun: true }, tag }) : undefined
+  }
+  if (prompt.includes('封闭时间线')) return JSON.stringify({ version: 'B', tag })
+  return undefined
 }
 
 function sendJson(res: http.ServerResponse, body: unknown): void {

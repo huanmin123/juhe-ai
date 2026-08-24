@@ -14,6 +14,7 @@ import {
   modelCheckPopulationKey,
   normalizedUpstreamOrigin
 } from './model-checks-observation-security.js'
+import { isTerminalModelCheckProbeFailure } from './model-checks-probe-retry.js'
 
 export const modelIdentityFeatureVersion = 'identity-features-v2-seven-categories'
 export const modelIdentityProbeVersion = 'generated-canary-v2-seven-categories'
@@ -122,6 +123,7 @@ export async function executeModelIdentityObservationProbes(input: {
   baseUrl: string
   credentialMode: string
   probeSetVersion: string
+  stream?: boolean
   runProbe: (request: ModelCheckProbeRequest, itemKey: string) => Promise<GatewayProbeResult>
 }): Promise<{ item: ModelCheckItemCreateInput; observations: IdentityObservationSeed[] }> {
   const nonce = createTraceId().replace(/[^a-zA-Z0-9]/g, '').slice(-12)
@@ -139,7 +141,7 @@ export async function executeModelIdentityObservationProbes(input: {
     const job = jobs[index] as { definition: GeneratedCanary; model: string }
     const request = createModelCheckProbeRequest('openai_responses', job.model, job.definition.prompt, {
       maxOutputTokens: job.definition.maxOutputTokens,
-      stream: false,
+      stream: input.stream ?? false,
       temperature: 0
     })
     const result = await input.runProbe(request, `target.identity.${job.definition.key}.${job.model}.${index}`)
@@ -197,7 +199,7 @@ export async function executeModelIdentityObservationProbes(input: {
       featureVector: extractStructuredIdentityFeatureVector(job.definition.category, output, result.usage, constraintPassed),
       traceId: result.traceId
     })
-    if ((result.attemptCount ?? 0) >= 2 && result.statusCode !== 200) terminalFailure = result
+    if (isTerminalModelCheckProbeFailure(result)) terminalFailure = result
   }
   const targetProbeCount = definitions.length
   const targetConstraintRate = targetSuccessCount > 0 ? targetPassedCount / targetSuccessCount : 0

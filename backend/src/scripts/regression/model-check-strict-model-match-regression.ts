@@ -115,13 +115,13 @@ try {
     '合法模型映射不应被模型检测误判为返回模型不一致'
   )
   assert(mappedDetail.checks.some((item) => item.itemKey === 'target.responses_basic' && item.status === 'passed'), '基础固定输出成功必须生成评分项')
-  const mappedStream = mappedDetail.checks.find((item) => item.itemKey === 'target.responses_stream')
-  assert(mappedStream, `映射模型检测应生成流式 Responses 检测项：${JSON.stringify(mappedDetail.checks.map((item) => ({ itemKey: item.itemKey, status: item.status })))}`)
-  assert.equal(mappedStream.evidenceSummary.requestModel, mappedRequestModel, '模型检测证据应保留请求模型')
-  assert.equal(mappedStream.evidenceSummary.upstreamModel, mappedUpstreamModel, '模型检测证据应保留实际上游模型')
-  assert.equal(mappedStream.evidenceSummary.expectedModel, mappedUpstreamModel, '映射命中后应按实际上游模型校验返回模型')
-  assert.equal(mappedStream.evidenceSummary.responseModel, mappedRequestModel, '映射命中后应允许上游返回公开请求模型名')
-  assert.equal(mappedStream.evidenceSummary.modelMappingApplied, true, '模型检测证据应明确标记模型映射已命中')
+  const mappedBasic = mappedDetail.checks.find((item) => item.itemKey === 'target.responses_basic')
+  assert(mappedBasic, `映射模型检测应生成账户选定形态的 Responses 基础检测项：${JSON.stringify(mappedDetail.checks.map((item) => ({ itemKey: item.itemKey, status: item.status })))}`)
+  assert.equal(mappedBasic.evidenceSummary.requestModel, mappedRequestModel, '模型检测证据应保留请求模型')
+  assert.equal(mappedBasic.evidenceSummary.upstreamModel, mappedUpstreamModel, '模型检测证据应保留实际上游模型')
+  assert.equal(mappedBasic.evidenceSummary.expectedModel, mappedUpstreamModel, '映射命中后应按实际上游模型校验返回模型')
+  assert.equal(mappedBasic.evidenceSummary.responseModel, mappedRequestModel, '映射命中后应允许上游返回公开请求模型名')
+  assert.equal(mappedBasic.evidenceSummary.modelMappingApplied, true, '模型检测证据应明确标记模型映射已命中')
   const mappedTrustReport = mappedDetail.resultSummary.trustReport as Record<string, unknown> | undefined
   assert.equal(mappedTrustReport?.mappingStatus, 'configured_mapping', '显式模型映射必须展示为已配置映射')
   assert.notEqual(mappedTrustReport?.identityStatus, 'suspected_downgrade', '显式映射不能被身份维度误判为降级')
@@ -157,7 +157,7 @@ function createMockUpstream(): http.Server {
         const outputText = outputForProbe(body)
         const actualResponseModel = responseModelForBody(body)
         if (body.stream === true) {
-          sendStream(res, outputText, actualResponseModel)
+          sendStream(res, outputText, actualResponseModel, Array.isArray(body.tools))
         } else {
           sendJson(res, responsePayload(body, outputText, actualResponseModel))
         }
@@ -196,7 +196,7 @@ function responsePayload(body: Record<string, unknown>, outputText: string, actu
   }
 }
 
-function sendStream(res: http.ServerResponse, outputText: string, actualResponseModel: string): void {
+function sendStream(res: http.ServerResponse, outputText: string, actualResponseModel: string, hasTool = false): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
@@ -208,6 +208,14 @@ function sendStream(res: http.ServerResponse, outputText: string, actualResponse
     response: {
       status: 'completed',
       model: actualResponseModel,
+      ...(hasTool ? {
+        output: [{
+          type: 'function_call',
+          call_id: 'call_model_check',
+          name: 'record_model_check',
+          arguments: JSON.stringify({ code: 'ok', count: 1 })
+        }]
+      } : {}),
       usage: {
         input_tokens: 8,
         output_tokens: 3,

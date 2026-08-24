@@ -26,11 +26,10 @@ import {
   parseModelCheckProbeResponse
 } from './model-checks-response-parsing.js'
 import type { ModelCheckProbeProtocol } from './model-checks.profiles.js'
+import { modelCheckProbeMaxAttempts } from './model-checks-probe-retry.js'
 
-// Model checks use a bounded two-attempt schedule.  The shared diagnostic
-// timeout table still owns the per-attempt values, but only its first two
-// entries are applicable here (10s initial, 20s retry).
-const probeMaxAttempts = 2
+// Model checks use a bounded three-attempt schedule. The shared diagnostic
+// timeout table owns the per-attempt values (10s, 20s, then 30s).
 
 export type ModelCheckGatewayProbeTarget = {
   identity: OpenAIGatewayRequestIdentity
@@ -97,7 +96,7 @@ export async function runGatewayProbe(
     if (attempt > 1) {
       await waitForModelCheckProbeAttemptDelay(attempts[attempts.length - 1], signal)
     }
-    const timeoutMs = accountDiagnosticRetryTimeoutMs[Math.min(attempt - 1, 1)] ?? 20_000
+    const timeoutMs = accountDiagnosticRetryTimeoutMs[Math.min(attempt - 1, accountDiagnosticRetryTimeoutMs.length - 1)] ?? 30_000
     const result = await runGatewayProbeAttempt(target, probe, signal, progress, attempt, maxAttempts, timeoutMs)
     attempts.push(result)
     if (result.success || !isRetryableProbeFailure(result) || attempt >= maxAttempts) {
@@ -344,8 +343,8 @@ function attachProbeRetryEvidence(result: GatewayProbeResult, attempts: GatewayP
 }
 
 function normalizedProbeMaxAttempts(value: number | undefined): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return probeMaxAttempts
-  return Math.max(1, Math.min(probeMaxAttempts, Math.trunc(value)))
+  if (typeof value !== 'number' || !Number.isFinite(value)) return modelCheckProbeMaxAttempts
+  return Math.max(1, Math.min(modelCheckProbeMaxAttempts, Math.trunc(value)))
 }
 
 async function waitForModelCheckProbeAttemptDelay(previous: GatewayProbeResult | undefined, signal?: AbortSignal): Promise<void> {

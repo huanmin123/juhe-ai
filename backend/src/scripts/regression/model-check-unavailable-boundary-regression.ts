@@ -120,7 +120,7 @@ try {
   assert.equal(failedRun.status, 'completed', '上游失败应形成可排查报告')
   assert.equal(failedRun.level, 'unavailable', '纯上游失败不能误判为 suspicious 或 likely')
   assert(!['suspicious', 'likely'].includes(failedRun.level), '上游失败不能落成可疑或较可信结论')
-  assert.equal(failedRun.message, '同一探针第二次 HTTP 非 200，已终止后续探针；未形成质量判定证据', '连续上游 HTTP 失败必须明确说明未形成质量判定证据')
+  assert.equal(failedRun.message, '同一探针达到最大尝试次数后仍为 HTTP 非 200，已终止后续探针；未形成质量判定证据', '连续上游 HTTP 失败必须明确说明未形成质量判定证据')
   assert(failedRun.checks.length > 0, '上游失败报告应保留失败探针用于排查')
   const upstreamDependentChecks = failedRun.checks.filter((item) => item.itemType !== 'usage_shape')
   assert(upstreamDependentChecks.length > 0, '上游失败报告应包含依赖上游响应的探针')

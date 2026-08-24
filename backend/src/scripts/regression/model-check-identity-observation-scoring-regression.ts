@@ -77,13 +77,14 @@ const terminalFailure = await executeModelIdentityObservationProbes({
     bodyTruncated: false,
     headers: {},
     errorMessage: 'upstream unavailable',
-    attemptCount: 2,
-    attemptStatusCodes: [503, 503],
-    attemptTraceIds: [`trace_${itemKey}_1`, `trace_${itemKey}_2`]
+    attemptCount: 3,
+    retryMaxAttempts: 3,
+    attemptStatusCodes: [503, 503, 503],
+    attemptTraceIds: [`trace_${itemKey}_1`, `trace_${itemKey}_2`, `trace_${itemKey}_3`]
   })
 })
 
-assert.equal(terminalFailure.item.status, 'skipped', '第二次 HTTP 非 200 必须保留为未验证')
+assert.equal(terminalFailure.item.status, 'skipped', '第三次 HTTP 非 200 必须保留为未验证')
 assert.equal(terminalFailure.item.maxScore, 0, '网络失败不能进入内容评分分母')
 const terminalEvidence = terminalFailure.item.evidenceSummary as Record<string, unknown>
 assert.equal(terminalEvidence.requestFailure, true)

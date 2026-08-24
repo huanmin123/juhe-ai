@@ -264,13 +264,13 @@ function timeoutProbe(traceId: string): GatewayProbeResult {
     bodyTruncated: false,
     headers: {},
     errorMessage: '模型检测探针超时',
-    attemptCount: 2,
-    retryAttemptCount: 1,
+    attemptCount: 3,
+    retryAttemptCount: 2,
     retryableFailureCount: 2,
-    retryMaxAttempts: 2,
-    attemptTraceIds: [`${traceId}_1`, `${traceId}_2`],
-    attemptStatusCodes: [0, 0],
-    attemptMessages: ['模型检测探针超时', '模型检测探针超时']
+    retryMaxAttempts: 3,
+    attemptTraceIds: [`${traceId}_1`, `${traceId}_2`, `${traceId}_3`],
+    attemptStatusCodes: [0, 0, 0],
+    attemptMessages: ['模型检测探针超时', '模型检测探针超时', '模型检测探针超时']
   }
 }
 

@@ -50,11 +50,12 @@ export function parseModelCheckProbeResponse(input: {
 
 function parseOpenAIResponsesProbeResponse(context: DiagnosticResponseContext): ParsedModelCheckProbeResponse {
   const streamFailureMessage = parseOpenAIStreamFailureMessage(context)
+  const response = context.record ?? firstRecord(context.payloads.map((payload) => recordValue(payload.response)))
   return {
-    json: context.record,
+    json: response,
     outputText: extractOpenAIResponsesOutputText(context),
-    model: textValue(context.record?.model) ?? firstText(context.payloads.map((payload) => recordValue(payload.response)?.model)),
-    usage: recordValue(context.record?.usage) ?? firstRecord(context.payloads.map((payload) => recordValue(payload.response)?.usage)),
+    model: textValue(response?.model) ?? firstText(context.payloads.map((payload) => recordValue(payload.response)?.model)),
+    usage: recordValue(response?.usage) ?? firstRecord(context.payloads.map((payload) => recordValue(payload.response)?.usage)),
     systemFingerprint: textValue(context.record?.system_fingerprint),
     errorMessage: parseUpstreamMessage(context) ?? streamFailureMessage,
     streamFailureMessage

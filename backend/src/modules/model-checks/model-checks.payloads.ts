@@ -63,14 +63,14 @@ export function createModelCheckProbeRequest(
 export function createGpt56JuiceProbeRequest(
   model: string,
   prompt: string,
-  options: { reasoningEffort: 'high'; instructions?: string }
+  options: { reasoningEffort: 'high'; instructions?: string; stream?: boolean }
 ): ModelCheckProbeRequest {
   return {
     path: '/v1/responses',
     responseProtocol: 'openai_responses',
     expectedModel: model,
     body: {
-      ...createResponsesPayload(model, prompt, { maxOutputTokens: 16, stream: false, temperature: 0 }),
+      ...createResponsesPayload(model, prompt, { maxOutputTokens: 16, stream: options.stream ?? false, temperature: 0 }),
       instructions: options.instructions ?? 'You are an isolated GPT-5.6 account diagnostic. Follow the requested output exactly.',
       reasoning: { effort: options.reasoningEffort },
       include: ['reasoning.encrypted_content']
@@ -81,22 +81,28 @@ export function createGpt56JuiceProbeRequest(
 export function createModelCheckDistributionProbeRequest(
   protocol: ModelCheckProbeProtocol,
   model: string,
-  definition: DistributionProbeDefinition
+  definition: DistributionProbeDefinition,
+  options: { stream?: boolean } = {}
 ): ModelCheckProbeRequest {
   return createModelCheckProbeRequest(protocol, model, definition.prompt, {
     maxOutputTokens: definition.maxOutputTokens,
-    stream: false,
+    stream: options.stream ?? false,
     temperature: 0.2
   })
 }
 
-export function createModelCheckStructuredOutputRequest(protocol: ModelCheckProbeProtocol, model: string): ModelCheckProbeRequest {
+export function createModelCheckStructuredOutputRequest(
+  protocol: ModelCheckProbeProtocol,
+  model: string,
+  options: { stream?: boolean } = {}
+): ModelCheckProbeRequest {
+  const stream = options.stream ?? false
   if (protocol === 'openai_responses') {
     return {
       path: '/v1/responses',
       responseProtocol: protocol,
       expectedModel: model,
-      body: createStructuredOutputPayload(model)
+      body: createStructuredOutputPayload(model, stream)
     }
   }
   if (protocol === 'openai_chat') {
@@ -105,7 +111,7 @@ export function createModelCheckStructuredOutputRequest(protocol: ModelCheckProb
       responseProtocol: protocol,
       expectedModel: model,
       body: {
-        ...createChatCompletionsPayload(model, 'Return {"status":"ok","value":7} as JSON.', { maxOutputTokens: 64, stream: false, temperature: 0 }),
+        ...createChatCompletionsPayload(model, 'Return {"status":"ok","value":7} as JSON.', { maxOutputTokens: 64, stream, temperature: 0 }),
         response_format: {
           type: 'json_schema',
           json_schema: {
@@ -124,19 +130,19 @@ export function createModelCheckStructuredOutputRequest(protocol: ModelCheckProb
       expectedModel: model,
       body: createAnthropicMessagesPayload(model, 'Return only this JSON object: {"status":"ok","value":7}', {
         maxOutputTokens: 64,
-        stream: false,
+        stream,
         temperature: 0
       })
     }
   }
   return {
-    path: geminiGenerateContentPath(model, false),
+    path: geminiGenerateContentPath(model, stream),
     responseProtocol: protocol,
     expectedModel: model,
     body: {
       ...createGeminiGenerateContentPayload('Return {"status":"ok","value":7} as JSON.', {
         maxOutputTokens: 64,
-        stream: false,
+        stream,
         temperature: 0
       }),
       generationConfig: {
@@ -156,13 +162,18 @@ export function createModelCheckStructuredOutputRequest(protocol: ModelCheckProb
   }
 }
 
-export function createModelCheckToolCallingRequest(protocol: ModelCheckProbeProtocol, model: string): ModelCheckProbeRequest {
+export function createModelCheckToolCallingRequest(
+  protocol: ModelCheckProbeProtocol,
+  model: string,
+  options: { stream?: boolean } = {}
+): ModelCheckProbeRequest {
+  const stream = options.stream ?? false
   if (protocol === 'openai_responses') {
     return {
       path: '/v1/responses',
       responseProtocol: protocol,
       expectedModel: model,
-      body: createToolCallingPayload(model)
+      body: createToolCallingPayload(model, stream)
     }
   }
   if (protocol === 'openai_chat') {
@@ -173,7 +184,7 @@ export function createModelCheckToolCallingRequest(protocol: ModelCheckProbeProt
       body: {
         ...createChatCompletionsPayload(model, 'Call the provided function with code "ok" and count 1.', {
           maxOutputTokens: 64,
-          stream: false,
+          stream,
           temperature: 0
         }),
         tools: [
@@ -201,7 +212,7 @@ export function createModelCheckToolCallingRequest(protocol: ModelCheckProbeProt
       body: {
         ...createAnthropicMessagesPayload(model, 'Call the provided tool with code "ok" and count 1.', {
           maxOutputTokens: 64,
-          stream: false,
+          stream,
           temperature: 0
         }),
         tools: [
@@ -219,13 +230,13 @@ export function createModelCheckToolCallingRequest(protocol: ModelCheckProbeProt
     }
   }
   return {
-    path: geminiGenerateContentPath(model, false),
+    path: geminiGenerateContentPath(model, stream),
     responseProtocol: protocol,
     expectedModel: model,
     body: {
       ...createGeminiGenerateContentPayload('Call the provided function with code "ok" and count 1.', {
         maxOutputTokens: 64,
-        stream: false,
+        stream,
         temperature: 0
       }),
       tools: [
@@ -259,20 +270,22 @@ export function createModelCheckToolCallingRequest(protocol: ModelCheckProbeProt
 export function createModelCheckLongContextRequest(
   protocol: ModelCheckProbeProtocol,
   model: string,
-  definition: LongContextProbeDefinition
+  definition: LongContextProbeDefinition,
+  options: { stream?: boolean } = {}
 ): ModelCheckProbeRequest {
+  const stream = options.stream ?? false
   if (protocol === 'openai_responses') {
     return {
       path: '/v1/responses',
       responseProtocol: protocol,
       expectedModel: model,
-      body: createLongContextPayload(model, definition)
+      body: createLongContextPayload(model, definition, stream)
     }
   }
   const prompt = buildLongContextPrompt(definition)
   return createModelCheckProbeRequest(protocol, model, prompt, {
     maxOutputTokens: definition.maxOutputTokens,
-    stream: false,
+    stream,
     temperature: 0
   })
 }
@@ -303,9 +316,9 @@ export function createResponsesPayload(
   }
 }
 
-export function createDistributionProbePayload(model: string, definition: DistributionProbeDefinition): Record<string, unknown> {
+export function createDistributionProbePayload(model: string, definition: DistributionProbeDefinition, stream = false): Record<string, unknown> {
   return {
-    ...createResponsesPayload(model, definition.prompt, { maxOutputTokens: definition.maxOutputTokens, stream: false }),
+    ...createResponsesPayload(model, definition.prompt, { maxOutputTokens: definition.maxOutputTokens, stream }),
     temperature: 0.2
   }
 }
@@ -385,9 +398,9 @@ export function createGeminiGenerateContentPayload(
   }
 }
 
-export function createStructuredOutputPayload(model: string): Record<string, unknown> {
+export function createStructuredOutputPayload(model: string, stream = false): Record<string, unknown> {
   return {
-    ...createResponsesPayload(model, 'Return {"status":"ok","value":7} as JSON.', { maxOutputTokens: 64, stream: false }),
+    ...createResponsesPayload(model, 'Return {"status":"ok","value":7} as JSON.', { maxOutputTokens: 64, stream }),
     text: {
       format: {
         type: 'json_schema',
@@ -407,9 +420,9 @@ export function createStructuredOutputPayload(model: string): Record<string, unk
   }
 }
 
-export function createToolCallingPayload(model: string): Record<string, unknown> {
+export function createToolCallingPayload(model: string, stream = false): Record<string, unknown> {
   return {
-    ...createResponsesPayload(model, 'Call the provided function with code "ok" and count 1.', { maxOutputTokens: 64, stream: false }),
+    ...createResponsesPayload(model, 'Call the provided function with code "ok" and count 1.', { maxOutputTokens: 64, stream }),
     tools: [
       {
         type: 'function',
@@ -433,10 +446,10 @@ export function createToolCallingPayload(model: string): Record<string, unknown>
   }
 }
 
-export function createLongContextPayload(model: string, definition: LongContextProbeDefinition): Record<string, unknown> {
+export function createLongContextPayload(model: string, definition: LongContextProbeDefinition, stream = false): Record<string, unknown> {
   return createResponsesPayload(model, buildLongContextPrompt(definition), {
     maxOutputTokens: definition.maxOutputTokens,
-    stream: false
+    stream
   })
 }
 

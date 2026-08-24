@@ -16,6 +16,7 @@ import {
   modelCheckObservationHmac,
   normalizedUpstreamOrigin
 } from './model-checks-observation-security.js'
+import { isTerminalModelCheckProbeFailure } from './model-checks-probe-retry.js'
 
 export type TokenIntegrityObservationSeed = Omit<ModelCheckObservationInput,
   'runId' | 'systemAccountId' | 'accountId' | 'providerCode' | 'providerProtocolProfileId'
@@ -31,6 +32,7 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
   profileMode?: 'quick' | 'full'
   prefix?: 'target' | 'trusted_comparison'
   observationEnabled?: boolean
+  stream?: boolean
   signal?: AbortSignal
   runProbe: (request: ModelCheckProbeRequest, itemKey: string) => Promise<GatewayProbeResult>
 }): Promise<{ item: ModelCheckItemCreateInput; observations: TokenIntegrityObservationSeed[] }> {
@@ -52,7 +54,7 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
       const prompt = preparedPrompt.prompt
       const request = createModelCheckProbeRequest('openai_responses', input.model, prompt, {
         maxOutputTokens: 8,
-        stream: false,
+        stream: input.stream ?? false,
         temperature: 0
       })
       const result = await input.runProbe(request, `${prefix}.token_integrity.r${roundIndex}.p${paddingTokens}`)
@@ -97,7 +99,7 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
         observationStatus: tokenObservationStatus(result, reportedInputTokens),
         traceId: result.traceId
       })
-      if ((result.attemptCount ?? 0) >= 2 && result.statusCode !== 200) {
+      if (isTerminalModelCheckProbeFailure(result)) {
         terminalFailure = true
         break
       }

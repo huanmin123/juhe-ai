@@ -115,12 +115,18 @@ type RequestFailureAggregate = {
   requestSuccessRate: number
 }
 
-export function evaluateBasicResponsesProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
+export function evaluateBasicResponsesProbe(
+  result: GatewayProbeResult,
+  model: string,
+  prefix: ModelCheckProbePrefix,
+  options: { stream?: boolean } = {}
+): ModelCheckItemCreateInput {
+  const transportLabel = options.stream ? '流式' : '非流式'
   return evaluateBasicProtocolProbe(result, model, prefix, {
     itemKey: `${prefix}.responses_basic`,
     itemType: 'responses_basic',
-    successMessage: 'Responses 非流式调用可用',
-    failurePrefix: 'Responses 非流式调用失败'
+    successMessage: `Responses ${transportLabel}调用可用`,
+    failurePrefix: `Responses ${transportLabel}调用失败`
   })
 }
 
