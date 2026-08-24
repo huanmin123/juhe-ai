@@ -65,7 +65,7 @@
 
 - `dev` 使用远端 `192.168.1.203` 的 PostgreSQL 数据库 `juhe_ai_sub2api_dev`、专用登录角色 `juhe_ai_sub2api_dev_app`，以及 cache/state/queue 三个 Redis 实例各自的 DB `9`；统一 namespace 是 `juhe-ai:dev`。真实连接配置在 `dev/env/shared.env`，初始化和加载入口在 `dev/runbooks/`。
 - `F:\juhe-ai-public-welfare\.local` 仅供目录设计参考；当前项目不读取或复用其中的数据库、Redis、连接串或命名空间。
-- `prod` 仅保存当前 Mac 部署与八台仅负责流量入口的 Edge 的私有证据和手册；`database/production-connection.env` 和 `edge-cluster/current-config/` 是用户明确授权保留的真实连接/配置快照。它不能自动执行部署、安装、切流或远端写操作。`sources/temporary-cutover-legacy` 明确标记旧日期/旧端口，仅供人工对齐，不作为现行默认。除这两处快照外，禁止复制 env、logs、releases、backups、shared、temporary 数据或向远端写操作。
+- `prod` 仅保存当前 Mac 部署与八台仅负责流量入口的 Edge 的私有证据和手册；`database/production-connection.env` 和 `edge-cluster/current-config/` 是用户明确授权保留的真实连接/配置快照。生产应用/Kubernetes 变更仍必须走 GitOps；但在当前任务中获得明确授权、并遵守 `.local/project-resources/prod/runbooks/生产数据库维护.md` 时，允许通过本地受控 PostgreSQL 连接执行限定的数据修复、回填和向前兼容的加法式 schema 变更。该例外不包含 Redis、Kubernetes 对象、Secret 或应用代码写入，也不允许复制 Secret、env、logs、releases、backups、shared、temporary 数据。`sources/temporary-cutover-legacy` 明确标记旧日期/旧端口，仅供人工对齐，不作为现行默认。
 - 操作 `.local` 后必须验证 `git check-ignore -v --no-index .local/<探针路径>` 命中忽略规则，并确认 `git ls-files -- .local` 没有输出。
 
 ## 事件导航
