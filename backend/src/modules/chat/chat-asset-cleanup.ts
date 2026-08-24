@@ -6,6 +6,7 @@ import {
 } from '../../storage/chat-assets.repository.js'
 import { deleteChatAssetObjects } from '../../storage/chat-asset-storage.js'
 import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 
 export interface ChatAssetCleanupResult {
   claimedAssets: number
@@ -33,7 +34,7 @@ export async function cleanupExpiredChatAssets(input: {
       deletedAssets += 1
     } catch (error) {
       failedAssets += 1
-      const retryAt = new Date(nowMs + cleanupRetryDelayMs(asset.cleanupAttemptCount)).toISOString()
+      const retryAt = new Date(nowMs + passiveScheduleDelayMs(cleanupRetryDelayMs(asset.cleanupAttemptCount))).toISOString()
       await releaseChatAssetDeletionClaim(input.client, {
         assetId: asset.id,
         claimId: claim.claimId,

@@ -101,6 +101,42 @@ try {
   assert.equal(failure.changed, true, 'PG failure 写回应创建 runtime state')
 
   const initialPool = await getPostgresPool()
+  const explicitResetKey = entries[1]
+  assert(explicitResetKey, 'PG 显式 reset 回归需要第二个 API Key')
+  const explicitResetAt = '2030-01-01T00:00:00.000Z'
+  const explicitResetDispatchAccount: OpenAIAccountSecret = {
+    ...dispatchAccount,
+    apiKey: explicitResetKey.key,
+    selectedApiKeyFingerprint: explicitResetKey.fingerprint,
+    selectedApiKeyIndex: explicitResetKey.index
+  }
+  assert.equal((await recordAccountApiKeyRuntimeFailureAsync({
+    account: explicitResetDispatchAccount,
+    status: 'rate_limited',
+    statusCode: 429,
+    errorCode: 'system_quota_explicit_reset',
+    errorMessage: 'PG 显式 reset 时间字段回归',
+    quotaRecoveryMode: 'explicit_reset',
+    cooldownUntil: explicitResetAt,
+    observedAt: '2026-01-02T00:00:00.000Z'
+  })).changed, true, 'PG 明确 reset_at 必须进入显式恢复模式')
+  const explicitResetResult = await initialPool.query(`
+    SELECT cooldown_until, next_probe_at
+    FROM juhe_business.account_api_key_runtime_states
+    WHERE account_id = $1 AND key_fingerprint = $2
+  `, [account.id, explicitResetKey.fingerprint]) as { rows: Array<{
+    cooldown_until: string | null
+    next_probe_at: string | null
+  }> }
+  const explicitResetRow = explicitResetResult.rows[0]
+  assert(explicitResetRow, 'PG 显式 reset 写回后必须存在 runtime state')
+  assert.equal(explicitResetRow.cooldown_until, explicitResetAt, 'PG 明确 reset_at 必须原样保存为 cooldown_until')
+  assert(explicitResetRow.next_probe_at, 'PG 明确 reset_at 必须保存被动复测时间')
+  assert.ok(
+    Date.parse(explicitResetRow.next_probe_at) > Date.parse(explicitResetAt)
+      && Date.parse(explicitResetRow.next_probe_at) <= Date.parse('2030-01-01T08:00:00.000Z'),
+    'PG 明确 reset_at 的 next_probe_at 必须在截止后错峰，且不超过周级最大 8 小时'
+  )
   const recoveryParentStatusKey = entries[1]
   assert(recoveryParentStatusKey, 'PG 父账户状态回归需要第二个 API Key')
   const recoveryParentStatusDueAt = new Date(Date.now() - 3_000).toISOString()
@@ -338,6 +374,26 @@ try {
     expectedAccountConfigRevision: failureCandidate.accountConfigRevision,
     observedAt: new Date().toISOString()
   })).changed, true, 'PG 同代 transport failure 必须继续退避')
+
+  const fencedGenericState = (await pool.query(`
+    SELECT cooldown_until, next_probe_at
+    FROM juhe_business.account_api_key_runtime_states
+    WHERE account_id = $1 AND key_fingerprint = $2
+  `, [account.id, selected.fingerprint])).rows[0] as { cooldown_until: string | null; next_probe_at: string | null }
+  assert.equal(fencedGenericState.cooldown_until, fencedGenericState.next_probe_at, 'PG fenced generic failure 必须让 cooldown_until 与 next_probe_at 使用同一调度时间')
+
+  assert.equal((await recordAccountApiKeyRuntimeFailureAsync({
+    account: dispatchAccount,
+    status: 'temporary_unavailable',
+    errorCode: 'pg_generic_upsert_failure',
+    observedAt: new Date(Date.now() + 1_000).toISOString()
+  })).changed, true, 'PG 无 fence generic failure 必须继续写入既有 runtime state')
+  const upsertGenericState = (await pool.query(`
+    SELECT cooldown_until, next_probe_at
+    FROM juhe_business.account_api_key_runtime_states
+    WHERE account_id = $1 AND key_fingerprint = $2
+  `, [account.id, selected.fingerprint])).rows[0] as { cooldown_until: string | null; next_probe_at: string | null }
+  assert.equal(upsertGenericState.cooldown_until, upsertGenericState.next_probe_at, 'PG upsert generic failure 必须让 cooldown_until 与 next_probe_at 使用同一调度时间')
 
   const claimRaceDueAt = new Date(Date.now() - 5_000).toISOString()
   await pool.query(`

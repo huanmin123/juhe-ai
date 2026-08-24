@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
 const InputPath = "/__aiinternal__/v1/operation-logs"
@@ -92,7 +94,7 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 	server := &http.Server{Handler: h, ReadHeaderTimeout: inputCfg.RequestTimeout, ReadTimeout: inputCfg.RequestTimeout, WriteTimeout: inputCfg.RequestTimeout, IdleTimeout: 30 * time.Second}
 	result := make(chan error, 1)
 	go func() { result <- server.Serve(listener) }()
-	retention := time.NewTicker(cfg.RetentionInterval)
+	retention := time.NewTimer(schedulejitter.Delay(cfg.RetentionInterval))
 	defer retention.Stop()
 	renew := time.NewTicker(cfg.OwnerLease / 3)
 	defer renew.Stop()
@@ -125,6 +127,7 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 			if err != nil {
 				cancelRetention()
 				logger.Error("F4 operation log retention setting unavailable; skip pass", "error", err)
+				retention.Reset(schedulejitter.Delay(cfg.RetentionInterval))
 				continue
 			}
 			cutoff := time.Now().UTC().AddDate(0, 0, -days)
@@ -138,6 +141,7 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 			} else {
 				logger.Info("F4 operation log retention complete", "mode", cfg.Mode, "retentionDays", days, "cutoff", cutoff.Format(time.RFC3339Nano), "deleted", deleted)
 			}
+			retention.Reset(schedulejitter.Delay(cfg.RetentionInterval))
 		}
 	}
 }

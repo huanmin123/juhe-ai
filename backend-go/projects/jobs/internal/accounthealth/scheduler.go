@@ -14,7 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf16"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
@@ -105,13 +104,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		lease, acquired, err := r.store.AcquireOwnerLease(ctx, r.cfg.InstanceID, r.cfg.OwnerLease)
 		if err != nil {
 			r.setError(err)
-			if err := waitContext(ctx, r.cfg.ScanInterval); err != nil {
+			if err := waitContext(ctx, schedulejitter.Delay(r.cfg.ScanInterval)); err != nil {
 				return err
 			}
 			continue
 		}
 		if !acquired {
-			if err := waitContext(ctx, minDuration(r.cfg.ScanInterval, r.cfg.OwnerLease/3)); err != nil {
+			if err := waitContext(ctx, schedulejitter.Delay(minDuration(r.cfg.ScanInterval, r.cfg.OwnerLease/3))); err != nil {
 				return err
 			}
 			continue
@@ -119,6 +118,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := r.runOwned(ctx, lease); err != nil && !errors.Is(err, context.Canceled) {
 			r.setError(err)
 			r.logger.Warn("account-health owner lease released", "error", err)
+		}
+		if ctx.Err() == nil {
+			if err := waitContext(ctx, schedulejitter.Delay(r.cfg.ScanInterval)); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -137,9 +141,9 @@ func (r *Runner) runOwned(parent context.Context, lease OwnerLease) error {
 	defer cancel(nil)
 	renewEvery := maxDuration(3*time.Second, r.cfg.OwnerLease/3)
 	renewTicker := time.NewTicker(renewEvery)
-	scanTicker := time.NewTicker(r.cfg.ScanInterval)
+	scanTimer := time.NewTimer(schedulejitter.Delay(r.cfg.ScanInterval))
 	defer renewTicker.Stop()
-	defer scanTicker.Stop()
+	defer scanTimer.Stop()
 
 	// Keep ownership renewal independent from the synchronous probe batch. A
 	// batch can legitimately outlive a renewal interval (for example, several
@@ -201,11 +205,12 @@ func (r *Runner) runOwned(parent context.Context, lease OwnerLease) error {
 			if !renewed {
 				return stopCycle(ErrOwnerLeaseLost)
 			}
-		case <-scanTicker.C:
+		case <-scanTimer.C:
 			if !cycleRunning {
 				initialCycle = false
 				startCycle()
 			}
+			scanTimer.Reset(schedulejitter.Delay(r.cfg.ScanInterval))
 		}
 	}
 }
@@ -696,7 +701,7 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_success", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_success_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode}}
 	case OutcomeNeutral, OutcomeTaskFailed:
 		growthStep := cooldownDeferGrowthStep(fence, observed, base)
-		delay := schedulejitter.Delay(stableCooldownDefer(input.AccountID, fence.Generation, growthStep, base, maxDelay))
+		delay := schedulejitter.Delay(cooldownDefer(growthStep, base, maxDelay))
 		next := observed.Add(delay)
 		outcome.NextDueAt = &next
 		outcome.FailureCount = prior.FailureCount
@@ -804,7 +809,7 @@ func cooldownFailureDelay(accountID, generation string, initial time.Duration, f
 		failures = 1
 	}
 	if failures > 5 {
-		return cooldownSlowRetryDelay(accountID, generation, failures)
+		return cooldownSlowRetryDelay()
 	}
 	delay := initial
 	for step := 1; step < failures; step++ {
@@ -813,14 +818,10 @@ func cooldownFailureDelay(accountID, generation string, initial time.Duration, f
 	return delay
 }
 
-func cooldownSlowRetryDelay(accountID, generation string, failures int) time.Duration {
-	value := accountID + ":" + generation + ":" + fmt.Sprintf("%d", failures)
-	hash := uint32(2166136261)
-	for _, unit := range utf16.Encode([]rune(value)) {
-		hash ^= uint32(unit)
-		hash *= 16777619
-	}
-	return time.Duration(60+hash%241) * time.Second
+func cooldownSlowRetryDelay() time.Duration {
+	// Keep the policy base deterministic only; the caller applies the global
+	// passive jitter once per retry so every round gets a fresh offset.
+	return 60 * time.Second
 }
 
 func boundedCooldownRemaining(input Input, expectedStatus string, fence *CooldownFence, observed time.Time) (time.Duration, bool) {
@@ -868,18 +869,6 @@ func invalidInputRequestID(input Input) string {
 	return "account-health-" + hex.EncodeToString(value[:])
 }
 
-func stableJitter(accountID string, maximumMS int64) time.Duration {
-	if maximumMS <= 0 {
-		return 0
-	}
-	if maximumMS > maxScheduleMilliseconds {
-		maximumMS = maxScheduleMilliseconds
-	}
-	value := sha256.Sum256([]byte(accountID))
-	n := uint64(value[0])<<56 | uint64(value[1])<<48 | uint64(value[2])<<40 | uint64(value[3])<<32 | uint64(value[4])<<24 | uint64(value[5])<<16 | uint64(value[6])<<8 | uint64(value[7])
-	return time.Duration(n%(uint64(maximumMS)+1)) * time.Millisecond
-}
-
 func cooldownDeferGrowthStep(fence *CooldownFence, observed time.Time, base time.Duration) int {
 	if fence == nil || fence.ObservationStartedAt.IsZero() || base <= 0 || observed.Before(fence.ObservationStartedAt) {
 		return 0
@@ -887,7 +876,7 @@ func cooldownDeferGrowthStep(fence *CooldownFence, observed time.Time, base time
 	return int(observed.Sub(fence.ObservationStartedAt) / base)
 }
 
-func stableCooldownDefer(accountID, generation string, growthStep int, base, maximum time.Duration) time.Duration {
+func cooldownDefer(growthStep int, base, maximum time.Duration) time.Duration {
 	const minimum = 3 * time.Second
 	if growthStep < 0 {
 		growthStep = 0
@@ -918,20 +907,10 @@ func stableCooldownDefer(accountID, generation string, growthStep int, base, max
 	if delay > maximum {
 		delay = maximum
 	}
-	// Keep every observation stage stable across retries while spreading a
-	// generation by +/-20%, as frozen by W7. The stage derives from elapsed
-	// observation time, not upstream failure count, so neutral/task results do
-	// not mutate the failure recovery sequence.
-	spreadMS := int64(delay/time.Millisecond) * 2 / 5
-	offset := stableJitter(accountID+":"+generation+fmt.Sprintf(":%d", growthStep), spreadMS) - time.Duration(spreadMS/2)*time.Millisecond
-	result := delay + offset
-	if result < minimum {
-		return minimum
-	}
-	if result > maximum {
-		return maximum
-	}
-	return result
+	// The returned value is the unjittered policy delay. The caller applies the
+	// global passive schedule jitter exactly once so every retry gets a fresh
+	// bounded offset instead of stacking a stable account-specific offset.
+	return delay
 }
 
 func durationMS(value int64, fallback time.Duration) time.Duration {

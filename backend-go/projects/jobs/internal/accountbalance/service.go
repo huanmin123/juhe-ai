@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -146,19 +147,20 @@ func (s *Service) Run(ctx context.Context) error {
 	} else {
 		s.ready.Store(true)
 	}
-	ticker := time.NewTicker(s.config.ScanInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(schedulejitter.Delay(s.config.ScanInterval))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 			if err := s.runCycle(ctx); err != nil {
 				s.ready.Store(false)
 				s.logger.Error("J2 余额刷新轮次失败", "error", err)
 			} else {
 				s.ready.Store(true)
 			}
+			timer.Reset(schedulejitter.Delay(s.config.ScanInterval))
 		}
 	}
 }

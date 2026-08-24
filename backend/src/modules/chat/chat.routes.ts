@@ -30,6 +30,7 @@ import { getChatDatabaseClient } from '../../storage/chat-client.js'
 import { ensureChatApiKeyForSystemAccountAsync, findChatApiKeySecretAsync } from '../../storage/repositories.js'
 import { validateGatewayApiKeyAsync } from '../../storage/gateway-api-key.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import { listCachedOpenAIAccountsForGroupAsync, listCachedProviderModelCatalogAsync } from '../gateway/runtime/runtime-cache.service.js'
 import { collectOpenAIChatSse } from './chat-gateway-sse.js'
 import { ChatContextBudgetError, estimateChatInputTokens, validateFixedChatInputBudget } from './chat-context-budget.js'
@@ -557,7 +558,7 @@ chatRouter.delete('/conversations/:conversationId/assets/:assetId', async (req, 
         assetId: claim.asset.id,
         claimId: claim.claimId,
         errorCode: error instanceof Error ? error.name || 'chat_asset_delete_failed' : 'chat_asset_delete_failed',
-        retryAt: new Date(nowMs + 60_000).toISOString(),
+        retryAt: new Date(nowMs + passiveScheduleDelayMs(60_000)).toISOString(),
         now
       }).catch(() => false)
       throw error

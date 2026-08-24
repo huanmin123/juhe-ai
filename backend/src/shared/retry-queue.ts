@@ -5,6 +5,7 @@ import {
   shouldRetryPolicyAttempt,
   type RetryPolicy
 } from './retry-policy.js'
+import { passiveScheduleDelayMs } from './passive-schedule-jitter.js'
 
 export interface RetryQueueRunContext {
   attemptIndex: number
@@ -208,10 +209,11 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
     if (retry && shouldRetryPolicyAttempt(queueItem.attemptIndex, options.policy)) {
       const delayMs = retryDelayMs(options.policy, retryNumber)
       queueItem.attemptIndex += 1
-      queueItem.nextRunAtMs = Date.now() + delayMs
+      const scheduledDelayMs = passiveScheduleDelayMs(delayMs)
+      queueItem.nextRunAtMs = Date.now() + scheduledDelayMs
       options.onRetryScheduled?.({
         ...event,
-        delayMs,
+        delayMs: scheduledDelayMs,
         nextAttemptAtMs: queueItem.nextRunAtMs,
         error
       })

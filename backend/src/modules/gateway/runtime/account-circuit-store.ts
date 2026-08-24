@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
+import { passiveScheduleDelayMs } from '../../../shared/passive-schedule-jitter.js'
 
 export type AccountCircuitPhase = 'CLOSED' | 'SUSPECT' | 'OPEN' | 'HALF_OPEN' | 'RECOVERING'
 
@@ -190,9 +191,12 @@ export const accountCircuitEscalationWindowMsMax = 24 * 60 * 60_000
 export function accountCircuitBackoffDelayMs(attempt: number, jitterSeed?: string): number {
   const index = Math.min(accountCircuitBackoffMs.length - 1, Math.max(0, Math.trunc(attempt) - 1))
   const base = accountCircuitBackoffMs[index]!
-  if (index < 4 || !jitterSeed?.trim()) return base
-  const sample = Number.parseInt(createHash('sha1').update(jitterSeed).digest('hex').slice(0, 8), 16) / 0xffff_ffff
-  return Math.max(1, Math.round(base * (0.8 + sample * 0.4)))
+  if (index < 4) return base
+  // The seed remains part of the API for callers that already provide a
+  // transition identity, but each long passive retry receives a fresh global
+  // offset instead of a stable account-specific phase.
+  void jitterSeed
+  return passiveScheduleDelayMs(base)
 }
 
 export function capacityExhaustedAccountCircuitState(

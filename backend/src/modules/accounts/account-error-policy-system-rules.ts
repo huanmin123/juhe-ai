@@ -49,7 +49,7 @@ const systemRules: readonly EffectiveAccountErrorHandlingRule[] = [
       'credit balance too low',
       'wallet balance exhausted'
     ],
-    description: '仅在 HTTP 403 且明确额度不足时进入限流中；支持该语义的 API Key 供应商 explicit reset 优先，无可靠时间时按账户策略稳定错峰复测；OAuth / Google OAuth 不消费 API Key reset 字段，默认 UTC daily 并支持账户策略调整。'
+    description: '仅在 HTTP 403 且明确额度不足时进入限流中；支持该语义的 API Key 供应商 explicit reset 优先，无可靠时间时按全局被动策略每轮重新偏移复测；OAuth / Google OAuth 不消费 API Key reset 字段，默认 UTC daily 并支持账户策略调整。'
   }
 ]
 

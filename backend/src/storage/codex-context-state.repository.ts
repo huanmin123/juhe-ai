@@ -11,6 +11,7 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { requiredRfc3339Instant } from '../shared/rfc3339.js'
+import { passiveScheduleDelayMs } from '../shared/passive-schedule-jitter.js'
 
 export interface CodexContextStateBoundary {
   systemAccountId: string
@@ -1545,7 +1546,7 @@ function storageCleanupRetryAt(now: string, attemptCount: number): string {
   const maxDelayMs = 6 * 60 * 60 * 1000
   const delayMs = Math.min(maxDelayMs, baseDelayMs * (2 ** Math.min(Math.max(0, attemptCount - 1), 10)))
   const nowMs = new Date(requiredRfc3339Instant(now)).getTime()
-  return new Date(nowMs + delayMs).toISOString()
+  return new Date(nowMs + passiveScheduleDelayMs(delayMs)).toISOString()
 }
 
 function uniqueStorageKeys(storageKeys: string[]): string[] {

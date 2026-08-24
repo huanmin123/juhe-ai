@@ -28,7 +28,7 @@ func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, inpu
 	if !request.Deadline.IsZero() && !request.Deadline.After(now(options)) {
 		return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "request_deadline_elapsed", ErrorMessage: "探活请求已过期"}, nil, now(options)), nil
 	}
-	if input.Type == "oauth" {
+	if input.Type == "oauth" || input.Type == "google_oauth" {
 		if input.OAuthAccess == nil {
 			return newOutcome(input, request, ProbeResult{Outcome: OutcomeTaskFailed, ErrorCode: "oauth_access_missing", ErrorMessage: "OAuth access token 缺失"}, nil, now(options)), nil
 		}

@@ -230,6 +230,11 @@ async function main(): Promise<void> {
       header: () => undefined
     }
     const quotaAuditMetadata: Array<{ label?: string, metadata?: Record<string, unknown> }> = []
+    const quotaInputEpochBefore = Number((databaseModule.getBusinessDatabase().prepare(`
+      SELECT count(*) AS count
+      FROM account_health_jobs_input_outbox
+      WHERE account_id = ?
+    `).get(quotaAccount.id) as { count: number }).count)
     const quotaDispatchResult = await handleFailedUpstreamResponse({
       req: quotaRequest,
       requestLane: 'text',
@@ -270,6 +275,12 @@ async function main(): Promise<void> {
     assert(quotaDispatchResult.action === 'skip_account' && quotaDispatchResult.failureKind === 'explicit_policy', '系统额度规则必须走显式策略切号分支')
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assertAccountStatus(quotaAccount.id, 'rate_limited', true, '系统额度规则必须将账户持久化为限流中且可调度')
+    const quotaInputEpochAfter = Number((databaseModule.getBusinessDatabase().prepare(`
+      SELECT count(*) AS count
+      FROM account_health_jobs_input_outbox
+      WHERE account_id = ?
+    `).get(quotaAccount.id) as { count: number }).count)
+    assert(quotaInputEpochAfter > quotaInputEpochBefore, '运行态冷却必须为账户发布新的 J1 input epoch')
     assert(
       quotaAuditMetadata.some((entry) => entry.label === 'account_error_policy_matched' && entry.metadata?.ruleSource === 'system' && entry.metadata?.ruleId === 'system.upstream_insufficient_quota'),
       '系统额度规则必须写入来源和规则 ID 审计元数据'

@@ -12,11 +12,11 @@ HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实
 
 ## 2. 状态变更授权来源
 
-账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略，或本文件明确的受控系统继承策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。当前唯一系统继承例外是 `system.upstream_insufficient_quota`：仅 HTTP `403` 且命中稳定额度错误码，或结构化错误消息命中高置信余额/额度文本时，才进入额度恢复状态。对支持该语义的 API Key，优先遵守已校验的供应商恢复时间；没有可靠时间时使用账户 `quota_recovery_policy` 的 duration 策略（默认 60 分钟并按账户/Key 稳定错峰 0–15 分钟）。OAuth / Google OAuth 不消费 API Key reset 字段，默认使用 UTC 每日策略，也可在账户策略中选择受限的 duration、daily 或 weekly 模式和 IANA 时区。系统规则仍优先于账户自定义规则。多 Key 只写失败 fingerprint，通用模式连续确认 30 天后该 Key 进入人工恢复的 `error`。裸 `403`、泛化 `quota`、权限或内容策略语义不得命中。该规则不写入 `credentials.error_handling_rules`、`system_settings` 或静态 system registry；`quota_recovery_policy` 仅保存账户可配置的恢复参数，授权实例只读继承有效投影。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
+账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略，或本文件明确的受控系统继承策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。当前唯一系统继承例外是 `system.upstream_insufficient_quota`：仅 HTTP `403` 且命中稳定额度错误码，或结构化错误消息命中高置信余额/额度文本时，才进入额度恢复状态。对支持该语义的 API Key，优先遵守已校验的供应商恢复时间；没有可靠时间时使用账户 `quota_recovery_policy` 的 duration 策略（默认 60 分钟并按全局被动策略每轮重新偏移）。OAuth / Google OAuth 不消费 API Key reset 字段，默认使用 UTC 每日策略，也可在账户策略中选择受限的 duration、daily 或 weekly 模式和 IANA 时区。系统规则仍优先于账户自定义规则。多 Key 只写失败 fingerprint，通用模式连续确认 30 天后该 Key 进入人工恢复的 `error`。裸 `403`、泛化 `quota`、权限或内容策略语义不得命中。该规则不写入 `credentials.error_handling_rules`、`system_settings` 或静态 system registry；`quota_recovery_policy` 仅保存账户可配置的恢复参数，授权实例只读继承有效投影。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
 
 传输电路是独立的、非语义状态机，只能记录连接失败、响应头未到达、读取中断、超时或完整 framing 等可观察传输事实。业务请求的首个传输失败只能形成待确认事实；账户级升级必须使用隔离的独立证据、租约和 CAS / generation，恢复必须由独立后台传输探针确认。传输电路不得维护 HTTP 状态码、错误码、错误类型或正文关键词白名单。
 
-默认电路确认阈值是“首次传输失败 + 2 次独立 confirmation 失败”。同一会话、同一来源或同一 evidence 的并发重放不能自证账户死亡；`SUSPECT` 也不能依赖新的客户端流量才能继续确认，必须进入有界的后台 due 队列，由 single-flight 传输探针提供独立证据。完整 framing、task failure 和 unknown 分别只负责清除传输怀疑、保持中性或延后，不得伪造负向确认。unknown 必须保留当前 `SUSPECT` generation 和确认计数，并使用当前电路退避序列与确定性 jitter 渐进延后；不得把 `retryAt` 重置为当前时间形成忙循环，也不得借 unknown 增加失败次数。
+默认电路确认阈值是“首次传输失败 + 2 次独立 confirmation 失败”。同一会话、同一来源或同一 evidence 的并发重放不能自证账户死亡；`SUSPECT` 也不能依赖新的客户端流量才能继续确认，必须进入有界的后台 due 队列，由 single-flight 传输探针提供独立证据。完整 framing、task failure 和 unknown 分别只负责清除传输怀疑、保持中性或延后，不得伪造负向确认。unknown 必须保留当前 `SUSPECT` generation 和确认计数，并使用当前电路退避序列与全局被动偏移渐进延后；不得把 `retryAt` 重置为当前时间形成忙循环，也不得借 unknown 增加失败次数。
 
 用户配置的路由首字截止和传输 hard timeout 是两类事实。`normalRoutingConfig.firstByteDeadlineMs`、速度优先 cutover、墙钟 handoff 等配置截止只回答“当前请求是否继续等待/换候选”，到期结果对账户电路、Key 运行态、共享质量和恢复副作用保持中性。只有建连失败、真实读取中断，以及 `textFirstResponseTimeoutSeconds` / lane hard lifetime 等传输层 hard timeout 才能作为 transport evidence；即使请求层根据配置截止主动取消了旧 attempt，也不得把该取消反写成 transport failure。
 
@@ -121,7 +121,7 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 - account circuit 的 memory / Redis 容量必须有硬上限并可配置；容量耗尽时不得把未记录的故障伪装成 `CLOSED`。运行态用共享容量哨兵把未知 scope 标为受控阻塞，只有活动 incident 关闭或容量提高后才自动解除。
 - 冷启动全量重建必须同时受单页时限、总时限、最大页数和严格递增复合 cursor 约束。页失败、数据库挂起或容量不足都必须有界返回，并释放 `rebuilding`，允许下一轮重试。
 - 全量重建未完成时，请求只能通过按账户权威查询渐进恢复。该查询必须一次返回并投影当前账户的父 incident、最多 64 个活动/恢复必需子 incident，以及当前 dispatch revision 下仍保留的 `CLOSED` ledger；不能按每条子 scope 再做无界查询。这样既避免先加载的旧 `OPEN` 卡住账户，也避免只重建父级而把子级误当 `CLOSED`。无法确认的账户继续阻塞，但不得连带阻塞已经确认完成的其他账户。
-- 长期 OPEN 的退避上限为 15 分钟基线，并从第 5 档开始按 scope 做确定性 `±20%` jitter；恢复 worker 使用可配置的有界 batch 和并发。Redis due 修复采用多次小 Lua 分页，单次 Lua 不得扫描整个容量。
+- 长期 OPEN 的退避上限为 15 分钟基线，并从第 5 档开始按全局被动策略每轮重新偏移；恢复 worker 使用可配置的有界 batch 和并发。Redis due 修复采用多次小 Lua 分页，单次 Lua 不得扫描整个容量。
 - Redis 的账户 revision 清理必须使用有界 `HSCAN` 分页，不能在账户或 scope 数量增长后退化为 `HGETALL` 全量读取。全量重建暂未完成时，恢复 sweep 和待投影 control-plane 事件仍需继续处理已经加载的 scope，不能互相等待形成全局自锁。
 - 低容量组的 FIFO 排队必须同时受组队列时限、服务器重试预算和请求墙钟约束。只有派发前发现当前分组没有可承接模型、额度和并发候选时，才允许按路由策略选择后续分组；已经发出上游请求后的失败不触发该 fallback。图片默认使用 600 秒首响应、120 秒 idle、3600 秒单次未提交 attempt 和 3600 秒整请求墙钟；单次时限到期即返回当前 timeout。
 - recoverable waiter 的 `global` 容量是单个 Node 进程内的共享上限；多进程部署的聚合容量会按进程数放大。文档、指标和压测不得把它误写成跨进程全局配额，除非以后迁移到共享协调存储。

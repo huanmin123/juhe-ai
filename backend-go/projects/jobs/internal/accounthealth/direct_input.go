@@ -34,11 +34,16 @@ type DirectAccount struct {
 	ConfigRevision                             int64
 	DispatchRevision                           int64
 	Provider                                   string
+	ProtocolProfileID                          string
+	ProtocolCode                               string
+	ProtocolVersion                            string
 	Type                                       string
 	Status                                     string
 	Schedulable                                bool
 	EndpointMode                               string
 	HealthModel                                string
+	MappedUpstreamModel                        string
+	MappedUpstreamEndpointFamily               string
 	CredentialsEncrypted                       string
 	AccountExpiresAt                           *time.Time
 	CooldownUntil                              *time.Time
@@ -50,6 +55,9 @@ type DirectSource struct {
 	ID                   string
 	ConfigRevision       int64
 	Provider             string
+	ProtocolProfileID    string
+	ProtocolCode         string
+	ProtocolVersion      string
 	Type                 string
 	Status               string
 	Schedulable          bool
@@ -105,28 +113,51 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 			return Input{}, err
 		}
 		effective.Provider = d.Source.Provider
+		effective.ProtocolProfileID = d.Source.ProtocolProfileID
+		effective.ProtocolCode = d.Source.ProtocolCode
+		effective.ProtocolVersion = d.Source.ProtocolVersion
 		effective.Type = d.Source.Type
 		effective.CredentialsEncrypted = d.Source.CredentialsEncrypted
 		sourceRevision = int64Pointer(d.Source.ConfigRevision)
 	}
-	if !isDirectOpenAIProvider(effective.Provider) || effective.Type != d.Account.Type {
+	if !isSupportedDirectProfile(effective.ProtocolProfileID, effective.Provider, effective.Type, d.Account.EndpointMode) || effective.Type != d.Account.Type {
 		return Input{}, fmt.Errorf("PG direct input 的有效来源 provider/type 不受 J1 支持")
 	}
+	if err := validateDirectProtocolMetadata(effective.ProtocolProfileID, effective.ProtocolCode, effective.ProtocolVersion); err != nil {
+		return Input{}, err
+	}
+	probeAccount := d.Account
+	probeAccount.Provider = effective.Provider
+	probeAccount.ProtocolProfileID = effective.ProtocolProfileID
+	probeAccount.ProtocolCode = effective.ProtocolCode
+	probeAccount.ProtocolVersion = effective.ProtocolVersion
+	probeAccount.Type = effective.Type
+	probeMode, probeModel, err := directProbeTarget(probeAccount)
+	if err != nil {
+		return Input{}, err
+	}
+	protocol := directProbeProtocolForMode(effective.ProtocolProfileID, effective.Provider, probeMode)
+	if protocol == "" {
+		return Input{}, fmt.Errorf("PG direct input 的有效来源协议 profile 不受 J1 支持")
+	}
 	result := Input{
-		AccountID:        d.Account.ID,
-		InputVersion:     d.InputVersion,
-		ConfigRevision:   d.Account.ConfigRevision,
-		DispatchRevision: d.Account.DispatchRevision,
-		Provider:         "openai",
-		Type:             d.Account.Type,
-		EndpointMode:     d.Account.EndpointMode,
-		HealthModel:      d.Account.HealthModel,
-		IssuedAt:         d.IssuedAt.UTC(),
-		ExpiresAt:        d.ExpiresAt.UTC(),
-		TLSPolicyVersion: d.TLSPolicy,
-		Eligibility:      Eligibility{AccountStatus: d.Account.Status, Schedulable: d.Account.Schedulable, BoundGroup: true, AuthorizationEligible: true, SourceConfigRevision: sourceRevision, CooldownUntil: cloneTime(d.Account.CooldownUntil), TemporaryUnavailableContinuousProbeEnabled: boolPointer(d.Account.TemporaryUnavailableContinuousProbeEnabled)},
-		Cooldown:         d.Account.Cooldown,
-		Schedule:         d.Schedule,
+		AccountID:         d.Account.ID,
+		InputVersion:      d.InputVersion,
+		ConfigRevision:    d.Account.ConfigRevision,
+		DispatchRevision:  d.Account.DispatchRevision,
+		Provider:          protocol,
+		ProtocolProfileID: effective.ProtocolProfileID,
+		ProtocolCode:      effective.ProtocolCode,
+		ProtocolVersion:   effective.ProtocolVersion,
+		Type:              d.Account.Type,
+		EndpointMode:      probeMode,
+		HealthModel:       probeModel,
+		IssuedAt:          d.IssuedAt.UTC(),
+		ExpiresAt:         d.ExpiresAt.UTC(),
+		TLSPolicyVersion:  d.TLSPolicy,
+		Eligibility:       Eligibility{AccountStatus: d.Account.Status, Schedulable: d.Account.Schedulable, BoundGroup: true, AuthorizationEligible: true, SourceConfigRevision: sourceRevision, CooldownUntil: cloneTime(d.Account.CooldownUntil), TemporaryUnavailableContinuousProbeEnabled: boolPointer(d.Account.TemporaryUnavailableContinuousProbeEnabled)},
+		Cooldown:          d.Account.Cooldown,
+		Schedule:          d.Schedule,
 	}
 	if (d.Account.Status == "temporary_unavailable" || d.Account.Status == "rate_limited") && !validCooldownFence(d.Account.Cooldown, result) {
 		return Input{}, fmt.Errorf("PG direct input 的冷却账户缺少完整 fence")
@@ -135,7 +166,16 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 	if err != nil {
 		return Input{}, err
 	}
-	result.BaseURL = directBaseURL(credentials, result.Type)
+	result.BaseURL, err = directBaseURL(credentials, effective, protocol)
+	if err != nil {
+		return Input{}, err
+	}
+	if effective.Type == "google_oauth" {
+		oauthType, _ := directString(credentials, "oauth_type")
+		if (oauthType == "code_assist" || oauthType == "google_one") && (probeMode != "generate_content_json" && probeMode != "generate_content_sse") {
+			return Input{}, fmt.Errorf("J1 Gemini Code Assist / Google One 只支持 GenerateContent 探活")
+		}
+	}
 	if d.Proxy != nil {
 		proxy, err := directProxyEnvelope(secret, *d.Proxy)
 		if err != nil {
@@ -178,21 +218,80 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 	} else if accountID, found := directString(credentials, "chatgpt_user_id"); found {
 		result.OAuthAccountID = accountID
 	}
+	if quotaProject, found := directString(credentials, "quota_project_id"); found {
+		result.OAuthQuotaProjectID = quotaProject
+	}
+	if oauthType, found := directString(credentials, "oauth_type"); found {
+		result.OAuthType = oauthType
+	}
+	if projectID, found := directString(credentials, "project_id"); found {
+		result.OAuthProjectID = projectID
+	}
 	return result, nil
+}
+
+func directProbeTarget(account DirectAccount) (string, string, error) {
+	mode := account.EndpointMode
+	model := account.HealthModel
+	if account.ProtocolProfileID != "profile_hybrid_openai_chat_v1" {
+		return mode, model, nil
+	}
+	if strings.TrimSpace(account.MappedUpstreamModel) == "" || strings.TrimSpace(account.MappedUpstreamEndpointFamily) == "" {
+		return "", "", fmt.Errorf("PG direct input 的 hybrid 账户缺少冻结的模型映射")
+	}
+	stream := mode == "chat_sse" || mode == "responses_sse" || mode == "messages_sse" || mode == "generate_content_sse" || mode == "interactions_sse"
+	var targetMode string
+	switch account.MappedUpstreamEndpointFamily {
+	case "chat_completions":
+		if mode != "chat_json" && mode != "chat_sse" && mode != "responses_json" && mode != "responses_sse" && mode != "messages_json" && mode != "messages_sse" && mode != "generate_content_json" && mode != "generate_content_sse" {
+			return "", "", fmt.Errorf("PG direct input 的 hybrid 映射不支持目标 Chat Completions")
+		}
+		targetMode = "chat_json"
+		if stream {
+			targetMode = "chat_sse"
+		}
+	case "responses":
+		if mode != "chat_json" && mode != "chat_sse" && mode != "responses_json" && mode != "responses_sse" {
+			return "", "", fmt.Errorf("PG direct input 的 hybrid 映射不支持目标 Responses")
+		}
+		targetMode = "responses_json"
+		if stream {
+			targetMode = "responses_sse"
+		}
+	case "messages":
+		if mode != "chat_json" && mode != "chat_sse" && mode != "responses_json" && mode != "responses_sse" && mode != "messages_json" && mode != "messages_sse" && mode != "generate_content_json" && mode != "generate_content_sse" {
+			return "", "", fmt.Errorf("PG direct input 的 hybrid 映射不支持目标 Messages")
+		}
+		targetMode = "messages_json"
+		if stream {
+			targetMode = "messages_sse"
+		}
+	case "generate_content":
+		if mode != "chat_json" && mode != "chat_sse" && mode != "responses_json" && mode != "responses_sse" && mode != "messages_json" && mode != "messages_sse" && mode != "generate_content_json" && mode != "generate_content_sse" {
+			return "", "", fmt.Errorf("PG direct input 的 hybrid 映射不支持目标 GenerateContent")
+		}
+		targetMode = "generate_content_json"
+		if stream {
+			targetMode = "generate_content_sse"
+		}
+	default:
+		return "", "", fmt.Errorf("PG direct input 的 hybrid 映射协议不受 J1 支持")
+	}
+	return targetMode, account.MappedUpstreamModel, nil
 }
 
 func validateDirectAccount(account DirectAccount, now time.Time) error {
 	if strings.TrimSpace(account.ID) == "" || account.ConfigRevision < 1 || account.DispatchRevision < 1 {
 		return fmt.Errorf("PG direct input 的账户或 revision 无效")
 	}
-	if !isDirectOpenAIProvider(account.Provider) || (account.Type != "api_key" && account.Type != "oauth") {
+	if account.Type != "api_key" && account.Type != "oauth" && account.Type != "google_oauth" {
 		return fmt.Errorf("PG direct input 的 provider/type 不受 J1 支持")
 	}
-	if account.EndpointMode != "chat_json" && account.EndpointMode != "responses_json" && account.EndpointMode != "responses_sse" && account.EndpointMode != "images_json" {
+	if !isSupportedDirectProfile(account.ProtocolProfileID, account.Provider, account.Type, account.EndpointMode) {
 		return fmt.Errorf("PG direct input 的 endpoint mode 不受 J1 支持")
 	}
-	if account.Type == "oauth" && account.EndpointMode != "responses_json" {
-		return fmt.Errorf("PG direct input 的 OAuth 仅支持 responses_json")
+	if err := validateDirectProtocolMetadata(account.ProtocolProfileID, account.ProtocolCode, account.ProtocolVersion); err != nil {
+		return err
 	}
 	if account.Status != "active" && account.Status != "pending_test" && account.Status != "temporary_unavailable" && account.Status != "rate_limited" {
 		return fmt.Errorf("PG direct input 的账户状态不可探活")
@@ -212,6 +311,25 @@ func validateDirectAccount(account DirectAccount, now time.Time) error {
 	return nil
 }
 
+func validateDirectProtocolMetadata(profile, code, version string) error {
+	if strings.TrimSpace(profile) == "" {
+		return nil
+	}
+	expectedCode, expectedVersion := "openai", "v1"
+	if strings.Contains(profile, "anthropic") {
+		expectedCode, expectedVersion = "anthropic", "v1"
+	} else if strings.Contains(profile, "gemini") {
+		expectedCode, expectedVersion = "gemini", "v1beta"
+	}
+	if strings.TrimSpace(code) != "" && code != expectedCode {
+		return fmt.Errorf("PG direct input 的 protocol_code 与 profile 不一致")
+	}
+	if strings.TrimSpace(version) != "" && version != expectedVersion {
+		return fmt.Errorf("PG direct input 的 protocol_version 与 profile 不一致")
+	}
+	return nil
+}
+
 func validateDirectAuthorization(input DirectInput, now time.Time) error {
 	if input.Authorization == nil || input.Source == nil {
 		return fmt.Errorf("PG direct input 的授权账户缺少 authorization/source")
@@ -224,7 +342,7 @@ func validateDirectAuthorization(input DirectInput, now time.Time) error {
 	if input.Binding.AuthorizationBindingID != authorization.ID {
 		return fmt.Errorf("PG direct input 的授权 group binding 不匹配")
 	}
-	if strings.TrimSpace(source.ID) == "" || source.ConfigRevision < 1 || !isDirectOpenAIProvider(source.Provider) || source.Type != input.Account.Type || source.Status != "active" || !source.Schedulable || source.LastErrorCode == "account_expired" || strings.TrimSpace(source.CredentialsEncrypted) == "" {
+	if strings.TrimSpace(source.ID) == "" || source.ConfigRevision < 1 || !isSupportedDirectProfile(source.ProtocolProfileID, source.Provider, source.Type, input.Account.EndpointMode) || source.Type != input.Account.Type || source.Status != "active" || !source.Schedulable || source.LastErrorCode == "account_expired" || strings.TrimSpace(source.CredentialsEncrypted) == "" {
 		return fmt.Errorf("PG direct input 的物理来源账户不可用")
 	}
 	if source.AccountExpiresAt != nil && !source.AccountExpiresAt.After(now) {
@@ -238,6 +356,197 @@ func validateDirectAuthorization(input DirectInput, now time.Time) error {
 
 func isDirectOpenAIProvider(value string) bool {
 	return value == "gpt" || value == "openai"
+}
+
+func isSupportedDirectProfile(profile, provider, accountType, mode string) bool {
+	if profile == "" {
+		if !isDirectOpenAIProvider(provider) || (accountType != "api_key" && accountType != "oauth") {
+			return false
+		}
+		if accountType == "oauth" {
+			return mode == "responses_json" || mode == "responses_sse"
+		}
+		return mode == "chat_json" || mode == "chat_sse" || mode == "responses_json" || mode == "responses_sse" || mode == "images_json"
+	}
+	switch profile {
+	case "profile_gpt_openai_v1":
+		if provider != "gpt" {
+			return false
+		}
+		return openAIProfileMode(accountType, mode, true)
+	case "profile_openai_openai_v1":
+		if provider != "openai" || accountType != "api_key" {
+			return false
+		}
+		return openAIChatOrResponseMode(mode, true)
+	case "profile_xai_openai_v1":
+		if provider != "xai" {
+			return false
+		}
+		return openAIProfileMode(accountType, mode, true)
+	case "profile_deepseek_openai_v1":
+		return provider == "deepseek" && accountType == "api_key" && openAIChatOrResponseMode(mode, true)
+	case "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1":
+		return provider == "glm" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
+	case "profile_gemini_openai_chat_v1beta":
+		return provider == "gemini" && accountType == "api_key" && (mode == "chat_json" || mode == "chat_sse")
+	case "profile_hybrid_openai_chat_v1":
+		return provider == "hybrid" && accountType == "api_key" && hybridProfileMode(mode)
+	case "profile_hybrid_anthropic_messages_v1":
+		return provider == "hybrid" && accountType == "api_key" && (mode == "messages_json" || mode == "messages_sse")
+	case "profile_hybrid_gemini_native_v1beta":
+		return provider == "hybrid" && accountType == "api_key" && geminiProfileMode(mode)
+	case "profile_anthropic_anthropic_v1":
+		return provider == "anthropic" && (accountType == "api_key" || accountType == "oauth") && (mode == "messages_json" || mode == "messages_sse")
+	case "profile_deepseek_anthropic_v1":
+		return provider == "deepseek" && accountType == "api_key" && (mode == "messages_json" || mode == "messages_sse")
+	case "profile_glm_coding_anthropic_v1":
+		return provider == "glm" && accountType == "api_key" && (mode == "messages_json" || mode == "messages_sse")
+	case "profile_gemini_native_v1beta":
+		return provider == "gemini" && (accountType == "api_key" || accountType == "google_oauth") && geminiProfileMode(mode)
+	default:
+		return false
+	}
+}
+
+func openAIProfileMode(accountType, mode string, allowImages bool) bool {
+	if accountType != "api_key" && accountType != "oauth" {
+		return false
+	}
+	if accountType == "oauth" {
+		return mode == "responses_json" || mode == "responses_sse"
+	}
+	return openAIChatOrResponseMode(mode, allowImages)
+}
+
+func openAIChatOrResponseMode(mode string, allowImages bool) bool {
+	if mode == "chat_json" || mode == "chat_sse" || mode == "responses_json" || mode == "responses_sse" {
+		return true
+	}
+	return allowImages && mode == "images_json"
+}
+
+func geminiProfileMode(mode string) bool {
+	return mode == "generate_content_json" || mode == "generate_content_sse" || mode == "interactions_json" || mode == "interactions_sse"
+}
+
+func hybridProfileMode(mode string) bool {
+	return openAIChatOrResponseMode(mode, true) || mode == "messages_json" || mode == "messages_sse" || geminiProfileMode(mode)
+}
+
+func directProbeProtocol(profile, provider string) string {
+	return directProbeProtocolForMode(profile, provider, "")
+}
+
+func directProbeProtocolForMode(profile, provider, mode string) string {
+	switch profile {
+	case "profile_anthropic_anthropic_v1", "profile_deepseek_anthropic_v1", "profile_glm_coding_anthropic_v1":
+		return "anthropic"
+	case "profile_gemini_native_v1beta":
+		return "gemini"
+	case "profile_gpt_openai_v1", "profile_openai_openai_v1", "profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_gemini_openai_chat_v1beta":
+		return "openai"
+	case "profile_hybrid_openai_chat_v1":
+		if mode == "messages_json" || mode == "messages_sse" {
+			return "anthropic"
+		}
+		if geminiProfileMode(mode) {
+			return "gemini"
+		}
+		if openAIChatOrResponseMode(mode, true) {
+			return "openai"
+		}
+		return ""
+	case "profile_hybrid_anthropic_messages_v1":
+		return "anthropic"
+	case "profile_hybrid_gemini_native_v1beta":
+		return "gemini"
+	case "":
+		if isDirectOpenAIProvider(provider) {
+			return "openai"
+		}
+	}
+	return ""
+}
+
+func probeProfileProvider(profile, protocol string) string {
+	switch profile {
+	case "profile_gpt_openai_v1":
+		return "gpt"
+	case "profile_openai_openai_v1":
+		return "openai"
+	case "profile_xai_openai_v1":
+		return "xai"
+	case "profile_deepseek_openai_v1", "profile_deepseek_anthropic_v1":
+		return "deepseek"
+	case "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_glm_coding_anthropic_v1":
+		return "glm"
+	case "profile_anthropic_anthropic_v1":
+		return "anthropic"
+	case "profile_gemini_native_v1beta", "profile_gemini_openai_chat_v1beta":
+		return "gemini"
+	case "profile_hybrid_openai_chat_v1", "profile_hybrid_anthropic_messages_v1", "profile_hybrid_gemini_native_v1beta":
+		return "hybrid"
+	default:
+		return protocol
+	}
+}
+
+func directBaseURL(credentials map[string]json.RawMessage, account DirectAccount, protocol string) (string, error) {
+	// GPT OAuth credentials may retain the generic OpenAI API base URL for
+	// compatibility. J1 must use the Codex backend endpoint for this profile.
+	if (account.ProtocolProfileID == "profile_gpt_openai_v1" || (account.ProtocolProfileID == "" && account.Provider == "gpt")) && account.Type == "oauth" {
+		return "https://chatgpt.com/backend-api/codex", nil
+	}
+	if configured, found := directString(credentials, "base_url"); found {
+		return strings.TrimRight(configured, "/"), nil
+	}
+	if account.ProtocolProfileID == "profile_hybrid_openai_chat_v1" {
+		return "", fmt.Errorf("J1 hybrid 协议缺少冻结的 base_url")
+	}
+	switch account.ProtocolProfileID {
+	case "profile_gpt_openai_v1":
+		if account.Type == "oauth" {
+			return "https://chatgpt.com/backend-api/codex", nil
+		}
+	case "profile_xai_openai_v1":
+		if account.Type == "oauth" {
+			return "https://cli-chat-proxy.grok.com/v1", nil
+		}
+		return "https://api.x.ai/v1", nil
+	case "profile_deepseek_openai_v1":
+		return "https://api.deepseek.com", nil
+	case "profile_deepseek_anthropic_v1":
+		return "https://api.deepseek.com/anthropic", nil
+	case "profile_glm_general_openai_v1":
+		return "https://open.bigmodel.cn/api/paas/v4", nil
+	case "profile_glm_coding_openai_v1":
+		return "https://open.bigmodel.cn/api/coding/paas/v4", nil
+	case "profile_glm_coding_anthropic_v1":
+		return "https://open.bigmodel.cn/api/anthropic", nil
+	case "profile_gemini_native_v1beta":
+		oauthType, _ := directString(credentials, "oauth_type")
+		if account.Type == "google_oauth" && (oauthType == "code_assist" || oauthType == "google_one") {
+			return "https://cloudcode-pa.googleapis.com", nil
+		}
+		return "https://generativelanguage.googleapis.com", nil
+	case "profile_gemini_openai_chat_v1beta":
+		return "https://generativelanguage.googleapis.com/v1beta/openai", nil
+	case "profile_anthropic_anthropic_v1":
+		return "https://api.anthropic.com", nil
+	case "profile_hybrid_anthropic_messages_v1":
+		return "https://api.anthropic.com", nil
+	case "profile_hybrid_gemini_native_v1beta":
+		return "https://generativelanguage.googleapis.com", nil
+	}
+	switch protocol {
+	case "anthropic":
+		return "https://api.anthropic.com", nil
+	case "gemini":
+		return "https://generativelanguage.googleapis.com", nil
+	default:
+		return "https://api.openai.com", nil
+	}
 }
 
 func decryptJSONObject(secret, encrypted, label string) (map[string]json.RawMessage, error) {
@@ -309,16 +618,6 @@ func directProxyEnvelope(secret string, proxy DirectProxy) (CredentialEnvelope, 
 		return CredentialEnvelope{}, err
 	}
 	return CredentialEnvelope{Kind: "proxy_url", Ciphertext: ciphertext}, nil
-}
-
-func directBaseURL(credentials map[string]json.RawMessage, accountType string) string {
-	if value, found := directString(credentials, "base_url"); found {
-		return strings.TrimRight(value, "/")
-	}
-	if accountType == "oauth" {
-		return "https://chatgpt.com/backend-api/codex"
-	}
-	return "https://api.openai.com"
 }
 
 func directString(values map[string]json.RawMessage, key string) (string, bool) {

@@ -72,6 +72,31 @@ func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 	}
 }
 
+func TestProbeGPTOAuthResponsesSSEUsesCodexPath(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/responses" {
+			t.Fatalf("GPT OAuth must use Codex responses path, got %s", request.URL.Path)
+		}
+		if request.Header.Get("OpenAI-Beta") != "responses=experimental" {
+			t.Fatalf("missing Codex OpenAI-Beta header: %q", request.Header.Get("OpenAI-Beta"))
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+	}))
+	defer server.Close()
+	input := testInput(server.URL, "responses_sse")
+	input.Type = "oauth"
+	input.ProtocolProfileID = "profile_gpt_openai_v1"
+	input.ProtocolCode = "openai"
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	input.OAuthExpiresAt = &expiresAt
+	result := ProbeOpenAI(context.Background(), input, CredentialEnvelope{Kind: "oauth_access", Ciphertext: testEnvelope(t, secret, `{"access_token":"oauth-token"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess {
+		t.Fatalf("unexpected GPT OAuth result: %#v", result)
+	}
+}
+
 func TestProbeOpenAIResponsesSSERequiresCompletionEvent(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -131,6 +156,73 @@ func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testin
 	result = ProbeOpenAI(context.Background(), testInput(missingResultServer.URL, "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
 	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
 		t.Fatalf("missing image result must be neutral, got %#v", result)
+	}
+}
+
+func TestProbeAnthropicMessagesUsesNativeHeadersAndCompletion(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/messages" || request.Header.Get("x-api-key") != "anthropic-key" || request.Header.Get("anthropic-version") != "2023-06-01" {
+			t.Fatalf("unexpected Anthropic request: path=%s headers=%#v", request.URL.Path, request.Header)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"juhe"}]}`))
+	}))
+	defer server.Close()
+	input := testInput(server.URL, "messages_json")
+	input.Provider = "anthropic"
+	input.ProtocolProfileID = "profile_anthropic_anthropic_v1"
+	input.ProtocolCode = "anthropic"
+	result := ProbeOpenAI(context.Background(), input, CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"anthropic-key"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess {
+		t.Fatalf("unexpected Anthropic result: %#v", result)
+	}
+}
+
+func TestProbeGeminiNativeUsesGoogleOAuthHeadersAndCompletion(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1beta/models/gemini-test:generateContent" || request.Header.Get("Authorization") != "Bearer google-token" || request.Header.Get("x-goog-user-project") != "quota-1" {
+			t.Fatalf("unexpected Gemini request: path=%s headers=%#v", request.URL.Path, request.Header)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"juhe"}]}}]}`))
+	}))
+	defer server.Close()
+	input := testInput(server.URL, "generate_content_json")
+	input.Provider = "gemini"
+	input.ProtocolProfileID = "profile_gemini_native_v1beta"
+	input.ProtocolCode = "gemini"
+	input.ProtocolVersion = "v1beta"
+	input.HealthModel = "gemini-test"
+	input.Type = "google_oauth"
+	input.OAuthQuotaProjectID = "quota-1"
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	input.OAuthExpiresAt = &expiresAt
+	result := ProbeOpenAI(context.Background(), input, CredentialEnvelope{Kind: "oauth_access", Ciphertext: testEnvelope(t, secret, `{"access_token":"google-token"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess {
+		t.Fatalf("unexpected Gemini result: %#v", result)
+	}
+}
+
+func TestProbeGeminiInteractionsSSERequiresCompletedEvent(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1beta/interactions" || request.Header.Get("api-revision") != "2026-05-20" || request.Header.Get("Accept") != "text/event-stream" {
+			t.Fatalf("unexpected Gemini Interactions request: path=%s headers=%#v", request.URL.Path, request.Header)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"type\":\"interaction.delta\",\"text\":\"juhe\"}\n\ndata: {\"type\":\"interaction.completed\",\"status\":\"completed\"}\n\n"))
+	}))
+	defer server.Close()
+	input := testInput(server.URL, "interactions_sse")
+	input.Provider = "gemini"
+	input.ProtocolProfileID = "profile_gemini_native_v1beta"
+	input.ProtocolCode = "gemini"
+	input.ProtocolVersion = "v1beta"
+	result := ProbeOpenAI(context.Background(), input, CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"gemini-key"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess {
+		t.Fatalf("unexpected Gemini Interactions result: %#v", result)
 	}
 }
 

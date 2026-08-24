@@ -15,12 +15,20 @@ import { findAccountSummary, findAccountSummaryAsync } from './account-summary.r
 import { isCoolingAccountStatus, isHardUnavailableAccountStatus, normalizeAccountStatus } from './account-status.js'
 import { completeAccountTestTask, completeAccountTestTaskAsync, type AccountTestTaskRecord } from './account-test-tasks.repository.js'
 import { normalizedDispatchPriority } from './account-write-input.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
+import {
+  reserveAndEnqueueAccountHealthJobsInputInTransaction,
+  reserveAndEnqueueAccountHealthJobsInputInTransactionAsync
+} from './account-health-jobs-input-outbox.repository.js'
+import {
+  enqueueAccountHealthJobsInputsForAuthorizationSourceInTransaction,
+  enqueueAccountHealthJobsInputsForAuthorizationSourceInTransactionAsync
+} from './account-health-jobs-input-authorization-fanout.repository.js'
 import type { AccountFailureRow, AccountRow } from './repository-row-types.js'
 import type { AccountTestResult } from '../domain/types.js'
 import { accountSystemAccountId, canManageResourceOwner } from './resource-authorization-helpers.js'
@@ -45,6 +53,56 @@ function findInternalAccountSummary(accountId: string): AccountSummary | undefin
 
 async function findInternalAccountSummaryAsync(accountId: string): Promise<AccountSummary | undefined> {
   return findAccountSummaryAsync(accountId, internalAccountReadAccess)
+}
+
+function enqueueRuntimeAccountHealthInput(
+  accountId: string,
+  configRevision: number | undefined,
+  dispatchRevision: number | undefined,
+  reason: string,
+  database: ReturnType<typeof getBusinessDatabase>
+): void {
+  const normalizedConfigRevision = Number(configRevision ?? 1)
+  const normalizedDispatchRevision = Number(dispatchRevision ?? 1)
+  if (!Number.isSafeInteger(normalizedConfigRevision) || normalizedConfigRevision < 1 || !Number.isSafeInteger(normalizedDispatchRevision) || normalizedDispatchRevision < 1) {
+    throw new Error('运行态冷却更新缺少有效的 J1 account revision')
+  }
+  reserveAndEnqueueAccountHealthJobsInputInTransaction({
+    accountId,
+    configRevision: normalizedConfigRevision,
+    dispatchRevision: normalizedDispatchRevision,
+    kind: 'snapshot',
+    reason
+  }, database)
+  enqueueAccountHealthJobsInputsForAuthorizationSourceInTransaction({
+    resource_type: 'account',
+    resource_id: accountId
+  }, reason, database)
+}
+
+async function enqueueRuntimeAccountHealthInputAsync(
+  accountId: string,
+  configRevision: number | undefined,
+  dispatchRevision: number | undefined,
+  reason: string,
+  client: DatabaseClient
+): Promise<void> {
+  const normalizedConfigRevision = Number(configRevision ?? 1)
+  const normalizedDispatchRevision = Number(dispatchRevision ?? 1)
+  if (!Number.isSafeInteger(normalizedConfigRevision) || normalizedConfigRevision < 1 || !Number.isSafeInteger(normalizedDispatchRevision) || normalizedDispatchRevision < 1) {
+    throw new Error('运行态冷却更新缺少有效的 J1 account revision')
+  }
+  await reserveAndEnqueueAccountHealthJobsInputInTransactionAsync(client, {
+    accountId,
+    configRevision: normalizedConfigRevision,
+    dispatchRevision: normalizedDispatchRevision,
+    kind: 'snapshot',
+    reason
+  })
+  await enqueueAccountHealthJobsInputsForAuthorizationSourceInTransactionAsync(client, {
+    resource_type: 'account',
+    resource_id: accountId
+  }, reason)
 }
 
 function accountRowForManage(accountId: string, access?: AccessScope): AccountRow | undefined {
@@ -2107,7 +2165,7 @@ function systemQuotaCooldownPrioritySql(failureCode: string | undefined, tableAl
   const prefix = tableAlias ? `${tableAlias}.` : ''
   const futureCooldownSql = tableAlias
     ? `${prefix}cooldown_until::timestamptz > ?::timestamptz`
-    : `${prefix}cooldown_until > ?`
+    : `julianday(${prefix}cooldown_until) > julianday(?)`
   return `
     AND NOT (
       (
@@ -2181,8 +2239,9 @@ export function markAccountCooldown(
 
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
   if (expiredByPackage) {
-    const result = getBusinessDatabase()
-      .prepare(`
+    const database = getBusinessDatabase()
+    const changed = runInDatabaseTransaction(() => {
+      const result = database.prepare(`
         UPDATE accounts
         SET status = 'disabled',
             schedulable = 0,
@@ -2204,8 +2263,7 @@ export function markAccountCooldown(
           ${accountHealthCheckGuardSql(healthCheckGuard)}
           ${accountPrecheckMutationGuardSql(precheckGuard)}
           ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
-      `)
-      .run(
+      `).run(
         '账户套餐已过期，已自动停用',
         nowIso(),
         id,
@@ -2215,7 +2273,11 @@ export function markAccountCooldown(
         ...accountPrecheckMutationGuardParams(precheckGuard),
         ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)
       )
-    if (Number(result.changes ?? 0) <= 0) {
+      if (Number(result.changes ?? 0) <= 0) return false
+      enqueueRuntimeAccountHealthInput(id, current.configRevision, current.dispatchRevision, 'account_runtime_expired', database)
+      return true
+    }, database)
+    if (!changed) {
       return undefined
     }
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
@@ -2242,8 +2304,9 @@ export function markAccountCooldown(
     runtimeFailureGuard?.observedAt ?? cooldownNow
   )
 
-  const result = getBusinessDatabase()
-    .prepare(`
+  const database = getBusinessDatabase()
+  const changed = runInDatabaseTransaction(() => {
+    const result = database.prepare(`
       UPDATE accounts
       SET status = ?,
           schedulable = 1,
@@ -2267,8 +2330,7 @@ export function markAccountCooldown(
         ${accountHealthCheckGuardSql(healthCheckGuard)}
         ${accountPrecheckMutationGuardSql(precheckGuard)}
         ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
-    `)
-    .run(
+    `).run(
       cooldownStatus,
       cooldownUntil,
       failureCode?.trim().slice(0, 120) || null,
@@ -2285,7 +2347,11 @@ export function markAccountCooldown(
       ...accountPrecheckMutationGuardParams(precheckGuard),
       ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)
     )
-  if (Number(result.changes ?? 0) <= 0) {
+    if (Number(result.changes ?? 0) <= 0) return false
+    enqueueRuntimeAccountHealthInput(id, current.configRevision, current.dispatchRevision, 'account_runtime_cooldown', database)
+    return true
+  }, database)
+  if (!changed) {
     return undefined
   }
   refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown' })
@@ -2317,8 +2383,9 @@ export async function markAccountCooldownAsync(
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
   if (expiredByPackage) {
-    const result = await client.execute(`
-      UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+    const changed = await client.transaction(async (tx) => {
+      const result = await tx.execute(`
+      UPDATE ${accountRuntimeMutationTable(tx, 'accounts')}
       SET status = 'disabled',
           schedulable = 0,
           cooldown_until = NULL,
@@ -2339,7 +2406,7 @@ export async function markAccountCooldownAsync(
         ${accountHealthCheckGuardSql(healthCheckGuard)}
         ${accountPrecheckMutationGuardSql(precheckGuard)}
         ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
-    `, [
+      `, [
       '账户套餐已过期，已自动停用',
       nowIso(),
       id,
@@ -2348,8 +2415,12 @@ export async function markAccountCooldownAsync(
       ...accountHealthCheckGuardParams(healthCheckGuard),
       ...accountPrecheckMutationGuardParams(precheckGuard),
       ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)
-    ])
-    if (Number(result.changes ?? 0) <= 0) {
+      ])
+      if (Number(result.changes ?? 0) <= 0) return false
+      await enqueueRuntimeAccountHealthInputAsync(id, current.configRevision, current.dispatchRevision, 'account_runtime_expired', tx)
+      return true
+    })
+    if (!changed) {
       return undefined
     }
     await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_expired' }, client)
@@ -2381,8 +2452,9 @@ export async function markAccountCooldownAsync(
     runtimeFailureGuard?.observedAt ?? cooldownNow
   )
 
-  const result = await client.execute(`
-    UPDATE ${accountRuntimeMutationTable(client, 'accounts')} AS accounts
+  const changed = await client.transaction(async (tx) => {
+    const result = await tx.execute(`
+    UPDATE ${accountRuntimeMutationTable(tx, 'accounts')} AS accounts
     SET status = ?,
         schedulable = 1,
         cooldown_until = ?,
@@ -2405,7 +2477,7 @@ export async function markAccountCooldownAsync(
       ${accountHealthCheckGuardSql(healthCheckGuard)}
       ${accountPrecheckMutationGuardSql(precheckGuard)}
       ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
-  `, [
+    `, [
     cooldownStatus,
     cooldownUntil,
     failureCode?.trim().slice(0, 120) || null,
@@ -2421,8 +2493,12 @@ export async function markAccountCooldownAsync(
     ...accountHealthCheckGuardParams(healthCheckGuard),
     ...accountPrecheckMutationGuardParams(precheckGuard),
     ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)
-  ])
-  if (Number(result.changes ?? 0) <= 0) {
+    ])
+    if (Number(result.changes ?? 0) <= 0) return false
+    await enqueueRuntimeAccountHealthInputAsync(id, current.configRevision, current.dispatchRevision, 'account_runtime_cooldown', tx)
+    return true
+  })
+  if (!changed) {
     return undefined
   }
   await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_cooldown' }, client)

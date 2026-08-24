@@ -185,6 +185,18 @@ try {
     assert.equal(accountRow(lockExpiredAccount.id)?.status, 'disabled', '锁库期间过期账户仍应被业务库清理为停用')
     assert.deepEqual(dirtyRows(), [{ group_id: '__all__', reason: 'account_expired' }], '锁库期间分组统计脏标记应落在业务库队列')
   })
+  const expiryInputEvent = databaseModule.getBusinessDatabase()
+    .prepare(`
+      SELECT event_kind, reason
+      FROM account_health_jobs_input_outbox
+      WHERE account_id = ?
+      ORDER BY input_version DESC
+      LIMIT 1
+    `)
+    .get(lockExpiredAccount.id) as unknown as { event_kind?: string; reason?: string } | undefined
+  assert.equal(expiryInputEvent?.event_kind, 'tombstone', '过期账户状态写入必须在同一业务事务保留 J1 tombstone intent')
+  assert.equal(expiryInputEvent?.reason, 'account_runtime_expired', '过期账户 tombstone intent 必须保留运行态过期原因')
+  assert.equal(accountRuntimeStatus.disableExpiredAccounts(undefined, 20), 0, '已标记 account_expired 的账户不得在下一轮重复入选')
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '统计锁释放后 worker 应消费业务库脏标记并刷新统计缓存')
   assert.deepEqual(dirtyRows(), [], '业务库脏标记刷新完成后应被清空')
 

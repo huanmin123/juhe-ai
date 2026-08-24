@@ -39,8 +39,8 @@
 - 该字段为 `false` 且状态为 `temporary_unavailable` 时，观察窗口固定为 10 分钟，下一次退避不得越过截止点；截止后必须执行一次真实最终探针，`complete_success` 可按来源恢复，只有独立 `transport_incomplete` 才写入 `cooldown_retest_limited_probe_timeout` 并转为 `error`。完整 framing 中性结果、worker 停止或任务未形成真实上游尝试时不能只按墙钟判异常。
 - 已处于 `temporary_unavailable` 时真实 `true -> false` 保存会从保存时间重开 10 分钟窗口并清理本轮复测计数；重复保存 `false` 不续期。`rate_limited` 始终沿用原恢复规则。
 
-- 只有独立 `transport_incomplete`（自动探针归类为 `upstream_failure`）才推进冷却恢复失败计数：第 1 至 5 次严格按 `3`、`6`、`12`、`24`、`48` 秒进入快速通道；第 6 次起进入慢速通道。慢速每轮以账户 ID、冷却 generation 和失败次数的确定性散列映射到闭区间 `1` 至 `5` 分钟，账户之间错峰，进程重启后不漂移，也不受 `maxPauseMinutes` 截断。
-- `framing_complete_neutral`、`probe_task_failure` 和其他已执行但无法归因的 `unknown` 都不增加持久失败计数、不推进长期或终态；它们同样以账户 ID、generation 和当前 `cooldown_until` 在 `1` 至 `5` 分钟内错峰顺延。顺延后的截止时间会参与下一轮散列，避免同一批账户反复同时探测。`stale` 队列项由投递和写回围栏直接丢弃，不安排新的复测。
+- 只有独立 `transport_incomplete`（自动探针归类为 `upstream_failure`）才推进冷却恢复失败计数：第 1 至 5 次按 `3`、`6`、`12`、`24`、`48` 秒策略基线进入快速通道；第 6 次起进入慢速通道。慢速每轮按全局被动策略重新偏移到 `1` 至 `5` 分钟策略窗口，不受 `maxPauseMinutes` 截断。
+- `framing_complete_neutral`、`probe_task_failure` 和其他已执行但无法归因的 `unknown` 都不增加持久失败计数、不推进长期或终态；它们同样按全局被动策略在 `1` 至 `5` 分钟策略窗口内重新偏移顺延。`stale` 队列项由投递和写回围栏直接丢弃，不安排新的复测。
 - 默认从 `cooldown_retest_observation_started_at` 连续累计真实 `upstream_failure` 满 `12` 小时后的下一次真实失败进入长期不可用阶段；长期阶段固定每 `1` 小时复检一次，不使用更长的配置间隔。
 - 只有独立 `transport_incomplete` 才启动并推进观察窗口；从观察起点满 7 天后的下一次独立 `transport_incomplete`，repository 原子写入 `status = error`、`schedulable = false`、清空 `cooldown_until`，并写入 `last_error_code = cooldown_retest_observation_timeout`。`framing_complete_neutral` 只顺延，`probe_task_failure` / `stale` / `unknown` 不计数。
 - 终态错误信息必须包含观察起点、持续 7 天和最后一次本地 transport 错误，便于运维定位；不得用上游业务 status/body 充当终态依据。

@@ -1,3 +1,5 @@
+import { passiveScheduleDelayMs } from './passive-schedule-jitter.js'
+
 export type RetryDelayStrategy = 'fixed' | 'exponential' | 'sequence'
 
 export interface RetryPolicy {
@@ -62,7 +64,7 @@ export function retryDelayMs(policy: RetryPolicy, retryNumber = 1): number {
 }
 
 export function retryDueAtMs(policy: RetryPolicy, retryNumber = 1, nowMs = Date.now()): number {
-  return nowMs + retryDelayMs(policy, retryNumber)
+  return nowMs + passiveScheduleDelayMs(retryDelayMs(policy, retryNumber))
 }
 
 export function retryAttemptCount(policy: RetryPolicy): number {

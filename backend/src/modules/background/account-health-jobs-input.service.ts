@@ -1,12 +1,16 @@
 import type { AccountSummary } from '../../domain/types.js'
-import { isJ1AccountHealthEndpointModeEligible, isJ1OpenAIProviderCode } from '../../storage/account-health-jobs-input.repository.js'
+import { resolveJ1AccountHealthProbeProtocol } from '../../storage/account-health-jobs-input.repository.js'
+import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1/model-mapping.js'
 import { encryptJson } from '../../storage/crypto.js'
 import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
 import { parseRfc3339Instant, requiredRfc3339Instant } from '../../shared/rfc3339.js'
 
 import { publishAccountHealthJobsInput, publishAccountHealthJobsRequest } from './account-health-jobs-input.protocol.js'
 
-type FrozenEndpointMode = 'chat_json' | 'responses_json' | 'responses_sse' | 'images_json'
+type FrozenEndpointMode =
+  | 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse' | 'images_json'
+  | 'messages_json' | 'messages_sse'
+  | 'generate_content_json' | 'generate_content_sse' | 'interactions_json' | 'interactions_sse'
 
 export interface AccountHealthJobsInputSettings {
   intervalHours: number
@@ -108,14 +112,12 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
   const configRevision = positiveInteger(account.configRevision, 'account configRevision')
   const dispatchRevision = positiveInteger(source.dispatchRevision, 'account dispatchRevision')
   const inputVersion = positiveInteger(source.inputVersion, 'account inputVersion')
-  if (!isJ1OpenAIProviderCode(account.providerCode)) throw new Error(`J1 未冻结的 provider：${account.providerCode}`)
-  if (account.type !== 'api_key' && account.type !== 'oauth') throw new Error(`J1 未冻结的账户类型：${account.type}`)
-  if (!isJ1AccountHealthEndpointModeEligible(account.type, account.healthCheckEndpointMode)) {
-    throw new Error(`J1 账户类型 ${account.type} 不支持探活 endpoint mode：${account.healthCheckEndpointMode}`)
-  }
+  const resolvedProtocol = resolveJ1AccountHealthProbeProtocol(account)
+  if (!resolvedProtocol) throw new Error(`J1 未冻结的协议 profile/type/endpoint mode：${account.providerProtocolProfileId ?? account.providerCode}/${account.type}/${account.healthCheckEndpointMode}`)
   const endpointMode = frozenEndpointMode(account.healthCheckEndpointMode)
   const healthModel = account.healthCheckModel.trim()
   if (!healthModel) throw new Error('J1 healthCheckModel 缺失')
+  const probeTarget = resolveJ1ProbeTarget(account, resolvedProtocol, endpointMode, healthModel)
 
   const sourceConfigRevision = account.accessType === 'authorized'
     ? positiveInteger(account.sourceConfigRevision, 'authorized sourceConfigRevision')
@@ -151,11 +153,14 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
     input_version: inputVersion,
     config_revision: configRevision,
     dispatch_revision: dispatchRevision,
-    provider: 'openai',
+    provider: probeTarget.protocol,
+    ...(account.providerProtocolProfileId ? { provider_protocol_profile_id: account.providerProtocolProfileId } : {}),
+    ...(account.protocolCode ? { protocol_code: account.protocolCode } : {}),
+    ...(account.protocolVersion ? { protocol_version: account.protocolVersion } : {}),
     type: account.type,
-    endpoint_mode: endpointMode,
-    health_model: healthModel,
-    base_url: accountBaseUrl(account),
+    endpoint_mode: probeTarget.endpointMode,
+    health_model: probeTarget.model,
+    base_url: accountBaseUrl(account, probeTarget.protocol),
     issued_at: now.toISOString(),
     expires_at: source.expiresAt.toISOString(),
     tls_policy_version: 'j1-direct-upstream-v1',
@@ -190,6 +195,12 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
     payload.oauth_expires_at = expiresAt.toISOString()
     const oauthAccountId = optionalString(account.credentials.account_id) ?? optionalString(account.credentials.chatgpt_user_id)
     if (oauthAccountId) payload.oauth_account_id = oauthAccountId
+    const quotaProjectId = optionalString(account.credentials.quota_project_id)
+    if (quotaProjectId) payload.oauth_quota_project_id = quotaProjectId
+    const oauthType = optionalString(account.credentials.oauth_type)
+    if (oauthType) payload.oauth_type = oauthType
+    const projectId = optionalString(account.credentials.project_id)
+    if (projectId) payload.oauth_project_id = projectId
   }
   return publishAccountHealthJobsInput({
     root: source.root,
@@ -197,6 +208,53 @@ export function publishAccountHealthJobsInputFromAccount(source: AccountHealthJo
     payload,
     signingKey: source.signingKey
   })
+}
+
+function resolveJ1ProbeTarget(
+  account: AccountSummary,
+  protocol: 'openai' | 'anthropic' | 'gemini',
+  sourceMode: FrozenEndpointMode,
+  sourceModel: string
+): { protocol: 'openai' | 'anthropic' | 'gemini'; endpointMode: FrozenEndpointMode; model: string } {
+  if (account.providerProtocolProfileId !== 'profile_hybrid_openai_chat_v1') {
+    return { protocol, endpointMode: sourceMode, model: sourceModel }
+  }
+  const sourceFamily = sourceEndpointFamilyForJ1Mode(sourceMode)
+  if (!sourceFamily) throw new Error(`J1 hybrid 账户的健康检查模式无法解析为模型映射源协议：${sourceMode}`)
+  const mapping = resolveOpenAIAccountModelMapping(account, sourceModel, sourceFamily)
+  if (!mapping) throw new Error(`J1 hybrid 账户缺少 ${sourceModel}/${sourceFamily} 的冻结模型映射`)
+  const targetProtocol = protocolForJ1EndpointFamily(mapping.upstreamEndpointFamily)
+  if (!targetProtocol) throw new Error(`J1 hybrid 账户的目标协议不受支持：${mapping.upstreamEndpointFamily}`)
+  return {
+    protocol: targetProtocol,
+    endpointMode: endpointModeForJ1TargetFamily(mapping.upstreamEndpointFamily, sourceMode),
+    model: mapping.upstreamModel
+  }
+}
+
+function sourceEndpointFamilyForJ1Mode(mode: FrozenEndpointMode): 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content' | undefined {
+  if (mode === 'chat_json' || mode === 'chat_sse') return 'chat_completions'
+  if (mode === 'responses_json' || mode === 'responses_sse') return 'responses'
+  if (mode === 'messages_json' || mode === 'messages_sse') return 'messages'
+  if (mode === 'generate_content_json') return 'generate_content'
+  if (mode === 'generate_content_sse') return 'stream_generate_content'
+  return undefined
+}
+
+function protocolForJ1EndpointFamily(family: string): 'openai' | 'anthropic' | 'gemini' | undefined {
+  if (family === 'chat_completions' || family === 'responses') return 'openai'
+  if (family === 'messages') return 'anthropic'
+  if (family === 'generate_content') return 'gemini'
+  return undefined
+}
+
+function endpointModeForJ1TargetFamily(family: string, sourceMode: FrozenEndpointMode): FrozenEndpointMode {
+  const stream = sourceMode === 'chat_sse' || sourceMode === 'responses_sse' || sourceMode === 'messages_sse' || sourceMode === 'generate_content_sse' || sourceMode === 'interactions_sse'
+  if (family === 'chat_completions') return stream ? 'chat_sse' : 'chat_json'
+  if (family === 'responses') return stream ? 'responses_sse' : 'responses_json'
+  if (family === 'messages') return stream ? 'messages_sse' : 'messages_json'
+  if (family === 'generate_content') return stream ? 'generate_content_sse' : 'generate_content_json'
+  throw new Error(`J1 hybrid 账户目标 endpoint family 不受支持：${family}`)
 }
 
 // A tombstone replaces, rather than deletes, the previous input. Deletion can
@@ -229,14 +287,61 @@ export function publishAccountHealthJobsInputTombstone(input: AccountHealthJobsI
 }
 
 function frozenEndpointMode(value: string): FrozenEndpointMode {
-  if (value === 'chat_json' || value === 'responses_json' || value === 'responses_sse' || value === 'images_json') return value
+  if (
+    value === 'chat_json' || value === 'chat_sse' || value === 'responses_json' || value === 'responses_sse' || value === 'images_json'
+    || value === 'messages_json' || value === 'messages_sse'
+    || value === 'generate_content_json' || value === 'generate_content_sse' || value === 'interactions_json' || value === 'interactions_sse'
+  ) return value
   throw new Error(`J1 未冻结的探活 endpoint mode：${value}`)
 }
 
-function accountBaseUrl(account: AccountSummary): string {
+function accountBaseUrl(account: AccountSummary, protocol: 'openai' | 'anthropic' | 'gemini'): string {
+  // GPT OAuth is a Codex credential, not an OpenAI API-key credential. The
+  // OAuth writer historically stores api.openai.com/v1 as a compatibility
+  // field, but J1 must always use the Codex backend endpoint for this profile.
+  if ((account.providerProtocolProfileId === 'profile_gpt_openai_v1' || (!account.providerProtocolProfileId && account.providerCode === 'gpt')) && account.type === 'oauth') {
+    return 'https://chatgpt.com/backend-api/codex'
+  }
   const configured = optionalString(account.credentials.base_url)
   if (configured) return configured.replace(/\/+$/u, '')
-  return account.type === 'oauth' ? 'https://chatgpt.com/backend-api/codex' : 'https://api.openai.com'
+  if (account.providerProtocolProfileId === 'profile_hybrid_openai_chat_v1') {
+    throw new Error('J1 hybrid 账户缺少冻结的 base_url')
+  }
+  switch (account.providerProtocolProfileId) {
+    case 'profile_gpt_openai_v1':
+      return account.type === 'oauth' ? 'https://chatgpt.com/backend-api/codex' : 'https://api.openai.com'
+    case 'profile_xai_openai_v1':
+      return account.type === 'oauth' ? 'https://cli-chat-proxy.grok.com/v1' : 'https://api.x.ai/v1'
+    case 'profile_deepseek_openai_v1':
+      return 'https://api.deepseek.com'
+    case 'profile_glm_general_openai_v1':
+      return 'https://open.bigmodel.cn/api/paas/v4'
+    case 'profile_glm_coding_openai_v1':
+      return 'https://open.bigmodel.cn/api/coding/paas/v4'
+    case 'profile_glm_coding_anthropic_v1':
+      return 'https://open.bigmodel.cn/api/anthropic'
+    case 'profile_deepseek_anthropic_v1':
+      return 'https://api.deepseek.com/anthropic'
+    case 'profile_anthropic_anthropic_v1':
+    case 'profile_hybrid_anthropic_messages_v1':
+      return 'https://api.anthropic.com'
+    case 'profile_gemini_native_v1beta':
+      return account.type === 'google_oauth' && (account.credentials.oauth_type === 'code_assist' || account.credentials.oauth_type === 'google_one')
+        ? 'https://cloudcode-pa.googleapis.com'
+        : 'https://generativelanguage.googleapis.com'
+    case 'profile_gemini_openai_chat_v1beta':
+      return 'https://generativelanguage.googleapis.com/v1beta/openai'
+    case 'profile_hybrid_gemini_native_v1beta':
+      return 'https://generativelanguage.googleapis.com'
+    default:
+      return protocol === 'anthropic'
+        ? 'https://api.anthropic.com'
+        : protocol === 'gemini'
+          ? 'https://generativelanguage.googleapis.com'
+          : account.type === 'oauth'
+            ? 'https://chatgpt.com/backend-api/codex'
+            : 'https://api.openai.com'
+  }
 }
 
 function normalizedSchedule(settings: AccountHealthJobsInputSettings): Record<string, number> {

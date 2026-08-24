@@ -392,11 +392,8 @@ func TestScheduleMillisecondsAreBoundedWithoutDurationOverflow(t *testing.T) {
 	if got := durationMS(1<<63-1, time.Second); got != maxScheduleDuration {
 		t.Fatalf("durationMS overflow guard=%s, want %s", got, maxScheduleDuration)
 	}
-	if got := stableJitter("bounded", 1<<63-1); got < 0 || got > maxScheduleDuration {
-		t.Fatalf("stableJitter must remain in the bounded duration range: %s", got)
-	}
-	if got := stableCooldownDefer("bounded", "bounded-generation", 1000, maxScheduleDuration, maxScheduleDuration); got < 0 || got > maxScheduleDuration {
-		t.Fatalf("stable cooldown defer overflowed: %s", got)
+	if got := cooldownDefer(1000, maxScheduleDuration, maxScheduleDuration); got < 0 || got > maxScheduleDuration {
+		t.Fatalf("cooldown defer overflowed: %s", got)
 	}
 }
 
@@ -725,7 +722,7 @@ func TestCooldownNeutralDeferUsesObservationGenerationWindow(t *testing.T) {
 	if later.NextDueAt == nil || later.NextDueAt.Sub(later.ObservedAt) <= 0 {
 		t.Fatalf("next observation window must retain a positive neutral defer: first=%s later=%#v", firstDelay, later)
 	}
-	if capped := stableCooldownDefer(input.AccountID, fence.Generation, 100, 30*time.Second, 15*time.Minute); capped > 15*time.Minute || capped < 3*time.Second {
+	if capped := cooldownDefer(100, 30*time.Second, 15*time.Minute); capped > 15*time.Minute || capped < 3*time.Second {
 		t.Fatalf("neutral defer must remain within [3s,15m]: %s", capped)
 	}
 }

@@ -14,6 +14,7 @@ import {
 } from '../../domain/provider-protocol.js'
 import { genericApiKeyQuotaCooldownUntil } from '../../modules/gateway/policy/api-key-quota-recovery.js'
 import { quotaRecoveryCooldownUntil } from '../../modules/accounts/quota-recovery-policy.js'
+import { passiveScheduleJitterWindowMs } from '../../shared/passive-schedule-jitter.js'
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
@@ -43,9 +44,12 @@ const stableGenericSecond = genericApiKeyQuotaCooldownUntil({
   now: stableGenericNow,
   seed: 'quota-regression:account-a:key-a:g1'
 })
-assert.equal(stableGenericFirst, stableGenericSecond, '同一账户、Key 和恢复代次必须复用稳定错峰')
-assert(Date.parse(stableGenericFirst) - stableGenericNow.getTime() >= 60 * 60_000, '通用额度恢复不得早于 1 小时')
-assert(Date.parse(stableGenericFirst) - stableGenericNow.getTime() <= 75 * 60_000, '通用额度恢复错峰不得超过 15 分钟')
+const genericBaselineMs = 60 * 60_000
+const genericWindowMs = passiveScheduleJitterWindowMs(genericBaselineMs)
+for (const value of [stableGenericFirst, stableGenericSecond]) {
+  const delayMs = Date.parse(value) - stableGenericNow.getTime()
+  assert(delayMs >= genericBaselineMs && delayMs <= genericBaselineMs + genericWindowMs && delayMs !== genericBaselineMs, '通用额度恢复必须在硬边界之后使用全局偏移')
+}
 const configuredDuration = quotaRecoveryCooldownUntil({
   accountType: 'api_key',
   seed: 'quota-regression:configured',
@@ -53,7 +57,7 @@ const configuredDuration = quotaRecoveryCooldownUntil({
   policy: { api_key: { reset_strategy: 'duration', duration_minutes: 90, timezone: 'UTC' } }
 })
 assert(Date.parse(configuredDuration) - stableGenericNow.getTime() >= 90 * 60_000, '账户级 API Key 恢复间隔配置必须生效')
-assert(Date.parse(configuredDuration) - stableGenericNow.getTime() <= 105 * 60_000, '账户级 API Key 恢复间隔仍必须受系统错峰上限约束')
+assert(Date.parse(configuredDuration) - stableGenericNow.getTime() <= 120 * 60_000, '账户级 API Key 恢复间隔仍必须受系统错峰上限约束')
 const configuredOAuthDaily = quotaRecoveryCooldownUntil({
   accountType: 'oauth',
   seed: 'quota-regression:oauth',
@@ -61,7 +65,7 @@ const configuredOAuthDaily = quotaRecoveryCooldownUntil({
   policy: { oauth: { reset_strategy: 'daily', daily_reset_hour: 3, timezone: 'UTC' } }
 })
 assert(Date.parse(configuredOAuthDaily) - Date.parse('2026-08-24T03:00:00.000Z') >= 0, 'OAuth daily 恢复策略必须可配置且按 UTC 计算')
-assert(Date.parse(configuredOAuthDaily) - Date.parse('2026-08-24T03:00:00.000Z') <= 15 * 60_000, 'OAuth daily 仍必须使用系统稳定错峰')
+assert(Date.parse(configuredOAuthDaily) - Date.parse('2026-08-24T03:00:00.000Z') <= 30 * 60_000, 'OAuth daily 必须在硬边界之后使用全局偏移')
 
 const accountErrorPolicySource = readFileSync(new URL('../../modules/gateway/policy/account-error-policy.service.ts', import.meta.url), 'utf8')
 assert.match(
@@ -198,7 +202,7 @@ assert.equal(multiKeyApiKeyQuotaDecision?.quotaRecoveryMode, 'generic', '没有 
 assert.equal(multiKeyApiKeyQuotaDecision?.cooldownStatus, 'rate_limited')
 assert(multiKeyApiKeyQuotaDecision?.cooldownUntil, '通用 API Key 额度恢复必须提供复测边界')
 const genericApiKeyDelay = Date.parse(multiKeyApiKeyQuotaDecision!.cooldownUntil!) - Date.now()
-assert(genericApiKeyDelay >= 60 * 60_000 - 10_000 && genericApiKeyDelay <= 75 * 60_000 + 10_000, '通用 API Key 额度复测默认应为 1 小时并带 0-15 分钟错峰')
+assert(genericApiKeyDelay >= 60 * 60_000 - 10_000 && genericApiKeyDelay <= 90 * 60_000 + 10_000, '通用 API Key 额度复测默认应为 1 小时并带全局偏移')
 
 const configuredApiKeyQuotaDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_configured_quota',
@@ -217,7 +221,7 @@ const configuredApiKeyQuotaDecision = decideAccountErrorPolicy({
   status: 'active'
 }, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_user_quota"}}'), settings)
 const configuredApiKeyDelay = Date.parse(configuredApiKeyQuotaDecision!.cooldownUntil!) - Date.now()
-assert(configuredApiKeyDelay >= 90 * 60_000 - 10_000 && configuredApiKeyDelay <= 105 * 60_000 + 10_000, '账户 API Key 额度恢复策略必须影响系统额度决策')
+assert(configuredApiKeyDelay >= 90 * 60_000 - 10_000 && configuredApiKeyDelay <= 120 * 60_000 + 10_000, '账户 API Key 额度恢复策略必须影响系统额度决策')
 
 const normalizedRuntimeApiKeysQuotaDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_runtime_api_keys_quota',

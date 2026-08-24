@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { passiveScheduleNotBeforeDelayMs } from '../../shared/passive-schedule-jitter.js'
 
 export type QuotaRecoveryAccountType = 'api_key' | 'oauth' | 'google_oauth'
 export type QuotaRecoveryStrategy = 'duration' | 'daily' | 'weekly'
@@ -22,7 +22,6 @@ export interface QuotaRecoveryPolicy {
 const FIXED_JITTER_MINUTES = 15
 const MAX_POLICY_BYTES = 4096
 const MAX_DURATION_MINUTES = 7 * 24 * 60
-const MAX_JITTER_MINUTES = FIXED_JITTER_MINUTES
 
 export const DEFAULT_API_KEY_QUOTA_RECOVERY_SCHEDULE: QuotaRecoverySchedule = {
   reset_strategy: 'duration',
@@ -80,16 +79,13 @@ export function quotaRecoveryCooldownUntil(input: {
 }): string {
   const now = input.now ?? new Date()
   const schedule = quotaRecoveryScheduleForAccount(input.policy, input.accountType)
-  const jitter = deterministicJitterMinutes(`${input.seed}:${schedule.reset_strategy}`, schedule.jitter_minutes ?? FIXED_JITTER_MINUTES)
   const boundary = scheduleBoundary(schedule, now)
-  return new Date(boundary.getTime() + jitter * 60_000).toISOString()
-}
-
-export function deterministicJitterMinutes(seed: string, maxMinutes: number): number {
-  const max = Math.max(0, Math.min(MAX_JITTER_MINUTES, Math.floor(maxMinutes)))
-  if (max === 0) return 0
-  const digest = createHash('sha256').update(seed).digest()
-  return digest.readUInt32BE(0) % (max + 1)
+  // Quota reset boundaries are hard not-before points. The actual passive
+  // retest may run later, with the global interval-sized offset applied once.
+  void input.seed
+  void schedule.jitter_minutes
+  const delayMs = Math.max(1, boundary.getTime() - now.getTime())
+  return new Date(now.getTime() + passiveScheduleNotBeforeDelayMs(delayMs)).toISOString()
 }
 
 function normalizeQuotaRecoverySchedule(value: unknown): QuotaRecoverySchedule {

@@ -90,6 +90,9 @@ assertRolePostgresBlockContains('stats-worker', 'group-account-stats-refresh', '
 assertRolePostgresBlockContains('stats-worker', 'account-quality-refresh', 'PG 高性能 stats-worker 必须注册 account-quality-refresh，避免账户质量分长期不刷新')
 assertRolePostgresBlockContains('stats-worker', 'usage-stats-consistency-check', 'PG 高性能 stats-worker 必须注册 usage-stats-consistency-check，避免统计一致性漂移无人检测')
 assertRolePostgresBlockContains('stats-worker', 'authorization-usage-range-windows-refresh', 'PG 高性能 stats-worker 必须注册授权用量范围窗口刷新')
+assert.match(scheduledJobRegistration('background-task-run-reconcile'), /passiveJitter:\s*true/, '后台任务状态对账是被动扫描，必须使用全局偏移')
+assert.match(scheduledJobRegistration('account-circuit-control-plane-maintenance'), /passiveJitter:\s*true/, '账户电路 control-plane 对账是被动维护，必须使用全局偏移')
+assert.match(scheduledJobRegistration('account-list-availability-projection-maintenance'), /passiveJitter:\s*true/, '账户列表可用性投影维护是被动扫描，必须使用全局偏移')
 assert.match(backgroundJobsSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*refreshBackgroundJobSettingsSnapshotIfNeeded\(\)[\s\S]*generation !== startGeneration[\s\S]*scheduleBackgroundJobs\(\)/, 'PG 后台定时任务必须等待系统设置快照加载，并使用 generation 防止停机后复活')
 assert.match(backgroundJobsSource, /function refreshBackgroundJobSettingsSnapshotIfNeeded\(\): Promise<void>/, 'PG 后台任务系统设置快照刷新必须返回 Promise，避免启动时异步未完成就注册默认 interval')
 assert(backgroundJobsSource.includes("reason: 'stats_worker_startup_refresh'"), 'PG stats-worker 首次分组统计刷新必须写全量脏标记，修复已有统计缓存缺失或旧 0 值')
@@ -234,6 +237,14 @@ function roleCaseBlock(role: string): string {
 function collectScheduledJobNames(block: string): string[] {
   const names = new Set([...block.matchAll(/backgroundScheduledJobName\('([^']+)'\)/g)].map((match) => match[1]))
   return [...names]
+}
+
+function scheduledJobRegistration(jobName: string): string {
+  const marker = `backgroundScheduledJobName('${jobName}')`
+  const start = backgroundJobsSource.indexOf(marker)
+  assert(start >= 0, `background-jobs 必须注册 ${jobName}`)
+  const nextRegistration = backgroundJobsSource.indexOf('scheduler.schedule(', start + marker.length)
+  return nextRegistration >= 0 ? backgroundJobsSource.slice(start, nextRegistration) : backgroundJobsSource.slice(start)
 }
 
 function functionBlock(name: string): string {

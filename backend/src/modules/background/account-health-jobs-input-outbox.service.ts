@@ -1,4 +1,5 @@
 import type { AccountHealthJobsInputOutboxEvent } from '../../storage/account-health-jobs-input-outbox.repository.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 
 export interface AccountHealthJobsInputOutboxPublisherDependencies {
   claim(leaseMs: number): Promise<AccountHealthJobsInputOutboxEvent | undefined>
@@ -44,7 +45,7 @@ export async function publishNextAccountHealthJobsInputOutboxEvent(
     else await dependencies.publishTombstone(event)
   } catch (error) {
     const delay = retryDelayMs(event.attemptCount, retryBaseMs, retryMaxMs)
-    const retryAt = new Date(now().getTime() + delay)
+    const retryAt = new Date(now().getTime() + passiveScheduleDelayMs(delay))
     return await dependencies.fail(event, publishFailureCode(error), retryAt) ? 'retry_scheduled' : 'lease_lost'
   }
   return await dependencies.acknowledge(event) ? 'published' : 'lease_lost'

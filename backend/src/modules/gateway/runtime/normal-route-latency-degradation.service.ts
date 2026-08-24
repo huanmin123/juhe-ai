@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../../shared/concurrency-governor.js'
+import { passiveScheduleDelayMs } from '../../../shared/passive-schedule-jitter.js'
 import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import type { RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
@@ -357,7 +358,7 @@ async function recordNormalRouteFirstByteSuccessLockedAsync(
   }
   const nextProbeAtMs = recoveryProbeRoundAttempts(current) > 0
     ? current.nextProbeAtMs
-    : now + nextProbeDelayMs(config, key)
+    : now + nextProbeDelayMs(config)
   await latencyStateStore.setJson(key, {
     ...current,
     successCount,
@@ -797,25 +798,13 @@ function latencyStateRemainingTtlMs(degradedUntilMs: number | undefined, now: nu
   return Math.max(1, degradedUntilMs - now)
 }
 
-function nextProbeDelayMs(config: NormalRouteSpeedFirstRuntimeConfig, key: string): number {
+function nextProbeDelayMs(config: NormalRouteSpeedFirstRuntimeConfig): number {
   const baseMs = Math.max(10, config.probeIntervalSeconds) * 1000
-  const jitterRatio = stableProbeJitterRatio(key)
-  return Math.max(1000, Math.trunc(baseMs + baseMs * jitterRatio))
+  return passiveScheduleDelayMs(baseMs)
 }
 
 function nextRecoveryProbeDelayMs(): number {
-  // The scheduler itself scans every five seconds. Keeping the due time on the
-  // same cadence avoids a positive jitter turning a two-probe window into an
-  // accidental ten-second wait.
-  return normalRouteRecoveryProbeIntervalMs
-}
-
-function stableProbeJitterRatio(key: string): number {
-  let hash = 0
-  for (let index = 0; index < key.length; index += 1) {
-    hash = (hash * 31 + key.charCodeAt(index)) >>> 0
-  }
-  return ((hash % 21) - 10) / 100
+  return passiveScheduleDelayMs(normalRouteRecoveryProbeIntervalMs)
 }
 
 async function loadLatencyStateIndexKeys(indexKey: string): Promise<string[]> {

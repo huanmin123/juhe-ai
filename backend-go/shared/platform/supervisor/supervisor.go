@@ -10,6 +10,8 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
 // Component is one independently configured and fenced sidecar function.
@@ -110,7 +112,9 @@ func runComponent(ctx context.Context, component Component, logger *slog.Logger,
 		}
 		delay := retryDelay(options, consecutiveFailures)
 		logger.Error("sidecar component failed; retrying", "component", component.Name, "cause", err, "consecutiveFailures", consecutiveFailures, "retryDelay", delay.String())
-		timer := time.NewTimer(delay)
+		jitteredDelay := schedulejitter.Delay(delay)
+		logger.Debug("sidecar component retry delay jittered", "component", component.Name, "configuredRetryDelay", delay.String(), "retryDelay", jitteredDelay.String())
+		timer := time.NewTimer(jitteredDelay)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {

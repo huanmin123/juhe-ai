@@ -5,7 +5,8 @@ import {
   resolveAccountApiKeyQuotaRetestDecision
 } from '../../modules/background/account-api-key-cooldown-retest.service.js'
 import { resolveAccountTestResponseDiagnostics } from '../../modules/accounts/account-test-response-diagnostics.js'
-import { deterministicJitterMinutes } from '../../modules/accounts/quota-recovery-policy.js'
+import { quotaRecoveryCooldownUntil } from '../../modules/accounts/quota-recovery-policy.js'
+import { passiveScheduleJitterWindowMs } from '../../shared/passive-schedule-jitter.js'
 
 const workerSource = readFileSync(new URL('../../modules/background/account-api-key-cooldown-retest.service.ts', import.meta.url), 'utf8')
 const retestItemSource = sourceBetween(workerSource, 'async function runAccountApiKeyCooldownRetestQueueItem', 'async function loadAccountForTestViaDbService')
@@ -13,8 +14,16 @@ const delaySource = sourceBetween(workerSource, 'function quotaRecoveryDelaySeco
 assert.match(retestItemSource, /recoverySeed: `\$\{account\.id\}:\$\{item\.keyFingerprint\?\.trim\(\) \|\| 'account'\}`/, 'worker 额度决策 seed 必须将空白 fingerprint 归一为 account')
 assert.match(delaySource, /seed: `\$\{input\.account\.id\}:\$\{input\.keyFingerprint\?\.trim\(\) \|\| 'account'\}`/, 'worker 延迟计算 seed 必须将空白 fingerprint 归一为 account')
 for (const seed of ['quota-retest-a', 'quota-retest-b', 'quota-retest-c']) {
-  const jitter = deterministicJitterMinutes(seed, 60)
-  assert(jitter >= 0 && jitter <= 15, '稳定错峰即使收到过大上限也必须限定在 0–15 分钟')
+  const quotaNow = new Date('2026-08-22T00:00:00.000Z')
+  const cooldownUntil = Date.parse(quotaRecoveryCooldownUntil({
+    seed,
+    accountType: 'api_key',
+    now: quotaNow,
+    policy: { api_key: { reset_strategy: 'duration', duration_minutes: 60, jitter_minutes: 15, timezone: 'UTC' } }
+  }))
+  const baselineMs = 60 * 60_000
+  const windowMs = passiveScheduleJitterWindowMs(baselineMs)
+  assert(cooldownUntil >= quotaNow.getTime() + baselineMs && cooldownUntil <= quotaNow.getTime() + baselineMs + windowMs, '额度恢复必须在硬边界之后使用全局偏移')
 }
 
 const observedAt = new Date('2026-08-22T00:00:00.000Z')
@@ -67,7 +76,7 @@ assert.equal(explicitToGeneric.previousRecoveryMode, 'explicit_reset')
 assert.equal(explicitToGeneric.recoveryMode, 'generic', '当前无 hint 必须切换通用模式')
 assert.equal(explicitToGeneric.timedOut, false, '显式转通用必须重新开始 30 天观察')
 const explicitToGenericDelay = Date.parse(explicitToGeneric.cooldownUntil!) - observedAt.getTime()
-assert(explicitToGenericDelay >= 60 * 60_000 && explicitToGenericDelay <= 75 * 60_000, '通用模式首次复测应从当前观察时刻等待 1 小时并带稳定错峰')
+assert(explicitToGenericDelay >= 60 * 60_000 && explicitToGenericDelay <= 90 * 60_000, '通用模式首次复测应从当前观察时刻等待 1 小时并按全局被动策略偏移')
 
 const textOnlyAttempt = {
   ...explicitAttempt,

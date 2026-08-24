@@ -734,11 +734,31 @@ local function close(entry)
 end
 
 local backoffs = { 3000, 5000, 10000, 30000, 60000, 120000, 300000, 600000, 900000 }
+local function passive_delay(base, seed)
+  base = math.max(1, math.floor(tonumber(base) or 1))
+  local window
+  if base < 60000 then
+    window = math.floor(base / 2)
+  elseif base < 3600000 then
+    window = 30000
+  elseif base < 86400000 then
+    window = 1800000
+  elseif base < 604800000 then
+    window = 3600000
+  else
+    window = 28800000
+  end
+  window = math.min(window, math.floor(base / 2))
+  if window <= 0 then return base end
+  local digest = redis.sha1hex(tostring(seed or '') .. ':' .. tostring(input['transitionId'] or '') .. ':' .. tostring(now_ms))
+  local sample = tonumber(string.sub(digest, 1, 8), 16) / 4294967295
+  local offset = math.floor(sample * (window * 2 + 1)) - window
+  if offset == 0 then offset = 1 end
+  return math.max(1, base + offset)
+end
 local function jittered_backoff(base, attempt, generation)
   if attempt < 5 then return base end
-  local digest = redis.sha1hex(scope_key .. ':' .. tostring(generation) .. ':' .. tostring(attempt))
-  local sample = tonumber(string.sub(digest, 1, 8), 16) / 4294967295
-  return math.max(1, math.floor(base * (0.8 + sample * 0.4) + 0.5))
+  return passive_delay(base, scope_key .. ':' .. tostring(generation) .. ':' .. tostring(attempt))
 end
 local function open(entry)
   local state = entry['state']

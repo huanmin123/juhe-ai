@@ -913,8 +913,8 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
       FROM ${patchTable(client, 'accounts')}
       WHERE authorization_instance_source_account_id = ?
         AND deleted_at IS NULL
-        AND provider_code IN ('gpt', 'openai')
-        AND type IN ('api_key', 'oauth')
+        AND provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+        AND type IN ('api_key', 'oauth', 'google_oauth')
       ORDER BY id ASC
       ${client.driver === 'postgres' ? 'FOR UPDATE' : ''}
     `, [row.id])

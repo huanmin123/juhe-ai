@@ -30,6 +30,9 @@ type Input struct {
 	ConfigRevision       int64               `json:"config_revision"`
 	DispatchRevision     int64               `json:"dispatch_revision"`
 	Provider             string              `json:"provider"`
+	ProtocolProfileID    string              `json:"provider_protocol_profile_id,omitempty"`
+	ProtocolCode         string              `json:"protocol_code,omitempty"`
+	ProtocolVersion      string              `json:"protocol_version,omitempty"`
 	Type                 string              `json:"type"`
 	EndpointMode         string              `json:"endpoint_mode"`
 	HealthModel          string              `json:"health_model"`
@@ -39,6 +42,9 @@ type Input struct {
 	OAuthAccess          *CredentialEnvelope `json:"oauth_access,omitempty"`
 	OAuthExpiresAt       *time.Time          `json:"oauth_expires_at,omitempty"`
 	OAuthAccountID       string              `json:"oauth_account_id,omitempty"`
+	OAuthQuotaProjectID  string              `json:"oauth_quota_project_id,omitempty"`
+	OAuthType            string              `json:"oauth_type,omitempty"`
+	OAuthProjectID       string              `json:"oauth_project_id,omitempty"`
 	Proxy                *CredentialEnvelope `json:"proxy,omitempty"`
 	IssuedAt             time.Time           `json:"issued_at"`
 	ExpiresAt            time.Time           `json:"expires_at"`

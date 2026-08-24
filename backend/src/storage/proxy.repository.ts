@@ -1377,8 +1377,8 @@ function enqueueProxyAffectedAccountHealthInputsInTransaction(
       ON source.id = target.authorization_instance_source_account_id
       AND source.deleted_at IS NULL
     WHERE target.deleted_at IS NULL
-      AND target.provider_code IN ('gpt', 'openai')
-      AND target.type IN ('api_key', 'oauth')
+      AND target.provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+      AND target.type IN ('api_key', 'oauth', 'google_oauth')
       AND (target.proxy_profile_id = ? OR source.proxy_profile_id = ?)
     ORDER BY target.id ASC
   `).all(proxyProfileId, proxyProfileId) as Array<{ id: string, config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>
@@ -1405,8 +1405,8 @@ async function enqueueProxyAffectedAccountHealthInputsInTransactionAsync(
       ON source.id = target.authorization_instance_source_account_id
       AND source.deleted_at IS NULL
     WHERE target.deleted_at IS NULL
-      AND target.provider_code IN ('gpt', 'openai')
-      AND target.type IN ('api_key', 'oauth')
+      AND target.provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+      AND target.type IN ('api_key', 'oauth', 'google_oauth')
       AND (target.proxy_profile_id = ? OR source.proxy_profile_id = ?)
     ORDER BY target.id ASC
     ${client.driver === 'postgres' ? 'FOR UPDATE OF target' : ''}

@@ -226,13 +226,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		lease, acquired, err := acquireOwner(ctx, r.cfg.InstanceID, r.cfg.OwnerLease)
 		if err != nil {
 			r.recordError(err)
-			if err := waitRuntime(ctx, r.cfg.Interval); err != nil {
+			if err := waitRuntime(ctx, schedulejitter.Delay(r.cfg.Interval)); err != nil {
 				return err
 			}
 			continue
 		}
 		if !acquired {
-			if err := waitRuntime(ctx, minRuntime(r.cfg.Interval, r.cfg.OwnerLease/3)); err != nil {
+			if err := waitRuntime(ctx, schedulejitter.Delay(minRuntime(r.cfg.Interval, r.cfg.OwnerLease/3))); err != nil {
 				return err
 			}
 			continue
@@ -265,6 +265,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if err := waitRuntime(ctx, schedulejitter.Delay(r.cfg.Interval)); err != nil {
+			return err
 		}
 	}
 }

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { DatabaseSync } from 'node:sqlite'
+import { passiveScheduleJitterWindowMs } from '../../shared/passive-schedule-jitter.js'
 
 const root = mkdtempSync(join(tmpdir(), 'juhe-ai-chat-asset-cleanup-'))
 process.env.JUHE_AI_CHAT_ASSETS_ROOT = root
@@ -55,7 +56,15 @@ try {
   const failedRow = database.prepare('SELECT cleanup_status, cleanup_attempt_count, cleanup_retry_at FROM chat_assets WHERE id = ?').get(failed.id) as Record<string, unknown>
   assert.equal(failedRow.cleanup_status, 'failed')
   assert.equal(Number(failedRow.cleanup_attempt_count), 1)
-  assert.equal(failedRow.cleanup_retry_at, '2026-07-04T00:01:00.000Z', '清理 retryAt 必须 canonical 为 UTC')
+  const cleanupRetryAtMs = Date.parse(String(failedRow.cleanup_retry_at))
+  const cleanupBaselineMs = Date.parse('2026-07-04T00:00:00.000Z') + 60_000
+  const cleanupWindowMs = passiveScheduleJitterWindowMs(60_000)
+  assert.ok(
+    cleanupRetryAtMs >= cleanupBaselineMs - cleanupWindowMs
+      && cleanupRetryAtMs <= cleanupBaselineMs + cleanupWindowMs
+      && cleanupRetryAtMs !== cleanupBaselineMs,
+    '清理 retryAt 必须 canonical 为 UTC 并使用全局偏移'
+  )
   rmSync(assetStorage.chatAssetObjectPath(failed.storageKey!), { recursive: true, force: true })
   const retryCleanup = await cleanupExpiredChatAssets({ client, now: '2026-07-08T00:01:01.000Z', limit: 10 })
   assert.deepEqual([retryCleanup.deletedAssets, retryCleanup.failedAssets], [1, 0], '退避到期后必须重试并收口 DB 行')
@@ -119,7 +128,7 @@ try {
   assert.doesNotMatch(cleanupSource, /Date\.parse\(/, '聊天资产后台清理不得按进程时区解析 now')
   assert.match(cleanupSource, /requiredRfc3339Instant\(input\.now, '聊天资产清理 now'\)/, '聊天资产后台清理 now 必须严格 canonical')
   assert.doesNotMatch(deleteRouteSource, /retryAt: new Date\(Date\.parse\(now\)/, '聊天资产删除路由不得重新宽松解析内部 now')
-  assert.match(deleteRouteSource, /const nowMs = Date\.now\(\)[\s\S]*retryAt: new Date\(nowMs \+ 60_000\)\.toISOString\(\)/, '聊天资产删除路由必须从同一 epoch 生成 retryAt')
+  assert.match(deleteRouteSource, /const nowMs = Date\.now\(\)[\s\S]*retryAt: new Date\(nowMs \+ passiveScheduleDelayMs\(60_000\)\)\.toISOString\(\)/, '聊天资产删除路由必须从同一 epoch 生成带偏移 retryAt')
 
   async function createReadyAsset(id: string, storageKey: string, bytes: Buffer) {
     const sha256 = createHash('sha256').update(bytes).digest('hex')

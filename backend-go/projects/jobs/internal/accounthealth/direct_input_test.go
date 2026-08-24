@@ -107,7 +107,7 @@ func (rows *directInputRowsLifecycleRows) Next(dest []driver.Value) error {
 }
 
 func directInputLifecycleCandidateColumns() []string {
-	columns := make([]string, 43)
+	columns := make([]string, 51)
 	for index := range columns {
 		columns[index] = fmt.Sprintf("c%d", index)
 	}
@@ -120,33 +120,39 @@ func directInputLifecycleCandidateValues() []driver.Value {
 	if err != nil {
 		panic(err)
 	}
-	values := make([]driver.Value, 43)
+	values := make([]driver.Value, 51)
 	values[0] = "account-rows-lifecycle"
 	values[1] = int64(1)
 	values[2] = int64(2)
 	values[3] = int64(3)
 	values[4] = "openai"
-	values[5] = "api_key"
-	values[6] = "active"
-	values[7] = int64(1)
-	values[8] = "chat_json"
-	values[9] = "gpt-test"
-	values[10] = credentials
-	values[16] = "system-account"
-	values[17] = "authorization-1"
-	values[18] = "active"
-	values[20] = `{}`
-	values[21] = "source-account"
-	values[22] = "owner-account"
-	values[24] = "source-account"
-	values[25] = int64(4)
-	values[26] = "openai"
-	values[27] = "api_key"
-	values[28] = "active"
-	values[29] = int64(1)
-	values[33] = credentials
-	values[34] = "group-1"
-	values[35] = "authorization-1"
+	values[5] = "profile_openai_openai_v1"
+	values[6] = "openai"
+	values[7] = "v1"
+	values[8] = "api_key"
+	values[9] = "active"
+	values[10] = int64(1)
+	values[11] = "chat_json"
+	values[12] = "gpt-test"
+	values[15] = credentials
+	values[21] = "system-account"
+	values[22] = "authorization-1"
+	values[23] = "active"
+	values[25] = `{}`
+	values[26] = "source-account"
+	values[27] = "owner-account"
+	values[29] = "source-account"
+	values[30] = int64(4)
+	values[31] = "openai"
+	values[32] = "profile_openai_openai_v1"
+	values[33] = "openai"
+	values[34] = "v1"
+	values[35] = "api_key"
+	values[36] = "active"
+	values[37] = int64(1)
+	values[41] = credentials
+	values[42] = "group-1"
+	values[43] = "authorization-1"
 	return values
 }
 
@@ -200,8 +206,27 @@ func TestDirectInputCandidatesIncludeResponsesSSE(t *testing.T) {
 	if !strings.Contains(directInputCandidatesSQL, "'responses_sse'") {
 		t.Fatal("PG direct input 候选查询必须包含 responses_sse")
 	}
-	if !strings.Contains(directInputCandidatesSQL, "a.type <> 'oauth' OR a.health_check_endpoint_mode = 'responses_json'") {
-		t.Fatal("PG direct input 候选查询必须排除 OAuth responses_sse")
+	if !strings.Contains(directInputCandidatesSQL, "'responses_json'") {
+		t.Fatal("PG direct input 候选查询必须保留 responses_json")
+	}
+	for _, mode := range []string{"messages_json", "messages_sse", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"} {
+		if !strings.Contains(directInputCandidatesSQL, "'"+mode+"'") {
+			t.Fatalf("PG direct input 候选查询必须包含 %s", mode)
+		}
+	}
+	if !strings.Contains(directInputCandidatesSQL, "generate_content_sse' THEN 'stream_generate_content'") {
+		t.Fatal("Gemini GenerateContent SSE 必须按 stream_generate_content 查找模型映射")
+	}
+	if !strings.Contains(directInputCandidatesSQL, "mm.upstream_model <> mm.source_model OR mm.upstream_endpoint_family <> mm.source_endpoint_family") {
+		t.Fatal("PG direct input 不得接受 identity model mapping")
+	}
+	for _, column := range []string{"provider_protocol_profile_id", "protocol_code", "protocol_version"} {
+		if !strings.Contains(directInputCandidatesSQL, "a."+column) || !strings.Contains(directInputCandidatesSQL, "source."+column) {
+			t.Fatalf("PG direct input 查询必须冻结账户和来源的 %s", column)
+		}
+	}
+	if !strings.Contains(directInputCandidatesSQL, "CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END") {
+		t.Fatal("authorized hybrid mapping must read the physical source account mapping")
 	}
 }
 
@@ -387,7 +412,7 @@ func TestDirectInputCandidatesQuerySuppressesExactFencedGenerationBeforeLimit(t 
 	}
 }
 
-func TestDirectInputRejectsOAuthResponsesSSE(t *testing.T) {
+func TestDirectInputAcceptsOAuthResponsesSSE(t *testing.T) {
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
 	err := validateDirectAccount(DirectAccount{
 		ID:                   "oauth-account",
@@ -401,8 +426,62 @@ func TestDirectInputRejectsOAuthResponsesSSE(t *testing.T) {
 		HealthModel:          "gpt-test",
 		CredentialsEncrypted: "encrypted",
 	}, now)
-	if err == nil {
-		t.Fatal("OAuth responses_sse must remain outside the frozen Go J1 scope")
+	if err != nil {
+		t.Fatalf("OAuth responses_sse must remain supported by the current J1 profile scope: %v", err)
+	}
+}
+
+func TestDirectInputRejectsOAuthForOpenAICompatibleProfile(t *testing.T) {
+	if isSupportedDirectProfile("profile_openai_openai_v1", "openai", "oauth", "responses_json") {
+		t.Fatal("OpenAI-compatible profile must remain API-key-only")
+	}
+}
+
+func TestDirectInputRejectsProtocolMetadataMismatch(t *testing.T) {
+	if err := validateDirectProtocolMetadata("profile_gpt_openai_v1", "anthropic", "v1"); err == nil {
+		t.Fatal("profile/protocol mismatch must be rejected")
+	}
+}
+
+func TestDirectInputUsesGrokCLIProxyForOAuthWithoutBaseURL(t *testing.T) {
+	baseURL, err := directBaseURL(map[string]json.RawMessage{}, DirectAccount{ProtocolProfileID: "profile_xai_openai_v1", Type: "oauth"}, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseURL != "https://cli-chat-proxy.grok.com/v1" {
+		t.Fatalf("xAI OAuth base URL = %q", baseURL)
+	}
+}
+
+func TestDirectInputUsesCodexBaseURLForOAuthEvenWhenCredentialHasOpenAIBaseURL(t *testing.T) {
+	baseURL, err := directBaseURL(map[string]json.RawMessage{
+		"base_url": json.RawMessage(`"https://api.openai.com/v1"`),
+	}, DirectAccount{ProtocolProfileID: "profile_gpt_openai_v1", Type: "oauth"}, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseURL != "https://chatgpt.com/backend-api/codex" {
+		t.Fatalf("GPT OAuth base URL = %q", baseURL)
+	}
+}
+
+func TestDirectInputSupportsGeminiGoogleOAuthProfile(t *testing.T) {
+	secret := "j1-direct-input-secret"
+	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
+	credentials, err := EncryptV1Envelope(secret, []byte(`{"access_token":"google-token","expires_at":"2030-08-16T02:00:00Z","quota_project_id":"quota-1","oauth_type":"ai_studio","base_url":"https://generativelanguage.googleapis.com"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := (DirectInput{
+		Account:      DirectAccount{ID: "gemini-account", ConfigRevision: 1, DispatchRevision: 1, Provider: "gemini", ProtocolProfileID: "profile_gemini_native_v1beta", ProtocolCode: "gemini", ProtocolVersion: "v1beta", Type: "google_oauth", Status: "pending_test", EndpointMode: "generate_content_json", HealthModel: "gemini-test", CredentialsEncrypted: credentials},
+		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
+		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
+	}).ToInput(secret, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.Provider != "gemini" || input.OAuthAccess == nil || input.OAuthQuotaProjectID != "quota-1" || input.EndpointMode != "generate_content_json" {
+		t.Fatalf("mapped Gemini direct input = %#v", input)
 	}
 }
 
@@ -461,7 +540,7 @@ func TestDirectInputNormalizesGPTProviderToOpenAIProtocol(t *testing.T) {
 		t.Fatalf("GPT OpenAI-v1 provider must be accepted: %v", err)
 	}
 	if input.Provider != "openai" {
-		t.Fatalf("normalized provider = %q, want openai", input.Provider)
+		t.Fatalf("provider = %q, want openai", input.Provider)
 	}
 	if input.EndpointMode != "responses_sse" {
 		t.Fatalf("endpoint mode = %q, want responses_sse", input.EndpointMode)

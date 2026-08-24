@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
 
 const defaultResultProjectionConsumer = "juhe-ai-proxy-latency-go-projector-v1"
@@ -152,7 +154,7 @@ func (p *ResultProjector) Run(ctx context.Context) error {
 		if err != nil && p.logger != nil {
 			p.logger.Error("J3a Go result projection failed; immutable outcome is retained for retry", "error", err)
 		}
-		if err := waitRuntime(ctx, p.cfg.PollInterval); err != nil {
+		if err := waitRuntime(ctx, schedulejitter.Delay(p.cfg.PollInterval)); err != nil {
 			return err
 		}
 	}

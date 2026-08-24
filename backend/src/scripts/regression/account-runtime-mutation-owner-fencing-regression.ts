@@ -29,7 +29,7 @@ assert.match(
 )
 assert.match(
   cooldownAsyncSource,
-  /if \(Number\(result\.changes \?\? 0\) <= 0\) \{\s*return undefined\s*\}/,
+  /if \(Number\(result\.changes \?\? 0\) <= 0\) return false[\s\S]*if \(!changed\) \{\s*return undefined\s*\}/,
   'owner cooldown 条件写未命中时必须返回未更新，不能把最新账户摘要误报为写入成功'
 )
 assert.match(
@@ -59,13 +59,18 @@ assert.match(
 )
 assert.match(
   cooldownAsyncSource,
-  /UPDATE \$\{accountRuntimeMutationTable\(client, 'accounts'\)\} AS accounts/,
+  /UPDATE \$\{accountRuntimeMutationTable\(tx, 'accounts'\)\} AS accounts/,
   'owner quota 冷却 PG UPDATE 必须为优先级 guard 提供 accounts 别名'
 )
 assert.match(
   systemQuotaPrioritySource,
   /cooldown_until::timestamptz > \?::timestamptz/,
   'owner quota 冷却 PG 优先级 guard 必须按 timestamptz 比较未来冷却时间'
+)
+assert.match(
+  systemQuotaPrioritySource,
+  /julianday\(\$\{prefix\}cooldown_until\) > julianday\(\?\)/,
+  'owner quota 冷却 SQLite 优先级 guard 必须按瞬时语义比较未来冷却时间'
 )
 assert.match(
   authorizedCooldownAsyncSource,

@@ -575,7 +575,7 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 | confirmation 失败阈值 | 首次失败后还需 2 次独立 confirmation；同一请求不能连续自证 |
 | 半开同时请求 | 1 |
 | 短退避序列 | `3s -> 5s -> 10s -> 30s -> 60s` |
-| 自动运行态最大退避 | 15 分钟基线，并按 scope 加确定性 jitter |
+| 自动运行态最大退避 | 15 分钟基线，并按全局被动策略每轮重新偏移 |
 | `RECOVERING` 并发 | 1 |
 | recovery canary 间隔 | 3 秒 |
 | `RECOVERING -> CLOSED` | 连续 3 次匹配 generation 的完整 transport framing；只关闭自动 transport circuit，不代表业务状态恢复 |
@@ -704,7 +704,7 @@ Key circuit 只接受同 Key 的合法共享证据；protocol-model circuit 只�
 
 confirmation 只服务独立 transport 证据，不服务上游业务语义。任意 lane 的 confirmation 都不设置 5 秒专属 deadline，也不把普通路由配置首字截止当传输失败；它使用当前 lane hard first-response / attempt lifetime，并受对应请求墙钟与最终响应预留裁剪。confirmation 是真实上游 attempt，其 fetch 与首字观察期间 `routeCoordinationBudget` 暂停；如果当前请求已经没有完成一次有意义 hard probe 的预算，租约持有者直接换号，不强行确认。收到可见首字后，后续响应读取继续使用当前 lane timeout 和流式 idle timeout；只有 HTTP framing 完整，或 SSE 在没有读取中断的情况下正常结束，才提交中性 framing 结果；需要账户 / Key 业务恢复时还必须形成匹配 provenance 的 `complete_success`。
 
-confirmation 租约到期但没有形成真实上游 attempt、租约请求被客户端取消或探针任务自身失败时，结论为 unknown：保留 `SUSPECT` generation 和确认计数，按当前电路退避与确定性 jitter 渐进延后下一次 due；不能把“没有得到结论”伪造成账号失败，也不能把 `retryAt` 设为当前时间形成热循环。
+confirmation 租约到期但没有形成真实上游 attempt、租约请求被客户端取消或探针任务自身失败时，结论为 unknown：保留 `SUSPECT` generation 和确认计数，按当前电路退避与全局被动偏移渐进延后下一次 due；不能把“没有得到结论”伪造成账号失败，也不能把 `retryAt` 设为当前时间形成热循环。
 
 半开租约和 confirmation 租约都禁止同账号原地多轮重试。租约失败只提交一次状态转换和一次结构化日志，其他因电路被排除的请求不重复写上游失败日志。
 
@@ -1015,7 +1015,7 @@ gateway_request_wall_handoff_total
 - 所有请求使用 lane-aware `GatewayRequestWallBudget`（决策点 handoff 客户端），文本默认 270 秒，图片由 `imageRequestWallTimeoutSeconds` 控制且默认 3600 秒；二者都不从 `noAvailableAccountWaitTimeoutSeconds` 派生。`ServerRetryBudget` 只累计零可派发、FIFO / 并发槽和半开等待；图片另用 600/120/3600 单次时限，失败后的候选切换仍服从图片墙钟与 attempt 上限；
 - 单次请求最多取得一次 confirmation，首次失败后需两个独立 confirmation 失败才 `OPEN`；confirmation 不另设 5 秒 timer，也不把路由配置截止当失败，使用 lane hard timeout；租约本身覆盖 attempt hard lifetime；
 - 故障切号、重新选号和零可派发等待共用一个 3 秒 `routeCoordinationBudget`；
-- 退避从 `3s -> 5s -> 10s -> 30s -> 60s` 起步，长期故障延伸到 15 分钟基线并加入确定性 jitter；
+- 退避从 `3s -> 5s -> 10s -> 30s -> 60s` 起步，长期故障延伸到 15 分钟基线并按全局被动策略每轮重新偏移；
 - 父 account 只在配置窗口内至少 3 个当前 OPEN 独立 scope 后升级，scope 阈值可调但硬下限为 3；
 - `RECOVERING` 连续 3 次匹配 generation 的完整 transport framing 才关闭自动电路；framing 中性不恢复业务状态；
 - 热质量只重排完整账户配置层相同的账号；

@@ -20,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
 const (
@@ -230,15 +232,16 @@ func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease,
 			}
 			close(done)
 		}()
-		ticker := time.NewTicker(cfg.RetentionInterval)
-		defer ticker.Stop()
+		timer := time.NewTimer(schedulejitter.Delay(cfg.RetentionInterval))
+		defer timer.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-timer.C:
 				_, err := store.CleanupRetention(ctx, lease, cfg.RetentionConfigAt(time.Now()))
 				if err == nil {
+					timer.Reset(schedulejitter.Delay(cfg.RetentionInterval))
 					continue
 				}
 				if ctx.Err() != nil {

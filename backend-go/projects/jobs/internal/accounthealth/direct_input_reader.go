@@ -354,12 +354,12 @@ func directInputScanCap(limit int) int {
 
 const directInputCandidatesSQL = `
 SELECT
-  a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.provider_code, a.type, a.status, a.schedulable,
-  a.health_check_endpoint_mode, a.health_check_model, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled,
+  a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.provider_code, a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.type, a.status, a.schedulable,
+  a.health_check_endpoint_mode, a.health_check_model, mapping.upstream_model, mapping.upstream_endpoint_family, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
   a.system_account_id,
   ra.id, ra.status, ra.expires_at, ra.limits_json, ra.resource_id, ra.resource_owner_system_account_id, ra.effective_source_team_id,
-  source.id, source.config_revision, source.provider_code, source.type, source.status, source.schedulable,
+  source.id, source.config_revision, source.provider_code, source.provider_protocol_profile_id, source.protocol_code, source.protocol_version, source.type, source.status, source.schedulable,
   source.account_expires_at, source.cooldown_until, source.last_error_code, source.credentials_encrypted,
   binding.group_id, binding.account_authorization_id,
   proxy.id, proxy.enabled, proxy.type, proxy.host, proxy.port, proxy.username, proxy.password_encrypted
@@ -375,11 +375,30 @@ LEFT JOIN LATERAL (
   ORDER BY ga.updated_at DESC, ga.group_id ASC, ga.account_id ASC LIMIT 1
 ) binding ON TRUE
 LEFT JOIN juhe_business.proxy_profiles proxy ON proxy.id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.proxy_profile_id ELSE source.proxy_profile_id END
+LEFT JOIN LATERAL (
+  SELECT mm.upstream_model, mm.upstream_endpoint_family
+  FROM juhe_business.account_model_mappings mm
+  WHERE mm.account_id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END
+    AND mm.provider_code = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.provider_code ELSE source.provider_code END
+    AND mm.enabled = 1
+    AND mm.source_model = a.health_check_model
+    AND (mm.upstream_model <> mm.source_model OR mm.upstream_endpoint_family <> mm.source_endpoint_family)
+    AND mm.source_endpoint_family = CASE
+      WHEN a.health_check_endpoint_mode IN ('chat_json', 'chat_sse') THEN 'chat_completions'
+      WHEN a.health_check_endpoint_mode IN ('responses_json', 'responses_sse') THEN 'responses'
+      WHEN a.health_check_endpoint_mode IN ('messages_json', 'messages_sse') THEN 'messages'
+      WHEN a.health_check_endpoint_mode = 'generate_content_json' THEN 'generate_content'
+      WHEN a.health_check_endpoint_mode = 'generate_content_sse' THEN 'stream_generate_content'
+      ELSE 'interactions'
+    END
+  ORDER BY mm.updated_at DESC, mm.source_model ASC
+  LIMIT 1
+) mapping ON TRUE
 WHERE a.deleted_at IS NULL
-  AND a.provider_code IN ('gpt', 'openai')
-  AND a.type IN ('api_key', 'oauth')
-  AND a.health_check_endpoint_mode IN ('chat_json', 'responses_json', 'responses_sse', 'images_json')
-  AND (a.type <> 'oauth' OR a.health_check_endpoint_mode = 'responses_json')
+  AND a.provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+  AND a.type IN ('api_key', 'oauth', 'google_oauth')
+  AND (a.provider_protocol_profile_id <> 'profile_hybrid_openai_chat_v1' OR mapping.upstream_model IS NOT NULL)
+  AND a.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
   AND (a.status = 'pending_test' OR a.schedulable = 1)
   AND (a.account_expires_at IS NULL OR a.account_expires_at > $1)
@@ -389,7 +408,7 @@ WHERE a.deleted_at IS NULL
     ra.id IS NOT NULL AND ra.status = 'active' AND (ra.expires_at IS NULL OR ra.expires_at > $1)
     AND ra.resource_type = 'account' AND ra.resource_id = source.id
     AND ra.resource_owner_system_account_id = source.system_account_id AND ra.grantee_system_account_id = a.system_account_id
-    AND source.provider_code IN ('gpt', 'openai') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1
+    AND source.provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1
     AND source.deleted_at IS NULL AND source.last_error_code IS DISTINCT FROM 'account_expired'
     AND (source.account_expires_at IS NULL OR source.account_expires_at > $1)
     AND (source.cooldown_until IS NULL OR source.cooldown_until <= $1)
@@ -428,23 +447,30 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var accountExpires, cooldownUntil, observationStarted, cooldownGeneration sql.NullString
 	var authorizationID, authorizationStatus, authorizationExpires, authorizationLimits sql.NullString
 	var authorizationResourceID, authorizationOwner, authorizationTeam sql.NullString
-	var sourceID, sourceProvider, sourceType, sourceStatus, sourceExpires, sourceCooldown, sourceError, sourceCredentials sql.NullString
+	var accountProfile, accountProtocol, accountProtocolVersion sql.NullString
+	var mappedUpstreamModel, mappedUpstreamFamily sql.NullString
+	var sourceID, sourceProvider, sourceProfile, sourceProtocol, sourceProtocolVersion, sourceType, sourceStatus, sourceExpires, sourceCooldown, sourceError, sourceCredentials sql.NullString
 	var sourceRevision sql.NullInt64
 	var groupID, bindingAuthorizationID sql.NullString
 	var proxyID, proxyType, proxyHost, proxyUsername, proxyPassword sql.NullString
 	var proxyEnabled sql.NullBool
 	var proxyPort sql.NullInt64
 	if err := rows.Scan(
-		&result.account.ID, &result.inputVersion, &result.account.ConfigRevision, &result.account.DispatchRevision, &result.account.Provider, &result.account.Type, &result.account.Status, &schedulable,
-		&result.account.EndpointMode, &result.account.HealthModel, &result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe,
+		&result.account.ID, &result.inputVersion, &result.account.ConfigRevision, &result.account.DispatchRevision, &result.account.Provider, &accountProfile, &accountProtocol, &accountProtocolVersion, &result.account.Type, &result.account.Status, &schedulable,
+		&result.account.EndpointMode, &result.account.HealthModel, &mappedUpstreamModel, &mappedUpstreamFamily, &result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe,
 		&observationStarted, &cooldownGeneration, &result.systemAccount,
 		&authorizationID, &authorizationStatus, &authorizationExpires, &authorizationLimits, &authorizationResourceID, &authorizationOwner, &authorizationTeam,
-		&sourceID, &sourceRevision, &sourceProvider, &sourceType, &sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
+		&sourceID, &sourceRevision, &sourceProvider, &sourceProfile, &sourceProtocol, &sourceProtocolVersion, &sourceType, &sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
 		&groupID, &bindingAuthorizationID,
 		&proxyID, &proxyEnabled, &proxyType, &proxyHost, &proxyPort, &proxyUsername, &proxyPassword,
 	); err != nil {
 		return directCandidate{}, fmt.Errorf("解码 PG direct input 候选失败: %w", err)
 	}
+	result.account.ProtocolProfileID = accountProfile.String
+	result.account.ProtocolCode = accountProtocol.String
+	result.account.ProtocolVersion = accountProtocolVersion.String
+	result.account.MappedUpstreamModel = mappedUpstreamModel.String
+	result.account.MappedUpstreamEndpointFamily = mappedUpstreamFamily.String
 	result.account.Schedulable = schedulable.Valid && schedulable.Int64 == 1
 	result.account.TemporaryUnavailableContinuousProbeEnabled = continuousProbe.Valid && continuousProbe.Bool
 	var err error
@@ -482,7 +508,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		if err != nil {
 			return directCandidate{}, err
 		}
-		result.source = &DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceProvider.String, Type: sourceType.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
+		result.source = &DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceProvider.String, ProtocolProfileID: sourceProfile.String, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
 		if result.account.Cooldown != nil {
 			value := result.source.ConfigRevision
 			result.account.Cooldown.SourceConfigRevision = &value

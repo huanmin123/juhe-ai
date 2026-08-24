@@ -51,18 +51,19 @@ func (indexer *Indexer) Run(ctx context.Context) error {
 	if err := indexer.RunRetention(ctx); err != nil {
 		return err
 	}
-	pollTicker := time.NewTicker(indexer.config.PollInterval)
+	pollTimer := time.NewTimer(schedulejitter.Delay(indexer.config.PollInterval))
 	retentionTimer := time.NewTimer(schedulejitter.Delay(indexer.config.RetentionInterval))
-	defer pollTicker.Stop()
+	defer pollTimer.Stop()
 	defer retentionTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-pollTicker.C:
+		case <-pollTimer.C:
 			if err := indexer.RunOnce(ctx); err != nil {
 				return err
 			}
+			pollTimer.Reset(schedulejitter.Delay(indexer.config.PollInterval))
 		case <-retentionTimer.C:
 			if err := indexer.RunRetention(ctx); err != nil {
 				return err

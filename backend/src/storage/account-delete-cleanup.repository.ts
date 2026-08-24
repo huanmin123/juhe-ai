@@ -261,8 +261,8 @@ function logicallyDeleteAccounts(database: DatabaseSync, accountIds: string[], a
     FROM accounts
     WHERE deleted_at = ?
       AND id IN (${sqlPlaceholders(ids.length)})
-      AND provider_code IN ('gpt', 'openai')
-      AND type IN ('api_key', 'oauth')
+      AND provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+      AND type IN ('api_key', 'oauth', 'google_oauth')
     ORDER BY id ASC
   `).all(deletedAt, ...ids) as Array<{ id: string, config_revision: number | string | bigint, dispatch_revision: number | string | bigint }>
   for (const account of tombstones) {
@@ -309,8 +309,8 @@ async function logicallyDeleteAccountsAsync(client: DatabaseClient, accountIds: 
       FROM ${accountDeleteCleanupTable(client, 'accounts')}
       WHERE deleted_at = ?
         AND id IN (${deletedIds.map(() => '?').join(', ')})
-        AND provider_code IN ('gpt', 'openai')
-        AND type IN ('api_key', 'oauth')
+      AND provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+      AND type IN ('api_key', 'oauth', 'google_oauth')
       ORDER BY id ASC
       ${client.driver === 'postgres' ? 'FOR UPDATE' : ''}
     `, [deletedAt, ...deletedIds])

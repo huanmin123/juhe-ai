@@ -20,6 +20,7 @@ import type { ChatTransportProtocol } from './chat-transport.js'
 import { countChatJsonTokens } from './chat-token-count.js'
 import type { ChatGatewayDispatch } from './chat-gateway-dispatch.js'
 import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 
 const compactionPromptVersion = 'chat-context-summary-v1'
 const compactionSourcePageRows = 40
@@ -164,7 +165,7 @@ async function runCompaction(
       systemAccountId: input.systemAccountId,
       expectedRevision: loaded.head.contextRevision,
       errorCode: safeErrorCode(error),
-      retryAt: new Date(Date.now() + 60_000).toISOString(),
+      retryAt: new Date(Date.now() + passiveScheduleDelayMs(60_000)).toISOString(),
       now: new Date().toISOString()
     }).catch(() => false)
     return { status: 'failed', reason: error instanceof Error ? error.message : 'chat_context_claim_failed' }
@@ -266,7 +267,7 @@ async function runCompaction(
       systemAccountId: input.systemAccountId,
       claimId: claim.claimId,
       errorCode: safeErrorCode(error),
-      retryAt: new Date(Date.now() + Math.min(30, Math.max(1, claim.attemptCount)) * 60_000).toISOString(),
+      retryAt: new Date(Date.now() + passiveScheduleDelayMs(Math.min(30, Math.max(1, claim.attemptCount)) * 60_000)).toISOString(),
       now: new Date().toISOString()
     }).catch(() => false)
     return { status: 'failed', reason: error instanceof Error ? error.message : 'chat_context_compaction_failed' }

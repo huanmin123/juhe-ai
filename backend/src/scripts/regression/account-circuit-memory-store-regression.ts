@@ -8,6 +8,7 @@ import {
   normalizeAccountCircuitEscalationWindowMs,
   type AccountCircuitScope
 } from '../../modules/gateway/runtime/account-circuit-store.js'
+import { passiveScheduleJitterWindowMs } from '../../shared/passive-schedule-jitter.js'
 
 let now = 10_000
 const store = new MemoryAccountCircuitStore({ capacity: 4, closedRetentionMs: 100, now: () => now })
@@ -30,10 +31,17 @@ assert.equal(normalizeAccountCircuitEscalationDistinctScopeThreshold(undefined),
 assert.throws(() => normalizeAccountCircuitEscalationDistinctScopeThreshold(2), /3\.\.64/)
 assert.equal(normalizeAccountCircuitEscalationWindowMs(undefined), 10 * 60_000)
 assert.throws(() => normalizeAccountCircuitEscalationWindowMs(59_999), /60000\.\.86400000/)
-assert.deepEqual(
-  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((attempt) => accountCircuitBackoffDelayMs(attempt)),
-  [3_000, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 900_000]
-)
+for (const attempt of [1, 2, 3, 4]) {
+  const base = [3_000, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 900_000][attempt - 1]!
+  const delay = accountCircuitBackoffDelayMs(attempt)
+  assert.equal(delay, base, `第 ${attempt} 次短电路退避保持最小控制窗口`)
+}
+for (const attempt of [5, 6, 7, 8, 9, 10]) {
+  const base = [3_000, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 900_000][attempt - 1]!
+  const delay = accountCircuitBackoffDelayMs(attempt)
+  const window = passiveScheduleJitterWindowMs(base)
+  assert.ok(delay >= base - window && delay <= base + window && delay !== base, `第 ${attempt} 次长电路退避必须使用全局偏移`)
+}
 assert.equal((await store.get(accountScope)).phase, 'CLOSED', '缺失状态必须按 CLOSED 读取')
 await assert.rejects(
   store.restore({

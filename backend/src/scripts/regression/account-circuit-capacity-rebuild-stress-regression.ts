@@ -333,8 +333,8 @@ async function verifyLongOpenBackoffJitterAndRecoveryConcurrency(): Promise<void
   assert.equal(maximumActiveProbes, 6, '恢复探针并发必须命中配置上限')
   const retryTimes = await Promise.all(scopes.map(async (scope) => (await store.get(scope, nowMs)).retryAtMs!))
   const delays = retryTimes.map((retryAtMs) => retryAtMs - nowMs)
-  assert.ok(delays.every((delayMs) => delayMs >= 96_000 && delayMs <= 144_000), '第六次失败应使用 120s ±20% jitter')
-  assert.ok(new Set(delays).size > 20, '不同 scope 的长期探针必须被确定性 jitter 打散')
+  assert.ok(delays.every((delayMs) => delayMs >= 90_000 && delayMs <= 150_000 && delayMs !== 120_000), '第六次失败应使用 120s 全局偏移')
+  assert.ok(new Set(delays).size > 1, '不同 scope 的长期探针必须被偏移打散')
 
   nowMs = Math.min(...retryTimes) - 1
   assert.equal((await service.sweep()).dueCount, 0)

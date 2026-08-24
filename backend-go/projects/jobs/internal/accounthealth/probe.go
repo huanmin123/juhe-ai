@@ -31,8 +31,9 @@ type ProbeOptions struct {
 	Now              func() time.Time
 }
 
-// ProbeOpenAI executes one direct probe. It intentionally has no dependency
-// on Node, Gateway, IPC, Redis, routing, model mapping, or usage writers.
+// ProbeOpenAI executes one frozen direct probe. The historical exported name is
+// retained for callers, but dispatches by the signed protocol profile rather
+// than assuming every account speaks OpenAI v1.
 func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope, options ProbeOptions) ProbeResult {
 	if err := validateInput(input, options); err != nil {
 		return taskFailure("invalid_input", err.Error())
@@ -75,7 +76,7 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return neutral(response.StatusCode, "upstream_http_status", "上游返回非成功状态")
 	}
-	if err := verifyResponse(input.EndpointMode, input.HealthModel, body); err != nil {
+	if err := verifyResponse(input, body); err != nil {
 		return neutral(response.StatusCode, "upstream_protocol_invalid", "上游响应未满足探活语义")
 	}
 	return ProbeResult{Outcome: OutcomeSuccess, StatusCode: response.StatusCode}
@@ -85,13 +86,16 @@ func validateInput(input Input, options ProbeOptions) error {
 	if strings.TrimSpace(input.AccountID) == "" || input.InputVersion <= 0 || input.ConfigRevision <= 0 || input.DispatchRevision <= 0 {
 		return errors.New("input fence 无效")
 	}
-	if strings.TrimSpace(input.Provider) != "openai" || (input.Type != "api_key" && input.Type != "oauth") {
+	profileProvider := probeProfileProvider(input.ProtocolProfileID, input.Provider)
+	if !isSupportedDirectProfile(input.ProtocolProfileID, profileProvider, input.Type, input.EndpointMode) {
 		return errors.New("未冻结的 provider 或账户类型")
 	}
-	switch input.EndpointMode {
-	case "chat_json", "responses_json", "responses_sse", "images_json":
-	default:
-		return errors.New("未冻结的探活 endpoint mode")
+	if err := validateDirectProtocolMetadata(input.ProtocolProfileID, input.ProtocolCode, input.ProtocolVersion); err != nil {
+		return err
+	}
+	protocol := directProbeProtocolForMode(input.ProtocolProfileID, profileProvider, input.EndpointMode)
+	if protocol == "" || strings.TrimSpace(input.Provider) != protocol {
+		return errors.New("provider 与协议 profile 不一致")
 	}
 	if strings.TrimSpace(input.HealthModel) == "" {
 		return errors.New("health model 缺失")
@@ -103,11 +107,13 @@ func validateInput(input Input, options ProbeOptions) error {
 	if input.ExpiresAt.IsZero() || !input.ExpiresAt.After(now) {
 		return errors.New("input 已过期")
 	}
-	if input.Type == "oauth" && (input.OAuthExpiresAt == nil || !input.OAuthExpiresAt.After(now.Add(time.Minute))) {
+	if (input.Type == "oauth" || input.Type == "google_oauth") && (input.OAuthExpiresAt == nil || !input.OAuthExpiresAt.After(now.Add(time.Minute))) {
 		return errors.New("OAuth access token 已到期或接近到期")
 	}
-	if input.Type == "oauth" && input.EndpointMode != "responses_json" {
-		return errors.New("OAuth 仅允许独立冻结的 responses_json 探活")
+	if input.Type == "google_oauth" && (input.OAuthType == "code_assist" || input.OAuthType == "google_one") {
+		if protocol != "gemini" || strings.TrimSpace(input.OAuthProjectID) == "" {
+			return errors.New("Gemini Code Assist / Google One 探活缺少协议或 project_id")
+		}
 	}
 	return nil
 }
@@ -150,21 +156,22 @@ func probeTransportConfig(input Input, options ProbeOptions) (string, time.Durat
 }
 
 func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token string) (*http.Request, error) {
+	protocol := directProbeProtocolForMode(input.ProtocolProfileID, input.Provider, input.EndpointMode)
 	path := ""
 	method := http.MethodPost
 	var body any
 	switch input.EndpointMode {
-	case "chat_json":
+	case "chat_json", "chat_sse":
 		path = "/v1/chat/completions"
 		body = map[string]any{
 			"model":      input.HealthModel,
 			"messages":   []map[string]any{{"role": "user", "content": "只能回复：juhe"}},
 			"max_tokens": 256,
-			"stream":     false,
+			"stream":     input.EndpointMode == "chat_sse",
 		}
 	case "responses_json":
 		path = "/v1/responses"
-		if input.Type == "oauth" {
+		if input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
 			path = "/responses"
 		}
 		body = map[string]any{
@@ -174,11 +181,14 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			"max_output_tokens": 256,
 			"stream":            false,
 		}
-		if input.Type == "oauth" {
+		if input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
 			body.(map[string]any)["store"] = false
 		}
 	case "responses_sse":
 		path = "/v1/responses"
+		if input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
+			path = "/responses"
+		}
 		body = map[string]any{
 			"model":             input.HealthModel,
 			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "只能回复：juhe"}}}},
@@ -197,8 +207,44 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			"output_format":      "webp",
 			"output_compression": 100,
 		}
+	case "messages_json", "messages_sse":
+		path = "/v1/messages"
+		body = map[string]any{
+			"model":      input.HealthModel,
+			"max_tokens": 256,
+			"messages":   []map[string]any{{"role": "user", "content": "只能回复：juhe"}},
+			"stream":     input.EndpointMode == "messages_sse",
+		}
+	case "generate_content_json", "generate_content_sse":
+		model := strings.TrimPrefix(input.HealthModel, "models/")
+		path = "/v1beta/models/" + url.PathEscape(model) + ":generateContent"
+		if input.EndpointMode == "generate_content_sse" {
+			path = "/v1beta/models/" + url.PathEscape(model) + ":streamGenerateContent?alt=sse"
+		}
+		body = map[string]any{
+			"contents":         []map[string]any{{"role": "user", "parts": []map[string]any{{"text": "只能回复：juhe"}}}},
+			"generationConfig": map[string]any{"maxOutputTokens": 256},
+		}
+	case "interactions_json", "interactions_sse":
+		path = "/v1beta/interactions"
+		body = map[string]any{
+			"model":  input.HealthModel,
+			"input":  "只能回复：juhe",
+			"stream": input.EndpointMode == "interactions_sse",
+		}
 	default:
 		return nil, errors.New("未冻结的 endpoint mode")
+	}
+	codeAssist := protocol == "gemini" && input.Type == "google_oauth" && (input.OAuthType == "code_assist" || input.OAuthType == "google_one")
+	if codeAssist {
+		path = "/v1internal:streamGenerateContent?alt=sse"
+		body = map[string]any{"model": input.HealthModel, "project": input.OAuthProjectID, "request": body}
+	}
+	if input.ProtocolProfileID == "profile_gemini_openai_chat_v1beta" && protocol == "openai" {
+		path = strings.TrimPrefix(path, "/v1")
+	}
+	if (input.ProtocolProfileID == "profile_glm_general_openai_v1" || input.ProtocolProfileID == "profile_glm_coding_openai_v1") && protocol == "openai" {
+		path = strings.TrimPrefix(path, "/v1")
 	}
 	target := joinBaseURL(base, path)
 	var reader io.Reader
@@ -213,14 +259,58 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	if input.EndpointMode == "responses_sse" {
+	request.Header.Set("User-Agent", defaultProbeUserAgent)
+	switch protocol {
+	case "anthropic":
+		request.Header.Set("anthropic-version", "2023-06-01")
+		if input.Type == "oauth" || input.ProtocolProfileID == "profile_glm_coding_anthropic_v1" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		} else {
+			request.Header.Set("x-api-key", token)
+		}
+		if input.Type == "oauth" {
+			request.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
+			request.Header.Set("User-Agent", "claude-cli/2.1.161 (external, cli)")
+			request.Header.Set("x-stainless-lang", "js")
+			request.Header.Set("x-stainless-package-version", "0.94.0")
+			request.Header.Set("x-stainless-os", "Linux")
+			request.Header.Set("x-stainless-arch", "arm64")
+			request.Header.Set("x-stainless-runtime", "node")
+			request.Header.Set("x-stainless-runtime-version", "v24.3.0")
+			request.Header.Set("x-stainless-retry-count", "0")
+			request.Header.Set("x-stainless-timeout", "600")
+			request.Header.Set("x-app", "cli")
+			request.Header.Set("anthropic-dangerous-direct-browser-access", "true")
+		}
+	case "gemini":
+		if input.Type == "google_oauth" {
+			request.Header.Set("Authorization", "Bearer "+token)
+			if value := strings.TrimSpace(input.OAuthQuotaProjectID); value != "" {
+				request.Header.Set("x-goog-user-project", value)
+			}
+		} else {
+			request.Header.Set("x-goog-api-key", token)
+		}
+		if input.EndpointMode == "interactions_json" || input.EndpointMode == "interactions_sse" {
+			request.Header.Set("api-revision", "2026-05-20")
+		}
+		if codeAssist {
+			request.Header.Set("User-Agent", "GeminiCLI/0.1.5 (Windows; AMD64)")
+		}
+	default:
+		request.Header.Set("Authorization", "Bearer "+token)
+		if input.ProtocolProfileID == "profile_xai_openai_v1" && input.Type == "oauth" && strings.EqualFold(request.URL.Hostname(), "cli-chat-proxy.grok.com") {
+			request.Header.Set("User-Agent", "xai-grok-workspace/0.2.93")
+			request.Header.Set("x-xai-token-auth", "xai-grok-cli")
+			request.Header.Set("x-grok-client-version", "0.2.93")
+		}
+	}
+	if input.EndpointMode == "responses_sse" || input.EndpointMode == "chat_sse" || input.EndpointMode == "messages_sse" || input.EndpointMode == "generate_content_sse" || input.EndpointMode == "interactions_sse" || codeAssist {
 		request.Header.Set("Accept", "text/event-stream")
 	} else {
 		request.Header.Set("Accept", "application/json")
 	}
-	request.Header.Set("User-Agent", defaultProbeUserAgent)
-	if input.Type == "oauth" {
+	if protocol == "openai" && input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
 		request.Header.Set("OpenAI-Beta", "responses=experimental")
 		if accountID := strings.TrimSpace(input.OAuthAccountID); accountID != "" {
 			request.Header.Set("ChatGPT-Account-Id", accountID)
@@ -245,11 +335,18 @@ func parseBaseURL(raw string, allowInsecure bool) (*url.URL, error) {
 
 func joinBaseURL(base *url.URL, path string) *url.URL {
 	copy := *base
+	pathOnly, rawQuery, hasQuery := strings.Cut(path, "?")
 	basePath := strings.TrimRight(copy.Path, "/")
 	if strings.HasSuffix(basePath, "/v1") {
 		basePath = strings.TrimSuffix(basePath, "/v1")
 	}
-	copy.Path = basePath + path
+	if strings.HasSuffix(basePath, "/v1beta") && strings.HasPrefix(pathOnly, "/v1beta/") {
+		pathOnly = strings.TrimPrefix(pathOnly, "/v1beta")
+	}
+	copy.Path = basePath + pathOnly
+	if hasQuery {
+		copy.RawQuery = rawQuery
+	}
 	return &copy
 }
 
@@ -276,37 +373,123 @@ func decryptToken(secret string, envelope CredentialEnvelope) (string, error) {
 	return value, nil
 }
 
-func verifyResponse(mode, model string, body []byte) error {
-	if mode == "responses_sse" {
+func verifyResponse(input Input, body []byte) error {
+	codeAssist := input.Provider == "gemini" && input.Type == "google_oauth" && (input.OAuthType == "code_assist" || input.OAuthType == "google_one")
+	if codeAssist {
+		return verifyGeminiSSE(body)
+	}
+	switch input.EndpointMode {
+	case "responses_sse":
 		return verifyResponsesSSE(body)
+	case "chat_sse":
+		return verifyOpenAIChatSSE(body)
+	case "messages_sse":
+		return verifyAnthropicSSE(body)
+	case "generate_content_sse":
+		return verifyGeminiSSE(body)
+	case "interactions_sse":
+		return verifyInteractionsSSE(body)
 	}
 	var response map[string]any
 	if err := json.Unmarshal(body, &response); err != nil {
 		return errors.New("响应不是 JSON")
 	}
-	if mode == "images_json" {
-		data, ok := response["data"].([]any)
-		if !ok {
-			return errors.New("Images API 响应缺少 data")
+	if input.ProtocolProfileID == "" {
+		if input.EndpointMode == "images_json" {
+			return verifyImagesJSON(response)
 		}
-		for _, item := range data {
-			record, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if value, ok := record["b64_json"].(string); ok && strings.TrimSpace(value) != "" {
-				return nil
-			}
-			if value, ok := record["url"].(string); ok && strings.TrimSpace(value) != "" {
-				return nil
-			}
+		if containsChallenge(response) {
+			return nil
 		}
-		return errors.New("Images API 响应缺少有效图片结果")
+		return errors.New("响应未包含挑战值")
 	}
-	if containsChallenge(response) {
+	switch input.EndpointMode {
+	case "images_json":
+		return verifyImagesJSON(response)
+	case "chat_json":
+		if !chatCompleted(response) || !containsChallenge(response) {
+			return errors.New("Chat Completions 响应未完成挑战")
+		}
 		return nil
+	case "responses_json":
+		if textField(response, "status") != "completed" || !(response["object"] == "response" || response["output"] != nil) || !containsChallenge(response) {
+			return errors.New("Responses 响应未完成挑战")
+		}
+		return nil
+	case "messages_json":
+		if response["type"] != "message" || textField(response, "stop_reason") == "" || !containsChallenge(response) {
+			return errors.New("Anthropic Messages 响应未完成挑战")
+		}
+		return nil
+	case "generate_content_json":
+		if !geminiCandidateComplete(response) || !containsChallenge(response) {
+			return errors.New("Gemini GenerateContent 响应未完成挑战")
+		}
+		return nil
+	case "interactions_json":
+		if textField(response, "status") != "completed" || !containsChallenge(response) {
+			return errors.New("Gemini Interactions 响应未完成挑战")
+		}
+		return nil
+	default:
+		if containsChallenge(response) {
+			return nil
+		}
+		return errors.New("响应未包含挑战值")
 	}
-	return errors.New("响应未包含挑战值")
+}
+
+func chatCompleted(response map[string]any) bool {
+	choices, ok := response["choices"].([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range choices {
+		choice, _ := item.(map[string]any)
+		if textField(choice, "finish_reason") != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func verifyImagesJSON(response map[string]any) error {
+	data, ok := response["data"].([]any)
+	if !ok {
+		return errors.New("Images API 响应缺少 data")
+	}
+	for _, item := range data {
+		record, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if value := textField(record, "b64_json"); value != "" {
+			return nil
+		}
+		if value := textField(record, "url"); value != "" {
+			return nil
+		}
+	}
+	return errors.New("Images API 响应缺少有效图片结果")
+}
+
+func textField(value map[string]any, name string) string {
+	text, _ := value[name].(string)
+	return strings.TrimSpace(text)
+}
+
+func geminiCandidateComplete(response map[string]any) bool {
+	candidates, ok := response["candidates"].([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range candidates {
+		candidate, ok := item.(map[string]any)
+		if ok && textField(candidate, "finishReason") != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func verifyResponsesSSE(body []byte) error {
@@ -323,6 +506,168 @@ func verifyResponsesSSE(body []byte) error {
 	}
 	if !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
 		return errors.New("SSE 输出未包含挑战值")
+	}
+	return nil
+}
+
+func verifyOpenAIChatSSE(body []byte) error {
+	text := strings.ReplaceAll(string(body), "\r\n", "\n")
+	var output strings.Builder
+	done := false
+	for _, block := range strings.Split(text, "\n\n") {
+		for _, line := range strings.Split(block, "\n") {
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data == "[DONE]" {
+				done = true
+				continue
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(data), &payload); err != nil {
+				return errors.New("Chat SSE data 不是 JSON")
+			}
+			choices, _ := payload["choices"].([]any)
+			for _, item := range choices {
+				choice, _ := item.(map[string]any)
+				if textField(choice, "finish_reason") != "" {
+					done = true
+				}
+				if delta, _ := choice["delta"].(map[string]any); delta != nil {
+					output.WriteString(textField(delta, "content"))
+				}
+				if message, _ := choice["message"].(map[string]any); message != nil {
+					output.WriteString(textField(message, "content"))
+				}
+			}
+		}
+	}
+	if !done || !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+		return errors.New("Chat SSE 未完成挑战")
+	}
+	return nil
+}
+
+func verifyAnthropicSSE(body []byte) error {
+	text := strings.ReplaceAll(string(body), "\r\n", "\n")
+	var output strings.Builder
+	stopped := false
+	for _, block := range strings.Split(text, "\n\n") {
+		var eventName string
+		var data string
+		for _, line := range strings.Split(block, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event:"):
+				eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			case strings.HasPrefix(line, "data:"):
+				data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			}
+		}
+		if data == "" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return errors.New("Messages SSE data 不是 JSON")
+		}
+		if kind := textField(payload, "type"); kind != "" {
+			eventName = kind
+		}
+		if eventName == "content_block_delta" {
+			if delta, _ := payload["delta"].(map[string]any); delta != nil {
+				output.WriteString(textField(delta, "text"))
+			}
+		}
+		if eventName == "message_stop" {
+			stopped = true
+		}
+	}
+	if !stopped || !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+		return errors.New("Messages SSE 未完成挑战")
+	}
+	return nil
+}
+
+func verifyGeminiSSE(body []byte) error {
+	text := strings.ReplaceAll(string(body), "\r\n", "\n")
+	var output strings.Builder
+	finished := false
+	for _, block := range strings.Split(text, "\n\n") {
+		for _, line := range strings.Split(block, "\n") {
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data == "[DONE]" {
+				finished = true
+				continue
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(data), &payload); err != nil {
+				return errors.New("Gemini SSE data 不是 JSON")
+			}
+			candidatePayload := payload
+			if nested, ok := payload["response"].(map[string]any); ok {
+				candidatePayload = nested
+			}
+			if geminiCandidateComplete(candidatePayload) {
+				finished = true
+			}
+			if candidates, ok := candidatePayload["candidates"].([]any); ok {
+				for _, item := range candidates {
+					candidate, _ := item.(map[string]any)
+					content, _ := candidate["content"].(map[string]any)
+					parts, _ := content["parts"].([]any)
+					for _, part := range parts {
+						if record, _ := part.(map[string]any); record != nil {
+							output.WriteString(textField(record, "text"))
+						}
+					}
+				}
+			}
+			if containsChallenge(payload) {
+				output.WriteString(probeChallenge)
+			}
+		}
+	}
+	if !finished || !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+		return errors.New("Gemini SSE 未完成挑战")
+	}
+	return nil
+}
+
+func verifyInteractionsSSE(body []byte) error {
+	text := strings.ReplaceAll(string(body), "\r\n", "\n")
+	var output strings.Builder
+	completed := false
+	for _, block := range strings.Split(text, "\n\n") {
+		for _, line := range strings.Split(block, "\n") {
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data == "[DONE]" {
+				completed = true
+				continue
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(data), &payload); err != nil {
+				return errors.New("Interactions SSE data 不是 JSON")
+			}
+			if textField(payload, "status") == "completed" || textField(payload, "type") == "interaction.completed" {
+				completed = true
+			}
+			if interaction, _ := payload["interaction"].(map[string]any); interaction != nil && textField(interaction, "status") == "completed" {
+				completed = true
+			}
+			if containsChallenge(payload) {
+				output.WriteString(probeChallenge)
+			}
+		}
+	}
+	if !completed || !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+		return errors.New("Interactions SSE 未完成挑战")
 	}
 	return nil
 }

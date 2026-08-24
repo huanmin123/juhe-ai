@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import type { AccountSummary } from '../../domain/types.js'
 import { readPublishedAccountHealthJobsInput } from '../../modules/background/account-health-jobs-input.protocol.js'
 import { publishAccountHealthJobsInputFromAccount, publishAccountHealthJobsProbeRequest } from '../../modules/background/account-health-jobs-input.service.js'
-import { isJ1AccountHealthEndpointModeEligible } from '../../storage/account-health-jobs-input.repository.js'
+import { isJ1AccountHealthEndpointModeEligible, resolveJ1AccountHealthProbeProtocol } from '../../storage/account-health-jobs-input.repository.js'
 
 const testRoot = resolve(process.env.JUHE_AI_TEST_TEMP_ROOT?.trim() || tmpdir())
 const root = mkdtempSync(join(testRoot, 'juhe-ai-account-health-service-'))
@@ -63,8 +63,8 @@ try {
   const responsesSsePayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(responsesSsePath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
   assert.equal(responsesSsePayload.endpoint_mode, 'responses_sse', 'GPT Responses SSE 必须可进入 Go J1 输入协议')
   assert.equal(isJ1AccountHealthEndpointModeEligible('api_key', 'responses_sse'), true)
-  assert.equal(isJ1AccountHealthEndpointModeEligible('oauth', 'responses_sse'), false)
-  assert.throws(() => publishAccountHealthJobsInputFromAccount({
+  assert.equal(isJ1AccountHealthEndpointModeEligible('oauth', 'responses_sse'), true)
+  const oauthSsePath = publishAccountHealthJobsInputFromAccount({
     account: {
       ...account,
       type: 'oauth',
@@ -77,7 +77,141 @@ try {
     root,
     settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
     expiresAt: new Date(Date.now() + 60_000)
-  }), /账户类型 oauth 不支持探活 endpoint mode：responses_sse/u)
+  })
+  const oauthSsePayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(oauthSsePath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(oauthSsePayload.endpoint_mode, 'responses_sse')
+
+  const xaiOAuthPath = publishAccountHealthJobsInputFromAccount({
+    account: {
+      ...account,
+      providerCode: 'xai',
+      providerProtocolProfileId: 'profile_xai_openai_v1',
+      type: 'oauth',
+      healthCheckEndpointMode: 'responses_json',
+      credentials: { access_token: 'xai-oauth-token', expires_at: new Date(Date.now() + 60_000).toISOString() }
+    } as AccountSummary,
+    dispatchRevision: 3,
+    inputVersion: 181,
+    signingKey,
+    root,
+    settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+    expiresAt: new Date(Date.now() + 60_000)
+  })
+  const xaiOAuthPayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(xaiOAuthPath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(xaiOAuthPayload.base_url, 'https://cli-chat-proxy.grok.com/v1')
+
+  const anthropicAccount = {
+    ...account,
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1',
+    healthCheckEndpointMode: 'messages_sse'
+  } as AccountSummary
+  assert.equal(resolveJ1AccountHealthProbeProtocol(anthropicAccount), 'anthropic')
+  const anthropicPath = publishAccountHealthJobsInputFromAccount({
+    account: anthropicAccount,
+    dispatchRevision: 3,
+    inputVersion: 19,
+    signingKey,
+    root,
+    settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+    expiresAt: new Date(Date.now() + 60_000)
+  })
+  const anthropicPayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(anthropicPath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(anthropicPayload.provider, 'anthropic')
+  assert.equal(anthropicPayload.provider_protocol_profile_id, 'profile_anthropic_anthropic_v1')
+  assert.equal(anthropicPayload.endpoint_mode, 'messages_sse')
+
+  const geminiAccount = {
+    ...account,
+    providerCode: 'gemini',
+    providerProtocolProfileId: 'profile_gemini_native_v1beta',
+    protocolCode: 'gemini',
+    protocolVersion: 'v1beta',
+    healthCheckEndpointMode: 'generate_content_json'
+  } as AccountSummary
+  assert.equal(resolveJ1AccountHealthProbeProtocol(geminiAccount), 'gemini')
+  const geminiPath = publishAccountHealthJobsInputFromAccount({
+    account: geminiAccount,
+    dispatchRevision: 3,
+    inputVersion: 20,
+    signingKey,
+    root,
+    settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+    expiresAt: new Date(Date.now() + 60_000)
+  })
+  const geminiPayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(geminiPath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(geminiPayload.provider, 'gemini')
+  assert.equal(geminiPayload.endpoint_mode, 'generate_content_json')
+
+  for (const [label, candidate, expected] of [
+    ['xai oauth responses', { providerCode: 'xai', providerProtocolProfileId: 'profile_xai_openai_v1', type: 'oauth', healthCheckEndpointMode: 'responses_sse' }, 'openai'],
+    ['OpenAI-compatible OAuth is rejected by its API-key-only profile', { providerCode: 'openai', providerProtocolProfileId: 'profile_openai_openai_v1', type: 'oauth', healthCheckEndpointMode: 'responses_json' }, undefined],
+    ['deepseek anthropic', { providerCode: 'deepseek', providerProtocolProfileId: 'profile_deepseek_anthropic_v1', type: 'api_key', healthCheckEndpointMode: 'messages_json' }, 'anthropic'],
+    ['glm coding anthropic', { providerCode: 'glm', providerProtocolProfileId: 'profile_glm_coding_anthropic_v1', type: 'api_key', healthCheckEndpointMode: 'messages_sse' }, 'anthropic'],
+    ['gemini OpenAI chat', { providerCode: 'gemini', providerProtocolProfileId: 'profile_gemini_openai_chat_v1beta', type: 'api_key', healthCheckEndpointMode: 'chat_sse' }, 'openai'],
+    ['hybrid without mapping is rejected', { providerCode: 'hybrid', providerProtocolProfileId: 'profile_hybrid_openai_chat_v1', type: 'api_key', healthCheckEndpointMode: 'messages_json' }, undefined],
+    ['invalid provider profile pair', { providerCode: 'gemini', providerProtocolProfileId: 'profile_anthropic_anthropic_v1', type: 'api_key', healthCheckEndpointMode: 'messages_json' }, undefined],
+    ['protocol metadata mismatch is rejected', { providerCode: 'gpt', providerProtocolProfileId: 'profile_gpt_openai_v1', protocolCode: 'anthropic', protocolVersion: 'v1', type: 'api_key', healthCheckEndpointMode: 'chat_json' }, undefined]
+  ] as const) {
+    assert.equal(resolveJ1AccountHealthProbeProtocol({ ...account, ...candidate } as AccountSummary), expected, label)
+  }
+
+  const hybridAccount = {
+    ...account,
+    providerCode: 'hybrid',
+    providerProtocolProfileId: 'profile_hybrid_openai_chat_v1',
+    healthCheckEndpointMode: 'messages_json',
+    credentials: { api_key: 'sk-hybrid', base_url: 'https://hybrid.example.com' },
+    modelMappings: [{
+      sourceModel: 'gpt-test',
+      sourceEndpointFamily: 'messages',
+      upstreamModel: 'claude-test',
+      upstreamEndpointFamily: 'messages',
+      enabled: true
+    }]
+  } as AccountSummary
+  assert.equal(resolveJ1AccountHealthProbeProtocol(hybridAccount), 'anthropic')
+  const hybridPath = publishAccountHealthJobsInputFromAccount({
+    account: hybridAccount,
+    dispatchRevision: 3,
+    inputVersion: 21,
+    signingKey,
+    root,
+    settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+    expiresAt: new Date(Date.now() + 60_000)
+  })
+  const hybridPayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(hybridPath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(hybridPayload.provider, 'anthropic')
+  assert.equal(hybridPayload.endpoint_mode, 'messages_json')
+  assert.equal(hybridPayload.health_model, 'claude-test')
+
+  const hybridGeminiSseAccount = {
+    ...hybridAccount,
+    healthCheckEndpointMode: 'generate_content_sse',
+    modelMappings: [{
+      sourceModel: 'gpt-test',
+      sourceEndpointFamily: 'stream_generate_content',
+      upstreamModel: 'gemini-test',
+      upstreamEndpointFamily: 'generate_content',
+      enabled: true
+    }]
+  } as AccountSummary
+  assert.equal(resolveJ1AccountHealthProbeProtocol(hybridGeminiSseAccount), 'gemini')
+  const hybridGeminiSsePath = publishAccountHealthJobsInputFromAccount({
+    account: hybridGeminiSseAccount,
+    dispatchRevision: 3,
+    inputVersion: 22,
+    signingKey,
+    root,
+    settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+    expiresAt: new Date(Date.now() + 60_000)
+  })
+  const hybridGeminiSsePayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(hybridGeminiSsePath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(hybridGeminiSsePayload.provider, 'gemini')
+  assert.equal(hybridGeminiSsePayload.endpoint_mode, 'generate_content_sse')
+  assert.equal(hybridGeminiSsePayload.health_model, 'gemini-test')
 
   const cooldownAccount = {
     ...account,
@@ -123,6 +257,28 @@ try {
   const oauthPayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(oauthPath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
   assert.equal(oauthPayload.endpoint_mode, 'responses_json')
   assert.equal(oauthPayload.oauth_expires_at, '2030-08-16T00:00:00.000Z')
+
+  const profiledOAuthPath = publishAccountHealthJobsInputFromAccount({
+    account: {
+      ...oauthAccount,
+      providerProtocolProfileId: 'profile_gpt_openai_v1',
+      protocolCode: 'openai',
+      protocolVersion: 'v1',
+      credentials: {
+        access_token: 'oauth-access-token',
+        expires_at: '2030-08-16T08:00:00.000+08:00',
+        base_url: 'https://api.openai.com/v1'
+      }
+    } as AccountSummary,
+    dispatchRevision: 3,
+    inputVersion: 130,
+    signingKey,
+    root,
+    settings: { intervalHours: 1, jitterMinutes: 10, failureThreshold: 2 },
+    expiresAt: new Date(Date.now() + 60_000)
+  })
+  const profiledOAuthPayload = JSON.parse(Buffer.from(readPublishedAccountHealthJobsInput(profiledOAuthPath).payload, 'base64url').toString('utf8')) as Record<string, unknown>
+  assert.equal(profiledOAuthPayload.base_url, 'https://chatgpt.com/backend-api/codex')
 
   for (const invalidTime of ['2030-08-16T08:00:00.000', '2030-08-16 08:00:00+08:00', 'not-a-time']) {
     assert.throws(() => publishAccountHealthJobsInputFromAccount({

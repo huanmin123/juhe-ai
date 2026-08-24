@@ -306,9 +306,9 @@ export function decideAccountErrorPolicy(
       : recoveryHint?.mode
     const configuredPolicy = quotaRecoveryPolicyFromCredentials(account.credentials)
     const recoveryAccountType = account.type === 'api_key' ? 'api_key' : account.type === 'google_oauth' ? 'google_oauth' : 'oauth'
-    // Runtime recovery timestamps are mutable observations, not a new policy
-    // generation. Keep the seed identical to the background retest seed so
-    // gateway and worker decisions do not move the due time between stages.
+    // Runtime recovery timestamps are passive observations. The shared quota
+    // policy preserves the hard reset boundary while sampling a fresh global
+    // offset for each newly scheduled retest.
     const recoverySeed = [
       account.id,
       account.selectedApiKeyFingerprint?.trim() || 'account'

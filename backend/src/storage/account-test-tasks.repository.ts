@@ -13,7 +13,7 @@ import type {
 } from '../domain/types.js'
 import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../domain/account-health-check-endpoint-mode.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { requiredRfc3339Instant } from '../shared/rfc3339.js'
+import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
@@ -1431,7 +1431,10 @@ function accountTestTaskFromRow(row: AccountTestTaskRow): AccountTestTask {
 }
 
 function accountTestTaskQueuedDeadlineAt(queuedAt: string): string {
-  return new Date(Date.parse(queuedAt) + runtimeConfig.background.accountTestQueuedMaxWaitMs).toISOString()
+  const canonicalQueuedAt = requiredRfc3339Instant(queuedAt, 'account_test_tasks.queued_at')
+  const queuedAtMs = rfc3339InstantMilliseconds(canonicalQueuedAt)
+  if (queuedAtMs === undefined) throw new Error('account_test_tasks.queued_at 必须是有效 RFC3339 时间')
+  return new Date(queuedAtMs + runtimeConfig.background.accountTestQueuedMaxWaitMs).toISOString()
 }
 
 function databaseBoolean(value: unknown): boolean {

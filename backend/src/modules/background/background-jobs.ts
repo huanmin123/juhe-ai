@@ -276,6 +276,7 @@ function scheduleBackgroundJobs(): void {
         name: backgroundScheduledJobName('background-task-run-reconcile'),
         intervalMs: backgroundTaskRunReconcileIntervalMs,
         initialDelayMs: backgroundTaskRunReconcileInitialDelayMs,
+        passiveJitter: true,
         scheduleMode: 'fixedDelay',
         timeoutMs: 2 * minuteMs,
         failureBackoff: { baseMs: 5 * secondMs, maxMs: 5 * minuteMs },
@@ -333,13 +334,14 @@ function scheduleBackgroundJobs(): void {
       }
       scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: accountApiKeyCooldownRetestStartupDelayMs, passiveJitter: true, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('normal-route-speed-first-recovery-probe'), intervalMs: 5 * secondMs, initialDelayMs: normalRouteSpeedFirstProbeStartupDelayMs, passiveJitter: true, task: runNormalRouteSpeedFirstRecoveryProbe })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-control-plane-maintenance'), intervalMs: 5 * secondMs, initialDelayMs: secondMs, task: runAccountCircuitControlPlaneMaintenance })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-control-plane-maintenance'), intervalMs: 5 * secondMs, initialDelayMs: secondMs, passiveJitter: true, task: runAccountCircuitControlPlaneMaintenance })
       if (runtimeConfig.background.accountListAvailabilityProjectionEnabled) {
         scheduler.schedule({
           name: backgroundScheduledJobName('account-list-availability-projection-maintenance'),
           intervalMs: runtimeConfig.background.accountListAvailabilityProjectionIntervalMs,
           initialDelayMs: secondMs,
           stablePhaseWindowMs: secondMs,
+          passiveJitter: true,
           overlapPolicy: 'coalesceOne',
           resourceLane: 'account-list-projection',
           timeoutMs: 60 * secondMs,

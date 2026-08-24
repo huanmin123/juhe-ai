@@ -12,14 +12,14 @@
 | 低频轻任务 | 稳定初始相位、小范围实例相位 | reconcile、expiry sweep |
 | 新鲜度驱动重统计 | `fixedRate`、`coalesceOne`、资源 lane、租约 | 排行、趋势、overview、范围窗口 |
 | 纯存储维护 | `fixedDelay`、资源 lane、租约 | 表监控、retention、日志索引 |
-| 对象到期任务 | 持久化 `due_at`、对象稳定错峰、短事务 claim | 健康检查、OAuth、余额 |
+| 对象到期任务 | 持久化 `due_at`、全局被动偏移、短事务 claim | 健康检查、OAuth、余额 |
 | 用户控制周期 | 保持用户周期，只治理 claim / 并发 / timeout | 模型质量检查 |
 | 事件驱动微批 | 不加周期 jitter，使用队列上限和背压 | usage、audit、operation |
 
 ## 3. Scheduler 契约
 
 - `scheduleMode`：`fixedRate` 以计划时间为锚点；`fixedDelay` 在上轮结束后再等待周期。
-- `stablePhaseWindowMs`：使用 `jobName + workerRole + stableInstanceId` 派生稳定偏移。`production + performance` 未显式设置 `JUHE_AI_INSTANCE_ID` 时启动直接失败；standalone / 非生产环境保留 PID fallback。
+- `stablePhaseWindowMs`：使用 `jobName + workerRole + stableInstanceId` 派生启动相位，只用于初始分散；每轮被动执行还必须通过全局分级偏移重新采样。`production + performance` 未显式设置 `JUHE_AI_INSTANCE_ID` 时启动直接失败；standalone / 非生产环境保留 PID fallback。
 - `overlapPolicy`：轻任务可 `skip`；重任务使用 `coalesceOne`，运行期间多次到期最多保留一个尾随执行。
 - `timeoutMs`：scheduler 创建 `AbortController` 并传给 task；task 必须在外部请求、批次边界和数据库阶段响应取消。
 - `failureBackoff`：失败使用有上限的 full-jitter backoff；成功后回归正常周期，不永久漂移。
@@ -61,7 +61,7 @@
 
 ## 7. 具体任务规则
 
-- 账户健康检查保持 `1h + 0～10m` 账户稳定错峰，AI 健康监控只读其结果。
+- 账户健康检查保持 `1h` 基础周期并按全局被动策略每轮重新偏移，AI 健康监控只读其结果。
 - 模型质量检查保持用户周期；scheduled / recovery / health-sync retry 使用独立 claim 和真实 batch outcome。
 - 系统趋势只刷新受最新小时变化影响的范围；封口历史窗口不反复删除重建。
 - PostgreSQL quota、usage overview、AI 性能摘要使用“事实写事务内标 dirty + generation CAS + `SKIP LOCKED` 小批领取”。在线刷新只删除或 upsert 本轮领取 scope 的目标行，不再全表删除。

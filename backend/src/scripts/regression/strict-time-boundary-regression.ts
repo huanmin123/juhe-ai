@@ -384,7 +384,7 @@ const chatAssetDeleteRouteEnd = chatRoutesSource.indexOf("\nchatRouter.get('/con
 assert.ok(chatAssetDeleteRouteStart >= 0 && chatAssetDeleteRouteEnd > chatAssetDeleteRouteStart, '必须能定位聊天资产删除路由')
 const chatAssetDeleteRouteSource = chatRoutesSource.slice(chatAssetDeleteRouteStart, chatAssetDeleteRouteEnd)
 assert.doesNotMatch(chatAssetDeleteRouteSource, /Date\.parse\(now\)/, '聊天资产删除路由不得宽松重解析内部 now')
-assert.match(chatAssetDeleteRouteSource, /const nowMs = Date\.now\(\)[\s\S]*retryAt: new Date\(nowMs \+ 60_000\)\.toISOString\(\)/, '聊天资产删除 retryAt 必须基于同一 epoch 生成')
+assert.match(chatAssetDeleteRouteSource, /const nowMs = Date\.now\(\)[\s\S]*retryAt: new Date\(nowMs \+ passiveScheduleDelayMs\(60_000\)\)\.toISOString\(\)/, '聊天资产删除 retryAt 必须基于同一 epoch 生成带偏移')
 
 const workerSchedulerSource = readFileSync(new URL('../../modules/background/worker-scheduler.ts', import.meta.url), 'utf8')
 assert.doesNotMatch(workerSchedulerSource, /Date\.parse\(/, 'worker scheduler 不得按本机时区解析内部绝对时间')
