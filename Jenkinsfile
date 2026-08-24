@@ -462,8 +462,15 @@ def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest
   def activeNodeDigest = metadataValue('prod', 'nodeImageDigest')
   def activeJobsDigest = metadataValue('prod', 'jobsImageDigest')
   def activeGatewayDigest = metadataValue('prod', 'gatewayImageDigest')
+  def activeVerificationStatus = metadataValue('prod', 'verification.status')
+  def activeVerificationSourceCommit = metadataValue('prod', 'verification.sourceCommit')
   if (!validCommit(activeSourceCommit) || !validDigest(activeNodeDigest) || !validDigest(activeJobsDigest) || !validDigest(activeGatewayDigest)) {
     error '当前 prod-B active release state 缺少合法的 source/digest；拒绝创建反向候选。'
+  }
+  if (!(activeVerificationStatus in ['pending', 'passed']) ||
+      (activeVerificationStatus == 'passed' && activeVerificationSourceCommit != activeSourceCommit) ||
+      (activeVerificationStatus == 'pending' && activeVerificationSourceCommit)) {
+    error '当前 prod-B active verification 状态不合法；拒绝创建反向候选。'
   }
   // In the reverse orientation the primary image names are prod-A. The
   // stable prod-B candidate aliases are intentionally left untouched.
@@ -489,8 +496,8 @@ def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest
       -e 's|^  candidateVerification.sourceCommit: ".*"|  candidateVerification.sourceCommit: ""|' \\
       -e 's|^  releaseMode: ".*"|  releaseMode: "reverse-blue-green"|' \\
       -e 's|^  releaseActor: ".*"|  releaseActor: "jenkins-prod-reverse-intent"|' \\
-      -e 's|^  verification.status: ".*"|  verification.status: "pending"|' \\
-      -e 's|^  verification.sourceCommit: ".*"|  verification.sourceCommit: ""|' \\
+      -e 's|^  verification.status: ".*"|  verification.status: "${activeVerificationStatus}"|' \\
+      -e 's|^  verification.sourceCommit: ".*"|  verification.sourceCommit: "${activeVerificationSourceCommit}"|' \\
       '${overlay}/release-metadata.yaml'
     git config user.name platform-jenkins
     git config user.email jenkins@jh.huanmin.top
