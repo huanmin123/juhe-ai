@@ -457,12 +457,11 @@ def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest
   refreshPlatformReleaseWorkspace()
   def overlay = "${releaseWorkspace()}/apps/juhe-ai/overlays/prod"
   // Top-level fields describe the active slot. In this reverse orientation,
-  // B is active and its source/digests are held in the pre-existing candidate
-  // fields until A replaces them as the new candidate.
-  def activeSourceCommit = metadataValue('prod', 'candidateSourceCommit')
-  def activeNodeDigest = metadataValue('prod', 'candidateNodeImageDigest')
-  def activeJobsDigest = metadataValue('prod', 'candidateJobsImageDigest')
-  def activeGatewayDigest = metadataValue('prod', 'candidateGatewayImageDigest')
+  // B is active; preserve those fields while replacing candidate A fields.
+  def activeSourceCommit = metadataValue('prod', 'sourceCommit')
+  def activeNodeDigest = metadataValue('prod', 'nodeImageDigest')
+  def activeJobsDigest = metadataValue('prod', 'jobsImageDigest')
+  def activeGatewayDigest = metadataValue('prod', 'gatewayImageDigest')
   if (!validCommit(activeSourceCommit) || !validDigest(activeNodeDigest) || !validDigest(activeJobsDigest) || !validDigest(activeGatewayDigest)) {
     error '当前 prod-B active release state 缺少合法的 source/digest；拒绝创建反向候选。'
   }
