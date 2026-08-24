@@ -287,6 +287,21 @@ func TestExecuteIssuedInputRejectsLostLeaseExpiredInputAndCancellation(t *testin
 	})
 }
 
+func TestExecuteIssuedInputMakesClaimReleaseFailureVisible(t *testing.T) {
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer proxyServer.Close()
+	store, owner, proxy, input := executorFixture(t, proxyServer.URL, "", "")
+	defer store.Close()
+	releaseErr := errors.New("execution claim release failure")
+	store.releaseExecutionClaim = func(context.Context, string, string) error { return releaseErr }
+	outcome, committed, err := ExecuteIssuedInput(context.Background(), store, owner, proxy, input, ExecutorOptions{Timeout: time.Second})
+	if !errors.Is(err, releaseErr) || committed || outcome.OutcomeID != "" {
+		t.Fatalf("claim release failure was not surfaced: outcome=%+v committed=%t err=%v", outcome, committed, err)
+	}
+}
+
 func TestExecuteIssuedInputRejectsTamperedIssuedSnapshotAndBusyProxy(t *testing.T) {
 	store, owner, proxy, input := executorFixture(t, "http://127.0.0.1:1", "", "")
 	defer store.Close()

@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
 
 var (
@@ -57,11 +60,14 @@ type Runner struct {
 	ownerLease *OwnerLease
 	// These hooks keep lifecycle failure paths executable in unit tests while
 	// production defaults remain the Store methods.
+	acquireOwnerLease  func(context.Context, string, time.Duration) (OwnerLease, bool, error)
 	renewOwnerLease    func(context.Context, OwnerLease, time.Duration) error
 	releaseOwnerLease  func(context.Context, OwnerLease) error
 	releaseProxyLease  func(context.Context, ProxyLease) error
 	acquireProxyLease  func(context.Context, OwnerLease, string, time.Duration) (ProxyLease, bool, error)
+	issueInput         func(context.Context, InputDraft) (IssuedInput, error)
 	executeIssuedInput func(context.Context, *Store, OwnerLease, ProxyLease, IssuedInput, ExecutorOptions) (Outcome, bool, error)
+	runOwnedFn         func(context.Context, OwnerLease) error
 }
 
 func NewRunner(cfg RuntimeConfig, store *Store, reader inputLoader, logger *slog.Logger) *Runner {
@@ -70,12 +76,64 @@ func NewRunner(cfg RuntimeConfig, store *Store, reader inputLoader, logger *slog
 	}
 	runner := &Runner{cfg: cfg, store: store, reader: reader, logger: logger, executeIssuedInput: ExecuteIssuedInput}
 	if store != nil {
+		runner.acquireOwnerLease = store.AcquireOwnerLease
 		runner.renewOwnerLease = store.RenewOwnerLease
 		runner.releaseOwnerLease = store.ReleaseOwnerLease
 		runner.releaseProxyLease = store.ReleaseProxyLease
 		runner.acquireProxyLease = store.AcquireProxyLease
+		runner.issueInput = store.IssueInput
 	}
 	return runner
+}
+
+const leaseReleaseTimeout = 5 * time.Second
+
+// boundedReleaseContext deliberately detaches cancellation from the request
+// or cycle context. A lease/claim release must still be attempted after the
+// work is cancelled, but it must have a finite upper bound and report failure
+// to the caller rather than disappearing in a defer.
+func boundedReleaseContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), leaseReleaseTimeout)
+}
+
+func (r *Runner) releaseOwnerLeaseBounded(parent context.Context, lease OwnerLease) error {
+	release := r.releaseOwnerLease
+	if release == nil && r.store != nil {
+		release = r.store.ReleaseOwnerLease
+	}
+	if release == nil {
+		return errors.New("J3a owner lease release hook unavailable")
+	}
+	releaseCtx, releaseCancel := boundedReleaseContext(parent)
+	defer releaseCancel()
+	return release(releaseCtx, lease)
+}
+
+func (r *Runner) releaseProxyLeaseBounded(parent context.Context, lease ProxyLease) error {
+	release := r.releaseProxyLease
+	if release == nil && r.store != nil {
+		release = r.store.ReleaseProxyLease
+	}
+	if release == nil {
+		return errors.New("J3a proxy lease release hook unavailable")
+	}
+	releaseCtx, releaseCancel := boundedReleaseContext(parent)
+	defer releaseCancel()
+	return release(releaseCtx, lease)
+}
+
+func joinReleaseFailure(existing error, label string, releaseErr error) error {
+	if releaseErr == nil {
+		return existing
+	}
+	wrapped := fmt.Errorf("J3a %s release failed: %w", label, releaseErr)
+	if existing == nil {
+		return wrapped
+	}
+	return errors.Join(existing, wrapped)
 }
 
 // SetResultProjector binds the Go-owned business writer. A J3a runner without
@@ -161,7 +219,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		lease, acquired, err := r.store.AcquireOwnerLease(ctx, r.cfg.InstanceID, r.cfg.OwnerLease)
+		acquireOwner := r.acquireOwnerLease
+		if acquireOwner == nil {
+			acquireOwner = r.store.AcquireOwnerLease
+		}
+		lease, acquired, err := acquireOwner(ctx, r.cfg.InstanceID, r.cfg.OwnerLease)
 		if err != nil {
 			r.recordError(err)
 			if err := waitRuntime(ctx, r.cfg.Interval); err != nil {
@@ -177,12 +239,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		r.setOwnerLease(lease)
 		r.setOwnerHeld(true)
-		err = r.runOwned(ctx, lease)
+		runOwned := r.runOwnedFn
+		if runOwned == nil {
+			runOwned = r.runOwned
+		}
+		err = runOwned(ctx, lease)
 		r.setOwnerHeld(false)
 		r.clearOwnerLease()
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		releaseErr := r.releaseOwnerLease(releaseCtx, lease)
-		cancel()
+		releaseErr := r.releaseOwnerLeaseBounded(ctx, lease)
 		runErr := err
 		if releaseErr != nil {
 			if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -210,7 +274,7 @@ func (r *Runner) Run(ctx context.Context) error {
 // periodic loop is active; otherwise it acquires a short-lived owner lease.
 // This keeps manual diagnostics available during Go ownership while preserving
 // the same owner/proxy fences and committed outcome semantics as periodic work.
-func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTestReport, error) {
+func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (report ProxyTestReport, runErr error) {
 	if r == nil || r.store == nil || r.projector == nil {
 		return ProxyTestReport{}, errors.New("J3a manual runner 未初始化")
 	}
@@ -241,7 +305,11 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTes
 	}
 	owner, reused := r.currentOwnerLease()
 	if !reused {
-		acquired, ok, err := r.store.AcquireOwnerLease(ctx, r.cfg.InstanceID, r.cfg.OwnerLease)
+		acquireOwner := r.acquireOwnerLease
+		if acquireOwner == nil {
+			acquireOwner = r.store.AcquireOwnerLease
+		}
+		acquired, ok, err := acquireOwner(ctx, r.cfg.InstanceID, r.cfg.OwnerLease)
 		if err != nil {
 			return ProxyTestReport{}, err
 		}
@@ -251,7 +319,12 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTes
 		owner = acquired
 	}
 	if !reused {
-		defer func() { _ = r.store.ReleaseOwnerLease(context.Background(), owner) }()
+		defer func() {
+			if releaseErr := r.releaseOwnerLeaseBounded(ctx, owner); releaseErr != nil {
+				runErr = joinReleaseFailure(runErr, "manual owner lease", releaseErr)
+				r.recordError(runErr)
+			}
+		}()
 	}
 	// The durable Store input contract intentionally requires a 1..15 minute
 	// expiry window. Manual execution keeps its stricter probe deadline in the
@@ -261,18 +334,31 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTes
 		draftDeadline = time.Minute
 	}
 	draft := request.InputDraft(now, draftDeadline)
-	issued, err := r.store.IssueInput(ctx, draft)
+	issueInput := r.issueInput
+	if issueInput == nil {
+		issueInput = r.store.IssueInput
+	}
+	issued, err := issueInput(ctx, draft)
 	if err != nil {
 		return ProxyTestReport{}, err
 	}
-	proxy, acquired, err := r.store.AcquireProxyLease(ctx, owner, issued.ProxyID, r.cfg.ProxyLease)
+	acquireProxy := r.acquireProxyLease
+	if acquireProxy == nil {
+		acquireProxy = r.store.AcquireProxyLease
+	}
+	proxy, acquired, err := acquireProxy(ctx, owner, issued.ProxyID, r.cfg.ProxyLease)
 	if err != nil {
 		return ProxyTestReport{}, err
 	}
 	if !acquired {
 		return ProxyTestReport{}, ErrProxyLeaseHeld
 	}
-	defer func() { _ = r.store.ReleaseProxyLease(context.Background(), proxy) }()
+	defer func() {
+		if releaseErr := r.releaseProxyLeaseBounded(ctx, proxy); releaseErr != nil {
+			runErr = joinReleaseFailure(runErr, "manual proxy lease", releaseErr)
+			r.recordError(runErr)
+		}
+	}()
 	execCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	proxyURL, err := proxyURLForIssuedInput(issued, r.cfg.CredentialSecret)
@@ -280,7 +366,11 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTes
 		return ProxyTestReport{}, err
 	}
 	defer clearProxyURL(&proxyURL)
-	outcome, _, err := ExecuteIssuedInput(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: deadline, Now: r.cfg.Now})
+	execute := r.executeIssuedInput
+	if execute == nil {
+		execute = ExecuteIssuedInput
+	}
+	outcome, _, err := execute(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: deadline, Now: r.cfg.Now})
 	if err != nil {
 		return ProxyTestReport{}, err
 	}
@@ -295,7 +385,7 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (ProxyTes
 	if err != nil {
 		return ProxyTestReport{}, err
 	}
-	report := request.Report(outcome)
+	report = request.Report(outcome)
 	if !writeOutbound {
 		return report, nil
 	}
@@ -351,8 +441,8 @@ func (r *Runner) runOwned(ctx context.Context, lease OwnerLease) error {
 		}
 		return err
 	}
-	ticker := time.NewTicker(r.cfg.Interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(schedulejitter.Delay(r.cfg.Interval))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ownedCtx.Done():
@@ -360,13 +450,14 @@ func (r *Runner) runOwned(ctx context.Context, lease OwnerLease) error {
 				return renewal
 			}
 			return ownedCtx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 			if err := r.runCycle(ownedCtx, lease); err != nil {
 				if renewal := readRenewalError(renewErr); renewal != nil {
 					return errors.Join(err, renewal)
 				}
 				return err
 			}
+			timer.Reset(schedulejitter.Delay(r.cfg.Interval))
 		}
 	}
 }
@@ -398,6 +489,20 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 	nextCandidate := 0
 	var cycleErrs []error
 	var fatalErr error
+	recordProxyReleaseFailure := func(releaseErr error) {
+		if releaseErr == nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		counts.releaseFailures++
+		counts.failures++
+		cycleErrs = append(cycleErrs, releaseErr)
+		if fatalLeaseError(releaseErr) && fatalErr == nil {
+			fatalErr = releaseErr
+			cancel()
+		}
+	}
 	worker := func() {
 		for {
 			if cycleCtx.Err() != nil {
@@ -451,7 +556,7 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 			counts.claimed++
 			if counts.started >= counts.target {
 				mu.Unlock()
-				r.releaseProxyLease(context.Background(), proxy)
+				recordProxyReleaseFailure(r.releaseProxyLeaseBounded(cycleCtx, proxy))
 				continue
 			}
 			counts.started++
@@ -464,7 +569,7 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 				counts.executionFailures++
 				cycleErrs = append(cycleErrs, err)
 				mu.Unlock()
-				r.releaseProxyLease(context.Background(), proxy)
+				recordProxyReleaseFailure(r.releaseProxyLeaseBounded(cycleCtx, proxy))
 				r.logger.Warn("J3a IssueInput failed", "error", err)
 				continue
 			}
@@ -478,7 +583,7 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 				counts.executionFailures++
 				cycleErrs = append(cycleErrs, errors.New("J3a proxy execution window expired"))
 				mu.Unlock()
-				r.releaseProxyLease(context.Background(), proxy)
+				recordProxyReleaseFailure(r.releaseProxyLeaseBounded(cycleCtx, proxy))
 				continue
 			}
 			execCtx, execCancel := context.WithTimeout(cycleCtx, proxyWindow)
@@ -491,9 +596,7 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 				execErr = r.projectOutcome(execCtx, outcome)
 			}
 			execCancel()
-			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			releaseErr := r.releaseProxyLease(releaseCtx, proxy)
-			releaseCancel()
+			releaseErr := r.releaseProxyLeaseBounded(cycleCtx, proxy)
 			mu.Lock()
 			if releaseErr != nil {
 				counts.releaseFailures++

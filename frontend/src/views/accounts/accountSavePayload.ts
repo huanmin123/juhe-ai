@@ -100,6 +100,7 @@ export type AccountOAuthCreateCommonPayload = {
     reasoning_effort_override?: Exclude<AccountFormModel['reasoningEffortOverride'], ''>
     error_handling_rules?: unknown
     response_inspection_rules?: unknown
+    quota_recovery_policy?: unknown
   }
   notes?: string
 }
@@ -333,6 +334,9 @@ export function buildOAuthCreateCommonPayload(input: {
   }
   if (Object.prototype.hasOwnProperty.call(credentials, 'response_inspection_rules')) {
     credentialsPatch.response_inspection_rules = credentials.response_inspection_rules
+  }
+  if (Object.prototype.hasOwnProperty.call(credentials, 'quota_recovery_policy')) {
+    credentialsPatch.quota_recovery_policy = credentials.quota_recovery_policy
   }
   if (Object.keys(credentialsPatch).length) {
     payload.credentialsPatch = credentialsPatch

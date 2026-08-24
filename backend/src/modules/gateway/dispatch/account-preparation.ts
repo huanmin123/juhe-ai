@@ -204,7 +204,8 @@ export async function selectAccountApiKeyForDispatch(
       fixed.key,
       fixed.fingerprint,
       fixed.index,
-      account.selectedApiKeyTransientGeneration
+      account.selectedApiKeyTransientGeneration,
+      account.selectedApiKeyRecoveryStartedAt
     )
   }
 
@@ -238,6 +239,9 @@ export async function selectAccountApiKeyForDispatch(
     apiKeyPoolIsolationEnabled ? selected.index : undefined,
     apiKeyPoolIsolationEnabled
       ? runtimeStates.find((state) => state.keyFingerprint === selected.fingerprint && state.transientGeneration !== undefined)?.transientGeneration
+      : undefined,
+    apiKeyPoolIsolationEnabled
+      ? runtimeStates.find((state) => state.keyFingerprint === selected.fingerprint)?.recoveryStartedAt
       : undefined
   )
 }
@@ -247,7 +251,8 @@ function accountWithSelectedApiKey(
   apiKey: string,
   selectedApiKeyFingerprint?: string,
   selectedApiKeyIndex?: number,
-  selectedApiKeyTransientGeneration?: string
+  selectedApiKeyTransientGeneration?: string,
+  selectedApiKeyRecoveryStartedAt?: string
 ): UpstreamAccount {
   return {
     ...account,
@@ -255,6 +260,7 @@ function accountWithSelectedApiKey(
     selectedApiKeyFingerprint,
     selectedApiKeyIndex,
     selectedApiKeyTransientGeneration,
+    selectedApiKeyRecoveryStartedAt,
     credentials: {
       ...account.credentials,
       api_key: apiKey

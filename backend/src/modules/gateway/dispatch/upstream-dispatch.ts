@@ -727,7 +727,8 @@ export async function fetchFirstAvailableUpstream(
                   ...account,
                   selectedApiKeyFingerprint: undefined,
                   selectedApiKeyIndex: undefined,
-                  selectedApiKeyTransientGeneration: undefined
+                  selectedApiKeyTransientGeneration: undefined,
+                  selectedApiKeyRecoveryStartedAt: undefined
                 }
               : account
             const selectedAccount = await selectAccountApiKeyForDispatch(accountForApiKeySelection, {

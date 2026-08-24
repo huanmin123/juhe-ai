@@ -20,6 +20,7 @@ import { isAccountAvailabilityScheduleAllowed } from './account-availability-sch
 import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
 import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { configuredModelCheckModelsForAccount } from '../modules/model-checks/model-checks.profiles.js'
+import { passiveScheduleDelayMs } from '../shared/passive-schedule-jitter.js'
 
 const businessSchemaName = 'juhe_business'
 const defaultSchedulePageSize = 20
@@ -319,7 +320,7 @@ export async function createModelQualityScheduleAsync(
       next_run_at, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
     ON CONFLICT(system_account_id, account_id) DO NOTHING
-  `, [id, systemAccountId, accountId, model, intervalMinutes, input.profile, input.penaltyThreshold, input.penaltyAction, input.recoveryIntervalMinutes, enabled ? 1 : 0, addMinutes(now, intervalMinutes), now, now])
+  `, [id, systemAccountId, accountId, model, intervalMinutes, input.profile, input.penaltyThreshold, input.penaltyAction, input.recoveryIntervalMinutes, enabled ? 1 : 0, addPassiveMinutes(now, intervalMinutes), now, now])
   if (inserted.changes <= 0) throw new Error('该账户已存在定时检查配置，请使用字段级更新')
   const row = await findScheduleRow(client, systemAccountId, accountId)
   if (!row) throw new Error('定时检查配置保存失败')
@@ -368,7 +369,7 @@ export async function patchModelQualityScheduleAsync(
   if (input.model !== undefined && input.model !== existing.model) append('model', input.model)
   if (input.intervalMinutes !== undefined && input.intervalMinutes !== Number(existing.interval_minutes)) {
     append('interval_minutes', input.intervalMinutes)
-    append('next_run_at', addMinutes(nowIso(), input.intervalMinutes))
+    append('next_run_at', addPassiveMinutes(nowIso(), input.intervalMinutes))
   }
   if (input.profile !== undefined && input.profile !== existing.profile) append('profile', input.profile)
   if (input.penaltyThreshold !== undefined && input.penaltyThreshold !== Number(existing.penalty_threshold)) append('penalty_threshold', input.penaltyThreshold)
@@ -515,7 +516,7 @@ export async function completeModelQualityScheduleRunAsync(input: {
         next_run_at = ?,
         lease_owner = NULL, lease_until = NULL, updated_at = ?
     WHERE id = ? AND revision = ? AND lease_owner = ?
-  `, [input.runId ?? null, completedAt, input.status, addMinutes(completedAt, strictInteger(input.intervalMinutes, 10, 10080, '定时检查间隔无效')), completedAt, input.scheduleId, input.scheduleRevision, input.ownerId])
+  `, [input.runId ?? null, completedAt, input.status, addPassiveMinutes(completedAt, strictInteger(input.intervalMinutes, 10, 10080, '定时检查间隔无效')), completedAt, input.scheduleId, input.scheduleRevision, input.ownerId])
   return result.changes > 0
 }
 
@@ -615,12 +616,12 @@ export async function completeModelQualityRecoveryAsync(input: {
       return { result: 'stale', message: '质量隔离处罚代次或恢复租约已变化，本次恢复结果已忽略' }
     }
     if (Number(enforcement.policy_revision) !== input.policyRevision) {
-      const nextRecoveryAt = addMinutes(completedAt, recoveryIntervalMinutes)
+      const nextRecoveryAt = addPassiveMinutes(completedAt, recoveryIntervalMinutes)
       await rescheduleRecovery(tx, input, nextRecoveryAt, completedAt)
       return { result: 'stale', nextRecoveryAt, message: '处罚配置快照已变化，本次不解除隔离并等待复检' }
     }
     if (!input.passed) {
-      const nextRecoveryAt = addMinutes(completedAt, recoveryIntervalMinutes)
+      const nextRecoveryAt = addPassiveMinutes(completedAt, recoveryIntervalMinutes)
       await rescheduleRecovery(tx, input, nextRecoveryAt, completedAt)
       return { result: 'kept_isolated', beforeStatus: 'quality_isolated', afterStatus: 'quality_isolated', nextRecoveryAt, message: `质量恢复检查未达标，账户继续隔离；下次检查时间 ${nextRecoveryAt}` }
     }
@@ -633,7 +634,7 @@ export async function completeModelQualityRecoveryAsync(input: {
       return { result: 'stale', beforeStatus: account?.status, afterStatus: account?.status, message: '账户已被用户或其他任务修改，本次恢复结果已忽略' }
     }
     if (Number(account.config_revision) !== Number(enforcement.account_config_revision)) {
-      const nextRecoveryAt = addMinutes(completedAt, recoveryIntervalMinutes)
+      const nextRecoveryAt = addPassiveMinutes(completedAt, recoveryIntervalMinutes)
       await rescheduleRecovery(tx, input, nextRecoveryAt, completedAt)
       return { result: 'stale', beforeStatus: account.status, afterStatus: account.status, nextRecoveryAt, message: '账户配置在恢复检查期间发生变化，本次不解除隔离并等待重新复检' }
     }
@@ -718,7 +719,7 @@ export async function applyModelQualityEnforcementAsync(input: ModelQualityEnfor
     const generation = (prior?.generation ?? 0) + 1
     const enforcementId = newId('mqe')
     const recoveryDueAt = input.action === 'quality_isolate'
-      ? addMinutes(decidedAt, input.recoveryIntervalMinutes)
+      ? addPassiveMinutes(decidedAt, input.recoveryIntervalMinutes)
       : undefined
     const targetStatus: AccountStatus = input.action === 'quality_isolate'
       ? 'quality_isolated'
@@ -1022,6 +1023,13 @@ function addMinutes(value: string, minutes: number): string {
   const timestamp = rfc3339InstantMilliseconds(value)
   if (timestamp === undefined) throw new Error('模型质量调度时间必须是带 Z 或数值 offset 的 RFC3339 时间')
   return new Date(timestamp + minutes * 60_000).toISOString()
+}
+
+function addPassiveMinutes(value: string, minutes: number): string {
+  const timestamp = rfc3339InstantMilliseconds(value)
+  if (timestamp === undefined) throw new Error('模型质量被动调度时间必须是带 Z 或数值 offset 的 RFC3339 时间')
+  const intervalMs = Math.max(1, Math.trunc(Number(minutes) || 1)) * 60_000
+  return new Date(timestamp + passiveScheduleDelayMs(intervalMs)).toISOString()
 }
 
 function normalizedIso(value?: string): string {

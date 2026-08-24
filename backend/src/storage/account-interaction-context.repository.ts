@@ -154,6 +154,7 @@ export interface AccountCloneCredentialOptions {
   reasoning_effort_override?: string
   error_handling_rules?: unknown[]
   response_inspection_rules?: unknown[]
+  quota_recovery_policy?: Record<string, unknown>
 }
 
 export class AccountInteractionContextForbiddenError extends Error {
@@ -445,6 +446,9 @@ function projectCloneCredentialOptions(credentials: AccountCredentials): Account
   if (typeof credentials.reasoning_effort_override === 'string') output.reasoning_effort_override = credentials.reasoning_effort_override
   if (Array.isArray(credentials.error_handling_rules)) output.error_handling_rules = credentials.error_handling_rules
   if (Array.isArray(credentials.response_inspection_rules)) output.response_inspection_rules = credentials.response_inspection_rules
+  if (credentials.quota_recovery_policy && typeof credentials.quota_recovery_policy === 'object') {
+    output.quota_recovery_policy = credentials.quota_recovery_policy
+  }
   return output
 }
 

@@ -35,6 +35,7 @@ import {
 import {
   loadAccountResponseInspectionRules
 } from './accountResponseInspectionPolicyPayload'
+import { loadAccountQuotaRecoveryPolicy } from './accountQuotaRecoveryPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { accountHealthCheckEndpointModeOptions, defaultAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
 import {
@@ -326,6 +327,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     inheritedErrorPolicyRules.value = systemInheritedErrorPolicyRulesPreview()
     accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
+    form.quotaRecoveryPolicy = loadAccountQuotaRecoveryPolicy(undefined)
     authResult.value = undefined
   }
 
@@ -792,6 +794,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountErrorPolicyRules.value = advancedLoad?.errorPolicyRules ?? loadAccountErrorPolicyRules()
     inheritedErrorPolicyRules.value = advancedLoad?.inheritedErrorPolicyRules ?? []
     accountResponseInspectionRules.value = advancedLoad?.responseInspectionRules ?? loadAccountResponseInspectionRules()
+    form.quotaRecoveryPolicy = advancedLoad?.patch.quotaRecoveryPolicy ?? loadAccountQuotaRecoveryPolicy(undefined)
     authResult.value = undefined
     return true
   }
@@ -851,6 +854,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountErrorPolicyRules.value = formLoad.errorPolicyRules
     inheritedErrorPolicyRules.value = formLoad.inheritedErrorPolicyRules
     accountResponseInspectionRules.value = formLoad.responseInspectionRules
+    form.quotaRecoveryPolicy = formLoad.patch.quotaRecoveryPolicy ?? loadAccountQuotaRecoveryPolicy(undefined)
     authResult.value = undefined
     modalOpen.value = true
   }

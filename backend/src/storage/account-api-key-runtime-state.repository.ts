@@ -3,6 +3,7 @@ import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled } from './acc
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { passiveScheduleDelayMs, passiveScheduleNotBeforeDelayMs } from '../shared/passive-schedule-jitter.js'
 import { canonicalizeRfc3339Instant, requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
@@ -175,6 +176,9 @@ const probeClaimLeaseSeconds = 10 * 60
 const probeCandidateScanLimit = runtimeConfig.background.accountApiKeyProbeCandidateScanLimit
 const businessSchemaName = 'juhe_business'
 const accountApiKeyRuntimeProbeCandidateStatuses = ['unverified', 'temporary_unavailable', 'rate_limited'] as const
+// 冷却中的父账户仍需允许探针，以便 Key 能恢复；disabled/error/pending_test/
+// quality_isolated 等硬不可用状态明确排除。
+const accountApiKeyRuntimeProbeParentStatusesSql = "'active', 'rate_limited', 'temporary_unavailable'"
 const accountApiKeyRuntimeProbeCandidateStatusSql = accountApiKeyRuntimeProbeCandidateStatuses.map((status) => `'${status}'`).join(', ')
 
 function isAccountApiKeyRuntimeProbeCandidateStatus(
@@ -205,7 +209,7 @@ export function loadAccountApiKeyRuntimeStatesByAccountIds(
   for (const chunk of chunkValues(ids, 900)) {
     const rows = database
       .prepare(`
-        SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at
+        SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, recovery_started_at
         FROM account_api_key_runtime_states
         WHERE account_id IN (${sqlPlaceholders(chunk.length)})
       `)
@@ -216,6 +220,7 @@ export function loadAccountApiKeyRuntimeStatesByAccountIds(
         status: AccountApiKeyRuntimeStatus
         cooldown_until: string | null
         next_probe_at: string | null
+        recovery_started_at: string | null
       }>
     for (const row of rows) {
       const states = result.get(row.account_id) ?? []
@@ -224,7 +229,8 @@ export function loadAccountApiKeyRuntimeStatesByAccountIds(
         status: row.status,
         keyIndex: Number.isInteger(row.key_index) ? row.key_index : undefined,
         cooldownUntil: row.cooldown_until ?? undefined,
-        nextProbeAt: row.next_probe_at ?? undefined
+        nextProbeAt: row.next_probe_at ?? undefined,
+        recoveryStartedAt: row.recovery_started_at ?? undefined
       })
       result.set(row.account_id, states)
     }
@@ -250,8 +256,9 @@ export async function loadAccountApiKeyRuntimeStatesByAccountIdsAsync(
       status: AccountApiKeyRuntimeStatus
       cooldown_until: string | null
       next_probe_at: string | null
+      recovery_started_at: string | null
     }>(`
-      SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at
+      SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, recovery_started_at
       FROM ${accountApiKeyRuntimeStatesTable(client)}
       WHERE account_id IN (${chunk.map(() => '?').join(', ')})
     `, chunk)
@@ -262,7 +269,8 @@ export async function loadAccountApiKeyRuntimeStatesByAccountIdsAsync(
         status: row.status,
         keyIndex: Number.isInteger(row.key_index) ? row.key_index : undefined,
         cooldownUntil: row.cooldown_until ?? undefined,
-        nextProbeAt: row.next_probe_at ?? undefined
+        nextProbeAt: row.next_probe_at ?? undefined,
+        recoveryStartedAt: row.recovery_started_at ?? undefined
       })
       result.set(row.account_id, states)
     }
@@ -280,8 +288,9 @@ export async function loadAccountApiKeyRuntimeStatesForAccountInClient(
     status: AccountApiKeyRuntimeStatus
     cooldown_until: string | null
     next_probe_at: string | null
+    recovery_started_at: string | null
   }>(`
-    SELECT key_fingerprint, key_index, status, cooldown_until, next_probe_at
+    SELECT key_fingerprint, key_index, status, cooldown_until, next_probe_at, recovery_started_at
     FROM ${accountApiKeyRuntimeStatesTable(client)}
     WHERE account_id = ?
   `, [accountId])
@@ -290,7 +299,8 @@ export async function loadAccountApiKeyRuntimeStatesForAccountInClient(
     status: row.status,
     keyIndex: Number.isInteger(row.key_index) ? row.key_index : undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
-    nextProbeAt: row.next_probe_at ?? undefined
+    nextProbeAt: row.next_probe_at ?? undefined,
+    recoveryStartedAt: row.recovery_started_at ?? undefined
   }))
 }
 
@@ -639,7 +649,7 @@ export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountAp
         AND states.next_probe_at <= ?
         AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
         AND accounts.deleted_at IS NULL
-        AND accounts.status = 'active'
+        AND accounts.status IN (${accountApiKeyRuntimeProbeParentStatusesSql})
         AND accounts.schedulable = 1
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
       ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
@@ -670,7 +680,7 @@ export async function listAccountApiKeyRuntimeStatesDueForProbeAsync(limit = 20)
       AND states.next_probe_at <= ?
       AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
       AND accounts.deleted_at IS NULL
-      AND accounts.status = 'active'
+      AND accounts.status IN (${accountApiKeyRuntimeProbeParentStatusesSql})
       AND accounts.schedulable = 1
       AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
     ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
@@ -1007,12 +1017,13 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   const observedAt = normalizeObservedAt(input.observedAt, now)
   const nextBackoffSeconds = nextProbeBackoffSeconds(existing?.probe_backoff_seconds)
   const status = normalizeFailureStatus(input.status)
-  const cooldownUntil = input.cooldownUntil === undefined
+  const parsedCooldownUntil = input.cooldownUntil === undefined
     ? undefined
     : requiredRfc3339Instant(input.cooldownUntil, 'cooldownUntil')
+  const cooldownUntil = parsedCooldownUntil
   const nextProbeAt = cooldownUntil !== undefined && status === 'rate_limited'
-    ? cooldownUntil
-    : new Date(Date.now() + nextBackoffSeconds * 1000).toISOString()
+    ? passiveProbeNotBeforeAt(cooldownUntil)
+    : passiveProbeRetryAt(nextBackoffSeconds)
   const errorCode = input.errorCode
     ?? (input.quotaRecoveryMode === 'explicit_reset'
       ? API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE
@@ -1057,6 +1068,12 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
             AND key_fingerprint = ?
             AND status <> 'disabled'
             AND (last_attempt_at IS NULL OR last_attempt_at < ?)
+            AND NOT (
+              ? = 'generic'
+              AND last_error_code IN (?, ?)
+              AND cooldown_until IS NOT NULL
+              AND julianday(cooldown_until) > julianday(?)
+            )
             ${expectedFence.sql}
             ${configFence.sql}
         `)
@@ -1078,6 +1095,10 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           now,
           target.accountId,
           target.keyFingerprint,
+          observedAt,
+          input.quotaRecoveryMode ?? '',
+          API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE,
+          API_KEY_QUOTA_GENERIC_ERROR_CODE,
           observedAt,
           ...expectedFence.params,
           ...configFence.params
@@ -1162,12 +1183,13 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   const observedAt = normalizeObservedAt(input.observedAt, now)
   const nextBackoffSeconds = nextProbeBackoffSeconds(existing?.probe_backoff_seconds)
   const status = normalizeFailureStatus(input.status)
-  const cooldownUntil = input.cooldownUntil === undefined
+  const parsedCooldownUntil = input.cooldownUntil === undefined
     ? undefined
     : requiredRfc3339Instant(input.cooldownUntil, 'cooldownUntil')
+  const cooldownUntil = parsedCooldownUntil
   const nextProbeAt = cooldownUntil !== undefined && status === 'rate_limited'
-    ? cooldownUntil
-    : new Date(Date.now() + nextBackoffSeconds * 1000).toISOString()
+    ? passiveProbeNotBeforeAt(cooldownUntil)
+    : passiveProbeRetryAt(nextBackoffSeconds)
   const errorCode = input.errorCode
     ?? (input.quotaRecoveryMode === 'explicit_reset'
       ? API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE
@@ -1191,7 +1213,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
     (statement_timestamp() + ${atomicNextBackoffSql} * INTERVAL '1 second') AT TIME ZONE 'UTC',
     'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
   )`
-  const preserveExplicitCooldownSql = cooldownUntil !== undefined && status === 'rate_limited' ? 'TRUE' : 'FALSE'
+  const useInputCooldownSql = cooldownUntil !== undefined && status === 'rate_limited' ? 'TRUE' : 'FALSE'
 
   if (expectedFence.provided) {
     const fencedResult = await client.execute(`
@@ -1202,11 +1224,11 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
           failure_count = current_state.failure_count + 1,
           consecutive_failures = current_state.consecutive_failures + 1,
           cooldown_until = CASE
-            WHEN ${preserveExplicitCooldownSql} THEN ?
+            WHEN ${useInputCooldownSql} THEN ?
             ELSE ${atomicNextProbeAtSql}
           END,
           next_probe_at = CASE
-            WHEN ${preserveExplicitCooldownSql} THEN ?
+            WHEN ${useInputCooldownSql} THEN ?
             ELSE ${atomicNextProbeAtSql}
           END,
           probe_backoff_seconds = ${atomicNextBackoffSql},
@@ -1225,6 +1247,12 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
         AND current_state.key_fingerprint = ?
         AND current_state.status <> 'disabled'
         AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at < ?)
+        AND NOT (
+          ? = 'generic'
+          AND current_state.last_error_code IN (?, ?)
+          AND current_state.cooldown_until IS NOT NULL
+          AND current_state.cooldown_until::timestamptz > ?::timestamptz
+        )
         ${expectedFence.sql}
         ${configFence.sql}
     `, [
@@ -1244,6 +1272,10 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       now,
       target.accountId,
       target.keyFingerprint,
+      observedAt,
+      input.quotaRecoveryMode ?? '',
+      API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE,
+      API_KEY_QUOTA_GENERIC_ERROR_CODE,
       observedAt,
       ...expectedFence.params,
       ...configFence.params
@@ -1272,11 +1304,11 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       failure_count = current_state.failure_count + 1,
       consecutive_failures = current_state.consecutive_failures + 1,
       cooldown_until = CASE
-        WHEN ${preserveExplicitCooldownSql} THEN excluded.cooldown_until
+        WHEN ${useInputCooldownSql} THEN excluded.cooldown_until
         ELSE ${atomicNextProbeAtSql}
       END,
       next_probe_at = CASE
-        WHEN ${preserveExplicitCooldownSql} THEN excluded.next_probe_at
+        WHEN ${useInputCooldownSql} THEN excluded.next_probe_at
         ELSE ${atomicNextProbeAtSql}
       END,
       probe_backoff_seconds = ${atomicNextBackoffSql},
@@ -1295,6 +1327,12 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       updated_at = excluded.updated_at
     WHERE current_state.status <> 'disabled'
       AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at < excluded.last_attempt_at)
+      AND NOT (
+        ? = 'generic'
+        AND current_state.last_error_code IN (?, ?)
+        AND current_state.cooldown_until IS NOT NULL
+        AND current_state.cooldown_until::timestamptz > excluded.last_attempt_at::timestamptz
+      )
   `, [
     newId('account_api_key_runtime_state'),
     target.systemAccountId,
@@ -1312,7 +1350,10 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
     errorMessage,
     normalizeRuntimeTraceId(input.traceId),
     now,
-    now
+    now,
+    input.quotaRecoveryMode ?? '',
+    API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE,
+    API_KEY_QUOTA_GENERIC_ERROR_CODE
   ])
 
   const changed = Number(result.changes ?? 0) > 0
@@ -1348,7 +1389,7 @@ export function deferAccountApiKeyRuntimeProbe(input: AccountApiKeyRuntimeProbeD
   )
   const now = nowIso()
   const observedAt = normalizeObservedAt(input.observedAt, now)
-  const nextProbeAt = new Date(Date.now() + normalizeProbeDeferSeconds(input.delaySeconds) * 1000).toISOString()
+  const nextProbeAt = passiveProbeRetryAt(normalizeProbeDeferSeconds(input.delaySeconds))
   const result = getBusinessDatabase()
     .prepare(`
       UPDATE account_api_key_runtime_states
@@ -1402,7 +1443,7 @@ export async function deferAccountApiKeyRuntimeProbeAsync(input: AccountApiKeyRu
   }
   const now = nowIso()
   const observedAt = normalizeObservedAt(input.observedAt, now)
-  const nextProbeAt = new Date(Date.now() + normalizeProbeDeferSeconds(input.delaySeconds) * 1000).toISOString()
+  const nextProbeAt = passiveProbeRetryAt(normalizeProbeDeferSeconds(input.delaySeconds))
   const client = await getAccountApiKeyRuntimeStateDatabaseClient()
   const configFence = expectedAccountConfigRevisionFence(
     input,
@@ -2053,6 +2094,18 @@ function expectedAccountConfigRevisionFence(
 
 function normalizeProbeDeferSeconds(value: number): number {
   return Math.max(initialProbeBackoffSeconds, Math.min(maxProbeBackoffSeconds, Math.trunc(value)))
+}
+
+function passiveProbeRetryAt(delaySeconds: number): string {
+  const intervalMs = normalizeProbeDeferSeconds(delaySeconds) * 1000
+  return new Date(Date.now() + passiveScheduleDelayMs(intervalMs)).toISOString()
+}
+
+function passiveProbeNotBeforeAt(deadlineAt: string): string {
+  const now = Date.now()
+  const deadlineMs = requiredRfc3339Timestamp(deadlineAt, 'cooldownUntil')
+  const intervalMs = Math.max(1, deadlineMs - now)
+  return new Date(now + passiveScheduleNotBeforeDelayMs(intervalMs)).toISOString()
 }
 
 function sanitizeRuntimeErrorMessage(value: string): string {

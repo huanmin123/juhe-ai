@@ -26,6 +26,7 @@ import {
 } from './accountEndpointModes'
 import { accountGptRequestOverridesForForm } from './accountGptRequestOverrides'
 import { inferGeminiOAuthType } from './geminiOAuthType'
+import { loadAccountQuotaRecoveryPolicy } from './accountQuotaRecoveryPolicyTypes'
 
 export class AccountEditFormLoadError extends Error {
   readonly cause: unknown
@@ -78,6 +79,9 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
   const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '账户详情错误处理策略')
   const inheritedErrorPolicyRules = loadInheritedErrorPolicyRules(advanced.effectiveErrorHandlingRules)
   const responseInspectionRules = loadCredentialResponseInspectionRules(credentials, '账户详情响应检查策略')
+  const quotaRecoveryPolicy = loadAccountQuotaRecoveryPolicy(
+    advanced.effectiveQuotaRecoveryPolicy ?? credentials.quota_recovery_policy
+  )
   const { accountExpiresAt, availabilitySchedule } = parseAccountScheduleFields(
     advanced.accountExpiresAt,
     advanced.availabilitySchedule,
@@ -91,7 +95,8 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     ...accountGptRequestOverridesForForm(account.providerCode, credentials),
     modelMappings: cloneAccountModelMappings(advanced.modelMappings),
     availabilitySchedule,
-    ...accountBalanceFormFields(advanced)
+    ...accountBalanceFormFields(advanced),
+    quotaRecoveryPolicy
   }
 
   return {
@@ -149,6 +154,7 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
   const credentials = account.credentialOptions
   const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '克隆来源错误处理策略')
   const responseInspectionRules = loadCredentialResponseInspectionRules(credentials, '克隆来源响应检查策略')
+  const quotaRecoveryPolicy = loadAccountQuotaRecoveryPolicy(credentials.quota_recovery_policy)
   const baseUrl = credentialBaseUrlForForm(credentials, '克隆来源凭据')
   const { accountExpiresAt, availabilitySchedule } = parseAccountScheduleFields(
     account.accountExpiresAt,
@@ -196,7 +202,8 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     tags: accountTagNames(account.tags),
     availabilitySchedule,
     ...accountBalanceFormFields(account),
-    notes: account.notes ?? ''
+    notes: account.notes ?? '',
+    quotaRecoveryPolicy
   }
 
   return {

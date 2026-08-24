@@ -111,9 +111,15 @@ try {
     explainIndexed: true
   }))
 } finally {
-  await cleanupSmokeRows()
-  await closeRedisClients()
-  await closePostgresPool()
+  try {
+    await cleanupSmokeRows()
+  } finally {
+    try {
+      await closeRedisClients()
+    } finally {
+      await closePostgresPool()
+    }
+  }
 }
 async function assertLatencyRefreshCandidateExplainUsesIndex(): Promise<void> {
   const pool = await getPostgresPool()

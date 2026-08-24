@@ -1,5 +1,6 @@
 import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
 import { normalizeAccountResponseInspectionRules } from '../modules/accounts/account-response-inspection-policy-validation.js'
+import { normalizeQuotaRecoveryPolicy } from '../modules/accounts/quota-recovery-policy.js'
 import { providerAccountCredentialDriverForContext } from '../modules/providers/drivers/account-credentials.registry.js'
 import type { ProviderAccountCredentialContext } from '../modules/providers/drivers/_shared/account-credentials.js'
 import { GPT_VENDOR_CODE, isAnthropicProtocolProfile } from '../domain/provider-protocol.js'
@@ -18,7 +19,8 @@ const apiKeyAccountCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'quota_recovery_policy'
 ])
 
 const oauthAccountCredentialKeys = new Set([
@@ -44,7 +46,8 @@ const oauthAccountCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'quota_recovery_policy'
 ])
 
 const googleOAuthAccountCredentialKeys = new Set([
@@ -67,7 +70,8 @@ const googleOAuthAccountCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'quota_recovery_policy'
 ])
 
 const accountCredentialBaseUrlMaxBytes = 2048
@@ -318,6 +322,9 @@ function normalizeAccountCredentialPolicies(input: Record<string, unknown>, cred
   }
   if (Object.prototype.hasOwnProperty.call(input, 'response_inspection_rules')) {
     credentials.response_inspection_rules = normalizeAccountResponseInspectionRules(input.response_inspection_rules)
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'quota_recovery_policy')) {
+    credentials.quota_recovery_policy = normalizeQuotaRecoveryPolicy(input.quota_recovery_policy)
   }
 }
 

@@ -12,6 +12,7 @@ assert.match(
 const cooldownAsyncSource = functionSource('markAccountCooldownAsync', 'migrateAccountTraffic')
 const exceptionAsyncSource = functionSource('markAccountExceptionAsync', 'markAccountDisabledByFailure')
 const authorizedCooldownAsyncSource = functionSource('markAuthorizedAccountBindingCooldownByContextAsync', 'markAuthorizedAccountBindingDisabledByFailure')
+const systemQuotaPrioritySource = sourceBetween('function systemQuotaCooldownPrioritySql', 'function systemQuotaCooldownPriorityParams')
 const ownerClearAsyncSource = sourceBetween(
   'export async function clearAccountFailureStateResultAsync',
   'export async function clearAuthorizedAccountBindingFailureStateByContextAsync'
@@ -51,6 +52,34 @@ assert.match(
   /AND status NOT IN \('disabled', 'error'\)/,
   'authorized binding 的既有 hard-state 原子保护必须保持不变'
 )
+assert.match(
+  cooldownAsyncSource,
+  /systemQuotaCooldownPrioritySql\(failureCode, 'accounts'\)/,
+  'owner quota 冷却必须在账户级写回中保留显式 reset/已有通用冷却的优先级门禁'
+)
+assert.match(
+  cooldownAsyncSource,
+  /UPDATE \$\{accountRuntimeMutationTable\(client, 'accounts'\)\} AS accounts/,
+  'owner quota 冷却 PG UPDATE 必须为优先级 guard 提供 accounts 别名'
+)
+assert.match(
+  systemQuotaPrioritySource,
+  /cooldown_until::timestamptz > \?::timestamptz/,
+  'owner quota 冷却 PG 优先级 guard 必须按 timestamptz 比较未来冷却时间'
+)
+assert.match(
+  authorizedCooldownAsyncSource,
+  /systemQuotaCooldownPrioritySql\(input\.failureCode, 'accounts'\)/,
+  'authorized quota 冷却必须在账户级写回中保留显式 reset/已有通用冷却的优先级门禁'
+)
+assert(cooldownAsyncSource.includes('systemQuotaCooldownPriorityParams('), 'owner quota 冷却必须绑定门禁参数')
+assert(authorizedCooldownAsyncSource.includes('systemQuotaCooldownPriorityParams('), 'authorized quota 冷却必须绑定门禁参数')
+assert.match(
+  repositorySource,
+  /last_error_code IN \(\?, \?, \?\)[\s\S]*last_error_code IS NULL[\s\S]*last_error_message[\s\S]*LIKE \?/,
+  '账户级通用额度写回必须兼容新旧显式 cooldown provenance'
+)
+assert(repositorySource.includes('LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX'), '账户级通用额度写回必须绑定旧显式 provenance 参数')
 for (const [name, source] of [
   ['owner', ownerClearAsyncSource],
   ['authorized binding', authorizedClearAsyncSource]

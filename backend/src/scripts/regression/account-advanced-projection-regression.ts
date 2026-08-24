@@ -57,6 +57,20 @@ try {
       supported_endpoint_modes: ['responses_sse'],
       service_tier_override: 'priority',
       reasoning_effort_override: 'high',
+      quota_recovery_policy: {
+        api_key: {
+          reset_strategy: 'duration',
+          duration_minutes: 90,
+          jitter_minutes: 15,
+          timezone: 'UTC'
+        },
+        oauth: {
+          reset_strategy: 'daily',
+          daily_reset_hour: 6,
+          jitter_minutes: 15,
+          timezone: 'Asia/Shanghai'
+        }
+      },
       error_handling_rules: [{
         enabled: true,
         name: '账户自定义限流',
@@ -132,6 +146,7 @@ try {
     'configRevision',
     'credentials',
     'effectiveErrorHandlingRules',
+    'effectiveQuotaRecoveryPolicy',
     'id',
     'modelMappings',
     'proxyProfileId',
@@ -141,9 +156,15 @@ try {
   assert.deepEqual(detail.modelMappings, [])
   assert.deepEqual(Object.keys(detail.credentials ?? {}).sort(), [
     'error_handling_rules',
+    'quota_recovery_policy',
     'reasoning_effort_override',
     'service_tier_override'
   ])
+  assert.equal(detail.effectiveQuotaRecoveryPolicy.api_key?.duration_minutes, 90)
+  assert.equal(detail.effectiveQuotaRecoveryPolicy.api_key?.jitter_minutes, 15)
+  assert.equal(detail.effectiveQuotaRecoveryPolicy.oauth?.reset_strategy, 'daily')
+  assert.equal(detail.effectiveQuotaRecoveryPolicy.oauth?.daily_reset_hour, 6)
+  assert.equal(detail.effectiveQuotaRecoveryPolicy.oauth?.timezone, 'Asia/Shanghai')
   assert.equal(detail.proxyProfileId, proxy.id)
   assert.equal(detail.balanceQueryConfig?.intervalMinutes, 10)
   assert.equal(detail.temporaryUnavailableContinuousProbeEnabled, false)
@@ -170,7 +191,7 @@ try {
       'pre_consume_token_quota_failed'
     ],
     keywords: ['余额不足', '额度不足', 'insufficient balance', 'insufficient quota', 'credit balance too low', 'wallet balance exhausted'],
-    description: '仅在 HTTP 403 且明确额度不足时进入限流中；官方 OAuth 遵守固定场景，API Key 优先遵守供应商恢复时间，否则按通用间隔复测。'
+    description: '仅在 HTTP 403 且明确额度不足时进入限流中；支持该语义的 API Key 供应商 explicit reset 优先，无可靠时间时按账户策略稳定错峰复测；OAuth / Google OAuth 不消费 API Key reset 字段，默认 UTC daily 并支持账户策略调整。'
   })
   assert.deepEqual(detail.effectiveErrorHandlingRules[1], {
     id: 'account.1',
@@ -309,6 +330,9 @@ try {
   assert(authorizedDetail, '授权实例应返回独立的只读高级投影')
   assert.equal(authorizedDetail.accessType, 'authorized')
   assert.equal(authorizedDetail.credentials, undefined, '授权实例高级投影不得读取或返回来源账户凭据')
+  assert.equal(authorizedDetail.effectiveQuotaRecoveryPolicy.api_key?.duration_minutes, 90)
+  assert.equal(authorizedDetail.effectiveQuotaRecoveryPolicy.oauth?.daily_reset_hour, 6)
+  assert.equal(authorizedDetail.effectiveQuotaRecoveryPolicy.oauth?.timezone, 'Asia/Shanghai')
   assert.deepEqual(
     authorizedDetail.effectiveErrorHandlingRules.map((rule) => ({ id: rule.id, source: rule.source, inherited: rule.inherited, editable: rule.editable })),
     [{ id: 'system.upstream_insufficient_quota', source: 'system', inherited: true, editable: false }],

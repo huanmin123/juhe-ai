@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
 
 // Runner owns the F2 scheduling lifecycle. It deliberately keeps scheduling
@@ -53,16 +55,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := r.runCycle(ownerCtx); err != nil {
 			return err
 		}
-		ticker := time.NewTicker(r.cfg.Interval)
-		defer ticker.Stop()
+		timer := time.NewTimer(schedulejitter.Delay(r.cfg.Interval))
+		defer timer.Stop()
 		for {
 			select {
 			case <-ownerCtx.Done():
 				return ownerCtx.Err()
-			case <-ticker.C:
+			case <-timer.C:
 				if err := r.runCycle(ownerCtx); err != nil {
 					return err
 				}
+				timer.Reset(schedulejitter.Delay(r.cfg.Interval))
 			}
 		}
 	})

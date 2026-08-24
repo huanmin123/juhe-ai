@@ -14,6 +14,7 @@ assert.match(repositorySource, /states\.updated_at,[\s\S]{0,300}accounts\.config
 assert.match(repositorySource, /probe_account\.config_revision = \?[\s\S]{0,100}FOR UPDATE/, 'PG 探针回写必须锁住并核对账户配置代次')
 
 assert.match(cooldownServiceSource, /entry\.fingerprint === item\.keyFingerprint && entry\.key === item\.apiKey/, '执行探针前必须同时复核 fingerprint 和原始 secret')
+assert.match(cooldownServiceSource, /isAccountStatusEligibleForRecoveryProbe\(account\.status\)/, '恢复探针不得把父账户冷却状态误判为失效队列项')
 assert.match(
   cooldownServiceSource,
   /const fixedKeyRuntimeStateMutationCandidate = \{[\s\S]{0,160}apiKeyRuntimeStateDisabled: false/,

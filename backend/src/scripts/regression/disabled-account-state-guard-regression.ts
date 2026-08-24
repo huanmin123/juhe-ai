@@ -7,6 +7,11 @@ import cors from 'cors'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import {
+  LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX,
+  SYSTEM_QUOTA_EXPLICIT_RESET_COOLDOWN_CODE,
+  SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE
+} from '../../domain/account-runtime-provenance.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { ok } from '../../shared/http.js'
 import { logger } from '../../shared/logger.js'
@@ -273,6 +278,50 @@ async function main(): Promise<void> {
       !Reflect.ownKeys(quotaRequest).some((key) => typeof key === 'symbol' && String(key).includes('requestFailureHealthCheckDispatched')),
       '系统额度规则命中后不得派发低上下文 request_failure 健康探针'
     )
+    const explicitQuotaBoundary = new Date(Date.now() + 90 * 60_000).toISOString()
+    const explicitQuotaWrite = repositories.markAccountCooldown(
+      quotaAccount.id,
+      explicitQuotaBoundary,
+      '模拟供应商显式 reset',
+      'rate_limited',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      SYSTEM_QUOTA_EXPLICIT_RESET_COOLDOWN_CODE
+    )
+    assert(explicitQuotaWrite?.cooldownUntil === explicitQuotaBoundary, '单 Key 账户应接受供应商显式 reset 边界')
+    const staleGenericQuotaWrite = repositories.markAccountCooldown(
+      quotaAccount.id,
+      new Date(Date.now() + 60 * 60_000).toISOString(),
+      '模拟迟到通用额度结果',
+      'rate_limited',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE
+    )
+    assert(staleGenericQuotaWrite === undefined, '单 Key 账户通用额度结果不得覆盖未来显式 reset')
+    const preservedQuotaAccount = repositories.listAccounts(adminAccess).find((item: AccountSummary) => item.id === quotaAccount.id)
+    assert(preservedQuotaAccount?.cooldownUntil === explicitQuotaBoundary, '单 Key 账户显式 reset 边界必须保持不变')
+    databaseModule.getBusinessDatabase()
+      .prepare('UPDATE accounts SET last_error_code = NULL, last_error_message = ?, cooldown_until = ? WHERE id = ?')
+      .run(`${LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX}旧显式 reset`, explicitQuotaBoundary, quotaAccount.id)
+    const legacyGenericQuotaWrite = repositories.markAccountCooldown(
+      quotaAccount.id,
+      new Date(Date.now() + 60 * 60_000).toISOString(),
+      '模拟迟到通用额度结果（旧显式 provenance）',
+      'rate_limited',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE
+    )
+    assert(legacyGenericQuotaWrite === undefined, '单 Key 账户通用额度结果不得覆盖旧格式显式 reset')
+    const preservedLegacyQuotaAccount = repositories.listAccounts(adminAccess).find((item: AccountSummary) => item.id === quotaAccount.id)
+    assert(preservedLegacyQuotaAccount?.cooldownUntil === explicitQuotaBoundary, '旧格式显式 reset 边界必须保持不变')
 
     const opaque403Account = repositories.createAccount({
       providerCode: 'gpt',

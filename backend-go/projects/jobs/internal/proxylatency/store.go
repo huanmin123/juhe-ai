@@ -77,6 +77,9 @@ type Store struct {
 	mode    StoreMode
 	writeMu sync.Mutex
 	pool    *pgpool.Handle
+	// releaseExecutionClaim is a private fault-injection seam for lifecycle
+	// tests. Production leaves it nil and uses ReleaseExecutionClaim below.
+	releaseExecutionClaim func(context.Context, string, string) error
 }
 
 // OutcomeCursor is the immutable jobs-store ordering key consumed by the Go

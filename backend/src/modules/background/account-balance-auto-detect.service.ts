@@ -1,5 +1,6 @@
 import type { AccountBalanceQueryConfig, AccountBalanceSnapshot } from '../accounts/account-balance.types.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import {
   queryBuiltinAccountBalance,
   runWithAccountBalanceLease,
@@ -144,7 +145,8 @@ async function autoDetectAccountBalanceCandidateWithLease(
   }
   const detected = attempt.detected
   const completedAt = new Date().toISOString()
-  const nextRefreshAt = new Date(Date.now() + detected.config.intervalMinutes * 60_000).toISOString()
+  const intervalMs = Math.max(1, Math.trunc(Number(detected.config.intervalMinutes) || 1)) * 60_000
+  const nextRefreshAt = new Date(Date.now() + passiveScheduleDelayMs(intervalMs)).toISOString()
   const enableInput = {
     accountId: candidate.id,
     expectedConfigRevision: candidate.configRevision,

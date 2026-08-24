@@ -2,6 +2,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { logger } from '../../shared/logger.js'
+import {
+  passiveScheduleDelayMs,
+  passiveScheduleInitialDelayMs,
+  passiveScheduleJitterWindowMs,
+  passiveScheduleOffsetMs
+} from '../../shared/passive-schedule-jitter.js'
 import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 import {
   failureBackoffDelayMs,
@@ -21,6 +27,17 @@ assert.notEqual(stableScheduledJobOffsetMs('instance-a', 1_000), stableScheduled
 assert.ok(stableScheduledJobOffsetMs('bounded', 10) >= 0 && stableScheduledJobOffsetMs('bounded', 10) < 10)
 assert.equal(failureBackoffDelayMs({ baseMs: 100, maxMs: 1_000 }, 1, () => 1), 100)
 assert.equal(failureBackoffDelayMs({ baseMs: 100, maxMs: 1_000 }, 8, () => 1), 1_000)
+assert.equal(passiveScheduleJitterWindowMs(30_000), 15_000)
+assert.equal(passiveScheduleJitterWindowMs(60 * 60_000), 30 * 60_000)
+assert.equal(passiveScheduleJitterWindowMs(24 * 60 * 60_000), 60 * 60_000)
+assert.equal(passiveScheduleJitterWindowMs(7 * 24 * 60 * 60_000), 8 * 60 * 60_000)
+assert.equal(passiveScheduleOffsetMs(10 * 60_000, () => 0), -30_000)
+assert.equal(passiveScheduleOffsetMs(10 * 60_000, () => 1), 30_000)
+assert.equal(passiveScheduleDelayMs(10 * 60_000, () => 0), 9.5 * 60_000)
+assert.equal(passiveScheduleDelayMs(10 * 60_000, () => 1), 10.5 * 60_000)
+assert.equal(passiveScheduleInitialDelayMs(10_000, 10 * 60_000, () => 0), 5_000)
+assert.equal(passiveScheduleInitialDelayMs(10_000, 10 * 60_000, () => 1), 15_000)
+assert.match(workerSchedulerSource, /passiveScheduleInitialDelayMs\(initialScheduleDelayMs, intervalMs, this\.random\)/, '延迟的首轮被动任务必须使用全局偏移')
 
 async function verifyCoalesceOneKeepsFixedRatePhase(): Promise<void> {
   const clock = new FakeClock()

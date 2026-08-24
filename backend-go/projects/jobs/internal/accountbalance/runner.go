@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
 
 type RunnerConfig struct {
@@ -268,7 +270,7 @@ func (r *Runner) runInput(ctx context.Context, owner OwnerLease, input Input) (r
 	if intervalMinutes == 0 {
 		intervalMinutes = 5
 	}
-	next := now.Add(time.Duration(intervalMinutes) * time.Minute)
+	next := now.Add(schedulejitter.Delay(time.Duration(intervalMinutes) * time.Minute))
 	outcome := Outcome{OutcomeID: OutcomeIDForInput(input), RequestID: RequestIDForInput(input), AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, Trigger: input.Trigger, ObservedAt: now, Snapshot: snapshot, Adapter: query.Adapter, NextRefreshAt: &next, ErrorCode: query.ErrorCode, ErrorMessage: query.ErrorMessage}
 	outcome.SystemAccountID = input.SystemAccountID
 	if found {

@@ -1,6 +1,8 @@
 import type { AccountStatus } from '../../../domain/types.js'
 import {
   EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+  SYSTEM_QUOTA_EXPLICIT_RESET_COOLDOWN_CODE,
+  SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE,
 } from '../../../domain/account-runtime-provenance.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import {
@@ -33,11 +35,15 @@ import {
   SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID,
   systemInsufficientQuotaRuleMatches
 } from '../../accounts/account-error-policy-system-rules.js'
+import {
+  normalizeQuotaRecoveryPolicy,
+  quotaRecoveryCooldownUntil,
+  type QuotaRecoveryPolicy
+} from '../../accounts/quota-recovery-policy.js'
 import { requiredRfc3339Instant } from '../../../shared/rfc3339.js'
 import { isAccountApiKeyPoolIsolationEnabled } from '../../../storage/account-api-key-rotation.js'
 import {
   extractApiKeyQuotaRecoveryHint,
-  genericApiKeyQuotaCooldownUntil,
   type ApiKeyQuotaRecoveryHint,
   type ApiKeyQuotaRecoveryMode
 } from './api-key-quota-recovery.js'
@@ -78,6 +84,7 @@ export interface AccountErrorPolicyAccount {
   credentials: Record<string, unknown>
   apiKeys?: string[]
   selectedApiKeyFingerprint?: string
+  selectedApiKeyRecoveryStartedAt?: string
   accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
   bindingSystemAccountId?: string
   groupOwnerSystemAccountId?: string
@@ -89,6 +96,7 @@ export interface AccountErrorPolicyAccount {
   lastErrorMessage?: string
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
+  quotaRecoveryGeneration?: string
 }
 
 export interface AccountErrorPolicyDecision {
@@ -296,8 +304,21 @@ export function decideAccountErrorPolicy(
     const recoveryMode = apiKeyGenericRecovery
       ? recoveryHint?.mode ?? 'generic'
       : recoveryHint?.mode
+    const configuredPolicy = quotaRecoveryPolicyFromCredentials(account.credentials)
+    const recoveryAccountType = account.type === 'api_key' ? 'api_key' : account.type === 'google_oauth' ? 'google_oauth' : 'oauth'
+    // Runtime recovery timestamps are mutable observations, not a new policy
+    // generation. Keep the seed identical to the background retest seed so
+    // gateway and worker decisions do not move the due time between stages.
+    const recoverySeed = [
+      account.id,
+      account.selectedApiKeyFingerprint?.trim() || 'account'
+    ].join(':')
     const cooldownUntil = recoveryHint?.cooldownUntil
-      ?? (apiKeyGenericRecovery ? genericApiKeyQuotaCooldownUntil() : undefined)
+      ?? quotaRecoveryCooldownUntil({
+        policy: configuredPolicy,
+        accountType: recoveryAccountType,
+        seed: recoverySeed
+      })
     return {
       action: 'cooldown',
       ruleId: SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID,
@@ -342,6 +363,11 @@ export function decideAccountErrorPolicy(
     cooldownStatus: 'temporary_unavailable',
     cooldownUntil: new Date(Date.now() + settings.defaultTemporaryUnschedulableMinutes * 60_000).toISOString()
   }
+}
+
+function quotaRecoveryPolicyFromCredentials(credentials: Record<string, unknown>): QuotaRecoveryPolicy | undefined {
+  if (!Object.prototype.hasOwnProperty.call(credentials, 'quota_recovery_policy')) return undefined
+  return normalizeQuotaRecoveryPolicy(credentials.quota_recovery_policy)
 }
 
 export function accountErrorPolicyCouldMatchStatus(
@@ -413,6 +439,11 @@ function applyExplicitAccountErrorPolicyDecision(
   const reason = explicitAccountErrorPolicyReason(account, input, decision)
   const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
   const runtimeFailureGuard = accountRuntimeFailureObservationGuard(account, input)
+  const failureCode = decision.ruleSource === 'system'
+    ? decision.quotaRecoveryMode === 'explicit_reset'
+      ? SYSTEM_QUOTA_EXPLICIT_RESET_COOLDOWN_CODE
+      : SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE
+    : EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE
   const updated = decision.action === 'disable'
     ? authorizedTarget
       ? markAuthorizedAccountBindingDisabledByFailure({ ...authorizedTarget, reason, runtimeFailureGuard })
@@ -424,7 +455,7 @@ function applyExplicitAccountErrorPolicyDecision(
           cooldownUntil: decision.cooldownUntil,
           reason,
           traceId: input.traceId,
-          failureCode: EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+          failureCode,
           runtimeFailureGuard
         })
       : markAccountCooldown(
@@ -436,7 +467,7 @@ function applyExplicitAccountErrorPolicyDecision(
           input.traceId,
           undefined,
           runtimeFailureGuard,
-          EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE
+          failureCode
         )
   return {
     action: decision.action,
@@ -467,6 +498,11 @@ async function applyExplicitAccountErrorPolicyDecisionAsync(
   const reason = explicitAccountErrorPolicyReason(account, input, decision)
   const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
   const runtimeFailureGuard = accountRuntimeFailureObservationGuard(account, input)
+  const failureCode = decision.ruleSource === 'system'
+    ? decision.quotaRecoveryMode === 'explicit_reset'
+      ? SYSTEM_QUOTA_EXPLICIT_RESET_COOLDOWN_CODE
+      : SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE
+    : EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE
   const updated = decision.action === 'disable'
     ? authorizedTarget
       ? await markAuthorizedAccountBindingDisabledByFailureAsync({ ...authorizedTarget, reason, runtimeFailureGuard })
@@ -478,7 +514,7 @@ async function applyExplicitAccountErrorPolicyDecisionAsync(
           cooldownUntil: decision.cooldownUntil,
           reason,
           traceId: input.traceId,
-          failureCode: EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+          failureCode,
           runtimeFailureGuard
         })
       : await markAccountCooldownAsync(
@@ -490,7 +526,7 @@ async function applyExplicitAccountErrorPolicyDecisionAsync(
           input.traceId,
           undefined,
           runtimeFailureGuard,
-          EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE
+          failureCode
         )
   return {
     action: decision.action,

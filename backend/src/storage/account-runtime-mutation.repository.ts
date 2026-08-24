@@ -2,7 +2,9 @@ import type { AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus
 import {
   EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
   isExplicitAccountErrorPolicyCooldown,
-  LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX
+  LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX,
+  SYSTEM_QUOTA_EXPLICIT_RESET_COOLDOWN_CODE,
+  SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE
 } from '../domain/account-runtime-provenance.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { requiredRfc3339Instant, rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
@@ -1458,6 +1460,11 @@ export function markAuthorizedAccountBindingCooldownByContext(
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
   const cooldownGeneration = newCooldownRetestGeneration()
   const now = nowIso()
+  const systemQuotaPrioritySql = systemQuotaCooldownPrioritySql(input.failureCode)
+  const systemQuotaPriorityParams = systemQuotaCooldownPriorityParams(
+    input.failureCode,
+    input.runtimeFailureGuard?.observedAt ?? now
+  )
   const result = getBusinessDatabase()
     .prepare(`
       UPDATE accounts
@@ -1480,6 +1487,7 @@ export function markAuthorizedAccountBindingCooldownByContext(
         AND authorization_instance_authorization_id = ?
         AND deleted_at IS NULL
         AND status NOT IN ('disabled', 'error')
+        ${systemQuotaPrioritySql}
         ${accountHealthCheckGuardSql(input.healthCheckGuard)}
         ${accountPrecheckMutationGuardSql(input.precheckGuard)}
         ${accountRuntimeFailureObservationGuardSql(input.runtimeFailureGuard)}
@@ -1505,6 +1513,7 @@ export function markAuthorizedAccountBindingCooldownByContext(
       target.accountId,
       target.systemAccountId,
       target.accountAuthorizationId,
+      ...systemQuotaPriorityParams,
       ...accountHealthCheckGuardParams(input.healthCheckGuard),
       ...accountPrecheckMutationGuardParams(input.precheckGuard),
       ...accountRuntimeFailureObservationGuardParams(input.runtimeFailureGuard),
@@ -1554,6 +1563,11 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
   const cooldownGeneration = newCooldownRetestGeneration()
   const now = nowIso()
+  const systemQuotaPrioritySql = systemQuotaCooldownPrioritySql(input.failureCode, 'accounts')
+  const systemQuotaPriorityParams = systemQuotaCooldownPriorityParams(
+    input.failureCode,
+    input.runtimeFailureGuard?.observedAt ?? now
+  )
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const result = await client.execute(`
     UPDATE ${accountRuntimeMutationTable(client, 'accounts')} AS accounts
@@ -1576,6 +1590,7 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
       AND authorization_instance_authorization_id = ?
       AND deleted_at IS NULL
       AND status NOT IN ('disabled', 'error')
+      ${systemQuotaPrioritySql}
       ${accountHealthCheckGuardSql(input.healthCheckGuard)}
       ${accountPrecheckMutationGuardSql(input.precheckGuard)}
       ${accountRuntimeFailureObservationGuardSql(input.runtimeFailureGuard)}
@@ -1600,6 +1615,7 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
     target.accountId,
     target.systemAccountId,
     target.accountAuthorizationId,
+    ...systemQuotaPriorityParams,
     ...accountHealthCheckGuardParams(input.healthCheckGuard),
     ...accountPrecheckMutationGuardParams(input.precheckGuard),
     ...accountRuntimeFailureObservationGuardParams(input.runtimeFailureGuard),
@@ -2086,6 +2102,42 @@ function accountRuntimeFailureUpdatedAtParams(
   return guard ? [guard.observedAt, guard.observedAt] : [fallback]
 }
 
+function systemQuotaCooldownPrioritySql(failureCode: string | undefined, tableAlias = ''): string {
+  if (failureCode !== SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE) return ''
+  const prefix = tableAlias ? `${tableAlias}.` : ''
+  const futureCooldownSql = tableAlias
+    ? `${prefix}cooldown_until::timestamptz > ?::timestamptz`
+    : `${prefix}cooldown_until > ?`
+  return `
+    AND NOT (
+      (
+        ${prefix}last_error_code IN (?, ?, ?)
+        OR (
+          ${prefix}last_error_code IS NULL
+          AND COALESCE(${prefix}last_error_message, '') LIKE ?
+        )
+      )
+      AND ${prefix}cooldown_until IS NOT NULL
+      AND ${futureCooldownSql}
+    )
+  `
+}
+
+function systemQuotaCooldownPriorityParams(
+  failureCode: string | undefined,
+  referenceAt: string
+): string[] {
+  return failureCode === SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE
+    ? [
+        SYSTEM_QUOTA_EXPLICIT_RESET_COOLDOWN_CODE,
+        SYSTEM_QUOTA_GENERIC_COOLDOWN_CODE,
+        EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+        `${LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX}%`,
+        referenceAt
+      ]
+    : []
+}
+
 export function markAccountTemporaryUnavailable(
   id: string,
   reason: string,
@@ -2184,6 +2236,11 @@ export function markAccountCooldown(
   const cooldownObservationStartedAt = temporaryState?.observationStartedAt
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
   const cooldownGeneration = newCooldownRetestGeneration()
+  const systemQuotaPrioritySql = systemQuotaCooldownPrioritySql(failureCode)
+  const systemQuotaPriorityParams = systemQuotaCooldownPriorityParams(
+    failureCode,
+    runtimeFailureGuard?.observedAt ?? cooldownNow
+  )
 
   const result = getBusinessDatabase()
     .prepare(`
@@ -2206,6 +2263,7 @@ export function markAccountCooldown(
         AND deleted_at IS NULL
         AND status = ?
         AND config_revision = ?
+        ${systemQuotaPrioritySql}
         ${accountHealthCheckGuardSql(healthCheckGuard)}
         ${accountPrecheckMutationGuardSql(precheckGuard)}
         ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
@@ -2222,6 +2280,7 @@ export function markAccountCooldown(
       id,
       current.status,
       current.configRevision ?? 1,
+      ...systemQuotaPriorityParams,
       ...accountHealthCheckGuardParams(healthCheckGuard),
       ...accountPrecheckMutationGuardParams(precheckGuard),
       ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)
@@ -2316,9 +2375,14 @@ export async function markAccountCooldownAsync(
   const cooldownObservationStartedAt = temporaryState?.observationStartedAt
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
   const cooldownGeneration = newCooldownRetestGeneration()
+  const systemQuotaPrioritySql = systemQuotaCooldownPrioritySql(failureCode, 'accounts')
+  const systemQuotaPriorityParams = systemQuotaCooldownPriorityParams(
+    failureCode,
+    runtimeFailureGuard?.observedAt ?? cooldownNow
+  )
 
   const result = await client.execute(`
-    UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')} AS accounts
     SET status = ?,
         schedulable = 1,
         cooldown_until = ?,
@@ -2337,6 +2401,7 @@ export async function markAccountCooldownAsync(
       AND deleted_at IS NULL
       AND status = ?
       AND config_revision = ?
+      ${systemQuotaPrioritySql}
       ${accountHealthCheckGuardSql(healthCheckGuard)}
       ${accountPrecheckMutationGuardSql(precheckGuard)}
       ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
@@ -2352,6 +2417,7 @@ export async function markAccountCooldownAsync(
     id,
     current.status,
     current.configRevision ?? 1,
+    ...systemQuotaPriorityParams,
     ...accountHealthCheckGuardParams(healthCheckGuard),
     ...accountPrecheckMutationGuardParams(precheckGuard),
     ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)

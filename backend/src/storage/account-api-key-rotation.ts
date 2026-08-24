@@ -28,6 +28,7 @@ export interface AccountApiKeyRuntimeSelectionState {
   status: AccountApiKeyRuntimeStatus
   keyIndex?: number
   transientGeneration?: string
+  recoveryStartedAt?: string
   cooldownUntil?: string
   nextProbeAt?: string
 }

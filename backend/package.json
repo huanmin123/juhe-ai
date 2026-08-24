@@ -240,6 +240,7 @@
     "test:account-api-key-failure-guard": "tsx src/scripts/regression/account-api-key-failure-guard-regression.ts",
     "test:account-api-key-mutation-authority": "tsx src/scripts/regression/account-api-key-mutation-authority-regression.ts",
     "test:account-api-key-runtime-observation": "tsx src/scripts/regression/account-api-key-runtime-observation-regression.ts",
+    "test:account-api-key-recovery-parent-status": "tsx src/scripts/regression/account-api-key-recovery-parent-status-regression.ts",
     "test:account-api-key-runtime-status-sql": "tsx src/scripts/regression/account-api-key-runtime-status-sql-regression.ts",
     "test:account-api-key-runtime-revalidate": "tsx src/scripts/regression/account-api-key-runtime-revalidate-regression.ts",
     "test:account-api-key-probe-generation-contract": "tsx src/scripts/regression/account-api-key-probe-generation-contract-regression.ts",

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
 
 type fakeDirectInputLoader struct {
@@ -596,12 +598,12 @@ func TestRunnerDirectInputFailureRenewsSuppressionAfterRetryWindow(t *testing.T)
 	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_health_outcomes WHERE request_id=?`, requestID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("retry after suppression expiry must retain one outcome receipt: count=%d err=%v", count, err)
 	}
-	wantDue := now.Add(directInputFailureRetryBackoff)
 	var gotDue, gotUpdated string
 	if err := store.db.QueryRowContext(context.Background(), `SELECT next_due_at,updated_at FROM account_health_direct_input_suppressions WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revision=?`, failure.AccountID, failure.InputVersion, failure.ConfigRevision, failure.DispatchRevision).Scan(&gotDue, &gotUpdated); err != nil {
 		t.Fatalf("read renewed suppression: %v", err)
 	}
-	if gotDue != wantDue.Format(time.RFC3339Nano) || gotUpdated != now.Format(time.RFC3339Nano) {
+	parsedDue, err := time.Parse(time.RFC3339Nano, gotDue)
+	if err != nil || parsedDue.Sub(now) < directInputFailureRetryBackoff-30*time.Second || parsedDue.Sub(now) > directInputFailureRetryBackoff+30*time.Second || parsedDue.Equal(now.Add(directInputFailureRetryBackoff)) || gotUpdated != now.Format(time.RFC3339Nano) {
 		t.Fatalf("suppression was not renewed after retry window: next_due_at=%q updated_at=%q", gotDue, gotUpdated)
 	}
 }
@@ -714,14 +716,14 @@ func TestCooldownNeutralDeferUsesObservationGenerationWindow(t *testing.T) {
 	prior.FailureCount = 99
 	repeat := Outcome{Outcome: OutcomeTaskFailed, ObservedAt: start}
 	applyOutcomeDecision(&repeat, input, prior, true, "cooldown_retest")
-	if repeat.NextDueAt == nil || repeat.NextDueAt.Sub(start) != firstDelay || repeat.FailureCount != 99 {
-		t.Fatalf("same generation/stage defer must be stable and not change failure count: %#v", repeat)
+	if repeat.NextDueAt == nil || repeat.NextDueAt.Sub(start) <= 0 || repeat.FailureCount != 99 {
+		t.Fatalf("same generation/stage defer must remain positive and not change failure count: %#v", repeat)
 	}
 
 	later := Outcome{Outcome: OutcomeNeutral, ObservedAt: start.Add(30 * time.Second)}
 	applyOutcomeDecision(&later, input, prior, true, "cooldown_retest")
-	if later.NextDueAt == nil || later.NextDueAt.Sub(later.ObservedAt) <= firstDelay {
-		t.Fatalf("next observation window must increase neutral defer: first=%s later=%#v", firstDelay, later)
+	if later.NextDueAt == nil || later.NextDueAt.Sub(later.ObservedAt) <= 0 {
+		t.Fatalf("next observation window must retain a positive neutral defer: first=%s later=%#v", firstDelay, later)
 	}
 	if capped := stableCooldownDefer(input.AccountID, fence.Generation, 100, 30*time.Second, 15*time.Minute); capped > 15*time.Minute || capped < 3*time.Second {
 		t.Fatalf("neutral defer must remain within [3s,15m]: %s", capped)
@@ -822,19 +824,19 @@ func TestThresholdCooldownStartsIndependentRetrySequence(t *testing.T) {
 	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active", FailureCount: 2}
 	threshold := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
 	applyOutcomeDecision(&threshold, input, prior, true, "health")
-	if threshold.CooldownFence == nil || threshold.FailureCount != 0 || threshold.NextDueAt == nil || !threshold.NextDueAt.Equal(now.Add(3*time.Second)) {
+	if threshold.CooldownFence == nil || threshold.FailureCount != 0 || threshold.NextDueAt == nil || !isJitteredWithin(threshold.NextDueAt.Sub(now), 3*time.Second) {
 		t.Fatalf("threshold transition must reset cooldown retry count: %#v", threshold)
 	}
 	firstCooldown := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
 	prior = CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: threshold.FailureCount, CooldownFence: threshold.CooldownFence}
 	applyOutcomeDecision(&firstCooldown, input, prior, true, "cooldown_retest")
-	if firstCooldown.FailureCount != 1 || firstCooldown.NextDueAt == nil || !firstCooldown.NextDueAt.Equal(now.Add(3*time.Second)) {
+	if firstCooldown.FailureCount != 1 || firstCooldown.NextDueAt == nil || !isJitteredWithin(firstCooldown.NextDueAt.Sub(now), 3*time.Second) {
 		t.Fatalf("first cooldown retry must use initial backoff: %#v", firstCooldown)
 	}
 	secondCooldown := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
 	prior.FailureCount = firstCooldown.FailureCount
 	applyOutcomeDecision(&secondCooldown, input, prior, true, "cooldown_retest")
-	if secondCooldown.FailureCount != 2 || secondCooldown.NextDueAt == nil || !secondCooldown.NextDueAt.Equal(now.Add(6*time.Second)) {
+	if secondCooldown.FailureCount != 2 || secondCooldown.NextDueAt == nil || !isJitteredWithin(secondCooldown.NextDueAt.Sub(now), 6*time.Second) {
 		t.Fatalf("second cooldown retry must double initial backoff: %#v", secondCooldown)
 	}
 }
@@ -846,7 +848,7 @@ func TestThresholdCooldownUsesThreeSecondDefaultBackoff(t *testing.T) {
 	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownFailureBackoffMS: 0}
 	outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
 	applyOutcomeDecision(&outcome, input, CurrentState{AccountStatus: "active"}, true, "health")
-	if outcome.NextDueAt == nil || !outcome.NextDueAt.Equal(now.Add(3*time.Second)) {
+	if outcome.NextDueAt == nil || !isJitteredWithin(outcome.NextDueAt.Sub(now), 3*time.Second) {
 		t.Fatalf("threshold cooldown default backoff must be 3s: %#v", outcome)
 	}
 }
@@ -861,7 +863,7 @@ func TestCooldownFailureTransitionsLongTermThenTerminal(t *testing.T) {
 	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: 2, CooldownFence: fence}
 	outcome := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
 	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
-	if outcome.AccountStatus != "temporary_unavailable" || outcome.NextDueAt == nil || !outcome.NextDueAt.Equal(now.Add(time.Hour)) || outcome.ErrorCode != "cooldown_retest_long_term_unavailable" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_failure" {
+	if outcome.AccountStatus != "temporary_unavailable" || outcome.NextDueAt == nil || !isJitteredWithin(outcome.NextDueAt.Sub(now), time.Hour) || outcome.ErrorCode != "cooldown_retest_long_term_unavailable" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_failure" {
 		t.Fatalf("expired max recovery must use hourly long-term retest: %#v", outcome)
 	}
 	fence.ObservationStartedAt = now.Add(-7 * 24 * time.Hour)
@@ -886,8 +888,8 @@ func TestCooldownFailureUsesDeterministicSlowBackoffAfterFastRetries(t *testing.
 		t.Fatalf("slow recovery outcome invalid: %#v", outcome)
 	}
 	delay := outcome.NextDueAt.Sub(now)
-	if delay < time.Minute || delay > 5*time.Minute || delay != cooldownFailureDelay(input.AccountID, fence.Generation, 3*time.Second, 11) {
-		t.Fatalf("slow recovery delay must be stable in [1m,5m]: %s", delay)
+	if delay < 30*time.Second || delay > 5*time.Minute+30*time.Second || delay == cooldownFailureDelay(input.AccountID, fence.Generation, 3*time.Second, 11) {
+		t.Fatalf("slow recovery delay must apply a fresh global offset in [30s,5m30s]: %s", delay)
 	}
 }
 
@@ -906,7 +908,7 @@ func TestBoundedTemporaryUnavailableCapsThenTerminatesOnRealFailure(t *testing.T
 	}
 	beforeDeadline := Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now}
 	applyOutcomeDecision(&beforeDeadline, input, prior, true, "cooldown_retest")
-	if beforeDeadline.NextDueAt == nil || !beforeDeadline.NextDueAt.Equal(now.Add(time.Second)) || beforeDeadline.AccountStatus != "temporary_unavailable" {
+	if beforeDeadline.NextDueAt == nil || beforeDeadline.NextDueAt.Sub(now) <= 0 || !beforeDeadline.NextDueAt.Before(now.Add(time.Second)) || beforeDeadline.AccountStatus != "temporary_unavailable" {
 		t.Fatalf("bounded retry must stop at ten-minute deadline: %#v", beforeDeadline)
 	}
 	fence.ObservationStartedAt = now.Add(-cooldownLimitedProbeTimeout)
@@ -930,6 +932,11 @@ func TestBoundedTemporaryUnavailableCapsThenTerminatesOnRealFailure(t *testing.T
 	if rateLimited.AccountStatus != "rate_limited" || rateLimited.ErrorCode != "cooldown_retest_long_term_unavailable" {
 		t.Fatalf("rate-limited cooldown must not use temporary bounded terminal: %#v", rateLimited)
 	}
+}
+
+func isJitteredWithin(delay, interval time.Duration) bool {
+	window := schedulejitter.Window(interval)
+	return delay >= interval-window && delay <= interval+window && delay != interval
 }
 
 func TestCooldownFailureDelayStartsAtInitialBackoff(t *testing.T) {

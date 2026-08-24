@@ -649,7 +649,22 @@ try {
   assert.equal(genericQuotaRow.status, 'rate_limited')
   assert.equal(genericQuotaRow.recovery_started_at, quotaObservedAt, '通用额度观察窗口必须从首次确认开始')
   assert.equal(genericQuotaRow.last_error_code, API_KEY_QUOTA_GENERIC_ERROR_CODE)
-  assert.equal(genericQuotaRow.next_probe_at, quotaCooldownUntil, '无 reset_at 的 API Key 默认复测边界必须由调用方传入 2 小时')
+  assert.equal(genericQuotaRow.next_probe_at, quotaCooldownUntil, '无 reset_at 的 API Key 复测边界必须由账户策略稳定计算并由调用方传入')
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[0],
+    status: 'rate_limited',
+    errorCode: API_KEY_QUOTA_GENERIC_ERROR_CODE,
+    errorMessage: '同一恢复周期内重复收到额度不足',
+    quotaRecoveryMode: 'generic',
+    cooldownUntil: '2026-01-01T03:00:00.000Z',
+    observedAt: '2026-01-01T00:30:00.000Z'
+  }).changed, false, '同一 generic 恢复周期仍有未来 cooldown 时，重复失败不得重算或推迟 due')
+  const stableGenericQuotaRow = database.prepare(`
+    SELECT next_probe_at
+    FROM account_api_key_runtime_states
+    WHERE account_id = ? AND key_fingerprint = ?
+  `).get(account.id, entries[0]!.fingerprint) as { next_probe_at: string | null }
+  assert.equal(stableGenericQuotaRow.next_probe_at, quotaCooldownUntil, 'generic duplicate 必须保留原 due')
 
   assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
     account: selected[0],
@@ -665,6 +680,7 @@ try {
     errorCode: API_KEY_QUOTA_GENERIC_ERROR_CODE,
     errorMessage: '额度仍不足',
     quotaRecoveryMode: 'generic',
+    cooldownUntil: '2026-01-31T01:00:00.000Z',
     observedAt: '2026-01-31T00:00:00.000Z'
   }).changed, true, 'quota -> transport -> quota 必须继续写入当前 Key')
   const continuousQuotaRow = database.prepare(`
@@ -681,6 +697,7 @@ try {
     errorCode: API_KEY_QUOTA_GENERIC_ERROR_CODE,
     errorMessage: '额度仍不足',
     quotaRecoveryMode: 'generic',
+    cooldownUntil: '2026-02-01T01:00:00.000Z',
     observedAt: '2026-02-01T00:00:00.000Z'
   }).changed, true, 'break 后的通用 quota 观察必须允许继续写入')
   const notTimedOutQuotaRow = database.prepare(`
@@ -741,6 +758,22 @@ try {
   assert.equal(explicitQuotaRow.recovery_started_at, null, '明确 reset_at 不得启动 30 天通用观察窗口')
   assert.equal(explicitQuotaRow.last_error_code, API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE)
   assert.equal(explicitQuotaRow.next_probe_at, '2030-01-01T00:00:00.000Z')
+  assert.equal(runtimeStates.recordAccountApiKeyRuntimeFailure({
+    account: selected[1],
+    status: 'rate_limited',
+    errorCode: API_KEY_QUOTA_GENERIC_ERROR_CODE,
+    errorMessage: 'generic 额度不足不得覆盖未来显式 reset_at',
+    quotaRecoveryMode: 'generic',
+    cooldownUntil: '2026-01-03T01:00:00.000Z',
+    observedAt: '2026-01-03T00:00:00.000Z'
+  }).changed, false, '未来显式 reset_at 存在时 generic 写入必须由原子 guard 拒绝')
+  const afterGenericAttempt = database.prepare(`
+    SELECT last_error_code, next_probe_at
+    FROM account_api_key_runtime_states
+    WHERE account_id = ? AND key_fingerprint = ?
+  `).get(account.id, entries[1]!.fingerprint) as { last_error_code: string | null; next_probe_at: string | null }
+  assert.equal(afterGenericAttempt.last_error_code, API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE, '被拒绝的 generic 写入不得改写显式 provenance')
+  assert.equal(afterGenericAttempt.next_probe_at, '2030-01-01T00:00:00.000Z', '被拒绝的 generic 写入不得改写未来显式复测时间')
 
   console.log('账户内 API Key 探测摘要回归通过')
 } finally {

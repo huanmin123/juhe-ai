@@ -222,7 +222,7 @@ try {
   assertNoForbiddenCredentialKeysExcept(
     detail,
     '账户高级详情响应',
-    new Set(['error_handling_rules', 'response_inspection_rules'])
+    new Set(['error_handling_rules', 'response_inspection_rules', 'effectiveQuotaRecoveryPolicy'])
   )
   assertNoSecretValueLeak(detail, '账户高级详情响应')
 
@@ -282,6 +282,7 @@ try {
     'configRevision',
     'credentials',
     'effectiveErrorHandlingRules',
+    'effectiveQuotaRecoveryPolicy',
     'id',
     'modelMappings',
     'temporaryUnavailableContinuousProbeEnabled'
@@ -648,8 +649,12 @@ function assertNoForbiddenCredentialKeysExcept(value: unknown, label: string, al
     return
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const insideEffectiveQuotaRecoveryPolicy = path === '$.effectiveQuotaRecoveryPolicy'
+      || path.startsWith('$.effectiveQuotaRecoveryPolicy.')
     assert(
-      allowedKeys.has(key) || !['api_key', 'access_token', 'refresh_token', 'id_token', 'error_handling_rules', 'response_inspection_rules'].includes(key),
+      allowedKeys.has(key)
+        || insideEffectiveQuotaRecoveryPolicy
+        || !['api_key', 'access_token', 'refresh_token', 'id_token', 'error_handling_rules', 'response_inspection_rules'].includes(key),
       `${label} 不应包含凭据字段 ${path}.${key}`
     )
     assertNoForbiddenCredentialKeysExcept(child, label, allowedKeys, `${path}.${key}`)

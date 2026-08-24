@@ -54,7 +54,8 @@ const oauthCredentialsPatchSchema = z.object({
   service_tier_override: z.string().trim().min(1).optional(),
   reasoning_effort_override: z.string().trim().min(1).optional(),
   error_handling_rules: z.unknown().optional(),
-  response_inspection_rules: z.unknown().optional()
+  response_inspection_rules: z.unknown().optional(),
+  quota_recovery_policy: z.unknown().optional()
 }).strict()
 
 const accountModelMappingSchema = z.object({
@@ -620,6 +621,7 @@ function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchS
   if (patch?.reasoning_effort_override !== undefined) output.reasoning_effort_override = patch.reasoning_effort_override
   if (patch?.error_handling_rules !== undefined) output.error_handling_rules = patch.error_handling_rules
   if (patch?.response_inspection_rules !== undefined) output.response_inspection_rules = patch.response_inspection_rules
+  if (patch?.quota_recovery_policy !== undefined) output.quota_recovery_policy = patch.quota_recovery_policy
   return output
 }
 

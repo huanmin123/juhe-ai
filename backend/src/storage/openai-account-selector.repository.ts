@@ -393,6 +393,7 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
   copyRuntimeCredentialValue(credentials, output, 'api_key_weights')
   copyRuntimeCredentialValue(credentials, output, 'error_handling_rules')
   copyRuntimeCredentialValue(credentials, output, 'response_inspection_rules')
+  copyRuntimeCredentialValue(credentials, output, 'quota_recovery_policy')
   return output
 }
 

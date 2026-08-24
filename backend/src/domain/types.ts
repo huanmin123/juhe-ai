@@ -477,6 +477,7 @@ export interface AccountCredentials {
   service_tier_override?: string
   reasoning_effort_override?: string
   response_inspection_rules?: unknown[]
+  quota_recovery_policy?: Record<string, unknown>
   [key: string]: unknown
 }
 

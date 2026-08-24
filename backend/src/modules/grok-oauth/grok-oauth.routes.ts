@@ -70,7 +70,8 @@ const oauthCredentialsPatchSchema = z.object({
   base_url: z.string().trim().min(1).optional(),
   supported_endpoint_modes: z.array(z.string().trim().min(1)).max(20).optional(),
   error_handling_rules: z.unknown().optional(),
-  response_inspection_rules: z.unknown().optional()
+  response_inspection_rules: z.unknown().optional(),
+  quota_recovery_policy: z.unknown().optional()
 }).strict()
 
 const accountModelMappingSchema = z.object({
@@ -689,6 +690,7 @@ function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchS
   if (patch?.supported_endpoint_modes !== undefined) output.supported_endpoint_modes = patch.supported_endpoint_modes
   if (patch?.error_handling_rules !== undefined) output.error_handling_rules = patch.error_handling_rules
   if (patch?.response_inspection_rules !== undefined) output.response_inspection_rules = patch.response_inspection_rules
+  if (patch?.quota_recovery_policy !== undefined) output.quota_recovery_policy = patch.quota_recovery_policy
   return output
 }
 

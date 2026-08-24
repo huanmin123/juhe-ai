@@ -1,4 +1,5 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { passiveScheduleInitialDelayMs, passiveScheduleOffsetMs } from '../../shared/passive-schedule-jitter.js'
 import { rfc3339InstantMilliseconds } from '../../shared/rfc3339.js'
 
 export type WorkerScheduledJobScheduleMode = 'fixedRate' | 'fixedDelay'
@@ -26,6 +27,8 @@ export interface WorkerScheduledJobOptions {
   timeoutMs?: number
   stablePhaseWindowMs?: number
   stablePhaseSeed?: string
+  /** Apply the global per-run passive schedule deviation policy. */
+  passiveJitter?: boolean
   resourceLane?: string
   failureBackoff?: WorkerScheduledJobFailureBackoffOptions
   task: (context: WorkerScheduledJobTaskContext) => void | WorkerScheduledJobTaskResult | Promise<void | WorkerScheduledJobTaskResult>
@@ -59,6 +62,7 @@ export interface WorkerScheduledJobRuntimeSnapshot {
   intervalMs: number
   initialDelayMs: number
   stablePhaseOffsetMs: number
+  passiveJitter: boolean
   scheduleMode: WorkerScheduledJobScheduleMode
   overlapPolicy: WorkerScheduledJobOverlapPolicy
   timeoutMs?: number
@@ -102,6 +106,7 @@ interface WorkerScheduledJobState {
   intervalMs: number
   initialDelayMs: number
   stablePhaseOffsetMs: number
+  passiveJitter: boolean
   scheduleMode: WorkerScheduledJobScheduleMode
   overlapPolicy: WorkerScheduledJobOverlapPolicy
   timeoutMs?: number
@@ -185,6 +190,7 @@ export class WorkerScheduler {
       intervalMs,
       initialDelayMs,
       stablePhaseOffsetMs,
+      passiveJitter: options.passiveJitter === true,
       scheduleMode: options.scheduleMode ?? 'fixedRate',
       overlapPolicy: options.overlapPolicy ?? 'skip',
       timeoutMs: normalizedOptionalPositiveMs(options.timeoutMs),
@@ -209,13 +215,21 @@ export class WorkerScheduler {
     this.jobs.set(options.name, state)
 
     const runImmediately = options.runImmediately !== false
-    const firstDelayMs = initialDelayMs + stablePhaseOffsetMs + (runImmediately ? 0 : intervalMs)
+    const initialScheduleDelayMs = initialDelayMs + stablePhaseOffsetMs + (runImmediately ? 0 : intervalMs)
+    // An explicitly immediate startup is event-driven. Every delayed passive
+    // run, including the first one after startup, gets a bounded fresh offset.
+    const firstDelayMs = state.passiveJitter && initialScheduleDelayMs > 0
+      ? passiveScheduleInitialDelayMs(initialScheduleDelayMs, intervalMs, this.random)
+      : initialScheduleDelayMs
     const firstRunAtMs = this.clock.now() + firstDelayMs
     if (state.scheduleMode === 'fixedRate') state.fixedRateAnchorAtMs = firstRunAtMs
     if (firstDelayMs === 0) {
       state.lastScheduledAt = new Date(firstRunAtMs).toISOString()
       if (state.scheduleMode === 'fixedRate') {
-        this.scheduleRegularTimer(options.name, state, firstRunAtMs + state.intervalMs)
+        const firstIntervalDelay = state.passiveJitter
+          ? Math.max(1, state.intervalMs + passiveScheduleOffsetMs(state.intervalMs, this.random))
+          : state.intervalMs
+        this.scheduleRegularTimer(options.name, state, firstRunAtMs + firstIntervalDelay)
       }
       this.triggerRun(options.name, state)
       return
@@ -260,6 +274,7 @@ export class WorkerScheduler {
         intervalMs: state.intervalMs,
         initialDelayMs: state.initialDelayMs,
         stablePhaseOffsetMs: state.stablePhaseOffsetMs,
+        passiveJitter: state.passiveJitter,
         scheduleMode: state.scheduleMode,
         overlapPolicy: state.overlapPolicy,
         timeoutMs: state.timeoutMs,
@@ -331,7 +346,10 @@ export class WorkerScheduler {
       state.nextRegularRunAtMs = undefined
       state.lastScheduledAt = new Date(scheduledAtMs).toISOString()
       if (state.scheduleMode === 'fixedRate') {
-        const nextScheduledAtMs = nextFixedRateTargetMs(scheduledAtMs, state.intervalMs, this.clock.now())
+        let nextScheduledAtMs = nextFixedRateTargetMs(scheduledAtMs, state.intervalMs, this.clock.now())
+        if (state.passiveJitter) {
+          nextScheduledAtMs += passiveScheduleOffsetMs(state.intervalMs, this.random)
+        }
         this.scheduleRegularTimer(name, state, nextScheduledAtMs)
       }
       if (state.backoffUntilMs !== undefined && this.clock.now() < state.backoffUntilMs) {
@@ -403,7 +421,7 @@ export class WorkerScheduler {
     }
     if (!this.acquireLane(name, state)) {
       if (state.scheduleMode === 'fixedDelay' && state.overlapPolicy === 'skip') {
-        this.scheduleRegularTimer(name, state, this.clock.now() + state.intervalMs)
+        this.scheduleRegularTimer(name, state, this.clock.now() + this.nextPassiveIntervalDelay(state))
       }
       return
     }
@@ -623,7 +641,7 @@ export class WorkerScheduler {
         return
       }
       if (state.scheduleMode === 'fixedDelay') {
-        this.scheduleRegularTimer(name, state, this.clock.now() + state.intervalMs)
+        this.scheduleRegularTimer(name, state, this.clock.now() + this.nextPassiveIntervalDelay(state))
       }
     }
   }
@@ -639,6 +657,12 @@ export class WorkerScheduler {
 
   private nowIso(): string {
     return new Date(this.clock.now()).toISOString()
+  }
+
+  private nextPassiveIntervalDelay(state: WorkerScheduledJobState): number {
+    return state.passiveJitter
+      ? Math.max(1, state.intervalMs + passiveScheduleOffsetMs(state.intervalMs, this.random))
+      : state.intervalMs
   }
 }
 

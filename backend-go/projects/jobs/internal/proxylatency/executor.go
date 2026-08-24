@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"strconv"
@@ -31,7 +32,7 @@ type ExecutorOptions struct {
 // A committed replay is returned without another upstream request. All first
 // execution failures before an upstream item has run (input, lease, envelope,
 // cancellation) return an error and never synthesize a committed outcome.
-func ExecuteIssuedInput(ctx context.Context, store *Store, owner OwnerLease, proxy ProxyLease, input IssuedInput, options ExecutorOptions) (Outcome, bool, error) {
+func ExecuteIssuedInput(ctx context.Context, store *Store, owner OwnerLease, proxy ProxyLease, input IssuedInput, options ExecutorOptions) (outcome Outcome, committed bool, runErr error) {
 	if store == nil {
 		return Outcome{}, false, errors.New("J3a executor Store 不可用")
 	}
@@ -49,7 +50,26 @@ func ExecuteIssuedInput(ctx context.Context, store *Store, owner OwnerLease, pro
 		return *replay, false, nil
 	}
 	input = resolved
-	defer func() { _ = store.ReleaseExecutionClaim(context.Background(), input.RequestID, claimToken) }()
+	defer func() {
+		releaseCtx, releaseCancel := boundedReleaseContext(ctx)
+		release := store.releaseExecutionClaim
+		if release == nil {
+			release = store.ReleaseExecutionClaim
+		}
+		releaseErr := release(releaseCtx, input.RequestID, claimToken)
+		releaseCancel()
+		if releaseErr == nil {
+			return
+		}
+		wrapped := fmt.Errorf("J3a execution claim release failed: %w", releaseErr)
+		if runErr == nil {
+			outcome = Outcome{}
+			committed = false
+			runErr = wrapped
+			return
+		}
+		runErr = errors.Join(runErr, wrapped)
+	}()
 	proxyURL, err := proxyURLForIssuedInput(input, options.CredentialSecret)
 	if err != nil {
 		return Outcome{}, false, err
@@ -92,7 +112,7 @@ func ExecuteIssuedInput(ctx context.Context, store *Store, owner OwnerLease, pro
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, false, err
 	}
-	outcome := Outcome{
+	outcome = Outcome{
 		OutcomeID:           stableOutcomeID(input.RequestID),
 		RequestID:           input.RequestID,
 		ProxyID:             input.ProxyID,
@@ -106,7 +126,7 @@ func ExecuteIssuedInput(ctx context.Context, store *Store, owner OwnerLease, pro
 		Items:               items,
 		executionClaimToken: claimToken,
 	}
-	committed, err := store.AppendOutcome(ctx, owner, proxy, outcome)
+	committed, err = store.AppendOutcome(ctx, owner, proxy, outcome)
 	if err != nil {
 		return Outcome{}, false, err
 	}

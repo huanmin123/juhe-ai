@@ -1,10 +1,21 @@
 import { canonicalizeRfc3339Instant, rfc3339InstantMilliseconds } from '../../../shared/rfc3339.js'
+import {
+  quotaRecoveryCooldownUntil,
+  type QuotaRecoveryPolicy
+} from '../../accounts/quota-recovery-policy.js'
 
 export const API_KEY_QUOTA_GENERIC_ERROR_CODE = 'api_key_quota_insufficient'
 export const API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE = 'api_key_quota_insufficient_reset'
 export const API_KEY_QUOTA_RECOVERY_TIMEOUT_ERROR_CODE = 'api_key_quota_recovery_timeout'
 
-export const API_KEY_GENERIC_QUOTA_PROBE_INTERVAL_MS = 2 * 60 * 60 * 1000
+/**
+ * The generic fallback is intentionally one hour plus a stable positive
+ * jitter.  The jitter is derived from the account/key recovery seed, not from
+ * Math.random(), so repeated observations in one recovery window do not move
+ * the probe deadline or create an un-auditable schedule.
+ */
+export const API_KEY_GENERIC_QUOTA_PROBE_INTERVAL_MS = 60 * 60 * 1000
+export const API_KEY_GENERIC_QUOTA_PROBE_JITTER_MAX_MINUTES = 15
 export const API_KEY_QUOTA_OBSERVATION_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000
 
 export type ApiKeyQuotaRecoveryMode = 'generic' | 'explicit_reset'
@@ -16,8 +27,18 @@ export interface ApiKeyQuotaRecoveryHint {
   source?: ApiKeyQuotaRecoveryHintSource
 }
 
-export function genericApiKeyQuotaCooldownUntil(now = new Date()): string {
-  return new Date(now.getTime() + API_KEY_GENERIC_QUOTA_PROBE_INTERVAL_MS).toISOString()
+export function genericApiKeyQuotaCooldownUntil(input?: {
+  now?: Date
+  seed?: string
+  policy?: QuotaRecoveryPolicy
+} | Date): string {
+  const options = input instanceof Date ? { now: input } : (input ?? {})
+  return quotaRecoveryCooldownUntil({
+    accountType: 'api_key',
+    now: options.now,
+    seed: options.seed ?? 'system:api_key:generic',
+    policy: options.policy
+  })
 }
 
 export function apiKeyQuotaObservationExceeded(

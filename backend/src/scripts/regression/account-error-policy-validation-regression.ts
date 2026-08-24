@@ -12,6 +12,8 @@ import {
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION
 } from '../../domain/provider-protocol.js'
+import { genericApiKeyQuotaCooldownUntil } from '../../modules/gateway/policy/api-key-quota-recovery.js'
+import { quotaRecoveryCooldownUntil } from '../../modules/accounts/quota-recovery-policy.js'
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
@@ -31,6 +33,35 @@ const settings: GatewaySettings = {
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
 }
+
+const stableGenericNow = new Date('2026-08-24T00:00:00.000Z')
+const stableGenericFirst = genericApiKeyQuotaCooldownUntil({
+  now: stableGenericNow,
+  seed: 'quota-regression:account-a:key-a:g1'
+})
+const stableGenericSecond = genericApiKeyQuotaCooldownUntil({
+  now: stableGenericNow,
+  seed: 'quota-regression:account-a:key-a:g1'
+})
+assert.equal(stableGenericFirst, stableGenericSecond, '同一账户、Key 和恢复代次必须复用稳定错峰')
+assert(Date.parse(stableGenericFirst) - stableGenericNow.getTime() >= 60 * 60_000, '通用额度恢复不得早于 1 小时')
+assert(Date.parse(stableGenericFirst) - stableGenericNow.getTime() <= 75 * 60_000, '通用额度恢复错峰不得超过 15 分钟')
+const configuredDuration = quotaRecoveryCooldownUntil({
+  accountType: 'api_key',
+  seed: 'quota-regression:configured',
+  now: stableGenericNow,
+  policy: { api_key: { reset_strategy: 'duration', duration_minutes: 90, timezone: 'UTC' } }
+})
+assert(Date.parse(configuredDuration) - stableGenericNow.getTime() >= 90 * 60_000, '账户级 API Key 恢复间隔配置必须生效')
+assert(Date.parse(configuredDuration) - stableGenericNow.getTime() <= 105 * 60_000, '账户级 API Key 恢复间隔仍必须受系统错峰上限约束')
+const configuredOAuthDaily = quotaRecoveryCooldownUntil({
+  accountType: 'oauth',
+  seed: 'quota-regression:oauth',
+  now: new Date('2026-08-24T01:00:00.000Z'),
+  policy: { oauth: { reset_strategy: 'daily', daily_reset_hour: 3, timezone: 'UTC' } }
+})
+assert(Date.parse(configuredOAuthDaily) - Date.parse('2026-08-24T03:00:00.000Z') >= 0, 'OAuth daily 恢复策略必须可配置且按 UTC 计算')
+assert(Date.parse(configuredOAuthDaily) - Date.parse('2026-08-24T03:00:00.000Z') <= 15 * 60_000, 'OAuth daily 仍必须使用系统稳定错峰')
 
 const accountErrorPolicySource = readFileSync(new URL('../../modules/gateway/policy/account-error-policy.service.ts', import.meta.url), 'utf8')
 assert.match(
@@ -139,7 +170,7 @@ assert.equal(systemQuotaDecision?.cooldownStatus, 'rate_limited')
 assert.ok(systemQuotaDecision?.cooldownUntil, '系统额度规则命中必须返回下一次每日恢复时间')
 assert(Number.isFinite(Date.parse(systemQuotaDecision!.cooldownUntil!)) && Date.parse(systemQuotaDecision!.cooldownUntil!) > Date.now(), '系统额度规则 cooldownUntil 必须是未来 RFC3339 时间')
 
-const oauthFixedQuotaDecision = decideAccountErrorPolicy({
+const oauthQuotaDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_oauth_fixed_quota',
   providerCode: 'openai',
   protocolCode: OPENAI_PROTOCOL_CODE,
@@ -148,8 +179,8 @@ const oauthFixedQuotaDecision = decideAccountErrorPolicy({
   credentials: {},
   status: 'active'
 }, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_user_quota","reset_at":"2099-01-02T03:04:05Z"}}'), settings)
-assert.equal(oauthFixedQuotaDecision?.quotaRecoveryMode, undefined, '官方 OAuth 额度场景必须继续使用固定恢复规则')
-assert.notEqual(oauthFixedQuotaDecision?.cooldownUntil, '2099-01-02T03:04:05.000Z', 'OAuth 不得被 API Key 的 reset_at 通用化覆盖')
+assert.equal(oauthQuotaDecision?.quotaRecoveryMode, undefined, 'OAuth 额度场景应使用 daily/duration/weekly 账户策略，而不是 API Key explicit_reset 模式')
+assert.notEqual(oauthQuotaDecision?.cooldownUntil, '2099-01-02T03:04:05.000Z', 'OAuth 不得消费 API Key 的 reset_at hint')
 
 const multiKeyApiKeyQuotaDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_multi_key_quota',
@@ -166,7 +197,27 @@ assert.equal(multiKeyApiKeyQuotaDecision?.keyScoped, true, '多 Key API Key 额�
 assert.equal(multiKeyApiKeyQuotaDecision?.quotaRecoveryMode, 'generic', '没有 reset_at 时 API Key 必须走通用恢复模式')
 assert.equal(multiKeyApiKeyQuotaDecision?.cooldownStatus, 'rate_limited')
 assert(multiKeyApiKeyQuotaDecision?.cooldownUntil, '通用 API Key 额度恢复必须提供复测边界')
-assert(Date.parse(multiKeyApiKeyQuotaDecision!.cooldownUntil!) - Date.now() > 2 * 60 * 60_000 - 10_000, '通用 API Key 额度复测默认应约为 2 小时')
+const genericApiKeyDelay = Date.parse(multiKeyApiKeyQuotaDecision!.cooldownUntil!) - Date.now()
+assert(genericApiKeyDelay >= 60 * 60_000 - 10_000 && genericApiKeyDelay <= 75 * 60_000 + 10_000, '通用 API Key 额度复测默认应为 1 小时并带 0-15 分钟错峰')
+
+const configuredApiKeyQuotaDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_configured_quota',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  apiKeys: ['sk-configured-a', 'sk-configured-b'],
+  selectedApiKeyFingerprint: 'configured-key-fingerprint',
+  credentials: {
+    api_keys: ['sk-configured-a', 'sk-configured-b'],
+    quota_recovery_policy: {
+      api_key: { reset_strategy: 'duration', duration_minutes: 90, timezone: 'UTC' }
+    }
+  },
+  status: 'active'
+}, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_user_quota"}}'), settings)
+const configuredApiKeyDelay = Date.parse(configuredApiKeyQuotaDecision!.cooldownUntil!) - Date.now()
+assert(configuredApiKeyDelay >= 90 * 60_000 - 10_000 && configuredApiKeyDelay <= 105 * 60_000 + 10_000, '账户 API Key 额度恢复策略必须影响系统额度决策')
 
 const normalizedRuntimeApiKeysQuotaDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_runtime_api_keys_quota',

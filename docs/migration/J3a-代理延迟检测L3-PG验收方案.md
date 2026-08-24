@@ -1,6 +1,6 @@
 # J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案
 
-> 状态：本轮（2026-08-23）已在一次性 dev scratch 经 PgBouncer `6432` 重跑 required jobs/reader smoke，并另行通过现役 Node PostgreSQL CRUD/CAS smoke 验证微秒版本与并发更新；测试后数据库、角色、临时代理行和 PgBouncer 临时认证均已清理。该证据仍不包含真实 Node→Go→Node 进程编排、manual bridge、active-path-zero、owner handoff、生产/L4、Docker/Redis 或回滚。该方案不翻转 Go owner、不停止 Node owner，也不替代后续部署门禁。
+> 状态：本轮（2026-08-24）已在一次性 dev scratch 经 PgBouncer `6432` 重跑 required jobs/reader smoke，并连续两次通过 Go business-result projector applied/receipt/cursor/replay/outbound 与 manual direct-CAS smoke，另行通过现役 Node PostgreSQL CRUD/CAS smoke 验证微秒版本与并发更新；测试后数据库、角色、临时代理行和 PgBouncer 临时认证均已清理。该证据仍不包含真实 Node→Go→Node 进程编排、manual bridge、active-path-zero、owner handoff、生产/L4、Docker/Redis 或回滚。该方案不翻转 Go owner、不停止 Node owner，也不替代后续部署门禁。
 
 ## 1. 目的与硬边界
 

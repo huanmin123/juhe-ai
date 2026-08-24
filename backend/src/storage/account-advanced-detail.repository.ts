@@ -13,6 +13,11 @@ import {
   effectiveAccountErrorHandlingRules,
   type EffectiveAccountErrorHandlingRule
 } from '../modules/accounts/account-error-policy-system-rules.js'
+import {
+  normalizeQuotaRecoveryPolicy,
+  quotaRecoveryScheduleForAccount,
+  type QuotaRecoveryPolicy
+} from '../modules/accounts/quota-recovery-policy.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
 import { decryptJson } from './crypto.js'
@@ -28,7 +33,8 @@ const advancedEditableCredentialKeys = [
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'quota_recovery_policy'
 ] as const
 
 interface AccountAdvancedDetailRow {
@@ -36,6 +42,7 @@ interface AccountAdvancedDetailRow {
   config_revision: number
   system_account_id: string
   credentials_encrypted: string | null
+  source_credentials_encrypted: string | null
   proxy_profile_id: string | null
   availability_schedule_json: string | null
   account_expires_at: string | null
@@ -66,6 +73,8 @@ export interface AccountAdvancedDetail {
   configRevision: number
   accessType: 'owner' | 'authorized'
   credentials?: AccountCredentials
+  /** Effective non-secret policy, including inherited policy for authorized accounts. */
+  effectiveQuotaRecoveryPolicy: QuotaRecoveryPolicy
   effectiveErrorHandlingRules: EffectiveAccountErrorHandlingRule[]
   modelMappings: AccountModelMapping[]
   proxyProfileId?: string
@@ -97,6 +106,7 @@ export async function findAccountAdvancedDetailAsync(
         THEN accounts.credentials_encrypted
         ELSE NULL
       END AS credentials_encrypted,
+      source_accounts.credentials_encrypted AS source_credentials_encrypted,
       accounts.proxy_profile_id,
       accounts.availability_schedule_json,
       accounts.account_expires_at,
@@ -145,6 +155,13 @@ export async function findAccountAdvancedDetailAsync(
   const ownerCredentials = !authorized && row.credentials_encrypted
     ? decryptJson<AccountCredentials>(row.credentials_encrypted)
     : undefined
+  const sourceCredentials = authorized && row.source_credentials_encrypted
+    ? decryptJson<AccountCredentials>(row.source_credentials_encrypted)
+    : undefined
+  const effectivePolicySource = authorized ? sourceCredentials : ownerCredentials
+  const effectiveQuotaRecoveryPolicy = effectiveQuotaRecoveryPolicyFor(
+    effectivePolicySource?.quota_recovery_policy
+  )
   const advancedCredentials = ownerCredentials
     ? projectAdvancedEditableCredentials(ownerCredentials)
     : undefined
@@ -156,6 +173,7 @@ export async function findAccountAdvancedDetailAsync(
     ...(advancedCredentials && Object.keys(advancedCredentials).length > 0
       ? { credentials: advancedCredentials }
       : {}),
+    effectiveQuotaRecoveryPolicy,
     effectiveErrorHandlingRules: effectiveAccountErrorHandlingRules(ownerCredentials?.error_handling_rules),
     modelMappings: mappingRows.map(accountAdvancedDetailMappingFromRow),
     proxyProfileId: (authorized ? row.source_proxy_profile_id : row.proxy_profile_id) ?? undefined,
@@ -176,6 +194,15 @@ export async function findAccountAdvancedDetailAsync(
             : undefined
         }
       : {})
+  }
+}
+
+function effectiveQuotaRecoveryPolicyFor(value: unknown): QuotaRecoveryPolicy {
+  const normalized = normalizeQuotaRecoveryPolicy(value)
+  return {
+    api_key: quotaRecoveryScheduleForAccount(normalized, 'api_key'),
+    oauth: quotaRecoveryScheduleForAccount(normalized, 'oauth'),
+    google_oauth: quotaRecoveryScheduleForAccount(normalized, 'google_oauth')
   }
 }
 

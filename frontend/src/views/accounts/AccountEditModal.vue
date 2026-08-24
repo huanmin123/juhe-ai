@@ -224,6 +224,12 @@
                 :readonly="authorizedEditing"
               />
 
+              <AccountQuotaRecoveryPolicyCard
+                v-model:policy="form.quotaRecoveryPolicy"
+                :account-type="form.type"
+                :readonly="authorizedEditing"
+              />
+
               <AccountResponseInspectionPolicyCard
                 v-model:rules="responseInspectionRules"
                 :readonly="authorizedEditing"
@@ -257,6 +263,7 @@ import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSec
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
+import AccountQuotaRecoveryPolicyCard from './AccountQuotaRecoveryPolicyCard.vue'
 import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
 import AccountBalanceQuerySection from './AccountBalanceQuerySection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
@@ -417,6 +424,7 @@ const advancedConfiguredCount = computed(() => {
     Boolean(form.accountExpiresAt),
     form.availabilitySchedule.enabled,
     errorPolicyRules.value.length > 0,
+    Object.keys(form.quotaRecoveryPolicy ?? {}).length > 0,
     responseInspectionRules.value.length > 0,
     Boolean(form.serviceTierOverride),
     Boolean(form.reasoningEffortOverride),

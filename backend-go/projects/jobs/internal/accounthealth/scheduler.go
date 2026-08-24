@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf16"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
 
 // Runner is the only J1 scheduler.  Its inputs are immutable signed files and
@@ -317,7 +319,7 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 
 func (r *Runner) persistDirectInputFailure(ctx context.Context, lease OwnerLease, failure DirectInputFailure, observed time.Time) error {
 	requestID := directInputFailureRequestID(failure, observed)
-	nextDue := observed.Add(directInputFailureRetryBackoff)
+	nextDue := observed.Add(schedulejitter.Delay(directInputFailureRetryBackoff))
 	outcome := Outcome{
 		OutcomeID:        requestID,
 		RequestID:        requestID,
@@ -567,7 +569,7 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 		if input.Eligibility.AccountStatus == "pending_test" {
 			return "health", input.IssuedAt, true
 		}
-		return "health", input.IssuedAt.Add(stableJitter(input.AccountID, input.Schedule.HealthJitterMS)), true
+		return "health", input.IssuedAt, true
 	}
 	if state.NextDueAt == nil {
 		return "health", now, true
@@ -618,7 +620,7 @@ func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, prio
 	retry := durationMS(input.Schedule.FailureRetryMS, 5*time.Minute)
 	switch outcome.Outcome {
 	case OutcomeSuccess:
-		next := observed.Add(interval + stableJitter(input.AccountID, input.Schedule.HealthJitterMS))
+		next := observed.Add(schedulejitter.Delay(interval))
 		outcome.NextDueAt = &next
 		outcome.FailureCount = 0
 		outcome.AccountStatus = "active"
@@ -650,19 +652,19 @@ func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, prio
 			// upstream failure is scheduled with the frozen initial backoff.
 			outcome.FailureCount = 0
 			generation := newOutcomeID()
-			next := observed.Add(durationMS(input.Schedule.CooldownFailureBackoffMS, 3*time.Second))
+			next := observed.Add(schedulejitter.Delay(durationMS(input.Schedule.CooldownFailureBackoffMS, 3*time.Second)))
 			outcome.NextDueAt = &next
 			outcome.Projection = healthProjection(input, "temporary_unavailable", priorStatus, nil, observed, outcome, failures)
 			outcome.CooldownFence = &CooldownFence{ObservationStartedAt: observed, Generation: generation, SourceConfigRevision: input.Eligibility.SourceConfigRevision}
 			outcome.Projection.CooldownFence = outcome.CooldownFence
 			return
 		}
-		next := observed.Add(retry)
+		next := observed.Add(schedulejitter.Delay(retry))
 		outcome.NextDueAt = &next
 		outcome.AccountStatus = priorStatus
 		outcome.Projection = healthProjection(input, "health_failure", priorStatus, nil, observed, outcome, failures)
 	default:
-		next := observed.Add(retry)
+		next := observed.Add(schedulejitter.Delay(retry))
 		outcome.NextDueAt = &next
 		outcome.FailureCount = prior.FailureCount
 		outcome.FailureStartedAt = prior.FailureStartedAt
@@ -687,14 +689,14 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 	initialBackoff := durationMS(input.Schedule.CooldownFailureBackoffMS, 3*time.Second)
 	switch outcome.Outcome {
 	case OutcomeSuccess:
-		next := observed.Add(durationMS(input.Schedule.HealthIntervalMS, time.Hour) + stableJitter(input.AccountID, input.Schedule.HealthJitterMS))
+		next := observed.Add(schedulejitter.Delay(durationMS(input.Schedule.HealthIntervalMS, time.Hour)))
 		outcome.NextDueAt = &next
 		outcome.FailureCount = 0
 		outcome.AccountStatus = "active"
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_success", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_success_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode}}
 	case OutcomeNeutral, OutcomeTaskFailed:
 		growthStep := cooldownDeferGrowthStep(fence, observed, base)
-		delay := stableCooldownDefer(input.AccountID, fence.Generation, growthStep, base, maxDelay)
+		delay := schedulejitter.Delay(stableCooldownDefer(input.AccountID, fence.Generation, growthStep, base, maxDelay))
 		next := observed.Add(delay)
 		outcome.NextDueAt = &next
 		outcome.FailureCount = prior.FailureCount
@@ -725,7 +727,7 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 			return
 		}
 		if elapsed >= cooldownMaxRecovery(input.Schedule) {
-			next := observed.Add(cooldownLongTermInterval)
+			next := observed.Add(schedulejitter.Delay(cooldownLongTermInterval))
 			outcome.NextDueAt = &next
 			outcome.AccountStatus = expectedStatus
 			outcome.ErrorCode = "cooldown_retest_long_term_unavailable"
@@ -733,9 +735,9 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 			outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_failure", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
 			return
 		}
-		delay := cooldownFailureDelay(input.AccountID, fence.Generation, initialBackoff, failures)
+		delay := schedulejitter.Delay(cooldownFailureDelay(input.AccountID, fence.Generation, initialBackoff, failures))
 		if remaining, bounded := boundedCooldownRemaining(input, expectedStatus, fence, observed); bounded && delay > remaining {
-			delay = remaining
+			delay = passiveDelayBefore(remaining)
 		}
 		next := observed.Add(delay)
 		outcome.NextDueAt = &next
@@ -987,6 +989,24 @@ func minDuration(left, right time.Duration) time.Duration {
 		return left
 	}
 	return right
+}
+
+// passiveDelayBefore keeps a retry strictly before a state-machine deadline.
+// It still samples a fresh, non-zero offset so reaching the deadline never
+// turns a passive probe into a synchronized exact-time operation.
+func passiveDelayBefore(deadline time.Duration) time.Duration {
+	if deadline <= time.Millisecond {
+		return time.Millisecond
+	}
+	offset := schedulejitter.Offset(deadline)
+	if offset < 0 {
+		offset = -offset
+	}
+	delay := deadline - offset
+	if delay < time.Millisecond {
+		return time.Millisecond
+	}
+	return delay
 }
 
 func maxDuration(left, right time.Duration) time.Duration {

@@ -1,9 +1,21 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import {
   resolveAccountApiKeyQuotaRetestDecision
 } from '../../modules/background/account-api-key-cooldown-retest.service.js'
 import { resolveAccountTestResponseDiagnostics } from '../../modules/accounts/account-test-response-diagnostics.js'
+import { deterministicJitterMinutes } from '../../modules/accounts/quota-recovery-policy.js'
+
+const workerSource = readFileSync(new URL('../../modules/background/account-api-key-cooldown-retest.service.ts', import.meta.url), 'utf8')
+const retestItemSource = sourceBetween(workerSource, 'async function runAccountApiKeyCooldownRetestQueueItem', 'async function loadAccountForTestViaDbService')
+const delaySource = sourceBetween(workerSource, 'function quotaRecoveryDelaySeconds', '')
+assert.match(retestItemSource, /recoverySeed: `\$\{account\.id\}:\$\{item\.keyFingerprint\?\.trim\(\) \|\| 'account'\}`/, 'worker 额度决策 seed 必须将空白 fingerprint 归一为 account')
+assert.match(delaySource, /seed: `\$\{input\.account\.id\}:\$\{input\.keyFingerprint\?\.trim\(\) \|\| 'account'\}`/, 'worker 延迟计算 seed 必须将空白 fingerprint 归一为 account')
+for (const seed of ['quota-retest-a', 'quota-retest-b', 'quota-retest-c']) {
+  const jitter = deterministicJitterMinutes(seed, 60)
+  assert(jitter >= 0 && jitter <= 15, '稳定错峰即使收到过大上限也必须限定在 0–15 分钟')
+}
 
 const observedAt = new Date('2026-08-22T00:00:00.000Z')
 const explicitResetAt = '2026-08-23T04:00:00.000Z'
@@ -38,7 +50,7 @@ const repeatedExplicit = resolveAccountApiKeyQuotaRetestDecision({
   observedAt: new Date('2026-08-22T01:00:00.000Z')
 })
 assert.equal(repeatedExplicit.recoveryMode, 'explicit_reset', '重复显式额度失败仍必须识别')
-assert.equal(repeatedExplicit.cooldownUntil, explicitResetAt, '重复显式复测不得把当前 reset_at 改成固定 2 小时')
+assert.equal(repeatedExplicit.cooldownUntil, explicitResetAt, '重复显式复测不得把当前 reset_at 改成 generic duration')
 
 const explicitToGeneric = resolveAccountApiKeyQuotaRetestDecision({
   result: { statusCode: 403, message: '上游额度不足' },
@@ -54,7 +66,8 @@ assert.equal(explicitToGeneric.quotaFailure, true, '显式模式后无 hint 仍�
 assert.equal(explicitToGeneric.previousRecoveryMode, 'explicit_reset')
 assert.equal(explicitToGeneric.recoveryMode, 'generic', '当前无 hint 必须切换通用模式')
 assert.equal(explicitToGeneric.timedOut, false, '显式转通用必须重新开始 30 天观察')
-assert.equal(explicitToGeneric.cooldownUntil, '2026-08-22T02:00:00.000Z', '通用模式首次复测应从当前观察时刻等待 2 小时')
+const explicitToGenericDelay = Date.parse(explicitToGeneric.cooldownUntil!) - observedAt.getTime()
+assert(explicitToGenericDelay >= 60 * 60_000 && explicitToGenericDelay <= 75 * 60_000, '通用模式首次复测应从当前观察时刻等待 1 小时并带稳定错峰')
 
 const textOnlyAttempt = {
   ...explicitAttempt,
@@ -122,3 +135,10 @@ assert.match(statusOnly.responseText, /insufficient_user_quota/, 'status-only up
 assert.deepEqual(statusOnly.responseHeaders, { 'retry-after': '7200' }, 'status-only upstream callback 必须保留下游恢复响应头')
 
 console.log('account api key quota retest regression passed')
+
+function sourceBetween(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker)
+  const end = endMarker ? source.indexOf(endMarker, start + startMarker.length) : source.length
+  assert(start >= 0 && end > start, `无法定位 ${startMarker}`)
+  return source.slice(start, end)
+}

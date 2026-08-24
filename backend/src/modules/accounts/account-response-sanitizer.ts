@@ -25,7 +25,8 @@ const editBasicCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'quota_recovery_policy'
 ])
 
 export function sanitizeAccountCredentialsForResponse(credentials: Record<string, unknown> | undefined): Record<string, unknown> {

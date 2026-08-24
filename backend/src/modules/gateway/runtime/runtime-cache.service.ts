@@ -1015,6 +1015,7 @@ function cloneStaticOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAcc
     selectedApiKeyFingerprint: undefined,
     selectedApiKeyIndex: undefined,
     selectedApiKeyTransientGeneration: undefined,
+    selectedApiKeyRecoveryStartedAt: undefined,
     modelMappings: (account.modelMappings ?? []).map((mapping) => ({ ...mapping })),
     credentials: { ...account.credentials }
   }

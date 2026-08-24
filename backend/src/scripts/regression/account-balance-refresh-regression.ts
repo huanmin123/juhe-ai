@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import { passiveScheduleJitterWindowMs } from '../../shared/passive-schedule-jitter.js'
 import { UpstreamRequestTimeoutError } from '../../modules/gateway/upstream/request.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-balance-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -1509,9 +1510,11 @@ function assertBalanceRetryDelay(
   const row = database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(accountId) as { balance_query_next_refresh_at?: string | null }
   assert.ok(row.balance_query_next_refresh_at)
   const delayMs = Date.parse(row.balance_query_next_refresh_at) - Date.parse(lastAttemptAt)
+  const baselineMs = expectedMinutes * 60_000
+  const windowMs = passiveScheduleJitterWindowMs(baselineMs)
   assert.ok(
-    Math.abs(delayMs - expectedMinutes * 60_000) < 1_500,
-    `余额临时失败应在约 ${expectedMinutes} 分钟后重试，实际 ${delayMs}ms`
+    delayMs >= baselineMs - windowMs && delayMs <= baselineMs + windowMs && delayMs !== baselineMs,
+    `余额临时失败应在全局偏移窗口内重试，实际 ${delayMs}ms，基准 ${baselineMs}ms，窗口 ±${windowMs}ms`
   )
 }
 

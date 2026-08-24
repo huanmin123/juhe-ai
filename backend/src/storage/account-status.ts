@@ -22,6 +22,10 @@ export function isCoolingAccountStatus(status: AccountStatus): boolean {
   return coolingAccountStatusValues.includes(status)
 }
 
+export function isAccountStatusEligibleForRecoveryProbe(status: AccountStatus): boolean {
+  return status === 'active' || isCoolingAccountStatus(status)
+}
+
 export function isHardUnavailableAccountStatus(status: AccountStatus): boolean {
   return status === 'disabled' || status === 'pending_test' || status === 'error' || status === 'quality_isolated'
 }

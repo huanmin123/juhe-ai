@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
 
 const displacedIdentityPrefix = "__runtime_log_identity__:"
@@ -50,9 +52,9 @@ func (indexer *Indexer) Run(ctx context.Context) error {
 		return err
 	}
 	pollTicker := time.NewTicker(indexer.config.PollInterval)
-	retentionTicker := time.NewTicker(indexer.config.RetentionInterval)
+	retentionTimer := time.NewTimer(schedulejitter.Delay(indexer.config.RetentionInterval))
 	defer pollTicker.Stop()
-	defer retentionTicker.Stop()
+	defer retentionTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -61,10 +63,11 @@ func (indexer *Indexer) Run(ctx context.Context) error {
 			if err := indexer.RunOnce(ctx); err != nil {
 				return err
 			}
-		case <-retentionTicker.C:
+		case <-retentionTimer.C:
 			if err := indexer.RunRetention(ctx); err != nil {
 				return err
 			}
+			retentionTimer.Reset(schedulejitter.Delay(indexer.config.RetentionInterval))
 		}
 	}
 }

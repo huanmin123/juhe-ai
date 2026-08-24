@@ -288,6 +288,167 @@ func TestRunnerKeepsProxyReleaseErrorVisible(t *testing.T) {
 	}
 }
 
+func TestRunnerEarlyProxyReleaseErrorVisible(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	store, err := OpenStore(cfg.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	runner := NewRunner(cfg, store, fakeInputReader{drafts: []InputDraft{{ProxyID: "early-release", ProxyType: "invalid"}}}, nil)
+	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
+	if err != nil || !acquired {
+		t.Fatalf("owner lease acquired=%v err=%v", acquired, err)
+	}
+	releaseErr := errors.New("early proxy release failure")
+	runner.releaseProxyLease = func(context.Context, ProxyLease) error { return releaseErr }
+	_ = runner.runCycle(context.Background(), owner)
+	status := runner.Status()
+	if !strings.Contains(status.LastError, releaseErr.Error()) || status.ReleaseFailures != 1 || runner.Ready() {
+		t.Fatalf("early release error was not retained: status=%+v ready=%v", status, runner.Ready())
+	}
+}
+
+func testManualReleaseRequest() ManualRequest {
+	now := time.Now().UTC()
+	return ManualRequest{
+		SchemaVersion:  1,
+		ProxyID:        "manual-release-proxy",
+		ProxyName:      "Manual release proxy",
+		ConfigRevision: now.Format(time.RFC3339Nano),
+		ProxyType:      "http",
+		ProxyHost:      "127.0.0.1",
+		ProxyPort:      1,
+		Targets: []ManualTarget{{
+			Provider:  "openai",
+			ProfileID: "manual-profile",
+			Name:      "OpenAI",
+			URL:       "http://provider.invalid/",
+		}},
+	}
+}
+
+func TestRunnerManualOwnerReleaseErrorVisible(t *testing.T) {
+	releaseErr := errors.New("manual owner release failure")
+	issueErr := errors.New("manual issue input failure")
+	runner := NewRunner(RuntimeConfig{ManualDeadline: time.Second}, &Store{}, nil, nil)
+	runner.SetResultProjector(&ResultProjector{})
+	runner.acquireOwnerLease = func(context.Context, string, time.Duration) (OwnerLease, bool, error) {
+		return OwnerLease{OwnerID: "manual-owner", FenceToken: 1}, true, nil
+	}
+	runner.issueInput = func(context.Context, InputDraft) (IssuedInput, error) {
+		return IssuedInput{}, issueErr
+	}
+	runner.releaseOwnerLease = func(ctx context.Context, _ OwnerLease) error {
+		if ctx.Err() != nil {
+			t.Fatalf("manual owner release inherited cancellation: %v", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("manual owner release must use a bounded context")
+		}
+		return releaseErr
+	}
+	_, err := runner.RunManual(context.Background(), testManualReleaseRequest())
+	if !errors.Is(err, issueErr) || !errors.Is(err, releaseErr) {
+		t.Fatalf("manual owner release error was not joined with execution error: %v", err)
+	}
+	if !strings.Contains(runner.Status().LastError, releaseErr.Error()) {
+		t.Fatalf("manual owner release error was not recorded: %+v", runner.Status())
+	}
+}
+
+func TestRunnerManualProxyReleaseErrorVisible(t *testing.T) {
+	releaseErr := errors.New("manual proxy release failure")
+	executionErr := errors.New("manual execution failure")
+	request := testManualReleaseRequest()
+	now := time.Now().UTC()
+	runner := NewRunner(RuntimeConfig{ManualDeadline: time.Second}, &Store{}, nil, nil)
+	runner.SetResultProjector(&ResultProjector{})
+	runner.acquireOwnerLease = func(context.Context, string, time.Duration) (OwnerLease, bool, error) {
+		return OwnerLease{OwnerID: "manual-owner", FenceToken: 1}, true, nil
+	}
+	runner.releaseOwnerLease = func(context.Context, OwnerLease) error { return nil }
+	runner.issueInput = func(context.Context, InputDraft) (IssuedInput, error) {
+		return IssuedInput{
+			RequestID:      "manual-release-request",
+			ProxyID:        request.ProxyID,
+			ConfigRevision: request.ConfigRevision,
+			InputVersion:   1,
+			IssuedAt:       now,
+			ExpiresAt:      now.Add(time.Minute),
+			Trigger:        TriggerManual,
+			ProxyType:      "http",
+			ProxyHost:      "127.0.0.1",
+			ProxyPort:      1,
+			Targets:        []Target{{Provider: "openai", ProfileID: "manual-profile", URL: "http://provider.invalid/"}},
+		}, nil
+	}
+	runner.acquireProxyLease = func(context.Context, OwnerLease, string, time.Duration) (ProxyLease, bool, error) {
+		return ProxyLease{ProxyID: request.ProxyID, FenceToken: 1, LeaseUntil: now.Add(time.Minute)}, true, nil
+	}
+	runner.releaseProxyLease = func(ctx context.Context, _ ProxyLease) error {
+		if ctx.Err() != nil {
+			t.Fatalf("manual proxy release inherited cancellation: %v", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("manual proxy release must use a bounded context")
+		}
+		return releaseErr
+	}
+	runner.executeIssuedInput = func(context.Context, *Store, OwnerLease, ProxyLease, IssuedInput, ExecutorOptions) (Outcome, bool, error) {
+		return Outcome{}, false, executionErr
+	}
+	_, err := runner.RunManual(context.Background(), request)
+	if !errors.Is(err, executionErr) || !errors.Is(err, releaseErr) {
+		t.Fatalf("manual proxy release error was not joined with execution error: %v", err)
+	}
+	if !strings.Contains(runner.Status().LastError, releaseErr.Error()) {
+		t.Fatalf("manual proxy release error was not recorded: %+v", runner.Status())
+	}
+}
+
+func TestRunnerRunOwnerReleaseErrorVisible(t *testing.T) {
+	releaseErr := errors.New("periodic owner release failure")
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := NewRunner(RuntimeConfig{OwnerLease: time.Second}, &Store{}, fakeInputReader{}, nil)
+	runner.acquireOwnerLease = func(context.Context, string, time.Duration) (OwnerLease, bool, error) {
+		return OwnerLease{OwnerID: "periodic-owner", FenceToken: 1}, true, nil
+	}
+	runner.runOwnedFn = func(context.Context, OwnerLease) error {
+		cancel()
+		return context.Canceled
+	}
+	runner.releaseOwnerLease = func(ctx context.Context, _ OwnerLease) error {
+		if ctx.Err() != nil {
+			t.Fatalf("periodic owner release inherited cancellation: %v", ctx.Err())
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("periodic owner release must use a bounded context")
+		}
+		return releaseErr
+	}
+	err := runner.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("periodic runner returned unexpected error: %v", err)
+	}
+	if !strings.Contains(runner.Status().LastError, releaseErr.Error()) {
+		t.Fatalf("periodic owner release error was not recorded: %+v", runner.Status())
+	}
+}
+
+func TestBoundedReleaseContextDetachesCancellation(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	releaseCtx, cancelRelease := boundedReleaseContext(parent)
+	defer cancelRelease()
+	cancelParent()
+	if err := releaseCtx.Err(); err != nil {
+		t.Fatalf("release context inherited parent cancellation: %v", err)
+	}
+	if _, ok := releaseCtx.Deadline(); !ok {
+		t.Fatal("release context must have a finite deadline")
+	}
+}
+
 func TestRunnerPreservesReleaseErrorWithExecutionError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.CredentialSecret = "wrong-secret"

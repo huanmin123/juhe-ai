@@ -44,6 +44,9 @@ export function buildAccountCredentials(input: {
   writeAccountGptRequestOverrides(credentials, input.form)
   writeAccountErrorPolicyToCredentials(credentials, input.errorPolicyRules)
   writeAccountResponseInspectionRulesToCredentials(credentials, input.responseInspectionRules)
+  if (input.form.quotaRecoveryPolicy && Object.keys(input.form.quotaRecoveryPolicy).length) {
+    credentials.quota_recovery_policy = input.form.quotaRecoveryPolicy
+  }
   return credentials
 }
 

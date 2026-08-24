@@ -13,6 +13,7 @@ import type {
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
+import type { AccountQuotaRecoveryPolicyForm } from './accountQuotaRecoveryPolicyTypes'
 
 export interface AccountFormModel {
   providerCode: string
@@ -65,6 +66,7 @@ export interface AccountFormModel {
   balanceQueryTotalPointer: string
   balanceQueryUsedPointer: string
   balanceQueryDivisor: string
+  quotaRecoveryPolicy?: AccountQuotaRecoveryPolicyForm
 }
 
 export type AccountOAuthAuthorizeForm = Pick<

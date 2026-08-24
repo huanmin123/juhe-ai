@@ -101,6 +101,34 @@ try {
   assert.equal(failure.changed, true, 'PG failure 写回应创建 runtime state')
 
   const initialPool = await getPostgresPool()
+  const recoveryParentStatusKey = entries[1]
+  assert(recoveryParentStatusKey, 'PG 父账户状态回归需要第二个 API Key')
+  const recoveryParentStatusDueAt = new Date(Date.now() - 3_000).toISOString()
+  await initialPool.query(
+    'DELETE FROM juhe_business.account_api_key_runtime_states WHERE account_id = $1 AND key_fingerprint = $2',
+    [account.id, recoveryParentStatusKey.fingerprint]
+  )
+  await initialPool.query(`
+    INSERT INTO juhe_business.account_api_key_runtime_states (
+      id, system_account_id, account_id, key_fingerprint, key_index,
+      status, failure_count, consecutive_failures, success_count,
+      cooldown_until, next_probe_at, probe_backoff_seconds,
+      created_at, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, 'temporary_unavailable', 1, 1, 0, $6, $6, 3, $6, $6)
+  `, [
+    `${marker}-cooling-parent-state`,
+    access.systemAccountId,
+    account.id,
+    recoveryParentStatusKey.fingerprint,
+    recoveryParentStatusKey.index,
+    recoveryParentStatusDueAt
+  ])
+  await initialPool.query(
+    `UPDATE juhe_business.accounts
+     SET status = 'temporary_unavailable', schedulable = 1, cooldown_until = $1, updated_at = NOW()
+     WHERE id = $2`,
+    [recoveryParentStatusDueAt, account.id]
+  )
   await initialPool.query(`
     INSERT INTO juhe_business.account_api_key_runtime_states (
       id, system_account_id, account_id, key_fingerprint, key_index,
@@ -118,6 +146,35 @@ try {
   const candidates = await listAccountApiKeyRuntimeStatesDueForProbeAsync(20)
   const candidate = candidates.find((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint)
   assert.ok(candidate, 'PG due-for-probe 读取应返回刚写入的 key')
+  assert(
+    candidates.some((item) => item.accountId === account.id && item.keyFingerprint === recoveryParentStatusKey.fingerprint),
+    'PG temporary_unavailable 父账户的到期 Key 必须进入恢复探针候选'
+  )
+  await initialPool.query(
+    `UPDATE juhe_business.accounts
+     SET status = 'disabled', cooldown_until = NULL, updated_at = NOW()
+     WHERE id = $1`,
+    [account.id]
+  )
+  const disabledParentCandidates = await listAccountApiKeyRuntimeStatesDueForProbeAsync(20)
+  assert.equal(
+    disabledParentCandidates.some((item) => item.accountId === account.id && item.keyFingerprint === recoveryParentStatusKey.fingerprint),
+    false,
+    'PG disabled 父账户不得进入恢复探针候选'
+  )
+  await initialPool.query(
+    `UPDATE juhe_business.accounts
+     SET status = 'active', schedulable = 1, cooldown_until = NULL, updated_at = NOW()
+     WHERE id = $1`,
+    [account.id]
+  )
+  await initialPool.query(
+    `UPDATE juhe_business.account_api_key_runtime_states
+     SET status = 'active', next_probe_at = NULL, probe_claim_token = NULL,
+         probe_claimed_until = NULL, updated_at = NOW()
+     WHERE account_id = $1 AND key_fingerprint = $2`,
+    [account.id, recoveryParentStatusKey.fingerprint]
+  )
   assert.equal(candidate.apiKey, selected.key, 'PG due-for-probe 应能从加密凭据恢复目标 API Key')
   assert(candidate.probeClaimToken, 'PG due-for-probe 必须原子取得数据库 claim')
   assert(Number.isFinite(Date.parse(candidate.stateUpdatedAt)), 'PG due-for-probe 必须返回精确 state updated_at generation')
@@ -409,8 +466,8 @@ async function assertProbeExplainUsesIndex(dueAt: string): Promise<void> {
        WHERE states.status IN ('unverified', 'temporary_unavailable', 'rate_limited')
          AND states.next_probe_at IS NOT NULL
          AND states.next_probe_at <= $1
-         AND accounts.deleted_at IS NULL
-         AND accounts.status = 'active'
+       AND accounts.deleted_at IS NULL
+         AND accounts.status IN ('active', 'rate_limited', 'temporary_unavailable')
          AND accounts.schedulable = 1
          AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > $2)
        ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC

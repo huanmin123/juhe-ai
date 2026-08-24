@@ -4,6 +4,7 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
+import { isAccountStatusEligibleForRecoveryProbe } from '../../storage/account-status.js'
 import {
   type AccountApiKeyRuntimeProbeCandidate
 } from '../../storage/account-api-key-runtime-state.repository.js'
@@ -27,6 +28,7 @@ import {
   type ApiKeyQuotaRecoveryHint,
   type ApiKeyQuotaRecoveryMode
 } from '../gateway/policy/api-key-quota-recovery.js'
+import { normalizeQuotaRecoveryPolicy } from '../accounts/quota-recovery-policy.js'
 
 interface AccountApiKeyCooldownRetestQueueItem extends AccountApiKeyRuntimeProbeCandidate {
   maxRecoveryHours: number
@@ -86,6 +88,8 @@ export function resolveAccountApiKeyQuotaRetestDecision(input: {
   protocol?: AccountTestDiagnosticProtocol
   previousErrorCode?: string
   recoveryStartedAt?: string
+  recoverySeed?: string
+  quotaRecoveryPolicy?: Record<string, unknown>
   observedAt?: Date
 }): AccountApiKeyQuotaRetestDecision {
   const observedAt = input.observedAt ?? new Date()
@@ -120,7 +124,15 @@ export function resolveAccountApiKeyQuotaRetestDecision(input: {
     ...(recoveryHint ? { recoveryHint } : {}),
     timedOut,
     ...(!timedOut && recoveryMode
-      ? { cooldownUntil: recoveryHint?.cooldownUntil ?? genericApiKeyQuotaCooldownUntil(observedAt) }
+      ? {
+          cooldownUntil: recoveryHint?.cooldownUntil ?? genericApiKeyQuotaCooldownUntil({
+            now: observedAt,
+            seed: input.recoverySeed ?? 'api-key:default',
+            policy: input.quotaRecoveryPolicy
+              ? normalizeQuotaRecoveryPolicy(input.quotaRecoveryPolicy)
+              : undefined
+          })
+        }
       : {})
   }
 }
@@ -130,7 +142,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   context: { attemptIndex: number; retryNumber: number }
 ) {
   const account = await loadAccountForTestViaDbService(item.accountId)
-  if (!account || account.type !== 'api_key' || account.status !== 'active' || !account.schedulable || !account.boundGroupId) {
+  if (!account || account.type !== 'api_key' || !isAccountStatusEligibleForRecoveryProbe(account.status) || !account.schedulable || !account.boundGroupId) {
     logger.debug({
       event: 'background_account_api_key_cooldown_retest_discarded',
       accountId: item.accountId,
@@ -245,6 +257,8 @@ async function runAccountApiKeyCooldownRetestQueueItem(
       : account.protocolCode === 'gemini' ? 'gemini' : 'openai',
     previousErrorCode: item.lastErrorCode,
     recoveryStartedAt: item.recoveryStartedAt,
+    recoverySeed: `${account.id}:${item.keyFingerprint?.trim() || 'account'}`,
+    quotaRecoveryPolicy: account.credentials?.quota_recovery_policy as Record<string, unknown> | undefined,
     observedAt: responseObservedAt
   })
   const quotaFailure = quotaDecision.quotaFailure
@@ -354,7 +368,14 @@ async function runAccountApiKeyCooldownRetestQueueItem(
         expectedStateUpdatedAt: item.stateUpdatedAt,
         expectedProbeClaimToken: item.probeClaimToken,
         expectedAccountConfigRevision: item.accountConfigRevision,
-        delaySeconds: quotaRecoveryMode ? 2 * 60 * 60 : 60,
+        delaySeconds: quotaRecoveryMode
+          ? quotaRecoveryDelaySeconds({
+              account,
+              keyFingerprint: item.keyFingerprint,
+              recoveryStartedAt: item.recoveryStartedAt,
+              now: responseObservedAt
+            })
+          : 60,
         observedAt: responseObservedAtIso,
         breakQuotaRecoveryWindow: previousQuotaRecoveryMode !== undefined
       }
@@ -391,7 +412,12 @@ async function runAccountApiKeyCooldownRetestQueueItem(
         expectedStateUpdatedAt: item.stateUpdatedAt,
         expectedProbeClaimToken: item.probeClaimToken,
         expectedAccountConfigRevision: item.accountConfigRevision,
-        delaySeconds: 2 * 60 * 60,
+        delaySeconds: quotaRecoveryDelaySeconds({
+          account,
+          keyFingerprint: item.keyFingerprint,
+          recoveryStartedAt: item.recoveryStartedAt,
+          now: responseObservedAt
+        }),
         observedAt: responseObservedAtIso,
         breakQuotaRecoveryWindow: previousQuotaRecoveryMode !== undefined
       }
@@ -470,4 +496,21 @@ async function loadOpenAIAccountForGroupViaDbService(
     includeUnavailable: options.includeUnavailable,
     ignoreAvailability: options.ignoreAvailability
   }, backgroundProbeDbServiceTimeoutMs)
+}
+
+function quotaRecoveryDelaySeconds(input: {
+  account: { id: string; credentials?: Record<string, unknown> }
+  keyFingerprint: string
+  recoveryStartedAt?: string
+  now: Date
+}): number {
+  const policy = input.account.credentials?.quota_recovery_policy
+    ? normalizeQuotaRecoveryPolicy(input.account.credentials.quota_recovery_policy)
+    : undefined
+  const until = genericApiKeyQuotaCooldownUntil({
+    now: input.now,
+    seed: `${input.account.id}:${input.keyFingerprint?.trim() || 'account'}`,
+    policy
+  })
+  return Math.max(60, Math.ceil((new Date(until).getTime() - input.now.getTime()) / 1000))
 }

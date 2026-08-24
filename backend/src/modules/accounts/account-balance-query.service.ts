@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
+import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import type { AccountBalanceBuiltinAdapter, AccountBalanceQueryConfig, AccountBalanceSnapshot } from './account-balance.types.js'
 import type { AccountBalanceRefreshCandidate } from '../../storage/account-balance.repository.js'
 import {
@@ -215,8 +216,9 @@ async function resolveAccountBalanceRefreshAttempt(
   }
 }
 
-function nextBalanceRefreshAfter(intervalMinutes: number): string {
-  return new Date(Date.now() + intervalMinutes * 60_000).toISOString()
+export function nextBalanceRefreshAfter(intervalMinutes: number, nowMs = Date.now(), random = Math.random): string {
+  const intervalMs = Math.max(1, Math.trunc(Number(intervalMinutes) || 1)) * 60_000
+  return new Date(nowMs + passiveScheduleDelayMs(intervalMs, random)).toISOString()
 }
 
 export async function queryAccountBalance(

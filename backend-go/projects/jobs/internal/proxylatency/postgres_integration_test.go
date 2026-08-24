@@ -115,6 +115,27 @@ func TestPostgresResultProjectorSmoke(t *testing.T) {
 				t.Errorf("J3a projector cleanup proxy %q failed: %s", fixtureID, redactPGError(err, resultURL))
 			}
 		}
+		for _, outcomeID := range outcomeIDs {
+			var remaining int
+			if err := business.QueryRowContext(cleanupCtx, `SELECT count(*) FROM juhe_business.proxy_latency_projection_receipts WHERE outcome_id=$1`, outcomeID).Scan(&remaining); err != nil {
+				t.Errorf("J3a projector cleanup receipt %q verification failed: %s", outcomeID, redactPGError(err, resultURL))
+			} else if remaining != 0 {
+				t.Errorf("J3a projector cleanup receipt %q left %d rows", outcomeID, remaining)
+			}
+		}
+		var cursorRemaining, proxyRemaining int
+		if err := business.QueryRowContext(cleanupCtx, `SELECT count(*) FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1`, "j3a-pg-projector-smoke").Scan(&cursorRemaining); err != nil {
+			t.Errorf("J3a projector cleanup cursor verification failed: %s", redactPGError(err, resultURL))
+		} else if cursorRemaining != 0 {
+			t.Errorf("J3a projector cleanup cursor left %d rows", cursorRemaining)
+		}
+		for _, fixtureID := range []string{proxyID, noTargetProxyID} {
+			if err := business.QueryRowContext(cleanupCtx, `SELECT count(*) FROM juhe_business.proxy_profiles WHERE id=$1`, fixtureID).Scan(&proxyRemaining); err != nil {
+				t.Errorf("J3a projector cleanup proxy %q verification failed: %s", fixtureID, redactPGError(err, resultURL))
+			} else if proxyRemaining != 0 {
+				t.Errorf("J3a projector cleanup proxy %q left %d rows", fixtureID, proxyRemaining)
+			}
+		}
 	})
 
 	owner, acquired, err := store.AcquireOwnerLease(ctx, ownerID, 45*time.Second)
@@ -180,25 +201,58 @@ func TestPostgresResultProjectorSmoke(t *testing.T) {
 	if _, err := business.ExecContext(ctx, `UPDATE juhe_business.proxy_profiles SET updated_at=updated_at + INTERVAL '1 microsecond' WHERE id=$1`, proxyID); err != nil {
 		t.Fatalf("advance J3a projector config revision failed: %s", redactPGError(err, resultURL))
 	}
+	snapshotManualDurableState := func() (int, int, string, bool) {
+		var receiptCount, cursorCount int
+		if err := business.QueryRowContext(ctx, `SELECT count(*) FROM juhe_business.proxy_latency_projection_receipts`).Scan(&receiptCount); err != nil {
+			t.Fatalf("snapshot J3a projector manual receipts failed: %s", redactPGError(err, resultURL))
+		}
+		if err := business.QueryRowContext(ctx, `SELECT count(*) FROM juhe_business.proxy_latency_projection_cursors`).Scan(&cursorCount); err != nil {
+			t.Fatalf("snapshot J3a projector manual cursors failed: %s", redactPGError(err, resultURL))
+		}
+		var cursorOutcome sql.NullString
+		err := business.QueryRowContext(ctx, `SELECT outcome_id FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1`, "j3a-pg-projector-smoke").Scan(&cursorOutcome)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("snapshot J3a projector manual cursor value failed: %s", redactPGError(err, resultURL))
+		}
+		return receiptCount, cursorCount, cursorOutcome.String, cursorOutcome.Valid
+	}
+	projectManualWithoutDurableMutation := func(label string, invoke func() (ProjectionResult, error)) ProjectionResult {
+		beforeReceipts, beforeCursors, beforeCursorOutcome, beforeCursorValid := snapshotManualDurableState()
+		result, err := invoke()
+		if err != nil {
+			t.Fatalf("J3a projector %s manual projection failed: %s", label, redactPGError(err, resultURL))
+		}
+		afterReceipts, afterCursors, afterCursorOutcome, afterCursorValid := snapshotManualDurableState()
+		if beforeReceipts != afterReceipts || beforeCursors != afterCursors || beforeCursorOutcome != afterCursorOutcome || beforeCursorValid != afterCursorValid {
+			t.Fatalf("J3a projector %s manual projection changed durable receipt/cursor state: before=(receipts=%d cursors=%d cursor=%q valid=%t) after=(receipts=%d cursors=%d cursor=%q valid=%t)", label, beforeReceipts, beforeCursors, beforeCursorOutcome, beforeCursorValid, afterReceipts, afterCursors, afterCursorOutcome, afterCursorValid)
+		}
+		return result
+	}
 	staleRequest := ManualRequest{SchemaVersion: 1, ProxyID: proxyID, ProxyName: ownerID, ConfigRevision: now.Format(time.RFC3339Nano), ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 65535}
-	stale, err := projector.ProjectManualNoTargets(ctx, staleRequest, now.Add(2*time.Second))
-	if err != nil || stale.Disposition != ProjectionStale {
-		t.Fatalf("J3a projector stale fence failed: disposition=%s err=%s", stale.Disposition, redactPGError(err, resultURL))
+	stale := projectManualWithoutDurableMutation("stale", func() (ProjectionResult, error) {
+		return projector.ProjectManualNoTargets(ctx, staleRequest, now.Add(2*time.Second))
+	})
+	if stale.Disposition != ProjectionStale {
+		t.Fatalf("J3a projector stale fence failed: disposition=%s", stale.Disposition)
 	}
 	if _, err := business.ExecContext(ctx, `INSERT INTO juhe_business.proxy_profiles (id,system_account_id,name,type,host,port,enabled,test_status,created_at,updated_at) VALUES ($1,$2,$3,'http','127.0.0.1',65535,TRUE,'unknown',$4,$4)`, noTargetProxyID, systemAccountID, noTargetProxyID, now); err != nil {
 		t.Fatalf("insert J3a no-target fixture failed: %s", redactPGError(err, resultURL))
 	}
 	noTargetRequest := ManualRequest{SchemaVersion: 1, ProxyID: noTargetProxyID, ProxyName: noTargetProxyID, ConfigRevision: now.Format(time.RFC3339Nano), ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 65535}
-	noTarget, err := projector.ProjectManualNoTargets(ctx, noTargetRequest, now.Add(time.Second))
-	if err != nil || noTarget.Disposition != ProjectionApplied || !noTarget.Changed {
-		t.Fatalf("J3a projector no-target CAS failed: disposition=%s changed=%t err=%s", noTarget.Disposition, noTarget.Changed, redactPGError(err, resultURL))
+	noTarget := projectManualWithoutDurableMutation("no-target", func() (ProjectionResult, error) {
+		return projector.ProjectManualNoTargets(ctx, noTargetRequest, now.Add(time.Second))
+	})
+	if noTarget.Disposition != ProjectionApplied || !noTarget.Changed {
+		t.Fatalf("J3a projector no-target CAS failed: disposition=%s changed=%t", noTarget.Disposition, noTarget.Changed)
 	}
 	if _, err := business.ExecContext(ctx, `DELETE FROM juhe_business.proxy_profiles WHERE id=$1`, noTargetProxyID); err != nil {
 		t.Fatalf("delete J3a no-target fixture failed: %s", redactPGError(err, resultURL))
 	}
-	deleted, err := projector.ProjectManualNoTargets(ctx, noTargetRequest, now.Add(2*time.Second))
-	if err != nil || deleted.Disposition != ProjectionIgnored || deleted.Reason != "proxy_missing_or_deleted" {
-		t.Fatalf("J3a projector deleted fence failed: disposition=%s reason=%q err=%s", deleted.Disposition, deleted.Reason, redactPGError(err, resultURL))
+	deleted := projectManualWithoutDurableMutation("deleted", func() (ProjectionResult, error) {
+		return projector.ProjectManualNoTargets(ctx, noTargetRequest, now.Add(2*time.Second))
+	})
+	if deleted.Disposition != ProjectionIgnored || deleted.Reason != "proxy_missing_or_deleted" {
+		t.Fatalf("J3a projector deleted fence failed: disposition=%s reason=%q", deleted.Disposition, deleted.Reason)
 	}
 }
 
@@ -540,11 +594,11 @@ func cleanupProjectorSmokeRows(t *testing.T, store *Store, owner OwnerLease, pro
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if proxyLeaseAcquired != nil && *proxyLeaseAcquired {
-			if err := store.ReleaseProxyLease(ctx, *proxyLease); err != nil && !errors.Is(err, ErrProxyLeaseLost) {
+			if err := store.ReleaseProxyLease(ctx, *proxyLease); err != nil {
 				t.Errorf("J3a projector smoke cleanup proxy lease release failed: %s", redactPGError(err, ""))
 			}
 		}
-		if err := store.ReleaseOwnerLease(ctx, owner); err != nil && !errors.Is(err, ErrOwnerLeaseLost) {
+		if err := store.ReleaseOwnerLease(ctx, owner); err != nil {
 			t.Errorf("J3a projector smoke cleanup owner lease release failed: %s", redactPGError(err, ""))
 		}
 		cleanupStatements := []string{
@@ -569,6 +623,26 @@ func cleanupProjectorSmokeRows(t *testing.T, store *Store, owner OwnerLease, pro
 				if _, err := store.db.ExecContext(ctx, `DELETE FROM juhe_jobs.proxy_latency_outcomes WHERE outcome_id=$1`, outcomeID); err != nil {
 					t.Errorf("J3a projector smoke cleanup outcome %q failed: %s", outcomeID, redactPGError(err, ""))
 				}
+			}
+		}
+		jobsChecks := []struct {
+			name  string
+			query string
+			arg   string
+		}{
+			{name: "execution claims", query: `SELECT count(*) FROM juhe_jobs.proxy_latency_execution_claims WHERE proxy_id=$1`, arg: proxyID},
+			{name: "outcomes", query: `SELECT count(*) FROM juhe_jobs.proxy_latency_outcomes WHERE proxy_id=$1`, arg: proxyID},
+			{name: "inputs", query: `SELECT count(*) FROM juhe_jobs.proxy_latency_inputs WHERE proxy_id=$1`, arg: proxyID},
+			{name: "input versions", query: `SELECT count(*) FROM juhe_jobs.proxy_latency_input_versions WHERE proxy_id=$1`, arg: proxyID},
+			{name: "proxy leases", query: `SELECT count(*) FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1`, arg: proxyID},
+			{name: "owner leases", query: `SELECT count(*) FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' AND owner_id=$1`, arg: owner.OwnerID},
+		}
+		for _, check := range jobsChecks {
+			var remaining int
+			if err := store.db.QueryRowContext(ctx, check.query, check.arg).Scan(&remaining); err != nil {
+				t.Errorf("J3a projector smoke cleanup %s verification failed: %s", check.name, redactPGError(err, ""))
+			} else if remaining != 0 {
+				t.Errorf("J3a projector smoke cleanup %s left %d rows", check.name, remaining)
 			}
 		}
 	})

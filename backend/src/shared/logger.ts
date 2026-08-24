@@ -14,6 +14,7 @@ import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig, type RuntimeConfig } from '../config/runtime.js'
 import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
+import { passiveScheduleDelayMs } from './passive-schedule-jitter.js'
 import {
   drainProcessDiagnosticAsync,
   writeProcessDiagnosticAsync,
@@ -916,16 +917,24 @@ export function startLogMaintenance(): void {
     logMaintenanceKickoff = undefined
     fileLogStream.cleanup()
   })
-  logMaintenanceTimer = setInterval(
-    () => fileLogStream.cleanup(),
-    runtimeConfig.log.cleanupIntervalMinutes * 60 * 1000
-  )
-  logMaintenanceTimer.unref()
+  scheduleNextLogMaintenance()
 }
 
 let fatalProcessExitStarted = false
 let logMaintenanceTimer: NodeJS.Timeout | undefined
 let logMaintenanceKickoff: NodeJS.Immediate | undefined
+
+function scheduleNextLogMaintenance(): void {
+  const stream = fileLogStream
+  if (!stream) return
+  const intervalMs = runtimeConfig.log.cleanupIntervalMinutes * 60 * 1000
+  logMaintenanceTimer = setTimeout(() => {
+    logMaintenanceTimer = undefined
+    stream.cleanup()
+    scheduleNextLogMaintenance()
+  }, passiveScheduleDelayMs(intervalMs))
+  logMaintenanceTimer.unref()
+}
 
 type LogMaintenanceOwnerContext = Pick<RuntimeConfig, 'runtimeMode' | 'processRole' | 'workerRole' | 'workerReplicaIndex'>
 
@@ -986,7 +995,7 @@ export async function closeLogger(timeoutMs = 30_000): Promise<void> {
     logMaintenanceKickoff = undefined
   }
   if (logMaintenanceTimer) {
-    clearInterval(logMaintenanceTimer)
+    clearTimeout(logMaintenanceTimer)
     logMaintenanceTimer = undefined
   }
   if (!fileLogStream || fileLogStream.writableEnded || fileLogStream.destroyed) {
