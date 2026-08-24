@@ -44,6 +44,12 @@ const stableGenericSecond = genericApiKeyQuotaCooldownUntil({
   now: stableGenericNow,
   seed: 'quota-regression:account-a:key-a:g1'
 })
+const stableGenericDifferentSeed = genericApiKeyQuotaCooldownUntil({
+  now: stableGenericNow,
+  seed: 'quota-regression:account-a:key-a:g2'
+})
+assert.equal(stableGenericFirst, stableGenericSecond, '同一 seed、策略和基准时间必须返回完全相同的额度恢复 deadline')
+assert.notEqual(stableGenericFirst, stableGenericDifferentSeed, '额度恢复 deadline 必须实际使用 recovery seed 派生错峰偏移')
 const genericBaselineMs = 60 * 60_000
 const genericWindowMs = passiveScheduleJitterWindowMs(genericBaselineMs)
 for (const value of [stableGenericFirst, stableGenericSecond]) {

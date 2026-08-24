@@ -434,10 +434,6 @@ func hybridProfileMode(mode string) bool {
 	return openAIChatOrResponseMode(mode, true) || mode == "messages_json" || mode == "messages_sse" || geminiProfileMode(mode)
 }
 
-func directProbeProtocol(profile, provider string) string {
-	return directProbeProtocolForMode(profile, provider, "")
-}
-
 func directProbeProtocolForMode(profile, provider, mode string) string {
 	switch profile {
 	case "profile_anthropic_anthropic_v1", "profile_deepseek_anthropic_v1", "profile_glm_coding_anthropic_v1":

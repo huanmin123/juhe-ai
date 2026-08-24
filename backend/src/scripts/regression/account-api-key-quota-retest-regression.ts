@@ -15,12 +15,15 @@ assert.match(retestItemSource, /recoverySeed: `\$\{account\.id\}:\$\{item\.keyFi
 assert.match(delaySource, /seed: `\$\{input\.account\.id\}:\$\{input\.keyFingerprint\?\.trim\(\) \|\| 'account'\}`/, 'worker 延迟计算 seed 必须将空白 fingerprint 归一为 account')
 for (const seed of ['quota-retest-a', 'quota-retest-b', 'quota-retest-c']) {
   const quotaNow = new Date('2026-08-22T00:00:00.000Z')
-  const cooldownUntil = Date.parse(quotaRecoveryCooldownUntil({
+  const quotaInput = {
     seed,
     accountType: 'api_key',
     now: quotaNow,
     policy: { api_key: { reset_strategy: 'duration', duration_minutes: 60, jitter_minutes: 15, timezone: 'UTC' } }
-  }))
+  } as const
+  const cooldownUntil = Date.parse(quotaRecoveryCooldownUntil(quotaInput))
+  const repeatedCooldownUntil = Date.parse(quotaRecoveryCooldownUntil(quotaInput))
+  assert.equal(repeatedCooldownUntil, cooldownUntil, '同一 seed、策略和基准时间必须返回完全相同的额度恢复 deadline')
   const baselineMs = 60 * 60_000
   const windowMs = passiveScheduleJitterWindowMs(baselineMs)
   assert(cooldownUntil >= quotaNow.getTime() + baselineMs && cooldownUntil <= quotaNow.getTime() + baselineMs + windowMs, '额度恢复必须在硬边界之后使用全局偏移')

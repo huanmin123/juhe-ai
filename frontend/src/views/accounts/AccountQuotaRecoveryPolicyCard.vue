@@ -22,11 +22,11 @@
 
     <a-form-item v-if="schedule.reset_strategy === 'duration'" label="恢复间隔（分钟）">
       <a-input-number :value="schedule.duration_minutes" :disabled="readonly" :min="30" :max="10080" :precision="0" @update:value="updateSchedule('duration_minutes', $event)" />
-      <span class="quota-recovery-inline-help">建议 60；jitter_minutes固定15、实际0–15 分钟稳定错峰</span>
+      <span class="quota-recovery-inline-help">建议 60；恢复边界后按系统窗口稳定错峰</span>
     </a-form-item>
     <a-form-item v-else-if="schedule.reset_strategy === 'daily'" label="每日恢复时间">
       <a-input-number :value="schedule.daily_reset_hour" :disabled="readonly" :min="0" :max="23" :precision="0" @update:value="updateSchedule('daily_reset_hour', $event)" />
-      <span class="quota-recovery-inline-help">{{ schedule.timezone }} {{ String(schedule.daily_reset_hour).padStart(2, '0') }}:00，jitter_minutes固定15、实际0–15 分钟稳定错峰</span>
+      <span class="quota-recovery-inline-help">{{ schedule.timezone }} {{ String(schedule.daily_reset_hour).padStart(2, '0') }}:00，恢复边界后按系统窗口稳定错峰</span>
     </a-form-item>
     <a-form-item v-else label="每周恢复时间">
       <a-space>
@@ -40,9 +40,9 @@
     <a-form-item label="时区">
       <a-input :value="schedule.timezone" :disabled="readonly" placeholder="UTC 或 IANA 时区，例如 Asia/Shanghai" @update:value="updateSchedule('timezone', $event)" />
     </a-form-item>
-    <a-form-item label="错峰范围（分钟）">
+    <a-form-item label="错峰兼容字段（分钟）">
       <a-input-number :value="schedule.jitter_minutes" disabled :min="15" :max="15" :precision="0" />
-      <span class="quota-recovery-inline-help">jitter_minutes固定15、实际0–15 分钟稳定错峰，账户不能关闭或修改</span>
+      <span class="quota-recovery-inline-help">jitter_minutes固定15，仅作兼容字段；实际偏移按恢复间隔的系统窗口稳定计算，账户不能关闭或修改</span>
     </a-form-item>
   </section>
 </template>

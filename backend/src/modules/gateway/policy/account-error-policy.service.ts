@@ -307,8 +307,8 @@ export function decideAccountErrorPolicy(
     const configuredPolicy = quotaRecoveryPolicyFromCredentials(account.credentials)
     const recoveryAccountType = account.type === 'api_key' ? 'api_key' : account.type === 'google_oauth' ? 'google_oauth' : 'oauth'
     // Runtime recovery timestamps are passive observations. The shared quota
-    // policy preserves the hard reset boundary while sampling a fresh global
-    // offset for each newly scheduled retest.
+    // policy preserves the hard reset boundary and derives one stable positive
+    // offset from this account/key seed within the global passive window.
     const recoverySeed = [
       account.id,
       account.selectedApiKeyFingerprint?.trim() || 'account'

@@ -9,13 +9,13 @@ export const API_KEY_QUOTA_EXPLICIT_RESET_ERROR_CODE = 'api_key_quota_insufficie
 export const API_KEY_QUOTA_RECOVERY_TIMEOUT_ERROR_CODE = 'api_key_quota_recovery_timeout'
 
 /**
- * The generic fallback is intentionally one hour plus a stable positive
- * jitter.  The jitter is derived from the account/key recovery seed, not from
- * Math.random(), so repeated observations in one recovery window do not move
- * the probe deadline or create an un-auditable schedule.
+ * The generic fallback uses the configured quota reset boundary plus a stable
+ * positive offset derived from the account/key recovery seed. The offset is
+ * bounded by the shared passive interval window (not the legacy fixed
+ * jitter_minutes/15-minute metadata), so repeated observations keep one
+ * auditable probe deadline.
  */
 export const API_KEY_GENERIC_QUOTA_PROBE_INTERVAL_MS = 60 * 60 * 1000
-export const API_KEY_GENERIC_QUOTA_PROBE_JITTER_MAX_MINUTES = 15
 export const API_KEY_QUOTA_OBSERVATION_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000
 
 export type ApiKeyQuotaRecoveryMode = 'generic' | 'explicit_reset'

@@ -482,6 +482,7 @@ const draftPayload = buildAccountDraftTestPayload({
 assert.equal(savePayload.healthCheckModel, 'gpt-5.4', '账户保存必须持久化表单检查模型')
 assert.equal(savePayload.status, 'pending_test', '默认保存请求必须保持待检查状态')
 assert.equal('error_handling_rules' in savePayload.credentials, false, '只读系统规则预览不得进入新建账户的 credentials payload')
+assert.equal('quota_recovery_policy' in savePayload.credentials, false, '未编辑额度恢复策略的新建账户不得持久化运行时默认值')
 assert.equal(draftPayload.healthCheckModel, 'gpt-5.4', '新增和编辑人工测试草稿必须携带表单检查模型')
 assert.deepEqual(savePayload.supportedModels, ['gpt-5.5', 'gpt-5.4'], '账户保存必须保留支持模型')
 

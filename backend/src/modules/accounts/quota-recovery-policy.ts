@@ -1,4 +1,4 @@
-import { passiveScheduleNotBeforeDelayMs } from '../../shared/passive-schedule-jitter.js'
+import { passiveScheduleJitterWindowMs } from '../../shared/passive-schedule-jitter.js'
 
 export type QuotaRecoveryAccountType = 'api_key' | 'oauth' | 'google_oauth'
 export type QuotaRecoveryStrategy = 'duration' | 'daily' | 'weekly'
@@ -80,12 +80,27 @@ export function quotaRecoveryCooldownUntil(input: {
   const now = input.now ?? new Date()
   const schedule = quotaRecoveryScheduleForAccount(input.policy, input.accountType)
   const boundary = scheduleBoundary(schedule, now)
-  // Quota reset boundaries are hard not-before points. The actual passive
-  // retest may run later, with the global interval-sized offset applied once.
-  void input.seed
-  void schedule.jitter_minutes
   const delayMs = Math.max(1, boundary.getTime() - now.getTime())
-  return new Date(now.getTime() + passiveScheduleNotBeforeDelayMs(delayMs)).toISOString()
+  const jitterWindowMs = passiveScheduleJitterWindowMs(delayMs)
+  const offsetMs = deterministicPositiveOffsetMs(input.seed, jitterWindowMs)
+  // Quota reset boundaries are hard not-before points. The actual passive
+  // retest uses a deterministic, seed-derived positive offset within the
+  // global interval-sized window; schedule.jitter_minutes is policy metadata.
+  return new Date(boundary.getTime() + offsetMs).toISOString()
+}
+
+function deterministicPositiveOffsetMs(seed: string, windowMs: number): number {
+  if (windowMs <= 0) return 0
+  return 1 + stableSeedHash(seed) % windowMs
+}
+
+function stableSeedHash(seed: string): number {
+  let hash = 2166136261
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
 }
 
 function normalizeQuotaRecoverySchedule(value: unknown): QuotaRecoverySchedule {
@@ -109,7 +124,7 @@ function normalizeQuotaRecoverySchedule(value: unknown): QuotaRecoverySchedule {
     output.weekly_reset_hour = integerInRange(input.weekly_reset_hour, 0, 23, 'weekly_reset_hour')
   }
   const jitter = input.jitter_minutes === undefined ? FIXED_JITTER_MINUTES : input.jitter_minutes
-  if (jitter !== FIXED_JITTER_MINUTES) throw new Error('额度恢复策略 jitter_minutes固定15、实际0–15')
+  if (jitter !== FIXED_JITTER_MINUTES) throw new Error('额度恢复策略 jitter_minutes固定15，仅作为兼容字段')
   output.jitter_minutes = FIXED_JITTER_MINUTES
   const timezone = input.timezone === undefined ? 'UTC' : input.timezone
   if (typeof timezone !== 'string' || !timezone.trim()) throw new Error('额度恢复策略 timezone 无效')
