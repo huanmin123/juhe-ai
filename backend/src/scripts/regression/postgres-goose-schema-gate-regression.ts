@@ -123,9 +123,7 @@ async function assertAcceptsExpectedSchemaAndClosesPool(): Promise<void> {
   assert.deepEqual(receivedPoolConfig, {
     connectionString: postgresConfig.postgres.url,
     connectionTimeoutMillis: postgresConfig.postgres.connectionTimeoutMs,
-    max: 1,
-    statement_timeout: postgresConfig.postgres.statementTimeoutMs,
-    lock_timeout: postgresConfig.postgres.lockTimeoutMs
+    max: 1
   })
   assert.equal(queryTexts[0], POSTGRES_GOOSE_CURRENT_VERSION_QUERY)
   assertLatestVersionFoldQuery(queryTexts[0] ?? '')

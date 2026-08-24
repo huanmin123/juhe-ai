@@ -163,9 +163,7 @@ export async function enforcePostgresSchemaOwnerGate(
   const pool = await createPool({
     connectionString,
     connectionTimeoutMillis: config.postgres.connectionTimeoutMs,
-    max: 1,
-    statement_timeout: config.postgres.statementTimeoutMs,
-    lock_timeout: config.postgres.lockTimeoutMs
+    max: 1
   })
 
   let operationFailed = false

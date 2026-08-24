@@ -58,8 +58,9 @@ export interface PostgresGooseSchemaGatePoolConfig {
   connectionString: string
   connectionTimeoutMillis: number
   max: number
-  statement_timeout: number
-  lock_timeout: number
+  // Do not pass statement_timeout/lock_timeout as pg Pool startup options:
+  // PgBouncer rejects those startup parameters. The gate queries are read-only
+  // catalog checks; transaction-scoped timeouts belong to the caller.
 }
 
 export interface PostgresGooseSchemaGatePool {
@@ -133,9 +134,7 @@ export async function enforcePostgresGooseSchemaGate(
   const pool = await createPool({
     connectionString,
     connectionTimeoutMillis: config.postgres.connectionTimeoutMs,
-    max: 1,
-    statement_timeout: config.postgres.statementTimeoutMs,
-    lock_timeout: config.postgres.lockTimeoutMs
+    max: 1
   })
 
   let operationFailed = false
