@@ -174,6 +174,7 @@ pipeline {
             jobsDigest: env.JOBS_DIGEST,
             gatewayDigest: env.GATEWAY_DIGEST
           ]
+          waitForArgoApplication('juhe-ai-test')
           waitForIngress('test')
           markReleaseVerified('test', release.sourceCommit, release.nodeDigest, release.jobsDigest, release.gatewayDigest)
         }
@@ -256,6 +257,7 @@ pipeline {
       when { expression { (params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested()) || rollbackRequested() } }
       steps {
         script {
+          waitForArgoApplication('juhe-ai-prod')
           waitForIngress('prod')
           markReleaseVerified('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST)
         }
@@ -521,6 +523,33 @@ def waitForIngress(environmentName) {
       i=\$((i + 1)); sleep 5
     done
     echo '${environmentName} 入口、Node DB-ready health 或已启用的 J2 Go-owner readiness 未通过。' >&2
+    exit 1
+  """
+}
+
+def waitForArgoApplication(applicationName) {
+  if (!(applicationName ==~ /^juhe-ai-(test|prod)$/)) {
+    error "不允许观察未声明的 Argo Application：${applicationName}"
+  }
+  sh """#!/bin/sh
+    set -eu
+    test -r '${env.RELEASE_OBSERVER_KUBECONFIG}' || {
+      echo 'Jenkins release observer kubeconfig 不可读。' >&2
+      exit 1
+    }
+    i=0
+    while [ \$i -lt 60 ]; do
+      state=\$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n argocd get application '${applicationName}' -o jsonpath='{.status.sync.status}|{.status.health.status}|{.status.operationState.phase}' 2>&1) || {
+        echo "无法读取 Argo Application ${applicationName}：\$state" >&2
+        exit 1
+      }
+      if [ "\$state" = 'Synced|Healthy|Succeeded' ]; then
+        exit 0
+      fi
+      i=\$((i + 1))
+      sleep 5
+    done
+    echo "Argo Application ${applicationName} 未达到 Synced|Healthy|Succeeded。" >&2
     exit 1
   """
 }

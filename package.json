@@ -24,6 +24,7 @@
     "test:release-package": "node scripts/validate-release-package.test.mjs && pnpm test:legacy-node-index-bridge",
     "test:redis-role-operations": "pwsh -File ./scripts/regression/validate-redis-role-operations.ps1",
     "test:release-source-preflight": "pwsh -NoProfile -File ./scripts/regression/validate-release-source-preflight.ps1",
+    "test:jenkins-release-gate": "node scripts/regression/jenkins-release-gate-contract.test.mjs",
     "test:owner-manifest": "node scripts/validate-owner-manifest.test.mjs",
     "test:owner-cutover-matrix": "node scripts/owner-cutover-matrix.test.mjs",
     "test:owner-lock": "node --test scripts/run-with-owner-lock.test.mjs",
