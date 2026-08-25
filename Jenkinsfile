@@ -329,7 +329,14 @@ def releaseWorkspace() { return "${env.WORKSPACE}/.platform-release" }
 def prodHistoryPath() { return "${releaseWorkspace()}/apps/juhe-ai/overlays/prod/release-history.tsv" }
 
 def refreshPlatformReleaseWorkspace() {
-  sh "rm -rf '${releaseWorkspace()}' && GIT_SSH_COMMAND=\"ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts\" git clone --depth 1 --branch '${env.RELEASE_BRANCH}' '${env.PLATFORM_REPOSITORY}' '${releaseWorkspace()}'"
+  // A release operation reads this state more than once to detect races. A
+  // transient Gitee Upload Pack disconnect must not turn a safe candidate
+  // intent into a false release failure. Each attempt starts with an empty
+  // workspace, retains strict host-key verification, and still fails closed
+  // after the bounded retry budget is exhausted.
+  retry(3) {
+    sh "rm -rf '${releaseWorkspace()}' && GIT_SSH_COMMAND=\"ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts\" git clone --depth 1 --branch '${env.RELEASE_BRANCH}' '${env.PLATFORM_REPOSITORY}' '${releaseWorkspace()}'"
+  }
 }
 
 def metadataValue(environmentName, key) {

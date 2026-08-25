@@ -26,4 +26,7 @@ assert.match(jenkinsfile, /def waitForArgoApplication\(applicationName, expected
 assert.match(jenkinsfile, /Synced\|Healthy\|Succeeded\|\$\{expectedRevision\}/,
   '只有本次 release-state Git revision 已同步、健康并完成时才允许继续发布验证')
 
+assert.match(jenkinsfile, /def refreshPlatformReleaseWorkspace\(\)\s*\{[\s\S]*?retry\(3\)[\s\S]*?git clone --depth 1 --branch/,
+  'release state 的受限 clone 必须为瞬时 Gitee 断链提供有界重试，且不能降级主机密钥校验')
+
 console.log('Jenkins release Argo gate contract passed')
