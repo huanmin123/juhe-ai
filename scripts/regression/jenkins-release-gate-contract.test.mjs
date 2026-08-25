@@ -34,6 +34,8 @@ assert.match(jenkinsfile, /def waitForArgoApplication\(applicationName, expected
   'Argo 观察必须使用受限 release observer kubeconfig')
 assert.match(jenkinsfile, /Synced\|Healthy\|Succeeded\|\$\{expectedRevision\}/,
   '只有本次 release-state Git revision 已同步、健康并完成时才允许继续发布验证')
+assert.match(jenkinsfile, /def waitForArgoApplication\(applicationName, expectedRevision\)[\s\S]*?while \[ \\\$i -lt 180 \]/,
+  'Argo release gate 必须为 Harbor 拉取与 Pod startup 保留 15 分钟的有界等待窗口')
 
 assert.match(jenkinsfile, /def refreshPlatformReleaseWorkspace\(\)\s*\{[\s\S]*?retry\(3\)[\s\S]*?git clone --depth 1 --branch/,
   'release state 的受限 clone 必须为瞬时 Gitee 断链提供有界重试，且不能降级主机密钥校验')

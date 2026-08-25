@@ -612,8 +612,11 @@ def waitForArgoApplication(applicationName, expectedRevision) {
       echo 'Jenkins release observer kubeconfig 不可读。' >&2
       exit 1
     }
+    # Harbor 内网镜像拉取和 Pod startup 的时间必须纳入 release gate；
+    # Node runtime 镜像在 app-mac-vm 网络波动时可能超过 5 分钟。
+    # 15 分钟后仍未达到本次 revision 的 Synced/Healthy/Succeeded 才失败关闭。
     i=0
-    while [ \$i -lt 60 ]; do
+    while [ \$i -lt 180 ]; do
       state=\$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n argocd get application '${applicationName}' -o jsonpath='{.status.sync.status}|{.status.health.status}|{.status.operationState.phase}|{.status.sync.revision}' 2>&1) || {
         echo "无法读取 Argo Application ${applicationName}：\$state" >&2
         exit 1
