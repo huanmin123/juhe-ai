@@ -147,6 +147,7 @@ export const usageStatsCursorSafetyDelaySeconds = 15
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = usageStatsCursorSafetyDelaySeconds
 const USAGE_STATS_MAX_SHARDS_PER_BATCH = 16
 const USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK = '0001-01-01T00:00:00.000Z'
+const USAGE_RANK_SNAPSHOT_LEGACY_EMPTY_SOURCE_WATERMARK = '0000-00-00T00:00:00.000Z'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE = 'global'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID = ''
 const USAGE_RANK_SNAPSHOT_SOURCE_VERSION_SCOPE_TYPE = 'usage_rank_snapshot_source_version'
@@ -1963,7 +1964,7 @@ export async function refreshHotUsageWindowSnapshots(options: Omit<RefreshUsageR
   const previousState = options.skipIfUnchanged && sourceWatermark !== undefined
     ? usageRankSnapshotRefreshJobState(database, jobName)
     : undefined
-  if (previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey) {
+  if (previousState && !previousState.legacyEmptySourceWatermark && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey) {
     return {
       durationMs: Date.now() - startedAt,
       stages: [],
@@ -2033,7 +2034,7 @@ async function refreshHotUsageWindowSnapshotsPostgres(options: Omit<RefreshUsage
     ? await usageRankSnapshotRefreshJobStateAsync(client, jobName)
     : undefined
   const context = await createUsageRankSnapshotContextAsync(client)
-  const sourceUnchanged = Boolean(previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey)
+  const sourceUnchanged = Boolean(previousState && !previousState.legacyEmptySourceWatermark && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey)
   const hasPendingUsageScopeRangeWindowRequests = sourceUnchanged
     && stages.some((stage) => stage.name === 'usage_scope_range_windows')
     && (await listPendingUsageRangeWindowRequestsAsync(client, 'usage_scope', 1)).length > 0
@@ -2429,6 +2430,7 @@ async function usageRankSnapshotStagesHavePendingWorkAsync(
 }
 
 interface UsageRankSnapshotRefreshJobStateRow extends StatsJobStateRow {
+  legacyEmptySourceWatermark?: boolean
   legacySourceVersion?: string
 }
 
@@ -2519,6 +2521,7 @@ function usageRankSnapshotSourceUnchanged(
   previousSourceVersion: string | undefined
 ): boolean {
   if (!previousState || !sourceState) return false
+  if (previousState.legacyEmptySourceWatermark) return false
   // The pre-v2 layout stored the timestamp and version in one field. Force one
   // refresh so the normal state writer atomically moves it to the two-row form.
   if (previousState.legacySourceVersion !== undefined) return false
@@ -3584,12 +3587,14 @@ function optionalUsageStatsCursorTimestamp(value: string | null | undefined, lab
 function normalizeUsageRankSnapshotRefreshJobState(row: StatsJobStateRow | undefined, allowLegacySourceWatermark = false): UsageRankSnapshotRefreshJobStateRow | undefined {
   if (!row) return undefined
   if (row.cursor_created_at === null) return { ...row, cursor_created_at: null }
+  const legacyEmptySourceWatermark = row.cursor_created_at === USAGE_RANK_SNAPSHOT_LEGACY_EMPTY_SOURCE_WATERMARK
   const source = allowLegacySourceWatermark
     ? normalizeUsageRankSnapshotStoredSourceState(row.cursor_created_at)
     : { sourceWatermark: normalizeUsageRankSnapshotCanonicalSourceWatermark(row.cursor_created_at) }
   return {
     ...row,
     cursor_created_at: source.sourceWatermark,
+    ...(legacyEmptySourceWatermark ? { legacyEmptySourceWatermark: true } : {}),
     ...(source.legacySourceVersion === undefined ? {} : { legacySourceVersion: source.legacySourceVersion })
   }
 }
@@ -3616,6 +3621,9 @@ function normalizeUsageRankSnapshotSourceWatermark(value: string): string {
 }
 
 function normalizeUsageRankSnapshotCanonicalSourceWatermark(value: string): string {
+  if (value === USAGE_RANK_SNAPSHOT_LEGACY_EMPTY_SOURCE_WATERMARK) {
+    return USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK
+  }
   return requiredRfc3339Instant(value, '用量排行快照 sourceWatermark')
 }
 

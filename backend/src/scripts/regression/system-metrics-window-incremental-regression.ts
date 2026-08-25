@@ -364,6 +364,30 @@ try {
     'legacy 复合水位不得泄漏到非系统指标任务'
   )
 
+  const legacyEmptyWatermarkJobName = `${jobName}:legacy-empty-watermark`
+  await usageStatsRepository.refreshHotUsageWindowSnapshots({
+    skipIfUnchanged: true,
+    jobName: legacyEmptyWatermarkJobName,
+    yieldToEventLoop: async () => {}
+  })
+  database.prepare(`
+    UPDATE stats_job_state
+    SET cursor_created_at = '0000-00-00T00:00:00.000Z'
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `).run(legacyEmptyWatermarkJobName)
+  await usageStatsRepository.refreshHotUsageWindowSnapshots({
+    skipIfUnchanged: true,
+    jobName: legacyEmptyWatermarkJobName,
+    yieldToEventLoop: async () => {}
+  })
+  const migratedLegacyEmptyState = database.prepare(`
+    SELECT cursor_created_at
+    FROM stats_job_state
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `).get(legacyEmptyWatermarkJobName) as { cursor_created_at?: string } | undefined
+  assert.match(migratedLegacyEmptyState?.cursor_created_at ?? '', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, '旧空水位应迁移为 canonical UTC')
+  assert.notEqual(migratedLegacyEmptyState?.cursor_created_at, '0000-00-00T00:00:00.000Z', '旧空水位不得继续持久化')
+
   console.log('系统指标趋势窗口增量回归通过：纯 canonical 水位与独立 sourceVersion、同毫秒变更、范围外变化、日期变更和水位倒退均正确处理')
 } finally {
   try {

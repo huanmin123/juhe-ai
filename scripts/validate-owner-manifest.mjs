@@ -10,7 +10,7 @@ const ALLOWED_OWNERS = new Set(['node', 'go'])
 // This is the deployment compatibility gate. Node runtime code exports the
 // same value from TypeScript; validate-owner-manifest.test.mjs keeps the two
 // package boundaries synchronized without relying on a retired Go catalog.
-export const CURRENT_SCHEMA_VERSION = 93
+export const CURRENT_SCHEMA_VERSION = 94
 const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 const MAX_EXACT_ROUTES = 2048
 const MAX_WORKER_JOBS = 256
