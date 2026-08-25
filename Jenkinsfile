@@ -159,7 +159,7 @@ pipeline {
       when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
       steps {
         script {
-          writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-ci')
+          env.TEST_RELEASE_STATE_REVISION = writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-ci')
         }
       }
     }
@@ -174,7 +174,7 @@ pipeline {
             jobsDigest: env.JOBS_DIGEST,
             gatewayDigest: env.GATEWAY_DIGEST
           ]
-          waitForArgoApplication('juhe-ai-test')
+          waitForArgoApplication('juhe-ai-test', env.TEST_RELEASE_STATE_REVISION)
           waitForIngress('test')
           markReleaseVerified('test', release.sourceCommit, release.nodeDigest, release.jobsDigest, release.gatewayDigest)
         }
@@ -203,7 +203,7 @@ pipeline {
           if (release.sourceCommit != env.SOURCE_COMMIT || release.nodeDigest != env.NODE_DIGEST || release.jobsDigest != env.JOBS_DIGEST || release.gatewayDigest != env.GATEWAY_DIGEST) {
             error 'test release state 在晋级期间发生变化，拒绝写入 prod。'
           }
-          writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-prod-promotion')
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-prod-promotion')
         }
       }
     }
@@ -248,7 +248,7 @@ pipeline {
           env.NODE_DIGEST = selected.nodeDigest
           env.JOBS_DIGEST = selected.jobsDigest
           env.GATEWAY_DIGEST = selected.gatewayDigest
-          writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-prod-rollback')
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-prod-rollback')
         }
       }
     }
@@ -257,7 +257,7 @@ pipeline {
       when { expression { (params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested()) || rollbackRequested() } }
       steps {
         script {
-          waitForArgoApplication('juhe-ai-prod')
+          waitForArgoApplication('juhe-ai-prod', env.PROD_RELEASE_STATE_REVISION)
           waitForIngress('prod')
           markReleaseVerified('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST)
         }
@@ -452,6 +452,7 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       GIT_SSH_COMMAND="ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts" git push origin HEAD:'${env.RELEASE_BRANCH}'
     fi
   """
+  return sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
 }
 
 def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest) {
@@ -527,9 +528,12 @@ def waitForIngress(environmentName) {
   """
 }
 
-def waitForArgoApplication(applicationName) {
+def waitForArgoApplication(applicationName, expectedRevision) {
   if (!(applicationName ==~ /^juhe-ai-(test|prod)$/)) {
     error "不允许观察未声明的 Argo Application：${applicationName}"
+  }
+  if (!validCommit(expectedRevision)) {
+    error "Argo Application ${applicationName} 缺少本次 release-state Git revision；拒绝沿用上一轮健康状态。"
   }
   sh """#!/bin/sh
     set -eu
@@ -539,17 +543,17 @@ def waitForArgoApplication(applicationName) {
     }
     i=0
     while [ \$i -lt 60 ]; do
-      state=\$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n argocd get application '${applicationName}' -o jsonpath='{.status.sync.status}|{.status.health.status}|{.status.operationState.phase}' 2>&1) || {
+      state=\$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n argocd get application '${applicationName}' -o jsonpath='{.status.sync.status}|{.status.health.status}|{.status.operationState.phase}|{.status.sync.revision}' 2>&1) || {
         echo "无法读取 Argo Application ${applicationName}：\$state" >&2
         exit 1
       }
-      if [ "\$state" = 'Synced|Healthy|Succeeded' ]; then
+      if [ "\$state" = 'Synced|Healthy|Succeeded|${expectedRevision}' ]; then
         exit 0
       fi
       i=\$((i + 1))
       sleep 5
     done
-    echo "Argo Application ${applicationName} 未达到 Synced|Healthy|Succeeded。" >&2
+    echo "Argo Application ${applicationName} 未达到本次 ${expectedRevision} 的 Synced|Healthy|Succeeded。" >&2
     exit 1
   """
 }
