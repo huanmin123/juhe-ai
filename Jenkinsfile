@@ -612,11 +612,11 @@ def waitForArgoApplication(applicationName, expectedRevision) {
       echo 'Jenkins release observer kubeconfig 不可读。' >&2
       exit 1
     }
-    # Harbor 内网镜像拉取和 Pod startup 的时间必须纳入 release gate；
-    # Node runtime 镜像在 app-mac-vm 网络波动时可能超过 5 分钟。
-    # 15 分钟后仍未达到本次 revision 的 Synced/Healthy/Succeeded 才失败关闭。
+    # Harbor 在集群内网；正常镜像拉取约为秒级，Pod startup 通常应在 5 分钟内完成。
+    # 5 分钟是硬上限，不再用长等待掩盖 Harbor、节点网络、解压、gate 或 readiness 故障。
+    # Argo 明确进入 Failed/Error/Degraded 时立即 fail-closed。
     i=0
-    while [ \$i -lt 180 ]; do
+    while [ \$i -lt 60 ]; do
       state=\$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n argocd get application '${applicationName}' -o jsonpath='{.status.sync.status}|{.status.health.status}|{.status.operationState.phase}|{.status.sync.revision}' 2>&1) || {
         echo "无法读取 Argo Application ${applicationName}：\$state" >&2
         exit 1
@@ -624,10 +624,17 @@ def waitForArgoApplication(applicationName, expectedRevision) {
       if [ "\$state" = 'Synced|Healthy|Succeeded|${expectedRevision}' ]; then
         exit 0
       fi
+      sync_status=\$(printf '%s' "\$state" | cut -d'|' -f1)
+      health_status=\$(printf '%s' "\$state" | cut -d'|' -f2)
+      operation_phase=\$(printf '%s' "\$state" | cut -d'|' -f3)
+      if [ "\$operation_phase" = 'Failed' ] || [ "\$operation_phase" = 'Error' ] || [ "\$health_status" = 'Degraded' ]; then
+        echo "Argo Application ${applicationName} 已明确失败：sync=\$sync_status health=\$health_status operation=\$operation_phase revision=\$(printf '%s' \"\$state\" | cut -d'|' -f4)" >&2
+        exit 1
+      fi
       i=\$((i + 1))
       sleep 5
     done
-    echo "Argo Application ${applicationName} 未达到本次 ${expectedRevision} 的 Synced|Healthy|Succeeded。" >&2
+    echo "Argo Application ${applicationName} 在 5 分钟内未达到本次 ${expectedRevision} 的 Synced|Healthy|Succeeded；停止等待并检查 Harbor、节点网络、镜像解压、gate、PVC 和 readiness。" >&2
     exit 1
   """
 }

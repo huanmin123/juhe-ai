@@ -34,8 +34,12 @@ assert.match(jenkinsfile, /def waitForArgoApplication\(applicationName, expected
   'Argo 观察必须使用受限 release observer kubeconfig')
 assert.match(jenkinsfile, /Synced\|Healthy\|Succeeded\|\$\{expectedRevision\}/,
   '只有本次 release-state Git revision 已同步、健康并完成时才允许继续发布验证')
-assert.match(jenkinsfile, /def waitForArgoApplication\(applicationName, expectedRevision\)[\s\S]*?while \[ \\\$i -lt 180 \]/,
-  'Argo release gate 必须为 Harbor 拉取与 Pod startup 保留 15 分钟的有界等待窗口')
+assert.match(jenkinsfile, /def waitForArgoApplication\(applicationName, expectedRevision\)[\s\S]*?while \[ \\\$i -lt 60 \]/,
+  'Argo release gate 必须以 5 分钟为内网 Harbor 拉取与 Pod startup 的硬上限')
+assert.match(jenkinsfile, /operation_phase[\s\S]*?'Failed'[\s\S]*?'Error'[\s\S]*?health_status[\s\S]*?'Degraded'[\s\S]*?exit 1/,
+  'Argo 明确 Failed、Error 或 Degraded 时必须立即失败，不能等待至超时')
+assert.match(jenkinsfile, /停止等待并检查 Harbor、节点网络、镜像解压、gate、PVC 和 readiness/,
+  '5 分钟超时必须输出可行动的分层排障范围')
 
 assert.match(jenkinsfile, /def refreshPlatformReleaseWorkspace\(\)\s*\{[\s\S]*?retry\(3\)[\s\S]*?git clone --depth 1 --branch/,
   'release state 的受限 clone 必须为瞬时 Gitee 断链提供有界重试，且不能降级主机密钥校验')
