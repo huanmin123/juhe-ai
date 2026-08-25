@@ -26,7 +26,11 @@ pipeline {
     RELEASE_OBSERVER_KUBECONFIG = '/run/jenkins-secrets/kubeconfig-release-observer'
     PLATFORM_REPOSITORY = 'git@gitee.com:huanminabc/k8s-juhe.git'
     RELEASE_BRANCH = 'main'
-    INGRESS_ENDPOINT = 'http://192.168.1.76:32080'
+    // Jenkins runs on infra-linux.  Keep release verification on the local
+    // NodePort path so an app-mac-vm LAN/NAT flap cannot be mistaken for a
+    // failed application release.
+    INGRESS_ENDPOINT = 'http://127.0.0.1:32080'
+    PROMETHEUS_ENDPOINT = 'http://127.0.0.1:19091'
     BUILD_HTTP_PROXY = 'http://10.66.45.2:7890'
     BUILD_NO_PROXY = '127.0.0.1,localhost,192.168.1.76,192.168.1.203,10.66.45.2'
   }
@@ -63,6 +67,15 @@ pipeline {
           if ([params.DEPLOY_PROD, reverseDeployRequested(), rollbackRequested()].findAll { it }.size() > 1) {
             error 'DEPLOY_PROD、REVERSE_DEPLOY_PROD 与 ROLLBACK_PROD 只能选择一个。'
           }
+        }
+      }
+    }
+
+    stage('test 发布前置检查') {
+      when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
+      steps {
+        script {
+          preflightTestRelease()
         }
       }
     }
@@ -532,6 +545,51 @@ def waitForIngress(environmentName) {
     done
     echo '${environmentName} 入口、Node DB-ready health 或已启用的 J2 Go-owner readiness 未通过。' >&2
     exit 1
+  """
+}
+
+def preflightTestRelease() {
+  sh """#!/bin/sh
+    set -eu
+    test -r '${env.RELEASE_OBSERVER_KUBECONFIG}' || {
+      echo 'Jenkins release observer kubeconfig 不可读。' >&2
+      exit 1
+    }
+    observer='KUBECONFIG=${env.RELEASE_OBSERVER_KUBECONFIG} kubectl'
+    for check in \\
+      "-n argocd auth can-i get applications.argoproj.io/juhe-ai-test" \\
+      "-n juhe-ai-test auth can-i list events" \\
+      "-n juhe-ai-test auth can-i get resourcequotas/juhe-ai-test-budget"; do
+      if [ "\$(sh -c "\$observer \$check")" != 'yes' ]; then
+        echo "release observer 权限不足：\$check" >&2
+        exit 1
+      fi
+    done
+    state=\$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n argocd get application juhe-ai-test -o jsonpath='{.status.sync.status}|{.status.health.status}' 2>&1) || {
+      echo "无法读取 test Argo 状态：\$state" >&2
+      exit 1
+    }
+    if [ "\$state" != 'Synced|Healthy' ]; then
+      echo "test 当前不是 Synced|Healthy：\$state；拒绝在不稳定基线上构建。" >&2
+      exit 1
+    fi
+    if ! env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 10 -H 'Host: test.aijh.huanmin.top' '${env.INGRESS_ENDPOINT}/__aisys__/api/health' >/dev/null; then
+      echo 'test 当前入口或 Node DB-ready/J2 readiness 未通过；拒绝开始构建。' >&2
+      exit 1
+    fi
+    prometheus_value() {
+      query=\$1
+      curl --fail --silent --show-error --max-time 10 --get --data-urlencode "query=\$query" '${env.PROMETHEUS_ENDPOINT}/api/v1/query' |
+        sed -n 's/.*"value":\\[[^,]*,"\\([^"\\]*\\)"\\].*/\\1/p' | head -n 1
+    }
+    blocked=\$(prometheus_value 'sum(pg_blocking_sessions_blocked_sessions{job="postgres",datname="juhe_ai_test"})')
+    longest_tx=\$(prometheus_value 'max(pg_stat_activity_max_tx_duration{job="postgres",datname="juhe_ai_test",state=~"active|idle in transaction"})')
+    case "\$blocked" in ''|*[!0-9.eE+-]*) echo "无法读取 test 数据库锁指标：\$blocked" >&2; exit 1 ;; esac
+    case "\$longest_tx" in ''|*[!0-9.eE+-]*) echo "无法读取 test 数据库事务指标：\$longest_tx" >&2; exit 1 ;; esac
+    if awk "BEGIN { exit !(\$blocked > 0 || \$longest_tx > 300) }"; then
+      echo "test 数据库存在锁等待或超过 5 分钟的事务（blocked=\$blocked, longestTxSeconds=\$longest_tx）；先清理再发布。" >&2
+      exit 1
+    fi
   """
 }
 
