@@ -10,6 +10,8 @@ assert.match(jenkinsfile, /stage\('test 发布前置检查'\)[\s\S]*?preflightTe
   'test 构建前必须执行基础环境门禁')
 assert.match(jenkinsfile, /def preflightTestRelease\(\)[\s\S]*?juhe-ai-test[\s\S]*?pg_blocking_sessions_blocked_sessions[\s\S]*?pg_stat_activity_max_tx_duration/,
   'test 前置检查必须覆盖 observer 权限、Argo、入口、数据库锁与长事务')
+assert.match(jenkinsfile, /def preflightTestRelease\(\)[\s\S]*?ALERTS\{namespace="juhe-ai-test",alertstate="firing"\}/,
+  'test 前置检查必须拒绝仍有 juhe-ai-test firing 告警的节点/Pod')
 
 assert.match(jenkinsfile, /env\.TEST_RELEASE_STATE_REVISION = writeReleaseState\('test'/,
   'test 必须保存本次 release-state Git revision')

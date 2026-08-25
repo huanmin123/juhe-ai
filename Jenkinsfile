@@ -584,10 +584,16 @@ def preflightTestRelease() {
     }
     blocked=\$(prometheus_value 'sum(pg_blocking_sessions_blocked_sessions{job="postgres",datname="juhe_ai_test"})')
     longest_tx=\$(prometheus_value 'max(pg_stat_activity_max_tx_duration{job="postgres",datname="juhe_ai_test",state=~"active|idle in transaction"})')
+    active_alerts=\$(prometheus_value 'sum(ALERTS{namespace="juhe-ai-test",alertstate="firing"}) or vector(0)')
     case "\$blocked" in ''|*[!0-9.eE+-]*) echo "无法读取 test 数据库锁指标：\$blocked" >&2; exit 1 ;; esac
     case "\$longest_tx" in ''|*[!0-9.eE+-]*) echo "无法读取 test 数据库事务指标：\$longest_tx" >&2; exit 1 ;; esac
+    case "\$active_alerts" in ''|*[!0-9.eE+-]*) echo "无法读取 juhe-ai-test 告警指标：\$active_alerts" >&2; exit 1 ;; esac
     if awk "BEGIN { exit !(\$blocked > 0 || \$longest_tx > 300) }"; then
       echo "test 数据库存在锁等待或超过 5 分钟的事务（blocked=\$blocked, longestTxSeconds=\$longest_tx）；先清理再发布。" >&2
+      exit 1
+    fi
+    if awk "BEGIN { exit !(\$active_alerts > 0) }"; then
+      echo "juhe-ai-test 仍有 firing 告警（count=\$active_alerts）；先恢复节点/Pod 稳定性再发布。" >&2
       exit 1
     fi
   """
