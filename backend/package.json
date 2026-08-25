@@ -46,6 +46,8 @@
     "test:proxy-demand-write": "tsx src/scripts/regression/proxy-demand-write-regression.ts",
     "test:proxy-latency-go-only": "tsx src/scripts/regression/proxy-latency-go-only-regression.ts",
     "test:proxy-latency-node-writer-removed": "tsx src/scripts/regression/proxy-latency-node-writer-removed-regression.ts",
+    "test:proxy-latency-jobs-health": "tsx src/scripts/regression/proxy-latency-jobs-health-regression.ts",
+    "test:proxy-latency-node-go-manual-interop": "tsx src/scripts/regression/proxy-latency-node-go-manual-interop.ts",
     "test:gateway-fetch-proxy-transport": "tsx src/scripts/regression/gateway-fetch-proxy-transport-regression.ts",
     "test:large-response": "node --expose-gc --import tsx src/scripts/regression/non-stream-large-response-regression.ts",
     "test:first-byte-deadline-decision-race": "tsx src/scripts/regression/first-byte-deadline-decision-race-regression.ts",

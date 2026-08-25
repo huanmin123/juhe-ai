@@ -7,10 +7,10 @@
 - [Go 后端架构基线](Go后端架构基线.md)：Go 技术、存储、并发和完整功能迁移的通用规则；与三项目边界冲突时，以三项目边界为准。
 - [后台任务迁移总设计与路线图](后台任务迁移总设计与路线图.md)：后台任务的完整迁移顺序、Go jobs 直连上游探活边界、PostgreSQL / SQLite 数据边界和切换门禁。
 - [J3 候选任务 L1 语义冻结](J3-候选任务L1语义冻结.md)：冻结 J3a 代理延迟检测、J3b 模型检测和 J3c 质量检查的候选边界；账号复制不属于当前后台候选。
-- [J3a 代理延迟检测完整迁移契约](J3a-代理延迟检测完整迁移契约.md)：冻结 J3a 的输入、结果、lease、Go 独占投影与 L2 实施边界；Node J3a scheduler、旧 executor、outcome reader/projector 和 business writer 已删除。
-- [J3a 代理延迟检测 Node-Go 深度对照报告](../reports/J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)：记录 Node 历史 oracle、Go 独占执行/投影、手动 adapter 和删除边界；真实 Node→Go 手动进程联调、active-path-zero、生产切换仍未完成。
+- [J3a 代理延迟检测完整迁移契约](J3a-代理延迟检测完整迁移契约.md)：冻结 J3a 的输入、结果、lease、Go 独占投影与 L2 实施边界；Node J3a scheduler、旧 executor、outcome reader/projector 和 business writer 已删除。2026-08-26 生产只读预检确认尚未启用 J3a，jobs schema/权限、Secret alias、容量、owner handoff 和回滚仍是硬门禁。
+- [J3a 代理延迟检测 Node-Go 深度对照报告](../reports/J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)：记录 Node 历史 oracle、Go 独占执行/投影、手动 adapter 和删除边界；Node 子进程→Go jobs HTTP handler 已回归验证，独立 jobs 二进制部署、active-path-zero、生产切换仍未完成。
 - [J3a 代理延迟检测 Node-Go 深度对照计划](../plans/计划-20260822T140000000Z-J3a代理延迟检测Node-Go深度对照.md)：维护 Node 机制补缺、跨运行时门禁和主分支精确 staging allowlist。
-- [J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案](J3a-代理延迟检测L3-PG验收方案.md)：2026-08-23 dev scratch 经 PgBouncer `6432` required smoke 与 Go business-result projector applied/stale、receipt、cursor、CAS/replay 已通过并清理；真实手动进程联调、生产、active-path-zero、owner handoff 与 L4 仍未完成。
+- [J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案](J3a-代理延迟检测L3-PG验收方案.md)：2026-08-23 dev scratch 经 PgBouncer `6432` required smoke 与 Go business-result projector applied/stale、receipt、cursor、CAS/replay 已通过并清理；Node 子进程→Go handler manual 互操作已通过，独立 jobs 二进制、生产、active-path-zero、owner handoff 与 L4 仍未完成。
 - [J1 账号健康探活完整迁移契约](J1-账号健康探活完整迁移契约.md)：冻结账号健康探活与冷却复测的完整 owner、SQLite/PG 输入输出协议、直接上游探活、Gateway source fence、切换和归档边界。
 - [J2 余额刷新完整迁移契约](J2-余额刷新完整迁移契约.md)：冻结周期刷新、首次探测补偿、手动刷新、单 API Key、provider adapter、快照/CAS 与 SQLite/PG owner 边界；当前完成 L2 Go jobs、Node projector 与显式 Go-owner bridge，发布前门禁仍以契约为准。
 - [Go 三项目部署与验证计划](Go三项目部署与验证计划.md)：当前兼容部署、隔离开发验证、后续 jobs-only candidate 与生产 handover 的分层验收。

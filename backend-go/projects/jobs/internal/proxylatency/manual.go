@@ -1,8 +1,10 @@
 package proxylatency
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -51,12 +53,53 @@ type ProxyTestReport struct {
 }
 
 type ProxyTestItem struct {
-	Name       string     `json:"name"`
-	Status     ItemStatus `json:"status"`
-	HTTPStatus *int       `json:"httpStatus,omitempty"`
-	LatencyMS  *int64     `json:"latencyMs,omitempty"`
-	Message    string     `json:"message"`
-	TargetURL  string     `json:"targetUrl,omitempty"`
+	Name             string     `json:"name"`
+	Status           ItemStatus `json:"status"`
+	HTTPStatus       *int       `json:"httpStatus,omitempty"`
+	LatencyMS        *int64     `json:"latencyMs,omitempty"`
+	Message          string     `json:"message"`
+	TargetURL        string     `json:"-"`
+	includeTargetURL bool
+}
+
+// MarshalJSON distinguishes Node's absent synthetic-base targetUrl from an
+// enabled provider whose configured target URL is explicitly empty.
+func (item ProxyTestItem) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		Name       string     `json:"name"`
+		Status     ItemStatus `json:"status"`
+		HTTPStatus *int       `json:"httpStatus,omitempty"`
+		LatencyMS  *int64     `json:"latencyMs,omitempty"`
+		Message    string     `json:"message"`
+		TargetURL  *string    `json:"targetUrl,omitempty"`
+	}
+	value := payload{Name: item.Name, Status: item.Status, HTTPStatus: item.HTTPStatus, LatencyMS: item.LatencyMS, Message: item.Message}
+	if item.includeTargetURL {
+		targetURL := item.TargetURL
+		value.TargetURL = &targetURL
+	}
+	return json.Marshal(value)
+}
+
+func (item *ProxyTestItem) UnmarshalJSON(data []byte) error {
+	type payload struct {
+		Name       string     `json:"name"`
+		Status     ItemStatus `json:"status"`
+		HTTPStatus *int       `json:"httpStatus,omitempty"`
+		LatencyMS  *int64     `json:"latencyMs,omitempty"`
+		Message    string     `json:"message"`
+		TargetURL  *string    `json:"targetUrl,omitempty"`
+	}
+	var value payload
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	item.Name, item.Status, item.HTTPStatus, item.LatencyMS, item.Message = value.Name, value.Status, value.HTTPStatus, value.LatencyMS, value.Message
+	item.TargetURL, item.includeTargetURL = "", value.TargetURL != nil
+	if value.TargetURL != nil {
+		item.TargetURL = *value.TargetURL
+	}
+	return nil
 }
 
 func (request ManualRequest) Validate(maxDeadline time.Duration) error {
@@ -69,8 +112,8 @@ func (request ManualRequest) Validate(maxDeadline time.Duration) error {
 	if request.ProxyPassword != nil && strings.TrimSpace(request.ProxyUsername) == "" {
 		return errors.New("J3a manual proxy password 缺少 username")
 	}
-	if len(request.Targets) > 128 {
-		return errors.New("J3a manual targets 不得超过 128")
+	if len(request.Targets) > maxProxyLatencyWorkItems {
+		return errors.New("J3a manual targets 超出 Go runtime 支持范围")
 	}
 	if maxDeadline <= 0 || maxDeadline > 25*time.Second {
 		maxDeadline = 25 * time.Second
@@ -80,7 +123,7 @@ func (request ManualRequest) Validate(maxDeadline time.Duration) error {
 	}
 	seen := make(map[string]struct{}, len(request.Targets))
 	for _, target := range request.Targets {
-		if strings.TrimSpace(target.Provider) == "" || strings.TrimSpace(target.ProfileID) == "" || strings.TrimSpace(target.Name) == "" || strings.TrimSpace(target.URL) == "" {
+		if strings.TrimSpace(target.Provider) == "" || strings.TrimSpace(target.ProfileID) == "" || strings.TrimSpace(target.Name) == "" {
 			return errors.New("J3a manual target 字段无效")
 		}
 		if _, exists := seen[target.Provider]; exists {
@@ -97,7 +140,14 @@ func (request ManualRequest) Validate(maxDeadline time.Duration) error {
 func (request ManualRequest) InputDraft(now time.Time, deadline time.Duration) InputDraft {
 	targets := make([]Target, 0, len(request.Targets))
 	for _, target := range request.Targets {
-		targets = append(targets, Target{Provider: target.Provider, ProfileID: target.ProfileID, URL: target.URL})
+		canonical, err := canonicalizeProbeTarget(Target{Provider: target.Provider, ProfileID: target.ProfileID, URL: target.URL})
+		if err != nil {
+			// Validate already rejects malformed target identity. Preserve the
+			// value here only so Store.IssueInput returns its normal fail-closed
+			// input error if a caller bypassed Validate.
+			canonical = Target{Provider: target.Provider, ProfileID: target.ProfileID, URL: target.URL}
+		}
+		targets = append(targets, canonical)
 	}
 	return InputDraft{
 		ProxyID: request.ProxyID, ConfigRevision: request.ConfigRevision, Trigger: TriggerManual,
@@ -151,12 +201,12 @@ func (request ManualRequest) Report(outcome Outcome) ProxyTestReport {
 	providerItems := make([]ProxyTestItem, 0, len(outcome.Items))
 	for _, item := range outcome.Items {
 		target := nameByProvider[item.Provider]
-		converted := ProxyTestItem{Name: target.Name, Status: item.Status, Message: itemMessage(item), TargetURL: target.URL}
+		converted := ProxyTestItem{Name: target.Name, Status: item.Status, Message: itemMessage(item, target.URL), TargetURL: target.URL, includeTargetURL: true}
 		if item.HTTPStatus != 0 {
 			value := item.HTTPStatus
 			converted.HTTPStatus = &value
 		}
-		if item.LatencyMS != 0 {
+		if item.Status == ItemPassed {
 			value := item.LatencyMS
 			converted.LatencyMS = &value
 		}
@@ -174,12 +224,15 @@ func (request ManualRequest) Report(outcome Outcome) ProxyTestReport {
 	}
 }
 
-func itemMessage(item ItemResult) string {
-	if item.ErrorCode != "" {
-		return item.ErrorCode
-	}
+func itemMessage(item ItemResult, targetURL string) string {
 	if item.HTTPStatus != 0 {
 		return fmt.Sprintf("HTTP %d（传输完整，状态码仅供诊断）", item.HTTPStatus)
+	}
+	if item.ErrorCode == targetProbeErrorInvalidURL {
+		return legacyManualTargetFailureMessage(targetURL)
+	}
+	if item.ErrorCode != "" {
+		return item.ErrorCode
 	}
 	if item.Status == ItemFailed {
 		return "代理传输失败"
@@ -188,6 +241,44 @@ func itemMessage(item ItemResult) string {
 		return "未形成真实代理检测请求"
 	}
 	return "代理目标检测完成"
+}
+
+// legacyManualTargetFailureMessage restores the observable Node management
+// response without retaining a malformed target in the durable outcome. Node
+// constructed the configured URL first, then rejected a successfully parsed
+// non-HTTP(S) protocol before it could form a proxy request.
+func legacyManualTargetFailureMessage(rawTargetURL string) string {
+	if protocol, ok := legacyUnsupportedTargetProtocol(rawTargetURL); ok {
+		return fmt.Sprintf("未形成真实代理检测请求：不支持的目标协议：%s:", protocol)
+	}
+	return "未形成真实代理检测请求：Invalid URL"
+}
+
+func legacyUnsupportedTargetProtocol(rawTargetURL string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rawTargetURL))
+	if err != nil || parsed == nil {
+		return "", false
+	}
+	protocol := strings.ToLower(parsed.Scheme)
+	if protocol == "" || protocol == "http" || protocol == "https" {
+		return "", false
+	}
+	// WHATWG URL treats these special network schemes without an authority or
+	// opaque payload (for example, "ftp:") as invalid. A real configured URL
+	// such as ftp://provider.invalid/v1 reaches Node's explicit protocol check.
+	if requiresTargetAuthority(protocol) && parsed.Host == "" && parsed.Opaque == "" && parsed.Path == "" {
+		return "", false
+	}
+	return protocol, true
+}
+
+func requiresTargetAuthority(protocol string) bool {
+	switch protocol {
+	case "ftp", "ftps", "ws", "wss":
+		return true
+	default:
+		return false
+	}
 }
 
 func syntheticBase(items []ProxyTestItem, providerCount int) ProxyTestItem {
@@ -206,7 +297,7 @@ func syntheticBase(items []ProxyTestItem, providerCount int) ProxyTestItem {
 		case ItemPassed:
 			reachable++
 		}
-		if item.LatencyMS != nil {
+		if item.Status == ItemPassed && item.LatencyMS != nil {
 			total += *item.LatencyMS
 			latencies++
 		}

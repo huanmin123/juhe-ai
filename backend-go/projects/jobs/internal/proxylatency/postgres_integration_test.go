@@ -18,8 +18,46 @@ const (
 	pgProjectorURLEnv      = "J3A_PG_PROJECTOR_URL"
 	pgSmokeRequiredEnv     = "J3A_PG_SMOKE_REQUIRED"
 	pgSmokePrefixEnv       = "J3A_PG_SMOKE_DB_PREFIX"
+	pgSchemaContractURLEnv = "J3A_PG_SCHEMA_CONTRACT_SMOKE_URL"
 	pgSmokeDefaultDBPrefix = "juhe_ai_sub2api_dev_j3a_"
 )
+
+// TestPostgresSchemaContractSmoke proves the production runtime preflight is
+// not merely a table-name check. It is opt-in and only allows an isolated
+// direct PostgreSQL scratch database prepared with an empty juhe_jobs schema.
+func TestPostgresSchemaContractSmoke(t *testing.T) {
+	rawURL := strings.TrimSpace(os.Getenv(pgSchemaContractURLEnv))
+	if rawURL == "" {
+		t.Skipf("J3a PostgreSQL schema-contract smoke skipped: set %s for an isolated run", pgSchemaContractURLEnv)
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || parsed.Port() != "5432" || parsed.User == nil || strings.TrimSpace(parsed.User.Username()) == "" || !strings.HasPrefix(strings.Trim(parsed.Path, "/"), pgSmokeDefaultDBPrefix) {
+		t.Fatalf("J3a schema-contract smoke only accepts explicit-role direct 5432 scratch PostgreSQL URL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: rawURL})
+	if err != nil {
+		t.Fatalf("open J3a schema-contract PostgreSQL failed: %s", redactPGError(err, rawURL))
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close J3a schema-contract PostgreSQL failed: %s", redactPGError(err, rawURL))
+		}
+	})
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatalf("explicit J3a schema-contract bootstrap failed: %s", redactPGError(err, rawURL))
+	}
+	if err := store.CheckSchema(ctx); err != nil {
+		t.Fatalf("complete J3a schema-contract preflight failed: %s", redactPGError(err, rawURL))
+	}
+	if _, err := store.db.ExecContext(ctx, `ALTER TABLE juhe_jobs.proxy_latency_owner_leases ALTER COLUMN fence_token TYPE TEXT USING fence_token::TEXT`); err != nil {
+		t.Fatalf("prepare J3a malformed schema-contract fixture failed: %s", redactPGError(err, rawURL))
+	}
+	if err := store.CheckSchema(ctx); err == nil || !strings.Contains(err.Error(), "proxy_latency_owner_leases.fence_token") {
+		t.Fatalf("J3a runtime schema preflight must reject malformed table, err=%s", redactPGError(err, rawURL))
+	}
+}
 
 // TestPostgresResultProjectorSmoke is the explicit Go business-result gate.
 // It is opt-in because it must use a disposable PgBouncer database and a
@@ -63,6 +101,9 @@ func TestPostgresResultProjectorSmoke(t *testing.T) {
 	})
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatalf("J3a projector jobs EnsureSchema failed: %s", redactPGError(err, jobsURL))
+	}
+	if err := store.CheckSchema(ctx); err != nil {
+		t.Fatalf("J3a projector jobs CheckSchema failed after explicit bootstrap: %s", redactPGError(err, jobsURL))
 	}
 	business, err := sql.Open("pgx", resultURL)
 	if err != nil {
@@ -317,6 +358,9 @@ func TestPostgresSmoke(t *testing.T) {
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatalf("J3a jobs EnsureSchema failed: %s", redactPGError(err, jobsURL))
 	}
+	if err := store.CheckSchema(ctx); err != nil {
+		t.Fatalf("J3a jobs CheckSchema failed after explicit bootstrap: %s", redactPGError(err, jobsURL))
+	}
 	assertJobsRoleCannotWriteBusiness(t, ctx, store.db, jobsURL)
 
 	inputDB, err := sql.Open("pgx", inputURL)
@@ -350,6 +394,22 @@ func TestPostgresSmoke(t *testing.T) {
 	}
 	if len(drafts) != 1 || drafts[0].ProxyID == "" || len(drafts[0].Targets) == 0 {
 		t.Fatalf("J3a direct input fixture 未返回有效 enabled proxy/target")
+	}
+	var validTargets, invalidTargets int
+	for _, target := range drafts[0].Targets {
+		if target.ProbeError == targetProbeErrorInvalidURL {
+			if target.URL != "" {
+				t.Fatalf("J3a invalid target must not retain source URL: %+v", target)
+			}
+			invalidTargets++
+			continue
+		}
+		if target.URL != "" {
+			validTargets++
+		}
+	}
+	if validTargets == 0 || invalidTargets == 0 {
+		t.Fatalf("J3a direct input fixture must retain both valid and invalid enabled-provider targets: valid=%d invalid=%d targets=%+v", validTargets, invalidTargets, drafts[0].Targets)
 	}
 
 	ownerID := fmt.Sprintf("j3a-pg-smoke-%d", time.Now().UTC().UnixNano())
@@ -447,6 +507,12 @@ func TestPostgresSmoke(t *testing.T) {
 	}
 	if err := store.ReleaseOwnerLease(ctx, successor); err != nil {
 		t.Fatalf("release successor J3a owner lease failed: %s", redactPGError(err, jobsURL))
+	}
+	if _, err := store.db.ExecContext(ctx, `ALTER TABLE juhe_jobs.proxy_latency_owner_leases ALTER COLUMN fence_token TYPE TEXT USING fence_token::TEXT`); err != nil {
+		t.Fatalf("prepare malformed J3a PostgreSQL schema check failed: %s", redactPGError(err, jobsURL))
+	}
+	if err := store.CheckSchema(ctx); err == nil || !strings.Contains(err.Error(), "proxy_latency_owner_leases.fence_token") {
+		t.Fatalf("J3a jobs runtime must fail closed on malformed PostgreSQL schema, err=%s", redactPGError(err, jobsURL))
 	}
 }
 

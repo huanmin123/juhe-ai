@@ -7,9 +7,30 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestSQLiteCheckSchemaFailsClosedWhenOwnedObjectIsMissing(t *testing.T) {
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-schema-check.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.db.Exec(`DROP INDEX idx_proxy_latency_outcomes_cursor`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckSchema(context.Background()); err == nil || !strings.Contains(err.Error(), "idx_proxy_latency_outcomes_cursor") {
+		t.Fatalf("缺少 SQLite schema 对象时必须 fail-closed，实际错误=%v", err)
+	}
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("显式 schema maintenance 应能恢复私有 SQLite schema: %v", err)
+	}
+	if err := store.CheckSchema(context.Background()); err != nil {
+		t.Fatalf("显式 schema maintenance 后 CheckSchema 仍失败: %v", err)
+	}
+}
 
 func TestSQLiteStoreOwnerProxyLeasesAndOutcomes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "proxy-latency.sqlite3")
@@ -421,6 +442,46 @@ func TestSQLiteStoreCanonicalizesIssuedInputTargetsAndRevision(t *testing.T) {
 	}
 	if issued.ConfigRevision != draft.ConfigRevision || issued.Targets[0].Provider != "openai" || issued.Targets[0].ProfileID != "profile-openai" || issued.Targets[0].URL != "https://api.openai.com/v1" {
 		t.Fatalf("issued input was not canonicalized: %+v", issued)
+	}
+}
+
+func TestSQLiteStoreDoesNotPersistInvalidTargetURL(t *testing.T) {
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-invalid-target.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	draft := testInputDraft("proxy-1", TriggerPeriodic)
+	draft.Targets = []Target{
+		{Provider: "valid", ProfileID: "profile-valid", URL: "https://example.test/v1"},
+		{Provider: "query", ProfileID: "profile-query", URL: "https://example.test/v1?token=query-secret"},
+		{Provider: "userinfo", ProfileID: "profile-userinfo", URL: "https://user:userinfo-secret@example.test/v1"},
+		{Provider: "fragment", ProfileID: "profile-fragment", URL: "https://example.test/v1#fragment-secret"},
+	}
+	issued, err := store.IssueInput(context.Background(), draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload []byte
+	if err := store.db.QueryRow(`SELECT payload FROM proxy_latency_inputs WHERE request_id=?`, issued.RequestID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, sentinel := range []string{"query-secret", "userinfo-secret", "fragment-secret"} {
+		if strings.Contains(string(payload), sentinel) {
+			t.Fatalf("durable issued payload leaked invalid target sentinel %q: %s", sentinel, payload)
+		}
+	}
+	var persisted IssuedInput
+	if err := json.Unmarshal(payload, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Targets) != 4 || persisted.Targets[0].URL != "https://example.test/v1" {
+		t.Fatalf("persisted target set=%+v", persisted.Targets)
+	}
+	for _, target := range persisted.Targets[1:] {
+		if target.URL != "" || target.ProbeError != targetProbeErrorInvalidURL || target.Provider == "" || target.ProfileID == "" {
+			t.Fatalf("invalid target durable form=%+v", target)
+		}
 	}
 }
 

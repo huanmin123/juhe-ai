@@ -63,6 +63,39 @@ func TestExecuteIssuedInputCommitsIsolatedSuccessNeutralAndFailure(t *testing.T)
 	}
 }
 
+func TestExecuteIssuedInputRecordsInvalidTargetWithoutOutboundRequest(t *testing.T) {
+	var calls atomic.Int32
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer proxyServer.Close()
+	store, owner, proxy, input := executorFixture(t, proxyServer.URL, "", "")
+	defer store.Close()
+	issued, err := store.IssueInput(context.Background(), InputDraft{
+		ProxyID: input.ProxyID, ConfigRevision: input.ConfigRevision, Trigger: input.Trigger,
+		IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(5 * time.Minute), PolicyVersion: proxyLatencyInputPolicyVersion,
+		ProxyType: input.ProxyType, ProxyHost: input.ProxyHost, ProxyPort: input.ProxyPort,
+		Targets: []Target{
+			{Provider: "reachable", ProfileID: "reachable", URL: "http://provider.example/ok"},
+			{Provider: "hybrid", ProfileID: "hybrid", URL: "http://provider.example/blocked?token=query-secret"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issued.Targets[1].URL != "" || issued.Targets[1].ProbeError != targetProbeErrorInvalidURL {
+		t.Fatalf("Store must canonicalize invalid target to sanitized probe error: %+v", issued.Targets[1])
+	}
+	outcome, committed, err := ExecuteIssuedInput(context.Background(), store, owner, proxy, issued, ExecutorOptions{Timeout: time.Second})
+	if err != nil || !committed {
+		t.Fatalf("execute committed=%t err=%v", committed, err)
+	}
+	if calls.Load() != 1 || len(outcome.Items) != 2 || outcome.Items[1].Status != ItemUnknown || outcome.Items[1].ErrorCode != targetProbeErrorInvalidURL || outcome.OverallStatus != OverallWarning {
+		t.Fatalf("invalid target must be an unknown without outbound request: calls=%d outcome=%+v", calls.Load(), outcome)
+	}
+}
+
 func TestExecuteIssuedInputReplayAvoidsSecondProbe(t *testing.T) {
 	var calls atomic.Int32
 	proxyServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

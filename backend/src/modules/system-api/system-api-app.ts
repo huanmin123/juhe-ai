@@ -53,6 +53,7 @@ import {
 } from './system-api-db-access.js'
 import { accountBalanceGoOwnerEnabled } from '../background/account-balance-handover.js'
 import { accountBalanceJobsOutcomeProjectionRuntimeReady } from '../background/account-balance-jobs-outcome-projection-runtime.service.js'
+import { parseLoopbackHttpUrl } from '../../shared/loopback-http.js'
 
 export interface SystemApiAppOptions {
   systemApiPrefix: string
@@ -60,6 +61,7 @@ export interface SystemApiAppOptions {
   trustProxy?: boolean | number
   bypassSystemApiRateLimitForTest?: boolean
   accountBalanceHealth?: () => Promise<SystemApiDependencyHealth>
+  proxyLatencyHealth?: () => Promise<SystemApiDependencyHealth>
 }
 
 type BodyParserError = Error & {
@@ -83,6 +85,7 @@ export interface SystemApiHealthResponse {
   status: 'ok' | 'degraded'
   service: 'juhe-ai-db-service'
   accountBalance: SystemApiDependencyHealth
+  proxyLatency: SystemApiDependencyHealth
 }
 
 /**
@@ -90,12 +93,16 @@ export interface SystemApiHealthResponse {
  * without turning it into the Node process readiness signal. A dead or
  * unreachable DB service still fails at the parent proxy boundary (503/504).
  */
-export function resolveSystemApiHealth(accountBalance: SystemApiDependencyHealth): SystemApiHealthResponse {
+export function resolveSystemApiHealth(
+  accountBalance: SystemApiDependencyHealth,
+  proxyLatency: SystemApiDependencyHealth
+): SystemApiHealthResponse {
   return {
     statusCode: 200,
-    status: accountBalance.ready ? 'ok' : 'degraded',
+    status: accountBalance.ready && proxyLatency.ready ? 'ok' : 'degraded',
     service: 'juhe-ai-db-service',
-    accountBalance
+    accountBalance,
+    proxyLatency
   }
 }
 
@@ -128,8 +135,11 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use('/__aidelegated__/v1', systemApiDbAccessModeMiddleware('/__aidelegated__/v1'), systemApiDbServiceAdmissionControl, delegatedApiRouter)
 
   app.get(`${systemApiPrefix}/health`, async (_req, res) => {
-    const accountBalance = await (options.accountBalanceHealth ?? accountBalanceGoOwnerHealth)()
-    const health = resolveSystemApiHealth(accountBalance)
+    const [accountBalance, proxyLatency] = await Promise.all([
+      (options.accountBalanceHealth ?? accountBalanceGoOwnerHealth)(),
+      (options.proxyLatencyHealth ?? proxyLatencyGoOwnerHealth)()
+    ])
+    const health = resolveSystemApiHealth(accountBalance, proxyLatency)
     res.status(health.statusCode).json({ ...health, checkedAt: new Date().toISOString() })
   })
 
@@ -229,6 +239,35 @@ export async function accountBalanceGoOwnerHealth(
     return { enabled: true, ready, projectorReady }
   } catch {
     return { enabled: true, ready: false, projectorReady }
+  }
+}
+
+/**
+ * J3a exposes only a one-way Node -> Go health observation. The Go jobs
+ * process owns probe execution and projection, and never calls Node from this
+ * path. When the explicit Go owner switch is absent this dependency is not
+ * enabled; once present, every required readiness field must be true.
+ */
+export async function proxyLatencyGoOwnerHealth(
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: { fetch?: typeof fetch } = {}
+): Promise<SystemApiDependencyHealth> {
+  if (env.JUHE_AI_PROXY_LATENCY_JOBS_OWNER?.trim().toLowerCase() !== 'go') return { enabled: false, ready: true }
+  const endpoint = env.JUHE_AI_PROXY_LATENCY_JOBS_HTTP_URL?.trim()
+  if (!endpoint) return { enabled: true, ready: false }
+  try {
+    const healthUrl = new URL('/health', parseLoopbackHttpUrl(endpoint, 'J3a Go health observer endpoint'))
+    const response = await (dependencies.fetch ?? fetch)(healthUrl, { signal: AbortSignal.timeout(2_000) })
+    const payload: unknown = await response.json()
+    const health = payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
+    const ready = response.ok
+      && health?.ready === true
+      && health.proxyLatencyEnabled === true
+      && health.proxyLatencyReady === true
+      && health.proxyLatencyOwnerHeld === true
+    return { enabled: true, ready }
+  } catch {
+    return { enabled: true, ready: false }
   }
 }
 

@@ -2,9 +2,26 @@ package proxylatency
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestPostgresProjectorContractIncludesProxyDirtyTriggerDependencies(t *testing.T) {
+	projector := &ResultProjector{mode: StorePostgres}
+	statements := strings.Join(projector.contractStatements(), "\n")
+	for _, required := range []string{
+		"juhe_business.accounts",
+		"juhe_business.account_list_availability_projections",
+		"juhe_business.account_list_availability_dirty",
+		"INSERT INTO juhe_business.account_list_availability_dirty",
+		"UPDATE juhe_business.account_list_availability_dirty",
+	} {
+		if !strings.Contains(statements, required) {
+			t.Fatalf("PostgreSQL result projector contract missing proxy dirty-trigger dependency %q", required)
+		}
+	}
+}
 
 func TestProjectionBaseAndSummary(t *testing.T) {
 	items := []ItemResult{
@@ -25,6 +42,25 @@ func TestProjectionBaseAndSummary(t *testing.T) {
 	}
 	if summary.Message != "代理检测存在 1 项失败" {
 		t.Fatalf("summary message=%q", summary.Message)
+	}
+}
+
+func TestProjectionBaseIncludesZeroPassedLatencyOnly(t *testing.T) {
+	base, latency := projectionBase([]ItemResult{
+		{Status: ItemPassed, LatencyMS: 0},
+		{Status: ItemPassed, LatencyMS: 10},
+		{Status: ItemFailed, LatencyMS: 0},
+		{Status: ItemUnknown, LatencyMS: 0},
+	})
+	if base != ItemWarning {
+		t.Fatalf("projectionBase status=%q want %q", base, ItemWarning)
+	}
+	if latency == nil || *latency != 5 {
+		t.Fatalf("projectionBase average=%v want 5 including passed 0ms", latency)
+	}
+	_, zero := projectionBase([]ItemResult{{Status: ItemPassed, LatencyMS: 0}})
+	if zero == nil || *zero != 0 {
+		t.Fatalf("projectionBase all-zero passed average=%v want pointer to 0", zero)
 	}
 }
 

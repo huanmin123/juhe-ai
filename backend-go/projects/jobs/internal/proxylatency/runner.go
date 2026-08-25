@@ -329,6 +329,26 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (report P
 			}
 		}()
 	}
+	// Match the periodic path: reject a busy proxy before creating an issued
+	// input. A manual 503 is a scheduling result, not probe work, so it must not
+	// leave an otherwise unreachable input waiting for expiry.
+	acquireProxy := r.acquireProxyLease
+	if acquireProxy == nil {
+		acquireProxy = r.store.AcquireProxyLease
+	}
+	proxy, acquired, err := acquireProxy(ctx, owner, request.ProxyID, r.cfg.ProxyLease)
+	if err != nil {
+		return ProxyTestReport{}, err
+	}
+	if !acquired {
+		return ProxyTestReport{}, ErrProxyLeaseHeld
+	}
+	defer func() {
+		if releaseErr := r.releaseProxyLeaseBounded(ctx, proxy); releaseErr != nil {
+			runErr = joinReleaseFailure(runErr, "manual proxy lease", releaseErr)
+			r.recordError(runErr)
+		}
+	}()
 	// The durable Store input contract intentionally requires a 1..15 minute
 	// expiry window. Manual execution keeps its stricter probe deadline in the
 	// execution context while issuing a bounded one-minute durable snapshot.
@@ -345,23 +365,6 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (report P
 	if err != nil {
 		return ProxyTestReport{}, err
 	}
-	acquireProxy := r.acquireProxyLease
-	if acquireProxy == nil {
-		acquireProxy = r.store.AcquireProxyLease
-	}
-	proxy, acquired, err := acquireProxy(ctx, owner, issued.ProxyID, r.cfg.ProxyLease)
-	if err != nil {
-		return ProxyTestReport{}, err
-	}
-	if !acquired {
-		return ProxyTestReport{}, ErrProxyLeaseHeld
-	}
-	defer func() {
-		if releaseErr := r.releaseProxyLeaseBounded(ctx, proxy); releaseErr != nil {
-			runErr = joinReleaseFailure(runErr, "manual proxy lease", releaseErr)
-			r.recordError(runErr)
-		}
-	}()
 	execCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	proxyURL, err := proxyURLForIssuedInput(issued, r.cfg.CredentialSecret)
@@ -538,6 +541,12 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 			}
 			proxy, acquired, err := acquireProxy(cycleCtx, owner, draft.ProxyID, r.cfg.ProxyLease)
 			if err != nil {
+				if errors.Is(err, ErrProxyLeaseHeld) {
+					mu.Lock()
+					counts.skippedLeases++
+					mu.Unlock()
+					continue
+				}
 				mu.Lock()
 				cycleErrs = append(cycleErrs, err)
 				counts.failures++

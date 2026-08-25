@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -214,9 +215,9 @@ func main() {
 		if err != nil {
 			fail(fmt.Errorf("open J3a proxy-latency jobs store: %w", err))
 		}
-		if err := j3Store.EnsureSchema(context.Background()); err != nil {
+		if err := j3Store.CheckSchema(context.Background()); err != nil {
 			_ = j3Store.Close()
-			fail(fmt.Errorf("initialize J3a proxy-latency jobs schema: %w", err))
+			fail(fmt.Errorf("verify pre-provisioned J3a proxy-latency jobs schema: %w", err))
 		}
 		j3InputPool, err = postgresPools.Acquire("pgx", j3Config.BusinessPostgresURL, "business-input", j3Config.InputPostgresMaxOpenConns, j3Config.InputPostgresMaxIdleConns)
 		if err != nil {
@@ -253,7 +254,7 @@ func main() {
 			fail(fmt.Errorf("open J3a Go business-result PostgreSQL pool: %w", err))
 		}
 		j3ResultDB = j3ResultPool.DB()
-		resultProjector, projectorErr := proxylatency.NewResultProjector(j3Store, j3ResultDB, proxylatency.ResultProjectorConfig{PollInterval: time.Second, BatchSize: 100, Now: j3Config.Now}, logger)
+		resultProjector, projectorErr := proxylatency.NewResultProjector(j3Store, j3ResultDB, proxylatency.ResultProjectorConfig{PollInterval: time.Second, BatchSize: j3Config.BatchSize, Now: j3Config.Now}, logger)
 		if projectorErr != nil {
 			_ = j3ResultPool.Close()
 			_ = j3InputPool.Close()
@@ -274,7 +275,7 @@ func main() {
 		j3Projector = resultProjector
 	}
 
-	listener, err := net.Listen("tcp", *healthAddress)
+	listener, err := listenLoopback(*healthAddress)
 	if err != nil {
 		fail(fmt.Errorf("listen jobs health endpoint %q: %w", *healthAddress, err))
 	}
@@ -391,7 +392,7 @@ func main() {
 // runPassiveJobs never initializes stores or leases. It exists only for a
 // candidate readiness endpoint during standby/drain; ownerReady stays false.
 func runPassiveJobs(healthAddress string, ownerMode ownermode.Mode, logger *slog.Logger) {
-	listener, err := net.Listen("tcp", healthAddress)
+	listener, err := listenLoopback(healthAddress)
 	if err != nil {
 		fail(fmt.Errorf("listen passive jobs health endpoint %q: %w", healthAddress, err))
 	}
@@ -413,6 +414,39 @@ func runPassiveJobs(healthAddress string, ownerMode ownermode.Mode, logger *slog
 	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
 		fail(fmt.Errorf("passive jobs health endpoint stopped: %w", serveResult))
 	}
+}
+
+func listenLoopback(address string) (net.Listener, error) {
+	if err := validateLoopbackListenAddress(address); err != nil {
+		return nil, err
+	}
+	return net.Listen("tcp", address)
+}
+
+func validateLoopbackListenAddress(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid loopback listen address %q: %w", address, err)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("invalid loopback listen address %q: port must be between 1 and 65535", address)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !isLoopbackListenIP(ip) {
+		return fmt.Errorf("invalid loopback listen address %q: host must be localhost or a loopback IP", address)
+	}
+	return nil
+}
+
+func isLoopbackListenIP(ip net.IP) bool {
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4[0] == 127
+	}
+	return ip.Equal(net.IPv6loopback)
 }
 
 func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {

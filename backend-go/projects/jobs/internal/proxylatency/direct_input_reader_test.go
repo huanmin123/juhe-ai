@@ -18,6 +18,8 @@ func TestProxyLatencyCandidateSQLKeepsBusinessEligibilityAndStableOrder(t *testi
 		"ORDER BY (p.last_tested_at IS NOT NULL) ASC,p.last_tested_at ASC,p.updated_at DESC,p.id ASC",
 		"row_number() OVER",
 		"ppp.updated_at DESC,ppp.id ASC",
+		"p.name AS provider_name",
+		"target.provider_name ASC,target.provider ASC",
 	} {
 		if !strings.Contains(proxyLatencyCandidatesSQL, required) {
 			t.Fatalf("候选 SQL 缺少 %q", required)
@@ -84,7 +86,7 @@ func TestMakeProxyLatencyCandidatePreservesOnlyEncryptedPasswordEnvelope(t *test
 	}
 }
 
-func TestMakeProxyLatencyCandidateRejectsInvalidTTLTargetAndBoolean(t *testing.T) {
+func TestMakeProxyLatencyCandidateRejectsInvalidTTLAndBoolean(t *testing.T) {
 	now := time.Date(2026, 8, 21, 4, 0, 0, 0, time.UTC)
 	base := proxyLatencyCandidateAssembly{row: proxyLatencyCandidateRow{proxyID: "proxy-1", proxyType: "http", proxyHost: "127.0.0.1", proxyPort: 8080, proxyEnabled: true, configRevision: "2026-08-21T03:59:00Z"}, targets: []Target{{Provider: "gpt", ProfileID: "profile", URL: "https://api.openai.com/v1"}}}
 	if _, err := makeProxyLatencyInputDraft(base, now, 30*time.Second); err == nil {
@@ -95,9 +97,23 @@ func TestMakeProxyLatencyCandidateRejectsInvalidTTLTargetAndBoolean(t *testing.T
 		t.Fatal("enabled=false 候选必须 fail-closed")
 	}
 	base.row.proxyEnabled = true
-	base.targets[0].URL = "ftp://example.test"
-	if _, err := makeProxyLatencyInputDraft(base, now, time.Minute); err == nil {
-		t.Fatal("非法 target URL 必须 fail-closed")
+}
+
+func TestMakeProxyLatencyCandidatePreservesInvalidProviderTargetAsUnknown(t *testing.T) {
+	now := time.Date(2026, 8, 21, 4, 0, 0, 0, time.UTC)
+	draft, err := makeProxyLatencyInputDraft(proxyLatencyCandidateAssembly{
+		row: proxyLatencyCandidateRow{proxyID: "proxy-1", proxyType: "http", proxyHost: "127.0.0.1", proxyPort: 8080, proxyEnabled: true, configRevision: "2026-08-21T03:59:00Z"},
+		targets: []Target{
+			{Provider: "gpt", ProfileID: "profile-gpt", URL: "https://api.openai.com/v1"},
+			{Provider: "hybrid", ProfileID: "profile-hybrid", URL: ""},
+			{Provider: "unsupported", ProfileID: "profile-unsupported", URL: "ftp://provider.invalid/v1"},
+		},
+	}, now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(draft.Targets) != 3 || draft.Targets[0].URL == "" || draft.Targets[1].URL != "" || draft.Targets[1].ProbeError != targetProbeErrorInvalidURL || draft.Targets[2].URL != "" || draft.Targets[2].ProbeError != targetProbeErrorInvalidURL {
+		t.Fatalf("invalid provider target must remain an explicit unknown item: %+v", draft.Targets)
 	}
 }
 

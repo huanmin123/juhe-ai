@@ -540,10 +540,11 @@ def waitForIngress(environmentName) {
     set -eu
     i=0
     while [ \$i -lt 60 ]; do
-      if env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 10 -H 'Host: ${host}' '${env.INGRESS_ENDPOINT}/__aisys__/api/health' >/dev/null; then exit 0; fi
+      health=\$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 10 -H 'Host: ${host}' '${env.INGRESS_ENDPOINT}/__aisys__/api/health' 2>/dev/null || true)
+      if printf '%s' "\$health" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'; then exit 0; fi
       i=\$((i + 1)); sleep 5
     done
-    echo '${environmentName} 入口、Node DB-ready health 或已启用的 J2 Go-owner readiness 未通过。' >&2
+    echo '${environmentName} 入口、Node DB-ready health 或已启用的 J2/J3a Go-owner readiness 未通过。' >&2
     exit 1
   """
 }
@@ -573,8 +574,9 @@ def preflightTestRelease() {
       echo "test 当前不是 Synced|Healthy：\$state；拒绝在不稳定基线上构建。" >&2
       exit 1
     fi
-    if ! env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 10 -H 'Host: test.aijh.huanmin.top' '${env.INGRESS_ENDPOINT}/__aisys__/api/health' >/dev/null; then
-      echo 'test 当前入口或 Node DB-ready/J2 readiness 未通过；拒绝开始构建。' >&2
+    health=\$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 10 -H 'Host: test.aijh.huanmin.top' '${env.INGRESS_ENDPOINT}/__aisys__/api/health' 2>/dev/null || true)
+    if ! printf '%s' "\$health" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+      echo 'test 当前入口或 Node DB-ready/J2/J3a owner readiness 未通过；拒绝开始构建。' >&2
       exit 1
     fi
     prometheus_value() {

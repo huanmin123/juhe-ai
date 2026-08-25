@@ -44,12 +44,18 @@ type CredentialEnvelope struct {
 	Ciphertext string `json:"ciphertext"`
 }
 
+const targetProbeErrorInvalidURL = "target_url_invalid"
+
 // Target is a frozen enabled-provider endpoint selected with a proxy
-// candidate. URLs are configuration values, never response data.
+// candidate. URLs are configuration values, never response data. A target
+// without URL is permitted only when ProbeError explicitly records that the
+// Node-compatible provider probe could not be formed; the executor then emits
+// an unknown item and never attempts an outbound request.
 type Target struct {
-	Provider  string `json:"provider"`
-	ProfileID string `json:"profile_id"`
-	URL       string `json:"url"`
+	Provider   string `json:"provider"`
+	ProfileID  string `json:"profile_id"`
+	URL        string `json:"url"`
+	ProbeError string `json:"probe_error,omitempty"`
 }
 
 // InputDraft is a read-only business snapshot. It intentionally has no JSON

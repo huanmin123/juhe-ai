@@ -2,6 +2,8 @@ package proxylatency
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,6 +92,63 @@ func TestManualReportPreservesProviderTargetURLAndSyntheticOptionality(t *testin
 	}
 }
 
+func TestManualReportPreservesZeroPassedLatencyAndLegacyHTTPStatusMessage(t *testing.T) {
+	request := ManualRequest{
+		SchemaVersion: 1, ProxyID: "proxy-zero-latency", ProxyName: "Zero latency proxy",
+		ConfigRevision: "2026-08-23T00:00:00.123Z", ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 8080,
+		Targets: []ManualTarget{
+			{Provider: "status", ProfileID: "profile-status", Name: "Status", URL: "https://status.example/v1"},
+			{Provider: "failed", ProfileID: "profile-failed", Name: "Failed", URL: "https://failed.example/v1"},
+			{Provider: "unknown", ProfileID: "profile-unknown", Name: "Unknown", URL: "https://unknown.example/v1"},
+		},
+	}
+	report := request.Report(Outcome{
+		ObservedAt: time.Date(2026, 8, 23, 0, 0, 1, 0, time.UTC),
+		Items: []ItemResult{
+			{Provider: "status", ProfileID: "profile-status", Status: ItemPassed, Outcome: OutcomeNeutral, HTTPStatus: 503, LatencyMS: 0, ErrorCode: "upstream_http_status"},
+			{Provider: "failed", ProfileID: "profile-failed", Status: ItemFailed, Outcome: OutcomeUpstreamFailure, LatencyMS: 0},
+			{Provider: "unknown", ProfileID: "profile-unknown", Status: ItemUnknown, Outcome: OutcomeProbeTaskFailure, LatencyMS: 0},
+		},
+	})
+	if report.Items[0].LatencyMS == nil || *report.Items[0].LatencyMS != 0 {
+		t.Fatalf("synthetic base must retain passed 0ms latency: %+v", report.Items[0])
+	}
+	if report.BaseLatencyMS == nil || *report.BaseLatencyMS != 0 {
+		t.Fatalf("report base latency must retain passed 0ms: %v", report.BaseLatencyMS)
+	}
+	if report.Items[1].LatencyMS == nil || *report.Items[1].LatencyMS != 0 {
+		t.Fatalf("passed provider item must retain 0ms latency: %+v", report.Items[1])
+	}
+	if report.Items[1].Message != "HTTP 503（传输完整，状态码仅供诊断）" {
+		t.Fatalf("non-2xx manual message=%q", report.Items[1].Message)
+	}
+	if report.Items[2].LatencyMS != nil || report.Items[3].LatencyMS != nil {
+		t.Fatalf("failed/unknown default 0ms must omit latency: failed=%+v unknown=%+v", report.Items[2], report.Items[3])
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		BaseLatencyMS *int64           `json:"baseLatencyMs"`
+		Items         []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.BaseLatencyMS == nil || *payload.BaseLatencyMS != 0 {
+		t.Fatalf("JSON baseLatencyMs=%v want 0: %s", payload.BaseLatencyMS, encoded)
+	}
+	if value, ok := payload.Items[1]["latencyMs"]; !ok || value != float64(0) {
+		t.Fatalf("JSON passed latencyMs=%v want 0: %s", value, encoded)
+	}
+	for _, index := range []int{2, 3} {
+		if _, ok := payload.Items[index]["latencyMs"]; ok {
+			t.Fatalf("JSON item %d must omit default failed/unknown latency: %s", index, encoded)
+		}
+	}
+}
+
 func TestSyntheticBaseRoundsLatencyLikeNode(t *testing.T) {
 	first := int64(10)
 	second := int64(11)
@@ -117,6 +176,79 @@ func TestManualInputDraftUsesManualTriggerAndDeadline(t *testing.T) {
 	draft := request.InputDraft(now, 3*time.Second)
 	if draft.Trigger != TriggerManual || draft.ExpiresAt.Sub(draft.IssuedAt) != 3*time.Second || len(draft.Targets) != 1 {
 		t.Fatalf("manual draft mismatch: %+v", draft)
+	}
+}
+
+func TestManualRequestAllowsBlankProviderURLAsUnknownLikeNode(t *testing.T) {
+	request := ManualRequest{
+		SchemaVersion: 1, ProxyID: "proxy-manual", ProxyName: "Manual proxy",
+		ConfigRevision: "2026-08-23T00:00:00.123Z", ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 8080,
+		Targets: []ManualTarget{{Provider: "hybrid", ProfileID: "profile-hybrid", Name: "Hybrid", URL: ""}},
+	}
+	if err := request.Validate(25 * time.Second); err != nil {
+		t.Fatalf("blank provider base URL must retain Node unknown-item behavior: %v", err)
+	}
+	draft := request.InputDraft(time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC), time.Minute)
+	if len(draft.Targets) != 1 || draft.Targets[0].ProbeError != targetProbeErrorInvalidURL || draft.Targets[0].URL != "" {
+		t.Fatalf("manual blank URL draft=%+v", draft.Targets)
+	}
+	report := request.Report(Outcome{ProxyID: request.ProxyID, ObservedAt: time.Date(2026, 8, 23, 0, 0, 1, 0, time.UTC), OverallStatus: OverallUnknown, Items: []ItemResult{{Provider: "hybrid", ProfileID: "profile-hybrid", Status: ItemUnknown, Outcome: OutcomeProbeTaskFailure, ErrorCode: targetProbeErrorInvalidURL}}})
+	if len(report.Items) != 2 || report.Items[1].TargetURL != "" || report.Items[1].Message != "未形成真实代理检测请求：Invalid URL" {
+		t.Fatalf("manual invalid provider report=%+v", report)
+	}
+}
+
+func TestManualRequestMarksUnsupportedProviderURLUnknownWithoutRetainingItInTheIssuedInput(t *testing.T) {
+	request := ManualRequest{
+		SchemaVersion: 1, ProxyID: "proxy-manual", ProxyName: "Manual proxy",
+		ConfigRevision: "2026-08-23T00:00:00.123Z", ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 8080,
+		Targets: []ManualTarget{{Provider: "unsupported", ProfileID: "profile-unsupported", Name: "Unsupported", URL: "ftp://provider.invalid/v1"}},
+	}
+	if err := request.Validate(25 * time.Second); err != nil {
+		t.Fatalf("unsupported provider URL must remain an explicit Node-compatible unknown: %v", err)
+	}
+	draft := request.InputDraft(time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC), time.Minute)
+	if len(draft.Targets) != 1 || draft.Targets[0].ProbeError != targetProbeErrorInvalidURL || draft.Targets[0].URL != "" {
+		t.Fatalf("manual unsupported URL draft=%+v", draft.Targets)
+	}
+	report := request.Report(Outcome{ProxyID: request.ProxyID, ObservedAt: time.Date(2026, 8, 23, 0, 0, 1, 0, time.UTC), OverallStatus: OverallUnknown, Items: []ItemResult{{Provider: "unsupported", ProfileID: "profile-unsupported", Status: ItemUnknown, Outcome: OutcomeProbeTaskFailure, ErrorCode: targetProbeErrorInvalidURL}}})
+	if len(report.Items) != 2 || report.Items[1].TargetURL != "ftp://provider.invalid/v1" || report.Items[1].Message != "未形成真实代理检测请求：不支持的目标协议：ftp:" {
+		t.Fatalf("manual unsupported provider report=%+v", report)
+	}
+}
+
+func TestLegacyManualTargetFailureMessageMatchesNodeURLOracle(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty", raw: "", want: "未形成真实代理检测请求：Invalid URL"},
+		{name: "whitespace", raw: " \t ", want: "未形成真实代理检测请求：Invalid URL"},
+		{name: "malformed HTTP", raw: "http://", want: "未形成真实代理检测请求：Invalid URL"},
+		{name: "FTP", raw: "ftp://provider.invalid/v1", want: "未形成真实代理检测请求：不支持的目标协议：ftp:"},
+		{name: "uppercase FTP", raw: "FTP://provider.invalid/v1", want: "未形成真实代理检测请求：不支持的目标协议：ftp:"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := legacyManualTargetFailureMessage(test.raw); got != test.want {
+				t.Fatalf("message=%q want=%q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestManualRequestDoesNotRetainNodeTargetCap(t *testing.T) {
+	targets := make([]ManualTarget, 129)
+	for index := range targets {
+		targets[index] = ManualTarget{Provider: fmt.Sprintf("provider-%d", index), ProfileID: fmt.Sprintf("profile-%d", index), Name: fmt.Sprintf("Provider %d", index), URL: "https://example.invalid/v1"}
+	}
+	request := ManualRequest{
+		SchemaVersion: 1, ProxyID: "proxy-manual", ProxyName: "Manual proxy",
+		ConfigRevision: "2026-08-23T00:00:00.123Z", ProxyType: "http", ProxyHost: "127.0.0.1", ProxyPort: 8080,
+		Targets: targets,
+	}
+	if err := request.Validate(25 * time.Second); err != nil {
+		t.Fatalf("Go manual request must not retain Node-era 128 target cap: %v", err)
 	}
 }
 

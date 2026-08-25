@@ -26,7 +26,7 @@ func TestLoadRuntimeConfigEnabledRequiresCompletePostgresConfig(t *testing.T) {
 	}
 }
 
-func TestLoadRuntimeConfigUsesNodeBatchAndCandidatePoolDefaults(t *testing.T) {
+func TestLoadRuntimeConfigUsesGoHighThroughputDefaults(t *testing.T) {
 	env := map[string]string{
 		"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
@@ -41,8 +41,29 @@ func TestLoadRuntimeConfigUsesNodeBatchAndCandidatePoolDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.InputLimit != 80 || cfg.BatchSize != 20 || cfg.CandidatePoolFactor != 4 || cfg.WorkerConcurrency != 4 {
-		t.Fatalf("unexpected Node-aligned scheduler defaults: %+v", cfg)
+	if cfg.InputLimit != 10_000 || cfg.BatchSize != 1_000 || cfg.CandidatePoolFactor != 10 || cfg.WorkerConcurrency != 1_000 {
+		t.Fatalf("unexpected Go high-throughput scheduler defaults: %+v", cfg)
+	}
+}
+
+func TestLoadRuntimeConfigAcceptsLargeGoCapacity(t *testing.T) {
+	env := map[string]string{
+		"JUHE_AI_PROXY_LATENCY_ENABLED":               "true",
+		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":            "go",
+		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":           "jobs-test",
+		"JUHE_AI_PROXY_LATENCY_STORE":                 "postgres",
+		"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":          "postgres://jobs",
+		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":    "postgres://business",
+		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL":   "postgres://business-writer",
+		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":     "credential-secret",
+		"JUHE_AI_PROXY_LATENCY_INPUT_LIMIT":           "1000000",
+		"JUHE_AI_PROXY_LATENCY_BATCH_SIZE":            "1000000",
+		"JUHE_AI_PROXY_LATENCY_CANDIDATE_POOL_FACTOR": "1000",
+		"JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY":    "1000000",
+	}
+	cfg, err := LoadRuntimeConfig(func(name string) string { return env[name] })
+	if err != nil || cfg.InputLimit != 1_000_000 || cfg.BatchSize != 1_000_000 || cfg.CandidatePoolFactor != 1_000 || cfg.WorkerConcurrency != 1_000_000 {
+		t.Fatalf("large Go capacity config=%+v err=%v", cfg, err)
 	}
 }
 
@@ -99,6 +120,38 @@ func TestRunnerCycleOrdersLeasesAndIsolatesProxyFailures(t *testing.T) {
 	}
 	if status.Selected != 2 || status.Target != 2 || status.Started != 2 || status.Processed != 1 || status.Deferred != 0 || !status.Partial {
 		t.Fatalf("scheduler counters lost failure/partial semantics: %+v", status)
+	}
+}
+
+func TestRunnerCycleSkipsErrProxyLeaseHeldAndFillsTarget(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	cfg.BatchSize = 2
+	store, err := OpenStore(cfg.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	runner := NewRunner(cfg, store, fakeInputReader{drafts: []InputDraft{testDraft("busy"), testDraft("available"), testDraft("available-2")}}, nil)
+	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
+	if err != nil || !acquired {
+		t.Fatalf("owner lease acquired=%v err=%v", acquired, err)
+	}
+	runner.acquireProxyLease = func(_ context.Context, owner OwnerLease, proxyID string, _ time.Duration) (ProxyLease, bool, error) {
+		if proxyID == "busy" {
+			return ProxyLease{}, false, ErrProxyLeaseHeld
+		}
+		return ProxyLease{ProxyID: proxyID, OwnerID: owner.OwnerID, FenceToken: 1, LeaseUntil: time.Now().UTC().Add(time.Minute)}, true, nil
+	}
+	runner.releaseProxyLease = func(context.Context, ProxyLease) error { return nil }
+	runner.executeIssuedInput = func(context.Context, *Store, OwnerLease, ProxyLease, IssuedInput, ExecutorOptions) (Outcome, bool, error) {
+		return Outcome{}, true, nil
+	}
+	if err := runner.runCycle(context.Background(), owner); err != nil {
+		t.Fatalf("busy proxy lease must be skipped without cycle error: %v", err)
+	}
+	status := runner.Status()
+	if status.SkippedLeases != 1 || status.Started != 2 || status.Processed != 2 || status.Executed != 2 || status.ExecutionFailures != 0 || status.ProxyFailures != 0 || status.Partial || status.LastError != "" {
+		t.Fatalf("busy proxy lease counters/status=%+v", status)
 	}
 }
 
@@ -336,6 +389,10 @@ func TestRunnerManualOwnerReleaseErrorVisible(t *testing.T) {
 	runner.acquireOwnerLease = func(context.Context, string, time.Duration) (OwnerLease, bool, error) {
 		return OwnerLease{OwnerID: "manual-owner", FenceToken: 1}, true, nil
 	}
+	runner.acquireProxyLease = func(context.Context, OwnerLease, string, time.Duration) (ProxyLease, bool, error) {
+		return ProxyLease{ProxyID: "manual-release-proxy", OwnerID: "manual-owner", FenceToken: 1, LeaseUntil: time.Now().UTC().Add(time.Minute)}, true, nil
+	}
+	runner.releaseProxyLease = func(context.Context, ProxyLease) error { return nil }
 	runner.issueInput = func(context.Context, InputDraft) (IssuedInput, error) {
 		return IssuedInput{}, issueErr
 	}
@@ -354,6 +411,26 @@ func TestRunnerManualOwnerReleaseErrorVisible(t *testing.T) {
 	}
 	if !strings.Contains(runner.Status().LastError, releaseErr.Error()) {
 		t.Fatalf("manual owner release error was not recorded: %+v", runner.Status())
+	}
+}
+
+func TestRunnerManualBusyProxyDoesNotIssueInput(t *testing.T) {
+	runner := NewRunner(RuntimeConfig{ManualDeadline: time.Second}, &Store{}, nil, nil)
+	runner.SetResultProjector(&ResultProjector{})
+	runner.acquireOwnerLease = func(context.Context, string, time.Duration) (OwnerLease, bool, error) {
+		return OwnerLease{OwnerID: "manual-owner", FenceToken: 1}, true, nil
+	}
+	runner.releaseOwnerLease = func(context.Context, OwnerLease) error { return nil }
+	runner.acquireProxyLease = func(context.Context, OwnerLease, string, time.Duration) (ProxyLease, bool, error) {
+		return ProxyLease{}, false, nil
+	}
+	runner.issueInput = func(context.Context, InputDraft) (IssuedInput, error) {
+		t.Fatal("busy proxy must not issue a durable manual input")
+		return IssuedInput{}, nil
+	}
+	_, err := runner.RunManual(context.Background(), testManualReleaseRequest())
+	if !errors.Is(err, ErrProxyLeaseHeld) {
+		t.Fatalf("busy proxy error=%v want ErrProxyLeaseHeld", err)
 	}
 }
 

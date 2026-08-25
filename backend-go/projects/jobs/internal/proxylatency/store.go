@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -73,10 +75,13 @@ type ProxyLease struct {
 // and PostgreSQL writes are constrained to the externally provisioned
 // juhe_jobs schema.
 type Store struct {
-	db      *sql.DB
-	mode    StoreMode
-	writeMu sync.Mutex
-	pool    *pgpool.Handle
+	db                  *sql.DB
+	mode                StoreMode
+	writeMu             sync.Mutex
+	pool                *pgpool.Handle
+	schemaMu            sync.Mutex
+	postgresSchemaReady bool
+	schemaCheckMu       sync.Mutex
 	// releaseExecutionClaim is a private fault-injection seam for lifecycle
 	// tests. Production leaves it nil and uses ReleaseExecutionClaim below.
 	releaseExecutionClaim func(context.Context, string, string) error
@@ -119,7 +124,12 @@ func OpenStore(config StoreConfig) (*Store, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("配置 proxy-latency sqlite 单 writer 失败: %w", err)
 		}
-		return &Store{db: db, mode: StoreSQLite}, nil
+		store := &Store{db: db, mode: StoreSQLite}
+		if err := store.EnsureSchema(context.Background()); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("初始化 proxy-latency sqlite schema 失败: %w", err)
+		}
+		return store, nil
 	case StorePostgres:
 		if strings.TrimSpace(config.PostgresURL) == "" {
 			return nil, errors.New("proxy-latency postgres 缺少连接 URL")
@@ -216,11 +226,264 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
+// CheckSchema verifies the externally provisioned PostgreSQL contract without
+// issuing DDL. Production J3a startup uses this method so a missing or partial
+// migration fails closed instead of turning the owner process into an implicit
+// schema migrator. SQLite remains Go-owned and may initialize its private
+// store on first use.
+func (s *Store) CheckSchema(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("proxy-latency store 未初始化")
+	}
+	if s.mode == StoreSQLite {
+		return s.checkSQLiteSchema(ctx)
+	}
+	err := s.checkPostgresSchema(ctx)
+	s.schemaMu.Lock()
+	s.postgresSchemaReady = err == nil
+	s.schemaMu.Unlock()
+	return err
+}
+
+// ensureRuntimeSchema preserves the startup fail-closed check without putting
+// PostgreSQL catalog scans on every proxy's execution path. main verifies the
+// externally provisioned contract before the runner starts; a direct Store
+// caller that did not pass that gate performs the same check once before any
+// mutation. CheckSchema itself always performs a fresh full verification for
+// explicit maintenance and diagnostic callers.
+func (s *Store) ensureRuntimeSchema(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("proxy-latency store 未初始化")
+	}
+	if s.mode == StoreSQLite {
+		return s.CheckSchema(ctx)
+	}
+	s.schemaMu.Lock()
+	ready := s.postgresSchemaReady
+	s.schemaMu.Unlock()
+	if ready {
+		return nil
+	}
+	// A Store reached outside main can be admitted concurrently. Collapse its
+	// first preflight instead of amplifying PostgreSQL information_schema load.
+	s.schemaCheckMu.Lock()
+	defer s.schemaCheckMu.Unlock()
+	s.schemaMu.Lock()
+	ready = s.postgresSchemaReady
+	s.schemaMu.Unlock()
+	if ready {
+		return nil
+	}
+	return s.CheckSchema(ctx)
+}
+
+func (s *Store) checkPostgresSchema(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return fmt.Errorf("检查 proxy-latency postgres schema 事务失败: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, postgresSetLocalSQL); err != nil {
+		return fmt.Errorf("配置 proxy-latency postgres schema 检查超时失败: %w", err)
+	}
+	var owner, currentUser string
+	if err := tx.QueryRowContext(ctx, `SELECT pg_get_userbyid(nspowner), current_user FROM pg_namespace WHERE nspname='juhe_jobs'`).Scan(&owner, &currentUser); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("缺少外部 bootstrap 创建的 juhe_jobs schema")
+		}
+		return fmt.Errorf("读取 proxy-latency postgres schema owner 失败: %w", err)
+	}
+	if owner != currentUser {
+		return fmt.Errorf("juhe_jobs schema owner 必须是当前 jobs role: owner=%s current=%s", owner, currentUser)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema='juhe_jobs' AND table_name = ANY($1)`, contracts.J3AProxyLatencyTables)
+	if err != nil {
+		return fmt.Errorf("读取 proxy-latency postgres tables 失败: %w", err)
+	}
+	seenTables := make(map[string]struct{}, len(contracts.J3AProxyLatencyTables))
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("读取 proxy-latency postgres table 名称失败: %w", err)
+		}
+		seenTables[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("遍历 proxy-latency postgres tables 失败: %w", err)
+	}
+	_ = rows.Close()
+	missingTables := make([]string, 0)
+	for _, name := range contracts.J3AProxyLatencyTables {
+		if _, ok := seenTables[name]; !ok {
+			missingTables = append(missingTables, name)
+		}
+	}
+	if len(missingTables) > 0 {
+		return fmt.Errorf("J3a PostgreSQL schema 缺少预置表: %s", strings.Join(missingTables, ", "))
+	}
+	if err := checkPostgresSchemaShape(ctx, tx); err != nil {
+		return err
+	}
+	indexNames := make([]string, 0, len(contracts.J3AProxyLatencyIndexes))
+	for name := range contracts.J3AProxyLatencyIndexes {
+		indexNames = append(indexNames, name)
+	}
+	sort.Strings(indexNames)
+	indexRows, err := tx.QueryContext(ctx, `SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='juhe_jobs' AND indexname = ANY($1)`, indexNames)
+	if err != nil {
+		return fmt.Errorf("读取 proxy-latency postgres indexes 失败: %w", err)
+	}
+	seenIndexes := make(map[string]string, len(contracts.J3AProxyLatencyIndexes))
+	for indexRows.Next() {
+		var name, definition string
+		if err := indexRows.Scan(&name, &definition); err != nil {
+			_ = indexRows.Close()
+			return fmt.Errorf("读取 proxy-latency postgres index 名称失败: %w", err)
+		}
+		seenIndexes[name] = strings.ToLower(strings.Join(strings.Fields(definition), " "))
+	}
+	if err := indexRows.Err(); err != nil {
+		_ = indexRows.Close()
+		return fmt.Errorf("遍历 proxy-latency postgres indexes 失败: %w", err)
+	}
+	_ = indexRows.Close()
+	missingIndexes := make([]string, 0)
+	invalidIndexes := make([]string, 0)
+	for name, expected := range contracts.J3AProxyLatencyIndexes {
+		definition, ok := seenIndexes[name]
+		if !ok {
+			missingIndexes = append(missingIndexes, name)
+			continue
+		}
+		if !strings.Contains(definition, expected) {
+			invalidIndexes = append(invalidIndexes, name)
+		}
+	}
+	if len(missingIndexes) > 0 {
+		return fmt.Errorf("J3a PostgreSQL schema 缺少预置索引: %s", strings.Join(missingIndexes, ", "))
+	}
+	if len(invalidIndexes) > 0 {
+		sort.Strings(invalidIndexes)
+		return fmt.Errorf("J3a PostgreSQL schema 索引定义不兼容: %s", strings.Join(invalidIndexes, ", "))
+	}
+	return nil
+}
+
+func checkPostgresSchemaShape(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT table_name,column_name,data_type,udt_name,is_nullable FROM information_schema.columns WHERE table_schema='juhe_jobs' AND table_name = ANY($1)`, contracts.J3AProxyLatencyTables)
+	if err != nil {
+		return fmt.Errorf("读取 J3a PostgreSQL schema 列契约失败: %w", err)
+	}
+	defer rows.Close()
+	seen := make(map[string]map[string]contracts.PostgresColumnSpec, len(contracts.J3AProxyLatencyColumns))
+	for rows.Next() {
+		var table, column, dataType, udtName, nullable string
+		if err := rows.Scan(&table, &column, &dataType, &udtName, &nullable); err != nil {
+			return fmt.Errorf("读取 J3a PostgreSQL schema 列定义失败: %w", err)
+		}
+		if seen[table] == nil {
+			seen[table] = make(map[string]contracts.PostgresColumnSpec)
+		}
+		seen[table][column] = contracts.PostgresColumnSpec{DataType: dataType, UdtName: udtName, Nullable: nullable == "YES"}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历 J3a PostgreSQL schema 列契约失败: %w", err)
+	}
+	invalid := make([]string, 0)
+	for table, expectedColumns := range contracts.J3AProxyLatencyColumns {
+		for column, expected := range expectedColumns {
+			actual, ok := seen[table][column]
+			if !ok {
+				invalid = append(invalid, table+"."+column+":missing")
+				continue
+			}
+			if actual.DataType != expected.DataType || actual.UdtName != expected.UdtName {
+				invalid = append(invalid, fmt.Sprintf("%s.%s:type=%s/%s", table, column, actual.DataType, actual.UdtName))
+				continue
+			}
+			if !expected.Nullable && actual.Nullable {
+				invalid = append(invalid, table+"."+column+":nullable")
+			}
+		}
+	}
+	if len(invalid) > 0 {
+		sort.Strings(invalid)
+		return fmt.Errorf("J3a PostgreSQL schema 列定义不兼容: %s", strings.Join(invalid, ", "))
+	}
+
+	constraintRows, err := tx.QueryContext(ctx, `SELECT relation.relname,pg_get_constraintdef(c.oid) FROM pg_constraint AS c JOIN pg_class AS relation ON relation.oid=c.conrelid JOIN pg_namespace AS namespace ON namespace.oid=relation.relnamespace WHERE namespace.nspname='juhe_jobs' AND relation.relname = ANY($1) AND c.contype IN ('p','u')`, contracts.J3AProxyLatencyTables)
+	if err != nil {
+		return fmt.Errorf("读取 J3a PostgreSQL schema constraint 契约失败: %w", err)
+	}
+	defer constraintRows.Close()
+	constraints := make(map[string][]string, len(contracts.J3AProxyLatencyConstraints))
+	for constraintRows.Next() {
+		var table, definition string
+		if err := constraintRows.Scan(&table, &definition); err != nil {
+			return fmt.Errorf("读取 J3a PostgreSQL schema constraint 定义失败: %w", err)
+		}
+		constraints[table] = append(constraints[table], strings.ToLower(strings.Join(strings.Fields(definition), " ")))
+	}
+	if err := constraintRows.Err(); err != nil {
+		return fmt.Errorf("遍历 J3a PostgreSQL schema constraint 契约失败: %w", err)
+	}
+	for table, expectedDefinitions := range contracts.J3AProxyLatencyConstraints {
+		for _, expected := range expectedDefinitions {
+			found := false
+			for _, actual := range constraints[table] {
+				if strings.Contains(actual, expected) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				invalid = append(invalid, table+":constraint="+expected)
+			}
+		}
+	}
+	if len(invalid) > 0 {
+		sort.Strings(invalid)
+		return fmt.Errorf("J3a PostgreSQL schema constraint 不兼容: %s", strings.Join(invalid, ", "))
+	}
+	return nil
+}
+
+func (s *Store) checkSQLiteSchema(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type IN ('table','index') AND name IN ('proxy_latency_owner_leases','proxy_latency_proxy_leases','proxy_latency_outcomes','proxy_latency_input_versions','proxy_latency_inputs','proxy_latency_execution_claims','idx_proxy_latency_outcomes_proxy','idx_proxy_latency_outcomes_cursor')`)
+	if err != nil {
+		return fmt.Errorf("读取 proxy-latency sqlite schema 失败: %w", err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{}, len(proxyLatencySQLiteObjects))
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("读取 proxy-latency sqlite schema 名称失败: %w", err)
+		}
+		seen[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历 proxy-latency sqlite schema 失败: %w", err)
+	}
+	missing := make([]string, 0)
+	for _, name := range proxyLatencySQLiteObjects {
+		if _, ok := seen[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("J3a SQLite schema 缺少对象: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration time.Duration) (OwnerLease, bool, error) {
 	if strings.TrimSpace(ownerID) == "" || duration <= 0 {
 		return OwnerLease{}, false, errors.New("owner lease 参数无效")
 	}
-	if err := s.EnsureSchema(ctx); err != nil {
+	if err := s.ensureRuntimeSchema(ctx); err != nil {
 		return OwnerLease{}, false, err
 	}
 	s.writeMu.Lock()
@@ -305,7 +568,7 @@ func (s *Store) AcquireProxyLease(ctx context.Context, owner OwnerLease, proxyID
 	if strings.TrimSpace(proxyID) == "" || duration <= 0 || !validOwnerLease(owner) {
 		return ProxyLease{}, false, errors.New("proxy lease 参数无效")
 	}
-	if err := s.EnsureSchema(ctx); err != nil {
+	if err := s.ensureRuntimeSchema(ctx); err != nil {
 		return ProxyLease{}, false, err
 	}
 	s.writeMu.Lock()
@@ -491,7 +754,7 @@ func (s *Store) IssueInput(ctx context.Context, draft InputDraft) (IssuedInput, 
 	if err != nil {
 		return IssuedInput{}, err
 	}
-	if err := s.EnsureSchema(ctx); err != nil {
+	if err := s.ensureRuntimeSchema(ctx); err != nil {
 		return IssuedInput{}, err
 	}
 	requestID, err := newRequestID()
@@ -583,8 +846,8 @@ func (s *Store) ListCommittedOutcomes(ctx context.Context, after *OutcomeCursor,
 	if s == nil || s.db == nil {
 		return nil, errors.New("J3a jobs Store 未初始化")
 	}
-	if limit < 1 || limit > 1000 {
-		return nil, errors.New("J3a committed outcome limit 必须在 1..1000")
+	if limit < 1 || limit > maxProxyLatencyWorkItems {
+		return nil, errors.New("J3a committed outcome limit 超出 Go runtime 支持范围")
 	}
 	if after != nil && (after.StoredAt.IsZero() || strings.TrimSpace(after.OutcomeID) == "") {
 		return nil, errors.New("J3a committed outcome cursor 无效")
@@ -729,7 +992,7 @@ func (s *Store) AdmitExecution(ctx context.Context, owner OwnerLease, proxy Prox
 	if proxy.OwnerID != owner.OwnerID || proxy.ProxyID != supplied.ProxyID || !validOwnerLease(owner) || proxy.FenceToken < 1 {
 		return IssuedInput{}, "", nil, errors.New("proxy-latency executor lease 与 issued input 不匹配")
 	}
-	if err := s.EnsureSchema(ctx); err != nil {
+	if err := s.ensureRuntimeSchema(ctx); err != nil {
 		return IssuedInput{}, "", nil, err
 	}
 	s.writeMu.Lock()
@@ -950,7 +1213,7 @@ func canonicalizeInputDraft(draft InputDraft) (InputDraft, error) {
 	seenProviders := make(map[string]struct{}, len(draft.Targets))
 	canonicalTargets := make([]Target, 0, len(draft.Targets))
 	for _, target := range draft.Targets {
-		canonicalTarget, err := canonicalizeTarget(target)
+		canonicalTarget, err := canonicalizeProbeTarget(target)
 		if err != nil {
 			return InputDraft{}, err
 		}
@@ -1009,6 +1272,12 @@ func canonicalizeTarget(target Target) (Target, error) {
 	profileID := strings.TrimSpace(target.ProfileID)
 	if provider == "" || profileID == "" {
 		return Target{}, errors.New("J3a input draft target 标识无效")
+	}
+	if target.ProbeError != "" {
+		if target.ProbeError != targetProbeErrorInvalidURL || strings.TrimSpace(target.URL) != "" {
+			return Target{}, errors.New("J3a input draft target probe 状态无效")
+		}
+		return Target{Provider: provider, ProfileID: profileID, ProbeError: targetProbeErrorInvalidURL}, nil
 	}
 	parsed, err := parseTargetURL(target.URL)
 	if err != nil {
@@ -1290,6 +1559,17 @@ func containsForbiddenPostgresDDL(schema string) bool {
 }
 
 const postgresSetLocalSQL = `SET LOCAL statement_timeout = '5000ms'; SET LOCAL lock_timeout = '1000ms'`
+
+var proxyLatencySQLiteObjects = []string{
+	"proxy_latency_owner_leases",
+	"proxy_latency_proxy_leases",
+	"proxy_latency_outcomes",
+	"proxy_latency_input_versions",
+	"proxy_latency_inputs",
+	"proxy_latency_execution_claims",
+	"idx_proxy_latency_outcomes_proxy",
+	"idx_proxy_latency_outcomes_cursor",
+}
 
 const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS proxy_latency_owner_leases (

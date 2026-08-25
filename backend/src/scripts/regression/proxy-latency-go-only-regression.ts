@@ -10,6 +10,8 @@ const exists = (relativePath: string) => fs.existsSync(path.join(backendRoot, re
 
 const routeSource = source('src/modules/proxies/proxies.routes.ts')
 const handoverSource = source('src/modules/background/proxy-latency-handover.ts')
+const loopbackHttpSource = source('src/shared/loopback-http.ts')
+const systemApiSource = source('src/modules/system-api/system-api-app.ts')
 const dbServiceSource = source('src/db-service.ts')
 const backgroundSource = source('src/modules/background/background-jobs.ts')
 const registrySource = source('src/modules/background/background-job-registry.entries.ts')
@@ -21,6 +23,12 @@ const currentOwnershipDocs = [
   repositorySource('docs/functions/PostgreSQL与Redis高性能模式设计.md'),
   repositorySource('docs/migration/Go后端架构基线.md'),
   repositorySource('docs/migration/Go三项目架构基线.md')
+]
+const j3aHandoffDocs = [
+  repositorySource('docs/migration/J3a-代理延迟检测完整迁移契约.md'),
+  repositorySource('docs/migration/J3-候选任务L1语义冻结.md'),
+  repositorySource('docs/plans/计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md'),
+  repositorySource('docs/plans/计划-20260822T140000000Z-J3a代理延迟检测Node-Go深度对照.md')
 ]
 
 for (const deletedPath of [
@@ -42,8 +50,10 @@ assert.match(routeSource, /const execution = await runGoProxyManualExecution[\s\
 assert.match(handoverSource, /response\.status === 404[\s\S]*J3a manual proxy missing or deleted[\s\S]*代理不存在/, '只有 Go 的明确 missing/deleted 语义才能映射为代理不存在')
 assert.match(handoverSource, /class GoManualBridgeHttpError[\s\S]*retryAfter/, 'Go manual 非 2xx 必须保留 HTTP status 与 Retry-After')
 assert.match(handoverSource, /JUHE_AI_PROXY_LATENCY_JOBS_OWNER/, 'Go manual adapter 必须要求显式 Go owner 配置')
-assert.match(handoverSource, /endpointURL\.protocol !== 'http:'/, 'Go manual adapter 必须限制为本机 HTTP loopback')
-assert.match(handoverSource, /127\.0\.0\.1.*::1/, 'Go manual adapter 必须拒绝非 loopback endpoint')
+assert.match(handoverSource, /parseLoopbackHttpUrl/, 'Go manual adapter 必须复用本机 HTTP loopback 边界')
+assert.match(loopbackHttpSource, /url\.protocol !== 'http:'/ , 'Node → Go 调用必须限制为本机 HTTP loopback')
+assert.match(loopbackHttpSource, /127\.0\.0\.1.*::1/, 'Node → Go 调用必须拒绝非 loopback endpoint')
+assert.match(systemApiSource, /parseLoopbackHttpUrl\(endpoint, 'J3a Go health observer endpoint'\)/, 'J3a health observer 也必须限制为本机 loopback')
 assert.match(handoverSource, /readBoundedGoManualResponse/, 'Go manual adapter 必须有界读取 Go 响应')
 assert.doesNotMatch(handoverSource, /proxyLatency(Node|Go)OwnerEnabled|resolveProxyLatencyHandoverGate|fallback/i, 'Go adapter 不得包含 Node fallback/双 owner')
 assert.match(handoverSource, /assertProxyLatencyReportMatchesProxy/, 'Go report 必须在 Node 写回前做 proxy identity 校验')
@@ -52,6 +62,9 @@ assert.doesNotMatch(capacityEnvSource, /JUHE_AI_BACKGROUND_PROXY_LATENCY_REFRESH
 for (const document of currentOwnershipDocs) {
   assert.match(document, /J3a[\s\S]{0,80}(Go|juhe-ai-jobs)/, '权威文档必须标明 J3a 的 Go owner')
   assert.doesNotMatch(document, /proxy-latency-refresh/, '权威文档不得把 Node scheduler 作为当前 J3a owner')
+}
+for (const document of j3aHandoffDocs) {
+  assert.doesNotMatch(document, /Node\s*(?:→|->)\s*Go\s*(?:→|->)\s*Node/, 'J3a handoff 不得描述为 Go 回调 Node 的跨进程环')
 }
 
 console.log('proxy-latency-go-only-regression: PASS')

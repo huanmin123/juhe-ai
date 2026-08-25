@@ -2,11 +2,23 @@ import { createCipheriv, createHash, randomBytes } from 'node:crypto'
 import type { ProxyProfileTestConfig } from '../../storage/proxy.repository.js'
 import { listProvidersAsync } from '../../storage/provider.repository.js'
 import { parseRfc3339Instant } from '../../shared/rfc3339.js'
+import { parseLoopbackHttpUrl } from '../../shared/loopback-http.js'
 import type { ProxyTestReport } from '../proxies/proxy-test.contract.js'
 
 export const proxyLatencyHandoverSchemaVersion = 1 as const
 export const proxyLatencyHandoverJobName = 'proxy-latency' as const
 const proxyLatencyManualResponseMaxBytes = 512 * 1024
+
+export interface ProxyLatencyManualBridgeDependencies {
+  /** Test seam only; production reads the enabled provider catalog directly. */
+  providers?: () => Promise<Array<{
+    enabled: boolean
+    code: string
+    name: string
+    baseUrl: string
+    defaultProtocolProfileId?: string
+  }>>
+}
 
 export class GoManualBridgeHttpError extends Error {
   readonly status: number
@@ -22,18 +34,16 @@ export class GoManualBridgeHttpError extends Error {
 
 export async function runProxyLatencyManualViaGo(
   proxy: ProxyProfileTestConfig,
-  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  dependencies: ProxyLatencyManualBridgeDependencies = {}
 ): Promise<ProxyTestReport> {
   const endpoint = process.env.JUHE_AI_PROXY_LATENCY_JOBS_HTTP_URL?.trim()
   const owner = process.env.JUHE_AI_PROXY_LATENCY_JOBS_OWNER?.trim().toLowerCase()
   const secret = process.env.JUHE_AI_PROXY_LATENCY_MANUAL_HTTP_SECRET?.trim()
   const credentialSecret = process.env.JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET?.trim()
   if (owner !== 'go' || !endpoint || !secret || secret.length < 32 || !credentialSecret) throw new Error('J3a Go manual bridge 配置不完整或 owner 不是 go')
-  const endpointURL = new URL(endpoint)
-  if (endpointURL.protocol !== 'http:' || !['localhost', '127.0.0.1', '::1', '[::1]'].includes(endpointURL.hostname)) {
-    throw new Error('J3a Go manual bridge endpoint 必须是本机 loopback HTTP 地址')
-  }
-  const providers = (await listProvidersAsync()).filter((provider) => provider.enabled)
+  const endpointURL = parseLoopbackHttpUrl(endpoint, 'J3a Go manual bridge endpoint')
+  const providers = (await (dependencies.providers ?? listProvidersAsync)()).filter((provider) => provider.enabled)
   const proxyUrl = new URL(proxy.proxyUrl)
   const input = {
     schema_version: 1,
@@ -45,7 +55,12 @@ export async function runProxyLatencyManualViaGo(
     proxy_port: proxy.port,
     ...(proxy.username ? { proxy_username: proxy.username } : {}),
     ...(proxyUrl.password ? { proxy_password: { kind: 'proxy_password', ciphertext: encryptProxyPassword(decodeURIComponent(proxyUrl.password), credentialSecret) } } : {}),
-    targets: providers.map((provider) => ({ provider: provider.code, profile_id: provider.code, name: provider.name, url: provider.baseUrl })),
+    targets: providers.map((provider) => ({
+      provider: provider.code,
+      profile_id: provider.defaultProtocolProfileId?.trim() || provider.code,
+      name: provider.name,
+      url: provider.baseUrl
+    })),
     deadline_ms: Math.min(25_000, Math.max(1_000, options.timeoutMs ?? 25_000))
   }
   const controller = new AbortController()

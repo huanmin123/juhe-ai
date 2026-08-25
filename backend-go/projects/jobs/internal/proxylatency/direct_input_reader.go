@@ -15,6 +15,8 @@ const (
 	proxyLatencyInputPolicyVersion = "j3a-proxy-latency-v1"
 	proxyLatencyStatementTimeout   = "5s"
 	proxyLatencyLockTimeout        = "1s"
+	maxProxyLatencyInputLimit      = maxProxyLatencyWorkItems
+	maxProxyLatencyPageSize        = maxProxyLatencyWorkItems
 )
 
 // PostgresDirectInputReader reads only frozen proxy and provider facts. It
@@ -68,8 +70,8 @@ var proxyLatencyRequiredRelations = []string{
 }
 
 func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]InputDraft, error) {
-	if limit < 1 || limit > 1024 {
-		return nil, errors.New("J3a PG direct input limit 必须在 1..1024")
+	if limit < 1 || limit > maxProxyLatencyInputLimit {
+		return nil, errors.New("J3a PG direct input limit 必须在 1..1000000")
 	}
 	tx, err := r.beginReadOnly(ctx)
 	if err != nil {
@@ -82,8 +84,8 @@ func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]I
 	if pageSize < 40 {
 		pageSize = 40
 	}
-	if pageSize > 1024 {
-		pageSize = 1024
+	if pageSize > maxProxyLatencyPageSize {
+		pageSize = maxProxyLatencyPageSize
 	}
 	for offset := 0; len(result) < limit; offset += pageSize {
 		rows, err := tx.QueryContext(ctx, proxyLatencyCandidatesSQL, pageSize, offset)
@@ -234,7 +236,7 @@ func makeProxyLatencyInputDraft(assembly proxyLatencyCandidateAssembly, now time
 	targets := make([]Target, 0, len(assembly.targets))
 	seenProviders := make(map[string]struct{}, len(assembly.targets))
 	for _, target := range assembly.targets {
-		canonicalTarget, err := canonicalizeTarget(target)
+		canonicalTarget, err := canonicalizeProbeTarget(target)
 		if err != nil {
 			return InputDraft{}, err
 		}
@@ -246,6 +248,28 @@ func makeProxyLatencyInputDraft(assembly proxyLatencyCandidateAssembly, now time
 	}
 	issuedAt := now.UTC()
 	return InputDraft{ProxyID: row.proxyID, ConfigRevision: canonicalRevision, Trigger: TriggerPeriodic, IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(ttl), PolicyVersion: proxyLatencyInputPolicyVersion, ProxyType: row.proxyType, ProxyHost: row.proxyHost, ProxyPort: int(row.proxyPort), ProxyUsername: row.proxyUsername, ProxyPassword: password, Targets: targets}, nil
+}
+
+// canonicalizeProbeTarget keeps the legacy Node probe contract at the catalog
+// boundary. A blank or unsupported provider base URL was
+// never an executable target in Node; it produced one explicit unknown item
+// while the other providers for the same proxy continued. Persist only a
+// stable failure code, never the malformed source URL, so no outbound request
+// or sensitive configuration echo can occur later in the pipeline.
+func canonicalizeProbeTarget(target Target) (Target, error) {
+	provider := strings.ToLower(strings.TrimSpace(target.Provider))
+	profileID := strings.TrimSpace(target.ProfileID)
+	if provider == "" || profileID == "" {
+		return Target{}, errors.New("J3a input draft target 标识无效")
+	}
+	canonical, err := canonicalizeTarget(Target{Provider: provider, ProfileID: profileID, URL: target.URL, ProbeError: target.ProbeError})
+	if err == nil {
+		return canonical, nil
+	}
+	if target.ProbeError != "" {
+		return Target{}, err
+	}
+	return Target{Provider: provider, ProfileID: profileID, ProbeError: targetProbeErrorInvalidURL}, nil
 }
 
 func validProxyLatencyType(value string) bool {
@@ -290,9 +314,9 @@ WITH selected_proxies AS (
   ORDER BY (p.last_tested_at IS NOT NULL) ASC,p.last_tested_at ASC,p.updated_at DESC,p.id ASC
   LIMIT $1 OFFSET $2
 ), selected_targets AS (
-  SELECT provider,profile_id,target_url
+  SELECT provider,provider_name,profile_id,target_url
   FROM (
-    SELECT p.code AS provider,ppp.id AS profile_id,ppp.base_url AS target_url,
+    SELECT p.code AS provider,p.name AS provider_name,ppp.id AS profile_id,ppp.base_url AS target_url,
       row_number() OVER (
         PARTITION BY p.code
         ORDER BY CASE WHEN ppp.enabled = 1 THEN 0 ELSE 1 END,
@@ -310,4 +334,4 @@ SELECT proxy.id,proxy.type,proxy.host,proxy.port,proxy.username,proxy.password_e
   proxy.config_revision,proxy.last_tested_at,target.provider,target.profile_id,target.target_url
 FROM selected_proxies proxy
 CROSS JOIN selected_targets target
-ORDER BY (proxy.last_tested_at IS NOT NULL) ASC,proxy.last_tested_at ASC,proxy.config_revision DESC,proxy.id ASC,target.provider ASC`
+ORDER BY (proxy.last_tested_at IS NOT NULL) ASC,proxy.last_tested_at ASC,proxy.config_revision DESC,proxy.id ASC,target.provider_name ASC,target.provider ASC`

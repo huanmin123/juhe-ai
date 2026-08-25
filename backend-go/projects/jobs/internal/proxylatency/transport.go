@@ -7,8 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
@@ -72,14 +74,151 @@ func ProbeItem(ctx context.Context, request ProbeRequest) ItemResult {
 }
 
 func parseTargetURL(raw string) (*url.URL, error) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+	if raw == "" || strings.Contains(raw, "\\") || hasTargetControlCharacter(raw) {
 		return nil, errors.New("target URL invalid")
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, errors.New("target URL invalid")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed == nil {
+		return nil, errors.New("target URL invalid")
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
 		return nil, errors.New("target URL scheme invalid")
 	}
+	colon := strings.IndexByte(value, ':')
+	if colon <= 0 || colon+2 >= len(value) || !strings.EqualFold(value[:colon], scheme) || value[colon+1:colon+3] != "//" {
+		return nil, errors.New("target URL authority invalid")
+	}
+	if parsed.Opaque != "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(value, "#") {
+		return nil, errors.New("target URL invalid")
+	}
+	if strings.Contains(parsed.Host, "%") {
+		return nil, errors.New("target URL host invalid")
+	}
+	hostname := parsed.Hostname()
+	if !validTargetHostname(hostname) {
+		return nil, errors.New("target URL host invalid")
+	}
+	port, err := canonicalTargetPort(parsed.Host)
+	if err != nil {
+		return nil, err
+	}
+	path := parsed.Path
+	if path == "" {
+		path = "/"
+	}
+	if hasTargetControlCharacter(path) || strings.Contains(path, "//") || hasEncodedTargetByte(parsed.EscapedPath(), "2f") || hasEncodedTargetByte(parsed.EscapedPath(), "5c") {
+		return nil, errors.New("target URL path invalid")
+	}
+	for _, segment := range strings.Split(path, "/") {
+		decoded, err := url.PathUnescape(segment)
+		if err != nil || decoded == "." || decoded == ".." || strings.ContainsAny(decoded, "/\\") || hasTargetControlCharacter(decoded) {
+			return nil, errors.New("target URL path dot segment invalid")
+		}
+	}
+	parsed.Scheme = scheme
+	canonicalHost := strings.ToLower(hostname)
+	if strings.Contains(hostname, ":") {
+		canonicalHost = "[" + canonicalHost + "]"
+	}
+	if port != "" && !isDefaultTargetPort(scheme, port) {
+		canonicalHost += ":" + port
+	}
+	parsed.Host = canonicalHost
+	parsed.Path = path
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
 	return parsed, nil
+}
+
+func hasTargetControlCharacter(value string) bool {
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEncodedTargetByte(path, encoded string) bool {
+	path = strings.ToLower(path)
+	return strings.Contains(path, "%"+encoded)
+}
+
+func validTargetHostname(hostname string) bool {
+	if hostname == "" || strings.HasPrefix(hostname, ".") || strings.Contains(hostname, "..") {
+		return false
+	}
+	if net.ParseIP(hostname) != nil {
+		return true
+	}
+	if strings.Contains(hostname, ":") || len(hostname) > 253 {
+		return false
+	}
+	if strings.HasSuffix(hostname, ".") {
+		hostname = strings.TrimSuffix(hostname, ".")
+	}
+	if hostname == "" {
+		return false
+	}
+	for _, label := range strings.Split(hostname, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func canonicalTargetPort(host string) (string, error) {
+	port := ""
+	if strings.HasPrefix(host, "[") {
+		closing := strings.IndexByte(host, ']')
+		if closing < 0 {
+			return "", errors.New("target URL host invalid")
+		}
+		rest := host[closing+1:]
+		if rest == "" {
+			return "", nil
+		}
+		if !strings.HasPrefix(rest, ":") || len(rest) == 1 {
+			return "", errors.New("target URL port invalid")
+		}
+		port = rest[1:]
+	} else {
+		colonCount := strings.Count(host, ":")
+		if colonCount > 1 {
+			return "", errors.New("target URL host invalid")
+		}
+		if colonCount == 1 {
+			separator := strings.LastIndexByte(host, ':')
+			if separator == 0 || separator == len(host)-1 {
+				return "", errors.New("target URL port invalid")
+			}
+			port = host[separator+1:]
+		}
+	}
+	if port == "" {
+		return "", nil
+	}
+	parsed, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || parsed == 0 {
+		return "", errors.New("target URL port invalid")
+	}
+	return strconv.FormatUint(parsed, 10), nil
+}
+
+func isDefaultTargetPort(scheme, port string) bool {
+	return (scheme == "http" && port == "80") || (scheme == "https" && port == "443")
 }
 
 // applyNodeProbeHeaders mirrors the two request shapes in Node's

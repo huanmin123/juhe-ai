@@ -91,6 +91,16 @@ func ExecuteIssuedInput(ctx context.Context, store *Store, owner OwnerLease, pro
 		if err := ctx.Err(); err != nil {
 			return Outcome{}, false, err
 		}
+		if target.ProbeError != "" {
+			// This is a frozen catalog validation result, not an outbound
+			// fallback. Keep the provider in the report exactly as Node did,
+			// but never turn an invalid base URL into a network request.
+			items = append(items, ItemResult{
+				Provider: target.Provider, ProfileID: target.ProfileID,
+				Status: ItemUnknown, Outcome: OutcomeProbeTaskFailure, ErrorCode: target.ProbeError,
+			})
+			continue
+		}
 		probeTimeout := options.Timeout
 		remaining := input.ExpiresAt.Sub(now().UTC())
 		if remaining <= 0 {

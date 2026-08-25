@@ -16,15 +16,57 @@ import (
 )
 
 func TestAllowedTargetURL(t *testing.T) {
-	for _, raw := range []string{"http://example.test/path", "https://example.test/path"} {
-		if _, err := parseTargetURL(raw); err != nil {
-			t.Fatalf("allowed target %q: %v", raw, err)
-		}
+	for _, test := range []struct {
+		raw  string
+		want string
+	}{
+		{raw: "http://example.test/path", want: "http://example.test/path"},
+		{raw: "HTTPS://EXAMPLE.TEST", want: "https://example.test/"},
+		{raw: "http://EXAMPLE.TEST:80/path", want: "http://example.test/path"},
+		{raw: "https://example.test:443", want: "https://example.test/"},
+		{raw: "https://example.test:8443/v1/models", want: "https://example.test:8443/v1/models"},
+	} {
+		t.Run(test.raw, func(t *testing.T) {
+			parsed, err := parseTargetURL(test.raw)
+			if err != nil {
+				t.Fatalf("allowed target %q: %v", test.raw, err)
+			}
+			if got := parsed.String(); got != test.want {
+				t.Fatalf("canonical target=%q want=%q", got, test.want)
+			}
+		})
 	}
-	for _, raw := range []string{"", "ftp://example.test", "https://user:pass@example.test", "https://example.test/#fragment"} {
+	for _, raw := range []string{
+		"",
+		"ftp://example.test",
+		"https://user:pass@example.test",
+		"https://example.test/v1?token=query-secret",
+		"https://example.test/v1#fragment-secret",
+		"http:example.com",
+		"https://example.test\\v1",
+		"https://example.test/./v1",
+		"https://example.test/%2e%2e/v1",
+		"https://example.test/a%2Fb",
+		"https://example.test/a%5Cb",
+		"https://example.test//v1",
+		"https://example..test/v1",
+		"https://-example.test/v1",
+		"https://example.test:bad/v1",
+		"https://example.test:0/v1",
+		"https://example.test:65536/v1",
+		"https://example.test:/v1",
+		"https://example.test/\x00v1",
+	} {
 		if _, err := parseTargetURL(raw); err == nil {
 			t.Fatalf("disallowed target %q accepted", raw)
 		}
+	}
+}
+
+func TestProbeItemRejectsStrictlyInvalidTargetBeforeProxySetup(t *testing.T) {
+	result := ProbeItem(context.Background(), ProbeRequest{TargetURL: "https://example.test/v1?token=query-secret"})
+	if result.Status != ItemUnknown || result.ErrorCode != targetProbeErrorInvalidURL {
+		t.Fatalf("invalid target result=%+v", result)
 	}
 }
 

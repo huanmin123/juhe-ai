@@ -19,11 +19,12 @@ assert.deepEqual(await accountBalanceGoOwnerHealth(goOwnerEnv, {
   projectorReady: () => false,
   fetch: async () => { throw new Error('projector 未启动时不得探测 Go jobs') }
 }), { enabled: true, ready: false, projectorReady: false }, 'Go owner 且 projector 未启动必须拒绝 DB-service health')
-assert.deepEqual(resolveSystemApiHealth({ enabled: true, ready: false, projectorReady: false }), {
+assert.deepEqual(resolveSystemApiHealth({ enabled: true, ready: false, projectorReady: false }, { enabled: false, ready: true }), {
   statusCode: 200,
   status: 'degraded',
   service: 'juhe-ai-db-service',
-  accountBalance: { enabled: true, ready: false, projectorReady: false }
+  accountBalance: { enabled: true, ready: false, projectorReady: false },
+  proxyLatency: { enabled: false, ready: true }
 }, 'J2 transient health 只能在 DB-service body 中降级，不得把 Node readiness 变成 503')
 
 const ready = await accountBalanceGoOwnerHealth(goOwnerEnv, {
@@ -34,7 +35,7 @@ const ready = await accountBalanceGoOwnerHealth(goOwnerEnv, {
   }
 })
 assert.deepEqual(ready, { enabled: true, ready: true, projectorReady: true }, 'Go jobs 与 projector 都 ready 时 DB-service health 必须通过')
-assert.equal(resolveSystemApiHealth(ready).statusCode, 200, 'J2 ready health 仍应返回 200')
+assert.equal(resolveSystemApiHealth(ready, { enabled: false, ready: true }).statusCode, 200, 'J2 ready health 仍应返回 200')
 
 assert.deepEqual(resolveRuntimeReadiness({
   dbServiceReady: true,

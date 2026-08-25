@@ -4,10 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +21,61 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	_ "modernc.org/sqlite"
 )
+
+func TestValidateLoopbackListenAddress(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+		valid   bool
+	}{
+		{name: "ipv4 loopback", address: "127.0.0.1:3305", valid: true},
+		{name: "ipv4 loopback range", address: "127.255.255.254:65535", valid: true},
+		{name: "localhost", address: "localhost:3305", valid: true},
+		{name: "localhost case insensitive", address: "LOCALHOST:3305", valid: true},
+		{name: "ipv6 loopback", address: "[::1]:3305", valid: true},
+		{name: "wildcard ipv4", address: "0.0.0.0:3305", valid: false},
+		{name: "wildcard ipv6", address: "[::]:3305", valid: false},
+		{name: "remote ipv4", address: "192.168.1.10:3305", valid: false},
+		{name: "missing port ipv4", address: "127.0.0.1", valid: false},
+		{name: "missing port localhost", address: "localhost", valid: false},
+		{name: "missing host", address: ":3305", valid: false},
+		{name: "invalid port", address: "localhost:not-a-port", valid: false},
+		{name: "zero port", address: "localhost:0", valid: false},
+		{name: "port out of range", address: "localhost:65536", valid: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateLoopbackListenAddress(test.address)
+			if test.valid && err != nil {
+				t.Fatalf("validateLoopbackListenAddress(%q) returned error: %v", test.address, err)
+			}
+			if !test.valid && err == nil {
+				t.Fatalf("validateLoopbackListenAddress(%q) accepted invalid address", test.address)
+			}
+		})
+	}
+}
+
+func TestListenLoopbackUsesValidatedAddress(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	listener, err = listenLoopback(address)
+	if err != nil {
+		t.Fatalf("listenLoopback(%q) returned error: %v", address, err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := listenLoopback("0.0.0.0:3305"); err == nil {
+		t.Fatal("listenLoopback accepted wildcard address")
+	}
+}
 
 func TestMatchesAccountBalanceManualSecret(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef"
@@ -133,7 +192,11 @@ func TestHealthUsesAtomicProxyLatencySnapshot(t *testing.T) {
 }
 
 func TestJobsHTTPHandlerWiresProxyLatencyManualBridge(t *testing.T) {
+	var providerRequests atomic.Int32
 	proxyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Host == "provider.invalid" {
+			providerRequests.Add(1)
+		}
 		response.WriteHeader(http.StatusNoContent)
 	}))
 	defer proxyServer.Close()
@@ -187,7 +250,7 @@ func TestJobsHTTPHandlerWiresProxyLatencyManualBridge(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
 	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "", true, func() bool { return false }, func() proxylatency.RunnerStatus { return runner.Status() }, func() (proxylatency.RunnerStatus, bool) { return runner.Snapshot() }, true, cfg.ManualHTTPSecret, runner)
-	body := `{"input":{"schema_version":1,"proxy_id":"proxy-manual","proxy_name":"Manual proxy","config_revision":"2026-08-23T00:00:00.123Z","proxy_type":"http","proxy_host":"` + proxyURL.Hostname() + `","proxy_port":` + fmt.Sprint(port) + `,"targets":[{"provider":"openai","profile_id":"profile-openai","name":"OpenAI","url":"http://provider.invalid/"}],"deadline_ms":1000}}`
+	body := `{"input":{"schema_version":1,"proxy_id":"proxy-manual","proxy_name":"Manual proxy","config_revision":"2026-08-23T00:00:00.123Z","proxy_type":"http","proxy_host":"` + proxyURL.Hostname() + `","proxy_port":` + fmt.Sprint(port) + `,"targets":[{"provider":"openai","profile_id":"profile-openai","name":"OpenAI","url":"http://provider.invalid/"},{"provider":"hybrid","profile_id":"profile-hybrid","name":"Hybrid","url":""},{"provider":"unsupported","profile_id":"profile-unsupported","name":"Unsupported","url":"ftp://provider.invalid/v1"}],"deadline_ms":1000}}`
 	request := httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+cfg.ManualHTTPSecret)
 	request.Header.Set("Content-Type", "application/json")
@@ -207,6 +270,19 @@ func TestJobsHTTPHandlerWiresProxyLatencyManualBridge(t *testing.T) {
 	if !ok || report["proxyId"] != "proxy-manual" {
 		t.Fatalf("manual bridge report mismatch: %#v", payload)
 	}
+	items, ok := report["items"].([]any)
+	if !ok || len(items) != 4 || providerRequests.Load() != 1 {
+		t.Fatalf("manual bridge must keep each invalid provider as one non-outbound item: providerRequests=%d report=%#v", providerRequests.Load(), report)
+	}
+	hybrid, ok := items[2].(map[string]any)
+	if !ok || hybrid["targetUrl"] != "" || hybrid["message"] != "未形成真实代理检测请求：Invalid URL" || hybrid["status"] != "unknown" {
+		t.Fatalf("manual bridge invalid provider compatibility mismatch: %#v", hybrid)
+	}
+	unsupported, ok := items[3].(map[string]any)
+	if !ok || unsupported["targetUrl"] != "ftp://provider.invalid/v1" || unsupported["message"] != "未形成真实代理检测请求：不支持的目标协议：ftp:" || unsupported["status"] != "unknown" {
+		t.Fatalf("manual bridge unsupported URL compatibility mismatch: %#v", unsupported)
+	}
+	runNodeGoProxyLatencyManualInterop(t, handler, proxyURL, cfg.ManualHTTPSecret)
 	if _, err := business.Exec(`UPDATE proxy_profiles SET updated_at='2026-08-24T00:00:00.123Z' WHERE id='proxy-manual'`); err != nil {
 		t.Fatal(err)
 	}
@@ -255,6 +331,42 @@ func TestJobsHTTPHandlerWiresProxyLatencyManualBridge(t *testing.T) {
 	handler.ServeHTTP(deletedNoProviderRecord, deletedNoProviderRequest)
 	if deletedNoProviderRecord.Code != http.StatusNotFound {
 		t.Fatalf("deleted no-provider manual bridge status=%d body=%s", deletedNoProviderRecord.Code, deletedNoProviderRecord.Body.String())
+	}
+}
+
+// runNodeGoProxyLatencyManualInterop exercises the real Node handover adapter
+// against the Go jobs HTTP handler. It is opt-in because the normal Go test
+// image deliberately does not require a Node/pnpm runtime.
+func runNodeGoProxyLatencyManualInterop(t *testing.T, handler http.Handler, proxyURL *url.URL, secret string) {
+	t.Helper()
+	if os.Getenv("J3A_NODE_GO_MANUAL_INTEROP") != "1" {
+		return
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	repoRoot, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pnpm := "pnpm"
+	if runtime.GOOS == "windows" {
+		pnpm = "pnpm.cmd"
+	}
+	command := exec.Command(pnpm, "--filter", "juhe-ai-backend", "run", "test:proxy-latency-node-go-manual-interop")
+	command.Dir = repoRoot
+	command.Env = append(os.Environ(),
+		"J3A_NODE_GO_MANUAL_INTEROP_JOBS_URL="+server.URL,
+		"J3A_NODE_GO_MANUAL_INTEROP_PROXY_HOST="+proxyURL.Hostname(),
+		"J3A_NODE_GO_MANUAL_INTEROP_PROXY_PORT="+proxyURL.Port(),
+		"J3A_NODE_GO_MANUAL_INTEROP_SECRET="+secret,
+		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER=go",
+		"JUHE_AI_PROXY_LATENCY_JOBS_HTTP_URL="+server.URL,
+		"JUHE_AI_PROXY_LATENCY_MANUAL_HTTP_SECRET="+secret,
+		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET=node-go-manual-interop-credential-secret",
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Node -> Go J3a manual interop failed: %v\n%s", err, output)
 	}
 }
 

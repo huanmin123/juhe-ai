@@ -77,9 +77,9 @@ func NewResultProjector(store *Store, business *sql.DB, cfg ResultProjectorConfi
 		return nil, errors.New("J3a Go result projector poll interval 无效")
 	}
 	if cfg.BatchSize == 0 {
-		cfg.BatchSize = 100
+		cfg.BatchSize = defaultProxyLatencyBatchSize
 	}
-	if cfg.BatchSize < 1 || cfg.BatchSize > 1000 {
+	if cfg.BatchSize < 1 || cfg.BatchSize > maxProxyLatencyWorkItems {
 		return nil, errors.New("J3a Go result projector batch size 无效")
 	}
 	if cfg.Now == nil {
@@ -92,7 +92,8 @@ func NewResultProjector(store *Store, business *sql.DB, cfg ResultProjectorConfi
 }
 
 // CheckContract proves that the Go result role can use exactly the existing
-// J3a business projection tables and proxy test-state columns. It performs
+// J3a business projection tables, proxy test-state columns, and the minimal
+// account-availability dirty path fired by proxy_profiles updates. It performs
 // zero-row statements only; role provisioning is never repaired implicitly.
 func (p *ResultProjector) CheckContract(ctx context.Context) error {
 	if p == nil || p.business == nil {
@@ -120,9 +121,14 @@ func (p *ResultProjector) contractStatements() []string {
 			"SELECT id,test_status,latency_ms,outbound_ip,outbound_region,last_test_message,last_tested_at,updated_at FROM juhe_business.proxy_profiles LIMIT 0",
 			"SELECT outcome_id,proxy_id,input_version,disposition,reason,applied_at FROM juhe_business.proxy_latency_projection_receipts LIMIT 0",
 			"SELECT consumer_key,stored_at,outcome_id,updated_at FROM juhe_business.proxy_latency_projection_cursors LIMIT 0",
+			"SELECT id,proxy_profile_id,authorization_instance_source_account_id,system_account_id FROM juhe_business.accounts LIMIT 0",
+			"SELECT account_id,source_generation FROM juhe_business.account_list_availability_projections LIMIT 0",
+			"SELECT account_id,generation,available_at_ms FROM juhe_business.account_list_availability_dirty LIMIT 0",
 			"UPDATE juhe_business.proxy_profiles SET test_status=test_status WHERE FALSE",
 			"INSERT INTO juhe_business.proxy_latency_projection_receipts(outcome_id,proxy_id,input_version,disposition,reason,applied_at) SELECT '', '', 1, 'rejected', NULL, CURRENT_TIMESTAMP WHERE FALSE",
 			"INSERT INTO juhe_business.proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) SELECT '', NULL, NULL, CURRENT_TIMESTAMP WHERE FALSE",
+			"INSERT INTO juhe_business.account_list_availability_dirty(account_id,viewer_system_account_id,generation,applied_generation,reason,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,created_at_ms,updated_at_ms) SELECT '', '', 1, 0, 'j3a_contract_check', 0, NULL, NULL, NULL, 0, 0, 0 WHERE FALSE",
+			"UPDATE juhe_business.account_list_availability_dirty SET generation=generation WHERE FALSE",
 		}
 	}
 	return []string{
@@ -649,7 +655,7 @@ func projectionBase(items []ItemResult) (ItemStatus, *int64) {
 		case ItemPassed:
 			reachable++
 		}
-		if item.LatencyMS >= 0 && item.LatencyMS != 0 {
+		if (item.Status == ItemPassed || item.Status == ItemWarning) && item.LatencyMS >= 0 {
 			total += item.LatencyMS
 			latencies++
 		}
