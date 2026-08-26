@@ -778,7 +778,7 @@ def markReleaseVerified(environmentName, sourceCommit, nodeDigest, jobsDigest, g
       if [ ! -f "\$history" ]; then
         printf '# recordedAtUtc\\tactor\\tsourceCommit\\tnodeDigest\\tjobsDigest\\tgatewayDigest\\tj3aManagementEnabled\\tjenkinsBuild\\n' > "\$history"
       fi
-      j3a=$(sed -n 's/^  j3aManagementEnabled: "\\(.*\\)"/\\1/p' '${file}' | head -n1)
+      j3a=\$(sed -n 's/^  j3aManagementEnabled: "\\(.*\\)"/\\1/p' '${file}' | head -n1)
       if ! awk -F '\\t' -v commit='${sourceCommit}' -v node='${nodeDigest}' -v jobs='${jobsDigest}' -v gateway='${gatewayDigest}' -v j3a="\$j3a" '\$3 == commit && \$4 == node && \$5 == jobs && \$6 == gateway && (NF == 7 ? j3a == "false" : \$7 == j3a) { found = 1 } END { exit !found }' "\$history"; then
         printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '${releaseActor}' '${sourceCommit}' '${nodeDigest}' '${jobsDigest}' '${gatewayDigest}' "\$j3a" "\${BUILD_TAG:-unknown}" >> "\$history"
       fi
