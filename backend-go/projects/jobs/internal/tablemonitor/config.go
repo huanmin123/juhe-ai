@@ -21,7 +21,7 @@ const (
 	defaultPerformanceSources        = 512
 	defaultPostgresConcurrentSources = 512
 	defaultRetentionBatchSize        = 512
-	defaultRetentionMaxBatches       = 1000
+	defaultRetentionMaxBatches       = 512
 	defaultPostgresPoolSize          = 5096
 )
 
@@ -72,7 +72,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE 无效: %w", err)
 	}
-	retentionMaxBatches, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES"), defaultRetentionMaxBatches, 1, 100000)
+	retentionMaxBatches, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES"), defaultRetentionMaxBatches, 1, 5096)
 	if err != nil {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES 无效: %w", err)
 	}

@@ -93,7 +93,7 @@ const (
 
 func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, kind candidateReadKind, byID bool, ids ...string) ([]Candidate, error) {
 	if limit < 1 || limit > 1024 {
-		return nil, errors.New("J2 direct input limit 必须在 1..1024")
+		return nil, errors.New("J2 direct input limit 必须在 1..5096")
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
