@@ -514,7 +514,8 @@ type tableSnapshotBaseline struct {
 	rowCount   *int64
 }
 
-// previousTableSnapshots resolves every table's latest baseline in one query.
+// previousTableSnapshots resolves every table's latest baseline in one query
+// for each lookback window.
 // The old per-table lookup made a 189-table sample issue 378 sequential
 // round trips, which can exhaust a healthy run's wall-clock budget.
 func (s *Store) previousTableSnapshots(ctx context.Context, snapshots []TableSnapshot, lookback time.Duration) ([]tableSnapshotBaseline, error) {
