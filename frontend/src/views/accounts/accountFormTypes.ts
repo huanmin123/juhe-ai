@@ -14,6 +14,7 @@ import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import type { AccountQuotaRecoveryPolicyForm } from './accountQuotaRecoveryPolicyTypes'
+import type { AccountErrorPolicyRuleOverrideForm } from './accountErrorPolicyTypes'
 
 export interface AccountFormModel {
   providerCode: string
@@ -67,6 +68,7 @@ export interface AccountFormModel {
   balanceQueryUsedPointer: string
   balanceQueryDivisor: string
   quotaRecoveryPolicy?: AccountQuotaRecoveryPolicyForm
+  errorHandlingRuleOverrides?: AccountErrorPolicyRuleOverrideForm[]
 }
 
 export type AccountOAuthAuthorizeForm = Pick<

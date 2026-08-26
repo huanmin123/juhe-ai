@@ -5,6 +5,14 @@ import {
 
 export const SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID = 'system.upstream_insufficient_quota'
 
+export type AccountErrorPolicyOverrideAction = 'replace' | 'delete'
+
+export interface AccountErrorPolicyOverride {
+  system_rule_id: string
+  action: AccountErrorPolicyOverrideAction
+  rule_index?: number
+}
+
 export type AccountErrorPolicyRuleSource = 'system' | 'account'
 
 export interface EffectiveAccountErrorHandlingRule extends AccountErrorHandlingRule {
@@ -29,9 +37,9 @@ const systemRules: readonly EffectiveAccountErrorHandlingRule[] = [
     name: '上游额度不足',
     priority: 1,
     action: 'rate_limited',
-    reset_strategy: 'daily',
-    daily_reset_hour: 0,
-    status_codes: [403],
+    reset_strategy: 'duration',
+    duration_hours: 1,
+    status_codes: [402, 403],
     error_codes: [
       'insufficient_user_quota',
       'insufficient_quota',
@@ -49,7 +57,7 @@ const systemRules: readonly EffectiveAccountErrorHandlingRule[] = [
       'credit balance too low',
       'wallet balance exhausted'
     ],
-    description: '仅在 HTTP 403 且明确额度不足时进入限流中；支持该语义的 API Key 供应商 explicit reset 优先，无可靠时间时由 recovery seed 在全局窗口内稳定错峰复测；OAuth / Google OAuth 不消费 API Key reset 字段，默认 UTC daily 并支持账户策略调整。'
+    description: '匹配 HTTP 402 或 HTTP 403 的明确余额/额度不足响应；默认进入限流，可按普通规则调整恢复策略。'
   }
 ]
 
@@ -73,17 +81,51 @@ export function systemAccountErrorHandlingRules(): EffectiveAccountErrorHandling
   return systemRules.map(cloneEffectiveRule)
 }
 
-export function effectiveAccountErrorHandlingRules(value: unknown): EffectiveAccountErrorHandlingRule[] {
+export function normalizeAccountErrorPolicyOverrides(value: unknown): AccountErrorPolicyOverride[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error('错误处理策略覆盖格式无效')
+  return value.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error(`第 ${index + 1} 条错误处理策略覆盖格式无效`)
+    const record = item as Record<string, unknown>
+    if (record.system_rule_id !== SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID) {
+      throw new Error(`第 ${index + 1} 条错误处理策略覆盖的系统规则 ID 无效`)
+    }
+    if (record.action !== 'replace' && record.action !== 'delete') {
+      throw new Error(`第 ${index + 1} 条错误处理策略覆盖动作无效`)
+    }
+    const keys = record.action === 'replace'
+      ? ['system_rule_id', 'action', 'rule_index']
+      : ['system_rule_id', 'action']
+    const unexpected = Object.keys(record).find((key) => !keys.includes(key))
+    if (unexpected) throw new Error(`第 ${index + 1} 条错误处理策略覆盖包含不支持字段：${unexpected}`)
+    if (record.action === 'replace' && (!Number.isInteger(record.rule_index) || Number(record.rule_index) < 0)) {
+      throw new Error(`第 ${index + 1} 条错误处理策略覆盖规则索引无效`)
+    }
+    return record.action === 'replace'
+      ? { system_rule_id: SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID, action: 'replace', rule_index: Number(record.rule_index) }
+      : { system_rule_id: SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID, action: 'delete' }
+  })
+}
+
+export function effectiveAccountErrorHandlingRules(value: unknown, overridesValue?: unknown): EffectiveAccountErrorHandlingRule[] {
   const accountRules = normalizeAccountErrorHandlingRules(value)
-    .sort((left, right) => left.priority - right.priority)
-    .map((rule, index) => ({
+  const overrides = normalizeAccountErrorPolicyOverrides(overridesValue)
+  const quotaOverride = overrides.find((item) => item.system_rule_id === SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID)
+  const replacedIndex = quotaOverride?.action === 'replace' ? quotaOverride.rule_index : undefined
+  const accountEffective = accountRules
+    .map((rule, index) => ({ rule, index }))
+    .sort((left, right) => left.rule.priority - right.rule.priority)
+    .map(({ rule, index }) => ({
       ...cloneRule(rule),
-      id: `account.${index + 1}`,
+      id: index === replacedIndex ? SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID : `account.${index + 1}`,
       source: 'account' as const,
       inherited: false,
       editable: true
     }))
-  return [...systemAccountErrorHandlingRules(), ...accountRules]
+  const system = quotaOverride?.action === 'delete' || quotaOverride?.action === 'replace'
+    ? []
+    : systemAccountErrorHandlingRules()
+  return [...system, ...accountEffective]
 }
 
 /**
@@ -97,12 +139,13 @@ export function systemInsufficientQuotaRuleMatches(input: {
   errorType?: string
   searchableText?: string
 }): boolean {
-  if (input.statusCode !== 403) return false
+  if (input.statusCode !== 402 && input.statusCode !== 403) return false
   const errorCode = normalizeErrorIdentifier(input.errorCode)
   const errorType = normalizeErrorIdentifier(input.errorType)
   if (nonQuota403ErrorIdentifiers.has(errorCode) || nonQuota403ErrorIdentifiers.has(errorType)) {
     return false
   }
+  if (input.statusCode === 402 && !errorCode && !errorType) return true
   if (insufficientQuotaStableCodes.has(errorCode) || insufficientQuotaStableCodes.has(errorType)) {
     return true
   }

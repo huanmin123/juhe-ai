@@ -33,6 +33,7 @@ import {
 } from '../../accounts/account-error-policy-validation.js'
 import {
   SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID,
+  normalizeAccountErrorPolicyOverrides,
   systemInsufficientQuotaRuleMatches
 } from '../../accounts/account-error-policy-system-rules.js'
 import {
@@ -41,6 +42,7 @@ import {
   type QuotaRecoveryPolicy
 } from '../../accounts/quota-recovery-policy.js'
 import { requiredRfc3339Instant } from '../../../shared/rfc3339.js'
+import { passiveScheduleDeterministicOffsetMs } from '../../../shared/passive-schedule-jitter.js'
 import { isAccountApiKeyPoolIsolationEnabled } from '../../../storage/account-api-key-rotation.js'
 import {
   extractApiKeyQuotaRecoveryHint,
@@ -287,7 +289,9 @@ export function decideAccountErrorPolicy(
     .filter((value): value is string => Boolean(value?.trim()))
     .join('\n')
     .toLowerCase()
-  if (systemInsufficientQuotaRuleMatches({ statusCode, errorCode, errorType, searchableText: systemSearchableText })) {
+  const quotaOverride = normalizeAccountErrorPolicyOverrides(account.credentials.error_handling_rule_overrides)
+    .find((item) => item.system_rule_id === SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID)
+  if (!quotaOverride && systemInsufficientQuotaRuleMatches({ statusCode, errorCode, errorType, searchableText: systemSearchableText })) {
     const apiKeyGenericRecovery = account.type === 'api_key'
     const recoveryHint = apiKeyGenericRecovery
       ? extractApiKeyQuotaRecoveryHint({ bodyText, headers })
@@ -331,9 +335,9 @@ export function decideAccountErrorPolicy(
           name: '上游额度不足',
           priority: 1,
           action: 'rate_limited',
-          reset_strategy: 'daily',
-          daily_reset_hour: 0
-        }, new Date()),
+          reset_strategy: 'duration',
+          duration_hours: 1
+        }, new Date(), `${account.id}:${account.selectedApiKeyFingerprint?.trim() || 'account'}`),
       keyScoped: apiKeyPoolIsolation,
       quotaRecoveryMode: recoveryMode,
       quotaRecoveryHintSource: recoveryHint?.source
@@ -353,7 +357,7 @@ export function decideAccountErrorPolicy(
       ruleName: rule.name,
       ruleSource: 'account',
       cooldownStatus: 'rate_limited',
-      cooldownUntil: accountErrorRuleCooldownUntil(rule, new Date())
+      cooldownUntil: accountErrorRuleCooldownUntil(rule, new Date(), `${account.id}:${rule.name}:${rule.priority}`)
     }
   }
   return {
@@ -375,7 +379,9 @@ export function accountErrorPolicyCouldMatchStatus(
   statusCode: number
 ): boolean {
   if (statusCode >= 200 && statusCode <= 299) return false
-  if (statusCode === 403) return true
+  const quotaRuleOverridden = normalizeAccountErrorPolicyOverrides(account.credentials.error_handling_rule_overrides)
+    .some((item) => item.system_rule_id === SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID)
+  if (!quotaRuleOverridden && (statusCode === 402 || statusCode === 403)) return true
   return normalizeAccountErrorHandlingRules(account.credentials.error_handling_rules)
     .some((rule) => rule.enabled && (!rule.status_codes?.length || rule.status_codes.includes(statusCode)))
 }
@@ -401,9 +407,10 @@ function accountErrorRuleMatches(
     && (!rule.keywords?.length || rule.keywords.some((value) => searchableText.includes(value.toLowerCase())))
 }
 
-function accountErrorRuleCooldownUntil(rule: AccountErrorHandlingRule, now: Date): string | undefined {
+function accountErrorRuleCooldownUntil(rule: AccountErrorHandlingRule, now: Date, seed: string): string | undefined {
   if (rule.reset_strategy === 'duration') {
-    return new Date(now.getTime() + Math.max(1, rule.duration_hours ?? 1) * 3_600_000).toISOString()
+    const intervalMs = Math.max(1, rule.duration_hours ?? 1) * 3_600_000
+    return new Date(now.getTime() + intervalMs + passiveScheduleDeterministicOffsetMs(intervalMs, seed)).toISOString()
   }
   const target = new Date(now)
   target.setMinutes(0, 0, 0)
@@ -415,7 +422,8 @@ function accountErrorRuleCooldownUntil(rule: AccountErrorHandlingRule, now: Date
   if (target.getTime() <= now.getTime()) {
     target.setDate(target.getDate() + (rule.reset_strategy === 'weekly' ? 7 : 1))
   }
-  return target.toISOString()
+  const intervalMs = Math.max(1, target.getTime() - now.getTime())
+  return new Date(target.getTime() + passiveScheduleDeterministicOffsetMs(intervalMs, seed)).toISOString()
 }
 
 function applyExplicitAccountErrorPolicyDecision(

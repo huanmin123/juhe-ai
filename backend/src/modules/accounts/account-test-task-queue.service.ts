@@ -395,7 +395,7 @@ function accountDiagnosticAttemptMessage(
   testEndpointMode?: AccountSupportedEndpointMode
 ): string {
   const action = testEndpointMode === 'images_json' ? '图像生成测试中' : '真实请求测试中'
-  return `${action}：第 ${progress.attemptNumber}/${progress.totalAttempts} 次，本次最多等待 ${formatDiagnosticTimeout(progress.timeoutMs)}，总上限 ${formatDiagnosticTimeout(progress.maxTotalTimeoutMs)}`
+  return `${action}：本次诊断最长等待 ${formatDiagnosticTimeout(progress.maxTotalTimeoutMs)}`
 }
 
 function formatDiagnosticTimeout(timeoutMs: number): string {
@@ -639,6 +639,9 @@ async function runAccountApiKeyPoolEntryTests(
 ): Promise<AccountApiKeyPoolEntryTestResult[]> {
   let completedCount = 0
   let successCount = 0
+  const timeoutSchedule = accountDiagnosticRetryTimeouts(
+    input.testEndpointMode === 'images_json' ? 'image_generation' : 'generation'
+  )
   const diagnostic = await runAccountApiKeyPoolDiagnostic(baseCandidate, entries, async ({ entry, candidate, timeoutMs, signal }) => {
     const attempt = await runAccountApiKeyPoolEntryTest(account, baseCandidate, entry, {
       ...input,
@@ -653,6 +656,9 @@ async function runAccountApiKeyPoolEntryTests(
       timedOutAfterRealUpstreamAttempt: attempt.timedOutAfterRealUpstreamAttempt
     }
   }, {
+    signal: input.signal,
+    maxConcurrentAttempts: input.testEndpointMode === 'images_json' ? 1 : undefined,
+    timeoutSchedule,
     onEntryComplete: (item) => {
       completedCount += 1
       if (item.value.success) successCount += 1
@@ -660,7 +666,16 @@ async function runAccountApiKeyPoolEntryTests(
     }
   })
   if (!diagnostic) return []
-  return diagnostic.attempts.map((item) => item.value)
+  const callbackFailureResults = diagnostic.errors.map(({ entry }) => {
+    logger.warn({
+      event: 'account_api_key_pool_diagnostic_callback_failed',
+      accountId: account.id,
+      keyIndex: entry.index
+    }, 'API Key 池测试回调异常，已记录为该 Key 的安全失败结果')
+    return accountApiKeyPoolDiagnosticErrorResult(account, entry, input.model)
+  })
+  return [...diagnostic.attempts.map((item) => item.value), ...callbackFailureResults]
+    .sort((left, right) => left.keyIndex - right.keyIndex)
 }
 
 async function runAccountApiKeyPoolEntryTest(
@@ -746,6 +761,25 @@ function accountApiKeyPoolEntryTestResult(
     errorCode: result.errorCode,
     message: result.message,
     durationMs: result.durationMs
+  }
+}
+
+function accountApiKeyPoolDiagnosticErrorResult(
+  account: AccountSummary,
+  entry: AccountApiKeyEntry,
+  model: string | undefined
+): AccountApiKeyPoolEntryTestResult {
+  const message = 'API Key 测试执行异常，请检查服务日志'
+  return {
+    entry,
+    result: failedAccountTestResult(account, message, model, {
+      accountFailureEligible: false
+    }),
+    keyIndex: entry.index,
+    keyPrefix: keyPrefixForDisplay(entry.key),
+    keySuffix: keySuffixForDisplay(entry.key),
+    success: false,
+    message
   }
 }
 

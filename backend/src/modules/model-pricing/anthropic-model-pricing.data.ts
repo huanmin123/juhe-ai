@@ -94,18 +94,6 @@ export const anthropicModelPricingData = [
     supported_reasoning_efforts: ['low', 'medium', 'high'], default_reasoning_effort: 'high'
   }),
   model({
-    model: 'claude-opus-4-1', catalog_order: 100, release_date: '2025-08-05', shutdown_date: '2026-08-05',
-    input_usd_per_million: 15, output_usd_per_million: 75,
-    context_window_tokens: 200_000, max_input_tokens: 200_000, max_output_tokens: 32_000,
-    supported_reasoning_efforts: []
-  }),
-  model({
-    model: 'claude-opus-4-1-20250805', catalog_order: 110, release_date: '2025-08-05', shutdown_date: '2026-08-05',
-    input_usd_per_million: 15, output_usd_per_million: 75,
-    context_window_tokens: 200_000, max_input_tokens: 200_000, max_output_tokens: 32_000,
-    supported_reasoning_efforts: []
-  }),
-  model({
     model: 'claude-sonnet-4-6', catalog_order: 120, release_date: '2026-02-17',
     input_usd_per_million: 3, output_usd_per_million: 15,
     context_window_tokens: 1_000_000, max_input_tokens: 1_000_000, max_output_tokens: 64_000,

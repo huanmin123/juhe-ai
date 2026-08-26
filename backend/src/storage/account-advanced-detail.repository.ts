@@ -33,6 +33,7 @@ const advancedEditableCredentialKeys = [
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
+  'error_handling_rule_overrides',
   'response_inspection_rules',
   'quota_recovery_policy'
 ] as const
@@ -174,7 +175,7 @@ export async function findAccountAdvancedDetailAsync(
       ? { credentials: advancedCredentials }
       : {}),
     effectiveQuotaRecoveryPolicy,
-    effectiveErrorHandlingRules: effectiveAccountErrorHandlingRules(ownerCredentials?.error_handling_rules),
+    effectiveErrorHandlingRules: effectiveAccountErrorHandlingRules(ownerCredentials?.error_handling_rules, ownerCredentials?.error_handling_rule_overrides),
     modelMappings: mappingRows.map(accountAdvancedDetailMappingFromRow),
     proxyProfileId: (authorized ? row.source_proxy_profile_id : row.proxy_profile_id) ?? undefined,
     availabilitySchedule: parseAccountAvailabilityScheduleJson(authorized

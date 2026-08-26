@@ -84,7 +84,10 @@ func ExecuteIssuedInput(ctx context.Context, store *Store, owner OwnerLease, pro
 	}
 	// observed_at is the beginning of the probe window, not its persistence
 	// time. The future Node projector uses this for its last_tested_at CAS.
-	observedAt := now().UTC()
+	// PostgreSQL timestamptz preserves microseconds. Canonicalize before both
+	// the immutable JSON payload and the row metadata are written, otherwise a
+	// nanosecond clock reading would make a valid committed outcome unreadable.
+	observedAt := canonicalPostgresTimestamp(now())
 
 	items := make([]ItemResult, 0, len(input.Targets))
 	for _, target := range input.Targets {

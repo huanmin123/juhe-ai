@@ -178,9 +178,9 @@ try {
     name: '上游额度不足',
     priority: 1,
     action: 'rate_limited',
-    reset_strategy: 'daily',
-    daily_reset_hour: 0,
-    status_codes: [403],
+    reset_strategy: 'duration',
+    duration_hours: 1,
+    status_codes: [402, 403],
     error_codes: [
       'insufficient_user_quota',
       'insufficient_quota',
@@ -191,7 +191,7 @@ try {
       'pre_consume_token_quota_failed'
     ],
     keywords: ['余额不足', '额度不足', 'insufficient balance', 'insufficient quota', 'credit balance too low', 'wallet balance exhausted'],
-    description: '仅在 HTTP 403 且明确额度不足时进入限流中；支持该语义的 API Key 供应商 explicit reset 优先，无可靠时间时由 recovery seed 在全局窗口内稳定错峰复测；OAuth / Google OAuth 不消费 API Key reset 字段，默认 UTC daily 并支持账户策略调整。'
+    description: '匹配 HTTP 402 或 HTTP 403 的明确余额/额度不足响应；默认进入限流，可按普通规则调整恢复策略。'
   })
   assert.deepEqual(detail.effectiveErrorHandlingRules[1], {
     id: 'account.1',

@@ -1,4 +1,5 @@
 import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
+import { normalizeAccountErrorPolicyOverrides } from '../modules/accounts/account-error-policy-system-rules.js'
 import { normalizeAccountResponseInspectionRules } from '../modules/accounts/account-response-inspection-policy-validation.js'
 import { normalizeQuotaRecoveryPolicy } from '../modules/accounts/quota-recovery-policy.js'
 import { providerAccountCredentialDriverForContext } from '../modules/providers/drivers/account-credentials.registry.js'
@@ -19,6 +20,7 @@ const apiKeyAccountCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
+  'error_handling_rule_overrides',
   'response_inspection_rules',
   'quota_recovery_policy'
 ])
@@ -46,6 +48,7 @@ const oauthAccountCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
+  'error_handling_rule_overrides',
   'response_inspection_rules',
   'quota_recovery_policy'
 ])
@@ -70,6 +73,7 @@ const googleOAuthAccountCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
+  'error_handling_rule_overrides',
   'response_inspection_rules',
   'quota_recovery_policy'
 ])
@@ -319,6 +323,9 @@ function normalizeEndpointModesForWrite(value: unknown, context: AccountEndpoint
 function normalizeAccountCredentialPolicies(input: Record<string, unknown>, credentials: Record<string, unknown>): void {
   if (Object.prototype.hasOwnProperty.call(input, 'error_handling_rules')) {
     credentials.error_handling_rules = normalizeAccountErrorHandlingRules(input.error_handling_rules)
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'error_handling_rule_overrides')) {
+    credentials.error_handling_rule_overrides = normalizeAccountErrorPolicyOverrides(input.error_handling_rule_overrides)
   }
   if (Object.prototype.hasOwnProperty.call(input, 'response_inspection_rules')) {
     credentials.response_inspection_rules = normalizeAccountResponseInspectionRules(input.response_inspection_rules)

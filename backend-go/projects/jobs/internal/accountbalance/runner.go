@@ -56,10 +56,10 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 		config.InputTTL = 15 * time.Minute
 	}
 	if config.MaxConcurrent <= 0 {
-		config.MaxConcurrent = 4
+		config.MaxConcurrent = defaultAccountBalanceConcurrency
 	}
-	if config.MaxConcurrent > 256 {
-		return nil, errors.New("account-balance runner 最大并发不能超过 256")
+	if config.MaxConcurrent > maxAccountBalanceWorkItems {
+		return nil, fmt.Errorf("account-balance runner 最大并发不能超过 %d", maxAccountBalanceWorkItems)
 	}
 	if config.ProbeTimeout <= 0 || config.ProbeTimeout > defaultBalanceTimeout {
 		config.ProbeTimeout = defaultBalanceTimeout

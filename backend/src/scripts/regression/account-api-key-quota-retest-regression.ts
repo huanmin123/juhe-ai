@@ -26,7 +26,11 @@ for (const seed of ['quota-retest-a', 'quota-retest-b', 'quota-retest-c']) {
   assert.equal(repeatedCooldownUntil, cooldownUntil, '同一 seed、策略和基准时间必须返回完全相同的额度恢复 deadline')
   const baselineMs = 60 * 60_000
   const windowMs = passiveScheduleJitterWindowMs(baselineMs)
-  assert(cooldownUntil >= quotaNow.getTime() + baselineMs && cooldownUntil <= quotaNow.getTime() + baselineMs + windowMs, '额度恢复必须在硬边界之后使用全局偏移')
+  assert(
+    cooldownUntil >= quotaNow.getTime() + baselineMs - windowMs
+      && cooldownUntil <= quotaNow.getTime() + baselineMs + windowMs,
+    '额度恢复必须使用统一的全局前后错峰窗口'
+  )
 }
 
 const observedAt = new Date('2026-08-22T00:00:00.000Z')
@@ -79,7 +83,12 @@ assert.equal(explicitToGeneric.previousRecoveryMode, 'explicit_reset')
 assert.equal(explicitToGeneric.recoveryMode, 'generic', '当前无 hint 必须切换通用模式')
 assert.equal(explicitToGeneric.timedOut, false, '显式转通用必须重新开始 30 天观察')
 const explicitToGenericDelay = Date.parse(explicitToGeneric.cooldownUntil!) - observedAt.getTime()
-assert(explicitToGenericDelay >= 60 * 60_000 && explicitToGenericDelay <= 90 * 60_000, '通用模式首次复测应从当前观察时刻等待 1 小时并按全局被动策略偏移')
+const explicitToGenericWindow = passiveScheduleJitterWindowMs(60 * 60_000)
+assert(
+  explicitToGenericDelay >= 60 * 60_000 - explicitToGenericWindow
+    && explicitToGenericDelay <= 60 * 60_000 + explicitToGenericWindow,
+  '通用模式首次复测应从当前观察时刻等待 1 小时并按统一全局前后错峰'
+)
 
 const textOnlyAttempt = {
   ...explicitAttempt,

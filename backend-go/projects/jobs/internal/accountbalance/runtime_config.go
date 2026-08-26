@@ -11,6 +11,13 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 )
 
+const (
+	defaultAccountBalanceConcurrency       = 1000
+	defaultAccountBalanceBatchSize         = 1000
+	defaultAccountBalanceRecoveryBatchSize = 100
+	maxAccountBalanceWorkItems             = 1_000_000
+)
+
 // RuntimeConfig is deliberately opt-in.  The J2 package never claims an
 // owner merely because a newer jobs binary is deployed.
 type RuntimeConfig struct {
@@ -117,13 +124,13 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.MaxResponseBytes, err = runtimeInt64(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_RESPONSE_BYTES", defaultMaxBodyBytes, 1, defaultMaxBodyBytes); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.MaxConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY", 256, 4, 256); err != nil {
+	if cfg.MaxConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY", defaultAccountBalanceConcurrency, 1, maxAccountBalanceWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE", 36, 1, 1024); err != nil {
+	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE", defaultAccountBalanceBatchSize, 1, maxAccountBalanceWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.RecoveryBatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE", 4, 1, cfg.BatchSize); err != nil {
+	if cfg.RecoveryBatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE", defaultAccountBalanceRecoveryBatchSize, 1, cfg.BatchSize); err != nil {
 		return RuntimeConfig{}, err
 	}
 	waves := (cfg.BatchSize + cfg.MaxConcurrency - 1) / cfg.MaxConcurrency

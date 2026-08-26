@@ -54,12 +54,13 @@ type AccountLease struct {
 }
 
 type Store struct {
-	db          *sql.DB
-	mode        StoreMode
-	writeMu     sync.Mutex
-	schemaMu    sync.Mutex
-	schemaReady bool
-	pool        *pgpool.Handle
+	db            *sql.DB
+	mode          StoreMode
+	writeMu       sync.Mutex
+	schemaMu      sync.Mutex
+	schemaCheckMu sync.Mutex
+	schemaReady   bool
+	pool          *pgpool.Handle
 }
 
 func OpenStore(config StoreConfig) (*Store, error) {
@@ -193,6 +194,141 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
+// CheckSchema verifies the externally provisioned PostgreSQL contract without
+// issuing DDL. Production J2 startup must fail closed when migrations are
+// missing; only isolated SQLite/scratch tests may call EnsureSchema.
+func (s *Store) CheckSchema(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("account-balance store 未初始化")
+	}
+	if s.mode == StoreSQLite {
+		return s.EnsureSchema(ctx)
+	}
+	s.schemaCheckMu.Lock()
+	defer s.schemaCheckMu.Unlock()
+	return s.checkPostgresSchema(ctx)
+}
+
+func (s *Store) checkPostgresSchema(ctx context.Context) error {
+	s.schemaMu.Lock()
+	s.schemaReady = false
+	s.schemaMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return fmt.Errorf("检查 account-balance postgres schema 事务失败: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SET LOCAL TRANSACTION READ ONLY"); err != nil {
+		return err
+	}
+	if err := ensureBalancePGSchema(ctx, tx); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema='juhe_jobs' AND table_name = ANY($1)`, []string{
+		"account_balance_owner_leases", "account_balance_account_leases", "account_balance_snapshots", "account_balance_outcomes",
+	})
+	if err != nil {
+		return fmt.Errorf("读取 account-balance postgres tables 失败: %w", err)
+	}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		seen[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	missing := make([]string, 0, 4)
+	for _, name := range []string{"account_balance_owner_leases", "account_balance_account_leases", "account_balance_snapshots", "account_balance_outcomes"} {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("J2 PostgreSQL schema 缺少预置表: %s", strings.Join(missing, ", "))
+	}
+	if err := checkBalancePGColumns(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.schemaMu.Lock()
+	s.schemaReady = true
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func checkBalancePGColumns(ctx context.Context, tx *sql.Tx) error {
+	expected := map[string]map[string]string{
+		"account_balance_owner_leases":   {"lease_key": "text", "owner_id": "text", "fence_token": "int8", "lease_until": "timestamptz", "updated_at": "timestamptz"},
+		"account_balance_account_leases": {"account_id": "text", "owner_id": "text", "fence_token": "int8", "lease_until": "timestamptz", "updated_at": "timestamptz"},
+		"account_balance_snapshots":      {"account_id": "text", "input_version": "int8", "config_revision": "int8", "trigger": "text", "snapshot_json": "jsonb", "next_refresh_at": "timestamptz", "updated_at": "timestamptz"},
+		"account_balance_outcomes":       {"outcome_id": "text", "request_id": "text", "account_id": "text", "input_version": "int8", "config_revision": "int8", "trigger": "text", "observed_at": "timestamptz", "payload": "jsonb", "committed": "bool"},
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT table_name,column_name,udt_name,is_nullable FROM information_schema.columns WHERE table_schema='juhe_jobs' AND table_name = ANY($1)`, []string{"account_balance_owner_leases", "account_balance_account_leases", "account_balance_snapshots", "account_balance_outcomes"})
+	if err != nil {
+		return fmt.Errorf("读取 J2 PostgreSQL 列契约失败: %w", err)
+	}
+	defer rows.Close()
+	seen := map[string]map[string]string{}
+	for rows.Next() {
+		var table, column, udt, nullable string
+		if err := rows.Scan(&table, &column, &udt, &nullable); err != nil {
+			return err
+		}
+		if nullable == "YES" && column != "next_refresh_at" {
+			return fmt.Errorf("J2 PostgreSQL 列 %s.%s 必须为 NOT NULL", table, column)
+		}
+		if seen[table] == nil {
+			seen[table] = map[string]string{}
+		}
+		seen[table][column] = udt
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for table, columns := range expected {
+		for column, udt := range columns {
+			if got, ok := seen[table][column]; !ok {
+				return fmt.Errorf("J2 PostgreSQL 缺少列 %s.%s", table, column)
+			} else if got != udt {
+				return fmt.Errorf("J2 PostgreSQL 列 %s.%s 类型不符: got=%s want=%s", table, column, got, udt)
+			}
+		}
+	}
+	return nil
+}
+
+// ensureRuntimeSchema is the production entrypoint. PostgreSQL is always
+// checked read-only; only isolated SQLite stores may initialize their schema.
+func (s *Store) ensureRuntimeSchema(ctx context.Context) error {
+	if s.mode == StoreSQLite {
+		return s.EnsureSchema(ctx)
+	}
+	s.schemaMu.Lock()
+	ready := s.schemaReady
+	s.schemaMu.Unlock()
+	if ready {
+		return nil
+	}
+	s.schemaCheckMu.Lock()
+	defer s.schemaCheckMu.Unlock()
+	s.schemaMu.Lock()
+	ready = s.schemaReady
+	s.schemaMu.Unlock()
+	if ready {
+		return nil
+	}
+	return s.checkPostgresSchema(ctx)
+}
+
 func ensureBalancePGSchema(ctx context.Context, tx *sql.Tx) error {
 	var owner, current string
 	err := tx.QueryRowContext(ctx, `SELECT pg_get_userbyid(nspowner), current_user FROM pg_namespace WHERE nspname='juhe_jobs'`).Scan(&owner, &current)
@@ -212,7 +348,7 @@ func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration 
 	if strings.TrimSpace(ownerID) == "" || duration <= 0 {
 		return OwnerLease{}, false, errors.New("owner lease 参数无效")
 	}
-	if err := s.EnsureSchema(ctx); err != nil {
+	if err := s.ensureRuntimeSchema(ctx); err != nil {
 		return OwnerLease{}, false, err
 	}
 	s.writeMu.Lock()

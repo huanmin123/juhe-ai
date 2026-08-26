@@ -669,6 +669,9 @@ func releasedLeaseResult(result sql.Result, err error, lost error) error {
 // match the original request identity exactly; a later config never changes
 // the interpretation of an earlier request ID.
 func (s *Store) AppendOutcome(ctx context.Context, owner OwnerLease, proxy ProxyLease, outcome Outcome) (bool, error) {
+	if s.mode == StorePostgres {
+		outcome.ObservedAt = canonicalPostgresTimestamp(outcome.ObservedAt)
+	}
 	if err := validateOutcome(outcome); err != nil {
 		return false, err
 	}
@@ -743,6 +746,10 @@ func (s *Store) AppendOutcome(ctx context.Context, owner OwnerLease, proxy Proxy
 		return false, err
 	}
 	return inserted, nil
+}
+
+func canonicalPostgresTimestamp(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Microsecond)
 }
 
 // IssueInput is the only path that turns a read-only business draft into an

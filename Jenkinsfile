@@ -172,7 +172,8 @@ pipeline {
       when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
       steps {
         script {
-          env.TEST_RELEASE_STATE_REVISION = writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-ci')
+          env.J3A_MANAGEMENT_ENABLED = sourceUsesDirectJ3aManagement() ? 'true' : 'false'
+          env.TEST_RELEASE_STATE_REVISION = writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-ci')
         }
       }
     }
@@ -185,11 +186,13 @@ pipeline {
             sourceCommit: env.SOURCE_COMMIT,
             nodeDigest: env.NODE_DIGEST,
             jobsDigest: env.JOBS_DIGEST,
-            gatewayDigest: env.GATEWAY_DIGEST
+            gatewayDigest: env.GATEWAY_DIGEST,
+            j3aManagementEnabled: env.J3A_MANAGEMENT_ENABLED
           ]
           waitForArgoApplication('juhe-ai-test', env.TEST_RELEASE_STATE_REVISION)
           waitForIngress('test')
-          markReleaseVerified('test', release.sourceCommit, release.nodeDigest, release.jobsDigest, release.gatewayDigest)
+          verifyJ3aRelease('test', release.j3aManagementEnabled)
+          markReleaseVerified('test', release.sourceCommit, release.nodeDigest, release.jobsDigest, release.gatewayDigest, release.j3aManagementEnabled)
         }
       }
     }
@@ -203,6 +206,7 @@ pipeline {
           env.NODE_DIGEST = release.nodeDigest
           env.JOBS_DIGEST = release.jobsDigest
           env.GATEWAY_DIGEST = release.gatewayDigest
+          env.J3A_MANAGEMENT_ENABLED = release.j3aManagementEnabled
         }
       }
     }
@@ -213,10 +217,10 @@ pipeline {
         script {
           assertStandardProdPromotionAllowed()
           def release = readVerifiedTestRelease()
-          if (release.sourceCommit != env.SOURCE_COMMIT || release.nodeDigest != env.NODE_DIGEST || release.jobsDigest != env.JOBS_DIGEST || release.gatewayDigest != env.GATEWAY_DIGEST) {
+          if (release.sourceCommit != env.SOURCE_COMMIT || release.nodeDigest != env.NODE_DIGEST || release.jobsDigest != env.JOBS_DIGEST || release.gatewayDigest != env.GATEWAY_DIGEST || release.j3aManagementEnabled != env.J3A_MANAGEMENT_ENABLED) {
             error 'test release state 在晋级期间发生变化，拒绝写入 prod。'
           }
-          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-prod-promotion')
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-promotion')
         }
       }
     }
@@ -227,10 +231,10 @@ pipeline {
         script {
           assertReverseProdIntentAllowed()
           def release = readVerifiedTestRelease()
-          if (release.sourceCommit != env.SOURCE_COMMIT || release.nodeDigest != env.NODE_DIGEST || release.jobsDigest != env.JOBS_DIGEST || release.gatewayDigest != env.GATEWAY_DIGEST) {
+          if (release.sourceCommit != env.SOURCE_COMMIT || release.nodeDigest != env.NODE_DIGEST || release.jobsDigest != env.JOBS_DIGEST || release.gatewayDigest != env.GATEWAY_DIGEST || release.j3aManagementEnabled != env.J3A_MANAGEMENT_ENABLED) {
             error 'test release state 在反向候选写入期间发生变化，拒绝写入 prod candidate。'
           }
-          writeReverseReleaseState(env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST)
+          writeReverseReleaseState(env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED)
           currentBuild.description = "反向蓝绿候选已写入：prod-b stable -> prod-a candidate，source=${env.SOURCE_COMMIT}；等待 gate/UAT/owner handoff/stable switch"
         }
       }
@@ -261,7 +265,8 @@ pipeline {
           env.NODE_DIGEST = selected.nodeDigest
           env.JOBS_DIGEST = selected.jobsDigest
           env.GATEWAY_DIGEST = selected.gatewayDigest
-          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, 'jenkins-prod-rollback')
+          env.J3A_MANAGEMENT_ENABLED = selected.j3aManagementEnabled
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-rollback')
         }
       }
     }
@@ -272,7 +277,8 @@ pipeline {
         script {
           waitForArgoApplication('juhe-ai-prod', env.PROD_RELEASE_STATE_REVISION)
           waitForIngress('prod')
-          markReleaseVerified('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST)
+          verifyJ3aRelease('prod', env.J3A_MANAGEMENT_ENABLED)
+          markReleaseVerified('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED)
         }
       }
     }
@@ -366,10 +372,11 @@ def readTestRelease() {
     nodeDigest: metadataValue('test', 'nodeImageDigest'),
     jobsDigest: metadataValue('test', 'jobsImageDigest'),
     gatewayDigest: metadataValue('test', 'gatewayImageDigest'),
+    j3aManagementEnabled: metadataValue('test', 'j3aManagementEnabled'),
     status: metadataValue('test', 'verification.status'),
     verifiedCommit: metadataValue('test', 'verification.sourceCommit')
   ]
-  if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest)) {
+  if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false'])) {
     error 'test release state 未通过完整性检查。'
   }
   return release
@@ -404,7 +411,8 @@ def prodRollbackCandidates() {
     sourceCommit: metadataValue('prod', 'sourceCommit'),
     nodeDigest: metadataValue('prod', 'nodeImageDigest'),
     jobsDigest: metadataValue('prod', 'jobsImageDigest'),
-    gatewayDigest: metadataValue('prod', 'gatewayImageDigest')
+    gatewayDigest: metadataValue('prod', 'gatewayImageDigest'),
+    j3aManagementEnabled: metadataValue('prod', 'j3aManagementEnabled')
   ]
   def candidates = [:]
   readFile(historyFile).readLines().eachWithIndex { line, index ->
@@ -412,23 +420,27 @@ def prodRollbackCandidates() {
       return
     }
     def fields = line.split('\\t', -1)
-    if (fields.size() != 7) {
+    if (!(fields.size() in [7, 8])) {
       error "prod release-history.tsv 第 ${index + 1} 行字段数错误。"
     }
     def sourceCommit = fields[2]
     def nodeDigest = fields[3]
     def jobsDigest = fields[4]
     def gatewayDigest = fields[5]
+    // Seven-column records predate J3a direct management and are therefore
+    // explicit disabled rollback candidates.
+    def j3aManagementEnabled = fields.size() == 8 ? fields[6] : 'false'
+    def build = fields.size() == 8 ? fields[7] : fields[6]
     if (!(fields[0] ==~ /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/) ||
         !(fields[1] in ['legacy-prod-state', 'jenkins-prod-promotion', 'jenkins-prod-rollback']) ||
-        !validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !fields[6]) {
+        !validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false']) || !build) {
       error "prod release-history.tsv 第 ${index + 1} 行字段非法。"
     }
-    if (sourceCommit == current.sourceCommit && nodeDigest == current.nodeDigest && jobsDigest == current.jobsDigest && gatewayDigest == current.gatewayDigest) {
+    if (sourceCommit == current.sourceCommit && nodeDigest == current.nodeDigest && jobsDigest == current.jobsDigest && gatewayDigest == current.gatewayDigest && j3aManagementEnabled == current.j3aManagementEnabled) {
       return
     }
-    def label = "${fields[0]} | ${fields[6]} | ${sourceCommit} | ${nodeDigest.take(19)} / ${jobsDigest.take(19)} / ${gatewayDigest.take(19)}"
-    candidates[label] = [sourceCommit: sourceCommit, nodeDigest: nodeDigest, jobsDigest: jobsDigest, gatewayDigest: gatewayDigest]
+    def label = "${fields[0]} | ${build} | J3a=${j3aManagementEnabled} | ${sourceCommit} | ${nodeDigest.take(19)} / ${jobsDigest.take(19)} / ${gatewayDigest.take(19)}"
+    candidates[label] = [sourceCommit: sourceCommit, nodeDigest: nodeDigest, jobsDigest: jobsDigest, gatewayDigest: gatewayDigest, j3aManagementEnabled: j3aManagementEnabled]
   }
   return candidates
 }
@@ -440,13 +452,32 @@ def replaceDigest(file, imageName, digest) {
   sh "perl -0pi -e '${expression}' '${file}'"
 }
 
-def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest, actor) {
-  if (!validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest)) error '发布状态字段不合法。'
+def sourceUsesDirectJ3aManagement() {
+  return fileExists('backend-go/projects/jobs/internal/proxylatency/manual_admin.go') &&
+    !fileExists('backend/src/modules/background/proxy-latency-handover.ts') &&
+    !fileExists('backend/src/modules/proxies/proxy-test.contract.ts') &&
+    !readFile('backend/src/modules/proxies/proxies.routes.ts').contains("proxiesRouter.post('/:id/test'")
+}
+
+def configureJ3aManagementRelease(overlay, enabled) {
+  if (!(enabled in ['true', 'false'])) error 'J3a 管理 release 状态必须为 true 或 false。'
+  def kustomization = "${overlay}/kustomization.yaml"
+  if (enabled == 'true') {
+    sh "grep -Fqx '  - j3a-management-ingressroute.yaml' '${kustomization}' || sed -i '/^  - ingress.yaml$/a\\  - j3a-management-ingressroute.yaml' '${kustomization}'"
+  } else {
+    sh "sed -i '/^  - j3a-management-ingressroute.yaml$/d' '${kustomization}'"
+  }
+  sh "sed -i -e 's|^      - JUHE_AI_PROXY_LATENCY_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}|' -e 's|^      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}|' '${kustomization}'"
+}
+
+def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest, j3aManagementEnabled, actor) {
+  if (!validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false'])) error '发布状态字段不合法。'
   refreshPlatformReleaseWorkspace()
   def overlay = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}"
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai', nodeDigest)
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-jobs', jobsDigest)
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-gateway', gatewayDigest)
+  configureJ3aManagementRelease(overlay, j3aManagementEnabled)
   if (environmentName == 'prod') {
     sh "sed -i 's/replicas: 0/replicas: 1/' '${overlay}/statefulset-patch.yaml'"
   }
@@ -458,13 +489,14 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       -e 's|^  nodeImageDigest: ".*"|  nodeImageDigest: "${nodeDigest}"|' \\
       -e 's|^  jobsImageDigest: ".*"|  jobsImageDigest: "${jobsDigest}"|' \\
       -e 's|^  gatewayImageDigest: ".*"|  gatewayImageDigest: "${gatewayDigest}"|' \\
+      -e 's|^  j3aManagementEnabled: ".*"|  j3aManagementEnabled: "${j3aManagementEnabled}"|' \\
       -e 's|^  releaseActor: ".*"|  releaseActor: "${actor}"|' \\
       -e 's|^  verification.status: ".*"|  verification.status: "pending"|' \\
       -e 's|^  verification.sourceCommit: ".*"|  verification.sourceCommit: ""|' \\
       '${overlay}/release-metadata.yaml'
     git config user.name platform-jenkins
     git config user.email jenkins@jh.huanmin.top
-    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml' '${overlay}/statefulset-patch.yaml'
+    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml' '${overlay}/statefulset-patch.yaml' '${overlay}/j3a-management-ingressroute.yaml'
     if git diff --cached --quiet; then
       echo 'release state 已是目标 source commit 与不可变 digest；继续执行验证，不重复提交。'
     else
@@ -475,8 +507,8 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
   return sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
 }
 
-def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest) {
-  if (!validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest)) error '反向候选发布状态字段不合法。'
+def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest, candidateJ3aManagementEnabled) {
+  if (!validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(candidateJ3aManagementEnabled in ['true', 'false'])) error '反向候选发布状态字段不合法。'
   refreshPlatformReleaseWorkspace()
   def overlay = "${releaseWorkspace()}/apps/juhe-ai/overlays/prod"
   // Top-level fields describe the active slot. In this reverse orientation,
@@ -485,9 +517,10 @@ def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest
   def activeNodeDigest = metadataValue('prod', 'nodeImageDigest')
   def activeJobsDigest = metadataValue('prod', 'jobsImageDigest')
   def activeGatewayDigest = metadataValue('prod', 'gatewayImageDigest')
+  def activeJ3aManagementEnabled = metadataValue('prod', 'j3aManagementEnabled')
   def activeVerificationStatus = metadataValue('prod', 'verification.status')
   def activeVerificationSourceCommit = metadataValue('prod', 'verification.sourceCommit')
-  if (!validCommit(activeSourceCommit) || !validDigest(activeNodeDigest) || !validDigest(activeJobsDigest) || !validDigest(activeGatewayDigest)) {
+  if (!validCommit(activeSourceCommit) || !validDigest(activeNodeDigest) || !validDigest(activeJobsDigest) || !validDigest(activeGatewayDigest) || !(activeJ3aManagementEnabled in ['true', 'false'])) {
     error '当前 prod-B active release state 缺少合法的 source/digest；拒绝创建反向候选。'
   }
   if (!(activeVerificationStatus in ['pending', 'passed']) ||
@@ -512,6 +545,7 @@ def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest
       -e 's|^  candidateNodeImageDigest: ".*"|  candidateNodeImageDigest: "${nodeDigest}"|' \\
       -e 's|^  candidateJobsImageDigest: ".*"|  candidateJobsImageDigest: "${jobsDigest}"|' \\
       -e 's|^  candidateGatewayImageDigest: ".*"|  candidateGatewayImageDigest: "${gatewayDigest}"|' \\
+      -e 's|^  candidateJ3aManagementEnabled: ".*"|  candidateJ3aManagementEnabled: "${candidateJ3aManagementEnabled}"|' \\
       -e 's|^  activeSlot: ".*"|  activeSlot: "prod-b"|' \\
       -e 's|^  candidateSlot: ".*"|  candidateSlot: "prod-a"|' \\
       -e 's|^  candidateGate: ".*"|  candidateGate: "blocked"|' \\
@@ -547,6 +581,92 @@ def waitForIngress(environmentName) {
     echo '${environmentName} 入口、Node DB-ready health 或已启用的 J2/J3a Go-owner readiness 未通过。' >&2
     exit 1
   """
+}
+
+def verifyJ3aRelease(environmentName, enabled) {
+  if (enabled == 'false') return
+  if (enabled != 'true') error "${environmentName} J3a management release 状态非法。"
+  def namespace = environmentName == 'test' ? 'juhe-ai-test' : 'juhe-ai-prod'
+  def host = environmentName == 'test' ? 'test.aijh.huanmin.top' : 'aijh.huanmin.top'
+  def proxyID = env."J3A_${environmentName.toUpperCase()}_MANUAL_PROXY_ID"
+  if (!(proxyID ==~ /^[A-Za-z0-9_-]{1,128}$/)) {
+    error "${environmentName} J3a 已启用，但 J3A_${environmentName.toUpperCase()}_MANUAL_PROXY_ID 未配置或格式非法。"
+  }
+  def credentialID = "juhe-j3a-${environmentName}-release-verifier-token"
+  withCredentials([string(credentialsId: credentialID, variable: 'J3A_RELEASE_VERIFIER_TOKEN')]) {
+    sh """#!/bin/sh
+      set -eu
+      test -n "\${J3A_RELEASE_VERIFIER_TOKEN:-}" || {
+        echo '${environmentName} J3a release verifier token 为空。' >&2
+        exit 1
+      }
+      observer='KUBECONFIG=${env.RELEASE_OBSERVER_KUBECONFIG} kubectl'
+      if [ "\$(sh -c "\$observer -n ${namespace} auth can-i get endpoints/juhe-ai")" != 'yes' ]; then
+        echo 'J3a release observer 缺少 stable Endpoint 读取权限。' >&2
+        exit 1
+      fi
+      active_pod=\$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' get endpoints juhe-ai -o jsonpath='{.subsets[0].addresses[0].targetRef.name}')
+      case "\$active_pod" in juhe-ai-0|juhe-ai-b-0) ;; *) echo 'J3a stable Endpoint 未指向允许的 jobs Pod。' >&2; exit 1 ;; esac
+      if [ "\$(sh -c "\$observer -n ${namespace} auth can-i get pods/\$active_pod")" != 'yes' ] || \\
+         [ "\$(sh -c "\$observer -n ${namespace} auth can-i create pods --subresource=portforward --resource-name=\$active_pod")" != 'yes' ]; then
+        echo "J3a release observer 缺少 \$active_pod 的受限 health port-forward 权限。" >&2
+        exit 1
+      fi
+      forward_log=\$(mktemp)
+      KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' port-forward "pod/\$active_pod" 33050:3305 >"\$forward_log" 2>&1 &
+      forward_pid=\$!
+      cleanup() { kill "\$forward_pid" 2>/dev/null || true; wait "\$forward_pid" 2>/dev/null || true; rm -f "\$forward_log"; }
+      trap cleanup EXIT HUP INT TERM
+      health=''
+      i=0
+      while [ \$i -lt 20 ]; do
+        health=\$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 3 http://127.0.0.1:33050/health 2>/dev/null || true)
+        if [ -n "\$health" ]; then break; fi
+        i=\$((i + 1)); sleep 1
+      done
+      for field in ready proxyLatencyEnabled proxyLatencyReady proxyLatencyOwnerHeld; do
+        if ! printf '%s' "\$health" | grep -Eq "\\\"\$field\\\"[[:space:]]*:[[:space:]]*true"; then
+          echo "${environmentName} J3a Go health 未满足 \$field=true。" >&2
+          exit 1
+        fi
+      done
+      node_health=\$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 10 -H 'Host: ${host}' '${env.INGRESS_ENDPOINT}/__aisys__/api/health')
+      if ! printf '%s' "\$node_health" | grep -Eq '\"proxyLatency\"[[:space:]]*:[[:space:]]*\\{[^}]*\"enabled\"[[:space:]]*:[[:space:]]*false'; then
+        echo '${environmentName} active-path-zero 未通过：Node proxyLatency 仍处于 enabled。' >&2
+        exit 1
+      fi
+      started_at=\$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+      report=\$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 30 \\
+        -H 'Host: ${host}' \\
+        -H "Authorization: Bearer \${J3A_RELEASE_VERIFIER_TOKEN}" \\
+        -X POST '${env.INGRESS_ENDPOINT}/__aisys__/api/proxies/${proxyID}/test')
+      if ! printf '%s' "\$report" | grep -Eq '"data"[[:space:]]*:'; then
+        echo '${environmentName} J3a 精确管理 POST 未返回兼容 report envelope。' >&2
+        exit 1
+      fi
+      i=0
+      while [ \$i -lt 12 ]; do
+        audit=\$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 10 \\
+          -H 'Host: ${host}' \\
+          -H "Authorization: Bearer \${J3A_RELEASE_VERIFIER_TOKEN}" \\
+          --get \\
+          --data-urlencode 'module=proxies' \\
+          --data-urlencode 'action=test' \\
+          --data-urlencode 'resourceType=proxy' \\
+          --data-urlencode 'resourceId=${proxyID}' \\
+          --data-urlencode "startAt=\$started_at" \\
+          --data-urlencode 'pageSize=20' \\
+          '${env.INGRESS_ENDPOINT}/__aisys__/api/operation-logs' 2>/dev/null || true)
+        if printf '%s' "\$audit" | grep -Eq '"operationKey"[[:space:]]*:[[:space:]]*"proxies\\.test"' && \\
+           printf '%s' "\$audit" | grep -Eq '"resourceId"[[:space:]]*:[[:space:]]*"${proxyID}"'; then
+          exit 0
+        fi
+        i=\$((i + 1)); sleep 1
+      done
+      echo '${environmentName} J3a F4 审计管理端读回未在 12 秒内出现。' >&2
+      exit 1
+    """
+  }
 }
 
 def preflightTestRelease() {
@@ -641,10 +761,10 @@ def waitForArgoApplication(applicationName, expectedRevision) {
   """
 }
 
-def markReleaseVerified(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest) {
+def markReleaseVerified(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest, j3aManagementEnabled) {
   refreshPlatformReleaseWorkspace()
   def file = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}/release-metadata.yaml"
-  if (metadataValue(environmentName, 'sourceCommit') != sourceCommit || metadataValue(environmentName, 'nodeImageDigest') != nodeDigest || metadataValue(environmentName, 'jobsImageDigest') != jobsDigest || metadataValue(environmentName, 'gatewayImageDigest') != gatewayDigest) error 'release state 在验证期间变化。'
+  if (metadataValue(environmentName, 'sourceCommit') != sourceCommit || metadataValue(environmentName, 'nodeImageDigest') != nodeDigest || metadataValue(environmentName, 'jobsImageDigest') != jobsDigest || metadataValue(environmentName, 'gatewayImageDigest') != gatewayDigest || metadataValue(environmentName, 'j3aManagementEnabled') != j3aManagementEnabled) error 'release state 在验证期间变化。'
   def releaseActor = environmentName == 'prod' ? metadataValue('prod', 'releaseActor') : ''
   if (environmentName == 'prod' && !(releaseActor in ['jenkins-prod-promotion', 'jenkins-prod-rollback'])) {
     error 'prod releaseActor 非法，拒绝记录可回滚历史。'
@@ -656,10 +776,11 @@ def markReleaseVerified(environmentName, sourceCommit, nodeDigest, jobsDigest, g
     if [ '${environmentName}' = 'prod' ]; then
       history='apps/juhe-ai/overlays/prod/release-history.tsv'
       if [ ! -f "\$history" ]; then
-        printf '# recordedAtUtc\\tactor\\tsourceCommit\\tnodeDigest\\tjobsDigest\\tgatewayDigest\\tjenkinsBuild\\n' > "\$history"
+        printf '# recordedAtUtc\\tactor\\tsourceCommit\\tnodeDigest\\tjobsDigest\\tgatewayDigest\\tj3aManagementEnabled\\tjenkinsBuild\\n' > "\$history"
       fi
-      if ! awk -F '\\t' -v commit='${sourceCommit}' -v node='${nodeDigest}' -v jobs='${jobsDigest}' -v gateway='${gatewayDigest}' '\$3 == commit && \$4 == node && \$5 == jobs && \$6 == gateway { found = 1 } END { exit !found }' "\$history"; then
-        printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '${releaseActor}' '${sourceCommit}' '${nodeDigest}' '${jobsDigest}' '${gatewayDigest}' "\${BUILD_TAG:-unknown}" >> "\$history"
+      j3a=$(sed -n 's/^  j3aManagementEnabled: "\\(.*\\)"/\\1/p' '${file}' | head -n1)
+      if ! awk -F '\\t' -v commit='${sourceCommit}' -v node='${nodeDigest}' -v jobs='${jobsDigest}' -v gateway='${gatewayDigest}' -v j3a="\$j3a" '\$3 == commit && \$4 == node && \$5 == jobs && \$6 == gateway && (NF == 7 ? j3a == "false" : \$7 == j3a) { found = 1 } END { exit !found }' "\$history"; then
+        printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '${releaseActor}' '${sourceCommit}' '${nodeDigest}' '${jobsDigest}' '${gatewayDigest}' "\$j3a" "\${BUILD_TAG:-unknown}" >> "\$history"
       fi
     fi
     git config user.name platform-jenkins

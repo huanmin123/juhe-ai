@@ -21,11 +21,12 @@ export interface ParsedModelCheckProbeResponse {
 
 export function isSuccessfulModelCheckProbeResponse(
   statusCode: number,
-  _parsed: Pick<ParsedModelCheckProbeResponse, 'errorMessage' | 'streamFailureMessage'>
+  parsed: Pick<ParsedModelCheckProbeResponse, 'errorMessage' | 'streamFailureMessage'>
 ): boolean {
   // Transport retry semantics are intentionally independent from probe quality.
-  // Only HTTP 200 reaches evaluator-based content and protocol scoring.
-  return statusCode === 200
+  // A provider can return an error envelope with HTTP 200; it must not reach
+  // evaluator-based content and protocol scoring as a successful probe.
+  return statusCode === 200 && !parsed.errorMessage && !parsed.streamFailureMessage
 }
 
 export function parseModelCheckProbeResponse(input: {

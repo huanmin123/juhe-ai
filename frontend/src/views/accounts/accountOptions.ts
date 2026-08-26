@@ -42,12 +42,12 @@ export { GPT_VENDOR_CODE }
 
 export const DEFAULT_OPENAI_SUPPORTED_MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-image-2']
 export const DEFAULT_GPT_SUPPORTED_MODELS = [...DEFAULT_OPENAI_SUPPORTED_MODELS]
-export const DEFAULT_XAI_SUPPORTED_MODELS = ['grok-4.5']
-export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5']
-export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash']
+export const DEFAULT_XAI_SUPPORTED_MODELS = ['grok-4.6', 'grok-4.5']
+export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5']
+export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash']
 export const DEFAULT_DEEPSEEK_SUPPORTED_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro']
-export const DEFAULT_GLM_SUPPORTED_MODELS = ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7-flashx', 'glm-4.7-flash']
-export const DEFAULT_HYBRID_SUPPORTED_MODELS = ['gpt-5.6-sol', 'claude-opus-4-8', 'gemini-3.5-flash', 'deepseek-v4-flash', 'glm-5.2']
+export const DEFAULT_GLM_SUPPORTED_MODELS = ['glm-5.3', 'glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7-flashx', 'glm-4.7-flash']
+export const DEFAULT_HYBRID_SUPPORTED_MODELS = ['gpt-5.6-sol', 'claude-opus-5', 'gemini-3.7-flash', 'deepseek-v4-flash', 'glm-5.3']
 
 export const OPENAI_COMPATIBLE_PROVIDER: ProviderDefinition = {
   id: OPENAI_COMPATIBLE_PROVIDER_CODE,
@@ -126,7 +126,7 @@ export const XAI_PROVIDER: ProviderDefinition = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.x.ai/v1',
-  defaultHealthCheckModel: 'grok-4.5',
+  defaultHealthCheckModel: 'grok-4.6',
   defaultSupportedModels: DEFAULT_XAI_SUPPORTED_MODELS,
   accountTypes: ['api_key', 'oauth'],
   capabilities: ['responses', 'chat', 'passthrough'],
@@ -139,7 +139,7 @@ export const XAI_PROVIDER: ProviderDefinition = {
       protocolCode: OPENAI_PROTOCOL_CODE,
       protocolVersion: OPENAI_PROTOCOL_VERSION,
       baseUrl: 'https://api.x.ai/v1',
-      defaultHealthCheckModel: 'grok-4.5',
+      defaultHealthCheckModel: 'grok-4.6',
       accountTypes: ['api_key', 'oauth'],
       capabilities: ['responses', 'chat', 'passthrough'],
       endpointFamilies: [
@@ -159,7 +159,7 @@ export const ANTHROPIC_PROVIDER: ProviderDefinition = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://api.anthropic.com/v1',
-  defaultHealthCheckModel: 'claude-opus-4-8',
+  defaultHealthCheckModel: 'claude-opus-5',
   defaultSupportedModels: DEFAULT_ANTHROPIC_SUPPORTED_MODELS,
   accountTypes: ['api_key', 'oauth'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
@@ -172,7 +172,7 @@ export const ANTHROPIC_PROVIDER: ProviderDefinition = {
       protocolCode: ANTHROPIC_PROTOCOL_CODE,
       protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
       baseUrl: 'https://api.anthropic.com/v1',
-      defaultHealthCheckModel: 'claude-opus-4-8',
+      defaultHealthCheckModel: 'claude-opus-5',
       accountTypes: ['api_key', 'oauth'],
       capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
       endpointFamilies: [
@@ -193,7 +193,7 @@ export const GEMINI_PROVIDER: ProviderDefinition = {
   protocolCode: GEMINI_PROTOCOL_CODE,
   protocolVersion: GEMINI_PROTOCOL_VERSION,
   baseUrl: 'https://generativelanguage.googleapis.com',
-  defaultHealthCheckModel: 'gemini-3.5-flash',
+  defaultHealthCheckModel: 'gemini-3.7-flash',
   defaultSupportedModels: DEFAULT_GEMINI_SUPPORTED_MODELS,
   accountTypes: ['api_key', 'google_oauth'],
   capabilities: ['generate_content', 'count_tokens', 'embed_content', 'interactions', 'passthrough'],
@@ -206,7 +206,7 @@ export const GEMINI_PROVIDER: ProviderDefinition = {
       protocolCode: GEMINI_PROTOCOL_CODE,
       protocolVersion: GEMINI_PROTOCOL_VERSION,
       baseUrl: 'https://generativelanguage.googleapis.com',
-      defaultHealthCheckModel: 'gemini-3.5-flash',
+      defaultHealthCheckModel: 'gemini-3.7-flash',
       accountTypes: ['api_key', 'google_oauth'],
       capabilities: ['generate_content', 'count_tokens', 'embed_content', 'interactions', 'passthrough'],
       endpointFamilies: [
@@ -225,7 +225,7 @@ export const GEMINI_PROVIDER: ProviderDefinition = {
       protocolCode: OPENAI_PROTOCOL_CODE,
       protocolVersion: OPENAI_PROTOCOL_VERSION,
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-      defaultHealthCheckModel: 'gemini-3.5-flash',
+      defaultHealthCheckModel: 'gemini-3.7-flash',
       accountTypes: ['api_key'],
       capabilities: ['chat', 'passthrough'],
       endpointFamilies: [
@@ -328,7 +328,7 @@ export const GLM_PROVIDER: ProviderDefinition = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
-  defaultHealthCheckModel: 'glm-5.2',
+  defaultHealthCheckModel: 'glm-5.3',
   defaultSupportedModels: DEFAULT_GLM_SUPPORTED_MODELS,
   accountTypes: ['api_key'],
   capabilities: ['chat', 'messages', 'passthrough'],
@@ -341,7 +341,7 @@ export const GLM_PROVIDER: ProviderDefinition = {
       protocolCode: OPENAI_PROTOCOL_CODE,
       protocolVersion: OPENAI_PROTOCOL_VERSION,
       baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
-      defaultHealthCheckModel: 'glm-5.2',
+      defaultHealthCheckModel: 'glm-5.3',
       accountTypes: ['api_key'],
       capabilities: ['chat', 'messages', 'passthrough'],
       endpointFamilies: [
@@ -356,7 +356,7 @@ export const GLM_PROVIDER: ProviderDefinition = {
       protocolCode: OPENAI_PROTOCOL_CODE,
       protocolVersion: OPENAI_PROTOCOL_VERSION,
       baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
-      defaultHealthCheckModel: 'glm-5.2',
+      defaultHealthCheckModel: 'glm-5.3',
       accountTypes: ['api_key'],
       capabilities: ['chat', 'passthrough'],
       endpointFamilies: [
@@ -371,7 +371,7 @@ export const GLM_PROVIDER: ProviderDefinition = {
       protocolCode: ANTHROPIC_PROTOCOL_CODE,
       protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
       baseUrl: 'https://open.bigmodel.cn/api/anthropic',
-      defaultHealthCheckModel: 'glm-5.2',
+      defaultHealthCheckModel: 'glm-5.3',
       accountTypes: ['api_key'],
       capabilities: ['messages', 'models', 'passthrough'],
       endpointFamilies: [

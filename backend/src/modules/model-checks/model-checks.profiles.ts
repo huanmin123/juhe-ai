@@ -34,7 +34,7 @@ export interface ModelCheckProtocolProfile {
 }
 
 const gptModels = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4'] as const
-const anthropicModels = ['claude-opus-4-8', 'claude-opus-4-7'] as const
+const anthropicModels = ['claude-opus-5', 'claude-opus-4-8'] as const
 const glmModels = ['glm-5.2', 'glm-5.1'] as const
 const deepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro'] as const
 const geminiModels = ['gemini-3.5-flash', 'gemini-3.1-pro-preview'] as const
@@ -44,8 +44,8 @@ const preferredPairedModels = new Map<string, string>([
   ['gpt-5.6-luna', 'gpt-5.6-terra'],
   ['gpt-5.5', 'gpt-5.4'],
   ['gpt-5.4', 'gpt-5.5'],
-  ['claude-opus-4-8', 'claude-opus-4-7'],
-  ['claude-opus-4-7', 'claude-opus-4-8'],
+  ['claude-opus-5', 'claude-opus-4-8'],
+  ['claude-opus-4-8', 'claude-opus-5'],
   ['glm-5.2', 'glm-5.1'],
   ['glm-5.1', 'glm-5.2'],
   ['deepseek-v4-flash', 'deepseek-v4-pro'],

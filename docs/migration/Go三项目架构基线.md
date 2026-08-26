@@ -58,7 +58,7 @@ backend-go/
 - 只注册周期任务和可恢复的后台执行。任务必须有稳定 ID、owner lease/单 owner 规则、取消上下文、超时、下一轮重试和可观察结果。
 - 复制、探活、统计、窗口聚合和保留清理由这里逐项迁移。迁移一个完整功能后，Node 原 scheduler/worker 和旧 Go owner 必须退出活跃路径并归档，不做长期双写。
 - 可实时的探活、账号检测和独立外部 I/O 按候选窗口直接 fan-out goroutine；统计按游标/批次并发；低优先级历史扫描和冷数据清理使用较小窗口，让位于实时任务。
-- `jobs` 不提供业务 API。若必须接受人工触发，使用明确的受认证内部命令/一次性 maintenance 命令，不把管理 API 反向接入 jobs 包。
+- `jobs` 不提供通用业务 API。对一个已由 `jobs` 完整拥有的后台功能，允许提供受认证、精确路由的管理命令入口（例如 J3a 的单个代理诊断，以及后续 J3b 的模型检测 JSON/SSE）：鉴权、限流、审计、执行、结果读回和取消必须都在 Go owner 内完成，入口不得转发给 Node 或 `gateway`，也不得演化为通用业务代理。该例外只解决完整功能接管时的管理面，不授权迁移网关请求路由、用户 AI 请求或账户 CRUD。
 - `jobs` 直接向账户配置的上游执行轻量诊断，不经 Node 或 Go gateway。该诊断不实现用户请求路由、鉴权、配额、流式响应、G2/G3 网关状态或账户策略写入；业务网关继续由 Node owner 处理，直到其完整迁移批次另行验收。
 - PostgreSQL 使用稳定数据库契约；SQLite 使用 jobs 自己拥有的 Store 和单向输入/只读结果协议。`jobs` 绝不成为 Node SQLite 文件的第二 writer，也不以 Node/gateway RPC 为 fallback。
 

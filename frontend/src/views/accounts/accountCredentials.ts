@@ -44,6 +44,9 @@ export function buildAccountCredentials(input: {
       : buildOAuthCredentials(input.form, input.currentCredentials ?? {})
   writeAccountGptRequestOverrides(credentials, input.form)
   writeAccountErrorPolicyToCredentials(credentials, input.errorPolicyRules)
+  if (input.form.errorHandlingRuleOverrides?.length) {
+    credentials.error_handling_rule_overrides = input.form.errorHandlingRuleOverrides
+  }
   writeAccountResponseInspectionRulesToCredentials(credentials, input.responseInspectionRules)
   if (input.form.quotaRecoveryPolicy && Object.keys(input.form.quotaRecoveryPolicy).length) {
     credentials.quota_recovery_policy = loadAccountQuotaRecoveryPolicy(input.form.quotaRecoveryPolicy)

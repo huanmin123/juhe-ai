@@ -19,7 +19,8 @@ import {
 import { accountTestProbeKind } from '../../modules/accounts/account-test-probe-policy.js'
 import {
   accountDiagnosticAttemptProgress,
-  accountDiagnosticRetryTimeouts
+  accountDiagnosticRetryTimeouts,
+  diagnosticAccountTestGatewaySettingsOverride
 } from '../../modules/accounts/account-diagnostic-retry-policy.js'
 import {
   extractAccountTestRawVisibleOutputText,
@@ -50,6 +51,18 @@ assert.equal(accountTestModelsPathForProtocol('anthropic'), '/v1/models', 'Anthr
 assert.deepEqual(accountDiagnosticRetryTimeouts('generation'), [10_000, 20_000, 30_000], '文本测试必须保留三档重试窗口')
 assert.deepEqual(accountDiagnosticRetryTimeouts('image_generation'), [120_000], '图片测试必须只生成一次，并保留 120 秒完成窗口')
 assert.deepEqual(accountDiagnosticRetryTimeouts('models_catalog'), [10_000], '模型目录获取必须只保留单次 10 秒窗口，不能进入生成诊断重试阶梯')
+assert.deepEqual(diagnosticAccountTestGatewaySettingsOverride(undefined, 120_000), {
+  temporaryUnschedulableRetryAttempts: 0,
+  temporaryUnschedulableRetryIntervalSeconds: 0,
+  textFirstResponseTimeoutSeconds: 120,
+  textStreamIdleTimeoutSeconds: 120,
+  noAvailableAccountWaitTimeoutSeconds: 120,
+  textUncommittedAttemptMaxLifetimeSeconds: 120,
+  imageFirstResponseTimeoutSeconds: 120,
+  imageStreamIdleTimeoutSeconds: 120,
+  imageUncommittedAttemptMaxLifetimeSeconds: 120,
+  imageRequestWallTimeoutSeconds: 120
+}, '图片诊断的网关墙钟和 attempt 超时必须与单次 120 秒任务窗口一致')
 assert.deepEqual(
   accountDiagnosticAttemptProgress(0, 120_000, Date.now() + 1_000, accountDiagnosticRetryTimeouts('image_generation')),
   {
@@ -489,8 +502,12 @@ assert.match(serviceSource, /const imageResponseBody = probeKind === 'image_gene
 assert.doesNotMatch(serviceSource, /redactAccountTestImageResponse/, '图片测试不得为纯展示解析上游图片正文')
 assert.doesNotMatch(serviceSource, /parseOpenAIJsonBody|parseOpenAIUpstreamMessage|parseAnthropicUpstreamMessage|parseGeminiPayloads/, '账户测试不得绕过统一诊断上下文重复解析响应正文')
 assert.match(serviceSource, /responseBody: imageResponseBody,\s*responseText: JSON\.stringify\(imageResponseBody\)/, '图片测试必须仅返回已脱敏的响应 JSON')
-assert.match(serviceSource, /probeKind === 'image_generation'\s*\? proxyFailureMessage \|\| protocolEvidenceError \|\| accountTestHttpFailureMessage/, '图片测试失败信息不得回显上游响应正文')
-assert.match(serviceSource, /const suppressDiagnostics = probeKind === 'image_generation'/, '图片测试异常路径不得保留原始错误正文')
+assert.match(serviceSource, /accountTestImageFailureMessage\(\{[\s\S]*?upstreamMessage,[\s\S]*?downstreamStatusCode: response\.statusCode/, '图片测试失败只能使用有界解析的错误码和错误摘要，不能回显响应正文')
+assert.match(serviceSource, /function accountTestImageFailureMessage\([\s\S]*?上游 Images API 返回错误/, '图片测试必须保留可行动的上游错误摘要')
+assert.match(serviceSource, /if \(input\.upstreamErrorCode\) return `上游 Images API 返回错误（\$\{input\.upstreamErrorCode\}）`/, '图片测试只有上游错误码时也必须保留可行动摘要')
+assert.match(serviceSource, /const message = suppressDiagnostics && !\(normalizedError instanceof AccountTestAbortError\)\s*\? accountTestImageExceptionMessage\(normalizedError\)/, '图片测试异常路径必须使用安全的异常摘要，同时保留本地超时结论')
+assert.match(serviceSource, /function accountTestImageExceptionMessage\([\s\S]*?请求未建立连接[\s\S]*?请求异常，请检查服务日志后重试/, '图片测试非 HTTP 异常必须提供有界且可行动的安全摘要')
+assert.doesNotMatch(serviceSource, /accountTestImageExceptionMessage\([\s\S]*?error\.message/, '图片测试非 HTTP 异常摘要不得回显原始错误内容')
 assert.match(serviceSource, /createOpenAIImageGenerationTestRequest/, '人工图像测试必须构造真实图片生成请求')
 assert.match(serviceSource, /const protocolSuccessEvidence = probeKind === 'image_generation'\s*\? imageResponseInspection\?\.successEvidence === true/, '图片测试 HTTP 2xx 仍必须验证 Images JSON 成功证据')
 assert.match(serviceSource, /accountManualTestEndpointModes/, '测试服务必须复用共享解析器读取账号可测试形态')
@@ -511,6 +528,9 @@ assert.doesNotMatch(serviceSource, /preflightAccountModelCatalog|accountModelCat
 assert.doesNotMatch(retryTestSource, /models_catalog/, '真实模型测试不得把上游模型目录作为诊断步骤')
 assert.match(serviceSource, /export async function discoverAccountUpstreamModels/, '用户显式同步必须继续保留独立上游模型目录发现入口')
 assert.match(serviceSource, /candidateAccounts:\s*\[diagnosticCandidate\]/, '测试服务仍应固定当前诊断候选账号')
+const accountTestQueueSource = readFileSync(resolve('src/modules/accounts/account-test-task-queue.service.ts'), 'utf8')
+assert.match(accountTestQueueSource, /const timeoutSchedule = accountDiagnosticRetryTimeouts\(\s*input\.testEndpointMode === 'images_json' \? 'image_generation' : 'generation'\s*\)[\s\S]*?signal: input\.signal,[\s\S]*?maxConcurrentAttempts: input\.testEndpointMode === 'images_json' \? 1 : undefined,[\s\S]*?timeoutSchedule,/, '多 API Key 图片测试必须传递取消信号、限制单并发并保留单次 120 秒超时计划')
+assert.match(accountTestQueueSource, /diagnostic\.errors\.map\(\(\{ entry \}\) =>[\s\S]*?accountApiKeyPoolDiagnosticErrorResult/, 'Key 池回调异常必须转换为安全的逐 Key 结果，不能静默丢弃')
 assert.match(serviceSource, /disableSessionAffinity:\s*true/, '测试服务仍应禁用 session affinity')
 assert.match(serviceSource, /trafficSource:\s*input\.trafficSource\s*\?\?\s*'manual_account_test'/, '测试服务仍应保留 manual_account_test 默认来源')
 assert.match(serviceSource, /resolveOpenAIRequestModelMapping/, '账户测试必须解析本次真实请求命中的模型映射')

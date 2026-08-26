@@ -92,7 +92,7 @@ assert.equal(canSelectModelCheckAccount(openAICompatibleAccount), true, 'OpenAI-
 assert.equal(canSelectModelCheckAccount(openAICompatibleAccount, { excludedAccountId: openAICompatibleAccount.id }), false, '可信对比账户不能选择当前检测目标')
 assert.equal(canSelectModelCheckAccount(unnamedOpenAIAccount), false, '无名称账户不应出现在模型检测选项中')
 assert.deepEqual(modelCheckModelsForAccount(gptOpenAIAccount), ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4'], 'GPT 模型检测必须使用当前完整 GPT 模型 ID')
-assert.deepEqual(modelCheckModelsForAccount(anthropicAccount), ['claude-opus-4-8', 'claude-opus-4-7'], 'Anthropic 模型检测必须使用完整 Claude 模型 ID')
+assert.deepEqual(modelCheckModelsForAccount(anthropicAccount), ['claude-opus-5', 'claude-opus-4-8'], 'Anthropic 模型检测必须使用完整 Claude 模型 ID')
 assert.deepEqual(modelCheckModelsForAccount(glmAccount), ['glm-5.2', 'glm-5.1'], 'GLM 模型检测必须使用完整 GLM 模型 ID')
 assert.deepEqual(modelCheckModelsForAccount(deepSeekAccount), ['deepseek-v4-flash', 'deepseek-v4-pro'], 'DeepSeek 模型检测必须使用完整 DeepSeek 模型 ID')
 assert.deepEqual(modelCheckModelsForAccount(geminiAccount), ['gemini-3.5-flash', 'gemini-3.1-pro-preview'], 'Gemini 模型检测必须使用完整 Gemini 模型 ID')
@@ -100,12 +100,12 @@ assert.deepEqual(modelCheckModelsForAccount({ ...gptOpenAIAccount, modelCheckMod
 assert.deepEqual(modelCheckModelsForAccount({ ...gptOpenAIAccount, modelCheckModels: [] }), [], '没有可用检测模型的账户不得回退到供应商通用模型列表')
 assert.equal(canSelectTrustedModelCheckAccount(secondAnthropicAccount, {
   targetAccount: anthropicAccount,
-  model: 'claude-opus-4-8',
+  model: 'claude-opus-5',
   excludedAccountId: anthropicAccount.id
 }), true, '同供应商同 profile 同模型的 Anthropic 账户应可作为可信对比')
 assert.equal(canSelectTrustedModelCheckAccount(gptOpenAIAccount, {
   targetAccount: anthropicAccount,
-  model: 'claude-opus-4-8',
+  model: 'claude-opus-5',
   excludedAccountId: anthropicAccount.id
 }), false, '可信对比账户不能跨供应商或跨协议 profile 选择')
 
@@ -117,7 +117,7 @@ assert.match(accountOptionsSource, /systemAccountId === input\.modelCheckScopePa
 assert.doesNotMatch(accountOptionsSource, /isGptVendorCode|GPT_VENDOR_CODE/, '模型检测账户选项不应再绑定 GPT 供应商名')
 assert.doesNotMatch(accountOptionsSource, /isOpenAIProtocolProfile/, '模型检测账户选项不应内联协议判断')
 assert.match(capabilitySource, /gpt-5\.6-sol/, '能力 helper 必须包含 GPT-5.6 Sol 完整模型 ID')
-assert.match(capabilitySource, /claude-opus-4-8/, '能力 helper 必须包含 Anthropic 完整模型 ID')
+assert.match(capabilitySource, /claude-opus-5/, '能力 helper 必须包含 Anthropic 完整模型 ID')
 assert.match(capabilitySource, /glm-5\.2/, '能力 helper 必须包含 GLM 完整模型 ID')
 assert.match(capabilitySource, /deepseek-v4-flash/, '能力 helper 必须包含 DeepSeek 完整模型 ID')
 assert.match(capabilitySource, /gemini-3\.5-flash/, '能力 helper 必须包含 Gemini 完整模型 ID')

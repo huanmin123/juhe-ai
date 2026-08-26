@@ -39,7 +39,7 @@ func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := store.EnsureSchema(context.Background()); err != nil {
+	if err := store.CheckSchema(context.Background()); err != nil {
 		_ = store.Close()
 		return nil, err
 	}

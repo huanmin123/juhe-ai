@@ -11,7 +11,7 @@
     "warningCount": 1,
     "failedCount": 0,
     "baseLatencyMs": 40,
-    "testedAt": "2026-08-23T00:00:05.123456Z",
+    "testedAt": "2026-08-23T00:00:05.123Z",
     "items": [
       {
         "name": "基础连通性",

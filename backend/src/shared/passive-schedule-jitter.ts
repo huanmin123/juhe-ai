@@ -76,3 +76,17 @@ export function passiveScheduleNotBeforeDelayMs(intervalMs: number, random = Mat
   const offset = passiveScheduleOffsetMs(interval, random)
   return interval + (offset === 0 ? 1 : Math.abs(offset))
 }
+
+/** Returns a stable symmetric offset for a recurring account schedule. */
+export function passiveScheduleDeterministicOffsetMs(intervalMs: number, seed: string): number {
+  const windowMs = passiveScheduleJitterWindowMs(intervalMs)
+  if (windowMs <= 0) return 0
+  let hash = 2166136261
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  const span = windowMs * 2 + 1
+  const offset = (hash >>> 0) % span - windowMs
+  return offset === 0 ? 1 : offset
+}

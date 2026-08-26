@@ -79,9 +79,10 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
   const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '账户详情错误处理策略')
   const inheritedErrorPolicyRules = loadInheritedErrorPolicyRules(advanced.effectiveErrorHandlingRules)
   const responseInspectionRules = loadCredentialResponseInspectionRules(credentials, '账户详情响应检查策略')
-  const quotaRecoveryPolicy = loadAccountQuotaRecoveryPolicy(
-    advanced.effectiveQuotaRecoveryPolicy ?? credentials.quota_recovery_policy
-  )
+  // Keep the form override separate from the effective system/default policy.
+  // The latter is passed to the inline rule editor for display only; loading it
+  // here would make an inherited account look locally overridden on save.
+  const quotaRecoveryPolicy = loadAccountQuotaRecoveryPolicy(credentials.quota_recovery_policy)
   const { accountExpiresAt, availabilitySchedule } = parseAccountScheduleFields(
     advanced.accountExpiresAt,
     advanced.availabilitySchedule,
@@ -96,7 +97,8 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     modelMappings: cloneAccountModelMappings(advanced.modelMappings),
     availabilitySchedule,
     ...accountBalanceFormFields(advanced),
-    quotaRecoveryPolicy
+    quotaRecoveryPolicy,
+    errorHandlingRuleOverrides: Array.isArray(credentials.error_handling_rule_overrides) ? credentials.error_handling_rule_overrides as AccountFormModel['errorHandlingRuleOverrides'] : []
   }
 
   return {
@@ -154,7 +156,10 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
   const credentials = account.credentialOptions
   const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '克隆来源错误处理策略')
   const responseInspectionRules = loadCredentialResponseInspectionRules(credentials, '克隆来源响应检查策略')
-  const quotaRecoveryPolicy = loadAccountQuotaRecoveryPolicy(credentials.quota_recovery_policy)
+  // A clone starts as a new account: do not carry the source account's
+  // account-level quota override. It will display the effective global policy
+  // and only fork a local override after the user edits it.
+  const quotaRecoveryPolicy = loadAccountQuotaRecoveryPolicy(undefined)
   const baseUrl = credentialBaseUrlForForm(credentials, '克隆来源凭据')
   const { accountExpiresAt, availabilitySchedule } = parseAccountScheduleFields(
     account.accountExpiresAt,
@@ -203,7 +208,8 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     availabilitySchedule,
     ...accountBalanceFormFields(account),
     notes: account.notes ?? '',
-    quotaRecoveryPolicy
+    quotaRecoveryPolicy,
+    errorHandlingRuleOverrides: []
   }
 
   return {

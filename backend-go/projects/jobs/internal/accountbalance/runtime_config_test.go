@@ -102,7 +102,7 @@ func TestRuntimeConfigUsesHighPerformanceConcurrencyAndPoolDefaults(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxConcurrency != 256 || cfg.PostgresMaxOpenConns != 1000 || cfg.PostgresMaxIdleConns != 1000 || cfg.InputPostgresMaxOpenConns != 1000 || cfg.InputPostgresMaxIdleConns != 1000 {
+	if cfg.MaxConcurrency != defaultAccountBalanceConcurrency || cfg.BatchSize != defaultAccountBalanceBatchSize || cfg.RecoveryBatchSize != defaultAccountBalanceRecoveryBatchSize || cfg.PostgresMaxOpenConns != 1000 || cfg.PostgresMaxIdleConns != 1000 || cfg.InputPostgresMaxOpenConns != 1000 || cfg.InputPostgresMaxIdleConns != 1000 {
 		t.Fatalf("unexpected high-performance defaults: %#v", cfg)
 	}
 }
@@ -129,6 +129,23 @@ func TestRuntimeConfigAcceptsExternalPoolAndConcurrency(t *testing.T) {
 	}
 	if cfg.MaxConcurrency != 64 || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 1100 || cfg.InputPostgresMaxOpenConns != 900 || cfg.InputPostgresMaxIdleConns != 800 {
 		t.Fatalf("external pool configuration not applied: %#v", cfg)
+	}
+}
+
+func TestRuntimeConfigAcceptsLargeGoConcurrencyAndBatch(t *testing.T) {
+	values := map[string]string{
+		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go", "JUHE_AI_ACCOUNT_BALANCE_STORE": "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
+		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET": "0123456789abcdef0123456789abcdef",
+		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY": "1000000", "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE": "1000000", "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE": "999999",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE": "20m", "JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET": "15m", "JUHE_AI_ACCOUNT_BALANCE_PROBE_TIMEOUT": "15s",
+	}
+	cfg, err := LoadRuntimeConfig(func(name string) string { return values[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxConcurrency != maxAccountBalanceWorkItems || cfg.BatchSize != maxAccountBalanceWorkItems || cfg.RecoveryBatchSize != maxAccountBalanceWorkItems-1 {
+		t.Fatalf("large Go capacity configuration not applied: %#v", cfg)
 	}
 }
 

@@ -35,7 +35,7 @@
             <a-button size="small" @click="collapseAllRules">收起全部</a-button>
             <a-button v-if="!readonly" size="small" @click="normalizePriorities">重排优先级</a-button>
             <a-popconfirm v-if="!readonly" title="清空后账号只走通用失败处理，确定继续吗？" ok-text="清空" cancel-text="取消" @confirm="clearRules">
-              <a-button size="small" :disabled="rules.length === 0">清空规则</a-button>
+              <a-button size="small" :disabled="displayRules.length === 0">清空规则</a-button>
             </a-popconfirm>
           </a-space>
 
@@ -51,12 +51,13 @@
                 <div class="rule-summary">
                   <div class="rule-summary-main">
                     <a-switch
-                      v-model:checked="item.rule.enabled"
+                      :checked="item.rule.enabled"
                       size="small"
                       checked-children="启"
                       un-checked-children="停"
-                      :disabled="readonly || item.inherited"
+                      :disabled="readonly"
                       @click.stop
+                      @update:checked="updateDisplayRuleEnabled(item, $event)"
                     />
                     <a-tag class="priority-tag" color="blue">P{{ item.rule.priority ?? '-' }}</a-tag>
                     <a-tag v-if="item.inherited" color="cyan">继承</a-tag>
@@ -67,62 +68,62 @@
                 </div>
               </template>
 
-              <template v-if="!readonly && !item.inherited" #extra>
+              <template v-if="!readonly" #extra>
                 <a-space class="rule-actions" wrap @click.stop>
-                  <a-button size="small" :disabled="item.localIndex === 0" @click="moveRule(item.localIndex, -1)">上移</a-button>
-                  <a-button size="small" :disabled="item.localIndex === rules.length - 1" @click="moveRule(item.localIndex, 1)">下移</a-button>
-                  <a-button size="small" danger @click="removeRule(item.localIndex)">删除</a-button>
+                  <a-button size="small" :disabled="item.inherited ? rules.length === 0 : item.localIndex === 0" @click="materializeAndMove(item, -1)">上移</a-button>
+                  <a-button size="small" :disabled="item.inherited ? rules.length === 0 : item.localIndex === rules.length - 1" @click="materializeAndMove(item, 1)">下移</a-button>
+                  <a-button size="small" danger @click="removeDisplayRule(item)">删除</a-button>
                 </a-space>
               </template>
 
               <div class="rule-editor">
                 <div class="form-grid error-rule-grid compact">
                   <a-form-item label="规则名称">
-                    <a-input v-model:value="item.rule.name" :disabled="readonly || item.inherited" placeholder="例如 429 临时限流" />
+                    <a-input :value="item.rule.name" :disabled="readonly" placeholder="例如 429 临时限流" @update:value="updateDisplayRuleField(item, 'name', $event)" />
                   </a-form-item>
                   <a-form-item label="优先级" tooltip="小值先匹配。多条规则都能命中时，优先执行优先级更靠前的规则。">
-                    <a-input-number v-model:value="item.rule.priority" :disabled="readonly || item.inherited" :min="1" :max="9999" style="width: 100%" />
+                    <a-input-number :value="item.rule.priority" :disabled="readonly" :min="1" :max="9999" style="width: 100%" @update:value="updateDisplayRuleField(item, 'priority', $event)" />
                   </a-form-item>
                   <a-form-item label="处理动作" tooltip="命中规则后对账号做什么处理，例如短期避让、进入限流冷却或标记为异常。">
-                    <a-select v-model:value="item.rule.action" :disabled="readonly || item.inherited" :options="actionOptions" />
+                    <a-select :value="item.rule.action" :disabled="readonly" :options="actionOptions" @update:value="updateDisplayRuleField(item, 'action', $event)" />
                   </a-form-item>
                 </div>
 
                 <div class="form-grid error-rule-grid matcher-grid">
                   <a-form-item label="状态码" tooltip="匹配上游 HTTP 状态码，例如 429、502、503。多个值用逗号、分号或换行分隔。">
-                    <a-input v-model:value="item.rule.status_codes" :disabled="readonly || item.inherited" placeholder="429, 502, 503" />
+                    <a-input :value="item.rule.status_codes" :disabled="readonly" placeholder="429, 502, 503" @update:value="updateDisplayRuleField(item, 'status_codes', $event)" />
                   </a-form-item>
                   <a-form-item label="错误码" tooltip="匹配响应体 error.code，例如 insufficient_quota。不同供应商字段可能不同，可先从审计日志或运行日志确认。">
-                    <a-input v-model:value="item.rule.error_codes" :disabled="readonly || item.inherited" placeholder="insufficient_quota" />
+                    <a-input :value="item.rule.error_codes" :disabled="readonly" placeholder="insufficient_quota" @update:value="updateDisplayRuleField(item, 'error_codes', $event)" />
                   </a-form-item>
                   <a-form-item label="错误类型" tooltip="匹配响应体 error.type，例如 rate_limit_exceeded。适合供应商把错误原因放在 type 字段的场景。">
-                    <a-input v-model:value="item.rule.error_types" :disabled="readonly || item.inherited" placeholder="rate_limit_exceeded" />
+                    <a-input :value="item.rule.error_types" :disabled="readonly" placeholder="rate_limit_exceeded" @update:value="updateDisplayRuleField(item, 'error_types', $event)" />
                   </a-form-item>
                   <a-form-item label="关键词" tooltip="匹配错误消息文本中的关键词。多个关键词用英文或中文逗号分隔；任一关键词命中即可。">
-                    <a-textarea v-model:value="item.rule.keywords" :disabled="readonly || item.inherited" :rows="1" auto-size placeholder="多个关键词仅用英文或中文逗号分隔" />
+                    <a-textarea :value="item.rule.keywords" :disabled="readonly" :rows="1" auto-size placeholder="多个关键词仅用英文或中文逗号分隔" @update:value="updateDisplayRuleField(item, 'keywords', $event)" />
                   </a-form-item>
                 </div>
 
                 <div v-if="item.rule.action === 'rate_limited'" class="form-grid error-rule-grid compact">
                   <a-form-item label="恢复策略" tooltip="账号进入限流后什么时候自动恢复候选。按时长、每天固定时间或每周固定时间恢复。">
-                    <a-select v-model:value="item.rule.reset_strategy" :disabled="readonly || item.inherited" :options="accountErrorRecoveryStrategyOptions" />
+                    <a-select :value="item.rule.reset_strategy" :disabled="readonly" :options="accountErrorRecoveryStrategyOptions" @update:value="updateDisplayRuleField(item, 'reset_strategy', $event)" />
                   </a-form-item>
                   <a-form-item v-if="item.rule.reset_strategy === 'duration'" label="恢复小时数">
-                    <a-input-number v-model:value="item.rule.duration_hours" :disabled="readonly || item.inherited" :min="1" :max="720" style="width: 100%" />
+                    <a-input-number :value="item.rule.duration_hours" :disabled="readonly" :min="1" :max="720" style="width: 100%" @update:value="updateDisplayRuleField(item, 'duration_hours', $event)" />
                   </a-form-item>
                   <a-form-item v-if="item.rule.reset_strategy === 'daily'" label="每天恢复时间">
-                    <a-select v-model:value="item.rule.daily_reset_hour" :disabled="readonly || item.inherited" :options="accountErrorHourOptions" />
+                    <a-select :value="item.rule.daily_reset_hour" :disabled="readonly" :options="accountErrorHourOptions" @update:value="updateDisplayRuleField(item, 'daily_reset_hour', $event)" />
                   </a-form-item>
                   <a-form-item v-if="item.rule.reset_strategy === 'weekly'" label="每周恢复日">
-                    <a-select v-model:value="item.rule.weekly_reset_day" :disabled="readonly || item.inherited" :options="accountErrorWeekdayOptions" />
+                    <a-select :value="item.rule.weekly_reset_day" :disabled="readonly" :options="accountErrorWeekdayOptions" @update:value="updateDisplayRuleField(item, 'weekly_reset_day', $event)" />
                   </a-form-item>
                   <a-form-item v-if="item.rule.reset_strategy === 'weekly'" label="每周恢复时间">
-                    <a-select v-model:value="item.rule.weekly_reset_hour" :disabled="readonly || item.inherited" :options="accountErrorHourOptions" />
+                    <a-select :value="item.rule.weekly_reset_hour" :disabled="readonly" :options="accountErrorHourOptions" @update:value="updateDisplayRuleField(item, 'weekly_reset_hour', $event)" />
                   </a-form-item>
                 </div>
 
                 <a-form-item label="说明">
-                  <a-textarea v-model:value="item.rule.description" :disabled="readonly || item.inherited" :rows="1" auto-size placeholder="可写为什么要这样处理" />
+                  <a-textarea :value="item.rule.description" :disabled="readonly" :rows="1" auto-size placeholder="可写为什么要这样处理" @update:value="updateDisplayRuleField(item, 'description', $event)" />
                 </a-form-item>
               </div>
             </a-collapse-panel>
@@ -202,8 +203,16 @@ import {
   accountErrorPolicyGuideSources,
   resolveAccountErrorPolicyContextGuide
 } from './accountErrorPolicyGuide'
+import type { AccountErrorPolicyRuleOverrideForm } from './accountErrorPolicyTypes'
 
 const rules = defineModel<AccountErrorPolicyRuleForm[]>('rules', { required: true })
+const errorHandlingRuleOverrides = defineModel<AccountErrorPolicyRuleOverrideForm[]>('errorHandlingRuleOverrides', { default: () => [] })
+type DisplayRule = {
+  key: string
+  inherited: boolean
+  localIndex: number
+  rule: AccountErrorPolicyRuleForm | AccountErrorPolicyInheritedRule
+}
 
 const props = withDefaults(defineProps<{
   accountType?: string
@@ -216,22 +225,22 @@ const props = withDefaults(defineProps<{
   baseUrl: '',
   providerCode: '',
   readonly: false,
-  inheritedErrorPolicyRules: () => []
+  inheritedErrorPolicyRules: () => [],
 })
 
 const policyActiveKeys = ref<string[]>([])
 const activeRuleKeys = ref<string[]>([])
 const guideOpen = ref(false)
 const actionOptions = accountErrorActionSelectOptions
-const displayRules = computed(() => [
-  ...props.inheritedErrorPolicyRules.map((rule) => ({
+const displayRules = computed<DisplayRule[]>(() => [
+  ...props.inheritedErrorPolicyRules.filter((rule) => !isOverridden(rule.id)).map((rule) => ({
     key: `inherited:${rule.id}`,
     inherited: true,
     localIndex: -1,
     rule
   })),
   ...rules.value.map((rule, localIndex) => ({
-    key: ruleKey(localIndex),
+    key: replacementRuleKey(localIndex) ?? ruleKey(localIndex),
     inherited: false,
     localIndex,
     rule
@@ -283,13 +292,75 @@ function handlePresetClick(event: { key: string | number }) {
 function clearRules() {
   if (props.readonly) return
   rules.value = []
+  errorHandlingRuleOverrides.value = props.inheritedErrorPolicyRules
+    .map((rule) => ({ system_rule_id: rule.id as 'system.upstream_insufficient_quota', action: 'delete' }))
   activeRuleKeys.value = []
 }
 
 function removeRule(index: number) {
   if (props.readonly) return
+  const override = errorHandlingRuleOverrides.value.find((item) => item.action === 'replace' && item.rule_index === index)
   rules.value.splice(index, 1)
+  if (override) {
+    errorHandlingRuleOverrides.value = [{ system_rule_id: override.system_rule_id, action: 'delete' }]
+  } else {
+    errorHandlingRuleOverrides.value = errorHandlingRuleOverrides.value.map((item) => item.action === 'replace' && item.rule_index !== undefined && item.rule_index > index
+      ? { ...item, rule_index: item.rule_index - 1 }
+      : item)
+  }
   activeRuleKeys.value = []
+}
+
+function isOverridden(systemRuleId: string): boolean {
+  return errorHandlingRuleOverrides.value.some((item) => item.system_rule_id === systemRuleId)
+}
+
+function replacementRuleKey(index: number): string | undefined {
+  const override = errorHandlingRuleOverrides.value.find((item) => item.action === 'replace' && item.rule_index === index)
+  return override ? `inherited:${override.system_rule_id}` : undefined
+}
+
+function materializeInheritedRule(item: Pick<DisplayRule, 'inherited' | 'localIndex' | 'rule'>): number | undefined {
+  if (props.readonly) return undefined
+  if (!item.inherited) return item.localIndex
+  if (!('id' in item.rule)) return undefined
+  const clone = cloneAccountErrorPolicyRule(item.rule)
+  rules.value.push(clone)
+  const index = rules.value.length - 1
+  errorHandlingRuleOverrides.value = [{ system_rule_id: item.rule.id as 'system.upstream_insufficient_quota', action: 'replace', rule_index: index }]
+  activeRuleKeys.value = [`inherited:${item.rule.id}`]
+  return index
+}
+
+function materializeAndMove(item: Pick<DisplayRule, 'inherited' | 'localIndex' | 'rule'>, offset: number): void {
+  const index = materializeInheritedRule(item)
+  if (index !== undefined) moveRule(index, offset)
+}
+
+function updateDisplayRuleEnabled(item: Pick<DisplayRule, 'inherited' | 'localIndex' | 'rule'>, enabled: boolean): void {
+  const index = materializeInheritedRule(item)
+  if (index === undefined) return
+  rules.value[index].enabled = enabled
+}
+
+function updateDisplayRuleField<K extends keyof AccountErrorPolicyRuleForm>(
+  item: Pick<DisplayRule, 'inherited' | 'localIndex' | 'rule'>,
+  field: K,
+  value: AccountErrorPolicyRuleForm[K]
+): void {
+  const index = materializeInheritedRule(item)
+  if (index === undefined) return
+  rules.value[index][field] = value
+}
+
+function removeDisplayRule(item: Pick<DisplayRule, 'inherited' | 'localIndex' | 'rule'>): void {
+  if (item.inherited) {
+    if (!('id' in item.rule)) return
+    errorHandlingRuleOverrides.value = [{ system_rule_id: item.rule.id as 'system.upstream_insufficient_quota', action: 'delete' }]
+    activeRuleKeys.value = []
+    return
+  }
+  removeRule(item.localIndex)
 }
 
 function moveRule(index: number, offset: number) {
@@ -298,7 +369,14 @@ function moveRule(index: number, offset: number) {
   if (nextIndex < 0 || nextIndex >= rules.value.length) return
   const [rule] = rules.value.splice(index, 1)
   rules.value.splice(nextIndex, 0, rule)
-  activeRuleKeys.value = [ruleKey(nextIndex)]
+  errorHandlingRuleOverrides.value = errorHandlingRuleOverrides.value.map((item) => {
+    if (item.action !== 'replace' || item.rule_index === undefined) return item
+    if (item.rule_index === index) return { ...item, rule_index: nextIndex }
+    if (index < nextIndex && item.rule_index > index && item.rule_index <= nextIndex) return { ...item, rule_index: item.rule_index - 1 }
+    if (index > nextIndex && item.rule_index >= nextIndex && item.rule_index < index) return { ...item, rule_index: item.rule_index + 1 }
+    return item
+  })
+  activeRuleKeys.value = [replacementRuleKey(nextIndex) ?? ruleKey(nextIndex)]
 }
 
 function normalizePriorities() {
@@ -313,6 +391,7 @@ function expandAllRules() {
 function collapseAllRules() {
   activeRuleKeys.value = []
 }
+
 </script>
 
 <style scoped>

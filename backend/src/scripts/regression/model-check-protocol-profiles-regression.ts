@@ -37,8 +37,8 @@ import {
 import { hasFunctionCall } from '../../modules/model-checks/model-checks-parsing.js'
 import { estimateTokenCountFromText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
 
-const sharedGoContract = JSON.parse(readFileSync(new URL(
-  '../../../../backend-go/internal/modelcheckprofile/testdata/node-model-check-profile-contract.json',
+const profileContract = JSON.parse(readFileSync(new URL(
+  './testdata/node-model-check-profile-contract.json',
   import.meta.url
 ), 'utf8')) as {
   defaultModel: string
@@ -59,12 +59,12 @@ assert.deepEqual({
     models: [...profile.models],
     sourceEndpointFamilies: modelCheckSourceEndpointFamilies(profile)
   }))
-}, sharedGoContract, 'Node/Go 模型检测 profile、模型、source family 与默认值必须共用同一契约')
+}, profileContract, '模型检测 profile、模型、source family 与冻结契约必须一致')
 
 assert(supportedModels.includes('gpt-5.6-sol'), '应注册 GPT-5.6 Sol 完整模型 ID gpt-5.6-sol')
 assert(supportedModels.includes('gpt-5.6-terra'), '应注册 GPT-5.6 Terra 完整模型 ID gpt-5.6-terra')
 assert(supportedModels.includes('gpt-5.6-luna'), '应注册 GPT-5.6 Luna 完整模型 ID gpt-5.6-luna')
-assert(supportedModels.includes('claude-opus-4-8'), '应注册 Anthropic 完整模型 ID claude-opus-4-8')
+assert(supportedModels.includes('claude-opus-5'), '应注册 Anthropic 完整模型 ID claude-opus-5')
 assert(supportedModels.includes('glm-5.2'), '应注册 GLM 完整模型 ID glm-5.2')
 assert(supportedModels.includes('deepseek-v4-flash'), '应注册 DeepSeek 完整模型 ID deepseek-v4-flash')
 assert(supportedModels.includes('gemini-3.5-flash'), '应注册 Gemini 完整模型 ID gemini-3.5-flash')
@@ -96,8 +96,10 @@ assert.equal(deepSeekProfile?.protocol, 'openai_chat', 'DeepSeek OpenAI profile 
 const anthropicProfile = findModelCheckProfileForAccountModel({
   providerCode: ANTHROPIC_PROVIDER_CODE,
   providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID
-}, 'claude-opus-4-8')
+}, 'claude-opus-5')
 assert.equal(anthropicProfile?.protocol, 'anthropic_messages', 'Anthropic profile 应走 Messages 检测')
+assert.equal(anthropicProfile?.defaultModel, 'claude-opus-5', 'Anthropic profile 默认检测模型应跟随当前官方主模型')
+assert.equal(anthropicProfile ? pairedModelForProfile(anthropicProfile, 'claude-opus-5') : undefined, 'claude-opus-4-8', 'Opus 5 辅助对照应优先使用 Opus 4.8')
 
 const geminiProfile = findModelCheckProfileForAccountModel({
   providerCode: GEMINI_PROVIDER_CODE,
@@ -110,9 +112,9 @@ assert.equal(chatRequest.path, '/v1/chat/completions')
 assert.equal(chatRequest.body.model, 'glm-5.2')
 assert.equal(chatRequest.body.max_tokens, 64, 'OpenAI Chat 短探针应保留足够输出 token，避免 reasoning tokens 挤占可见输出')
 
-const anthropicRequest = createModelCheckProbeRequest('anthropic_messages', 'claude-opus-4-8', '只输出 OK', { maxOutputTokens: 16, stream: false })
+const anthropicRequest = createModelCheckProbeRequest('anthropic_messages', 'claude-opus-5', '只输出 OK', { maxOutputTokens: 16, stream: false })
 assert.equal(anthropicRequest.path, '/v1/messages')
-assert.equal(anthropicRequest.body.model, 'claude-opus-4-8')
+assert.equal(anthropicRequest.body.model, 'claude-opus-5')
 assert.equal(anthropicRequest.body.temperature, undefined, 'Anthropic Messages 探针不应发送通用 temperature 参数')
 
 const geminiRequest = createModelCheckProbeRequest('gemini_native', 'gemini-3.5-flash', '只输出 OK', { maxOutputTokens: 16, stream: false })
@@ -140,12 +142,12 @@ const anthropicParsed = parseModelCheckProbeResponse({
   path: '/v1/messages',
   bodyText: JSON.stringify({
     type: 'message',
-    model: 'claude-opus-4-8',
+    model: 'claude-opus-5',
     content: [{ type: 'text', text: 'OK-MODEL-CHECK' }],
     usage: { input_tokens: 8, output_tokens: 2 }
   })
 })
-assert.equal(anthropicParsed.model, 'claude-opus-4-8')
+assert.equal(anthropicParsed.model, 'claude-opus-5')
 assert.equal(anthropicParsed.outputText, 'OK-MODEL-CHECK')
 assert.equal(anthropicParsed.usage?.input_tokens, 8)
 
@@ -200,8 +202,8 @@ for (const fixture of [
   {
     protocol: 'anthropic_messages' as const,
     path: '/v1/messages',
-    bodyText: 'event: message_start\r\ndata: {"message":{"model":"claude-opus-4-8",\r\ndata: "usage":{"input_tokens":4}}}\r\n\r\nevent: content_block_delta\r\ndata: {"delta":{"text":"OK"}}',
-    expectedModel: 'claude-opus-4-8',
+    bodyText: 'event: message_start\r\ndata: {"message":{"model":"claude-opus-5",\r\ndata: "usage":{"input_tokens":4}}}\r\n\r\nevent: content_block_delta\r\ndata: {"delta":{"text":"OK"}}',
+    expectedModel: 'claude-opus-5',
     expectedUsageKey: 'input_tokens',
     expectedUsage: 4
   },
@@ -296,7 +298,7 @@ assert(hasFunctionCall({
   }]
 }, 'record_model_check'), 'OpenAI Chat tool_calls 应可被评分器识别')
 
-const anthropicToolRequest = createModelCheckToolCallingRequest('anthropic_messages', 'claude-opus-4-8')
+const anthropicToolRequest = createModelCheckToolCallingRequest('anthropic_messages', 'claude-opus-5')
 assert.equal(anthropicToolRequest.path, '/v1/messages')
 assert(hasFunctionCall({
   content: [{ type: 'tool_use', name: 'record_model_check', input: { code: 'ok', count: 1 } }]

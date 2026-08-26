@@ -60,7 +60,7 @@ assert.equal(XAI_PROVIDER_CODE, 'xai')
 assert.equal(XAI_OPENAI_V1_PROFILE_ID, 'profile_xai_openai_v1')
 assert(DEFAULT_PROVIDER_SEEDS.some((seed) => seed.code === XAI_PROVIDER_CODE), '默认供应商种子应包含 xAI')
 assert(DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS.some((seed) => seed.id === XAI_OPENAI_V1_PROFILE_ID), '默认协议档案种子应包含 xAI OpenAI v1')
-assert.deepEqual(XAI_PROVIDER_SEED.defaultSupportedModels, ['grok-4.5'], 'xAI 默认模型应使用资料完整的当前官方文本模型')
+assert.deepEqual(XAI_PROVIDER_SEED.defaultSupportedModels, ['grok-4.6', 'grok-4.5'], 'xAI 默认模型应使用资料完整的当前官方文本模型')
 assert.deepEqual(XAI_OPENAI_V1_PROFILE_SEED.accountTypes, ['api_key', 'oauth'], 'xAI 官方 API 档案应允许 API Key 与 Grok OAuth')
 assert.deepEqual(
   XAI_OPENAI_V1_PROFILE_SEED.endpointFamilies,

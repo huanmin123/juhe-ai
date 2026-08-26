@@ -287,7 +287,7 @@ async function assertProviderRepositoryAsync(repository: typeof import('../../st
   assert.ok(defaultModel, '应能读取供应商默认检查模型')
   await assertDefaultHealthCheckModelRolePriorityAsync(repository, defaultModel)
   assert.ok((await repository.findProviderDefaultSupportedModelsAsync(GPT_VENDOR_CODE)).includes('gpt-5.6-sol'), '应能读取供应商默认支持模型')
-  assert.equal(await repository.findProviderDefaultHealthCheckModelAsync(ANTHROPIC_PROVIDER_CODE), 'claude-opus-4-8', 'Anthropic 默认检查模型应使用 Opus 4.8')
+  assert.equal(await repository.findProviderDefaultHealthCheckModelAsync(ANTHROPIC_PROVIDER_CODE), 'claude-opus-5', 'Anthropic 默认检查模型应使用 Opus 5')
 
   const defaultProfile = await repository.defaultProviderProtocolProfileAsync(GPT_VENDOR_CODE)
   assert.ok(defaultProfile, '应能读取默认协议档案')

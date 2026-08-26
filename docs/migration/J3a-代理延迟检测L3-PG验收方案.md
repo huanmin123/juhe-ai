@@ -1,6 +1,6 @@
 # J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案
 
-> 状态：本轮（2026-08-24）已在一次性 dev scratch 经 PgBouncer `6432` 重跑 required jobs/reader smoke，并连续两次通过 Go business-result projector applied/receipt/cursor/replay/outbound 与 manual direct-CAS smoke，另行通过现役 Node PostgreSQL CRUD/CAS smoke 验证微秒版本与并发更新；测试后数据库、角色、临时代理行和 PgBouncer 临时认证均已清理。另有显式 Node 子进程→Go jobs HTTP handler 的 manual bridge 互操作回归，覆盖有效 provider 与空 hybrid URL。上述证据仍不包含独立 Go jobs 二进制的 dev 进程编排、active-path-zero、owner handoff、生产/L4、Docker/Redis 或回滚。该方案不翻转 Go owner、不停止 Node owner，也不替代后续部署门禁。
+> 状态：隔离 dev scratch 的 Go jobs/reader/projector schema smoke 与 Node 业务 schema 初始化路径已具备；本轮重新执行时，Node schema 初始化成功，但独立管理 listener 所需的最小权限角色预检尚未闭环。对当前 dev app 角色执行只读 contract smoke 的实际结果为 `juhe_dataset.operation_logs` 不存在（`42P01`），说明 F4 schema 尚未由独立 gateway/maintenance 路径预置，故不得把管理 listener/F4 进程 handoff 写成通过。此前数据库、角色、临时代理行和 PgBouncer 临时认证均已按生命周期清理。上述证据仍不包含独立 Go jobs 二进制的 dev 进程编排、active-path-zero、owner handoff、生产/L4、Docker/Redis 或回滚。该方案不翻转 Go owner、不停止 Node owner，也不替代后续部署门禁。
 
 ## 1. 目的与硬边界
 

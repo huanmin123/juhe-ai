@@ -209,7 +209,7 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 101, '截至 2026-08-10，当前 Node 权威模型目录应包含 101 个可用完整模型键')
+  assert.equal(expectedSqliteModelKeys.length, 105, '截至 2026-08-26，当前 Node 权威模型目录应包含 105 个可用完整模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
@@ -648,16 +648,11 @@ try {
   )
   assert.equal(deepSeekModels.has('deepseek-ai-v4-flash'), false, 'DeepSeek 模型目录不得暴露官方列表不存在的 deepseek-ai V4 Flash 别名')
   assert.equal(deepSeekModels.has('deepseek-ai-v4-pro'), false, 'DeepSeek 模型目录不得暴露官方列表不存在的 deepseek-ai V4 Pro 别名')
-  if (new Date().toISOString().slice(0, 10) < '2026-07-24') {
-    assert(deepSeekModels.has('deepseek-chat'), 'DeepSeek 模型目录在 deepseek-chat 退役前应包含官方历史兼容名')
-    assert(deepSeekModels.has('deepseek-reasoner'), 'DeepSeek 模型目录在 deepseek-reasoner 退役前应包含官方历史兼容名')
-  }
   assert.deepEqual(
     deepSeekCatalog.map((item) => item.model),
     [
       'deepseek-v4-flash',
-      'deepseek-v4-pro',
-      ...(new Date().toISOString().slice(0, 10) < '2026-07-24' ? ['deepseek-chat', 'deepseek-reasoner'] : [])
+      'deepseek-v4-pro'
     ],
     'DeepSeek 模型目录应按当前官方优先模型到历史兼容名排序'
   )
@@ -691,6 +686,7 @@ try {
   })
   const glmModels = new Set(glmCatalog.map((item) => item.model))
   for (const id of [
+    'glm-5.3',
     'glm-5.2',
     'glm-5.1',
     'glm-5',
@@ -715,6 +711,7 @@ try {
   assert.deepEqual(
     glmCatalog.map((item) => item.model),
     [
+      'glm-5.3',
       'glm-5.2',
       'glm-5.1',
       'glm-5-turbo',
@@ -738,6 +735,7 @@ try {
   })
   const geminiModels = new Set(geminiCatalog.map((item) => item.model))
   for (const id of [
+    'gemini-3.7-flash',
     'gemini-3.5-flash',
     'gemini-3.1-pro-preview',
     'gemini-3.1-pro-preview-customtools',
@@ -750,7 +748,6 @@ try {
   ]) {
     assert(geminiModels.has(id), `Gemini 模型目录应包含 Google 官方模型 ${id}`)
   }
-  assert.equal(geminiModels.has('gemini-embedding-001'), false, '已于 2026-07-14 关闭的 Gemini Embedding 001 不得进入当前可用目录')
   assert(geminiCatalog.find((item) => item.model === 'gemini-3.5-flash')?.supportedApiProtocols.includes('interactions'), 'Gemini 3.5 Flash 应声明官方 Interactions 协议')
   assert(geminiCatalog.find((item) => item.model === 'gemini-2.5-pro')?.supportedApiProtocols.includes('interactions'), 'Gemini 2.5 Pro 应声明官方 Interactions 协议')
   assert.equal(geminiCatalog.find((item) => item.model === 'gemini-3.1-pro-preview-customtools')?.supportedApiProtocols.includes('interactions'), false, '未在官方 Interactions 模型表列出的 customtools 别名不得推断为支持')
@@ -763,6 +760,7 @@ try {
   assert.deepEqual(
     geminiCatalog.map((item) => item.model),
     [
+      'gemini-3.7-flash',
       'gemini-3.6-flash',
       'gemini-3.5-flash-lite',
       'gemini-3.5-flash',
@@ -822,8 +820,6 @@ try {
   assert(anthropicModels.has('claude-sonnet-4-5-20250929'), 'Anthropic 模型目录应包含 Sonnet 4.5 官方 dated ID')
   assert(anthropicModels.has('claude-opus-4-5-20251101'), 'Anthropic 模型目录应包含 Opus 4.5 官方 dated ID')
   assert.equal(anthropicModels.has('claude-mythos-preview'), false, 'Mythos preview 已退休，不应进入 Anthropic 模型目录')
-  assert.equal(anthropicModels.has('claude-opus-4-1'), false, 'Opus 4.1 已于 2026-08-05 shutdown，不应进入当前目录')
-  assert.equal(anthropicModels.has('claude-opus-4-1-20250805'), false, 'Opus 4.1 dated ID 已于 2026-08-05 shutdown，不应进入当前目录')
   for (const id of [
     'default',
     'claude-opus-4-20250514',

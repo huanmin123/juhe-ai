@@ -181,14 +181,17 @@ export function accountTestSingleRunningOutputLines(input: {
     { text: '正在走账户配置的真实请求流程...', tone: 'warning' },
     { text: `使用模型：${input.model}`, tone: 'success' },
     {
-      text: `等待策略：后台接收后按 ${timeoutSchedule.map(formatAccountTestDuration).join(' + ')} 执行，运行超过 ${formatAccountTestDuration(diagnosticMaxWaitMs)} 会自动失败`,
+      text: `本次诊断最长等待 ${formatAccountTestDuration(diagnosticMaxWaitMs)}，超时会自动停止`,
       tone: 'muted'
     }
   ]
   if (task?.id) {
-    lines.push({ text: `后台任务：${task.id}（${accountTestTaskStatusText(task.status)}）`, tone: 'muted' })
+    lines.push({ text: `后台任务：${task.id}（${task.cancelRequested ? '正在停止' : accountTestTaskStatusText(task.status)}）`, tone: 'muted' })
   } else {
     lines.push({ text: '后台任务：提交中', tone: 'muted' })
+  }
+  if (task?.cancelRequested && task.message !== '正在停止测试') {
+    lines.push({ text: '正在停止测试，等待后台任务确认停止', tone: 'warning' })
   }
   if (task?.message) {
     lines.push({ text: task.message, tone: task.status === 'queued' ? 'muted' : 'info' })
@@ -200,10 +203,6 @@ export function accountTestSingleRunningOutputLines(input: {
     lines.push({
       text: `运行耗时：${formatAccountTestDuration(elapsedMs)}`,
       tone: elapsedMs > diagnosticMaxWaitMs ? 'warning' : 'muted'
-    })
-    lines.push({
-      text: `当前窗口估计：${accountTestDiagnosticAttemptWindowText(elapsedMs, task?.testEndpointMode ?? input.testEndpointMode)}`,
-      tone: 'info'
     })
   }
   if (shouldDisplayManagedOAuthRefreshHint(input.account)) {

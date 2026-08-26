@@ -110,7 +110,7 @@ func TestExecuteIssuedInputReplayAvoidsSecondProbe(t *testing.T) {
 	if err != nil || !committed {
 		t.Fatalf("first committed=%t err=%v", committed, err)
 	}
-	if !first.ObservedAt.Equal(startedAt) {
+	if !first.ObservedAt.Equal(canonicalPostgresTimestamp(startedAt)) {
 		t.Fatalf("observed_at=%s want probe start %s", first.ObservedAt, startedAt)
 	}
 	second, committed, err := ExecuteIssuedInput(context.Background(), store, owner, proxy, input, ExecutorOptions{Timeout: time.Second})

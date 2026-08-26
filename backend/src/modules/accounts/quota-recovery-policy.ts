@@ -1,4 +1,4 @@
-import { passiveScheduleJitterWindowMs } from '../../shared/passive-schedule-jitter.js'
+import { passiveScheduleDeterministicOffsetMs } from '../../shared/passive-schedule-jitter.js'
 
 export type QuotaRecoveryAccountType = 'api_key' | 'oauth' | 'google_oauth'
 export type QuotaRecoveryStrategy = 'duration' | 'daily' | 'weekly'
@@ -80,27 +80,10 @@ export function quotaRecoveryCooldownUntil(input: {
   const now = input.now ?? new Date()
   const schedule = quotaRecoveryScheduleForAccount(input.policy, input.accountType)
   const boundary = scheduleBoundary(schedule, now)
-  const delayMs = Math.max(1, boundary.getTime() - now.getTime())
-  const jitterWindowMs = passiveScheduleJitterWindowMs(delayMs)
-  const offsetMs = deterministicPositiveOffsetMs(input.seed, jitterWindowMs)
-  // Quota reset boundaries are hard not-before points. The actual passive
-  // retest uses a deterministic, seed-derived positive offset within the
-  // global interval-sized window; schedule.jitter_minutes is policy metadata.
-  return new Date(boundary.getTime() + offsetMs).toISOString()
-}
-
-function deterministicPositiveOffsetMs(seed: string, windowMs: number): number {
-  if (windowMs <= 0) return 0
-  return 1 + stableSeedHash(seed) % windowMs
-}
-
-function stableSeedHash(seed: string): number {
-  let hash = 2166136261
-  for (let index = 0; index < seed.length; index += 1) {
-    hash ^= seed.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return hash >>> 0
+  const intervalMs = Math.max(1, boundary.getTime() - now.getTime())
+  // The configured schedule is a passive target. The shared scheduler adds a
+  // stable per-account offset so accounts do not converge on the same minute.
+  return new Date(boundary.getTime() + passiveScheduleDeterministicOffsetMs(intervalMs, input.seed)).toISOString()
 }
 
 function normalizeQuotaRecoverySchedule(value: unknown): QuotaRecoverySchedule {

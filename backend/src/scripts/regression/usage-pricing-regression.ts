@@ -18,7 +18,7 @@ import {
 import {
   inspectAnthropicStreamText
 } from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
-import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing, listProviderModelPricingAsOf } from '../../modules/model-pricing/model-pricing.service.js'
+import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { retryDelayMs, retryAttemptCount, sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import { externalIntegrationScopeOptions } from '../../storage/external-integration-source-constants.js'
@@ -403,8 +403,7 @@ assert.equal(deepSeekV4ProCost, 0.00034945, 'DeepSeek V4 Pro 成本应按 cache 
 const deepSeekModelPricingList = listProviderModelPricing(DEEPSEEK_PROVIDER_CODE)
 assert.deepEqual(deepSeekModelPricingList.map((item) => item.model), [
   'deepseek-v4-flash',
-  'deepseek-v4-pro',
-  ...(new Date().toISOString().slice(0, 10) < '2026-07-24' ? ['deepseek-chat', 'deepseek-reasoner'] : [])
+  'deepseek-v4-pro'
 ], 'DeepSeek 价格目录应按当前官方优先模型到历史兼容名排序')
 const deepSeekPricingById = new Map(deepSeekModelPricingList.map((item) => [item.model, item]))
 for (const id of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
@@ -434,6 +433,7 @@ const glm52Cost = estimateProviderCostUsd({
 assert.equal(glm52Cost, 0.001384, 'GLM-5.2 成本应按 cache hit 与 cache miss 拆分')
 const glmModelPricingList = listProviderModelPricing(GLM_PROVIDER_CODE)
 assert.deepEqual(glmModelPricingList.map((item) => item.model), [
+  'glm-5.3',
   'glm-5.2',
   'glm-5.1',
   'glm-5',
@@ -450,6 +450,7 @@ assert.deepEqual(glmModelPricingList.map((item) => item.model), [
 ], 'GLM 价格目录应按官方当前模型从新到旧排序')
 const glmPricingById = new Map(glmModelPricingList.map((item) => [item.model, item]))
 for (const id of [
+  'glm-5.3',
   'glm-5.2',
   'glm-5.1',
   'glm-5',
@@ -467,6 +468,11 @@ for (const id of [
   assert(glmPricingById.has(id), `GLM 模型价格目录应包含 ${id}`)
   assert.deepEqual(glmPricingById.get(id)?.supportedApiProtocols, ['chat_completions'])
 }
+assert.equal(glmPricingById.get('glm-5.3')?.inputUsdPer1M, 1.4)
+assert.equal(glmPricingById.get('glm-5.3')?.cachedInputUsdPer1M, 0.26)
+assert.equal(glmPricingById.get('glm-5.3')?.outputUsdPer1M, 4.4)
+assert.deepEqual(glmPricingById.get('glm-5.3')?.supportedReasoningEfforts, ['low', 'high', 'max'])
+assert.equal(glmPricingById.get('glm-5.3')?.defaultReasoningEffort, 'max')
 assert.equal(glmPricingById.get('glm-5.2')?.inputUsdPer1M, 1.4)
 assert.equal(glmPricingById.get('glm-5.2')?.cachedInputUsdPer1M, 0.26)
 assert.equal(glmPricingById.get('glm-5.2')?.outputUsdPer1M, 4.4)
@@ -554,8 +560,31 @@ assert.equal(estimateProviderCostUsd({
   inputTokens: 200_000,
   outputTokens: 0
 }), 0.5, 'xAI 输入达到 200k 阈值时必须对全量输入启用长上下文价格')
+const xAIModelPricingList = listProviderModelPricing(XAI_PROVIDER_CODE)
+assert.deepEqual(xAIModelPricingList.map((item) => item.model), [
+  'grok-4.6',
+  'grok-imagine-image-2.0',
+  'grok-4.5',
+  'grok-build-0.1',
+  'grok-imagine-image-quality',
+  'grok-4.20-0309-non-reasoning',
+  'grok-4.20-0309-reasoning',
+  'grok-4.20-multi-agent-0309',
+  'grok-imagine-image'
+], 'xAI 价格目录应包含当前官方对话与图像模型，并按发布时间倒序')
+const xAIPricingById = new Map(xAIModelPricingList.map((item) => [item.model, item]))
+assert.equal(xAIPricingById.get('grok-4.6')?.inputUsdPer1M, 2)
+assert.equal(xAIPricingById.get('grok-4.6')?.cachedInputUsdPer1M, 0.5)
+assert.equal(xAIPricingById.get('grok-4.6')?.outputUsdPer1M, 6)
+assert.deepEqual(xAIPricingById.get('grok-4.6')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh'])
+assert.equal(xAIPricingById.get('grok-4.6')?.defaultReasoningEffort, 'high')
+assert.deepEqual(xAIPricingById.get('grok-imagine-image-2.0')?.supportedApiProtocols, ['images'])
+assert.deepEqual(xAIPricingById.get('grok-imagine-image-2.0')?.inputModalities, ['text', 'image'])
+assert.deepEqual(xAIPricingById.get('grok-imagine-image-2.0')?.outputModalities, ['image'])
+assert.equal(xAIPricingById.get('grok-imagine-image-2.0')?.outputUsdPerImage, 0.04)
 const geminiModelPricingList = listProviderModelPricing(GEMINI_PROVIDER_CODE)
 assert.deepEqual(geminiModelPricingList.map((item) => item.model), [
+  'gemini-3.7-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.5-flash',
@@ -570,6 +599,7 @@ assert.deepEqual(geminiModelPricingList.map((item) => item.model), [
 ], 'Gemini 价格目录应只包含当前收录的 Google 官方模型')
 const geminiPricingById = new Map(geminiModelPricingList.map((item) => [item.model, item]))
 for (const id of [
+  'gemini-3.7-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.5-flash',
@@ -597,6 +627,13 @@ for (const id of [
   assert.deepEqual(geminiPricingById.get(id)?.supportedServiceTiers, ['priority', 'flex'])
   assert.deepEqual(geminiPricingById.get(id)?.outputModalities, ['text'])
 }
+assert.equal(geminiPricingById.get('gemini-3.7-flash')?.defaultReasoningEffort, 'high')
+assert.deepEqual(geminiPricingById.get('gemini-3.7-flash')?.supportedReasoningEfforts, ['low', 'medium', 'high'])
+assert.deepEqual(geminiPricingById.get('gemini-3.7-flash')?.inputModalities, ['text', 'image'])
+assert.equal(geminiPricingById.get('gemini-3.7-flash')?.inputUsdPer1M, 0.75)
+assert.equal(geminiPricingById.get('gemini-3.7-flash')?.cachedInputUsdPer1M, 0.075)
+assert.equal(geminiPricingById.get('gemini-3.7-flash')?.outputUsdPer1M, 3.75)
+assert.equal(geminiPricingById.get('gemini-3.7-flash')?.cacheStorageUsdPer1MPerHour, 0.5)
 assert.equal(geminiPricingById.get('gemini-3.5-flash')?.defaultReasoningEffort, 'medium')
 assert.equal(geminiPricingById.get('gemini-3.6-flash')?.defaultReasoningEffort, 'medium')
 assert.equal(geminiPricingById.get('gemini-3.5-flash-lite')?.defaultReasoningEffort, 'minimal')
@@ -707,11 +744,6 @@ assert.equal(anthropicPricingById.get('claude-opus-5')?.maxOutputTokens, 128_000
 assert.equal(anthropicPricingById.get('claude-opus-4-8')?.maxOutputTokens, 128_000)
 assert.equal(anthropicPricingById.get('claude-opus-4-5')?.maxOutputTokens, 64_000)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.maxOutputTokens, 64_000)
-const anthropicHistoricalPricingById = new Map(listProviderModelPricingAsOf(ANTHROPIC_PROVIDER_CODE, '2026-08-04').map((item) => [item.model, item]))
-assert.equal(anthropicHistoricalPricingById.get('claude-opus-4-1')?.shutdownDate, '2026-08-05')
-assert.equal(anthropicHistoricalPricingById.get('claude-opus-4-1-20250805')?.shutdownDate, '2026-08-05')
-assert.equal(listProviderModelPricingAsOf(ANTHROPIC_PROVIDER_CODE, '2026-08-05').some((item) => item.model === 'claude-opus-4-1'), false, 'Opus 4.1 应从 2026-08-05 起隐藏')
-assert.equal(listProviderModelPricingAsOf(ANTHROPIC_PROVIDER_CODE, '2026-08-05').some((item) => item.model === 'claude-opus-4-1-20250805'), false, 'Opus 4.1 dated ID 应从 2026-08-05 起隐藏')
 assert.equal(anthropicPricingById.get('claude-haiku-4-5-20251001')?.releaseDate, '2025-10-01')
 assert.equal(anthropicPricingById.get('claude-sonnet-4-5-20250929')?.releaseDate, '2025-09-29')
 assert.equal(anthropicPricingById.get('claude-opus-4-5-20251101')?.releaseDate, '2025-11-01')
@@ -720,7 +752,6 @@ assert.equal(anthropicPricingById.get('claude-fable-5')?.defaultReasoningEffort,
 assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
 assert.equal(anthropicPricingById.get('claude-opus-5')?.defaultReasoningEffort, 'high')
 assert.deepEqual(anthropicPricingById.get('claude-sonnet-4-6')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'max'])
-assert.equal(anthropicHistoricalPricingById.get('claude-opus-4-1')?.supportedReasoningEfforts.length, 0)
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedApiProtocols, ['messages', 'message_token_counting'])
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.inputModalities, ['text', 'image'])
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.outputModalities, ['text'])
@@ -820,6 +851,7 @@ for (const id of [
   'gpt-5.3-codex-spark',
   'codex-mini-latest',
   'o1-mini',
+  'gpt-5.3-chat-latest',
   'gpt-5.2-chat-latest',
   'gpt-5.2-codex',
   'gpt-5.1-chat-latest',
@@ -854,8 +886,6 @@ assert.deepEqual(openAIModelPricingById.get('gpt-5.2')?.supportedApiProtocols, [
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2-2025-12-11')?.supportedApiProtocols, ['chat_completions', 'responses'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5.3-codex')?.supportedApiProtocols, ['responses'])
 assert.equal(openAIModelPricingById.has('gpt-5.2-codex'), false)
-assert.equal(listProviderModelPricingAsOf(GPT_VENDOR_CODE, '2026-08-09').some((item) => item.model === 'gpt-5.2-chat-latest'), true, 'gpt-5.2-chat-latest 应在 shutdown date 前可见')
-assert.equal(listProviderModelPricingAsOf(GPT_VENDOR_CODE, '2026-08-10').some((item) => item.model === 'gpt-5.2-chat-latest'), false, 'gpt-5.2-chat-latest 应从 2026-08-10 起隐藏')
 assert.deepEqual(openAIModelPricingById.get('gpt-image-1')?.supportedApiProtocols, ['images', 'responses'])
 assert.equal(openAIModelPricingById.has('gpt-4o-mini-tts'), false)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.releaseDate, '2026-06-26')

@@ -14,6 +14,7 @@ import {
 } from '../../domain/provider-protocol.js'
 import { genericApiKeyQuotaCooldownUntil } from '../../modules/gateway/policy/api-key-quota-recovery.js'
 import { quotaRecoveryCooldownUntil } from '../../modules/accounts/quota-recovery-policy.js'
+import { effectiveAccountErrorHandlingRules } from '../../modules/accounts/account-error-policy-system-rules.js'
 import { passiveScheduleJitterWindowMs } from '../../shared/passive-schedule-jitter.js'
 
 const settings: GatewaySettings = {
@@ -54,7 +55,7 @@ const genericBaselineMs = 60 * 60_000
 const genericWindowMs = passiveScheduleJitterWindowMs(genericBaselineMs)
 for (const value of [stableGenericFirst, stableGenericSecond]) {
   const delayMs = Date.parse(value) - stableGenericNow.getTime()
-  assert(delayMs >= genericBaselineMs && delayMs <= genericBaselineMs + genericWindowMs && delayMs !== genericBaselineMs, '通用额度恢复必须在硬边界之后使用全局偏移')
+  assert(delayMs >= genericBaselineMs - genericWindowMs && delayMs <= genericBaselineMs + genericWindowMs && delayMs !== genericBaselineMs, '通用额度恢复必须使用全局前后错峰窗口')
 }
 const configuredDuration = quotaRecoveryCooldownUntil({
   accountType: 'api_key',
@@ -62,7 +63,7 @@ const configuredDuration = quotaRecoveryCooldownUntil({
   now: stableGenericNow,
   policy: { api_key: { reset_strategy: 'duration', duration_minutes: 90, timezone: 'UTC' } }
 })
-assert(Date.parse(configuredDuration) - stableGenericNow.getTime() >= 90 * 60_000, '账户级 API Key 恢复间隔配置必须生效')
+assert(Date.parse(configuredDuration) - stableGenericNow.getTime() >= 60 * 60_000, '账户级 API Key 恢复间隔配置必须在统一错峰窗口内生效')
 assert(Date.parse(configuredDuration) - stableGenericNow.getTime() <= 120 * 60_000, '账户级 API Key 恢复间隔仍必须受系统错峰上限约束')
 const configuredOAuthDaily = quotaRecoveryCooldownUntil({
   accountType: 'oauth',
@@ -70,8 +71,7 @@ const configuredOAuthDaily = quotaRecoveryCooldownUntil({
   now: new Date('2026-08-24T01:00:00.000Z'),
   policy: { oauth: { reset_strategy: 'daily', daily_reset_hour: 3, timezone: 'UTC' } }
 })
-assert(Date.parse(configuredOAuthDaily) - Date.parse('2026-08-24T03:00:00.000Z') >= 0, 'OAuth daily 恢复策略必须可配置且按 UTC 计算')
-assert(Date.parse(configuredOAuthDaily) - Date.parse('2026-08-24T03:00:00.000Z') <= 30 * 60_000, 'OAuth daily 必须在硬边界之后使用全局偏移')
+assert(Math.abs(Date.parse(configuredOAuthDaily) - Date.parse('2026-08-24T03:00:00.000Z')) <= 30 * 60_000, 'OAuth daily 恢复策略必须按 UTC 并在统一错峰窗口内计算')
 
 const accountErrorPolicySource = readFileSync(new URL('../../modules/gateway/policy/account-error-policy.service.ts', import.meta.url), 'utf8')
 assert.match(
@@ -118,6 +118,49 @@ const textKeywordDecision = decideAccountErrorPolicy({
 assert.equal(textKeywordDecision?.action, 'cooldown', '用户显式账户错误策略命中后应允许改变账户状态')
 assert.equal(textKeywordDecision?.cooldownStatus, 'temporary_unavailable')
 assert.equal(textKeywordDecision?.ruleName, '文本 200')
+
+const genericDurationStartedAt = Date.now()
+const genericDurationDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_generic_duration_jitter',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  credentials: {
+    error_handling_rules: [tempRule({ name: '429 固定时长', status_codes: [429], action: 'rate_limited', reset_strategy: 'duration', duration_hours: 1 })]
+  },
+  status: 'active'
+}, 429, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"message":"too many requests"}}'), settings)
+const genericDurationDelay = Date.parse(genericDurationDecision!.cooldownUntil!) - genericDurationStartedAt
+const genericDurationWindow = passiveScheduleJitterWindowMs(60 * 60_000)
+assert(
+  genericDurationDelay >= 60 * 60_000 - genericDurationWindow - 10_000
+    && genericDurationDelay <= 60 * 60_000 + genericDurationWindow + 10_000,
+  '普通固定时长规则必须复用全局前后错峰'
+)
+
+const genericDailyStartedAt = new Date()
+const genericDailyHour = (genericDailyStartedAt.getHours() + 1) % 24
+const genericDailyBoundary = new Date(genericDailyStartedAt)
+genericDailyBoundary.setMinutes(0, 0, 0)
+genericDailyBoundary.setHours(genericDailyHour)
+if (genericDailyBoundary.getTime() <= genericDailyStartedAt.getTime()) genericDailyBoundary.setDate(genericDailyBoundary.getDate() + 1)
+const genericDailyDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_generic_daily_jitter',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  credentials: {
+    error_handling_rules: [tempRule({ name: '429 每天固定时间', status_codes: [429], action: 'rate_limited', reset_strategy: 'daily', daily_reset_hour: genericDailyHour })]
+  },
+  status: 'active'
+}, 429, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"message":"too many requests"}}'), settings)
+const genericDailyWindow = passiveScheduleJitterWindowMs(genericDailyBoundary.getTime() - genericDailyStartedAt.getTime())
+assert(
+  Math.abs(Date.parse(genericDailyDecision!.cooldownUntil!) - genericDailyBoundary.getTime()) <= genericDailyWindow + 10_000,
+  '普通每天固定时间规则必须复用全局前后错峰'
+)
 
 const successDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_validation',
@@ -177,8 +220,54 @@ assert.equal(systemQuotaDecision?.ruleSource, 'system')
 assert.equal(systemQuotaDecision?.ruleId, 'system.upstream_insufficient_quota')
 assert.equal(systemQuotaDecision?.ruleName, '上游额度不足')
 assert.equal(systemQuotaDecision?.cooldownStatus, 'rate_limited')
-assert.ok(systemQuotaDecision?.cooldownUntil, '系统额度规则命中必须返回下一次每日恢复时间')
+assert.ok(systemQuotaDecision?.cooldownUntil, '系统额度规则命中必须返回恢复时间')
 assert(Number.isFinite(Date.parse(systemQuotaDecision!.cooldownUntil!)) && Date.parse(systemQuotaDecision!.cooldownUntil!) > Date.now(), '系统额度规则 cooldownUntil 必须是未来 RFC3339 时间')
+
+const paymentRequiredQuotaDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_system_402',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  credentials: {},
+  status: 'active'
+}, 402, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"message":"Payment Required"}}'), settings)
+assert.equal(paymentRequiredQuotaDecision?.ruleId, 'system.upstream_insufficient_quota', 'HTTP 402 必须命中系统额度规则')
+assert.equal(paymentRequiredQuotaDecision?.ruleSource, 'system')
+
+const accountQuotaOverrideRule = tempRule({
+  name: '账户额度不足处理',
+  status_codes: [402, 403],
+  action: 'retry_next'
+})
+const effectiveReplacement = effectiveAccountErrorHandlingRules(
+  [accountQuotaOverrideRule],
+  [{ system_rule_id: 'system.upstream_insufficient_quota', action: 'replace', rule_index: 0 }]
+)
+assert.deepEqual(
+  effectiveReplacement.map((rule) => ({ id: rule.id, source: rule.source, inherited: rule.inherited, name: rule.name })),
+  [{ id: 'system.upstream_insufficient_quota', source: 'account', inherited: false, name: '账户额度不足处理' }],
+  '修改内置规则后，高级详情只能展示账户副本，不能继续展示全局规则'
+)
+assert.deepEqual(
+  effectiveAccountErrorHandlingRules([], [{ system_rule_id: 'system.upstream_insufficient_quota', action: 'delete' }]),
+  [],
+  '删除内置规则后必须持久化删除覆盖，刷新时不得重新注入全局规则'
+)
+const accountQuotaOverrideDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_account_quota_override',
+  providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  type: 'api_key',
+  credentials: {
+    error_handling_rules: [accountQuotaOverrideRule],
+    error_handling_rule_overrides: [{ system_rule_id: 'system.upstream_insufficient_quota', action: 'replace', rule_index: 0 }]
+  },
+  status: 'active'
+}, 402, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"message":"Payment Required"}}'), settings)
+assert.equal(accountQuotaOverrideDecision?.action, 'retry_next', '账户副本必须按普通规则动作执行，而不是继续走全局额度特殊处理')
+assert.equal(accountQuotaOverrideDecision?.ruleSource, 'account')
+assert.equal(accountQuotaOverrideDecision?.ruleName, '账户额度不足处理')
 
 const oauthQuotaDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_oauth_fixed_quota',
@@ -208,7 +297,7 @@ assert.equal(multiKeyApiKeyQuotaDecision?.quotaRecoveryMode, 'generic', '没有 
 assert.equal(multiKeyApiKeyQuotaDecision?.cooldownStatus, 'rate_limited')
 assert(multiKeyApiKeyQuotaDecision?.cooldownUntil, '通用 API Key 额度恢复必须提供复测边界')
 const genericApiKeyDelay = Date.parse(multiKeyApiKeyQuotaDecision!.cooldownUntil!) - Date.now()
-assert(genericApiKeyDelay >= 60 * 60_000 - 10_000 && genericApiKeyDelay <= 90 * 60_000 + 10_000, '通用 API Key 额度复测默认应为 1 小时并带全局偏移')
+assert(genericApiKeyDelay >= 30 * 60_000 - 10_000 && genericApiKeyDelay <= 90 * 60_000 + 10_000, '通用 API Key 额度复测默认应为 1 小时并使用全局前后错峰')
 
 const configuredApiKeyQuotaDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_configured_quota',
@@ -227,7 +316,7 @@ const configuredApiKeyQuotaDecision = decideAccountErrorPolicy({
   status: 'active'
 }, 403, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"code":"insufficient_user_quota"}}'), settings)
 const configuredApiKeyDelay = Date.parse(configuredApiKeyQuotaDecision!.cooldownUntil!) - Date.now()
-assert(configuredApiKeyDelay >= 90 * 60_000 - 10_000 && configuredApiKeyDelay <= 120 * 60_000 + 10_000, '账户 API Key 额度恢复策略必须影响系统额度决策')
+assert(configuredApiKeyDelay >= 60 * 60_000 - 10_000 && configuredApiKeyDelay <= 120 * 60_000 + 10_000, '账户 API Key 额度恢复策略必须在统一错峰窗口内影响系统额度决策')
 
 const normalizedRuntimeApiKeysQuotaDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_runtime_api_keys_quota',

@@ -1,7 +1,25 @@
-// Curated from official Z.ai / BigModel GLM text model and pricing docs on 2026-06-22.
+// Curated from official Z.ai / BigModel GLM text model and pricing docs on 2026-08-26.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
 
 export const glmModelPricingData = [
+  {
+    model: 'glm-5.3',
+    mode: 'chat',
+    catalog_order: 0,
+    release_date: '2026-08-18',
+    input_cost_per_token: 1.4 / 1_000_000,
+    cache_read_input_token_cost: 0.26 / 1_000_000,
+    output_cost_per_token: 4.4 / 1_000_000,
+    context_window_tokens: 1_000_000,
+    max_output_tokens: 128_000,
+    supported_api_protocols: ['chat_completions'],
+    supports_prompt_caching: true,
+    supports_service_tier: false,
+    input_modalities: ['text'],
+    output_modalities: ['text'],
+    supported_reasoning_efforts: ['low', 'high', 'max'],
+    default_reasoning_effort: 'max'
+  },
   {
     model: 'glm-5.2',
     mode: 'chat',

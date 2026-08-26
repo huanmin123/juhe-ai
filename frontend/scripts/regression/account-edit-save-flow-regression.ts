@@ -11,7 +11,6 @@ import {
   buildAccountSavePayload,
   validateAccountSaveForm
 } from '../../src/views/accounts/accountSavePayload'
-import { defaultAccountQuotaRecoverySchedule } from '../../src/views/accounts/accountQuotaRecoveryPolicyTypes'
 import {
   buildAccountAdvancedUpdatePatch,
   buildAccountBasicEditSnapshot,
@@ -29,6 +28,7 @@ const frontendRoot = resolve(currentDir, '../..')
 const accountsViewSource = readSource('src/views/accounts/AccountsView.vue')
 const editModalSource = readSource('src/views/accounts/AccountEditModal.vue')
 const errorPolicyCardSource = readSource('src/views/accounts/AccountErrorPolicyCard.vue')
+const errorPolicyTypesSource = readSource('src/views/accounts/accountErrorPolicyTypes.ts')
 const errorPolicyLoaderSource = readSource('src/views/accounts/accountEditFormLoaders.ts')
 const basicInfoSource = readSource('src/views/accounts/AccountBasicInfoSection.vue')
 const editTestSource = readSource('src/views/accounts/useAccountEditTestAction.ts')
@@ -102,11 +102,23 @@ assert.match(errorPolicyLoaderSource, /loadInheritedErrorPolicyRules\(advanced\.
 assert.match(errorPolicyLoaderSource, /filter\(\(rule\) => rule\.source === 'system' && rule\.inherited === true && rule\.editable === false\)/, '只有不可编辑系统规则可进入继承展示列表')
 assert.match(errorPolicyLoaderSource, /inheritedErrorPolicyRules: systemInheritedErrorPolicyRulesPreview\(\)/, '克隆账户在尚无高级详情 DTO 时也必须展示只读系统规则')
 assert.match(editFormSource, /inheritedErrorPolicyRules\.value = systemInheritedErrorPolicyRulesPreview\(\)/, '新建账户在尚无高级详情 DTO 时也必须展示只读系统规则')
+assert.match(errorPolicyTypesSource, /status_codes: '402, 403'/, '上游额度不足规则前端预览必须使用逗号分隔的 402、403 状态码')
 assert.match(editModalSource, /:inherited-error-policy-rules="inheritedErrorPolicyRules"/, '错误策略卡片必须接收独立继承规则列表')
+assert.match(editModalSource, /v-model:error-handling-rule-overrides="form\.errorHandlingRuleOverrides"/, '内置规则覆盖必须通过错误策略卡片传入并保持保存模型')
+assert.doesNotMatch(editModalSource, /AccountQuotaRecoveryPolicyCard|quota-recovery-policy/, '账户编辑弹窗不得保留独立额度恢复策略配置')
 assert.match(errorPolicyCardSource, /<a-tag v-if="item\.inherited" color="cyan">继承<\/a-tag>/, '继承规则必须显示继承标签')
-assert.match(errorPolicyCardSource, /!readonly && !item\.inherited/, '继承规则不得显示编辑、排序或删除操作')
-assert.match(errorPolicyCardSource, /displayRules = computed\(\(\) => \[/, '系统规则与本地规则必须合并在同一展示列表')
-assert.match(errorPolicyCardSource, /inheritedErrorPolicyRules\.map[\s\S]*rules\.value\.map/, '展示列表必须系统规则优先且本地规则仍来自可保存表单')
+assert.doesNotMatch(errorPolicyCardSource, /!readonly && !item\.inherited/, '内置规则不得因继承状态禁用普通操作')
+assert.match(errorPolicyCardSource, /displayRules = computed<DisplayRule\[]>\(\(\) => \[/, '系统规则与本地规则必须合并在同一展示列表')
+assert.match(errorPolicyCardSource, /inheritedErrorPolicyRules\.filter[\s\S]*rules\.value\.map/, '展示列表必须系统规则优先且本地规则仍来自可保存表单')
+assert.match(errorPolicyCardSource, /@update:checked="updateDisplayRuleEnabled\(item, \$event\)"/, '内置规则的启停操作必须在首次操作时转为账户规则')
+assert.match(errorPolicyCardSource, /@update:value="updateDisplayRuleField\(item, 'name', \$event\)"/, '编辑内置规则字段必须在首次操作时转为账户规则')
+assert.doesNotMatch(errorPolicyCardSource, /readonly \|\| item\.inherited/, '内置规则不得因继承状态禁用字段')
+assert.match(errorPolicyCardSource, /action: 'replace', rule_index: index/, '首次编辑必须创建账户替代规则覆盖')
+assert.match(errorPolicyCardSource, /action: 'delete'/, '删除内置规则必须创建账户删除覆盖')
+assert.match(errorPolicyCardSource, /replacementRuleKey\(localIndex\) \?\? ruleKey\(localIndex\)/, '内置规则复制为账户副本后必须保持同一列表项 key，首次输入不能丢失焦点')
+assert.match(errorPolicyCardSource, /item\.rule\.action === 'rate_limited'/, '内置规则必须复用普通限流恢复字段')
+assert.doesNotMatch(errorPolicyCardSource, /AccountQuotaRecoveryPolicyCard|isUpstreamInsufficientQuotaRule/, '内置规则不得再使用特殊恢复组件或字段分支')
+assert.match(errorPolicyLoaderSource, /errorHandlingRuleOverrides: Array\.isArray\(credentials\.error_handling_rule_overrides\)/, '编辑账户必须加载已保存的内置规则覆盖')
 assert.match(
   editFormSource,
   /editingAccountDetail = ref<AccountEditBasicDetail>\(\)[\s\S]*editingAccountAdvancedDetail = ref<AccountAdvancedDetail>\(\)/,
@@ -535,38 +547,6 @@ assert.equal(
   buildAccountAdvancedUpdatePatch(advancedBaseline, advancedBaseline, 11),
   undefined,
   '高级编辑没有变化时不得产生更新请求体'
-)
-const quotaPolicyForm = defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
-quotaPolicyForm.quotaRecoveryPolicy = {
-  api_key: defaultAccountQuotaRecoverySchedule('api_key')
-}
-const quotaPolicyBaseline = buildAccountSavePayload({
-  accounts: [],
-  form: quotaPolicyForm,
-  errorPolicyRules: [],
-  responseInspectionRules: []
-})
-quotaPolicyForm.quotaRecoveryPolicy.api_key!.duration_minutes = 61
-const quotaPolicyCurrent = buildAccountSavePayload({
-  accounts: [],
-  form: quotaPolicyForm,
-  errorPolicyRules: [],
-  responseInspectionRules: []
-})
-assert.equal(
-  (quotaPolicyBaseline.credentials.quota_recovery_policy as { api_key: { duration_minutes: number } }).api_key.duration_minutes,
-  60,
-  '配额策略编辑基线不得与当前表单共享嵌套对象'
-)
-assert.deepEqual(
-  buildAccountAdvancedUpdatePatch(quotaPolicyCurrent, quotaPolicyBaseline, 11),
-  {
-    credentialsPatch: {
-      quota_recovery_policy: quotaPolicyCurrent.credentials.quota_recovery_policy
-    },
-    expectedConfigRevision: 11
-  },
-  '修改配额策略嵌套字段必须产生 quota_recovery_policy credentialsPatch'
 )
 const advancedPriorityChanged = structuredClone(advancedBaseline)
 advancedPriorityChanged.priority += 1

@@ -205,7 +205,7 @@ const runningLines = accountTestSingleOutputLines({
 })
 assertLineIncludes(runningLines, '测试请求形态：Responses API (Streaming)', 'OAuth 账户应展示固定 endpoint mode')
 assertLineIncludes(runningLines, '后台任务：task_account_test_display_oauth（测试中）', '运行输出应展示后台任务状态')
-assertLineIncludes(runningLines, '当前窗口估计：第 1/3 次', '运行输出应展示当前等待窗口')
+assertLineIncludes(runningLines, '本次诊断最长等待 60s，超时会自动停止', '运行输出应只展示统一总时限，不展示内部重试阶梯')
 assertLineIncludes(runningLines, 'OAuth Token 刷新也包含在当前等待窗口内', 'OAuth 运行输出应展示 token 刷新提示')
 
 const imageRunningLines = accountTestSingleOutputLines({
@@ -213,7 +213,7 @@ const imageRunningLines = accountTestSingleOutputLines({
   activeTask: taskFixture(apiKeyAccount, {
     status: 'running',
     startedAt: new Date(Date.now() - 1500).toISOString(),
-    message: '图像生成测试中：第 1/1 次，本次最多等待 120s，总上限 120s',
+    message: '图像生成测试中：本次诊断最长等待 120s',
     testEndpointMode: 'images_json'
   }),
   testEndpointMode: 'images_json',
@@ -222,8 +222,25 @@ const imageRunningLines = accountTestSingleOutputLines({
   providerLabel: () => 'OpenAI',
   running: true
 })
-assertLineIncludes(imageRunningLines, '当前窗口估计：第 1/1 次', '图片测试运行中应展示单次 120 秒窗口')
-assertLineIncludes(imageRunningLines, '图像生成测试中：第 1/1 次，本次最多等待 120s，总上限 120s', '图片测试运行中必须明确等待真实生图')
+assertLineIncludes(imageRunningLines, '本次诊断最长等待 120s，超时会自动停止', '图片测试运行中必须只展示单次 120 秒总时限')
+assertLineIncludes(imageRunningLines, '图像生成测试中：本次诊断最长等待 120s', '图片测试运行中必须明确等待真实生图')
+
+const stoppingLines = accountTestSingleOutputLines({
+  account: apiKeyAccount,
+  activeTask: taskFixture(apiKeyAccount, {
+    status: 'running',
+    cancelRequested: true,
+    message: '正在停止测试',
+    testEndpointMode: 'images_json'
+  }),
+  testEndpointMode: 'images_json',
+  selectedEndpointModeText: 'Images API',
+  model: 'gpt-image-2',
+  providerLabel: () => 'OpenAI',
+  running: true
+})
+assertLineIncludes(stoppingLines, '后台任务：task_account_test_display_api_key（正在停止）', '取消请求未确认前必须保持后台任务为停止中')
+assertLineIncludes(stoppingLines, '正在停止测试', '取消请求未确认前必须展示正在停止')
 
 const imageSuccessLines = accountTestSingleOutputLines({
   account: apiKeyAccount,

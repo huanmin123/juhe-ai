@@ -18,7 +18,13 @@ export interface AccountErrorPolicyRuleForm {
   description: string
 }
 
-/** A system rule rendered in the same list but never included in save payloads. */
+export interface AccountErrorPolicyRuleOverrideForm {
+  system_rule_id: 'system.upstream_insufficient_quota'
+  action: 'replace' | 'delete'
+  rule_index?: number
+}
+
+/** A system rule rendered as the account's global default until the first edit. */
 export interface AccountErrorPolicyInheritedRule extends AccountErrorPolicyRuleForm {
   id: string
   source: 'system'
@@ -39,7 +45,7 @@ export function systemInheritedErrorPolicyRulesPreview(): AccountErrorPolicyInhe
     enabled: true,
     name: '上游额度不足',
     priority: 1,
-    status_codes: '403',
+    status_codes: '402, 403',
     error_codes: [
       'insufficient_user_quota',
       'insufficient_quota',
@@ -52,12 +58,12 @@ export function systemInheritedErrorPolicyRulesPreview(): AccountErrorPolicyInhe
     error_types: '',
     keywords: '余额不足, 额度不足, insufficient balance, insufficient quota, credit balance too low, wallet balance exhausted',
     action: 'rate_limited',
-    reset_strategy: 'daily',
-    duration_hours: null,
+    reset_strategy: 'duration',
+    duration_hours: 1,
     daily_reset_hour: 0,
     weekly_reset_day: null,
     weekly_reset_hour: null,
-    description: '仅在 HTTP 403 且明确额度不足时进入限流中；官方 OAuth 遵守固定场景，API Key 优先遵守供应商恢复时间，否则按通用间隔复测。'
+    description: '匹配 HTTP 402 或 HTTP 403 的明确余额/额度不足响应；默认进入限流，可按普通规则调整恢复策略。'
   }]
 }
 

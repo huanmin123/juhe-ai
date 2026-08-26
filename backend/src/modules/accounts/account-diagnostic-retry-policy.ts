@@ -39,7 +39,11 @@ export function diagnosticAccountTestGatewaySettingsOverride(
     textFirstResponseTimeoutSeconds: timeoutSeconds,
     textStreamIdleTimeoutSeconds: timeoutSeconds,
     noAvailableAccountWaitTimeoutSeconds: timeoutSeconds,
-    textUncommittedAttemptMaxLifetimeSeconds: Math.max(60, timeoutSeconds)
+    textUncommittedAttemptMaxLifetimeSeconds: Math.max(60, timeoutSeconds),
+    imageFirstResponseTimeoutSeconds: timeoutSeconds,
+    imageStreamIdleTimeoutSeconds: timeoutSeconds,
+    imageUncommittedAttemptMaxLifetimeSeconds: Math.max(60, timeoutSeconds),
+    imageRequestWallTimeoutSeconds: timeoutSeconds
   }
 }
 

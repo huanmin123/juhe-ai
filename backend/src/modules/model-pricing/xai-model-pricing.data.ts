@@ -1,8 +1,13 @@
-// Curated from the official xAI models, pricing, and release notes pages on 2026-07-23.
+// Curated from the official xAI models, pricing, and release notes pages on 2026-08-26.
 // Token prices are USD per token. Models with a 200k threshold charge the
 // higher rate for all request tokens once the prompt reaches the threshold.
 
 export const xAIModelPricingData = [
+  textModel('grok-4.6', 500_000, 2, 0.5, 6, {
+    releaseDate: '2026-08-12',
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'high'
+  }),
   textModel('grok-4.5', 500_000, 2, 0.3, 6, {
     releaseDate: '2026-07-08',
     supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
@@ -21,6 +26,15 @@ export const xAIModelPricingData = [
     releaseDate: '2026-03-10',
     supportedApiProtocols: ['responses']
   }),
+  {
+    model: 'grok-imagine-image-2.0',
+    mode: 'image',
+    release_date: '2026-08-07',
+    output_cost_per_image: 0.04,
+    supported_api_protocols: ['images'] as const,
+    input_modalities: ['text', 'image'] as const,
+    output_modalities: ['image'] as const
+  },
   {
     model: 'grok-imagine-image',
     mode: 'image',

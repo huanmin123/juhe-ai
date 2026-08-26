@@ -647,7 +647,14 @@ export async function testOpenAIAccount(
       message: success
         ? accountTestSuccessMessage(account, responseTruncated, requestUrl)
         : probeKind === 'image_generation'
-          ? proxyFailureMessage || protocolEvidenceError || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode)
+          ? accountTestImageFailureMessage({
+            proxyFailureMessage,
+            protocolEvidenceError,
+            upstreamErrorCode,
+            upstreamMessage,
+            statusCode: diagnosticStatusCode,
+            downstreamStatusCode: response.statusCode
+          })
           : proxyFailureMessage || outputChallengeError || protocolEvidenceError || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
       model: testedModel,
       ...accountTestModelMappingFields(modelMapping),
@@ -673,8 +680,8 @@ export async function testOpenAIAccount(
   } catch (error) {
     const normalizedError = input.signal?.aborted ? accountTestAbortError(input.signal) : error
     const suppressDiagnostics = probeKind === 'image_generation'
-    const message = suppressDiagnostics
-      ? accountTestFailureMessage(account, requestUrl)
+    const message = suppressDiagnostics && !(normalizedError instanceof AccountTestAbortError)
+      ? accountTestImageExceptionMessage(normalizedError)
       : normalizedError instanceof Error ? normalizedError.message : accountTestFailureMessage(account, requestUrl)
     const accountFailureEligible = accountTestFailureEligible(normalizedError)
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
@@ -850,6 +857,33 @@ function accountTestHttpFailureMessage(statusCode: number | undefined, downstrea
     return `API 返回 HTTP ${statusCode}`
   }
   return `API 返回 HTTP ${downstreamStatusCode}`
+}
+
+function accountTestImageFailureMessage(input: {
+  proxyFailureMessage?: string
+  protocolEvidenceError?: string
+  upstreamErrorCode?: string
+  upstreamMessage?: string
+  statusCode?: number
+  downstreamStatusCode: number
+}): string {
+  if (input.proxyFailureMessage) return input.proxyFailureMessage
+  if (input.upstreamMessage) {
+    const errorCode = input.upstreamErrorCode ? `（${input.upstreamErrorCode}）` : ''
+    return `上游 Images API 返回错误${errorCode}：${input.upstreamMessage}`
+  }
+  if (input.upstreamErrorCode) return `上游 Images API 返回错误（${input.upstreamErrorCode}）`
+  return input.protocolEvidenceError ?? accountTestHttpFailureMessage(input.statusCode, input.downstreamStatusCode)
+}
+
+function accountTestImageExceptionMessage(error: unknown): string {
+  if (error instanceof AccountTestConfigurationError) {
+    return 'OpenAI Images API 测试配置无效，请检查账户配置'
+  }
+  if (error instanceof TypeError) {
+    return 'OpenAI Images API 请求未建立连接，请检查上游地址或网络'
+  }
+  return 'OpenAI Images API 请求异常，请检查服务日志后重试'
 }
 
 function isHttpStatusCode(value: unknown): value is number {

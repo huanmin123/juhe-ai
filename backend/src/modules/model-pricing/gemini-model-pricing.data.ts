@@ -1,6 +1,6 @@
 import type { RawModelPricing } from './provider-driver.types.js'
 
-// Curated from the official Gemini API model, pricing, release, and deprecation docs on 2026-07-23.
+// Curated from the official Gemini API model, pricing, release, and deprecation docs on 2026-08-26.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
 const textGenerationProtocols = ['chat_completions', 'generate_content', 'stream_generate_content', 'count_tokens'] as const
 const embeddingProtocols = ['embed_content'] as const
@@ -14,6 +14,25 @@ interface GeminiTierPrices {
 }
 
 export const geminiModelPricingData: RawModelPricing[] = [
+  textModel({
+    model: 'gemini-3.7-flash',
+    catalogOrder: 0,
+    releaseDate: '2026-08-13',
+    inputUsdPer1M: 0.75,
+    outputUsdPer1M: 3.75,
+    cachedInputUsdPer1M: 0.075,
+    cacheStorageUsdPer1MPerHour: 0.5,
+    serviceTierPrices: {
+      flex: { inputUsdPer1M: 0.375, outputUsdPer1M: 1.875, cachedInputUsdPer1M: 0.0375, cacheStorageUsdPer1MPerHour: 0.5 },
+      priority: { inputUsdPer1M: 1.35, outputUsdPer1M: 6.75, cachedInputUsdPer1M: 0.135, cacheStorageUsdPer1MPerHour: 0.5 }
+    },
+    supported_api_protocols: ['chat_completions', 'generate_content', 'stream_generate_content', 'count_tokens', 'interactions'],
+    input_modalities: ['text', 'image'],
+    output_modalities: ['text'],
+    supported_tools: ['code_execution', 'file_search', 'function_calling', 'google_maps_grounding', 'google_search_grounding', 'structured_outputs', 'url_context', 'computer_use'],
+    supported_reasoning_efforts: ['low', 'medium', 'high'],
+    default_reasoning_effort: 'high'
+  }),
   textModel({
     model: 'gemini-3.6-flash',
     catalogOrder: 1,
@@ -235,17 +254,6 @@ export const geminiModelPricingData: RawModelPricing[] = [
     maxInputTokens: 8_192,
     supported_api_protocols: ['embed_content'],
     input_modalities: ['text', 'image', 'video', 'audio', 'file'],
-    output_modalities: ['text']
-  }),
-  embeddingModel({
-    model: 'gemini-embedding-001',
-    catalogOrder: 110,
-    releaseDate: '2025-07-14',
-    inputUsdPer1M: 0.15,
-    shutdownDate: '2026-07-14',
-    maxInputTokens: 2_048,
-    supported_api_protocols: ['embed_content'],
-    input_modalities: ['text'],
     output_modalities: ['text']
   })
 ]

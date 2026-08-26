@@ -220,13 +220,8 @@
 
               <AccountErrorPolicyCard
                 v-model:rules="errorPolicyRules"
+                v-model:error-handling-rule-overrides="form.errorHandlingRuleOverrides"
                 :inherited-error-policy-rules="inheritedErrorPolicyRules"
-                :readonly="authorizedEditing"
-              />
-
-              <AccountQuotaRecoveryPolicyCard
-                v-model:policy="form.quotaRecoveryPolicy"
-                :account-type="form.type"
                 :readonly="authorizedEditing"
               />
 
@@ -263,7 +258,6 @@ import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSec
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
-import AccountQuotaRecoveryPolicyCard from './AccountQuotaRecoveryPolicyCard.vue'
 import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
 import AccountBalanceQuerySection from './AccountBalanceQuerySection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'

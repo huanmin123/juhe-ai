@@ -90,7 +90,8 @@ export function defaultAccountForm(
     balanceQueryRemainingPointer: '',
     balanceQueryTotalPointer: '',
     balanceQueryUsedPointer: '',
-    balanceQueryDivisor: ''
+    balanceQueryDivisor: '',
+    errorHandlingRuleOverrides: []
   }
 }
 

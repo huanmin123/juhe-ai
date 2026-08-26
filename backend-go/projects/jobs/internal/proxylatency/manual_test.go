@@ -81,6 +81,9 @@ func TestManualReportPreservesProviderTargetURLAndSyntheticOptionality(t *testin
 	if report.Score != 90 || report.Grade != "A" || report.Message != "代理可用，存在 1 项告警" {
 		t.Fatalf("unexpected manual score/grade/message: %+v", report)
 	}
+	if report.TestedAt != "2026-08-23T00:00:05.123Z" {
+		t.Fatalf("manual report must match Node millisecond ISO timestamp: %q", report.TestedAt)
+	}
 	if len(report.Items) != 3 || report.Items[0].TargetURL != "" {
 		t.Fatalf("synthetic base item must be first and omit targetUrl: %+v", report.Items)
 	}
