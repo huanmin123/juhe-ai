@@ -17,7 +17,7 @@ const (
 	defaultOwnerLease                = 5 * time.Minute
 	defaultRetentionDays             = 30
 	defaultMaxTables                 = 256
-	defaultMaxConcurrentSources      = 4
+	defaultMaxConcurrentSources      = 1024
 	defaultPerformanceSources        = 64
 	defaultPostgresConcurrentSources = 1024
 	defaultRetentionBatchSize        = 1000
@@ -64,7 +64,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	} else if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_MODE")), "performance") {
 		concurrencyDefault = defaultPerformanceSources
 	}
-	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), concurrencyDefault, 4, 1024)
+	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), concurrencyDefault, 1, 1024)
 	if err != nil {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES 无效: %w", err)
 	}
