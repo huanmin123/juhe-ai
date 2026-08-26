@@ -34,6 +34,29 @@ func TestRunSuiteKeepsOrderedItemsAfterOneHTTPFailure(t *testing.T) {
 	}
 }
 
+func TestRunSuiteEmitsEveryItemInReturnedOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"model":"gpt-5.6-sol","output_text":"OK-MODEL-CHECK","usage":{"input_tokens":1}}`))
+	}))
+	defer server.Close()
+	var observed []string
+	items, err := RunSuite(context.Background(), BasicProbeInput{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Model: "gpt-5.6-sol", MaxOutputTokens: 16}, SuiteOptions{
+		IncludeStructured: true,
+		IncludeTool:       true,
+		OnItem: func(item EvaluationItem) {
+			observed = append(observed, item.ItemKey)
+		},
+	}, RetryOptions{AttemptTimeouts: []time.Duration{time.Second}, Delay: func(context.Context) error { return nil }})
+	if err != nil || len(items) != len(observed) {
+		t.Fatalf("items=%#v observed=%#v err=%v", items, observed, err)
+	}
+	for index, item := range items {
+		if observed[index] != item.ItemKey {
+			t.Fatalf("index=%d observed=%q item=%q", index, observed[index], item.ItemKey)
+		}
+	}
+}
+
 func TestRunSuiteStopsAfterTerminalBasicFailure(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

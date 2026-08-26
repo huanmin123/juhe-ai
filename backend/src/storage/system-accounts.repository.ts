@@ -42,9 +42,9 @@ const defaultSystemAccountPageSize = 20
 const maxSystemAccountPageSize = 100
 const businessSchemaName = 'juhe_business'
 const whitespacePattern = /\s/
-const systemAccountCreateInputKeys = new Set(['username', 'displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled', 'requestLimits'])
-const systemAccountUpdateInputKeys = new Set(['displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled', 'requestLimits'])
-const systemAccountManagementPatchInputKeys = new Set(['displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled', 'requestLimits'])
+const systemAccountCreateInputKeys = new Set(['username', 'displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled', 'aiAccountLimit', 'requestLimits'])
+const systemAccountUpdateInputKeys = new Set(['displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled', 'aiAccountLimit', 'requestLimits'])
+const systemAccountManagementPatchInputKeys = new Set(['displayName', 'description', 'password', 'role', 'status', 'mustChangePassword', 'imageGenerationEnabled', 'aiAccountLimit', 'requestLimits'])
 
 export type SystemAccountManagementPatchField = 'displayName'
   | 'description'
@@ -53,6 +53,7 @@ export type SystemAccountManagementPatchField = 'displayName'
   | 'status'
   | 'mustChangePassword'
   | 'imageGenerationEnabled'
+  | 'aiAccountLimit'
   | 'requestLimits'
 
 export interface SystemAccountManagementPatchChange {
@@ -84,6 +85,7 @@ interface SystemAccountManagementPatchRow {
   status?: SystemAccountStatus
   must_change_password?: number | boolean
   image_generation_enabled?: number | boolean
+  ai_account_limit?: number | null
   request_limits_json?: string | null
   password_hash?: string
 }
@@ -137,7 +139,7 @@ export function listSystemAccountsPageReadOnly(options: SystemAccountListOptions
   const keywordFilter = buildSystemAccountListKeywordFilter(normalized.keyword)
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at, updated_at
+      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, ai_account_limit, request_limits_json, last_login_at, updated_at
       FROM system_accounts
       ${keywordFilter.clause}
       ORDER BY updated_at DESC, id DESC
@@ -169,7 +171,7 @@ export async function listSystemAccountsPageAsync(options: SystemAccountListOpti
   const client = await getSystemAccountDatabaseClient()
   const keywordFilter = buildSystemAccountListKeywordFilterForClient(client, normalized.keyword)
   const rows = await client.query<Omit<SystemAccountSummaryRow, 'created_at'>>(`
-    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at,
+    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, ai_account_limit, request_limits_json, last_login_at,
       updated_at
     FROM ${systemAccountTable(client, 'system_accounts')}
     ${keywordFilter.clause}
@@ -348,7 +350,7 @@ function escapeLikePrefix(value: string): string {
 export function findSystemAccountById(id: string): SystemAccountSummary | undefined {
   const row = getBusinessDatabase()
     .prepare(`
-      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at, created_at, updated_at
+      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, ai_account_limit, request_limits_json, last_login_at, created_at, updated_at
       FROM system_accounts
       WHERE id = ?
     `)
@@ -388,7 +390,7 @@ export async function findSystemAccountByIdAsync(id: string): Promise<SystemAcco
 
 async function findSystemAccountByIdWithClient(client: DatabaseClient, id: string, lockRow = false): Promise<SystemAccountSummary | undefined> {
   const row = await client.one<SystemAccountSummaryRow>(`
-    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, request_limits_json, last_login_at, created_at, updated_at
+    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, ai_account_limit, request_limits_json, last_login_at, created_at, updated_at
     FROM ${systemAccountTable(client, 'system_accounts')}
     WHERE id = ?${lockRow && client.driver === 'postgres' ? ' FOR UPDATE' : ''}
   `, [id])
@@ -397,7 +399,7 @@ async function findSystemAccountByIdWithClient(client: DatabaseClient, id: strin
 
 export function findSystemAccountByUsername(username: string): (SystemAccountSummary & { passwordHash: string }) | undefined {
   const row = getBusinessDatabase().prepare(`
-    SELECT id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, request_limits_json, last_login_at, created_at, updated_at
+    SELECT id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, ai_account_limit, request_limits_json, last_login_at, created_at, updated_at
     FROM system_accounts
     WHERE lower(username) = lower(?)
   `).get(username) as unknown as SystemAccountRow | undefined
@@ -424,7 +426,7 @@ export async function findSystemAccountByUsernameInClientAsync(
   username: string
 ): Promise<(SystemAccountSummary & { passwordHash: string }) | undefined> {
   const row = await client.one<SystemAccountRow>(`
-    SELECT id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, request_limits_json, last_login_at, created_at, updated_at
+    SELECT id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, ai_account_limit, request_limits_json, last_login_at, created_at, updated_at
     FROM ${systemAccountTable(client, 'system_accounts')}
     WHERE lower(username) = lower(?)
   `, [username])
@@ -508,6 +510,7 @@ export function createSystemAccount(input: {
   status?: SystemAccountStatus
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
+  aiAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
 }): SystemAccountSummary {
   const password = normalizeSystemAccountPassword(input.password)
@@ -523,6 +526,7 @@ export type SystemAccountWithPasswordHashInput = {
   status?: SystemAccountStatus
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
+  aiAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
 }
 
@@ -553,6 +557,7 @@ export function createSystemAccountWithPasswordHash(input: SystemAccountWithPass
     status: normalizeSystemAccountStatus(input.status, 'active'),
     mustChangePassword: normalizeSystemAccountMustChangePassword(input.mustChangePassword, true, role),
     imageGenerationEnabled: normalizeOptionalBoolean(input.imageGenerationEnabled, false, '支持图像生成'),
+    aiAccountLimit: normalizeAiAccountLimit(input.aiAccountLimit) ?? undefined,
     requestLimits: normalizeUserRequestLimits(input.requestLimits),
     createdAt: now,
     updatedAt: now
@@ -562,10 +567,10 @@ export function createSystemAccountWithPasswordHash(input: SystemAccountWithPass
     database
       .prepare(`
         INSERT INTO system_accounts (
-          id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, request_limits_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, ai_account_limit, request_limits_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-      .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, serializeUserRequestLimits(summary.requestLimits), now, now)
+      .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, summary.aiAccountLimit ?? null, serializeUserRequestLimits(summary.requestLimits), now, now)
     ensureDefaultBuiltInGroupsForSystemAccount(summary.id, now)
     ensureDefaultRouteStrategiesForSystemAccount(summary.id, now)
     ensureDefaultApiKeysForSystemAccount(summary.id, now)
@@ -609,6 +614,7 @@ export async function createSystemAccountWithPasswordHashInClientAsync(
     status: normalizeSystemAccountStatus(input.status, 'active'),
     mustChangePassword: normalizeSystemAccountMustChangePassword(input.mustChangePassword, true, role),
     imageGenerationEnabled: normalizeOptionalBoolean(input.imageGenerationEnabled, false, '支持图像生成'),
+    aiAccountLimit: normalizeAiAccountLimit(input.aiAccountLimit) ?? undefined,
     requestLimits: normalizeUserRequestLimits(input.requestLimits),
     createdAt: now,
     updatedAt: now
@@ -617,9 +623,9 @@ export async function createSystemAccountWithPasswordHashInClientAsync(
   await ensureSystemAccountDisplayNameUniqueAsync(client, displayName)
   await client.execute(`
       INSERT INTO ${systemAccountTable(client, 'system_accounts')} (
-        id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, request_limits_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, serializeUserRequestLimits(summary.requestLimits), now, now])
+        id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, ai_account_limit, request_limits_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, summary.aiAccountLimit ?? null, serializeUserRequestLimits(summary.requestLimits), now, now])
   await ensureDefaultBuiltInGroupsForSystemAccountAsync(client, summary.id, now)
   await ensureDefaultRouteStrategiesForSystemAccountAsync(client, summary.id, now)
   await ensureDefaultApiKeysForSystemAccountAsync(client, summary.id, now)
@@ -725,6 +731,14 @@ export async function patchSystemAccountManagementAsync(
         result.imageGenerationEnabled = nextValue
       }
     }
+    if (Object.hasOwn(input, 'aiAccountLimit')) {
+      const currentValue = normalizeAiAccountLimit(requiredSystemAccountPatchValue(current, 'ai_account_limit', input, ['aiAccountLimit']))
+      const nextValue = normalizeAiAccountLimit(input.aiAccountLimit)
+      if (nextValue !== currentValue) {
+        appendSystemAccountPatchChange(assignments, params, changes, 'aiAccountLimit', 'ai_account_limit', currentValue, nextValue, nextValue ?? null)
+        result.aiAccountLimit = nextValue ?? null
+      }
+    }
     if (Object.hasOwn(input, 'requestLimits')) {
       const currentValue = parseUserRequestLimitsJson(requiredSystemAccountPatchValue(current, 'request_limits_json', input, ['requestLimits']))
       const nextValue = normalizeUserRequestLimits(input.requestLimits)
@@ -810,6 +824,7 @@ function systemAccountManagementPatchSelectColumns(input: Record<string, unknown
   if (Object.hasOwn(input, 'role') || Object.hasOwn(input, 'status')) columns.add('status')
   if (Object.hasOwn(input, 'role') || Object.hasOwn(input, 'mustChangePassword')) columns.add('must_change_password')
   if (Object.hasOwn(input, 'imageGenerationEnabled')) columns.add('image_generation_enabled')
+  if (Object.hasOwn(input, 'aiAccountLimit')) columns.add('ai_account_limit')
   if (Object.hasOwn(input, 'requestLimits')) columns.add('request_limits_json')
   if (Object.hasOwn(input, 'password')) columns.add('password_hash')
   return [...columns]
@@ -881,6 +896,7 @@ export function updateSystemAccount(id: string, input: {
   status?: SystemAccountStatus
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
+  aiAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
   password?: string
 }): SystemAccountSummary | undefined {
@@ -896,6 +912,7 @@ export async function updateSystemAccountAsync(id: string, input: {
   status?: SystemAccountStatus
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
+  aiAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
   password?: string
 }): Promise<SystemAccountSummary | undefined> {
@@ -911,6 +928,7 @@ export function updateSystemAccountWithPasswordHash(id: string, input: {
   status?: SystemAccountStatus
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
+  aiAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
   password?: string
 }, passwordHash?: string): SystemAccountSummary | undefined {
@@ -935,6 +953,7 @@ export function updateSystemAccountWithPasswordHash(id: string, input: {
     status: normalizeSystemAccountStatus(input.status, current.status),
     mustChangePassword: normalizeSystemAccountMustChangePassword(input.mustChangePassword, current.mustChangePassword, nextRole),
     imageGenerationEnabled: normalizeOptionalBoolean(input.imageGenerationEnabled, current.imageGenerationEnabled, '支持图像生成'),
+    aiAccountLimit: Object.prototype.hasOwnProperty.call(input, 'aiAccountLimit') ? normalizeAiAccountLimit(input.aiAccountLimit) ?? undefined : current.aiAccountLimit,
     requestLimits: Object.prototype.hasOwnProperty.call(input, 'requestLimits') ? normalizeUserRequestLimits(input.requestLimits) : current.requestLimits
   }
   const now = nowIso()
@@ -944,18 +963,18 @@ export function updateSystemAccountWithPasswordHash(id: string, input: {
     getBusinessDatabase()
       .prepare(`
         UPDATE system_accounts
-        SET display_name = ?, description = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, image_generation_enabled = ?, request_limits_json = ?, updated_at = ?
+        SET display_name = ?, description = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, image_generation_enabled = ?, ai_account_limit = ?, request_limits_json = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(next.displayName, next.description ?? null, next.role, next.status, passwordHash, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, serializeUserRequestLimits(next.requestLimits), now, id)
+      .run(next.displayName, next.description ?? null, next.role, next.status, passwordHash, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, next.aiAccountLimit ?? null, serializeUserRequestLimits(next.requestLimits), now, id)
   } else {
     getBusinessDatabase()
       .prepare(`
         UPDATE system_accounts
-        SET display_name = ?, description = ?, role = ?, status = ?, must_change_password = ?, image_generation_enabled = ?, request_limits_json = ?, updated_at = ?
+        SET display_name = ?, description = ?, role = ?, status = ?, must_change_password = ?, image_generation_enabled = ?, ai_account_limit = ?, request_limits_json = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(next.displayName, next.description ?? null, next.role, next.status, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, serializeUserRequestLimits(next.requestLimits), now, id)
+      .run(next.displayName, next.description ?? null, next.role, next.status, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, next.aiAccountLimit ?? null, serializeUserRequestLimits(next.requestLimits), now, id)
   }
   invalidateSystemAccountLookupCache(id)
   if (gatewayAccountRuntimeChanged(current, next)) {
@@ -972,6 +991,7 @@ export async function updateSystemAccountWithPasswordHashAsync(id: string, input
   status?: SystemAccountStatus
   mustChangePassword?: boolean
   imageGenerationEnabled?: boolean
+  aiAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
   password?: string
 }, passwordHash?: string): Promise<SystemAccountSummary | undefined> {
@@ -1000,6 +1020,7 @@ export async function updateSystemAccountWithPasswordHashAsync(id: string, input
       status: normalizeSystemAccountStatus(input.status, current.status),
       mustChangePassword: normalizeSystemAccountMustChangePassword(input.mustChangePassword, current.mustChangePassword, nextRole),
       imageGenerationEnabled: normalizeOptionalBoolean(input.imageGenerationEnabled, current.imageGenerationEnabled, '支持图像生成'),
+      aiAccountLimit: Object.prototype.hasOwnProperty.call(input, 'aiAccountLimit') ? normalizeAiAccountLimit(input.aiAccountLimit) ?? undefined : current.aiAccountLimit,
       requestLimits: Object.prototype.hasOwnProperty.call(input, 'requestLimits') ? normalizeUserRequestLimits(input.requestLimits) : current.requestLimits
     }
     const now = nowIso()
@@ -1008,15 +1029,15 @@ export async function updateSystemAccountWithPasswordHashAsync(id: string, input
     if (passwordHash) {
       await tx.execute(`
         UPDATE ${systemAccountTable(tx, 'system_accounts')}
-        SET display_name = ?, description = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, image_generation_enabled = ?, request_limits_json = ?, updated_at = ?
+        SET display_name = ?, description = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, image_generation_enabled = ?, ai_account_limit = ?, request_limits_json = ?, updated_at = ?
         WHERE id = ?
-      `, [next.displayName, next.description ?? null, next.role, next.status, passwordHash, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, serializeUserRequestLimits(next.requestLimits), now, id])
+      `, [next.displayName, next.description ?? null, next.role, next.status, passwordHash, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, next.aiAccountLimit ?? null, serializeUserRequestLimits(next.requestLimits), now, id])
     } else {
       await tx.execute(`
         UPDATE ${systemAccountTable(tx, 'system_accounts')}
-        SET display_name = ?, description = ?, role = ?, status = ?, must_change_password = ?, image_generation_enabled = ?, request_limits_json = ?, updated_at = ?
+        SET display_name = ?, description = ?, role = ?, status = ?, must_change_password = ?, image_generation_enabled = ?, ai_account_limit = ?, request_limits_json = ?, updated_at = ?
         WHERE id = ?
-      `, [next.displayName, next.description ?? null, next.role, next.status, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, serializeUserRequestLimits(next.requestLimits), now, id])
+      `, [next.displayName, next.description ?? null, next.role, next.status, next.mustChangePassword ? 1 : 0, next.imageGenerationEnabled ? 1 : 0, next.aiAccountLimit ?? null, serializeUserRequestLimits(next.requestLimits), now, id])
     }
     updated = { ...next, updatedAt: now }
   })
@@ -1166,6 +1187,7 @@ export function findSessionByTokenReadOnly(tokenHash: string): (SessionWithAccou
         sa.password_hash,
         sa.must_change_password,
         sa.image_generation_enabled,
+        sa.ai_account_limit,
         sa.request_limits_json,
         sa.last_login_at,
         sa.created_at,
@@ -1207,6 +1229,7 @@ export async function findSessionByTokenAsync(token: string): Promise<(SessionWi
       sa.password_hash,
       sa.must_change_password,
       sa.image_generation_enabled,
+      sa.ai_account_limit,
       sa.request_limits_json,
       sa.last_login_at,
       sa.created_at,
@@ -1462,6 +1485,14 @@ function normalizeOptionalBoolean(value: unknown, fallback: boolean, label: stri
   if (value === undefined) return fallback
   if (typeof value !== 'boolean') {
     throw new Error(`${label}必须是布尔值`)
+  }
+  return value
+}
+
+function normalizeAiAccountLimit(value: unknown): number | null | undefined {
+  if (value === undefined || value === null) return value
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 1_000_000) {
+    throw new Error('AI 账户上限必须是 0 到 1000000 之间的整数')
   }
   return value
 }

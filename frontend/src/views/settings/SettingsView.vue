@@ -81,8 +81,8 @@
           <div class="section-heading">
             <div>
               <h3 class="section-title">
-                <span>用户请求限制</span>
-                <a-tooltip title="限制同一系统用户通过所有 API Key 发起的网关请求；0 表示无限。请求只在本机内存中同步判断，多节点计数由 Redis 后台合并。">
+                <span>用户限制</span>
+                <a-tooltip title="设置系统账户的全局请求和 AI 账户数量限制；各用户可以在系统账户编辑中单独覆盖。">
                   <QuestionCircleOutlined class="help-icon" />
                 </a-tooltip>
               </h3>
@@ -94,7 +94,7 @@
             v-if="sectionErrors['user-request-limit']"
             type="error"
             show-icon
-            message="用户请求限制加载失败"
+            message="用户限制加载失败"
             :description="sectionErrors['user-request-limit']"
           >
             <template #action>
@@ -129,6 +129,11 @@
               <div class="setting-item">
                 <a-form-item label="每月请求数" tooltip="0 表示无限；按系统使用统计时区的自然月计算。">
                   <a-input-number v-model:value="systemForm.gatewayUserRequestLimitPerMonth" :min="0" :max="1000000000" :precision="0" :step="1" style="width: 100%" />
+                </a-form-item>
+              </div>
+              <div class="setting-item">
+                <a-form-item label="AI 账户数量限制" tooltip="默认 100；0 表示无限。限制每个用户可创建的自有 AI 账户数量，删除账户后释放名额。">
+                  <a-input-number v-model:value="systemForm.userAiAccountLimit" :min="0" :max="1000000" :precision="0" :step="1" style="width: 100%" />
                 </a-form-item>
               </div>
             </div>
@@ -410,7 +415,7 @@ const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
 const sectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
   'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
-  'user-request-limit': ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth'],
+  'user-request-limit': ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth', 'userAiAccountLimit'],
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
   'cooldown-retest': ['cooldownAccountRetestMaxBackoffHours'],

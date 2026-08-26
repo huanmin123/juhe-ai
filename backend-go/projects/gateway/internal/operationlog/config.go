@@ -9,6 +9,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlitepath"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
 type Config struct {
@@ -39,10 +40,11 @@ type InputServerConfig struct {
 const defaultInputMaxBytes int64 = 4 << 20
 
 const (
-	defaultOwnerLease        = 30 * time.Second
-	defaultRetentionInterval = time.Minute
-	defaultRetentionBatch    = 512
-	defaultPostgresPoolSize  = 5096
+	defaultOwnerLease           = 30 * time.Second
+	defaultRetentionInterval    = time.Minute
+	defaultRetentionBatch       = 512
+	defaultPostgresPoolSize     = 5096
+	defaultPostgresMaxIdleConns = sqlpool.MaxIdleConns
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -71,11 +73,16 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	postgresMaxIdle, err := positiveIntOrDefault("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresPoolSize)
+	postgresMaxIdle, err := positiveIntOrDefault("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresMaxIdleConns)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg := Config{Enabled: true, InstanceID: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_INSTANCE_ID")), Mode: Mode(strings.ToLower(modeRaw)), DatabasePath: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_DATABASE_PATH")), BusinessSettingsPath: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH")), PostgresURL: postgresURL, PostgresMaxOpenConns: postgresMaxOpen, PostgresMaxIdleConns: postgresMaxIdle, OwnerLease: ownerLease, RetentionInterval: retentionInterval, RetentionDays: 365, RetentionBatchSize: retentionBatch}
+	if cfg.Mode == ModePostgres {
+		if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
+			return Config{}, fmt.Errorf("F4 PostgreSQL 连接池配置无效: %w", err)
+		}
+	}
 	for _, key := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", "JUHE_AI_AUDIT_LOG_DATABASE_PATH", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH"} {
 		for _, path := range strings.Split(getenv(key), ",") {
 			if path = strings.TrimSpace(path); path != "" {

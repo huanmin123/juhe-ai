@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
 const (
@@ -16,6 +17,8 @@ const (
 	defaultAccountBalanceBatchSize         = 512
 	defaultAccountBalanceRecoveryBatchSize = 512
 	maxAccountBalanceWorkItems             = 5096
+	defaultPostgresMaxOpenConns            = 5096
+	defaultPostgresMaxIdleConns            = sqlpool.MaxIdleConns
 )
 
 // RuntimeConfig is deliberately opt-in.  The J2 package never claims an
@@ -70,17 +73,23 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL")
 	}
 	var err error
-	if cfg.PostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
+	if cfg.PostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", defaultPostgresMaxOpenConns); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.PostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
+	if cfg.PostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
+	if cfg.InputPostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS", defaultPostgresMaxOpenConns); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
+	if cfg.InputPostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
 		return RuntimeConfig{}, err
+	}
+	if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
+		return RuntimeConfig{}, fmt.Errorf("J2 jobs PostgreSQL 连接池配置无效: %w", err)
+	}
+	if err := sqlpool.ValidatePoolLimits(cfg.InputPostgresMaxOpenConns, cfg.InputPostgresMaxIdleConns); err != nil {
+		return RuntimeConfig{}, fmt.Errorf("J2 业务读取 PostgreSQL 连接池配置无效: %w", err)
 	}
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL"))
 	if cfg.BusinessPostgresURL == "" {

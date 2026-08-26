@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
 const (
@@ -20,6 +22,7 @@ const (
 	defaultInputTTL               = 15 * time.Minute
 	defaultDirectInputLimit       = 512
 	defaultPostgresPoolSize       = 5096
+	defaultPostgresMaxIdleConns   = sqlpool.MaxIdleConns
 	defaultSQLiteConcurrency      = 512
 	defaultPerformanceConcurrency = 512
 	defaultPostgresConcurrency    = 512
@@ -82,8 +85,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if cfg.Store.PostgresMaxOpenConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS", defaultPostgresPoolSize); err != nil {
 			return Config{}, err
 		}
-		if cfg.Store.PostgresMaxIdleConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS", defaultPostgresPoolSize); err != nil {
+		if cfg.Store.PostgresMaxIdleConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
 			return Config{}, err
+		}
+		if err := sqlpool.ValidatePoolLimits(cfg.Store.PostgresMaxOpenConns, cfg.Store.PostgresMaxIdleConns); err != nil {
+			return Config{}, fmt.Errorf("J1 jobs PostgreSQL 连接池配置无效: %w", err)
 		}
 	}
 	cfg.InputDirectory = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY"))
@@ -116,8 +122,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if cfg.DirectInputPostgresMaxOpenConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS", defaultPostgresPoolSize); err != nil {
 			return Config{}, err
 		}
-		if cfg.DirectInputPostgresMaxIdleConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS", defaultPostgresPoolSize); err != nil {
+		if cfg.DirectInputPostgresMaxIdleConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
 			return Config{}, err
+		}
+		if err := sqlpool.ValidatePoolLimits(cfg.DirectInputPostgresMaxOpenConns, cfg.DirectInputPostgresMaxIdleConns); err != nil {
+			return Config{}, fmt.Errorf("J1 业务读取 PostgreSQL 连接池配置无效: %w", err)
 		}
 	}
 	keyText := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY"))

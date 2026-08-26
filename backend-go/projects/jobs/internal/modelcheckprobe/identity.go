@@ -38,6 +38,7 @@ type IdentityObservation struct {
 type IdentityProbeInput struct {
 	Model    string
 	Protocol modelcheckprofile.Protocol
+	Prefix   string
 	RunProbe func(context.Context, Request) (ProbeResult, error)
 }
 
@@ -74,14 +75,14 @@ func RunIdentityObservation(ctx context.Context, input IdentityProbeInput) (Eval
 			features := identityFeatureVector(canary.Category, result.Response.OutputText, result.Response.Usage, passed)
 			observations = append(observations, IdentityObservation{Definition: canary, Model: model, Result: result, Passed: passed, Features: features})
 			if isTerminalProbeResult(result) {
-				return evaluateIdentityObservations(observations, input.Model), observations, nil
+				return evaluateIdentityObservations(observations, input.Model, suitePrefix(input.Prefix)), observations, nil
 			}
 		}
 	}
-	return evaluateIdentityObservations(observations, input.Model), observations, nil
+	return evaluateIdentityObservations(observations, input.Model, suitePrefix(input.Prefix)), observations, nil
 }
 
-func evaluateIdentityObservations(observations []IdentityObservation, targetModel string) EvaluationItem {
+func evaluateIdentityObservations(observations []IdentityObservation, targetModel, prefix string) EvaluationItem {
 	success, passed, targetSuccess, targetPassed := 0, 0, 0, 0
 	summaries := make([]map[string]any, 0, len(observations))
 	for _, observation := range observations {
@@ -103,7 +104,7 @@ func evaluateIdentityObservations(observations []IdentityObservation, targetMode
 		summaries = append(summaries, map[string]any{"key": observation.Definition.Key, "model": observation.Model, "traceId": result.TraceID, "success": result.Success, "constraintPassed": observation.Passed, "responseModel": result.Response.Model, "httpStatus": result.HTTPStatusCode, "featureVector": observation.Features, "outputPreview": boundedText(result.Response.OutputText, 256), "errorMessage": result.Response.ErrorMessage})
 	}
 	if success == 0 {
-		return EvaluationItem{ItemKey: "target.identity_observation", ItemType: "identity_observation", Status: "skipped", Evidence: map[string]any{"message": "受控生成式身份探针请求失败，未形成完整质量证据", "requestFailure": true, "excludedFromScoring": true, "featureVersion": IdentityFeatureVersion, "probeVersion": IdentityProbeVersion, "summaries": summaries}}
+		return EvaluationItem{ItemKey: prefix + ".identity_observation", ItemType: "identity_observation", Status: "skipped", Evidence: map[string]any{"message": "受控生成式身份探针请求失败，未形成完整质量证据", "requestFailure": true, "excludedFromScoring": true, "featureVersion": IdentityFeatureVersion, "probeVersion": IdentityProbeVersion, "summaries": summaries}}
 	}
 	rate := float64(passed) / float64(success)
 	score := minInt(9, int(rate*10))
@@ -113,7 +114,7 @@ func evaluateIdentityObservations(observations []IdentityObservation, targetMode
 	} else if rate >= 0.6 {
 		status = "warning"
 	}
-	return EvaluationItem{ItemKey: "target.identity_observation", ItemType: "identity_observation", Status: status, Score: score, MaxScore: 10, Evidence: map[string]any{"message": "受控生成式身份探针结果", "featureVersion": IdentityFeatureVersion, "probeVersion": IdentityProbeVersion, "modelCount": len(PairedIdentityModels(targetModel)), "observationCount": len(observations), "successCount": success, "constraintPassedCount": passed, "constraintRate": rate, "targetModel": targetModel, "targetSuccessCount": targetSuccess, "targetConstraintPassedCount": targetPassed, "targetConstraintRate": ratioInt(targetPassed, targetSuccess), "summaries": summaries}}
+	return EvaluationItem{ItemKey: prefix + ".identity_observation", ItemType: "identity_observation", Status: status, Score: score, MaxScore: 10, Evidence: map[string]any{"message": "受控生成式身份探针结果", "featureVersion": IdentityFeatureVersion, "probeVersion": IdentityProbeVersion, "modelCount": len(PairedIdentityModels(targetModel)), "observationCount": len(observations), "successCount": success, "constraintPassedCount": passed, "constraintRate": rate, "targetModel": targetModel, "targetSuccessCount": targetSuccess, "targetConstraintPassedCount": targetPassed, "targetConstraintRate": ratioInt(targetPassed, targetSuccess), "summaries": summaries}}
 }
 
 func generatedIdentityCanaries(nonce string) []IdentityCanary {

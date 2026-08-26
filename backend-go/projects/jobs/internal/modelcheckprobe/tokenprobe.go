@@ -16,6 +16,7 @@ type TokenProbeInput struct {
 	Model       string
 	Protocol    modelcheckprofile.Protocol
 	ProfileMode string
+	ItemPrefix  string
 	Prefix      string
 	Stream      bool
 	CountTokens func(string) int
@@ -83,7 +84,7 @@ func RunTokenIntegrity(ctx context.Context, input TokenProbeInput) (TokenProbeRu
 		status = "warning"
 	}
 	evidence := map[string]any{"message": tokenAnalysisMessage(analysis.Status), "diagnosticOnly": maxScore == 0, "tokenizerVersion": TokenizerVersion, "probeVersion": TokenProbeVersion, "slope": analysis.Slope, "intercept": analysis.Intercept, "slopeConfidenceLow": analysis.SlopeConfidenceLow, "slopeConfidenceHigh": analysis.SlopeConfidenceHigh, "sampleCount": analysis.SampleCount, "roundCount": analysis.RoundCount, "reasonCodes": analysis.ReasonCodes, "httpStatus": last.HTTPStatusCode}
-	return TokenProbeRun{Item: EvaluationItem{ItemKey: "target.token_integrity", ItemType: "token_integrity", Status: status, Score: score, MaxScore: maxScore, TraceID: representative.TraceID, DurationMS: last.DurationMS, Evidence: evidence}, Samples: samples}, nil
+	return TokenProbeRun{Item: EvaluationItem{ItemKey: suitePrefix(input.ItemPrefix) + ".token_integrity", ItemType: "token_integrity", Status: status, Score: score, MaxScore: maxScore, TraceID: representative.TraceID, DurationMS: last.DurationMS, Evidence: evidence}, Samples: samples}, nil
 }
 
 func tokenNonce() string {

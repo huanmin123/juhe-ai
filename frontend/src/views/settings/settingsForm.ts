@@ -13,6 +13,7 @@ export interface SystemForm {
   gatewayUserRequestLimitPerDay: number
   gatewayUserRequestLimitPerWeek: number
   gatewayUserRequestLimitPerMonth: number
+  userAiAccountLimit: number
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number
@@ -54,6 +55,7 @@ export const defaultSystemSettings: SystemForm = {
   gatewayUserRequestLimitPerDay: 0,
   gatewayUserRequestLimitPerWeek: 0,
   gatewayUserRequestLimitPerMonth: 0,
+  userAiAccountLimit: 100,
   systemApiRateLimitIpReadPerMinute: 600,
   systemApiRateLimitIpReadBurstPer10Seconds: 120,
   systemApiRateLimitIpWritePerMinute: 180,
@@ -98,6 +100,7 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     gatewayUserRequestLimitPerDay: integerValue(settings.gatewayUserRequestLimitPerDay, '用户每日请求上限', 0, 1_000_000_000),
     gatewayUserRequestLimitPerWeek: integerValue(settings.gatewayUserRequestLimitPerWeek, '用户每周请求上限', 0, 1_000_000_000),
     gatewayUserRequestLimitPerMonth: integerValue(settings.gatewayUserRequestLimitPerMonth, '用户每月请求上限', 0, 1_000_000_000),
+    userAiAccountLimit: integerValue(settings.userAiAccountLimit, '用户 AI 账户数量上限', 0, 1_000_000),
     systemApiRateLimitIpReadPerMinute: integerValue(settings.systemApiRateLimitIpReadPerMinute, 'IP 读请求每分钟上限', 0, 1_000_000),
     systemApiRateLimitIpReadBurstPer10Seconds: integerValue(settings.systemApiRateLimitIpReadBurstPer10Seconds, 'IP 读请求突发上限', 0, 1_000_000),
     systemApiRateLimitIpWritePerMinute: integerValue(settings.systemApiRateLimitIpWritePerMinute, 'IP 写请求每分钟上限', 0, 1_000_000),

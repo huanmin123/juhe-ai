@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckinput"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -95,8 +96,10 @@ func OpenPostgres(dsn string, maxOpen int) (*Store, error) {
 	if maxOpen <= 0 {
 		maxOpen = 1000
 	}
+	maxIdle := min(maxOpen, sqlpool.MaxIdleConns)
 	db.SetMaxOpenConns(maxOpen)
-	db.SetMaxIdleConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxIdleTime(sqlpool.MaxConnIdleTime)
 	return &Store{db: db, mode: Postgres}, nil
 }
 

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
 const (
@@ -23,6 +25,7 @@ const (
 	defaultRetentionBatchSize        = 512
 	defaultRetentionMaxBatches       = 512
 	defaultPostgresPoolSize          = 5096
+	defaultPostgresMaxIdleConns      = sqlpool.MaxIdleConns
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -100,8 +103,13 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.PostgresMaxOpenConns, err = positiveIntOrDefault("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS", getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS"), defaultPostgresPoolSize); err != nil {
 		return Config{}, err
 	}
-	if cfg.PostgresMaxIdleConns, err = positiveIntOrDefault("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresPoolSize); err != nil {
+	if cfg.PostgresMaxIdleConns, err = positiveIntOrDefault("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresMaxIdleConns); err != nil {
 		return Config{}, err
+	}
+	if mode == ModePostgres {
+		if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
+			return Config{}, fmt.Errorf("F2 PostgreSQL 连接池配置无效: %w", err)
+		}
 	}
 	if mode == ModeSQLite {
 		if cfg.OutputPath == "" {

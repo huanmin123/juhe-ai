@@ -13,6 +13,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlitepath"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
 const (
@@ -24,6 +25,7 @@ const (
 	defaultSuccessRetentionDays     = 3
 	defaultProblemRetentionDays     = 7
 	defaultPostgresPoolSize         = 5096
+	defaultPostgresMaxIdleConns     = sqlpool.MaxIdleConns
 )
 
 type Config struct {
@@ -65,7 +67,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	postgresMaxIdle, err := parsePositiveInteger("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresPoolSize)
+	postgresMaxIdle, err := parsePositiveInteger("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresMaxIdleConns)
 	if err != nil {
 		return Config{}, err
 	}
@@ -88,6 +90,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		TableMonitorDatabasePath: strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_DATABASE_PATH")),
 		CodexShardRoot:           strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
 		UsageShardRoot:           strings.TrimSpace(getenv("JUHE_AI_USAGE_SHARD_ROOT")),
+	}
+	if cfg.Mode == ModePostgres {
+		if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
+			return Config{}, fmt.Errorf("F3 PostgreSQL 连接池配置无效: %w", err)
+		}
 	}
 	if cfg.InstanceID == "" {
 		return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INSTANCE_ID 是稳定实例 ID 的必填配置")

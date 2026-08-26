@@ -589,6 +589,7 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['gatewayUserRequestLimitPerDay', 0],
   ['gatewayUserRequestLimitPerWeek', 0],
   ['gatewayUserRequestLimitPerMonth', 0],
+  ['userAiAccountLimit', 100],
   ['systemApiRateLimitIpReadPerMinute', 600],
   ['systemApiRateLimitIpReadBurstPer10Seconds', 120],
   ['systemApiRateLimitIpWritePerMinute', 180],

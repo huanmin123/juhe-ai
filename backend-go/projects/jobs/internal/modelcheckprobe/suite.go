@@ -7,6 +7,7 @@ import (
 )
 
 type SuiteOptions struct {
+	Prefix                     string
 	IncludeStream              bool
 	IncludeStructured          bool
 	IncludeTool                bool
@@ -14,6 +15,12 @@ type SuiteOptions struct {
 	IncludeLongContext         bool
 	IncludeStability           bool
 	IncludeUsageOnBasicFailure bool
+	IncludeTokenIntegrity      bool
+	IncludeIdentity            bool
+	// OnItem observes every completed evaluation item in suite order. It is
+	// invocation-scoped so management SSE and scheduled runs never share a
+	// mutable callback.
+	OnItem func(EvaluationItem)
 }
 
 // RunSuite executes the ordered basic/stream/structured/tool probes and then
@@ -21,6 +28,11 @@ type SuiteOptions struct {
 // the same probe chain as the Node executor; the failure remains evidence.
 func RunSuite(ctx context.Context, input BasicProbeInput, options SuiteOptions, retry RetryOptions) ([]EvaluationItem, error) {
 	items := make([]EvaluationItem, 0, 5)
+	prefix := suitePrefix(options.Prefix)
+	appendItem := func(item EvaluationItem) {
+		items = append(items, item)
+		emitSuiteItem(options.OnItem, item)
+	}
 	results := make([]ProbeResult, 0, 4)
 	base := TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}
 	request, err := BuildBasic(input.Protocol, input.Model, "Reply with exactly: OK-MODEL-CHECK", BasicOptions{MaxOutputTokens: max(input.MaxOutputTokens, 16), Stream: input.Stream})
@@ -32,10 +44,10 @@ func RunSuite(ctx context.Context, input BasicProbeInput, options SuiteOptions, 
 		return nil, err
 	}
 	results = append(results, result)
-	items = append(items, evaluateSuiteBasic(result, input.Protocol, input.Model, "target", false))
+	appendItem(evaluateSuiteBasic(result, input.Protocol, input.Model, prefix, false))
 	if isTerminalProbeResult(result) {
 		if options.IncludeUsageOnBasicFailure {
-			items = append(items, EvaluateUsageShape(results, "target"))
+			appendItem(EvaluateUsageShape(results, prefix))
 		}
 		return items, nil
 	}
@@ -49,7 +61,7 @@ func RunSuite(ctx context.Context, input BasicProbeInput, options SuiteOptions, 
 			return nil, err
 		}
 		results = append(results, result)
-		items = append(items, evaluateSuiteBasic(result, input.Protocol, input.Model, "target", true))
+		appendItem(evaluateSuiteBasic(result, input.Protocol, input.Model, prefix, true))
 		if isTerminalProbeResult(result) {
 			return items, nil
 		}
@@ -64,7 +76,7 @@ func RunSuite(ctx context.Context, input BasicProbeInput, options SuiteOptions, 
 			return nil, err
 		}
 		results = append(results, result)
-		items = append(items, EvaluateStructuredOutput(result, input.Model, "target"))
+		appendItem(EvaluateStructuredOutput(result, input.Model, prefix))
 		if isTerminalProbeResult(result) {
 			return items, nil
 		}
@@ -79,55 +91,101 @@ func RunSuite(ctx context.Context, input BasicProbeInput, options SuiteOptions, 
 			return nil, err
 		}
 		results = append(results, result)
-		items = append(items, EvaluateToolCalling(result, input.Model, "target"))
+		appendItem(EvaluateToolCalling(result, input.Model, prefix))
 		if isTerminalProbeResult(result) {
 			return items, nil
 		}
 	}
 	if options.IncludeStructured || options.IncludeTool {
-		items = append(items, EvaluateUsageShape(results, "target"))
+		appendItem(EvaluateUsageShape(results, prefix))
+	}
+	if options.IncludeTokenIntegrity && input.Protocol == modelcheckprofile.ProtocolOpenAIResponses {
+		if input.CountTokens == nil {
+			appendItem(EvaluationItem{ItemKey: prefix + ".token_integrity", ItemType: "token_integrity", Status: "skipped", Evidence: map[string]any{
+				"message": "tokenizer 快照缺失，未形成可验证 Token 诚信证据", "excludedFromScoring": true, "evidenceInsufficient": true,
+			}})
+		} else {
+			tokenRun, tokenErr := RunTokenIntegrity(ctx, TokenProbeInput{Model: input.Model, Protocol: input.Protocol, ProfileMode: profileMode(options), ItemPrefix: prefix, Stream: input.Stream, CountTokens: input.CountTokens, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
+				return ExecuteWithRetry(ctx, request, base, retry)
+			}})
+			if tokenErr != nil {
+				return nil, tokenErr
+			}
+			appendItem(tokenRun.Item)
+		}
+	}
+	if options.IncludeIdentity && input.Protocol == modelcheckprofile.ProtocolOpenAIResponses {
+		identity, _, identityErr := RunIdentityObservation(ctx, IdentityProbeInput{Model: input.Model, Protocol: input.Protocol, Prefix: prefix, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
+			return ExecuteWithRetry(ctx, request, base, retry)
+		}})
+		if identityErr != nil {
+			return nil, identityErr
+		}
+		appendItem(identity)
 	}
 	if options.IncludeBehavior {
-		behavior, terminal, behaviorErr := RunBehaviorProbeSetWithTerminal(ctx, BehaviorProbeInput{Model: input.Model, Protocol: input.Protocol, Stream: input.Stream, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
+		behavior, terminal, behaviorErr := RunBehaviorProbeSetWithTerminal(ctx, BehaviorProbeInput{Model: input.Model, Protocol: input.Protocol, Prefix: prefix, Stream: input.Stream, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
 			return ExecuteWithRetry(ctx, request, base, retry)
 		}})
 		if behaviorErr != nil {
 			return nil, behaviorErr
 		}
-		items = append(items, behavior)
+		appendItem(behavior)
 		if terminal {
 			return items, nil
 		}
 	}
 	if options.IncludeLongContext {
 		if input.CountTokens == nil || input.ModelLimit <= 0 {
-			items = append(items, EvaluationItem{ItemKey: "target.long_context", ItemType: "long_context", Status: "skipped", Evidence: map[string]any{
+			appendItem(EvaluationItem{ItemKey: prefix + ".long_context", ItemType: "long_context", Status: "skipped", Evidence: map[string]any{
 				"message":             "长上下文 tokenizer 或模型窗口快照缺失，未形成可验证长上下文证据",
 				"excludedFromScoring": true, "evidenceInsufficient": true,
 			}})
 		} else {
-			longContext, terminal, longContextErr := RunLongContextProbeSetWithTerminal(ctx, LongContextInput{Model: input.Model, Protocol: input.Protocol, Stream: input.Stream, ModelLimit: input.ModelLimit, CountTokens: input.CountTokens, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
+			longContext, terminal, longContextErr := RunLongContextProbeSetWithTerminal(ctx, LongContextInput{Model: input.Model, Protocol: input.Protocol, Prefix: prefix, Stream: input.Stream, ModelLimit: input.ModelLimit, CountTokens: input.CountTokens, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
 				return ExecuteWithRetry(ctx, request, base, retry)
 			}})
 			if longContextErr != nil {
 				return nil, longContextErr
 			}
-			items = append(items, longContext)
+			appendItem(longContext)
 			if terminal {
 				return items, nil
 			}
 		}
 	}
 	if options.IncludeStability {
-		stability, stabilityErr := RunStabilityProbeSet(ctx, StabilityProbeInput{Model: input.Model, Protocol: input.Protocol, Stream: input.Stream, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
+		stability, stabilityErr := RunStabilityProbeSet(ctx, StabilityProbeInput{Model: input.Model, Protocol: input.Protocol, Prefix: prefix, Stream: input.Stream, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
 			return ExecuteWithRetry(ctx, request, base, retry)
 		}})
 		if stabilityErr != nil {
 			return nil, stabilityErr
 		}
-		items = append(items, stability)
+		appendItem(stability)
 	}
 	return items, nil
+}
+
+func emitSuiteItem(callback func(EvaluationItem), item EvaluationItem) {
+	if callback == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	callback(item)
+}
+
+func profileMode(options SuiteOptions) string {
+	if options.IncludeBehavior || options.IncludeLongContext || options.IncludeStability || options.IncludeIdentity {
+		return "full"
+	}
+	return "quick"
+}
+
+func suitePrefix(value string) string {
+	if value == "" {
+		return "target"
+	}
+	return value
 }
 
 func evaluateSuiteBasic(result ProbeResult, protocol modelcheckprofile.Protocol, model, prefix string, stream bool) EvaluationItem {

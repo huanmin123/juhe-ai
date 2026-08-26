@@ -11,6 +11,7 @@ import (
 type StabilityProbeInput struct {
 	Model    string
 	Protocol modelcheckprofile.Protocol
+	Prefix   string
 	Stream   bool
 	RunProbe func(context.Context, Request) (ProbeResult, error)
 }
@@ -37,7 +38,7 @@ func RunStabilityProbeSet(ctx context.Context, input StabilityProbeInput) (Evalu
 			break
 		}
 	}
-	return EvaluateStabilityProbe(results, input.Model, "target"), nil
+	return EvaluateStabilityProbe(results, input.Model, suitePrefix(input.Prefix)), nil
 }
 
 func EvaluateStabilityProbe(results []ProbeResult, expectedModel, prefix string) EvaluationItem {

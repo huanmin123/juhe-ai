@@ -102,7 +102,7 @@ func TestRuntimeConfigUsesHighPerformanceConcurrencyAndPoolDefaults(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxConcurrency != defaultAccountBalanceConcurrency || cfg.BatchSize != defaultAccountBalanceBatchSize || cfg.RecoveryBatchSize != defaultAccountBalanceRecoveryBatchSize || cfg.PostgresMaxOpenConns != 5096 || cfg.PostgresMaxIdleConns != 5096 || cfg.InputPostgresMaxOpenConns != 5096 || cfg.InputPostgresMaxIdleConns != 5096 {
+	if cfg.MaxConcurrency != defaultAccountBalanceConcurrency || cfg.BatchSize != defaultAccountBalanceBatchSize || cfg.RecoveryBatchSize != defaultAccountBalanceRecoveryBatchSize || cfg.PostgresMaxOpenConns != defaultPostgresMaxOpenConns || cfg.PostgresMaxIdleConns != defaultPostgresMaxIdleConns || cfg.InputPostgresMaxOpenConns != defaultPostgresMaxOpenConns || cfg.InputPostgresMaxIdleConns != defaultPostgresMaxIdleConns {
 		t.Fatalf("unexpected high-performance defaults: %#v", cfg)
 	}
 }
@@ -119,15 +119,15 @@ func TestRuntimeConfigAcceptsExternalPoolAndConcurrency(t *testing.T) {
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":              "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY":               "64",
 		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS":       "1200",
-		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS":       "1100",
+		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS":       "10",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS": "900",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS": "800",
+		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS": "8",
 	}
 	cfg, err := LoadRuntimeConfig(func(name string) string { return values[name] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxConcurrency != 64 || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 1100 || cfg.InputPostgresMaxOpenConns != 900 || cfg.InputPostgresMaxIdleConns != 800 {
+	if cfg.MaxConcurrency != 64 || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 10 || cfg.InputPostgresMaxOpenConns != 900 || cfg.InputPostgresMaxIdleConns != 8 {
 		t.Fatalf("external pool configuration not applied: %#v", cfg)
 	}
 }

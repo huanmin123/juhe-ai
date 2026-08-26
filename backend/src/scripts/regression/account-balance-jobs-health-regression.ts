@@ -48,7 +48,7 @@ const standby = await accountBalanceGoOwnerHealth({
     accountBalanceReady: false
   }), { status: 200 })
 })
-assert.deepEqual(standby, { enabled: true, ready: true, projectorReady: true, ownerMode: 'standby' }, 'standby 不持有 J2 owner 时，健康检查必须以进程可达和投影新鲜度判定')
+assert.deepEqual(standby, { enabled: true, ready: true, projectorReady: true, ownerMode: 'standby' as const }, 'standby 不持有 J2 owner 时，健康检查必须以进程可达和投影新鲜度判定')
 assert.equal(resolveSystemApiHealth(standby, { enabled: false, ready: true }).status, 'ok', '正常 standby 不得被误报为 degraded')
 
 assert.deepEqual(resolveRuntimeReadiness({

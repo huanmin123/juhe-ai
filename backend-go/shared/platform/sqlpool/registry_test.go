@@ -64,4 +64,7 @@ func TestRegistrySeparatesRoleAndRejectsInvalidBounds(t *testing.T) {
 	if _, err := registry.Acquire(open, "memory", "jobs", 4, 5); err == nil {
 		t.Fatal("idle connections above open connections must be rejected")
 	}
+	if _, err := registry.Acquire(open, "memory", "jobs", 12, MaxIdleConns+1); err == nil {
+		t.Fatalf("idle connections above the platform limit %d must be rejected", MaxIdleConns)
+	}
 }

@@ -66,6 +66,7 @@ type LongContextObservation struct {
 type LongContextInput struct {
 	Model       string
 	Protocol    modelcheckprofile.Protocol
+	Prefix      string
 	Stream      bool
 	ModelLimit  int
 	CountTokens func(string) int
@@ -102,7 +103,7 @@ func RunLongContextProbeSetWithTerminal(ctx context.Context, input LongContextIn
 			break
 		}
 	}
-	return EvaluateLongContextProbeSet(observations, input.Model, "target"), terminal, nil
+	return EvaluateLongContextProbeSet(observations, input.Model, suitePrefix(input.Prefix)), terminal, nil
 }
 
 func EvaluateLongContextProbeSet(observations []LongContextObservation, expectedModel, prefix string) EvaluationItem {

@@ -5,6 +5,7 @@ export interface SystemSettings {
   gatewayUserRequestLimitPerDay: number
   gatewayUserRequestLimitPerWeek: number
   gatewayUserRequestLimitPerMonth: number
+  userAiAccountLimit: number
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number

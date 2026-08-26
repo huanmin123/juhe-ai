@@ -15,6 +15,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       password_hash TEXT NOT NULL,
       must_change_password INTEGER NOT NULL DEFAULT 0,
       image_generation_enabled INTEGER NOT NULL DEFAULT 0,
+      ai_account_limit INTEGER CHECK (ai_account_limit BETWEEN 0 AND 1000000),
       request_limits_json TEXT,
       last_login_at TEXT,
       created_at TEXT NOT NULL,
@@ -1634,12 +1635,26 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
   ensureAccountHealthCheckEndpointModeSchema(database)
+  ensureSystemAccountRequestLimitsSchema(database)
+  ensureSystemAccountAiAccountLimitSchema(database)
   ensureAccountCircuitControlPlaneSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureOidcProviderSchema(database)
   ensureAuthorizationInstanceIndexes(database)
   ensureAccountTestTaskQueuedDeadlineSchema(database)
+}
+
+function ensureSystemAccountRequestLimitsSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(system_accounts)').all() as Array<{ name?: unknown }>
+  if (columns.length === 0 || columns.some((column) => column.name === 'request_limits_json')) return
+  database.exec('ALTER TABLE system_accounts ADD COLUMN request_limits_json TEXT')
+}
+
+function ensureSystemAccountAiAccountLimitSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(system_accounts)').all() as Array<{ name?: unknown }>
+  if (columns.length === 0 || columns.some((column) => column.name === 'ai_account_limit')) return
+  database.exec('ALTER TABLE system_accounts ADD COLUMN ai_account_limit INTEGER CHECK (ai_account_limit BETWEEN 0 AND 1000000)')
 }
 
 function ensureAccountTestTaskQueuedDeadlineSchema(database: DatabaseSync): void {

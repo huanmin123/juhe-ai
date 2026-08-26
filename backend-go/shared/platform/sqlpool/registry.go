@@ -8,6 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
+)
+
+const (
+	// MaxIdleConns prevents a high concurrency ceiling from becoming a high
+	// number of permanently reserved PostgreSQL sessions.
+	MaxIdleConns = 10
+	// MaxConnIdleTime releases unused database/sql connections after the
+	// platform-wide idle window.
+	MaxConnIdleTime = 10 * time.Minute
 )
 
 type Registry struct {
@@ -46,8 +56,8 @@ func (r *Registry) Acquire(open func() (*sql.DB, error), url, role string, maxOp
 	if open == nil || url == "" || role == "" {
 		return nil, errors.New("sql pool opener、URL、role 不能为空")
 	}
-	if maxOpen < 1 || maxIdle < 1 || maxIdle > maxOpen {
-		return nil, fmt.Errorf("sql pool max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpen, maxIdle)
+	if err := ValidatePoolLimits(maxOpen, maxIdle); err != nil {
+		return nil, err
 	}
 	key := Key{URL: url, Role: role}
 	r.mu.Lock()
@@ -59,7 +69,7 @@ func (r *Registry) Acquire(open func() (*sql.DB, error), url, role string, maxOp
 		if maxOpen > current.db.Stats().MaxOpenConnections {
 			current.db.SetMaxOpenConns(maxOpen)
 		}
-		current.db.SetMaxIdleConns(maxIdle)
+		configurePool(current.db, maxIdle)
 		current.refs++
 		return &Handle{registry: r, key: key, db: current.db}, nil
 	}
@@ -71,9 +81,24 @@ func (r *Registry) Acquire(open func() (*sql.DB, error), url, role string, maxOp
 		return nil, errors.New("sql pool opener 返回空数据库连接")
 	}
 	db.SetMaxOpenConns(maxOpen)
-	db.SetMaxIdleConns(maxIdle)
+	configurePool(db, maxIdle)
 	r.entries[key] = &entry{db: db, refs: 1}
 	return &Handle{registry: r, key: key, db: db}, nil
+}
+
+// ValidatePoolLimits keeps the high connection ceiling independent from the
+// small, bounded cache of idle sessions. Callers should validate at config
+// load time so a stale deployment value fails before a pool is opened.
+func ValidatePoolLimits(maxOpen, maxIdle int) error {
+	if maxOpen < 1 || maxIdle < 1 || maxIdle > maxOpen || maxIdle > MaxIdleConns {
+		return fmt.Errorf("sql pool max open/idle 必须满足 1 <= idle <= min(open, %d)，实际为 %d/%d", MaxIdleConns, maxOpen, maxIdle)
+	}
+	return nil
+}
+
+func configurePool(db *sql.DB, maxIdle int) {
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxIdleTime(MaxConnIdleTime)
 }
 
 func (h *Handle) DB() *sql.DB {

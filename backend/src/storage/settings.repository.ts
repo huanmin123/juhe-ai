@@ -26,6 +26,7 @@ export const systemSettingKeys = [
   'gatewayUserRequestLimitPerDay',
   'gatewayUserRequestLimitPerWeek',
   'gatewayUserRequestLimitPerMonth',
+  'userAiAccountLimit',
   'systemApiRateLimitIpReadPerMinute',
   'systemApiRateLimitIpReadBurstPer10Seconds',
   'systemApiRateLimitIpWritePerMinute',
@@ -89,7 +90,8 @@ const compatibleSystemSettingDefaults: Partial<Record<SystemSettingKey, unknown>
   gatewayUserRequestLimitPerMinute: 0,
   gatewayUserRequestLimitPerDay: 0,
   gatewayUserRequestLimitPerWeek: 0,
-  gatewayUserRequestLimitPerMonth: 0
+  gatewayUserRequestLimitPerMonth: 0,
+  userAiAccountLimit: 100
 }
 
 const globalSettingKeys = ['appName', 'appIcon'] as const
@@ -97,7 +99,7 @@ const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
 export const managementSettingsSectionCatalog = {
   brand: { domain: 'global', keys: globalSettingKeys },
   'gateway-core': { domain: 'system', keys: ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'] as const },
-  'user-request-limit': { domain: 'system', keys: ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth'] as const },
+  'user-request-limit': { domain: 'system', keys: ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth', 'userAiAccountLimit'] as const },
   'account-health': { domain: 'system', keys: ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold'] as const },
   'api-rate-limit': { domain: 'system', keys: ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'] as const },
   'cooldown-retest': { domain: 'system', keys: ['cooldownAccountRetestMaxBackoffHours'] as const },
@@ -111,6 +113,7 @@ const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   gatewayUserRequestLimitPerDay: integerSetting(0, 1_000_000_000),
   gatewayUserRequestLimitPerWeek: integerSetting(0, 1_000_000_000),
   gatewayUserRequestLimitPerMonth: integerSetting(0, 1_000_000_000),
+  userAiAccountLimit: integerSetting(0, 1_000_000),
   systemApiRateLimitIpReadPerMinute: integerSetting(0, 1_000_000),
   systemApiRateLimitIpReadBurstPer10Seconds: integerSetting(0, 1_000_000),
   systemApiRateLimitIpWritePerMinute: integerSetting(0, 1_000_000),

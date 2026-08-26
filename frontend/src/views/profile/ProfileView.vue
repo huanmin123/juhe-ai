@@ -157,29 +157,6 @@
         </a-card>
       </div>
 
-      <a-card class="page-card profile-limit-card" title="请求限制">
-        <template #extra>
-          <span class="profile-limit-timezone">统计时区：{{ profile.effectiveRequestLimits.timezone }}</span>
-        </template>
-        <div class="profile-limit-grid">
-          <div v-for="item in requestLimitItems" :key="item.key" class="profile-limit-item">
-            <span class="profile-limit-icon"><component :is="item.icon" /></span>
-            <div class="profile-limit-copy">
-              <span>{{ item.label }}</span>
-              <strong>{{ requestLimitText(item.limit) }}</strong>
-            </div>
-            <a-tag :color="item.source === 'user' ? 'blue' : 'default'">
-              {{ item.source === 'user' ? '单独配置' : '全局默认' }}
-            </a-tag>
-          </div>
-        </div>
-        <div v-if="profile.effectiveRequestLimits.overrideExpiresOn" class="profile-limit-expiry" :class="{ expired: !profile.effectiveRequestLimits.overrideActive }">
-          {{ profile.effectiveRequestLimits.overrideActive
-            ? `用户单独配置有效至 ${profile.effectiveRequestLimits.overrideExpiresOn}，到期次日自动继承全局。`
-            : `用户单独配置已于 ${profile.effectiveRequestLimits.overrideExpiresOn} 到期，当前已继承全局。` }}
-        </div>
-      </a-card>
-
       <div ref="securitySection">
         <a-card class="page-card profile-security-card" title="账号安全">
           <template #extra>
@@ -251,18 +228,14 @@
 
 <script setup lang="ts">
 import {
-  CalendarOutlined,
   CheckCircleOutlined,
   EditOutlined,
   FileTextOutlined,
-  FieldTimeOutlined,
   IdcardOutlined,
   LockOutlined,
   PictureOutlined,
   SafetyCertificateOutlined,
-  ScheduleOutlined,
   SaveOutlined,
-  ThunderboltOutlined,
   UserOutlined
 } from '@ant-design/icons-vue'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
@@ -273,7 +246,7 @@ import { authState, changePassword, updateProfile } from '@/composables/useAuth'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { formatDateTime } from '@/shared/formatters'
 import { isAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { CurrentUserProfile } from '@/types/domain'
 import { normalizeProfileRedirectPath } from './profileNavigation'
@@ -311,17 +284,6 @@ const imageGenerationDescription = computed(() => profile.value?.imageGeneration
   : '需要管理员在系统账户管理中开启。')
 const accountStatusLabel = computed(() => profile.value?.status === 'active' ? '启用中' : '已停用')
 const accountStatusColor = computed(() => profile.value?.status === 'active' ? 'green' : 'red')
-const requestLimitItems = computed(() => {
-  const limits = profile.value?.effectiveRequestLimits
-  if (!limits) return []
-  return [
-    { key: 'minute', label: '每分钟', icon: ThunderboltOutlined, ...limits.perMinute },
-    { key: 'day', label: '每日', icon: CalendarOutlined, ...limits.perDay },
-    { key: 'week', label: '每周', icon: ScheduleOutlined, ...limits.perWeek },
-    { key: 'month', label: '每月', icon: FieldTimeOutlined, ...limits.perMonth }
-  ]
-})
-
 watch(
   () => currentUser.value?.id,
   (systemAccountId) => {
@@ -426,10 +388,6 @@ function resetPasswordForm(): void {
   passwordForm.oldPassword = ''
   passwordForm.newPassword = ''
   passwordForm.confirmPassword = ''
-}
-
-function requestLimitText(limit: number): string {
-  return limit === 0 ? '无限制' : `${formatNumber(limit)} 次`
 }
 
 async function focusRequestedSection(): Promise<void> {
@@ -566,83 +524,6 @@ async function focusRequestedSection(): Promise<void> {
   grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
   gap: 18px;
   align-items: stretch;
-}
-
-.profile-limit-card :deep(.ant-card-body) {
-  padding: 6px 24px 18px;
-}
-
-.profile-limit-timezone {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.profile-limit-expiry {
-  margin-top: 16px;
-  padding: 10px 12px;
-  color: #1d4ed8;
-  font-size: 13px;
-  background: #eff6ff;
-  border-radius: 8px;
-}
-
-.profile-limit-expiry.expired {
-  color: #64748b;
-  background: #f1f5f9;
-}
-
-.profile-limit-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.profile-limit-item {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border-right: 1px solid #eef2f7;
-}
-
-.profile-limit-item:last-child {
-  border-right: 0;
-}
-
-.profile-limit-item :deep(.ant-tag) {
-  width: max-content;
-  margin: 7px 0 0 48px;
-  grid-column: 1 / -1;
-}
-
-.profile-limit-icon {
-  width: 38px;
-  height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #0369a1;
-  font-size: 17px;
-  background: #e0f2fe;
-  border-radius: 8px;
-}
-
-.profile-limit-copy {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.profile-limit-copy span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.profile-limit-copy strong {
-  color: #0f172a;
-  font-size: 18px;
-  line-height: 24px;
 }
 
 .profile-section-card {
@@ -918,17 +799,6 @@ async function focusRequestedSection(): Promise<void> {
     gap: 0;
   }
 
-  .profile-limit-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .profile-limit-item:nth-child(2) {
-    border-right: 0;
-  }
-
-  .profile-limit-item:nth-child(-n + 2) {
-    border-bottom: 1px solid #eef2f7;
-  }
 }
 
 @media (max-width: 640px) {
@@ -1003,28 +873,6 @@ async function focusRequestedSection(): Promise<void> {
   .profile-time-grid {
     grid-template-columns: 1fr;
     gap: 12px;
-  }
-
-  .profile-limit-card :deep(.ant-card-head) {
-    align-items: flex-start;
-  }
-
-  .profile-limit-timezone {
-    display: none;
-  }
-
-  .profile-limit-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .profile-limit-item,
-  .profile-limit-item:nth-child(2) {
-    border-right: 0;
-    border-bottom: 1px solid #eef2f7;
-  }
-
-  .profile-limit-item:last-child {
-    border-bottom: 0;
   }
 
   .profile-time-grid > div {

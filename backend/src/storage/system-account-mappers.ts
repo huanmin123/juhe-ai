@@ -11,6 +11,7 @@ export interface SystemAccountRow {
   password_hash: string
   must_change_password: number
   image_generation_enabled: number
+  ai_account_limit?: number | null
   request_limits_json: string | null
   last_login_at: string | null
   created_at: string
@@ -29,6 +30,7 @@ export function systemAccountSummaryFromRow(row: SystemAccountSummaryRow): Syste
     status: row.status,
     mustChangePassword: effectiveMustChangePassword(row.role, row.must_change_password === 1),
     imageGenerationEnabled: row.image_generation_enabled === 1,
+    aiAccountLimit: normalizedAiAccountLimit(row.ai_account_limit),
     requestLimits: parseUserRequestLimitsJson(row.request_limits_json),
     lastLoginAt: row.last_login_at ?? undefined,
     createdAt: row.created_at,
@@ -46,6 +48,7 @@ export function systemAccountListItemFromRow(row: Omit<SystemAccountSummaryRow, 
     status: row.status,
     mustChangePassword: effectiveMustChangePassword(row.role, row.must_change_password === 1),
     imageGenerationEnabled: row.image_generation_enabled === 1,
+    aiAccountLimit: normalizedAiAccountLimit(row.ai_account_limit),
     requestLimits: parseUserRequestLimitsJson(row.request_limits_json),
     lastLoginAt: row.last_login_at ?? undefined,
     editVersion: row.updated_at
@@ -54,6 +57,12 @@ export function systemAccountListItemFromRow(row: Omit<SystemAccountSummaryRow, 
 
 function effectiveMustChangePassword(role: SystemAccountRole, mustChangePassword: boolean): boolean {
   return mustChangePassword && !isAdminRole(role)
+}
+
+function normalizedAiAccountLimit(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1_000_000
+    ? value
+    : undefined
 }
 
 export function systemAccountPrincipalSummaryFromRow(row: Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>): SystemAccountPrincipalSummary {

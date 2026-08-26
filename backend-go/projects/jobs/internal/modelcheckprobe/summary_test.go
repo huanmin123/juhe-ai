@@ -45,3 +45,17 @@ func TestSummarizeChecksRejectsModelMismatchBeforeScore(t *testing.T) {
 		t.Fatalf("mismatch summary=%#v", result)
 	}
 }
+
+func TestSummarizeChecksAcceptsPassedTrustedComparisonByItemType(t *testing.T) {
+	checks := []EvaluationItem{
+		{ItemKey: "target.responses_basic", ItemType: "responses_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{ItemKey: "target.behavior_probe", ItemType: "behavior_probe", Status: "passed", Score: 35, MaxScore: 35},
+		{ItemKey: "target.long_context", ItemType: "long_context", Status: "passed", Score: 15, MaxScore: 15},
+		{ItemKey: "target.stability", ItemType: "stability", Status: "passed", Score: 15, MaxScore: 15},
+		{ItemKey: "trusted_comparison.comparison", ItemType: "trusted_comparison", Status: "passed", Score: 10, MaxScore: 10},
+	}
+	result := SummarizeChecks(checks, true, "full")
+	if result.Level != "high_confidence" {
+		t.Fatalf("result=%#v", result)
+	}
+}

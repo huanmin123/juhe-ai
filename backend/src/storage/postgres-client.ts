@@ -96,6 +96,7 @@ async function createPostgresPool(): Promise<PostgresPool> {
   const pool = new Pool({
     connectionString: runtimeConfig.postgres.url,
     max: runtimeConfig.postgres.poolMax,
+    idleTimeoutMillis: runtimeConfig.postgres.idleTimeoutMs,
     connectionTimeoutMillis: runtimeConfig.postgres.connectionTimeoutMs,
     application_name: postgresApplicationName()
   }) as unknown as PostgresPool

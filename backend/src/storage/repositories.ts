@@ -135,6 +135,7 @@ import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-r
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
+import * as settingsRepository from './settings.repository.js'
 import {
   listAccountGroupOptions,
   listAccountGroupOptionsAsync,
@@ -2044,6 +2045,7 @@ function createAccountInSqliteTransaction(input: Record<string, unknown>, access
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(account.availabilitySchedule, new Date(nowMs))
   let savedTags = account.tags ?? []
   try {
+    assertAiAccountCreationLimitInSqliteTransaction(database, systemAccountId)
     database
       .prepare(`
         INSERT INTO accounts (
@@ -2334,6 +2336,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(account.availabilitySchedule, new Date(nowMs))
   let savedTags = account.tags ?? []
   try {
+    await assertAiAccountCreationLimitInClientTransaction(client, systemAccountId)
     await client.execute(`
         INSERT INTO ${accountWriteTable(client, 'accounts')} (
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
@@ -2437,6 +2440,68 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   invalidateGatewayRuntimeAfterBusinessWrite('account_created')
 
   return { ...account, tags: savedTags }
+}
+
+function assertAiAccountCreationLimitInSqliteTransaction(
+  database: ReturnType<typeof getBusinessDatabase>,
+  systemAccountId: string
+): void {
+  const owner = database.prepare(`
+    SELECT ai_account_limit
+    FROM system_accounts
+    WHERE id = ?
+    LIMIT 1
+  `).get(systemAccountId) as { ai_account_limit?: unknown } | undefined
+  const limit = effectiveAiAccountCreationLimit(owner?.ai_account_limit, settingsRepository.getSettings())
+  if (limit === 0) return
+  const row = database.prepare(`
+    SELECT COUNT(*) AS count
+    FROM accounts
+    WHERE system_account_id = ?
+      AND deleted_at IS NULL
+      AND authorization_instance_authorization_id IS NULL
+  `).get(systemAccountId) as { count?: unknown } | undefined
+  assertAiAccountLimitNotReached(Number(row?.count ?? 0), limit)
+}
+
+async function assertAiAccountCreationLimitInClientTransaction(
+  client: DatabaseClient,
+  systemAccountId: string
+): Promise<void> {
+  const lockClause = client.driver === 'postgres' ? ' FOR UPDATE' : ''
+  const owner = await client.one<{ ai_account_limit?: unknown }>(`
+    SELECT ai_account_limit
+    FROM ${accountWriteTable(client, 'system_accounts')}
+    WHERE id = ?
+    LIMIT 1${lockClause}
+  `, [systemAccountId])
+  const limit = effectiveAiAccountCreationLimit(owner?.ai_account_limit, await settingsRepository.getSettingsAsync())
+  if (limit === 0) return
+  const row = await client.one<{ count?: unknown }>(`
+    SELECT COUNT(*) AS count
+    FROM ${accountWriteTable(client, 'accounts')}
+    WHERE system_account_id = ?
+      AND deleted_at IS NULL
+      AND authorization_instance_authorization_id IS NULL
+  `, [systemAccountId])
+  assertAiAccountLimitNotReached(Number(row?.count ?? 0), limit)
+}
+
+function effectiveAiAccountCreationLimit(accountOverride: unknown, settings: Record<string, unknown>): number {
+  const value = accountOverride ?? settings.userAiAccountLimit
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 1_000_000) {
+    throw new Error('AI 账户数量限制配置无效')
+  }
+  return value
+}
+
+function assertAiAccountLimitNotReached(currentCount: number, limit: number): void {
+  if (!Number.isInteger(currentCount) || currentCount < 0) {
+    throw new Error('AI 账户数量统计异常')
+  }
+  if (currentCount >= limit) {
+    throw new Error(`AI 账户数量已达到限制（${limit}）`)
+  }
 }
 
 export function updateAccount(id: string, input: Record<string, unknown>, access?: AccessScope): AccountSummary | undefined {

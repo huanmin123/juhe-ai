@@ -22,15 +22,18 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, balanceRepository, balanceQueryService, balanceRefreshJob, autoDetectService, workerSchedulerModule] = await Promise.all([
+const [databaseModule, repositories, balanceRepository, balanceQueryService, balanceRefreshJob, autoDetectService, workerSchedulerModule, settingsRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-balance.repository.js'),
   import('../../modules/accounts/account-balance-query.service.js'),
   import('../../modules/background/account-balance-refresh.job.js'),
   import('../../modules/background/account-balance-auto-detect.service.js'),
-  import('../../modules/background/worker-scheduler.js')
+  import('../../modules/background/worker-scheduler.js'),
+  import('../../storage/settings.repository.js')
 ])
+
+await settingsRepository.updateSettingsAsync({ userAiAccountLimit: 1_000_000 })
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 

@@ -8,11 +8,11 @@ import (
 
 func TestRegistryReusesSameURLAndRole(t *testing.T) {
 	r := NewRegistry()
-	a, err := r.Acquire("postgres://same", "gateway", 1000, 1000)
+	a, err := r.Acquire("postgres://same", "gateway", 1000, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := r.Acquire("postgres://same", "gateway", 1000, 1000)
+	b, err := r.Acquire("postgres://same", "gateway", 1000, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

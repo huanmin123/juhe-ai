@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/operationlogappend"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
 const manualAdminProxyTestPathPrefix = "/__aisys__/api/proxies/"
@@ -71,8 +72,11 @@ func LoadManualAdminConfig(getenv func(string) string) (ManualAdminConfig, error
 	if cfg.MaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return ManualAdminConfig{}, err
 	}
-	if cfg.MaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
+	if cfg.MaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS", sqlpool.MaxIdleConns); err != nil {
 		return ManualAdminConfig{}, err
+	}
+	if err := sqlpool.ValidatePoolLimits(cfg.MaxOpenConns, cfg.MaxIdleConns); err != nil {
+		return ManualAdminConfig{}, fmt.Errorf("J3a 管理 PostgreSQL 连接池配置无效: %w", err)
 	}
 	if cfg.RequestDeadline, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE", 25*time.Second, time.Second, 25*time.Second); err != nil {
 		return ManualAdminConfig{}, err

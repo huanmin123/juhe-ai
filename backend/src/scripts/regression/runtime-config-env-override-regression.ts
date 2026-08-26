@@ -95,6 +95,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.redis.queueUrl, 'redis://:queue-secret@127.0.0.1:6381/0', 'Redis queue URL 应正确读取')
   assert.equal(runtimeConfig.redis.namespace, 'runtime-test', 'Redis namespace 应正确读取')
   assert.equal(runtimeConfig.postgres.poolMax, 25, 'PostgreSQL pool max 应正确读取')
+  assert.equal(runtimeConfig.postgres.idleTimeoutMs, 45_000, 'PostgreSQL idle timeout 应正确读取')
   assert.equal(runtimeConfig.postgres.jitEnabled, false, 'PostgreSQL JIT 开关应正确读取')
   assert.equal(runtimeConfig.postgres.writeMaxConcurrency, 100, 'PostgreSQL 写队列并发应正确读取')
   assert.equal(runtimeConfig.postgres.writeQueueMaxItems, 60000, 'PostgreSQL 写队列容量应正确读取')
@@ -158,6 +159,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_FILE_CHILD === '1') {
   assert.equal(runtimeConfig.runtimeStateDriver, 'redis', '专用 env 文件应能覆盖运行态 driver')
   assert.equal(runtimeConfig.queueDriver, 'redis_stream', '专用 env 文件应能覆盖队列 driver')
   assert.equal(runtimeConfig.postgres.poolMax, 44, '专用 env 文件应能覆盖 PostgreSQL pool max')
+  assert.equal(runtimeConfig.postgres.idleTimeoutMs, 30_000, '专用 env 文件未指定时应保留 PostgreSQL idle timeout 默认值')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 333, '专用 env 文件应能覆盖 System API DB service 在途上限')
 
   process.exit(0)
@@ -264,6 +266,7 @@ const performanceResult = spawnRegression({
   JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0',
   JUHE_AI_REDIS_NAMESPACE: 'runtime-test',
   JUHE_AI_DB_POOL_MAX: '25',
+  JUHE_AI_POSTGRES_IDLE_TIMEOUT_MS: '45000',
   JUHE_AI_POSTGRES_JIT_ENABLED: 'false',
   JUHE_AI_DB_WRITE_MAX_CONCURRENCY: '100',
   JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: '60000',

@@ -97,6 +97,7 @@ export interface SystemAccountSummary {
   status: SystemAccountStatus
   mustChangePassword: boolean
   imageGenerationEnabled: boolean
+  aiAccountLimit?: number
   requestLimits?: UserRequestLimits
   lastLoginAt?: string
   createdAt: string
@@ -115,11 +116,12 @@ export type SystemAccountMutationResult = {
 } & Partial<Pick<SystemAccountSummary,
   'displayName'
   | 'role'
-  | 'status'
-  | 'mustChangePassword'
-  | 'imageGenerationEnabled'
->> & {
+   | 'status'
+   | 'mustChangePassword'
+   | 'imageGenerationEnabled'
+ >> & {
   description?: string | null
+  aiAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
 }
 

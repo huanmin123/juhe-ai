@@ -33,8 +33,11 @@ assert.match(profileSource, /updateProfile\(\{ displayName \}\)/, '页面必须�
 assert.match(profileSource, /changePassword\(/, '页面必须复用改密接口')
 assert.match(profileSource, /@click="saveDisplayName"/, '用户名称保存必须使用可验证的显式点击提交')
 assert.match(profileSource, /@click="savePassword"/, '密码修改必须使用可验证的显式点击提交')
-for (const marker of ['系统角色', '图像生成', '账户状态', '请求限制', '每分钟', '每日', '每周', '每月', '最近登录', '账户创建', '资料更新']) {
+for (const marker of ['系统角色', '图像生成', '账户状态', '最近登录', '账户创建', '资料更新']) {
   assert(profileSource.includes(marker), `个人信息页面缺少展示项：${marker}`)
+}
+for (const marker of ['请求限制', '统计时区', '每分钟', '每日', '每周', '每月']) {
+  assert(!profileSource.includes(marker), `个人信息页面不应展示内部限制信息：${marker}`)
 }
 
 const layoutDirectory = fileURLToPath(new URL('../../layouts/', import.meta.url))

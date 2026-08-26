@@ -7,6 +7,7 @@ export interface SystemAccountEditableValues {
   status: SystemAccountStatus
   mustChangePassword: boolean
   imageGenerationEnabled: boolean
+  aiAccountLimit: number | null
   requestLimits: UserRequestLimits | null
 }
 
@@ -19,6 +20,7 @@ const editableFields = [
   'status',
   'mustChangePassword',
   'imageGenerationEnabled',
+  'aiAccountLimit',
   'requestLimits'
 ] as const satisfies readonly (keyof SystemAccountEditableValues)[]
 
@@ -57,6 +59,7 @@ export function mergeSystemAccountMutation(
   if (mutation.status !== undefined) next.status = mutation.status
   if (mutation.mustChangePassword !== undefined) next.mustChangePassword = mutation.mustChangePassword
   if (mutation.imageGenerationEnabled !== undefined) next.imageGenerationEnabled = mutation.imageGenerationEnabled
+  if (Object.hasOwn(mutation, 'aiAccountLimit')) next.aiAccountLimit = mutation.aiAccountLimit ?? undefined
   if (Object.hasOwn(mutation, 'requestLimits')) next.requestLimits = mutation.requestLimits ?? undefined
   return next
 }

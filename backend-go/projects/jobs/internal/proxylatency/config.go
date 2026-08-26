@@ -2,12 +2,14 @@ package proxylatency
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
 const (
@@ -23,6 +25,8 @@ const (
 	defaultProxyLatencyConcurrency  = 512
 	defaultProxyLatencyProbeLimit   = 512
 	defaultProxyLatencyProbeTimeout = 30 * time.Second
+	defaultPostgresMaxOpenConns     = 5096
+	defaultPostgresMaxIdleConns     = sqlpool.MaxIdleConns
 )
 
 // RuntimeConfig is opt-in. Disabled configuration deliberately does not
@@ -79,17 +83,23 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_POSTGRES_URL")
 	}
 	var err error
-	if cfg.PostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
+	if cfg.PostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS", defaultPostgresMaxOpenConns); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.PostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
+	if cfg.PostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
+	if cfg.InputPostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS", defaultPostgresMaxOpenConns); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
+	if cfg.InputPostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
 		return RuntimeConfig{}, err
+	}
+	if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
+		return RuntimeConfig{}, fmt.Errorf("J3a jobs PostgreSQL 连接池配置无效: %w", err)
+	}
+	if err := sqlpool.ValidatePoolLimits(cfg.InputPostgresMaxOpenConns, cfg.InputPostgresMaxIdleConns); err != nil {
+		return RuntimeConfig{}, fmt.Errorf("J3a 业务读取 PostgreSQL 连接池配置无效: %w", err)
 	}
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL"))
 	if cfg.BusinessPostgresURL == "" {

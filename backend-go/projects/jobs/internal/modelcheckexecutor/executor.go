@@ -35,6 +35,10 @@ type ResolvedTarget struct {
 
 type TargetResolver func(context.Context, string, string) (ResolvedTarget, error)
 
+type ExecuteOptions struct {
+	OnItem func(modelcheckprobe.EvaluationItem)
+}
+
 type OutcomePayload struct {
 	InputID      string `json:"inputId"`
 	InputDigest  string `json:"inputDigest"`
@@ -47,6 +51,12 @@ type OutcomePayload struct {
 }
 
 func ExecuteInput(ctx context.Context, store *modelcheckdurable.Store, inputID, ownerID, claimToken, outcomeID string, now time.Time, resolver TargetResolver, retry modelcheckprobe.RetryOptions) (OutcomePayload, error) {
+	return ExecuteInputWithOptions(ctx, store, inputID, ownerID, claimToken, outcomeID, now, resolver, retry, ExecuteOptions{})
+}
+
+// ExecuteInputWithOptions keeps the durable claim/fence flow identical to
+// ExecuteInput while exposing invocation-local probe progress to its caller.
+func ExecuteInputWithOptions(ctx context.Context, store *modelcheckdurable.Store, inputID, ownerID, claimToken, outcomeID string, now time.Time, resolver TargetResolver, retry modelcheckprobe.RetryOptions, options ExecuteOptions) (OutcomePayload, error) {
 	if store == nil || resolver == nil {
 		return OutcomePayload{}, errors.New("model check executor is not initialized")
 	}
@@ -60,6 +70,16 @@ func ExecuteInput(ctx context.Context, store *modelcheckdurable.Store, inputID, 
 	}
 	if !matchesSnapshot(target, issued) {
 		return OutcomePayload{}, errors.New("model check target revision or profile is stale")
+	}
+	var comparison ResolvedTarget
+	if issued.Input.TrustedComparison {
+		comparison, err = resolver(ctx, issued.Input.Comparison.ID, issued.Input.Comparison.ConfigRevision)
+		if err != nil {
+			return OutcomePayload{}, err
+		}
+		if !matchesComparisonSnapshot(comparison, issued) || comparison.Protocol != target.Protocol || comparison.ProtocolProfileID != target.ProtocolProfileID {
+			return OutcomePayload{}, errors.New("model check trusted comparison revision or profile is stale")
+		}
 	}
 	claim, err := store.Claim(ctx, inputID, ownerID, claimToken, outcomeID, now, issued.Input.DeadlineAt.Sub(now))
 	if err != nil {
@@ -78,17 +98,34 @@ func ExecuteInput(ctx context.Context, store *modelcheckdurable.Store, inputID, 
 	if !matchesSnapshot(rechecked, issued) || rechecked.Endpoint != target.Endpoint || rechecked.Protocol != target.Protocol {
 		return release(errors.New("model check target revision or profile is stale"))
 	}
-	items, err := modelcheckprobe.RunSuite(ctx, modelcheckprobe.BasicProbeInput{Endpoint: rechecked.Endpoint, Protocol: rechecked.Protocol, Model: rechecked.Model, Prompt: rechecked.Prompt, Stream: rechecked.Stream, MaxOutputTokens: rechecked.MaxOutputTokens, Headers: rechecked.Headers, Timeout: rechecked.Timeout, MaxResponseBytes: rechecked.MaxResponseBytes, ModelLimit: rechecked.ModelLimit, CountTokens: rechecked.CountTokens}, modelcheckprobe.SuiteOptions{
-		IncludeStream:              rechecked.Stream,
-		IncludeStructured:          true,
-		IncludeTool:                true,
-		IncludeBehavior:            issued.Input.Profile == "full",
-		IncludeLongContext:         issued.Input.Profile == "full",
-		IncludeStability:           issued.Input.Profile == "full",
-		IncludeUsageOnBasicFailure: issued.Input.Profile == "full",
-	}, retry)
+	if issued.Input.TrustedComparison {
+		comparisonRechecked, comparisonErr := resolver(ctx, issued.Input.Comparison.ID, issued.Input.Comparison.ConfigRevision)
+		if comparisonErr != nil {
+			return release(comparisonErr)
+		}
+		if !matchesComparisonSnapshot(comparisonRechecked, issued) || comparisonRechecked.Endpoint != comparison.Endpoint || comparisonRechecked.Protocol != comparison.Protocol {
+			return release(errors.New("model check trusted comparison revision or profile is stale"))
+		}
+		comparison = comparisonRechecked
+	}
+	items, err := runSuite(ctx, rechecked, issued.Input.Profile, "target", retry, options.OnItem)
 	if err != nil {
 		return release(err)
+	}
+	if issued.Input.TrustedComparison && !terminalSuite(items) {
+		targetItems := append([]modelcheckprobe.EvaluationItem(nil), items...)
+		comparisonItems, comparisonErr := runSuite(ctx, comparison, issued.Input.Profile, "trusted_comparison", retry, options.OnItem)
+		if comparisonErr != nil {
+			return release(comparisonErr)
+		}
+		items = append(items, comparisonItems...)
+		if !terminalSuite(comparisonItems) {
+			comparisonItem := modelcheckprobe.EvaluateTrustedComparison(targetItems, comparisonItems, issued.Input.Profile)
+			items = append(items, comparisonItem)
+			if options.OnItem != nil {
+				options.OnItem(comparisonItem)
+			}
+		}
 	}
 	if len(items) == 0 {
 		return release(errors.New("model check suite produced no evaluation items"))
@@ -105,6 +142,37 @@ func ExecuteInput(ctx context.Context, store *modelcheckdurable.Store, inputID, 
 	return payload, nil
 }
 
+func runSuite(ctx context.Context, target ResolvedTarget, profile, prefix string, retry modelcheckprobe.RetryOptions, onItem func(modelcheckprobe.EvaluationItem)) ([]modelcheckprobe.EvaluationItem, error) {
+	return modelcheckprobe.RunSuite(ctx, modelcheckprobe.BasicProbeInput{Endpoint: target.Endpoint, Protocol: target.Protocol, Model: target.Model, Prompt: target.Prompt, Stream: target.Stream, MaxOutputTokens: target.MaxOutputTokens, Headers: target.Headers, Timeout: target.Timeout, MaxResponseBytes: target.MaxResponseBytes, ModelLimit: target.ModelLimit, CountTokens: target.CountTokens}, modelcheckprobe.SuiteOptions{
+		Prefix:                     prefix,
+		IncludeStream:              target.Stream,
+		IncludeStructured:          true,
+		IncludeTool:                true,
+		IncludeBehavior:            profile == "full",
+		IncludeLongContext:         profile == "full",
+		IncludeStability:           profile == "full",
+		IncludeUsageOnBasicFailure: profile == "full",
+		IncludeTokenIntegrity:      true,
+		IncludeIdentity:            profile == "full",
+		OnItem:                     onItem,
+	}, retry)
+}
+
 func matchesSnapshot(target ResolvedTarget, issued modelcheckdurable.Issued) bool {
 	return target.ConfigRevision == issued.Input.Target.ConfigRevision && target.ProtocolProfileID == issued.Input.Target.ProtocolProfileID && target.ProtocolProfileRevision == issued.Input.Target.ProtocolProfileRevision && target.Model == issued.Input.Target.MappedUpstreamModel
+}
+
+func matchesComparisonSnapshot(target ResolvedTarget, issued modelcheckdurable.Issued) bool {
+	comparison := issued.Input.Comparison
+	return comparison != nil && target.ConfigRevision == comparison.ConfigRevision && target.ProtocolProfileID == comparison.ProtocolProfileID && target.ProtocolProfileRevision == comparison.ProtocolProfileRevision && target.Model == comparison.MappedUpstreamModel
+}
+
+func terminalSuite(items []modelcheckprobe.EvaluationItem) bool {
+	for _, item := range items {
+		if item.ItemType == "responses_basic" || item.ItemType == "protocol_basic" {
+			success, _ := item.Evidence["success"].(bool)
+			return !success
+		}
+	}
+	return true
 }

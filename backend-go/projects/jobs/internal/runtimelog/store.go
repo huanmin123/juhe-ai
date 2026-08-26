@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "modernc.org/sqlite"
@@ -110,6 +111,8 @@ func OpenStore(ctx context.Context, config Config) (Store, error) {
 		}
 		poolConfig.MaxConns = int32(maxConns)
 		poolConfig.MinConns = int32(config.PostgresMinConns)
+		poolConfig.MinIdleConns = int32(config.PostgresMinConns)
+		poolConfig.MaxConnIdleTime = sqlpool.MaxConnIdleTime
 		if poolConfig.MinConns > poolConfig.MaxConns {
 			return nil, fmt.Errorf("运行日志 PostgreSQL min connections 不得大于 max connections: %d > %d", poolConfig.MinConns, poolConfig.MaxConns)
 		}

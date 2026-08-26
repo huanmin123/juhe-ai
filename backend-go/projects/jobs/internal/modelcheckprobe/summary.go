@@ -73,7 +73,7 @@ func SummarizeChecks(checks []EvaluationItem, trustedComparison bool, profile st
 		return SummaryResult{Level: "uncertain", Score: score, MaxScore: 100, Message: "关键行为或稳定性探针存在请求失败，未形成完整模型可信度证据"}
 	}
 	trustedItem := findItem(checks, "trusted_comparison.comparison")
-	trustedPassed := !trustedComparison || hasStatus(checks, "trusted_comparison", "passed")
+	trustedPassed := !trustedComparison || hasItemTypeStatus(checks, "trusted_comparison", "passed")
 	if trustedComparison && trustedItem != nil && trustedItem.Status == "skipped" {
 		return SummaryResult{Level: "uncertain", Score: score, MaxScore: 100, Message: "可信对比探针请求失败，未形成完整可比模型证据"}
 	}
@@ -126,6 +126,15 @@ func findItem(items []EvaluationItem, keys ...string) *EvaluationItem {
 func hasStatus(items []EvaluationItem, key, status string) bool {
 	for _, item := range items {
 		if item.ItemKey == key && item.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasItemTypeStatus(items []EvaluationItem, itemType, status string) bool {
+	for _, item := range items {
+		if item.ItemType == itemType && item.Status == status {
 			return true
 		}
 	}

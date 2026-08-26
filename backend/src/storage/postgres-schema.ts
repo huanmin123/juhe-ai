@@ -71,6 +71,11 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   },
   {
     schemaName: 'juhe_business',
+    source: 'system-account-ai-account-limit-pg-column',
+    sql: 'ALTER TABLE system_accounts ADD COLUMN IF NOT EXISTS ai_account_limit integer CHECK (ai_account_limit BETWEEN 0 AND 1000000)'
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((name COLLATE "C"), id)'
   },

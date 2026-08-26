@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
 const (
@@ -18,7 +20,7 @@ const (
 	defaultBatchSize         = 512
 	defaultOwnerLease        = 30 * time.Second
 	defaultPostgresMaxConns  = 5096
-	defaultPostgresMinConns  = 512
+	defaultPostgresMinConns  = sqlpool.MaxIdleConns
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -73,6 +75,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	postgresMinConns, err := positiveIntOrDefault("JUHE_AI_RUNTIME_LOG_POSTGRES_MIN_CONNS", getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_MIN_CONNS"), defaultPostgresMinConns)
 	if err != nil {
 		return Config{}, err
+	}
+	if postgresMinConns > sqlpool.MaxIdleConns {
+		return Config{}, fmt.Errorf("JUHE_AI_RUNTIME_LOG_POSTGRES_MIN_CONNS 不得大于 %d", sqlpool.MaxIdleConns)
 	}
 	config := Config{
 		OwnerID:                fmt.Sprintf("%s:%d", ownerInstance, os.Getpid()),

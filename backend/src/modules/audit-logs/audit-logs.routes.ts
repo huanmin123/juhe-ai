@@ -27,6 +27,7 @@ async function getF3Repository(): Promise<AuditLogF3QueryRepository> {
       ...(isPostgres ? { postgresUrl: runtimeConfig.postgres.url } : { sqlitePath: runtimeConfig.auditLogF3.sqlitePath }),
       postgresSchema: runtimeConfig.auditLogF3.postgresSchema,
       postgresPoolMax: runtimeConfig.auditLogF3.postgresPoolMax,
+      postgresIdleTimeoutMs: runtimeConfig.postgres.idleTimeoutMs,
       postgresTransactionLocalSettingsSql: isPostgres ? postgresTransactionLocalSettingsSql() : undefined,
       payloadBlobDirectory: runtimeConfig.auditLogF3.payloadBlobDirectory,
       hotSearchDirectory: runtimeConfig.auditLogF3.hotSearchDirectory

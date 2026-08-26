@@ -224,7 +224,7 @@ func TestLoadManualAdminConfigIsExplicitAndBounded(t *testing.T) {
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS":          "0.0.0.0:3405",
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":            "postgres://example",
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS": "1000",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS": "1000",
+		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS": "10",
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE":                "25s",
 	}
 	cfg, err := LoadManualAdminConfig(func(key string) string { return env[key] })

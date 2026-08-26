@@ -37,6 +37,7 @@ const createSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
   imageGenerationEnabled: z.boolean().optional(),
+  aiAccountLimit: z.number().int().min(0).max(1_000_000).nullable().optional(),
   requestLimits: requestLimitsSchema.nullable().optional()
 }).strict()
 
@@ -49,6 +50,7 @@ const updateSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
   imageGenerationEnabled: z.boolean().optional(),
+  aiAccountLimit: z.number().int().min(0).max(1_000_000).nullable().optional(),
   requestLimits: requestLimitsSchema.nullable().optional()
 }).strict().refine((input) => Object.keys(input).some((key) => key !== 'expectedUpdatedAt'), '至少提交一个修改字段')
 
@@ -129,7 +131,8 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
             safeChange('role', '角色', undefined, account.role),
             safeChange('status', '状态', undefined, account.status),
             safeChange('imageGenerationEnabled', '支持图像生成', undefined, account.imageGenerationEnabled),
-            safeChange('requestLimits', '用户请求限制', undefined, account.requestLimits),
+            safeChange('aiAccountLimit', 'AI 账户数量限制', undefined, account.aiAccountLimit),
+            safeChange('requestLimits', '用户限制', undefined, account.requestLimits),
             safeChange('password', '登录密码', undefined, parsed.data.password)
           ],
           viewers: viewer(account.id, 'admin_managed_my_resource')
@@ -209,7 +212,7 @@ function hasWhitespace(value: string): boolean {
 }
 
 function systemAccountPatchFieldLabel(field: SystemAccountManagementPatchField): string {
-  return {
+  const labels: Record<SystemAccountManagementPatchField, string> = {
     displayName: '用户名称',
     description: '说明',
     password: '登录密码',
@@ -217,6 +220,8 @@ function systemAccountPatchFieldLabel(field: SystemAccountManagementPatchField):
     status: '状态',
     mustChangePassword: '下次登录改密',
     imageGenerationEnabled: '支持图像生成',
-    requestLimits: '用户请求限制'
-  }[field]
+    aiAccountLimit: 'AI 账户数量限制',
+    requestLimits: '用户限制'
+  }
+  return labels[field]
 }

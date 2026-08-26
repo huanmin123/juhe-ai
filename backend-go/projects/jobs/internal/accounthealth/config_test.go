@@ -21,15 +21,15 @@ func TestLoadConfigDirectInputSource(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT":            "17",
 		"JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY":               "19",
 		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS":       "23",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS":       "21",
+		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS":       "10",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS": "29",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS": "27",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS": "10",
 	}
 	cfg, err := LoadConfig(func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if cfg.InputSource != "postgres" || cfg.BusinessPostgresURL != env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"] || cfg.DirectInputLimit != 17 || cfg.MaxConcurrency != 19 || cfg.Store.PostgresMaxOpenConns != 23 || cfg.Store.PostgresMaxIdleConns != 21 || cfg.DirectInputPostgresMaxOpenConns != 29 || cfg.DirectInputPostgresMaxIdleConns != 27 {
+	if cfg.InputSource != "postgres" || cfg.BusinessPostgresURL != env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"] || cfg.DirectInputLimit != 17 || cfg.MaxConcurrency != 19 || cfg.Store.PostgresMaxOpenConns != 23 || cfg.Store.PostgresMaxIdleConns != 10 || cfg.DirectInputPostgresMaxOpenConns != 29 || cfg.DirectInputPostgresMaxIdleConns != 10 {
 		t.Fatalf("unexpected direct input config: %#v", cfg)
 	}
 }
@@ -52,7 +52,7 @@ func TestLoadConfigJ1CapacityDefaultsAndUpperBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if cfg.DirectInputLimit != defaultDirectInputLimit || cfg.MaxConcurrency != defaultPostgresConcurrency || cfg.Store.PostgresMaxOpenConns != defaultPostgresPoolSize || cfg.Store.PostgresMaxIdleConns != defaultPostgresPoolSize {
+	if cfg.DirectInputLimit != defaultDirectInputLimit || cfg.MaxConcurrency != defaultPostgresConcurrency || cfg.Store.PostgresMaxOpenConns != defaultPostgresPoolSize || cfg.Store.PostgresMaxIdleConns != defaultPostgresMaxIdleConns {
 		t.Fatalf("defaults changed: %#v", cfg)
 	}
 	for _, name := range []string{"JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT"} {
@@ -70,10 +70,14 @@ func TestLoadConfigJ1CapacityDefaultsAndUpperBound(t *testing.T) {
 		withPool[key] = value
 	}
 	withPool["JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS"] = "1200"
-	withPool["JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS"] = "1100"
+	withPool["JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS"] = "10"
 	cfg, err = LoadConfig(func(key string) string { return withPool[key] })
-	if err != nil || cfg.Store.PostgresMaxOpenConns != 1200 || cfg.Store.PostgresMaxIdleConns != 1100 {
+	if err != nil || cfg.Store.PostgresMaxOpenConns != 1200 || cfg.Store.PostgresMaxIdleConns != 10 {
 		t.Fatalf("external PostgreSQL pool size must be accepted: cfg=%#v err=%v", cfg, err)
+	}
+	withPool["JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS"] = "11"
+	if _, err := LoadConfig(func(key string) string { return withPool[key] }); err == nil {
+		t.Fatal("idle connection configuration above the platform limit must be rejected")
 	}
 }
 

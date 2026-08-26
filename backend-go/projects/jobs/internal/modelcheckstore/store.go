@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -173,10 +174,10 @@ func OpenPostgres(dsn string, maxOpen, maxIdle int) (*Store, error) {
 		maxOpen = 1000
 	}
 	if maxIdle <= 0 {
-		maxIdle = maxOpen
+		maxIdle = min(maxOpen, sqlpool.MaxIdleConns)
 	}
-	if maxIdle > maxOpen {
-		return nil, errors.New("model check PostgreSQL idle pool cannot exceed open pool")
+	if err := sqlpool.ValidatePoolLimits(maxOpen, maxIdle); err != nil {
+		return nil, fmt.Errorf("model check PostgreSQL 连接池配置无效: %w", err)
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -184,6 +185,7 @@ func OpenPostgres(dsn string, maxOpen, maxIdle int) (*Store, error) {
 	}
 	db.SetMaxOpenConns(maxOpen)
 	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxIdleTime(sqlpool.MaxConnIdleTime)
 	return &Store{db: db, mode: StorePostgres}, nil
 }
 

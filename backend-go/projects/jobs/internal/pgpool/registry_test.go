@@ -8,11 +8,11 @@ import (
 
 func TestRegistryReusesSameURLAndRole(t *testing.T) {
 	registry := NewRegistry()
-	first, err := registry.Acquire("pgx", "postgres://same", "jobs", 1000, 1000)
+	first, err := registry.Acquire("pgx", "postgres://same", "jobs", 1000, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := registry.Acquire("pgx", "postgres://same", "jobs", 1000, 1000)
+	second, err := registry.Acquire("pgx", "postgres://same", "jobs", 1000, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,11 +29,11 @@ func TestRegistryReusesSameURLAndRole(t *testing.T) {
 
 func TestRegistrySeparatesRole(t *testing.T) {
 	registry := NewRegistry()
-	first, err := registry.Acquire("pgx", "postgres://same", "jobs", 1000, 1000)
+	first, err := registry.Acquire("pgx", "postgres://same", "jobs", 1000, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := registry.Acquire("pgx", "postgres://same", "business", 1000, 1000)
+	second, err := registry.Acquire("pgx", "postgres://same", "business", 1000, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

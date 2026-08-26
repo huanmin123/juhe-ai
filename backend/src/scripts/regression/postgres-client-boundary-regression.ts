@@ -7,6 +7,7 @@ import { postgresApplicationName, postgresPoolTimeoutConfig, postgresTransaction
 
 const postgresClientSource = readFileSync(fileURLToPath(new URL('../../storage/postgres-client.ts', import.meta.url)), 'utf8')
 assert.doesNotMatch(postgresClientSource, /\boptions\s*:/, '连接池不得发送 PgBouncer transaction pooling 不兼容的 startup options')
+assert.match(postgresClientSource, /idleTimeoutMillis:\s*runtimeConfig\.postgres\.idleTimeoutMs/, '主 PostgreSQL 连接池必须显式使用受限的闲置回收时间')
 
 const originalProcessRole = runtimeConfig.processRole
 const originalWorkerRole = runtimeConfig.workerRole

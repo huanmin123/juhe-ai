@@ -24,6 +24,7 @@ export interface SystemAccountSummary {
   status: SystemAccountStatus
   mustChangePassword: boolean
   imageGenerationEnabled: boolean
+  aiAccountLimit?: number
   requestLimits?: UserRequestLimits
   lastLoginAt?: string
   createdAt: string
@@ -69,9 +70,11 @@ export type SystemAccountPatchPayload = {
   | 'status'
   | 'mustChangePassword'
   | 'imageGenerationEnabled'
+  | 'aiAccountLimit'
 >> & {
   password?: string
   description?: string | null
+  aiAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
 }
 
@@ -85,8 +88,10 @@ export type SystemAccountMutationResult = {
   | 'status'
   | 'mustChangePassword'
   | 'imageGenerationEnabled'
+  | 'aiAccountLimit'
 >> & {
   description?: string | null
+  aiAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
 }
 

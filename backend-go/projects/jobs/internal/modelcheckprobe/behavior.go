@@ -28,6 +28,7 @@ var BehaviorProbeDefinitions = []BehaviorDefinition{
 type BehaviorProbeInput struct {
 	Model    string
 	Protocol modelcheckprofile.Protocol
+	Prefix   string
 	Stream   bool
 	RunProbe func(context.Context, Request) (ProbeResult, error)
 }
@@ -55,7 +56,7 @@ func RunBehaviorProbeSetWithTerminal(ctx context.Context, input BehaviorProbeInp
 			break
 		}
 	}
-	return EvaluateBehaviorProbeSet(observations, input.Model, "target"), terminal, nil
+	return EvaluateBehaviorProbeSet(observations, input.Model, suitePrefix(input.Prefix)), terminal, nil
 }
 
 func isTerminalProbeResult(result ProbeResult) bool {

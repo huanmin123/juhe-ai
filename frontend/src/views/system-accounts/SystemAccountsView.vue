@@ -91,8 +91,8 @@
 
         <div class="request-limit-editor">
           <div class="request-limit-editor-head">
-            <strong>用户请求限制</strong>
-            <span>留空继承全局，填写 0 表示该用户无限；到期日当天仍有效，次日自动继承全局。</span>
+            <strong>用户限制</strong>
+            <span>留空继承全局，填写 0 表示不限。请求限制可设置到期日；AI 账户数量限制长期有效。</span>
           </div>
           <div class="request-limit-grid">
             <a-form-item label="每分钟请求数">
@@ -106,6 +106,9 @@
             </a-form-item>
             <a-form-item label="每月请求数">
               <a-input-number v-model:value="form.requestLimitPerMonth" :min="0" :max="1000000000" :precision="0" :step="1" placeholder="继承全局" style="width: 100%" />
+            </a-form-item>
+            <a-form-item label="AI 账户数量限制" tooltip="限制该用户可创建的自有 AI 账户数量；删除账户后释放名额。">
+              <a-input-number v-model:value="form.aiAccountLimit" :min="0" :max="1000000" :precision="0" :step="1" placeholder="继承全局" style="width: 100%" />
             </a-form-item>
           </div>
           <a-form-item label="覆盖到期日" tooltip="可选。所选日期当天仍生效，次日 00:00 起按系统统计时区自动继承全局。">
@@ -182,6 +185,7 @@ const form = reactive({
   status: 'active' as SystemAccountStatus,
   mustChangePassword: true,
   imageGenerationEnabled: false,
+  aiAccountLimit: null as number | null,
   requestLimitPerMinute: null as number | null,
   requestLimitPerDay: null as number | null,
   requestLimitPerWeek: null as number | null,
@@ -267,7 +271,7 @@ function openCreate() {
   editingBaseline.value = undefined
   Object.assign(form, {
     username: '', displayName: '', description: '', password: '', role: 'user', status: 'active', mustChangePassword: true,
-    imageGenerationEnabled: false, requestLimitPerMinute: null, requestLimitPerDay: null, requestLimitPerWeek: null, requestLimitPerMonth: null,
+    imageGenerationEnabled: false, aiAccountLimit: null, requestLimitPerMinute: null, requestLimitPerDay: null, requestLimitPerWeek: null, requestLimitPerMonth: null,
     requestLimitExpiresOn: null
   })
   modalOpen.value = true
@@ -286,6 +290,7 @@ function openEdit(record: SystemAccountListItem) {
     status: record.status,
     mustChangePassword: record.mustChangePassword,
     imageGenerationEnabled: record.imageGenerationEnabled,
+    aiAccountLimit: record.aiAccountLimit ?? null,
     requestLimitPerMinute: record.requestLimits?.perMinute ?? null,
     requestLimitPerDay: record.requestLimits?.perDay ?? null,
     requestLimitPerWeek: record.requestLimits?.perWeek ?? null,
@@ -347,6 +352,7 @@ const handleSave = submitAction('system_accounts.save', async () => {
       status: SystemAccountStatus
       mustChangePassword: boolean
       imageGenerationEnabled: boolean
+      aiAccountLimit: number | null
       requestLimits: UserRequestLimits | null
     } = {
       ...editableValues
@@ -538,6 +544,7 @@ function systemAccountEditableValues(displayName: string): SystemAccountEditable
     status: form.status,
     mustChangePassword: isAdminRole(form.role) ? false : form.mustChangePassword,
     imageGenerationEnabled: form.imageGenerationEnabled,
+    aiAccountLimit: normalizedOptionalAiAccountLimit(form.aiAccountLimit),
     requestLimits: requestLimitsPayload()
   }
 }
@@ -546,6 +553,14 @@ function normalizedOptionalRequestLimit(value: number | null, label: string): nu
   if (value === null) return null
   if (!Number.isInteger(value) || value < 0 || value > 1_000_000_000) {
     throw new Error(`${label}必须是 0 到 1000000000 之间的整数`)
+  }
+  return value
+}
+
+function normalizedOptionalAiAccountLimit(value: number | null): number | null {
+  if (value === null) return null
+  if (!Number.isInteger(value) || value < 0 || value > 1_000_000) {
+    throw new Error('AI 账户数量限制必须是 0 到 1000000 之间的整数')
   }
   return value
 }
