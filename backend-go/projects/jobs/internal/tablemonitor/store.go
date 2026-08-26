@@ -488,20 +488,23 @@ func (s *Store) hasExpiredSnapshots(ctx context.Context, lease OwnerLease, cutof
 }
 
 func (s *Store) populateGrowth(ctx context.Context, sample *collectedSample) error {
+	if len(sample.tables) == 0 {
+		return nil
+	}
+	oneHour, err := s.previousTableSnapshots(ctx, sample.tables, time.Hour)
+	if err != nil {
+		return err
+	}
+	oneDay, err := s.previousTableSnapshots(ctx, sample.tables, 24*time.Hour)
+	if err != nil {
+		return err
+	}
 	for index := range sample.tables {
 		snapshot := &sample.tables[index]
-		oneHour, err := s.previousTableSnapshot(ctx, snapshot.Role, snapshot.TableName, snapshot.SampledAt.Add(-time.Hour))
-		if err != nil {
-			return err
-		}
-		oneDay, err := s.previousTableSnapshot(ctx, snapshot.Role, snapshot.TableName, snapshot.SampledAt.Add(-24*time.Hour))
-		if err != nil {
-			return err
-		}
-		snapshot.GrowthBytes1h = growthDelta(snapshot.TotalBytes, oneHour.totalBytes)
-		snapshot.GrowthRows1h = growthDelta(snapshot.RowCount, oneHour.rowCount)
-		snapshot.GrowthBytes24h = growthDelta(snapshot.TotalBytes, oneDay.totalBytes)
-		snapshot.GrowthRows24h = growthDelta(snapshot.RowCount, oneDay.rowCount)
+		snapshot.GrowthBytes1h = growthDelta(snapshot.TotalBytes, oneHour[index].totalBytes)
+		snapshot.GrowthRows1h = growthDelta(snapshot.RowCount, oneHour[index].rowCount)
+		snapshot.GrowthBytes24h = growthDelta(snapshot.TotalBytes, oneDay[index].totalBytes)
+		snapshot.GrowthRows24h = growthDelta(snapshot.RowCount, oneDay[index].rowCount)
 	}
 	return nil
 }
@@ -511,36 +514,79 @@ type tableSnapshotBaseline struct {
 	rowCount   *int64
 }
 
-func (s *Store) previousTableSnapshot(ctx context.Context, role, tableName string, before time.Time) (tableSnapshotBaseline, error) {
-	var totalBytes, rowCount sql.NullInt64
-	var err error
+// previousTableSnapshots resolves every table's latest baseline in one query.
+// The old per-table lookup made a 189-table sample issue 378 sequential
+// round trips, which can exhaust a healthy run's wall-clock budget.
+func (s *Store) previousTableSnapshots(ctx context.Context, snapshots []TableSnapshot, lookback time.Duration) ([]tableSnapshotBaseline, error) {
+	baselines := make([]tableSnapshotBaseline, len(snapshots))
+	if len(snapshots) == 0 {
+		return baselines, nil
+	}
+
+	var values strings.Builder
+	args := make([]any, 0, len(snapshots)*4)
+	for index, snapshot := range snapshots {
+		if index > 0 {
+			values.WriteString(", ")
+		}
+		if s.mode == ModePostgres {
+			base := index*4 + 1
+			fmt.Fprintf(&values, "($%d, $%d, $%d, $%d)", base, base+1, base+2, base+3)
+			args = append(args, index, snapshot.Role, snapshot.TableName, snapshot.SampledAt.Add(-lookback).UTC())
+			continue
+		}
+		values.WriteString("(?, ?, ?, ?)")
+		args = append(args, index, snapshot.Role, snapshot.TableName, sqliteTimestamp(snapshot.SampledAt.Add(-lookback).UTC()))
+	}
+
+	table := "table_storage_snapshots"
 	if s.mode == ModePostgres {
-		err = s.db.QueryRowContext(ctx, `SELECT total_bytes, row_count
-FROM juhe_stats.table_storage_snapshots
-WHERE database_role = $1 AND table_name = $2 AND sampled_at <= $3
-ORDER BY sampled_at DESC, id DESC LIMIT 1`, role, tableName, before.UTC()).Scan(&totalBytes, &rowCount)
-	} else {
-		err = s.db.QueryRowContext(ctx, `SELECT total_bytes, row_count
-FROM table_storage_snapshots
-WHERE database_role = ? AND table_name = ? AND sampled_at <= ?
-ORDER BY sampled_at DESC, id DESC LIMIT 1`, role, tableName, sqliteTimestamp(before.UTC())).Scan(&totalBytes, &rowCount)
+		table = "juhe_stats.table_storage_snapshots"
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return tableSnapshotBaseline{}, nil
-	}
+	query := fmt.Sprintf(`WITH target(target_index, database_role, table_name, before_at) AS (
+  VALUES %s
+), ranked AS (
+  SELECT target.target_index, snapshot.total_bytes, snapshot.row_count,
+    ROW_NUMBER() OVER (
+      PARTITION BY target.target_index
+      ORDER BY snapshot.sampled_at DESC, snapshot.id DESC
+    ) AS baseline_rank
+  FROM target
+  JOIN %s AS snapshot
+    ON snapshot.database_role = target.database_role
+   AND snapshot.table_name = target.table_name
+   AND snapshot.sampled_at <= target.before_at
+)
+SELECT target_index, total_bytes, row_count
+FROM ranked
+WHERE baseline_rank = 1`, values.String(), table)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return tableSnapshotBaseline{}, err
+		return nil, err
 	}
-	baseline := tableSnapshotBaseline{}
-	if totalBytes.Valid {
-		value := totalBytes.Int64
-		baseline.totalBytes = &value
+	defer rows.Close()
+	for rows.Next() {
+		var index int
+		var totalBytes, rowCount sql.NullInt64
+		if err := rows.Scan(&index, &totalBytes, &rowCount); err != nil {
+			return nil, err
+		}
+		if index < 0 || index >= len(baselines) {
+			return nil, fmt.Errorf("表监控历史基线返回了无效目标序号 %d", index)
+		}
+		if totalBytes.Valid {
+			value := totalBytes.Int64
+			baselines[index].totalBytes = &value
+		}
+		if rowCount.Valid {
+			value := rowCount.Int64
+			baselines[index].rowCount = &value
+		}
 	}
-	if rowCount.Valid {
-		value := rowCount.Int64
-		baseline.rowCount = &value
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	return baseline, nil
+	return baselines, nil
 }
 
 func growthDelta(current, previous *int64) *int64 {

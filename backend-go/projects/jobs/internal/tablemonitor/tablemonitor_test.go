@@ -368,6 +368,69 @@ FROM table_storage_snapshots WHERE database_role = 'business' AND table_name = '
 	}
 }
 
+func TestPopulateGrowthUsesLatestBaselineForEachTableAndWindow(t *testing.T) {
+	root := t.TempDir()
+	env := sqliteTestEnv(root)
+	cfg, err := LoadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 8, 26, 8, 0, 0, 0, time.UTC)
+	old := now.Add(-30 * time.Hour)
+	mid := now.Add(-2 * time.Hour)
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "growth-batch-test", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("获取表监控 owner lease 失败: acquired=%t err=%v", acquired, err)
+	}
+	if err := store.WriteSample(context.Background(), lease, collectedSample{tables: []TableSnapshot{
+		{Role: "business", TableName: "accounts", SampledAt: old, TotalBytes: int64Pointer(10), RowCount: int64Pointer(1)},
+		{Role: "business", TableName: "groups", SampledAt: old, TotalBytes: int64Pointer(20), RowCount: int64Pointer(2)},
+		{Role: "stats", TableName: "accounts", SampledAt: old, TotalBytes: int64Pointer(30), RowCount: int64Pointer(3)},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteSample(context.Background(), lease, collectedSample{tables: []TableSnapshot{
+		{Role: "business", TableName: "accounts", SampledAt: mid, TotalBytes: int64Pointer(40), RowCount: int64Pointer(4)},
+		{Role: "business", TableName: "groups", SampledAt: mid, TotalBytes: int64Pointer(50), RowCount: int64Pointer(5)},
+		{Role: "stats", TableName: "accounts", SampledAt: mid, TotalBytes: int64Pointer(60), RowCount: int64Pointer(6)},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	sample := collectedSample{tables: []TableSnapshot{
+		{Role: "business", TableName: "accounts", SampledAt: now, TotalBytes: int64Pointer(100), RowCount: int64Pointer(10)},
+		{Role: "business", TableName: "groups", SampledAt: now, TotalBytes: int64Pointer(200), RowCount: int64Pointer(20)},
+		{Role: "stats", TableName: "accounts", SampledAt: now, TotalBytes: int64Pointer(300), RowCount: int64Pointer(30)},
+		{Role: "business", TableName: "new-table", SampledAt: now, TotalBytes: int64Pointer(400), RowCount: int64Pointer(40)},
+	}}
+	if err := store.populateGrowth(context.Background(), &sample); err != nil {
+		t.Fatal(err)
+	}
+
+	for index, want := range []struct {
+		oneHour, oneDay int64
+	}{{60, 90}, {150, 180}, {240, 270}} {
+		got := sample.tables[index]
+		if got.GrowthBytes1h == nil || got.GrowthRows1h == nil || got.GrowthBytes24h == nil || got.GrowthRows24h == nil {
+			t.Fatalf("table %d 缺少增长基线: %+v", index, got)
+		}
+		if *got.GrowthBytes1h != want.oneHour || *got.GrowthRows1h != want.oneHour/10 || *got.GrowthBytes24h != want.oneDay || *got.GrowthRows24h != want.oneDay/10 {
+			t.Fatalf("table %d 增长值错误: %+v", index, got)
+		}
+	}
+	if got := sample.tables[3]; got.GrowthBytes1h != nil || got.GrowthRows1h != nil || got.GrowthBytes24h != nil || got.GrowthRows24h != nil {
+		t.Fatalf("没有历史快照的表必须保持空增长值: %+v", got)
+	}
+}
+
+func int64Pointer(value int64) *int64 { return &value }
+
 func TestCleanupUntilCompleteAcceptsExactFinalBatch(t *testing.T) {
 	root := t.TempDir()
 	env := sqliteTestEnv(root)
