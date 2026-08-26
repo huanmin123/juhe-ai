@@ -15,7 +15,7 @@ const (
 	defaultRetentionDays     = 14
 	defaultLogRetentionDays  = 30
 	defaultLogMaxFiles       = 500
-	defaultBatchSize         = 100000
+	defaultBatchSize         = 512
 	defaultOwnerLease        = 30 * time.Second
 	defaultPostgresMaxConns  = 5096
 	defaultPostgresMinConns  = 512
@@ -62,7 +62,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	batchSize, err := intOrDefault("JUHE_AI_RUNTIME_LOG_BATCH_SIZE", getenv("JUHE_AI_RUNTIME_LOG_BATCH_SIZE"), defaultBatchSize, 1, 100000)
+	batchSize, err := intOrDefault("JUHE_AI_RUNTIME_LOG_BATCH_SIZE", getenv("JUHE_AI_RUNTIME_LOG_BATCH_SIZE"), defaultBatchSize, 1, 5096)
 	if err != nil {
 		return Config{}, err
 	}

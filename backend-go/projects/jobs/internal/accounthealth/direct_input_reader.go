@@ -331,7 +331,7 @@ func collectDirectCandidatePagesWithCap(limit, scanCap int, loadPage func(offset
 }
 
 const (
-	maxDirectInputScanCandidates = 10_000
+	maxDirectInputScanCandidates = 5096
 	directInputScanMultiplier    = 16
 )
 

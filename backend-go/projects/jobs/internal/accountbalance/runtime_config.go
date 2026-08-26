@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	defaultAccountBalanceConcurrency       = 1024
-	defaultAccountBalanceBatchSize         = 1024
-	defaultAccountBalanceRecoveryBatchSize = 1024
-	maxAccountBalanceWorkItems             = 1_000_000
+	defaultAccountBalanceConcurrency       = 512
+	defaultAccountBalanceBatchSize         = 512
+	defaultAccountBalanceRecoveryBatchSize = 512
+	maxAccountBalanceWorkItems             = 5096
 )
 
 // RuntimeConfig is deliberately opt-in.  The J2 package never claims an

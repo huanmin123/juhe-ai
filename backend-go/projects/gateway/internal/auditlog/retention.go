@@ -179,8 +179,8 @@ func normalizeRetentionConfig(config RetentionConfig) (RetentionConfig, error) {
 	if config.BatchSize <= 0 {
 		config.BatchSize = 1000
 	}
-	if config.BatchSize > 10000 {
-		config.BatchSize = 10000
+	if config.BatchSize > 5096 {
+		config.BatchSize = 5096
 	}
 	if config.SuccessSampleBucketThreshold < 0 {
 		config.SuccessSampleBucketThreshold = 0

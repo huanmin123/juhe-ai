@@ -11,17 +11,17 @@ import (
 )
 
 const (
-	maxProxyLatencyWorkItems      = 1_000_000
+	maxProxyLatencyWorkItems      = 5096
 	defaultProxyLatencyInterval   = 5 * time.Second
 	defaultProxyLatencyOwnerLease = 90 * time.Second
 	defaultProxyLatencyProxyLease = 75 * time.Second
 	// Go owns the J3a worker pool. These defaults deliberately do not inherit
 	// Node's event-loop-era throttles; deployment CPU/memory requests and the
 	// upstream itself remain the capacity boundaries.
-	defaultProxyLatencyBatchSize    = 1_024
+	defaultProxyLatencyBatchSize    = 512
 	defaultProxyLatencyPoolFactor   = 100
-	defaultProxyLatencyConcurrency  = 1_024
-	defaultProxyLatencyProbeLimit   = 10_000
+	defaultProxyLatencyConcurrency  = 512
+	defaultProxyLatencyProbeLimit   = 512
 	defaultProxyLatencyProbeTimeout = 30 * time.Second
 )
 

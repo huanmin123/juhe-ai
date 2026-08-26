@@ -17,10 +17,10 @@ const (
 	defaultOwnerLease                = 5 * time.Minute
 	defaultRetentionDays             = 30
 	defaultMaxTables                 = 256
-	defaultMaxConcurrentSources      = 1024
-	defaultPerformanceSources        = 64
-	defaultPostgresConcurrentSources = 1024
-	defaultRetentionBatchSize        = 1000
+	defaultMaxConcurrentSources      = 512
+	defaultPerformanceSources        = 512
+	defaultPostgresConcurrentSources = 512
+	defaultRetentionBatchSize        = 512
 	defaultRetentionMaxBatches       = 1000
 	defaultPostgresPoolSize          = 5096
 )
@@ -64,11 +64,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	} else if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_MODE")), "performance") {
 		concurrencyDefault = defaultPerformanceSources
 	}
-	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), concurrencyDefault, 1, 1024)
+	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), concurrencyDefault, 1, 5096)
 	if err != nil {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES 无效: %w", err)
 	}
-	retentionBatchSize, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE"), defaultRetentionBatchSize, 1, 10000)
+	retentionBatchSize, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE"), defaultRetentionBatchSize, 1, 5096)
 	if err != nil {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE 无效: %w", err)
 	}

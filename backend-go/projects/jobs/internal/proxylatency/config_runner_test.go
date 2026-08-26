@@ -41,7 +41,7 @@ func TestLoadRuntimeConfigUsesGoHighThroughputDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.InputLimit != 10_000 || cfg.BatchSize != 1_024 || cfg.CandidatePoolFactor != 100 || cfg.WorkerConcurrency != 1_024 {
+	if cfg.InputLimit != 512 || cfg.BatchSize != 512 || cfg.CandidatePoolFactor != 100 || cfg.WorkerConcurrency != 512 {
 		t.Fatalf("unexpected Go high-throughput scheduler defaults: %+v", cfg)
 	}
 }
@@ -56,13 +56,13 @@ func TestLoadRuntimeConfigAcceptsLargeGoCapacity(t *testing.T) {
 		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":    "postgres://business",
 		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL":   "postgres://business-writer",
 		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":     "credential-secret",
-		"JUHE_AI_PROXY_LATENCY_INPUT_LIMIT":           "1000000",
-		"JUHE_AI_PROXY_LATENCY_BATCH_SIZE":            "1000000",
+		"JUHE_AI_PROXY_LATENCY_INPUT_LIMIT":           "5096",
+		"JUHE_AI_PROXY_LATENCY_BATCH_SIZE":            "5096",
 		"JUHE_AI_PROXY_LATENCY_CANDIDATE_POOL_FACTOR": "1000",
-		"JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY":    "1000000",
+		"JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY":    "5096",
 	}
 	cfg, err := LoadRuntimeConfig(func(name string) string { return env[name] })
-	if err != nil || cfg.InputLimit != 1_000_000 || cfg.BatchSize != 1_000_000 || cfg.CandidatePoolFactor != 1_000 || cfg.WorkerConcurrency != 1_000_000 {
+	if err != nil || cfg.InputLimit != 5096 || cfg.BatchSize != 5096 || cfg.CandidatePoolFactor != 1_000 || cfg.WorkerConcurrency != 5096 {
 		t.Fatalf("large Go capacity config=%+v err=%v", cfg, err)
 	}
 }

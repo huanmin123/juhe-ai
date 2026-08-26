@@ -18,14 +18,14 @@ const (
 	defaultProbeTimeout           = 65 * time.Second
 	defaultMaxResponseBytes       = int64(256 * 1024)
 	defaultInputTTL               = 15 * time.Minute
-	defaultDirectInputLimit       = 1024
+	defaultDirectInputLimit       = 512
 	defaultPostgresPoolSize       = 5096
-	defaultSQLiteConcurrency      = 4
-	defaultPerformanceConcurrency = 64
-	defaultPostgresConcurrency    = 1024
-	minJ1Concurrency              = 4
-	maxJ1Concurrency              = 1024
-	maxJ1Capacity                 = 1024
+	defaultSQLiteConcurrency      = 512
+	defaultPerformanceConcurrency = 512
+	defaultPostgresConcurrency    = 512
+	minJ1Concurrency              = 1
+	maxJ1Concurrency              = 5096
+	maxJ1Capacity                 = 5096
 )
 
 // Config is deliberately opt-in.  A release cannot accidentally claim J1

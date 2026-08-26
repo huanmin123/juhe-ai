@@ -71,7 +71,7 @@ var proxyLatencyRequiredRelations = []string{
 
 func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]InputDraft, error) {
 	if limit < 1 || limit > maxProxyLatencyInputLimit {
-		return nil, errors.New("J3a PG direct input limit 必须在 1..1000000")
+		return nil, errors.New("J3a PG direct input limit 必须在 1..5096")
 	}
 	tx, err := r.beginReadOnly(ctx)
 	if err != nil {

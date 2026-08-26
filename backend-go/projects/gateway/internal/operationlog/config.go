@@ -41,7 +41,7 @@ const defaultInputMaxBytes int64 = 4 << 20
 const (
 	defaultOwnerLease        = 30 * time.Second
 	defaultRetentionInterval = time.Minute
-	defaultRetentionBatch    = 10000
+	defaultRetentionBatch    = 512
 	defaultPostgresPoolSize  = 5096
 )
 
@@ -63,7 +63,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil || retentionInterval < time.Second || retentionInterval > 24*time.Hour {
 		return Config{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL must be a duration from 1s to 24h")
 	}
-	retentionBatch, err := intOrDefault("JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE", getenv("JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE"), defaultRetentionBatch, 1, 10000)
+	retentionBatch, err := intOrDefault("JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE", getenv("JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE"), defaultRetentionBatch, 1, 5096)
 	if err != nil {
 		return Config{}, err
 	}

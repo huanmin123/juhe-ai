@@ -145,12 +145,12 @@ func TestLoadConfigParsesNodeCompatibleRetentionPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RetentionInterval != time.Minute || cfg.RetentionBatchSize != 10000 || cfg.SuccessHotRetentionHours != 1 || cfg.SuccessSampleRate != 0.1 || cfg.SuccessRetentionDays != 3 || cfg.ProblemRetentionDays != 7 {
+	if cfg.RetentionInterval != time.Minute || cfg.RetentionBatchSize != 512 || cfg.SuccessHotRetentionHours != 1 || cfg.SuccessSampleRate != 0.1 || cfg.SuccessRetentionDays != 3 || cfg.ProblemRetentionDays != 7 {
 		t.Fatalf("Node-compatible retention defaults mismatch: %+v", cfg)
 	}
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	retention := cfg.RetentionConfigAt(now)
-	if !retention.SuccessHotCutoff.Equal(now.Add(-time.Hour)) || !retention.SuccessCutoff.Equal(now.Add(-72*time.Hour)) || !retention.FailureCutoff.Equal(now.Add(-168*time.Hour)) || !retention.ErrorGroupCutoff.Equal(now.Add(-168*time.Hour)) || retention.SuccessSampleBucketThreshold != 1000 || retention.BatchSize != 10000 {
+	if !retention.SuccessHotCutoff.Equal(now.Add(-time.Hour)) || !retention.SuccessCutoff.Equal(now.Add(-72*time.Hour)) || !retention.FailureCutoff.Equal(now.Add(-168*time.Hour)) || !retention.ErrorGroupCutoff.Equal(now.Add(-168*time.Hour)) || retention.SuccessSampleBucketThreshold != 1000 || retention.BatchSize != 512 {
 		t.Fatalf("Node-compatible retention cutoffs mismatch: %+v", retention)
 	}
 
