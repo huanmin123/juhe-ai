@@ -567,6 +567,22 @@ func TestPostgresSchemaValidationRejectsNullableRequiredColumn(t *testing.T) {
 	}
 }
 
+func TestSchemaBootstrapContextOutlivesRequestOperationDeadline(t *testing.T) {
+	ctx, cancel := schemaBootstrapContext(context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("schema bootstrap context 必须有 deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining < schemaBootstrapTimeout-time.Second || remaining > schemaBootstrapTimeout {
+		t.Fatalf("schema bootstrap deadline=%s, want about %s", remaining, schemaBootstrapTimeout)
+	}
+	if schemaBootstrapTimeout <= storeOperationTimeout {
+		t.Fatalf("schema bootstrap timeout=%s 必须大于 request timeout=%s", schemaBootstrapTimeout, storeOperationTimeout)
+	}
+}
+
 func TestPostgresSchemaValidationRejectsLegacyViewerPrimaryKey(t *testing.T) {
 	stub := validSchemaCatalogStub()
 	stub.strings["pk.juhe_dataset.operation_log_viewers"] = "operation_log_id,system_account_id,visibility_reason"

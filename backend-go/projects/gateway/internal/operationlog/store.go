@@ -290,7 +290,7 @@ func (s *sqlStore) bind(q string) string {
 	return q
 }
 func (s *sqlStore) EnsureSchema(ctx context.Context) error {
-	ctx, cancel := storeContext(ctx)
+	ctx, cancel := schemaBootstrapContext(ctx)
 	defer cancel()
 	s.schemaMu.Lock()
 	defer s.schemaMu.Unlock()
