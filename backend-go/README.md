@@ -132,6 +132,8 @@ rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmok
 
 ## F2：表存储监控采样与保留
 
+高吞吐部署可将 Go worker 并发设为 `1024`、PostgreSQL pool 上限设为 `5096`；这些值必须与 PostgreSQL `max_connections` 和 PgBouncer `MAX_CLIENT_CONN`/`DEFAULT_POOL_SIZE` 一起调整。
+
 `jobs` 内的 F2 是唯一采样、快照写入和表监控历史保留 owner。它在 SQLite 和 PostgreSQL 两种正式模式下直接异步并发采样；不使用 queue、Redis、Asynq、Node IPC、Node/Go 开关、fallback 或双 writer。
 
 运行前必须满足：
