@@ -30,6 +30,9 @@ type ProbeResult struct {
 	RateLimited          bool
 	ResponseTruncated    bool
 	Response             ParsedResponse
+	RetryAttemptCount    int
+	RetryMaxAttempts     int
+	AttemptStatusCodes   []int
 }
 
 // EvaluationItem is deliberately storage-neutral. The jobs runtime will map
@@ -336,6 +339,11 @@ func item(key, kind, status string, score, maxScore int, result ProbeResult, evi
 	}
 	evidence["rateLimited"] = result.RateLimited
 	evidence["responseTruncated"] = result.ResponseTruncated
+	if result.RetryAttemptCount > 0 {
+		evidence["retryAttemptCount"] = result.RetryAttemptCount
+		evidence["retryMaxAttempts"] = result.RetryMaxAttempts
+		evidence["attemptStatusCodes"] = append([]int(nil), result.AttemptStatusCodes...)
+	}
 	output := EvaluationItem{ItemKey: key, ItemType: kind, Status: status, Score: score, MaxScore: maxScore, DurationMS: result.DurationMS, TraceID: result.TraceID, Evidence: evidence}
 	if !result.Success {
 		output.ErrorCode = fmt.Sprintf("http_%d", result.HTTPStatusCode)

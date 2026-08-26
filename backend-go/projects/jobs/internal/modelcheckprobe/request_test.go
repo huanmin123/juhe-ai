@@ -71,6 +71,31 @@ func TestBuildBasicMatchesFrozenNodeProtocolContracts(t *testing.T) {
 	}
 }
 
+func TestBuildStructuredAndToolRequestsPreserveProtocolShapes(t *testing.T) {
+	structured, err := BuildStructured(modelcheckprofile.ProtocolOpenAIResponses, "gpt-5.6-sol", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var structuredBody map[string]any
+	if err := json.Unmarshal(structured.Body, &structuredBody); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := structuredBody["text"]; !ok {
+		t.Fatalf("structured body=%#v", structuredBody)
+	}
+	tool, err := BuildTool(modelcheckprofile.ProtocolOpenAIChat, "gpt-5.6-sol", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolBody map[string]any
+	if err := json.Unmarshal(tool.Body, &toolBody); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := toolBody["tools"]; !ok {
+		t.Fatalf("tool body=%#v", toolBody)
+	}
+}
+
 func TestBuildBasicRejectsMalformedAndUnknownInput(t *testing.T) {
 	for _, test := range []struct {
 		protocol modelcheckprofile.Protocol

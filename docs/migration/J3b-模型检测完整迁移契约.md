@@ -1,7 +1,7 @@
 # J3b 模型检测完整迁移契约
 
 > 冻结日期：2026-08-26。
-> 状态：L1 完整边界已按当前 `master` 重新冻结；Go jobs 已新增纯领域 `modelcheckprofile`、`modelcheckprobe` 和双模式 `modelcheckstore` 的 run/item/observation 基线。后者直接连接 SQLite 或 PostgreSQL dataset store，PostgreSQL 运行期只做 schema preflight、不执行 DDL；隔离 dev scratch 已完成 Node 六 schema 初始化后 Go run/item/observation/终态 writer smoke，并清理数据库、角色和 PgBouncer 临时认证。它仍未接入 Go J3b runtime、管理 API/SSE、直接上游 transport、质量投影、GitOps 或 Node 归档。本文件不是切换授权。历史 W7 单体 Go 实现和 Goose catalog 已由 `133cd4e48 (go del)` 删除，不能作为当前可复用实现或验收依据。
+> 状态：L1 完整边界已按当前 `master` 重新冻结；Go jobs 已新增纯领域 `modelcheckprofile`、`modelcheckprobe`、单次 direct transport 和双模式 `modelcheckstore` 的 run/item/observation 基线。后者直接连接 SQLite 或 PostgreSQL dataset store，PostgreSQL 运行期只做 schema preflight、不执行 DDL；隔离 dev scratch 已完成 Node 六 schema 初始化后 Go run/item/observation/终态 writer smoke，并清理数据库、角色和 PgBouncer 临时认证。它仍未接入 Go J3b runtime、管理 API/SSE、retry/调度、质量投影、GitOps 或 Node 归档。本文件不是切换授权。历史 W7 单体 Go 实现和 Goose catalog 已由 `133cd4e48 (go del)` 删除，不能作为当前可复用实现或验收依据。
 
 ## 1. 完整功能边界
 
@@ -73,7 +73,7 @@ J3b 是下一项可开始 L2 设计的候选，但尚不具备删除 Node 的条
 
 `backend-go/projects/jobs/internal/modelcheckinput` 已定义版本化、规范化的 `IssuedInput` 纯领域结构。它固定账号/config/profile/policy revision、endpoint fingerprint、credential envelope alias、model/profile/trigger/deadline 与 SHA-256 digest；payload 前会重算 digest，配置篡改会 fail-closed。该结构没有原始 API Key、token、cookie、代理密码或 response body 字段。`InputVersion` 由 durable Store 在同一 identity 的事务内分配并进入 digest，`IdentityKey` 仅由 system account、target、model/profile、trigger/schedule 和 comparison identity 派生，不包含凭据、时间或响应。
 
-`backend-go/projects/jobs/internal/modelcheckdurable` 已实现这四张 `juhe_jobs` 表对应的 SQLite/PostgreSQL input、claim 和 outcome 事务边界：同一 `input_id` 只有字节等价的 immutable input 才能重放；同一 logical identity 的新快照分配下一个单调版本；执行 claim 以 owner/token/outcome 与到期时间维护单调 fence；outcome 必须同时匹配 input digest、claim token、owner、outcome ID 与 fence，旧 fence、过期 lease、不同 payload 重放一律拒绝。SQLite 回归已覆盖签发、重放、版本、busy/takeover、stale fence 和 outcome replay；PostgreSQL runtime 仍只会使用 maintenance 预置并通过 readiness 的 schema，尚无真实 PostgreSQL durable Store smoke。本包尚未做业务 revision re-read/stale、run/item/observation 写入衔接、质量投影或 runtime 接线，不能据此启用 J3b 或归档 Node。
+`backend-go/projects/jobs/internal/modelcheckdurable` 已实现这四张 `juhe_jobs` 表对应的 SQLite/PostgreSQL input、claim 和 outcome 事务边界：同一 `input_id` 只有字节等价的 immutable input 才能重放；同一 logical identity 的新快照分配下一个单调版本；执行 claim 以 owner/token/outcome 与到期时间维护单调 fence；outcome 必须同时匹配 input digest、claim token、owner、outcome ID 与 fence，旧 fence、过期 lease、不同 payload 重放一律拒绝。SQLite 回归已覆盖签发、重放、版本、busy/takeover、stale fence 和 outcome replay；一次性 dev PostgreSQL scratch 已通过真实表上的 schema preflight、Issue/Load、两个并发 owner 的一成功一 `ErrBusy` claim、Commit 和过期后的幂等 replay，随后数据库已删除并核验不存在。本包尚未做业务 revision re-read/stale、run/item/observation 写入衔接、质量投影或 runtime 接线，不能据此启用 J3b 或归档 Node。
 
 `backend-go/shared/contracts` 与 `backend-go/projects/maintenance/internal/j3bmodelcheck` 已冻结 J3b 独立 `juhe_jobs` schema contract 及一次性 bootstrap 命令。表、列、主键/唯一约束和游标/target 索引均由共享 contract 描述；bootstrap 只在显式 `--check-j3b-model-check-postgres` 或 `--apply-j3b-model-check-postgres` 下运行，jobs runtime 后续只做只读 readiness。当前没有在开发主库或生产执行该 bootstrap；真实 scratch smoke 需另行完成并清理后才能作为环境证据。
 
@@ -81,4 +81,8 @@ J3b 是下一项可开始 L2 设计的候选，但尚不具备删除 Node 的条
 
 `backend-go/projects/jobs/internal/modelcheckprobe` 已接管四种协议的基础 capability request 构造：OpenAI Responses、OpenAI Chat、Anthropic Messages 与 Gemini native。它生成不含凭据的不可变 JSON bytes，并保留 Node 的路径、短探针最低 token、Anthropic 不发送通用 `temperature`、Gemini `?alt=sse` 规则；它不发网。后续 executor 必须直接使用此包，不能重新在 Node 或另一个 Go 服务构造 payload。
 
-同一 `modelcheckprobe` 包还解析四协议 JSON/SSE 的 model、output、usage 与 error envelope，HTTP `200` 但包含协议错误时不会被标为成功。它只保留评分所需字段，不保存原始 response body；structured evidence 仅保留 `status/value`，usage evidence 仅保留八个数字 token 字段，不能把上游额外 JSON 写入 outcome。Node 的多行 `data:`/EOF frame、Anthropic delta、OpenAI stream failure、Gemini error 已由 Go 回归覆盖。该包现已实现并用 Node 的请求失败评分向量核对基础 `responses_basic`、stream、structured output、tool calling 与 usage-shape 的 item 状态、分数、分母、模型不匹配和证据不足语义。它仍没有 direct transport；behavior、long-context、stability、token integrity、identity、distribution、cross-model 与 trust/quality 汇总尚未迁入。
+同一包新增 jobs-owned direct transport 与 `RunBasicProbe` 组合：严格校验 endpoint（禁止 userinfo/query/fragment/redirect），按协议补齐 `/v1` 或 `/v1beta`，支持 JSON/SSE、取消、超时和响应大小上限，并只把解析后的 model/output/status/usage 交给 evaluator；原始 response body、认证头和 transport 原始错误不进入 durable evidence。transport 回归覆盖四协议路径、SSE、非 2xx、超大响应、userinfo、取消和超时，组合回归确认真实 HTTP 响应可直接得到 `responses_basic` 评分 item。该层仍是单次 probe，不包含 retry、input claim、持久化、质量投影或管理 API。
+
+`backend-go/projects/jobs/internal/modelcheckexecutor` 已把 `LoadInput → resolver 预读 → Claim → resolver revision/profile/model/endpoint 二次复核 → RunBasicProbeWithRetry → CommitOutcome` 串成单输入 Go 闭环。resolver 预读失败不会留下租约；claim 后第二次快照必须与第一次及 immutable input 一致，否则以 stale 失败且不发网；retry 只重试 transport/HTTP 非 200，HTTP 200 的内容质量失败只评分一次。该 executor 尚未连接管理 listener、完整 probe suite、质量投影或 scheduler。
+
+同一 `modelcheckprobe` 包还解析四协议 JSON/SSE 的 model、output、usage 与 error envelope，HTTP `200` 但包含协议错误时不会被标为成功。它只保留评分所需字段，不保存原始 response body；structured evidence 仅保留 `status/value`，usage evidence 仅保留八个数字 token 字段，不能把上游额外 JSON 写入 outcome。Node 的多行 `data:`/EOF frame、Anthropic delta、OpenAI stream failure、Gemini error 已由 Go 回归覆盖。该包现已实现并用 Node 的请求失败评分向量核对基础 `responses_basic`、stream、structured output、tool calling 与 usage-shape 的 item 状态、分数、分母、模型不匹配和证据不足语义。单次 direct transport 已由同包实现；behavior、long-context、stability、token integrity、identity、distribution、cross-model 与 trust/quality 汇总尚未迁入。

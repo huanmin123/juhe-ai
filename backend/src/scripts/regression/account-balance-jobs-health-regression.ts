@@ -37,6 +37,20 @@ const ready = await accountBalanceGoOwnerHealth(goOwnerEnv, {
 assert.deepEqual(ready, { enabled: true, ready: true, projectorReady: true }, 'Go jobs 与 projector 都 ready 时 DB-service health 必须通过')
 assert.equal(resolveSystemApiHealth(ready, { enabled: false, ready: true }).statusCode, 200, 'J2 ready health 仍应返回 200')
 
+const standby = await accountBalanceGoOwnerHealth({
+  ...goOwnerEnv,
+  JUHE_AI_BLUE_GREEN_OWNER_MODE: 'standby'
+}, {
+  projectorReady: () => true,
+  fetch: async () => new Response(JSON.stringify({
+    ready: true,
+    accountBalanceEnabled: true,
+    accountBalanceReady: false
+  }), { status: 200 })
+})
+assert.deepEqual(standby, { enabled: true, ready: true, projectorReady: true, ownerMode: 'standby' }, 'standby 不持有 J2 owner 时，健康检查必须以进程可达和投影新鲜度判定')
+assert.equal(resolveSystemApiHealth(standby, { enabled: false, ready: true }).status, 'ok', '正常 standby 不得被误报为 degraded')
+
 assert.deepEqual(resolveRuntimeReadiness({
   dbServiceReady: true,
   workerTopologyReady: true,

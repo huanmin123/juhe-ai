@@ -76,6 +76,7 @@ export interface SystemApiDependencyHealth {
   enabled: boolean
   ready: boolean
   projectorReady?: boolean
+  ownerMode?: 'active' | 'standby' | 'drain'
 }
 
 export interface SystemApiHealthResponse {
@@ -225,17 +226,44 @@ export async function accountBalanceGoOwnerHealth(
 ): Promise<{ enabled: boolean; ready: boolean; projectorReady?: boolean }> {
   if (!accountBalanceGoOwnerEnabled(env)) return { enabled: false, ready: true }
   const endpoint = env.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL?.trim()
+  const configuredOwnerMode = env.JUHE_AI_BLUE_GREEN_OWNER_MODE?.trim()
+  const ownerMode: SystemApiDependencyHealth['ownerMode'] = configuredOwnerMode === 'standby' || configuredOwnerMode === 'drain'
+    ? configuredOwnerMode
+    : 'active'
   const projectorReady = (dependencies.projectorReady ?? accountBalanceJobsOutcomeProjectionRuntimeReady)()
-  if (!endpoint || !projectorReady) return { enabled: true, ready: false, projectorReady }
+  if (!endpoint || !projectorReady) {
+    return {
+      enabled: true,
+      ready: false,
+      projectorReady,
+      ...(ownerMode === 'active' ? {} : { ownerMode })
+    }
+  }
   try {
     const healthUrl = new URL('/health', endpoint)
     const response = await (dependencies.fetch ?? fetch)(healthUrl, { signal: AbortSignal.timeout(2_000) })
     const payload: unknown = await response.json()
     const health = payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
-    const ready = response.ok && health?.ready === true && health.accountBalanceEnabled === true && health.accountBalanceReady === true
-    return { enabled: true, ready, projectorReady }
+    const processReady = response.ok && health?.accountBalanceEnabled === true
+    // A standby slot intentionally does not acquire the account-balance owner.
+    // Its health contract is process reachability plus a fresh read-only
+    // projector, not active-owner readiness.
+    const ready = ownerMode === 'standby'
+      ? processReady && projectorReady
+      : processReady && health?.ready === true && health.accountBalanceReady === true
+    return {
+      enabled: true,
+      ready,
+      projectorReady,
+      ...(ownerMode === 'active' ? {} : { ownerMode })
+    }
   } catch {
-    return { enabled: true, ready: false, projectorReady }
+    return {
+      enabled: true,
+      ready: false,
+      projectorReady,
+      ...(ownerMode === 'active' ? {} : { ownerMode })
+    }
   }
 }
 

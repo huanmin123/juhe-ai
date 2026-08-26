@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,6 +69,9 @@ func TestSQLiteIssueClaimFenceAndOutcomeReplay(t *testing.T) {
 	if err != nil || newClaim.FenceToken != 2 {
 		t.Fatalf("takeover=%#v err=%v", newClaim, err)
 	}
+	if _, err := store.Claim(ctx, first.Input.InputID, "owner-b", "claim-b", "outcome-other", now.Add(2*time.Minute+time.Second), time.Minute); !errors.Is(err, ErrClaimConflict) {
+		t.Fatalf("claim token reuse err=%v", err)
+	}
 
 	if err := store.CommitOutcome(ctx, Outcome{OutcomeID: "outcome-a", InputID: first.Input.InputID, InputDigest: first.Input.InputDigest, Payload: []byte(`{"status":"passed"}`)}, claim, now.Add(2*time.Minute)); !errors.Is(err, ErrStaleFence) {
 		t.Fatalf("stale commit err=%v", err)
@@ -84,6 +88,10 @@ func TestSQLiteIssueClaimFenceAndOutcomeReplay(t *testing.T) {
 	}
 	if err := store.CommitOutcome(ctx, Outcome{OutcomeID: "outcome-b", InputID: first.Input.InputID, InputDigest: first.Input.InputDigest, Payload: []byte(`{"status":"failed"}`)}, newClaim, now.Add(2*time.Minute+3*time.Second)); !errors.Is(err, ErrOutcomeConflict) {
 		t.Fatalf("conflicting replay err=%v", err)
+	}
+	wrongOutcomeID := Outcome{OutcomeID: "outcome-other", InputID: first.Input.InputID, InputDigest: first.Input.InputDigest, Payload: payload}
+	if err := store.CommitOutcome(ctx, wrongOutcomeID, newClaim, now.Add(2*time.Minute+4*time.Second)); !errors.Is(err, ErrOutcomeConflict) {
+		t.Fatalf("outcome ID replay err=%v", err)
 	}
 }
 
@@ -132,10 +140,32 @@ func TestPostgresModelCheckDurableSmoke(t *testing.T) {
 	if _, err := store.LoadInput(ctx, issued.Input.InputID, now); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := store.Claim(ctx, issued.Input.InputID, "pg-smoke-owner", "pg-smoke-claim", "pg-smoke-outcome", now, time.Minute)
-	if err != nil {
-		t.Fatal(err)
+	claims := make([]Claim, 2)
+	claimErrors := make([]error, 2)
+	var group sync.WaitGroup
+	for index, owner := range []string{"pg-smoke-owner-a", "pg-smoke-owner-b"} {
+		group.Add(1)
+		go func(index int, owner string) {
+			defer group.Done()
+			claims[index], claimErrors[index] = store.Claim(ctx, issued.Input.InputID, owner, "pg-smoke-claim-"+owner, "pg-smoke-outcome-"+owner, now, time.Minute)
+		}(index, owner)
 	}
+	group.Wait()
+	winner := -1
+	for index, claimErr := range claimErrors {
+		if claimErr == nil {
+			if winner != -1 {
+				t.Fatalf("both PostgreSQL claimers succeeded: %#v", claims)
+			}
+			winner = index
+		} else if !errors.Is(claimErr, ErrBusy) {
+			t.Fatalf("PostgreSQL concurrent claim[%d]: %v", index, claimErr)
+		}
+	}
+	if winner == -1 {
+		t.Fatalf("no PostgreSQL claimer succeeded: %v", claimErrors)
+	}
+	claim := claims[winner]
 	payload := []byte(`{"status":"passed","source":"postgres-smoke"}`)
 	commit := Outcome{OutcomeID: claim.OutcomeID, InputID: issued.Input.InputID, InputDigest: issued.Input.InputDigest, Payload: payload}
 	if err := store.CommitOutcome(ctx, commit, claim, now.Add(time.Second)); err != nil {

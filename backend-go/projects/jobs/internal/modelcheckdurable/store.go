@@ -30,6 +30,7 @@ var (
 	ErrBusy            = errors.New("model check input is claimed by another owner")
 	ErrExpired         = errors.New("model check input or claim is expired")
 	ErrStaleFence      = errors.New("model check claim fence is stale")
+	ErrClaimConflict   = errors.New("model check claim conflicts with active claim")
 	ErrOutcomeConflict = errors.New("model check outcome conflicts with existing outcome")
 	ErrInputTampered   = errors.New("stored model check input failed integrity verification")
 )
@@ -258,6 +259,9 @@ func (s *Store) Claim(ctx context.Context, inputID, ownerID, claimToken, outcome
 	if err == nil && now.Before(until) && (c.ClaimToken != claimToken || c.OwnerID != ownerID) {
 		return Claim{}, ErrBusy
 	}
+	if err == nil && now.Before(until) && c.ClaimToken == claimToken && c.OwnerID == ownerID && c.OutcomeID != outcomeID {
+		return Claim{}, ErrClaimConflict
+	}
 	if err == nil && c.ClaimToken == claimToken && c.OwnerID == ownerID && c.OutcomeID == outcomeID && now.Before(until) {
 		c.InputID = inputID
 		c.ClaimUntil = until
@@ -285,7 +289,7 @@ func (s *Store) Claim(ctx context.Context, inputID, ownerID, claimToken, outcome
 }
 
 func (s *Store) CommitOutcome(ctx context.Context, outcome Outcome, claim Claim, now time.Time) error {
-	if outcome.InputID == "" || outcome.OutcomeID == "" || claim.ClaimToken == "" || outcome.InputDigest == "" || len(outcome.Payload) == 0 || !json.Valid(outcome.Payload) {
+	if outcome.InputID == "" || outcome.OutcomeID == "" || claim.InputID != outcome.InputID || claim.ClaimToken == "" || outcome.InputDigest == "" || len(outcome.Payload) == 0 || !json.Valid(outcome.Payload) {
 		return errors.New("invalid model check outcome")
 	}
 	sum := sha256.Sum256(outcome.Payload)
@@ -319,10 +323,10 @@ func (s *Store) CommitOutcome(ctx context.Context, outcome Outcome, claim Claim,
 	if token != claim.ClaimToken || owner != claim.OwnerID || oid != claim.OutcomeID || fence != claim.FenceToken {
 		return ErrStaleFence
 	}
-	var oldDigest string
-	err = tx.QueryRowContext(ctx, s.lock("SELECT payload_digest FROM "+s.table("model_check_outcomes")+" WHERE input_id=?"), outcome.InputID).Scan(&oldDigest)
+	var oldOutcomeID, oldDigest string
+	err = tx.QueryRowContext(ctx, s.lock("SELECT outcome_id,payload_digest FROM "+s.table("model_check_outcomes")+" WHERE input_id=?"), outcome.InputID).Scan(&oldOutcomeID, &oldDigest)
 	if err == nil {
-		if oldDigest != outcome.PayloadDigest {
+		if oldOutcomeID != outcome.OutcomeID || oldDigest != outcome.PayloadDigest {
 			return ErrOutcomeConflict
 		}
 		return tx.Commit()
