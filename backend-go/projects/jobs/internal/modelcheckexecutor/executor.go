@@ -42,6 +42,7 @@ type OutcomePayload struct {
 	// Item remains the first/basic item for readers that predate suite results.
 	Item        modelcheckprobe.EvaluationItem   `json:"item"`
 	Items       []modelcheckprobe.EvaluationItem `json:"items,omitempty"`
+	Summary     modelcheckprobe.SummaryResult    `json:"summary"`
 	CommittedAt time.Time                        `json:"committedAt"`
 }
 
@@ -92,7 +93,8 @@ func ExecuteInput(ctx context.Context, store *modelcheckdurable.Store, inputID, 
 	if len(items) == 0 {
 		return release(errors.New("model check suite produced no evaluation items"))
 	}
-	payload := OutcomePayload{InputID: issued.Input.InputID, InputDigest: issued.Input.InputDigest, InputVersion: issued.Input.InputVersion, Item: items[0], Items: items, CommittedAt: now.UTC()}
+	summary := modelcheckprobe.SummarizeChecks(items, issued.Input.TrustedComparison, issued.Input.Profile)
+	payload := OutcomePayload{InputID: issued.Input.InputID, InputDigest: issued.Input.InputDigest, InputVersion: issued.Input.InputVersion, Item: items[0], Items: items, Summary: summary, CommittedAt: now.UTC()}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return release(fmt.Errorf("marshal model check outcome: %w", err))
