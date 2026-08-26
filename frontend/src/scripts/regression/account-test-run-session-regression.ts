@@ -230,8 +230,12 @@ const accountTestModalSource = readFileSync(fileURLToPath(new URL('../../views/a
 assert.match(accountTestModalSource, /accountTestSessionHeartbeatIntervalMs\s*=\s*5000/, '测试会话心跳间隔应为 5000ms')
 assert.doesNotMatch(accountTestModalSource, /accountTestSessionHeartbeatIntervalMs\s*=\s*2000/, '测试会话心跳间隔不得回退为 2000ms')
 assert.match(accountTestModalSource, /function closeTestModal\([\s\S]*terminateAttachedTestRun\(true\)/, '关闭测试弹窗必须终止运行中的测试')
+assert.match(accountTestModalSource, /function terminateAttachedTestRun[\s\S]*cancelRequested: true,[\s\S]*?message: '正在停止测试'/, '终止测试必须先进入停止中，而不是伪造已停止终态')
 assert.match(accountTestModalSource, /function terminateAttachedTestRun[\s\S]*cancelAccountTestRunBackend\(run\)/, '终止测试必须请求后端取消')
-assert.match(accountTestModalSource, /function terminateAttachedTestRun[\s\S]*clearRunSessionSnapshot\(run\)/, '终止测试必须清理本地可恢复会话')
+assert.doesNotMatch(accountTestModalSource.slice(accountTestModalSource.indexOf('function terminateAttachedTestRun'), accountTestModalSource.indexOf('function stopAccountTest')), /status: 'canceled'|run\.controller\.abort\(\)|testRunning\.value = false/, '取消请求未确认前不得本地伪造终态、停止轮询或允许重试')
+assert.match(accountTestModalSource, /function closeTestModal[\s\S]*if \(!stopping\)[\s\S]*?nextTestViewToken\(\)/, '关闭停止中的测试弹窗时不得脱离任务轮询')
+assert.match(accountTestModalSource, /function restoreStoppingAccountTestRun[\s\S]*正在停止测试，等待后台任务确认停止/, '同一账户在停止确认前重新打开时必须展示停止中状态')
+assert.match(accountTestModalSource, /function finishAccountTestRunLifecycle[\s\S]*isAccountTestTaskTerminal\(run\.task\)[\s\S]*clearRunSessionSnapshot/, '停止中的会话快照只能在后台任务终态后清理')
 assert.match(accountTestModalSource, /function closeTestModal\([\s\S]*detachCurrentTestView\(\)/, '无运行测试关闭时仍可安全脱离视图')
 assert.doesNotMatch(
   accountTestModalSource.slice(accountTestModalSource.indexOf('function closeTestModal'), accountTestModalSource.indexOf('function closeTestModal') + 500),

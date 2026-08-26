@@ -95,4 +95,62 @@ const singleSuccess = await runAccountApiKeyPoolDiagnostic(candidate, singleKey,
 }), { allowSingleEntry: true })
 assert.equal(singleSuccess?.completed, true, '唯一 Key 成功后应完成本轮，下一轮必须从池首开始')
 
+const imageScheduleCalls: number[] = []
+const imageScheduleResult = await runAccountApiKeyPoolDiagnostic(candidate, entries.slice(0, 2), async ({ timeoutMs }) => {
+  imageScheduleCalls.push(timeoutMs)
+  return {
+    value: timeoutMs,
+    success: false,
+    timedOutAfterRealUpstreamAttempt: true
+  }
+}, { timeoutSchedule: [120_000] })
+assert.deepEqual(imageScheduleCalls, [120_000, 120_000], '图片 Key 池必须让每个 Key 使用单次 120 秒诊断窗口')
+assert.equal(imageScheduleResult?.attempts.length, 2, '图片 Key 池单次窗口结束后不得进入文本重试阶梯')
+
+let imageInFlight = 0
+let imageMaxInFlight = 0
+await runAccountApiKeyPoolDiagnostic(candidate, entries.slice(0, 3), async ({ entry }) => {
+  imageInFlight += 1
+  imageMaxInFlight = Math.max(imageMaxInFlight, imageInFlight)
+  await new Promise<void>((resolve) => setTimeout(resolve, 5))
+  imageInFlight -= 1
+  return {
+    value: entry.key,
+    success: false,
+    timedOutAfterRealUpstreamAttempt: false
+  }
+}, { maxConcurrentAttempts: 1 })
+assert.equal(imageMaxInFlight, 1, 'Images API Key 池必须串行发起上游尝试')
+
+let textInFlight = 0
+let textMaxInFlight = 0
+await runAccountApiKeyPoolDiagnostic(candidate, entries.slice(0, 3), async ({ entry }) => {
+  textInFlight += 1
+  textMaxInFlight = Math.max(textMaxInFlight, textInFlight)
+  await new Promise<void>((resolve) => setTimeout(resolve, 5))
+  textInFlight -= 1
+  return {
+    value: entry.key,
+    success: false,
+    timedOutAfterRealUpstreamAttempt: false
+  }
+})
+assert.equal(textMaxInFlight, 3, '文本 API Key 池必须保持默认全并发诊断')
+
+const cancellationController = new AbortController()
+const cancellationCalls: string[] = []
+const canceledDiagnostic = await runAccountApiKeyPoolDiagnostic(candidate, entries.slice(0, 3), async ({ entry, signal }) => {
+  cancellationCalls.push(entry.key)
+  cancellationController.abort()
+  await new Promise<void>((resolve) => setTimeout(resolve, 5))
+  assert.equal(signal.aborted, true, '外层取消信号必须传入固定 Key 尝试')
+  return {
+    value: entry.key,
+    success: false,
+    timedOutAfterRealUpstreamAttempt: false
+  }
+}, { signal: cancellationController.signal })
+assert.equal(cancellationCalls.length, 1, '取消后不得启动新的 Key 尝试')
+assert.equal(canceledDiagnostic?.attempts.length, 0, '取消后的中断结果不得被视为完成尝试')
+
 console.log('account-api-key-pool-diagnostic-regression passed')

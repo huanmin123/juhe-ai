@@ -69,7 +69,9 @@ export async function runAccountApiKeyPoolDiagnostic<T>(
   options: {
     signal?: AbortSignal
     allowSingleEntry?: boolean
+    maxConcurrentAttempts?: number
     maxStages?: number
+    timeoutSchedule?: readonly number[]
     onKeyAttempt?: (entry: AccountApiKeyEntry) => void
     onEntryComplete?: (attempt: AccountApiKeyPoolDiagnosticAttempt<T>) => void
   } = {}
@@ -89,6 +91,9 @@ export async function runAccountApiKeyPoolDiagnostic<T>(
   let winner: AccountApiKeyPoolDiagnosticAttempt<T> | undefined
   let completedPrefixLength = 0
   let lastCompletedFingerprint: string | undefined
+  const timeoutSchedule = options.timeoutSchedule?.length
+    ? options.timeoutSchedule
+    : accountDiagnosticRetryTimeoutMs
 
   const recordCompletedAttempt = (
     current: { entry: AccountApiKeyEntry; nextStage: number; completed: boolean },
@@ -103,7 +108,7 @@ export async function runAccountApiKeyPoolDiagnostic<T>(
     }
   }
 
-  const stageCount = Math.min(accountDiagnosticRetryTimeoutMs.length, Math.max(1, options.maxStages ?? accountDiagnosticRetryTimeoutMs.length))
+  const stageCount = Math.min(timeoutSchedule.length, Math.max(1, options.maxStages ?? timeoutSchedule.length))
   for (let stage = 0; stage < stageCount; stage += 1) {
     if (options.signal?.aborted || stopController.signal.aborted) break
     const stageEntries = pending.filter((item) => !item.completed && item.nextStage === stage)
@@ -119,7 +124,7 @@ export async function runAccountApiKeyPoolDiagnostic<T>(
           attemptResult = await attempt({
             entry: current.entry,
             candidate: fixedAccountApiKeyPoolCandidate(candidate, current.entry, { apiKeyRuntimeStateDisabled: true }),
-            timeoutMs: accountDiagnosticRetryTimeoutMs[stage],
+            timeoutMs: timeoutSchedule[stage] ?? timeoutSchedule[timeoutSchedule.length - 1]!,
             signal: AbortSignal.any([options.signal ?? new AbortController().signal, stopController.signal])
           })
         } catch (error) {
@@ -144,7 +149,10 @@ export async function runAccountApiKeyPoolDiagnostic<T>(
         recordCompletedAttempt(current, item)
       }
     }
-    await Promise.all(Array.from({ length: stageEntries.length }, () => worker()))
+    const maxConcurrentAttempts = Number.isFinite(options.maxConcurrentAttempts)
+      ? Math.max(1, Math.trunc(options.maxConcurrentAttempts!))
+      : stageEntries.length
+    await Promise.all(Array.from({ length: Math.min(stageEntries.length, maxConcurrentAttempts) }, () => worker()))
   }
 
   return {

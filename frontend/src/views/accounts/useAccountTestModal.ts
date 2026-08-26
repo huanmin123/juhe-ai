@@ -107,6 +107,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   let pendingModelSearchResolve: (() => void) | undefined
 
   async function openTestModal(account: AccountListItem): Promise<void> {
+    if (restoreStoppingAccountTestRun(account)) return
     if (!canTestAccount(account)) {
       if (!isGatewayTestableAccountProfile(account)) {
         message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
@@ -155,6 +156,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     mode: AccountTestDraftMode,
     fixedEndpointModes?: AccountSupportedEndpointMode[]
   ): void {
+    if (restoreStoppingAccountTestRun(account)) return
     if (!isGatewayTestableAccountProfile(account)) {
       message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
       return
@@ -302,18 +304,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     if (run.task?.status === 'queued' || run.task?.status === 'running') {
       run.task = {
         ...run.task,
-        status: 'canceled',
-        message: '已停止测试'
+        cancelRequested: true,
+        message: '正在停止测试'
       }
       activeSingleTestTask.value = run.task
     }
-    clearRunSessionSnapshot(run)
-    activeTestRun = undefined
-    testRunning.value = false
-    stopAccountTestSessionHeartbeat(run)
-    run.controller.abort()
     if (notify) {
-      message.info(stoppedAccountTestMessage(run.account))
+      message.info('正在停止测试')
     }
     void cancelAccountTestRunBackend(run)
     return true
@@ -324,12 +321,12 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function closeTestModal(): void {
-    const canceled = terminateAttachedTestRun(true)
-    if (!canceled) {
+    const stopping = terminateAttachedTestRun(true)
+    if (!stopping) {
       detachCurrentTestView()
+      nextTestViewToken()
+      resetTestModels()
     }
-    nextTestViewToken()
-    resetTestModels()
     testModalOpen.value = false
     clearModelSearchTimer()
   }
@@ -395,7 +392,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       scopeParams: input.scopeParams,
       sessionId: input.sessionId,
       task: input.task,
-      stopRequested: false,
+      stopRequested: Boolean(input.task?.cancelRequested),
       viewToken: input.viewToken
     }
     activeTestRun = run
@@ -476,6 +473,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   async function finishAccountTestRunLifecycle(run: AccountTestRunContext): Promise<void> {
     if (!run.detached && !run.stopRequested) {
       await completeAccountTestRunSession(run)
+    }
+    if (!run.detached && (!run.stopRequested || isAccountTestTaskTerminal(run.task))) {
       clearRunSessionSnapshot(run)
     }
     stopAccountTestSessionHeartbeat(run)
@@ -509,6 +508,18 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       && run.viewToken === testViewToken
       && testingAccount.value?.id === run.account.id
     )
+  }
+
+  function restoreStoppingAccountTestRun(account: AccountListItem): boolean {
+    const run = activeTestRun
+    if (!run || !run.stopRequested || run.account.id !== account.id) return false
+    testModalOpen.value = true
+    message.info('正在停止测试，等待后台任务确认停止')
+    return true
+  }
+
+  function isAccountTestTaskTerminal(task: AccountTestTask | undefined): boolean {
+    return task?.status === 'success' || task?.status === 'failed' || task?.status === 'canceled'
   }
 
   function nextTestViewToken(): number {

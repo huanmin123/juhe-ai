@@ -310,7 +310,7 @@ DeepSeek 模型目录必须单独维护在 `deepseek` 供应商下，不要混�
 | `deepseek-v4-flash` | 1,000,000 | 384,000 | USD 0.0028 | USD 0.14 | USD 0.28 |
 | `deepseek-v4-pro` | 1,000,000 | 384,000 | USD 0.003625 | USD 0.435 | USD 0.87 |
 
-`deepseek-ai-v4-*` 属于第三方中转别名，`deepseek-chat` 和 `deepseek-reasoner` 是将于 `2026-07-24 15:59 UTC` 退役的兼容别名；它们均不进入当前内置官网目录。确需连接第三方别名时，由用户在对应供应商下显式创建自定义模型和映射。
+`deepseek-ai-v4-*` 属于第三方中转别名，`deepseek-chat` 和 `deepseek-reasoner` 已于 `2026-07-24 15:59 UTC` 退役；它们均不进入当前内置官网目录。确需连接第三方别名时，由用户在对应供应商下显式创建自定义模型和映射。
 
 模型目录字段要求：
 
