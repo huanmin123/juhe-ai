@@ -1,11 +1,11 @@
 # J3a 代理延迟检测完整迁移契约
 
-> 状态：J3a 已改为一次性 Go owner：Go 周期 executor、Go manual bridge、Go result projector、receipt/cursor 与 `proxy_profiles` CAS 写回均由 `jobs` 独占；Node J3a scheduler、旧 executor、outcome reader/projector 和 J3a business writer 已删除。Node 仅保留管理 HTTP、权限、操作日志和 Go manual request adapter，不保留 fallback、双 owner、双写或 J3a 回滚路径。当前工作区的 J3a 定向代码/测试门禁、四个非 jobs `go.work` module 的 test/race/vet、`projects/jobs` 全量 test/race/vet、受控 dev PG CRUD smoke，以及显式 `J3A_PG_PROJECTOR_URL` 的 Go business-result projector applied/receipt/cursor/replay/outbound 集成 smoke 已通过；manual stale/deleted/no-target 是直接 CAS 分支，按契约不产生 durable receipt/cursor，必须与 applied durable 覆盖分开记录。未提供受控结果库时不得把历史 scratch 记录当作当前通过。生产部署、真实进程 handoff、active-path-zero、重启演练和生产/L4 仍需单独执行，未在本契约中伪称完成。
+> 状态：J3a 的周期执行、手动管理、结果投影、receipt/cursor 与 `proxy_profiles` CAS 写回均由 `jobs` 进程内 Go 实现独占；Node J3a scheduler、旧 executor、outcome reader/projector、business writer、手动 adapter、Node→Go 健康观测及其 Node 回归入口均已删除并归档至 `migration-backup/node/j3a-proxy-latency-manual-control-cutover-20260826/`。Go 管理入口保持原 `POST /__aisys__/api/proxies/:id/test` 资源路径、管理员鉴权、`404`/`503 + Retry-After`/`200`/`502` 响应契约，并直接追加 F4 兼容审计记录；不存在 Node fallback、双 owner、双写或 Go→Node/Go→Go HTTP。当前 Go/Node 定向测试与隔离 PostgreSQL schema/projector smoke 已通过，但本轮独立 Go jobs 管理 listener 的 dev 进程闭环尚未通过：Node 业务 schema 初始化成功，随后临时最小权限角色预检未完成，因此不能把 listener/F4 handoff 写成已通过。GitOps 已预置端口与精确 Go 入口定义，但默认关闭，Jenkins 只会在同一 release-state commit 写入 direct-Go 三镜像 digest 时同时启用。尚未 Argo 同步。生产部署、真实进程 handoff、active-path-zero、重启演练和生产/L4 仍需单独执行，未在本契约中伪称完成。
 
 ## 1. Owner 与范围
 
 - Go `jobs` 将成为唯一的周期探测、单代理 lease、直接代理请求和 jobs outcome writer；不得调用 Node、gateway、IPC、Redis Stream、Node DB-service 或网关 HTTP。
-- Node 保留管理路由、权限、操作日志与手动请求 adapter；Go 直接写 `juhe_business.proxy_profiles`，并独占 outcome projector、receipt/cursor 和 CAS。Node 不再拥有 J3a outcome reader/projector 或检测状态 writer。
+- Go `jobs` 管理 listener 直接完成管理员 session / temporary token 鉴权、proxy/provider 快照、手动执行和 F4 兼容审计追加；入口层必须把原管理资源路径路由到该 listener。Node 不再拥有 J3a 管理路由、鉴权 adapter、operation-log writer、outcome reader/projector 或检测状态 writer。
 - 本批只迁移 `proxy-latency-refresh` 与 `POST /proxies/:id/test` 的已保存代理检测。账号复制、模型检测和质量检查不在范围内。
 - 运行时必须显式配置 `JUHE_AI_PROXY_LATENCY_JOBS_OWNER=go`；缺失或非法配置时 Go J3a fail-closed，不启动周期/手动路径，Node 也不回退。L2 可以拥有 SQLite 自有 Store 测试；真正 Go-owner 运行时只允许 PostgreSQL jobs Store + PostgreSQL 业务输入/结果写回，SQLite business DB 不允许第二 writer。
 
@@ -21,7 +21,7 @@ Go 在短生命周期、`REPEATABLE READ READ ONLY` 的 PostgreSQL 事务内读�
 
 ### 2.2 手动命令
 
-保留当前管理员 `404`、诊断槽满 `503 + Retry-After`、成功 `200` 和执行异常 `502` 的外部语义。Node 只在显式 Go-owner gate 打开后向 jobs loopback HTTP 发送受限、加密的 v1 input，并同步等待最多 25 秒；Go 直接执行代理请求并写 outcome，不回调 Node。该 bridge 不是周期调度或持久队列。
+保留当前管理员 `404`、lease busy `503 + Retry-After`、成功 `200` 和执行异常 `502` 的外部语义。请求通过 ingress 到达 Go `jobs` 的显式管理 listener 后，在同一进程内读取受控 PostgreSQL 快照并同步等待最多 25 秒；Go 直接执行代理请求、写 outcome/投影并以最佳努力追加审计，不调用 Node 或另一 Go 进程。Node 的诊断槽是事件循环时期的实现限制，不迁入 Go；该管理入口不是周期调度或持久队列。
 
 ## 3. 探测与结果语义
 
@@ -50,7 +50,7 @@ Header 模式边界：HTTP forward proxy 请求携带 `accept`、`user-agent`、
 
 已完成且仅在本地 Go 测试（SQLite jobs Store + SQL contract）验证的基础域包括：proxy URL / stored `socks5` 与 `socks5h` 的 Node-effective 远端 DNS 映射、禁止重定向、Node probe request headers、512 KiB 收集上限并持续 drain 到完整 framing、CONNECT response header 64 KiB 上限、成功/neutral/upstream failure/probe task failure 分类、owner/proxy lease、request 级 execution claim、Store 签发的 durable `request_id/input_version`、持久化深拷贝 snapshot、issued-input identity/expiry fence、executor timeout 不越过 input expiry、payload SHA-256 digest 及 replay poison 校验，以及 outcome 的 trigger、RFC3339 UTC config revision 和 lease token 持久字段。最小 executor 只消费 Store 已签发且由 claim 交付的 input：先验证 live owner/proxy lease 与持久 payload，再逐 target 直接请求，且只把脱敏 item 写入 outcome；首次执行前的 input、解密、lease、取消或 claim 失败不伪造 committed outcome。已提交 request 只读回原 outcome，不再次请求上游；同一 request 并发执行返回明确 in-flight，不重复请求。password envelope 仅在 executor 内存中解密为 proxy URL，不进入 outcome、Store 错误或日志。Go result projector 已实现 `(stored_at,outcome_id)` reader、业务事务 receipt/cursor/CAS 与 `proxy_profiles` 写回；本轮 dev scratch 通过 PgBouncer `6432` required 验收时，applied/receipt/cursor/replay/outbound 属于 durable projector 覆盖，manual stale/deleted/no-target 属于无 receipt/cursor 的直接 CAS 边界，详见 [L3-PG 真实验收报告](../reports/J3a代理延迟检测L3-PG真实验收报告-2026-08-22.md)。该证据不代表生产发布。
 
-当前代码已经完成一次性 Go owner 接线：Go jobs 独占周期执行、手动执行、结果投影、receipt/cursor 与 `proxy_profiles` CAS 写回；Node J3a scheduler、旧 executor、outcome reader/projector 和 J3a business writer 均已删除。Node 仅保留管理 HTTP、权限/操作日志和把手动请求转发给 Go 的 adapter。生产部署、真实进程 handoff、active-path-zero、重启演练和生产/L4 仍需单独执行，不能用本地证据冒充已上线。
+当前代码已经完成一次性 Go owner 接线：Go jobs 独占周期执行、手动管理、结果投影、receipt/cursor 与 `proxy_profiles` CAS 写回；Node 的 J3a scheduler、旧 executor、outcome reader/projector、business writer、管理 adapter 和健康观测均已删除。生产部署、真实进程 handoff、active-path-zero、重启演练和生产/L4 仍需单独执行，不能用本地证据冒充已上线。
 
 ## 7. L3 Go runtime readiness（本批）
 
@@ -58,13 +58,13 @@ Header 模式边界：HTTP forward proxy 请求携带 `accept`、`user-agent`、
 
 配置缺失、非法 duration/limit、非 PostgreSQL jobs Store 或缺少 owner gate/credential secret 均 fail-closed；默认关闭时不打开数据库、不创建 runner。jobs `/health` 增加 `proxyLatencyEnabled`、`proxyLatencyReady`、`proxyLatencyOwnerHeld`、最近周期/成功/错误、输入/执行/失败计数和 J3a readiness 汇总；启用后必须完成至少一轮无失败 cycle 才 ready，owner/lease 丢失或失败周期不得伪造成功状态。
 
-发布观察只允许 Node 对同 Pod loopback Go jobs `/health` 的单向读取：当 `JUHE_AI_PROXY_LATENCY_JOBS_OWNER=go` 时，Node `GET /__aisys__/api/health` 的 `proxyLatency` 同时要求 Go `ready`、`proxyLatencyEnabled`、`proxyLatencyReady` 与 `proxyLatencyOwnerHeld` 均为真；未配置 Go owner 时显式返回 `enabled=false, ready=true`，不阻断既有运行。该接口为运维诊断而始终返回 HTTP `200`，Jenkins 必须验证 body 的 `status="ok"`，不得只以 HTTP 状态码判定通过。该观察不携带任务输入或结果，Go 从不调用 Node，也不构成 fallback 或双 owner。
+J3a readiness 由 Go jobs `/health` 及 jobs metrics 独立观测；Node 不再读取或聚合 J3a Go health。Node 系统健康响应为兼容保留 `proxyLatency={enabled:false,ready:true}`，不能作为 J3a 发布证据。Jenkins 必须直接验证 Go jobs 的 `ready`、`proxyLatencyEnabled`、`proxyLatencyReady` 与 `proxyLatencyOwnerHeld`，不得只以 HTTP 状态码或 Node health 判定通过。
 
-本批不保留 Node/Go 双 owner、双写或运行时 fallback。Go 配置缺失或 Go 服务不可用时请求必须失败，不得回退到 Node。一次性 dev scratch 已验证 Go PgBouncer required jobs/projector smoke 与现役 Node 代理管理 PG CRUD/CAS smoke；Go projector smoke 的 applied/receipt/cursor/replay/outbound 与 manual stale/deleted/no-target 分支分别记录，不能把无 receipt 的直接 CAS 分支写成 durable receipt 通过。另已通过显式 Node 子进程 → Go jobs HTTP handler 互操作回归：正式 Node manual adapter 会发送真实 loopback HTTP 请求，空 hybrid URL 保留为一个 `unknown`，有效 provider 仍发送，Go 不回调 Node。该回归不替代独立 Go jobs 二进制、dev 部署或生产 handoff；active-path-zero、重启演练和生产/L4 仍需单独执行。
+本批不保留 Node/Go 双 owner、双写或运行时 fallback。Go 配置、F4 审计表/权限、credential envelope alias 或 Go 服务缺失时管理 listener 必须拒绝启动或请求必须失败，不得回退到 Node。Go PgBouncer required jobs/projector smoke、现役 Node 代理管理 PG CRUD/CAS smoke 和管理 listener 单元测试已有证据；独立 Go jobs listener 的 dev 进程闭环仍未通过，原因是本轮 Node schema 初始化后未完成 F4 `operation_log_*` 表与最小权限角色预检，不能把它写成 listener/F4 handoff 通过。Go projector smoke 的 applied/receipt/cursor/replay/outbound 与 manual stale/deleted/no-target 分支分别记录，不能把无 receipt 的直接 CAS 分支写成 durable receipt 通过。该证据不替代真实 dev Pod、Argo 同步、独立 jobs 发布 handoff 或生产 handoff；active-path-zero、重启演练和生产/L4 仍需单独执行。
 
 ## 8. L2 验收与非目标
 
-L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS、取消/超时/response cap/full drain、CONNECT header、非 2xx、lease、execution claim 并发、持久 snapshot TOCTOU、重复 request、旧 revision/observed CAS、SQLite 单 writer、Go 结果投影 payload/metadata 双校验以及 Go-only 路径删除检查。当前本地命令已覆盖 proxylatency package/race/vet、`projects/jobs` 全量 test/race/vet、Node typecheck、Go result projector、manual adapter、现役 proxy CRUD/PG smoke、显式 Node 子进程→Go handler 的 manual interop 和 Go-only 删除回归；本轮 dev PgBouncer `6432` required jobs/projector smoke、Node PG CRUD/CAS smoke 与 Go business-result projector 已实际通过并清理，projector durable 与 direct-CAS 分支按各自语义记录。独立 Go jobs 二进制的 dev 部署、Docker/Redis、Jenkins、GitOps、active-path-zero、owner handoff 和生产/L4 属于后续门禁。
+L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS、取消/超时/response cap/full drain、CONNECT header、非 2xx、lease、execution claim 并发、持久 snapshot TOCTOU、重复 request、旧 revision/observed CAS、SQLite 单 writer、Go 结果投影 payload/metadata 双校验、Go 管理鉴权/审计 DTO 和 Node active-path-zero 检查。当前本地命令已覆盖 proxylatency package、jobs command、Node typecheck、Go result projector、Go 管理 handler 与 Go-only 删除回归；本轮 dev PgBouncer `6432` required jobs/projector smoke、Node PG CRUD/CAS smoke 与 Go business-result projector 已实际通过并清理，projector durable 与 direct-CAS 分支按各自语义记录。独立 Go jobs 二进制的 dev 部署、F4 schema/权限、入口路由、Jenkins、GitOps、active-path-zero、owner handoff 和生产/L4 属于后续门禁。
 
 ## 9. Node↔Go 深度对照门
 
@@ -72,13 +72,13 @@ L2 必须通过 Go unit/race/vet、Node typecheck 和新增回归：协议/DNS�
 
 1. Go result projector 独占 committed outcome reader、receipt、cursor、CAS 与 `proxy_profiles` 写回；Node outcome reader/projector 文件已删除。
 2. Node J3a scheduler、旧 executor 和 refresh 回归入口已删除；Node 不再扫描候选、不再执行探测、不再写 J3a 状态。
-3. Node 手动路由只通过 loopback v1 adapter 调用 Go，保留 `404`、`503 + Retry-After`、`200`、`502`、25 秒 deadline、取消和 CAS stale 外部边界；Go 不可用时直接失败，不走 Node fallback。
+3. Node 手动路由、loopback adapter 与 health observer 已删除；Go jobs 管理 listener 保留 `404`、`503 + Retry-After`、`200`、`502`、25 秒 deadline、session/temporary-token 鉴权、CAS stale 与审计外部边界；Go 不可用时直接失败，不走 Node fallback。
 
 数值默认值、provider target 排序、IPv6 CONNECT authority、SOCKS wire、407/502/TLS/truncated/slow-drip 仍需同 fixture Node/Go golden 验证；不得以本地 Go 测试或一次 dev smoke 代替跨运行时闭环。
 
 ## 10. 完整迁移前的明确禁止事项
 
-- 不通过修改 Node 业务语义来掩盖 Go 缺口；Node 管理 API 与操作日志保留，J3a `proxy_profiles` 业务写回只允许 Go result projector。
+- 不通过修改用户可观察业务语义来掩盖 Go 缺口；J3a 管理 API 与操作日志由 Go jobs 直接处理，`proxy_profiles` 业务写回只允许 Go result projector。
 - Go owner 是唯一 J3a owner；Go 不可用时 fail-closed，不做双写、双 consumer 或 Node fallback。生产部署、active-path-zero、owner handoff、重启演练和 L4 仍是发布门禁，不是第二套运行时实现。
 - 不把 dev scratch PG/PgBouncer 结果扩展为生产/L4 结论；所有跨运行时和生产门禁必须另立计划、单独取证。
 
@@ -90,11 +90,11 @@ Node 周期候选旧实现遇到非取消执行异常时会把 `testStatus=unkno
 
 ### 11.2 手动 ProxyTestReport 不是 Go Outcome 的同构对象
 
-Node 手动报告外部 schema 冻结为：报告字段 `proxyId`、`proxyName`、`score`、`grade`、`status`、`passedCount`、`warningCount`、`failedCount`、`outboundIp?`、`outboundRegion?`、`baseLatencyMs?`、`testedAt`、`items`、`message`；item 字段 `name`、`status`、`httpStatus?`、`latencyMs?`、`message`、`targetUrl?`。`?` 表示 Node JSON 序列化时字段为 `undefined` 则省略，不得改写为 `null`；synthetic 基础连通性 item（无 provider 或 provider 聚合）可省略 `targetUrl`，provider item 无论 passed/failed/unknown/deadline/transport 都保留 `targetUrl`，其中 unknown/deadline/transport 可省略 `httpStatus`、`latencyMs`；无可用出口或基础延迟时也省略对应 report 字段。状态枚举冻结为 `passed|warning|failed|unknown`；聚合规则为 failed>0→failed，否则 warning>0 或 passed 与 unknown 混合→warning，否则 passed>0→passed，否则 unknown；`unknown` score=0，否则 `max(0, round(100-warningCount*10-failedCount*35))`，grade 为 A(≥90)/B(≥75)/C(≥60)/D。报告包含 synthetic 基础连通性 item；provider item 使用 display name/base URL，Node 外部响应不携带 provider code。provider code 仅允许作为 bridge 内部查找元数据，code→display-name 映射不得改变外部 schema。出口探测顺序固定为 `ip-api`、`ipwho.is`、`api.ip.sb`、`ipinfo.io`、`ipify`、`httpbin`；仅 HTTP 200 进入解析，解析失败或非 200 才回退下一个目标，周期刷新不写 outbound。Go `Outcome` 目前不包含这些管理端聚合字段，manual bridge 必须另订逐字段适配层，不得直接把 Go outcome 当成 Node 响应。
+历史 Node 手动报告外部 schema 冻结为：报告字段 `proxyId`、`proxyName`、`score`、`grade`、`status`、`passedCount`、`warningCount`、`failedCount`、`outboundIp?`、`outboundRegion?`、`baseLatencyMs?`、`testedAt`、`items`、`message`；item 字段 `name`、`status`、`httpStatus?`、`latencyMs?`、`message`、`targetUrl?`。`?` 表示字段为 `undefined` 则省略，不得改写为 `null`；synthetic 基础连通性 item（无 provider 或 provider 聚合）可省略 `targetUrl`，provider item 无论 passed/failed/unknown/deadline/transport 都保留 `targetUrl`，其中 unknown/deadline/transport 可省略 `httpStatus`、`latencyMs`；无可用出口或基础延迟时也省略对应 report 字段。状态枚举冻结为 `passed|warning|failed|unknown`；聚合规则为 failed>0→failed，否则 warning>0 或 passed 与 unknown 混合→warning，否则 passed>0→passed，否则 unknown；`unknown` score=0，否则 `max(0, round(100-warningCount*10-failedCount*35))`，grade 为 A(≥90)/B(≥75)/C(≥60)/D。报告包含 synthetic 基础连通性 item；provider item 使用 display name/base URL，外部响应不携带 provider code。provider code 仅允许作为 Go 管理 handler 的内部查找元数据，code→display-name 映射不得改变外部 schema。出口探测顺序固定为 `ip-api`、`ipwho.is`、`api.ip.sb`、`ipinfo.io`、`ipify`、`httpbin`；仅 HTTP 200 进入解析，解析失败或非 200 才回退下一个目标，周期刷新不写 outbound。Go `Outcome` 不包含这些管理端聚合字段，Go 管理层必须逐字段适配，不能直接把 Go outcome 当成响应。
 
 ### 11.3 手动入口边界
 
-Node 路由在调用 Go 前后都做存在性检查，停用 proxy 仍可进入手动测试；诊断槽耗尽或 Go owner/proxy lease busy 返回 `503 + Retry-After`；仅 Go 明确的 `proxy_missing_or_deleted` 与调用后对象消失返回 `404`；CAS stale (`updated=false`) 仍返回 `200` 报告且不启动/写入 outbound；异常才返回 `502`。无启用 provider 时 Node 仍生成 `unknown` 基础 item 并可返回 `200`；Go 周期 reader 在无有效 target 时返回零候选，不能以启动失败阻断手动 unknown 分支。`requireAdmin`、operation log、槽释放、25 秒 deadline、父取消和仅 applied 后执行的 outbound fallback 都是 bridge 必须保留的可观察边界。
+Go 管理 handler 在读取快照前完成与 Node `requireAdmin` 等价的 session / temporary-token 鉴权，停用 proxy 仍可进入手动测试；owner/proxy lease busy 返回 `503 + Retry-After`，开始和结束存在性检查对应删除竞态返回 `404`；CAS stale (`updated=false`) 仍返回 `200` 报告且不启动/写入 outbound；异常才返回 `502`。无启用 provider 时 Go 仍生成 `unknown` 基础 item并返回 `200`；Go 周期 reader 在无有效 target 时返回零候选，不能以启动失败阻断手动 unknown 分支。F4 兼容 operation log 是最佳努力追加，25 秒 deadline、父取消和仅 applied 后执行的 outbound fallback 均由 Go 保留；Node 诊断槽/bridge 不再是运行边界。
 
 ### 11.4 调度器生命周期
 
@@ -105,25 +105,26 @@ Node `proxy-latency-refresh` 的事实配置为 60 秒间隔、4 分钟初始延
 ## 12. 证据与提交边界
 
 - 报告中的“通过”统一解释为 Node 源码事实或 Go 本地验证；没有同一 fixture 的 Node/Go runtime golden 就标记为 `cross-runtime-unverified`。
-- 本轮 dev PgBouncer smoke 与 Go business-result projector 的真实结果以本次受控验证记录为准；scratch 数据库、角色、临时 PgBouncer 认证和 outcome/receipt/cursor fixture 均已清理。Node 子进程→Go handler 的互操作回归补足 manual HTTP 边界，但两项证据都不扩展为独立 jobs 二进制、生产或 L4 结论。
-- 本轮受控范围覆盖 Go `proxylatency` runner/projector/direct reader、Node manual adapter/管理 CRUD/存储与定向回归，以及 architecture/functions/migration/plans/reports 的 owner 说明；`accounthealth`、`accountbalance`、`migration-backup`、`docs/bug` 等并行 dirty worktree 路径不作为 J3a 通过证据，也不被本契约改写。
+- 本轮 dev PgBouncer smoke 与 Go business-result projector 的真实结果以本次受控验证记录为准；scratch 数据库、角色、临时 PgBouncer 认证和 outcome/receipt/cursor fixture 均已清理。历史 Node 子进程→Go handler 互操作仅证明已删除 bridge 的旧边界；新的 Go 管理 handler 仍须在独立 jobs 二进制、F4 schema/权限和入口路由就绪后完成 dev/生产闭环。
+- 本轮受控范围覆盖 Go `proxylatency` runner/projector/direct reader/management handler、Node 管理 CRUD（不含已删除 J3a test route）和定向回归，以及 architecture/functions/migration/plans/reports 的 owner 说明；`accounthealth`、`accountbalance`、`migration-backup`、`docs/bug` 等并行 dirty worktree 路径不作为 J3a 通过证据，也不被本契约改写。
 
 ## 13. 生产发布前置快照（2026-08-26）
 
 以下是从生产现役 Pod 的运行角色执行的只读关系/权限预检；未读取 Secret 值，未执行 `INSERT`、`UPDATE`、`DELETE` 或 DDL。它证明当前状态，**不**证明未来 J3a 专用 jobs/input/result 角色已正确配置。
 
-- 现役 Go jobs `/health` 报告 `proxyLatencyEnabled=false`、`proxyLatencyOwnerHeld=false`，Node 对外健康检查尚未进入 J3a Go-owner 约束；因此“J3a 已生产接管”不成立。
-- 2026-08-26 从正式外部 Node health 只读复核：`/__aisys__/api/health` 返回 HTTP `200` 与 `status="ok"`，但响应仅含既有 `accountBalance` 摘要，完全没有 `proxyLatency` 字段。这证明现役生产 Node 镜像尚未包含 J3a health-observer 契约，不能把 HTTP `200` 或 J2 状态误作 J3a Go-owner 已启用的证据。该外部检查无法读取 owner lease、Go jobs schema 或 Secret，仍须由具备受控 K3s/数据库只读权限的维护流程完成后续 gate。
+- 现役 Go jobs `/health` 报告 `proxyLatencyEnabled=false`、`proxyLatencyOwnerHeld=false`；因此“J3a 已生产接管”不成立。后续发布应直接检查 Go jobs health，而不是依赖 Node 代理健康字段。
+- 2026-08-26 从正式外部 Node health 的 `HTTP 200` / J2 状态只是一项历史只读事实，不能作为 J3a Go-owner、owner lease、Go jobs schema、Secret alias 或管理 listener 已启用的证据。仍须由具备受控 K3s/数据库只读权限的维护流程完成后续 gate。
 - `juhe_business.proxy_latency_projection_receipts`、`juhe_business.proxy_latency_projection_cursors` 已存在；`juhe_jobs` schema 可用，但 `proxy_latency_owner_leases`、`proxy_latency_proxy_leases`、`proxy_latency_outcomes`、`proxy_latency_input_versions`、`proxy_latency_inputs`、`proxy_latency_execution_claims` 六张 J3a jobs 表及其两个 outcome 索引尚未存在。
 - 现役应用角色有 `juhe_jobs` schema `USAGE`/`CREATE`，并可读取候选来源、读写现有 projection receipt/cursor；这只是 bootstrap 能力线索，不能替代按最小权限为 jobs、input、result 三条连接分别验收的 `GRANT`。
-- 当前 GitOps prod/test overlay 仅声明 J1/J2，尚无 `JUHE_AI_PROXY_LATENCY_*` 的受控 J3a 运行配置；当前 `go-jobs` 容器 request 为 `100m CPU / 128Mi`、limit 为 `300m CPU / 256Mi`。这与 J3a 默认 `1000` worker 的容量模型不相称，切流前必须按实际 Pod CPU、内存、PostgreSQL/PgBouncer 与上游预算同步调整，不能以 Node 时代的小并发或当前容器 limit 静默压低 Go 功能。
+- 本批 GitOps 工作树已为 test/prod 预置 `JUHE_AI_PROXY_LATENCY_*` Go-owner 配置、每槽位独立 instance ID，以及稳定/A/B/preview Service 同构的 `j3a-management:3307` 端口；仅稳定 Service 的 Traefik `IngressRoute` 可匹配 `POST /__aisys__/api/proxies/{id}/test`。默认 `enabled=false` 且不引用路由资源。Jenkins 检测 direct-Go 源码后才会把开关、路由和三镜像 digest 写为同一 release-state 提交，并在标记 passed 前经受限 active-Pod port-forward 读取 Go `/health` 的 `ready`、`proxyLatencyEnabled`、`proxyLatencyReady`、`proxyLatencyOwnerHeld`，再以受控 temporary token 调用精确 POST 并回读 F4 管理端审计。缺少 verifier 凭据、环境 proxy ID、受限 observer 权限或任一闭环时必须失败；不能退回 Node health。反向候选另记录 `candidateJ3aManagementEnabled`，稳定切换必须把该能力值、三镜像 digest、两项 enabled flag、IngressRoute 引用和 stable selector 同一提交提升。旧 7 列 release history 记录在回滚时明确解释为 `J3a=false`。当前 `go-jobs` 容器 request 为 `100m CPU / 128Mi`、limit 为 `300m CPU / 256Mi`。这与 J3a 默认 `1000` worker 的容量模型不相称，切流前必须按实际 Pod CPU、内存、PostgreSQL/PgBouncer 与上游预算同步调整，不能以 Node 时代的小并发或当前容器 limit 静默压低 Go 功能。
 
 为避免在稳定 Go owner 启动时以 runtime DDL 掩盖缺表，维护项目提供唯一的 J3a PostgreSQL 一次性 bootstrap：`juhe-ai-maintenance --check-j3a-proxy-latency-postgres` 默认只读检查，报告缺失或不兼容对象时退出 `3`；检查同时验证上述必需列的名称、类型、`NOT NULL` 与主键/唯一约束契约。maintenance 与 jobs runtime 复用同一 `shared/contracts` schema 事实，`Store.CheckSchema` 也在稳定 owner 启动前执行同样的结构 preflight，不能通过跳过 maintenance 让同名畸形表进入运行期。只有获得数据库变更授权后才可执行 `--apply-j3a-proxy-latency-postgres`。它只会在**已存在且当前连接角色拥有**的 `juhe_jobs` schema 中幂等创建上述 6 张表和 2 个索引，并在同一事务复查；对任何同名但结构不符的既有表 fail-closed，绝不以 `ALTER`、删除重建或隐式数据修复掩盖问题。它拒绝创建 schema、变更 schema owner、触碰 `juhe_business`、写入 `goose_db_version` 或进行任何 Node 初始化。连接仅从 `JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL` 当前进程环境读取，JSON 报告只含数据库名、角色和对象标识，绝不含 URL 或 Secret。该一次性命令不是 jobs runtime，也不替代三条 runtime 最小权限连接或 GitOps release。
 
 生产 handoff 必须按以下顺序由获授权的 GitOps/数据库维护流程执行并留存脱敏证据：
 
 1. 在候选环境以向前兼容的独立 schema/权限契约预置并验证上述 6 张 jobs 表和索引；先以 `--check-j3a-proxy-latency-postgres` 留存缺项/owner 证据，获授权的受控数据库流程才可对预置且由目标 jobs role 拥有的 schema 执行 `--apply-j3a-proxy-latency-postgres`，再以只读检查返回 `0` 的 JSON 报告留证。jobs role 仅写 J3a jobs 表，input role 只读候选数据，result role 仅有 `proxy_profiles`、receipt/cursor 及 `proxy_profiles` update trigger 所需 `accounts`/availability projection 最小读取和 availability dirty 表 upsert 权限。不得首次在 stable owner 启动时把 `EnsureSchema` 当成 schema 验收。
-2. 以 Secret alias 提供 `JUHE_AI_PROXY_LATENCY_POSTGRES_URL`、`INPUT_POSTGRES_URL`、`RESULT_POSTGRES_URL`、`CREDENTIAL_SECRET`，并在启用 manual 时提供不少于 32 字符的 `MANUAL_HTTP_SECRET`；ConfigMap 明确提供 `ENABLED=true`、`JOBS_OWNER=go`、实例 ID、`STORE=postgres`、同 Pod loopback `JOBS_HTTP_URL` 和经过容量评审的参数。不得记录或输出任何 Secret 值。
-3. 候选 Pod 启动后，验证 Go `/health` 的 `proxyLatencyEnabled=true`、`proxyLatencyOwnerHeld=true`、至少一轮成功周期后的 `proxyLatencyReady=true`/`ready=true`；再验证 Node `/__aisys__/api/health` 返回 `status="ok"` 且 `proxyLatency.ready=true`。HTTP `200` 本身不构成通过。
-4. 在真实 Pod 验证 Node 管理手动入口 → 同 Pod Go loopback → Go outcome/projector → Node 读回；同时记录 active-path-zero、单 owner/单 writer、owner lease、重启恢复、一次失败回退和回滚 release。Go 不调用 Node，配置缺失或 Go 不可用必须 fail-closed，禁止 Node fallback 或双 owner。
-5. Jenkins 仅在上述 JSON health、manual 闭环和 active-path-zero 全部通过后晋级同源 digest；生产记录必须包含 release/digest、schema contract、脱敏键名检查、health 摘要、owner epoch、观察窗口及回滚结果。任何一项缺失时 J3a 保持关闭，不启动 J3b/J3c 的 owner 切换。
+2. 以 Secret alias 提供 `JUHE_AI_PROXY_LATENCY_POSTGRES_URL`、`INPUT_POSTGRES_URL`、`RESULT_POSTGRES_URL`、`CREDENTIAL_SECRET`，以及管理 listener 专用的 `JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL`；同一代理密码必须已经是与 `CREDENTIAL_SECRET` 匹配的 J3 v1 envelope。ConfigMap 明确提供 `ENABLED=true`、`JOBS_OWNER=go`、实例 ID、`STORE=postgres`、`JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=true`、`JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS`、`JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE=25s` 和经过容量评审的参数。不得记录或输出任何 Secret 值。
+3. 在受控 F4 migration 中先预置 `juhe_dataset.operation_logs`、`operation_log_targets`、`operation_log_viewers`、`operation_log_summary_search_terms` 及管理角色的 `INSERT` 权限；Go listener 会在 bind 前做只读 schema/权限预检，任一缺失即拒绝启动，绝不丢弃审计或回退 Node。
+4. 候选 Pod 启动后，直接验证 Go `/health` 的 `proxyLatencyEnabled=true`、`proxyLatencyOwnerHeld=true`、至少一轮成功周期后的 `proxyLatencyReady=true`/`ready=true`；Jenkins 只对明确列名的 active Pod 建立短生命周期 `pods/portforward` 到 loopback jobs health，禁止用 Node health 代替。再经入口路由验证 `POST /__aisys__/api/proxies/:id/test` 到同一 jobs 进程的 Go handler，并由管理端回读 `operationKey=proxies.test` 的 F4 审计，覆盖管理员 temporary token、`404`、`503 + Retry-After`、`200` 报告、Go outcome/projector 与审计可见性。HTTP `200` 本身不构成通过。
+5. 切换入口路由与删除 Node 管理路径必须作为同一 release 原子执行；随后记录 active-path-zero、单 owner/单 writer、owner lease、重启恢复、一次失败回退和回滚 release。J3a 路径不允许 Node→Go、Go→Node 或 Go→Go HTTP，配置缺失或 Go 不可用必须 fail-closed。
+6. Jenkins 仅在上述 JSON health、manual 闭环、F4 audit readback 和 active-path-zero 全部通过后晋级同源 digest；生产记录必须包含 release/digest、schema contract、脱敏键名检查、health 摘要、owner epoch、观察窗口及回滚结果。任何一项缺失时 J3a 保持关闭，不启动 J3b/J3c 的 owner 切换。

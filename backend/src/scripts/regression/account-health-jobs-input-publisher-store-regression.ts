@@ -82,21 +82,33 @@ try {
   })
   assert.equal(outboxStatus(database, account.id, 2), 'published')
 
-  database.prepare('UPDATE accounts SET status = ?, schedulable = ? WHERE id = ?').run('disabled', 0, account.id)
-  const tombstone = reserveAndEnqueueAccountHealthJobsInput({
+  const staleRevision = reserveAndEnqueueAccountHealthJobsInput({
     accountId: account.id,
     configRevision: row.config_revision,
     dispatchRevision: row.dispatch_revision,
     kind: 'snapshot',
+    reason: 'dispatch_revision_changed'
+  }, database)
+  database.prepare('UPDATE accounts SET dispatch_revision = dispatch_revision + 1 WHERE id = ?').run(account.id)
+  assert.equal(await publishNextAccountHealthJobsInputFromBusinessOutbox(), 'superseded', '已过期的 dispatch revision snapshot 必须淘汰而非无限重试')
+  assert.equal(outboxStatus(database, account.id, staleRevision.inputVersion), 'superseded')
+
+  const currentRow = database.prepare('SELECT config_revision, dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { config_revision: number, dispatch_revision: number }
+  database.prepare('UPDATE accounts SET status = ?, schedulable = ? WHERE id = ?').run('disabled', 0, account.id)
+  const tombstone = reserveAndEnqueueAccountHealthJobsInput({
+    accountId: account.id,
+    configRevision: currentRow.config_revision,
+    dispatchRevision: currentRow.dispatch_revision,
+    kind: 'snapshot',
     reason: 'account_disabled'
   }, database)
-  assert.equal(tombstone.inputVersion, 3)
+  assert.equal(tombstone.inputVersion, 4)
   assert.equal(await publishNextAccountHealthJobsInputFromBusinessOutbox(), 'published', '当前资格失效的 snapshot intent 必须转换成 tombstone 并 ACK')
   const tombstoneInput = readPublishedAccountHealthJobsInput(inputPath)
   const tombstonePayload = JSON.parse(Buffer.from(tombstoneInput.payload, 'base64url').toString('utf8')) as Record<string, unknown>
-  assert.equal(tombstonePayload.input_version, 3)
+  assert.equal(tombstonePayload.input_version, 4)
   assert.equal((tombstonePayload.eligibility as Record<string, unknown>).schedulable, false)
-  assert.equal(outboxStatus(database, account.id, 2), 'published')
+  assert.equal(outboxStatus(database, account.id, 4), 'published')
 
   console.log('J1 input publisher store 回归通过：SQLite DB-service intent 已生成 snapshot/tombstone 并按 lease ACK')
 } finally {

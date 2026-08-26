@@ -1,0 +1,67 @@
+{
+  "manifestVersion": 2,
+  "featureId": "j3a-proxy-latency-manual-control-cutover-20260826",
+  "featureName": "J3a proxy-latency manual control-plane cutover",
+  "archivedAt": "2026-08-26T00:00:00+08:00",
+  "maintainer": "juhe-ai maintainers",
+  "lifecycleStatus": "node-active-path-removed-runtime-handoff-pending",
+  "archiveOverlayAllowed": false,
+  "archiveSourceBaseline": "c5bfcfd9f19ff66c6e39ab5cab568dce80ae82a2",
+  "cutoverCommit": null,
+  "rollbackCommit": null,
+  "restoreProcedure": "归档只用于审计和离线回溯。必须先停止 Go J3a owner，并通过一个明确、已验证的整体 rollback commit 回退；严禁从本目录恢复 Node route、bridge 或 fallback 到正在运行的系统。",
+  "goImplementationPaths": [
+    "backend-go/projects/jobs/cmd/juhe-ai-jobs/main.go",
+    "backend-go/projects/jobs/internal/proxylatency/manual_admin.go",
+    "backend-go/projects/jobs/internal/proxylatency/manual.go",
+    "backend-go/projects/jobs/internal/proxylatency/runner.go",
+    "backend-go/shared/platform/operationlogappend"
+  ],
+  "disabledNodeEntrypoints": [
+    "backend/src/modules/proxies/proxies.routes.ts POST /:id/test",
+    "backend/src/modules/background/proxy-latency-handover.ts",
+    "backend/src/modules/proxies/proxy-test.contract.ts",
+    "backend/src/modules/system-api/system-api-app.ts J3a Go health observer",
+    "backend/src/scripts/regression/proxy-latency-jobs-health-regression.ts",
+    "backend/src/scripts/regression/proxy-latency-node-go-manual-interop.ts",
+    "backend/package.json test:proxy-latency-jobs-health",
+    "backend/package.json test:proxy-latency-node-go-manual-interop"
+  ],
+  "files": [
+    {
+      "archivePath": "migration-backup/node/j3a-proxy-latency-manual-control-cutover-20260826/backend/src/modules/background/proxy-latency-handover.ts",
+      "originalPath": "backend/src/modules/background/proxy-latency-handover.ts",
+      "sourceKind": "complete_removed_file",
+      "sha256": "8f37be3a6f46a61e1081b1884bbf1a00c0621c58624f9bbff9ccb30e79983c86"
+    },
+    {
+      "archivePath": "migration-backup/node/j3a-proxy-latency-manual-control-cutover-20260826/backend/src/modules/proxies/proxy-test.contract.ts",
+      "originalPath": "backend/src/modules/proxies/proxy-test.contract.ts",
+      "sourceKind": "complete_removed_file",
+      "sha256": "b8405f04d8c3ef6159753bebdff7f003852ca8cb5f3d9fe397230e182ecbeec4"
+    },
+    {
+      "archivePath": "migration-backup/node/j3a-proxy-latency-manual-control-cutover-20260826/proxies-manual-test.route.ts",
+      "originalPath": "backend/src/modules/proxies/proxies.routes.ts",
+      "sourceKind": "removed_source_fragment",
+      "sourceCommit": "c5bfcfd9f19ff66c6e39ab5cab568dce80ae82a2",
+      "sha256": "05ce990ae73e37a08e3dc53bbae915d58d5ce7bb0cfb809faed0c526e0021fbf"
+    },
+    {
+      "archivePath": "migration-backup/node/j3a-proxy-latency-manual-control-cutover-20260826/system-api-j3a-health-observer.ts",
+      "originalPath": "backend/src/modules/system-api/system-api-app.ts",
+      "sourceKind": "removed_source_fragment",
+      "sourceCommit": "c5bfcfd9f19ff66c6e39ab5cab568dce80ae82a2",
+      "sha256": "dd930b5e4ada749be7c355e2df506222ed637063468ee62b3397b2f812fbcdab"
+    }
+  ],
+  "verification": {
+    "activeNodePathZeroEvidence": "backend/src/scripts/regression/proxy-latency-go-only-regression.ts; rg scans of backend/src, backend/package.json and Go jobs sources",
+    "local": "Go proxylatency/jobs tests and Node typecheck/go-only regression must pass before this archive is accepted.",
+    "runtimeRemaining": [
+      "Run the Go jobs management listener against a disposable PostgreSQL database with F4 schema and privileges.",
+      "Install the external ingress route for POST /__aisys__/api/proxies/:id/test to the Go jobs management listener.",
+      "Complete candidate owner handoff, active-path-zero, restart and rollback evidence before declaring production cutover."
+    ]
+  }
+}

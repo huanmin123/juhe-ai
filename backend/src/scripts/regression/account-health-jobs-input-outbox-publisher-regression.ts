@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   publishNextAccountHealthJobsInputOutboxEvent,
+  StaleAccountHealthJobsInputOutboxEventError,
   type AccountHealthJobsInputOutboxPublisherDependencies
 } from '../../modules/background/account-health-jobs-input-outbox.service.js'
 import type { AccountHealthJobsInputOutboxEvent } from '../../storage/account-health-jobs-input-outbox.repository.js'
@@ -32,6 +33,17 @@ assert.equal(await publishNextAccountHealthJobsInputOutboxEvent(staleDependencie
 assert.deepEqual(actions, ['claim', 'current', 'supersede'])
 
 actions.length = 0
+const staleRevisionDependencies = {
+  ...dependencies,
+  async publishSnapshot() {
+    actions.push('snapshot')
+    throw new StaleAccountHealthJobsInputOutboxEventError()
+  }
+}
+assert.equal(await publishNextAccountHealthJobsInputOutboxEvent(staleRevisionDependencies, { leaseMs: 30_000 }), 'superseded')
+assert.deepEqual(actions, ['claim', 'current', 'snapshot', 'supersede'])
+
+actions.length = 0
 let retryAt: Date | undefined
 const failingDependencies = {
   ...dependencies,
@@ -45,7 +57,9 @@ assert.equal(await publishNextAccountHealthJobsInputOutboxEvent(failingDependenc
   retryBaseMs: 1_000,
   retryMaxMs: 10_000
 }), 'retry_scheduled')
-assert.equal(retryAt?.toISOString(), '2030-08-16T00:00:01.000Z')
+assert.ok(retryAt, '发布失败必须安排下一次重试')
+assert.ok(retryAt.getTime() >= start.getTime() + 1, '被动调度抖动后重试时间必须保持在当前时刻之后')
+assert.ok(retryAt.getTime() <= start.getTime() + 1_500, '1 秒退避的短周期抖动不得超过 500ms')
 assert.deepEqual(actions, ['claim', 'current', 'snapshot', 'fail'])
 
 console.log('account-health-jobs-input-outbox-publisher-regression passed')

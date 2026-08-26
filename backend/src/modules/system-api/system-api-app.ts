@@ -53,7 +53,6 @@ import {
 } from './system-api-db-access.js'
 import { accountBalanceGoOwnerEnabled } from '../background/account-balance-handover.js'
 import { accountBalanceJobsOutcomeProjectionRuntimeReady } from '../background/account-balance-jobs-outcome-projection-runtime.service.js'
-import { parseLoopbackHttpUrl } from '../../shared/loopback-http.js'
 
 export interface SystemApiAppOptions {
   systemApiPrefix: string
@@ -61,7 +60,6 @@ export interface SystemApiAppOptions {
   trustProxy?: boolean | number
   bypassSystemApiRateLimitForTest?: boolean
   accountBalanceHealth?: () => Promise<SystemApiDependencyHealth>
-  proxyLatencyHealth?: () => Promise<SystemApiDependencyHealth>
 }
 
 type BodyParserError = Error & {
@@ -135,11 +133,10 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use('/__aidelegated__/v1', systemApiDbAccessModeMiddleware('/__aidelegated__/v1'), systemApiDbServiceAdmissionControl, delegatedApiRouter)
 
   app.get(`${systemApiPrefix}/health`, async (_req, res) => {
-    const [accountBalance, proxyLatency] = await Promise.all([
-      (options.accountBalanceHealth ?? accountBalanceGoOwnerHealth)(),
-      (options.proxyLatencyHealth ?? proxyLatencyGoOwnerHealth)()
-    ])
-    const health = resolveSystemApiHealth(accountBalance, proxyLatency)
+    const accountBalance = await (options.accountBalanceHealth ?? accountBalanceGoOwnerHealth)()
+    // J3a is owned by the Go jobs management endpoint. Preserve the health
+    // response shape without making Node observe or call that process.
+    const health = resolveSystemApiHealth(accountBalance, { enabled: false, ready: true })
     res.status(health.statusCode).json({ ...health, checkedAt: new Date().toISOString() })
   })
 
@@ -239,35 +236,6 @@ export async function accountBalanceGoOwnerHealth(
     return { enabled: true, ready, projectorReady }
   } catch {
     return { enabled: true, ready: false, projectorReady }
-  }
-}
-
-/**
- * J3a exposes only a one-way Node -> Go health observation. The Go jobs
- * process owns probe execution and projection, and never calls Node from this
- * path. When the explicit Go owner switch is absent this dependency is not
- * enabled; once present, every required readiness field must be true.
- */
-export async function proxyLatencyGoOwnerHealth(
-  env: NodeJS.ProcessEnv = process.env,
-  dependencies: { fetch?: typeof fetch } = {}
-): Promise<SystemApiDependencyHealth> {
-  if (env.JUHE_AI_PROXY_LATENCY_JOBS_OWNER?.trim().toLowerCase() !== 'go') return { enabled: false, ready: true }
-  const endpoint = env.JUHE_AI_PROXY_LATENCY_JOBS_HTTP_URL?.trim()
-  if (!endpoint) return { enabled: true, ready: false }
-  try {
-    const healthUrl = new URL('/health', parseLoopbackHttpUrl(endpoint, 'J3a Go health observer endpoint'))
-    const response = await (dependencies.fetch ?? fetch)(healthUrl, { signal: AbortSignal.timeout(2_000) })
-    const payload: unknown = await response.json()
-    const health = payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
-    const ready = response.ok
-      && health?.ready === true
-      && health.proxyLatencyEnabled === true
-      && health.proxyLatencyReady === true
-      && health.proxyLatencyOwnerHeld === true
-    return { enabled: true, ready }
-  } catch {
-    return { enabled: true, ready: false }
   }
 }
 

@@ -31,6 +31,7 @@ import {
 } from './account-health-jobs-input.service.js'
 import {
   publishNextAccountHealthJobsInputOutboxEvent,
+  StaleAccountHealthJobsInputOutboxEventError,
   type AccountHealthJobsInputOutboxPublishDisposition
 } from './account-health-jobs-input-outbox.service.js'
 
@@ -126,7 +127,7 @@ function publishTombstone(event: AccountHealthJobsInputOutboxEvent, root: string
 
 function assertEventRevision(event: AccountHealthJobsInputOutboxEvent, configRevision: number | undefined, dispatchRevision: number | undefined): void {
   if (configRevision !== event.configRevision || dispatchRevision !== event.dispatchRevision) {
-    throw new Error('J1 input outbox event 与当前业务 revision 不一致')
+    throw new StaleAccountHealthJobsInputOutboxEventError()
   }
 }
 

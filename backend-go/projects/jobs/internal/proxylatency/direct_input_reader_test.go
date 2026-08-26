@@ -44,7 +44,7 @@ func TestProxyLatencyCandidateSQLMatchesNodeProfileFallbackAndSpecialPriority(t 
 		}
 	}
 	// An outer enabled-only filter would silently drop Node's all-disabled fallback.
-	if strings.Contains(proxyLatencyCandidatesSQL, "WHERE ppp.enabled = 1") {
+	if strings.Contains(proxyLatencyCandidatesSQL, "WHERE ppp.enabled") {
 		t.Fatalf("profile resolver must retain Node all-disabled fallback: %s", proxyLatencyCandidatesSQL)
 	}
 }

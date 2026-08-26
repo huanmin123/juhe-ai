@@ -286,6 +286,13 @@ func (r *Runner) RunManual(ctx context.Context, request ManualRequest) (report P
 	}
 	now := r.now()
 	deadline := r.cfg.ManualDeadline
+	// The external Go management endpoint can be enabled independently from
+	// the retired Node loopback bridge. Keep manual execution bounded even for
+	// programmatic callers that construct a minimal RuntimeConfig in tests or
+	// maintenance tools.
+	if deadline <= 0 {
+		deadline = 25 * time.Second
+	}
 	if request.DeadlineMS > 0 && time.Duration(request.DeadlineMS)*time.Millisecond < deadline {
 		deadline = time.Duration(request.DeadlineMS) * time.Millisecond
 	}

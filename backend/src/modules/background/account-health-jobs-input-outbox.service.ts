@@ -18,6 +18,16 @@ export interface AccountHealthJobsInputOutboxPublisherOptions {
   retryMaxMs?: number
 }
 
+// A snapshot whose account fence advanced after the intent was committed must
+// be discarded. Retrying it would repeatedly attempt to publish an input that
+// Go must reject as stale.
+export class StaleAccountHealthJobsInputOutboxEventError extends Error {
+  constructor() {
+    super('J1 input outbox event 与当前业务 revision 不一致')
+    this.name = 'StaleAccountHealthJobsInputOutboxEventError'
+  }
+}
+
 export type AccountHealthJobsInputOutboxPublishDisposition = 'idle' | 'published' | 'superseded' | 'retry_scheduled' | 'lease_lost'
 
 // This is a one-event executor, not a scheduler. A DB-service owner may call
@@ -44,6 +54,9 @@ export async function publishNextAccountHealthJobsInputOutboxEvent(
     if (event.kind === 'snapshot') await dependencies.publishSnapshot(event)
     else await dependencies.publishTombstone(event)
   } catch (error) {
+    if (error instanceof StaleAccountHealthJobsInputOutboxEventError) {
+      return await dependencies.supersede(event) ? 'superseded' : 'lease_lost'
+    }
     const delay = retryDelayMs(event.attemptCount, retryBaseMs, retryMaxMs)
     const retryAt = new Date(now().getTime() + passiveScheduleDelayMs(delay))
     return await dependencies.fail(event, publishFailureCode(error), retryAt) ? 'retry_scheduled' : 'lease_lost'

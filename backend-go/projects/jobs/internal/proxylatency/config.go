@@ -50,8 +50,6 @@ type RuntimeConfig struct {
 	ProxyLease                time.Duration
 	ProbeTimeout              time.Duration
 	CredentialSecret          string
-	ManualEnabled             bool
-	ManualHTTPSecret          string
 	ManualDeadline            time.Duration
 	Now                       func() time.Time
 }
@@ -134,16 +132,6 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET"))
 	if cfg.CredentialSecret == "" {
 		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET")
-	}
-	cfg.ManualEnabled = strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_MANUAL_ENABLED")), "true")
-	if cfg.ManualEnabled {
-		cfg.ManualHTTPSecret = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_MANUAL_HTTP_SECRET"))
-		if len(cfg.ManualHTTPSecret) < 32 {
-			return RuntimeConfig{}, errors.New("启用 J3a manual bridge 时 JUHE_AI_PROXY_LATENCY_MANUAL_HTTP_SECRET 至少 32 字符")
-		}
-		if cfg.ManualDeadline, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_MANUAL_DEADLINE", 25*time.Second, time.Second, 25*time.Second); err != nil {
-			return RuntimeConfig{}, err
-		}
 	}
 	return cfg, nil
 }

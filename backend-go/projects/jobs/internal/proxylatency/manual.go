@@ -11,9 +11,9 @@ import (
 
 const proxyLatencyManualJobName = "proxy-latency"
 
-// ManualRequest is the loopback-only v1 bridge payload. It is deliberately
+// ManualRequest is the internal Go management command. It is deliberately
 // separate from Outcome: target URLs and display names are needed to recreate
-// Node's management response, but are never persisted in the jobs outcome.
+// the management response, but are never persisted in the jobs outcome.
 type ManualRequest struct {
 	SchemaVersion  int                 `json:"schema_version"`
 	ProxyID        string              `json:"proxy_id"`
@@ -219,9 +219,16 @@ func (request ManualRequest) Report(outcome Outcome) ProxyTestReport {
 	return ProxyTestReport{
 		ProxyID: request.ProxyID, ProxyName: request.ProxyName, Score: summary.score, Grade: summary.grade,
 		Status: summary.status, PassedCount: summary.passed, WarningCount: summary.warning, FailedCount: summary.failed,
-		BaseLatencyMS: base.LatencyMS, TestedAt: outcome.ObservedAt.UTC().Format(time.RFC3339Nano), Items: items,
+		BaseLatencyMS: base.LatencyMS, TestedAt: manualNodeISOTime(outcome.ObservedAt), Items: items,
 		Message: reportMessage(summary.status, summary.failed, summary.warning),
 	}
+}
+
+// manualNodeISOTime keeps the externally visible manual report and the
+// Node-owned system_sessions TEXT fields on JavaScript Date#toISOString's
+// fixed UTC millisecond representation.
+func manualNodeISOTime(value time.Time) string {
+	return value.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z07:00")
 }
 
 func itemMessage(item ItemResult, targetURL string) string {

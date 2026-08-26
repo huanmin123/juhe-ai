@@ -197,6 +197,13 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load J3a proxy-latency config: %w", err))
 	}
+	j3ManagementConfig, err := proxylatency.LoadManualAdminConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load J3a proxy-latency management config: %w", err))
+	}
+	if j3ManagementConfig.Enabled && !j3Config.Enabled {
+		fail(errors.New("启用 J3a 管理接口前必须启用 J3a Go owner"))
+	}
 	var j3Store *proxylatency.Store
 	var j3InputDB *sql.DB
 	var j3InputPool *pgpool.Handle
@@ -204,6 +211,9 @@ func main() {
 	var j3ResultPool *pgpool.Handle
 	var j3Runner *proxylatency.Runner
 	var j3Projector *proxylatency.ResultProjector
+	var j3ManagementDB *sql.DB
+	var j3ManagementPool *pgpool.Handle
+	var j3ManagementSource *proxylatency.PostgresManualAdminSource
 	if j3Config.Enabled {
 		j3Config.Store.PostgresMaxOpenConns = j3Config.PostgresMaxOpenConns
 		j3Config.Store.PostgresMaxIdleConns = j3Config.PostgresMaxIdleConns
@@ -273,6 +283,34 @@ func main() {
 		j3Runner = proxylatency.NewRunner(j3Config, j3Store, reader, logger)
 		j3Runner.SetResultProjector(resultProjector)
 		j3Projector = resultProjector
+		if j3ManagementConfig.Enabled {
+			j3ManagementPool, err = postgresPools.Acquire("pgx", j3ManagementConfig.PostgresURL, "proxy-latency-management", j3ManagementConfig.MaxOpenConns, j3ManagementConfig.MaxIdleConns)
+			if err != nil {
+				_ = j3ResultPool.Close()
+				_ = j3InputPool.Close()
+				_ = j3Store.Close()
+				fail(fmt.Errorf("open J3a management PostgreSQL pool: %w", err))
+			}
+			j3ManagementDB = j3ManagementPool.DB()
+			j3ManagementSource, err = proxylatency.NewPostgresManualAdminSource(j3ManagementDB, j3Config.Now)
+			if err != nil {
+				_ = j3ManagementPool.Close()
+				_ = j3ResultPool.Close()
+				_ = j3InputPool.Close()
+				_ = j3Store.Close()
+				fail(fmt.Errorf("initialize J3a management source: %w", err))
+			}
+			managementContractCtx, managementContractCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			managementContractErr := j3ManagementSource.CheckContract(managementContractCtx)
+			managementContractCancel()
+			if managementContractErr != nil {
+				_ = j3ManagementPool.Close()
+				_ = j3ResultPool.Close()
+				_ = j3InputPool.Close()
+				_ = j3Store.Close()
+				fail(fmt.Errorf("verify J3a management PostgreSQL contract: %w", managementContractErr))
+			}
+		}
 	}
 
 	listener, err := listenLoopback(*healthAddress)
@@ -354,6 +392,39 @@ func main() {
 			},
 		})
 	}
+	if j3ManagementConfig.Enabled {
+		managementListener, listenErr := net.Listen("tcp", j3ManagementConfig.ListenAddress)
+		if listenErr != nil {
+			fail(fmt.Errorf("listen J3a management endpoint %q: %w", j3ManagementConfig.ListenAddress, listenErr))
+		}
+		managementServer := &http.Server{
+			Handler:           proxylatency.NewManualAdminHandler(j3Runner, j3ManagementSource, proxylatency.NewPostgresManualAdminAuditAppender(j3ManagementDB), j3ManagementConfig.RequestDeadline, logger),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       j3ManagementConfig.RequestDeadline + 5*time.Second,
+			WriteTimeout:      j3ManagementConfig.RequestDeadline + 5*time.Second,
+			IdleTimeout:       30 * time.Second,
+		}
+		components = append(components, supervisor.Component{
+			Name: "J3a management API",
+			Run: func(context.Context) error {
+				err := managementServer.Serve(managementListener)
+				if errors.Is(err, http.ErrServerClosed) {
+					return nil
+				}
+				return err
+			},
+			Close: func() error {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				shutdownErr := managementServer.Shutdown(shutdownCtx)
+				poolErr := j3ManagementPool.Close()
+				if shutdownErr != nil {
+					return shutdownErr
+				}
+				return poolErr
+			},
+		})
+	}
 	healthServer := &http.Server{
 		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
 			if j3Runner == nil {
@@ -365,7 +436,7 @@ func main() {
 				return proxylatency.RunnerStatus{}, true
 			}
 			return j3Runner.Snapshot()
-		}, j3Config.ManualEnabled, j3Config.ManualHTTPSecret, j3Runner),
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -522,69 +593,6 @@ func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tabl
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(manualHandoverResult(envelope.Input, record.Snapshot, record.NextRefreshAt, true, manualOutcome(record.Snapshot.Status)))
 	})
-	manualEnabled := false
-	manualSecret := ""
-	var manualRunner *proxylatency.Runner
-	if len(j3) > 4 {
-		if value, ok := j3[4].(bool); ok {
-			manualEnabled = value
-		}
-	}
-	if len(j3) > 5 {
-		if value, ok := j3[5].(string); ok {
-			manualSecret = value
-		}
-	}
-	if len(j3) > 6 {
-		manualRunner, _ = j3[6].(*proxylatency.Runner)
-	}
-	mux.HandleFunc("/proxy-latency/manual", func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost {
-			response.Header().Set("Allow", http.MethodPost)
-			http.Error(response, "J3a manual bridge 仅支持 POST", http.StatusMethodNotAllowed)
-			return
-		}
-		if !manualEnabled || manualRunner == nil {
-			http.Error(response, "J3a manual bridge unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if !matchesAccountBalanceManualSecret(request, manualSecret) {
-			response.Header().Set("WWW-Authenticate", `Bearer realm="juhe-ai-jobs"`)
-			http.Error(response, "J3a manual bridge 未授权", http.StatusUnauthorized)
-			return
-		}
-		request.Body = http.MaxBytesReader(response, request.Body, 512<<10)
-		var envelope struct {
-			Input proxylatency.ManualRequest `json:"input"`
-		}
-		decoder := json.NewDecoder(request.Body)
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&envelope); err != nil {
-			http.Error(response, "J3a manual input 无效", http.StatusBadRequest)
-			return
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); err != io.EOF {
-			http.Error(response, "J3a manual input 不得包含尾随 JSON", http.StatusBadRequest)
-			return
-		}
-		report, err := manualRunner.RunManual(request.Context(), envelope.Input)
-		if err != nil {
-			status := http.StatusBadGateway
-			if errors.Is(err, proxylatency.ErrManualProxyMissing) {
-				status = http.StatusNotFound
-			} else if errors.Is(err, proxylatency.ErrOwnerLeaseHeld) || errors.Is(err, proxylatency.ErrProxyLeaseHeld) {
-				response.Header().Set("Retry-After", "1")
-				status = http.StatusServiceUnavailable
-			} else if strings.Contains(err.Error(), "schema") || strings.Contains(err.Error(), "字段") || strings.Contains(err.Error(), "无效") {
-				status = http.StatusBadRequest
-			}
-			http.Error(response, err.Error(), status)
-			return
-		}
-		response.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(response).Encode(map[string]any{"schemaVersion": 1, "job": "proxy-latency", "report": report})
-	})
 	return mux
 }
 
@@ -641,8 +649,6 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 	proxyLatencySnapshot := func() (proxylatency.RunnerStatus, bool) {
 		return proxyLatencyStatus(), proxyLatencyReady()
 	}
-	proxyLatencyManualEnabled := false
-	proxyLatencyManualReady := true
 	if len(j2) > 0 {
 		if value, ok := j2[0].(bool); ok {
 			accountBalanceEnabled = value
@@ -673,16 +679,6 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 			proxyLatencySnapshot = value
 		}
 	}
-	if len(j2) > 6 {
-		if value, ok := j2[6].(bool); ok {
-			proxyLatencyManualEnabled = value
-		}
-	}
-	if len(j2) > 7 {
-		if value, ok := j2[7].(string); ok {
-			proxyLatencyManualReady = proxyLatencyManualEnabled && len(value) >= 32
-		}
-	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
 			http.NotFound(response, request)
@@ -708,8 +704,6 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 			"accountBalanceReady":           accountBalanceIsReady,
 			"proxyLatencyEnabled":           proxyLatencyEnabled,
 			"proxyLatencyReady":             proxyLatencyIsReady,
-			"proxyLatencyManualEnabled":     proxyLatencyManualEnabled,
-			"proxyLatencyManualReady":       !proxyLatencyManualEnabled || proxyLatencyManualReady,
 			"proxyLatencyOwnerHeld":         proxyStatus.OwnerHeld,
 			"proxyLatencyLastCycleAt":       proxylatencyTime(proxyStatus.LastCycleAt),
 			"proxyLatencyLastSuccessAt":     proxylatencyTime(proxyStatus.LastSuccess),
