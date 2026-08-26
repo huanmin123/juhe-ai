@@ -463,9 +463,9 @@ def configureJ3aManagementRelease(overlay, enabled) {
   if (!(enabled in ['true', 'false'])) error 'J3a 管理 release 状态必须为 true 或 false。'
   def kustomization = "${overlay}/kustomization.yaml"
   if (enabled == 'true') {
-    sh "grep -Fqx '  - j3a-management-ingressroute.yaml' '${kustomization}' || sed -i '/^  - ingress.yaml$/a\\  - j3a-management-ingressroute.yaml' '${kustomization}'"
+    sh "grep -Fqx '  - j3a-management-ingressroute.yaml' '${kustomization}' || sed -i '/^  - ingress.yaml\$/a\\  - j3a-management-ingressroute.yaml' '${kustomization}'"
   } else {
-    sh "sed -i '/^  - j3a-management-ingressroute.yaml$/d' '${kustomization}'"
+    sh "sed -i '/^  - j3a-management-ingressroute.yaml\$/d' '${kustomization}'"
   }
   sh "sed -i -e 's|^      - JUHE_AI_PROXY_LATENCY_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}|' -e 's|^      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}|' '${kustomization}'"
 }
