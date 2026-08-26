@@ -29,16 +29,20 @@ type ResolvedTarget struct {
 	Headers                 http.Header
 	Timeout                 time.Duration
 	MaxResponseBytes        int64
+	ModelLimit              int
+	CountTokens             func(string) int
 }
 
 type TargetResolver func(context.Context, string, string) (ResolvedTarget, error)
 
 type OutcomePayload struct {
-	InputID      string                         `json:"inputId"`
-	InputDigest  string                         `json:"inputDigest"`
-	InputVersion int64                          `json:"inputVersion"`
-	Item         modelcheckprobe.EvaluationItem `json:"item"`
-	CommittedAt  time.Time                      `json:"committedAt"`
+	InputID      string `json:"inputId"`
+	InputDigest  string `json:"inputDigest"`
+	InputVersion int64  `json:"inputVersion"`
+	// Item remains the first/basic item for readers that predate suite results.
+	Item        modelcheckprobe.EvaluationItem   `json:"item"`
+	Items       []modelcheckprobe.EvaluationItem `json:"items,omitempty"`
+	CommittedAt time.Time                        `json:"committedAt"`
 }
 
 func ExecuteInput(ctx context.Context, store *modelcheckdurable.Store, inputID, ownerID, claimToken, outcomeID string, now time.Time, resolver TargetResolver, retry modelcheckprobe.RetryOptions) (OutcomePayload, error) {
@@ -60,21 +64,38 @@ func ExecuteInput(ctx context.Context, store *modelcheckdurable.Store, inputID, 
 	if err != nil {
 		return OutcomePayload{}, err
 	}
+	release := func(original error) (OutcomePayload, error) {
+		if releaseErr := store.ReleaseClaim(ctx, claim, now); releaseErr != nil {
+			return OutcomePayload{}, errors.Join(original, fmt.Errorf("release model check claim: %w", releaseErr))
+		}
+		return OutcomePayload{}, original
+	}
 	rechecked, err := resolver(ctx, issued.Input.Target.ID, issued.Input.Target.ConfigRevision)
 	if err != nil {
-		return OutcomePayload{}, err
+		return release(err)
 	}
 	if !matchesSnapshot(rechecked, issued) || rechecked.Endpoint != target.Endpoint || rechecked.Protocol != target.Protocol {
-		return OutcomePayload{}, errors.New("model check target revision or profile is stale")
+		return release(errors.New("model check target revision or profile is stale"))
 	}
-	item, err := modelcheckprobe.RunBasicProbeWithRetry(ctx, modelcheckprobe.BasicProbeInput{Endpoint: rechecked.Endpoint, Protocol: rechecked.Protocol, Model: rechecked.Model, Prompt: rechecked.Prompt, Stream: rechecked.Stream, MaxOutputTokens: rechecked.MaxOutputTokens, Headers: rechecked.Headers, Timeout: rechecked.Timeout, MaxResponseBytes: rechecked.MaxResponseBytes}, retry)
+	items, err := modelcheckprobe.RunSuite(ctx, modelcheckprobe.BasicProbeInput{Endpoint: rechecked.Endpoint, Protocol: rechecked.Protocol, Model: rechecked.Model, Prompt: rechecked.Prompt, Stream: rechecked.Stream, MaxOutputTokens: rechecked.MaxOutputTokens, Headers: rechecked.Headers, Timeout: rechecked.Timeout, MaxResponseBytes: rechecked.MaxResponseBytes, ModelLimit: rechecked.ModelLimit, CountTokens: rechecked.CountTokens}, modelcheckprobe.SuiteOptions{
+		IncludeStream:              rechecked.Stream,
+		IncludeStructured:          true,
+		IncludeTool:                true,
+		IncludeBehavior:            issued.Input.Profile == "full",
+		IncludeLongContext:         issued.Input.Profile == "full",
+		IncludeStability:           issued.Input.Profile == "full",
+		IncludeUsageOnBasicFailure: issued.Input.Profile == "full",
+	}, retry)
 	if err != nil {
-		return OutcomePayload{}, err
+		return release(err)
 	}
-	payload := OutcomePayload{InputID: issued.Input.InputID, InputDigest: issued.Input.InputDigest, InputVersion: issued.Input.InputVersion, Item: item, CommittedAt: now.UTC()}
+	if len(items) == 0 {
+		return release(errors.New("model check suite produced no evaluation items"))
+	}
+	payload := OutcomePayload{InputID: issued.Input.InputID, InputDigest: issued.Input.InputDigest, InputVersion: issued.Input.InputVersion, Item: items[0], Items: items, CommittedAt: now.UTC()}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return OutcomePayload{}, fmt.Errorf("marshal model check outcome: %w", err)
+		return release(fmt.Errorf("marshal model check outcome: %w", err))
 	}
 	if err := store.CommitOutcome(ctx, modelcheckdurable.Outcome{OutcomeID: outcomeID, InputID: inputID, InputDigest: issued.Input.InputDigest, Payload: encoded}, claim, now); err != nil {
 		return OutcomePayload{}, err

@@ -38,7 +38,7 @@ func TestExecuteInputRunsGoProbeAndCommitsDurableOutcome(t *testing.T) {
 	payload, err := ExecuteInput(ctx, store, issued.Input.InputID, "jobs-1", "claim-1", "outcome-1", now, func(context.Context, string, string) (ResolvedTarget, error) {
 		return ResolvedTarget{ConfigRevision: "config-revision-1", ProtocolProfileID: "profile-openai-responses", ProtocolProfileRevision: "profile-revision-1", Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Model: "gpt-5.6-sol", Prompt: "hello", MaxOutputTokens: 32}, nil
 	}, modelcheckprobe.RetryOptions{AttemptTimeouts: []time.Duration{time.Second}, Delay: func(context.Context) error { return nil }})
-	if err != nil || payload.Item.Status != "passed" || payload.InputVersion != 1 {
+	if err != nil || payload.Item.Status != "passed" || len(payload.Items) != 4 || payload.InputVersion != 1 {
 		t.Fatalf("payload=%#v err=%v", payload, err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -123,6 +124,25 @@ type ObservationInput struct {
 	CreatedAt                 time.Time
 }
 
+// OutcomeProjection is the atomic dataset projection of one completed Go
+// model-check execution. The run must already exist in running state; items
+// and the terminal run update are committed together so a crash cannot expose
+// a terminal run with only a prefix of its evidence.
+type OutcomeProjection struct {
+	RunID           string
+	Items           []ItemInput
+	Status          RunStatus
+	Level           string
+	Score           int
+	MaxScore        int
+	Message         string
+	FinishedAt      time.Time
+	ResultSummary   json.RawMessage
+	QualityDecision json.RawMessage
+}
+
+var ErrProjectionConflict = errors.New("model check outcome projection conflicts with terminal run")
+
 type Store struct {
 	db   *sql.DB
 	mode StoreMode
@@ -220,6 +240,79 @@ func (s *Store) CheckSchema(ctx context.Context) error {
 			return fmt.Errorf("verify model check schema %s: %w", table, err)
 		}
 	}
+	if err := s.checkIndexes(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+var requiredModelCheckIndexes = map[string][]string{
+	"model_check_runs": {
+		"idx_model_check_runs_created", "idx_model_check_runs_system_account_created", "idx_model_check_runs_actor_created",
+		"idx_model_check_runs_model_created", "idx_model_check_runs_level_created", "idx_model_check_runs_status_created",
+		"idx_model_check_runs_target_created", "idx_model_check_runs_account_created", "idx_model_check_runs_trigger_created",
+		"idx_model_check_runs_quality_health_sync_retry", "idx_model_check_runs_system_account_model_created",
+		"idx_model_check_runs_system_account_level_created", "idx_model_check_runs_system_account_status_created",
+		"idx_model_check_runs_system_account_target_created",
+	},
+	"model_check_items": {
+		"idx_model_check_items_run_order", "idx_model_check_items_run_key", "idx_model_check_items_run_status",
+	},
+	"model_check_observations": {
+		"idx_model_check_observations_cursor", "idx_model_check_observations_pending_aggregation",
+		"idx_model_check_observations_account_model", "idx_model_check_observations_cohort", "idx_model_check_observations_population",
+	},
+}
+
+func (s *Store) checkIndexes(ctx context.Context) error {
+	for table, required := range requiredModelCheckIndexes {
+		found := make(map[string]struct{}, len(required))
+		if s.mode == StorePostgres {
+			rows, err := s.db.QueryContext(ctx, `SELECT indexname FROM pg_indexes WHERE schemaname='juhe_dataset' AND tablename=$1`, table)
+			if err != nil {
+				return fmt.Errorf("verify model check indexes %s: %w", table, err)
+			}
+			for rows.Next() {
+				var name string
+				if err := rows.Scan(&name); err != nil {
+					rows.Close()
+					return fmt.Errorf("read model check indexes %s: %w", table, err)
+				}
+				found[name] = struct{}{}
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return fmt.Errorf("iterate model check indexes %s: %w", table, err)
+			}
+			rows.Close()
+		} else {
+			rows, err := s.db.QueryContext(ctx, "PRAGMA index_list("+table+")")
+			if err != nil {
+				return fmt.Errorf("verify model check indexes %s: %w", table, err)
+			}
+			for rows.Next() {
+				var seq int
+				var name, unique, origin, partial any
+				if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+					rows.Close()
+					return fmt.Errorf("read model check indexes %s: %w", table, err)
+				}
+				if indexName, ok := name.(string); ok {
+					found[indexName] = struct{}{}
+				}
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return fmt.Errorf("iterate model check indexes %s: %w", table, err)
+			}
+			rows.Close()
+		}
+		for _, index := range required {
+			if _, ok := found[index]; !ok {
+				return fmt.Errorf("verify model check schema %s: missing index %s", table, index)
+			}
+		}
+	}
 	return nil
 }
 
@@ -283,6 +376,131 @@ func (s *Store) AppendObservation(ctx context.Context, input ObservationInput) e
 		return fmt.Errorf("commit model check observation: %w", err)
 	}
 	return nil
+}
+
+// ProjectOutcome atomically appends all outcome items and transitions the run
+// to its terminal state. A terminal replay is accepted only when its complete
+// run summary and item set match the stored projection exactly.
+func (s *Store) ProjectOutcome(ctx context.Context, projection OutcomeProjection) error {
+	if err := validateOutcomeProjection(projection); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin model check outcome projection: %w", err)
+	}
+	defer tx.Rollback()
+	var currentStatus, currentLevel, currentMessage, currentResult, currentDecision, startedAt string
+	var currentFinishedAt sql.NullString
+	var currentScore, currentMaxScore int
+	row := tx.QueryRowContext(ctx, s.lockRunQuery(`SELECT status,level,score,max_score,message,started_at,finished_at,result_summary_json,quality_decision_json FROM model_check_runs WHERE id=?`), projection.RunID)
+	if err := row.Scan(&currentStatus, &currentLevel, &currentScore, &currentMaxScore, &currentMessage, &startedAt, &currentFinishedAt, &currentResult, &currentDecision); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("model check run not found")
+		}
+		return fmt.Errorf("read model check run for projection: %w", err)
+	}
+	if currentStatus != string(RunRunning) {
+		if err := s.verifyTerminalProjection(ctx, tx, projection, currentStatus, currentLevel, currentScore, currentMaxScore, currentMessage, currentFinishedAt, currentResult, currentDecision); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	createdAt := projection.FinishedAt.UTC().Format(time.RFC3339Nano)
+	for _, item := range projection.Items {
+		evidence := normalizeJSON(item.EvidenceSummary)
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO model_check_items (id,run_id,item_key,item_type,status,score,max_score,duration_ms,trace_id,evidence_summary_json,error_code,error_message,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), item.ID, projection.RunID, item.ItemKey, item.ItemType, string(item.Status), item.Score, item.MaxScore, item.DurationMS, nullable(item.TraceID), string(evidence), nullable(item.ErrorCode), nullable(item.ErrorMessage), createdAt, createdAt); err != nil {
+			return fmt.Errorf("append model check projected item %s: %w", item.ID, err)
+		}
+	}
+	duration := int64(0)
+	if parsed, parseErr := time.Parse(time.RFC3339Nano, startedAt); parseErr == nil {
+		duration = projection.FinishedAt.Sub(parsed).Milliseconds()
+		if duration < 0 {
+			duration = 0
+		}
+	}
+	result := normalizeJSON(projection.ResultSummary)
+	decision := normalizeJSON(projection.QualityDecision)
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE model_check_runs SET level=?,score=?,max_score=?,status=?,message=?,finished_at=?,duration_ms=?,result_summary_json=?,quality_decision_json=?,updated_at=? WHERE id=? AND status='running'`), projection.Level, projection.Score, projection.MaxScore, string(projection.Status), projection.Message, projection.FinishedAt.UTC().Format(time.RFC3339Nano), duration, string(result), string(decision), createdAt, projection.RunID); err != nil {
+		return fmt.Errorf("finish projected model check run: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) verifyTerminalProjection(ctx context.Context, tx *sql.Tx, projection OutcomeProjection, status, level string, score, maxScore int, message string, finishedAt sql.NullString, result, decision string) error {
+	if !finishedAt.Valid || status != string(projection.Status) || level != projection.Level || score != projection.Score || maxScore != projection.MaxScore || message != projection.Message || finishedAt.String != projection.FinishedAt.UTC().Format(time.RFC3339Nano) || !jsonEqual([]byte(result), projection.ResultSummary) || !jsonEqual([]byte(decision), projection.QualityDecision) {
+		return ErrProjectionConflict
+	}
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id,item_key,item_type,status,score,max_score,duration_ms,trace_id,evidence_summary_json,error_code,error_message FROM model_check_items WHERE run_id=? ORDER BY id`), projection.RunID)
+	if err != nil {
+		return fmt.Errorf("read projected model check items: %w", err)
+	}
+	defer rows.Close()
+	expected := make(map[string]ItemInput, len(projection.Items))
+	for _, item := range projection.Items {
+		expected[item.ID] = item
+	}
+	seen := 0
+	for rows.Next() {
+		var id, key, itemType, itemStatus, traceID, evidence, errorCode, errorMessage sql.NullString
+		var itemScore, itemMax int
+		var duration sql.NullInt64
+		if err := rows.Scan(&id, &key, &itemType, &itemStatus, &itemScore, &itemMax, &duration, &traceID, &evidence, &errorCode, &errorMessage); err != nil {
+			return fmt.Errorf("scan projected model check item: %w", err)
+		}
+		item, ok := expected[id.String]
+		if !ok || item.ItemKey != key.String || item.ItemType != itemType.String || string(item.Status) != itemStatus.String || item.Score != itemScore || item.MaxScore != itemMax || !nullableIntEqual(item.DurationMS, duration) || !nullableStringMatches(item.TraceID, traceID) || !jsonEqual([]byte(evidence.String), normalizeJSON(item.EvidenceSummary)) || !nullableStringMatches(item.ErrorCode, errorCode) || !nullableStringMatches(item.ErrorMessage, errorMessage) {
+			return ErrProjectionConflict
+		}
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate projected model check items: %w", err)
+	}
+	if seen != len(expected) {
+		return ErrProjectionConflict
+	}
+	return nil
+}
+
+func validateOutcomeProjection(projection OutcomeProjection) error {
+	if strings.TrimSpace(projection.RunID) == "" || len(projection.Items) == 0 || (projection.Status != RunCompleted && projection.Status != RunFailed && projection.Status != RunCanceled) || strings.TrimSpace(projection.Level) == "" || projection.Score < 0 || projection.MaxScore < 0 || projection.Score > projection.MaxScore || projection.FinishedAt.IsZero() {
+		return errors.New("model check outcome projection input is invalid")
+	}
+	seen := make(map[string]struct{}, len(projection.Items))
+	for _, item := range projection.Items {
+		if err := validateItemInput(item); err != nil || item.RunID != projection.RunID {
+			return errors.New("model check outcome projection item is invalid")
+		}
+		if _, ok := seen[item.ID]; ok {
+			return errors.New("model check outcome projection contains duplicate item ID")
+		}
+		seen[item.ID] = struct{}{}
+	}
+	return nil
+}
+
+func jsonEqual(left, right []byte) bool {
+	var leftValue, rightValue any
+	if !json.Valid(left) || !json.Valid(right) || json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return false
+	}
+	return reflect.DeepEqual(leftValue, rightValue)
+}
+
+func nullableStringMatches(expected string, actual sql.NullString) bool {
+	if strings.TrimSpace(expected) == "" {
+		return !actual.Valid
+	}
+	return actual.Valid && actual.String == expected
+}
+
+func nullableIntEqual(expected *int64, actual sql.NullInt64) bool {
+	if expected == nil {
+		return !actual.Valid
+	}
+	return actual.Valid && actual.Int64 == *expected
 }
 
 func (s *Store) FinishRun(ctx context.Context, runID string, status RunStatus, level string, score, maxScore int, message string, finishedAt time.Time, resultSummary, qualityDecision json.RawMessage) error {
@@ -440,5 +658,23 @@ CREATE TABLE IF NOT EXISTS model_check_items (id TEXT PRIMARY KEY,run_id TEXT NO
 CREATE TABLE IF NOT EXISTS model_check_observations (id TEXT PRIMARY KEY,run_id TEXT NOT NULL,system_account_id TEXT NOT NULL,account_id TEXT NOT NULL,provider_code TEXT NOT NULL,provider_protocol_profile_id TEXT NOT NULL,endpoint_family TEXT NOT NULL,requested_model TEXT NOT NULL,mapped_upstream_model TEXT NOT NULL,observed_model TEXT,mapping_applied INTEGER NOT NULL DEFAULT 0,upstream_bucket_hmac TEXT NOT NULL,cohort_key_hmac TEXT NOT NULL,population_key_hmac TEXT NOT NULL,probe_key_hmac TEXT NOT NULL,system_fingerprint_hmac TEXT,probe_family TEXT NOT NULL,probe_set_version TEXT NOT NULL,tokenizer_version TEXT NOT NULL,feature_version TEXT NOT NULL DEFAULT 'none',round_index INTEGER NOT NULL,padding_tokens INTEGER NOT NULL,local_input_tokens INTEGER NOT NULL,reported_input_tokens INTEGER,cached_input_tokens INTEGER,constraint_passed INTEGER,feature_1 REAL,feature_2 REAL,feature_3 REAL,feature_4 REAL,feature_5 REAL,feature_6 REAL,feature_7 REAL,feature_8 REAL,observation_status TEXT NOT NULL,identity_status TEXT NOT NULL,mapping_status TEXT NOT NULL,protocol_status TEXT NOT NULL,evidence_coverage INTEGER NOT NULL DEFAULT 0,trace_id TEXT,created_at TEXT NOT NULL,aggregation_completed_at TEXT,FOREIGN KEY(run_id) REFERENCES model_check_runs(id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS idx_model_check_runs_created ON model_check_runs(created_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_created ON model_check_runs(system_account_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_actor_created ON model_check_runs(actor_system_account_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_model_created ON model_check_runs(model,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_level_created ON model_check_runs(level,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_status_created ON model_check_runs(status,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_target_created ON model_check_runs(target_type,target_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_account_created ON model_check_runs(account_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_trigger_created ON model_check_runs(trigger_kind,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_quality_health_sync_retry ON model_check_runs(quality_health_sync_status,updated_at,id) WHERE quality_health_sync_status='failed';
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_model_created ON model_check_runs(system_account_id,model,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_level_created ON model_check_runs(system_account_id,level,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_status_created ON model_check_runs(system_account_id,status,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_target_created ON model_check_runs(system_account_id,target_type,target_id,created_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS idx_model_check_items_run_order ON model_check_items(run_id,created_at,id);
-CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending ON model_check_observations(created_at,id) WHERE aggregation_completed_at IS NULL;`
+CREATE INDEX IF NOT EXISTS idx_model_check_items_run_key ON model_check_items(run_id,item_key,id);
+CREATE INDEX IF NOT EXISTS idx_model_check_items_run_status ON model_check_items(run_id,status,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_model_check_observations_cursor ON model_check_observations(created_at,id);
+CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON model_check_observations(created_at,id) WHERE aggregation_completed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_model_check_observations_account_model ON model_check_observations(system_account_id,account_id,requested_model,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_model_check_observations_cohort ON model_check_observations(cohort_key_hmac,mapped_upstream_model,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_model_check_observations_population ON model_check_observations(population_key_hmac,requested_model,probe_family,created_at,id);`

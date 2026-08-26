@@ -3,6 +3,7 @@ package modelcheckstore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -79,6 +80,58 @@ func TestInvalidJSONIsNeutralizedAndDuplicateItemIDIsRejected(t *testing.T) {
 	}
 }
 
+func TestProjectOutcomeIsAtomicAndTerminalReplayIsStrict(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	finished := started.Add(2 * time.Second)
+	if err := store.CreateRun(ctx, RunInput{ID: "project-run", SystemAccountID: "sys", ActorSystemAccountID: "actor", ProviderCode: "openai", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", Trigger: TriggerManual, ProbeSetVersion: "v1", StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	projection := OutcomeProjection{
+		RunID: "project-run", Status: RunCompleted, Level: "likely", Score: 18, MaxScore: 20, Message: "完成",
+		FinishedAt: finished, ResultSummary: []byte(`{"items":2}`), QualityDecision: []byte(`{"enforcement":"none"}`),
+		Items: []ItemInput{
+			{ID: "project-item-a", RunID: "project-run", ItemKey: "basic", ItemType: "responses_basic", Status: ItemPassed, Score: 10, MaxScore: 10, DurationMS: ptrInt64(100), EvidenceSummary: []byte(`{"ok":true}`)},
+			{ID: "project-item-b", RunID: "project-run", ItemKey: "structured", ItemType: "structured_output", Status: ItemWarning, Score: 8, MaxScore: 10, DurationMS: ptrInt64(200), ErrorMessage: "证据不足"},
+		},
+	}
+	if err := store.ProjectOutcome(ctx, projection); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id='project-run'`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("projected item count=%d err=%v", count, err)
+	}
+	if err := store.ProjectOutcome(ctx, projection); err != nil {
+		t.Fatalf("identical terminal replay must be idempotent: %v", err)
+	}
+	conflict := projection
+	conflict.Score = 19
+	if err := store.ProjectOutcome(ctx, conflict); !errors.Is(err, ErrProjectionConflict) {
+		t.Fatalf("different terminal replay must fail closed, err=%v", err)
+	}
+	bad := projection
+	bad.RunID = "project-run"
+	bad.Items = append([]ItemInput{{ID: "project-item-c", RunID: "project-run", ItemKey: "new", ItemType: "new", Status: ItemPassed, Score: 1, MaxScore: 1}}, bad.Items...)
+	if err := store.ProjectOutcome(ctx, bad); !errors.Is(err, ErrProjectionConflict) {
+		t.Fatalf("terminal item-set drift must fail closed, err=%v", err)
+	}
+}
+
+func ptrInt64(value int64) *int64 { return &value }
+
 func TestPostgresBindQualifiesTablesAndNumbersPlaceholders(t *testing.T) {
 	store := &Store{mode: StorePostgres}
 	got := store.bind("SELECT * FROM model_check_runs WHERE id=? AND status=?")
@@ -94,6 +147,28 @@ func TestPostgresRunStateQueriesTakeARowLock(t *testing.T) {
 	want := "SELECT status FROM juhe_dataset.model_check_runs WHERE id=$1 FOR UPDATE"
 	if got != want {
 		t.Fatalf("lock query=%q want=%q", got, want)
+	}
+}
+
+func TestCheckSchemaRejectsMissingRequiredSQLiteIndex(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX idx_model_check_items_run_key`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckSchema(ctx); err == nil || !strings.Contains(err.Error(), "missing index idx_model_check_items_run_key") {
+		t.Fatalf("missing index must fail closed, err=%v", err)
 	}
 }
 
@@ -157,6 +232,59 @@ func TestPostgresModelCheckWriterSmoke(t *testing.T) {
 	var status string
 	if err := store.db.QueryRowContext(ctx, `SELECT status FROM juhe_dataset.model_check_runs WHERE id=$1`, runID).Scan(&status); err != nil || status != string(RunCompleted) {
 		t.Fatalf("completed J3b PostgreSQL run status=%q err=%v", status, err)
+	}
+}
+
+func TestPostgresModelCheckAtomicProjectionSmoke(t *testing.T) {
+	if os.Getenv("J3B_MODEL_CHECK_POSTGRES_SMOKE") != "1" {
+		t.Skip("set J3B_MODEL_CHECK_POSTGRES_SMOKE=1 to verify the configured development PostgreSQL atomic projector")
+	}
+	dsn := strings.TrimSpace(os.Getenv("JUHE_AI_MODEL_CHECK_POSTGRES_URL"))
+	if dsn == "" {
+		t.Fatal("JUHE_AI_MODEL_CHECK_POSTGRES_URL is required for the opt-in smoke")
+	}
+	store, err := OpenPostgres(dsn, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := store.CheckSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC().Truncate(time.Microsecond)
+	runID := "j3b-pg-project-" + started.Format("20060102150405.000000")
+	defer func() {
+		if _, cleanupErr := store.db.ExecContext(context.Background(), `DELETE FROM juhe_dataset.model_check_runs WHERE id=$1`, runID); cleanupErr != nil {
+			t.Errorf("cleanup J3b PostgreSQL atomic projector run: %v", cleanupErr)
+		}
+	}()
+	if err := store.CreateRun(ctx, RunInput{ID: runID, SystemAccountID: "j3b-project-system", ActorSystemAccountID: "j3b-project-actor", ProviderCode: "openai", TargetType: "account", TargetID: "j3b-project-account", Model: "gpt-5.6-sol", Profile: "quick", Trigger: TriggerManual, ProbeSetVersion: "j3b-project-v1", StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	finished := started.Add(1500 * time.Millisecond)
+	projection := OutcomeProjection{RunID: runID, Items: []ItemInput{{ID: runID + "-item", RunID: runID, ItemKey: "basic", ItemType: "responses_basic", Status: ItemPassed, Score: 10, MaxScore: 10, EvidenceSummary: []byte(`{"ok":true}`)}}, Status: RunCompleted, Level: "likely", Score: 10, MaxScore: 10, Message: "smoke", FinishedAt: finished, ResultSummary: []byte(`{"items":1}`), QualityDecision: []byte(`{"enforcement":"none"}`)}
+	if err := store.ProjectOutcome(ctx, projection); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProjectOutcome(ctx, projection); err != nil {
+		t.Fatalf("identical PostgreSQL terminal replay must be idempotent: %v", err)
+	}
+	conflict := projection
+	conflict.Score = 9
+	if err := store.ProjectOutcome(ctx, conflict); !errors.Is(err, ErrProjectionConflict) {
+		t.Fatalf("different PostgreSQL terminal replay must fail closed, err=%v", err)
+	}
+	var runCount, itemCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM juhe_dataset.model_check_runs WHERE id=$1`, runID).Scan(&runCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM juhe_dataset.model_check_items WHERE run_id=$1`, runID).Scan(&itemCount); err != nil {
+		t.Fatal(err)
+	}
+	if runCount != 1 || itemCount != 1 {
+		t.Fatalf("atomic PostgreSQL projection counts run=%d item=%d", runCount, itemCount)
 	}
 }
 

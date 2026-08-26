@@ -93,6 +93,23 @@ func TestSQLiteIssueClaimFenceAndOutcomeReplay(t *testing.T) {
 	if err := store.CommitOutcome(ctx, wrongOutcomeID, newClaim, now.Add(2*time.Minute+4*time.Second)); !errors.Is(err, ErrOutcomeConflict) {
 		t.Fatalf("outcome ID replay err=%v", err)
 	}
+	listed, err := store.ListCommittedOutcomes(ctx, OutcomeCursor{}, 10)
+	if err != nil || len(listed) != 1 || listed[0].Outcome.OutcomeID != "outcome-b" || listed[0].Input.InputID != first.Input.InputID {
+		t.Fatalf("committed outcome list=%#v err=%v", listed, err)
+	}
+	found, ok, err := store.FindCommittedOutcome(ctx, "outcome-b")
+	if err != nil || !ok || found.Outcome.PayloadDigest == "" {
+		t.Fatalf("committed outcome find=%#v ok=%v err=%v", found, ok, err)
+	}
+	if _, err := store.ListCommittedOutcomes(ctx, OutcomeCursor{OutcomeID: "outcome-b"}, 10); err == nil {
+		t.Fatal("incomplete outcome cursor must be rejected")
+	}
+	if _, err := store.db.Exec(`UPDATE model_check_outcomes SET payload = ? WHERE outcome_id = ?`, []byte(`{"tampered":true}`), "outcome-b"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ListCommittedOutcomes(ctx, OutcomeCursor{}, 10); !errors.Is(err, ErrOutcomeTampered) {
+		t.Fatalf("tampered outcome must fail closed, err=%v", err)
+	}
 }
 
 func TestSQLiteIssueRejectsInputIDReuseWithDifferentImmutableInput(t *testing.T) {
@@ -113,6 +130,37 @@ func TestSQLiteIssueRejectsInputIDReuseWithDifferentImmutableInput(t *testing.T)
 	reused.Target.ConfigRevision = "config-revision-2"
 	if _, err := store.Issue(ctx, reused); err == nil || !strings.Contains(err.Error(), "already bound") {
 		t.Fatalf("input ID reuse err=%v", err)
+	}
+}
+
+func TestSQLiteReleaseClaimPreservesFenceForTakeover(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "release.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 26, 11, 0, 0, 0, time.UTC)
+	issued, err := store.Issue(ctx, validDraft(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Claim(ctx, issued.Input.InputID, "owner-a", "claim-a", "outcome-a", now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReleaseClaim(ctx, first, now); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Claim(ctx, issued.Input.InputID, "owner-b", "claim-b", "outcome-b", now, time.Minute)
+	if err != nil || second.FenceToken != first.FenceToken+1 {
+		t.Fatalf("takeover after release=%#v err=%v", second, err)
+	}
+	if err := store.ReleaseClaim(ctx, first, now); !errors.Is(err, ErrStaleFence) {
+		t.Fatalf("stale release err=%v", err)
 	}
 }
 
@@ -137,6 +185,26 @@ func TestPostgresModelCheckDurableSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		for _, statement := range []string{
+			`DELETE FROM juhe_jobs.model_check_outcomes WHERE input_id=$1`,
+			`DELETE FROM juhe_jobs.model_check_execution_claims WHERE input_id=$1`,
+			`DELETE FROM juhe_jobs.model_check_inputs WHERE input_id=$1`,
+			`DELETE FROM juhe_jobs.model_check_input_versions WHERE identity_key=$1 AND NOT EXISTS (SELECT 1 FROM juhe_jobs.model_check_inputs WHERE identity_key=$1)`,
+		} {
+			var args []any
+			if strings.Contains(statement, "identity_key") {
+				args = []any{issued.IdentityKey}
+			} else {
+				args = []any{issued.Input.InputID}
+			}
+			if _, cleanupErr := store.db.ExecContext(cleanupCtx, statement, args...); cleanupErr != nil {
+				t.Errorf("cleanup durable PostgreSQL smoke: %v", cleanupErr)
+			}
+		}
+	}()
 	if _, err := store.LoadInput(ctx, issued.Input.InputID, now); err != nil {
 		t.Fatal(err)
 	}
@@ -173,6 +241,14 @@ func TestPostgresModelCheckDurableSmoke(t *testing.T) {
 	}
 	if err := store.CommitOutcome(ctx, commit, claim, now.Add(2*time.Minute)); err != nil {
 		t.Fatalf("idempotent postgres replay: %v", err)
+	}
+	listed, err := store.ListCommittedOutcomes(ctx, OutcomeCursor{}, 10)
+	if err != nil || len(listed) != 1 || listed[0].Outcome.OutcomeID != claim.OutcomeID {
+		t.Fatalf("PostgreSQL committed outcome list=%#v err=%v", listed, err)
+	}
+	found, ok, err := store.FindCommittedOutcome(ctx, claim.OutcomeID)
+	if err != nil || !ok || found.Input.InputID != issued.Input.InputID {
+		t.Fatalf("PostgreSQL committed outcome find=%#v ok=%v err=%v", found, ok, err)
 	}
 }
 

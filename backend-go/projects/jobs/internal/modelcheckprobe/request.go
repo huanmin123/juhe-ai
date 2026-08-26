@@ -107,7 +107,7 @@ func BuildStructured(protocol modelcheckprofile.Protocol, model string, stream b
 	if err := json.Unmarshal(request.Body, &payload); err != nil {
 		return Request{}, err
 	}
-	schema := map[string]any{"type": "object", "properties": map[string]any{"status": map[string]any{"type": "string"}, "value": map[string]any{"type": "integer"}}, "required": []string{"status", "value"}}
+	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"status": map[string]any{"type": "string", "enum": []string{"ok"}}, "value": map[string]any{"type": "integer"}}, "required": []string{"status", "value"}}
 	switch protocol {
 	case modelcheckprofile.ProtocolOpenAIResponses:
 		payload["text"] = map[string]any{"format": map[string]any{"type": "json_schema", "name": "model_check_structured_output", "strict": true, "schema": schema}}
@@ -133,10 +133,10 @@ func BuildTool(protocol modelcheckprofile.Protocol, model string, stream bool) (
 	if err := json.Unmarshal(request.Body, &payload); err != nil {
 		return Request{}, err
 	}
-	parameters := map[string]any{"type": "object", "properties": map[string]any{"code": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer"}}, "required": []string{"code", "count"}}
+	parameters := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"code": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer"}}, "required": []string{"code", "count"}}
 	switch protocol {
 	case modelcheckprofile.ProtocolOpenAIResponses:
-		payload["tools"] = []any{map[string]any{"type": "function", "name": "record_model_check", "description": "Record a model check marker.", "parameters": parameters, "strict": true}}
+		payload["tools"] = []any{map[string]any{"type": "function", "name": "record_model_check", "description": "Record a model check marker.", "parameters": parameters}}
 		payload["tool_choice"] = map[string]any{"type": "function", "name": "record_model_check"}
 	case modelcheckprofile.ProtocolOpenAIChat:
 		payload["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{"name": "record_model_check", "description": "Record a model check marker.", "parameters": parameters}}}

@@ -33,6 +33,7 @@ var (
 	ErrClaimConflict   = errors.New("model check claim conflicts with active claim")
 	ErrOutcomeConflict = errors.New("model check outcome conflicts with existing outcome")
 	ErrInputTampered   = errors.New("stored model check input failed integrity verification")
+	ErrOutcomeTampered = errors.New("stored model check outcome failed integrity verification")
 )
 
 type Store struct {
@@ -55,6 +56,19 @@ type Outcome struct {
 	Payload                         json.RawMessage
 	PayloadDigest                   string
 	Committed                       bool
+}
+
+// OutcomeCursor is the stable replay position for committed outcomes. The
+// outcome ID breaks ties when multiple commits share the same timestamp.
+type OutcomeCursor struct {
+	StoredAt  time.Time
+	OutcomeID string
+}
+
+type StoredOutcome struct {
+	Outcome     Outcome
+	Input       modelcheckinput.IssuedInput
+	IdentityKey string
 }
 
 func OpenSQLite(path string) (*Store, error) {
@@ -288,21 +302,54 @@ func (s *Store) Claim(ctx context.Context, inputID, ownerID, claimToken, outcome
 	return c, nil
 }
 
-func (s *Store) CommitOutcome(ctx context.Context, outcome Outcome, claim Claim, now time.Time) error {
-	if outcome.InputID == "" || outcome.OutcomeID == "" || claim.InputID != outcome.InputID || claim.ClaimToken == "" || outcome.InputDigest == "" || len(outcome.Payload) == 0 || !json.Valid(outcome.Payload) {
-		return errors.New("invalid model check outcome")
+// ReleaseClaim makes a claimed input immediately available for takeover while
+// retaining its fence row. Retaining the row is essential: a later claimant
+// must receive a strictly newer fence token so an old worker cannot commit.
+func (s *Store) ReleaseClaim(ctx context.Context, claim Claim, now time.Time) error {
+	if s == nil || s.db == nil || claim.InputID == "" || claim.ClaimToken == "" || claim.OwnerID == "" || claim.OutcomeID == "" || claim.FenceToken < 1 || now.IsZero() {
+		return errors.New("invalid model check claim release")
 	}
-	sum := sha256.Sum256(outcome.Payload)
-	digest := hex.EncodeToString(sum[:])
-	if outcome.PayloadDigest != "" && outcome.PayloadDigest != digest {
-		return errors.New("model check outcome payload digest mismatch")
-	}
-	outcome.PayloadDigest = digest
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("model_check_execution_claims")+" SET claim_until=?,updated_at=? WHERE input_id=? AND claim_token=? AND owner_id=? AND outcome_id=? AND fence_token=?"), s.timeValue(now), s.timeValue(now), claim.InputID, claim.ClaimToken, claim.OwnerID, claim.OutcomeID, claim.FenceToken)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected != 1 {
+		return ErrStaleFence
+	}
+	return tx.Commit()
+}
+
+func (s *Store) CommitOutcome(ctx context.Context, outcome Outcome, claim Claim, now time.Time) error {
+	if outcome.InputID == "" || outcome.OutcomeID == "" || claim.InputID != outcome.InputID || claim.ClaimToken == "" || outcome.InputDigest == "" || len(outcome.Payload) == 0 || !json.Valid(outcome.Payload) {
+		return errors.New("invalid model check outcome")
+	}
+	rawSum := sha256.Sum256(outcome.Payload)
+	rawDigest := hex.EncodeToString(rawSum[:])
+	if outcome.PayloadDigest != "" && outcome.PayloadDigest != rawDigest {
+		return errors.New("model check outcome payload digest mismatch")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// PostgreSQL JSONB has a canonical text representation (including sorted
+	// object keys) that can differ from the caller's JSON byte order. Persist
+	// and digest that representation so a later replay observes the exact same
+	// bytes. SQLite stores JSON as text and therefore keeps the original bytes.
+	storedPayload, err := s.canonicalOutcomePayload(ctx, tx, outcome.Payload)
+	if err != nil {
+		return err
+	}
+	storedSum := sha256.Sum256(storedPayload)
+	outcome.PayloadDigest = hex.EncodeToString(storedSum[:])
 	var inputDigest string
 	if err := tx.QueryRowContext(ctx, s.lock("SELECT input_digest FROM "+s.table("model_check_inputs")+" WHERE input_id=?"), outcome.InputID).Scan(&inputDigest); err != nil {
 		return err
@@ -349,11 +396,125 @@ func (s *Store) CommitOutcome(ctx context.Context, outcome Outcome, claim Claim,
 	if s.mode == Postgres {
 		committed = true
 	}
-	_, err = tx.ExecContext(ctx, s.bind("INSERT INTO "+s.table("model_check_outcomes")+"(outcome_id,input_id,input_digest,fence_token,observed_at,stored_at,payload,payload_digest,committed) VALUES(?,?,?,?,?,?,?,?,?)"), outcome.OutcomeID, outcome.InputID, outcome.InputDigest, outcome.FenceToken, s.timeValue(outcome.ObservedAt), s.timeValue(outcome.StoredAt), outcome.Payload, outcome.PayloadDigest, committed)
+	_, err = tx.ExecContext(ctx, s.bind("INSERT INTO "+s.table("model_check_outcomes")+"(outcome_id,input_id,input_digest,fence_token,observed_at,stored_at,payload,payload_digest,committed) VALUES(?,?,?,?,?,?,?,?,?)"), outcome.OutcomeID, outcome.InputID, outcome.InputDigest, outcome.FenceToken, s.timeValue(outcome.ObservedAt), s.timeValue(outcome.StoredAt), storedPayload, outcome.PayloadDigest, committed)
 	if err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) canonicalOutcomePayload(ctx context.Context, tx *sql.Tx, payload []byte) ([]byte, error) {
+	if s.mode != Postgres {
+		return payload, nil
+	}
+	var canonical string
+	if err := tx.QueryRowContext(ctx, s.bind("SELECT ?::jsonb::text"), string(payload)).Scan(&canonical); err != nil {
+		return nil, fmt.Errorf("canonicalize model check outcome payload: %w", err)
+	}
+	if !json.Valid([]byte(canonical)) {
+		return nil, errors.New("canonical model check outcome payload is invalid")
+	}
+	return []byte(canonical), nil
+}
+
+// ListCommittedOutcomes returns immutable, integrity-checked outcomes after a
+// cursor. It is read-only and deliberately joins the exact issued input so a
+// projector never has to trust an unbound payload or call another service.
+func (s *Store) ListCommittedOutcomes(ctx context.Context, cursor OutcomeCursor, limit int) ([]StoredOutcome, error) {
+	if s == nil || s.db == nil || limit <= 0 || limit > 10000 {
+		return nil, errors.New("invalid model check outcome cursor or limit")
+	}
+	query := "SELECT o.outcome_id,o.input_id,o.input_digest,o.fence_token,o.observed_at,o.stored_at,o.payload,o.payload_digest,i.identity_key,i.payload FROM " + s.table("model_check_outcomes") + " o JOIN " + s.table("model_check_inputs") + " i ON i.input_id=o.input_id WHERE o.committed=" + s.committedLiteral()
+	args := make([]any, 0, 3)
+	if !cursor.StoredAt.IsZero() || cursor.OutcomeID != "" {
+		if cursor.StoredAt.IsZero() || strings.TrimSpace(cursor.OutcomeID) == "" {
+			return nil, errors.New("model check outcome cursor is incomplete")
+		}
+		query += " AND (o.stored_at>? OR (o.stored_at=? AND o.outcome_id>?))"
+		args = append(args, s.timeValue(cursor.StoredAt), s.timeValue(cursor.StoredAt), cursor.OutcomeID)
+	}
+	query += " ORDER BY o.stored_at ASC,o.outcome_id ASC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list committed model check outcomes: %w", err)
+	}
+	defer rows.Close()
+	result := make([]StoredOutcome, 0, limit)
+	for rows.Next() {
+		stored, err := s.scanStoredOutcome(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, stored)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate committed model check outcomes: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Store) FindCommittedOutcome(ctx context.Context, outcomeID string) (StoredOutcome, bool, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(outcomeID) == "" {
+		return StoredOutcome{}, false, errors.New("model check outcome ID is required")
+	}
+	query := "SELECT o.outcome_id,o.input_id,o.input_digest,o.fence_token,o.observed_at,o.stored_at,o.payload,o.payload_digest,i.identity_key,i.payload FROM " + s.table("model_check_outcomes") + " o JOIN " + s.table("model_check_inputs") + " i ON i.input_id=o.input_id WHERE o.committed=" + s.committedLiteral() + " AND o.outcome_id=?"
+	row := s.db.QueryRowContext(ctx, s.bind(query), outcomeID)
+	stored, err := s.scanStoredOutcome(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StoredOutcome{}, false, nil
+	}
+	if err != nil {
+		return StoredOutcome{}, false, err
+	}
+	return stored, true, nil
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func (s *Store) scanStoredOutcome(row rowScanner) (StoredOutcome, error) {
+	var stored StoredOutcome
+	var observedRaw, storedRaw any
+	var outcomePayload, inputPayload []byte
+	if err := row.Scan(&stored.Outcome.OutcomeID, &stored.Outcome.InputID, &stored.Outcome.InputDigest, &stored.Outcome.FenceToken, &observedRaw, &storedRaw, &outcomePayload, &stored.Outcome.PayloadDigest, &stored.IdentityKey, &inputPayload); err != nil {
+		return StoredOutcome{}, err
+	}
+	var err error
+	if stored.Outcome.ObservedAt, err = s.readTime(observedRaw); err != nil {
+		return StoredOutcome{}, ErrOutcomeTampered
+	}
+	if stored.Outcome.StoredAt, err = s.readTime(storedRaw); err != nil {
+		return StoredOutcome{}, ErrOutcomeTampered
+	}
+	if !json.Valid(outcomePayload) {
+		return StoredOutcome{}, ErrOutcomeTampered
+	}
+	checksum := sha256.Sum256(outcomePayload)
+	if hex.EncodeToString(checksum[:]) != stored.Outcome.PayloadDigest {
+		return StoredOutcome{}, ErrOutcomeTampered
+	}
+	stored.Outcome.Payload = append(json.RawMessage(nil), outcomePayload...)
+	if json.Unmarshal(inputPayload, &stored.Input) != nil || stored.Input.Verify() != nil || stored.Input.InputID != stored.Outcome.InputID || stored.Input.InputDigest != stored.Outcome.InputDigest {
+		return StoredOutcome{}, ErrInputTampered
+	}
+	if stored.IdentityKey == "" {
+		return StoredOutcome{}, ErrInputTampered
+	}
+	identity, err := stored.Input.IdentityKey()
+	if err != nil || identity != stored.IdentityKey {
+		return StoredOutcome{}, ErrInputTampered
+	}
+	stored.Outcome.Committed = true
+	return stored, nil
+}
+
+func (s *Store) committedLiteral() string {
+	if s.mode == Postgres {
+		return "TRUE"
+	}
+	return "1"
 }
 
 func (s *Store) table(name string) string {

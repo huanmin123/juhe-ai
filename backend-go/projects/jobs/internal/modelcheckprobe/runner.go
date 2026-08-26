@@ -19,6 +19,8 @@ type BasicProbeInput struct {
 	Headers          http.Header
 	Timeout          time.Duration
 	MaxResponseBytes int64
+	ModelLimit       int
+	CountTokens      func(string) int
 }
 
 // RunBasicProbe is the first jobs-owned network-to-score composition. It does
@@ -42,6 +44,30 @@ func RunBasicProbeWithRetry(ctx context.Context, input BasicProbeInput, retry Re
 	}
 	result, transportErr := ExecuteWithRetry(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}, retry)
 	return evaluateBasicResult(result, transportErr, input), nil
+}
+
+func RunStructuredProbe(ctx context.Context, input BasicProbeInput, retry RetryOptions) (EvaluationItem, error) {
+	request, err := BuildStructured(input.Protocol, input.Model, input.Stream)
+	if err != nil {
+		return EvaluationItem{}, err
+	}
+	result, transportErr := ExecuteWithRetry(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}, retry)
+	if transportErr != nil && result.Response.ErrorMessage == "" {
+		result.Response.ErrorMessage = "模型检测 transport 失败"
+	}
+	return EvaluateStructuredOutput(result, input.Model, "target"), nil
+}
+
+func RunToolProbe(ctx context.Context, input BasicProbeInput, retry RetryOptions) (EvaluationItem, error) {
+	request, err := BuildTool(input.Protocol, input.Model, input.Stream)
+	if err != nil {
+		return EvaluationItem{}, err
+	}
+	result, transportErr := ExecuteWithRetry(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}, retry)
+	if transportErr != nil && result.Response.ErrorMessage == "" {
+		result.Response.ErrorMessage = "模型检测 transport 失败"
+	}
+	return EvaluateToolCalling(result, input.Model, "target"), nil
 }
 
 func evaluateBasicResult(result ProbeResult, transportErr error, input BasicProbeInput) EvaluationItem {
