@@ -13,19 +13,19 @@ import (
 )
 
 const (
-	defaultScanInterval           = time.Minute
+	defaultScanInterval           = 5 * time.Second
 	defaultOwnerLease             = 90 * time.Second
 	defaultProbeTimeout           = 65 * time.Second
 	defaultMaxResponseBytes       = int64(256 * 1024)
-	defaultInputTTL               = 24 * time.Hour
-	defaultDirectInputLimit       = 256
-	defaultPostgresPoolSize       = 1000
+	defaultInputTTL               = 15 * time.Minute
+	defaultDirectInputLimit       = 1024
+	defaultPostgresPoolSize       = 5096
 	defaultSQLiteConcurrency      = 4
 	defaultPerformanceConcurrency = 64
-	defaultPostgresConcurrency    = 256
+	defaultPostgresConcurrency    = 1024
 	minJ1Concurrency              = 4
-	maxJ1Concurrency              = 256
-	maxJ1Capacity                 = 1000
+	maxJ1Concurrency              = 1024
+	maxJ1Capacity                 = 1024
 )
 
 // Config is deliberately opt-in.  A release cannot accidentally claim J1
@@ -79,12 +79,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL")
 	}
 	if mode == StorePostgres {
-		if cfg.Store.PostgresMaxOpenConns, err = configPositiveIntAny(getenv, defaultPostgresPoolSize,
-			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_POOL_MAX", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_POOL_SIZE", "JUHE_AI_ACCOUNT_HEALTH_STORE_POSTGRES_MAX_OPEN_CONNS", "JUHE_AI_ACCOUNT_HEALTH_STORE_POSTGRES_POOL_SIZE"); err != nil {
+		if cfg.Store.PostgresMaxOpenConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS", defaultPostgresPoolSize); err != nil {
 			return Config{}, err
 		}
-		if cfg.Store.PostgresMaxIdleConns, err = configPositiveIntAny(getenv, defaultPostgresPoolSize,
-			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_POOL_IDLE_MAX", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_POOL_SIZE", "JUHE_AI_ACCOUNT_HEALTH_STORE_POSTGRES_MAX_IDLE_CONNS", "JUHE_AI_ACCOUNT_HEALTH_STORE_POSTGRES_POOL_SIZE"); err != nil {
+		if cfg.Store.PostgresMaxIdleConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS", defaultPostgresPoolSize); err != nil {
 			return Config{}, err
 		}
 	}
@@ -115,12 +113,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if cfg.BusinessPostgresURL == "" {
 			return Config{}, errors.New("postgres direct input 缺少 JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL")
 		}
-		if cfg.DirectInputPostgresMaxOpenConns, err = configPositiveIntAny(getenv, defaultPostgresPoolSize,
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_POOL_MAX", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_POOL_SIZE", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_POSTGRES_MAX_OPEN_CONNS", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_POSTGRES_POOL_SIZE"); err != nil {
+		if cfg.DirectInputPostgresMaxOpenConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS", defaultPostgresPoolSize); err != nil {
 			return Config{}, err
 		}
-		if cfg.DirectInputPostgresMaxIdleConns, err = configPositiveIntAny(getenv, defaultPostgresPoolSize,
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_POOL_IDLE_MAX", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_POOL_SIZE", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_POSTGRES_MAX_IDLE_CONNS", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_POSTGRES_POOL_SIZE"); err != nil {
+		if cfg.DirectInputPostgresMaxIdleConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS", defaultPostgresPoolSize); err != nil {
 			return Config{}, err
 		}
 	}
@@ -242,28 +238,16 @@ func configInt(getenv func(string) string, name string, fallback, minimum, maxim
 	return parsed, nil
 }
 
-func configIntAny(getenv func(string) string, fallback, minimum, maximum int, names ...string) (int, error) {
-	for _, name := range names {
-		if strings.TrimSpace(getenv(name)) != "" {
-			return configInt(getenv, name, fallback, minimum, maximum)
-		}
+func configPositiveInt(getenv func(string) string, name string, fallback int) (int, error) {
+	value := strings.TrimSpace(getenv(name))
+	if value == "" {
+		return fallback, nil
 	}
-	return fallback, nil
-}
-
-func configPositiveIntAny(getenv func(string) string, fallback int, names ...string) (int, error) {
-	for _, name := range names {
-		if strings.TrimSpace(getenv(name)) == "" {
-			continue
-		}
-		value := strings.TrimSpace(getenv(name))
-		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed < 1 {
-			return 0, fmt.Errorf("%s 必须是正整数", name)
-		}
-		return parsed, nil
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0, fmt.Errorf("%s 必须是正整数", name)
 	}
-	return fallback, nil
+	return parsed, nil
 }
 
 func configInt64(getenv func(string) string, name string, fallback, minimum, maximum int64) (int64, error) {

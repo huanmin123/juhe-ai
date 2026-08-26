@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	defaultAccountBalanceConcurrency       = 1000
-	defaultAccountBalanceBatchSize         = 1000
-	defaultAccountBalanceRecoveryBatchSize = 100
+	defaultAccountBalanceConcurrency       = 1024
+	defaultAccountBalanceBatchSize         = 1024
+	defaultAccountBalanceRecoveryBatchSize = 1024
 	maxAccountBalanceWorkItems             = 1_000_000
 )
 
@@ -70,16 +70,16 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL")
 	}
 	var err error
-	if cfg.PostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+	if cfg.PostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.PostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+	if cfg.PostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+	if cfg.InputPostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+	if cfg.InputPostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL"))
@@ -94,7 +94,7 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if len(cfg.ManualHTTPSecret) < 32 {
 		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET 至少需要 32 个字符")
 	}
-	if cfg.ScanInterval, err = runtimeDuration(getenv, "JUHE_AI_ACCOUNT_BALANCE_SCAN_INTERVAL", time.Minute, 5*time.Second); err != nil {
+	if cfg.ScanInterval, err = runtimeDuration(getenv, "JUHE_AI_ACCOUNT_BALANCE_SCAN_INTERVAL", 5*time.Second, 5*time.Second); err != nil {
 		return RuntimeConfig{}, err
 	}
 	if cfg.OwnerLease, err = runtimeDuration(getenv, "JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE", 5*time.Minute, 15*time.Second); err != nil {

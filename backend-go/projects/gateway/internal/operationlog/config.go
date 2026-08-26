@@ -41,8 +41,8 @@ const defaultInputMaxBytes int64 = 4 << 20
 const (
 	defaultOwnerLease        = 30 * time.Second
 	defaultRetentionInterval = time.Minute
-	defaultRetentionBatch    = 1000
-	defaultPostgresPoolSize  = 1000
+	defaultRetentionBatch    = 10000
+	defaultPostgresPoolSize  = 5096
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -55,9 +55,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("F4 operation log store and input listener must be configured together")
 	}
 	postgresURL := strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_POSTGRES_URL"))
-	if postgresURL == "" {
-		postgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-	}
 	ownerLease, err := durationOrDefault("JUHE_AI_OPERATION_LOG_OWNER_LEASE", getenv("JUHE_AI_OPERATION_LOG_OWNER_LEASE"), defaultOwnerLease)
 	if err != nil || ownerLease < 5*time.Second {
 		return Config{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_OWNER_LEASE must be a duration of at least 5s")
@@ -105,7 +102,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 	}
 	if cfg.Mode == ModePostgres && cfg.PostgresURL == "" {
-		return Config{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_POSTGRES_URL or JUHE_AI_POSTGRES_URL is required for postgres")
+		return Config{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_POSTGRES_URL is required for postgres")
 	}
 	return cfg, nil
 }

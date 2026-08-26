@@ -41,7 +41,7 @@ func TestLoadRuntimeConfigUsesGoHighThroughputDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.InputLimit != 10_000 || cfg.BatchSize != 1_000 || cfg.CandidatePoolFactor != 10 || cfg.WorkerConcurrency != 1_000 {
+	if cfg.InputLimit != 10_000 || cfg.BatchSize != 1_024 || cfg.CandidatePoolFactor != 100 || cfg.WorkerConcurrency != 1_024 {
 		t.Fatalf("unexpected Go high-throughput scheduler defaults: %+v", cfg)
 	}
 }

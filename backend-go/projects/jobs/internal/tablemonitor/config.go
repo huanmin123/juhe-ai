@@ -19,10 +19,10 @@ const (
 	defaultMaxTables                 = 256
 	defaultMaxConcurrentSources      = 4
 	defaultPerformanceSources        = 64
-	defaultPostgresConcurrentSources = 256
+	defaultPostgresConcurrentSources = 1024
 	defaultRetentionBatchSize        = 1000
 	defaultRetentionMaxBatches       = 1000
-	defaultPostgresPoolSize          = 1000
+	defaultPostgresPoolSize          = 5096
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -30,9 +30,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if instanceID == "" {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_INSTANCE_ID 是必填配置")
 	}
-	configuredMode := strings.TrimSpace(firstNonEmpty(getenv("JUHE_AI_TABLE_MONITOR_STORE"), getenv("JUHE_AI_DATABASE_DRIVER")))
+	configuredMode := strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_STORE"))
 	if configuredMode == "" {
-		return Config{}, fmt.Errorf("必须设置 JUHE_AI_TABLE_MONITOR_STORE 或 JUHE_AI_DATABASE_DRIVER")
+		return Config{}, fmt.Errorf("必须设置 JUHE_AI_TABLE_MONITOR_STORE")
 	}
 	mode := Mode(strings.ToLower(configuredMode))
 	if mode != ModeSQLite && mode != ModePostgres {
@@ -64,7 +64,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	} else if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_MODE")), "performance") {
 		concurrencyDefault = defaultPerformanceSources
 	}
-	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), concurrencyDefault, 4, 256)
+	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), concurrencyDefault, 4, 1024)
 	if err != nil {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES 无效: %w", err)
 	}
@@ -86,7 +86,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		UsageCatalogPath:     strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH")),
 		StatsPath:            strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH")),
 		CodexShardRoot:       strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
-		PostgresURL:          firstNonEmpty(getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL")),
+		PostgresURL:          strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_URL")),
 		PostgresMaxOpenConns: 0,
 		PostgresMaxIdleConns: 0,
 		Interval:             interval,
@@ -166,7 +166,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得放入 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
 		}
 	} else if cfg.PostgresURL == "" {
-		return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_TABLE_MONITOR_POSTGRES_URL 或 JUHE_AI_POSTGRES_URL")
+		return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_TABLE_MONITOR_POSTGRES_URL")
 	}
 	return cfg, nil
 }
@@ -212,15 +212,6 @@ func positiveIntOrDefault(name, value string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s 必须是正整数", name)
 	}
 	return parsed, nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func sameSQLiteFile(left, right string) (bool, error) {

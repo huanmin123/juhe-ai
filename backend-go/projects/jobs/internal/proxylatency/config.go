@@ -12,16 +12,16 @@ import (
 
 const (
 	maxProxyLatencyWorkItems      = 1_000_000
-	defaultProxyLatencyInterval   = time.Minute
+	defaultProxyLatencyInterval   = 5 * time.Second
 	defaultProxyLatencyOwnerLease = 90 * time.Second
 	defaultProxyLatencyProxyLease = 75 * time.Second
 	// Go owns the J3a worker pool. These defaults deliberately do not inherit
 	// Node's event-loop-era throttles; deployment CPU/memory requests and the
 	// upstream itself remain the capacity boundaries.
-	defaultProxyLatencyBatchSize    = 1_000
-	defaultProxyLatencyPoolFactor   = 10
-	defaultProxyLatencyConcurrency  = 1_000
-	defaultProxyLatencyProbeLimit   = defaultProxyLatencyBatchSize * defaultProxyLatencyPoolFactor
+	defaultProxyLatencyBatchSize    = 1_024
+	defaultProxyLatencyPoolFactor   = 100
+	defaultProxyLatencyConcurrency  = 1_024
+	defaultProxyLatencyProbeLimit   = 10_000
 	defaultProxyLatencyProbeTimeout = 30 * time.Second
 )
 
@@ -79,16 +79,16 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_POSTGRES_URL")
 	}
 	var err error
-	if cfg.PostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+	if cfg.PostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.PostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+	if cfg.PostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+	if cfg.InputPostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+	if cfg.InputPostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL"))

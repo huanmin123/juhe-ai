@@ -15,10 +15,10 @@ const (
 	defaultRetentionDays     = 14
 	defaultLogRetentionDays  = 30
 	defaultLogMaxFiles       = 500
-	defaultBatchSize         = 500
+	defaultBatchSize         = 100000
 	defaultOwnerLease        = 30 * time.Second
-	defaultPostgresMaxConns  = 1000
-	defaultPostgresMinConns  = 0
+	defaultPostgresMaxConns  = 5096
+	defaultPostgresMinConns  = 512
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -30,7 +30,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	mode, err := parseMode(firstNonEmpty(getenv("JUHE_AI_RUNTIME_LOG_STORE"), getenv("JUHE_AI_DATABASE_DRIVER")))
+	mode, err := parseMode(getenv("JUHE_AI_RUNTIME_LOG_STORE"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -84,7 +84,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		UsageCatalogPath:       strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH")),
 		StatsPath:              strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH")),
 		CodexShardRoot:         strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
-		PostgresURL:            firstNonEmpty(getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL")),
+		PostgresURL:            strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_URL")),
 		PostgresMaxConns:       postgresMaxConns,
 		PostgresMinConns:       postgresMinConns,
 		LogDirectory:           strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
@@ -113,7 +113,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 	case ModePostgres:
 		if config.PostgresURL == "" {
-			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_RUNTIME_LOG_POSTGRES_URL 或 JUHE_AI_POSTGRES_URL")
+			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_RUNTIME_LOG_POSTGRES_URL")
 		}
 	}
 	return config, nil
@@ -175,7 +175,7 @@ func parseMode(value string) (Mode, error) {
 	case ModePostgres:
 		return ModePostgres, nil
 	default:
-		return "", fmt.Errorf("JUHE_AI_RUNTIME_LOG_STORE 或 JUHE_AI_DATABASE_DRIVER 必须为 sqlite 或 postgres")
+		return "", fmt.Errorf("JUHE_AI_RUNTIME_LOG_STORE 必须为 sqlite 或 postgres")
 	}
 }
 

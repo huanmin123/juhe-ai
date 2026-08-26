@@ -60,7 +60,7 @@ func TestLoadConfigJ1CapacityDefaultsAndUpperBound(t *testing.T) {
 		for key, value := range base {
 			withValue[key] = value
 		}
-		withValue[name] = "1001"
+		withValue[name] = "1025"
 		if _, err := LoadConfig(func(key string) string { return withValue[key] }); err == nil || !strings.Contains(err.Error(), name) {
 			t.Fatalf("%s must reject values above its configured range, got %v", name, err)
 		}

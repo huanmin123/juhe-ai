@@ -80,8 +80,8 @@ go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-pos
 运行前必须满足：
 
 - 稳定且唯一的 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`；它用于 Go 多实例 fencing，不是 Node/Go 选择开关。
-- `JUHE_AI_RUNTIME_LOG_STORE=sqlite` 或 `postgres`；未设置时只可从 `JUHE_AI_DATABASE_DRIVER` 取得同值。
-- SQLite 提供 F1 专用 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`，以及业务、数据集目录、usage catalog、stats 和 Codex Context shard 的路径。F1 会拒绝这些任一路径、F2 专用库或任一 shard 与 F1 指向同一个物理 SQLite 文件；只读业务库的 `system_settings.runtimeLogIndexRetentionDays`。PostgreSQL 提供 `JUHE_AI_POSTGRES_URL`，并从 `juhe_business.system_settings` 读取同一设置。
+- `JUHE_AI_RUNTIME_LOG_STORE=sqlite` 或 `postgres`；必须显式设置，不再从通用数据库变量回退。
+- SQLite 提供 F1 专用 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`，以及业务、数据集目录、usage catalog、stats 和 Codex Context shard 的路径。F1 会拒绝这些任一路径、F2 专用库或任一 shard 与 F1 指向同一个物理 SQLite 文件；只读业务库的 `system_settings.runtimeLogIndexRetentionDays`。PostgreSQL 必须提供专用 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`，并从 `juhe_business.system_settings` 读取同一设置。
 - 两种模式均提供 `JUHE_AI_LOG_DIR`；Go 启动时初始化并验证自己的 F1 schema。
 
 示例：
@@ -137,8 +137,8 @@ rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmok
 运行前必须满足：
 
 - 稳定且唯一的 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID`；它用于 owner lease fencing，不是 Node/Go 选择开关。
-- `JUHE_AI_TABLE_MONITOR_STORE=sqlite` 或 `postgres`；未设置时只可从 `JUHE_AI_DATABASE_DRIVER` 取得同值。
-- SQLite 提供 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 作为 F2 专用输出文件，`JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 用于验证 F1/F2 物理隔离，以及 `JUHE_AI_DATABASE_PATH`、`JUHE_AI_DATASET_DATABASE_PATH`、`JUHE_AI_USAGE_CATALOG_DATABASE_PATH`、`JUHE_AI_STATS_DATABASE_PATH` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 作为只读采样源；输出文件不得与 F1、任何源库或 shard 共用。PostgreSQL 提供 `JUHE_AI_POSTGRES_URL`，快照写入 `juhe_stats`。
+- `JUHE_AI_TABLE_MONITOR_STORE=sqlite` 或 `postgres`；必须显式设置，不再从通用数据库变量回退。
+- SQLite 提供 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 作为 F2 专用输出文件，`JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 用于验证 F1/F2 物理隔离，以及 `JUHE_AI_DATABASE_PATH`、`JUHE_AI_DATASET_DATABASE_PATH`、`JUHE_AI_USAGE_CATALOG_DATABASE_PATH`、`JUHE_AI_STATS_DATABASE_PATH` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 作为只读采样源；输出文件不得与 F1、任何源库或 shard 共用。PostgreSQL 必须提供专用 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`，快照写入 `juhe_stats`。
 - `JUHE_AI_TABLE_MONITOR_OWNER_LEASE` 默认 `5m`；同一事实库同一时间只允许一个 Go owner，第二实例拒绝启动，失去 lease 后采样和保留清理拒写。
 - `JUHE_AI_TABLE_MONITOR_INTERVAL` 默认 `1m`，单轮 `JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT` 默认 `45s`，`JUHE_AI_TABLE_MONITOR_RETENTION_DAYS` 默认 `30`，`JUHE_AI_TABLE_MONITOR_MAX_TABLES` 默认 `256`；`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 默认 `8`（范围 `1..256`），`JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE` 默认 `1000`（范围 `1..10000`），`JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES` 默认 `1000`（范围 `1..100000`）。达到 retention 批次数上限后仍有过期数据才显式失败，不静默遗漏。
 

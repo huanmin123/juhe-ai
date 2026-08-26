@@ -18,12 +18,12 @@ import (
 const (
 	defaultOwnerLease               = 30 * time.Second
 	defaultRetentionInterval        = time.Minute
-	defaultRetentionBatchSize       = 100
+	defaultRetentionBatchSize       = 10000
 	defaultSuccessHotRetentionHours = 1
 	defaultSuccessSampleRate        = 0.1
 	defaultSuccessRetentionDays     = 3
 	defaultProblemRetentionDays     = 7
-	defaultPostgresPoolSize         = 1000
+	defaultPostgresPoolSize         = 5096
 )
 
 type Config struct {
@@ -61,9 +61,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_STORE 必须为 sqlite 或 postgres")
 	}
 	postgresURL := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_POSTGRES_URL"))
-	if postgresURL == "" {
-		postgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-	}
 	postgresMaxOpen, err := parsePositiveInteger("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS", getenv("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS"), defaultPostgresPoolSize)
 	if err != nil {
 		return Config{}, err
@@ -138,7 +135,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	if mode == ModePostgres {
 		if cfg.PostgresURL == "" {
-			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_AUDIT_LOG_POSTGRES_URL 或 JUHE_AI_POSTGRES_URL")
+			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_AUDIT_LOG_POSTGRES_URL")
 		}
 		if cfg.PayloadBlobDirectory == "" {
 			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY")

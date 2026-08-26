@@ -241,8 +241,8 @@ func TestLoadConfigAppliesBoundedRuntimeSettings(t *testing.T) {
 	if err != nil || cfg.OwnerLease != 45*time.Second || cfg.RetentionInterval != 2*time.Minute || cfg.RetentionBatchSize != 321 {
 		t.Fatalf("F4 runtime settings cfg=%+v err=%v", cfg, err)
 	}
-	if cfg.PostgresMaxOpenConns != 1000 || cfg.PostgresMaxIdleConns != 1000 {
-		t.Fatalf("default F4 PostgreSQL pool=%d/%d want 1000/1000", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
+	if cfg.PostgresMaxOpenConns != 5096 || cfg.PostgresMaxIdleConns != 5096 {
+		t.Fatalf("default F4 PostgreSQL pool=%d/%d want 5096/5096", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
 	}
 	values["JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS"] = "1200"
 	values["JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS"] = "1100"

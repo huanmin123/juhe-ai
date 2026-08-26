@@ -68,10 +68,10 @@ func LoadManualAdminConfig(getenv func(string) string) (ManualAdminConfig, error
 		return ManualAdminConfig{}, errors.New("启用 J3a 管理接口时缺少 JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL")
 	}
 	var err error
-	if cfg.MaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+	if cfg.MaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return ManualAdminConfig{}, err
 	}
-	if cfg.MaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+	if cfg.MaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
 		return ManualAdminConfig{}, err
 	}
 	if cfg.RequestDeadline, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE", 25*time.Second, time.Second, 25*time.Second); err != nil {
