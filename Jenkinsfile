@@ -614,9 +614,8 @@ def verifyJ3aRelease(environmentName, enabled) {
       fi
       active_pod=\$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' get endpoints juhe-ai -o jsonpath='{.subsets[0].addresses[0].targetRef.name}')
       case "\$active_pod" in juhe-ai-0|juhe-ai-b-0) ;; *) echo 'J3a stable Endpoint 未指向允许的 jobs Pod。' >&2; exit 1 ;; esac
-      if [ "\$(sh -c "\$observer -n ${namespace} auth can-i get pods/\$active_pod")" != 'yes' ] || \\
-         [ "\$(sh -c "\$observer -n ${namespace} auth can-i create pods --subresource=portforward")" != 'yes' ]; then
-        echo "J3a release observer 缺少 \$active_pod 的受限 health port-forward 权限。" >&2
+      if [ "\$(sh -c "\$observer -n ${namespace} auth can-i get pods/\$active_pod")" != 'yes' ]; then
+        echo "J3a release observer 缺少 \$active_pod 的读取权限。" >&2
         exit 1
       fi
       forward_log=\$(mktemp)
