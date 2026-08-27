@@ -160,7 +160,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_FILE_CHILD === '1') {
   assert.equal(runtimeConfig.runtimeStateDriver, 'redis', '专用 env 文件应能覆盖运行态 driver')
   assert.equal(runtimeConfig.queueDriver, 'redis_stream', '专用 env 文件应能覆盖队列 driver')
   assert.equal(runtimeConfig.postgres.poolMax, 44, '专用 env 文件应能覆盖 PostgreSQL pool max')
-  assert.equal(runtimeConfig.postgres.idleTimeoutMs, 30_000, '专用 env 文件未指定时应保留 PostgreSQL idle timeout 默认值')
+  assert.equal(runtimeConfig.postgres.idleTimeoutMs, 600_000, '专用 env 文件未指定时应保留 PostgreSQL idle timeout 默认值')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 333, '专用 env 文件应能覆盖 System API DB service 在途上限')
 
   process.exit(0)
