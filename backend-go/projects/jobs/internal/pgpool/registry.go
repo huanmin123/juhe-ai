@@ -18,6 +18,8 @@ type Registry struct {
 
 type Key = sqlpool.Key
 type Handle = sqlpool.Handle
+type PoolEvent = sqlpool.PoolEvent
+type PoolSnapshot = sqlpool.PoolSnapshot
 
 func NewRegistry() *Registry {
 	return &Registry{}
@@ -39,6 +41,23 @@ func (r *Registry) Close() error {
 		return nil
 	}
 	return r.shared().Close()
+}
+
+// SetObserver forwards credential-free pool lifecycle events to jobs-owned
+// logging/metrics code without coupling this package to a telemetry backend.
+func (r *Registry) SetObserver(observer func(PoolEvent)) {
+	if r == nil {
+		return
+	}
+	r.shared().SetObserver(observer)
+}
+
+// Stats returns a credential-free snapshot of pools currently held by jobs.
+func (r *Registry) Stats() []PoolSnapshot {
+	if r == nil {
+		return nil
+	}
+	return r.shared().Stats()
 }
 
 func (r *Registry) shared() *sqlpool.Registry {

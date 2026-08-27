@@ -3,6 +3,7 @@ package sqlpool
 import (
 	"database/sql"
 	"database/sql/driver"
+	"sync"
 	"testing"
 )
 
@@ -66,5 +67,38 @@ func TestRegistrySeparatesRoleAndRejectsInvalidBounds(t *testing.T) {
 	}
 	if _, err := registry.Acquire(open, "memory", "jobs", 12, MaxIdleConns+1); err == nil {
 		t.Fatalf("idle connections above the platform limit %d must be rejected", MaxIdleConns)
+	}
+}
+
+func TestRegistryObserverAndStatsAreCredentialFree(t *testing.T) {
+	registry := NewRegistry()
+	var mu sync.Mutex
+	events := make([]PoolEvent, 0, 3)
+	registry.SetObserver(func(event PoolEvent) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	})
+	open := func() (*sql.DB, error) { return sql.Open("sqlpool-test", "") }
+	handle, err := registry.Acquire(open, "postgres://user:secret@db/app", "jobs", 8, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshots := registry.Stats()
+	if len(snapshots) != 1 || snapshots[0].Role != "jobs" || snapshots[0].MaxOpen != 8 || snapshots[0].MaxIdle != 3 {
+		t.Fatalf("unexpected pool snapshot: %+v", snapshots)
+	}
+	if err := handle.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[0].Kind != "open" || events[1].Kind != "close" {
+		t.Fatalf("unexpected lifecycle events: %+v", events)
+	}
+	for _, event := range events {
+		if event.Role != "jobs" || event.MaxOpen != 8 || event.MaxIdle != 3 {
+			t.Fatalf("unexpected lifecycle event: %+v", event)
+		}
 	}
 }

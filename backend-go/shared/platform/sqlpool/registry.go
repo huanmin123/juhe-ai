@@ -21,8 +21,37 @@ const (
 )
 
 type Registry struct {
-	mu      sync.Mutex
-	entries map[Key]*entry
+	mu       sync.Mutex
+	entries  map[Key]*entry
+	observer func(PoolEvent)
+}
+
+// PoolEvent is emitted after a pool lifecycle operation. URL is deliberately
+// excluded so a DSN password can never leak through an instrumentation hook.
+type PoolEvent struct {
+	Kind    string
+	Role    string
+	MaxOpen int
+	MaxIdle int
+	Refs    int
+	DBStats sql.DBStats
+}
+
+const (
+	PoolEventOpen    = "open"
+	PoolEventReuse   = "reuse"
+	PoolEventRelease = "release"
+	PoolEventClose   = "close"
+)
+
+// PoolSnapshot is a point-in-time view of every pool owned by the registry.
+// It is safe to expose to metrics/logging code; it contains no credentials.
+type PoolSnapshot struct {
+	Role    string
+	MaxOpen int
+	MaxIdle int
+	Refs    int
+	DBStats sql.DBStats
 }
 
 type Key struct {
@@ -31,8 +60,9 @@ type Key struct {
 }
 
 type entry struct {
-	db   *sql.DB
-	refs int
+	db      *sql.DB
+	refs    int
+	maxIdle int
 }
 
 type Handle struct {
@@ -44,6 +74,36 @@ type Handle struct {
 
 func NewRegistry() *Registry {
 	return &Registry{entries: make(map[Key]*entry)}
+}
+
+// SetObserver installs an optional lifecycle hook. The hook is invoked after
+// the registry lock is released and must be non-blocking; callers can bridge
+// it to slog or Prometheus without changing pool acquisition call sites.
+func (r *Registry) SetObserver(observer func(PoolEvent)) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.observer = observer
+	r.mu.Unlock()
+}
+
+// Stats returns credential-free snapshots for all pools in this registry.
+func (r *Registry) Stats() []PoolSnapshot {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	snapshots := make([]PoolSnapshot, 0, len(r.entries))
+	for key, current := range r.entries {
+		if current == nil || current.db == nil {
+			continue
+		}
+		stats := current.db.Stats()
+		snapshots = append(snapshots, PoolSnapshot{Role: key.Role, MaxOpen: stats.MaxOpenConnections, MaxIdle: current.maxIdle, Refs: current.refs, DBStats: stats})
+	}
+	return snapshots
 }
 
 // Acquire opens or reuses a pool identified by the exact URL and logical
@@ -61,7 +121,6 @@ func (r *Registry) Acquire(open func() (*sql.DB, error), url, role string, maxOp
 	}
 	key := Key{URL: url, Role: role}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.entries == nil {
 		r.entries = make(map[Key]*entry)
 	}
@@ -70,20 +129,44 @@ func (r *Registry) Acquire(open func() (*sql.DB, error), url, role string, maxOp
 			current.db.SetMaxOpenConns(maxOpen)
 		}
 		configurePool(current.db, maxIdle)
+		current.maxIdle = maxIdle
 		current.refs++
-		return &Handle{registry: r, key: key, db: current.db}, nil
+		handle := &Handle{registry: r, key: key, db: current.db}
+		event := r.eventLocked(PoolEventReuse, key, current)
+		observer := r.observer
+		r.mu.Unlock()
+		emit(observer, event)
+		return handle, nil
 	}
 	db, err := open()
 	if err != nil {
+		r.mu.Unlock()
 		return nil, err
 	}
 	if db == nil {
+		r.mu.Unlock()
 		return nil, errors.New("sql pool opener 返回空数据库连接")
 	}
 	db.SetMaxOpenConns(maxOpen)
 	configurePool(db, maxIdle)
-	r.entries[key] = &entry{db: db, refs: 1}
+	r.entries[key] = &entry{db: db, refs: 1, maxIdle: maxIdle}
+	entry := r.entries[key]
+	event := r.eventLocked(PoolEventOpen, key, entry)
+	observer := r.observer
+	r.mu.Unlock()
+	emit(observer, event)
 	return &Handle{registry: r, key: key, db: db}, nil
+}
+
+func (r *Registry) eventLocked(kind string, key Key, current *entry) PoolEvent {
+	stats := current.db.Stats()
+	return PoolEvent{Kind: kind, Role: key.Role, MaxOpen: stats.MaxOpenConnections, MaxIdle: current.maxIdle, Refs: current.refs, DBStats: stats}
+}
+
+func emit(observer func(PoolEvent), event PoolEvent) {
+	if observer != nil {
+		observer(event)
+	}
 }
 
 // ValidatePoolLimits keeps the high connection ceiling independent from the
@@ -113,19 +196,29 @@ func (h *Handle) Close() error {
 		return nil
 	}
 	var err error
+	var event PoolEvent
+	var observer func(PoolEvent)
 	h.once.Do(func() {
 		h.registry.mu.Lock()
-		defer h.registry.mu.Unlock()
 		current := h.registry.entries[h.key]
 		if current == nil {
+			h.registry.mu.Unlock()
 			return
 		}
 		current.refs--
 		if current.refs > 0 {
+			event = h.registry.eventLocked(PoolEventRelease, h.key, current)
+			observer = h.registry.observer
+			h.registry.mu.Unlock()
+			emit(observer, event)
 			return
 		}
 		delete(h.registry.entries, h.key)
 		err = current.db.Close()
+		event = PoolEvent{Kind: PoolEventClose, Role: h.key.Role, MaxOpen: current.db.Stats().MaxOpenConnections, MaxIdle: current.maxIdle, Refs: 0, DBStats: current.db.Stats()}
+		observer = h.registry.observer
+		h.registry.mu.Unlock()
+		emit(observer, event)
 	})
 	return err
 }
