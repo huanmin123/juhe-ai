@@ -322,11 +322,12 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 				r.applyScheduledOutcome(&task.outcome, task.input, task.state, task.found, task.kind)
 				if _, err := r.store.AppendOutcome(ctx, lease, task.outcome); err != nil {
 					recordError(err)
+				} else {
+					// This is a scan-attempt metric; durable outcome count remains in
+					// the store and is never inferred from this in-memory value.
+					executed.Add(1)
 				}
 				r.logger.Debug("account-health DB worker 完成", "phase", "db_write", "account_id", task.input.AccountID, "latency_ms", time.Since(started).Milliseconds(), "queue_depth", len(dbQueue))
-				// This is a scan-attempt metric; durable outcome count remains in
-				// the store and is never inferred from this in-memory value.
-				executed.Add(1)
 			}
 		}()
 	}
