@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"strconv"
@@ -23,6 +24,28 @@ type ExecutorOptions struct {
 	CredentialSecret string
 	Timeout          time.Duration
 	Now              func() time.Time
+	DBGate           *DBConcurrencyGate
+	Logger           *slog.Logger
+}
+
+func (options ExecutorOptions) acquireDB(ctx context.Context, operation string) (func(), error) {
+	if options.DBGate == nil {
+		return func() {}, nil
+	}
+	release, wait, err := options.DBGate.Acquire(ctx)
+	if options.Logger != nil {
+		options.Logger.Debug("J3a DB gate", "operation", operation, "queue_wait_ms", wait.Milliseconds(), "queue_depth", options.DBGate.QueueDepth(), "db_concurrency", options.DBGate.Capacity(), "error", err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return release, nil
+}
+
+func (options ExecutorOptions) logDB(operation string, started time.Time, err error) {
+	if options.Logger != nil {
+		options.Logger.Debug("J3a DB phase", "operation", operation, "db_latency_ms", time.Since(started).Milliseconds(), "error", err)
+	}
 }
 
 // ExecuteIssuedInput runs one already-issued proxy-latency request. It has no
@@ -42,7 +65,14 @@ func ExecuteIssuedInput(ctx context.Context, store *Store, owner OwnerLease, pro
 	if options.Timeout <= 0 {
 		return Outcome{}, false, errors.New("J3a executor timeout 无效")
 	}
+	releaseDB, err := options.acquireDB(ctx, "admit_execution")
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	dbStarted := time.Now()
 	resolved, claimToken, replay, err := store.AdmitExecution(ctx, owner, proxy, input)
+	releaseDB()
+	options.logDB("admit_execution", dbStarted, err)
 	if err != nil {
 		return Outcome{}, false, err
 	}
@@ -139,7 +169,14 @@ func ExecuteIssuedInput(ctx context.Context, store *Store, owner OwnerLease, pro
 		Items:               items,
 		executionClaimToken: claimToken,
 	}
+	releaseDB, err = options.acquireDB(ctx, "append_outcome")
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	dbStarted = time.Now()
 	committed, err = store.AppendOutcome(ctx, owner, proxy, outcome)
+	releaseDB()
+	options.logDB("append_outcome", dbStarted, err)
 	if err != nil {
 		return Outcome{}, false, err
 	}

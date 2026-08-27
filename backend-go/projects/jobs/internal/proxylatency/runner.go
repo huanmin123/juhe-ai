@@ -486,11 +486,13 @@ func readRenewalError(ch <-chan error) error {
 
 func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 	attempt := r.now()
-	if err := r.store.VerifyOwnerLease(ctx, owner); err != nil {
+	dbGate := NewDBConcurrencyGate(r.dbConcurrency(), r.dbQueueSize())
+	if err := r.withDB(ctx, dbGate, "verify_owner", func() error { return r.store.VerifyOwnerLease(ctx, owner) }); err != nil {
 		r.recordCycle(attempt, 0, 0, 1, err)
 		return err
 	}
-	drafts, err := r.reader.LoadDue(ctx, r.candidatePoolLimit())
+	var drafts []InputDraft
+	err := withDBValue(r, ctx, dbGate, "load_due", func() ([]InputDraft, error) { return r.reader.LoadDue(ctx, r.candidatePoolLimit()) }, &drafts)
 	if err != nil {
 		r.recordCycle(attempt, 0, 0, 1, err)
 		return err
@@ -530,7 +532,7 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 			nextCandidate++
 			mu.Unlock()
 			draft := drafts[index]
-			if err := r.store.VerifyOwnerLease(cycleCtx, owner); err != nil {
+			if err := r.withDB(cycleCtx, dbGate, "verify_owner", func() error { return r.store.VerifyOwnerLease(cycleCtx, owner) }); err != nil {
 				mu.Lock()
 				cycleErrs = append(cycleErrs, err)
 				if fatalLeaseError(err) && fatalErr == nil {
@@ -546,7 +548,14 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 			if acquireProxy == nil {
 				acquireProxy = r.store.AcquireProxyLease
 			}
-			proxy, acquired, err := acquireProxy(cycleCtx, owner, draft.ProxyID, r.cfg.ProxyLease)
+			var proxy ProxyLease
+			var acquired bool
+			var proxyResult proxyLeaseResult
+			err = withDBValue(r, cycleCtx, dbGate, "acquire_proxy", func() (proxyLeaseResult, error) {
+				value, ok, acquireErr := acquireProxy(cycleCtx, owner, draft.ProxyID, r.cfg.ProxyLease)
+				return proxyLeaseResult{lease: value, acquired: ok}, acquireErr
+			}, &proxyResult)
+			proxy, acquired = proxyResult.lease, proxyResult.acquired
 			if err != nil {
 				if errors.Is(err, ErrProxyLeaseHeld) {
 					mu.Lock()
@@ -575,20 +584,21 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 			counts.claimed++
 			if counts.started >= counts.target {
 				mu.Unlock()
-				recordProxyReleaseFailure(r.releaseProxyLeaseBounded(cycleCtx, proxy))
+				recordProxyReleaseFailure(r.releaseProxyLeaseGated(cycleCtx, dbGate, proxy))
 				continue
 			}
 			counts.started++
 			mu.Unlock()
 
-			issued, err := r.store.IssueInput(cycleCtx, draft)
+			var issued IssuedInput
+			err = withDBValue(r, cycleCtx, dbGate, "issue_input", func() (IssuedInput, error) { return r.store.IssueInput(cycleCtx, draft) }, &issued)
 			if err != nil {
 				mu.Lock()
 				counts.failures++
 				counts.executionFailures++
 				cycleErrs = append(cycleErrs, err)
 				mu.Unlock()
-				recordProxyReleaseFailure(r.releaseProxyLeaseBounded(cycleCtx, proxy))
+				recordProxyReleaseFailure(r.releaseProxyLeaseGated(cycleCtx, dbGate, proxy))
 				r.logger.Warn("J3a IssueInput failed", "error", err)
 				continue
 			}
@@ -602,7 +612,7 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 				counts.executionFailures++
 				cycleErrs = append(cycleErrs, errors.New("J3a proxy execution window expired"))
 				mu.Unlock()
-				recordProxyReleaseFailure(r.releaseProxyLeaseBounded(cycleCtx, proxy))
+				recordProxyReleaseFailure(r.releaseProxyLeaseGated(cycleCtx, dbGate, proxy))
 				continue
 			}
 			execCtx, execCancel := context.WithTimeout(cycleCtx, proxyWindow)
@@ -610,12 +620,12 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 			if execute == nil {
 				execute = ExecuteIssuedInput
 			}
-			outcome, committed, execErr := execute(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, Now: r.cfg.Now})
+			outcome, committed, execErr := execute(execCtx, r.store, owner, proxy, issued, ExecutorOptions{CredentialSecret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, Now: r.cfg.Now, DBGate: dbGate, Logger: r.logger})
 			if execErr == nil {
-				execErr = r.projectOutcome(execCtx, outcome)
+				execErr = r.projectOutcomeWithGate(execCtx, outcome, dbGate)
 			}
 			execCancel()
-			releaseErr := r.releaseProxyLeaseBounded(cycleCtx, proxy)
+			releaseErr := r.releaseProxyLeaseGated(cycleCtx, dbGate, proxy)
 			mu.Lock()
 			if releaseErr != nil {
 				counts.releaseFailures++
@@ -686,6 +696,58 @@ type cycleCounts struct {
 	inputs, executed, failures, executionFailures, releaseFailures         int
 }
 
+type proxyLeaseResult struct {
+	lease    ProxyLease
+	acquired bool
+}
+
+func (r *Runner) withDB(ctx context.Context, gate *DBConcurrencyGate, operation string, fn func() error) error {
+	if gate == nil {
+		return fn()
+	}
+	release, wait, err := gate.Acquire(ctx)
+	if r.logger != nil {
+		r.logger.Debug("J3a DB gate", "operation", operation, "queue_wait_ms", wait.Milliseconds(), "queue_depth", gate.QueueDepth(), "db_concurrency", gate.Capacity(), "error", err)
+	}
+	if err != nil {
+		return err
+	}
+	started := time.Now()
+	err = fn()
+	release()
+	if r.logger != nil {
+		r.logger.Debug("J3a DB phase", "operation", operation, "db_latency_ms", time.Since(started).Milliseconds(), "error", err)
+	}
+	return err
+}
+
+func withDBValue[T any](r *Runner, ctx context.Context, gate *DBConcurrencyGate, operation string, fn func() (T, error), out *T) error {
+	if gate == nil {
+		value, err := fn()
+		*out = value
+		return err
+	}
+	release, wait, err := gate.Acquire(ctx)
+	if r.logger != nil {
+		r.logger.Debug("J3a DB gate", "operation", operation, "queue_wait_ms", wait.Milliseconds(), "queue_depth", gate.QueueDepth(), "db_concurrency", gate.Capacity(), "error", err)
+	}
+	if err != nil {
+		return err
+	}
+	started := time.Now()
+	value, err := fn()
+	*out = value
+	release()
+	if r.logger != nil {
+		r.logger.Debug("J3a DB phase", "operation", operation, "db_latency_ms", time.Since(started).Milliseconds(), "error", err)
+	}
+	return err
+}
+
+func (r *Runner) releaseProxyLeaseGated(ctx context.Context, gate *DBConcurrencyGate, proxy ProxyLease) error {
+	return r.withDB(ctx, gate, "release_proxy", func() error { return r.releaseProxyLeaseBounded(ctx, proxy) })
+}
+
 func (r *Runner) recordCycleSummary(attempt time.Time, counts *cycleCounts, cycleErr error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -738,6 +800,40 @@ func (r *Runner) workerConcurrency() int {
 		return r.cfg.WorkerConcurrency
 	}
 	return 1
+}
+
+func (r *Runner) dbConcurrency() int {
+	if r.cfg.DBConcurrency > 0 {
+		return r.cfg.DBConcurrency
+	}
+	return 0
+}
+
+func (r *Runner) dbQueueSize() int {
+	if r.cfg.DBQueueSize > 0 {
+		return r.cfg.DBQueueSize
+	}
+	return 0
+}
+
+func (r *Runner) projectOutcomeWithGate(ctx context.Context, outcome Outcome, gate *DBConcurrencyGate) error {
+	if gate == nil {
+		return r.projectOutcome(ctx, outcome)
+	}
+	release, wait, err := gate.Acquire(ctx)
+	if r.logger != nil {
+		r.logger.Debug("J3a DB gate", "operation", "project_outcome", "queue_wait_ms", wait.Milliseconds(), "queue_depth", gate.QueueDepth(), "db_concurrency", gate.Capacity(), "error", err)
+	}
+	if err != nil {
+		return err
+	}
+	started := time.Now()
+	err = r.projectOutcome(ctx, outcome)
+	release()
+	if r.logger != nil {
+		r.logger.Debug("J3a DB phase", "operation", "project_outcome", "db_latency_ms", time.Since(started).Milliseconds(), "error", err)
+	}
+	return err
 }
 
 func minInt(left, right int) int {

@@ -20,13 +20,15 @@ const (
 	// Go owns the J3a worker pool. These defaults deliberately do not inherit
 	// Node's event-loop-era throttles; deployment CPU/memory requests and the
 	// upstream itself remain the capacity boundaries.
-	defaultProxyLatencyBatchSize    = 512
-	defaultProxyLatencyPoolFactor   = 100
-	defaultProxyLatencyConcurrency  = 512
-	defaultProxyLatencyProbeLimit   = 512
-	defaultProxyLatencyProbeTimeout = 30 * time.Second
-	defaultPostgresMaxOpenConns     = 5096
-	defaultPostgresMaxIdleConns     = sqlpool.MaxIdleConns
+	defaultProxyLatencyBatchSize     = 512
+	defaultProxyLatencyPoolFactor    = 100
+	defaultProxyLatencyConcurrency   = 512
+	defaultProxyLatencyDBConcurrency = 16
+	defaultProxyLatencyDBQueueSize   = 512
+	defaultProxyLatencyProbeLimit    = 512
+	defaultProxyLatencyProbeTimeout  = 30 * time.Second
+	defaultPostgresMaxOpenConns      = 5096
+	defaultPostgresMaxIdleConns      = sqlpool.MaxIdleConns
 )
 
 // RuntimeConfig is opt-in. Disabled configuration deliberately does not
@@ -48,6 +50,8 @@ type RuntimeConfig struct {
 	BatchSize                 int
 	CandidatePoolFactor       int
 	WorkerConcurrency         int
+	DBConcurrency             int
+	DBQueueSize               int
 	InputTTL                  time.Duration
 	Interval                  time.Duration
 	OwnerLease                time.Duration
@@ -119,6 +123,12 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, err
 	}
 	if cfg.WorkerConcurrency, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY", defaultProxyLatencyConcurrency, 1, maxProxyLatencyWorkItems); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.DBConcurrency, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_DB_CONCURRENCY", defaultProxyLatencyDBConcurrency, 1, 64); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.DBQueueSize, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_DB_QUEUE_SIZE", defaultProxyLatencyDBQueueSize, 1, maxProxyLatencyWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}
 	if cfg.InputTTL, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_TTL", 5*time.Minute, time.Minute, 15*time.Minute); err != nil {
