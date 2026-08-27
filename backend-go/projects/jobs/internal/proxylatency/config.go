@@ -27,7 +27,7 @@ const (
 	defaultProxyLatencyDBQueueSize   = 512
 	defaultProxyLatencyProbeLimit    = 512
 	defaultProxyLatencyProbeTimeout  = 30 * time.Second
-	defaultPostgresMaxOpenConns      = 5096
+	defaultPostgresMaxOpenConns      = 16
 	defaultPostgresMaxIdleConns      = sqlpool.MaxIdleConns
 )
 

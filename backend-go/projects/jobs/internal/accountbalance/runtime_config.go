@@ -17,7 +17,7 @@ const (
 	defaultAccountBalanceBatchSize         = 512
 	defaultAccountBalanceRecoveryBatchSize = 512
 	maxAccountBalanceWorkItems             = 5096
-	defaultPostgresMaxOpenConns            = 5096
+	defaultPostgresMaxOpenConns            = 16
 	defaultPostgresMaxIdleConns            = sqlpool.MaxIdleConns
 )
 

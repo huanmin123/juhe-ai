@@ -21,7 +21,7 @@ const (
 	defaultMaxResponseBytes       = int64(256 * 1024)
 	defaultInputTTL               = 15 * time.Minute
 	defaultDirectInputLimit       = 512
-	defaultPostgresPoolSize       = 5096
+	defaultPostgresPoolSize       = 16
 	defaultPostgresMaxIdleConns   = sqlpool.MaxIdleConns
 	defaultSQLiteConcurrency      = 512
 	defaultPerformanceConcurrency = 512

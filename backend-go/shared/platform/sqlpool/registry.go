@@ -17,7 +17,7 @@ const (
 	MaxIdleConns = 10
 	// MaxConnIdleTime releases unused database/sql connections after the
 	// platform-wide idle window.
-	MaxConnIdleTime = 10 * time.Minute
+	MaxConnIdleTime = 60 * time.Minute
 )
 
 type Registry struct {

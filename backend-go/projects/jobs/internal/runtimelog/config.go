@@ -19,10 +19,10 @@ const (
 	defaultLogMaxFiles       = 500
 	defaultBatchSize         = 512
 	defaultOwnerLease        = 30 * time.Second
-	defaultPostgresMaxConns  = 5096
+	defaultPostgresMaxConns  = 16
 	// Do not prewarm PostgreSQL connections during process startup. Pools
 	// create connections on demand and recycle idle ones via MaxConnIdleTime.
-	defaultPostgresMinConns  = 0
+	defaultPostgresMinConns = 0
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {

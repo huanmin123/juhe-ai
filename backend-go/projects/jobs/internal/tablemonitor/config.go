@@ -24,7 +24,7 @@ const (
 	defaultPostgresConcurrentSources = 512
 	defaultRetentionBatchSize        = 512
 	defaultRetentionMaxBatches       = 512
-	defaultPostgresPoolSize          = 5096
+	defaultPostgresPoolSize          = 16
 	defaultPostgresMaxIdleConns      = sqlpool.MaxIdleConns
 )
 
