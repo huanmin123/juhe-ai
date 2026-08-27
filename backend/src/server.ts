@@ -556,6 +556,12 @@ const server = app.listen(port, host, httpListenBacklog, () => {
     host,
     port,
     backlog: httpListenBacklog,
+    concurrencyGlobalMax: runtimeConfig.concurrency.globalMax,
+    upstreamMaxSockets: runtimeConfig.gateway.upstreamAgentMaxSockets,
+    postgresPoolMax: runtimeConfig.postgres.poolMax,
+    postgresDbWorkerMaxConcurrency: runtimeConfig.postgres.dbWorkerMaxConcurrency,
+    postgresWriteMaxConcurrency: runtimeConfig.postgres.writeMaxConcurrency,
+    postgresWriteQueueMaxItems: runtimeConfig.postgres.writeQueueMaxItems,
     logDirectory: runtimeConfig.log.fileEnabled ? runtimeConfig.log.directory : undefined
   }, `juhe-ai 后端已监听 http://${host}:${port}`)
 })

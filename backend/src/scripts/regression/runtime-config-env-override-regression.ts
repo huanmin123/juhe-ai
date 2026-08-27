@@ -98,6 +98,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.postgres.idleTimeoutMs, 45_000, 'PostgreSQL idle timeout 应正确读取')
   assert.equal(runtimeConfig.postgres.jitEnabled, false, 'PostgreSQL JIT 开关应正确读取')
   assert.equal(runtimeConfig.postgres.writeMaxConcurrency, 100, 'PostgreSQL 写队列并发应正确读取')
+  assert.equal(runtimeConfig.postgres.dbWorkerMaxConcurrency, 12, 'PostgreSQL DB worker 并发应支持独立环境变量覆盖')
   assert.equal(runtimeConfig.postgres.writeQueueMaxItems, 60000, 'PostgreSQL 写队列容量应正确读取')
   assert.equal(runtimeConfig.postgres.statementTimeoutMs, 45000, 'PostgreSQL statement timeout 应正确读取')
   assert.equal(runtimeConfig.postgres.lockTimeoutMs, 3000, 'PostgreSQL lock timeout 应正确读取')
@@ -269,6 +270,7 @@ const performanceResult = spawnRegression({
   JUHE_AI_POSTGRES_IDLE_TIMEOUT_MS: '45000',
   JUHE_AI_POSTGRES_JIT_ENABLED: 'false',
   JUHE_AI_DB_WRITE_MAX_CONCURRENCY: '100',
+  JUHE_AI_DB_WORKER_MAX_CONCURRENCY: '12',
   JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: '60000',
   JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS: '45000',
   JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS: '3000',

@@ -95,6 +95,8 @@ export interface RuntimeConfig {
     idleTimeoutMs: number
     jitEnabled: boolean
     writeMaxConcurrency: number
+    /** Hard concurrency ceiling for DB workers; independent from pool max/open connections. */
+    dbWorkerMaxConcurrency: number
     writeQueueMaxItems: number
     connectionTimeoutMs: number
     statementTimeoutMs: number
@@ -628,7 +630,11 @@ export const runtimeConfig: RuntimeConfig = {
     // Interactive API reads are short OLTP queries. JIT compilation adds a
     // large cold-query tail without helping these bounded result sets.
     jitEnabled: booleanConfig('JUHE_AI_POSTGRES_JIT_ENABLED', false),
-    writeMaxConcurrency: numberConfig('JUHE_AI_DB_WRITE_MAX_CONCURRENCY', 100, 1, 1000),
+    writeMaxConcurrency: numberConfig('JUHE_AI_DB_WRITE_MAX_CONCURRENCY', 32, 1, 1000),
+    // The write setting remains an operator override for compatibility. This
+    // separate lane budget prevents a large value from turning every IO task
+    // into an unbounded PostgreSQL writer.
+    dbWorkerMaxConcurrency: numberConfig('JUHE_AI_DB_WORKER_MAX_CONCURRENCY', 16, 1, 64),
     writeQueueMaxItems: numberConfig('JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS', 50000, 100, 1000000),
     connectionTimeoutMs: numberConfig('JUHE_AI_POSTGRES_CONNECTION_TIMEOUT_MS', 10000, 100, 3600000),
     statementTimeoutMs: numberConfig('JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS', 30000, 0, 3600000),

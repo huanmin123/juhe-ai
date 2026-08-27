@@ -60,6 +60,7 @@ let lastSlowFlushAt: string | undefined
 let droppedDispatchCount = 0
 let droppedOverflowCount = 0
 let droppedOversizeCount = 0
+let lastQueueSaturationWarningAt = 0
 let shutdownHooksInstalled = false
 let allowDbServiceLocalUsageRecordWriteForTest = false
 let usageRecordRedisStreamQueueInstance: RedisStreamQueue<UsageRecordInput> | undefined
@@ -161,6 +162,7 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
 
   pendingUsageRecords.push(queued)
   pendingUsageRecordBytes += queued.bytes
+  maybeLogUsageRecordQueueSaturation()
   scheduleUsageRecordFlush(pendingUsageRecords.length >= usageRecordBatchSize ? 0 : usageRecordFlushIntervalMs)
 }
 
@@ -1024,7 +1026,34 @@ function shouldUseConcurrentUsageRecordFlush(): boolean {
 }
 
 function usageRecordConcurrentFlushLimit(): number {
-  return Math.max(1, Math.min(Math.trunc(runtimeConfig.postgres.writeMaxConcurrency), 100))
+  return Math.max(
+    1,
+    Math.min(
+      Math.trunc(runtimeConfig.postgres.writeMaxConcurrency),
+      Math.trunc(runtimeConfig.postgres.dbWorkerMaxConcurrency),
+      100
+    )
+  )
+}
+
+function maybeLogUsageRecordQueueSaturation(): void {
+  const itemRatio = usageRecordQueueMaxItems > 0 ? pendingUsageRecords.length / usageRecordQueueMaxItems : 0
+  const byteRatio = usageRecordQueueMaxBytes > 0 ? pendingUsageRecordBytes / usageRecordQueueMaxBytes : 0
+  const saturationRatio = Math.max(itemRatio, byteRatio)
+  const now = Date.now()
+  if (saturationRatio < 0.8 || now - lastQueueSaturationWarningAt < 60_000) return
+  lastQueueSaturationWarningAt = now
+  logger.warn({
+    event: 'usage_record_db_write_queue_saturated',
+    saturationRatio: Number(saturationRatio.toFixed(3)),
+    pendingCount: pendingUsageRecords.length,
+    pendingBytes: pendingUsageRecordBytes,
+    maxItems: usageRecordQueueMaxItems,
+    maxBytes: usageRecordQueueMaxBytes,
+    dbWorkerMaxConcurrency: runtimeConfig.postgres.dbWorkerMaxConcurrency,
+    configuredWriteMaxConcurrency: runtimeConfig.postgres.writeMaxConcurrency,
+    postgresPoolMax: runtimeConfig.postgres.poolMax
+  }, '数据库写队列达到 80% 容量；IO 任务将继续排队，DB worker 保持受控并发')
 }
 
 function estimateUsageRecordBytes(input: UsageRecordInput): number {
