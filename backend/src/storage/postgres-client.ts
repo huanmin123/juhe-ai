@@ -95,7 +95,9 @@ async function createPostgresPool(): Promise<PostgresPool> {
   const { Pool } = await import('pg')
   const pool = new Pool({
     connectionString: runtimeConfig.postgres.url,
-    max: runtimeConfig.postgres.poolMax,
+    // node-postgres has no separate max-idle setting. Keep the effective pool
+    // bounded at ten so idle clients cannot exceed the platform policy.
+    max: Math.min(runtimeConfig.postgres.poolMax, 10),
     idleTimeoutMillis: runtimeConfig.postgres.idleTimeoutMs,
     connectionTimeoutMillis: runtimeConfig.postgres.connectionTimeoutMs,
     application_name: postgresApplicationName()
