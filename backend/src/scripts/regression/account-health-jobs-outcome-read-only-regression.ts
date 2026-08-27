@@ -5,9 +5,12 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import {
+  closeAccountHealthJobsStoreSource,
+  createPostgresAccountHealthJobsStoreSource,
   decodeAccountHealthJobsOutcomePayload,
   listAccountHealthJobsOutcomes,
-  listAccountHealthJobsOutcomesForAccounts
+  listAccountHealthJobsOutcomesForAccounts,
+  type AccountHealthJobsPostgresStoreSource
 } from '../../storage/account-health-jobs-outcome.repository.js'
 
 const require = createRequire(import.meta.url)
@@ -85,6 +88,59 @@ try {
     outcome_id: 'outcome-5', request_id: 'request-5', account_id: 'account-1', outcome: 'complete_success', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3,
     projection: { target_account_id: 'other-account', transition_kind: 'health_success', input_version: 1, config_revision: 2, dispatch_revision: 3, expected_account_status: 'active' }
   }), /account\/revision fence/)
+
+  const postgresPayload = {
+    outcome_id: 'postgres-outcome-1', request_id: 'request-postgres-1', account_id: 'account-1', outcome: 'complete_success', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3,
+    projection: { target_account_id: 'account-1', transition_kind: 'health_success', input_version: 1, config_revision: 2, dispatch_revision: 3, expected_account_status: 'active' }
+  }
+  let connects = 0
+  let releases = 0
+  let ends = 0
+  const queryTexts: string[] = []
+  const pooledSource = createPostgresAccountHealthJobsStoreSource('postgres://unused')
+  pooledSource.pool = {
+    async connect() {
+      connects += 1
+      return {
+        async query(text: string) {
+          queryTexts.push(text)
+          if (text.startsWith('SELECT payload')) {
+            return { rows: [{ payload: postgresPayload, storage_observed_at: '2026-08-16T00:00:00.000000Z' }] }
+          }
+          return { rows: [] }
+        },
+        release() { releases += 1 }
+      } as never
+    },
+    async end() { ends += 1 }
+  }
+  await listAccountHealthJobsOutcomes(pooledSource, { limit: 1 })
+  await listAccountHealthJobsOutcomes(pooledSource, { limit: 1 })
+  assert.equal(connects, 2, '常驻 J1 reader 每轮借用同一个 pool 的连接')
+  assert.equal(releases, 2, '常驻 J1 reader 每轮必须归还连接')
+  assert.equal(ends, 0, '常驻 J1 reader 在 runtime 退出前不能每轮销毁 pool')
+  assert.equal(queryTexts.filter((text) => text === 'SET LOCAL statement_timeout = 5000').length, 2, 'J1 PostgreSQL 读取必须有语句超时')
+  await closeAccountHealthJobsStoreSource(pooledSource)
+  assert.equal(ends, 1, '常驻 J1 reader runtime 退出时必须关闭 pool')
+
+  let transientEnds = 0
+  const transientSource: AccountHealthJobsPostgresStoreSource = { mode: 'postgres', postgresUrl: 'postgres://unused' }
+  transientSource.pool = {
+    async connect() {
+      return {
+        async query(text: string) {
+          if (text.startsWith('SELECT payload')) {
+            return { rows: [{ payload: postgresPayload, storage_observed_at: '2026-08-16T00:00:00.000000Z' }] }
+          }
+          return { rows: [] }
+        },
+        release() {}
+      } as never
+    },
+    async end() { transientEnds += 1 }
+  }
+  await listAccountHealthJobsOutcomes(transientSource, { limit: 1 })
+  assert.equal(transientEnds, 1, '一次性 J1 reader 查询完成后不能保留闲置 pool')
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

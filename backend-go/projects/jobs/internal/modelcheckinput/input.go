@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 type Trigger string
 
@@ -35,8 +35,40 @@ type AccountSnapshot struct {
 }
 
 type PolicySnapshot struct {
-	Revision string `json:"revision"`
-	Digest   string `json:"digest"`
+	Revision                 string `json:"revision"`
+	Profile                  string `json:"profile"`
+	ManualEnforcementEnabled bool   `json:"manualEnforcementEnabled"`
+	PenaltyThreshold         int    `json:"penaltyThreshold"`
+	PenaltyAction            string `json:"penaltyAction"`
+	RecoveryIntervalMinutes  int    `json:"recoveryIntervalMinutes"`
+	Digest                   string `json:"digest"`
+}
+
+// NewPolicySnapshot freezes all policy inputs that can influence the quality
+// projection. The digest is derived here rather than trusted from a caller,
+// so replay can detect a changed threshold or enforcement action.
+func NewPolicySnapshot(revision, profile string, manualEnforcementEnabled bool, penaltyThreshold int, penaltyAction string, recoveryIntervalMinutes int) (PolicySnapshot, error) {
+	policy := PolicySnapshot{
+		Revision:                 clean(revision),
+		Profile:                  clean(profile),
+		ManualEnforcementEnabled: manualEnforcementEnabled,
+		PenaltyThreshold:         penaltyThreshold,
+		PenaltyAction:            clean(penaltyAction),
+		RecoveryIntervalMinutes:  recoveryIntervalMinutes,
+	}
+	if err := validatePolicy(policy, false); err != nil {
+		return PolicySnapshot{}, err
+	}
+	digest, err := policyDigest(policy)
+	if err != nil {
+		return PolicySnapshot{}, err
+	}
+	policy.Digest = digest
+	return policy, nil
+}
+
+func (policy PolicySnapshot) Verify() error {
+	return validatePolicy(normalizePolicy(policy), true)
 }
 
 type Draft struct {
@@ -199,6 +231,9 @@ func validate(input IssuedInput) error {
 	if input.Profile != "quick" && input.Profile != "full" {
 		return errors.New("model check input profile is invalid")
 	}
+	if err := input.Policy.Verify(); err != nil {
+		return err
+	}
 	if input.Trigger != TriggerManual && input.Trigger != TriggerScheduled && input.Trigger != TriggerQualityRecovery {
 		return errors.New("model check input trigger is invalid")
 	}
@@ -272,7 +307,49 @@ func normalizeAccount(account AccountSnapshot) AccountSnapshot {
 }
 
 func normalizePolicy(policy PolicySnapshot) PolicySnapshot {
-	return PolicySnapshot{Revision: clean(policy.Revision), Digest: clean(policy.Digest)}
+	return PolicySnapshot{
+		Revision:                 clean(policy.Revision),
+		Profile:                  clean(policy.Profile),
+		ManualEnforcementEnabled: policy.ManualEnforcementEnabled,
+		PenaltyThreshold:         policy.PenaltyThreshold,
+		PenaltyAction:            clean(policy.PenaltyAction),
+		RecoveryIntervalMinutes:  policy.RecoveryIntervalMinutes,
+		Digest:                   clean(policy.Digest),
+	}
+}
+
+func validatePolicy(policy PolicySnapshot, verifyDigest bool) error {
+	if policy.Revision == "" || policy.Profile != "quick" && policy.Profile != "full" || policy.PenaltyThreshold < 40 || policy.PenaltyThreshold > 100 || (policy.PenaltyAction != "disable" && policy.PenaltyAction != "fallback" && policy.PenaltyAction != "quality_isolate") || policy.RecoveryIntervalMinutes < 10 || policy.RecoveryIntervalMinutes > 10080 {
+		return errors.New("model check policy snapshot is invalid")
+	}
+	if !verifyDigest {
+		return nil
+	}
+	want, err := policyDigest(policy)
+	if err != nil {
+		return err
+	}
+	if policy.Digest != want {
+		return errors.New("model check policy snapshot digest mismatch")
+	}
+	return nil
+}
+
+func policyDigest(policy PolicySnapshot) (string, error) {
+	payload := struct {
+		Revision                 string `json:"revision"`
+		Profile                  string `json:"profile"`
+		ManualEnforcementEnabled bool   `json:"manualEnforcementEnabled"`
+		PenaltyThreshold         int    `json:"penaltyThreshold"`
+		PenaltyAction            string `json:"penaltyAction"`
+		RecoveryIntervalMinutes  int    `json:"recoveryIntervalMinutes"`
+	}{policy.Revision, policy.Profile, policy.ManualEnforcementEnabled, policy.PenaltyThreshold, policy.PenaltyAction, policy.RecoveryIntervalMinutes}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal model check policy snapshot: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func comparisonID(snapshot *AccountSnapshot) string {

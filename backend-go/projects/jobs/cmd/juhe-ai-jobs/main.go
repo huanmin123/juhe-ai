@@ -23,6 +23,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckapp"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckruntime"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
@@ -312,6 +314,17 @@ func main() {
 			}
 		}
 	}
+	j3bConfig, err := modelcheckruntime.LoadConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load J3b model-check config: %w", err))
+	}
+	var j3bHost *modelcheckapp.Host
+	if j3bConfig.Enabled {
+		j3bHost, err = modelcheckapp.OpenHost(context.Background(), j3bConfig)
+		if err != nil {
+			fail(fmt.Errorf("initialize J3b Go control plane: %w", err))
+		}
+	}
 
 	listener, err := listenLoopback(*healthAddress)
 	if err != nil {
@@ -425,6 +438,38 @@ func main() {
 			},
 		})
 	}
+	if j3bHost != nil {
+		j3bListener, listenErr := net.Listen("tcp", j3bConfig.ManagementAddress)
+		if listenErr != nil {
+			_ = j3bHost.Close()
+			fail(fmt.Errorf("listen J3b management endpoint %q: %w", j3bConfig.ManagementAddress, listenErr))
+		}
+		j3bServer := &http.Server{Handler: j3bHost.Handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: j3bConfig.Deadline + 5*time.Second, WriteTimeout: j3bConfig.Deadline + 5*time.Second, IdleTimeout: 30 * time.Second}
+		components = append(components, supervisor.Component{
+			Name: "J3b model-check management API",
+			Run: func(context.Context) error {
+				err := j3bServer.Serve(j3bListener)
+				if errors.Is(err, http.ErrServerClosed) {
+					return nil
+				}
+				return err
+			},
+			Close: func() error {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				shutdownErr := j3bServer.Shutdown(shutdownCtx)
+				closeErr := j3bHost.Close()
+				if shutdownErr != nil {
+					return shutdownErr
+				}
+				return closeErr
+			},
+		})
+	}
+	j3bReady := func() bool { return true }
+	if j3bHost != nil {
+		j3bReady = j3bHost.Ready
+	}
 	healthServer := &http.Server{
 		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
 			if j3Runner == nil {
@@ -436,14 +481,14 @@ func main() {
 				return proxylatency.RunnerStatus{}, true
 			}
 			return j3Runner.Snapshot()
-		}),
+		}, j3bConfig.Enabled, j3bReady),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled)
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", j3bConfig.Enabled)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
@@ -539,6 +584,8 @@ func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
 			"accountBalanceReady":   false,
 			"proxyLatencyEnabled":   false,
 			"proxyLatencyReady":     false,
+			"modelCheckEnabled":     false,
+			"modelCheckReady":       false,
 		})
 	})
 }
@@ -649,6 +696,8 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 	proxyLatencySnapshot := func() (proxylatency.RunnerStatus, bool) {
 		return proxyLatencyStatus(), proxyLatencyReady()
 	}
+	modelCheckEnabled := false
+	modelCheckReady := func() bool { return true }
 	if len(j2) > 0 {
 		if value, ok := j2[0].(bool); ok {
 			accountBalanceEnabled = value
@@ -679,6 +728,16 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 			proxyLatencySnapshot = value
 		}
 	}
+	if len(j2) > 6 {
+		if value, ok := j2[6].(bool); ok {
+			modelCheckEnabled = value
+		}
+	}
+	if len(j2) > 7 {
+		if value, ok := j2[7].(func() bool); ok {
+			modelCheckReady = value
+		}
+	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
 			http.NotFound(response, request)
@@ -690,8 +749,9 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 		accountBalanceIsReady := !accountBalanceEnabled || accountBalanceReady()
 		proxyStatus, proxyReady := proxyLatencySnapshot()
 		proxyLatencyIsReady := !proxyLatencyEnabled || proxyReady
+		modelCheckIsReady := !modelCheckEnabled || modelCheckReady()
 		response.Header().Set("Content-Type", "application/json")
-		ready := runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady
+		ready := runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && modelCheckIsReady
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"ready":                         ready,
 			"ownerReady":                    ready,
@@ -704,6 +764,8 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 			"accountBalanceReady":           accountBalanceIsReady,
 			"proxyLatencyEnabled":           proxyLatencyEnabled,
 			"proxyLatencyReady":             proxyLatencyIsReady,
+			"modelCheckEnabled":             modelCheckEnabled,
+			"modelCheckReady":               modelCheckIsReady,
 			"proxyLatencyOwnerHeld":         proxyStatus.OwnerHeld,
 			"proxyLatencyLastCycleAt":       proxylatencyTime(proxyStatus.LastCycleAt),
 			"proxyLatencyLastSuccessAt":     proxylatencyTime(proxyStatus.LastSuccess),

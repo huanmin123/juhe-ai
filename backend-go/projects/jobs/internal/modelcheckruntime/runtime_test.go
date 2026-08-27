@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,7 +36,7 @@ func TestRunProjectsGoProbeIntoDatasetAndDurableOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run error: %v", err)
 	}
-	if result.RunStatus != modelcheckstore.RunCompleted || result.InputID == "" || result.OutcomeID == "" || len(result.Items) != 5 {
+	if result.RunStatus != modelcheckstore.RunCompleted || result.InputID == "" || result.OutcomeID == "" || len(result.Items) != 4 {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	if result.Summary.Level == "" || result.Summary.MaxScore <= 0 {
@@ -44,6 +46,9 @@ func TestRunProjectsGoProbeIntoDatasetAndDurableOutcome(t *testing.T) {
 	status, count := readRunStatusAndItemCount(t, datasetPath, result.RunID)
 	if status != string(modelcheckstore.RunCompleted) || count != len(result.Items) {
 		t.Fatalf("projected status=%s itemCount=%d resultItems=%d", status, count, len(result.Items))
+	}
+	if decision := readRunQualityDecision(t, datasetPath, result.RunID); !strings.Contains(decision, `"quality_evidence_not_formed"`) || !strings.Contains(decision, `"result":"not_triggered"`) {
+		t.Fatalf("quality decision=%s", decision)
 	}
 	outcomes, err := durable.ListCommittedOutcomes(context.Background(), modelcheckdurable.OutcomeCursor{}, 10)
 	if err != nil || len(outcomes) != 1 || outcomes[0].Outcome.OutcomeID != result.OutcomeID {
@@ -57,7 +62,7 @@ func TestRunProjectsCanceledFailureEvenWhenCallerContextIsCanceled(t *testing.T)
 	defer dataset.Close()
 	service := newRuntimeService(durable, dataset, "http://unused.invalid", now)
 	ctx, cancel := context.WithCancel(context.Background())
-	service.Resolver = func(context.Context, string, string) (modelcheckexecutor.ResolvedTarget, error) {
+	service.Resolver = func(context.Context, modelcheckexecutor.ResolutionRequest) (modelcheckexecutor.ResolvedTarget, error) {
 		cancel()
 		return modelcheckexecutor.ResolvedTarget{}, context.Canceled
 	}
@@ -78,7 +83,7 @@ func TestRunUsesActiveRegistryForStopAndExclusion(t *testing.T) {
 	service := newRuntimeService(durable, dataset, "http://unused.invalid", now)
 	service.Active = modelcheckactive.NewRegistry()
 	started := make(chan struct{})
-	service.Resolver = func(ctx context.Context, _, _ string) (modelcheckexecutor.ResolvedTarget, error) {
+	service.Resolver = func(ctx context.Context, _ modelcheckexecutor.ResolutionRequest) (modelcheckexecutor.ResolvedTarget, error) {
 		select {
 		case <-started:
 		default:
@@ -140,7 +145,14 @@ func newRuntimeService(durable *modelcheckdurable.Store, dataset *modelcheckstor
 	return &Service{
 		Durable: durable,
 		Dataset: dataset,
-		Resolver: func(context.Context, string, string) (modelcheckexecutor.ResolvedTarget, error) {
+		Resolver: func(_ context.Context, request modelcheckexecutor.ResolutionRequest) (modelcheckexecutor.ResolvedTarget, error) {
+			snapshot := request.Account
+			if request.Input.SystemAccountID != "system-account" || request.Input.Model != "gpt-5.6-sol" {
+				return modelcheckexecutor.ResolvedTarget{}, fmt.Errorf("unexpected resolver input: %#v", request.Input)
+			}
+			if snapshot.ID != "target-account" || snapshot.ConfigRevision != "config-revision-1" || snapshot.MappedUpstreamModel != "gpt-5.6-sol" {
+				return modelcheckexecutor.ResolvedTarget{}, fmt.Errorf("unexpected resolver snapshot: %#v", snapshot)
+			}
 			return modelcheckexecutor.ResolvedTarget{ConfigRevision: "config-revision-1", ProtocolProfileID: "profile-openai-responses", ProtocolProfileRevision: "profile-revision-1", Endpoint: endpoint, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Model: "gpt-5.6-sol", Prompt: "hello", MaxOutputTokens: 32}, nil
 		},
 		Retry: modelcheckprobe.RetryOptions{AttemptTimeouts: []time.Duration{time.Second}, Delay: func(context.Context) error { return nil }},
@@ -150,7 +162,15 @@ func newRuntimeService(durable *modelcheckdurable.Store, dataset *modelcheckstor
 }
 
 func runtimeRequest(now time.Time) RunRequest {
-	return RunRequest{SystemAccountID: "system-account", ActorSystemAccountID: "actor-account", Target: modelcheckinput.AccountSnapshot{ID: "target-account", ConfigRevision: "config-revision-1", ProviderCode: "openai", ProtocolProfileID: "profile-openai-responses", ProtocolProfileRevision: "profile-revision-1", EndpointFingerprint: "endpoint-hmac-1", MappedUpstreamModel: "gpt-5.6-sol", CredentialEnvelopeRef: "credential-alias-1", ProxyConfigurationVersion: "proxy-revision-1"}, Model: "gpt-5.6-sol", Profile: "quick", Trigger: modelcheckinput.TriggerManual, ProbeSetVersion: "probe-v1", Policy: modelcheckinput.PolicySnapshot{Revision: "policy-revision-1", Digest: "policy-digest-1"}, StartedAt: now, DeadlineAt: now.Add(time.Minute), TargetName: "Target", ProviderCode: "openai", TargetType: "account"}
+	return RunRequest{SystemAccountID: "system-account", ActorSystemAccountID: "actor-account", Target: modelcheckinput.AccountSnapshot{ID: "target-account", ConfigRevision: "config-revision-1", ProviderCode: "openai", ProtocolProfileID: "profile-openai-responses", ProtocolProfileRevision: "profile-revision-1", EndpointFingerprint: "endpoint-hmac-1", MappedUpstreamModel: "gpt-5.6-sol", CredentialEnvelopeRef: "credential-alias-1", ProxyConfigurationVersion: "proxy-revision-1"}, Model: "gpt-5.6-sol", Profile: "quick", Trigger: modelcheckinput.TriggerManual, ProbeSetVersion: "probe-v1", Policy: testPolicySnapshot(), StartedAt: now, DeadlineAt: now.Add(time.Minute), TargetName: "Target", ProviderCode: "openai", TargetType: "account"}
+}
+
+func testPolicySnapshot() modelcheckinput.PolicySnapshot {
+	policy, err := modelcheckinput.NewPolicySnapshot("policy-revision-1", "quick", true, 70, "fallback", 10)
+	if err != nil {
+		panic(err)
+	}
+	return policy
 }
 
 func nowFunc(now time.Time) func() time.Time { return func() time.Time { return now } }
@@ -180,4 +200,15 @@ func readRunStatusAndItemCount(t *testing.T, path, runID string) (string, int) {
 		t.Fatal(err)
 	}
 	return status, count
+}
+
+func readRunQualityDecision(t *testing.T, path, runID string) string {
+	t.Helper()
+	db := openReadOnlySQLite(t, path)
+	defer db.Close()
+	var decision string
+	if err := db.QueryRow("SELECT quality_decision_json FROM model_check_runs WHERE id=?", runID).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	return decision
 }

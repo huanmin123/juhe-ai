@@ -77,9 +77,6 @@ func TestManualAdminSnapshotSQLUsesActiveNodePostgresCatalogFlags(t *testing.T) 
 }
 
 func TestManualAdminSessionTimestampCompatibilityUsesNodeISOText(t *testing.T) {
-	if !strings.Contains(manualAdminAuthenticationSQL, "ss.expires_at") || strings.Contains(manualAdminAuthenticationSQL, "clock_timestamp") {
-		t.Fatalf("session query must read Node TEXT timestamps without PostgreSQL timestamp comparison: %s", manualAdminAuthenticationSQL)
-	}
 	instant := time.Date(2026, 8, 26, 12, 34, 56, 987654321, time.FixedZone("UTC+8", 8*60*60))
 	if got, want := manualNodeISOTime(instant), "2026-08-26T04:34:56.987Z"; got != want {
 		t.Fatalf("Node ISO timestamp=%q want %q", got, want)

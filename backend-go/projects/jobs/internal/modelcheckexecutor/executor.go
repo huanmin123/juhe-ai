@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckdurable"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckinput"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckprofile"
 )
@@ -27,13 +28,24 @@ type ResolvedTarget struct {
 	Stream                  bool
 	MaxOutputTokens         int
 	Headers                 http.Header
+	Client                  *http.Client
 	Timeout                 time.Duration
 	MaxResponseBytes        int64
 	ModelLimit              int
 	CountTokens             func(string) int
 }
 
-type TargetResolver func(context.Context, string, string) (ResolvedTarget, error)
+// ResolutionRequest gives a resolver the complete durable input together with
+// the target it is resolving. AccountSnapshot alone cannot prove the caller's
+// system-account scope or recover the requested model after an account-model
+// mapping changed it into MappedUpstreamModel. A resolver must re-read and
+// validate both values and must not depend on a prior HTTP run.
+type ResolutionRequest struct {
+	Input   modelcheckinput.IssuedInput
+	Account modelcheckinput.AccountSnapshot
+}
+
+type TargetResolver func(context.Context, ResolutionRequest) (ResolvedTarget, error)
 
 type ExecuteOptions struct {
 	OnItem func(modelcheckprobe.EvaluationItem)
@@ -64,7 +76,8 @@ func ExecuteInputWithOptions(ctx context.Context, store *modelcheckdurable.Store
 	if err != nil {
 		return OutcomePayload{}, err
 	}
-	target, err := resolver(ctx, issued.Input.Target.ID, issued.Input.Target.ConfigRevision)
+	targetRequest := ResolutionRequest{Input: issued.Input, Account: issued.Input.Target}
+	target, err := resolver(ctx, targetRequest)
 	if err != nil {
 		return OutcomePayload{}, err
 	}
@@ -73,7 +86,7 @@ func ExecuteInputWithOptions(ctx context.Context, store *modelcheckdurable.Store
 	}
 	var comparison ResolvedTarget
 	if issued.Input.TrustedComparison {
-		comparison, err = resolver(ctx, issued.Input.Comparison.ID, issued.Input.Comparison.ConfigRevision)
+		comparison, err = resolver(ctx, ResolutionRequest{Input: issued.Input, Account: *issued.Input.Comparison})
 		if err != nil {
 			return OutcomePayload{}, err
 		}
@@ -91,7 +104,7 @@ func ExecuteInputWithOptions(ctx context.Context, store *modelcheckdurable.Store
 		}
 		return OutcomePayload{}, original
 	}
-	rechecked, err := resolver(ctx, issued.Input.Target.ID, issued.Input.Target.ConfigRevision)
+	rechecked, err := resolver(ctx, targetRequest)
 	if err != nil {
 		return release(err)
 	}
@@ -99,7 +112,7 @@ func ExecuteInputWithOptions(ctx context.Context, store *modelcheckdurable.Store
 		return release(errors.New("model check target revision or profile is stale"))
 	}
 	if issued.Input.TrustedComparison {
-		comparisonRechecked, comparisonErr := resolver(ctx, issued.Input.Comparison.ID, issued.Input.Comparison.ConfigRevision)
+		comparisonRechecked, comparisonErr := resolver(ctx, ResolutionRequest{Input: issued.Input, Account: *issued.Input.Comparison})
 		if comparisonErr != nil {
 			return release(comparisonErr)
 		}
@@ -112,7 +125,20 @@ func ExecuteInputWithOptions(ctx context.Context, store *modelcheckdurable.Store
 	if err != nil {
 		return release(err)
 	}
-	if issued.Input.TrustedComparison && !terminalSuite(items) {
+	coreTerminal := terminalSuite(items)
+	extensionTerminal := false
+	if issued.Input.Profile == "full" && !coreTerminal {
+		extensionItems, terminal, extensionErr := runTargetExtensions(ctx, rechecked, "target", retry, options.OnItem)
+		if extensionErr != nil {
+			return release(extensionErr)
+		}
+		items = append(items, extensionItems...)
+		extensionTerminal = terminal
+		if terminal {
+			return commitOutcome(ctx, store, issued, claim, outcomeID, now, items, release)
+		}
+	}
+	if issued.Input.TrustedComparison && !coreTerminal && !extensionTerminal {
 		targetItems := append([]modelcheckprobe.EvaluationItem(nil), items...)
 		comparisonItems, comparisonErr := runSuite(ctx, comparison, issued.Input.Profile, "trusted_comparison", retry, options.OnItem)
 		if comparisonErr != nil {
@@ -130,20 +156,31 @@ func ExecuteInputWithOptions(ctx context.Context, store *modelcheckdurable.Store
 	if len(items) == 0 {
 		return release(errors.New("model check suite produced no evaluation items"))
 	}
+	return commitOutcome(ctx, store, issued, claim, outcomeID, now, items, release)
+}
+
+func commitOutcome(ctx context.Context, store *modelcheckdurable.Store, issued modelcheckdurable.Issued, claim modelcheckdurable.Claim, outcomeID string, now time.Time, items []modelcheckprobe.EvaluationItem, release func(error) (OutcomePayload, error)) (OutcomePayload, error) {
+	if len(items) == 0 {
+		return release(errors.New("model check suite produced no evaluation items"))
+	}
 	summary := modelcheckprobe.SummarizeChecks(items, issued.Input.TrustedComparison, issued.Input.Profile)
 	payload := OutcomePayload{InputID: issued.Input.InputID, InputDigest: issued.Input.InputDigest, InputVersion: issued.Input.InputVersion, Item: items[0], Items: items, Summary: summary, CommittedAt: now.UTC()}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return release(fmt.Errorf("marshal model check outcome: %w", err))
 	}
-	if err := store.CommitOutcome(ctx, modelcheckdurable.Outcome{OutcomeID: outcomeID, InputID: inputID, InputDigest: issued.Input.InputDigest, Payload: encoded}, claim, now); err != nil {
+	if err := store.CommitOutcome(ctx, modelcheckdurable.Outcome{OutcomeID: outcomeID, InputID: issued.Input.InputID, InputDigest: issued.Input.InputDigest, Payload: encoded}, claim, now); err != nil {
 		return OutcomePayload{}, err
 	}
 	return payload, nil
 }
 
+func runTargetExtensions(ctx context.Context, target ResolvedTarget, prefix string, retry modelcheckprobe.RetryOptions, onItem func(modelcheckprobe.EvaluationItem)) ([]modelcheckprobe.EvaluationItem, bool, error) {
+	return modelcheckprobe.RunTargetEvidenceExtensions(ctx, modelcheckprobe.BasicProbeInput{Endpoint: target.Endpoint, Protocol: target.Protocol, Model: target.Model, Prompt: target.Prompt, Stream: target.Stream, MaxOutputTokens: target.MaxOutputTokens, Headers: target.Headers, Client: target.Client, Timeout: target.Timeout, MaxResponseBytes: target.MaxResponseBytes, ModelLimit: target.ModelLimit, CountTokens: target.CountTokens}, prefix, retry, onItem)
+}
+
 func runSuite(ctx context.Context, target ResolvedTarget, profile, prefix string, retry modelcheckprobe.RetryOptions, onItem func(modelcheckprobe.EvaluationItem)) ([]modelcheckprobe.EvaluationItem, error) {
-	return modelcheckprobe.RunSuite(ctx, modelcheckprobe.BasicProbeInput{Endpoint: target.Endpoint, Protocol: target.Protocol, Model: target.Model, Prompt: target.Prompt, Stream: target.Stream, MaxOutputTokens: target.MaxOutputTokens, Headers: target.Headers, Timeout: target.Timeout, MaxResponseBytes: target.MaxResponseBytes, ModelLimit: target.ModelLimit, CountTokens: target.CountTokens}, modelcheckprobe.SuiteOptions{
+	return modelcheckprobe.RunSuite(ctx, modelcheckprobe.BasicProbeInput{Endpoint: target.Endpoint, Protocol: target.Protocol, Model: target.Model, Prompt: target.Prompt, Stream: target.Stream, MaxOutputTokens: target.MaxOutputTokens, Headers: target.Headers, Client: target.Client, Timeout: target.Timeout, MaxResponseBytes: target.MaxResponseBytes, ModelLimit: target.ModelLimit, CountTokens: target.CountTokens}, modelcheckprobe.SuiteOptions{
 		Prefix:                     prefix,
 		IncludeStream:              target.Stream,
 		IncludeStructured:          true,
@@ -152,8 +189,6 @@ func runSuite(ctx context.Context, target ResolvedTarget, profile, prefix string
 		IncludeLongContext:         profile == "full",
 		IncludeStability:           profile == "full",
 		IncludeUsageOnBasicFailure: profile == "full",
-		IncludeTokenIntegrity:      true,
-		IncludeIdentity:            profile == "full",
 		OnItem:                     onItem,
 	}, retry)
 }
@@ -169,10 +204,12 @@ func matchesComparisonSnapshot(target ResolvedTarget, issued modelcheckdurable.I
 
 func terminalSuite(items []modelcheckprobe.EvaluationItem) bool {
 	for _, item := range items {
-		if item.ItemType == "responses_basic" || item.ItemType == "protocol_basic" {
-			success, _ := item.Evidence["success"].(bool)
-			return !success
+		if item.Evidence == nil {
+			continue
+		}
+		if requestFailure, _ := item.Evidence["requestFailure"].(bool); requestFailure {
+			return true
 		}
 	}
-	return true
+	return false
 }

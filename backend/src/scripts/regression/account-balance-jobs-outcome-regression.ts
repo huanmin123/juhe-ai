@@ -3,7 +3,12 @@ import { createRequire } from 'node:module'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { decodeAccountBalanceJobsOutcome, listAccountBalanceJobsOutcomes } from '../../storage/account-balance-jobs-outcome.repository.js'
+import {
+  closeAccountBalanceJobsStoreSource,
+  createPostgresAccountBalanceJobsStoreSource,
+  decodeAccountBalanceJobsOutcome,
+  listAccountBalanceJobsOutcomes
+} from '../../storage/account-balance-jobs-outcome.repository.js'
 import { createSqliteDatabaseClient } from '../../storage/database-client.js'
 import { advanceAccountBalanceProjectionCursorAsync, currentAccountBalanceProjectionCursorAsync } from '../../storage/account-balance-projection-cursor.repository.js'
 
@@ -95,4 +100,61 @@ assert.equal(
   'a legacy millisecond cursor must advance through the first replayed microsecond outcome'
 )
 assert.equal(repairedCursorParams?.[0], '2026-08-19T04:07:26.724170Z')
+
+const postgresOutcomeRow = {
+  outcome_id: 'account-balance-outcome-1',
+  account_id: 'acct-j2',
+  input_version: 3,
+  config_revision: 7,
+  trigger: 'periodic',
+  payload: fixture,
+  storage_observed_at: '2026-08-19T00:00:00.000001Z'
+}
+const persistentPostgresSource = createPostgresAccountBalanceJobsStoreSource('postgres://reader@localhost/juhe_ai_test')
+let persistentConnects = 0
+let persistentEnds = 0
+let persistentReleases = 0
+const persistentQueries: string[] = []
+const persistentClient = {
+  query: async (sql: string) => {
+    persistentQueries.push(sql)
+    if (sql === 'SELECT current_user AS current_user') return { rows: [{ current_user: 'juhe_ai_j2_outcome_reader' }] }
+    if (sql.startsWith('SELECT outcome_id')) return { rows: [postgresOutcomeRow] }
+    return { rows: [] }
+  },
+  release: () => { persistentReleases++ }
+}
+persistentPostgresSource.pool = {
+  connect: async () => {
+    persistentConnects++
+    return persistentClient as never
+  },
+  end: async () => { persistentEnds++ }
+}
+assert.equal((await listAccountBalanceJobsOutcomes(persistentPostgresSource, { limit: 1 })).length, 1)
+assert.equal((await listAccountBalanceJobsOutcomes(persistentPostgresSource, { limit: 1 })).length, 1)
+assert.equal(persistentConnects, 2, '每轮可复用 pool 中的连接，但仍应独立借还 client')
+assert.equal(persistentEnds, 0, '成功轮询不得销毁 J2 outcome pool')
+assert.equal(persistentReleases, 2, '每轮读取必须归还借出的 client')
+assert.equal(persistentQueries.filter((sql) => sql === 'SELECT current_user AS current_user').length, 1, '每个新 pool 必须核验一次 J2 专用 reader 角色')
+await closeAccountBalanceJobsStoreSource(persistentPostgresSource)
+assert.equal(persistentEnds, 1, 'runtime 停止时必须关闭 J2 outcome pool')
+
+const wrongRoleSource = createPostgresAccountBalanceJobsStoreSource('postgres://wrong-role@localhost/juhe_ai_test')
+let wrongRoleEnds = 0
+const wrongRoleClient = {
+  query: async (sql: string) => sql === 'SELECT current_user AS current_user'
+    ? { rows: [{ current_user: 'juhe_ai_j1_test_output' }] }
+    : { rows: [] },
+  release: () => undefined
+}
+wrongRoleSource.pool = {
+  connect: async () => wrongRoleClient as never,
+  end: async () => { wrongRoleEnds++ }
+}
+await assert.rejects(
+  () => listAccountBalanceJobsOutcomes(wrongRoleSource, { limit: 1 }),
+  /J2 outcome reader 必须使用专用数据库角色/u
+)
+assert.equal(wrongRoleEnds, 1, 'reader 角色误配时必须丢弃连接池，不能复用越权连接')
 console.log('account balance jobs outcome regression passed')

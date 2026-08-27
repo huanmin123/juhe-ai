@@ -3,7 +3,12 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { currentAccountBalanceProjectionCursorAsync, advanceAccountBalanceProjectionCursorAsync } from '../../storage/account-balance-projection-cursor.repository.js'
-import { listAccountBalanceJobsOutcomes, type AccountBalanceJobsStoreSource } from '../../storage/account-balance-jobs-outcome.repository.js'
+import {
+  closeAccountBalanceJobsStoreSource,
+  createPostgresAccountBalanceJobsStoreSource,
+  listAccountBalanceJobsOutcomes,
+  type AccountBalanceJobsStoreSource
+} from '../../storage/account-balance-jobs-outcome.repository.js'
 import { getPostgresPool } from '../../storage/postgres-client.js'
 import { projectAccountBalanceJobsOutcome } from './account-balance-jobs-projector.service.js'
 import { accountBalanceGoOwnerEnabled } from './account-balance-handover.js'
@@ -45,8 +50,13 @@ export function startAccountBalanceJobsOutcomeProjectionRuntime(): void {
   stopping = false
   projectionReady = false
   projectionReadyUntil = 0
-  const source: AccountBalanceJobsStoreSource = { mode: 'postgres', postgresUrl }
-  running = loop(source).finally(() => { running = undefined; projectionReady = false; projectionReadyUntil = 0 })
+  const source = createPostgresAccountBalanceJobsStoreSource(postgresUrl)
+  running = loop(source).finally(async () => {
+    await closeAccountBalanceJobsStoreSource(source)
+    running = undefined
+    projectionReady = false
+    projectionReadyUntil = 0
+  })
 }
 
 export async function stopAccountBalanceJobsOutcomeProjectionRuntime(): Promise<void> { stopping = true; projectionReady = false; projectionReadyUntil = 0; await running }

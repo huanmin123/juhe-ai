@@ -97,8 +97,16 @@ func validDraft(issuedAt time.Time) Draft {
 		Profile:         "quick",
 		Trigger:         TriggerManual,
 		ProbeSetVersion: "probe-v1",
-		Policy:          PolicySnapshot{Revision: "policy-revision-1", Digest: "policy-digest-1"},
+		Policy:          testPolicySnapshot(),
 		IssuedAt:        issuedAt,
 		DeadlineAt:      issuedAt.Add(time.Minute),
 	}
+}
+
+func testPolicySnapshot() PolicySnapshot {
+	policy, err := NewPolicySnapshot("policy-revision-1", "quick", true, 70, "fallback", 10)
+	if err != nil {
+		panic(err)
+	}
+	return policy
 }

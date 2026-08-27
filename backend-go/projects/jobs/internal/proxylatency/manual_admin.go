@@ -2,9 +2,7 @@ package proxylatency
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/operationlogappend"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
@@ -30,11 +29,11 @@ const manualAdminSessionCookie = "juhe_ai_session"
 var temporaryAccessTokenPattern = regexp.MustCompile(`^juhe_tmp_[A-Za-z0-9_-]{43}$`)
 
 var (
-	ErrManualAdminInvalidToken   = errors.New("访问令牌无效或已过期")
-	ErrManualAdminLoginRequired  = errors.New("请先登录")
-	ErrManualAdminSessionExpired = errors.New("登录会话已过期")
-	ErrManualAdminMustChange     = errors.New("请先修改初始密码")
-	ErrManualAdminForbidden      = errors.New("需要管理员权限")
+	ErrManualAdminInvalidToken   = modelcheckauth.ErrInvalidToken
+	ErrManualAdminLoginRequired  = modelcheckauth.ErrLoginRequired
+	ErrManualAdminSessionExpired = modelcheckauth.ErrSessionExpired
+	ErrManualAdminMustChange     = modelcheckauth.ErrMustChange
+	ErrManualAdminForbidden      = modelcheckauth.ErrForbidden
 	ErrManualAdminProxyMissing   = errors.New("代理不存在")
 )
 
@@ -146,18 +145,19 @@ func (a postgresManualAdminAuditAppender) Append(ctx context.Context, input oper
 // auth session touch required by the J3a management endpoint. It never opens
 // Node storage or calls another process.
 type PostgresManualAdminSource struct {
-	db  *sql.DB
-	now func() time.Time
+	db   *sql.DB
+	auth *modelcheckauth.Authenticator
 }
 
 func NewPostgresManualAdminSource(db *sql.DB, now func() time.Time) (*PostgresManualAdminSource, error) {
 	if db == nil {
 		return nil, errors.New("J3a management PostgreSQL database is required")
 	}
-	if now == nil {
-		now = time.Now
+	auth, err := modelcheckauth.New(db, modelcheckauth.Postgres, now)
+	if err != nil {
+		return nil, err
 	}
-	return &PostgresManualAdminSource{db: db, now: now}, nil
+	return &PostgresManualAdminSource{db: db, auth: auth}, nil
 }
 
 // CheckContract verifies the least-privilege schema and grants before the
@@ -165,6 +165,9 @@ func NewPostgresManualAdminSource(db *sql.DB, now func() time.Time) (*PostgresMa
 func (s *PostgresManualAdminSource) CheckContract(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return errors.New("J3a management source 未初始化")
+	}
+	if err := s.auth.CheckContract(ctx); err != nil {
+		return fmt.Errorf("验证 J3a management 会话认证契约失败: %w", err)
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
@@ -215,44 +218,12 @@ func (s *PostgresManualAdminSource) Authenticate(ctx context.Context, authorizat
 	if err != nil {
 		return ManualAdminActor{}, err
 	}
-	hash := sha256.Sum256([]byte(token))
-	var sessionID, expiresAtText, lastSeenText string
-	var actor ManualAdminActor
-	var mustChange bool
-	err = s.db.QueryRowContext(ctx, manualAdminAuthenticationSQL, hex.EncodeToString(hash[:])).Scan(
-		&sessionID, &expiresAtText, &lastSeenText, &actor.SystemAccountID, &actor.Username, &actor.DisplayName, &actor.Role, &mustChange,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ManualAdminActor{}, ErrManualAdminSessionExpired
-	}
+	actor, err := s.auth.RequireAdminToken(ctx, token)
 	if err != nil {
-		return ManualAdminActor{}, fmt.Errorf("读取管理登录会话失败: %w", err)
+		return ManualAdminActor{}, err
 	}
-	now := s.now().UTC()
-	expiresAt, expiresAtErr := time.Parse(time.RFC3339Nano, expiresAtText)
-	lastSeen, lastSeenErr := time.Parse(time.RFC3339Nano, lastSeenText)
-	if expiresAtErr != nil || lastSeenErr != nil || !expiresAt.After(now) {
-		return ManualAdminActor{}, ErrManualAdminSessionExpired
-	}
-	if now.Sub(lastSeen) >= time.Minute {
-		if _, err := s.db.ExecContext(ctx, `UPDATE juhe_business.system_sessions SET last_seen_at=$1 WHERE id=$2 AND last_seen_at<$3`, manualNodeISOTime(now), sessionID, manualNodeISOTime(now.Add(-time.Minute))); err != nil {
-			return ManualAdminActor{}, fmt.Errorf("更新管理登录会话失败: %w", err)
-		}
-	}
-	if mustChange {
-		return ManualAdminActor{}, ErrManualAdminMustChange
-	}
-	if actor.Role != "admin" && actor.Role != "super_admin" {
-		return ManualAdminActor{}, ErrManualAdminForbidden
-	}
-	return actor, nil
+	return ManualAdminActor{SystemAccountID: actor.SystemAccountID, Username: actor.Username, DisplayName: actor.DisplayName, Role: actor.Role}, nil
 }
-
-const manualAdminAuthenticationSQL = `
-SELECT ss.id,ss.expires_at,ss.last_seen_at,sa.id,sa.username,COALESCE(sa.display_name,''),sa.role,sa.must_change_password
-FROM juhe_business.system_sessions ss
-INNER JOIN juhe_business.system_accounts sa ON sa.id=ss.system_account_id
-WHERE ss.token_hash=$1 AND sa.status='active'`
 
 func resolveManualAdminToken(authorization string, cookie *http.Cookie) (string, error) {
 	if authorization != "" {

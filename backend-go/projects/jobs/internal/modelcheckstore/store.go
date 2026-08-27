@@ -142,6 +142,16 @@ type OutcomeProjection struct {
 	QualityDecision json.RawMessage
 }
 
+var ErrQualityDecisionConflict = errors.New("model check quality decision conflicts with terminal run")
+
+type QualityDecisionUpdate struct {
+	RunID          string
+	Status         RunStatus
+	ResultSummary  json.RawMessage
+	PolicySnapshot json.RawMessage
+	Decision       json.RawMessage
+}
+
 var ErrProjectionConflict = errors.New("model check outcome projection conflicts with terminal run")
 
 type Store struct {
@@ -426,6 +436,50 @@ func (s *Store) ProjectOutcome(ctx context.Context, projection OutcomeProjection
 	decision := normalizeJSON(projection.QualityDecision)
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE model_check_runs SET level=?,score=?,max_score=?,status=?,message=?,finished_at=?,duration_ms=?,result_summary_json=?,quality_decision_json=?,updated_at=? WHERE id=? AND status='running'`), projection.Level, projection.Score, projection.MaxScore, string(projection.Status), projection.Message, projection.FinishedAt.UTC().Format(time.RFC3339Nano), duration, string(result), string(decision), createdAt, projection.RunID); err != nil {
 		return fmt.Errorf("finish projected model check run: %w", err)
+	}
+	return tx.Commit()
+}
+
+// UpdateQualityDecision appends the post-terminal quality fact without
+// reopening the run or changing its outcome. It is a compare-and-set: an
+// empty decision may be replaced once, while an identical replay succeeds;
+// any different fact fails closed.
+func (s *Store) UpdateQualityDecision(ctx context.Context, update QualityDecisionUpdate) error {
+	if s == nil || s.db == nil || strings.TrimSpace(update.RunID) == "" || (update.Status != RunCompleted && update.Status != RunFailed && update.Status != RunCanceled) || !json.Valid(update.ResultSummary) || !json.Valid(update.PolicySnapshot) || !json.Valid(update.Decision) {
+		return errors.New("model check quality decision input is invalid")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin quality decision projection: %w", err)
+	}
+	defer tx.Rollback()
+	var status, resultSummary, policySnapshot, current string
+	if err := tx.QueryRowContext(ctx, s.lockRunQuery(`SELECT status,result_summary_json,policy_snapshot_json,quality_decision_json FROM model_check_runs WHERE id=?`), update.RunID).Scan(&status, &resultSummary, &policySnapshot, &current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("model check run not found")
+		}
+		return fmt.Errorf("read quality decision run: %w", err)
+	}
+	if status != string(update.Status) || !jsonEqual([]byte(resultSummary), update.ResultSummary) || !jsonEqual([]byte(policySnapshot), update.PolicySnapshot) {
+		return ErrQualityDecisionConflict
+	}
+	normalized := normalizeJSON(update.Decision)
+	if jsonEqual([]byte(current), normalized) {
+		return tx.Commit()
+	}
+	if strings.TrimSpace(current) != "" && current != "{}" {
+		return ErrQualityDecisionConflict
+	}
+	// The locked row has already been compared with the expected terminal
+	// outcome and policy above. Do not repeat JSON equality in SQL: PostgreSQL
+	// stores these columns as JSONB in the production contract while SQLite
+	// stores text, and a textual predicate would make the two modes diverge.
+	result, err := tx.ExecContext(ctx, s.bind(`UPDATE model_check_runs SET quality_decision_json=?,updated_at=? WHERE id=? AND (quality_decision_json IS NULL OR quality_decision_json='' OR quality_decision_json='{}')`), string(normalized), time.Now().UTC().Format(time.RFC3339Nano), update.RunID)
+	if err != nil {
+		return fmt.Errorf("write quality decision: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ErrQualityDecisionConflict
 	}
 	return tx.Commit()
 }

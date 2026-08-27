@@ -256,6 +256,14 @@ func validDraft(issuedAt time.Time) modelcheckinput.Draft {
 	return modelcheckinput.Draft{
 		InputID: "input-1", SystemAccountID: "system-account", ActorSystemAccountID: "actor-account",
 		Target: modelcheckinput.AccountSnapshot{ID: "target-account", ConfigRevision: "config-revision-1", ProviderCode: "openai", ProtocolProfileID: "profile-openai-responses", ProtocolProfileRevision: "profile-revision-1", EndpointFingerprint: "endpoint-hmac-1", MappedUpstreamModel: "gpt-5.6-sol", CredentialEnvelopeRef: "credential-alias-1", ProxyConfigurationVersion: "proxy-revision-1"},
-		Model:  "gpt-5.6-sol", Profile: "quick", Trigger: modelcheckinput.TriggerManual, ProbeSetVersion: "probe-v1", Policy: modelcheckinput.PolicySnapshot{Revision: "policy-revision-1", Digest: "policy-digest-1"}, IssuedAt: issuedAt, DeadlineAt: issuedAt.Add(5 * time.Minute),
+		Model:  "gpt-5.6-sol", Profile: "quick", Trigger: modelcheckinput.TriggerManual, ProbeSetVersion: "probe-v1", Policy: testPolicySnapshot(), IssuedAt: issuedAt, DeadlineAt: issuedAt.Add(5 * time.Minute),
 	}
+}
+
+func testPolicySnapshot() modelcheckinput.PolicySnapshot {
+	policy, err := modelcheckinput.NewPolicySnapshot("policy-revision-1", "quick", true, 70, "fallback", 10)
+	if err != nil {
+		panic(err)
+	}
+	return policy
 }

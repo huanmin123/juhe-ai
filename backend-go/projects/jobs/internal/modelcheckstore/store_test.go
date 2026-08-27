@@ -130,6 +130,53 @@ func TestProjectOutcomeIsAtomicAndTerminalReplayIsStrict(t *testing.T) {
 	}
 }
 
+func TestUpdateQualityDecisionIsTerminalCASAndIdempotent(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	if err := store.CreateRun(ctx, RunInput{ID: "decision-run", SystemAccountID: "sys", ActorSystemAccountID: "actor", ProviderCode: "openai", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", Trigger: TriggerManual, ProbeSetVersion: "v1", StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	item := ItemInput{ID: "decision-item", RunID: "decision-run", ItemKey: "basic", ItemType: "basic", Status: ItemPassed, Score: 10, MaxScore: 10}
+	if err := store.ProjectOutcome(ctx, OutcomeProjection{RunID: "decision-run", Items: []ItemInput{item}, Status: RunCompleted, Level: "likely", Score: 10, MaxScore: 10, Message: "ok", FinishedAt: now.Add(time.Second), ResultSummary: []byte(`{"score":10}`)}); err != nil {
+		t.Fatal(err)
+	}
+	decision := []byte(`{"version":1,"outcomeDigest":"a","policyDigest":"b","evidenceDigest":"","decision":{"result":"not_triggered"}}`)
+	update := QualityDecisionUpdate{RunID: "decision-run", Status: RunCompleted, ResultSummary: []byte(`{"score":10}`), PolicySnapshot: []byte(`{}`), Decision: decision}
+	if err := store.UpdateQualityDecision(ctx, update); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateQualityDecision(ctx, update); err != nil {
+		t.Fatalf("identical quality replay: %v", err)
+	}
+	conflict := update
+	conflict.Decision = []byte(`{"different":true}`)
+	if err := store.UpdateQualityDecision(ctx, conflict); !errors.Is(err, ErrQualityDecisionConflict) {
+		t.Fatalf("quality drift must fail closed: %v", err)
+	}
+	wrongTerminal := update
+	wrongTerminal.ResultSummary = []byte(`{"score":9}`)
+	if err := store.UpdateQualityDecision(ctx, wrongTerminal); !errors.Is(err, ErrQualityDecisionConflict) {
+		t.Fatalf("terminal summary drift must fail closed: %v", err)
+	}
+	missing := update
+	missing.RunID = "missing"
+	if err := store.UpdateQualityDecision(ctx, missing); err == nil {
+		t.Fatal("missing run must fail")
+	}
+}
+
 func ptrInt64(value int64) *int64 { return &value }
 
 func TestPostgresBindQualifiesTablesAndNumbersPlaceholders(t *testing.T) {
@@ -228,6 +275,13 @@ func TestPostgresModelCheckWriterSmoke(t *testing.T) {
 	}
 	if err := store.FinishRun(ctx, runID, RunCompleted, "likely", 10, 10, "smoke", now.Add(time.Second), nil, nil); err != nil {
 		t.Fatal(err)
+	}
+	decision := []byte(`{"version":1,"outcomeDigest":"smoke-outcome","policyDigest":"smoke-policy","evidenceDigest":"smoke-evidence","decision":{"result":"not_triggered"}}`)
+	if err := store.UpdateQualityDecision(ctx, QualityDecisionUpdate{RunID: runID, Status: RunCompleted, ResultSummary: []byte(`{}`), PolicySnapshot: []byte(`{}`), Decision: decision}); err != nil {
+		t.Fatalf("write PostgreSQL quality decision: %v", err)
+	}
+	if err := store.UpdateQualityDecision(ctx, QualityDecisionUpdate{RunID: runID, Status: RunCompleted, ResultSummary: []byte(`{}`), PolicySnapshot: []byte(`{}`), Decision: decision}); err != nil {
+		t.Fatalf("replay PostgreSQL quality decision: %v", err)
 	}
 	var status string
 	if err := store.db.QueryRowContext(ctx, `SELECT status FROM juhe_dataset.model_check_runs WHERE id=$1`, runID).Scan(&status); err != nil || status != string(RunCompleted) {

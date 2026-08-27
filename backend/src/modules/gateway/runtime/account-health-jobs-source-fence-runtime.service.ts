@@ -2,6 +2,8 @@ import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { passiveScheduleDelayMs } from '../../../shared/passive-schedule-jitter.js'
 import {
+  closeAccountHealthJobsStoreSource,
+  createPostgresAccountHealthJobsStoreSource,
   listAccountHealthJobsOutcomes,
   type AccountHealthJobsOutcomeCursor,
   type AccountHealthJobsStoreSource
@@ -40,28 +42,32 @@ export async function stopAccountHealthJobsSourceFenceConsumerRuntime(): Promise
 
 async function runConsumerLoop(): Promise<void> {
   const source = outcomeStoreSource()
-  while (!stopping) {
-    try {
-      const outcomes = await listAccountHealthJobsOutcomes(source, {
-        ...(cursor ? { after: cursor } : {}),
-        limit: runtimeConfig.accountHealthJobs.projectionBatchSize
-      })
-      for (const outcome of outcomes) {
-        if (stopping) break
-        const settlement = await settleAccountHealthJobsSourceFenceOutcomeWithDisposition(outcome)
-        // Only a confirmed terminal disposition may advance a source-fenced
-        // outcome. Retry leaves the cursor unchanged so a runtime-state read
-        // race, owner lease, or dispatch hand-off cannot be silently skipped.
-        if (settlement === 'retry') break
-        cursor = sourceFenceOutcomeCursor(outcome)
+  try {
+    while (!stopping) {
+      try {
+        const outcomes = await listAccountHealthJobsOutcomes(source, {
+          ...(cursor ? { after: cursor } : {}),
+          limit: runtimeConfig.accountHealthJobs.projectionBatchSize
+        })
+        for (const outcome of outcomes) {
+          if (stopping) break
+          const settlement = await settleAccountHealthJobsSourceFenceOutcomeWithDisposition(outcome)
+          // Only a confirmed terminal disposition may advance a source-fenced
+          // outcome. Retry leaves the cursor unchanged so a runtime-state read
+          // race, owner lease, or dispatch hand-off cannot be silently skipped.
+          if (settlement === 'retry') break
+          cursor = sourceFenceOutcomeCursor(outcome)
+        }
+      } catch (error) {
+        logger.warn(errorLogFields(error, {
+          event: 'account_health_jobs_source_fence_consumer_failed'
+        }), 'J1 source-fence outcome 消费失败，将保留运行态游标重试')
       }
-    } catch (error) {
-      logger.warn(errorLogFields(error, {
-        event: 'account_health_jobs_source_fence_consumer_failed'
-      }), 'J1 source-fence outcome 消费失败，将保留运行态游标重试')
+      if (stopping) break
+      await waitForNextTick(runtimeConfig.accountHealthJobs.sourceFenceConsumerPollMs)
     }
-    if (stopping) break
-    await waitForNextTick(runtimeConfig.accountHealthJobs.sourceFenceConsumerPollMs)
+  } finally {
+    await closeAccountHealthJobsStoreSource(source)
   }
 }
 
@@ -90,7 +96,7 @@ function outcomeStoreSource(): AccountHealthJobsStoreSource {
   }
   const postgresUrl = runtimeConfig.accountHealthJobs.outcomePostgresUrl?.trim()
   if (!postgresUrl) throw new Error('J1 PG source-fence consumer 必须设置 jobs outcome PostgreSQL URL')
-  return { mode: 'postgres', postgresUrl }
+  return createPostgresAccountHealthJobsStoreSource(postgresUrl)
 }
 
 function waitForNextTick(delayMs: number): Promise<void> {

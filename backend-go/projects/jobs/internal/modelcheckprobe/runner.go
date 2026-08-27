@@ -17,6 +17,7 @@ type BasicProbeInput struct {
 	Stream           bool
 	MaxOutputTokens  int
 	Headers          http.Header
+	Client           *http.Client
 	Timeout          time.Duration
 	MaxResponseBytes int64
 	ModelLimit       int
@@ -31,7 +32,7 @@ func RunBasicProbe(ctx context.Context, input BasicProbeInput) (EvaluationItem, 
 	if err != nil {
 		return EvaluationItem{}, err
 	}
-	result, transportErr := Execute(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes})
+	result, transportErr := Execute(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Client: input.Client, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes})
 	return evaluateBasicResult(result, transportErr, input), nil
 }
 
@@ -42,7 +43,7 @@ func RunBasicProbeWithRetry(ctx context.Context, input BasicProbeInput, retry Re
 	if err != nil {
 		return EvaluationItem{}, err
 	}
-	result, transportErr := ExecuteWithRetry(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}, retry)
+	result, transportErr := ExecuteWithRetry(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Client: input.Client, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}, retry)
 	return evaluateBasicResult(result, transportErr, input), nil
 }
 
@@ -51,7 +52,7 @@ func RunStructuredProbe(ctx context.Context, input BasicProbeInput, retry RetryO
 	if err != nil {
 		return EvaluationItem{}, err
 	}
-	result, transportErr := ExecuteWithRetry(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}, retry)
+	result, transportErr := ExecuteWithRetry(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Client: input.Client, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}, retry)
 	if transportErr != nil && result.Response.ErrorMessage == "" {
 		result.Response.ErrorMessage = "模型检测 transport 失败"
 	}
@@ -63,7 +64,7 @@ func RunToolProbe(ctx context.Context, input BasicProbeInput, retry RetryOptions
 	if err != nil {
 		return EvaluationItem{}, err
 	}
-	result, transportErr := ExecuteWithRetry(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}, retry)
+	result, transportErr := ExecuteWithRetry(ctx, request, TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Client: input.Client, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}, retry)
 	if transportErr != nil && result.Response.ErrorMessage == "" {
 		result.Response.ErrorMessage = "模型检测 transport 失败"
 	}

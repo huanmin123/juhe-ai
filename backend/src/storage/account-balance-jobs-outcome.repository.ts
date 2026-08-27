@@ -3,9 +3,21 @@ import { resolve } from 'node:path'
 import type { PoolClient } from 'pg'
 import { parseRfc3339Instant, requiredRfc3339Instant } from '../shared/rfc3339.js'
 
+export interface AccountBalanceJobsPostgresOutcomePool {
+  connect(): Promise<PoolClient>
+  end(): Promise<void>
+}
+
+export interface AccountBalanceJobsPostgresStoreSource {
+  mode: 'postgres'
+  postgresUrl: string
+  pool?: AccountBalanceJobsPostgresOutcomePool
+  readerRoleVerified?: boolean
+}
+
 export type AccountBalanceJobsStoreSource =
   | { mode: 'sqlite'; databasePath: string }
-  | { mode: 'postgres'; postgresUrl: string }
+  | AccountBalanceJobsPostgresStoreSource
 
 export type AccountBalanceJobsOutcomeCursor = { observedAt: string; outcomeId: string }
 export interface AccountBalanceJobsOutcome {
@@ -26,6 +38,24 @@ export interface AccountBalanceJobsOutcome {
   errorCode?: string
   errorMessage?: string
   storageObservedAt: string
+}
+
+const postgresOutcomeReaderRole = 'juhe_ai_j2_outcome_reader'
+const postgresOutcomeReaderIdleTimeoutMs = 30_000
+const postgresOutcomeReaderMaxLifetimeSeconds = 600
+
+export function createPostgresAccountBalanceJobsStoreSource(postgresUrl: string): AccountBalanceJobsPostgresStoreSource {
+  const normalizedUrl = postgresUrl.trim()
+  if (!normalizedUrl) throw new Error('J2 PostgreSQL outcome URL 不能为空')
+  return { mode: 'postgres', postgresUrl: normalizedUrl }
+}
+
+export async function closeAccountBalanceJobsStoreSource(source: AccountBalanceJobsStoreSource): Promise<void> {
+  if (source.mode !== 'postgres') return
+  const pool = source.pool
+  source.pool = undefined
+  source.readerRoleVerified = false
+  await pool?.end()
 }
 
 export function decodeAccountBalanceJobsOutcome(value: unknown, storageObservedAt: string): AccountBalanceJobsOutcome {
@@ -66,19 +96,16 @@ function requiredStorageCursorInstant(value: unknown): string {
 }
 
 export async function listAccountBalanceJobsOutcomes(source: AccountBalanceJobsStoreSource, options: { after?: AccountBalanceJobsOutcomeCursor; limit: number }): Promise<AccountBalanceJobsOutcome[]> {
-  if ('mode' in source && source.mode === 'sqlite') return readSqliteOutcomes(source.databasePath, options.after, options.limit)
+  if (source.mode === 'sqlite') return readSqliteOutcomes(source.databasePath, options.after, options.limit)
   if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 1_000) throw new Error('J2 outcome limit 必须在 1..1000')
-  const { Pool } = await import('pg')
-  const pool = new Pool({
-    connectionString: source.postgresUrl,
-    max: 1,
-    connectionTimeoutMillis: 5_000,
-    query_timeout: 5_000
-  })
+  const pool = await postgresOutcomePool(source)
   let connection: PoolClient | undefined
+  let failed = false
+  let resetPool = false
   try {
     const acquired = await pool.connect()
     connection = acquired
+    await verifyPostgresOutcomeReaderRole(source, acquired)
     await acquired.query('BEGIN READ ONLY')
     await acquired.query('SET LOCAL statement_timeout = 5000')
     const after = options.after
@@ -88,12 +115,40 @@ export async function listAccountBalanceJobsOutcomes(source: AccountBalanceJobsS
     await acquired.query('COMMIT')
     return rows.rows.map((row: any) => decodeOutcomeRow(row))
   } catch (error) {
+    failed = true
+    resetPool = true
     await connection?.query('ROLLBACK').catch(() => undefined)
     throw error
   } finally {
-    connection?.release()
-    await pool.end()
+    connection?.release(failed ? new Error('J2 outcome reader connection failed') : undefined)
+    if (resetPool) await closeAccountBalanceJobsStoreSource(source).catch(() => undefined)
   }
+}
+
+async function postgresOutcomePool(source: AccountBalanceJobsPostgresStoreSource): Promise<AccountBalanceJobsPostgresOutcomePool> {
+  if (source.pool) return source.pool
+  const { Pool } = await import('pg')
+  const pool = new Pool({
+    connectionString: source.postgresUrl,
+    max: 1,
+    idleTimeoutMillis: postgresOutcomeReaderIdleTimeoutMs,
+    maxLifetimeSeconds: postgresOutcomeReaderMaxLifetimeSeconds,
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 5_000,
+    application_name: 'juhe-ai:db-service:j2-outcome-reader'
+  }) as unknown as AccountBalanceJobsPostgresOutcomePool
+  source.pool = pool
+  return pool
+}
+
+async function verifyPostgresOutcomeReaderRole(source: AccountBalanceJobsPostgresStoreSource, connection: PoolClient): Promise<void> {
+  if (source.readerRoleVerified) return
+  const result = await connection.query('SELECT current_user AS current_user')
+  const currentUser = result.rows[0]?.current_user
+  if (currentUser !== postgresOutcomeReaderRole) {
+    throw new Error(`J2 outcome reader 必须使用专用数据库角色 ${postgresOutcomeReaderRole}`)
+  }
+  source.readerRoleVerified = true
 }
 
 function readSqliteOutcomes(path: string, after: AccountBalanceJobsOutcomeCursor | undefined, limit: number): AccountBalanceJobsOutcome[] {

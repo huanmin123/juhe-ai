@@ -5,6 +5,8 @@ package modelcheckruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckexecutor"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckinput"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckquality"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckstore"
 )
 
@@ -224,8 +227,18 @@ func (s *Service) run(ctx context.Context, request RunRequest, progress func(Pro
 		item := failureItem(runID, executeErr, ids)
 		projectionCtx, cancel := terminalProjectionContext(runCtx)
 		defer cancel()
-		if projectionErr := s.Dataset.ProjectOutcome(projectionCtx, modelcheckstore.OutcomeProjection{RunID: runID, Items: []modelcheckstore.ItemInput{item}, Status: status, Level: "unavailable", Score: 0, MaxScore: 100, Message: executeErr.Error(), FinishedAt: now, ResultSummary: []byte(`{"level":"unavailable","score":0,"maxScore":100}`), QualityDecision: []byte(`{}`)}); projectionErr != nil {
+		failureSummary := modelcheckprobe.SummaryResult{Level: "unavailable", Score: 0, MaxScore: 100, Message: executeErr.Error()}
+		if projectionErr := s.Dataset.ProjectOutcome(projectionCtx, modelcheckstore.OutcomeProjection{RunID: runID, Items: []modelcheckstore.ItemInput{item}, Status: status, Level: "unavailable", Score: 0, MaxScore: 100, Message: executeErr.Error(), FinishedAt: now, ResultSummary: mustJSONSummary(failureSummary)}); projectionErr != nil {
 			return Result{}, errors.Join(executeErr, fmt.Errorf("project model check failure: %w", projectionErr))
+		}
+		failureOutcome := struct {
+			RunID   string                        `json:"runId"`
+			Status  modelcheckstore.RunStatus     `json:"status"`
+			Summary modelcheckprobe.SummaryResult `json:"summary"`
+			Item    modelcheckstore.ItemInput     `json:"item"`
+		}{RunID: runID, Status: status, Summary: failureSummary, Item: item}
+		if decisionErr := s.Dataset.UpdateQualityDecision(projectionCtx, modelcheckstore.QualityDecisionUpdate{RunID: runID, Status: status, ResultSummary: mustJSONSummary(failureSummary), PolicySnapshot: mustJSONPolicy(request.Policy), Decision: qualityDecisionJSON(request, failureSummary, false, now, failureOutcome)}); decisionErr != nil {
+			return Result{}, errors.Join(executeErr, fmt.Errorf("project model check quality decision: %w", decisionErr))
 		}
 		resultItem := modelcheckprobe.EvaluationItem{ItemKey: item.ItemKey, ItemType: item.ItemType, Status: "failed", Score: item.Score, MaxScore: item.MaxScore, DurationMS: valueOrZero(item.DurationMS), Evidence: map[string]any{"message": executeErr.Error()}, ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage}
 		eventType := "error"
@@ -246,8 +259,11 @@ func (s *Service) run(ctx context.Context, request RunRequest, progress func(Pro
 	}
 	projectionCtx, cancel := terminalProjectionContext(runCtx)
 	defer cancel()
-	if err := s.Dataset.ProjectOutcome(projectionCtx, modelcheckstore.OutcomeProjection{RunID: runID, Items: projected, Status: modelcheckstore.RunCompleted, Level: payload.Summary.Level, Score: payload.Summary.Score, MaxScore: payload.Summary.MaxScore, Message: payload.Summary.Message, FinishedAt: now, ResultSummary: mustJSONSummary(payload.Summary), QualityDecision: []byte(`{}`)}); err != nil {
+	if err := s.Dataset.ProjectOutcome(projectionCtx, modelcheckstore.OutcomeProjection{RunID: runID, Items: projected, Status: modelcheckstore.RunCompleted, Level: payload.Summary.Level, Score: payload.Summary.Score, MaxScore: payload.Summary.MaxScore, Message: payload.Summary.Message, FinishedAt: now, ResultSummary: mustJSONSummary(payload.Summary)}); err != nil {
 		return Result{}, fmt.Errorf("project model check outcome: %w", err)
+	}
+	if err := s.Dataset.UpdateQualityDecision(projectionCtx, modelcheckstore.QualityDecisionUpdate{RunID: runID, Status: modelcheckstore.RunCompleted, ResultSummary: mustJSONSummary(payload.Summary), PolicySnapshot: mustJSONPolicy(request.Policy), Decision: qualityDecisionJSON(request, payload.Summary, true, now, payload)}); err != nil {
+		return Result{}, fmt.Errorf("project model check quality decision: %w", err)
 	}
 	emitProgress(progress, ProgressEvent{Type: "run_completed", RunID: runID, InputID: issued.Input.InputID, Message: payload.Summary.Message, Status: string(modelcheckstore.RunCompleted)})
 	return Result{RunID: runID, InputID: issued.Input.InputID, OutcomeID: outcomeID, Items: items, Summary: payload.Summary, RunStatus: modelcheckstore.RunCompleted}, nil
@@ -352,6 +368,25 @@ func mustJSONSummary(summary modelcheckprobe.SummaryResult) []byte {
 func mustJSONPolicy(policy modelcheckinput.PolicySnapshot) []byte {
 	data, _ := jsonMarshal(policy)
 	return data
+}
+
+func qualityDecisionJSON(request RunRequest, summary modelcheckprobe.SummaryResult, completed bool, decidedAt time.Time, outcome any) []byte {
+	decision := modelcheckquality.Decide(request.Trigger, request.Policy, summary, completed, modelcheckquality.Evidence{}, decidedAt)
+	fact := modelcheckquality.NewFact(decision, digestJSON(outcome), request.Policy.Digest, digestJSON(modelcheckquality.Evidence{}))
+	data, err := jsonMarshal(fact)
+	if err != nil {
+		return []byte(`{"result":"not_triggered","reasonCodes":["quality_decision_encoding_failed"]}`)
+	}
+	return data
+}
+
+func digestJSON(value any) string {
+	data, err := jsonMarshal(value)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // Small local wrappers keep the runtime package free of mutable JSON state.

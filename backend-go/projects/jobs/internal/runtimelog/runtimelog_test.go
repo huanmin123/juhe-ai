@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -494,6 +495,18 @@ func TestOwnerLeaseFenceBlocksReplacementUntilCallbackReturns(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("replacement owner 在 callback 返回后仍未完成接管")
+	}
+}
+
+func TestPostgresTransactionGuardsAreBounded(t *testing.T) {
+	statements := postgresTransactionGuardStatements()
+	want := []string{
+		"SET LOCAL statement_timeout = '5s'",
+		"SET LOCAL lock_timeout = '2s'",
+		"SET LOCAL idle_in_transaction_session_timeout = '5s'",
+	}
+	if !reflect.DeepEqual(statements, want) {
+		t.Fatalf("F1 PostgreSQL transaction guards 不匹配: got=%#v want=%#v", statements, want)
 	}
 }
 

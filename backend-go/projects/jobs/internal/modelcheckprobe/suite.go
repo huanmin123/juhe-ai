@@ -15,8 +15,6 @@ type SuiteOptions struct {
 	IncludeLongContext         bool
 	IncludeStability           bool
 	IncludeUsageOnBasicFailure bool
-	IncludeTokenIntegrity      bool
-	IncludeIdentity            bool
 	// OnItem observes every completed evaluation item in suite order. It is
 	// invocation-scoped so management SSE and scheduled runs never share a
 	// mutable callback.
@@ -34,7 +32,7 @@ func RunSuite(ctx context.Context, input BasicProbeInput, options SuiteOptions, 
 		emitSuiteItem(options.OnItem, item)
 	}
 	results := make([]ProbeResult, 0, 4)
-	base := TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}
+	base := TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Client: input.Client, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}
 	request, err := BuildBasic(input.Protocol, input.Model, "Reply with exactly: OK-MODEL-CHECK", BasicOptions{MaxOutputTokens: max(input.MaxOutputTokens, 16), Stream: input.Stream})
 	if err != nil {
 		return nil, err
@@ -99,30 +97,6 @@ func RunSuite(ctx context.Context, input BasicProbeInput, options SuiteOptions, 
 	if options.IncludeStructured || options.IncludeTool {
 		appendItem(EvaluateUsageShape(results, prefix))
 	}
-	if options.IncludeTokenIntegrity && input.Protocol == modelcheckprofile.ProtocolOpenAIResponses {
-		if input.CountTokens == nil {
-			appendItem(EvaluationItem{ItemKey: prefix + ".token_integrity", ItemType: "token_integrity", Status: "skipped", Evidence: map[string]any{
-				"message": "tokenizer 快照缺失，未形成可验证 Token 诚信证据", "excludedFromScoring": true, "evidenceInsufficient": true,
-			}})
-		} else {
-			tokenRun, tokenErr := RunTokenIntegrity(ctx, TokenProbeInput{Model: input.Model, Protocol: input.Protocol, ProfileMode: profileMode(options), ItemPrefix: prefix, Stream: input.Stream, CountTokens: input.CountTokens, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
-				return ExecuteWithRetry(ctx, request, base, retry)
-			}})
-			if tokenErr != nil {
-				return nil, tokenErr
-			}
-			appendItem(tokenRun.Item)
-		}
-	}
-	if options.IncludeIdentity && input.Protocol == modelcheckprofile.ProtocolOpenAIResponses {
-		identity, _, identityErr := RunIdentityObservation(ctx, IdentityProbeInput{Model: input.Model, Protocol: input.Protocol, Prefix: prefix, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
-			return ExecuteWithRetry(ctx, request, base, retry)
-		}})
-		if identityErr != nil {
-			return nil, identityErr
-		}
-		appendItem(identity)
-	}
 	if options.IncludeBehavior {
 		behavior, terminal, behaviorErr := RunBehaviorProbeSetWithTerminal(ctx, BehaviorProbeInput{Model: input.Model, Protocol: input.Protocol, Prefix: prefix, Stream: input.Stream, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
 			return ExecuteWithRetry(ctx, request, base, retry)
@@ -166,6 +140,44 @@ func RunSuite(ctx context.Context, input BasicProbeInput, options SuiteOptions, 
 	return items, nil
 }
 
+// RunTargetEvidenceExtensions executes the evidence probes that Node runs
+// once for the primary target after its full core suite. Trusted-comparison
+// suites must never invoke this function: their role is comparison evidence,
+// not a second target identity/token assessment.
+func RunTargetEvidenceExtensions(ctx context.Context, input BasicProbeInput, prefix string, retry RetryOptions, onItem func(EvaluationItem)) ([]EvaluationItem, bool, error) {
+	if input.Protocol != modelcheckprofile.ProtocolOpenAIResponses {
+		return nil, false, nil
+	}
+	prefix = suitePrefix(prefix)
+	base := TransportOptions{Endpoint: input.Endpoint, Headers: input.Headers, Client: input.Client, Timeout: input.Timeout, MaxResponseBytes: input.MaxResponseBytes}
+	items := make([]EvaluationItem, 0, 2)
+	appendItem := func(item EvaluationItem) {
+		items = append(items, item)
+		emitSuiteItem(onItem, item)
+	}
+	if input.CountTokens == nil {
+		appendItem(EvaluationItem{ItemKey: prefix + ".token_integrity", ItemType: "token_integrity", Status: "skipped", Evidence: map[string]any{
+			"message": "tokenizer 快照缺失，未形成可验证 Token 诚信证据", "excludedFromScoring": true, "evidenceInsufficient": true,
+		}})
+	} else {
+		tokenRun, err := RunTokenIntegrity(ctx, TokenProbeInput{Model: input.Model, Protocol: input.Protocol, ProfileMode: "full", ItemPrefix: prefix, Stream: input.Stream, CountTokens: input.CountTokens, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
+			return ExecuteWithRetry(ctx, request, base, retry)
+		}})
+		if err != nil {
+			return nil, false, err
+		}
+		appendItem(tokenRun.Item)
+	}
+	identity, _, err := RunIdentityObservation(ctx, IdentityProbeInput{Model: input.Model, Protocol: input.Protocol, Prefix: prefix, RunProbe: func(ctx context.Context, request Request) (ProbeResult, error) {
+		return ExecuteWithRetry(ctx, request, base, retry)
+	}})
+	if err != nil {
+		return nil, false, err
+	}
+	appendItem(identity)
+	return items, isTerminalProbeItem(identity), nil
+}
+
 func emitSuiteItem(callback func(EvaluationItem), item EvaluationItem) {
 	if callback == nil {
 		return
@@ -174,11 +186,12 @@ func emitSuiteItem(callback func(EvaluationItem), item EvaluationItem) {
 	callback(item)
 }
 
-func profileMode(options SuiteOptions) string {
-	if options.IncludeBehavior || options.IncludeLongContext || options.IncludeStability || options.IncludeIdentity {
-		return "full"
+func isTerminalProbeItem(item EvaluationItem) bool {
+	if item.Evidence == nil {
+		return false
 	}
-	return "quick"
+	requestFailure, _ := item.Evidence["requestFailure"].(bool)
+	return requestFailure
 }
 
 func suitePrefix(value string) string {

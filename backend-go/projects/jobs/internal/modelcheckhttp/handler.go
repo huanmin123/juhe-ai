@@ -10,12 +10,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckactive"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckruntime"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckstore"
 )
 
 const (
@@ -29,7 +32,10 @@ var (
 )
 
 type Scope struct {
-	SystemAccountID string
+	SystemAccountID       string
+	ActorSystemAccountID  string
+	ActorRole             string
+	SystemAccountFilterID string
 }
 
 type Command struct {
@@ -43,12 +49,19 @@ type Command struct {
 
 type AuthorizeFunc func(context.Context, *http.Request) (Scope, error)
 type BuildRequestFunc func(context.Context, Scope, Command) (modelcheckruntime.RunRequest, error)
+type ResolveScopeFunc func(context.Context, Scope, Command) (Scope, error)
+type RunReader interface {
+	ListRuns(context.Context, modelcheckstore.RunListOptions) (modelcheckstore.RunListResult, error)
+	GetRun(context.Context, string, string) (modelcheckstore.RunDetail, bool, error)
+}
 
 type Handler struct {
 	Service       *modelcheckruntime.Service
 	Active        *modelcheckactive.Registry
 	Authorize     AuthorizeFunc
 	BuildRequest  BuildRequestFunc
+	ResolveScope  ResolveScopeFunc
+	Reader        RunReader
 	MaxBodyBytes  int64
 	Heartbeat     time.Duration
 	RetryAfterSec int
@@ -62,11 +75,12 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	scope, err := h.Authorize(request.Context(), request)
 	if err != nil {
 		status, message := http.StatusUnauthorized, ErrUnauthorized.Error()
+		code := ""
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) {
-			status, message = httpErr.Status, httpErr.Message
+			status, message, code = httpErr.Status, httpErr.Message, httpErr.Code
 		}
-		writeJSONError(response, status, message)
+		writeJSONErrorCode(response, status, message, code)
 		return
 	}
 	if strings.TrimSpace(scope.SystemAccountID) == "" {
@@ -83,6 +97,10 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		h.serveActive(response, scope)
 	case request.Method == http.MethodPost && path == "/run/stop":
 		h.serveStop(response, scope)
+	case request.Method == http.MethodGet && path == "/runs":
+		h.serveRunList(response, request, scope)
+	case request.Method == http.MethodGet && strings.HasPrefix(path, "/runs/"):
+		h.serveRunDetail(response, request, scope, strings.TrimPrefix(path, "/runs/"))
 	default:
 		http.NotFound(response, request)
 	}
@@ -91,6 +109,7 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 type HTTPError struct {
 	Status  int
 	Message string
+	Code    string
 }
 
 func (e *HTTPError) Error() string { return e.Message }
@@ -99,6 +118,11 @@ func (h *Handler) serveJSONRun(response http.ResponseWriter, request *http.Reque
 	command, err := decodeCommand(response, request, h.maxBodyBytes())
 	if err != nil {
 		writeJSONError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	scope, err = h.resolveScope(request.Context(), scope, command)
+	if err != nil {
+		h.writeBuildError(response, err)
 		return
 	}
 	runRequest, err := h.BuildRequest(request.Context(), scope, command)
@@ -118,6 +142,11 @@ func (h *Handler) serveStreamRun(response http.ResponseWriter, request *http.Req
 	command, err := decodeCommand(response, request, h.maxBodyBytes())
 	if err != nil {
 		writeJSONError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	scope, err = h.resolveScope(request.Context(), scope, command)
+	if err != nil {
+		h.writeBuildError(response, err)
 		return
 	}
 	runRequest, err := h.BuildRequest(request.Context(), scope, command)
@@ -241,6 +270,72 @@ func (h *Handler) serveStop(response http.ResponseWriter, scope Scope) {
 		active = summary
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"data": map[string]any{"stopped": stopped, "active": active}})
+}
+
+func (h *Handler) serveRunList(response http.ResponseWriter, request *http.Request, scope Scope) {
+	if h.Reader == nil {
+		writeJSONError(response, http.StatusServiceUnavailable, "模型检测管理读服务未初始化")
+		return
+	}
+	page, pageSize, err := parsePage(request)
+	if err != nil {
+		writeJSONError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	query := request.URL.Query()
+	result, err := h.Reader.ListRuns(request.Context(), modelcheckstore.RunListOptions{
+		SystemAccountID: scope.SystemAccountID,
+		// Node /runs 固定只返回 account 目标；不接受调用方改写目标类型。
+		TargetType: "account", TargetID: query.Get("targetId"), Model: query.Get("model"),
+		Level: query.Get("level"), Status: query.Get("status"), TriggerKind: query.Get("triggerKind"),
+		StartAt: query.Get("startAt"), EndAt: query.Get("endAt"), Page: page, PageSize: pageSize,
+	})
+	if err != nil {
+		writeJSONError(response, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"data": result})
+}
+
+func (h *Handler) serveRunDetail(response http.ResponseWriter, request *http.Request, scope Scope, runID string) {
+	if h.Reader == nil {
+		writeJSONError(response, http.StatusServiceUnavailable, "模型检测管理读服务未初始化")
+		return
+	}
+	runID, err := url.PathUnescape(runID)
+	if err != nil || strings.TrimSpace(runID) == "" || strings.Contains(runID, "/") {
+		writeJSONError(response, http.StatusNotFound, "模型检测记录不存在")
+		return
+	}
+	detail, found, err := h.Reader.GetRun(request.Context(), runID, scope.SystemAccountID)
+	if err != nil {
+		writeJSONError(response, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(response, http.StatusNotFound, "模型检测记录不存在")
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"data": detail})
+}
+
+func parsePage(request *http.Request) (int, int, error) {
+	page, pageSize := 1, 20
+	if raw := request.URL.Query().Get("page"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 {
+			return 0, 0, errors.New("分页参数无效")
+		}
+		page = value
+	}
+	if raw := request.URL.Query().Get("pageSize"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 100 {
+			return 0, 0, errors.New("分页参数无效")
+		}
+		pageSize = value
+	}
+	return page, pageSize, nil
 }
 
 func (h *Handler) writeBuildError(response http.ResponseWriter, err error) {
@@ -384,7 +479,18 @@ func (h *Handler) retryAfter() int {
 }
 
 func activeKey(scope Scope) string {
-	return "system-account:" + strings.TrimSpace(scope.SystemAccountID)
+	actorID := strings.TrimSpace(scope.ActorSystemAccountID)
+	if actorID == "" {
+		actorID = strings.TrimSpace(scope.SystemAccountID)
+	}
+	return "system-account:" + actorID
+}
+
+func (h *Handler) resolveScope(ctx context.Context, scope Scope, command Command) (Scope, error) {
+	if h == nil || h.ResolveScope == nil {
+		return scope, nil
+	}
+	return h.ResolveScope(ctx, scope, command)
 }
 
 func writeJSON(response http.ResponseWriter, status int, value any) {
@@ -394,5 +500,13 @@ func writeJSON(response http.ResponseWriter, status int, value any) {
 }
 
 func writeJSONError(response http.ResponseWriter, status int, message string) {
-	writeJSON(response, status, map[string]any{"message": message})
+	writeJSONErrorCode(response, status, message, "")
+}
+
+func writeJSONErrorCode(response http.ResponseWriter, status int, message, code string) {
+	payload := map[string]any{"message": message}
+	if code != "" {
+		payload["code"] = code
+	}
+	writeJSON(response, status, payload)
 }

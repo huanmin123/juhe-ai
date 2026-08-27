@@ -25,6 +25,10 @@ const (
 	postgresInsertRowsPerStatement = 5000
 	postgresCleanupRowsPerBatch    = 5000
 	sqliteCleanupRowsPerBatch      = 500
+	postgresStatementTimeout       = "5s"
+	postgresLockTimeout            = "2s"
+	postgresIdleTxTimeout          = "5s"
+	postgresOwnerLeaseTimeout      = 5 * time.Second
 )
 
 type facetRow struct {
@@ -53,6 +57,35 @@ func rollbackPostgresTx(tx pgx.Tx) {
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = tx.Rollback(rollbackCtx)
+}
+
+// beginPostgresTx installs a bounded server-side guard before the owner-row
+// fence is acquired. A canceled caller context alone is insufficient here:
+// an interrupted client must not leave the F1 lease row locked indefinitely.
+func beginPostgresTx(ctx context.Context, pool *pgxpool.Pool) (pgx.Tx, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	for _, statement := range postgresTransactionGuardStatements() {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			rollbackPostgresTx(tx)
+			return nil, fmt.Errorf("设置 F1 PostgreSQL 事务时限失败: %w", err)
+		}
+	}
+	return tx, nil
+}
+
+func postgresTransactionGuardStatements() []string {
+	return []string{
+		"SET LOCAL statement_timeout = '" + postgresStatementTimeout + "'",
+		"SET LOCAL lock_timeout = '" + postgresLockTimeout + "'",
+		"SET LOCAL idle_in_transaction_session_timeout = '" + postgresIdleTxTimeout + "'",
+	}
+}
+
+func ownerLeaseContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, postgresOwnerLeaseTimeout)
 }
 
 func OpenStore(ctx context.Context, config Config) (Store, error) {
@@ -347,7 +380,7 @@ func (store *postgresStore) FindCursorByIdentity(ctx context.Context, identity s
 }
 
 func (store *postgresStore) ReplaceCursor(ctx context.Context, lease OwnerLease, displaced *Cursor, replacement Cursor) error {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := beginPostgresTx(ctx, store.pool)
 	if err != nil {
 		return err
 	}
@@ -370,7 +403,7 @@ func (store *postgresStore) ReplaceCursor(ctx context.Context, lease OwnerLease,
 }
 
 func (store *postgresStore) CopyCursor(ctx context.Context, lease OwnerLease, cursor Cursor) error {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := beginPostgresTx(ctx, store.pool)
 	if err != nil {
 		return err
 	}
@@ -385,7 +418,7 @@ func (store *postgresStore) CopyCursor(ctx context.Context, lease OwnerLease, cu
 }
 
 func (store *postgresStore) Commit(ctx context.Context, lease OwnerLease, records []Record, cursor Cursor, retentionCutoff time.Time) error {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := beginPostgresTx(ctx, store.pool)
 	if err != nil {
 		return err
 	}
@@ -411,7 +444,7 @@ func (store *postgresStore) Cleanup(ctx context.Context, lease OwnerLease, cutof
 }
 
 func (store *postgresStore) VerifyOwnerLease(ctx context.Context, lease OwnerLease) error {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := beginPostgresTx(ctx, store.pool)
 	if err != nil {
 		return err
 	}
@@ -423,7 +456,7 @@ func (store *postgresStore) VerifyOwnerLease(ctx context.Context, lease OwnerLea
 }
 
 func (store *postgresStore) WithOwnerLeaseFence(ctx context.Context, lease OwnerLease, callback func() error) error {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := beginPostgresTx(ctx, store.pool)
 	if err != nil {
 		return err
 	}
@@ -459,7 +492,9 @@ func (store *postgresStore) RenewOwnerLease(ctx context.Context, lease OwnerLeas
 
 func (store *postgresStore) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
 	now := time.Now().UTC()
-	result, err := store.pool.Exec(ctx, "UPDATE juhe_dataset.runtime_log_index_owner_leases SET owner_id = '', lease_until = $1, updated_at = $1 WHERE lease_key = $2 AND owner_id = $3 AND fence_token = $4", now, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
+	leaseCtx, cancel := ownerLeaseContext(ctx)
+	defer cancel()
+	result, err := store.pool.Exec(leaseCtx, "UPDATE juhe_dataset.runtime_log_index_owner_leases SET owner_id = '', lease_until = $1, updated_at = $1 WHERE lease_key = $2 AND owner_id = $3 AND fence_token = $4", now, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
 	if err != nil {
 		return err
 	}
@@ -604,7 +639,9 @@ func postgresAcquireOwnerLease(ctx context.Context, pool *pgxpool.Pool, ownerID 
 	now := time.Now().UTC()
 	leaseUntil := now.Add(duration)
 	var token int64
-	err := pool.QueryRow(ctx, `
+	leaseCtx, cancel := ownerLeaseContext(ctx)
+	defer cancel()
+	err := pool.QueryRow(leaseCtx, `
     INSERT INTO juhe_dataset.runtime_log_index_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
     VALUES ($1, $2, 1, $3, $4)
     ON CONFLICT(lease_key) DO UPDATE SET
@@ -627,7 +664,9 @@ func postgresAcquireOwnerLease(ctx context.Context, pool *pgxpool.Pool, ownerID 
 func postgresRenewOwnerLease(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, duration time.Duration) (bool, error) {
 	now := time.Now().UTC()
 	leaseUntil := now.Add(duration)
-	result, err := pool.Exec(ctx, `
+	leaseCtx, cancel := ownerLeaseContext(ctx)
+	defer cancel()
+	result, err := pool.Exec(leaseCtx, `
     UPDATE juhe_dataset.runtime_log_index_owner_leases
     SET lease_until = $1, updated_at = $2
     WHERE lease_key = $3 AND owner_id = $4 AND fence_token = $5 AND lease_until > $6
@@ -1280,7 +1319,7 @@ func cleanupPostgres(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, 
 	result := CleanupResult{}
 	batchLimit := minInt(maxInt(batchSize, 1), postgresCleanupRowsPerBatch)
 	for batch := 0; batch < maxBatches; batch++ {
-		tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+		tx, err := beginPostgresTx(ctx, pool)
 		if err != nil {
 			return result, err
 		}
@@ -1321,7 +1360,7 @@ func cleanupPostgres(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, 
 		}
 	}
 	for batch := 0; batch < maxBatches; batch++ {
-		tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+		tx, err := beginPostgresTx(ctx, pool)
 		if err != nil {
 			return result, err
 		}

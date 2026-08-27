@@ -15,7 +15,11 @@ import { getBusinessDatabase } from '../../storage/database.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { getPostgresPool } from '../../storage/postgres-client.js'
 import { drainAccountHealthJobsOutcomes } from './account-health-jobs-outcome-drain.service.js'
-import type { AccountHealthJobsStoreSource } from '../../storage/account-health-jobs-outcome.repository.js'
+import {
+  closeAccountHealthJobsStoreSource,
+  createPostgresAccountHealthJobsStoreSource,
+  type AccountHealthJobsStoreSource
+} from '../../storage/account-health-jobs-outcome.repository.js'
 
 const consumerKey = 'juhe-ai-account-health-jobs-projector-v1'
 
@@ -52,17 +56,21 @@ export async function stopAccountHealthJobsOutcomeProjectionRuntime(): Promise<v
 
 async function runProjectionLoop(): Promise<void> {
   const source = outcomeStoreSource()
-  while (!stopping) {
-    try {
-      await drainOnce(source)
-    } catch (error) {
-      logger.error(errorLogFields(error, {
-        event: 'account_health_jobs_outcome_projection_failed',
-        consumerKey
-      }), 'J1 outcome 投影失败，将保留游标并重试')
+  try {
+    while (!stopping) {
+      try {
+        await drainOnce(source)
+      } catch (error) {
+        logger.error(errorLogFields(error, {
+          event: 'account_health_jobs_outcome_projection_failed',
+          consumerKey
+        }), 'J1 outcome 投影失败，将保留游标并重试')
+      }
+      if (stopping) break
+      await waitForNextTick(runtimeConfig.accountHealthJobs.projectionPollMs)
     }
-    if (stopping) break
-    await waitForNextTick(runtimeConfig.accountHealthJobs.projectionPollMs)
+  } finally {
+    await closeAccountHealthJobsStoreSource(source)
   }
 }
 
@@ -104,7 +112,7 @@ function outcomeStoreSource(): AccountHealthJobsStoreSource {
   }
   const postgresUrl = runtimeConfig.accountHealthJobs.outcomePostgresUrl?.trim()
   if (!postgresUrl) throw new Error('J1 PG outcome projection 必须设置 jobs outcome PostgreSQL URL')
-  return { mode: 'postgres', postgresUrl }
+  return createPostgresAccountHealthJobsStoreSource(postgresUrl)
 }
 
 function waitForNextTick(delayMs: number): Promise<void> {

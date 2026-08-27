@@ -139,7 +139,7 @@ func newTestHandler(service *modelcheckruntime.Service) *Handler {
 				return modelcheckruntime.RunRequest{}, errors.New("scope missing")
 			}
 			now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
-			request := modelcheckruntime.RunRequest{SystemAccountID: scope.SystemAccountID, ActorSystemAccountID: "actor-account", Target: modelcheckinput.AccountSnapshot{ID: command.TargetID, ConfigRevision: "config-revision-1", ProviderCode: "openai", ProtocolProfileID: "profile-openai-responses", ProtocolProfileRevision: "profile-revision-1", EndpointFingerprint: "endpoint-hmac-1", MappedUpstreamModel: command.Model, CredentialEnvelopeRef: "credential-alias-1", ProxyConfigurationVersion: "proxy-revision-1"}, Model: command.Model, Profile: command.Profile, Trigger: modelcheckinput.TriggerManual, ProbeSetVersion: "probe-v1", Policy: modelcheckinput.PolicySnapshot{Revision: "policy-revision-1", Digest: "policy-digest-1"}, StartedAt: now, DeadlineAt: now.Add(time.Minute), ProviderCode: "openai", TargetType: "account", TargetName: "Target"}
+			request := modelcheckruntime.RunRequest{SystemAccountID: scope.SystemAccountID, ActorSystemAccountID: "actor-account", Target: modelcheckinput.AccountSnapshot{ID: command.TargetID, ConfigRevision: "config-revision-1", ProviderCode: "openai", ProtocolProfileID: "profile-openai-responses", ProtocolProfileRevision: "profile-revision-1", EndpointFingerprint: "endpoint-hmac-1", MappedUpstreamModel: command.Model, CredentialEnvelopeRef: "credential-alias-1", ProxyConfigurationVersion: "proxy-revision-1"}, Model: command.Model, Profile: command.Profile, Trigger: modelcheckinput.TriggerManual, ProbeSetVersion: "probe-v1", Policy: testPolicySnapshot(), StartedAt: now, DeadlineAt: now.Add(time.Minute), ProviderCode: "openai", TargetType: "account", TargetName: "Target"}
 			if command.TrustedComparison {
 				comparison := request.Target
 				comparison.ID = command.TrustedComparisonID
@@ -149,6 +149,14 @@ func newTestHandler(service *modelcheckruntime.Service) *Handler {
 			return request, nil
 		},
 	}
+}
+
+func testPolicySnapshot() modelcheckinput.PolicySnapshot {
+	policy, err := modelcheckinput.NewPolicySnapshot("policy-revision-1", "quick", true, 70, "fallback", 10)
+	if err != nil {
+		panic(err)
+	}
+	return policy
 }
 
 func newHTTPTestService(t *testing.T, endpoint string) (*modelcheckruntime.Service, string, time.Time) {
@@ -174,7 +182,7 @@ func newHTTPTestService(t *testing.T, endpoint string) (*modelcheckruntime.Servi
 		dataset.Close()
 		t.Fatal(err)
 	}
-	service := &modelcheckruntime.Service{Durable: durable, Dataset: dataset, Active: modelcheckactive.NewRegistry(), Resolver: func(context.Context, string, string) (modelcheckexecutor.ResolvedTarget, error) {
+	service := &modelcheckruntime.Service{Durable: durable, Dataset: dataset, Active: modelcheckactive.NewRegistry(), Resolver: func(context.Context, modelcheckexecutor.ResolutionRequest) (modelcheckexecutor.ResolvedTarget, error) {
 		return modelcheckexecutor.ResolvedTarget{ConfigRevision: "config-revision-1", ProtocolProfileID: "profile-openai-responses", ProtocolProfileRevision: "profile-revision-1", Endpoint: endpoint, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Model: "gpt-5.6-sol", Prompt: "hello", MaxOutputTokens: 32}, nil
 	}, Retry: modelcheckprobe.RetryOptions{AttemptTimeouts: []time.Duration{time.Second}, Delay: func(context.Context) error { return nil }}, Now: func() time.Time { return now }, NewID: func(prefix string) string { return prefix + "-http" }}
 	t.Cleanup(func() { _ = durable.Close(); _ = dataset.Close() })

@@ -1,10 +1,24 @@
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
+import type { PoolClient } from 'pg'
 import { requiredRfc3339Instant } from '../shared/rfc3339.js'
+
+export interface AccountHealthJobsPostgresOutcomePool {
+  connect(): Promise<PoolClient>
+  end(): Promise<void>
+}
+
+export interface AccountHealthJobsPostgresStoreSource {
+  mode: 'postgres'
+  postgresUrl: string
+  /** Long-running consumers retain one bounded pool until their runtime stops. */
+  persistent?: true
+  pool?: AccountHealthJobsPostgresOutcomePool
+}
 
 export type AccountHealthJobsStoreSource =
   | { mode: 'sqlite'; databasePath: string }
-  | { mode: 'postgres'; postgresUrl: string }
+  | AccountHealthJobsPostgresStoreSource
 
 export interface AccountHealthJobsProjection {
   target_account_id: string
@@ -67,6 +81,22 @@ export interface AccountHealthJobsOutcomeCursor {
   outcomeId: string
 }
 
+const postgresOutcomeReaderIdleTimeoutMs = 30_000
+const postgresOutcomeReaderMaxLifetimeSeconds = 600
+
+export function createPostgresAccountHealthJobsStoreSource(postgresUrl: string): AccountHealthJobsPostgresStoreSource {
+  const normalizedUrl = postgresUrl.trim()
+  if (!normalizedUrl) throw new Error('J1 PostgreSQL outcome URL 不能为空')
+  return { mode: 'postgres', postgresUrl: normalizedUrl, persistent: true }
+}
+
+export async function closeAccountHealthJobsStoreSource(source: AccountHealthJobsStoreSource): Promise<void> {
+  if (source.mode !== 'postgres') return
+  const pool = source.pool
+  source.pool = undefined
+  await pool?.end()
+}
+
 // This is a read-only adapter for the jobs-owned store. It intentionally does
 // not expose INSERT/UPDATE/DELETE or a Node fallback executor. The DB-service
 // projector consumes returned facts and writes only its own business receipt.
@@ -79,7 +109,7 @@ export async function listAccountHealthJobsOutcomes(
   if (source.mode === 'sqlite') {
     return readSqliteOutcomes(source.databasePath, after, limit)
   }
-  return await readPostgresOutcomes(source.postgresUrl, after, limit)
+  return await readPostgresOutcomes(source, after, limit)
 }
 
 /**
@@ -108,7 +138,7 @@ export async function listAccountHealthJobsOutcomesForAccountsAsync(
   if (source.mode === 'sqlite') {
     return readSqliteOutcomesForAccounts(source.databasePath, normalized.accountIds, normalized.observedAfter)
   }
-  return await readPostgresOutcomesForAccounts(source.postgresUrl, normalized.accountIds, normalized.observedAfter)
+  return await readPostgresOutcomesForAccounts(source, normalized.accountIds, normalized.observedAfter)
 }
 
 function readSqliteOutcomes(path: string, after: AccountHealthJobsOutcomeCursor | undefined, limit: number): AccountHealthJobsOutcome[] {
@@ -165,14 +195,16 @@ function resolveSqliteCursor(
   return { observedAt: storageObservedAt.trim(), outcomeId: after.outcomeId }
 }
 
-async function readPostgresOutcomes(postgresUrl: string, after: AccountHealthJobsOutcomeCursor | undefined, limit: number): Promise<AccountHealthJobsOutcome[]> {
-  const { Pool } = await import('pg')
-  const pool = new Pool({ connectionString: postgresUrl, max: 1 })
-  const connection = await pool.connect()
+async function readPostgresOutcomes(source: AccountHealthJobsPostgresStoreSource, after: AccountHealthJobsOutcomeCursor | undefined, limit: number): Promise<AccountHealthJobsOutcome[]> {
+  const pool = await postgresOutcomePool(source)
+  let connection: PoolClient | undefined
   let inTransaction = false
+  let failed = false
   try {
+    connection = await pool.connect()
     await connection.query('BEGIN READ ONLY')
     inTransaction = true
+    await connection.query('SET LOCAL statement_timeout = 5000')
     const effectiveAfter = after ? await resolvePostgresCursor(connection, after) : undefined
     const result = effectiveAfter
       ? await connection.query(`SELECT payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes WHERE observed_at > $1 OR (observed_at = $1 AND outcome_id > $2) ORDER BY observed_at ASC, outcome_id ASC LIMIT $3`, [effectiveAfter.observedAt, effectiveAfter.outcomeId, limit])
@@ -181,33 +213,53 @@ async function readPostgresOutcomes(postgresUrl: string, after: AccountHealthJob
     inTransaction = false
     return result.rows.map((row: Record<string, unknown>) => decodeOutcomeRow(row))
   } catch (error) {
-    if (inTransaction) await connection.query('ROLLBACK').catch(() => undefined)
+    failed = true
+    if (inTransaction) await connection?.query('ROLLBACK').catch(() => undefined)
     throw error
   } finally {
-    connection.release()
-    await pool.end()
+    connection?.release(failed ? new Error('J1 outcome reader connection failed') : undefined)
+    if (failed || !source.persistent) await closeAccountHealthJobsStoreSource(source).catch(() => undefined)
   }
 }
 
-async function readPostgresOutcomesForAccounts(postgresUrl: string, accountIds: string[], observedAfter: string): Promise<AccountHealthJobsOutcome[]> {
-  const { Pool } = await import('pg')
-  const pool = new Pool({ connectionString: postgresUrl, max: 1 })
-  const connection = await pool.connect()
+async function readPostgresOutcomesForAccounts(source: AccountHealthJobsPostgresStoreSource, accountIds: string[], observedAfter: string): Promise<AccountHealthJobsOutcome[]> {
+  const pool = await postgresOutcomePool(source)
+  let connection: PoolClient | undefined
   let inTransaction = false
+  let failed = false
   try {
+    connection = await pool.connect()
     await connection.query('BEGIN READ ONLY')
     inTransaction = true
+    await connection.query('SET LOCAL statement_timeout = 5000')
     const result = await connection.query(`SELECT payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes WHERE account_id = ANY($1::text[]) AND observed_at >= $2::timestamptz ORDER BY observed_at ASC, outcome_id ASC`, [accountIds, observedAfter])
     await connection.query('COMMIT')
     inTransaction = false
     return result.rows.map((row: Record<string, unknown>) => decodeOutcomeRow(row))
   } catch (error) {
-    if (inTransaction) await connection.query('ROLLBACK').catch(() => undefined)
+    failed = true
+    if (inTransaction) await connection?.query('ROLLBACK').catch(() => undefined)
     throw error
   } finally {
-    connection.release()
-    await pool.end()
+    connection?.release(failed ? new Error('J1 outcome reader connection failed') : undefined)
+    if (failed || !source.persistent) await closeAccountHealthJobsStoreSource(source).catch(() => undefined)
   }
+}
+
+async function postgresOutcomePool(source: AccountHealthJobsPostgresStoreSource): Promise<AccountHealthJobsPostgresOutcomePool> {
+  if (source.pool) return source.pool
+  const { Pool } = await import('pg')
+  const pool = new Pool({
+    connectionString: source.postgresUrl,
+    max: 1,
+    idleTimeoutMillis: postgresOutcomeReaderIdleTimeoutMs,
+    maxLifetimeSeconds: postgresOutcomeReaderMaxLifetimeSeconds,
+    connectionTimeoutMillis: 5_000,
+    query_timeout: 5_000,
+    application_name: 'juhe-ai:j1-outcome-reader'
+  }) as unknown as AccountHealthJobsPostgresOutcomePool
+  source.pool = pool
+  return pool
 }
 
 function decodeOutcomeRow(row: unknown): AccountHealthJobsOutcome {
