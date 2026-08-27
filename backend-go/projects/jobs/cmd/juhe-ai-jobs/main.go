@@ -66,6 +66,20 @@ func main() {
 		runPassiveJobs(*healthAddress, ownerMode, logger)
 		return
 	}
+	postgresPools.SetObserver(func(event pgpool.PoolEvent) {
+		logger.Debug("jobs postgres pool event",
+			"event", event.Kind,
+			"role", event.Role,
+			"max_open", event.MaxOpen,
+			"max_idle", event.MaxIdle,
+			"refs", event.Refs,
+			"open", event.DBStats.OpenConnections,
+			"in_use", event.DBStats.InUse,
+			"idle", event.DBStats.Idle,
+			"wait_count", event.DBStats.WaitCount,
+			"wait_duration_ms", event.DBStats.WaitDuration.Milliseconds(),
+		)
+	})
 	postgresPools := pgpool.NewRegistry()
 	defer postgresPools.Close()
 	runtimeConfig, err := runtimelog.LoadConfig(os.Getenv)
