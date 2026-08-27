@@ -71,6 +71,13 @@ export interface AccountHealthJobsOutcome {
   failure_started_at?: string
   account_status?: string
   source_fence?: AccountHealthJobsSourceFence
+  key_model_fence?: {
+    capability_hash: string
+    key_fingerprint: string
+    dispatch_revision: number
+    owner_id: string
+  }
+  winner_key_fingerprint?: string
   projection?: AccountHealthJobsProjection
   /** Durable-store ordering timestamp; not part of the Go payload contract. */
   storage_observed_at?: string

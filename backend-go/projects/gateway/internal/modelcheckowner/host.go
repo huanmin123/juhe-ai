@@ -48,6 +48,17 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 	if deps.Resolve == nil || deps.Authorize == nil || deps.Build == nil || deps.Enforcement == nil || deps.Quality == nil {
 		return nil, errors.New("J3b Gateway owner dependencies are incomplete")
 	}
+	// Full-profile probes must have explicit tokenizer and model-limit
+	// snapshots. Allowing a nil dependency would silently mark those probe
+	// families as skipped and could make an incomplete observation look like a
+	// runnable owner. Keep the host fail-closed until Gateway wires real,
+	// versioned sources.
+	if deps.Tokenizer == nil || strings.TrimSpace(deps.Tokenizer.Version()) == "" {
+		return nil, errors.New("J3b Gateway tokenizer snapshot is not configured")
+	}
+	if deps.ModelLimits == nil || strings.TrimSpace(deps.ModelLimits.Version()) == "" {
+		return nil, errors.New("J3b Gateway model-limit snapshot is not configured")
+	}
 	store, err := OpenStore(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open J3b Gateway store: %w", err)

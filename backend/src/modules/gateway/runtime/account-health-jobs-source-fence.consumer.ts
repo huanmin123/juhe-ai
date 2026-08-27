@@ -5,6 +5,7 @@ import {
   settleDispatchedAvailabilityProbeBySourceFence,
   type AvailabilityProbeOutcome
 } from './availability-probe-coordinator.js'
+import { settleMainProbeFenceOutcome } from './key-model-redis-store.js'
 
 export interface AccountHealthJobsSourceFence {
   stateKey: string
@@ -26,6 +27,19 @@ export async function settleAccountHealthJobsSourceFenceOutcome(outcome: Account
 }
 
 export async function settleAccountHealthJobsSourceFenceOutcomeWithDisposition(outcome: AccountHealthJobsOutcome): Promise<AccountHealthJobsSourceFenceSettlement> {
+  if (outcome.key_model_fence) {
+    const settled = await settleMainProbeFenceOutcome({
+      fence: {
+        capabilityHash: outcome.key_model_fence.capability_hash,
+        keyFingerprint: outcome.key_model_fence.key_fingerprint,
+        dispatchRevision: outcome.key_model_fence.dispatch_revision,
+        ownerId: outcome.key_model_fence.owner_id
+      },
+      outcome: outcome.outcome,
+      winnerKeyFingerprint: outcome.winner_key_fingerprint
+    })
+    return settled ? 'settled' : 'retry'
+  }
   if (!outcome.source_fence) return 'not_applicable'
   const sourceFence: AccountHealthJobsSourceFence = {
     stateKey: outcome.source_fence.state_key,

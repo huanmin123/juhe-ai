@@ -7,6 +7,7 @@ import {
   keyModelForegroundLimit,
   keyModelForegroundPrecommitLeaseMs,
   keyModelForegroundRedisOperationTimeoutMs,
+  keyModelMainProbeUnknownRetryMs,
   type CapabilityKey,
   type KeyModelState
 } from './key-model-runtime.js'
@@ -20,6 +21,13 @@ export interface KeyModelFailureIntent {
   outcome: 'upstream_not_complete'
   sourceFence: string
   permit?: KeyModelForegroundPermit
+}
+
+export interface KeyModelFenceReference {
+  capabilityHash: string
+  keyFingerprint: string
+  dispatchRevision: number
+  ownerId: string
 }
 
 export type KeyModelFailureResult =
@@ -152,6 +160,23 @@ export class RedisKeyModelRuntimeStore {
     ], [permit.attemptId, hash, String(90_000)])
   }
 
+  async clearMainProbeFence(fence: KeyModelFenceReference, winnerKeyFingerprint: string): Promise<boolean> {
+    const hash = requiredHash(fence.capabilityHash)
+    if (requiredText(fence.keyFingerprint, 'keyFingerprint') !== requiredText(winnerKeyFingerprint, 'winnerKeyFingerprint')) return false
+    if (!Number.isSafeInteger(fence.dispatchRevision) || fence.dispatchRevision < 1) return false
+    const result = redisArray(await this.evalWithSingleRetry('MainProbe fence 清理', clearMainProbeFenceScript, [
+      this.keys.mainProbeFence(hash)
+    ], [requiredText(fence.ownerId, 'ownerId')]))
+    return finiteInteger(result[0]) === 1
+  }
+
+  async deferMainProbeFence(fence: KeyModelFenceReference): Promise<boolean> {
+    const result = redisArray(await this.evalWithSingleRetry('MainProbe fence unknown 延后', deferMainProbeFenceScript, [
+      this.keys.mainProbeFence(requiredHash(fence.capabilityHash))
+    ], [requiredText(fence.ownerId, 'ownerId'), String(keyModelMainProbeUnknownRetryMs)]))
+    return finiteInteger(result[0]) === 1
+  }
+
   async claimJ1Confirmation(sourceAccountId: string, dispatchRevision: number): Promise<boolean> {
     const sourceHash = capabilityHash({
       credentialSourceAccountId: requiredText(sourceAccountId, 'credentialSourceAccountId'),
@@ -202,6 +227,24 @@ export class RedisKeyModelRuntimeStore {
   }
 }
 
+export async function settleMainProbeFenceOutcome(input: {
+  fence: KeyModelFenceReference
+  outcome: string
+  winnerKeyFingerprint?: string
+}): Promise<boolean> {
+  const store = new RedisKeyModelRuntimeStore()
+  if (input.outcome === 'complete_success') {
+    if (!input.winnerKeyFingerprint || input.winnerKeyFingerprint !== input.fence.keyFingerprint) return true
+    await store.clearMainProbeFence(input.fence, input.winnerKeyFingerprint)
+    return true
+  }
+  if (input.outcome === 'framing_complete_neutral' || input.outcome === 'probe_task_failure' || input.outcome === 'stale') {
+    await store.deferMainProbeFence(input.fence)
+    return true
+  }
+  return true
+}
+
 export function keyModelRedisKeys(): KeyModelRedisKeys {
   const prefix = redisNamespacedKey('gateway-account-circuit-key-model')
   return {
@@ -227,9 +270,9 @@ incoming.lastObservedAtMs = now
 incoming.retryAtMs = now + 5000
 local function releasePermit()
   if redis.call('DEL', KEYS[6]) == 0 then return end
-  redis.call('ZREM', KEYS[5], ARGV[6])
+  redis.call('ZREM', KEYS[5], ARGV[5])
   local wake = redis.call('INCR', KEYS[7])
-  redis.call('PUBLISH', KEYS[8], ARGV[7] .. ':' .. tostring(wake))
+  redis.call('PUBLISH', KEYS[8], ARGV[6] .. ':' .. tostring(wake))
 end
 local receipt = redis.call('GET', KEYS[3])
 if receipt then
@@ -281,9 +324,26 @@ releasePermit()
 return {'applied', encoded}
 `
 
+export const clearMainProbeFenceScript = `
+local current = redis.call('GET', KEYS[1])
+if not current then return {0} end
+if current ~= ARGV[1] then return {0} end
+redis.call('DEL', KEYS[1])
+return {1}
+`
+
+export const deferMainProbeFenceScript = `
+local current = redis.call('GET', KEYS[1])
+if not current or current ~= ARGV[1] then return {0} end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return {1}
+`
+
 export const admitKeyModelForegroundScript = `
 local redisTime = redis.call('TIME')
 local now = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local existing = redis.call('GET', KEYS[3])
+if existing then return {'idempotent', redis.call('GET', KEYS[4]) or '0', existing} end
 local stateRaw = redis.call('GET', KEYS[1])
 if stateRaw then
   local state = cjson.decode(stateRaw)
@@ -292,8 +352,6 @@ if stateRaw then
   end
 end
 if redis.call('EXISTS', KEYS[5]) == 1 then return {'blocked', redis.call('GET', KEYS[4]) or '0', '0'} end
-local existing = redis.call('GET', KEYS[3])
-if existing then return {'idempotent', redis.call('GET', KEYS[4]) or '0', existing} end
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
 local count = tonumber(redis.call('ZCARD', KEYS[2]) or '0')
 if count >= tonumber(ARGV[3]) then return {'busy', redis.call('GET', KEYS[4]) or '0', '0'} end

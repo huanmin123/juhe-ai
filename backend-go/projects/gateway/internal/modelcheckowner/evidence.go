@@ -36,7 +36,7 @@ func AggregateEvidence(items []map[string]any) EvidenceAggregate {
 		}
 		result.Families = append(result.Families, family)
 		status, _ := item["status"].(string)
-		if status == "partial" || status == "skipped" {
+		if status != "passed" && status != "failed" && status != "warning" {
 			result.Partial = append(result.Partial, family)
 		}
 		if score, ok := item["score"].(int); ok && score > 0 {

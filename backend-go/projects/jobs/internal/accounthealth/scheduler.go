@@ -472,7 +472,7 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 }
 
 func (r *Runner) persistExplicitTerminal(ctx context.Context, lease OwnerLease, request ProbeRequest, kind string, observed time.Time, code, message string) error {
-	outcome := Outcome{OutcomeID: newOutcomeID(), RequestID: request.RequestID, AccountID: request.AccountID, Outcome: kind, ObservedAt: observed, InputVersion: request.InputVersion, ConfigRevision: request.ConfigRevision, DispatchRevision: request.DispatchRevision, ErrorCode: code, ErrorMessage: message, SourceFence: request.SourceFence}
+	outcome := Outcome{OutcomeID: newOutcomeID(), RequestID: request.RequestID, AccountID: request.AccountID, Outcome: kind, ObservedAt: observed, InputVersion: request.InputVersion, ConfigRevision: request.ConfigRevision, DispatchRevision: request.DispatchRevision, ErrorCode: code, ErrorMessage: message, SourceFence: request.SourceFence, KeyModelFence: request.KeyModelFence}
 	_, err := r.store.AppendOutcome(ctx, lease, outcome)
 	return err
 }

@@ -599,6 +599,7 @@
     "test:key-model-runtime": "tsx src/scripts/regression/key-model-runtime-regression.ts",
     "test:key-model-redis-store": "tsx src/scripts/regression/key-model-redis-store-regression.ts",
     "test:key-model-capability": "tsx src/scripts/regression/key-model-capability-regression.ts",
+    "test:key-model-j1-fence": "tsx src/scripts/regression/key-model-j1-fence-regression.ts",
     "test:account-circuit-escalation-config": "tsx src/scripts/regression/account-circuit-escalation-config-regression.ts",
     "test:account-circuit-control-plane": "tsx src/scripts/regression/account-circuit-control-plane-regression.ts",
     "test:account-list-availability-projection": "tsx src/scripts/regression/account-list-availability-projection-regression.ts",

@@ -1329,12 +1329,11 @@ export async function fetchFirstAvailableUpstream(
                 const provenBodyTransportFailure = isProvenUpstreamBodyTransportError(error)
                 const provenStartedTransportFailure = primaryStartedTransportFailure
                   || provenBodyTransportFailure
-                // The key-model path consumes only the transport lifecycle
-                // fact, not HTTP/error/body classifications. A cancellation or
-                // scheduler cutover has no capability conclusion; every other
-                // started attempt without a complete terminal response is one
-                // upstream_not_complete observation.
-                if (signal?.aborted || firstByteDeadlineTriggered) {
+                // Key-model state may only consume a trusted transport-lifecycle
+                // fact. Local preparation/validation errors, cancellation,
+                // scheduler cutover and an attempt that never reached the
+                // upstream are unknown; they must not open a shared state.
+                if (attemptSignal?.aborted || firstByteDeadlineTriggered || localRequestFailure || !provenStartedTransportFailure) {
                   await keyModelAttempt?.reportUnknown()
                 } else {
                   await keyModelAttempt?.reportUpstreamNotComplete()

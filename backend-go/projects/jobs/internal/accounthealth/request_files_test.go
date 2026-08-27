@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,5 +22,12 @@ func TestLoadSignedProbeRequestsAcceptsSourceFence(t *testing.T) {
 	requests, err := LoadSignedProbeRequests(root, map[string][]byte{"current": []byte("key")})
 	if err != nil || len(requests) != 1 || requests[0].SourceFence == nil || requests[0].SourceFence.SourceFenceID != "fence-1" {
 		t.Fatalf("requests=%#v err=%v", requests, err)
+	}
+}
+
+func TestLoadSignedProbeRequestsAcceptsKeyModelFence(t *testing.T) {
+	request := ProbeRequest{RequestID: "request-key-model", AccountID: "account-1", Reason: "request_failure", InputVersion: 2, ConfigRevision: 3, DispatchRevision: 4, Deadline: time.Now().UTC().Add(time.Minute), KeyModelFence: &KeyModelFence{CapabilityHash: strings.Repeat("a", 64), KeyFingerprint: "key-a", DispatchRevision: 4, OwnerID: "attempt-1"}}
+	if err := validateProbeRequest(request); err != nil {
+		t.Fatal(err)
 	}
 }

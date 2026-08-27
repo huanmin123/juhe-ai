@@ -41,7 +41,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 875,
+        "access_mode_line": 55,
+        "handler_line": 961,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -55,7 +60,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1036,
+        "access_mode_line": 83,
+        "handler_line": 623,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -69,7 +79,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 953,
+        "access_mode_line": 69,
+        "handler_line": 1118,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -83,7 +98,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 934,
+        "access_mode_line": 65,
+        "handler_line": 1110,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -97,7 +117,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 687,
+        "access_mode_line": 39,
+        "handler_line": 809,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -111,7 +136,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 642,
+        "access_mode_line": 31,
+        "handler_line": 893,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -125,7 +155,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 650,
+        "access_mode_line": 33,
+        "handler_line": 907,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "api_keys, accounts, resource_authorizations",
       "transaction_group": "availability-authorization",
@@ -139,7 +174,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 655,
+        "access_mode_line": 34,
+        "handler_line": 918,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "api_keys, accounts, resource_authorizations",
       "transaction_group": "availability-authorization",
@@ -153,7 +193,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 946,
+        "access_mode_line": 68,
+        "handler_line": 1116,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -167,7 +212,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 988,
+        "access_mode_line": 74,
+        "handler_line": 1135,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -181,7 +231,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 994,
+        "access_mode_line": 76,
+        "handler_line": 1149,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "chat/codex-context shards",
       "transaction_group": "excluded-nonbusiness",
@@ -195,7 +250,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1025,
+        "access_mode_line": 81,
+        "handler_line": 1079,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "chat/codex-context shards",
       "transaction_group": "excluded-nonbusiness",
@@ -209,7 +269,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 926,
+        "access_mode_line": 63,
+        "handler_line": 1095,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_record_cleanup_targets",
       "transaction_group": "account-cleanup",
@@ -223,7 +288,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 929,
+        "access_mode_line": 64,
+        "handler_line": 1104,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "system_sessions",
       "transaction_group": "session-retention",
@@ -237,7 +307,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 787,
+        "access_mode_line": 47,
+        "handler_line": 600,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -251,7 +326,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 768,
+        "access_mode_line": 44,
+        "handler_line": 985,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -265,7 +345,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1082,
+        "access_mode_line": 91,
+        "handler_line": 999,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "business tables for operation",
       "transaction_group": "management-mutation",
@@ -279,7 +364,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 827,
+        "access_mode_line": 50,
+        "handler_line": 929,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_usage_snapshots",
       "transaction_group": "account-health",
@@ -293,7 +383,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 938,
+        "access_mode_line": 66,
+        "handler_line": 1112,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -307,7 +402,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1052,
+        "access_mode_line": 86,
+        "handler_line": 638,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -321,7 +421,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 561,
+        "access_mode_line": 16,
+        "handler_line": 417,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -335,7 +440,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 581,
+        "access_mode_line": 20,
+        "handler_line": 453,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -349,7 +459,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 601,
+        "access_mode_line": 24,
+        "handler_line": 489,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -363,7 +478,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 740,
+        "access_mode_line": 42,
+        "handler_line": 723,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -377,7 +497,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 906,
+        "access_mode_line": 58,
+        "handler_line": 1007,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "group_account_stats_dirty",
       "transaction_group": "group-dirty-cursor",
@@ -391,7 +516,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 575,
+        "access_mode_line": 19,
+        "handler_line": 444,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -405,7 +535,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 595,
+        "access_mode_line": 23,
+        "handler_line": 480,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -419,7 +554,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 616,
+        "access_mode_line": 27,
+        "handler_line": 518,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -433,7 +573,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 846,
+        "access_mode_line": 51,
+        "handler_line": 934,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_usage_snapshots",
       "transaction_group": "account-health",
@@ -447,7 +592,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 923,
+        "access_mode_line": 62,
+        "handler_line": 784,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "api_keys, accounts, resource_authorizations",
       "transaction_group": "availability-authorization",
@@ -461,7 +611,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1063,
+        "access_mode_line": 87,
+        "handler_line": 647,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -475,7 +630,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 818,
+        "access_mode_line": 49,
+        "handler_line": 572,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -489,7 +649,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 538,
+        "access_mode_line": 13,
+        "handler_line": 380,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -503,7 +668,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 677,
+        "access_mode_line": 36,
+        "handler_line": 794,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "accounts",
       "transaction_group": "oauth-credentials",
@@ -517,7 +687,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 942,
+        "access_mode_line": 67,
+        "handler_line": 1114,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -531,7 +706,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 569,
+        "access_mode_line": 18,
+        "handler_line": 430,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -545,7 +725,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 589,
+        "access_mode_line": 22,
+        "handler_line": 466,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -559,7 +744,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 609,
+        "access_mode_line": 26,
+        "handler_line": 502,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -573,7 +763,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1105,
+        "access_mode_line": 96,
+        "handler_line": 1027,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -587,7 +782,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1109,
+        "access_mode_line": 97,
+        "handler_line": 1029,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -601,7 +801,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1113,
+        "access_mode_line": 98,
+        "handler_line": 1031,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -615,7 +820,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1074,
+        "access_mode_line": 89,
+        "handler_line": 657,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -629,7 +839,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 871,
+        "access_mode_line": 54,
+        "handler_line": 956,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -643,7 +858,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 975,
+        "access_mode_line": 72,
+        "handler_line": 1128,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -657,7 +877,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 968,
+        "access_mode_line": 71,
+        "handler_line": 1126,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -671,7 +896,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 981,
+        "access_mode_line": 73,
+        "handler_line": 1133,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -685,7 +915,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1085,
+        "access_mode_line": 92,
+        "handler_line": 872,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -699,7 +934,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1088,
+        "access_mode_line": 93,
+        "handler_line": 879,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -713,7 +953,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 524,
+        "access_mode_line": 11,
+        "handler_line": 348,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -727,7 +972,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 531,
+        "access_mode_line": 12,
+        "handler_line": 364,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -741,7 +991,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 565,
+        "access_mode_line": 17,
+        "handler_line": 422,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -755,7 +1010,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 627,
+        "access_mode_line": 29,
+        "handler_line": 536,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -769,7 +1029,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 605,
+        "access_mode_line": 25,
+        "handler_line": 494,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -783,7 +1048,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 585,
+        "access_mode_line": 21,
+        "handler_line": 458,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -797,7 +1067,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 635,
+        "access_mode_line": 30,
+        "handler_line": 554,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -811,7 +1086,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 509,
+        "access_mode_line": 7,
+        "handler_line": 327,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -825,7 +1105,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 546,
+        "access_mode_line": 14,
+        "handler_line": 397,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -839,7 +1124,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1101,
+        "access_mode_line": 95,
+        "handler_line": 1025,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -853,7 +1143,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 892,
+        "access_mode_line": 56,
+        "handler_line": 970,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -867,7 +1162,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 773,
+        "access_mode_line": 45,
+        "handler_line": 835,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -881,7 +1181,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 781,
+        "access_mode_line": 46,
+        "handler_line": 855,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -895,7 +1200,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1047,
+        "access_mode_line": 85,
+        "handler_line": 633,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -909,7 +1219,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1043,
+        "access_mode_line": 84,
+        "handler_line": 628,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -923,7 +1238,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 801,
+        "access_mode_line": 48,
+        "handler_line": 581,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -937,7 +1257,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 902,
+        "access_mode_line": 57,
+        "handler_line": 1001,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "group_account_stats_dirty",
       "transaction_group": "group-dirty-cursor",
@@ -951,7 +1276,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 669,
+        "access_mode_line": 37,
+        "handler_line": 759,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts",
       "transaction_group": "oauth-credentials",
@@ -965,7 +1295,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1097,
+        "access_mode_line": 75,
+        "handler_line": 1137,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "model_quality_policies, model_quality_schedules, account_quality_enforcements, dedicated j3b facts",
       "transaction_group": "j3b-quality",
@@ -979,7 +1314,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 681,
+        "access_mode_line": 38,
+        "handler_line": 802,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts",
       "transaction_group": "oauth-credentials",
@@ -993,7 +1333,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 867,
+        "access_mode_line": 53,
+        "handler_line": 950,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "accounts, account_usage_snapshots",
       "transaction_group": "account-health",
@@ -1007,7 +1352,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1078,
+        "access_mode_line": 90,
+        "handler_line": 667,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -1021,7 +1371,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 646,
+        "access_mode_line": 32,
+        "handler_line": 900,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -1035,7 +1390,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1018,
+        "access_mode_line": 80,
+        "handler_line": 1064,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "chat/codex-context shards",
       "transaction_group": "excluded-nonbusiness",
@@ -1049,7 +1409,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1010,
+        "access_mode_line": 79,
+        "handler_line": 1047,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "chat/codex-context shards",
       "transaction_group": "excluded-nonbusiness",
@@ -1063,7 +1428,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 554,
+        "access_mode_line": 15,
+        "handler_line": 415,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -1077,7 +1447,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 516,
+        "access_mode_line": 9,
+        "handler_line": 334,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -1091,7 +1466,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 706,
+        "access_mode_line": 40,
+        "handler_line": 677,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -1105,7 +1485,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 728,
+        "access_mode_line": 41,
+        "handler_line": 698,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -1119,7 +1504,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 756,
+        "access_mode_line": 43,
+        "handler_line": 819,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -1133,7 +1523,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1093,
+        "access_mode_line": 94,
+        "handler_line": 1033,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "business tables for operation",
       "transaction_group": "management-mutation",
@@ -1147,7 +1542,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 960,
+        "access_mode_line": 70,
+        "handler_line": 1122,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_circuit_incidents, account_circuit_outbox",
       "transaction_group": "circuit-control-plane",
@@ -1161,7 +1561,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 519,
+        "access_mode_line": 10,
+        "handler_line": 339,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -1175,7 +1580,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1006,
+        "access_mode_line": 78,
+        "handler_line": 1042,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "chat/codex-context shards",
       "transaction_group": "excluded-nonbusiness",
@@ -1189,7 +1599,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1002,
+        "access_mode_line": 77,
+        "handler_line": 1037,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "chat/codex-context shards",
       "transaction_group": "excluded-nonbusiness",
@@ -1203,7 +1618,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 623,
+        "access_mode_line": 28,
+        "handler_line": 528,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "openai-compatible metadata tables",
       "transaction_group": "gateway-artifacts",
@@ -1217,7 +1637,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1030,
+        "access_mode_line": 82,
+        "handler_line": 1090,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "chat/codex-context shards",
       "transaction_group": "excluded-nonbusiness",
@@ -1231,7 +1656,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1116,
+        "access_mode_line": 99,
+        "handler_line": 1035,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "none",
       "transaction_group": "read-only",
@@ -1245,7 +1675,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 920,
+        "access_mode_line": 61,
+        "handler_line": 774,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "api_keys, accounts, resource_authorizations",
       "transaction_group": "availability-authorization",
@@ -1259,7 +1694,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 917,
+        "access_mode_line": 60,
+        "handler_line": 767,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",
@@ -1273,7 +1713,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 1069,
+        "access_mode_line": 88,
+        "handler_line": 652,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "account_test_tasks, accounts",
       "transaction_group": "account-test-task",
@@ -1287,7 +1732,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 913,
+        "access_mode_line": 59,
+        "handler_line": 1019,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "group_account_stats_dirty",
       "transaction_group": "group-dirty-cursor",
@@ -1301,7 +1751,12 @@
       "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 663,
+        "access_mode_line": 35,
+        "handler_line": 740,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "business-writer"
       },
       "tables": "accounts",
       "transaction_group": "oauth-credentials",
@@ -1315,7 +1770,12 @@
       "access": "read",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
+        "handler": "backend/src/modules/db-service/db-service-handlers.ts",
+        "type_line": 512,
+        "access_mode_line": 8,
+        "handler_line": 332,
+        "entrypoint": "db-service-handler",
+        "writer_kind": "read-consumer"
       },
       "tables": "accounts, account_api_key_runtime_states",
       "transaction_group": "account-runtime",

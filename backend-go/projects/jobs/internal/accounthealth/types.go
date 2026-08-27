@@ -99,6 +99,13 @@ type SourceFence struct {
 	ConfigRevision   int64  `json:"config_revision"`
 }
 
+type KeyModelFence struct {
+	CapabilityHash   string `json:"capability_hash"`
+	KeyFingerprint   string `json:"key_fingerprint"`
+	DispatchRevision int64  `json:"dispatch_revision"`
+	OwnerID          string `json:"owner_id"`
+}
+
 type ProbeRequest struct {
 	RequestID        string    `json:"request_id"`
 	AccountID        string    `json:"account_id"`
@@ -110,9 +117,10 @@ type ProbeRequest struct {
 	// MutateAccount is true for activation/configuration work. Source-fenced
 	// Gateway confirmation requests set it false; only a typed upstream failure
 	// may later receive mutation authority under the frozen source rule.
-	MutateAccount bool         `json:"mutate_account"`
-	SourceFence   *SourceFence `json:"source_fence,omitempty"`
-	sourcePath    string       `json:"-"`
+	MutateAccount bool           `json:"mutate_account"`
+	SourceFence   *SourceFence   `json:"source_fence,omitempty"`
+	KeyModelFence *KeyModelFence `json:"key_model_fence,omitempty"`
+	sourcePath    string         `json:"-"`
 }
 
 type Projection struct {
@@ -129,25 +137,27 @@ type Projection struct {
 }
 
 type Outcome struct {
-	OutcomeID        string         `json:"outcome_id"`
-	RequestID        string         `json:"request_id"`
-	AccountID        string         `json:"account_id"`
-	Outcome          string         `json:"outcome"`
-	ObservedAt       time.Time      `json:"observed_at"`
-	InputVersion     int64          `json:"input_version"`
-	ConfigRevision   int64          `json:"config_revision"`
-	DispatchRevision int64          `json:"dispatch_revision"`
-	StatusCode       int            `json:"status_code,omitempty"`
-	ErrorCode        string         `json:"error_code,omitempty"`
-	ErrorMessage     string         `json:"error_message,omitempty"`
-	WinnerIndex      *int           `json:"winner_index,omitempty"`
-	SourceFence      *SourceFence   `json:"source_fence,omitempty"`
-	Projection       *Projection    `json:"projection,omitempty"`
-	NextDueAt        *time.Time     `json:"next_due_at,omitempty"`
-	FailureCount     int            `json:"failure_count,omitempty"`
-	FailureStartedAt *time.Time     `json:"failure_started_at,omitempty"`
-	AccountStatus    string         `json:"account_status,omitempty"`
-	CooldownFence    *CooldownFence `json:"cooldown_fence,omitempty"`
+	OutcomeID            string         `json:"outcome_id"`
+	RequestID            string         `json:"request_id"`
+	AccountID            string         `json:"account_id"`
+	Outcome              string         `json:"outcome"`
+	ObservedAt           time.Time      `json:"observed_at"`
+	InputVersion         int64          `json:"input_version"`
+	ConfigRevision       int64          `json:"config_revision"`
+	DispatchRevision     int64          `json:"dispatch_revision"`
+	StatusCode           int            `json:"status_code,omitempty"`
+	ErrorCode            string         `json:"error_code,omitempty"`
+	ErrorMessage         string         `json:"error_message,omitempty"`
+	WinnerIndex          *int           `json:"winner_index,omitempty"`
+	SourceFence          *SourceFence   `json:"source_fence,omitempty"`
+	KeyModelFence        *KeyModelFence `json:"key_model_fence,omitempty"`
+	WinnerKeyFingerprint string         `json:"winner_key_fingerprint,omitempty"`
+	Projection           *Projection    `json:"projection,omitempty"`
+	NextDueAt            *time.Time     `json:"next_due_at,omitempty"`
+	FailureCount         int            `json:"failure_count,omitempty"`
+	FailureStartedAt     *time.Time     `json:"failure_started_at,omitempty"`
+	AccountStatus        string         `json:"account_status,omitempty"`
+	CooldownFence        *CooldownFence `json:"cooldown_fence,omitempty"`
 }
 
 type CurrentState struct {

@@ -15,12 +15,26 @@ import (
 type Operation struct {
 	Operation    string `json:"operation"`
 	Access       string `json:"access"`
+	Source       Source `json:"source"`
 	Tables       string `json:"tables"`
 	Transaction  string `json:"transaction_group"`
 	CurrentOwner string `json:"current_owner"`
 	TargetOwner  string `json:"target_owner"`
 	Rollback     string `json:"rollback"`
 	Verification string `json:"verification"`
+}
+
+// Source pins the exact TypeScript declaration and dispatch locations used
+// to derive an operation. Line numbers are checked against the current source
+// so a stale handoff manifest cannot silently survive a handler move.
+type Source struct {
+	TypeUnion      string `json:"type_union"`
+	Handler        string `json:"handler"`
+	TypeLine       int    `json:"type_line"`
+	AccessModeLine int    `json:"access_mode_line"`
+	HandlerLine    int    `json:"handler_line"`
+	Entrypoint     string `json:"entrypoint"`
+	WriterKind     string `json:"writer_kind"`
 }
 
 type manifest struct {
@@ -135,6 +149,27 @@ func Verify(manifestPath, typesPath, accessPath, handlerPath string) (Report, er
 		if item.CurrentOwner == "" || item.TargetOwner == "" || item.Tables == "" || item.Transaction == "" || item.Rollback == "" || item.Verification == "" {
 			return Report{}, fmt.Errorf("operation %q lacks owner, table, transaction, rollback, or verification metadata", name)
 		}
+		if item.Source.TypeUnion == "" || item.Source.Handler == "" || item.Source.TypeLine <= 0 || item.Source.AccessModeLine <= 0 || item.Source.HandlerLine <= 0 || item.Source.Entrypoint == "" || item.Source.WriterKind == "" {
+			return Report{}, fmt.Errorf("operation %q lacks source location, entrypoint, or writer metadata", name)
+		}
+		if item.Source.TypeUnion != "backend/src/modules/db-service/db-service-types.ts" || item.Source.Handler != "backend/src/modules/db-service/db-service-handlers.ts" || item.Source.Entrypoint != "db-service-handler" {
+			return Report{}, fmt.Errorf("operation %q has an unsupported source or entrypoint", name)
+		}
+		if item.Source.WriterKind != "business-writer" && item.Source.WriterKind != "read-consumer" {
+			return Report{}, fmt.Errorf("operation %q has unsupported writer kind %q", name, item.Source.WriterKind)
+		}
+		if (item.Access == "read") != (item.Source.WriterKind == "read-consumer") {
+			return Report{}, fmt.Errorf("operation %q access and writer kind disagree", name)
+		}
+		if !lineContains(typesData, item.Source.TypeLine, "type: '"+name+"'") {
+			return Report{}, fmt.Errorf("operation %q type line %d is stale", name, item.Source.TypeLine)
+		}
+		if !lineContains(accessData, item.Source.AccessModeLine, name+":") {
+			return Report{}, fmt.Errorf("operation %q access-mode line %d is stale", name, item.Source.AccessModeLine)
+		}
+		if !lineContains(handlerData, item.Source.HandlerLine, "'"+name+"'") {
+			return Report{}, fmt.Errorf("operation %q handler line %d is stale", name, item.Source.HandlerLine)
+		}
 		if item.Access == "read" {
 			report.Reads++
 		} else if item.Access == "write" {
@@ -180,4 +215,12 @@ func bytesContainsHandler(source []byte, operation string) bool {
 	// accepting the JSON spelling still requires the operation text to occur in
 	// the handler source and does not make an absent handler pass.
 	return strings.Contains(string(source), `"`+operation+`"`)
+}
+
+func lineContains(source []byte, line int, needle string) bool {
+	if line <= 0 || needle == "" {
+		return false
+	}
+	lines := strings.Split(string(source), "\n")
+	return line <= len(lines) && strings.Contains(lines[line-1], needle)
 }

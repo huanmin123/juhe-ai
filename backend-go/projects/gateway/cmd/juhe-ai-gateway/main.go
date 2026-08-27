@@ -20,6 +20,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
@@ -131,6 +132,14 @@ func main() {
 		if schedulerErr := schedulerSource.CheckContract(context.Background()); schedulerErr != nil {
 			fail(fmt.Errorf("verify J3b Gateway scheduler contract: %w", schedulerErr))
 		}
+		tokenizer, tokenizerErr := modelcheckprobe.NewO200kTokenizer()
+		if tokenizerErr != nil {
+			fail(fmt.Errorf("create J3b Gateway tokenizer: %w", tokenizerErr))
+		}
+		modelLimits, modelLimitsErr := modelcheckowner.NewVersionedModelLimits(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		if modelLimitsErr != nil {
+			fail(fmt.Errorf("create J3b Gateway model-limit source: %w", modelLimitsErr))
+		}
 		j3bHost, hostErr := modelcheckowner.OpenHost(context.Background(), j3bConfig, modelcheckowner.HostDependencies{
 			Resolve:           businessSource.Resolver(),
 			ResolveComparison: businessSource.ComparisonResolver(),
@@ -139,6 +148,8 @@ func main() {
 			Build:             businessSource.BuildRequest,
 			Enforcement:       enforcement,
 			Quality:           quality,
+			Tokenizer:         tokenizer,
+			ModelLimits:       modelLimits,
 			SchedulerFactory: func(store *modelcheckowner.Store, runtime *modelcheckowner.Runtime, projector *modelcheckowner.QualityProjector) (modelcheckowner.SchedulerSource, modelcheckowner.SchedulerExecutor) {
 				source := schedulerSource
 				source.Store = store

@@ -8,6 +8,7 @@ import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { resolveGatewayKeyModelCapability, type GatewayKeyModelCapability } from './key-model-capability.js'
 import {
   RedisKeyModelRuntimeStore,
+  type KeyModelFenceReference,
   type KeyModelAdmissionResult,
   type KeyModelForegroundPermit
 } from './key-model-redis-store.js'
@@ -43,7 +44,6 @@ export interface PrepareGatewayKeyModelAttemptInput {
 export async function prepareGatewayKeyModelAttempt(
   input: PrepareGatewayKeyModelAttemptInput
 ): Promise<GatewayKeyModelAttemptPreparation> {
-  if (!runtimeConfig.gateway.keyModelRuntimeGuardEnabled) return { status: 'disabled' }
   const route = resolveGatewayKeyModelCapability(input.req, input.account)
   if (!route) return { status: 'disabled' }
   const store = getKeyModelRuntimeStore()
@@ -117,6 +117,17 @@ export class GatewayKeyModelAttempt {
       try {
         await this.store.recordMainProbeFailure(this.route.capability, this.permit)
         this.released = true
+        dispatchAccountHealthCheck(
+          this.route.accountId,
+          'request_failure',
+          undefined,
+          {
+            capabilityHash: this.capabilityHash,
+            keyFingerprint: this.route.capability.keyFingerprint,
+            dispatchRevision: this.route.capability.dispatchRevision,
+            ownerId: this.attemptId
+          } satisfies KeyModelFenceReference
+        )
       } catch (error) {
         await this.releaseSafely('unknown')
         this.logFailure('main_probe_fence_write_failed', error)

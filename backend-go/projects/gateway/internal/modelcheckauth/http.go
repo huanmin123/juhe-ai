@@ -118,12 +118,27 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusForbidden, "当前来源不在临时访问令牌白名单中")
 		return
 	}
+	ip := clientIP(r)
+	if blocked, retry, message := h.loginGuard().Check(ip, input.Username); blocked {
+		if retry > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+		}
+		writeJSONError(w, http.StatusTooManyRequests, message)
+		return
+	}
 	verified, ok, err := h.Auth.VerifySystemAccountCredentials(r.Context(), input.Username, input.Password)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if !ok || (verified.Role != "admin" && verified.Role != "super_admin") {
+		if blocked, retry, message := h.loginGuard().Failed(ip, input.Username); blocked {
+			if retry > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(retry))
+			}
+			writeJSONError(w, http.StatusTooManyRequests, message)
+			return
+		}
 		writeJSONError(w, http.StatusUnauthorized, "账号或密码错误")
 		return
 	}
@@ -137,9 +152,17 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !issuedOK {
+		if blocked, retry, message := h.loginGuard().Failed(ip, input.Username); blocked {
+			if retry > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(retry))
+			}
+			writeJSONError(w, http.StatusTooManyRequests, message)
+			return
+		}
 		writeJSONError(w, http.StatusUnauthorized, "账号或密码已变更，请重新申请")
 		return
 	}
+	h.loginGuard().Success(ip, verified.Username)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"token": issued.Token, "tokenType": "Bearer", "expiresAt": issued.ExpiresAt})
 }
@@ -148,6 +171,10 @@ func (h *HTTPHandler) revokeTemporaryAccessToken(w http.ResponseWriter, r *http.
 	token, err := requestToken(r)
 	if err != nil || !temporaryToken.MatchString(token) {
 		writeJSONError(w, http.StatusBadRequest, "只能撤销当前临时访问令牌")
+		return
+	}
+	if _, err := h.Auth.AuthenticateTokenForSession(r.Context(), token); err != nil {
+		writeJSONError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	if err := h.Auth.RevokeToken(r.Context(), token); err != nil {

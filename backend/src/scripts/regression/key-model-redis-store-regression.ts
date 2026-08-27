@@ -9,6 +9,9 @@ import {
 import type { RedisCommandClient } from '../../shared/redis-client.js'
 import type { CapabilityKey } from '../../modules/gateway/runtime/key-model-runtime.js'
 
+assert.equal(recordKeyModelFailureScript.includes('ARGV[7]'), false, '失败封口脚本不得读取不存在的 ARGV[7]')
+assert.match(recordKeyModelFailureScript, /ZREM', KEYS\[5\], ARGV\[5\]/, '失败封口必须移除 permit 的 attemptId 成员')
+
 const values = new Map<string, string>()
 const expirations = new Map<string, number>()
 const sortedSets = new Map<string, Map<string, number>>()
@@ -42,12 +45,17 @@ assert.equal(decisions.filter((decision) => decision.status === 'admitted').leng
 assert.equal(decisions.filter((decision) => decision.status === 'busy').length, 8)
 const admitted = decisions.filter((decision): decision is Extract<typeof decision, { status: 'admitted' }> => decision.status === 'admitted')
 assert.equal(await store.releaseForeground(admitted[0]!.permit), true)
-assert.equal((await store.admitForeground(capability, 'attempt-after-release')).status, 'admitted', '释放后必须唤醒并归还容量')
+const afterRelease = await store.admitForeground(capability, 'attempt-after-release')
+assert.equal(afterRelease.status, 'admitted', '释放后必须唤醒并归还容量')
+assert.equal(await store.releaseForeground(admitted[1]!.permit), true)
 
-const intent = { intentId: 'intent-1', requestId: 'request-1', attemptId: 'failure-attempt', capability, observedAtMs: now, outcome: 'upstream_not_complete' as const, sourceFence: 'source-fence-1' }
+const intent = { intentId: 'intent-1', requestId: 'request-1', attemptId: 'failure-attempt', capability, observedAtMs: now, outcome: 'upstream_not_complete' as const, sourceFence: 'source-fence-1', permit: afterRelease.status === 'admitted' ? afterRelease.permit : undefined }
 const opened = await store.recordFailure(intent)
 assert.equal(opened.status, 'applied')
 assert.equal(opened.status === 'applied' ? opened.state.retryAtMs : undefined, now + 5_000)
+if (opened.status === 'applied') {
+  assert.equal(sortedSets.get(store.keys.admission(opened.state.capabilityHash))?.size ?? 0, 0, '失败封口必须移除 permit 的 attemptId 成员')
+}
 assert.equal((await store.recordFailure(intent)).status, 'idempotent')
 assert.equal((await store.admitForeground(capability, 'blocked-attempt')).status, 'blocked')
 
@@ -59,10 +67,10 @@ function activeValue(key: string): string | null {
 
 function emulate(script: string, keys: string[], args: string[]): unknown[] {
   if (script === admitKeyModelForegroundScript) {
-    const rawState = activeValue(keys[0]!)
-    if (rawState && JSON.parse(rawState).phase !== 'CLOSED') return ['blocked', activeValue(keys[3]!) ?? '0', '0']
     const existing = activeValue(keys[2]!)
     if (existing) return ['idempotent', activeValue(keys[3]!) ?? '0', existing]
+    const rawState = activeValue(keys[0]!)
+    if (rawState && JSON.parse(rawState).phase !== 'CLOSED') return ['blocked', activeValue(keys[3]!) ?? '0', '0']
     const permits = sortedSets.get(keys[1]!) ?? new Map<string, number>()
     for (const [member, score] of permits) if (score <= now) permits.delete(member)
     sortedSets.set(keys[1]!, permits)
@@ -79,24 +87,29 @@ function emulate(script: string, keys: string[], args: string[]): unknown[] {
     return [1, wake]
   }
   if (script === recordKeyModelFailureScript) {
+    const releasePermit = () => {
+      if (!values.delete(keys[5]!)) return
+      sortedSets.get(keys[4]!)?.delete(args[4]!)
+      values.set(keys[6]!, String(Number(activeValue(keys[6]!) ?? '0') + 1))
+    }
     const receipt = activeValue(keys[2]!)
-    if (receipt) return ['idempotent', activeValue(keys[0]!) ?? receipt]
+    if (receipt) { releasePermit(); return ['idempotent', activeValue(keys[0]!) ?? receipt] }
     const incoming = JSON.parse(args[0]!) as Record<string, unknown>
     incoming.lastObservedAtMs = now
     incoming.retryAtMs = now + 5_000
     const currentRaw = activeValue(keys[0]!)
     if (currentRaw) {
       const current = JSON.parse(currentRaw) as Record<string, unknown>
-      if (Number(current.dispatchRevision) > Number(args[1])) return ['stale', '']
+      if (Number(current.dispatchRevision) > Number(args[1])) { releasePermit(); return ['stale', ''] }
       if (Number(current.dispatchRevision) === Number(args[1]) && current.phase !== 'CLOSED') {
         current.lastObservedAtMs = now; current.lastOutcome = 'upstream_not_complete'
-        const encoded = JSON.stringify(current); values.set(keys[0]!, encoded); values.set(keys[2]!, encoded); return ['idempotent', encoded]
+        const encoded = JSON.stringify(current); values.set(keys[0]!, encoded); values.set(keys[2]!, encoded); releasePermit(); return ['idempotent', encoded]
       }
       incoming.generation = Number(current.generation ?? 0) + 1
     } else {
       values.set(keys[3]!, String(Number(activeValue(keys[3]!) ?? '0') + 1))
     }
-    const encoded = JSON.stringify(incoming); values.set(keys[0]!, encoded); values.set(keys[2]!, encoded)
+    const encoded = JSON.stringify(incoming); values.set(keys[0]!, encoded); values.set(keys[2]!, encoded); releasePermit()
     return ['applied', encoded]
   }
   throw new Error('unexpected script')

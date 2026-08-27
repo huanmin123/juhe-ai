@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -95,9 +96,41 @@ func TestHTTPHandlerLoginMeLogoutLifecycle(t *testing.T) {
 	temporary := httptest.NewRequest(http.MethodPost, "/temporary-access-tokens", strings.NewReader(`{"username":"admin","password":"newsecurepassword","ttlSeconds":120}`))
 	temporary.RemoteAddr = "127.0.0.1:8080"
 	temporaryRecorder := httptest.NewRecorder()
-	(&HTTPHandler{Auth: auth, TemporaryAccessIPAllowlist: []string{"127.0.0.1"}}).ServeHTTP(temporaryRecorder, temporary)
+	temporaryHandler := &HTTPHandler{Auth: auth, TemporaryAccessIPAllowlist: []string{"127.0.0.1"}, Guard: NewLoginGuard(func() time.Time { return now })}
+	temporaryHandler.ServeHTTP(temporaryRecorder, temporary)
 	if temporaryRecorder.Code != http.StatusOK || !strings.Contains(temporaryRecorder.Body.String(), "juhe_tmp_") {
 		t.Fatalf("temporary token status=%d body=%s", temporaryRecorder.Code, temporaryRecorder.Body.String())
+	}
+	var temporaryEnvelope struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(temporaryRecorder.Body.Bytes(), &temporaryEnvelope); err != nil || temporaryEnvelope.Data.Token == "" {
+		t.Fatalf("decode temporary token response: err=%v body=%s", err, temporaryRecorder.Body.String())
+	}
+	revoke := httptest.NewRequest(http.MethodPost, "/temporary-access-tokens/revoke", nil)
+	revoke.Header.Set("Authorization", "Bearer "+temporaryEnvelope.Data.Token)
+	revokeRecorder := httptest.NewRecorder()
+	temporaryHandler.ServeHTTP(revokeRecorder, revoke)
+	if revokeRecorder.Code != http.StatusOK {
+		t.Fatalf("temporary token revoke status=%d body=%s", revokeRecorder.Code, revokeRecorder.Body.String())
+	}
+	revokeAgain := httptest.NewRequest(http.MethodPost, "/temporary-access-tokens/revoke", nil)
+	revokeAgain.Header.Set("Authorization", "Bearer "+temporaryEnvelope.Data.Token)
+	revokeAgainRecorder := httptest.NewRecorder()
+	temporaryHandler.ServeHTTP(revokeAgainRecorder, revokeAgain)
+	if revokeAgainRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked temporary token status=%d body=%s", revokeAgainRecorder.Code, revokeAgainRecorder.Body.String())
+	}
+	for attempt := 0; attempt < loginGuardLimit; attempt++ {
+		failed := httptest.NewRequest(http.MethodPost, "/temporary-access-tokens", strings.NewReader(`{"username":"admin","password":"wrong-password","ttlSeconds":120}`))
+		failed.RemoteAddr = "127.0.0.1:8080"
+		failedRecorder := httptest.NewRecorder()
+		temporaryHandler.ServeHTTP(failedRecorder, failed)
+		if attempt == loginGuardLimit-1 && failedRecorder.Code != http.StatusTooManyRequests {
+			t.Fatalf("temporary token login guard status=%d body=%s", failedRecorder.Code, failedRecorder.Body.String())
+		}
 	}
 	denied := httptest.NewRequest(http.MethodPost, "/temporary-access-tokens", strings.NewReader(`{"username":"admin","password":"newsecurepassword"}`))
 	denied.RemoteAddr = "192.0.2.10:8080"
@@ -180,5 +213,10 @@ func TestHTTPHandlerCaptchaDisabledAndEnabledEndpoints(t *testing.T) {
 	with.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"required":true`) || !strings.Contains(recorder.Body.String(), `"image":"data:image/png;base64,`) {
 		t.Fatalf("enabled captcha status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	loginRecorder := httptest.NewRecorder()
+	with.ServeHTTP(loginRecorder, httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"username":"admin","password":"secret"}`)))
+	if loginRecorder.Code != http.StatusBadRequest || !strings.Contains(loginRecorder.Body.String(), "验证码") {
+		t.Fatalf("captcha should guard login before credential lookup: status=%d body=%s", loginRecorder.Code, loginRecorder.Body.String())
 	}
 }

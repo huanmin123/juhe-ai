@@ -189,7 +189,6 @@ export interface RuntimeConfig {
     upstreamAgentMaxFreeSockets: number
     upstreamAgentMaxTotalSockets: number
     accountCircuitConfirmationFailuresRequired?: number
-    keyModelRuntimeGuardEnabled: boolean
     accountCircuitEscalationDistinctScopeThreshold: number
     accountCircuitEscalationWindowMs: number
     accountCircuitCapacity: number
@@ -720,9 +719,6 @@ export const runtimeConfig: RuntimeConfig = {
       1,
       5
     ),
-    // This remains opt-in until the Node admission path and the Go recovery
-    // owner share the production Redis/input contract end to end.
-    keyModelRuntimeGuardEnabled: booleanConfig('JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED', false),
     accountCircuitEscalationDistinctScopeThreshold: integerConfig(
       'JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD',
       3,

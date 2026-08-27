@@ -295,6 +295,31 @@ func TestHTTPHandlerScopesDetailAndParsesPagination(t *testing.T) {
 	if detail.Code != http.StatusNotFound {
 		t.Fatalf("cross-account detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
+	for _, query := range []string{"?page=0", "?page=not-a-number", "?pageSize=0", "?pageSize=1001", "?pageSize=bad"} {
+		invalid := httptest.NewRecorder()
+		handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/runs"+query, nil))
+		if invalid.Code != http.StatusBadRequest {
+			t.Fatalf("invalid pagination %s status=%d body=%s", query, invalid.Code, invalid.Body.String())
+		}
+	}
+}
+
+func TestResolveRequestedSystemAccountFailsClosedForUnwiredCrossScope(t *testing.T) {
+	if scoped, err := resolveRequestedSystemAccount(httptest.NewRequest(http.MethodGet, "/runs", nil), "sys-1"); err != nil || scoped != "sys-1" {
+		t.Fatalf("default scope=%q err=%v", scoped, err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/runs?systemAccountId=all", nil)
+	if scoped, err := resolveRequestedSystemAccount(request, "sys-1"); err != nil || scoped != "sys-1" {
+		t.Fatalf("all scope=%q err=%v", scoped, err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/runs?systemAccountId=sys-2", nil)
+	if _, err := resolveRequestedSystemAccount(request, "sys-1"); err == nil {
+		t.Fatal("cross system-account scope must fail closed until authorization migration")
+	}
+	request = httptest.NewRequest(http.MethodGet, "/runs?systemAccountId=sys-1&systemAccountId=sys-1", nil)
+	if _, err := resolveRequestedSystemAccount(request, "sys-1"); err == nil {
+		t.Fatal("duplicate system-account scope must be rejected")
+	}
 }
 
 func TestHTTPHandlerSSEEmitsHeartbeatWhileRuntimeIsRunning(t *testing.T) {

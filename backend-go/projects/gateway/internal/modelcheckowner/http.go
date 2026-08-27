@@ -151,6 +151,12 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeOwnerError(w, status, "模型检测管理请求未授权")
 		return
 	}
+	if scoped, scopeErr := resolveRequestedSystemAccount(r, systemAccountID); scopeErr != nil {
+		writeOwnerError(w, http.StatusServiceUnavailable, scopeErr.Error())
+		return
+	} else {
+		systemAccountID = scoped
+	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	switch {
 	case r.Method == http.MethodPost && path == "/run":
@@ -184,6 +190,21 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func resolveRequestedSystemAccount(r *http.Request, authenticated string) (string, error) {
+	values, exists := r.URL.Query()["systemAccountId"]
+	if !exists || len(values) == 0 || (len(values) == 1 && strings.TrimSpace(values[0]) == "") {
+		return authenticated, nil
+	}
+	if len(values) != 1 {
+		return "", errors.New("J3b systemAccountId 作用域参数无效")
+	}
+	requested := strings.TrimSpace(values[0])
+	if requested == "all" || requested == authenticated {
+		return authenticated, nil
+	}
+	return "", errors.New("J3b 管理员跨 systemAccountId 作用域尚未完成，当前请求已拒绝")
 }
 
 func (h *HTTPHandler) serveOptions(w http.ResponseWriter) {
@@ -300,7 +321,11 @@ func (h *HTTPHandler) patchQualityPolicy(w http.ResponseWriter, r *http.Request,
 func (h *HTTPHandler) listQualitySchedules(w http.ResponseWriter, r *http.Request, systemID string) {
 	q, err := h.quality()
 	if err == nil {
-		page, size := parsePage(r)
+		page, size, parseErr := parsePage(r)
+		if parseErr != nil {
+			writeOwnerError(w, http.StatusBadRequest, parseErr.Error())
+			return
+		}
 		var v QualityScheduleList
 		v, err = q.ListSchedules(r.Context(), systemID, page, size)
 		if err == nil {
@@ -545,7 +570,11 @@ func (h *HTTPHandler) serveStop(w http.ResponseWriter, accountID string) {
 }
 
 func (h *HTTPHandler) serveList(w http.ResponseWriter, r *http.Request, accountID string) {
-	page, pageSize := parsePage(r)
+	page, pageSize, err := parsePage(r)
+	if err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	result, err := h.Service.ListRuns(r.Context(), RunListQuery{SystemAccountID: accountID, Page: page, PageSize: pageSize})
 	if err != nil {
 		writeOwnerError(w, http.StatusInternalServerError, err.Error())
@@ -575,19 +604,23 @@ func (h *HTTPHandler) serveDetail(w http.ResponseWriter, r *http.Request, runID,
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": result})
 }
 
-func parsePage(r *http.Request) (int, int) {
+func parsePage(r *http.Request) (int, int, error) {
 	page, pageSize := 1, 50
 	if value := r.URL.Query().Get("page"); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
-			page = parsed
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			return 0, 0, errors.New("分页参数 page 必须是正整数")
 		}
+		page = parsed
 	}
 	if value := r.URL.Query().Get("pageSize"); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 && parsed <= 1000 {
-			pageSize = parsed
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 || parsed > 1000 {
+			return 0, 0, errors.New("分页参数 pageSize 必须是 1 到 1000 之间的整数")
 		}
+		pageSize = parsed
 	}
-	return page, pageSize
+	return page, pageSize, nil
 }
 
 func decodeRunCommand(r *http.Request, maxBody int64) (RunCommand, error) {

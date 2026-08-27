@@ -77,20 +77,26 @@ func saveProbeKeyCursor(ctx context.Context, store *Store, lease OwnerLease, acc
 }
 
 func newOutcome(input Input, request ProbeRequest, result ProbeResult, winner *int, observedAt time.Time) Outcome {
+	winnerFingerprint := ""
+	if winner != nil && *winner >= 0 && *winner < len(input.APIKeys) {
+		winnerFingerprint = input.APIKeys[*winner].Fingerprint
+	}
 	return Outcome{
-		OutcomeID:        newOutcomeID(),
-		RequestID:        request.RequestID,
-		AccountID:        input.AccountID,
-		Outcome:          result.Outcome,
-		ObservedAt:       observedAt.UTC(),
-		InputVersion:     input.InputVersion,
-		ConfigRevision:   input.ConfigRevision,
-		DispatchRevision: input.DispatchRevision,
-		StatusCode:       result.StatusCode,
-		ErrorCode:        result.ErrorCode,
-		ErrorMessage:     result.ErrorMessage,
-		WinnerIndex:      winner,
-		SourceFence:      request.SourceFence,
+		OutcomeID:            newOutcomeID(),
+		RequestID:            request.RequestID,
+		AccountID:            input.AccountID,
+		Outcome:              result.Outcome,
+		ObservedAt:           observedAt.UTC(),
+		InputVersion:         input.InputVersion,
+		ConfigRevision:       input.ConfigRevision,
+		DispatchRevision:     input.DispatchRevision,
+		StatusCode:           result.StatusCode,
+		ErrorCode:            result.ErrorCode,
+		ErrorMessage:         result.ErrorMessage,
+		WinnerIndex:          winner,
+		SourceFence:          request.SourceFence,
+		KeyModelFence:        request.KeyModelFence,
+		WinnerKeyFingerprint: winnerFingerprint,
 	}
 }
 

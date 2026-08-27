@@ -43,6 +43,7 @@ export const keyModelForegroundLimit = 2
 export const keyModelForegroundPrecommitLeaseMs = 90_000
 export const keyModelForegroundLeaseRenewMs = 30_000
 export const keyModelForegroundRedisOperationTimeoutMs = 100
+export const keyModelMainProbeUnknownRetryMs = 10_000
 
 export type KeyModelForegroundDecision = 'admitted' | 'busy' | 'blocked'
 

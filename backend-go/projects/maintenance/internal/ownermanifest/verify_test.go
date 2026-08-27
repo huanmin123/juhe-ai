@@ -42,3 +42,24 @@ func TestVerifyRejectsMissingOperation(t *testing.T) {
 		t.Fatal("missing operation must fail closed")
 	}
 }
+
+func TestVerifyRejectsStaleDeclaredSourceLine(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `{"manifest_version":1,"operations":[{"operation":"one","access":"read","source":{"type_union":"backend/src/modules/db-service/db-service-types.ts","handler":"backend/src/modules/db-service/db-service-handlers.ts","type_line":1,"access_mode_line":1,"handler_line":1,"entrypoint":"db-service-handler","writer_kind":"read-consumer"},"tables":"t","transaction_group":"g","current_owner":"node","target_owner":"read-consumer","rollback":"r","verification":"v"}]}`
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	_, err := Verify(
+		write("manifest.json", manifest),
+		write("types.ts", "export type DbServiceOperation =\n | { type: 'one' }\n"),
+		write("access.ts", "one: 'read',\n"),
+		write("handlers.ts", "case 'one':\n"),
+	)
+	if err == nil {
+		t.Fatal("stale source location must fail closed")
+	}
+}

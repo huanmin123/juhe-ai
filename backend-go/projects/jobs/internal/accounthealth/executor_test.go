@@ -38,7 +38,7 @@ func TestExecuteInputProbeUsesKeyPoolCursorAndReportsWinner(t *testing.T) {
 		{Index: 1, Fingerprint: "good", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-good")}},
 	}
 	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-1", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Minute)}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if err != nil || outcome.Outcome != OutcomeSuccess || outcome.WinnerIndex == nil || *outcome.WinnerIndex != 1 {
+	if err != nil || outcome.Outcome != OutcomeSuccess || outcome.WinnerIndex == nil || *outcome.WinnerIndex != 1 || outcome.WinnerKeyFingerprint != "good" {
 		t.Fatalf("outcome=%#v err=%v", outcome, err)
 	}
 	next, found, err := store.LoadKeyCursor(ctx, input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint)

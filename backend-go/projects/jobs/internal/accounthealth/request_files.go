@@ -73,7 +73,25 @@ func validateProbeRequest(request ProbeRequest) error {
 			return errors.New("request source fence 无效")
 		}
 	}
+	if request.KeyModelFence != nil {
+		fence := request.KeyModelFence
+		if !isCapabilityHash(fence.CapabilityHash) || strings.TrimSpace(fence.KeyFingerprint) == "" || strings.TrimSpace(fence.OwnerID) == "" || fence.DispatchRevision != request.DispatchRevision {
+			return errors.New("request key-model fence 无效")
+		}
+	}
 	return nil
+}
+
+func isCapabilityHash(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func requestDeadlineExpired(request ProbeRequest, now time.Time) bool {

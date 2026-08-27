@@ -6,11 +6,13 @@ require (
 	github.com/huanminabc/juhe-ai/backend-go-contracts v0.0.0
 	github.com/huanminabc/juhe-ai/backend-go-platform v0.0.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/tiktoken-go/tokenizer v0.8.0
 	golang.org/x/text v0.29.0
 	modernc.org/sqlite v1.56.0
 )
 
 require (
+	github.com/dlclark/regexp2/v2 v2.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

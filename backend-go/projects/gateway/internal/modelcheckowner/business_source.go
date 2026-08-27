@@ -89,6 +89,13 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 	if err != nil {
 		return nil, fmt.Errorf("open J3b Business source database: %w", err)
 	}
+	if !postgres {
+		// SQLite's physical-file owner must serialize all reads/writes through
+		// one connection. This applies before and after handoff; query_only is
+		// an access mode, not a substitute for single-connection ownership.
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	}
 	closeDB := db.Close
 	source, err := NewBusinessTargetSource(db, postgres, cfg.CredentialSecret)
 	if err != nil {

@@ -9,6 +9,7 @@ import { publishAccountHealthJobsProbeRequest } from '../background/account-heal
 import type { AccountHealthCheckTriggerReason, CodexSourceProbeFence } from '../accounts/account-health-check-trigger.js'
 import { settleAccountHealthJobsSourceFence } from '../gateway/runtime/account-health-jobs-source-fence.consumer.js'
 import { currentAccountHealthJobsProbeInput } from './account-health-jobs-dispatch-boundary.js'
+import type { KeyModelFenceReference } from '../gateway/runtime/key-model-redis-store.js'
 
 // Node publishes immutable request facts only.  Go jobs is the only J1 task
 // owner; this path never calls a worker, Gateway, Redis Stream, or HTTP bridge.
@@ -19,27 +20,30 @@ export type AccountHealthCheckDispatchOutcome =
 export function dispatchAccountHealthCheck(
   accountId: string,
   reason: AccountHealthCheckTriggerReason,
-  traceId = getTraceId()
+  traceId = getTraceId(),
+  keyModelFence?: KeyModelFenceReference
 ): boolean {
-  return dispatchAccountHealthCheckWithOutcome(accountId, reason, traceId).outcome !== 'rejected'
+  return dispatchAccountHealthCheckWithOutcome(accountId, reason, traceId, undefined, keyModelFence).outcome !== 'rejected'
 }
 
 export function dispatchAccountHealthCheckWithOutcome(
   accountId: string,
   reason: AccountHealthCheckTriggerReason,
   traceId = getTraceId(),
-  sourceFence?: CodexSourceProbeFence
+  sourceFence?: CodexSourceProbeFence,
+  keyModelFence?: KeyModelFenceReference
 ): AccountHealthCheckDispatchOutcome {
   const normalizedId = accountId.trim()
   if (!normalizedId) return rejectedDispatchOutcome('dispatch_rejected')
-  return publishGoJobsProbeRequest(normalizedId, reason, traceId, sourceFence)
+  return publishGoJobsProbeRequest(normalizedId, reason, traceId, sourceFence, keyModelFence)
 }
 
 function publishGoJobsProbeRequest(
   accountId: string,
   reason: AccountHealthCheckTriggerReason,
   traceId: string | undefined,
-  sourceFence: CodexSourceProbeFence | undefined
+  sourceFence: CodexSourceProbeFence | undefined,
+  keyModelFence: KeyModelFenceReference | undefined
 ): AccountHealthCheckDispatchOutcome {
   const root = runtimeConfig.accountHealthJobs.inputDirectory?.trim()
   const signingKey = runtimeConfig.accountHealthJobs.inputSigningKey?.trim()
@@ -65,7 +69,8 @@ function publishGoJobsProbeRequest(
       requestId,
       reason,
       deadline: new Date(Date.now() + runtimeConfig.background.accountHealthCheckProbeDeadlineMs),
-      sourceFence
+      sourceFence,
+      keyModelFence
     })
   })().catch((error) => {
     logger.warn({

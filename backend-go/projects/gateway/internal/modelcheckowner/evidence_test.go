@@ -22,3 +22,15 @@ func TestAggregateEvidenceFailsClosedForMissingAndPartialFamilies(t *testing.T) 
 		t.Fatalf("formed=%#v", formed)
 	}
 }
+
+func TestAggregateEvidenceUnknownStatusFailsClosed(t *testing.T) {
+	items := make([]map[string]any, 0, len(requiredEvidenceFamilies))
+	for _, family := range requiredEvidenceFamilies {
+		items = append(items, map[string]any{"kind": family, "status": "passed", "score": 10})
+	}
+	items[0]["status"] = ""
+	aggregate := AggregateEvidence(items)
+	if aggregate.Formed || aggregate.TrustFormed || len(aggregate.Partial) != 1 || aggregate.Partial[0] != requiredEvidenceFamilies[0] {
+		t.Fatalf("unknown evidence status must fail closed: %+v", aggregate)
+	}
+}

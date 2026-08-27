@@ -6,6 +6,7 @@ import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
 import { parseRfc3339Instant, requiredRfc3339Instant } from '../../shared/rfc3339.js'
 
 import { publishAccountHealthJobsInput, publishAccountHealthJobsRequest } from './account-health-jobs-input.protocol.js'
+import type { KeyModelFenceReference } from '../gateway/runtime/key-model-redis-store.js'
 
 type FrozenEndpointMode =
   | 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse' | 'images_json'
@@ -63,6 +64,7 @@ export interface AccountHealthJobsProbeRequestSource {
     probeGeneration: number
     configRevision: number
   }
+  keyModelFence?: KeyModelFenceReference
 }
 
 export function publishAccountHealthJobsProbeRequest(source: AccountHealthJobsProbeRequestSource): string {
@@ -97,6 +99,17 @@ export function publishAccountHealthJobsProbeRequest(source: AccountHealthJobsPr
       runtime_key: requiredText(source.sourceFence.runtimeKey, 'sourceFence.runtimeKey'),
       probe_generation: positiveInteger(source.sourceFence.probeGeneration, 'sourceFence.probeGeneration'),
       config_revision: configRevision
+    }
+  }
+  if (source.keyModelFence) {
+    if (source.keyModelFence.dispatchRevision !== dispatchRevision || !/^[a-f0-9]{64}$/u.test(source.keyModelFence.capabilityHash) || !source.keyModelFence.keyFingerprint.trim() || !source.keyModelFence.ownerId.trim()) {
+      throw new Error('J1 key-model fence 无效')
+    }
+    payload.key_model_fence = {
+      capability_hash: source.keyModelFence.capabilityHash,
+      key_fingerprint: source.keyModelFence.keyFingerprint.trim(),
+      dispatch_revision: source.keyModelFence.dispatchRevision,
+      owner_id: source.keyModelFence.ownerId.trim()
     }
   }
   return publishAccountHealthJobsRequest({ root: source.root, requestId, payload, signingKey: source.signingKey })

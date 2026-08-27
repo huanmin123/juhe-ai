@@ -19,6 +19,7 @@ const (
 	captchaIssueWindow   = time.Minute
 	captchaIssueLimit    = 60
 	captchaMaxChallenges = 1000
+	captchaMaxIssueKeys  = 2000
 )
 
 type CaptchaChallenge struct {
@@ -64,6 +65,24 @@ func (s *CaptchaService) Issue(clientIP string) (CaptchaIssueResult, error) {
 	now := s.now().UTC()
 	ip := strings.TrimSpace(clientIP)
 	recent := recentTimestamps(s.issues[ip], now)
+	if len(recent) == 0 {
+		if _, exists := s.issues[ip]; !exists && len(s.issues) >= captchaMaxIssueKeys {
+			for key, timestamps := range s.issues {
+				if len(recentTimestamps(timestamps, now)) == 0 {
+					delete(s.issues, key)
+					break
+				}
+			}
+			for len(s.issues) >= captchaMaxIssueKeys {
+				for key := range s.issues {
+					if key != ip {
+						delete(s.issues, key)
+						break
+					}
+				}
+			}
+		}
+	}
 	if len(recent) >= captchaIssueLimit {
 		retry := int((recent[0].Add(captchaIssueWindow).Sub(now) + time.Second - 1) / time.Second)
 		if retry < 1 {

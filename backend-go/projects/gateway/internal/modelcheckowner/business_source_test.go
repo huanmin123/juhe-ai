@@ -196,6 +196,10 @@ func TestOpenBusinessTargetConnectionAllowsWritesOnlyAfterHandoff(t *testing.T) 
 	if queryOnly != 0 {
 		t.Fatalf("handoff owner connection must not be query-only: %d", queryOnly)
 	}
+	stats := connection.DB.Stats()
+	if stats.MaxOpenConnections != 1 {
+		t.Fatalf("SQLite Business owner must use one connection, stats=%+v", stats)
+	}
 }
 
 func TestOpenBusinessTargetConnectionSharesValidatedHandle(t *testing.T) {

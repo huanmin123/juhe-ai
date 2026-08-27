@@ -10,6 +10,7 @@ import { requestModel, requestStream } from '../request/metadata.js'
 import { type CapabilityKey } from './key-model-runtime.js'
 
 export interface GatewayKeyModelCapability {
+  accountId: string
   capability: CapabilityKey
   isMainProbe: boolean
 }
@@ -22,7 +23,7 @@ export function resolveGatewayKeyModelCapability(req: Request, account: Upstream
   if (!model || !family || !keyFingerprint || !Number.isSafeInteger(revision) || (revision ?? 0) < 1) return undefined
   const capability = capabilityForRoute(account, model, family, requestStream(req))
   if (!capability) return undefined
-  return { capability, isMainProbe: routeMatchesMainProbe(account, model, family, requestStream(req), capability) }
+  return { accountId: account.id, capability, isMainProbe: routeMatchesMainProbe(account, model, family, requestStream(req), capability) }
 }
 
 function routeMatchesMainProbe(
