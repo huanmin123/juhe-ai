@@ -14,6 +14,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
 
+const maxBalanceRunnerConcurrency = 5096
+
 type RunnerConfig struct {
 	Store            *Store
 	OwnerID          string
@@ -58,8 +60,8 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 	if config.MaxConcurrent <= 0 {
 		config.MaxConcurrent = 4
 	}
-	if config.MaxConcurrent > 256 {
-		return nil, errors.New("account-balance runner 最大并发不能超过 256")
+	if config.MaxConcurrent > maxBalanceRunnerConcurrency {
+		return nil, fmt.Errorf("account-balance runner 最大并发不能超过 %d", maxBalanceRunnerConcurrency)
 	}
 	if config.ProbeTimeout <= 0 || config.ProbeTimeout > defaultBalanceTimeout {
 		config.ProbeTimeout = defaultBalanceTimeout

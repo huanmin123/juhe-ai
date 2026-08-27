@@ -16,6 +16,16 @@ type balanceTestHTTP struct {
 	path []string
 }
 
+func TestNewRunnerAcceptsConfiguredCapacity(t *testing.T) {
+	runner, err := NewRunner(RunnerConfig{Store: &Store{}, OwnerID: "capacity-test", CredentialSecret: "capacity-secret", MaxConcurrent: maxBalanceRunnerConcurrency})
+	if err != nil || runner.maxConcurrent != maxBalanceRunnerConcurrency {
+		t.Fatalf("configured capacity runner=%+v err=%v", runner, err)
+	}
+	if _, err := NewRunner(RunnerConfig{Store: &Store{}, OwnerID: "capacity-test", CredentialSecret: "capacity-secret", MaxConcurrent: maxBalanceRunnerConcurrency + 1}); err == nil || !strings.Contains(err.Error(), "最大并发") {
+		t.Fatalf("capacity above the configured bound must fail, got %v", err)
+	}
+}
+
 func (c *balanceTestHTTP) Do(request *http.Request) (*http.Response, error) {
 	c.path = append(c.path, request.URL.Path)
 	if c.err != nil {
