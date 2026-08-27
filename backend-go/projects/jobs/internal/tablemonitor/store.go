@@ -541,8 +541,10 @@ func (s *Store) previousTableSnapshots(ctx context.Context, snapshots []TableSna
 	}
 
 	table := "table_storage_snapshots"
+	beforeAt := "target.before_at"
 	if s.mode == ModePostgres {
 		table = "juhe_stats.table_storage_snapshots"
+		beforeAt = "target.before_at::timestamptz"
 	}
 	query := fmt.Sprintf(`WITH target(target_index, database_role, table_name, before_at) AS (
   VALUES %s
@@ -556,11 +558,11 @@ func (s *Store) previousTableSnapshots(ctx context.Context, snapshots []TableSna
   JOIN %s AS snapshot
     ON snapshot.database_role = target.database_role
    AND snapshot.table_name = target.table_name
-   AND snapshot.sampled_at <= target.before_at
+   AND snapshot.sampled_at <= %s
 )
 SELECT target_index, total_bytes, row_count
 FROM ranked
-WHERE baseline_rank = 1`, values.String(), table)
+WHERE baseline_rank = 1`, values.String(), table, beforeAt)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
