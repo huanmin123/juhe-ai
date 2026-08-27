@@ -1,7 +1,7 @@
 # J3b 模型检测 L2 输入、结果与存储契约
 
 > 冻结日期：2026-08-26。
-> 状态：L2 数据契约已冻结，Go 已具备 profile、规范化 `IssuedInput`、durable input/claim/outcome Store、request/response parser、基础 item evaluator 与 run/item/observation store 基线；尚未接入 Go runtime、管理 API/SSE、scheduler、GitOps 或 Node 归档。本文件不授权切流。
+> 状态：L2 数据契约已冻结。Gateway 已具备 profile、规范化 `IssuedInput`、durable input/claim/outcome Store、request/response parser、基础 item evaluator、run/item/observation 写入、管理 API/SSE、三类 scheduler、health retry 与 fail-closed Host 的实现基线；当前仍缺完整证据族持久化/信任聚合闭环、Business SQLite 全量 handoff、三库回填、GitOps 切换、Node active-path-zero 与归档。本文件不授权切流。
 > 上位边界：[J3b 模型检测完整迁移契约](J3b-模型检测完整迁移契约.md)。
 
 ## 1. 目标和非目标
@@ -77,17 +77,17 @@ J3c 保留 usage quality score、失败前置确认和它们的独立 queue/work
 
 ## 6. L2 实现门禁
 
-当前已落地的最小 Go L2 组件包括 `modelcheckinput`、`modelcheckdurable`、`modelcheckprofile`、`modelcheckprobe` 和 `modelcheckstore`：输入版本/identity/digest、SQLite/PostgreSQL durable input/claim/outcome、四协议请求响应解析、direct transport/retry、基础评分，以及 run/item/observation writer 均已建立。它们目前位于 jobs 的实现基线，方案 A 只允许将无 I/O 领域部分迁入 shared，并在 gateway 重建 I/O/store/runtime；不能直接 import jobs/internal 或启用 jobs host。既有回归不构成 J3b 完整迁移，也不改变 Node active owner。计划中的 PgBouncer 并发 terminal-fence smoke 仍未形成有效结果，保持未验证门禁。
+当前已落地的 Gateway L2 组件包括 `modelcheckinput`、`modelcheckdurable`、`modelcheckprofile`、`modelcheckprobe`、`modelcheckstore` 与 `modelcheckowner`：输入版本/identity/digest、SQLite/PostgreSQL durable input/claim/outcome、四协议请求响应解析、direct transport/retry、基础评分、run/item/observation writer、管理 API/SSE、三类 scheduler、health retry、Host 依赖校验，以及版本化 `o200k_base` tokenizer/model-limit source 均已建立。jobs 中的同名包只作为迁移参考，方案 A 不允许 Gateway import `jobs/internal` 或启用 jobs host；可复用部分仅限无 I/O 领域值对象。既有回归不构成 J3b 完整迁移，也不改变 Node active owner；完整证据族持久化/信任聚合、Business handoff、三库回填和 PgBouncer 端到端 terminal-fence smoke 仍未形成有效结果，保持未验证门禁。
 
 `modelcheckprobe` 现已具备单次 direct transport 和 `RunBasicProbe`：endpoint 只允许完整 HTTP(S) authority，禁止 query/fragment/userinfo 与 redirect；按协议拼接版本路径，严格限制响应大小，并把取消/超时/非 2xx 映射为可评分但不泄露原始正文的失败证据。该组合不持有 durable claim、不自行重试、不写数据库，后续由 Go executor 负责统一调度。
 
-`modelcheckexecutor` 已完成一个 input 的 Go-only 执行闭环：读取并校验 durable input，先解析一次目标，再获取 owner/token/fence claim，二次读取并比对 target config/profile/model/endpoint 快照，调用 direct transport/retry，再以 input digest 与 fence 提交 outcome。二次 resolver、套件构造或执行前校验失败会通过保留 fence 单调性的 `ReleaseClaim` 释放租约；revision/profile/model/endpoint 漂移在任何上游请求前返回 stale；旧 token/fence、过期 lease 和 outcome 冲突由 durable Store 拒绝。`ListCommittedOutcomes`/`FindCommittedOutcome` 以 `(stored_at,outcome_id)` 游标读取 committed outcome，并重验 payload digest、issued input digest 与 identity 绑定，篡改数据不会进入 projector；PostgreSQL `JSONB` outcome 在提交时先取数据库 canonical text 再计算摘要，保证读回重放的摘要一致。`modelcheckprobe.RunSuite` 已覆盖四协议基础/流式/结构化/tool/usage，按 Node 终止栅栏处理最终非 200，且行为与 long-context 组终止时不会继续后续组；full profile 缺少经确认的 tokenizer 与模型窗口快照时只生成显式 excluded/skipped 长上下文证据；尚未接入完整 run runtime、管理 API/SSE、scheduler 或质量 projector。
+`modelcheckexecutor` 已完成一个 input 的 Go-only 执行闭环：读取并校验 durable input，先解析一次目标，再获取 owner/token/fence claim，二次读取并比对 target config/profile/model/endpoint 快照，调用 direct transport/retry，再以 input digest 与 fence 提交 outcome。二次 resolver、套件构造或执行前校验失败会通过保留 fence 单调性的 `ReleaseClaim` 释放租约；revision/profile/model/endpoint 漂移在任何上游请求前返回 stale；旧 token/fence、过期 lease 和 outcome 冲突由 durable Store 拒绝。`ListCommittedOutcomes`/`FindCommittedOutcome` 以 `(stored_at,outcome_id)` 游标读取 committed outcome，并重验 payload digest、issued input digest 与 identity 绑定，篡改数据不会进入 projector；PostgreSQL `JSONB` outcome 在提交时先取数据库 canonical text 再计算摘要，保证读回重放的摘要一致。`modelcheckprobe.RunSuite` 已覆盖四协议基础/流式/结构化/tool/usage，按 Node 终止栅栏处理最终非 200，且行为与 long-context 组终止时不会继续后续组；full profile 使用版本化 tokenizer/model-limit snapshot，缺少快照时只生成显式 excluded/skipped 长上下文证据。该闭环现已由 Gateway runtime、管理 API/SSE 与 scheduler 组合，但完整证据族、trust/quality projector 和真实 handoff 仍受门禁约束。
 
-`modelcheckprobe.RunSuite` 已补齐 basic/stream/structured/tool/usage-shape 的有序组合，并可追加 full profile 的三轮 stability probe；最终非 200 按 Node 终止栅栏停止后续探针并保留已形成的 item 证据；structured/tool/stability 的四协议请求 schema 与 Node payload 对齐。它仍未接入 runtime 的完整 probe set、管理 API/SSE 或质量投影。
+`modelcheckprobe.RunSuite` 已补齐 basic/stream/structured/tool/usage-shape 的有序组合，并可追加 full profile 的 stability、identity、token integrity、distribution、cross-model、Juice 与 long-context 组；最终非 200 按 Node 终止栅栏停止后续探针并保留已形成的 item 证据，structured/tool/stability 的四协议请求 schema 与 Node payload 对齐。证据是否形成仍须经过逐族 observation receipt、trust 聚合及 quality projector 门禁，不能仅凭 suite 返回值切换 owner。
 
-`modelcheckstore.ProjectOutcome` 已提供 Go-owned 的原子 dataset 投影边界：一个 running run 的全部 item 与终态摘要在同一事务提交；进程崩溃不会留下只写入部分 item 的 terminal run。终态重放必须逐项核对状态、分数、证据摘要和 run summary/quality decision，任何结果漂移均返回 `ErrProjectionConflict`；SQLite 单测与真实 PostgreSQL scratch（Node 只初始化隔离 schema，Go 直接写入）均已验证。该入口尚未由管理 listener、scheduler 或 quality projector 调用。
+`modelcheckstore.ProjectOutcome` 已提供 Go-owned 的原子 dataset 投影边界：一个 running run 的全部 item 与终态摘要在同一事务提交；进程崩溃不会留下只写入部分 item 的 terminal run。终态重放必须逐项核对状态、分数、证据摘要和 run summary/quality decision，任何结果漂移均返回 `ErrProjectionConflict`；SQLite 单测与真实 PostgreSQL scratch（Node 只初始化隔离 schema，Go 直接写入）均已验证。Gateway runtime、管理 listener 与 scheduler 已具备调用接线，但 quality projector 仍要求完整 formed/trusted evidence、Business owner handoff 与隔离 PG/SQLite 切换证据，未满足前保持 fail-closed。
 
-开始 gateway 内 J3b runtime 前必须有：
+完成 Gateway 内 J3b L2 handoff 前必须有：
 
 1. Node request/response/SSE golden，含 `400/409/503`、stop、断开、EPIPE 和 heartbeat；
 2. PostgreSQL/SQLite schema contract、最小权限、input/outcome digest、lease/fence/CAS 与重复 replay 测试；
@@ -95,4 +95,4 @@ J3c 保留 usage quality score、失败前置确认和它们的独立 queue/work
 4. outcome、日志、F4 审计和管理响应的凭据泄露扫描；
 5. J3c writer/queue/read 路径与 J3b 的 static ownership scan。
 
-未完成任何一项时，J3b 只能标为 L2 实现中；不得启用 Go scheduler、删除 Node active path 或创建长期双 writer。
+未完成任何一项时，J3b 只能标为 L2 实现中；不得将 Go scheduler 作为生产 owner 启用、删除 Node active path 或创建长期双 writer。

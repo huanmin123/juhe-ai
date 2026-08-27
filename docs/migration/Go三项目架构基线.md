@@ -2,7 +2,7 @@
 
 > 状态：架构落地第一阶段（项目边界与工程骨架），不代表三个项目已经完成业务接管或生产切流。
 >
-> 本文是 Go 后续迁移的边界契约。F1/F2 已物理迁入 `jobs`，F3/F4 已物理迁入 `gateway`；`backend-go` 根目录只保留工作区定义。一般新迁移的定时功能进入 `jobs`；J3b 是经方案 A 明确批准的例外：其管理入口、调度和投影与 Business SQLite owner 同进程落在 `gateway`。
+> 本文是 Go 后续迁移的边界契约。F1/F2 已物理迁入 `jobs`，F3/F4 已物理迁入 `gateway`；`backend-go` 根目录只保留工作区定义。一般新迁移的定时功能进入 `jobs`；J3b 是经方案 A 明确批准的例外：其管理入口、调度和投影与 Business SQLite owner 同进程落在 `gateway`。当前 Gateway 已具备 J3b 的实现装配基线，但 Business SQLite 全量 handoff、三库回填、切换/回滚与 Node active-path-zero 尚未通过，不代表 J3b 已完成接管。
 
 ## 1. 最终项目划分
 

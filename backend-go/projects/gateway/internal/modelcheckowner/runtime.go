@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -222,7 +223,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		protocolStatus = "failed"
 	}
 	identityStatus := observationIdentityStatus(evidenceItems)
-	if err := s.Store.AppendObservation(ctx, ObservationRecord{ID: runID + "-observation-0001", RunID: runID, SystemAccountID: request.SystemAccountID, AccountID: request.TargetID, ProviderCode: providerCode, RequestedModel: request.Model, MappedUpstreamModel: probeModel, ProbeFamily: "core-suite", ObservationStatus: observationStatus, IdentityStatus: identityStatus, MappingStatus: mappingStatus, ProtocolStatus: protocolStatus, EvidenceCoverage: len(aggregate.Families), CreatedAt: now}); err != nil {
+	if err := appendEvaluationObservations(ctx, s.Store, runID, request.SystemAccountID, request.TargetID, providerCode, request.Model, probeModel, mappingStatus, protocolStatus, identityStatus, len(aggregate.Families), items, now); err != nil {
 		return RunResult{}, err
 	}
 	if request.TrustedComparison {
@@ -230,7 +231,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		if comparisonTarget.UpstreamModel != request.Model {
 			comparisonMappingStatus = "mapped"
 		}
-		if err := s.Store.AppendObservation(ctx, ObservationRecord{ID: runID + "-observation-0002", RunID: runID, SystemAccountID: request.SystemAccountID, AccountID: request.TrustedComparisonAccountID, ProviderCode: comparisonTarget.ProviderCode, RequestedModel: request.Model, MappedUpstreamModel: comparisonTarget.UpstreamModel, ProbeFamily: "trusted-comparison", ObservationStatus: observationStatus, IdentityStatus: identityStatus, MappingStatus: comparisonMappingStatus, ProtocolStatus: protocolStatus, EvidenceCoverage: len(aggregate.Families), CreatedAt: now}); err != nil {
+		if err := appendObservationIdempotent(ctx, s.Store, ObservationRecord{ID: runID + "-observation-0002", RunID: runID, SystemAccountID: request.SystemAccountID, AccountID: request.TrustedComparisonAccountID, ProviderCode: comparisonTarget.ProviderCode, RequestedModel: request.Model, MappedUpstreamModel: comparisonTarget.UpstreamModel, ProbeFamily: "trusted-comparison", ObservationStatus: observationStatus, IdentityStatus: identityStatus, MappingStatus: comparisonMappingStatus, ProtocolStatus: protocolStatus, EvidenceCoverage: len(aggregate.Families), CreatedAt: now}); err != nil {
 			return RunResult{}, err
 		}
 	}
@@ -250,7 +251,114 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		}
 	}
 	emit(ProgressEvent{Kind: "run_completed", Data: map[string]any{"runId": runID, "status": status}})
-	return RunResult{RunID: runID, Status: string(status), Data: map[string]any{"level": level, "score": score, "message": message}}, nil
+	return RunResult{RunID: runID, Status: string(status), Data: map[string]any{
+		"level":   level,
+		"score":   score,
+		"message": message,
+		// Scheduler quality recovery consumes these explicit durable quality
+		// gates. Omitting either flag must remain fail-closed in the executor.
+		"evidenceFormed": aggregate.Formed,
+		"trustFormed":    aggregate.TrustFormed,
+	}}, nil
+}
+
+// appendEvaluationObservations writes one bounded, durable receipt for every
+// evaluation emitted by modelcheckprobe. The receipt intentionally contains
+// no evaluation evidence payload: item evidence remains in the run projection
+// after its own sanitizer, while observations carry only scope, mapping,
+// protocol and formed/partial facts needed by downstream aggregation.
+//
+// IDs are derived from the run and stable evaluation position. A retry of the
+// same projection therefore addresses the same primary keys; the idempotent
+// append below treats an exact existing row as success and rejects drift.
+func appendEvaluationObservations(ctx context.Context, store *Store, runID, systemAccountID, accountID, providerCode, requestedModel, mappedModel, mappingStatus, protocolStatus, identityStatus string, evidenceCoverage int, evaluations []modelcheckprobe.Evaluation, now time.Time) error {
+	if len(evaluations) == 0 {
+		return errors.New("J3b evaluation observations are empty")
+	}
+	for index, evaluation := range evaluations {
+		family := strings.TrimSpace(evaluation.Kind)
+		if family == "" {
+			return fmt.Errorf("J3b evaluation %d family is empty", index)
+		}
+		if err := appendObservationIdempotent(ctx, store, ObservationRecord{
+			ID:                  fmt.Sprintf("%s-observation-family-%04d", runID, index+1),
+			RunID:               runID,
+			SystemAccountID:     systemAccountID,
+			AccountID:           accountID,
+			ProviderCode:        providerCode,
+			RequestedModel:      requestedModel,
+			MappedUpstreamModel: mappedModel,
+			ProbeFamily:         family,
+			ObservationStatus:   evaluationObservationStatus(evaluation.Status),
+			IdentityStatus:      identityStatus,
+			MappingStatus:       mappingStatus,
+			ProtocolStatus:      protocolStatus,
+			EvidenceCoverage:    evidenceCoverage,
+			CreatedAt:           now,
+		}); err != nil {
+			return fmt.Errorf("append J3b %s observation: %w", family, err)
+		}
+	}
+	return nil
+}
+
+func appendObservationIdempotent(ctx context.Context, store *Store, observation ObservationRecord) error {
+	if store == nil || store.db == nil {
+		return errors.New("J3b store is not open")
+	}
+	if err := validateObservation(observation); err != nil {
+		return err
+	}
+	if found, err := observationMatches(ctx, store, observation); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
+	if err := store.AppendObservation(ctx, observation); err == nil {
+		return nil
+	} else if found, lookupErr := observationMatches(ctx, store, observation); lookupErr == nil && found {
+		// Another owner of the same durable run may have won the insert race.
+		// Exact row equality makes this a safe replay; any drift remains the
+		// original append error and is never silently accepted.
+		return nil
+	} else {
+		return err
+	}
+}
+
+func observationMatches(ctx context.Context, store *Store, observation ObservationRecord) (bool, error) {
+	var existing ObservationRecord
+	var created string
+	err := store.db.QueryRowContext(ctx, store.bind(`SELECT id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at FROM `+store.table("model_check_observations")+` WHERE id=?`), observation.ID).Scan(
+		&existing.ID, &existing.RunID, &existing.SystemAccountID, &existing.AccountID, &existing.ProviderCode,
+		&existing.RequestedModel, &existing.MappedUpstreamModel, &existing.ProbeFamily, &existing.ObservationStatus,
+		&existing.IdentityStatus, &existing.MappingStatus, &existing.ProtocolStatus, &existing.EvidenceCoverage, &created,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read J3b observation idempotency key: %w", err)
+	}
+	existing.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return false, fmt.Errorf("parse J3b observation created_at: %w", err)
+	}
+	if existing.RunID != observation.RunID || existing.SystemAccountID != observation.SystemAccountID || existing.AccountID != observation.AccountID || existing.ProviderCode != observation.ProviderCode || existing.RequestedModel != observation.RequestedModel || existing.MappedUpstreamModel != observation.MappedUpstreamModel || existing.ProbeFamily != observation.ProbeFamily || existing.ObservationStatus != observation.ObservationStatus || existing.IdentityStatus != observation.IdentityStatus || existing.MappingStatus != observation.MappingStatus || existing.ProtocolStatus != observation.ProtocolStatus || existing.EvidenceCoverage != observation.EvidenceCoverage || !existing.CreatedAt.UTC().Equal(observation.CreatedAt.UTC()) {
+		return false, fmt.Errorf("J3b observation %s conflicts with existing row", observation.ID)
+	}
+	return true, nil
+}
+
+func evaluationObservationStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "passed", "failed", "warning":
+		return "complete"
+	default:
+		// skipped and unknown statuses are retained as partial evidence. They
+		// must never be promoted to a formed quality fact by persistence.
+		return "partial"
+	}
 }
 
 func observationIdentityStatus(items []map[string]any) string {

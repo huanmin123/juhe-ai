@@ -10,6 +10,7 @@ var J3BModelCheckTables = []string{
 	"model_check_observations",
 	"account_quality_health_hourly",
 	"model_check_scheduler_tasks",
+	"model_token_intercept_baseline_versions",
 }
 
 var J3BModelCheckIndexes = map[string]string{
@@ -23,6 +24,7 @@ var J3BModelCheckIndexes = map[string]string{
 	"idx_model_check_observations_pending_aggregation": "on juhe_j3b.model_check_observations using btree (created_at, id)",
 	"idx_account_quality_health_hourly_scope":          "on juhe_j3b.account_quality_health_hourly using btree (system_account_id, stat_hour, account_id)",
 	"idx_model_check_scheduler_tasks_due":              "on juhe_j3b.model_check_scheduler_tasks using btree (kind, due_at, claim_until, id)",
+	"idx_model_token_intercept_baseline_active":        "on juhe_j3b.model_token_intercept_baseline_versions using btree (cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, version_status, baseline_version)",
 }
 
 var J3BModelCheckColumns = map[string]map[string]PostgresColumnSpec{
@@ -53,16 +55,20 @@ var J3BModelCheckColumns = map[string]map[string]PostgresColumnSpec{
 	"model_check_scheduler_tasks": {
 		"id": {DataType: "text", UdtName: "text"}, "kind": {DataType: "text", UdtName: "text"}, "due_at": {DataType: "timestamp with time zone", UdtName: "timestamptz"}, "claim_owner": {DataType: "text", UdtName: "text"}, "claim_until": {DataType: "timestamp with time zone", UdtName: "timestamptz"}, "fence_token": {DataType: "bigint", UdtName: "int8"}, "state": {DataType: "text", UdtName: "text"}, "last_error": {DataType: "text", UdtName: "text"}, "completed_at": {DataType: "timestamp with time zone", UdtName: "timestamptz"}, "payload": {DataType: "jsonb", UdtName: "jsonb"}, "updated_at": {DataType: "timestamp with time zone", UdtName: "timestamptz"},
 	},
+	"model_token_intercept_baseline_versions": {
+		"cohort_key_hmac": {DataType: "text", UdtName: "text"}, "requested_model": {DataType: "text", UdtName: "text"}, "tokenizer_version": {DataType: "text", UdtName: "text"}, "probe_set_version": {DataType: "text", UdtName: "text"}, "baseline_version": {DataType: "integer", UdtName: "int4"}, "version_status": {DataType: "text", UdtName: "text"}, "evidence_status": {DataType: "text", UdtName: "text"}, "independent_source_count": {DataType: "integer", UdtName: "int4"}, "retained_source_count": {DataType: "integer", UdtName: "int4"}, "excluded_source_count": {DataType: "integer", UdtName: "int4"}, "median_intercept": {DataType: "double precision", UdtName: "float8", Nullable: true}, "mad_intercept": {DataType: "double precision", UdtName: "float8", Nullable: true}, "q10_intercept": {DataType: "double precision", UdtName: "float8", Nullable: true}, "q90_intercept": {DataType: "double precision", UdtName: "float8", Nullable: true}, "strong_threshold_intercept": {DataType: "double precision", UdtName: "float8", Nullable: true}, "strong_gate_enabled": {DataType: "integer", UdtName: "int4"}, "calibration_note": {DataType: "text", UdtName: "text", Nullable: true}, "first_observed_at": {DataType: "text", UdtName: "text"}, "last_observed_at": {DataType: "text", UdtName: "text"}, "updated_at": {DataType: "text", UdtName: "text"},
+	},
 }
 
 var J3BModelCheckConstraints = map[string][]string{
-	"model_check_input_versions":    {"primary key (identity_key)"},
-	"model_check_inputs":            {"primary key (input_id)", "unique (identity_key, input_version)", "unique (identity_key, input_digest)"},
-	"model_check_execution_claims":  {"primary key (input_id)"},
-	"model_check_outcomes":          {"primary key (outcome_id)", "unique (input_id)"},
-	"model_check_runs":              {"primary key (id)"},
-	"model_check_items":             {"primary key (id)"},
-	"model_check_observations":      {"primary key (id)"},
-	"account_quality_health_hourly": {"primary key (account_id, stat_hour)"},
-	"model_check_scheduler_tasks":   {"primary key (id)"},
+	"model_check_input_versions":              {"primary key (identity_key)"},
+	"model_check_inputs":                      {"primary key (input_id)", "unique (identity_key, input_version)", "unique (identity_key, input_digest)"},
+	"model_check_execution_claims":            {"primary key (input_id)"},
+	"model_check_outcomes":                    {"primary key (outcome_id)", "unique (input_id)"},
+	"model_check_runs":                        {"primary key (id)"},
+	"model_check_items":                       {"primary key (id)"},
+	"model_check_observations":                {"primary key (id)"},
+	"account_quality_health_hourly":           {"primary key (account_id, stat_hour)"},
+	"model_check_scheduler_tasks":             {"primary key (id)"},
+	"model_token_intercept_baseline_versions": {"primary key (cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, baseline_version)"},
 }

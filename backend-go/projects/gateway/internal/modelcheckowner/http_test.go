@@ -70,6 +70,16 @@ type fakeRunService struct{}
 
 type fakeQualityManager struct{}
 
+type fakeBaselineActivator struct {
+	input TokenInterceptBaselineActivation
+	err   error
+}
+
+func (f *fakeBaselineActivator) ActivateTokenInterceptBaseline(_ context.Context, input TokenInterceptBaselineActivation) error {
+	f.input = input
+	return f.err
+}
+
 func (fakeQualityManager) Policy(context.Context, string) (QualityPolicyView, error) {
 	return QualityPolicyView{SystemAccountID: "sys-1", Revision: 1, Profile: "quick", ManualEnforcementEnabled: true, PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}, nil
 }
@@ -183,6 +193,56 @@ func TestHTTPHandlerQualityPolicyAndScheduleRoutes(t *testing.T) {
 	handler.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/quality-schedules", strings.NewReader(`{"accountId":"acct","model":"gpt-5.6","intervalMinutes":60,"profile":"quick","penaltyThreshold":70,"penaltyAction":"fallback","recoveryIntervalMinutes":10}`)))
 	if create.Code != http.StatusOK || !strings.Contains(create.Body.String(), `"id":"sch"`) {
 		t.Fatalf("schedule status=%d body=%s", create.Code, create.Body.String())
+	}
+}
+
+func TestHTTPHandlerTokenInterceptBaselineActivationContract(t *testing.T) {
+	handler := newTestHTTPHandler()
+	activator := &fakeBaselineActivator{}
+	handler.Baseline = activator
+	body := `{"cohortKeyHmac":"hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requestedModel":"gpt-5.6","tokenizerVersion":"o200k_base@1","probeSetVersion":"probe-v1","baselineVersion":2,"strongThresholdIntercept":128,"calibrationNote":"calibrated"}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/token-intercept-baselines/activate", strings.NewReader(body)))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"activated":true`) || activator.input.BaselineVersion != 2 {
+		t.Fatalf("activation status=%d body=%s input=%+v", response.Code, response.Body.String(), activator.input)
+	}
+	for _, invalid := range []string{
+		`{"cohortKeyHmac":"bad","requestedModel":"gpt-5.6","tokenizerVersion":"o200k_base@1","probeSetVersion":"probe-v1","baselineVersion":2,"strongThresholdIntercept":128,"calibrationNote":"ok"}`,
+		`{"cohortKeyHmac":"hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requestedModel":"gpt-5.6","tokenizerVersion":"o200k_base@1","probeSetVersion":"probe-v1","baselineVersion":2,"strongThresholdIntercept":128,"calibrationNote":"ok","unexpected":true}`,
+	} {
+		invalidResponse := httptest.NewRecorder()
+		handler.ServeHTTP(invalidResponse, httptest.NewRequest(http.MethodPost, "/token-intercept-baselines/activate", strings.NewReader(invalid)))
+		if invalidResponse.Code != http.StatusBadRequest {
+			t.Fatalf("invalid activation status=%d body=%s", invalidResponse.Code, invalidResponse.Body.String())
+		}
+	}
+}
+
+func TestHTTPHandlerTokenInterceptBaselineMapsConflictAndUnavailable(t *testing.T) {
+	validBody := `{"cohortKeyHmac":"hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requestedModel":"gpt-5.6","tokenizerVersion":"o200k_base@1","probeSetVersion":"probe-v1","baselineVersion":2,"strongThresholdIntercept":128,"calibrationNote":"calibrated"}`
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "conflict", err: ErrTokenInterceptBaselineConflict, status: http.StatusConflict},
+		{name: "unavailable", err: ErrTokenInterceptBaselineUnavailable, status: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newTestHTTPHandler()
+			handler.Baseline = &fakeBaselineActivator{err: tc.err}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/token-intercept-baselines/activate", strings.NewReader(validBody)))
+			if response.Code != tc.status {
+				t.Fatalf("status=%d body=%s want=%d", response.Code, response.Body.String(), tc.status)
+			}
+		})
+	}
+	handler := newTestHTTPHandler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/token-intercept-baselines/activate", strings.NewReader(validBody)))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil baseline owner status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

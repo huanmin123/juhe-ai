@@ -32,7 +32,7 @@ var requiredTables = []string{
 	"model_check_input_versions", "model_check_inputs", "model_check_execution_claims", "model_check_outcomes",
 	"model_check_runs", "model_check_items", "model_check_observations",
 	"account_quality_health_hourly",
-	"model_check_scheduler_tasks",
+	"model_check_scheduler_tasks", "model_token_intercept_baseline_versions",
 }
 
 // requiredColumns is intentionally a small, stable contract rather than a
@@ -73,6 +73,138 @@ var requiredColumns = map[string][]string{
 	"model_check_scheduler_tasks": {
 		"id", "kind", "due_at", "claim_owner", "claim_until", "fence_token", "state", "last_error", "completed_at", "payload", "updated_at",
 	},
+	// The Gateway-owned baseline table deliberately keeps only the durable
+	// calibration and activation facts needed by J3b. Source aggregation is an
+	// offline/worker concern; this table is never populated from a Node bridge.
+	"model_token_intercept_baseline_versions": {
+		"cohort_key_hmac", "requested_model", "tokenizer_version", "probe_set_version", "baseline_version",
+		"version_status", "evidence_status", "independent_source_count", "q90_intercept",
+		"strong_threshold_intercept", "strong_gate_enabled", "calibration_note", "updated_at",
+	},
+}
+
+// ErrTokenInterceptBaselineUnavailable means the dedicated J3b baseline
+// storage is not readable (for example, the table or database is unavailable).
+// HTTP management maps it to 503 rather than pretending activation succeeded.
+var ErrTokenInterceptBaselineUnavailable = errors.New("J3b token intercept baseline storage unavailable")
+
+// ErrTokenInterceptBaselineConflict is returned for stale, missing, or
+// ineligible calibration versions. Activation is intentionally a CAS and the
+// caller must refresh the candidate before retrying.
+var ErrTokenInterceptBaselineConflict = errors.New("J3b token intercept baseline activation conflict")
+
+// TokenInterceptBaselineActivation is the complete, versioned input accepted
+// by the Gateway management endpoint. It mirrors the Node contract without
+// exposing database handles or cross-process adapters.
+type TokenInterceptBaselineActivation struct {
+	CohortKeyHMAC            string  `json:"cohortKeyHmac"`
+	RequestedModel           string  `json:"requestedModel"`
+	TokenizerVersion         string  `json:"tokenizerVersion"`
+	ProbeSetVersion          string  `json:"probeSetVersion"`
+	BaselineVersion          int     `json:"baselineVersion"`
+	StrongThresholdIntercept float64 `json:"strongThresholdIntercept"`
+	CalibrationNote          string  `json:"calibrationNote"`
+}
+
+// ActivateTokenInterceptBaseline performs the only mutable operation exposed
+// for fixed-intercept calibration. The candidate is locked and changed from
+// calibration_pending to active in one transaction; an existing active
+// version is retired in the same transaction. This keeps readers from seeing
+// two active versions or a partially activated candidate.
+func (s *Store) ActivateTokenInterceptBaseline(ctx context.Context, input TokenInterceptBaselineActivation) error {
+	if s == nil || s.db == nil {
+		return ErrTokenInterceptBaselineUnavailable
+	}
+	input = normalizeTokenInterceptBaselineActivation(input)
+	if err := validateTokenInterceptBaselineActivation(input); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%w: begin activation transaction: %v", ErrTokenInterceptBaselineUnavailable, err)
+	}
+	rollback := func(e error) error {
+		_ = tx.Rollback()
+		return e
+	}
+	table := s.tokenInterceptBaselineTable()
+	query := `SELECT version_status,evidence_status,independent_source_count,q90_intercept
+		FROM ` + table + ` WHERE cohort_key_hmac=? AND requested_model=? AND tokenizer_version=?
+		AND probe_set_version=? AND baseline_version=? LIMIT 1`
+	if s.mode == "postgres" {
+		query += " FOR UPDATE"
+	}
+	var status, evidence string
+	var independent int
+	var q90 sql.NullFloat64
+	err = tx.QueryRowContext(ctx, s.bind(query), input.CohortKeyHMAC, input.RequestedModel, input.TokenizerVersion, input.ProbeSetVersion, input.BaselineVersion).Scan(&status, &evidence, &independent, &q90)
+	if errors.Is(err, sql.ErrNoRows) {
+		return rollback(fmt.Errorf("%w: candidate version does not exist", ErrTokenInterceptBaselineConflict))
+	}
+	if err != nil {
+		return rollback(fmt.Errorf("%w: read candidate version: %v", ErrTokenInterceptBaselineUnavailable, err))
+	}
+	if status != "calibration_pending" || evidence != "stable" || independent < 10 || !q90.Valid || input.StrongThresholdIntercept < q90.Float64 {
+		return rollback(fmt.Errorf("%w: candidate is not eligible for activation", ErrTokenInterceptBaselineConflict))
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+table+` SET version_status='retired',strong_gate_enabled=0,updated_at=? WHERE cohort_key_hmac=? AND requested_model=? AND tokenizer_version=? AND probe_set_version=? AND version_status='active'`), now, input.CohortKeyHMAC, input.RequestedModel, input.TokenizerVersion, input.ProbeSetVersion); err != nil {
+		return rollback(fmt.Errorf("%w: retire active version: %v", ErrTokenInterceptBaselineUnavailable, err))
+	}
+	result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+table+` SET version_status='active',strong_threshold_intercept=?,strong_gate_enabled=1,calibration_note=?,updated_at=? WHERE cohort_key_hmac=? AND requested_model=? AND tokenizer_version=? AND probe_set_version=? AND baseline_version=? AND version_status='calibration_pending'`), input.StrongThresholdIntercept, input.CalibrationNote, now, input.CohortKeyHMAC, input.RequestedModel, input.TokenizerVersion, input.ProbeSetVersion, input.BaselineVersion)
+	if err != nil {
+		return rollback(fmt.Errorf("%w: activate candidate version: %v", ErrTokenInterceptBaselineUnavailable, err))
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return rollback(fmt.Errorf("%w: read activation result: %v", ErrTokenInterceptBaselineUnavailable, err))
+	} else if changed != 1 {
+		return rollback(fmt.Errorf("%w: candidate changed before activation", ErrTokenInterceptBaselineConflict))
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: commit activation transaction: %v", ErrTokenInterceptBaselineUnavailable, err)
+	}
+	return nil
+}
+
+func normalizeTokenInterceptBaselineActivation(input TokenInterceptBaselineActivation) TokenInterceptBaselineActivation {
+	input.CohortKeyHMAC = strings.TrimSpace(input.CohortKeyHMAC)
+	input.RequestedModel = strings.TrimSpace(input.RequestedModel)
+	input.TokenizerVersion = strings.TrimSpace(input.TokenizerVersion)
+	input.ProbeSetVersion = strings.TrimSpace(input.ProbeSetVersion)
+	input.CalibrationNote = strings.TrimSpace(input.CalibrationNote)
+	return input
+}
+
+func (s *Store) tokenInterceptBaselineTable() string {
+	if s.mode == "postgres" {
+		return s.schema + ".model_token_intercept_baseline_versions"
+	}
+	return "model_token_intercept_baseline_versions"
+}
+
+func validateTokenInterceptBaselineActivation(input TokenInterceptBaselineActivation) error {
+	if !strings.HasPrefix(strings.ToLower(input.CohortKeyHMAC), "hmac-sha256-v1:") || len(input.CohortKeyHMAC) != len("hmac-sha256-v1:")+64 {
+		return errors.New("cohort key 格式无效")
+	}
+	for _, char := range input.CohortKeyHMAC[len("hmac-sha256-v1:"):] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return errors.New("cohort key 格式无效")
+		}
+	}
+	if strings.TrimSpace(input.RequestedModel) == "" || len(input.RequestedModel) > 200 || strings.TrimSpace(input.TokenizerVersion) == "" || len(input.TokenizerVersion) > 200 || strings.TrimSpace(input.ProbeSetVersion) == "" || len(input.ProbeSetVersion) > 200 {
+		return errors.New("固定截距基线作用域无效")
+	}
+	if input.BaselineVersion <= 0 || !isFiniteNonNegative(input.StrongThresholdIntercept) {
+		return errors.New("固定截距基线版本或阈值无效")
+	}
+	if note := strings.TrimSpace(input.CalibrationNote); note == "" || len([]rune(note)) > 500 {
+		return errors.New("固定截距校准记录必须为 1 到 500 个字符")
+	}
+	return nil
+}
+
+func isFiniteNonNegative(value float64) bool {
+	return value >= 0 && value < 1.7976931348623157e+308
 }
 
 func OpenStore(cfg Config) (*Store, error) {
@@ -189,15 +321,18 @@ func (s *Store) ApplyHealthFact(ctx context.Context, fact HealthFact) (bool, err
 	if s == nil || s.db == nil {
 		return false, errors.New("J3b store is not open")
 	}
-	if fact.AccountID == "" || fact.SystemAccountID == "" || fact.StatHour == "" || fact.RunID == "" || fact.ObservedAt.IsZero() || fact.Threshold < 40 || fact.Threshold > 100 {
+	if strings.TrimSpace(fact.AccountID) == "" || strings.TrimSpace(fact.SystemAccountID) == "" || strings.TrimSpace(fact.ProviderCode) == "" || strings.TrimSpace(fact.Model) == "" || strings.TrimSpace(fact.Profile) == "" || strings.TrimSpace(fact.Level) == "" || strings.TrimSpace(fact.StatHour) == "" || strings.TrimSpace(fact.RunID) == "" || fact.ObservedAt.IsZero() || fact.Threshold < 40 || fact.Threshold > 100 || fact.Score < 0 || fact.Score > 100 {
 		return false, errors.New("health fact identity is incomplete")
+	}
+	if !validHealthStatHour(fact.StatHour) {
+		return false, errors.New("health fact stat hour is invalid")
 	}
 	if fact.ErrorMessage != "" && len([]rune(fact.ErrorMessage)) > 1000 {
 		fact.ErrorMessage = string([]rune(fact.ErrorMessage)[:1000])
 	}
 	observed := fact.ObservedAt.UTC().Format(time.RFC3339Nano)
 	table := s.healthTable()
-	query := fmt.Sprintf(`INSERT INTO %s (account_id,system_account_id,provider_code,stat_hour,observed_at,model_check_run_id,model,profile,score,threshold,level,error_code,error_message,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,stat_hour) DO UPDATE SET system_account_id=excluded.system_account_id,provider_code=excluded.provider_code,observed_at=excluded.observed_at,model_check_run_id=excluded.model_check_run_id,model=excluded.model,profile=excluded.profile,score=excluded.score,threshold=excluded.threshold,level=excluded.level,error_code=excluded.error_code,error_message=excluded.error_message,updated_at=excluded.updated_at WHERE excluded.observed_at > account_quality_health_hourly.observed_at OR (excluded.observed_at = account_quality_health_hourly.observed_at AND excluded.model_check_run_id > account_quality_health_hourly.model_check_run_id)`, table)
+	query := fmt.Sprintf(`INSERT INTO %s AS target (account_id,system_account_id,provider_code,stat_hour,observed_at,model_check_run_id,model,profile,score,threshold,level,error_code,error_message,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,stat_hour) DO UPDATE SET system_account_id=excluded.system_account_id,provider_code=excluded.provider_code,observed_at=excluded.observed_at,model_check_run_id=excluded.model_check_run_id,model=excluded.model,profile=excluded.profile,score=excluded.score,threshold=excluded.threshold,level=excluded.level,error_code=excluded.error_code,error_message=excluded.error_message,updated_at=excluded.updated_at WHERE excluded.observed_at > target.observed_at OR (excluded.observed_at = target.observed_at AND excluded.model_check_run_id > target.model_check_run_id)`, table)
 	result, err := s.db.ExecContext(ctx, s.bind(query), fact.AccountID, fact.SystemAccountID, fact.ProviderCode, fact.StatHour, observed, fact.RunID, fact.Model, fact.Profile, fact.Score, fact.Threshold, fact.Level, nullable(fact.ErrorCode), nullable(fact.ErrorMessage), time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return false, fmt.Errorf("upsert J3b health fact: %w", err)
@@ -207,6 +342,18 @@ func (s *Store) ApplyHealthFact(ctx context.Context, fact HealthFact) (bool, err
 		return false, fmt.Errorf("read J3b health upsert result: %w", err)
 	}
 	return changed > 0, nil
+}
+
+// validHealthStatHour accepts both the Gateway's canonical UTC RFC3339 hour
+// and the legacy Business stats bucket key (YYYY-MM-DDTHH). The latter has no
+// timezone by design and must remain readable during the owner handoff.
+func validHealthStatHour(value string) bool {
+	value = strings.TrimSpace(value)
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed.Equal(parsed.UTC().Truncate(time.Hour))
+	}
+	_, err := time.Parse("2006-01-02T15", value)
+	return err == nil
 }
 
 // ReadHealthFact is the read-only boundary exposed to J3c consumers. It

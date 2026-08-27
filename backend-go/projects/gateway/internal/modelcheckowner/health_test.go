@@ -100,6 +100,50 @@ func TestQualityProjectorRequiresEnforcementForFormedFailure(t *testing.T) {
 	}
 }
 
+func TestQualityProjectorRejectsRunIdentityMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}}
+	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-b", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 90, Threshold: 70, Level: "success"}
+	if err := projector.Project(context.Background(), "run-a", EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("mismatch must fail closed, err=%v", err)
+	}
+}
+
+func TestQualityProjectorRejectsInvalidStatHourBeforeEnforcement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stat-hour.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	enforcement := &recordingEnforcement{}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: enforcement}
+	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:15:00Z", RunID: "run-a", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 20, Threshold: 70, Level: "failure"}
+	if err := projector.Project(context.Background(), "run-a", EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil || !strings.Contains(err.Error(), "scope") {
+		t.Fatalf("invalid stat hour must fail closed, err=%v", err)
+	}
+	if enforcement.calls != 0 {
+		t.Fatalf("invalid health fact must not trigger enforcement, calls=%d", enforcement.calls)
+	}
+}
+
 func TestHealthSyncRetryExecutorRequiresRunIDPayload(t *testing.T) {
 	executor := &HealthSyncRetryExecutor{Projector: &QualityProjector{Store: &Store{}}}
 	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerHealthRetry, Payload: []byte(`{}`)}); err == nil {

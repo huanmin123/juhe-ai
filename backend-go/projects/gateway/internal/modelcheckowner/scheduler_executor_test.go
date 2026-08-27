@@ -6,11 +6,14 @@ import (
 	"testing"
 )
 
-type schedulerRunnerStub struct{ request RunRequest }
+type schedulerRunnerStub struct {
+	request    RunRequest
+	resultData any
+}
 
 func (s *schedulerRunnerStub) Run(_ context.Context, request RunRequest) (RunResult, error) {
 	s.request = request
-	return RunResult{RunID: "run-1", Status: string(RunCompleted)}, nil
+	return RunResult{RunID: "run-1", Status: string(RunCompleted), Data: s.resultData}, nil
 }
 
 func TestSchedulerRunExecutorRejectsIncompleteDurablePolicy(t *testing.T) {
@@ -56,5 +59,38 @@ func TestSchedulerRunExecutorFailsClosedWithoutRecoveryCAS(t *testing.T) {
 	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5"})
 	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: payload}); err == nil {
 		t.Fatal("quality recovery must fail closed without a Business CAS completion owner")
+	}
+}
+
+func TestSchedulerRecoveryRequiresFormedEvidenceAndTrust(t *testing.T) {
+	var passed []bool
+	runner := &schedulerRunnerStub{}
+	executor := &SchedulerRunExecutor{
+		Runtime: runner,
+		Build: func(_ context.Context, payload ScheduledPayload) (RunRequest, error) {
+			return RunRequest{Endpoint: "https://example.invalid", Prompt: "probe"}, nil
+		},
+		Recovery: func(_ context.Context, _ RecoveryPayload, value bool) error {
+			passed = append(passed, value)
+			return nil
+		},
+	}
+	base := ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", EnforcementID: "enf-1", Generation: 2, RecoveryIntervalMinutes: 10}
+	encoded, _ := json.Marshal(base)
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: encoded}); err != nil {
+		t.Fatal(err)
+	}
+	if len(passed) != 1 || passed[0] {
+		t.Fatalf("missing evidence/trust must keep account isolated: %#v", passed)
+	}
+	// A runtime result carrying explicit formed/trusted evidence is eligible
+	// for the Business generation/CAS completion callback.
+	runner.resultData = map[string]any{"evidenceFormed": true, "trustFormed": true}
+	encoded, _ = json.Marshal(base)
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: encoded}); err != nil {
+		t.Fatal(err)
+	}
+	if len(passed) != 2 || !passed[1] {
+		t.Fatalf("formed evidence/trust should pass recovery: %#v", passed)
 	}
 }

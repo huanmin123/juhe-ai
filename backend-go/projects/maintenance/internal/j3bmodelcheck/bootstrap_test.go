@@ -122,6 +122,9 @@ func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	if _, err := stats.Exec(`INSERT INTO account_quality_health_hourly(account_id,system_account_id,provider_code,stat_hour,observed_at,model_check_run_id,model,profile,score,threshold,level,updated_at) VALUES ('acct','sys','openai','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z','run-1','gpt-5.6','quick',90,70,'success','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := stats.Exec(`INSERT INTO model_token_intercept_baseline_versions(cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version,version_status,evidence_status,independent_source_count,retained_source_count,excluded_source_count,q90_intercept,strong_gate_enabled,first_observed_at,last_observed_at,updated_at) VALUES ('hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','gpt-5.6','o200k_base@1','probe-v1',1,'calibration_pending','stable',10,10,0,120,0,'2026-08-27T10:00:00Z','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 	if err := dataset.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +135,7 @@ func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.InsertedRows["model_check_runs"] != 1 || report.InsertedRows["model_check_items"] != 1 || report.InsertedRows["model_check_observations"] != 1 || report.InsertedRows["account_quality_health_hourly"] != 1 {
+	if report.InsertedRows["model_check_runs"] != 1 || report.InsertedRows["model_check_items"] != 1 || report.InsertedRows["model_check_observations"] != 1 || report.InsertedRows["account_quality_health_hourly"] != 1 || report.InsertedRows["model_token_intercept_baseline_versions"] != 1 {
 		t.Fatalf("report=%+v", report)
 	}
 	if report.SourceDigest["model_check_runs"] == "" || report.SourceDigest["model_check_runs"] != report.TargetDigest["model_check_runs"] {

@@ -44,6 +44,9 @@ export interface PrepareGatewayKeyModelAttemptInput {
 export async function prepareGatewayKeyModelAttempt(
   input: PrepareGatewayKeyModelAttemptInput
 ): Promise<GatewayKeyModelAttemptPreparation> {
+  // Standalone mode has no Redis state backend, so the Redis-backed guard is
+  // unavailable there. Performance/dev profiles use Redis and enter directly.
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return { status: 'disabled' }
   const route = resolveGatewayKeyModelCapability(input.req, input.account)
   if (!route) return { status: 'disabled' }
   const store = getKeyModelRuntimeStore()

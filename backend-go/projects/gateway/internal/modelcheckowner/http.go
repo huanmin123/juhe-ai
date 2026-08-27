@@ -97,6 +97,13 @@ type AccountOptions interface {
 	ModelCheckOptions() ModelCheckOptions
 }
 
+// TokenInterceptBaselineActivator is the in-process Gateway port for the
+// calibration activation management command. Implementations must perform a
+// durable CAS; HTTP never reaches Node, DB-service IPC, or another process.
+type TokenInterceptBaselineActivator interface {
+	ActivateTokenInterceptBaseline(context.Context, TokenInterceptBaselineActivation) error
+}
+
 type Authorize func(context.Context, *http.Request) (string, error)
 
 // NewAdminAuthorize adapts the Gateway-owned session contract to the J3b
@@ -129,6 +136,7 @@ type RunCommand struct {
 type HTTPHandler struct {
 	Service        RunService
 	AccountOptions AccountOptions
+	Baseline       TokenInterceptBaselineActivator
 	Quality        QualityManagement
 	Active         *modelcheckactive.Registry
 	Authorize      Authorize
@@ -161,6 +169,8 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && path == "/run":
 		h.serveRun(w, r, systemAccountID)
+	case r.Method == http.MethodPost && path == "/token-intercept-baselines/activate":
+		h.activateTokenInterceptBaseline(w, r)
 	case r.Method == http.MethodPost && path == "/run/stream":
 		h.serveStream(w, r, systemAccountID)
 	case r.Method == http.MethodGet && path == "/run/active":
@@ -190,6 +200,37 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (h *HTTPHandler) activateTokenInterceptBaseline(w http.ResponseWriter, r *http.Request) {
+	var input TokenInterceptBaselineActivation
+	if err := decodeOwnerJSON(r, h.maxBody(), &input); err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	input = normalizeTokenInterceptBaselineActivation(input)
+	if err := validateTokenInterceptBaselineActivation(input); err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if h.Baseline == nil {
+		writeOwnerError(w, http.StatusServiceUnavailable, "J3b Gateway 固定截距基线 owner 未完成接线")
+		return
+	}
+	if err := h.Baseline.ActivateTokenInterceptBaseline(r.Context(), input); err != nil {
+		switch {
+		case errors.Is(err, ErrTokenInterceptBaselineConflict):
+			writeOwnerError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, ErrTokenInterceptBaselineUnavailable):
+			writeOwnerError(w, http.StatusServiceUnavailable, err.Error())
+		default:
+			// A concrete activator is still required to preserve the same
+			// fail-closed service boundary for unexpected storage errors.
+			writeOwnerError(w, http.StatusServiceUnavailable, err.Error())
+		}
+		return
+	}
+	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"activated": true, "baselineVersion": input.BaselineVersion}})
 }
 
 func resolveRequestedSystemAccount(r *http.Request, authenticated string) (string, error) {

@@ -84,6 +84,73 @@ func TestStoreSchemaCheckRejectsMissingRequiredColumn(t *testing.T) {
 	}
 }
 
+func TestActivateTokenInterceptBaselineUsesAtomicCAS(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "baseline.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE model_token_intercept_baseline_versions (
+		cohort_key_hmac TEXT NOT NULL, requested_model TEXT NOT NULL, tokenizer_version TEXT NOT NULL,
+		probe_set_version TEXT NOT NULL, baseline_version INTEGER NOT NULL, version_status TEXT NOT NULL,
+		evidence_status TEXT NOT NULL, independent_source_count INTEGER NOT NULL, q90_intercept REAL,
+		strong_threshold_intercept REAL, strong_gate_enabled INTEGER NOT NULL, calibration_note TEXT,
+		updated_at TEXT NOT NULL, PRIMARY KEY(cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const cohort = "hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, row := range []struct {
+		version int
+		status  string
+		gate    int
+	}{
+		{version: 1, status: "active", gate: 1},
+		{version: 2, status: "calibration_pending", gate: 0},
+	} {
+		_, err = db.Exec(`INSERT INTO model_token_intercept_baseline_versions (cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version,version_status,evidence_status,independent_source_count,q90_intercept,strong_threshold_intercept,strong_gate_enabled,calibration_note,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, cohort, "gpt-5.6", "o200k_base@1", "probe-v1", row.version, row.status, "stable", 10, 120, nil, row.gate, nil, "2026-08-27T10:00:00Z")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &Store{db: db, mode: "sqlite"}
+	input := TokenInterceptBaselineActivation{CohortKeyHMAC: cohort, RequestedModel: "gpt-5.6", TokenizerVersion: "o200k_base@1", ProbeSetVersion: "probe-v1", BaselineVersion: 2, StrongThresholdIntercept: 128, CalibrationNote: "calibrated"}
+	if err := store.ActivateTokenInterceptBaseline(context.Background(), input); err != nil {
+		t.Fatalf("activate err=%v", err)
+	}
+	var status1, status2 string
+	var gate1, gate2 int
+	if err := db.QueryRow(`SELECT version_status,strong_gate_enabled FROM model_token_intercept_baseline_versions WHERE baseline_version=1`).Scan(&status1, &gate1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT version_status,strong_gate_enabled FROM model_token_intercept_baseline_versions WHERE baseline_version=2`).Scan(&status2, &gate2); err != nil {
+		t.Fatal(err)
+	}
+	if status1 != "retired" || gate1 != 0 || status2 != "active" || gate2 != 1 {
+		t.Fatalf("activation statuses old=%s/%d new=%s/%d", status1, gate1, status2, gate2)
+	}
+	if err := store.ActivateTokenInterceptBaseline(context.Background(), input); !errors.Is(err, ErrTokenInterceptBaselineConflict) {
+		t.Fatalf("replay must conflict, err=%v", err)
+	}
+}
+
+func TestActivateTokenInterceptBaselineFailsClosedWhenStorageMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-baseline.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := &Store{db: db, mode: "sqlite"}
+	err = store.ActivateTokenInterceptBaseline(context.Background(), TokenInterceptBaselineActivation{
+		CohortKeyHMAC: "hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RequestedModel: "gpt-5.6", TokenizerVersion: "o200k_base@1", ProbeSetVersion: "probe-v1", BaselineVersion: 1, StrongThresholdIntercept: 100, CalibrationNote: "ok",
+	})
+	if !errors.Is(err, ErrTokenInterceptBaselineUnavailable) {
+		t.Fatalf("missing table must return unavailable, err=%v", err)
+	}
+}
+
 func TestApplyHealthFactUsesLatestWinsOrdering(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j3b.db")
 	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")

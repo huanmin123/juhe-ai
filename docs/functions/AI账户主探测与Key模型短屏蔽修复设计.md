@@ -139,7 +139,7 @@ CapabilityKey =
 
 | 参数 | 固定值 | 作用 |
 | --- | --- | --- |
-| `guardEnabled` | `false`（发布验收后才改为 `true`） | 总开关；关闭时停止新屏蔽和候选过滤，但不删除已有 state、不改变账户状态 |
+| Key-model runtime guard | performance/dev Redis 模式直接启用；standalone 无 Redis 时不启用 | 不再提供运行时 kill switch；Redis-backed admission、短屏蔽和候选过滤随 performance/dev profile 生效 |
 | 首次 `OPEN` | `5 秒` | 非主 Key-model 第一次真实失败后的最短屏蔽窗口 |
 | 退避序列 | `5 秒 -> 15 秒 -> 1 分钟 -> 5 分钟` | 恢复失败后的下一次探测时间，第四次以后保持 5 分钟封顶 |
 | `recoverySuccessThreshold` | `3` 次连续成功 | 防止一次偶然成功立即放行坏 Key-model |
@@ -437,7 +437,7 @@ Node 网关负责捕获最终 Key/模型/入口、记录统一观察、提交 ty
 
 Key-模型的 phase 过滤必须在选择最终 Key 前完成，但 foreground permit 必须在最终 Key 已确定后申请；不能提前把整个账户从候选窗口删除。某模型所有 Key 被过滤，或所有未过滤 Key 都返回 `busy` 时，只表示该账户对本次模型暂时没有可派发候选；继续走其他账户、后备分组或一次有界等待，不写账户 `temporary_unavailable`。`busy` 不算业务失败、不能写 `key_model OPEN`，也不能触发 J1。
 
-运行时状态读取失败不能静默当作 `CLOSED`，也不能借机修改账户健康状态。Node 对同一 state store 只做 1 次 50 毫秒后重试；仍不可读时，对受影响的精确 Key-模型本次按不可选处理并尝试其他已通过硬门禁的 Key/账户，其他 Key、其他模型和账户状态不受影响。必须记录不可读事件，并提供关闭新过滤入口的 kill switch；kill switch 只停止新屏蔽写入和候选过滤，不删除已有 state，也不停止 Go 恢复，恢复 owner 仍可自然清理。不能把读取异常伪装成模型健康结论。
+运行时状态读取失败不能静默当作 `CLOSED`，也不能借机修改账户健康状态。Node 对同一 state store 只做 1 次 50 毫秒后重试；仍不可读时，对受影响的精确 Key-模型本次按不可选处理并尝试其他已通过硬门禁的 Key/账户，其他 Key、其他模型和账户状态不受影响。必须记录不可读事件并保留原始错误；不能把读取异常伪装成模型健康结论。performance/dev profile 的 Redis state 不可用时按 fail-closed 处理，standalone profile 不进入 Redis-backed guard。
 
 ## 11. 授权、映射和协议
 
@@ -544,15 +544,15 @@ Node 失败意图固定字段为 `intentId`、`requestId`、`attemptId`、`capab
 | state store 写入失败 | 当前 Key 本地排除，继续其他候选 | 保留原始错误，不假装 `OPEN` | 不影响 |
 | model-recovery 容量不足 | 不启动该 probe，保留 `retryAt` | 写 `recovery_capacity_exhausted` | 不影响 |
 | Go owner/lease 丢失 | 终止当前 probe | 结果为 `unknown/stale` | 不影响 |
-| kill switch 开启 | 不新建屏蔽、不消费新过滤 | 已有 state 只由 Go 恢复 | 不影响 |
+| standalone 或 Redis state 不可用 | 不进入 Redis-backed admission；保留原有本地调度并记录配置/运行时错误 | 不创建共享 `key_model` state | 不影响 |
 
-kill switch 名称固定为 `JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED`，默认 `false`，只有完成 shadow、UAT 和单生产分组验收后改为 `true`。关闭时不删除数据、不清理账户状态、不启动备用 Node writer；恢复到旧调度只需将其改回 `false`。
+本版本移除 `JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED` kill switch。performance/dev profile 必须配置 Redis state 并直接启用 admission、短屏蔽和精确恢复；standalone profile 没有 Redis state，保持原有无共享 state 的本地调度行为。启用前仍必须完成 shadow、UAT、单生产分组验收和 Node/Go/Redis 互操作 smoke，不得以配置开关替代验收。
 
 ## 16. 启用与灰度
 
-启用前必须证明：共享 `key_model` 状态、admission permit、lease、generation、Node 捕获/过滤、Go 精确恢复和主/非主写权限已经闭环；普通请求失败可以按限频规则触发 J1 A 探测，但不能直接执行 `request_failure -> 整号 temporary_unavailable` 写入；`protocol_model` 父级升级已隔离；多 Key、授权、映射、多协议、取消、重启和蓝绿测试通过。所有承接流量的 Gateway replica 必须先升级到同一 guard 版本并指向同一 Redis namespace，确认没有旧副本绕过 `admitForeground` 后才能打开 kill switch；灰度期间旧/新版本不能混接同一生产流量池。
+启用前必须证明：共享 `key_model` 状态、admission permit、lease、generation、Node 捕获/过滤、Go 精确恢复和主/非主写权限已经闭环；普通请求失败可以按限频规则触发 J1 A 探测，但不能直接执行 `request_failure -> 整号 temporary_unavailable` 写入；`protocol_model` 父级升级已隔离；多 Key、授权、映射、多协议、取消、重启和蓝绿测试通过。所有承接流量的 Gateway replica 必须先升级到同一版本并指向同一 Redis namespace，确认没有旧副本绕过 `admitForeground` 后才能承接流量；灰度期间旧/新版本不能混接同一生产流量池。
 
-上线门槛固定为以下全部满足：shadow 阶段 1 小时内 Node 计算的过滤候选与离线回放一致率 100%；UAT 连续 2 小时无主探测误屏蔽、无跨 Key 误屏蔽；单生产分组连续 24 小时 `runtime_state_unavailable` 为 0、`stale` 写入率低于 0.1%、恢复探测超时率低于 5%、候选耗尽率不高于启用前基线的 1.1 倍；Redis state、lease、outbox、Node 和 Go 互操作 smoke 全部通过。任一门槛失败，保持 kill switch `false`，不得扩大灰度。
+上线门槛固定为以下全部满足：shadow 阶段 1 小时内 Node 计算的过滤候选与离线回放一致率 100%；UAT 连续 2 小时无主探测误屏蔽、无跨 Key 误屏蔽；单生产分组连续 24 小时 `runtime_state_unavailable` 为 0、`stale` 写入率低于 0.1%、恢复探测超时率低于 5%、候选耗尽率不高于启用前基线的 1.1 倍；Redis state、lease、outbox、Node 和 Go 互操作 smoke 全部通过。任一门槛失败，停止扩大流量并回滚版本，不以配置开关代替故障处置。
 
 灰度顺序：
 
@@ -632,7 +632,7 @@ kill switch 名称固定为 `JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED`，
 | Redis 不可读 | 精确 Key 本次 fail-closed，50 ms 后重试 1 次，不修改账户 | Redis 恢复且读取成功 |
 | Redis 不可写 | 当前 Key 本地最长 5 秒短暂避让，保留写错误，不假装共享 `OPEN` | 下一次请求成功写入 intent |
 | Go recovery 全部停止 | 现有 OPEN 继续过滤，不扩大新 OPEN；告警 | Go owner 重新取得任务 lease |
-| Node 新过滤逻辑异常 | kill switch 关闭新写入和过滤 | 修复并重新通过 shadow/UAT |
+| Node 新过滤逻辑异常 | 停止承接新流量并回滚版本 | 修复并重新通过 shadow/UAT |
 | 状态容量达到 50,000 | 只清理 CLOSED，活动 state 不删除 | 清理出容量后继续 |
 | 路由 revision 变化 | 所有旧 state 标记 stale，新 revision 从 CLOSED 开始 | 新请求重新观察 |
 | 单个来源账户探测过载 | 同来源并发硬上限 2，其他到期项顺延 | 当前探测释放 lease |

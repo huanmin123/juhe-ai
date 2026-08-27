@@ -59,7 +59,7 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		// intentionally absent before cutover; their empty target tables are
 		// still validated by inspectSQLite above.
 		{dataset, "model_check_input_versions", true}, {dataset, "model_check_inputs", true}, {dataset, "model_check_execution_claims", true}, {dataset, "model_check_outcomes", true},
-		{dataset, "model_check_runs", false}, {dataset, "model_check_items", false}, {dataset, "model_check_observations", false}, {dataset, "model_check_scheduler_tasks", true}, {stats, "account_quality_health_hourly", false},
+		{dataset, "model_check_runs", false}, {dataset, "model_check_items", false}, {dataset, "model_check_observations", false}, {dataset, "model_check_scheduler_tasks", true}, {stats, "account_quality_health_hourly", false}, {stats, "model_token_intercept_baseline_versions", false},
 	} {
 		exists, err := sqliteTableExists(ctx, item.db, item.table)
 		if err != nil {

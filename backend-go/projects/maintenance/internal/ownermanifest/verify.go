@@ -45,15 +45,19 @@ type manifest struct {
 // Report is intentionally serializable so CI and release evidence can retain
 // the exact operation counts without copying source text or secrets.
 type Report struct {
-	ManifestVersion   int `json:"manifestVersion"`
-	Operations        int `json:"operations"`
-	Writes            int `json:"writes"`
-	Reads             int `json:"reads"`
-	Maintenance       int `json:"maintenance"`
-	Runtime           int `json:"runtime"`
-	SourceMaintenance int `json:"sourceMaintenance"`
-	SourceRuntime     int `json:"sourceRuntime"`
-	HandlerMatches    int `json:"handlerMatches"`
+	ManifestVersion     int            `json:"manifestVersion"`
+	Operations          int            `json:"operations"`
+	Writes              int            `json:"writes"`
+	Reads               int            `json:"reads"`
+	Maintenance         int            `json:"maintenance"`
+	Runtime             int            `json:"runtime"`
+	SourceMaintenance   int            `json:"sourceMaintenance"`
+	SourceRuntime       int            `json:"sourceRuntime"`
+	HandlerMatches      int            `json:"handlerMatches"`
+	TransactionGroups   int            `json:"transactionGroups"`
+	AccessCoverage      map[string]int `json:"accessCoverage"`
+	WriterCoverage      map[string]int `json:"writerCoverage"`
+	TransactionCoverage map[string]int `json:"transactionCoverage"`
 }
 
 var operationType = regexp.MustCompile(`(?m)^\s*\|\s*\{\s*type:\s*'([^']+)'`)
@@ -115,7 +119,15 @@ func Verify(manifestPath, typesPath, accessPath, handlerPath string) (Report, er
 	}
 
 	seen := make(map[string]struct{}, len(value.Operations))
-	report := Report{ManifestVersion: value.ManifestVersion, Operations: len(value.Operations)}
+	report := Report{
+		ManifestVersion:     value.ManifestVersion,
+		Operations:          len(value.Operations),
+		AccessCoverage:      make(map[string]int),
+		WriterCoverage:      make(map[string]int),
+		TransactionCoverage: make(map[string]int),
+	}
+	txOwners := make(map[string]string)
+	txTargets := make(map[string]string)
 	for _, item := range value.Operations {
 		name := strings.TrimSpace(item.Operation)
 		if name == "" {
@@ -149,6 +161,14 @@ func Verify(manifestPath, typesPath, accessPath, handlerPath string) (Report, er
 		if item.CurrentOwner == "" || item.TargetOwner == "" || item.Tables == "" || item.Transaction == "" || item.Rollback == "" || item.Verification == "" {
 			return Report{}, fmt.Errorf("operation %q lacks owner, table, transaction, rollback, or verification metadata", name)
 		}
+		if owner, ok := txOwners[item.Transaction]; ok && owner != item.CurrentOwner {
+			return Report{}, fmt.Errorf("transaction group %q mixes current owners %q and %q", item.Transaction, owner, item.CurrentOwner)
+		}
+		if target, ok := txTargets[item.Transaction]; ok && target != item.TargetOwner {
+			return Report{}, fmt.Errorf("transaction group %q mixes target owners %q and %q", item.Transaction, target, item.TargetOwner)
+		}
+		txOwners[item.Transaction] = item.CurrentOwner
+		txTargets[item.Transaction] = item.TargetOwner
 		if item.Source.TypeUnion == "" || item.Source.Handler == "" || item.Source.TypeLine <= 0 || item.Source.AccessModeLine <= 0 || item.Source.HandlerLine <= 0 || item.Source.Entrypoint == "" || item.Source.WriterKind == "" {
 			return Report{}, fmt.Errorf("operation %q lacks source location, entrypoint, or writer metadata", name)
 		}
@@ -175,6 +195,9 @@ func Verify(manifestPath, typesPath, accessPath, handlerPath string) (Report, er
 		} else if item.Access == "write" {
 			report.Writes++
 		}
+		report.AccessCoverage[item.Access]++
+		report.WriterCoverage[item.Source.WriterKind]++
+		report.TransactionCoverage[item.Transaction]++
 		if expectedAccess == "maintenance" {
 			report.SourceMaintenance++
 		} else if expectedAccess == "runtime" {
@@ -185,6 +208,7 @@ func Verify(manifestPath, typesPath, accessPath, handlerPath string) (Report, er
 		}
 		report.HandlerMatches++
 	}
+	report.TransactionGroups = len(report.TransactionCoverage)
 	if len(seen) != len(types) {
 		missing := make([]string, 0)
 		for name := range types {

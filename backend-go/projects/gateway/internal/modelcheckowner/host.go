@@ -72,7 +72,7 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 	}
 	projector := &QualityProjector{Store: store, Enforcement: deps.Enforcement}
 	runtime := &Runtime{Store: store, Resolve: deps.Resolve, ResolveComparison: deps.ResolveComparison, Tokenizer: deps.Tokenizer, ModelLimits: deps.ModelLimits, Projector: projector, OwnerID: cfg.InstanceID}
-	handler := &HTTPHandler{Service: runtime, Quality: deps.Quality, AccountOptions: deps.AccountOptions, Active: modelcheckactive.NewRegistry(), Authorize: deps.Authorize, Build: deps.Build}
+	handler := &HTTPHandler{Service: runtime, Quality: deps.Quality, AccountOptions: deps.AccountOptions, Baseline: store, Active: modelcheckactive.NewRegistry(), Authorize: deps.Authorize, Build: deps.Build}
 	// HTTP and scheduler share the same Runtime/Store but never call across
 	// processes. A Gateway owner is not ready until all durable scheduler
 	// dependencies are present; serving only the HTTP half would create a

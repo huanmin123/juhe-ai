@@ -135,10 +135,24 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 			return errors.New("J3b quality recovery lease metadata is incomplete")
 		}
 		generation, interval = payload.Generation, payload.RecoveryIntervalMinutes
-		passed := result.Status == string(RunCompleted)
+		// A successful HTTP/probe execution is not sufficient to clear a
+		// quality-isolated account. Recovery must observe the same durable
+		// evidence/trust gates used by health projection; missing metadata is
+		// fail-closed so an older/partial runtime cannot accidentally recover.
+		passed := result.Status == string(RunCompleted) && runResultEvidenceFormed(result)
 		return e.Recovery(ctx, RecoveryPayload{OwnerID: payload.OwnerID, AccountID: payload.TargetID, EnforcementID: payload.EnforcementID, RunID: result.RunID, Generation: generation, PolicyRevision: policyRevision, RecoveryIntervalMinutes: interval, CompletedAt: time.Now().UTC()}, passed)
 	}
 	return nil
+}
+
+func runResultEvidenceFormed(result RunResult) bool {
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		return false
+	}
+	evidence, evidenceOK := data["evidenceFormed"].(bool)
+	trust, trustOK := data["trustFormed"].(bool)
+	return evidenceOK && trustOK && evidence && trust
 }
 
 var _ SchedulerExecutor = (*SchedulerRunExecutor)(nil)

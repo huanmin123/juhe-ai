@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
@@ -61,6 +62,16 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	if err != nil || result.Status != string(RunCompleted) || result.RunID == "" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("runtime result data=%T, want map", result.Data)
+	}
+	if formed, ok := data["evidenceFormed"].(bool); !ok || formed {
+		t.Fatalf("quick profile evidenceFormed=%v, want explicit false", data["evidenceFormed"])
+	}
+	if trusted, ok := data["trustFormed"].(bool); !ok || trusted {
+		t.Fatalf("quick profile trustFormed=%v, want explicit false", data["trustFormed"])
+	}
 	var status string
 	if err := store.db.QueryRow(`SELECT status FROM model_check_runs WHERE id=?`, result.RunID).Scan(&status); err != nil || status != string(RunCompleted) {
 		t.Fatalf("status=%s err=%v", status, err)
@@ -77,8 +88,23 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 5 {
 		t.Fatalf("item count=%d err=%v", count, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 1 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 5 {
 		t.Fatalf("observation count=%d err=%v", count, err)
+	}
+	var familyCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family IN ('protocol_basic','structured_output','tool_calling','stability','usage_shape')`, result.RunID).Scan(&familyCount); err != nil || familyCount != 5 {
+		t.Fatalf("family observation count=%d err=%v", familyCount, err)
+	}
+	var observationStatus string
+	if err := store.db.QueryRow(`SELECT observation_status FROM model_check_observations WHERE run_id=? AND probe_family='usage_shape'`, result.RunID).Scan(&observationStatus); err != nil || observationStatus != "complete" {
+		t.Fatalf("usage observation status=%q err=%v", observationStatus, err)
+	}
+	var evidenceSummary string
+	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&evidenceSummary); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(evidenceSummary, server.URL) {
+		t.Fatalf("durable request summary leaked endpoint: %s", evidenceSummary)
 	}
 }
 
@@ -253,8 +279,89 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 		t.Fatalf("frozen trusted comparison=%#v", frozen["trustedComparison"])
 	}
 	var observations int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations != 2 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations != 13 {
 		t.Fatalf("observations=%d err=%v", observations, err)
+	}
+	var trusted int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family='trusted-comparison'`, result.RunID).Scan(&trusted); err != nil || trusted != 1 {
+		t.Fatalf("trusted comparison observations=%d err=%v", trusted, err)
+	}
+}
+
+func TestEvaluationObservationStatusIsPartialForSkippedAndUnknown(t *testing.T) {
+	for _, test := range []struct {
+		name, input, want string
+	}{
+		{name: "passed", input: "passed", want: "complete"},
+		{name: "failed", input: "failed", want: "complete"},
+		{name: "warning", input: "warning", want: "complete"},
+		{name: "skipped", input: "skipped", want: "partial"},
+		{name: "unknown", input: "", want: "partial"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := evaluationObservationStatus(test.input); got != test.want {
+				t.Fatalf("status=%q want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAppendEvaluationObservationsPersistsFamilyRowsWithoutEvidencePayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "family-observations.db")
+	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range runtimeTestDDL() {
+		if _, err := seed.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := seed.Exec(`INSERT INTO model_check_runs(id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,account_id,model,profile,trigger_kind,schedule_id,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,trace_id,created_at,updated_at) VALUES ('run-family','sys','actor','openai','account','acct','acct','gpt-5.6','full','manual',NULL,'running','unavailable',0,100,'','{}','{}','{}','{}','j3b-v1','2026-08-28T00:00:00Z',NULL,'2026-08-28T00:00:00Z','2026-08-28T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(testSQLiteConfig(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 28, 1, 2, 3, 0, time.UTC)
+	evaluations := []modelcheckprobe.Evaluation{
+		{Kind: "token_integrity", Status: "skipped", Evidence: map[string]any{"secret": "must-not-persist"}},
+		{Kind: "identity_observation", Status: "mystery", Evidence: map[string]any{"raw": "must-not-persist"}},
+		{Kind: "stability", Status: "passed", Evidence: map[string]any{"response": "must-not-persist"}},
+	}
+	if err := appendEvaluationObservations(context.Background(), store, "run-family", "sys", "acct", "openai", "requested", "mapped", "mapped", "passed", "unknown", 2, evaluations, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendEvaluationObservations(context.Background(), store, "run-family", "sys", "acct", "openai", "requested", "mapped", "mapped", "passed", "unknown", 2, evaluations, now); err != nil {
+		t.Fatalf("exact family observation replay must be idempotent: %v", err)
+	}
+	rows, err := store.db.Query(`SELECT id,probe_family,observation_status,evidence_coverage,created_at FROM model_check_observations WHERE run_id=? ORDER BY id`, "run-family")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := make([][]string, 0, 3)
+	for rows.Next() {
+		var id, family, status, created string
+		var coverage int
+		if err := rows.Scan(&id, &family, &status, &coverage, &created); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(id, "must-not-persist") || strings.Contains(family, "must-not-persist") || coverage != 2 || created != now.Format(time.RFC3339Nano) {
+			t.Fatalf("unexpected persisted row id=%q family=%q status=%q coverage=%d created=%q", id, family, status, coverage, created)
+		}
+		got = append(got, []string{family, status})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0][0] != "token_integrity" || got[0][1] != "partial" || got[1][0] != "identity_observation" || got[1][1] != "partial" || got[2][0] != "stability" || got[2][1] != "complete" {
+		t.Fatalf("family observations=%v", got)
 	}
 }
 

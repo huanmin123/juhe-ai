@@ -232,6 +232,7 @@ export async function settleMainProbeFenceOutcome(input: {
   outcome: string
   winnerKeyFingerprint?: string
 }): Promise<boolean> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return true
   const store = new RedisKeyModelRuntimeStore()
   if (input.outcome === 'complete_success') {
     if (!input.winnerKeyFingerprint || input.winnerKeyFingerprint !== input.fence.keyFingerprint) return true
