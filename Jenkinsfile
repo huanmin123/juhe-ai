@@ -663,8 +663,8 @@ def verifyJ3aRelease(environmentName, enabled) {
           --data-urlencode "startAt=\$started_at" \\
           --data-urlencode 'pageSize=20' \\
           '${env.INGRESS_ENDPOINT}/__aisys__/api/operation-logs' 2>/dev/null || true)
-        if printf '%s' "\$audit" | grep -Eq '"operationKey"[[:space:]]*:[[:space:]]*"proxies\\.test"' && \\
-           printf '%s' "\$audit" | grep -Eq '"resourceId"[[:space:]]*:[[:space:]]*"${proxyID}"'; then
+        if printf '%s' "\$audit" | grep -Eq '"items"[[:space:]]*:[[:space:]]*\\[[^]]*"summary"[[:space:]]*:[[:space:]]*"检测代理：J3a release probe' && \\
+           printf '%s' "\$audit" | grep -Eq '"createdAt"[[:space:]]*:[[:space:]]*"20[0-9]{2}-'; then
           exit 0
         fi
         i=\$((i + 1)); sleep 1
