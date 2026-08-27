@@ -18,8 +18,8 @@ func main() {
 	check := flag.Bool("check-boundary", false, "verify the scaffold boundary")
 	j3Check := flag.Bool("check-j3a-proxy-latency-postgres", false, "read-only verify pre-provisioned J3a PostgreSQL jobs schema")
 	j3Apply := flag.Bool("apply-j3a-proxy-latency-postgres", false, "add missing J3a PostgreSQL jobs tables/indexes after explicit authorization")
-	j3bCheck := flag.Bool("check-j3b-model-check-postgres", false, "read-only verify pre-provisioned J3b PostgreSQL jobs schema")
-	j3bApply := flag.Bool("apply-j3b-model-check-postgres", false, "add missing J3b PostgreSQL jobs tables/indexes after explicit authorization")
+	j3bCheck := flag.Bool("check-j3b-model-check-postgres", false, "read-only verify pre-provisioned J3b PostgreSQL juhe_j3b schema")
+	j3bApply := flag.Bool("apply-j3b-model-check-postgres", false, "add missing J3b PostgreSQL juhe_j3b tables/indexes after explicit authorization")
 	flag.Parse()
 	if *version {
 		fmt.Printf("juhe-ai-maintenance project=%s contract=%s\n", contracts.ProjectMaintenance, contracts.ArchitectureVersion)

@@ -20,7 +20,9 @@ const (
 	defaultBatchSize         = 512
 	defaultOwnerLease        = 30 * time.Second
 	defaultPostgresMaxConns  = 5096
-	defaultPostgresMinConns  = sqlpool.MaxIdleConns
+	// Do not prewarm PostgreSQL connections during process startup. Pools
+	// create connections on demand and recycle idle ones via MaxConnIdleTime.
+	defaultPostgresMinConns  = 0
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {

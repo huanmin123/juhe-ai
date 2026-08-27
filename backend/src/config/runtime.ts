@@ -624,7 +624,7 @@ export const runtimeConfig: RuntimeConfig = {
     schemaOwner: parsePostgresSchemaOwner(rawStringConfig('JUHE_AI_POSTGRES_SCHEMA_OWNER')),
     url: configuredPostgresUrl,
     poolMax: numberConfig('JUHE_AI_DB_POOL_MAX', 50, 1, 500),
-    idleTimeoutMs: numberConfig('JUHE_AI_POSTGRES_IDLE_TIMEOUT_MS', 30_000, 1_000, 600_000),
+    idleTimeoutMs: numberConfig('JUHE_AI_POSTGRES_IDLE_TIMEOUT_MS', 600_000, 1_000, 600_000),
     // Interactive API reads are short OLTP queries. JIT compilation adds a
     // large cold-query tail without helping these bounded result sets.
     jitEnabled: booleanConfig('JUHE_AI_POSTGRES_JIT_ENABLED', false),

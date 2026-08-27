@@ -72,13 +72,24 @@ func (b *Builder) Build(ctx context.Context, request Request) (modelcheckruntime
 	if b == nil {
 		return modelcheckruntime.RunRequest{}, errors.New("model check command builder is not initialized")
 	}
+	policy, err := b.config.PolicyLoader.Load(ctx, strings.TrimSpace(request.SystemAccountID))
+	if err != nil {
+		return modelcheckruntime.RunRequest{}, fmt.Errorf("load model check policy: %w", err)
+	}
+	return b.BuildWithPolicy(ctx, request, policy)
+}
+
+// BuildWithPolicy constructs a request from an already-claimed immutable
+// policy. Scheduled and quality-recovery callers use this after their lease
+// transaction has frozen the schedule revision; reloading the mutable global
+// policy here would make the run disagree with its claim fence.
+func (b *Builder) BuildWithPolicy(ctx context.Context, request Request, policy modelcheckinput.PolicySnapshot) (modelcheckruntime.RunRequest, error) {
+	if b == nil {
+		return modelcheckruntime.RunRequest{}, errors.New("model check command builder is not initialized")
+	}
 	request = normalize(request)
 	if err := validate(request); err != nil {
 		return modelcheckruntime.RunRequest{}, err
-	}
-	policy, err := b.config.PolicyLoader.Load(ctx, request.SystemAccountID)
-	if err != nil {
-		return modelcheckruntime.RunRequest{}, fmt.Errorf("load model check policy: %w", err)
 	}
 	if err := policy.Verify(); err != nil {
 		return modelcheckruntime.RunRequest{}, fmt.Errorf("verify model check policy: %w", err)

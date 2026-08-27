@@ -1,6 +1,7 @@
-// Package modelcheckstore owns the durable J3b run/item/observation facts.
-// It is intentionally independent from the Node runtime and talks directly to
-// the SQLite or PostgreSQL dataset store selected by the jobs process.
+// Package modelcheckstore contains the legacy durable J3b run/item/observation
+// implementation retained as relocation material. The jobs executable is
+// fail-closed for J3b under the current Gateway-only owner contract; this
+// package must not be wired into a jobs runtime or used as a second writer.
 package modelcheckstore
 
 import (
@@ -173,9 +174,9 @@ func OpenSQLite(path string) (*Store, error) {
 	return &Store{db: db, mode: StoreSQLite}, nil
 }
 
-// OpenPostgres opens the jobs-owned dataset connection. PostgreSQL schema is
-// provisioned by the explicit Node-compatible maintenance path; jobs only
-// verifies it and never executes DDL at runtime.
+// OpenPostgres opens the legacy dataset connection used by relocation tests.
+// The current Gateway-only owner contract does not permit jobs to call this
+// path at runtime; PostgreSQL schema is provisioned by explicit maintenance.
 func OpenPostgres(dsn string, maxOpen, maxIdle int) (*Store, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, errors.New("model check PostgreSQL URL is required")

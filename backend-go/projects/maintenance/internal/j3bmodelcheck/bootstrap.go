@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	SchemaName    = "juhe_jobs"
+	SchemaName    = "juhe_j3b"
 	BootstrapEnv  = "JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL"
 	bootstrapLock = int64(732_946_110_271_044_016)
 )
@@ -79,20 +79,20 @@ func Run(ctx context.Context, db *sql.DB, apply bool) (Report, error) {
 		return report, nil
 	}
 	if report.MissingSchema {
-		return Report{}, errors.New("J3b bootstrap 拒绝创建 juhe_jobs schema；必须由受控数据库流程预置")
+		return Report{}, errors.New("J3b bootstrap 拒绝创建 juhe_j3b schema；必须由受控数据库流程预置")
 	}
 	if report.SchemaOwner != report.CurrentRole {
-		return Report{}, fmt.Errorf("J3b bootstrap 拒绝跨角色修改 juhe_jobs schema: owner=%s current=%s", report.SchemaOwner, report.CurrentRole)
+		return Report{}, fmt.Errorf("J3b bootstrap 拒绝跨角色修改 juhe_j3b schema: owner=%s current=%s", report.SchemaOwner, report.CurrentRole)
 	}
 	if _, err := tx.ExecContext(ctx, postgresSchema); err != nil {
-		return Report{}, fmt.Errorf("执行 J3b PostgreSQL jobs schema bootstrap 失败: %w", err)
+		return Report{}, fmt.Errorf("执行 J3b PostgreSQL juhe_j3b schema bootstrap 失败: %w", err)
 	}
 	report, err = inspectTx(ctx, tx)
 	if err != nil {
 		return Report{}, err
 	}
 	if !report.Ready() {
-		return Report{}, errors.New("J3b PostgreSQL jobs schema bootstrap 后契约仍不完整")
+		return Report{}, errors.New("J3b PostgreSQL juhe_j3b schema bootstrap 后契约仍不完整")
 	}
 	report.Applied = true
 	if err := tx.Commit(); err != nil {
@@ -254,10 +254,21 @@ func requiredIndexNames() []string {
 }
 
 const postgresSchema = `
-CREATE TABLE IF NOT EXISTS juhe_jobs.model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
-CREATE TABLE IF NOT EXISTS juhe_jobs.model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version BIGINT NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, UNIQUE(identity_key,input_version), UNIQUE(identity_key,input_digest));
-CREATE TABLE IF NOT EXISTS juhe_jobs.model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, claim_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
-CREATE TABLE IF NOT EXISTS juhe_jobs.model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token BIGINT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, stored_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, payload_digest TEXT NOT NULL, committed BOOLEAN NOT NULL DEFAULT FALSE);
-CREATE INDEX IF NOT EXISTS idx_model_check_outcomes_cursor ON juhe_jobs.model_check_outcomes(stored_at,outcome_id);
-CREATE INDEX IF NOT EXISTS idx_model_check_inputs_target ON juhe_jobs.model_check_inputs(target_id,issued_at);
+CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
+CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version BIGINT NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, UNIQUE(identity_key,input_version), UNIQUE(identity_key,input_digest));
+CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, claim_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
+CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token BIGINT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, stored_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, payload_digest TEXT NOT NULL, committed BOOLEAN NOT NULL DEFAULT FALSE);
+CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL DEFAULT 'quick', trigger_kind TEXT NOT NULL DEFAULT 'manual' CHECK (trigger_kind IN ('manual','scheduled','quality_recovery')), schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','completed','failed','canceled')), message TEXT NOT NULL DEFAULT '', trace_id TEXT, probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1', started_at TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, request_summary_json TEXT NOT NULL DEFAULT '{}', result_summary_json TEXT NOT NULL DEFAULT '{}', policy_snapshot_json TEXT NOT NULL DEFAULT '{}', quality_decision_json TEXT NOT NULL DEFAULT '{}', quality_health_sync_status TEXT CHECK (quality_health_sync_status IS NULL OR quality_health_sync_status IN ('applied','pending_retry','failed')), error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES juhe_j3b.model_check_runs(id) ON DELETE CASCADE, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('passed','warning','failed','skipped')), score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL DEFAULT '{}', error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES juhe_j3b.model_check_runs(id) ON DELETE CASCADE, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, provider_code TEXT NOT NULL, provider_protocol_profile_id TEXT NOT NULL, endpoint_family TEXT NOT NULL, requested_model TEXT NOT NULL, mapped_upstream_model TEXT NOT NULL, observed_model TEXT, mapping_applied INTEGER NOT NULL DEFAULT 0, upstream_bucket_hmac TEXT NOT NULL, cohort_key_hmac TEXT NOT NULL, population_key_hmac TEXT NOT NULL, probe_key_hmac TEXT NOT NULL, system_fingerprint_hmac TEXT, probe_family TEXT NOT NULL, probe_set_version TEXT NOT NULL, tokenizer_version TEXT NOT NULL, feature_version TEXT NOT NULL DEFAULT 'none', round_index INTEGER NOT NULL, padding_tokens INTEGER NOT NULL, local_input_tokens INTEGER NOT NULL, reported_input_tokens INTEGER, cached_input_tokens INTEGER, constraint_passed INTEGER, feature_1 DOUBLE PRECISION, feature_2 DOUBLE PRECISION, feature_3 DOUBLE PRECISION, feature_4 DOUBLE PRECISION, feature_5 DOUBLE PRECISION, feature_6 DOUBLE PRECISION, feature_7 DOUBLE PRECISION, feature_8 DOUBLE PRECISION, observation_status TEXT NOT NULL, identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, protocol_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL DEFAULT 0, trace_id TEXT, created_at TEXT NOT NULL, aggregation_completed_at TEXT);
+CREATE TABLE IF NOT EXISTS juhe_j3b.account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL CHECK (profile IN ('quick','full')), score INTEGER NOT NULL, threshold INTEGER NOT NULL CHECK (threshold BETWEEN 40 AND 100), level TEXT NOT NULL, error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, stat_hour));
+CREATE INDEX IF NOT EXISTS idx_model_check_outcomes_cursor ON juhe_j3b.model_check_outcomes(stored_at,outcome_id);
+CREATE INDEX IF NOT EXISTS idx_model_check_inputs_target ON juhe_j3b.model_check_inputs(target_id,issued_at);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_created ON juhe_j3b.model_check_runs(created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_model_check_runs_quality_health_sync_retry ON juhe_j3b.model_check_runs(quality_health_sync_status,updated_at,id) WHERE quality_health_sync_status='failed';
+CREATE INDEX IF NOT EXISTS idx_model_check_items_run_order ON juhe_j3b.model_check_items(run_id,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_model_check_items_run_key ON juhe_j3b.model_check_items(run_id,item_key,id);
+CREATE INDEX IF NOT EXISTS idx_model_check_observations_cursor ON juhe_j3b.model_check_observations(created_at,id);
+CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON juhe_j3b.model_check_observations(created_at,id) WHERE aggregation_completed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_account_quality_health_hourly_scope ON juhe_j3b.account_quality_health_hourly(system_account_id,stat_hour,account_id);
 `

@@ -6,7 +6,7 @@
 
 ## 1. 目标和非目标
 
-本契约将 Node 当前的模型检测请求、持久事实和直接质量投影收敛为 Go `jobs` 的版本化输入与 outcome。它只定义 J3b 的可恢复执行单元，不以 Node HTTP、DB-service、IPC、队列或另一个 Go 服务作为实现依赖。
+本契约将 Node 当前的模型检测请求、持久事实和直接质量投影收敛为方案 A 下 Go `gateway` 进程内的版本化输入与 outcome。它只定义 J3b 的可恢复执行单元，不以 Node HTTP、DB-service、IPC、队列、`jobs` 或另一个 Go 服务作为实现依赖。
 
 `account-quality-refresh` 的 usage 统计重算与 `account-quality-failure-precheck-queue` 的失败前置确认属于 J3c，不能读取、写入或重试 J3b input/outcome。J3b 则拥有模型检测产生的 run、item、observation、trust aggregation receipt/cursor、quality decision、enforcement、quality recovery 和 health-hour sync/retry。
 
@@ -32,7 +32,7 @@ Go 管理入口保持现有 Node 外部请求域：
 - `schema_version=1`、`input_id`、`identity`、`trigger_kind`（`manual|scheduled|quality_recovery`）、`issued_at`、`deadline_at`；
 - actor/system account、target account、可选 comparison account 的 ID、逻辑删除状态、authorization scope、`config_revision` 与 provider protocol profile revision；
 - requested model、mapped upstream model、quick/full profile、trusted comparison 设置、schedule ID（仅 scheduled）、policy snapshot/revision；
-- 只可由 jobs 解开的 credential envelope、代理/endpoint 快照和每个 probe 的 protocol/payload version；
+- 只可由 gateway 进程内解开的 credential envelope、代理/endpoint 快照和每个 probe 的 protocol/payload version；
 - SHA-256 `input_digest`，由以上规范化字段生成；不能含明文 API Key、token、cookie、代理密码、原始上游响应或用户请求正文。
 
 同一 `input_id` 的重放必须同时匹配已签发版本和 digest；不同 immutable payload 一律拒绝，不得覆盖旧 input。同一 logical identity 的新快照分配下一个单调 `input_version`，旧版本不被覆盖。签发和执行前均须确认 target/comparison 未删除、未禁用且其 config/policy revision 未漂移；漂移产生明确 `stale` 事实，不发起旧快照的上游请求。
@@ -52,11 +52,11 @@ outcome 按 `input_id + input_digest + fence_token` 提交，包含：
 
 提交只有在 lease/fence、input digest、target revision 和 policy revision 均有效时才能写入。重复的同 digest outcome 是幂等成功；过期 lease、fence 落后、配置漂移、删除/禁用和不同 digest 必须记录 stale/rejected，不能写回较新的状态。任意单 probe 失败只完成对应 item；token integrity 的两次非 200 只停止该 token probe 后续 round，不得取消其他 probe。
 
-SSE 在输入签发成功后先发送 `: connected`，每 10 秒发送 `: heartbeat`，随后发送 `progress` 和 `complete|error`。客户端断开、`EPIPE`、显式 stop 或 jobs shutdown 取消该 input context；已持久化的终态仍可通过管理 read API 读取，不能因下游断开而丢失 outcome。
+SSE 在输入签发成功后先发送 `: connected`，每 10 秒发送 `: heartbeat`，随后发送 `progress` 和 `complete|error`。客户端断开、`EPIPE`、显式 stop 或 gateway shutdown 取消该 input context；已持久化的终态仍可通过管理 read API 读取，不能因下游断开而丢失 outcome。
 
 ## 4. 表和 writer 边界
 
-Go J3b 在 PostgreSQL 与 SQLite 两种正式模式都必须成为以下对象的唯一 writer：
+Go gateway 内的 J3b 在 PostgreSQL 与 SQLite 两种正式模式都必须成为以下对象的唯一 writer：
 
 | 事实 | Go J3b owner | 顺序约束 |
 | --- | --- | --- |
@@ -67,7 +67,7 @@ Go J3b 在 PostgreSQL 与 SQLite 两种正式模式都必须成为以下对象�
 | `account_quality_enforcements` | quality projector | 只由完整已验证的 J3b evidence 驱动；`modelCheckUnverified` 不处罚 |
 | `account_quality_health_hourly` | health-sync projector/retry | outcome 已提交后投影；失败写 `pending_retry|failed`，不伪造 applied |
 
-J3c 保留 usage quality score、失败前置确认和它们的独立 queue/worker/state；J3b 不得通过共享 SQLite DB-service 或 Node writer 投影上述 J3b 表。SQLite 迁移前必须先把涉及这些表的 Node writer、worker IPC、read worker 分支完整替换为 Go SQLite Store 的唯一 writer；PostgreSQL runtime 也只能做只读 schema/permission preflight，DDL 由 maintenance 的显式加法 migration 承担。
+J3c 保留 usage quality score、失败前置确认和它们的独立 queue/worker/state；J3b 不得通过共享 SQLite DB-service、`jobs` 或 Node writer 投影上述 J3b 表。方案 A 的 J3b 事实固定迁入 `JUHE_AI_J3B_DATABASE_PATH` 指向的单一 Go-owned SQLite 文件，或 PostgreSQL `juhe_j3b` schema，由 gateway 内 store 单独持有；`account_quality_health_hourly` 与 health-sync retry source 同属该 J3b 存储，不再写 Node stats/dataset。J3c 只能通过只读 `J3bHealthReader` 消费已发布 health fact，不得打开 J3b writer。PostgreSQL runtime 也只能做只读 schema/permission preflight，DDL 由 maintenance 的显式加法 migration 承担；旧三库数据迁移、回放、cleanup consumer 下线和 rollback epoch 必须在 L2 证据中逐项完成。
 
 ## 5. 管理读模型和保留
 
@@ -77,7 +77,7 @@ J3c 保留 usage quality score、失败前置确认和它们的独立 queue/work
 
 ## 6. L2 实现门禁
 
-当前已落地的最小 Go L2 组件包括 `modelcheckinput`、`modelcheckdurable`、`modelcheckprofile`、`modelcheckprobe` 和 `modelcheckstore`：输入版本/identity/digest、SQLite/PostgreSQL durable input/claim/outcome、四协议请求响应解析、direct transport/retry、基础评分，以及 run/item/observation writer 均已建立。`modelcheckdurable` 的 SQLite 回归覆盖版本重放、input ID 复用拒绝、claim busy/过期接管、旧 fence 和 outcome 冲突；一次性 dev PostgreSQL scratch 已通过真实表上的 schema preflight、Issue/Load/Claim/Commit 和过期后的幂等 replay，数据库已删除并核验不存在。它们尚未接入 jobs runtime、管理 API/SSE、调度、业务 revision re-read/stale、质量投影或调度恢复，因此不构成 J3b 完整迁移，也不改变 Node 的 active owner。计划中的 PgBouncer 并发 terminal-fence smoke 仍未形成有效结果，保持未验证门禁。
+当前已落地的最小 Go L2 组件包括 `modelcheckinput`、`modelcheckdurable`、`modelcheckprofile`、`modelcheckprobe` 和 `modelcheckstore`：输入版本/identity/digest、SQLite/PostgreSQL durable input/claim/outcome、四协议请求响应解析、direct transport/retry、基础评分，以及 run/item/observation writer 均已建立。它们目前位于 jobs 的实现基线，方案 A 只允许将无 I/O 领域部分迁入 shared，并在 gateway 重建 I/O/store/runtime；不能直接 import jobs/internal 或启用 jobs host。既有回归不构成 J3b 完整迁移，也不改变 Node active owner。计划中的 PgBouncer 并发 terminal-fence smoke 仍未形成有效结果，保持未验证门禁。
 
 `modelcheckprobe` 现已具备单次 direct transport 和 `RunBasicProbe`：endpoint 只允许完整 HTTP(S) authority，禁止 query/fragment/userinfo 与 redirect；按协议拼接版本路径，严格限制响应大小，并把取消/超时/非 2xx 映射为可评分但不泄露原始正文的失败证据。该组合不持有 durable claim、不自行重试、不写数据库，后续由 Go executor 负责统一调度。
 
@@ -87,7 +87,7 @@ J3c 保留 usage quality score、失败前置确认和它们的独立 queue/work
 
 `modelcheckstore.ProjectOutcome` 已提供 Go-owned 的原子 dataset 投影边界：一个 running run 的全部 item 与终态摘要在同一事务提交；进程崩溃不会留下只写入部分 item 的 terminal run。终态重放必须逐项核对状态、分数、证据摘要和 run summary/quality decision，任何结果漂移均返回 `ErrProjectionConflict`；SQLite 单测与真实 PostgreSQL scratch（Node 只初始化隔离 schema，Go 直接写入）均已验证。该入口尚未由管理 listener、scheduler 或 quality projector 调用。
 
-开始 jobs runtime 前必须有：
+开始 gateway 内 J3b runtime 前必须有：
 
 1. Node request/response/SSE golden，含 `400/409/503`、stop、断开、EPIPE 和 heartbeat；
 2. PostgreSQL/SQLite schema contract、最小权限、input/outcome digest、lease/fence/CAS 与重复 replay 测试；

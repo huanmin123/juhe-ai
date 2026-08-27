@@ -2,7 +2,7 @@
 
 ## 当前 Go 项目边界
 
-- [Go 三项目架构基线](Go三项目架构基线.md)：固定 `gateway`、`jobs`、`maintenance` 三个独立 Go 模块的源码、部署、依赖、并发和定时迁移边界。F1/F2 已在 `jobs`，F3/F4 已在 `gateway`，J3a 代理延迟检测也已由 `jobs` 独占；新定时功能不得写入 Node worker 或 gateway。
+- [Go 三项目架构基线](Go三项目架构基线.md)：固定 `gateway`、`jobs`、`maintenance` 三个独立 Go 模块的源码、部署、依赖、并发和定时迁移边界。F1/F2 已在 `jobs`，F3/F4 已在 `gateway`，J3a 代理延迟检测也已由 `jobs` 独占；一般新定时功能不得写入 Node worker 或 gateway，J3b 的方案 A 单进程 owner 是明确例外。
 - [Go 开发手册](Go开发手册.md)：固定复用优先、标准库/成熟库选择、项目隔离、任务并发和完整迁移的日常实现准则。
 - [Go 后端架构基线](Go后端架构基线.md)：Go 技术、存储、并发和完整功能迁移的通用规则；与三项目边界冲突时，以三项目边界为准。
 - [后台任务迁移总设计与路线图](后台任务迁移总设计与路线图.md)：后台任务的完整迁移顺序、Go jobs 直连上游探活边界、PostgreSQL / SQLite 数据边界和切换门禁。
@@ -11,8 +11,10 @@
 - [J3a 代理延迟检测 Node-Go 深度对照报告](../reports/J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)：记录 Node 历史 oracle、Go 独占执行/投影与历史手动 adapter；现役 J3a 管理入口已改为 jobs 进程内 Go handler，独立 jobs 二进制部署、active-path-zero、生产切换仍未完成。
 - [J3a 代理延迟检测 Node-Go 深度对照计划](../plans/计划-20260822T140000000Z-J3a代理延迟检测Node-Go深度对照.md)：维护 Node 机制补缺、跨运行时门禁和主分支精确 staging allowlist。
 - [J3a 代理延迟检测 L3 PostgreSQL/PgBouncer 验收方案](J3a-代理延迟检测L3-PG验收方案.md)：2026-08-23 dev scratch 经 PgBouncer `6432` required smoke 与 Go business-result projector applied/stale、receipt、cursor、CAS/replay 已通过并清理；Node 子进程→Go handler manual 互操作已通过，独立 jobs 二进制、生产、active-path-zero、owner handoff 与 L4 仍未完成。
-- [J3b 模型检测完整迁移契约](J3b-模型检测完整迁移契约.md)：冻结模型检测的手动 JSON/SSE、三类周期 trigger、直接上游 probe、run/item/可信度事实与直接质量投影；当前仅完成 L1，已冻结 Go 在 PostgreSQL/SQLite 双模式下的唯一 writer 目标，具体输入/结果/schema 与 SQLite owner 实现仍是 L2 前门禁。
-- [J3b 模型检测 L2 输入、结果与存储契约](J3b-模型检测L2输入结果与存储契约.md)：冻结版本化 input/outcome、lease/fence/CAS、trust receipt、直接质量投影、J3c 排除边界和双模式唯一 writer 的实现门禁。
+- [J3b 模型检测完整迁移契约](J3b-模型检测完整迁移契约.md)：冻结模型检测的手动 JSON/SSE、三类周期 trigger、直接上游 probe、run/item/可信度事实与直接质量投影；方案 A 指定 gateway 为 PostgreSQL/SQLite 的单进程 J3b owner，具体实现仍是 L2 前门禁。
+- [Business SQLite 单 Owner L1 清单](BusinessSQLite单Owner-L1清单.md)：冻结 Business SQLite 全量 writer 事务组、Go capability/gap、J3b 专属物理存储、切换与回滚的实施前清单。
+- [Business SQLite owner manifest](BusinessSQLite-owner-manifest.json)：逐项列出 `DbServiceOperation` 的访问模式、物理文件、事务组、当前/目标 owner 和回滚/验证门；该清单仍需在源码与运行时审计中逐项闭合。
+- [J3b 模型检测 L2 输入、结果与存储契约](J3b-模型检测L2输入结果与存储契约.md)：冻结 gateway 进程内版本化 input/outcome、lease/fence/CAS、trust receipt、直接质量投影、J3c 排除边界和双模式唯一 writer 的实现门禁。
 - [J1 账号健康探活完整迁移契约](J1-账号健康探活完整迁移契约.md)：冻结账号健康探活与冷却复测的完整 owner、SQLite/PG 输入输出协议、直接上游探活、Gateway source fence、切换和归档边界。
 - [J2 余额刷新完整迁移契约](J2-余额刷新完整迁移契约.md)：冻结周期刷新、首次探测补偿、手动刷新、单 API Key、provider adapter、快照/CAS 与 SQLite/PG owner 边界；当前完成 L2 Go jobs、Node projector 与显式 Go-owner bridge，发布前门禁仍以契约为准。
 - [Go 三项目部署与验证计划](Go三项目部署与验证计划.md)：当前兼容部署、隔离开发验证、后续 jobs-only candidate 与生产 handover 的分层验收。
@@ -61,7 +63,7 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 11. **共享主目录发生意外分支或历史变更时立即停写审计。** 先只读记录 `status`、`HEAD`、本地 / 远端 `master`、reflog 和所有 worktree，再确认维护者文件归属；不得用 reset、stash、checkout 或删除文件“恢复现场”。如果污染提交已经进入本地 `master`，仍以该 `master` 为待同步事实合入 clean 迁移分支，同时用 merge-base、逐提交和三点 diff 证明迁移提交边界；未推送的污染历史不等于可以忽略，也不授权迁移任务改写共享历史。
 12. **迁移测试不得借 Node 初始化掩盖 Go schema 缺口。** `juhe-ai-maintenance schema-up` 必须能在隔离 fresh PostgreSQL 上独立完成当前 Goose catalog；遇到仍由 Node 拥有、尚未进入 Go catalog 的表时，只允许让加法 migration 在对象不存在时显式 no-op，或把完整对象迁入 Goose 并通过 owner 评审。禁止在 Go 验收脚本中先调用 Node schema 初始化、伪造 Goose ledger 或复用已有业务库来制造通过结果。
 13. **多 Agent 只按可独立验证的边界并行。** 主 Agent 先划定模块、文件 owner、输入、输出和验收门禁；只读审计和测试 Agent 可以共用权威迁移 worktree，写 Agent 默认使用各自独立分支 / worktree 交付可审计提交，只有主 Agent 明确授予互不重叠的文件 owner 时才可在权威 worktree 并行写入。主 Agent 独占权威分支的中心集成、提交、主线 merge、owner manifest 裁决和合回。子 Agent 不得进入共享主目录写文件，不得自行切换公共分支、合并、推送或改 owner manifest；两个写 Agent 不得同时修改同一文件或同一状态机。共享契约、schema、owner 清单和迁移文档由主 Agent 集中裁决。子 Agent 交付必须列出 Node 依据、改动文件、测试结果、未完成项和风险，主 Agent 仍须复查实际 diff，不能把子 Agent 的“完成”直接换算成迁移完成。
-14. **同步主线也要同步语义，不只同步 Git。** 每次 `master` 前进后，除完成 merge 和冲突裁决外，还要按受影响模块重新检查 Node 路由、service、repository、worker、配置、测试和部署入口；若 Node 新增或修正业务语义，必须更新对应 Go 实现、契约测试和迁移状态。事件循环、worker thread 或 IPC 的实现可以在证明替代契约等价后调整；SQLite 单写者是文件级正确性不变量，必须由 Go SQLite adapter、owner bridge 或完成 handoff 的独占 writer 保持，不能以“Go 写法不同”删除。
+14. **同步主线也要同步语义，不只同步 Git。** 每次 `master` 前进后，除完成 merge 和冲突裁决外，还要按受影响模块重新检查 Node 路由、service、repository、worker、配置、测试和部署入口；若 Node 新增或修正业务语义，必须更新对应 Go 实现、契约测试和迁移状态。事件循环、worker thread 或 IPC 的实现可以在证明替代契约等价后调整；SQLite 单写者是文件级正确性不变量，必须由 Go SQLite adapter、legacy owner bridge 或完成 handoff 的独占 writer 保持，不能以“Go 写法不同”删除。方案 A 的 J3b 只允许最后一种完整 handoff，禁止 bridge。
 
 推荐顺序固定为：只读检查共享 `master` -> 在独立 worktree 审计范围 -> 将最新 `master` merge 到迁移分支 -> 实现与验证 -> 再次检查 `master` 漂移 -> 必要时再次 merge 与复验 -> 在共享主目录干净且基线稳定时合回 `master` -> 从 `master` 复验并记录证据。任何一步发现异常都回到只读基线审计，不凭记忆继续执行。
 
@@ -194,5 +196,5 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 - 迁移期间，前端仍按 Vue 3 + TypeScript + Ant Design Vue 维护。
 - Go 迁移优先覆盖后端运行时；前端 API 调用契约要通过测试证明未缺失，但不因迁移重做前端信息架构。
 - “不向下兼容”指不为旧 Node 内部结构、旧 schema、旧 repository 或旧 IPC 保留运行时兼容分支；对当前产品公开契约和用户可见行为，迁移必须做到等价或在文档中明确记录新契约。
-- 迁移目标保留 SQLite 与 PostgreSQL/Redis 两种模式。Go 必须支持两种模式，SQLite 不是 Node 旧实现或离线导出来源的同义词；SQLite 共存期遵守文件单 writer / owner bridge，PostgreSQL/Redis 共存期遵守 job / table / consumer 单 owner。
+- 迁移目标保留 SQLite 与 PostgreSQL/Redis 两种模式。Go 必须支持两种模式，SQLite 不是 Node 旧实现或离线导出来源的同义词；SQLite 共存期遵守文件单 writer / legacy owner bridge，PostgreSQL/Redis 共存期遵守 job / table / consumer 单 owner。方案 A 的 J3b 不允许 owner bridge，必须通过 Gateway 的完整单 owner handoff。
 - 迁移中可在隔离环境对完整功能做验证，但生产只允许一个完整功能 owner；Go 接管后不得保留 Node fallback、bridge、双写或双 consumer。

@@ -8,9 +8,8 @@ import (
 	"time"
 )
 
-// RuntimeConfig is the explicit Go owner contract for J3b. Disabled releases
-// do not open either database or listener, so a binary upgrade cannot create a
-// second owner accidentally.
+// RuntimeConfig keeps the historical shape for the reusable J3b packages.
+// The jobs executable is fail-closed under solution A and cannot own J3b.
 type RuntimeConfig struct {
 	Enabled              bool
 	InstanceID           string
@@ -53,23 +52,8 @@ func LoadConfig(getenv func(string) string) (RuntimeConfig, error) {
 	cfg.BusinessDatabasePath = strings.TrimSpace(getenv("JUHE_AI_MODEL_CHECK_BUSINESS_DATABASE_PATH"))
 	cfg.JobsPostgresURL = strings.TrimSpace(getenv("JUHE_AI_MODEL_CHECK_POSTGRES_URL"))
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_MODEL_CHECK_BUSINESS_POSTGRES_URL"))
-	if cfg.StoreMode == "sqlite" && (cfg.JobsDatabasePath == "" || cfg.DatasetDatabasePath == "" || cfg.BusinessDatabasePath == "") {
-		return RuntimeConfig{}, errors.New("sqlite 模式必须同时配置 jobs、dataset 与 business 数据库路径")
-	}
-	if cfg.StoreMode == "postgres" && cfg.JobsPostgresURL == "" {
-		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_MODEL_CHECK_POSTGRES_URL")
-	}
-	if cfg.StoreMode == "postgres" && cfg.BusinessPostgresURL == "" {
-		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_MODEL_CHECK_BUSINESS_POSTGRES_URL")
-	}
 	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_MODEL_CHECK_CREDENTIAL_SECRET"))
-	if cfg.CredentialSecret == "" {
-		return RuntimeConfig{}, errors.New("JUHE_AI_MODEL_CHECK_CREDENTIAL_SECRET 是必填配置")
-	}
 	cfg.IdentitySecret = strings.TrimSpace(getenv("JUHE_AI_MODEL_CHECK_IDENTITY_SECRET"))
-	if cfg.IdentitySecret == "" {
-		return RuntimeConfig{}, errors.New("JUHE_AI_MODEL_CHECK_IDENTITY_SECRET 是必填配置")
-	}
 	cfg.ManagementAddress = strings.TrimSpace(getenv("JUHE_AI_MODEL_CHECK_MANAGEMENT_LISTEN_ADDRESS"))
 	if cfg.ManagementAddress == "" {
 		cfg.ManagementAddress = "127.0.0.1:3308"
@@ -79,18 +63,33 @@ func LoadConfig(getenv func(string) string) (RuntimeConfig, error) {
 		cfg.ProbeSetVersion = "multi-provider-model-check-v4-gpt56-preview"
 	}
 	cfg.Deadline = duration(getenv("JUHE_AI_MODEL_CHECK_DEADLINE"), 15*time.Minute)
+	cfg.Heartbeat = duration(getenv("JUHE_AI_MODEL_CHECK_HEARTBEAT"), 10*time.Second)
+	cfg.RetryAttempts = integer(getenv("JUHE_AI_MODEL_CHECK_RETRY_ATTEMPTS"), 2)
+	if cfg.StoreMode == "sqlite" {
+		return RuntimeConfig{}, errors.New("J3b 不允许在 juhe-ai-jobs 中启用 sqlite：方案 A 的唯一运行时 owner 是 juhe-ai-gateway")
+	}
+	if cfg.JobsPostgresURL == "" {
+		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_MODEL_CHECK_POSTGRES_URL")
+	}
+	if cfg.BusinessPostgresURL == "" {
+		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_MODEL_CHECK_BUSINESS_POSTGRES_URL")
+	}
+	if cfg.CredentialSecret == "" {
+		return RuntimeConfig{}, errors.New("JUHE_AI_MODEL_CHECK_CREDENTIAL_SECRET 是必填配置")
+	}
+	if cfg.IdentitySecret == "" {
+		return RuntimeConfig{}, errors.New("JUHE_AI_MODEL_CHECK_IDENTITY_SECRET 是必填配置")
+	}
 	if cfg.Deadline <= 0 {
 		return RuntimeConfig{}, errors.New("JUHE_AI_MODEL_CHECK_DEADLINE 必须为正 duration")
 	}
-	cfg.Heartbeat = duration(getenv("JUHE_AI_MODEL_CHECK_HEARTBEAT"), 10*time.Second)
 	if cfg.Heartbeat <= 0 {
 		return RuntimeConfig{}, errors.New("JUHE_AI_MODEL_CHECK_HEARTBEAT 必须为正 duration")
 	}
-	cfg.RetryAttempts = integer(getenv("JUHE_AI_MODEL_CHECK_RETRY_ATTEMPTS"), 2)
 	if cfg.RetryAttempts < 0 || cfg.RetryAttempts > 10 {
 		return RuntimeConfig{}, errors.New("JUHE_AI_MODEL_CHECK_RETRY_ATTEMPTS 必须在 0..10")
 	}
-	return cfg, nil
+	return RuntimeConfig{}, errors.New("J3b 不允许在 juhe-ai-jobs 中启用 postgres：方案 A 的唯一运行时 owner 是 juhe-ai-gateway")
 }
 
 func duration(value string, fallback time.Duration) time.Duration {
@@ -103,6 +102,7 @@ func duration(value string, fallback time.Duration) time.Duration {
 	}
 	return parsed
 }
+
 func integer(value string, fallback int) int {
 	if strings.TrimSpace(value) == "" {
 		return fallback

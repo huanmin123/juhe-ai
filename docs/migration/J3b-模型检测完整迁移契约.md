@@ -5,7 +5,7 @@
 
 ## 1. 完整功能边界
 
-J3b 是“模型检测与其直接质量结果投影”，不是一个独立的 HTTP probe。一次完整接管必须由 Go `jobs` 直接承担以下所有部分：
+J3b 是“模型检测与其直接质量结果投影”，不是一个独立的 HTTP probe。一次完整接管必须由单一 Go J3b owner 直接承担以下所有部分：
 
 - 管理端 `POST /__aisys__/api/model-checks/run` 与 `POST /__aisys__/api/model-checks/run/stream` 的鉴权、参数验证、JSON/SSE 响应、客户端取消、活动任务冲突和进度事件；
 - `manual`、`scheduled`、`quality_recovery` 三种 trigger 的输入快照、资格判定、账号/协议 profile/模型映射解析、凭据解密、直接上游请求、取消和错误分类；
@@ -22,12 +22,12 @@ J3b 是“模型检测与其直接质量结果投影”，不是一个独立的 
 
 | 域 | 当前 Node 事实 | Go L2/L4 要求 |
 | --- | --- | --- |
-| HTTP 与 SSE | `backend/src/modules/model-checks/model-checks.routes.ts` 提供 JSON、SSE、`connected`、10 秒 heartbeat、progress、complete/error、停止与 active-run 查询 | Go jobs 管理 listener 直接提供等价路径、管理员鉴权和 SSE；不经过 Node HTTP/IPC 转发 |
+| HTTP 与 SSE | `backend/src/modules/model-checks/model-checks.routes.ts` 提供 JSON、SSE、`connected`、10 秒 heartbeat、progress、complete/error、停止与 active-run 查询 | Go J3b owner 的管理 listener 直接提供等价路径、管理员鉴权和 SSE；不经过 Node HTTP/IPC 转发 |
 | 主编排 | `model-checks.service.ts` 解析 target、创建 run、执行 probe、完成 run、生成质量决策 | 以 Go 领域服务完整替代；不得逐行翻译或调用 Node service |
 | 解析/协议与 probe | `model-checks.{profiles,payloads,probes,evaluation,parsing,response-parsing,provider-capabilities,gateway-probe,probe-retry}.ts` | 逐项固定请求、响应、重试、评分和包装 HTTP/上游 HTTP 的差异 |
 | 高级 probe | `model-checks-{token-integrity,token-probes,identity-features,observation-security,gpt56-juice,trust-report}.ts` | 不能因 Go 首版省略 token/identity/trust 结果；每项需 golden 或 Node oracle |
 | 手动生命周期 | `model-checks-active-runs.ts` 与 `diagnostic-task-limiter.ts` | Go 以请求/账号粒度的可取消活动 run 管理替代；不继承 Node 单事件循环低并发闸门 |
-| 周期任务 | `background-jobs.ts`、`model-quality-scheduled-check.service.ts`、background registry | Go 独占三类 scheduler、lease、恢复和 health；Node scheduler/worker registry 路径清零 |
+| 周期任务 | `background-jobs.ts`、`model-quality-scheduled-check.service.ts`、background registry | Go J3b owner 独占三类 scheduler、lease、恢复和 health；Node scheduler/worker registry 路径清零 |
 | 业务写入 | `model-checks.repository.ts`、`model-trust.repository.ts`、`model-quality*.repository.ts`、`background-dataset-writer.ts`、DB-service 命令 | Go 直接在 PostgreSQL 事务中完成 version/fence/CAS；Go 不调用 Node DB-service、IPC 或 HTTP |
 | 配置与读 API | `model-checks.routes.ts` 的 quality policy/schedule/run/read 路由及其调用的 repository | Go 直接管理同一 API 资源；Node 不保留 adapter、fallback reader 或 writer |
 | 启停、指标与测试 | `server.ts`、`worker.ts`、background registry、相关 model-check regression | Go health/metrics/Graceful shutdown 接管；Node 专属 runtime 与回归入口归档 |
@@ -44,28 +44,28 @@ J3b 是“模型检测与其直接质量结果投影”，不是一个独立的 
 
 ## 4. Go 目标结构与禁止边界
 
-J3b 目标 owner 是 `juhe-ai-jobs`，并且必须在 PostgreSQL 与 SQLite 两种正式模式中分别形成唯一 writer。管理 listener、runner、scheduler、input/outcome store、业务 projector、运行 health 和 audit append 都在该进程内完成。管理读 API 也由 Go handler 直接提供，入口路由通过 GitOps 精确分流至 jobs；这是 Go 三项目基线定义的“完整后台功能受认证管理命令入口”例外，不保留 Node→Go manual adapter，也不把它扩展成通用业务代理。
+方案 A 下，J3b 目标 owner 是 `juhe-ai-gateway`。无论 PostgreSQL 或 SQLite，管理 listener、runner、scheduler、input/outcome store、业务 projector、运行 health 和 audit append 都由该进程内的同一 J3b 组件完成。管理读 API 也由其 Go handler 直接提供，入口路由通过 GitOps 精确分流至 gateway；这是完整后台功能的受认证管理命令入口，不把 gateway 扩展成 Node 的通用代理。
 
-Go 只可直接请求目标上游和 PostgreSQL/Redis 等明确依赖。严禁 Go 调用 Node、Node DB-service、Node IPC、Node queue、Node HTTP、或另一个 Go 服务以完成 J3b。没有明确定义 input identity、config revision、lease fence、outcome digest、CAS 和重放语义时，不得开始实现或发布 scheduler。
+J3b owner 只可直接请求目标上游和 PostgreSQL/Redis 等明确依赖。严禁 J3b 调用 Node、Node DB-service、Node IPC、Node queue、Node HTTP 或另一个 Go 服务。`jobs` 可以复用无副作用的 J3b Go 包，但不得作为 J3b runtime、scheduler、Business SQLite writer 或 projector；也不得以 HTTP、IPC、queue、RPC 或 typed command 调用 gateway。没有明确定义 input identity、config revision、lease fence、outcome digest、CAS 和重放语义时，不得开始实现或发布 scheduler。
 
-当前 SQLite business DB 仍由 Node 单 writer 持有，尚未存在可验证的 Go 直接业务写入 owner。按双模式完整迁移规则，J3b L2 必须让 Go 接管所有受影响 SQLite business writer 与 schema 生命周期，并在每个 SQLite 文件建立唯一 writer；只做 PostgreSQL 接管并保留 SQLite Node owner 只能作为显式的临时范围缩减，不能标记 J3b 已接管。当前 `backend-go/projects/jobs` 也没有历史 W7 对应的 worker/store 可直接接管；必须重新建立当前架构的输入、outcome、schema contract 和实现。该决策已冻结为 Go 的双模式完整 owner，未完成前不得将 J3b 标记为 L2/L3 已接管。
+当前 SQLite business DB 仍由 Node 单 writer 持有，尚未存在可验证的 Go 直接业务写入 owner。按双模式完整迁移规则，J3b L2 必须先由 gateway 接管所有受影响 SQLite business writer 与 schema 生命周期，并在每个 SQLite 文件建立唯一 writer；只做 PostgreSQL 接管并保留 SQLite Node owner 只能作为显式的临时范围缩减，不能标记 J3b 已接管。当前 `backend-go/projects/jobs` 的 J3b 基线只是待复用的实现材料，不是方案 A 的运行时 owner；必须以当前架构重新建立输入、outcome、schema contract 和 gateway 内进程实现。未完成前不得将 J3b 标记为 L2/L3 已接管。
 
 ## 5. L2 前必须冻结的输入/结果协议
 
 - 输入：request ID、trigger、目标/比较账号及其 immutable config revision、provider protocol profile、model 映射、credential envelope、probe profile、policy revision、observed time、deadline 和发起人授权快照。
 - 结果：稳定 outcome ID/digest、run/item/observation、wrapped HTTP status 与 upstream status、评分/可信度、quality decision、health-sync 状态、error class、started/finished/observed time。
 - 一致性：每个 input 只签发一次；相同 identity+digest 的 outcome 重放幂等；不一致重放、过期 lease、删除/禁用账号、config/policy revision 漂移和 CAS 冲突必须 fail-closed 或记录 stale，不得覆写新状态。
-- PostgreSQL：jobs 自有表与业务结果表均使用最小权限、短事务、`statement_timeout`/`lock_timeout`；运行期不执行 DDL。Go schema/权限预检不通过时 listener/scheduler fail-closed。
+- PostgreSQL：J3b owner 自有表与业务结果表均使用最小权限、短事务、`statement_timeout`/`lock_timeout`；运行期不执行 DDL。Go schema/权限预检不通过时 listener/scheduler fail-closed。
 
 ## 6. 验收与 L4
 
-L2/L3 至少覆盖：所有 Node profile/probe 的 golden 对照；JSON 与 SSE 成功、拒绝、取消、客户端断开和 EPIPE；manual/scheduled/recovery/health-sync；凭据不进入 jobs outcome、日志或审计；lease busy、重复 input/outcome、revision 漂移、CAS stale、上游/代理/timeout/partial failure；PostgreSQL/PgBouncer 真实闭环、并发/race/vet；以及直接 Go 管理入口的管理 API readback。
+L2/L3 至少覆盖：所有 Node profile/probe 的 golden 对照；JSON 与 SSE 成功、拒绝、取消、客户端断开和 EPIPE；manual/scheduled/recovery/health-sync；凭据不进入 J3b outcome、日志或审计；lease busy、重复 input/outcome、revision 漂移、CAS stale、上游/代理/timeout/partial failure；PostgreSQL/PgBouncer 真实闭环、并发/race/vet；以及直接 Go 管理入口的管理 API readback。
 
-L4 还必须证明：Node route、SSE service、active-run、scheduler、worker/IPC/DB-service writer、retention/health retry、启动项、指标与专属测试已 active-path-zero；完整 Node 文件清单、SHA-256、接管/回滚提交和恢复顺序写入 backup manifest；Jenkins 与 GitOps 在同一 release-state 原子切换 Go jobs 镜像、能力开关和精确路由；生产 owner handoff、重启、回滚与 freshness 证据均已记录。未满足任一项时只能报告“L1/L2 实现中”，不能删除 Node 功能或宣称接管。
+L4 还必须证明：Node route、SSE service、active-run、scheduler、worker/IPC/DB-service writer、retention/health retry、启动项、指标与专属测试已 active-path-zero；完整 Node 文件清单、SHA-256、接管/回滚提交和恢复顺序写入 backup manifest；Jenkins 与 GitOps 在同一 release-state 原子切换 Go gateway 镜像、能力开关和精确路由；生产 owner handoff、重启、回滚与 freshness 证据均已记录。未满足任一项时只能报告“L1/L2 实现中”，不能删除 Node 功能或宣称接管。
 
 ## 7. 当前结论
 
-J3b 是下一项可开始 L2 设计的候选，但尚不具备删除 Node 的条件。架构已冻结为：`jobs` 进程内直接承受认证管理命令与 SSE，且 Go 在 PostgreSQL/SQLite 两种正式模式都成为唯一 J3b writer；不允许 Node bridge、Go→Node 调用或 SQLite 双 writer。下一步必须把现有模型检测的直接质量投影与 J3c 的统计/失败前置检查严格切开，再形成可执行的 Go input/outcome、schema 和 SQLite owner 契约。
+J3b 是下一项可开始 L2 设计的候选，但尚不具备删除 Node 的条件。方案 A 架构已冻结为：`gateway` 进程内直接承受认证管理命令、SSE、scheduler 与业务投影，且 Go 在 PostgreSQL/SQLite 两种正式模式都成为唯一 J3b writer；不允许 Node bridge、Go→Node 调用、Go→Go J3b 调用或 SQLite 双 writer。下一步必须把现有模型检测的直接质量投影与 J3c 的统计/失败前置检查严格切开，再形成可执行的 Go input/outcome、schema 和 SQLite owner 契约。
 
 ## 8. 当前 L2 增量
 
@@ -73,11 +73,23 @@ J3b 是下一项可开始 L2 设计的候选，但尚不具备删除 Node 的条
 
 `backend-go/projects/jobs/internal/modelcheckinput` 已定义版本化、规范化的 `IssuedInput` 纯领域结构。它固定账号/config/profile/policy revision、endpoint fingerprint、credential envelope alias、model/profile/trigger/deadline 与 SHA-256 digest；payload 前会重算 digest，配置篡改会 fail-closed。该结构没有原始 API Key、token、cookie、代理密码或 response body 字段。`InputVersion` 由 durable Store 在同一 identity 的事务内分配并进入 digest，`IdentityKey` 仅由 system account、target、model/profile、trigger/schedule 和 comparison identity 派生，不包含凭据、时间或响应。
 
-`backend-go/projects/jobs/internal/modelcheckdurable` 已实现这四张 `juhe_jobs` 表对应的 SQLite/PostgreSQL input、claim 和 outcome 事务边界：同一 `input_id` 只有字节等价的 immutable input 才能重放；同一 logical identity 的新快照分配下一个单调版本；执行 claim 以 owner/token/outcome 与到期时间维护单调 fence；outcome 必须同时匹配 input digest、claim token、owner、outcome ID 与 fence，旧 fence、过期 lease、不同 payload 重放一律拒绝。SQLite 回归已覆盖签发、重放、版本、busy/takeover、stale fence 和 outcome replay；一次性 dev PostgreSQL scratch 已通过真实表上的 schema preflight、Issue/Load、两个并发 owner 的一成功一 `ErrBusy` claim、Commit 和过期后的幂等 replay，随后数据库已删除并核验不存在。本包尚未做业务 revision re-read/stale、run/item/observation 写入衔接、质量投影或 runtime 接线，不能据此启用 J3b 或归档 Node。
+`backend-go/projects/jobs/internal/modelcheckdurable` 已实现 input、claim 和 outcome 事务边界，作为待迁移的纯实现材料；Gateway `internal/modelcheckowner.Store` 已新增只读 schema preflight，固定 J3b SQLite 单文件/PostgreSQL `juhe_j3b` 的物理入口，运行期不执行 DDL。相同 `input_id` 只有字节等价 immutable input 才能重放；claim/outcome 仍必须匹配 input digest、owner、outcome ID 和 fence。现有 jobs 包尚未迁入 Gateway 的业务 revision re-read、run/item/observation writer、质量投影或 runtime 接线，不能据此启用 J3b 或归档 Node。
 
-`backend-go/shared/contracts` 与 `backend-go/projects/maintenance/internal/j3bmodelcheck` 已冻结 J3b 独立 `juhe_jobs` schema contract 及一次性 bootstrap 命令。表、列、主键/唯一约束和游标/target 索引均由共享 contract 描述；bootstrap 只在显式 `--check-j3b-model-check-postgres` 或 `--apply-j3b-model-check-postgres` 下运行，jobs runtime 后续只做只读 readiness。当前没有在开发主库或生产执行该 bootstrap；真实 scratch smoke 需另行完成并清理后才能作为环境证据。
+Gateway `internal/modelcheckowner` 现已增加不可变 input 记录边界：payload 先规范化并计算 SHA-256，`input_id` 重放要求摘要和内容一致，不同内容复用 ID 会 fail-closed；写入使用单事务并保留 identity/version/config/policy/trigger/expiry 字段。该层仍是库级能力，未接入 listener、scheduler 或 Node 路径。
 
-`backend-go/projects/jobs/internal/modelcheckstore` 已建立 `model_check_runs`、`model_check_items`、`model_check_observations` 的 Go typed writer 基线：SQLite 显式建表，PostgreSQL 只做 `juhe_dataset` 三表读权限/列和必需索引契约预检；run 终态后拒绝追加和回退，JSON 字段仅接受有效 JSON。SQLite 建表索引与 Node dataset schema 的 run/item/observation 查询、retry 与 aggregation 索引同名对齐，缺任一必需索引时两种模式均 fail-closed。PostgreSQL 的追加和终结都先锁定同一 run 行，因而 terminal 与 item/observation 追加不能并发穿透；SQLite 保持单写者事务。`ProjectOutcome` 将同一 run 的全部 item 和终态摘要合并为单个事务，崩溃不会留下部分 item 的 terminal run；只有完整相同的终态 replay 才可幂等通过，任何 item 或摘要漂移均 fail-closed。它不调用 Node、Node DB-service、IPC 或 HTTP。隔离 dev scratch 已验证 PostgreSQL schema preflight 和完整 writer 生命周期，并在结束后清零临时数据库、角色与 PgBouncer 认证；本轮再以 dev PostgreSQL 验证严格索引 preflight、writer lifecycle、concurrent terminal fence，以及 Node 初始化的隔离 schema 上 Go atomic projector 的 idempotent/conflict 闭环，测试 run 会清理。该包仍未接入 runtime，不能据此启用 J3b、删除 Node 或宣称跨运行时完整等价。后续必须继续完成版本化 input/outcome digest、lease/fence/CAS、质量投影、管理 JSON/SSE 和调度恢复门禁。
+Gateway `internal/modelcheckowner` 现已增加 run/item/observation 持久化边界：只有 running run 可追加检测项和 observation，终态 projection 在同一事务内写入全部 item 与终态摘要；相同终态可幂等重放，状态、分数、摘要或 item 集合漂移会拒绝。该实现仍未接入管理 listener、真实 probe runtime、quality decision、scheduler 或 health retry，不能据此启用 J3b。
+
+Gateway `internal/modelcheckowner` 现已增加 claim/outcome durable fence：input 过期或活动租约竞争会拒绝，租约接管时 fence 严格递增；旧 owner 的 release/commit 会被拒绝；相同 outcome digest 可重放，内容漂移会冲突。该边界仍未由 Gateway runtime 调用，不能替代完整 scheduler、probe 和恢复验证。
+
+Gateway 已建立独立的 `modelcheckactive` 与 `modelcheckowner.HTTPHandler` 边界：进程内按 system-account 防重复运行、停止和释放；HTTP 路径覆盖 `/run`、`/run/stream`、`/run/active`、`/run/stop`、`/runs` 及详情读取，SSE 发送 connected/progress/complete/error，活动冲突返回 409 和 `Retry-After`。handler 只接受注入的认证、构建器和 runtime service，未接线时返回 503；它不调用 jobs、Node 或其他进程，当前也未注册到 Gateway 主 listener。
+
+Gateway 已开始迁入纯领域 profile catalog，`internal/modelcheckprofile` 与 Node golden 的默认模型、协议 profile、paired model 和 endpoint family 规则保持独立副本，未引入 `jobs/internal` 依赖。该包目前只作为后续 probe/runtime relocation 的值对象基础，尚未意味着 J3b runtime 已切换。
+
+Gateway 已将 `Runtime` 接入 `RunService` 契约：在注入完整 target resolver 后可执行 `IssueInput → CreateRun → Claim → direct probe → CommitOutcome → ProjectOutcome`，并提供按 system-account 的 run 列表/详情读取。隔离 SQLite 的成功闭环和失败终态均已回归；主进程仍在缺少 Business source、真实认证和完整 probe/trust 聚合时 fail-closed，不注册 J3b listener。
+
+`backend-go/shared/contracts` 与 `backend-go/projects/maintenance/internal/j3bmodelcheck` 已冻结 J3b 独立 `juhe_j3b` schema contract 及一次性 bootstrap 命令。表、列、主键/唯一约束和游标/target 索引均由共享 contract 描述；bootstrap 只在显式 `--check-j3b-model-check-postgres` 或 `--apply-j3b-model-check-postgres` 下运行，Gateway runtime 后续只做只读 readiness。当前没有在开发主库或生产执行该 bootstrap；真实 scratch smoke 需另行完成并清理后才能作为环境证据。
+
+`backend-go/projects/jobs/internal/modelcheckstore` 仍保留 `model_check_runs`、`model_check_items`、`model_check_observations` 的 Go typed writer 作为迁移材料：SQLite 显式建表，PostgreSQL 仅对旧 `juhe_dataset` 三表做契约预检；按方案 A，jobs 配置已对 SQLite/PostgreSQL J3b 一律 fail-closed，该包不得接入 jobs 常驻 runtime 或形成第二 writer。方案 A 的实际目标是 Gateway 的 `juhe_j3b` 专属存储，维护命令现在对 input/outcome、run/item/observation 和 health 表统一执行 schema/索引预检与显式 bootstrap；Gateway runtime 仍只做只读 readiness。原有 run 终态 fence、原子 item/observation 投影和 replay 语义继续作为迁移参考，但尚未接入 Gateway runtime、管理 API/SSE、retry/调度或质量 projector，不能据此启用 J3b、删除 Node 或宣称跨运行时完整等价。
 
 `backend-go/projects/jobs/internal/modelcheckprobe` 已接管四种协议的基础 capability request 构造：OpenAI Responses、OpenAI Chat、Anthropic Messages 与 Gemini native。它生成不含凭据的不可变 JSON bytes，并保留 Node 的路径、短探针最低 token、Anthropic 不发送通用 `temperature`、Gemini `?alt=sse` 规则；它不发网。后续 executor 必须直接使用此包，不能重新在 Node 或另一个 Go 服务构造 payload。
 
@@ -105,10 +117,86 @@ J3b 是下一项可开始 L2 设计的候选，但尚不具备删除 Node 的条
 
 `backend-go/projects/jobs/internal/modelcheckapp` 已将 J3b 的 Go runtime、`/run` JSON/SSE、active/stop、`/runs` 读接口、鉴权、目标/策略冻结组装到 `juhe-ai-jobs`。配置关闭时不打开 J3b 资源；启用时启动独立 management listener，并把 `modelCheckEnabled/modelCheckReady` 纳入 jobs health。该接线仍不代表完整接管：质量 policy/schedule/options 管理接口、三类 scheduler、质量/health projector、SQLite 唯一业务 writer、完整 observation/trust aggregation、GitOps readiness/回滚证据和 Node active-path-zero 尚未完成，因此 Node 仍不能删除或归档。
 
+SQLite 管理 listener 当前必须 fail-closed：Node 仍是共享 business SQLite 文件的唯一 writer，而 Go 管理鉴权与 Node 一致，会在会话超过一分钟未见时更新 `system_sessions.last_seen_at`；模型检测 `POST` 还是 Node system API 的 write/touch 会话路径。将 Go 改成只读验证并取消 session touch 不与该可观察会话契约等价，也不能使后续质量处罚、恢复 lease 或 health-sync 写入安全。故 `JUHE_AI_MODEL_CHECK_ENABLED=true` 且 `JUHE_AI_MODEL_CHECK_STORE=sqlite` 当前被 Go 配置拒绝；这是共存期保护，不是 SQLite 双模式接管完成或永久能力删除。共享 `system_sessions` 和 business SQLite file writer 的完整 owner handoff 超出 J3b，必须在独立范围中完成并有 Node active-path-zero 证据后，才能重新设计 SQLite owner。
+
+J3b health-sync 也暂不接线：Node 当前把已形成的模型质量失败写入 `account_quality_health_hourly`，并以失败 run 的 dataset fact 作重试来源；该统计写入不能借用、替换或提前接管 J3c 的 usage 统计刷新和失败前置确认 writer。Go runtime 目前仍缺 Node 等价的 observation、trust aggregation、distribution/cross-model 与 GPT-5.6 Juice evidence，`Evidence.Formed=false` 是有意的 fail-closed 状态。没有这些事实，按 score 推断处罚、恢复 passed 或 health-sync 都会改变可观察业务结果；后续必须由用户明确 J3b health output 的数据 owner、与 J3c 的表/worker 边界及验证范围，才可形成新的 projector/scheduler 契约。
+
 `backend-go/projects/jobs/internal/modelchecksource` 与 `modelcheckresolver` 已把 J3b 的业务候选冻结和执行解析拆开：前者复核账号状态、协议 profile、endpoint mode、账户模型限制与启用 mapping，并生成不含 endpoint、密文或代理值的 durable account snapshot；后者只消费该 snapshot 对应的内存加密执行材料，在 Go 进程内按协议构造认证头和显式代理 client。executor 的 resolver 现在接收完整 `IssuedInput + AccountSnapshot`，而非仅 account ID/config revision；因此重启重放仍能复核 system-account scope、原始请求模型、映射模型、profile revision、endpoint fingerprint、credential reference 与 proxy version，不能依赖前一次 HTTP 请求的进程内缓存。API Key、OAuth、Gemini quota project、profile/config revision 都有回归；quick 只执行核心 suite，full 的 token/identity 仅属于目标账户且发生在 target core suite 后、trusted comparison suite 前。
 
 `modelchecksource.PostgresReader` 已开始承担真实 Go 业务读取：在一个 `REPEATABLE READ` / `READ ONLY` 事务中，以 `systemAccountID + accountID` 作为 SQL scope 读取逻辑账户、授权实例的有效物理源、账户/分组授权、启用 binding、protocol profile、模型限制/mapping 与有效 proxy；凭据和 proxy password 只在本进程解封装为内存 execution snapshot，durable input 只保存 HMAC/摘要身份。它不会调用 Node DB-service、IPC 或 HTTP；2026-08-27 已使用 dev PostgreSQL 的应用连接完成零行 schema/grant 合同预检。相同语义的 `SQLiteReader` 使用 `mode=ro + query_only` 读取当前 Node business SQLite，并已有 owner-account fixture 的 snapshot/redaction/replay 回归；它仍是 reader，不触碰 Node 当前 SQLite writer。两者都尚未挂入 jobs main 或管理 handler，跨 endpoint-family 的 model mapping 也尚未具备 Go 直接协议转换，不能静默按错误协议请求上游。以上缺口连同真实认证、质量投影和 scheduler 未完成前，Node 仍是 J3b owner，禁止归档其 route/scheduler/writer。
 
 本轮补入 `modelcheckcommand` 与 `modelcheckpolicy`：管理命令构建器先以 Go source reader 冻结目标和可选可信对比账户，再读取并冻结同一 system-account 的有效质量策略，才生成 runtime request；目标名称、资源所有者、分组、profile、策略版本和探针版本均进入 run/input。`PolicySnapshot` 已升级为包含 profile、手动处置开关、阈值、动作和恢复周期的完整值对象，digest 由 Go 对规范 JSON 计算且在 input 签发/重放时复核，不能以任意外部 digest 绕过。`modelcheckpolicy.Reader` 对缺省 policy 使用与 Node 相同的 quick/70/fallback/10-minute 默认值，并可从 PostgreSQL 或 SQLite 业务表以事务级只读方式冻结显式 policy。普通检测的账号可用性已收紧为 Node `includeUnavailable` 域：仅 `active`、`temporary_unavailable`、`rate_limited` 且可调度、未过期；`pending_test` 不得执行，`quality_isolated` 仅可由 `quality_recovery` 请求使用。PostgreSQL 候选 SQL 也在只读 readiness 时经 `EXPLAIN` 规划，避免首个管理请求才发现 schema/type drift。以上仍未挂入 runtime listener、真实认证、scheduler 或质量 writer，不能改变 Node owner。
 
-同一 `modelcheckprobe` 包还解析四协议 JSON/SSE 的 model、output、usage 与 error envelope，HTTP `200` 但包含协议错误时不会被标为成功。它只保留评分所需字段，不保存原始 response body；structured evidence 仅保留 `status/value`，usage evidence 仅保留八个数字 token 字段，不能把上游额外 JSON 写入 outcome。Node 的多行 `data:`/EOF frame、Anthropic delta、OpenAI stream failure、Gemini error 已由 Go 回归覆盖。该包现已实现并用 Node 的请求失败评分向量核对基础 `responses_basic`、stream、structured output、tool calling 与 usage-shape 的 item 状态、分数、分母、模型不匹配和证据不足语义；行为探针、token integrity 固定矩阵/统计判定、long-context marker 生成/needle 评分，以及七类 identity canary/八维特征向量也已形成可单测的 Go 组件。单次 direct transport 已由同包实现；stability、distribution、cross-model 与 trust/quality 汇总、durable observation/runtime 接线仍未迁入。
+同一 `modelcheckprobe` 包还解析四协议 JSON/SSE 的 model、output、usage 与 error envelope，HTTP `200` 但包含协议错误时不会被标为成功。它只保留评分所需字段，不保存原始 response body；structured evidence 仅保留 `status/value`，usage evidence 仅保留八个数字 token 字段，不能把上游额外 JSON 写入 outcome。Node 的多行 `data:`/EOF frame、Anthropic delta、OpenAI stream failure、Gemini error 已由 Go 回归覆盖。Gateway 现已迁入 structured/tool/usage/stability 的纯评估与 suite 执行，并将 core-suite item 与 `partial` observation receipt 写入 Gateway 专属 J3b store；full profile 现执行行为探针和七类 identity canary，并只保留计数/脱敏摘要。token integrity 与 long-context 也已有 Gateway 纯评估器；在 tokenizer/model-limit snapshot 尚未接线时，suite 显式写入 `skipped` evidence，不伪造成功。`EvidenceAggregate` 严格要求 identity、token、stability、distribution、cross-model、Juice、usage、behavior、long-context 全部形成，缺失或 partial 时输出 `evidenceFormed=false`，禁止 enforcement/recovery/health 写入。distribution/cross-model/Juice 与 trust projector 仍未接入 Gateway runtime。
+
+## 9. 方案 A：Business SQLite 单 owner 前置契约（L1）
+
+> 本节是 J3b 进入 L2 前必须完成的独立前置契约，不是 J3b 的 L2 实现、发布或切换授权。当前 Node `db-service` 仍是共享 Business SQLite 物理文件的唯一 writer；本节没有改变任何运行时 owner，也没有授权启动服务、执行数据库变更或归档 Node。
+
+### 9.1 前置目标与范围
+
+方案 A 的目标是先完成共享 Business SQLite 文件的完整 owner handoff，令 Go `gateway` 成为该文件的唯一运行时 writer，再让 J3b 在该既成边界内取得自己的完整 SQLite owner。不能把 `system_sessions` 的局部 touch、J3b 质量写入、单个 HTTP 路由或一张表的 Go 基线当作 handoff 完成。
+
+该前置范围包括 schema/seed、管理 mutation、认证与 session lifecycle、DB-service command、后台 cleanup/lease/outbox 及其跨库顺序。`dataset`、stats、chat usage 等不因位于其他物理文件而成为本文件 writer；但涉及 Business SQLite 删除、lease、outbox 或投影的跨库事务顺序仍须在对应批次中验证。J3b 和 J3c 仍是两个独立功能 owner，不能以“后台任务”名义合成一个通用 writer。
+
+### 9.1.1 可追溯写者与能力清单
+
+下表是进入 B1 实施前的最小追踪索引；它不是“类别承诺”，每一行都必须在实施阶段补齐逐命令、逐路径、逐表的 manifest，并以源码扫描和运行时审计闭环。当前列出的目标 owner 是方案 A 的目标，不代表已经完成接管。
+
+| 当前写者/能力 | 可核验路径或命令域 | 主要物理表/文件 | 当前 owner | 目标 owner | 处理方式与门禁 |
+| --- | --- | --- | --- | --- | --- |
+| Business schema/seed | `backend/src/storage/database.ts`、`business-schema.ts`、`seed-defaults.ts` | Business SQLite 全部业务表 | Node `db-service` | `maintenance`（离线）+ `gateway`（运行） | 先做 schema/seed manifest、幂等与回滚；runtime 禁止 DDL |
+| 管理 mutation | `backend/src/modules/system-api/**`、`storage/*repository.ts` | accounts、groups、route strategies、API keys、providers、settings、authorization、proxy、announcements | Node `db-service` | Go `gateway` | 按事务组迁移完整 API；Node 路由与 DB-service command active-path-zero |
+| 认证与 session | `auth.routes.ts`、`auth.middleware.ts`、`system-accounts.repository.ts` | system_accounts、system_sessions | Node `db-service` | Go `gateway` | 保留 login/touch/logout/revoke/password-change 语义；禁止只迁 touch |
+| DB-service runtime mutation | `db-service-types.ts`、`db-service-handlers.ts`、`db-service-operation-access-mode.ts` | accounts 状态、OAuth、key runtime、circuit、health cursor/outbox | Node `db-service` | Go `gateway` | 逐 operation 建 command/表/事务映射；不可用 jobs 代写 |
+| Business cleanup/lease/outbox | `background-jobs.ts`、maintenance cleanup、circuit control-plane | 删除清理 targets、sessions、availability、authorization、circuit outbox | Node worker/`db-service` | Go `gateway` | 固化 drain、lease、跨库顺序和恢复；不得双 consumer |
+| J3b 专属事实 | `backend/src/modules/model-checks/**`、质量 repository/worker | 专属 J3b SQLite 文件或 PostgreSQL schema：run/item/observation/trust/quality/health | Node dataset/stats/db-service | Go `gateway` 进程内 | 从 `jobs` 现有基线迁移为 gateway 内实现；不写 Node dataset/stats 文件 |
+| J3c 统计/前置确认 | quality refresh、failure-precheck queue | J3c usage/stat 及其独立状态 | Node `stats-worker`/`ops-worker` | J3c 独立 owner | 不与 J3b 合并；J3b 只读已发布健康结果 |
+| 当前 Go 基线 | `backend-go/projects/jobs/internal/modelcheck*` | jobs-owned test/store 与 durable facts | Go `jobs`（未启用 owner） | Go `gateway` 内包/重写 | 仅复用无副作用领域代码；禁止 gateway import jobs/internal 或跨进程调用 |
+
+该表明确能力缺口：gateway 当前缺少完整管理 API、session lifecycle、Business SQLite writer、schema owner 和 J3b runtime 接线；maintenance 只有一次性 schema/诊断能力；jobs 现有 `modelcheck*` 不能直接成为 gateway 依赖。缺口必须拆成可验收的迁移/重写任务，未补齐前不得以目标 owner 作为已实现能力。
+
+### 9.2 B0-B4 owner 批次
+
+| 批次 | 唯一 owner 与工作 | 完成条件 | 明确未完成时的限制 |
+| --- | --- | --- | --- |
+| B0 | `maintenance` 负责可重复、显式触发的 schema/seed/preflight；运行期不得 DDL。 | 新旧 schema 版本、权限、seed 幂等性和失败恢复均有 SQLite/PG 证据。 | 不得由 jobs、gateway 或 Node runtime 隐式补 schema。 |
+| B1 | `gateway` 承接完整 Business SQLite 管理 API、认证/session lifecycle 和既有 DB-service mutation 的直接 Go 实现。 | 每条 mutation 已归类、具备请求/事务/错误语义对照，Node 同一路径清零。 | 仍由 Node owner 写入；Go 只能按已存在的只读共存门运行。 |
+| B2 | `gateway` 在同一进程内承接所有会影响 Business SQLite 的后台 lease、input/outcome、scheduler、投影和恢复；`jobs` 不参与 J3b runtime。 | 每个任务的触发、取消、重试、lease/fence、跨库顺序和恢复均有边界测试。 | jobs 不得直接或间接写 Business SQLite，也不得通过跨进程命令参与 J3b。 |
+| B3 | J3b 以独立输入/结果事实、scheduler 和直接质量投影接入 gateway 已完成的 owner 边界。 | 满足本文件 9.6 的 J3b L2 准入矩阵。 | 不得以 jobs 中的 J3b runtime、handler 或 reader 基线宣称 SQLite handoff 完成。 |
+| B4 | J3c 另立契约迁移 usage 统计刷新和失败前置确认。 | J3c 的表、worker、重试来源、投影和回滚均由其自身证据覆盖。 | J3b 不得写入、借用或替代 J3c 的统计/前置确认 owner。 |
+
+### 9.3 三项目职责与单物理文件不变量
+
+`gateway` 是 Business SQLite 与 J3b 的唯一进程 owner：它负责管理请求、认证/session 写入、业务 mutation、J3b 的直接上游工作、input/outcome、scheduler、最终 business projector 及该文件的事务/恢复语义。`jobs` 不运行 J3b；它只可复用无副作用的共享 Go 领域包，不持有该文件的连接写权限，也不向 gateway 发送 J3b command。`maintenance` 只负责显式离线 schema、seed、backfill、诊断和预检；它不是常驻业务 writer，完成后必须退出。
+
+任一时刻、每一个 Business SQLite **物理文件**只能有一个 writer 进程。该不变量包含 `system_sessions.last_seen_at`、管理 mutation、quality enforcement/recovery、scheduler lease、cleanup、outbox 和 schema lifecycle，不能按表、路由或功能拆分规避。非 owner 进程必须以只读连接和 `query_only` 运行；任何需要该文件 mutation 的路径均必须在 owner 内完成其完整事务。
+
+J3b 不建立 `gateway`/`jobs` typed command、HTTP、IPC、queue、RPC 或任何补偿链路。需要跨项目复用时，只能抽取无 I/O、无连接、无调度副作用的共享 Go 包，并由 gateway 在同一进程内调用；Business SQLite mutation、J3b lease、scheduler 和 projector 的 command ID、revision、owner epoch/fence、payload digest、超时/取消与幂等重放均在该进程内完成和验证，旧 fence、过期 lease、冲突 payload 或重复副作用一律 fail-closed。
+
+### 9.4 禁止的共存方式
+
+在 B0-B4 期间，禁止 Node↔Go HTTP/IPC/DB-service/queue bridge、手动 adapter、silent fallback、双 consumer 和双 writer。也禁止让 Node 写一部分表、Go 写另一部分表，或让 jobs 先写 Business SQLite 再由 gateway 补偿。新 owner 未达到 readiness 时必须拒绝该 mutation；不能回落到旧 Node writer 并把结果描述为 Go 完成。
+
+切换只能在已 drain 的单 owner epoch 内进行：旧 owner 停止接收 mutation，完成或显式中止在途事务与 consumer，确认该物理文件无旧 writer 后，新 owner 才可通过同一 epoch readiness 接管。Node active-path-zero 是切换后验收条件，不是允许并行写入的替代条件。
+
+### 9.5 SQLite/PG 切换与回滚
+
+SQLite 和 PostgreSQL 都是正式目标模式，必须分别保持唯一 writer、schema 生命周期、权限、事务语义和恢复证据；通过 PostgreSQL 不能替代 SQLite handoff，反之亦然。PostgreSQL runtime 只做权限/schema/readiness 预检，DDL 归 B0 `maintenance` 的显式流程；SQLite 同样不得由 runtime 隐式建表或修复 schema。
+
+每次 owner 切换前必须固化 owner manifest、epoch、版本兼容性、drain 状态、数据库备份/恢复点、健康/readiness、精确路由和回滚责任人。回滚只能整组恢复到先前已验证的单 owner：先停止新 owner 的 mutation/consumer，处理或隔离在途 command，再恢复旧 owner、路由与相同物理文件的写权限，并验证 revision/fence、session touch、lease、outbox、J3b/J3c 相关投影和 freshness。仅回滚镜像、开关或 Git 提交而未恢复 writer epoch，不构成有效回滚。
+
+### 9.6 J3b/J3c 边界、L2 准入与验证矩阵
+
+J3b 只拥有模型检测 input/outcome、run/item/observation、trust/quality 事实及已形成证据后的直接质量投影。物理存储固定为 `JUHE_AI_J3B_DATABASE_PATH` 指向的单一 SQLite 文件，或 PostgreSQL `juhe_j3b` schema；`account_quality_health_hourly` 与 health-sync retry source 同属该 J3b 存储，不再写 Node stats/dataset。J3c 独占 usage 统计刷新和账户失败前置确认，只能通过只读 `J3bHealthReader` 消费 J3b 发布事实，不得打开 J3b writer。J3b 不得消费未形成的 score 推断处罚、恢复或 health-sync，也不得把 J3c worker 当作 J3b 的兼容出口。旧三库数据迁移、回放、cleanup consumer 下线和 rollback epoch 必须在 L2 证据中逐项完成。
+
+| L2 准入项 | 必须证明的结果 | 最低验证 |
+| --- | --- | --- |
+| 写路径归类 | Business SQLite 全量 Node writer、DB-service command、启动/worker/scheduler/maintenance 写路径均有唯一归属；切换后 Node active path 为零。 | 源码、启动配置和路由精确扫描；运行时 writer/connection 审计。 |
+| 单 owner 切换 | SQLite 与 PG 均只出现一个物理 writer，旧 owner drain、epoch/fence 和恢复顺序可观察。 | 隔离 SQLite 与 PostgreSQL/PgBouncer 并发 handoff、重启和整组回滚演练。 |
+| 进程内调用边界 | J3b 不存在 gateway/jobs transport；共享 Go 包不能自行打开 Business SQLite、发起调度或制造第二个 owner。 | 静态依赖扫描、进程内 command ID/revision/fence/digest/CAS/replay 与故障注入测试。 |
+| J3b 完整功能 | JSON/SSE、三类 trigger、直接上游 probe、input/outcome、lease/fence、quality projector、recovery/health 的语义均完成。 | Node golden、成功/拒绝/取消/断连、busy/replay/stale、上游/代理/timeout/partial failure 及双模式集成。 |
+| J3b/J3c 隔离 | J3b 质量投影与 J3c usage/失败前置确认无双写、无借用重试来源、无交叉回滚。 | 表/worker/路由 ownership 审计，跨功能故障与回滚回归。 |
+| 发布与回退 | GitOps 精确路由、readiness、owner manifest、Node active-path-zero、备份和恢复顺序一致。 | candidate、生产 handoff、重启、回滚和 freshness 证据；未取得环境证据不得称为完成。 |
+
+以下范围仍未被本契约覆盖，不能随 B0-B4 顺带接管：chat 业务写入、`codex-context` 的存储/命令语义，以及任何未另行授权的跨项目 typed command。它们需要各自的 owner 清单、数据/外部副作用边界、兼容性与回滚契约；在此之前保持现有 owner，且不得作为 J3b SQLite L2 的隐式依赖或 fallback。J3b 不因这些未覆盖范围获得 gateway/jobs 跨进程调用的例外。

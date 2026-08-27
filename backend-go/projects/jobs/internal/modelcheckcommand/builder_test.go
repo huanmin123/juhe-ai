@@ -49,6 +49,29 @@ func TestBuilderRestrictsQualityRecoveryAndDoesNotFreezeInvalidRequest(t *testin
 	}
 }
 
+func TestBuilderUsesClaimedSchedulePolicyWithoutReloadingCurrentPolicy(t *testing.T) {
+	freezer := &fakeFreezer{targets: map[string]modelchecksource.FrozenTarget{"target": frozen("target", "Target")}}
+	current, err := modelcheckinput.NewPolicySnapshot("current-policy", "full", true, 95, "disable", 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := modelcheckinput.NewPolicySnapshot("schedule-revision-7", "quick", false, 70, "fallback", 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := New(Config{Freezer: freezer, PolicyLoader: staticPolicyLoader{policy: current}, ProbeSetVersion: "probe-v1", Deadline: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := builder.BuildWithPolicy(context.Background(), Request{SystemAccountID: "system-1", ActorSystemAccountID: "system-1", TargetID: "target", Model: "gpt-5.6-sol", Profile: "quick", Trigger: modelcheckinput.TriggerScheduled, ScheduleID: "schedule-1"}, claimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Policy != claimed || request.Profile != claimed.Profile {
+		t.Fatalf("scheduled request must preserve claimed policy: %#v", request)
+	}
+}
+
 type fakeFreezer struct {
 	targets  map[string]modelchecksource.FrozenTarget
 	requests []modelchecksource.Request

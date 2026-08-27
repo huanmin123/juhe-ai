@@ -9,7 +9,7 @@ import (
 
 func TestJ3bBootstrapDDLIsScopedAndComplete(t *testing.T) {
 	for _, table := range contracts.J3BModelCheckTables {
-		if !strings.Contains(postgresSchema, "juhe_jobs."+table) {
+		if !strings.Contains(postgresSchema, "juhe_j3b."+table) {
 			t.Fatalf("DDL missing table %q", table)
 		}
 	}
@@ -24,8 +24,8 @@ func TestJ3bBootstrapDDLIsScopedAndComplete(t *testing.T) {
 			t.Fatalf("DDL must not touch %q", forbidden)
 		}
 	}
-	if got := len(requiredIndexNames()); got != 2 {
-		t.Fatalf("index count=%d", got)
+	if got := len(requiredIndexNames()); got != len(contracts.J3BModelCheckIndexes) {
+		t.Fatalf("index count=%d want=%d", got, len(contracts.J3BModelCheckIndexes))
 	}
 }
 

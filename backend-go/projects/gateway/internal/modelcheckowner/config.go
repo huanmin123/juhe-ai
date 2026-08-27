@@ -1,0 +1,77 @@
+package modelcheckowner
+
+import (
+	"errors"
+	"os"
+	"strings"
+)
+
+// Config is the Gateway-side owner contract for J3b. It deliberately does
+// not start a listener or scheduler; callers must complete the storage
+// handoff/readiness checks before constructing the runtime.
+type Config struct {
+	Enabled                  bool
+	StoreMode                string
+	DatabasePath             string
+	PostgresURL              string
+	Owner                    string
+	InstanceID               string
+	BusinessHandoffConfirmed bool
+	SchemaReady              bool
+	RuntimeReady             bool
+	HealthBoundaryReady      bool
+}
+
+func LoadConfig(getenv func(string) string) (Config, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	cfg := Config{Enabled: strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_J3B_ENABLED")), "true")}
+	if !cfg.Enabled {
+		return cfg, nil
+	}
+	cfg.Owner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_J3B_OWNER")))
+	if cfg.Owner != "gateway" {
+		return Config{}, errors.New("启用 J3b 时 JUHE_AI_J3B_OWNER 必须为 gateway")
+	}
+	cfg.InstanceID = strings.TrimSpace(getenv("JUHE_AI_J3B_INSTANCE_ID"))
+	if cfg.InstanceID == "" {
+		return Config{}, errors.New("JUHE_AI_J3B_INSTANCE_ID 是必填配置")
+	}
+	cfg.StoreMode = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_J3B_STORE")))
+	if cfg.StoreMode != "sqlite" && cfg.StoreMode != "postgres" {
+		return Config{}, errors.New("JUHE_AI_J3B_STORE 必须为 sqlite 或 postgres")
+	}
+	if cfg.StoreMode == "sqlite" {
+		cfg.DatabasePath = strings.TrimSpace(getenv("JUHE_AI_J3B_DATABASE_PATH"))
+		if cfg.DatabasePath == "" {
+			return Config{}, errors.New("sqlite 模式缺少 JUHE_AI_J3B_DATABASE_PATH")
+		}
+	} else {
+		cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_POSTGRES_URL"))
+		if cfg.PostgresURL == "" {
+			return Config{}, errors.New("postgres 模式缺少 JUHE_AI_J3B_POSTGRES_URL")
+		}
+	}
+	cfg.BusinessHandoffConfirmed = trueValue(getenv("JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED"))
+	if !cfg.BusinessHandoffConfirmed {
+		return Config{}, errors.New("J3b Business owner handoff 未确认，必须保持关闭")
+	}
+	cfg.SchemaReady = trueValue(getenv("JUHE_AI_J3B_SCHEMA_READY"))
+	if !cfg.SchemaReady {
+		return Config{}, errors.New("J3b schema readiness 未确认，必须保持关闭")
+	}
+	cfg.HealthBoundaryReady = trueValue(getenv("JUHE_AI_J3B_HEALTH_BOUNDARY_READY"))
+	if !cfg.HealthBoundaryReady {
+		return Config{}, errors.New("J3b/J3c health boundary 未确认，必须保持关闭")
+	}
+	cfg.RuntimeReady = trueValue(getenv("JUHE_AI_J3B_RUNTIME_READY"))
+	if !cfg.RuntimeReady {
+		return Config{}, errors.New("J3b runtime readiness 未确认，必须保持关闭")
+	}
+	return cfg, nil
+}
+
+func trueValue(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), "true")
+}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
@@ -82,6 +83,16 @@ func main() {
 	if !ownerMode.OwnsWork() {
 		runPassiveGateway(*healthAddress, ownerMode, logger)
 		return
+	}
+	// The owner contract is parsed before any gateway stores/listeners are
+	// opened. Until the J3b runtime is actually attached to this process, an
+	// enabled flag must fail closed rather than silently serving a partial owner.
+	j3bConfig, err := modelcheckowner.LoadConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load J3b gateway owner config: %w", err))
+	}
+	if j3bConfig.Enabled {
+		fail(errors.New("J3b Gateway owner config is valid but runtime/source/auth factories are not attached; keep JUHE_AI_J3B_ENABLED=false until schema preflight and complete owner wiring are present"))
 	}
 	postgresPools := pgpool.NewRegistry()
 	defer postgresPools.Close()
