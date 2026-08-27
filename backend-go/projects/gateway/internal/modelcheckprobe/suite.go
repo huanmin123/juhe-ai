@@ -90,6 +90,23 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 			Evaluation{Kind: "token_integrity", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "tokenizer_snapshot_not_attached"}},
 			Evaluation{Kind: "long_context", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "model_limit_snapshot_not_attached"}},
 		)
+		if ShouldRunJuice(input.Model, input.Profile, string(input.Protocol)) {
+			juiceResults := make([]Result, 0, 6)
+			for _, request := range JuiceRequests(input.Model) {
+				result, executeErr := Execute(ctx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: timeout})
+				if executeErr != nil {
+					return nil, executeErr
+				}
+				juiceResults = append(juiceResults, result)
+			}
+			items = append(items, EvaluateJuice(input.Model, juiceResults, "0"))
+		} else {
+			items = append(items, Evaluation{Kind: "juice", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "juice_scope_not_applicable"}})
+		}
+		items = append(items,
+			Evaluation{Kind: "distribution", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "trusted_comparison_not_attached"}},
+			Evaluation{Kind: "cross_model", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "trusted_comparison_not_attached"}},
+		)
 	}
 	items = append(items, EvaluateUsage(results))
 	return items, nil

@@ -9,6 +9,7 @@ var J3BModelCheckTables = []string{
 	"model_check_items",
 	"model_check_observations",
 	"account_quality_health_hourly",
+	"model_check_scheduler_tasks",
 }
 
 var J3BModelCheckIndexes = map[string]string{
@@ -21,6 +22,7 @@ var J3BModelCheckIndexes = map[string]string{
 	"idx_model_check_observations_cursor":              "on juhe_j3b.model_check_observations using btree (created_at, id)",
 	"idx_model_check_observations_pending_aggregation": "on juhe_j3b.model_check_observations using btree (created_at, id)",
 	"idx_account_quality_health_hourly_scope":          "on juhe_j3b.account_quality_health_hourly using btree (system_account_id, stat_hour, account_id)",
+	"idx_model_check_scheduler_tasks_due":              "on juhe_j3b.model_check_scheduler_tasks using btree (kind, due_at, claim_until, id)",
 }
 
 var J3BModelCheckColumns = map[string]map[string]PostgresColumnSpec{
@@ -37,7 +39,7 @@ var J3BModelCheckColumns = map[string]map[string]PostgresColumnSpec{
 		"outcome_id": {DataType: "text", UdtName: "text"}, "input_id": {DataType: "text", UdtName: "text"}, "input_digest": {DataType: "text", UdtName: "text"}, "fence_token": {DataType: "bigint", UdtName: "int8"}, "observed_at": {DataType: "timestamp with time zone", UdtName: "timestamptz"}, "stored_at": {DataType: "timestamp with time zone", UdtName: "timestamptz"}, "payload": {DataType: "jsonb", UdtName: "jsonb"}, "payload_digest": {DataType: "text", UdtName: "text"}, "committed": {DataType: "boolean", UdtName: "bool"},
 	},
 	"model_check_runs": {
-		"id": {DataType: "text", UdtName: "text"}, "system_account_id": {DataType: "text", UdtName: "text"}, "actor_system_account_id": {DataType: "text", UdtName: "text"}, "provider_code": {DataType: "text", UdtName: "text"}, "target_type": {DataType: "text", UdtName: "text"}, "target_id": {DataType: "text", UdtName: "text"}, "model": {DataType: "text", UdtName: "text"}, "profile": {DataType: "text", UdtName: "text"}, "trigger_kind": {DataType: "text", UdtName: "text"}, "status": {DataType: "text", UdtName: "text"}, "request_summary_json": {DataType: "text", UdtName: "text"}, "result_summary_json": {DataType: "text", UdtName: "text"}, "policy_snapshot_json": {DataType: "text", UdtName: "text"}, "quality_decision_json": {DataType: "text", UdtName: "text"}, "created_at": {DataType: "text", UdtName: "text"}, "updated_at": {DataType: "text", UdtName: "text"},
+		"id": {DataType: "text", UdtName: "text"}, "system_account_id": {DataType: "text", UdtName: "text"}, "actor_system_account_id": {DataType: "text", UdtName: "text"}, "provider_code": {DataType: "text", UdtName: "text"}, "target_type": {DataType: "text", UdtName: "text"}, "target_id": {DataType: "text", UdtName: "text"}, "account_id": {DataType: "text", UdtName: "text", Nullable: true}, "model": {DataType: "text", UdtName: "text"}, "profile": {DataType: "text", UdtName: "text"}, "trigger_kind": {DataType: "text", UdtName: "text"}, "status": {DataType: "text", UdtName: "text"}, "level": {DataType: "text", UdtName: "text"}, "score": {DataType: "integer", UdtName: "int4"}, "max_score": {DataType: "integer", UdtName: "int4"}, "message": {DataType: "text", UdtName: "text"}, "request_summary_json": {DataType: "text", UdtName: "text"}, "result_summary_json": {DataType: "text", UdtName: "text"}, "policy_snapshot_json": {DataType: "text", UdtName: "text"}, "quality_decision_json": {DataType: "text", UdtName: "text"}, "quality_health_sync_status": {DataType: "text", UdtName: "text", Nullable: true}, "created_at": {DataType: "text", UdtName: "text"}, "updated_at": {DataType: "text", UdtName: "text"}, "finished_at": {DataType: "text", UdtName: "text", Nullable: true},
 	},
 	"model_check_items": {
 		"id": {DataType: "text", UdtName: "text"}, "run_id": {DataType: "text", UdtName: "text"}, "item_key": {DataType: "text", UdtName: "text"}, "item_type": {DataType: "text", UdtName: "text"}, "status": {DataType: "text", UdtName: "text"}, "evidence_summary_json": {DataType: "text", UdtName: "text"}, "created_at": {DataType: "text", UdtName: "text"}, "updated_at": {DataType: "text", UdtName: "text"},
@@ -47,6 +49,9 @@ var J3BModelCheckColumns = map[string]map[string]PostgresColumnSpec{
 	},
 	"account_quality_health_hourly": {
 		"account_id": {DataType: "text", UdtName: "text"}, "system_account_id": {DataType: "text", UdtName: "text"}, "provider_code": {DataType: "text", UdtName: "text"}, "stat_hour": {DataType: "text", UdtName: "text"}, "observed_at": {DataType: "text", UdtName: "text"}, "model_check_run_id": {DataType: "text", UdtName: "text"}, "model": {DataType: "text", UdtName: "text"}, "profile": {DataType: "text", UdtName: "text"}, "score": {DataType: "integer", UdtName: "int4"}, "threshold": {DataType: "integer", UdtName: "int4"}, "level": {DataType: "text", UdtName: "text"}, "updated_at": {DataType: "text", UdtName: "text"},
+	},
+	"model_check_scheduler_tasks": {
+		"id": {DataType: "text", UdtName: "text"}, "kind": {DataType: "text", UdtName: "text"}, "due_at": {DataType: "timestamp with time zone", UdtName: "timestamptz"}, "claim_owner": {DataType: "text", UdtName: "text"}, "claim_until": {DataType: "timestamp with time zone", UdtName: "timestamptz"}, "fence_token": {DataType: "bigint", UdtName: "int8"}, "state": {DataType: "text", UdtName: "text"}, "last_error": {DataType: "text", UdtName: "text"}, "completed_at": {DataType: "timestamp with time zone", UdtName: "timestamptz"}, "payload": {DataType: "jsonb", UdtName: "jsonb"}, "updated_at": {DataType: "timestamp with time zone", UdtName: "timestamptz"},
 	},
 }
 
@@ -59,4 +64,5 @@ var J3BModelCheckConstraints = map[string][]string{
 	"model_check_items":             {"primary key (id)"},
 	"model_check_observations":      {"primary key (id)"},
 	"account_quality_health_hourly": {"primary key (account_id, stat_hour)"},
+	"model_check_scheduler_tasks":   {"primary key (id)"},
 }

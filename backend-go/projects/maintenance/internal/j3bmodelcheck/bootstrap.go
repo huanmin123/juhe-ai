@@ -11,7 +11,10 @@ import (
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "modernc.org/sqlite"
 )
+
+const SQLiteBootstrapEnv = "JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH"
 
 const (
 	SchemaName    = "juhe_j3b"
@@ -49,6 +52,139 @@ func Open(rawURL string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	return db, nil
+}
+
+// OpenSQLite opens a dedicated J3b file. It never points at the legacy
+// Business SQLite path; callers must provide the explicit J3b path.
+func OpenSQLite(path string) (*sql.DB, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, errors.New("J3b SQLite bootstrap 必须提供专属文件路径")
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("打开 J3b SQLite bootstrap 连接失败: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	return db, nil
+}
+
+// RunSQLite checks or explicitly bootstraps the dedicated J3b schema. Apply
+// is intentionally guarded by the command layer's stop/backup confirmations.
+func RunSQLite(ctx context.Context, db *sql.DB, apply bool) (SQLiteReport, error) {
+	if db == nil {
+		return SQLiteReport{}, errors.New("J3b SQLite bootstrap 数据库未初始化")
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
+		return SQLiteReport{}, err
+	}
+	report, err := inspectSQLite(ctx, db)
+	if err != nil {
+		return SQLiteReport{}, err
+	}
+	if !apply || report.Ready() {
+		return report, nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return SQLiteReport{}, fmt.Errorf("开始 J3b SQLite schema transaction 失败: %w", err)
+	}
+	defer tx.Rollback()
+	for _, statement := range sqliteSchemaStatements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return SQLiteReport{}, fmt.Errorf("执行 J3b SQLite schema bootstrap 失败: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return SQLiteReport{}, fmt.Errorf("提交 J3b SQLite schema bootstrap 失败: %w", err)
+	}
+	report, err = inspectSQLite(ctx, db)
+	if err != nil {
+		return SQLiteReport{}, err
+	}
+	if !report.Ready() {
+		return SQLiteReport{}, errors.New("J3b SQLite schema bootstrap 后契约仍不完整")
+	}
+	report.Applied = true
+	return report, nil
+}
+
+type SQLiteReport struct {
+	MissingTables  []string `json:"missingTables"`
+	MissingColumns []string `json:"missingColumns"`
+	Applied        bool     `json:"applied"`
+}
+
+func (r SQLiteReport) Ready() bool { return len(r.MissingTables) == 0 && len(r.MissingColumns) == 0 }
+
+func inspectSQLite(ctx context.Context, db *sql.DB) (SQLiteReport, error) {
+	report := SQLiteReport{}
+	for _, table := range contracts.J3BModelCheckTables {
+		var found string
+		err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&found)
+		if errors.Is(err, sql.ErrNoRows) {
+			report.MissingTables = append(report.MissingTables, table)
+			continue
+		}
+		if err != nil {
+			return SQLiteReport{}, err
+		}
+		rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+		if err != nil {
+			return SQLiteReport{}, err
+		}
+		seen := map[string]bool{}
+		for rows.Next() {
+			var cid, notNull, pk int
+			var name, typ string
+			var defaultValue sql.NullString
+			if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+				rows.Close()
+				return SQLiteReport{}, err
+			}
+			seen[name] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return SQLiteReport{}, err
+		}
+		rows.Close()
+		for _, column := range sqliteRequiredColumns[table] {
+			if !seen[column] {
+				report.MissingColumns = append(report.MissingColumns, table+"."+column)
+			}
+		}
+	}
+	sort.Strings(report.MissingTables)
+	sort.Strings(report.MissingColumns)
+	return report, nil
+}
+
+var sqliteRequiredColumns = map[string][]string{
+	"model_check_input_versions":    {"identity_key", "next_version", "updated_at"},
+	"model_check_inputs":            {"input_id", "identity_key", "input_version", "input_digest", "target_id", "config_revision", "policy_revision", "trigger", "issued_at", "expires_at", "payload"},
+	"model_check_execution_claims":  {"input_id", "claim_token", "outcome_id", "owner_id", "fence_token", "claim_until", "updated_at"},
+	"model_check_outcomes":          {"outcome_id", "input_id", "input_digest", "fence_token", "observed_at", "stored_at", "payload", "payload_digest", "committed"},
+	"model_check_runs":              {"id", "system_account_id", "actor_system_account_id", "provider_code", "target_type", "target_id", "account_id", "model", "profile", "trigger_kind", "status", "level", "score", "max_score", "message", "request_summary_json", "result_summary_json", "policy_snapshot_json", "quality_decision_json", "quality_health_sync_status", "created_at", "updated_at", "finished_at"},
+	"model_check_items":             {"id", "run_id", "item_key", "item_type", "status", "score", "max_score", "duration_ms", "trace_id", "evidence_summary_json", "error_code", "error_message", "created_at", "updated_at"},
+	"model_check_observations":      {"id", "run_id", "system_account_id", "account_id", "provider_code", "requested_model", "mapped_upstream_model", "probe_family", "observation_status", "identity_status", "mapping_status", "protocol_status", "evidence_coverage", "created_at"},
+	"account_quality_health_hourly": {"account_id", "system_account_id", "provider_code", "stat_hour", "observed_at", "model_check_run_id", "model", "profile", "score", "threshold", "level", "updated_at"},
+	"model_check_scheduler_tasks":   {"id", "kind", "due_at", "claim_owner", "claim_until", "fence_token", "state", "last_error", "completed_at", "payload", "updated_at"},
+}
+
+var sqliteSchemaStatements = []string{
+	`CREATE TABLE IF NOT EXISTS model_check_input_versions (identity_key TEXT PRIMARY KEY,next_version INTEGER NOT NULL,updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS model_check_inputs (input_id TEXT PRIMARY KEY,identity_key TEXT NOT NULL,input_version INTEGER NOT NULL,input_digest TEXT NOT NULL,target_id TEXT NOT NULL,config_revision TEXT NOT NULL,policy_revision TEXT NOT NULL,trigger TEXT NOT NULL,issued_at TEXT NOT NULL,expires_at TEXT NOT NULL,payload BLOB NOT NULL,UNIQUE(identity_key,input_version),UNIQUE(identity_key,input_digest))`,
+	`CREATE TABLE IF NOT EXISTS model_check_execution_claims (input_id TEXT PRIMARY KEY,claim_token TEXT NOT NULL,outcome_id TEXT NOT NULL,owner_id TEXT NOT NULL,fence_token INTEGER NOT NULL,claim_until TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS model_check_outcomes (outcome_id TEXT PRIMARY KEY,input_id TEXT NOT NULL UNIQUE,input_digest TEXT NOT NULL,fence_token INTEGER NOT NULL,observed_at TEXT NOT NULL,stored_at TEXT NOT NULL,payload BLOB NOT NULL,payload_digest TEXT NOT NULL,committed INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE TABLE IF NOT EXISTS model_check_runs (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,actor_system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,target_type TEXT NOT NULL,target_id TEXT NOT NULL,account_id TEXT,model TEXT NOT NULL,profile TEXT NOT NULL,trigger_kind TEXT NOT NULL,status TEXT NOT NULL,level TEXT NOT NULL,score INTEGER NOT NULL,max_score INTEGER NOT NULL,message TEXT NOT NULL,request_summary_json TEXT NOT NULL,result_summary_json TEXT NOT NULL,policy_snapshot_json TEXT NOT NULL,quality_decision_json TEXT NOT NULL,quality_health_sync_status TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finished_at TEXT)`,
+	`CREATE TABLE IF NOT EXISTS model_check_items (id TEXT PRIMARY KEY,run_id TEXT NOT NULL,item_key TEXT NOT NULL,item_type TEXT NOT NULL,status TEXT NOT NULL,score INTEGER NOT NULL,max_score INTEGER NOT NULL,duration_ms INTEGER,trace_id TEXT,evidence_summary_json TEXT NOT NULL,error_code TEXT,error_message TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS model_check_observations (id TEXT PRIMARY KEY,run_id TEXT NOT NULL,system_account_id TEXT NOT NULL,account_id TEXT NOT NULL,provider_code TEXT NOT NULL,requested_model TEXT NOT NULL,mapped_upstream_model TEXT NOT NULL,probe_family TEXT NOT NULL,observation_status TEXT NOT NULL,identity_status TEXT NOT NULL,mapping_status TEXT NOT NULL,protocol_status TEXT NOT NULL,evidence_coverage INTEGER NOT NULL,created_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
+	`CREATE TABLE IF NOT EXISTS model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT NOT NULL,due_at TEXT NOT NULL,claim_owner TEXT,claim_until TEXT,fence_token INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',last_error TEXT,completed_at TEXT,payload BLOB NOT NULL,updated_at TEXT NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_scheduler_tasks_due ON model_check_scheduler_tasks(kind,due_at,claim_until,id)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_quality_health_sync_retry ON model_check_runs(quality_health_sync_status,updated_at,id)`,
 }
 
 func Run(ctx context.Context, db *sql.DB, apply bool) (Report, error) {
@@ -262,6 +398,8 @@ CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_runs (id TEXT PRIMARY KEY, syste
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES juhe_j3b.model_check_runs(id) ON DELETE CASCADE, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('passed','warning','failed','skipped')), score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL DEFAULT '{}', error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES juhe_j3b.model_check_runs(id) ON DELETE CASCADE, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, provider_code TEXT NOT NULL, provider_protocol_profile_id TEXT NOT NULL, endpoint_family TEXT NOT NULL, requested_model TEXT NOT NULL, mapped_upstream_model TEXT NOT NULL, observed_model TEXT, mapping_applied INTEGER NOT NULL DEFAULT 0, upstream_bucket_hmac TEXT NOT NULL, cohort_key_hmac TEXT NOT NULL, population_key_hmac TEXT NOT NULL, probe_key_hmac TEXT NOT NULL, system_fingerprint_hmac TEXT, probe_family TEXT NOT NULL, probe_set_version TEXT NOT NULL, tokenizer_version TEXT NOT NULL, feature_version TEXT NOT NULL DEFAULT 'none', round_index INTEGER NOT NULL, padding_tokens INTEGER NOT NULL, local_input_tokens INTEGER NOT NULL, reported_input_tokens INTEGER, cached_input_tokens INTEGER, constraint_passed INTEGER, feature_1 DOUBLE PRECISION, feature_2 DOUBLE PRECISION, feature_3 DOUBLE PRECISION, feature_4 DOUBLE PRECISION, feature_5 DOUBLE PRECISION, feature_6 DOUBLE PRECISION, feature_7 DOUBLE PRECISION, feature_8 DOUBLE PRECISION, observation_status TEXT NOT NULL, identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, protocol_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL DEFAULT 0, trace_id TEXT, created_at TEXT NOT NULL, aggregation_completed_at TEXT);
 CREATE TABLE IF NOT EXISTS juhe_j3b.account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL CHECK (profile IN ('quick','full')), score INTEGER NOT NULL, threshold INTEGER NOT NULL CHECK (threshold BETWEEN 40 AND 100), level TEXT NOT NULL, error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, stat_hour));
+CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_scheduler_tasks (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('scheduled','quality_recovery','health_sync_retry')), due_at TIMESTAMPTZ NOT NULL, claim_owner TEXT, claim_until TIMESTAMPTZ, fence_token BIGINT NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','failed','completed')), last_error TEXT, completed_at TIMESTAMPTZ, payload JSONB NOT NULL DEFAULT '{}'::jsonb, updated_at TIMESTAMPTZ NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_model_check_scheduler_tasks_due ON juhe_j3b.model_check_scheduler_tasks(kind,due_at,claim_until,id);
 CREATE INDEX IF NOT EXISTS idx_model_check_outcomes_cursor ON juhe_j3b.model_check_outcomes(stored_at,outcome_id);
 CREATE INDEX IF NOT EXISTS idx_model_check_inputs_target ON juhe_j3b.model_check_inputs(target_id,issued_at);
 CREATE INDEX IF NOT EXISTS idx_model_check_runs_created ON juhe_j3b.model_check_runs(created_at DESC,id DESC);

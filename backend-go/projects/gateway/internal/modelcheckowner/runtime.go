@@ -16,10 +16,10 @@ import (
 )
 
 type Target struct {
-	Endpoint string
-	Protocol modelcheckprofile.Protocol
-	Headers  http.Header
-	Prompt   string
+	Endpoint, ProviderCode, ConfigRevision string
+	Protocol                               modelcheckprofile.Protocol
+	Headers                                http.Header
+	Prompt                                 string
 }
 
 type Resolver func(context.Context, RunRequest) (Target, error)
@@ -28,12 +28,13 @@ type Resolver func(context.Context, RunRequest) (Target, error)
 // requires an injected resolver so credential/source reads remain inside the
 // Gateway owner and never become an HTTP or Node dependency.
 type Runtime struct {
-	Store   *Store
-	Resolve Resolver
-	OwnerID string
-	Now     func() time.Time
-	Lease   time.Duration
-	OnEvent func(ProgressEvent)
+	Store     *Store
+	Resolve   Resolver
+	Projector *QualityProjector
+	OwnerID   string
+	Now       func() time.Time
+	Lease     time.Duration
+	OnEvent   func(ProgressEvent)
 }
 
 func (s *Runtime) Run(ctx context.Context, request RunRequest) (RunResult, error) {
@@ -52,8 +53,14 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if s.Now != nil {
 		now = s.Now().UTC()
 	}
-	if request.SystemAccountID == "" || request.ActorSystemAccountID == "" || request.TargetID == "" || request.Model == "" {
+	if request.SystemAccountID == "" || request.ActorSystemAccountID == "" {
+		return RunResult{}, errors.New("J3b runtime scope is incomplete")
+	}
+	if request.TargetType != "account" || request.TargetID == "" || request.Model == "" {
 		return RunResult{}, errors.New("J3b runtime request is incomplete")
+	}
+	if request.Profile != "quick" && request.Profile != "full" {
+		return RunResult{}, errors.New("J3b runtime profile is invalid")
 	}
 	target, err := s.Resolve(ctx, request)
 	if err != nil {
@@ -71,12 +78,37 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if identity == "" {
 		identity = request.SystemAccountID + ":" + request.TargetID + ":" + request.Model
 	}
-	payload, _ := json.Marshal(map[string]any{"targetType": request.TargetType, "targetId": request.TargetID, "model": request.Model, "profile": request.Profile, "probeSetVersion": probeSet})
-	input, err := s.Store.IssueInput(ctx, InputRecord{InputID: inputID, IdentityKey: identity, TargetID: request.TargetID, ConfigRevision: request.ConfigRevision, PolicyRevision: request.PolicyRevision, Trigger: "manual", IssuedAt: now, ExpiresAt: now.Add(time.Minute), Payload: payload})
+	// Keep the frozen revisions in the durable request summary. Health retry
+	// must reuse the original CAS inputs instead of consulting mutable state.
+	payload, _ := json.Marshal(map[string]any{"targetType": request.TargetType, "targetId": request.TargetID, "model": request.Model, "profile": request.Profile, "probeSetVersion": probeSet, "configRevision": request.ConfigRevision, "policyRevision": request.PolicyRevision})
+	penaltyAction := request.PenaltyAction
+	if penaltyAction == "" {
+		penaltyAction = "quality_isolate"
+	}
+	if penaltyAction != "disable" && penaltyAction != "fallback" && penaltyAction != "quality_isolate" {
+		return RunResult{}, errors.New("J3b runtime penalty action is invalid")
+	}
+	policySnapshot, _ := json.Marshal(map[string]any{"revision": request.PolicyRevision, "threshold": request.Threshold, "action": penaltyAction})
+	providerCode := request.ProviderCode
+	if providerCode == "" {
+		providerCode = "unknown"
+	}
+	triggerKind := request.TriggerKind
+	if triggerKind == "" {
+		triggerKind = "manual"
+	}
+	if triggerKind != "manual" && triggerKind != "scheduled" && triggerKind != "quality_recovery" {
+		return RunResult{}, errors.New("J3b runtime trigger is invalid")
+	}
+	input, err := s.Store.IssueInput(ctx, InputRecord{InputID: inputID, IdentityKey: identity, TargetID: request.TargetID, ConfigRevision: request.ConfigRevision, PolicyRevision: request.PolicyRevision, Trigger: triggerKind, IssuedAt: now, ExpiresAt: now.Add(time.Minute), Payload: payload})
 	if err != nil {
 		return RunResult{}, err
 	}
-	if err := s.Store.CreateRun(ctx, RunRecord{ID: runID, SystemAccountID: request.SystemAccountID, ActorSystemAccountID: request.ActorSystemAccountID, ProviderCode: "unknown", TargetType: request.TargetType, TargetID: request.TargetID, Model: request.Model, Profile: request.Profile, TriggerKind: "manual", ProbeSetVersion: probeSet, StartedAt: now, RequestSummary: payload, PolicySnapshot: []byte(`{}`)}); err != nil {
+	accountID := ""
+	if request.TargetType == "account" {
+		accountID = request.TargetID
+	}
+	if err := s.Store.CreateRun(ctx, RunRecord{ID: runID, SystemAccountID: request.SystemAccountID, ActorSystemAccountID: request.ActorSystemAccountID, ProviderCode: providerCode, TargetType: request.TargetType, TargetID: request.TargetID, AccountID: accountID, Model: request.Model, Profile: request.Profile, TriggerKind: triggerKind, ScheduleID: request.ScheduleID, ProbeSetVersion: probeSet, StartedAt: now, RequestSummary: payload, PolicySnapshot: policySnapshot}); err != nil {
 		return RunResult{}, err
 	}
 	lease := s.Lease
@@ -142,7 +174,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 			break
 		}
 	}
-	if err := s.Store.AppendObservation(ctx, ObservationRecord{ID: runID + "-observation-0001", RunID: runID, SystemAccountID: request.SystemAccountID, AccountID: request.TargetID, ProviderCode: "unknown", RequestedModel: request.Model, MappedUpstreamModel: observedModel, ProbeFamily: "core-suite", ObservationStatus: observationStatus, IdentityStatus: "unverified", MappingStatus: "unverified", ProtocolStatus: protocolStatus, EvidenceCoverage: len(items), CreatedAt: now}); err != nil {
+	if err := s.Store.AppendObservation(ctx, ObservationRecord{ID: runID + "-observation-0001", RunID: runID, SystemAccountID: request.SystemAccountID, AccountID: request.TargetID, ProviderCode: providerCode, RequestedModel: request.Model, MappedUpstreamModel: observedModel, ProbeFamily: "core-suite", ObservationStatus: observationStatus, IdentityStatus: "unverified", MappingStatus: "unverified", ProtocolStatus: protocolStatus, EvidenceCoverage: len(items), CreatedAt: now}); err != nil {
 		return RunResult{}, err
 	}
 	resultPayload, _ := json.Marshal(map[string]any{"evaluations": items, "score": score, "maxScore": 100, "level": level})
@@ -151,12 +183,21 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		evidenceItems = append(evidenceItems, map[string]any{"kind": evaluation.Kind, "status": evaluation.Status, "score": evaluation.Score})
 	}
 	aggregate := AggregateEvidence(evidenceItems)
-	qualityDecision, _ := json.Marshal(map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial})
+	trustReport := BuildTrustReport(aggregate, evidenceItems)
+	qualityDecision, _ := json.Marshal(map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "trust": trustReport})
 	if err := s.Store.CommitOutcome(ctx, Outcome{OutcomeID: outcomeID, InputID: input.InputID, InputDigest: input.InputDigest, Payload: resultPayload}, claim, now); err != nil {
 		return RunResult{}, err
 	}
 	if err := s.Store.ProjectOutcome(ctx, OutcomeProjection{RunID: runID, Status: status, Level: level, Score: score, MaxScore: 100, Message: message, FinishedAt: now, Items: itemRecords, ResultSummary: resultPayload, QualityDecision: qualityDecision}); err != nil {
 		return RunResult{}, err
+	}
+	if aggregate.Formed && aggregate.TrustFormed && s.Projector != nil && request.Threshold > 0 && request.ProviderCode != "" {
+		fact := HealthFact{AccountID: request.TargetID, SystemAccountID: request.SystemAccountID, StatHour: now.Truncate(time.Hour).Format(time.RFC3339Nano), RunID: runID, ProviderCode: request.ProviderCode, Model: request.Model, Profile: request.Profile, PolicyRevision: request.PolicyRevision, AccountConfigRevision: request.ConfigRevision, PenaltyAction: penaltyAction, ObservedAt: now, Score: score, Threshold: request.Threshold, Level: level}
+		if err := s.Projector.Project(ctx, runID, aggregate, fact); err != nil {
+			// The run/outcome is already durable. Keep the health publication
+			// retryable instead of reporting a false applied state.
+			emit(ProgressEvent{Kind: "health_sync_failed", Data: map[string]any{"runId": runID, "message": err.Error()}})
+		}
 	}
 	emit(ProgressEvent{Kind: "run_completed", Data: map[string]any{"runId": runID, "status": status}})
 	return RunResult{RunID: runID, Status: string(status), Data: map[string]any{"level": level, "score": score, "message": message}}, nil

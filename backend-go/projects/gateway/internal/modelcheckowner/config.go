@@ -14,6 +14,10 @@ type Config struct {
 	StoreMode                string
 	DatabasePath             string
 	PostgresURL              string
+	BusinessDatabasePath     string
+	BusinessPostgresURL      string
+	CredentialSecret         string
+	IdentitySecret           string
 	Owner                    string
 	InstanceID               string
 	BusinessHandoffConfirmed bool
@@ -47,11 +51,30 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if cfg.DatabasePath == "" {
 			return Config{}, errors.New("sqlite 模式缺少 JUHE_AI_J3B_DATABASE_PATH")
 		}
+		cfg.BusinessDatabasePath = strings.TrimSpace(getenv("JUHE_AI_J3B_BUSINESS_DATABASE_PATH"))
+		if cfg.BusinessDatabasePath == "" {
+			return Config{}, errors.New("sqlite 模式缺少 JUHE_AI_J3B_BUSINESS_DATABASE_PATH")
+		}
+		if strings.EqualFold(cfg.DatabasePath, cfg.BusinessDatabasePath) {
+			return Config{}, errors.New("J3b 专属 SQLite 文件必须与 Business SQLite 文件分离")
+		}
 	} else {
 		cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_POSTGRES_URL"))
 		if cfg.PostgresURL == "" {
 			return Config{}, errors.New("postgres 模式缺少 JUHE_AI_J3B_POSTGRES_URL")
 		}
+		cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_BUSINESS_POSTGRES_URL"))
+		if cfg.BusinessPostgresURL == "" {
+			return Config{}, errors.New("postgres 模式缺少 JUHE_AI_J3B_BUSINESS_POSTGRES_URL")
+		}
+	}
+	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_J3B_CREDENTIAL_SECRET"))
+	if cfg.CredentialSecret == "" {
+		return Config{}, errors.New("JUHE_AI_J3B_CREDENTIAL_SECRET 是必填配置")
+	}
+	cfg.IdentitySecret = strings.TrimSpace(getenv("JUHE_AI_J3B_IDENTITY_SECRET"))
+	if cfg.IdentitySecret == "" {
+		return Config{}, errors.New("JUHE_AI_J3B_IDENTITY_SECRET 是必填配置")
 	}
 	cfg.BusinessHandoffConfirmed = trueValue(getenv("JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED"))
 	if !cfg.BusinessHandoffConfirmed {

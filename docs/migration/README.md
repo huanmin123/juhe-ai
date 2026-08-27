@@ -14,7 +14,10 @@
 - [J3b 模型检测完整迁移契约](J3b-模型检测完整迁移契约.md)：冻结模型检测的手动 JSON/SSE、三类周期 trigger、直接上游 probe、run/item/可信度事实与直接质量投影；方案 A 指定 gateway 为 PostgreSQL/SQLite 的单进程 J3b owner，具体实现仍是 L2 前门禁。
 - [Business SQLite 单 Owner L1 清单](BusinessSQLite单Owner-L1清单.md)：冻结 Business SQLite 全量 writer 事务组、Go capability/gap、J3b 专属物理存储、切换与回滚的实施前清单。
 - [Business SQLite owner manifest](BusinessSQLite-owner-manifest.json)：逐项列出 `DbServiceOperation` 的访问模式、物理文件、事务组、当前/目标 owner 和回滚/验证门；该清单仍需在源码与运行时审计中逐项闭合。
+- [Business SQLite manifest 校验脚本](verify-business-sqlite-manifest.ps1)：只读核对 `DbServiceOperation`、access-mode 与 manifest 的唯一 operation 集合，输出计数并在漏项/多项时失败。
 - [J3b 模型检测 L2 输入、结果与存储契约](J3b-模型检测L2输入结果与存储契约.md)：冻结 gateway 进程内版本化 input/outcome、lease/fence/CAS、trust receipt、直接质量投影、J3c 排除边界和双模式唯一 writer 的实现门禁。
+
+> 方案 A 例外边界：README 中其他迁移条目提到的 legacy `owner bridge` / typed command 只适用于尚未完整接管的功能；J3b 不适用。J3b 只能由 `gateway` 同进程运行，`jobs` 对启用配置硬失败，`maintenance` 仅执行一次性离线操作，任何 Node↔Go 或 Go↔Go J3b transport、fallback、双 writer 均禁止。
 - [J1 账号健康探活完整迁移契约](J1-账号健康探活完整迁移契约.md)：冻结账号健康探活与冷却复测的完整 owner、SQLite/PG 输入输出协议、直接上游探活、Gateway source fence、切换和归档边界。
 - [J2 余额刷新完整迁移契约](J2-余额刷新完整迁移契约.md)：冻结周期刷新、首次探测补偿、手动刷新、单 API Key、provider adapter、快照/CAS 与 SQLite/PG owner 边界；当前完成 L2 Go jobs、Node projector 与显式 Go-owner bridge，发布前门禁仍以契约为准。
 - [Go 三项目部署与验证计划](Go三项目部署与验证计划.md)：当前兼容部署、隔离开发验证、后续 jobs-only candidate 与生产 handover 的分层验收。

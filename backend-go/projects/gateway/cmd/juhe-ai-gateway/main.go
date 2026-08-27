@@ -17,6 +17,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
@@ -91,8 +92,80 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load J3b gateway owner config: %w", err))
 	}
+	var j3bHostComponent supervisor.Component
+	var j3bManagementServer *http.Server
+	var j3bManagementListener net.Listener
+	var j3bManagementServeErr chan error
 	if j3bConfig.Enabled {
-		fail(errors.New("J3b Gateway owner config is valid but runtime/source/auth factories are not attached; keep JUHE_AI_J3B_ENABLED=false until schema preflight and complete owner wiring are present"))
+		var businessMode modelcheckauth.Mode = modelcheckauth.SQLite
+		if j3bConfig.StoreMode == "postgres" {
+			businessMode = modelcheckauth.Postgres
+		}
+		businessConnection, openErr := modelcheckowner.OpenBusinessTargetConnection(context.Background(), j3bConfig)
+		if openErr != nil {
+			fail(fmt.Errorf("open J3b Business owner connection: %w", openErr))
+		}
+		defer businessConnection.Close()
+		businessSource := businessConnection.Source
+		authenticator, authErr := modelcheckauth.New(businessConnection.DB, businessMode, time.Now)
+		if authErr != nil {
+			fail(fmt.Errorf("create J3b Gateway authenticator: %w", authErr))
+		}
+		if authErr := authenticator.CheckContract(context.Background()); authErr != nil {
+			fail(fmt.Errorf("verify J3b Gateway auth contract: %w", authErr))
+		}
+		enforcement, enforcementErr := modelcheckowner.NewBusinessEnforcementApplier(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		if enforcementErr != nil {
+			fail(fmt.Errorf("create J3b Gateway enforcement owner: %w", enforcementErr))
+		}
+		recovery, recoveryErr := modelcheckowner.NewBusinessRecoveryApplier(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		if recoveryErr != nil {
+			fail(fmt.Errorf("create J3b Gateway recovery owner: %w", recoveryErr))
+		}
+		schedulerSource := &modelcheckowner.BusinessSchedulerSource{Business: businessConnection.DB, Postgres: businessMode == modelcheckauth.Postgres, OwnerID: j3bConfig.InstanceID}
+		if schedulerErr := schedulerSource.CheckContract(context.Background()); schedulerErr != nil {
+			fail(fmt.Errorf("verify J3b Gateway scheduler contract: %w", schedulerErr))
+		}
+		j3bHost, hostErr := modelcheckowner.OpenHost(context.Background(), j3bConfig, modelcheckowner.HostDependencies{
+			Resolve:     businessSource.Resolver(),
+			Authorize:   modelcheckowner.NewAdminAuthorize(authenticator),
+			Build:       businessSource.BuildRequest,
+			Enforcement: enforcement,
+			SchedulerFactory: func(store *modelcheckowner.Store, runtime *modelcheckowner.Runtime, projector *modelcheckowner.QualityProjector) (modelcheckowner.SchedulerSource, modelcheckowner.SchedulerExecutor) {
+				source := schedulerSource
+				source.Store = store
+				build := func(ctx context.Context, payload modelcheckowner.ScheduledPayload) (modelcheckowner.RunRequest, error) {
+					target, err := businessSource.Resolve(ctx, modelcheckowner.RunRequest{SystemAccountID: payload.SystemAccountID, TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, ConfigRevision: payload.ConfigRevision})
+					if err != nil {
+						return modelcheckowner.RunRequest{}, err
+					}
+					if target.ConfigRevision != payload.ConfigRevision {
+						return modelcheckowner.RunRequest{}, errors.New("J3b scheduled account config revision is stale")
+					}
+					return modelcheckowner.RunRequest{TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, Profile: payload.Profile, SystemAccountID: payload.SystemAccountID, ActorSystemAccountID: payload.ActorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: payload.Threshold, PenaltyAction: payload.PenaltyAction, ConfigRevision: payload.ConfigRevision, PolicyRevision: payload.PolicyRevision, ProbeSetVersion: payload.ProbeSetVersion, IdentityKey: payload.IdentityKey}, nil
+				}
+				executor := &modelcheckowner.SchedulerExecutorMux{Runs: &modelcheckowner.SchedulerRunExecutor{Runtime: runtime, Build: build, Recovery: recovery.Complete, Scheduled: source.CompleteScheduled}, Health: &modelcheckowner.HealthSyncRetryExecutor{Projector: projector}}
+				return source, executor
+			},
+		})
+		if hostErr != nil {
+			fail(fmt.Errorf("open J3b Gateway owner host: %w", hostErr))
+		}
+		managementMux := http.NewServeMux()
+		if err := j3bHost.Mount(managementMux, "/model-checks/"); err != nil {
+			fail(fmt.Errorf("mount J3b Gateway management routes: %w", err))
+		}
+		managementAddress := envOrDefault("JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS", "127.0.0.1:3307")
+		var listenErr error
+		j3bManagementListener, listenErr = net.Listen("tcp", managementAddress)
+		if listenErr != nil {
+			fail(fmt.Errorf("listen J3b Gateway management endpoint %q: %w", managementAddress, listenErr))
+		}
+		defer j3bManagementListener.Close()
+		j3bManagementServer = &http.Server{Handler: managementMux, ReadHeaderTimeout: 5 * time.Second}
+		j3bManagementServeErr = make(chan error, 1)
+		go func() { j3bManagementServeErr <- j3bManagementServer.Serve(j3bManagementListener) }()
+		j3bHostComponent = j3bHost.Component()
 	}
 	postgresPools := pgpool.NewRegistry()
 	defer postgresPools.Close()
@@ -152,6 +225,19 @@ func main() {
 	defer listener.Close()
 	var auditRunning atomic.Bool
 	var operationRunning atomic.Bool
+	var j3bRunning atomic.Bool
+	if j3bHostComponent.Run != nil {
+		baseJ3bComponent := j3bHostComponent
+		j3bHostComponent = supervisor.Component{
+			Name: baseJ3bComponent.Name,
+			Run: func(runCtx context.Context) error {
+				j3bRunning.Store(true)
+				defer j3bRunning.Store(false)
+				return baseJ3bComponent.Run(runCtx)
+			},
+			Close: baseJ3bComponent.Close,
+		}
+	}
 	components := []supervisor.Component{
 		{
 			Name: "F3 audit-log-owner",
@@ -162,6 +248,9 @@ func main() {
 			},
 			Close: auditStore.Close,
 		},
+	}
+	if j3bHostComponent.Run != nil {
+		components = append(components, j3bHostComponent)
 	}
 	if operationConfig.Enabled {
 		components = append(components, supervisor.Component{
@@ -180,12 +269,12 @@ func main() {
 				http.NotFound(response, request)
 				return
 			}
-			ready := auditRunning.Load() && (!operationConfig.Enabled || operationRunning.Load())
+			ready := auditRunning.Load() && (!operationConfig.Enabled || operationRunning.Load()) && (j3bHostComponent.Run == nil || j3bRunning.Load())
 			response.Header().Set("Content-Type", "application/json")
 			if !ready {
 				response.WriteHeader(http.StatusServiceUnavailable)
 			}
-			_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load()})
+			_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load(), "j3bReady": j3bRunning.Load()})
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -195,6 +284,17 @@ func main() {
 	go func() { serveErr <- healthServer.Serve(listener) }()
 	logger.Info("juhe-ai-gateway started", "healthAddress", listener.Addr().String(), "f4Enabled", operationConfig.Enabled)
 	runErr := supervisor.Run(ctx, components, logger)
+	if j3bManagementServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = j3bManagementServer.Shutdown(shutdownCtx)
+		shutdownCancel()
+		if j3bManagementServeErr != nil {
+			serveErrValue := <-j3bManagementServeErr
+			if serveErrValue != nil && !errors.Is(serveErrValue, http.ErrServerClosed) {
+				fail(fmt.Errorf("J3b management endpoint stopped: %w", serveErrValue))
+			}
+		}
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
 	shutdownCancel()

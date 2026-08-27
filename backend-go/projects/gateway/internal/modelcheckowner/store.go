@@ -3,6 +3,7 @@ package modelcheckowner
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -20,10 +21,18 @@ type Store struct {
 	schema string
 }
 
+func (s *Store) schedulerTaskTable() string {
+	if s.mode == "postgres" {
+		return s.schema + ".model_check_scheduler_tasks"
+	}
+	return "model_check_scheduler_tasks"
+}
+
 var requiredTables = []string{
 	"model_check_input_versions", "model_check_inputs", "model_check_execution_claims", "model_check_outcomes",
 	"model_check_runs", "model_check_items", "model_check_observations",
 	"account_quality_health_hourly",
+	"model_check_scheduler_tasks",
 }
 
 // requiredColumns is intentionally a small, stable contract rather than a
@@ -45,9 +54,9 @@ var requiredColumns = map[string][]string{
 		"outcome_id", "input_id", "input_digest", "fence_token", "observed_at", "stored_at", "payload", "payload_digest", "committed",
 	},
 	"model_check_runs": {
-		"id", "system_account_id", "actor_system_account_id", "provider_code", "target_type", "target_id",
-		"model", "profile", "trigger_kind", "status", "request_summary_json", "result_summary_json",
-		"policy_snapshot_json", "quality_decision_json", "created_at", "updated_at",
+		"id", "system_account_id", "actor_system_account_id", "provider_code", "target_type", "target_id", "account_id",
+		"model", "profile", "trigger_kind", "status", "level", "score", "max_score", "message", "request_summary_json", "result_summary_json",
+		"policy_snapshot_json", "quality_decision_json", "quality_health_sync_status", "created_at", "updated_at", "finished_at",
 	},
 	"model_check_items": {
 		"id", "run_id", "item_key", "item_type", "status", "evidence_summary_json", "created_at", "updated_at",
@@ -60,6 +69,9 @@ var requiredColumns = map[string][]string{
 	"account_quality_health_hourly": {
 		"account_id", "system_account_id", "provider_code", "stat_hour", "observed_at", "model_check_run_id",
 		"model", "profile", "score", "threshold", "level", "updated_at",
+	},
+	"model_check_scheduler_tasks": {
+		"id", "kind", "due_at", "claim_owner", "claim_until", "fence_token", "state", "last_error", "completed_at", "payload", "updated_at",
 	},
 }
 
@@ -177,7 +189,7 @@ func (s *Store) ApplyHealthFact(ctx context.Context, fact HealthFact) (bool, err
 	if s == nil || s.db == nil {
 		return false, errors.New("J3b store is not open")
 	}
-	if fact.AccountID == "" || fact.SystemAccountID == "" || fact.StatHour == "" || fact.RunID == "" || fact.ObservedAt.IsZero() {
+	if fact.AccountID == "" || fact.SystemAccountID == "" || fact.StatHour == "" || fact.RunID == "" || fact.ObservedAt.IsZero() || fact.Threshold < 40 || fact.Threshold > 100 {
 		return false, errors.New("health fact identity is incomplete")
 	}
 	if fact.ErrorMessage != "" && len([]rune(fact.ErrorMessage)) > 1000 {
@@ -230,6 +242,105 @@ func (s *Store) ReadHealthFact(ctx context.Context, accountID, statHour string) 
 	}
 	fact.ErrorCode, fact.ErrorMessage = errorCode.String, errorMessage.String
 	return fact, true, nil
+}
+
+// MarkHealthSync records the health publication outcome without changing the
+// terminal run status. It is fenced by the run ID and is idempotent for the
+// same state.
+func (s *Store) MarkHealthSync(ctx context.Context, runID, state string) error {
+	if s == nil || s.db == nil || strings.TrimSpace(runID) == "" {
+		return errors.New("J3b health sync identity is incomplete")
+	}
+	if state != "applied" && state != "failed" {
+		return errors.New("J3b health sync state is invalid")
+	}
+	result, err := s.db.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_check_runs")+` SET quality_health_sync_status=?,updated_at=? WHERE id=?`), state, time.Now().UTC().Format(time.RFC3339Nano), runID)
+	if err != nil {
+		return fmt.Errorf("mark J3b health sync %s: %w", state, err)
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return errors.New("J3b run not found for health sync")
+	}
+	return nil
+}
+
+type HealthSyncRetry struct {
+	RunID, AccountID, SystemAccountID, ProviderCode, Model, Profile, Level, StatHour string
+	PolicyRevision, AccountConfigRevision, PenaltyAction                             string
+	Score, Threshold                                                                 int
+	ObservedAt                                                                       time.Time
+	EvidenceFormed, TrustFormed                                                      bool
+}
+
+// ListHealthSyncRetries re-discovers failed health publications from durable
+// run facts. It is intentionally bounded and does not infer a decision from a
+// missing policy snapshot.
+func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthSyncRetry, error) {
+	if s == nil || s.db == nil || limit <= 0 || limit > 10000 {
+		return nil, errors.New("J3b health retry scan input is invalid")
+	}
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,account_id,system_account_id,provider_code,model,profile,level,score,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at FROM `+s.table("model_check_runs")+` WHERE quality_health_sync_status IN ('failed','pending_retry') AND finished_at IS NOT NULL ORDER BY updated_at ASC,id ASC LIMIT ?`), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list J3b health sync retries: %w", err)
+	}
+	defer rows.Close()
+	result := make([]HealthSyncRetry, 0)
+	for rows.Next() {
+		var retry HealthSyncRetry
+		var policy, decision, requestSummary, finished string
+		if err := rows.Scan(&retry.RunID, &retry.AccountID, &retry.SystemAccountID, &retry.ProviderCode, &retry.Model, &retry.Profile, &retry.Level, &retry.Score, &policy, &decision, &requestSummary, &finished); err != nil {
+			return nil, fmt.Errorf("scan J3b health sync retry: %w", err)
+		}
+		if retry.AccountID == "" || retry.SystemAccountID == "" || retry.ProviderCode == "" || retry.Model == "" || retry.Profile == "" {
+			return nil, fmt.Errorf("J3b health sync retry %s has incomplete scope", retry.RunID)
+		}
+		var policyFields map[string]any
+		if err := json.Unmarshal([]byte(policy), &policyFields); err != nil {
+			return nil, fmt.Errorf("J3b health sync retry %s policy snapshot: %w", retry.RunID, err)
+		}
+		threshold, ok := policyFields["threshold"].(float64)
+		if !ok || threshold < 40 || threshold > 100 {
+			return nil, fmt.Errorf("J3b health sync retry %s threshold is unavailable", retry.RunID)
+		}
+		var decisionFields struct {
+			EvidenceFormed bool `json:"evidenceFormed"`
+			TrustFormed    bool `json:"trustFormed"`
+		}
+		if err := json.Unmarshal([]byte(decision), &decisionFields); err != nil || !decisionFields.EvidenceFormed || !decisionFields.TrustFormed {
+			return nil, fmt.Errorf("J3b health sync retry %s evidence is not formed", retry.RunID)
+		}
+		retry.EvidenceFormed, retry.TrustFormed = true, true
+		retry.Threshold = int(threshold)
+		var policySnapshot struct {
+			Revision string `json:"revision"`
+			Action   string `json:"action"`
+		}
+		if err := json.Unmarshal([]byte(policy), &policySnapshot); err != nil || strings.TrimSpace(policySnapshot.Revision) == "" {
+			return nil, fmt.Errorf("J3b health retry %s policy revision is unavailable", retry.RunID)
+		}
+		retry.PolicyRevision = policySnapshot.Revision
+		retry.PenaltyAction = policySnapshot.Action
+		if retry.PenaltyAction == "" {
+			return nil, fmt.Errorf("J3b health retry %s penalty action is unavailable", retry.RunID)
+		}
+		var requestSnapshot struct {
+			ConfigRevision string `json:"configRevision"`
+		}
+		if err := json.Unmarshal([]byte(requestSummary), &requestSnapshot); err != nil || strings.TrimSpace(requestSnapshot.ConfigRevision) == "" {
+			return nil, fmt.Errorf("J3b health retry %s account config revision is unavailable", retry.RunID)
+		}
+		retry.AccountConfigRevision = requestSnapshot.ConfigRevision
+		retry.ObservedAt, err = time.Parse(time.RFC3339Nano, finished)
+		if err != nil {
+			return nil, fmt.Errorf("J3b health sync retry %s finished_at: %w", retry.RunID, err)
+		}
+		retry.StatHour = retry.ObservedAt.UTC().Truncate(time.Hour).Format(time.RFC3339Nano)
+		result = append(result, retry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate J3b health sync retries: %w", err)
+	}
+	return result, nil
 }
 
 func (s *Store) healthTable() string {

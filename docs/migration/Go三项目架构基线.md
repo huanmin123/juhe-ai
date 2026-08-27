@@ -9,7 +9,7 @@
 | 项目 | 运行形态 | 负责 | 不负责 |
 | --- | --- | --- | --- |
 | `gateway` | 长驻 HTTP 服务 | 管理 API、公开 API、AI 接口桥接上游、请求鉴权、请求级业务处理；方案 A 下承载 J3b 完整 runtime/scheduler/projector | 一般定时扫描、统计批处理、离线迁移和历史回填 |
-| `jobs` | 可独立部署的长驻定时服务 | 账号复制/探活、除 J3b 外的模型质量任务、OAuth 保活、统计聚合、定时保留清理及其他周期任务 | 对外业务 HTTP、AI 请求代理、一次性人工维护命令；J3b runtime、scheduler、listener、store 和 projector |
+| `jobs` | 可独立部署的长驻定时服务 | 账号复制/探活、除 J3b 外的模型质量任务（明确不含 J3b）、OAuth 保活、统计聚合、定时保留清理及其他周期任务 | 对外业务 HTTP、AI 请求代理、一次性人工维护命令；J3b runtime、scheduler、listener、store 和 projector |
 | `maintenance` | 独立执行的一次性命令 | schema 校验/迁移、历史数据回填、重建索引、诊断、人工触发的清理和导出 | 常驻调度、对外 HTTP、请求链路业务逻辑 |
 
 项目3按当前 Go 基线定义为 `maintenance` 控制面。它是一次性运维与数据工具，不是第三个常驻 worker；如果后续确认项目3需要承载其他长期职责，必须先修改本基线和模块边界，再迁移业务。

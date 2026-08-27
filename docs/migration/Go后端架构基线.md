@@ -4,6 +4,8 @@
 
 > **项目边界补充（方案 A 更新）。** Go 代码按 [Go 三项目架构基线](Go三项目架构基线.md) 拆为独立的 `gateway`、`jobs`、`maintenance` 模块。本文保留通用技术、存储和并发规则；F1/F2 由 jobs 承载，F3/F4 由 gateway 承载。一般新定时功能进入 jobs；J3b 是唯一已批准例外，由 gateway 在同一进程内承担管理入口、scheduler、专属 J3b Store 与 Business projector，不得调用 jobs 或 Node。
 
+**方案 A 的优先级。** 本文中面向未迁移、明确排除 J3b 的 legacy 功能的 `owner bridge`、typed command、DB-service HTTP/IPC 仅表示共存期的既有边界，不适用于 J3b；以下所有通用 bridge 条款均按此排除解释。J3b 的唯一运行时 owner 是 `gateway`：`jobs` 必须对所有 J3b 启用配置 fail-closed，`maintenance` 只执行显式离线 schema/backfill/审计命令，且不存在 `gateway`/`jobs`/Node 之间的 J3b transport、fallback 或双写。若本文其他段落与 [J3b 模型检测完整迁移契约](J3b-模型检测完整迁移契约.md) 或 [Business SQLite 单 Owner L1 清单](BusinessSQLite单Owner-L1清单.md) 的 J3b 专门条款冲突，以 J3b 专门条款为准。
+
 ## 1. 技术基线
 
 - 具体依赖选择以 [Go 技术选型与依赖基线](Go技术选型与依赖基线.md) 为准；本文只记录架构边界和运行约束。
@@ -14,7 +16,7 @@
 - 配置：使用 `internal/config` 封装 env 解析，不引入 Viper；配置库只在 config 层出现。
 - PostgreSQL：适配器使用连接池、事务函数和上下文超时收口；具体库选择在 B0 后固定。
 - Redis：仅 PostgreSQL/Redis 模式的 cache、state 可使用 Redis。当前 Node Redis Streams 是 Node 历史实现，新 Go 完整功能默认直接异步执行，不能混称或假定已接线。
-- SQLite：必须提供 SQLite Store adapter；具体 driver、连接方式和 legacy Node owner bridge 在 B0 定案。方案 A 的 J3b 不得使用 Node owner bridge、typed command、HTTP、IPC、queue 或 RPC，必须由 gateway 完成完整 handoff 后同进程独占。SQLite 模式不要求 Redis，并继续遵守每个文件单 writer。
+- SQLite：必须提供 SQLite Store adapter；具体 driver、连接方式和未迁移 legacy 功能的 Node owner bridge 在 B0 定案。该 bridge 规则不适用于 J3b：J3b 不得使用 Node owner bridge、typed command、HTTP、IPC、queue 或 RPC，必须由 gateway 完成完整 handoff 后同进程独占。SQLite 模式不要求 Redis，并继续遵守每个文件单 writer。
 - 观测：Prometheus `/__aisys__/metrics`、受控 pprof、结构化 `slog` 和内部系统监控 API 分层维护；Go runtime 指标以 `runtime/metrics`、Prometheus Go collector、PG/Redis adapter 和直接异步执行状态为基础，具体口径见 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md)。
 - 校验：使用 DTO 校验库处理字段形状和范围，跨字段业务规则仍写 service 校验，并转换为项目中文错误结构。
 - 测试：使用 Go 标准 `testing`、`httptest`、`go test ./... -race`、基准测试、testcontainers、必要的 mock upstream 和 goroutine 泄漏检查；跨服务依赖测试必须显式触发。
@@ -100,7 +102,7 @@ Go 目标不是复制当前 Node 进程树。
 - 主 server：承载系统 API、公开 API、静态资源、网关入口、健康检查和必要 supervisor。
 - worker：保留 `ingest`、`stats`、`ops` 三类角色的业务边界，但不再因为 Node 事件循环阻塞而拆出额外 DB service。
 - maintenance：生产维护脚本以独立命令运行，必须明确 dry run、影响范围和失败行为。
-- DB service：当前 SQLite 模式保留。对仍由 Node 拥有的 legacy 功能，Go 只能经其既有 typed command / owner bridge 写入业务 SQLite；方案 A 的 J3b 不得采用这种过渡方式，必须在 Gateway 完整接管 Business SQLite writer 后才可启用。完成冻结、drain 与 handoff 后，owner 才可独占目标文件。
+- DB service：当前 SQLite 模式保留。对仍由 Node 拥有且明确排除 J3b 的 legacy 功能，Go 只能经其既有 typed command / owner bridge 写入业务 SQLite；方案 A 的 J3b 不得采用这种过渡方式，必须在 Gateway 完整接管 Business SQLite writer 后才可启用。完成冻结、drain 与 handoff 后，owner 才可独占目标文件。
 - W1b 到 W7 的既有 bridge 叙述是历史实现记录；当前 Node Web 与 `ops-worker` 仍需运行，直到对应完整功能完成 L1-L4 接管；不得由局部 Go 实现推导 Go-only、网关、账户管理或主要 HTTP 接口接管。
 
 历史 PG/Redis 进程与命令记录如下，仅用于保留原方案的接口和验证线索；当前不证明这些 Go 命令、worker runtime 或依赖已存在。B0 必须分别完成 legacy SQLite owner bridge 与 PostgreSQL/Redis Store、直接异步执行的 PoC；方案 A 的 J3b 以完整 Gateway handoff 取代 bridge：

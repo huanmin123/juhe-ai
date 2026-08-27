@@ -31,6 +31,7 @@ const (
 type RunRecord struct {
 	ID, SystemAccountID, ActorSystemAccountID, ProviderCode string
 	TargetType, TargetID, Model, Profile, TriggerKind       string
+	AccountID                                               string
 	ProbeSetVersion                                         string
 	ScheduleID, TraceID                                     string
 	RequestSummary, PolicySnapshot                          json.RawMessage
@@ -77,7 +78,7 @@ func (s *Store) CreateRun(ctx context.Context, run RunRecord) error {
 	request := normalizeJSON(run.RequestSummary)
 	policy := normalizeJSON(run.PolicySnapshot)
 	now := run.StartedAt.UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_check_runs")+` (id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,model,profile,trigger_kind,schedule_id,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,trace_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), run.ID, run.SystemAccountID, run.ActorSystemAccountID, run.ProviderCode, run.TargetType, run.TargetID, run.Model, run.Profile, run.TriggerKind, nullable(run.ScheduleID), string(RunRunning), "unavailable", 0, 100, "", string(request), "{}", string(policy), "{}", run.ProbeSetVersion, now, nullable(run.TraceID), now, now)
+	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_check_runs")+` (id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,account_id,model,profile,trigger_kind,schedule_id,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,trace_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), run.ID, run.SystemAccountID, run.ActorSystemAccountID, run.ProviderCode, run.TargetType, run.TargetID, nullable(run.AccountID), run.Model, run.Profile, run.TriggerKind, nullable(run.ScheduleID), string(RunRunning), "unavailable", 0, 100, "", string(request), "{}", string(policy), "{}", run.ProbeSetVersion, now, nullable(run.TraceID), now, now)
 	if err != nil {
 		return fmt.Errorf("create J3b run: %w", err)
 	}

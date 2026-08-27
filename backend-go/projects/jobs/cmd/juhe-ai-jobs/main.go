@@ -23,7 +23,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckapp"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckruntime"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
@@ -66,6 +65,8 @@ func main() {
 		runPassiveJobs(*healthAddress, ownerMode, logger)
 		return
 	}
+	postgresPools := pgpool.NewRegistry()
+	defer postgresPools.Close()
 	postgresPools.SetObserver(func(event pgpool.PoolEvent) {
 		logger.Debug("jobs postgres pool event",
 			"event", event.Kind,
@@ -80,8 +81,6 @@ func main() {
 			"wait_duration_ms", event.DBStats.WaitDuration.Milliseconds(),
 		)
 	})
-	postgresPools := pgpool.NewRegistry()
-	defer postgresPools.Close()
 	runtimeConfig, err := runtimelog.LoadConfig(os.Getenv)
 	if err != nil {
 		fail(fmt.Errorf("load F1 runtime-log-indexer config: %w", err))
@@ -332,12 +331,11 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load J3b model-check config: %w", err))
 	}
-	var j3bHost *modelcheckapp.Host
 	if j3bConfig.Enabled {
-		j3bHost, err = modelcheckapp.OpenHost(context.Background(), j3bConfig)
-		if err != nil {
-			fail(fmt.Errorf("initialize J3b Go control plane: %w", err))
-		}
+		// Solution A reserves the J3b runtime for Gateway. Keep this guard even
+		// when a future config parser changes, so jobs can never become a second
+		// owner through an accidental startup path.
+		fail(errors.New("J3b runtime is Gateway-owned; juhe-ai-jobs cannot be enabled"))
 	}
 
 	listener, err := listenLoopback(*healthAddress)
@@ -452,38 +450,7 @@ func main() {
 			},
 		})
 	}
-	if j3bHost != nil {
-		j3bListener, listenErr := net.Listen("tcp", j3bConfig.ManagementAddress)
-		if listenErr != nil {
-			_ = j3bHost.Close()
-			fail(fmt.Errorf("listen J3b management endpoint %q: %w", j3bConfig.ManagementAddress, listenErr))
-		}
-		j3bServer := &http.Server{Handler: j3bHost.Handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: j3bConfig.Deadline + 5*time.Second, WriteTimeout: j3bConfig.Deadline + 5*time.Second, IdleTimeout: 30 * time.Second}
-		components = append(components, supervisor.Component{
-			Name: "J3b model-check management API",
-			Run: func(context.Context) error {
-				err := j3bServer.Serve(j3bListener)
-				if errors.Is(err, http.ErrServerClosed) {
-					return nil
-				}
-				return err
-			},
-			Close: func() error {
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				shutdownErr := j3bServer.Shutdown(shutdownCtx)
-				closeErr := j3bHost.Close()
-				if shutdownErr != nil {
-					return shutdownErr
-				}
-				return closeErr
-			},
-		})
-	}
 	j3bReady := func() bool { return true }
-	if j3bHost != nil {
-		j3bReady = j3bHost.Ready
-	}
 	healthServer := &http.Server{
 		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
 			if j3Runner == nil {
@@ -495,14 +462,14 @@ func main() {
 				return proxylatency.RunnerStatus{}, true
 			}
 			return j3Runner.Snapshot()
-		}, j3bConfig.Enabled, j3bReady),
+		}, false, j3bReady),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", j3bConfig.Enabled)
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", false)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)

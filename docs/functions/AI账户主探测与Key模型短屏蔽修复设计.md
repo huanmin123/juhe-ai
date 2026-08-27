@@ -1,6 +1,6 @@
 # AI 账户主探测与 Key-模型短屏蔽修复设计
 
-> 状态：最终实现契约 v1.0，代码尚未按本契约落地。
+> 状态：最终实现契约 v1.2，代码尚未按本契约落地。
 >
 > 本文是本轮生产调度问题的唯一实现依据，并覆盖 [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md) 在“非主模型短屏蔽”部分的早期目标方案。它是对现有账户健康探测、API Key 故障隔离和网关调度的局部修复，不采用重做整套多模型账户健康聚合的方案。实现、测试、运行态验证和发布门禁完成前，不能把本文当作已上线能力。文中“固定”参数不得被实现者替换为环境默认值、随机值或未记录的配置；需要调整必须先修改本文并重新走评审。
 
@@ -20,7 +20,7 @@ healthCheckModel + healthCheckEndpointMode
 对非主模型建立 credentialSource + key + model + endpoint/mapping 的短暂屏蔽
 ```
 
-该屏蔽只影响对应 API Key 和模型路由；其他 Key、其他模型、主探测模型、并发、配额、会话亲和、授权和蓝绿槽位继续走原有调度。
+该屏蔽只影响对应 API Key 和模型路由；其他 Key、其他模型、并发硬上限、配额、会话亲和、授权和蓝绿槽位继续走原有调度。为切断“同一 Key 在同一时间被 10 个请求一起打死”的失败风暴，新增的是精确 Key-模型的上游前置准入闸门，不是账户级并发上限，也不是把整个账户串行化。
 
 恢复由独立 Go model-recovery 任务执行。它可以复用现有探测执行器的 HTTP、代理、TLS、凭据解密、超时、租约和结果完整性能力，但必须使用独立任务入口、状态作用域、Key 游标和恢复计数。恢复成功只能解除同一个 Key 的同一个模型路由屏蔽，不能清理账户状态，也不能清理其他 Key 或其他模型的屏蔽。
 
@@ -39,7 +39,7 @@ Node 必须做最小接入，因为当前网关掌握实际选中的 Key、客�
 
 ### 2.2 调度
 
-网关已有账户硬门禁、API Key 轮换、同账户有限重试、`protocol_model` 电路、恢复探针、会话亲和、代理避让、并发和配额排序。本修复不能替换候选选择器或重排整个调度链，只能在“账户已通过硬门禁、请求模型和协议已确定、实际 Key 已确定”之后增加精确过滤层。
+网关已有账户硬门禁、API Key 轮换、同账户有限重试、`protocol_model` 电路、恢复探针、会话亲和、代理避让、并发和配额排序。本修复不能替换候选选择器或重排整个调度链。新增逻辑分成两个相邻但不同的动作：在“请求模型、协议、映射和实际 Key 已确定、但尚未发送上游”时做精确 Key-模型准入；通过后仍由原有账户并发槽和后续派发链负责。若当前实现已经先取得账户并发槽，准入返回 `blocked/busy` 必须立即释放该槽，不能拿账户槽等待一个已经被短屏蔽或前置预算占满的 Key。
 
 ### 2.3 需要解决的场景
 
@@ -51,6 +51,12 @@ Key-3 的 C 可用
 ```
 
 按 `account + model` 屏蔽会误阻断 Key-2 的 B；按账户状态处理会把 B 的问题扩大到 A、C；A 的一次探测成功又可能清除不相关的 B/C 失败。屏蔽必须下沉到实际物理 Key 和完整模型路由。
+
+### 2.4 并发失败风暴
+
+只在请求结束后写 `OPEN` 仍然不够：如果 10 个请求同时通过旧候选筛选并已经发送到同一 Key，第一条失败到达时，其余请求可能已经不可撤回。上游已发送的请求不能靠事后状态判断取消，也不能把 10 条已发生的失败伪装成一次成功。因此必须把保护边界前移到“发送上游之前”，并为每个精确 `CapabilityKey` 设置有限的**未提交请求预算**：同一 Key-模型最多允许 2 个尚未达到协议 `precommit` 的业务请求同时在途；其余请求立即改选其他 Key/账户，只有所有候选都被该闸门占用时，才在现有请求重试预算内等待闸门事件后重新枚举一次。
+
+该预算只约束同一 `CapabilityKey` 的上游前置阶段，不改变账户已有 `concurrencyLimit`、线程池、配额或其他模型的吞吐。健康流式请求在首个有效协议帧达到 `precommit` 后释放闸门许可，长流仍由原有账户并发槽管理；非流式请求在完整成功或失败时释放。这样 10 并发遇到坏 Key 时，最多 2 个请求会实际进入该 Key 的前置失败窗口，其余请求不会继续把同一个坏 Key 打穿。
 
 ## 3. 不变边界
 
@@ -84,7 +90,7 @@ MainProbe = healthCheckModel + healthCheckEndpointMode + 当前有效映射
 - 授权实例使用来源账户作为 `credentialSourceAccountId`；
 - 授权实例自己的分组、额度、调度开关、到期、冷却和本地避让仍独立执行。
 
-来源账户的已确认 Key-模型故障可以保护同来源授权实例不重复调用；未确认的单请求失败只能形成当前实例本地避让，不能跨实例扩大。跨实例共享前必须先由同一 CapabilityKey 的共享确认/Go 恢复探测写入权威 `OPEN`，不能把某个授权实例的单次失败直接广播给其他实例。
+来源账户和授权实例若最终使用相同 `credentialSourceAccountId + keyFingerprint + 模型/入口/映射 + dispatchRevision`，就是同一个物理 `CapabilityKey`，共享 foreground permit 和已确认的 `OPEN`，避免不同实例同时打穿同一上游连接。授权实例自己的分组、额度、状态、到期、代理或映射不同会先经过独立硬门禁；任一字段使最终 CapabilityKey 不同，就不能共享屏蔽。只有已经真实到达上游的 `upstream_not_complete` 才能跨实例写共享 `OPEN`，本地校验、候选为空、`busy`、取消或 `unknown` 不得广播。
 
 ### 4.3 Key-模型路由键
 
@@ -125,7 +131,7 @@ CapabilityKey =
 
 ### 4.6 首版覆盖范围
 
-最终方案覆盖已有文本协议：OpenAI Chat、OpenAI Responses、Anthropic Messages、Gemini GenerateContent、Gemini Interactions，以及已经冻结模型映射的 Hybrid。每个入口按完整 `CapabilityKey` 隔离，恢复请求复用同一协议 profile 和 endpoint mode。Images 允许进入本契约，但自动恢复探测默认关闭；只有账户路由明确携带 `allowModelRecoveryProbe=true` 时才允许创建共享 `key_model OPEN` 并执行现有 `images_json` 最小图片探测。未开启时，图片 `upstream_not_complete` 只能创建当前实例的本地 30 秒避让，不创建共享 state；真实成功只清除该本地避让。未知协议、未冻结映射、无法构造最小探测请求的路由不建立共享 state，保持现有调度。
+最终方案覆盖已有文本协议：OpenAI Chat、OpenAI Responses、Anthropic Messages、Gemini GenerateContent、Gemini Interactions，以及已经冻结模型映射的 Hybrid。每个入口按完整 `CapabilityKey` 隔离，恢复请求复用同一协议 profile 和 endpoint mode。Images 允许进入本契约，但自动恢复探测默认关闭；只有账户路由明确携带 `allowModelRecoveryProbe=true` 时才允许创建共享 `key_model OPEN` 并执行现有 `images_json` 最小图片探测。未开启时，图片 `upstream_not_complete` 只能创建当前实例既有的本地 30 秒避让，不创建共享 state；真实成功只清除该本地避让。该图片例外不属于本表的共享 Key-model 首次 OPEN 参数。未知协议、未冻结映射、无法构造最小探测请求的路由不建立共享 state，保持现有调度。
 
 ### 4.7 最终参数总表
 
@@ -134,16 +140,19 @@ CapabilityKey =
 | 参数 | 固定值 | 作用 |
 | --- | --- | --- |
 | `guardEnabled` | `false`（发布验收后才改为 `true`） | 总开关；关闭时停止新屏蔽和候选过滤，但不删除已有 state、不改变账户状态 |
-| 首次 `OPEN` | `30 秒` | 非主 Key-model 第一次真实失败后的最短屏蔽窗口 |
-| 退避序列 | `30 秒 -> 2 分钟 -> 10 分钟 -> 30 分钟` | 恢复失败后的下一次探测时间，第四次以后保持 30 分钟 |
+| 首次 `OPEN` | `5 秒` | 非主 Key-model 第一次真实失败后的最短屏蔽窗口 |
+| 退避序列 | `5 秒 -> 15 秒 -> 1 分钟 -> 5 分钟` | 恢复失败后的下一次探测时间，第四次以后保持 5 分钟封顶 |
 | `recoverySuccessThreshold` | `3` 次连续成功 | 防止一次偶然成功立即放行坏 Key-model |
-| `probeTimeout` | `65 秒` | 单次恢复探测的完整墙钟上限 |
-| `probeLease` | `90 秒` | 探测 owner 租约；必须覆盖 65 秒探测并留出写回时间 |
-| `leaseRenewInterval` | `15 秒` | 探测期间续租频率；续租失败立即停止请求 |
-| `unknownRetry` | `30 秒` | `unknown` 或失租后的重试延迟；不增加退避级别 |
-| `recoveringProbeInterval` | `30 秒` | 每次恢复成功后下一次连续验证的间隔 |
-| `recoverySuccessMaxGap` | `5 分钟` | 两次成功之间超过该间隔，连续成功计数归零 |
-| `scanInterval` | `5 秒` | Go recovery 扫描到期 state 的周期 |
+| `probeTimeout` | `30 秒` | 单次最小恢复探测的完整墙钟上限；与 J1 的账户探测超时独立 |
+| `probeLease` | `45 秒` | 探测 owner 租约；必须覆盖 30 秒探测并留出写回时间 |
+| `leaseRenewInterval` | `10 秒` | 探测期间续租频率；续租失败立即停止请求 |
+| `unknownRetry` | `10 秒` | `unknown` 或失租后的重试延迟；不增加退避级别 |
+| `recoveringProbeInterval` | `10 秒` | 每次恢复成功后下一次连续验证的间隔 |
+| `recoverySuccessMaxGap` | `2 分钟` | 两次实际成功证据的最大间隔；排队时不清零，下一次成功若超出则以该次成功重新计为 `1` |
+| `recoveryContinuationStartSLO` | 到期后 `45 秒` 内开始 | `RECOVERING` continuation 的调度时限；超时告警但排队本身不修改成功计数 |
+| `recoveryContinuationGlobalReserve` | `8`（包含在全局 32 内） | 为 `RECOVERING` continuation 保留的全局槽；无 continuation 时可借给普通 OPEN probe |
+| `recoveryContinuationSourceReserve` | `1`（包含在同来源 2 内） | 为同来源 continuation 保留一个槽；无 continuation 时可借用 |
+| `scanInterval` | `1 秒` | Go recovery 扫描到期 state 的周期；使首次 5 秒 OPEN 的正常发现延迟不超过约 1 秒 |
 | `batchLimit` | `128` | 每轮最多取得的到期 Key-model 数，超出留到下一轮 |
 | `globalProbeConcurrency` | `32` | 所有 model-recovery worker 的共享并发上限 |
 | `sourceProbeConcurrency` | `2` | 同一 `credentialSourceAccountId` 的并发探测上限 |
@@ -154,11 +163,31 @@ CapabilityKey =
 | `stateReadRetry` | `50 ms` 后重试 1 次 | Node 读取运行态的唯一重试；仍失败按不可选处理 |
 | `requestIntentLimit` | `8` 个 CapabilityKey/请求 | 防止一次多账户重试扇出无限失败意图，超出只记录诊断 |
 | `j1ConfirmationDebounce` | `2 分钟/来源账户/revision` | 非主模型失败触发 J1 主探测确认的限频；不创建第二个 J1 owner |
+| `foregroundInFlightLimit` | `2` | 同一精确 CapabilityKey 尚未达到协议 `precommit` 的业务请求上限；不是账户并发上限 |
+| `foregroundQueueWait` | `最多 1,200 ms`，且不得超过当前 request 的剩余 wall budget | 当前候选均被前置闸门占用时，只等待一次状态变化并重新枚举；不建立无界队列，也不读取账户并发重试环境变量 |
+| `foregroundRedisOperationTimeout` | `100 ms/次`，使用同一 attemptId 在 `50 ms` 后最多重试 1 次 | 准入、失败封口和释放的热路径 Redis 上限；最坏等待不超过 `250 ms`，仍失败则精确 fail-closed 并记录原始错误；生产启用前必须验证 Redis p99 小于该上限 |
+| `foregroundPrecommitLease` | `90 秒` | 前置 permit 的可续租故障自愈租约；正常请求在首帧/终态提前释放，进程崩溃后最多遗留 90 秒 |
+| `foregroundLeaseRenewInterval` | `30 秒` | 尚未 `precommit` 时续租；续租失败立即取消该 upstream attempt 并按第 5 节结算，不能继续持有失去的 permit |
+| `mainProbeFenceLease` | `J1 confirmation lease`（当前 `90 秒`） | **同一失败 MainProbe CapabilityKey** 等待 J1 结论期间的临时同波次准入栅栏；J1 在其他 Key 上成功不能清理它；不创建 `key_model` phase |
 | `timeSource` | Redis `TIME` | Node、Go、lease 和 `retryAt` 统一使用共享服务端时间 |
 
-J1 自身的 65 秒 probe timeout、90 秒 owner lease、现有账户健康阈值和现有 Key cursor 保持不变；本表中的 recovery 参数只属于 `model_recovery_probe`，不能反写或覆盖 J1 配置。所有时间均为墙钟时间，连续成功计数还必须满足同一 `generation`、同一 `dispatchRevision` 和 `successAt` 间隔不超过 5 分钟。
+J1 自身的 probe timeout、owner lease、现有账户健康阈值和现有 Key cursor 保持不变；本表中的 30 秒/45 秒 recovery 参数只属于 `model_recovery_probe`，不能反写或覆盖 J1 配置。所有时间均为墙钟时间，连续成功计数还必须满足同一 `generation`、同一 `dispatchRevision`。排队期间不根据墙钟清零；只有下一次真实成功完成后才比较成功间隔，超过 2 分钟时当前成功作为新序列的第 1 次。
 
-参数选值依据固定如下：30 秒首屏蔽足以切断当前坏 Key 的连续打击，但不会让临时网络抖动长时间消失；30 秒/2 分钟/10 分钟/30 分钟把探测压力从秒级拉开并设置明确上限；连续 3 次成功用于排除一次偶然成功；65 秒和 90 秒直接沿用现有 J1 探测与 owner lease，避免两套超时语义；5 秒扫描只决定发现到期 state 的延迟，不会缩短 30 秒屏蔽；全局 32、同来源 2 是恢复专用并发上限，确保恢复任务不会挤占网关业务连接和单一凭据来源；128 批量限制和 50,000 state 容量防止故障风暴产生无界任务。上述数值是 v1 固定契约，不能通过账户设置或隐藏环境变量覆盖。
+参数选值依据固定如下：首次 OPEN 为 5 秒，配套 1 秒扫描后正常情况下约 5–6 秒进入恢复竞争；5 秒/15 秒/1 分钟/5 分钟让短抖动快速恢复，同时把永久故障探测封顶为每 5 分钟一次。最小恢复探测使用 30 秒 timeout、45 秒 lease 和 10 秒续租，不复制 J1 的账户探测参数。连续 3 次成功仍用于排除偶然成功，成功间隔改为 10 秒；`RECOVERING` 通过全局 8 个、同来源 1 个可借用保留槽和 45 秒启动 SLO 防止被大量新 OPEN 饿死。排队不是能力失败，不在等待过程中清零；只有新的成功证据与上次成功相隔超过 2 分钟时，才用当前成功重启计数。前置未提交预算固定为 2，保证同一时间最多两个请求进入同一 Key-模型的不可撤回窗口；前置等待硬封顶 1,200 ms 并受请求剩余墙钟预算限制。热路径 Redis 单次操作固定 100 ms、只允许一次幂等重试；foreground permit 使用 90 秒可续租租约、30 秒续租，避免长 TTL 在进程崩溃后卡住健康 Key。全局 32、同来源 2 是恢复专用并发上限；128 批量限制和 50,000 state 容量防止故障风暴产生无界任务。上述数值是 v1.2 固定契约，不能通过账户设置或隐藏环境变量覆盖。
+
+### 4.8 参数关系与容量前提
+
+参数必须作为一组实现，不能只改一个常量：
+
+1. `scanInterval=1 秒` 不大于首次 OPEN 的五分之一，因此 5 秒到期后的正常扫描误差约为 0 至 1 秒；如果实际扫描延迟 p99 超过 1 秒，5 秒首轮目标不成立，必须先修复调度而不是缩短 OPEN。
+2. `probeLease=45 秒` 必须始终大于 `probeTimeout=30 秒`，并留下 15 秒用于取消、结果校验和 CAS 写回；`leaseRenewInterval=10 秒` 小于 lease 的三分之一，单次续租抖动不会立即造成双 owner。
+3. `recoverySuccessMaxGap=2 分钟` 覆盖 `recoveringProbeInterval 10 秒 + continuation 启动目标 45 秒 + probe timeout 30 秒 + 35 秒写回/调度余量`。只要 continuation 启动 SLO 成立，即使第二次探测跑满 30 秒也不会因调度等待清掉第一次成功。若实际成功间隔仍超过 2 分钟，说明探测或队列已经明显失去实时性；此时以当前成功重新计为 1 比使用陈旧成功直接放行更安全。
+4. 以探测均跑满 30 秒估算，8 个全局 continuation 保留槽最多完成约 16 次 continuation/分钟；同来源 1 个保留槽最多完成约 2 次/分钟。每个 Key 从第一次成功到关闭还需要 2 次 continuation，所以最坏耗时下约支持全局 8 个 Key/分钟、单来源 1 个 Key/分钟完成稳定恢复。超过该到期速率时 45 秒是 SLO 而非数学保证，必须通过队列告警扩容或降低 OPEN 产生速率，不能放宽状态语义掩盖积压。
+5. 5 分钟退避封顶意味着单个持续故障 CapabilityKey 稳态最多主动探测 12 次/小时；全局 32、同来源 2 和单 CapabilityKey lease 1 仍是最终保护，避免大量坏 Key 同时向同一上游施压。
+6. `probeTimeout=30 秒` 只适用于最小恢复探测。UAT 必须证明健康文本探测 p99 不超过 20 秒且超时率低于 5%；达不到时不得启用该协议 lane。Images 只有能用 URL 等小响应完成协议验证且响应不超过 256 KiB 时才允许自动探测，可能返回大体积 base64 的路由继续保持 `allowModelRecoveryProbe=false`。
+7. `foregroundPrecommitLease=90 秒` 不是业务请求超时；尚未 `precommit` 的健康 attempt 每 30 秒续租，正常首帧/终态即时释放，只有进程崩溃或续租失败才依赖 lease 回收。因此它可以短于现有请求 wall timeout，但续租失败必须取消 attempt，不能让已失去 permit 的请求继续发送。
+
+以上容量是安全边界，不是吞吐承诺。上线后必须同时观察 `recovery_due_age`、`recovery_continuation_start_delay`、保留槽占用率、probe timeout 和 source 队列长度；任一 continuation 启动延迟连续 5 分钟超过 45 秒，禁止扩大灰度。
 
 ## 5. 不判断状态码和错误类型
 
@@ -198,8 +227,9 @@ unknown
 
 ```text
 请求 A 且完整命中 MainProbe
-  -> 不写 Key-模型短屏蔽
-  -> 继续现有 Key 轮换和请求级处理
+  -> 只申请 foreground permit 吸收同波次并发，不写 Key-模型短屏蔽
+  -> permit busy 时释放账户槽并按现有 Key 轮换/候选继续
+  -> 首个真实失败建立 mainProbeFence，继续/复用 J1 主探测确认
   -> 按 J1 request_failure 规则投递主探测确认
   -> 账户状态仍只由 J1 决定
 ```
@@ -252,22 +282,27 @@ CapabilityKey + requestId + attemptId + dispatchRevision + observedAt + sourceFe
 首版参数固定如下，不允许按账户、模型或错误内容动态改变：
 
 ```text
-第 1 次 OPEN：30 秒
-第 2 次恢复失败：2 分钟
-第 3 次恢复失败：10 分钟
-第 4 次及以后：30 分钟（封顶）
+第 1 次 OPEN：5 秒
+第 2 次恢复失败：15 秒
+第 3 次恢复失败：1 分钟
+第 4 次及以后：5 分钟（封顶）
 ```
 
-`backoffAttempt` 从 1 开始，失败后按上表递增，最大保持 4；每次 `upstream_not_complete` 都重新计算 `retryAt`，不重置退避。无随机 jitter，避免同一 Key 的恢复时间不可预测；不同 Key 由独立 lease 和批次分散执行。这是防止坏路由反复占用上游的临时保护，不是账户长期处罚。`dispatchRevision` 变化时旧屏蔽立即视为 `STALE`，新 revision 从 `CLOSED` 开始。
+`backoffAttempt` 从 1 开始，失败后按上表递增，最大保持 4；首次真实失败创建 `OPEN` 时使用 5 秒，后续**真实恢复探测**的 `upstream_not_complete` 按当前级别重新计算 `retryAt`，不重置退避。并发晚到的业务失败只追加观察和幂等回执，不得重新计算 `retryAt` 或提升级别。无随机 jitter，避免同一 Key 的恢复时间不可预测；不同 Key 由独立 lease 和批次分散执行。这是防止坏路由反复占用上游的临时保护，不是账户长期处罚。`dispatchRevision` 变化时旧屏蔽立即视为 `STALE`，新 revision 从 `CLOSED` 开始。
 
 ### 8.3 Go model-recovery
 
-1. `retryAt` 到期后取得同一 CapabilityKey 的唯一 `half_open` lease；未取得 lease 的 worker 不发上游请求。
-2. 使用同一个 Key、客户端模型、入口、映射和 endpoint 发起最小探测；探测超时固定为 65 秒，租约固定为 90 秒，租约必须覆盖探测超时。
-3. `complete_success` 将 `recoverySuccessCount` 加 1 并进入 `RECOVERING`；连续 3 次成功才回到 `CLOSED`，计数为 0 的 `CLOSED` 才表示可正常派发。
-4. `upstream_not_complete` 将计数清零，回到 `OPEN` 并按固定退避延长 `retryAt`。
-5. `unknown`、取消、失租和 CAS 冲突不改变能力结论；`HALF_OPEN/RECOVERING` 收到这些结果时释放 lease 并回到 `OPEN`，`retryAt=now+30 秒`，不增加 `backoffAttempt`；配置变化的结果直接标记 `STALE` 并丢弃，旧 generation/revision 不得写回。
-6. 成功只清理同一个 Key-模型，不清理同账户其他 Key、其他模型或账户状态。
+1. `retryAt` 到期后取得同一 CapabilityKey 的唯一 `half_open` lease；未取得 lease 的 worker 不发上游请求。处于 `RECOVERING` 且已到期的 continuation 优先于普通 `OPEN` probe；调度器不得让普通 probe 持续占满其保留容量。
+2. 使用同一个 Key、客户端模型、入口、映射和 endpoint 发起最小探测；探测完整墙钟上限为 30 秒，租约为 45 秒，10 秒续租一次，租约必须覆盖探测和写回。
+3. `complete_success` 只在 CAS 成功写回时更新 `lastRecoverySuccessAt=now`。若没有上一次成功时间，或 `now-lastRecoverySuccessAt <= recoverySuccessMaxGap`，则将 `recoverySuccessCount` 加 1；若实际成功间隔超过 2 分钟，则当前成功作为新序列第 1 次。排队、等待 lease、扫描延迟和 worker 未轮到都不清零计数，也不改写 `lastRecoverySuccessAt`。
+4. `HALF_OPEN` 首次成功进入 `RECOVERING`；`RECOVERING` 在计数未达到 3 时按 `recoveringProbeInterval=10 秒` 安排下一次 continuation，达到 3 才回到 `CLOSED`。计数为 0 的 `CLOSED` 才表示可正常派发。
+5. `upstream_not_complete` 将计数清零，回到 `OPEN` 并按固定退避延长 `retryAt`；这表示真实探测失败，不等同于排队超时。
+6. `unknown` 或取消不改变能力结论；仍持有有效 lease 的 owner 释放 lease 后按探测前稳定态返回：原计数为 0 时回到 `OPEN`，原计数大于 0 时回到 `RECOVERING`，两者均设置 `retryAt=now+10 秒` 且不增加 `backoffAttempt`、不修改成功计数或成功时间。失租和 CAS 冲突的 worker 没有写回权，只丢弃本地结果，由当前 owner 的权威 state 决定后续；配置变化的结果标记 `STALE`，旧 generation/revision 不得写回。
+7. 成功只清理同一个 Key-模型，不清理同账户其他 Key、其他模型或账户状态。
+
+`recoveryContinuationGlobalReserve=8` 和 `recoveryContinuationSourceReserve=1` 是从全局 32、来源 2 中划出的可借用保留槽。没有到期 continuation 时，普通 `OPEN` probe 可以借用；一旦 continuation 到期，新的普通 probe 不得再占用该槽，已运行的普通 probe 不强杀，空闲后优先服务最老的 continuation。`recoveryContinuationStartSLO=45 秒` 是到期后的启动目标，不是把排队视为失败的计时器；若到期 continuation 因容量持续超过该目标，只产生 `recovery_continuation_slo_breach` 告警并按最老项优先，不能清零成功计数。该保留吞吐不能覆盖无限恢复积压，生产启用前必须用实际探测耗时验证来源级和全局级队列不会持续超标。
+
+`lastRecoverySuccessAt` 只属于当前 `generation + dispatchRevision` 的成功序列：首次真实失败从 `CLOSED` 创建新 generation 时必须清空；达到 3 次成功转为 `CLOSED` 后也不把旧成功时间带入下一次 generation。它不能复用 `lastObservedAt`，也不能在扫描、排队、失租或状态读取时刷新。
 
 恢复不能用 `healthCheckModel` 代替实际失败模型，也不能用 Key-2 的成功恢复 Key-1。
 
@@ -277,20 +312,84 @@ CapabilityKey + requestId + attemptId + dispatchRevision + observedAt + sourceFe
 | --- | --- | --- | --- | --- |
 | `CLOSED` | 非主 `upstream_not_complete` | `OPEN` | `1` | `0` |
 | `OPEN` | 未到 `retryAt` 的业务请求 | `OPEN` | 不变 | `0` |
-| `OPEN` | 到期且取得 lease | `HALF_OPEN` | 不变 | `0` |
-| `HALF_OPEN` | `complete_success` | `RECOVERING` | 不变 | `1` |
-| `RECOVERING` | `complete_success` 且计数 `< 3` | `RECOVERING` | 不变 | 加 1 |
-| `RECOVERING` | `complete_success` 且计数 `= 3` | `CLOSED` | `0` | `0` |
-| `HALF_OPEN/RECOVERING` | `upstream_not_complete` | `OPEN` | 加 1，最大 `4` | `0` |
-| `HALF_OPEN/RECOVERING` | `unknown`、取消、失租、CAS 冲突 | `OPEN` | 不变 | 不变 |
-| `OPEN` | `unknown`、取消、失租、CAS 冲突 | `OPEN` | 不变 | `0` |
+| `OPEN` | 到期且取得 lease | `HALF_OPEN` | 不变 | 保留，首次为 `0` |
+| `RECOVERING` | 到期且取得 lease | `HALF_OPEN` | 不变 | 保留 `1` 或 `2` |
+| `HALF_OPEN` | `complete_success`，原计数 `0` | `RECOVERING` | 不变 | `1` |
+| `HALF_OPEN` | `complete_success`，实际成功间隔 `<= 2 分钟`、原计数 `1` | `RECOVERING` | 不变 | `2` |
+| `HALF_OPEN` | `complete_success`，实际成功间隔 `<= 2 分钟`、原计数 `2` | `CLOSED` | `0` | `0` |
+| `HALF_OPEN` | `complete_success`，实际成功间隔 `> 2 分钟`（当前成功序列重启） | `RECOVERING` | 不变 | `1` |
+| `HALF_OPEN` | `upstream_not_complete` | `OPEN` | 加 1，最大 `4` | `0`，清空成功时间 |
+| `HALF_OPEN` | `unknown` 或取消，原计数 `0` | `OPEN` | 不变 | `0` |
+| `HALF_OPEN` | `unknown` 或取消，原计数 `> 0` | `RECOVERING` | 不变 | 保留 |
+| `HALF_OPEN` | 失租、CAS 冲突 | 权威 state 不变，本地结果 `STALE` | 不变 | 不变 |
+| `OPEN/RECOVERING` | 尚未取得 lease 就取消 | 当前 phase 不变 | 不变 | 不变 |
 | 任意活动 phase | revision 变化 | 旧结果 `STALE`，新 revision `CLOSED` | `0` | `0` |
 
-只有 `CLOSED` 允许普通派发；`HALF_OPEN` 和 `RECOVERING` 即使探测成功一次仍继续过滤。任何状态转换必须同时校验 `capabilityHash + dispatchRevision + generation + leaseId`，缺一项即拒绝。
+只有 `CLOSED` 允许普通派发；`HALF_OPEN` 和 `RECOVERING` 即使探测成功一次仍继续过滤。`HALF_OPEN` 是持租执行态，必须保留进入它之前的 `recoverySuccessCount`，不能用 phase 切换隐式清零。任何状态转换必须同时校验 `capabilityHash + dispatchRevision + generation + leaseId`，缺一项即拒绝。
 
-### 8.4 重启与多实例
+### 8.4 同一 Key 的并发失败风暴防护
 
-phase、generation、`retryAt` 和 probe lease 必须在跨进程共享运行时存储中。worker 重启后，未过期 `OPEN` 仍过滤，过期 lease 可被新 worker 接管；lease 续租每 15 秒一次，续租失败立即停止探测并将结果记为 `unknown`。旧结果因 generation/revision 不匹配失效。不能用进程内 Map 代替权威事实。
+#### 8.4.1 保护对象和锁顺序
+
+并发保护对象是精确 `CapabilityKey` 的**未提交上游请求**，不是账户，不是 `credentialSourceAccountId`，也不是整个模型。Node 必须按下面的顺序执行，不能把账户并发槽拿来充当前置闸门：
+
+```text
+账户硬门禁/本地屏蔽/代理可用性
+  -> 账户并发槽（沿用现有实现；仅在进入上游前短暂持有）
+  -> prepareUpstreamAccount，确定最终 Key、模型、入口、映射和 endpoint
+  -> foreground admission（同一 CapabilityKey 最多 2 个未提交请求）
+  -> 上游发送
+```
+
+如果 `foreground admission` 返回 `busy`，Node 必须立即释放刚拿到的账户并发槽，不得在闸门等待期间占着账户槽；随后把当前 Key 加入本请求的临时排除集，按现有 Key 游标尝试同账户其他 Key，再按原有账户/分组候选顺序继续。只有所有候选都因闸门 `busy` 或既有并发容量暂不可用时，才复用 `foregroundQueueWait` 等待一次共享 Redis admission 事件并重新枚举；等待前和唤醒后都必须重读 state，不能依赖通知不丢失；不创建独立的无界请求队列。
+
+这条顺序同时解决两个竞态：被 `OPEN` 的 Key 不会先消耗账户槽再被丢弃；同一账户的其他模型和其他 Key 仍可使用自己的账户并发预算。foreground 闸门与已有账户硬并发是两层约束，实际发送必须同时持有两者。
+
+#### 8.4.2 原子准入和失败封口
+
+`admitForeground(capabilityHash, dispatchRevision, attemptId)` 必须由 Redis Lua 在一次原子操作中完成：
+
+1. 先校验 revision；`OPEN/HALF_OPEN/RECOVERING` 直接返回 `blocked`，不增加在途计数。
+2. 清理已过 `foregroundPrecommitLease` 的遗留 permit；计数小于 2 才创建带 `attemptId` 的 permit 并返回 `admitted`，否则返回 `busy`。
+3. 同一个 `attemptId` 重复调用返回原结果，不能重复占用 permit。
+
+业务请求在真实上游结果为 `upstream_not_complete` 时，必须在同一个 Redis 原子写路径里完成“当前 generation 的 `OPEN`（非 MainProbe）+ 按第 8.2 节计算 `retryAt`（首次为 `now+5s`）+ 新请求封口 + 唤醒等待者”。第一条失败赢得 generation；并发晚到的失败只追加观察/幂等回执，不得新建 generation、重置退避或重新放大计数。Lua 同时递增该 `CapabilityKey` 的 admission wake sequence，并向命名空间事件通道发布 `capabilityHash`；跨 Gateway 副本的等待者先重读 state，再按事件唤醒，丢通知时不得把请求永久挂起。permit 的释放仍须在 `finally` 做带 owner token 的幂等删除，并递增同一 wake sequence；失败写和 permit 释放的先后不允许让新的请求绕过 `OPEN`。Redis 写失败时只能释放本地 permit 并把当前 Key 排除，必须保留原始写错误，不能声称共享 `OPEN` 已建立。
+
+已经发送上游的其他请求无法被事后取消；它们的响应仍按各自的真实结果结算。`OPEN` 只阻止新的准入，不伪造已发请求的结果，也不把晚到结果写入新的 generation。
+
+#### 8.4.3 permit 释放和流式边界
+
+- 非流式请求：在 `complete_success` 或 `upstream_not_complete/unknown` 终态释放 permit。
+- 流式请求：在收到首个满足当前协议的有效帧并向客户端提交 `precommit` 后释放 permit；此后长流继续持有原有账户并发槽，但不再占用“失败风暴前置预算”。
+- 首帧前超时、连接失败、响应无法形成有效协议帧均视为 `upstream_not_complete`（已真实到达上游）或 `unknown`（没有可信上游结论），按第 5 节结算；不能因为 permit 已释放而吞掉后续真实失败。
+- permit 释放必须放在 `finally`，并带 owner token；重复释放是幂等操作。进程崩溃由 `foregroundPrecommitLease` 自然回收，不能依赖进程内 Map。
+- 同一业务请求的 Key 轮换、兼容性重试或备用 upstream URL 每产生一次新的真实上游 attempt，都必须先结算并释放上一个 attempt 的 permit，再为新的完整 `CapabilityKey` 重新申请；未获准入的 attempt 不得写入 request attempt tracker 的“已发送”集合。
+
+#### 8.4.4 10 并发的确定性行为
+
+同一 `CapabilityKey` 收到 10 个同时请求时，最多 2 个请求能在同一时刻进入未提交上游窗口。其余请求不向这个 Key 发送请求：
+
+```text
+前 2 个：admitted -> 上游
+其余 8 个：busy -> 释放账户槽 -> 改选其他 Key/账户
+首个真实失败：原子 OPEN -> 唤醒等待者 -> 该 Key 后续全部 blocked
+```
+
+如果前 2 个请求在健康情况下很快提交首帧/完成，permit 会即时释放，等待者重新枚举后继续使用；因此不会把健康 Key 永久变成单线程。若只有这一个 Key 且它确实不可用，等待预算耗尽后返回现有的可重试容量/候选耗尽结果，不能再把 8 个请求送到已证实失败的上游。这个结果可能是“没有可用候选”，但不会制造 10 个同一上游失败，也不会把账户误标为异常。
+
+#### 8.4.5 MainProbe 的特殊规则
+
+完整命中 `MainProbe` 的请求也可以使用同一前置 permit 来吸收同波次并发，但**绝不创建 `key_model` phase**。首个主模型失败只为失败的完整 `CapabilityKey` 建立短暂的 `mainProbeFence`，并按现有 J1 confirmation lease 触发/复用一个 J1 主探测；J1 探测 owner 绕过该 fence。J1 返回后：
+
+- J1 `complete_success` 且 winner Key 与 fence 的 `keyFingerprint` 相同：只清理该精确 `mainProbeFence`；winner 是其他 Key 时，其他 Key 的 fence 不得被清理，按 fence 剩余 TTL 保持临时避让；
+- J1 失败：由现有 J1 账户状态和冷却契约决定，前置 fence 不越权写账户；
+- J1 `unknown`、失租或 CAS 冲突：fence 延后 `unknownRetry` 后重新观察，不写 `accounts.status`。
+
+该 fence 只是同一失败 Key 并发波次的入口协调，不是第二套账户健康状态机；账户状态仍只由 J1 决定，非主模型的 `key_model` 恢复也不能清理它。J1 的 winner Key 必须作为现有结果事实保留并参与 fence CAS，不能只返回账户成功而丢掉物理 Key 身份。
+
+### 8.5 重启与多实例
+
+phase、generation、`retryAt`、`lastRecoverySuccessAt` 和 probe lease 必须在跨进程共享运行时存储中。model-recovery worker 重启后，未过期 `OPEN` 仍过滤，过期的 45 秒 probe lease 可被新 worker 接管；model-recovery lease 每 10 秒续租一次，续租失败立即停止探测并将结果记为 `unknown`。J1 自身仍沿用现有 lease/续租参数；foreground permit 使用 90 秒租约并每 30 秒续租。旧结果因 generation/revision 不匹配失效。不能用进程内 Map 代替权威事实。
 
 ## 9. Job 与代码所有权
 
@@ -304,9 +403,9 @@ phase、generation、`retryAt` 和 probe lease 必须在跨进程共享运行时
 | Key cursor | `health_check` | `model_recovery:<capabilityHash>` |
 | 任务来源 | `account_health_check` | `model_recovery_probe` |
 
-model-recovery 首版固定运行参数：扫描周期 5 秒、每次最多取 128 个到期 state、全局最多 32 个并发探测、同一 `credentialSourceAccountId` 最多 2 个并发探测、单个 CapabilityKey 只能有 1 个 lease、单次探测超时 65 秒、lease 90 秒、单次响应上限 256 KiB。批次超限的 state 保留原 `retryAt`，下一轮继续处理；禁止无界创建 goroutine、队列或探测请求。J1 的现有调度参数不复制到 model-recovery，也不因本修复调整。
+model-recovery 首版固定运行参数：扫描周期 1 秒、每次最多取 128 个到期 state、全局最多 32 个并发探测、同一 `credentialSourceAccountId` 最多 2 个并发探测、单个 CapabilityKey 只能有 1 个 lease、单次探测超时 30 秒、lease 45 秒、10 秒续租、`RECOVERING` 全局保留 8 个可借用槽、同来源保留 1 个可借用槽、continuation 到期后 45 秒内启动为目标、单次响应上限 256 KiB。批次超限的 state 保留原 `retryAt`，下一轮继续处理；到期 `RECOVERING` continuation 优先于普通 OPEN probe，超过启动目标只告警不清成功计数；禁止无界创建 goroutine、队列或探测请求。J1 的现有调度参数不复制到 model-recovery，也不因本修复调整。
 
-共享底层能力可以包括配置读取、凭据解封、Key 选择、映射解析、代理、TLS、HTTP/SSE、超时、取消、lease、CAS 和脱敏日志；不能共享会互相覆盖的 outcome、cursor、恢复计数或状态投影。
+共享底层能力可以包括配置读取、凭据解封、Key 选择、映射解析、代理、TLS、HTTP/SSE、超时、取消、lease、CAS 和脱敏日志；model-recovery probe 不取得 foreground permit，避免恢复任务与业务请求互相挤占；不能共享会互相覆盖的 outcome、cursor、恢复计数或状态投影。
 
 Node 网关负责捕获最终 Key/模型/入口、记录统一观察、提交 typed intent 和过滤候选。Go jobs 负责恢复 lease、精确探测、phase/generation/retryAt 和模型运行态投影。J1 继续由现有 Go owner 负责账户状态。`model_recovery_probe` 不得写 `accounts.status`、J1 cursor、J1 failure count 或账户 cooldown。
 
@@ -317,6 +416,7 @@ Node 网关负责捕获最终 Key/模型/入口、记录统一观察、提交 ty
 | `accounts.status`、账户 cooldown、J1 failure count | 只读 | 唯一写入者 | 禁止 | 只投影 |
 | `key_model` `OPEN` intent | 唯一提交者 | 禁止 | 禁止直接凭空创建 | 只投影 |
 | `key_model` `phase/retryAt/generation` | 只读/过滤 | 禁止 | 唯一写入者 | 只投影 |
+| foreground permit / `mainProbeFence` | 唯一申请、释放和观察者 | J1 只可绕过 MainProbe fence | 不占用业务 permit；不得修改 | 不投影为账户状态 |
 | J1 cursor `health_check` | 禁止 | 唯一写入者 | 禁止 | 禁止 |
 | recovery cursor `model_recovery:<capabilityHash>` | 禁止 | 禁止 | 唯一写入者 | 禁止 |
 | 管理 API `runtimeSuppression` | 只读查询 | 禁止 | 禁止 | 由共享 state 查询生成 |
@@ -328,14 +428,14 @@ Node 网关负责捕获最终 Key/模型/入口、记录统一观察、提交 ty
 顺序必须是：
 
 1. API Key、路由策略、分组、授权和账户硬门禁；
-2. 解析客户端模型、入口族、最终映射和上游 endpoint；
-3. 枚举账户 API Key；
+2. 执行现有本地 suppression、transport circuit、代理/IP 避让；
+3. 解析客户端模型、入口族、最终映射和上游 endpoint，并枚举账户 API Key；
 4. 过滤对应 CapabilityKey 的 `OPEN/HALF_OPEN/RECOVERING`；
-5. 执行现有本地 suppression、transport circuit、代理/IP 避让；
-6. 执行现有配额、并发、会话亲和、质量和优先级排序；
-7. 派发上游。
+5. 执行现有配额、并发、会话亲和、质量和优先级排序；
+6. 对最终选定的 CapabilityKey 执行 `admitForeground`；`blocked` 立即换候选，`busy` 释放本次已取得的账户并发槽后换候选；
+7. 取得 foreground permit 后才派发上游；响应首个有效协议帧/终态或失败时幂等释放 permit。
 
-Key-模型过滤必须在选择 Key 前完成，但不能提前把整个账户从候选窗口删除。某模型所有 Key 被过滤时，只表示该账户对本次模型没有候选；继续走其他账户、后备分组或有界等待，不写账户 `temporary_unavailable`。
+Key-模型的 phase 过滤必须在选择最终 Key 前完成，但 foreground permit 必须在最终 Key 已确定后申请；不能提前把整个账户从候选窗口删除。某模型所有 Key 被过滤，或所有未过滤 Key 都返回 `busy` 时，只表示该账户对本次模型暂时没有可派发候选；继续走其他账户、后备分组或一次有界等待，不写账户 `temporary_unavailable`。`busy` 不算业务失败、不能写 `key_model OPEN`，也不能触发 J1。
 
 运行时状态读取失败不能静默当作 `CLOSED`，也不能借机修改账户健康状态。Node 对同一 state store 只做 1 次 50 毫秒后重试；仍不可读时，对受影响的精确 Key-模型本次按不可选处理并尝试其他已通过硬门禁的 Key/账户，其他 Key、其他模型和账户状态不受影响。必须记录不可读事件，并提供关闭新过滤入口的 kill switch；kill switch 只停止新屏蔽写入和候选过滤，不删除已有 state，也不停止 Go 恢复，恢复 owner 仍可自然清理。不能把读取异常伪装成模型健康结论。
 
@@ -376,9 +476,12 @@ Key-模型过滤必须在选择 Key 前完成，但不能提前把整个账户�
 - 详情按需展示脱敏 Key 标识、模型、入口、最终上游模型、到期时间和最近探测结果；
 - 不展示明文 Key、token、完整错误正文或用户 prompt；
 - 主探测成功不能显示“所有模型均正常”；
+- `foregroundBusy`、等待数和 permit 数是瞬时调度指标，不是账户异常；前端列表不得把一次 `busy` 显示为“账户故障”，详情页只在排障模式展示当前 admitted 数和最近等待耗时；
 - 管理 API 必须按本节固定结构返回；在 API 发布前，结构化日志和指标必须先可用，但前端不得自行从错误记录推断状态。
 
 健康监控并列显示“账户健康（J1 主探测）”和“运行时屏蔽（Key-模型）”，两者不合并。
+
+并发风暴保护还必须提供以下结构化观测，不用于业务分支：`foreground_admit_total`、`foreground_busy_total`、`foreground_blocked_total`、`foreground_wait_ms`、`foreground_release_total`、`foreground_precommit_total`、`foreground_open_fence_total`、`foreground_permit_expired_total`。Prometheus 聚合指标只使用低基数标签 `lane`、`providerCode`、`outcome` 和 `reason`；`capabilityHash`、`dispatchRevision`、脱敏 `keyFingerprint` 只进入结构化日志、审计和按 hash 查询的详情接口，禁止作为常驻指标标签。告警至少包括：同一 hash 的 `busy` 持续 5 分钟且没有 `precommit`、permit 过期率超过 1%、以及 `foreground_busy` 导致的候选耗尽率较启用前基线上升超过 10%。日志必须能关联 `traceId + attemptId + capabilityHash`，但不得记录 Key 明文或用户内容。
 
 管理 API 的固定返回结构为：
 
@@ -396,13 +499,13 @@ Key-模型过滤必须在选择 Key 前完成，但不能提前把整个账户�
 
 `routes` 只在详情接口返回，列表接口只返回 `activeCount` 和 `phaseCounts`；Key 只返回脱敏指纹，`lastOutcome` 只返回三态值，`retryAt` 返回 ISO-8601 时间。前端不能根据 `lastOutcome`、HTTP 状态或错误文本再次计算账户状态。
 
-详情 `routes[]` 固定字段为 `capabilityHash`、`keyFingerprint`、`clientModel`、`clientEndpointFamily`、`finalUpstreamModel`、`upstreamEndpointMode`、`phase`、`retryAt`、`recoverySuccessCount`、`lastOutcome`、`lastObservedAt`；不得返回 token、Base URL、完整 Key、请求正文或上游响应。
+详情 `routes[]` 固定字段为 `capabilityHash`、`keyFingerprint`、`clientModel`、`clientEndpointFamily`、`finalUpstreamModel`、`upstreamEndpointMode`、`phase`、`retryAt`、`recoverySuccessCount`、`lastRecoverySuccessAt`、`lastOutcome`、`lastObservedAt`；不得返回 token、Base URL、完整 Key、请求正文或上游响应。
 
 ## 14. 存储与接口契约
 
-最终实现复用现有 account circuit 的控制面接口、lease、generation、CAS 和 outbox 机制，但为 `key_model` 使用独立的 Redis 逻辑命名空间 `gateway-account-circuit-key-model` 和独立 50,000 条容量计数；它与现有 `gateway-account-circuit` 的账户/Key/`protocol_model` 容量互不争抢。SQLite/PostgreSQL 业务库只接收现有 control-plane outbox 的脱敏投影，不作为 Node/Go 派发热路径的锁。新增明确的 `key_model` scope；旧 `protocol_model` 行不迁移、不复用。
+最终实现复用现有 account circuit 的控制面接口、lease、generation、CAS 和 outbox 机制，但为 `key_model` 使用独立的 Redis 逻辑命名空间 `gateway-account-circuit-key-model` 和独立 50,000 条容量计数；它与现有 `gateway-account-circuit` 的账户/Key/`protocol_model` 容量互不争抢。foreground admission permit 和 `mainProbeFence` 只存短 TTL 的 Redis 计数/租约，不计入 50,000 条 `key_model` 状态容量，不写业务数据库；它们只允许在已持有现有账户并发槽的真实候选上创建，活跃数量因此受既有全局/账户并发上限约束，不得按任意请求参数无界建 Key。SQLite/PostgreSQL 业务库只接收现有 control-plane outbox 的脱敏投影，不作为 Node/Go 派发热路径的锁。新增明确的 `key_model` scope；旧 `protocol_model` 行不迁移、不复用。
 
-逻辑 Redis 键固定为 `state:<capabilityHash>`、`due`、`lease:<capabilityHash>`、`receipt:<intentId>` 和 `capacity`，统一经过现有 namespace 包装。Node 和 Go 必须访问同一组键；禁止再建进程内 Map、第二个 Redis 前缀或独立数据库。
+逻辑 Redis 键固定为 `state:<capabilityHash>`、`due`、`lease:<capabilityHash>`、`receipt:<intentId>`、`admission:<capabilityHash>`、`admissionLease:<capabilityHash>:<attemptId>`、`admissionWake:<capabilityHash>`、`mainProbeFence:<capabilityHash>`、`admission-events` 和 `capacity`，统一经过现有 namespace 包装。`admission` 是短期前置 permit 计数，`admissionWake` 是单调 wake sequence，`admission-events` 是跨副本通知通道；通知可以丢，state 和 sequence 才是权威事实。`mainProbeFence` 使用独立 owner 标识，不写入 `key_model.phase`。这些对象都不是第三套健康状态机。Node 和 Go 必须访问同一组键；禁止再建进程内 Map、第二个 Redis 前缀或独立数据库。
 
 `key_model` 的持久化主键为 `scopeKind=key_model + capabilityHash`，最多保留 50,000 个活动 scope；容量达到上限时，最旧的 `CLOSED` 记录先清理，仍不足则拒绝创建新屏蔽并将本次 Key 按不可选处理，不能删除 `OPEN/HALF_OPEN/RECOVERING`。关闭记录保留 5 分钟供幂等重放，之后由有界清理任务删除。
 
@@ -412,13 +515,14 @@ Key-模型过滤必须在选择 Key 前完成，但不能提前把整个账户�
 scopeKind, credentialSourceAccountId, keyFingerprint,
 clientModel, clientEndpointFamily, finalUpstreamModel,
 upstreamEndpointMode, capabilityHash, dispatchRevision, generation, phase,
-backoffAttempt, retryAt, recoverySuccessCount, probeLease, lastObservedAt,
+backoffAttempt, retryAt, recoverySuccessCount, lastRecoverySuccessAt,
+probeLease, lastObservedAt,
 lastOutcome, createdAt, updatedAt, retainedUntil
 ```
 
 Node 只提交 typed intent，不提交 SQL 或任意 patch。Go 只提交带 CapabilityKey、generation、revision、lease 和观察时间的恢复结果。所有写入必须做 capability 完整性校验、revision fence、单飞、幂等和 CAS；凭据明文、正文、token 和完整上游响应禁止落库。数据库迁移必须把 `account_circuit_incidents.scope_kind`、`failure_scope` 的允许值加入 `key_model`，并增加 `capability_hash`、`credential_source_account_id`、`client_endpoint_family`、`final_upstream_model`、`upstream_endpoint_mode` 字段及对应唯一约束；旧 `protocol_model` 约束和父级关系不改变。
 
-Node 失败意图固定字段为 `intentId`、`requestId`、`attemptId`、`capabilityHash`、`dispatchRevision`、`observedAt`、`outcome=upstream_not_complete`、`sourceFence`；Go 结果固定字段为 `runId`、`capabilityHash`、`generation`、`dispatchRevision`、`leaseId`、`observedAt`、`outcome`、`recoverySuccessCount`。任何缺字段、hash 不匹配、revision 过期、lease 不属于当前 owner 的写入均返回 `stale`，不做隐式补全。
+Node 失败意图固定字段为 `intentId`、`requestId`、`attemptId`、`capabilityHash`、`dispatchRevision`、`observedAt`、`outcome=upstream_not_complete`、`sourceFence`；Go 结果固定字段为 `runId`、`capabilityHash`、`generation`、`dispatchRevision`、`leaseId`、`observedAt`、`outcome`、`recoverySuccessCount`、`lastRecoverySuccessAt`。任何缺字段、hash 不匹配、revision 过期、lease 不属于当前 owner 的写入均返回 `stale`，不做隐式补全。
 
 ## 15. 取消、配置变化和回滚
 
@@ -434,6 +538,8 @@ Node 失败意图固定字段为 `intentId`、`requestId`、`attemptId`、`capab
 | 情况 | 本次请求 | 持久化动作 | 对账户状态 |
 | --- | --- | --- | --- |
 | 精确 state 为 `OPEN/HALF_OPEN/RECOVERING` | 跳过该 Key，尝试其他候选 | 不写 | 不影响 |
+| foreground permit 为 `busy` | 释放账户槽，尝试同账户其他 Key 或其他候选；仅在全候选 busy 时有界等待 | 不写 | 不影响 |
+| `mainProbeFence` 存在 | 跳过同波次 MainProbe 业务请求；J1 owner 可绕过并取得主探测结论 | 不写 `key_model` | 仍只由 J1 决定 |
 | state store 读取失败 | 跳过该 Key，50 ms 后只重试一次 | 写入 `runtime_state_unavailable` 指标 | 不影响 |
 | state store 写入失败 | 当前 Key 本地排除，继续其他候选 | 保留原始错误，不假装 `OPEN` | 不影响 |
 | model-recovery 容量不足 | 不启动该 probe，保留 `retryAt` | 写 `recovery_capacity_exhausted` | 不影响 |
@@ -444,14 +550,14 @@ kill switch 名称固定为 `JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED`，
 
 ## 16. 启用与灰度
 
-启用前必须证明：共享 `key_model` 状态、lease、generation、Node 捕获/过滤、Go 精确恢复和主/非主写权限已经闭环；普通请求失败可以按限频规则触发 J1 A 探测，但不能直接执行 `request_failure -> 整号 temporary_unavailable` 写入；`protocol_model` 父级升级已隔离；多 Key、授权、映射、多协议、取消、重启和蓝绿测试通过。
+启用前必须证明：共享 `key_model` 状态、admission permit、lease、generation、Node 捕获/过滤、Go 精确恢复和主/非主写权限已经闭环；普通请求失败可以按限频规则触发 J1 A 探测，但不能直接执行 `request_failure -> 整号 temporary_unavailable` 写入；`protocol_model` 父级升级已隔离；多 Key、授权、映射、多协议、取消、重启和蓝绿测试通过。所有承接流量的 Gateway replica 必须先升级到同一 guard 版本并指向同一 Redis namespace，确认没有旧副本绕过 `admitForeground` 后才能打开 kill switch；灰度期间旧/新版本不能混接同一生产流量池。
 
 上线门槛固定为以下全部满足：shadow 阶段 1 小时内 Node 计算的过滤候选与离线回放一致率 100%；UAT 连续 2 小时无主探测误屏蔽、无跨 Key 误屏蔽；单生产分组连续 24 小时 `runtime_state_unavailable` 为 0、`stale` 写入率低于 0.1%、恢复探测超时率低于 5%、候选耗尽率不高于启用前基线的 1.1 倍；Redis state、lease、outbox、Node 和 Go 互操作 smoke 全部通过。任一门槛失败，保持 kill switch `false`，不得扩大灰度。
 
 灰度顺序：
 
 1. shadow：只记录“如果过滤会过滤谁”；
-2. UAT：只启用非主文本模型；
+2. UAT：只启用非主文本模型，并执行 10 并发同一 CapabilityKey 的坏上游回放；
 3. 单个生产分组：限制账户范围和恢复并发；
 4. 观察完整屏蔽/恢复窗口；
 5. 文本协议连续观察 24 小时且错误率、恢复延迟和候选耗尽均未恶化后，才允许显式开启图片探测；未知协议永远不进入本版自动恢复。
@@ -477,20 +583,27 @@ kill switch 名称固定为 `JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED`，
 12. 本地校验失败、候选为空、并发拒绝、客户端取消和任务异常不产生共享屏蔽。
 13. 1000 个相同失败只形成一个活动 generation/恢复意图。
 14. 同一 Key-模型只允许一个 half-open lease。
-15. 连续成功阈值未达到时仍保持屏蔽；再次失败按退避延长。
-16. 旧结果晚于新 revision 返回时被拒绝。
-17. Node/Go 重启、双实例竞争和旧 lease 接管保持单 owner。
-18. `disabled` Key 不被自动复活。
+15. 同一 CapabilityKey 10 并发时最多 2 个未提交请求进入上游；其余请求在发送前改选，不产生失败记录。
+16. `busy` 请求释放已取得的账户并发槽，不在闸门等待期间占槽，不触发 J1 或 `key_model OPEN`。
+17. 首个真实失败原子封口并唤醒等待者；后续等待请求不再发送到该 Key。
+18. 流式首个有效帧 `precommit` 后释放 foreground permit，长流仍受原账户并发槽管理。
+19. 跨 Gateway 副本丢失 admission 通知时，等待者能通过 state/sequence 重读退出或重新枚举，不永久挂起。
+20. 连续成功阈值未达到时仍保持屏蔽；再次失败按退避延长。
+21. 旧结果晚于新 revision 返回时被拒绝。
+22. Node/Go 重启、双实例竞争和旧 lease 接管保持单 owner。
+23. `disabled` Key 不被自动复活。
 
 ### 既有链路、展示和发布
 
-19. 授权、来源状态、分组、额度、实例到期和账户硬状态仍是硬门禁。
-20. Key 轮换、线程池、并发、配额、会话亲和、代理和质量排序不改变。
-21. `temporary_unavailable` 账户仍按现有账户门禁停止所有模型；模型 `OPEN` 不能反向恢复账户。
-22. 蓝绿 standby 不运行第二个 model-recovery owner。
-23. Chat、Responses、Messages、GenerateContent、Images 和映射使用独立精确键。
-24. 前端同时显示 J1 账户状态和 Key-模型运行时屏蔽，不把后者伪装成账户状态。
-25. 未使用模型不会自动显示为不可用，日志不泄露凭据和用户内容。
+24. 授权、来源状态、分组、额度、实例到期和账户硬状态仍是硬门禁。
+25. Key 轮换、线程池、账户硬并发、配额、会话亲和、代理和质量排序不改变；foreground permit 仅是额外的精确前置约束。
+26. `temporary_unavailable` 账户仍按现有账户门禁停止所有模型；模型 `OPEN` 不能反向恢复账户。
+27. MainProbe 的同波次 fence 不写 `key_model`，J1 owner 可绕过 fence；J1 在其他 Key 上成功不能清理失败 Key 的 fence，账户状态仍只由 J1 决定。
+28. 蓝绿 standby 不运行第二个 model-recovery owner。
+29. Chat、Responses、Messages、GenerateContent、Images 和映射使用独立精确键。
+30. 前端同时显示 J1 账户状态和 Key-模型运行时屏蔽，不把后者伪装成账户状态。
+31. 未使用模型不会自动显示为不可用，日志不泄露凭据和用户内容。
+32. 第一次恢复成功后，即使 continuation 在队列中等待 90 秒，成功计数和 `lastRecoverySuccessAt` 仍保持不变；下一次真实成功在 2 分钟内到达时递增，超过 2 分钟时以当前成功重新计为 1；大量 OPEN probe 持续到来时，RECOVERING continuation 按保留槽和最老优先，不得永久饥饿。
 
 ## 18. 自审结论
 
@@ -501,28 +614,30 @@ kill switch 名称固定为 `JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED`，
 - 主探测与模型恢复共用底层探测能力但分离写权限，成功/失败不能互相清状态。
 - 不依赖脆弱的状态码或错误码表。
 - 过滤位于 Key 选择前的精确层，不替换并发、配额、会话、代理和蓝绿逻辑。
+- 并发失败风暴在上游发送前被限制为每个精确 Key-模型最多 2 个未提交请求；`busy` 请求改选或有界等待，不占住账户槽。
 
 ### 18.2 残余风险
 
-1. 单次真实失败可能造成最多 30 秒的误屏蔽；固定的 30 秒首退避、单飞和同 Key 连续恢复将其限制在可接受范围内。
+1. 单次真实失败可能造成最多 5 秒的首轮误屏蔽；固定的 5 秒首退避、1 秒扫描、单飞和同 Key 连续恢复将其限制在可接受范围内。恢复队列若持续超过保留吞吐，会拉长实际恢复时间，但不会被错误记为能力失败。
 2. 主模型不同入口若只比较模型名会误分流，必须比较完整 MainProbe。
 3. 现有 `protocol_model` 父级升级若未隔离，局部故障仍会穿透到账户级。
 4. Go 与 Node 若不共享同一权威状态，会出现一边恢复、一边仍屏蔽；共享存储、generation、lease 和 revision 是硬门禁。
 5. 前端账户主状态可能仍为正常，这是保留语义；必须用单独运行时提示表达局部屏蔽。
+6. 每个 Key-模型固定 2 个未提交 permit 会限制“只有一个可用 Key 且响应很慢”的峰值并发；这是阻止 10 条不可撤回失败的必要取舍，必须用多 Key/多账户候选和首帧后释放来保持整体吞吐。
 
 ### 18.3 失败模式预案
 
 | 失败模式 | 保护动作 | 恢复条件 |
 | --- | --- | --- |
 | Redis 不可读 | 精确 Key 本次 fail-closed，50 ms 后重试 1 次，不修改账户 | Redis 恢复且读取成功 |
-| Redis 不可写 | 当前 Key 本地 30 秒避让，保留写错误 | 下一次请求成功写入 intent |
+| Redis 不可写 | 当前 Key 本地最长 5 秒短暂避让，保留写错误，不假装共享 `OPEN` | 下一次请求成功写入 intent |
 | Go recovery 全部停止 | 现有 OPEN 继续过滤，不扩大新 OPEN；告警 | Go owner 重新取得任务 lease |
 | Node 新过滤逻辑异常 | kill switch 关闭新写入和过滤 | 修复并重新通过 shadow/UAT |
 | 状态容量达到 50,000 | 只清理 CLOSED，活动 state 不删除 | 清理出容量后继续 |
 | 路由 revision 变化 | 所有旧 state 标记 stale，新 revision 从 CLOSED 开始 | 新请求重新观察 |
 | 单个来源账户探测过载 | 同来源并发硬上限 2，其他到期项顺延 | 当前探测释放 lease |
 
-告警固定为：`runtime_state_unavailable > 0` 立即告警；`OPEN` 活动数连续 10 分钟增长且恢复成功率低于 50% 告警；候选耗尽率超过启用前基线 1.1 倍告警；任意账户状态被 `model_recovery_probe` 写入立即告警并阻断发布。
+告警固定为：`runtime_state_unavailable > 0` 立即告警；`OPEN` 活动数连续 10 分钟增长且恢复成功率低于 50% 告警；任一 `RECOVERING` continuation 启动延迟连续 5 分钟超过 45 秒时触发 `recovery_continuation_slo_breach`；最老 due age 超过 2 分钟或任一来源队列持续占满保留槽时触发恢复容量告警；候选耗尽率超过启用前基线 1.1 倍告警；任意账户状态被 `model_recovery_probe` 写入立即告警并阻断发布。
 
 ### 18.4 实施顺序
 
@@ -545,6 +660,7 @@ kill switch 名称固定为 `JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED`，
 - 不存在按状态码、错误码或错误类型分支的屏蔽规则；
 - Go 使用原失败 Key 和原模型路由，连续成功后才恢复；
 - 单飞、lease、generation、revision 和重启接管在多实例下有效；
+- 同一 Key-模型的 10 并发不会在首个失败已可见后继续全部打向该 Key，前置 permit、失败封口和 bounded wait 的竞态回归通过；
 - 账户、Key、授权、并发、线程池、会话、图片、多协议和蓝绿回归通过；
 - 前端和监控明确区分账户健康与 Key-模型运行时屏蔽；
 - 任一闭环未完成时，新路径保持关闭，不与旧路径双写。

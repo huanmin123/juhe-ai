@@ -137,6 +137,41 @@ func TestApplyHealthFactUsesLatestWinsOrdering(t *testing.T) {
 	}
 }
 
+func TestListHealthSyncRetriesRequiresDurablePolicySnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "health-retry.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := "2026-08-27T10:15:00Z"
+	_, err = db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "run-1", "acct-1", "sys-1", "openai", "gpt-5.6", "full", "failure", 12, `{"revision":"policy-1","threshold":70,"action":"quality_isolate"}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, finished, "failed", finished)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: db, mode: "sqlite"}
+	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
+	if err != nil || len(retries) != 1 {
+		t.Fatalf("retries=%#v err=%v", retries, err)
+	}
+	if retries[0].Threshold != 70 || retries[0].StatHour != "2026-08-27T10:00:00Z" {
+		t.Fatalf("retry=%#v", retries[0])
+	}
+	if !retries[0].EvidenceFormed || !retries[0].TrustFormed {
+		t.Fatalf("retry evidence=%#v", retries[0])
+	}
+	if _, err := db.Exec(`UPDATE model_check_runs SET policy_snapshot_json='{}' WHERE id='run-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ListHealthSyncRetries(context.Background(), 10); err == nil {
+		t.Fatal("missing threshold must fail closed")
+	}
+}
+
 func TestIssueInputIsImmutableAndIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j3b.db")
 	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
@@ -188,7 +223,7 @@ func TestRunLifecycleProjectionIsAtomicAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = seed.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, message TEXT NOT NULL DEFAULT '', finished_at TEXT)`)
+	_, err = seed.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, account_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, message TEXT NOT NULL DEFAULT '', finished_at TEXT, quality_health_sync_status TEXT)`)
 	if err != nil {
 		t.Fatal(err)
 	}

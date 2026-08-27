@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
 // RunService is the narrow runtime dependency of the Gateway management
@@ -26,6 +28,10 @@ type RunService interface {
 type RunRequest struct {
 	TargetType, TargetID, Model, Profile                         string
 	SystemAccountID, ActorSystemAccountID                        string
+	TriggerKind, ScheduleID                                      string
+	ProviderCode                                                 string
+	Threshold                                                    int
+	PenaltyAction                                                string
 	IdentityKey, ConfigRevision, PolicyRevision, ProbeSetVersion string
 	Endpoint, Prompt                                             string
 	Protocol                                                     string
@@ -49,13 +55,32 @@ type RunListQuery struct {
 }
 
 type Authorize func(context.Context, *http.Request) (string, error)
+
+// NewAdminAuthorize adapts the Gateway-owned session contract to the J3b
+// handler. Authentication and administrator scope checks stay in-process;
+// this adapter never proxies to Node or another Go service.
+func NewAdminAuthorize(auth *modelcheckauth.Authenticator) Authorize {
+	return func(ctx context.Context, request *http.Request) (string, error) {
+		if auth == nil || request == nil {
+			return "", errors.New("J3b Gateway authenticator is not initialized")
+		}
+		actor, err := auth.RequireAdmin(ctx, request.Header.Get("Authorization"), request.Header.Get("Cookie"))
+		if err != nil {
+			return "", err
+		}
+		return actor.SystemAccountID, nil
+	}
+}
+
 type BuildRequest func(context.Context, string, RunCommand) (RunRequest, error)
 
 type RunCommand struct {
-	TargetType string `json:"targetType"`
-	TargetID   string `json:"targetId"`
-	Model      string `json:"model"`
-	Profile    string `json:"profile,omitempty"`
+	TargetType          string `json:"targetType"`
+	TargetID            string `json:"targetId"`
+	Model               string `json:"model"`
+	Profile             string `json:"profile,omitempty"`
+	TrustedComparison   bool   `json:"trustedComparison,omitempty"`
+	TrustedComparisonID string `json:"trustedComparisonAccountId,omitempty"`
 }
 
 type HTTPHandler struct {
@@ -74,7 +99,11 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	systemAccountID, err := h.Authorize(r.Context(), r)
 	if err != nil || strings.TrimSpace(systemAccountID) == "" {
-		writeOwnerError(w, http.StatusUnauthorized, "模型检测管理请求未授权")
+		status := http.StatusUnauthorized
+		if errors.Is(err, modelcheckauth.ErrForbidden) {
+			status = http.StatusForbidden
+		}
+		writeOwnerError(w, status, "模型检测管理请求未授权")
 		return
 	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
@@ -107,7 +136,22 @@ func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, accountID
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := h.Service.Run(r.Context(), runRequest)
+	if err := validateBuiltRequest(accountID, command, runRequest); err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	key := "system-account:" + accountID
+	handle, acquired, current := h.Active.TryStart(r.Context(), key, modelcheckactive.Summary{TargetID: runRequest.TargetID, Model: runRequest.Model, Profile: runRequest.Profile, StartedAt: time.Now().UTC()})
+	if !acquired {
+		w.Header().Set("Retry-After", "1")
+		writeOwnerJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "active", "active": current}})
+		return
+	}
+	defer handle.Finish()
+	result, err := h.Service.Run(handle.Context(), runRequest)
+	if result.RunID != "" {
+		handle.Update(modelcheckactive.Summary{RunID: result.RunID})
+	}
 	if err != nil {
 		writeOwnerError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -123,6 +167,10 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accoun
 	}
 	runRequest, err := h.Build(r.Context(), accountID, command)
 	if err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateBuiltRequest(accountID, command, runRequest); err != nil {
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -146,14 +194,64 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accoun
 		return
 	}
 	flusher.Flush()
-	result, err := h.Service.RunStream(handle.Context(), runRequest, func(event ProgressEvent) {
-		_ = writeSSE(w, flusher, "progress", event)
-	})
-	if err != nil {
-		_ = writeSSE(w, flusher, "error", map[string]any{"message": err.Error()})
-		return
+	type streamResult struct {
+		result RunResult
+		err    error
 	}
-	_ = writeSSE(w, flusher, "complete", result)
+	events := make(chan ProgressEvent, 32)
+	results := make(chan streamResult, 1)
+	go func() {
+		result, err := h.Service.RunStream(handle.Context(), runRequest, func(event ProgressEvent) {
+			if event.Kind == "run_started" {
+				if data, ok := event.Data.(map[string]any); ok {
+					if runID, ok := data["runId"].(string); ok {
+						handle.Update(modelcheckactive.Summary{RunID: runID})
+					}
+				}
+			}
+			select {
+			case events <- event:
+			case <-handle.Context().Done():
+			}
+		})
+		results <- streamResult{result: result, err: err}
+	}()
+	heartbeat := h.heartbeat()
+	ticker := time.NewTicker(heartbeat)
+	defer ticker.Stop()
+	var writeMu sync.Mutex
+	writeEvent := func(event string, value any) bool {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return writeSSE(w, flusher, event, value) == nil
+	}
+	for {
+		select {
+		case event := <-events:
+			if !writeEvent("progress", event) {
+				return
+			}
+		case <-ticker.C:
+			writeMu.Lock()
+			_, writeErr := io.WriteString(w, ": heartbeat\n\n")
+			if writeErr == nil {
+				flusher.Flush()
+			}
+			writeMu.Unlock()
+			if writeErr != nil {
+				return
+			}
+		case outcome := <-results:
+			if outcome.err != nil {
+				_ = writeEvent("error", map[string]any{"message": outcome.err.Error()})
+				return
+			}
+			_ = writeEvent("complete", outcome.result)
+			return
+		case <-handle.Context().Done():
+			return
+		}
+	}
 }
 
 func (h *HTTPHandler) serveActive(w http.ResponseWriter, accountID string) {
@@ -224,14 +322,44 @@ func decodeRunCommand(r *http.Request, maxBody int64) (RunCommand, error) {
 		return RunCommand{}, errors.New("模型检测请求体不能为空")
 	}
 	decoder := json.NewDecoder(io.LimitReader(r.Body, maxBody))
+	decoder.DisallowUnknownFields()
 	var command RunCommand
 	if err := decoder.Decode(&command); err != nil {
 		return RunCommand{}, errors.New("模型检测请求体无效")
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return RunCommand{}, errors.New("模型检测请求体必须是单个 JSON 对象")
+	}
 	if command.TargetType == "" || command.TargetID == "" || command.Model == "" {
 		return RunCommand{}, errors.New("targetType、targetId、model 为必填")
 	}
+	if command.Profile != "" && command.Profile != "quick" && command.Profile != "full" {
+		return RunCommand{}, errors.New("profile 必须为 quick 或 full")
+	}
+	if command.TrustedComparisonID != "" && !command.TrustedComparison {
+		return RunCommand{}, errors.New("trustedComparisonAccountId 需要 trustedComparison=true")
+	}
+	if command.TrustedComparison && command.TrustedComparisonID == "" {
+		return RunCommand{}, errors.New("trustedComparison=true 需要 trustedComparisonAccountId")
+	}
 	return command, nil
+}
+
+func validateBuiltRequest(systemAccountID string, command RunCommand, request RunRequest) error {
+	if strings.TrimSpace(request.SystemAccountID) != strings.TrimSpace(systemAccountID) {
+		return errors.New("模型检测请求 scope 与认证账号不一致")
+	}
+	if strings.TrimSpace(request.ActorSystemAccountID) == "" {
+		return errors.New("模型检测请求缺少 actor scope")
+	}
+	if request.TargetType != "account" || request.TargetID != command.TargetID || request.Model != command.Model {
+		return errors.New("模型检测请求目标快照与原始命令不一致")
+	}
+	if request.Profile != "quick" && request.Profile != "full" {
+		return errors.New("模型检测请求 profile 快照无效")
+	}
+	return nil
 }
 
 func (h *HTTPHandler) maxBody() int64 {
@@ -239,6 +367,13 @@ func (h *HTTPHandler) maxBody() int64 {
 		return h.MaxBody
 	}
 	return 512 << 10
+}
+
+func (h *HTTPHandler) heartbeat() time.Duration {
+	if h.Heartbeat > 0 {
+		return h.Heartbeat
+	}
+	return 10 * time.Second
 }
 
 func writeSSE(w io.Writer, flusher http.Flusher, event string, data any) error {
