@@ -1180,7 +1180,7 @@ let codexTurnAvoidedFallbackEnabled = false
           dispatchCutoverReservation.release()
         }
       }
-      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease, accountCircuitAttempt, hotQualityAttempt, normalRouteFirstByteDeadline, responsePrecommitDeadlineAtMs, onFirstByteDeadline, firstByteDeadlineCoordinator } = upstreamResult
+      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease, accountCircuitAttempt, keyModelAttempt, hotQualityAttempt, normalRouteFirstByteDeadline, responsePrecommitDeadlineAtMs, onFirstByteDeadline, firstByteDeadlineCoordinator } = upstreamResult
       await settleHotQualityExplorationSafely(
         currentPreflight,
         currentPreflight.hotQualityExplorationReservation?.accountRuntimeKey === gatewayAccountRuntimeKey(account)
@@ -1328,7 +1328,12 @@ let codexTurnAvoidedFallbackEnabled = false
                 failureScope: accountTransportFailure ? 'protocol_model' : 'none',
                 source: accountTransportFailure ? 'gateway_transport' : 'request_lifecycle'
               })
-              if (!accountTransportFailure) await accountCircuitAttempt?.reportUnknown()
+              if (accountTransportFailure) {
+                await keyModelAttempt?.reportUpstreamNotComplete()
+              } else {
+                await keyModelAttempt?.reportUnknown()
+                await accountCircuitAttempt?.reportUnknown()
+              }
               throw error
             }
             if (!provenBodyTransportFailure) {
@@ -1345,10 +1350,16 @@ let codexTurnAvoidedFallbackEnabled = false
                   errorName: error instanceof Error ? error.name : undefined
                 }
               })
+              await keyModelAttempt?.reportUnknown()
               await accountCircuitAttempt?.reportUnknown()
               throw error
             }
             const bodyFailure = accountCircuitTransportFailure(error)
+            if (requestExecutionSignal.aborted) {
+              await keyModelAttempt?.reportUnknown()
+            } else {
+              await keyModelAttempt?.reportUpstreamNotComplete()
+            }
             await hotQualityAttempt.recordTerminal({
               outcomeClass: requestExecutionSignal.aborted
                 ? 'client_cancellation'
@@ -1528,6 +1539,13 @@ let codexTurnAvoidedFallbackEnabled = false
           await accountCircuitAttempt?.reportUnknown()
         } else if (!transportFailure) {
           await accountCircuitAttempt?.reportFramingComplete()
+        }
+        if (neutralSchedulingTermination || requestLocalProtocolFailure || explicitUserPolicyRetry) {
+          await keyModelAttempt?.reportUnknown()
+        } else if (protocolValidatedSuccess) {
+          await keyModelAttempt?.reportCompleteSuccess()
+        } else {
+          await keyModelAttempt?.reportUpstreamNotComplete()
         }
         logRequestStage('upstream.body.completed', {
           traceId,
@@ -2104,6 +2122,7 @@ let codexTurnAvoidedFallbackEnabled = false
         try {
           firstByteDeadlineCoordinator?.supersede()
           await settleTransferredAccountCircuitAttemptSafely(accountCircuitAttempt, account.id)
+          await keyModelAttempt?.reportUnknown()
         } finally {
           try {
             await hotQualityAttempt.recordTerminal({

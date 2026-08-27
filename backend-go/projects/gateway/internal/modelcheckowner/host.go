@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -16,14 +17,19 @@ import (
 // No dependency may be an HTTP/IPC/queue adapter; source and authentication
 // are owned by the Gateway process and are supplied by its management layer.
 type HostDependencies struct {
-	Resolve          Resolver
-	Authorize        Authorize
-	Build            BuildRequest
-	Scheduler        SchedulerSource
-	Executor         SchedulerExecutor
-	Enforcement      EnforcementApplier
-	ExecutorFactory  func(*Runtime, *QualityProjector) SchedulerExecutor
-	SchedulerFactory func(*Store, *Runtime, *QualityProjector) (SchedulerSource, SchedulerExecutor)
+	Resolve           Resolver
+	ResolveComparison Resolver
+	Tokenizer         modelcheckprobe.Tokenizer
+	ModelLimits       modelcheckprobe.ModelLimitSnapshot
+	AccountOptions    AccountOptions
+	Authorize         Authorize
+	Build             BuildRequest
+	Scheduler         SchedulerSource
+	Executor          SchedulerExecutor
+	Enforcement       EnforcementApplier
+	Quality           QualityManagement
+	ExecutorFactory   func(*Runtime, *QualityProjector) SchedulerExecutor
+	SchedulerFactory  func(*Store, *Runtime, *QualityProjector) (SchedulerSource, SchedulerExecutor)
 }
 
 type Host struct {
@@ -39,7 +45,7 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 	if !cfg.Enabled {
 		return nil, errors.New("J3b Gateway owner config is disabled")
 	}
-	if deps.Resolve == nil || deps.Authorize == nil || deps.Build == nil || deps.Enforcement == nil {
+	if deps.Resolve == nil || deps.Authorize == nil || deps.Build == nil || deps.Enforcement == nil || deps.Quality == nil {
 		return nil, errors.New("J3b Gateway owner dependencies are incomplete")
 	}
 	store, err := OpenStore(cfg)
@@ -54,8 +60,8 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 		return closeOnError(fmt.Errorf("verify J3b Gateway schema: %w", err))
 	}
 	projector := &QualityProjector{Store: store, Enforcement: deps.Enforcement}
-	runtime := &Runtime{Store: store, Resolve: deps.Resolve, Projector: projector, OwnerID: cfg.InstanceID}
-	handler := &HTTPHandler{Service: runtime, Active: modelcheckactive.NewRegistry(), Authorize: deps.Authorize, Build: deps.Build}
+	runtime := &Runtime{Store: store, Resolve: deps.Resolve, ResolveComparison: deps.ResolveComparison, Tokenizer: deps.Tokenizer, ModelLimits: deps.ModelLimits, Projector: projector, OwnerID: cfg.InstanceID}
+	handler := &HTTPHandler{Service: runtime, Quality: deps.Quality, AccountOptions: deps.AccountOptions, Active: modelcheckactive.NewRegistry(), Authorize: deps.Authorize, Build: deps.Build}
 	// HTTP and scheduler share the same Runtime/Store but never call across
 	// processes. A Gateway owner is not ready until all durable scheduler
 	// dependencies are present; serving only the HTTP half would create a

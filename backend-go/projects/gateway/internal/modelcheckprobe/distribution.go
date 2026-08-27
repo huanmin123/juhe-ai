@@ -51,14 +51,18 @@ func EvaluateDistribution(pairs []DistributionPair) Evaluation {
 }
 
 func EvaluateCrossModel(target, comparison Result, expectedModel string) Evaluation {
-	matched := (target.ObservedModel == "" || modelMatches(target.ObservedModel, expectedModel)) && (comparison.ObservedModel == "" || modelMatches(comparison.ObservedModel, expectedModel))
+	return EvaluateCrossModelPair(target, comparison, expectedModel, expectedModel)
+}
+
+func EvaluateCrossModelPair(target, comparison Result, targetExpectedModel, comparisonExpectedModel string) Evaluation {
+	matched := (target.ObservedModel == "" || modelMatches(target.ObservedModel, targetExpectedModel)) && (comparison.ObservedModel == "" || modelMatches(comparison.ObservedModel, comparisonExpectedModel))
 	if !target.Success || !comparison.Success {
 		return Evaluation{Kind: "cross_model", Status: "skipped", Evidence: map[string]any{"requestFailure": true, "excludedFromScoring": true}}
 	}
 	if matched {
-		return Evaluation{Kind: "cross_model", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"matchedModel": true}}
+		return Evaluation{Kind: "cross_model", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"matchedModel": true, "targetExpectedModel": targetExpectedModel, "comparisonExpectedModel": comparisonExpectedModel}}
 	}
-	return Evaluation{Kind: "cross_model", Status: "failed", Score: 1, MaxScore: 10, Evidence: map[string]any{"matchedModel": false, "modelMismatch": true}}
+	return Evaluation{Kind: "cross_model", Status: "failed", Score: 1, MaxScore: 10, Evidence: map[string]any{"matchedModel": false, "modelMismatch": true, "targetExpectedModel": targetExpectedModel, "comparisonExpectedModel": comparisonExpectedModel}}
 }
 
 func distributionPassed(key, output string) bool {

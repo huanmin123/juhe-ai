@@ -106,6 +106,7 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	request.ProviderCode = payload.ProviderCode
 	request.Threshold = payload.Threshold
 	request.PenaltyAction = payload.PenaltyAction
+	request.RecoveryIntervalMinutes = payload.RecoveryIntervalMinutes
 	request.ConfigRevision = payload.ConfigRevision
 	request.PolicyRevision = payload.PolicyRevision
 	request.ProbeSetVersion = payload.ProbeSetVersion

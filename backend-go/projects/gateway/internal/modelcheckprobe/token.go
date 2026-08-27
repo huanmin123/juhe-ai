@@ -1,9 +1,118 @@
 package modelcheckprobe
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"math"
 	"sort"
+	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
+
+// Tokenizer is an explicit, versioned snapshot dependency. The probe layer
+// never guesses token counts with rune/byte lengths because that would change
+// the Node o200k_base evidence semantics.
+type Tokenizer interface {
+	Version() string
+	Count(string) (int, error)
+}
+
+// RunTokenIntegrity executes the same bounded differential sequence as Node.
+// It returns an excluded/skipped item when usage is incomplete; callers must
+// not turn that state into a formed quality fact.
+func RunTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol, model string, tokenizer Tokenizer, run func(context.Context, Request) (Result, error)) (Evaluation, error) {
+	if tokenizer == nil || strings.TrimSpace(tokenizer.Version()) == "" {
+		return Evaluation{Kind: "token_integrity", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "tokenizer_snapshot_not_attached"}}, nil
+	}
+	if strings.TrimSpace(model) == "" || run == nil {
+		return Evaluation{}, errors.New("J3b token integrity input is invalid")
+	}
+	samples := make([]TokenSample, 0, 9)
+	results := make([]Result, 0, 9)
+	for round := 0; round < 3; round++ {
+		prefix := fmt.Sprintf("Controlled token integrity probe token-integrity-v1. Nonce %d. Reply with exactly OK.\n", round+1)
+		for _, padding := range []int{0, 512, 2048} {
+			prompt, localTokens, err := buildTokenPrompt(tokenizer, prefix, padding)
+			if err != nil {
+				return Evaluation{}, err
+			}
+			request, err := BuildBasic(protocol, model, prompt, false)
+			if err != nil {
+				return Evaluation{}, err
+			}
+			result, err := run(ctx, request)
+			if err != nil {
+				return Evaluation{}, err
+			}
+			results = append(results, result)
+			var reported *int
+			if value := usageInteger(result.Usage, "input_tokens", "prompt_tokens"); value >= 0 {
+				reported = &value
+			}
+			samples = append(samples, TokenSample{RoundIndex: round, PaddingTokens: padding, LocalInputTokens: localTokens, ReportedInputTokens: reported})
+			if !result.Success {
+				break
+			}
+		}
+	}
+	analysis := AnalyzeTokenIntegrity(samples)
+	status := "skipped"
+	score, maxScore := 0, 0
+	switch analysis.Status {
+	case "consistent":
+		status, score, maxScore = "passed", 10, 10
+	case "suspected_padding":
+		status, maxScore = "failed", 10
+	case "warning":
+		status, maxScore = "warning", 10
+	}
+	return Evaluation{Kind: "token_integrity", Status: status, Score: score, MaxScore: maxScore, Evidence: map[string]any{
+		"tokenizerVersion": tokenizer.Version(), "probeVersion": "token-integrity-v1", "slope": analysis.Slope,
+		"intercept": analysis.Intercept, "confidenceLow": analysis.ConfidenceLow, "confidenceHigh": analysis.ConfidenceHigh,
+		"sampleCount": analysis.SampleCount, "roundCount": analysis.RoundCount, "reasonCodes": analysis.ReasonCodes,
+		"requestCount": len(results), "partial": len(results) < 9,
+	}}, nil
+}
+
+func buildTokenPrompt(tokenizer Tokenizer, prefix string, target int) (string, int, error) {
+	if target < 0 || target > 2048 {
+		return "", 0, errors.New("J3b token padding target is out of range")
+	}
+	prefixTokens, err := tokenizer.Count(prefix)
+	if err != nil {
+		return "", 0, fmt.Errorf("count token prefix: %w", err)
+	}
+	padding := ""
+	for count := 0; count <= target+8; count++ {
+		candidate := prefix + padding
+		local, countErr := tokenizer.Count(candidate)
+		if countErr != nil {
+			return "", 0, fmt.Errorf("count token prompt: %w", countErr)
+		}
+		if local-prefixTokens == target {
+			return candidate, local, nil
+		}
+		if local-prefixTokens > target {
+			return "", 0, fmt.Errorf("tokenizer cannot construct exact %d-token padding", target)
+		}
+		padding += " x"
+	}
+	return "", 0, fmt.Errorf("tokenizer cannot construct exact %d-token padding", target)
+}
+
+func usageInteger(usage map[string]any, keys ...string) int {
+	for _, key := range keys {
+		if value, ok := usage[key].(float64); ok && value >= 0 && value == math.Trunc(value) {
+			return int(value)
+		}
+		if value, ok := usage[key].(int); ok && value >= 0 {
+			return value
+		}
+	}
+	return -1
+}
 
 type TokenSample struct {
 	RoundIndex, PaddingTokens, LocalInputTokens int

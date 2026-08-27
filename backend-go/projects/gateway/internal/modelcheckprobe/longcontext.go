@@ -1,6 +1,97 @@
 package modelcheckprobe
 
-import "strings"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
+)
+
+// ModelLimitSnapshot is the versioned model-capacity source required before
+// long-context probes can be considered evidence. No default window is
+// inferred here because a wrong limit changes both load and result semantics.
+type ModelLimitSnapshot interface {
+	Version() string
+	MaxInputTokens(providerCode, model string, protocol modelcheckprofile.Protocol) (int, error)
+}
+
+type LongContextDefinition struct {
+	Key, Marker       string
+	TargetInputTokens int
+}
+
+func RunLongContext(ctx context.Context, providerCode, model string, protocol modelcheckprofile.Protocol, tokenizer Tokenizer, limits ModelLimitSnapshot, run func(context.Context, Request) (Result, error)) (Evaluation, error) {
+	if tokenizer == nil || limits == nil || strings.TrimSpace(tokenizer.Version()) == "" || strings.TrimSpace(limits.Version()) == "" {
+		return Evaluation{Kind: "long_context", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "model_limit_snapshot_not_attached"}}, nil
+	}
+	if strings.TrimSpace(model) == "" || run == nil {
+		return Evaluation{}, errors.New("J3b long context input is invalid")
+	}
+	limit, err := limits.MaxInputTokens(providerCode, model, protocol)
+	if err != nil || limit < 8000 {
+		return Evaluation{Kind: "long_context", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "model_limit_snapshot_invalid", "limitVersion": limits.Version()}}, nil
+	}
+	safeLimit := limit - minInt(2048, limit/50)
+	high := minInt(safeLimit, maxInt(4000, limit/4))
+	medium := minInt(high-1, maxInt(2000, minInt(60000, high*3/5)))
+	low := minInt(medium-1, maxInt(1000, minInt(8000, medium/2)))
+	definitions := []LongContextDefinition{{"context_low", "NEEDLE-LOW", low}, {"context_medium", "NEEDLE-MEDIUM", medium}, {"context_high", "NEEDLE-HIGH", high}}
+	observations := make([]LongContextObservation, 0, len(definitions))
+	for _, definition := range definitions {
+		definition.Marker += fmt.Sprintf("-%d", definition.TargetInputTokens)
+		prompt, buildErr := buildLongContextPrompt(tokenizer, definition)
+		if buildErr != nil {
+			return Evaluation{}, buildErr
+		}
+		request, buildErr := BuildBasic(protocol, model, prompt, false)
+		if buildErr != nil {
+			return Evaluation{}, buildErr
+		}
+		result, runErr := run(ctx, request)
+		if runErr != nil {
+			return Evaluation{}, runErr
+		}
+		observations = append(observations, LongContextObservation{Key: definition.Key, Marker: definition.Marker, TargetInputTokens: definition.TargetInputTokens, Result: result})
+	}
+	item := EvaluateLongContext(observations, model)
+	if item.Evidence == nil {
+		item.Evidence = map[string]any{}
+	}
+	item.Evidence["tokenizerVersion"], item.Evidence["limitVersion"] = tokenizer.Version(), limits.Version()
+	return item, nil
+}
+
+func buildLongContextPrompt(tokenizer Tokenizer, definition LongContextDefinition) (string, error) {
+	markerLine := fmt.Sprintf("关键记录 %s: 隐藏标记是 %s，只输出这个标记。", definition.Key, definition.Marker)
+	rule := fmt.Sprintf("回答规则：只输出 key 为 %s 的隐藏标记本身。", definition.Key)
+	prefix := fmt.Sprintf("阅读上下文，找到 key 为 %s 的隐藏标记。\n", definition.Key)
+	prompt := prefix + markerLine + "\n" + rule
+	count, err := tokenizer.Count(prompt)
+	if err != nil {
+		return "", err
+	}
+	for count < definition.TargetInputTokens {
+		prompt = prefix + strings.Repeat("普通上下文干扰文本。 ", maxInt(1, definition.TargetInputTokens-count)/4) + markerLine + "\n" + rule
+		next, countErr := tokenizer.Count(prompt)
+		if countErr != nil {
+			return "", countErr
+		}
+		if next <= count {
+			break
+		}
+		count = next
+	}
+	return prompt, nil
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
 
 type LongContextObservation struct {
 	Key, Marker       string

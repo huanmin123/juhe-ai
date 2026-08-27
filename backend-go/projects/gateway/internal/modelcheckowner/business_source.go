@@ -111,6 +111,24 @@ func (s *BusinessTargetSource) Resolver() Resolver {
 	return s.Resolve
 }
 
+// ComparisonResolver resolves the separately frozen trusted-comparison
+// account inside the same Gateway process and business scope. It never uses
+// the primary target ID as a fallback.
+func (s *BusinessTargetSource) ComparisonResolver() Resolver {
+	if s == nil {
+		return nil
+	}
+	return func(ctx context.Context, request RunRequest) (Target, error) {
+		if !request.TrustedComparison || strings.TrimSpace(request.TrustedComparisonAccountID) == "" {
+			return Target{}, errors.New("J3b trusted comparison target is not configured")
+		}
+		comparisonRequest := request
+		comparisonRequest.TargetID = request.TrustedComparisonAccountID
+		comparisonRequest.ConfigRevision = request.TrustedComparisonConfigRevision
+		return s.Resolve(ctx, comparisonRequest)
+	}
+}
+
 func (s *BusinessTargetSource) CheckContract(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return errors.New("J3b Business target source is not initialized")
@@ -120,8 +138,9 @@ func (s *BusinessTargetSource) CheckContract(ctx context.Context) error {
 		return fmt.Errorf("open J3b Business source contract: %w", err)
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"accounts", "provider_protocol_profiles", "group_accounts", "groups", "model_quality_policies"} {
-		if _, err := tx.ExecContext(ctx, "SELECT 1 FROM "+s.table(table)+" LIMIT 0"); err != nil {
+	contracts := map[string]string{"accounts": "id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,config_revision,status,schedulable,credentials_encrypted,deleted_at", "provider_protocol_profiles": "id,enabled,base_url", "group_accounts": "account_id,system_account_id,group_id,enabled", "groups": "id,enabled", "model_quality_policies": "system_account_id,revision,profile,penalty_threshold,penalty_action,recovery_interval_minutes", "account_supported_models": "account_id,model", "account_model_mappings": "account_id,source_model,source_endpoint_family,upstream_model,enabled"}
+	for table, columns := range contracts {
+		if _, err := tx.ExecContext(ctx, "SELECT "+columns+" FROM "+s.table(table)+" LIMIT 0"); err != nil {
 			return fmt.Errorf("verify J3b Business source table %s: %w", table, err)
 		}
 	}
@@ -159,15 +178,23 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if request.ConfigRevision != "" && request.ConfigRevision != strconv.FormatInt(revision, 10) {
 		return Target{}, errors.New("J3b Business account config revision is stale")
 	}
-	if status != "active" && status != "temporary_unavailable" && status != "rate_limited" {
+	qualityRecovery := request.TriggerKind == string(SchedulerQualityRecovery)
+	if (qualityRecovery && status != "quality_isolated") || (!qualityRecovery && status != "active" && status != "temporary_unavailable" && status != "rate_limited") {
 		return Target{}, errors.New("J3b Business account is unavailable")
 	}
 	if !schedulable || !profileEnabled {
 		return Target{}, errors.New("J3b Business account is not schedulable")
 	}
 	profile, ok := modelcheckprofile.Find(provider, profileID)
-	if !ok || !supportsModel(profile, request.Model) {
+	if !ok {
 		return Target{}, errors.New("J3b Business provider profile does not support model")
+	}
+	upstreamModel, err := resolveConfiguredUpstreamModel(ctx, s.db, s.postgres, request.TargetID, profile, request.Model)
+	if err != nil {
+		return Target{}, err
+	}
+	if upstreamModel == "" {
+		return Target{}, errors.New("J3b Business account model restriction does not allow model")
 	}
 	token, err := decryptCredential(s.credentialSecret, encrypted)
 	if err != nil {
@@ -180,7 +207,7 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	} else {
 		headers.Set("Authorization", "Bearer "+token)
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, ConfigRevision: strconv.FormatInt(revision, 10), Protocol: profile.Protocol, Headers: headers, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, ConfigRevision: strconv.FormatInt(revision, 10), Protocol: profile.Protocol, UpstreamModel: upstreamModel, Headers: headers, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
 }
 
 // BuildRequest freezes the Business target and quality policy in one
@@ -196,14 +223,11 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 	if command.TargetType != "account" || strings.TrimSpace(command.TargetID) == "" || strings.TrimSpace(command.Model) == "" {
 		return RunRequest{}, errors.New("J3b Business request target is incomplete")
 	}
-	if command.TrustedComparison {
-		return RunRequest{}, errors.New("J3b trusted comparison source is not configured")
-	}
 	target, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model})
 	if err != nil {
 		return RunRequest{}, err
 	}
-	profile, revision, threshold, action, err := s.readPolicy(ctx, actorSystemAccountID)
+	profile, revision, threshold, action, recoveryInterval, err := s.readPolicy(ctx, actorSystemAccountID)
 	if err != nil {
 		return RunRequest{}, err
 	}
@@ -217,36 +241,42 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 	if command.Profile != "" && selectedProfile != profile {
 		return RunRequest{}, errors.New("J3b request profile differs from frozen policy")
 	}
-	return RunRequest{TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: selectedProfile, SystemAccountID: actorSystemAccountID, ActorSystemAccountID: actorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: threshold, PenaltyAction: action, ConfigRevision: target.ConfigRevision, PolicyRevision: revision, ProbeSetVersion: modelcheckprofile.QuickProbeSetVersion, IdentityKey: actorSystemAccountID + ":" + command.TargetID + ":" + command.Model + ":" + selectedProfile}, nil
+	request := RunRequest{TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: selectedProfile, SystemAccountID: actorSystemAccountID, ActorSystemAccountID: actorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: threshold, PenaltyAction: action, RecoveryIntervalMinutes: recoveryInterval, ConfigRevision: target.ConfigRevision, PolicyRevision: revision, ProbeSetVersion: modelcheckprofile.QuickProbeSetVersion, IdentityKey: actorSystemAccountID + ":" + command.TargetID + ":" + command.Model + ":" + selectedProfile}
+	if !command.TrustedComparison {
+		return request, nil
+	}
+	if selectedProfile != "full" || strings.TrimSpace(command.TrustedComparisonID) == "" || command.TrustedComparisonID == command.TargetID {
+		return RunRequest{}, errors.New("J3b trusted comparison requires a distinct full-profile account")
+	}
+	comparison, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: "account", TargetID: command.TrustedComparisonID, Model: command.Model})
+	if err != nil {
+		return RunRequest{}, fmt.Errorf("resolve J3b trusted comparison: %w", err)
+	}
+	request.TrustedComparison = true
+	request.TrustedComparisonAccountID = command.TrustedComparisonID
+	request.TrustedComparisonConfigRevision = comparison.ConfigRevision
+	request.IdentityKey += ":comparison:" + command.TrustedComparisonID + ":" + comparison.ConfigRevision
+	return request, nil
 }
 
-func (s *BusinessTargetSource) readPolicy(ctx context.Context, systemAccountID string) (profile, revision string, threshold int, action string, err error) {
-	profile, revision, threshold, action = "quick", "0", 70, "fallback"
+func (s *BusinessTargetSource) readPolicy(ctx context.Context, systemAccountID string) (profile, revision string, threshold int, action string, recoveryInterval int, err error) {
+	profile, revision, threshold, action, recoveryInterval = "quick", "0", 70, "fallback", 10
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return "", "", 0, "", fmt.Errorf("open J3b Business policy transaction: %w", err)
+		return "", "", 0, "", 0, fmt.Errorf("open J3b Business policy transaction: %w", err)
 	}
 	defer tx.Rollback()
-	query := `SELECT revision,profile,penalty_threshold,penalty_action FROM ` + s.table("model_quality_policies") + ` WHERE system_account_id=` + s.placeholder(1) + ` LIMIT 1`
-	if scanErr := tx.QueryRowContext(ctx, query, systemAccountID).Scan(&revision, &profile, &threshold, &action); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
-		return "", "", 0, "", fmt.Errorf("read J3b Business quality policy: %w", scanErr)
+	query := `SELECT revision,profile,penalty_threshold,penalty_action,recovery_interval_minutes FROM ` + s.table("model_quality_policies") + ` WHERE system_account_id=` + s.placeholder(1) + ` LIMIT 1`
+	if scanErr := tx.QueryRowContext(ctx, query, systemAccountID).Scan(&revision, &profile, &threshold, &action, &recoveryInterval); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
+		return "", "", 0, "", 0, fmt.Errorf("read J3b Business quality policy: %w", scanErr)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", "", 0, "", fmt.Errorf("commit J3b Business policy read: %w", err)
+		return "", "", 0, "", 0, fmt.Errorf("commit J3b Business policy read: %w", err)
 	}
-	if threshold < 40 || threshold > 100 || (profile != "quick" && profile != "full") || (action != "disable" && action != "fallback" && action != "quality_isolate") {
-		return "", "", 0, "", errors.New("J3b Business quality policy is invalid")
+	if threshold < 40 || threshold > 100 || recoveryInterval < 10 || recoveryInterval > 10080 || (profile != "quick" && profile != "full") || (action != "disable" && action != "fallback" && action != "quality_isolate") {
+		return "", "", 0, "", 0, errors.New("J3b Business quality policy is invalid")
 	}
-	return profile, revision, threshold, action, nil
-}
-
-func supportsModel(profile modelcheckprofile.ProtocolProfile, model string) bool {
-	for _, candidate := range profile.Models {
-		if candidate == model {
-			return true
-		}
-	}
-	return false
+	return profile, revision, threshold, action, recoveryInterval, nil
 }
 
 func (s *BusinessTargetSource) table(name string) string {

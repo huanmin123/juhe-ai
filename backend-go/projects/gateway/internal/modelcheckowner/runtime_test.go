@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -99,6 +100,197 @@ func TestRuntimeRejectsIncompleteTargetContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime-mapped-model.db")
+	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range runtimeTestDDL() {
+		if _, err := seed.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(testSQLiteConfig(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var mu sync.Mutex
+	models := make([]string, 0, 6)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read probe request: %v", err)
+		}
+		var request struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Fatalf("decode probe request: %v", err)
+		}
+		mu.Lock()
+		models = append(models, request.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(string(body), "record_model_check"):
+			_, _ = w.Write([]byte(`{"model":"gpt-5.6-terra","output":[{"type":"function_call","name":"record_model_check","arguments":"{\"code\":\"ok\",\"count\":1}"}],"usage":{"total_tokens":2}}`))
+		case strings.Contains(string(body), "VECTOR"):
+			_, _ = w.Write([]byte(`{"model":"gpt-5.6-terra","output_text":"VECTOR","usage":{"total_tokens":2}}`))
+		case strings.Contains(string(body), "status"):
+			_, _ = w.Write([]byte(`{"model":"gpt-5.6-terra","output_text":"{\"status\":\"ok\",\"value\":7}","usage":{"total_tokens":2}}`))
+		default:
+			_, _ = w.Write([]byte(`{"model":"gpt-5.6-terra","output_text":"OK-MODEL-CHECK","usage":{"total_tokens":2}}`))
+		}
+	}))
+	defer server.Close()
+	now := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
+	runtime := &Runtime{Store: store, OwnerID: "gateway-1", Now: func() time.Time { return now }, Resolve: func(context.Context, RunRequest) (Target, error) {
+		return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra"}, nil
+	}}
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
+	if err != nil || result.Status != string(RunCompleted) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	mu.Lock()
+	if len(models) != 6 {
+		mu.Unlock()
+		t.Fatalf("probe calls=%d models=%v", len(models), models)
+	}
+	for _, model := range models {
+		if model != "gpt-5.6-terra" {
+			mu.Unlock()
+			t.Fatalf("probe used model %q, want resolved upstream model", model)
+		}
+	}
+	mu.Unlock()
+	var requestSummary string
+	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&requestSummary); err != nil {
+		t.Fatal(err)
+	}
+	var frozen map[string]any
+	if err := json.Unmarshal([]byte(requestSummary), &frozen); err != nil || frozen["model"] != "gpt-5.6-sol" || frozen["upstreamModel"] != "gpt-5.6-terra" || frozen["protocol"] != string(modelcheckprofile.ProtocolOpenAIResponses) || frozen["endpointFingerprint"] != endpointFingerprint(server.URL) || strings.Contains(requestSummary, server.URL) {
+		t.Fatalf("frozen request=%s err=%v", requestSummary, err)
+	}
+	var requested, mapped, mappingStatus string
+	if err := store.db.QueryRow(`SELECT requested_model,mapped_upstream_model,mapping_status FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&requested, &mapped, &mappingStatus); err != nil {
+		t.Fatal(err)
+	}
+	if requested != "gpt-5.6-sol" || mapped != "gpt-5.6-terra" || mappingStatus != "mapped" {
+		t.Fatalf("observation requested=%q mapped=%q mappingStatus=%q", requested, mapped, mappingStatus)
+	}
+}
+
+func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime-trusted-comparison.db")
+	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range runtimeTestDDL() {
+		if _, err := seed.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(testSQLiteConfig(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var mu sync.Mutex
+	requests := map[string]int{}
+	newServer := func(model string) *httptest.Server {
+		return httptest.NewServer(&runtimeModelServer{t: t, expectedModel: model, mu: &mu, requests: requests})
+	}
+	targetServer := newServer("gpt-5.6-sol")
+	defer targetServer.Close()
+	comparisonServer := newServer("gpt-5.6-terra")
+	defer comparisonServer.Close()
+	if targetServer.URL == comparisonServer.URL {
+		t.Fatal("trusted comparison test servers must be distinct")
+	}
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	runtime := &Runtime{
+		Store:   store,
+		OwnerID: "gateway-1",
+		Now:     func() time.Time { return now },
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: targetServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai"}, nil
+		},
+		ResolveComparison: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: comparisonServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai"}, nil
+		},
+	}
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "comparison-acct", TrustedComparisonConfigRevision: "cfg-2"})
+	if err != nil || result.RunID == "" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	mu.Lock()
+	targetRequests, comparisonRequests := requests["gpt-5.6-sol"], requests["gpt-5.6-terra"]
+	mu.Unlock()
+	if targetRequests == 0 || comparisonRequests == 0 {
+		t.Fatalf("trusted comparison probe calls target=%d comparison=%d", targetRequests, comparisonRequests)
+	}
+	var requestSummary string
+	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&requestSummary); err != nil {
+		t.Fatal(err)
+	}
+	var frozen map[string]any
+	if err := json.Unmarshal([]byte(requestSummary), &frozen); err != nil {
+		t.Fatal(err)
+	}
+	comparison, ok := frozen["trustedComparison"].(map[string]any)
+	if !ok || comparison["accountId"] != "comparison-acct" || comparison["configRevision"] != "cfg-2" || comparison["upstreamModel"] != "gpt-5.6-terra" || comparison["endpointFingerprint"] != endpointFingerprint(comparisonServer.URL) {
+		t.Fatalf("frozen trusted comparison=%#v", frozen["trustedComparison"])
+	}
+	var observations int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations != 2 {
+		t.Fatalf("observations=%d err=%v", observations, err)
+	}
+}
+
+type runtimeModelServer struct {
+	t             *testing.T
+	expectedModel string
+	mu            *sync.Mutex
+	requests      map[string]int
+}
+
+func (s *runtimeModelServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.t.Helper()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.t.Errorf("read request: %v", err)
+		return
+	}
+	var request struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		s.t.Errorf("decode request model=%q err=%v", s.expectedModel, err)
+	}
+	s.mu.Lock()
+	s.requests[s.expectedModel]++
+	s.requests[s.expectedModel+"|"+request.Model]++
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	response := `{"model":"` + s.expectedModel + `","output_text":"OK-MODEL-CHECK","usage":{"total_tokens":2}}`
+	switch {
+	case strings.Contains(string(body), "record_model_check"):
+		response = `{"model":"` + s.expectedModel + `","output":[{"type":"function_call","name":"record_model_check","arguments":"{\"code\":\"ok\",\"count\":1}"}],"usage":{"total_tokens":2}}`
+	case strings.Contains(string(body), "status"):
+		response = `{"model":"` + s.expectedModel + `","output_text":"{\"status\":\"ok\",\"value\":7}","usage":{"total_tokens":2}}`
+	}
+	_, _ = w.Write([]byte(response))
 }
 
 func runtimeTestDDL() []string {

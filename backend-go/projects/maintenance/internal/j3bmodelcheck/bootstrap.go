@@ -96,6 +96,9 @@ func RunSQLite(ctx context.Context, db *sql.DB, apply bool) (SQLiteReport, error
 			return SQLiteReport{}, fmt.Errorf("执行 J3b SQLite schema bootstrap 失败: %w", err)
 		}
 	}
+	if err := ensureSQLiteRunColumns(ctx, tx); err != nil {
+		return SQLiteReport{}, fmt.Errorf("升级 J3b SQLite run schema 失败: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return SQLiteReport{}, fmt.Errorf("提交 J3b SQLite schema bootstrap 失败: %w", err)
 	}
@@ -166,7 +169,7 @@ var sqliteRequiredColumns = map[string][]string{
 	"model_check_inputs":            {"input_id", "identity_key", "input_version", "input_digest", "target_id", "config_revision", "policy_revision", "trigger", "issued_at", "expires_at", "payload"},
 	"model_check_execution_claims":  {"input_id", "claim_token", "outcome_id", "owner_id", "fence_token", "claim_until", "updated_at"},
 	"model_check_outcomes":          {"outcome_id", "input_id", "input_digest", "fence_token", "observed_at", "stored_at", "payload", "payload_digest", "committed"},
-	"model_check_runs":              {"id", "system_account_id", "actor_system_account_id", "provider_code", "target_type", "target_id", "account_id", "model", "profile", "trigger_kind", "status", "level", "score", "max_score", "message", "request_summary_json", "result_summary_json", "policy_snapshot_json", "quality_decision_json", "quality_health_sync_status", "created_at", "updated_at", "finished_at"},
+	"model_check_runs":              {"id", "system_account_id", "actor_system_account_id", "provider_code", "target_type", "target_id", "account_id", "model", "profile", "trigger_kind", "schedule_id", "status", "level", "score", "max_score", "message", "request_summary_json", "result_summary_json", "policy_snapshot_json", "quality_decision_json", "probe_set_version", "started_at", "trace_id", "quality_health_sync_status", "created_at", "updated_at", "finished_at"},
 	"model_check_items":             {"id", "run_id", "item_key", "item_type", "status", "score", "max_score", "duration_ms", "trace_id", "evidence_summary_json", "error_code", "error_message", "created_at", "updated_at"},
 	"model_check_observations":      {"id", "run_id", "system_account_id", "account_id", "provider_code", "requested_model", "mapped_upstream_model", "probe_family", "observation_status", "identity_status", "mapping_status", "protocol_status", "evidence_coverage", "created_at"},
 	"account_quality_health_hourly": {"account_id", "system_account_id", "provider_code", "stat_hour", "observed_at", "model_check_run_id", "model", "profile", "score", "threshold", "level", "updated_at"},
@@ -178,13 +181,56 @@ var sqliteSchemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS model_check_inputs (input_id TEXT PRIMARY KEY,identity_key TEXT NOT NULL,input_version INTEGER NOT NULL,input_digest TEXT NOT NULL,target_id TEXT NOT NULL,config_revision TEXT NOT NULL,policy_revision TEXT NOT NULL,trigger TEXT NOT NULL,issued_at TEXT NOT NULL,expires_at TEXT NOT NULL,payload BLOB NOT NULL,UNIQUE(identity_key,input_version),UNIQUE(identity_key,input_digest))`,
 	`CREATE TABLE IF NOT EXISTS model_check_execution_claims (input_id TEXT PRIMARY KEY,claim_token TEXT NOT NULL,outcome_id TEXT NOT NULL,owner_id TEXT NOT NULL,fence_token INTEGER NOT NULL,claim_until TEXT NOT NULL,updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS model_check_outcomes (outcome_id TEXT PRIMARY KEY,input_id TEXT NOT NULL UNIQUE,input_digest TEXT NOT NULL,fence_token INTEGER NOT NULL,observed_at TEXT NOT NULL,stored_at TEXT NOT NULL,payload BLOB NOT NULL,payload_digest TEXT NOT NULL,committed INTEGER NOT NULL DEFAULT 0)`,
-	`CREATE TABLE IF NOT EXISTS model_check_runs (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,actor_system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,target_type TEXT NOT NULL,target_id TEXT NOT NULL,account_id TEXT,model TEXT NOT NULL,profile TEXT NOT NULL,trigger_kind TEXT NOT NULL,status TEXT NOT NULL,level TEXT NOT NULL,score INTEGER NOT NULL,max_score INTEGER NOT NULL,message TEXT NOT NULL,request_summary_json TEXT NOT NULL,result_summary_json TEXT NOT NULL,policy_snapshot_json TEXT NOT NULL,quality_decision_json TEXT NOT NULL,quality_health_sync_status TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finished_at TEXT)`,
+	`CREATE TABLE IF NOT EXISTS model_check_runs (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,actor_system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,target_type TEXT NOT NULL,target_id TEXT NOT NULL,account_id TEXT,model TEXT NOT NULL,profile TEXT NOT NULL,trigger_kind TEXT NOT NULL,schedule_id TEXT,status TEXT NOT NULL,level TEXT NOT NULL,score INTEGER NOT NULL,max_score INTEGER NOT NULL,message TEXT NOT NULL,request_summary_json TEXT NOT NULL,result_summary_json TEXT NOT NULL,policy_snapshot_json TEXT NOT NULL,quality_decision_json TEXT NOT NULL,probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1',started_at TEXT NOT NULL,trace_id TEXT,quality_health_sync_status TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finished_at TEXT)`,
 	`CREATE TABLE IF NOT EXISTS model_check_items (id TEXT PRIMARY KEY,run_id TEXT NOT NULL,item_key TEXT NOT NULL,item_type TEXT NOT NULL,status TEXT NOT NULL,score INTEGER NOT NULL,max_score INTEGER NOT NULL,duration_ms INTEGER,trace_id TEXT,evidence_summary_json TEXT NOT NULL,error_code TEXT,error_message TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS model_check_observations (id TEXT PRIMARY KEY,run_id TEXT NOT NULL,system_account_id TEXT NOT NULL,account_id TEXT NOT NULL,provider_code TEXT NOT NULL,requested_model TEXT NOT NULL,mapped_upstream_model TEXT NOT NULL,probe_family TEXT NOT NULL,observation_status TEXT NOT NULL,identity_status TEXT NOT NULL,mapping_status TEXT NOT NULL,protocol_status TEXT NOT NULL,evidence_coverage INTEGER NOT NULL,created_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
 	`CREATE TABLE IF NOT EXISTS model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT NOT NULL,due_at TEXT NOT NULL,claim_owner TEXT,claim_until TEXT,fence_token INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',last_error TEXT,completed_at TEXT,payload BLOB NOT NULL,updated_at TEXT NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS idx_model_check_scheduler_tasks_due ON model_check_scheduler_tasks(kind,due_at,claim_until,id)`,
 	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_quality_health_sync_retry ON model_check_runs(quality_health_sync_status,updated_at,id)`,
+}
+
+// ensureSQLiteRunColumns is an explicit forward-only bootstrap migration for
+// dedicated files created by an earlier J3b contract. Runtime never performs
+// this DDL; the maintenance transaction either upgrades all four durable run
+// columns or rolls the entire bootstrap back.
+func ensureSQLiteRunColumns(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA table_info(model_check_runs)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	found := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		found[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for column, statement := range map[string]string{
+		"schedule_id":       "ALTER TABLE model_check_runs ADD COLUMN schedule_id TEXT",
+		"probe_set_version": "ALTER TABLE model_check_runs ADD COLUMN probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1'",
+		"started_at":        "ALTER TABLE model_check_runs ADD COLUMN started_at TEXT",
+		"trace_id":          "ALTER TABLE model_check_runs ADD COLUMN trace_id TEXT",
+	} {
+		if !found[column] {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return err
+			}
+		}
+	}
+	if !found["started_at"] {
+		if _, err := tx.ExecContext(ctx, "UPDATE model_check_runs SET started_at=created_at WHERE started_at IS NULL"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func Run(ctx context.Context, db *sql.DB, apply bool) (Report, error) {
@@ -395,6 +441,11 @@ CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_inputs (input_id TEXT PRIMARY KE
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, claim_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token BIGINT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, stored_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, payload_digest TEXT NOT NULL, committed BOOLEAN NOT NULL DEFAULT FALSE);
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL DEFAULT 'quick', trigger_kind TEXT NOT NULL DEFAULT 'manual' CHECK (trigger_kind IN ('manual','scheduled','quality_recovery')), schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','completed','failed','canceled')), message TEXT NOT NULL DEFAULT '', trace_id TEXT, probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1', started_at TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, request_summary_json TEXT NOT NULL DEFAULT '{}', result_summary_json TEXT NOT NULL DEFAULT '{}', policy_snapshot_json TEXT NOT NULL DEFAULT '{}', quality_decision_json TEXT NOT NULL DEFAULT '{}', quality_health_sync_status TEXT CHECK (quality_health_sync_status IS NULL OR quality_health_sync_status IN ('applied','pending_retry','failed')), error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+ALTER TABLE juhe_j3b.model_check_runs ADD COLUMN IF NOT EXISTS schedule_id TEXT;
+ALTER TABLE juhe_j3b.model_check_runs ADD COLUMN IF NOT EXISTS probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1';
+ALTER TABLE juhe_j3b.model_check_runs ADD COLUMN IF NOT EXISTS started_at TEXT;
+UPDATE juhe_j3b.model_check_runs SET started_at=created_at WHERE started_at IS NULL;
+ALTER TABLE juhe_j3b.model_check_runs ADD COLUMN IF NOT EXISTS trace_id TEXT;
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES juhe_j3b.model_check_runs(id) ON DELETE CASCADE, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('passed','warning','failed','skipped')), score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL DEFAULT '{}', error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES juhe_j3b.model_check_runs(id) ON DELETE CASCADE, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, provider_code TEXT NOT NULL, provider_protocol_profile_id TEXT NOT NULL, endpoint_family TEXT NOT NULL, requested_model TEXT NOT NULL, mapped_upstream_model TEXT NOT NULL, observed_model TEXT, mapping_applied INTEGER NOT NULL DEFAULT 0, upstream_bucket_hmac TEXT NOT NULL, cohort_key_hmac TEXT NOT NULL, population_key_hmac TEXT NOT NULL, probe_key_hmac TEXT NOT NULL, system_fingerprint_hmac TEXT, probe_family TEXT NOT NULL, probe_set_version TEXT NOT NULL, tokenizer_version TEXT NOT NULL, feature_version TEXT NOT NULL DEFAULT 'none', round_index INTEGER NOT NULL, padding_tokens INTEGER NOT NULL, local_input_tokens INTEGER NOT NULL, reported_input_tokens INTEGER, cached_input_tokens INTEGER, constraint_passed INTEGER, feature_1 DOUBLE PRECISION, feature_2 DOUBLE PRECISION, feature_3 DOUBLE PRECISION, feature_4 DOUBLE PRECISION, feature_5 DOUBLE PRECISION, feature_6 DOUBLE PRECISION, feature_7 DOUBLE PRECISION, feature_8 DOUBLE PRECISION, observation_status TEXT NOT NULL, identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, protocol_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL DEFAULT 0, trace_id TEXT, created_at TEXT NOT NULL, aggregation_completed_at TEXT);
 CREATE TABLE IF NOT EXISTS juhe_j3b.account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL CHECK (profile IN ('quick','full')), score INTEGER NOT NULL, threshold INTEGER NOT NULL CHECK (threshold BETWEEN 40 AND 100), level TEXT NOT NULL, error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, stat_hour));

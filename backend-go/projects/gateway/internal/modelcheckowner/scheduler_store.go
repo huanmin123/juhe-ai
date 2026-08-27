@@ -76,19 +76,30 @@ func (s *Store) EnsureHealthRetryTasks(ctx context.Context, limit int) error {
 	if err != nil {
 		return fmt.Errorf("scan J3b health retry tasks: %w", err)
 	}
-	defer rows.Close()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	runIDs := make([]string, 0, limit)
 	for rows.Next() {
 		var runID string
 		if err := rows.Scan(&runID); err != nil {
+			rows.Close()
 			return err
 		}
+		runIDs = append(runIDs, runID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, runID := range runIDs {
 		payload := fmt.Sprintf(`{"runId":%q}`, runID)
 		if _, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.schedulerTaskTable()+` (id,kind,due_at,state,payload,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`), "health:"+runID, string(SchedulerHealthRetry), now, "pending", payload, now); err != nil {
 			return fmt.Errorf("materialize J3b health retry %s: %w", runID, err)
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func (s *SQLSchedulerSource) Complete(ctx context.Context, task ScheduleTask) error {

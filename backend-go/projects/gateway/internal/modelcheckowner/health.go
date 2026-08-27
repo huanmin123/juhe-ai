@@ -11,11 +11,11 @@ import (
 // HealthFact is the durable J3b health projection input. Raw upstream
 // responses and credentials must never be placed here.
 type HealthFact struct {
-	AccountID, SystemAccountID, StatHour, RunID, ProviderCode, Model, Profile string
-	PolicyRevision, AccountConfigRevision                                     string
-	ObservedAt                                                                time.Time
-	Score, Threshold                                                          int
-	Level, ErrorCode, ErrorMessage, PenaltyAction                             string
+	AccountID, SystemAccountID, StatHour, RunID, ProviderCode, Model, Profile, ScheduleID string
+	PolicyRevision, AccountConfigRevision                                                 string
+	ObservedAt                                                                            time.Time
+	Score, Threshold, RecoveryIntervalMinutes                                             int
+	Level, ErrorCode, ErrorMessage, PenaltyAction                                         string
 }
 
 // HealthReader is the narrow read-only contract that a future J3c consumer
@@ -43,12 +43,12 @@ type EnforcementApplier interface {
 }
 
 type QualityEnforcement struct {
-	AccountID, SystemAccountID, RunID, ProviderCode, Model, Profile string
-	PolicyRevision, AccountConfigRevision                           string
-	Action                                                          string
-	Score, Threshold                                                int
-	Message                                                         string
-	OccurredAt                                                      time.Time
+	AccountID, SystemAccountID, RunID, ProviderCode, Model, Profile, ScheduleID string
+	PolicyRevision, AccountConfigRevision                                       string
+	Action                                                                      string
+	Score, Threshold, RecoveryIntervalMinutes                                   int
+	Message                                                                     string
+	OccurredAt                                                                  time.Time
 }
 
 type HealthSyncRetryExecutor struct {
@@ -76,7 +76,7 @@ func (e *HealthSyncRetryExecutor) Execute(ctx context.Context, task ScheduleTask
 		if retry.RunID != payload.RunID {
 			continue
 		}
-		return e.Projector.Project(ctx, retry.RunID, EvidenceAggregate{Formed: retry.EvidenceFormed, TrustFormed: retry.TrustFormed}, HealthFact{AccountID: retry.AccountID, SystemAccountID: retry.SystemAccountID, StatHour: retry.StatHour, RunID: retry.RunID, ProviderCode: retry.ProviderCode, Model: retry.Model, Profile: retry.Profile, PolicyRevision: retry.PolicyRevision, AccountConfigRevision: retry.AccountConfigRevision, PenaltyAction: retry.PenaltyAction, ObservedAt: retry.ObservedAt, Score: retry.Score, Threshold: retry.Threshold, Level: retry.Level})
+		return e.Projector.Project(ctx, retry.RunID, EvidenceAggregate{Formed: retry.EvidenceFormed, TrustFormed: retry.TrustFormed}, HealthFact{AccountID: retry.AccountID, SystemAccountID: retry.SystemAccountID, StatHour: retry.StatHour, RunID: retry.RunID, ProviderCode: retry.ProviderCode, Model: retry.Model, Profile: retry.Profile, ScheduleID: retry.ScheduleID, PolicyRevision: retry.PolicyRevision, AccountConfigRevision: retry.AccountConfigRevision, PenaltyAction: retry.PenaltyAction, RecoveryIntervalMinutes: retry.RecoveryIntervalMinutes, ObservedAt: retry.ObservedAt, Score: retry.Score, Threshold: retry.Threshold, Level: retry.Level})
 	}
 	return fmt.Errorf("J3b health retry run %s not found", payload.RunID)
 }
@@ -102,7 +102,7 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 			_ = p.Store.MarkHealthSync(ctx, runID, "failed")
 			return errors.New("J3b quality enforcement action is invalid")
 		}
-		if err := p.Enforcement.Apply(ctx, QualityEnforcement{AccountID: fact.AccountID, SystemAccountID: fact.SystemAccountID, RunID: fact.RunID, ProviderCode: fact.ProviderCode, Model: fact.Model, Profile: fact.Profile, PolicyRevision: fact.PolicyRevision, AccountConfigRevision: fact.AccountConfigRevision, Score: fact.Score, Threshold: fact.Threshold, Action: action, OccurredAt: fact.ObservedAt, Message: fact.ErrorMessage}); err != nil {
+		if err := p.Enforcement.Apply(ctx, QualityEnforcement{AccountID: fact.AccountID, SystemAccountID: fact.SystemAccountID, RunID: fact.RunID, ProviderCode: fact.ProviderCode, Model: fact.Model, Profile: fact.Profile, PolicyRevision: fact.PolicyRevision, AccountConfigRevision: fact.AccountConfigRevision, ScheduleID: fact.ScheduleID, Score: fact.Score, Threshold: fact.Threshold, RecoveryIntervalMinutes: fact.RecoveryIntervalMinutes, Action: action, OccurredAt: fact.ObservedAt, Message: fact.ErrorMessage}); err != nil {
 			_ = p.Store.MarkHealthSync(ctx, runID, "failed")
 			return fmt.Errorf("apply J3b quality enforcement: %w", err)
 		}

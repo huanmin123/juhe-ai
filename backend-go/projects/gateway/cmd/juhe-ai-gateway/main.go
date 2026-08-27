@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -122,20 +123,31 @@ func main() {
 		if recoveryErr != nil {
 			fail(fmt.Errorf("create J3b Gateway recovery owner: %w", recoveryErr))
 		}
+		quality, qualityErr := modelcheckowner.NewBusinessQualityManager(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		if qualityErr != nil {
+			fail(fmt.Errorf("create J3b Gateway quality manager: %w", qualityErr))
+		}
 		schedulerSource := &modelcheckowner.BusinessSchedulerSource{Business: businessConnection.DB, Postgres: businessMode == modelcheckauth.Postgres, OwnerID: j3bConfig.InstanceID}
 		if schedulerErr := schedulerSource.CheckContract(context.Background()); schedulerErr != nil {
 			fail(fmt.Errorf("verify J3b Gateway scheduler contract: %w", schedulerErr))
 		}
 		j3bHost, hostErr := modelcheckowner.OpenHost(context.Background(), j3bConfig, modelcheckowner.HostDependencies{
-			Resolve:     businessSource.Resolver(),
-			Authorize:   modelcheckowner.NewAdminAuthorize(authenticator),
-			Build:       businessSource.BuildRequest,
-			Enforcement: enforcement,
+			Resolve:           businessSource.Resolver(),
+			ResolveComparison: businessSource.ComparisonResolver(),
+			AccountOptions:    businessSource,
+			Authorize:         modelcheckowner.NewAdminAuthorize(authenticator),
+			Build:             businessSource.BuildRequest,
+			Enforcement:       enforcement,
+			Quality:           quality,
 			SchedulerFactory: func(store *modelcheckowner.Store, runtime *modelcheckowner.Runtime, projector *modelcheckowner.QualityProjector) (modelcheckowner.SchedulerSource, modelcheckowner.SchedulerExecutor) {
 				source := schedulerSource
 				source.Store = store
 				build := func(ctx context.Context, payload modelcheckowner.ScheduledPayload) (modelcheckowner.RunRequest, error) {
-					target, err := businessSource.Resolve(ctx, modelcheckowner.RunRequest{SystemAccountID: payload.SystemAccountID, TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, ConfigRevision: payload.ConfigRevision})
+					trigger := "scheduled"
+					if payload.EnforcementID != "" {
+						trigger = "quality_recovery"
+					}
+					target, err := businessSource.Resolve(ctx, modelcheckowner.RunRequest{SystemAccountID: payload.SystemAccountID, TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, ConfigRevision: payload.ConfigRevision, TriggerKind: trigger})
 					if err != nil {
 						return modelcheckowner.RunRequest{}, err
 					}
@@ -152,6 +164,11 @@ func main() {
 			fail(fmt.Errorf("open J3b Gateway owner host: %w", hostErr))
 		}
 		managementMux := http.NewServeMux()
+		var captchaService *modelcheckauth.CaptchaService
+		if !envBool("JUHE_AI_AUTH_CAPTCHA_DISABLED") {
+			captchaService = modelcheckauth.NewCaptchaService(time.Now)
+		}
+		managementMux.Handle("/auth/", http.StripPrefix("/auth", &modelcheckauth.HTTPHandler{Auth: authenticator, Captcha: captchaService, TemporaryAccessIPAllowlist: commaList(os.Getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST"))}))
 		if err := j3bHost.Mount(managementMux, "/model-checks/"); err != nil {
 			fail(fmt.Errorf("mount J3b Gateway management routes: %w", err))
 		}
@@ -388,6 +405,22 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func commaList(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
+}
+
+func envBool(name string) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
 func fail(err error) {

@@ -115,6 +115,11 @@ import type { FirstByteDeadlineDecisionInput, FirstByteDeadlineAction, FirstByte
 import { observeGatewayRouting } from '../observability/routing-observability.service.js'
 import { codexCompactionExpectedForRequest } from '../response/codex-compaction-contract.js'
 import { getGatewaySessionIdentity } from '../session-identity/index.js'
+import {
+  GatewayKeyModelAttempt,
+  GatewayKeyModelFailureBudget,
+  prepareGatewayKeyModelAttempt
+} from '../runtime/key-model-attempt.js'
 
 /**
  * Owns the optional speed-first reservation for exactly one physical upstream
@@ -180,6 +185,7 @@ export interface OpenAIUpstreamDispatchResult {
   confirmHalfOpenSuccess: () => Promise<boolean>
   releaseHalfOpenLease: () => Promise<boolean>
   accountCircuitAttempt?: GatewayAccountCircuitAttempt
+  keyModelAttempt?: GatewayKeyModelAttempt
   hotQualityAttempt: GatewayHotQualityAttemptLifecycle
   normalRouteFirstByteDeadline?: NormalRouteAttemptFirstByteDeadline
   responsePrecommitDeadlineAtMs?: number
@@ -351,6 +357,7 @@ export async function fetchFirstAvailableUpstream(
   let highConcurrencyDispatchQueueWaitCount = 0
   const failedProxyDispatchKeys = new Map<string, string>()
   const failedAccountIds = new Set<string>()
+  const keyModelFailureBudget = new GatewayKeyModelFailureBudget()
   const recoverableFailedAccountIds = new Set<string>()
   const bypassLocalSuppression = isAccountProbeTrafficSource(usageContext.trafficSource)
   const accountCircuitService = accountStateMutationEnabled && usageContext.trafficSource === 'gateway'
@@ -614,7 +621,7 @@ export async function fetchFirstAvailableUpstream(
         }
       }
       concurrencyRetryWaitBudgetMs = concurrencyAcquire.remainingWaitBudgetMs
-      const concurrencySlot = concurrencyAcquire.slot
+      let concurrencySlot = concurrencyAcquire.slot
       logRequestStage('account.concurrency_acquire', {
         traceId: usageContext.traceId,
         accountId: originalAccount.id,
@@ -669,11 +676,32 @@ export async function fetchFirstAvailableUpstream(
       const pendingApiKeyFailures: PendingAccountApiKeyFailure[] = []
       let accountApiKeyAttemptCount = 0
       let previousSelectedApiKeyFingerprint: string | undefined
+      let reacquireConcurrencyForNextKey = false
       try {
         let retryAccountApiKey = false
         do {
           retryAccountApiKey = false
           let skipAccount = false
+          if (reacquireConcurrencyForNextKey) {
+            const reacquired = await acquireAccountConcurrencyWithShortRetry(
+              concurrencyAccountId,
+              originalAccount.concurrencyLimit,
+              concurrencyRetryWaitBudgetMs,
+              signal,
+              requestLane,
+              groupSchedulingPolicy,
+              serverRetryBudget
+            )
+            concurrencyRetryWaitBudgetMs = reacquired.remainingWaitBudgetMs
+            concurrencySlot = reacquired.slot
+            reacquireConcurrencyForNextKey = false
+            if (!concurrencySlot.acquired) {
+              lastAttempt = accountCapacityLimitAttempt(originalAccount, accountConcurrencyLimitMessage(concurrencySlot, reacquired.waitedMs))
+              capacityLimitFailures.push({ account: originalAccount, message: accountConcurrencyLimitMessage(concurrencySlot, reacquired.waitedMs) })
+              skipAccount = true
+              break
+            }
+          }
           let account = originalAccount
           let headers: Headers
           let body: Buffer | string | undefined
@@ -915,36 +943,6 @@ export async function fetchFirstAvailableUpstream(
                 }),
                 keyFingerprint: account.selectedApiKeyFingerprint
               }
-              const attemptRegistration = requestAttemptTracker.tryRecordDispatchAttempt(
-                {
-                  ...dispatchAttemptIdentity,
-                  matchingConfirmation: accountCircuitAttempt?.isConfirmation === true,
-                  allowKeyRotation: accountApiKeyAttemptCount > 1,
-                  semanticRetryId: activeSemanticRetryId,
-                  sameAccountRetryId: activeSameAccountRetryId
-                }
-              )
-              if (!attemptRegistration.allowed) {
-                lastAttempt = requestDeduplicatedAttempt(account, attemptRegistration.reason)
-                failedAccountIds.add(account.id)
-                auditCapture.addGatewayMetadata({
-                  label: 'gateway_request_attempt_deduplicated',
-                  metadata: {
-                    accountId: account.id,
-                    accountRuntimeKey,
-                    physicalCredentialKey: accountPhysicalCredentialKey(account),
-                    keyFingerprint: account.selectedApiKeyFingerprint,
-                    reason: attemptRegistration.reason,
-                    coordinationScope: requestCoordination.scope
-                  }
-                })
-                skipAccount = true
-                break
-              }
-              if (account.selectedApiKeyFingerprint) {
-                requestApiKeyAttemptCount += 1
-              }
-              activeSameAccountRetryId = undefined
               const attemptTier = gatewayAccountDispatchPriorityTier(account, dispatchTierOptions)
               if (primaryDispatchTier && attemptTier !== primaryDispatchTier && !observedEscapedTiers.has(attemptTier)) {
                 observedEscapedTiers.add(attemptTier)
@@ -984,6 +982,90 @@ export async function fetchFirstAvailableUpstream(
                     return firstByteDeadlineDecision
                   }
                 : undefined
+              const keyModelAttemptId = `keymodel:${usageContext.traceId}:${attemptIndex}:${auditAttemptIndex + 1}:${randomUUID()}`
+              let keyModelAttempt: GatewayKeyModelAttempt | undefined
+              try {
+                const preparation = await prepareGatewayKeyModelAttempt({
+                  req,
+                  account,
+                  requestId: usageContext.traceId,
+                  attemptId: keyModelAttemptId,
+                  failureBudget: keyModelFailureBudget
+                })
+                if (preparation.status === 'busy' || preparation.status === 'blocked') {
+                  concurrencySlot.release()
+                  reacquireConcurrencyForNextKey = true
+                  lastAttempt = keyModelUnavailableAttempt(account, preparation.status)
+                  logGatewayAccountDispatchDecision({
+                    traceId: usageContext.traceId,
+                    account,
+                    decision: 'skipped',
+                    reason: `key_model_${preparation.status}`,
+                    modelPriority
+                  })
+                  auditCapture.addGatewayMetadata({
+                    label: 'key_model_foreground_dispatch_skip',
+                    metadata: {
+                      accountId: account.id,
+                      keyFingerprint: account.selectedApiKeyFingerprint,
+                      capabilityHash: preparation.capabilityHash,
+                      outcome: preparation.status,
+                      wakeSequence: preparation.wakeSequence
+                    }
+                  })
+                  retryAccountApiKey = true
+                  break
+                }
+                keyModelAttempt = preparation.status === 'admitted' ? preparation.attempt : undefined
+                if (keyModelAttempt && !keyModelAttempt.route.isMainProbe && accountCircuitAttempt) {
+                  // The existing protocol_model circuit remains responsible
+                  // for MainProbe/account semantics. Once this concrete route
+                  // is known to be non-main, its failure must stay in the new
+                  // exact key_model scope and cannot contribute parent evidence.
+                  await settleUndispatchedAccountCircuitAttempt(accountCircuitAttempt, account.id)
+                  accountCircuitAttempt = undefined
+                }
+              } catch (error) {
+                concurrencySlot.release()
+                reacquireConcurrencyForNextKey = true
+                lastAttempt = keyModelUnavailableAttempt(account, 'state_unavailable')
+                getRequestLogger().warn({
+                  event: 'key_model_runtime_state_unavailable',
+                  accountId: account.id,
+                  keyFingerprint: account.selectedApiKeyFingerprint,
+                  attemptId: keyModelAttemptId,
+                  error
+                }, 'Key-model 运行态不可读，精确候选按不可选处理')
+                retryAccountApiKey = true
+                break
+              }
+              const attemptRegistration = requestAttemptTracker.tryRecordDispatchAttempt({
+                ...dispatchAttemptIdentity,
+                matchingConfirmation: accountCircuitAttempt?.isConfirmation === true,
+                allowKeyRotation: accountApiKeyAttemptCount > 1,
+                semanticRetryId: activeSemanticRetryId,
+                sameAccountRetryId: activeSameAccountRetryId
+              })
+              if (!attemptRegistration.allowed) {
+                await keyModelAttempt?.reportUnknown()
+                lastAttempt = requestDeduplicatedAttempt(account, attemptRegistration.reason)
+                failedAccountIds.add(account.id)
+                auditCapture.addGatewayMetadata({
+                  label: 'gateway_request_attempt_deduplicated',
+                  metadata: {
+                    accountId: account.id,
+                    accountRuntimeKey,
+                    physicalCredentialKey: accountPhysicalCredentialKey(account),
+                    keyFingerprint: account.selectedApiKeyFingerprint,
+                    reason: attemptRegistration.reason,
+                    coordinationScope: requestCoordination.scope
+                  }
+                })
+                skipAccount = true
+                break
+              }
+              if (account.selectedApiKeyFingerprint) requestApiKeyAttemptCount += 1
+              activeSameAccountRetryId = undefined
               auditAttemptIndex += 1
               const auditAttemptId = auditCapture.startAttempt({
                 account,
@@ -1026,6 +1108,11 @@ export async function fetchFirstAvailableUpstream(
                   error
                 }, '上游 attempt started 回调失败')
               }
+              const attemptSignal = keyModelAttempt?.transportSignal(signal) ?? signal
+              const markFirstOutput = () => {
+                keyModelAttempt?.markPrecommit()
+                concurrencySlot.markFirstOutput()
+              }
               try {
                 const response = await performUpstreamRequestAttempt({
                   req,
@@ -1039,7 +1126,7 @@ export async function fetchFirstAvailableUpstream(
                   attemptStartedAt,
                   firstByteDeadlineMs: normalRouteFirstByteDeadline?.effectiveDeadlineMs,
                   onFirstByteDeadline,
-                  signal,
+                  signal: attemptSignal,
                   requestClientCompatibility
                 })
                 lastAttempt = {
@@ -1078,13 +1165,14 @@ export async function fetchFirstAvailableUpstream(
                     effectiveServiceTier,
                     timeoutProfile,
                     releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release),
-                    markFirstOutput: concurrencySlot.markFirstOutput,
+                    markFirstOutput,
                     confirmSameAccountApiKeyFailures: () => recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext),
                     confirmHalfOpenSuccess: () => automaticAccountStateMutationAllowed
                       ? completeHalfOpenLeaseSuccess(halfOpenLease)
                       : Promise.resolve(false),
                     releaseHalfOpenLease: () => releaseHalfOpenLease(halfOpenLease),
                     accountCircuitAttempt,
+                    keyModelAttempt,
                     hotQualityAttempt: getHotQualityAttempt(),
                     normalRouteFirstByteDeadline,
                     responsePrecommitDeadlineAtMs: requestLane === 'image' || gatewayRequestWallBudget.unbounded
@@ -1145,11 +1233,12 @@ export async function fetchFirstAvailableUpstream(
                     effectiveServiceTier,
                     timeoutProfile,
                     releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release),
-                    markFirstOutput: concurrencySlot.markFirstOutput,
+                    markFirstOutput,
                     confirmSameAccountApiKeyFailures: () => Promise.resolve(),
                     confirmHalfOpenSuccess: () => Promise.resolve(false),
                     releaseHalfOpenLease: () => releaseHalfOpenLease(halfOpenLease),
                     accountCircuitAttempt,
+                    keyModelAttempt,
                     hotQualityAttempt: getHotQualityAttempt(),
                     normalRouteFirstByteDeadline,
                     responsePrecommitDeadlineAtMs: requestLane === 'image' || gatewayRequestWallBudget.unbounded
@@ -1161,6 +1250,7 @@ export async function fetchFirstAvailableUpstream(
                   accountCircuitAttemptTransferred = true
                   return dispatchResult
                 }
+                await keyModelAttempt?.reportUpstreamNotComplete()
                 if (failedResponseResult.action === 'retry_with_compatibility_recovery') {
                   body = failedResponseResult.recovery.body
                   activeSemanticRetryId = failedResponseResult.recovery.semanticRetryId
@@ -1239,6 +1329,16 @@ export async function fetchFirstAvailableUpstream(
                 const provenBodyTransportFailure = isProvenUpstreamBodyTransportError(error)
                 const provenStartedTransportFailure = primaryStartedTransportFailure
                   || provenBodyTransportFailure
+                // The key-model path consumes only the transport lifecycle
+                // fact, not HTTP/error/body classifications. A cancellation or
+                // scheduler cutover has no capability conclusion; every other
+                // started attempt without a complete terminal response is one
+                // upstream_not_complete observation.
+                if (signal?.aborted || firstByteDeadlineTriggered) {
+                  await keyModelAttempt?.reportUnknown()
+                } else {
+                  await keyModelAttempt?.reportUpstreamNotComplete()
+                }
                 const pendingKeyTransportFailure = accountStateMutationEnabled
                   && usageContext.trafficSource === 'gateway'
                   && !localRequestFailure
@@ -1768,6 +1868,22 @@ function requestDeduplicatedAttempt(account: UpstreamAccount, reason: string): U
     protocolVersion: account.protocolVersion,
     upstreamUrl: 'account:request_deduplicated',
     message: `请求内候选已尝试：${reason}`
+  }
+}
+
+function keyModelUnavailableAttempt(
+  account: UpstreamAccount,
+  reason: 'busy' | 'blocked' | 'state_unavailable'
+): UpstreamAttempt {
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    upstreamUrl: 'account:key_model_unavailable',
+    message: `精确 Key-model 候选暂不可选：${reason}`
   }
 }
 

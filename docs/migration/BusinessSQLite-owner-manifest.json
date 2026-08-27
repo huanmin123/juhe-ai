@@ -626,7 +626,7 @@
     },
     {
       "operation": "list_account_api_key_runtime_states_due_for_probe",
-      "access": "read",
+      "access": "write",
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts"
@@ -987,20 +987,6 @@
       "target_owner": "go-gateway",
       "rollback": "owner-epoch drain; replay committed receipt; no backup restore after accepted writes",
       "verification": "B1-oauth-credentials"
-    },
-    {
-      "operation": "project_account_health_jobs_outcome",
-      "access": "write",
-      "source": {
-        "type_union": "backend/src/modules/db-service/db-service-types.ts",
-        "handler": "backend/src/modules/db-service/db-service-handlers.ts"
-      },
-      "tables": "accounts, account_usage_snapshots",
-      "transaction_group": "account-health",
-      "current_owner": "node-db-service",
-      "target_owner": "go-gateway",
-      "rollback": "owner-epoch drain; replay committed receipt; no backup restore after accepted writes",
-      "verification": "B1-account-health"
     },
     {
       "operation": "read_account_health_projection_cursor",

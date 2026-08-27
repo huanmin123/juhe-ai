@@ -82,6 +82,27 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 	return ProbeResult{Outcome: OutcomeSuccess, StatusCode: response.StatusCode}
 }
 
+// ProbeExactKeyModel reuses the frozen J1 direct probe executor but deliberately
+// bypasses its account-health cursor and outcome projection. The caller selects
+// one physical key and one already-resolved model route; this function does not
+// write accounts.status or any J1 cursor.
+func ProbeExactKeyModel(ctx context.Context, input Input, keyFingerprint, finalModel, endpointMode string, options ProbeOptions) ProbeResult {
+	input.HealthModel = strings.TrimSpace(finalModel)
+	input.EndpointMode = strings.TrimSpace(endpointMode)
+	if input.HealthModel == "" || input.EndpointMode == "" {
+		return taskFailure("key_model_route_invalid", "Key-model 探测路由缺失")
+	}
+	if input.Type != "api_key" {
+		return taskFailure("key_model_credential_type_unsupported", "首版 Key-model 恢复仅支持 API Key")
+	}
+	for _, key := range input.APIKeys {
+		if key.Fingerprint == strings.TrimSpace(keyFingerprint) {
+			return ProbeOpenAI(ctx, input, key.Credential, options)
+		}
+	}
+	return taskFailure("key_model_key_unavailable", "原失败 API Key 已不可用")
+}
+
 func validateInput(input Input, options ProbeOptions) error {
 	if strings.TrimSpace(input.AccountID) == "" || input.InputVersion <= 0 || input.ConfigRevision <= 0 || input.DispatchRevision <= 0 {
 		return errors.New("input fence 无效")

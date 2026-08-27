@@ -12,9 +12,11 @@
 
 `maintenance` 只执行显式 schema、seed、backfill、审计与恢复命令后退出。`jobs` 不参与 J3b runtime，不连接 Business SQLite 写入，也不调用 gateway。共享 Go 包只能包含无 I/O、无连接、无 scheduler 副作用的领域值对象、协议和算法。
 
-机器可读的逐 operation 清单见 [BusinessSQLite-owner-manifest.json](BusinessSQLite-owner-manifest.json)：当前 `DbServiceOperation` 联合有 95 个变体、93 个唯一 operation type；manifest 与 `db-service-operation-access-mode.ts` 均核对为 93 个唯一项（write 52、read 41）。每项包含 Node type/handler 来源、物理文件、表范围、事务组、当前/目标 owner、drain/epoch 回滚动作和验证门。该清单是实施与 active-path-zero 扫描的输入，不代表任何目标 writer 已启用；缺少源码路径或运行时审计证据时，L1 仍保持未关闭。
+机器可读的逐 operation 清单见 [BusinessSQLite-owner-manifest.json](BusinessSQLite-owner-manifest.json)。从 `backend-go` 目录执行只读命令 `go run ./projects/maintenance/cmd/juhe-ai-maintenance -verify-business-owner-manifest`（或在 maintenance 模块目录执行 `go run ./cmd/juhe-ai-maintenance -verify-business-owner-manifest`），校验器会自动向上解析仓库源码，并严格核对 `DbServiceOperation`、access-mode、handler 引用、重复/遗漏项及 owner/表/事务组/回滚/验证字段；当前报告为 92 个 operation（handoff write 52、read 40；源码 access-mode 中 maintenance 16、runtime 2；handlerMatches 92）。manifest 中的 `write` 是 handoff 粗粒度，覆盖 Node 的 `write|maintenance|runtime`；`status` 的 runtime 只读例外和已移除的历史 alias 在校验器中显式列出。该清单与校验报告是实施与 active-path-zero 扫描的输入，不代表任何目标 writer 已启用；缺少逐路由运行时审计证据时，L1 仍保持未关闭。
 
 方案 A 下 `juhe-ai-jobs` 的 J3b 配置无论 SQLite 或 PostgreSQL 均必须 fail-closed；jobs 不得启动 J3b host、listener、scheduler 或 store。Gateway 的 J3b listener 也必须在 Business handoff、专属 schema、health boundary、runtime/source/auth 四项门全部满足后才可监听。
+
+active-path-zero 由维护命令 `go run ./projects/maintenance/cmd/juhe-ai-maintenance -scan-node-j3b-active-path` 只读扫描 `backend/src`，覆盖 Node J3b 路由/proxy、token worker、quality scheduler、`model_quality_command` 及 `model_check_*`/health 写入口；输出文件、行号和模式，仍有命中时以非零状态阻断验收。当前扫描仍有 Node 路由、scheduler、DB-service、dataset/stats writer 和 cleanup/schema 命中，因此 active-path-zero 未通过；命令本身不修改源码或运行时 owner。
 
 J3b Gateway 的启用配置也必须通过四个显式门：`JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true`、`JUHE_AI_J3B_SCHEMA_READY=true`、`JUHE_AI_J3B_HEALTH_BOUNDARY_READY=true`、`JUHE_AI_J3B_RUNTIME_READY=true`。任一缺失时 Gateway 必须 fail-closed；即使四门齐全，在 runtime listener/scheduler/projector 实际接线前仍不得打开 `JUHE_AI_J3B_ENABLED`。
 

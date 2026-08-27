@@ -55,8 +55,8 @@ var requiredColumns = map[string][]string{
 	},
 	"model_check_runs": {
 		"id", "system_account_id", "actor_system_account_id", "provider_code", "target_type", "target_id", "account_id",
-		"model", "profile", "trigger_kind", "status", "level", "score", "max_score", "message", "request_summary_json", "result_summary_json",
-		"policy_snapshot_json", "quality_decision_json", "quality_health_sync_status", "created_at", "updated_at", "finished_at",
+		"model", "profile", "trigger_kind", "schedule_id", "status", "level", "score", "max_score", "message", "request_summary_json", "result_summary_json",
+		"policy_snapshot_json", "quality_decision_json", "probe_set_version", "started_at", "trace_id", "quality_health_sync_status", "created_at", "updated_at", "finished_at",
 	},
 	"model_check_items": {
 		"id", "run_id", "item_key", "item_type", "status", "evidence_summary_json", "created_at", "updated_at",
@@ -265,11 +265,11 @@ func (s *Store) MarkHealthSync(ctx context.Context, runID, state string) error {
 }
 
 type HealthSyncRetry struct {
-	RunID, AccountID, SystemAccountID, ProviderCode, Model, Profile, Level, StatHour string
-	PolicyRevision, AccountConfigRevision, PenaltyAction                             string
-	Score, Threshold                                                                 int
-	ObservedAt                                                                       time.Time
-	EvidenceFormed, TrustFormed                                                      bool
+	RunID, AccountID, SystemAccountID, ProviderCode, Model, Profile, Level, StatHour, ScheduleID string
+	PolicyRevision, AccountConfigRevision, PenaltyAction                                         string
+	Score, Threshold, RecoveryIntervalMinutes                                                    int
+	ObservedAt                                                                                   time.Time
+	EvidenceFormed, TrustFormed                                                                  bool
 }
 
 // ListHealthSyncRetries re-discovers failed health publications from durable
@@ -279,7 +279,7 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 	if s == nil || s.db == nil || limit <= 0 || limit > 10000 {
 		return nil, errors.New("J3b health retry scan input is invalid")
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,account_id,system_account_id,provider_code,model,profile,level,score,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at FROM `+s.table("model_check_runs")+` WHERE quality_health_sync_status IN ('failed','pending_retry') AND finished_at IS NOT NULL ORDER BY updated_at ASC,id ASC LIMIT ?`), limit)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at FROM `+s.table("model_check_runs")+` WHERE quality_health_sync_status IN ('failed','pending_retry') AND finished_at IS NOT NULL ORDER BY updated_at ASC,id ASC LIMIT ?`), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list J3b health sync retries: %w", err)
 	}
@@ -288,7 +288,8 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 	for rows.Next() {
 		var retry HealthSyncRetry
 		var policy, decision, requestSummary, finished string
-		if err := rows.Scan(&retry.RunID, &retry.AccountID, &retry.SystemAccountID, &retry.ProviderCode, &retry.Model, &retry.Profile, &retry.Level, &retry.Score, &policy, &decision, &requestSummary, &finished); err != nil {
+		var schedule sql.NullString
+		if err := rows.Scan(&retry.RunID, &retry.AccountID, &retry.SystemAccountID, &retry.ProviderCode, &retry.Model, &retry.Profile, &retry.Level, &retry.Score, &schedule, &policy, &decision, &requestSummary, &finished); err != nil {
 			return nil, fmt.Errorf("scan J3b health sync retry: %w", err)
 		}
 		if retry.AccountID == "" || retry.SystemAccountID == "" || retry.ProviderCode == "" || retry.Model == "" || retry.Profile == "" {
@@ -312,16 +313,21 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 		retry.EvidenceFormed, retry.TrustFormed = true, true
 		retry.Threshold = int(threshold)
 		var policySnapshot struct {
-			Revision string `json:"revision"`
-			Action   string `json:"action"`
+			Revision                string `json:"revision"`
+			Action                  string `json:"action"`
+			RecoveryIntervalMinutes int    `json:"recoveryIntervalMinutes"`
 		}
 		if err := json.Unmarshal([]byte(policy), &policySnapshot); err != nil || strings.TrimSpace(policySnapshot.Revision) == "" {
 			return nil, fmt.Errorf("J3b health retry %s policy revision is unavailable", retry.RunID)
 		}
 		retry.PolicyRevision = policySnapshot.Revision
 		retry.PenaltyAction = policySnapshot.Action
-		if retry.PenaltyAction == "" {
+		if retry.PenaltyAction == "" || policySnapshot.RecoveryIntervalMinutes < 10 || policySnapshot.RecoveryIntervalMinutes > 10080 {
 			return nil, fmt.Errorf("J3b health retry %s penalty action is unavailable", retry.RunID)
+		}
+		retry.RecoveryIntervalMinutes = policySnapshot.RecoveryIntervalMinutes
+		if schedule.Valid {
+			retry.ScheduleID = schedule.String
 		}
 		var requestSnapshot struct {
 			ConfigRevision string `json:"configRevision"`

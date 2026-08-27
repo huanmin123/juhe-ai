@@ -36,11 +36,12 @@ var (
 var temporaryToken = regexp.MustCompile(`^juhe_tmp_[A-Za-z0-9_-]{43}$`)
 
 type Actor struct {
-	SystemAccountID string
-	Username        string
-	DisplayName     string
-	Role            string
-	SessionID       string
+	SystemAccountID    string
+	Username           string
+	DisplayName        string
+	Role               string
+	SessionID          string
+	MustChangePassword bool
 }
 
 type Authenticator struct {
@@ -102,6 +103,23 @@ func (a *Authenticator) Authenticate(ctx context.Context, authorization, cookieH
 }
 
 func (a *Authenticator) AuthenticateToken(ctx context.Context, token string) (Actor, error) {
+	return a.authenticateToken(ctx, token, true, true)
+}
+
+// AuthenticateTokenForSession returns the active account even when the
+// account still has to change its initial password. The Node /auth/me
+// contract exposes that state so the client can reach change-password.
+func (a *Authenticator) AuthenticateTokenForSession(ctx context.Context, token string) (Actor, error) {
+	return a.authenticateToken(ctx, token, false, true)
+}
+
+// AuthenticateTokenForSessionNoTouch is for read-only management endpoints
+// such as /auth/me, matching Node's read access mode.
+func (a *Authenticator) AuthenticateTokenForSessionNoTouch(ctx context.Context, token string) (Actor, error) {
+	return a.authenticateToken(ctx, token, false, false)
+}
+
+func (a *Authenticator) authenticateToken(ctx context.Context, token string, rejectMustChange, touch bool) (Actor, error) {
 	if a == nil || a.db == nil || strings.TrimSpace(token) == "" {
 		return Actor{}, errors.New("Gateway management authenticator is not initialized")
 	}
@@ -125,12 +143,13 @@ func (a *Authenticator) AuthenticateToken(ctx context.Context, token string) (Ac
 	if err != nil {
 		return Actor{}, ErrSessionExpired
 	}
-	if now.Sub(lastSeen) >= time.Minute {
+	if touch && now.Sub(lastSeen) >= time.Minute {
 		if _, err := a.db.ExecContext(ctx, a.bind(`UPDATE `+a.table("system_sessions")+` SET last_seen_at=? WHERE id=? AND last_seen_at<?`), nodeISOTime(now), actor.SessionID, nodeISOTime(now.Add(-time.Minute))); err != nil {
 			return Actor{}, fmt.Errorf("touch management session: %w", err)
 		}
 	}
-	if mustChange {
+	actor.MustChangePassword = mustChange
+	if rejectMustChange && mustChange {
 		return Actor{}, ErrMustChange
 	}
 	return actor, nil

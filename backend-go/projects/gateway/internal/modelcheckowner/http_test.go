@@ -68,6 +68,27 @@ func TestHTTPHandlerMapsForbiddenAdminScopeTo403(t *testing.T) {
 
 type fakeRunService struct{}
 
+type fakeQualityManager struct{}
+
+func (fakeQualityManager) Policy(context.Context, string) (QualityPolicyView, error) {
+	return QualityPolicyView{SystemAccountID: "sys-1", Revision: 1, Profile: "quick", ManualEnforcementEnabled: true, PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}, nil
+}
+func (fakeQualityManager) PatchPolicy(_ context.Context, _ string, p QualityPolicyPatch) (QualityPolicyView, error) {
+	return QualityPolicyView{SystemAccountID: "sys-1", Revision: p.ExpectedRevision + 1, Profile: "quick", ManualEnforcementEnabled: true, PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}, nil
+}
+func (fakeQualityManager) ListSchedules(context.Context, string, int, int) (QualityScheduleList, error) {
+	return QualityScheduleList{}, nil
+}
+func (fakeQualityManager) CreateSchedule(context.Context, string, QualityScheduleInput) (QualityScheduleView, error) {
+	return QualityScheduleView{ID: "sch"}, nil
+}
+func (fakeQualityManager) PatchSchedule(context.Context, string, string, QualitySchedulePatch) (QualityScheduleView, error) {
+	return QualityScheduleView{ID: "sch"}, nil
+}
+func (fakeQualityManager) DeleteSchedule(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
 func (fakeRunService) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{RunID: "run-1", Status: "completed"}, nil
 }
@@ -137,11 +158,31 @@ func (s *scopedRunService) GetRun(context.Context, string) (any, bool, error) {
 func newTestHTTPHandler() *HTTPHandler {
 	return &HTTPHandler{
 		Service: fakeRunService{}, Active: modelcheckactive.NewRegistry(),
+		Quality:   fakeQualityManager{},
 		Authorize: func(context.Context, *http.Request) (string, error) { return "sys-1", nil },
 		Build: func(context.Context, string, RunCommand) (RunRequest, error) {
 			return RunRequest{SystemAccountID: "sys-1", ActorSystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6", Profile: "quick"}, nil
 		},
 		Heartbeat: 10 * time.Second,
+	}
+}
+
+func TestHTTPHandlerQualityPolicyAndScheduleRoutes(t *testing.T) {
+	handler := newTestHTTPHandler()
+	policy := httptest.NewRecorder()
+	handler.ServeHTTP(policy, httptest.NewRequest(http.MethodGet, "/quality-policy", nil))
+	if policy.Code != http.StatusOK || !strings.Contains(policy.Body.String(), `"revision":1`) {
+		t.Fatalf("policy status=%d body=%s", policy.Code, policy.Body.String())
+	}
+	patch := httptest.NewRecorder()
+	handler.ServeHTTP(patch, httptest.NewRequest(http.MethodPatch, "/quality-policy", strings.NewReader(`{"expectedRevision":1,"penaltyThreshold":75}`)))
+	if patch.Code != http.StatusOK || !strings.Contains(patch.Body.String(), `"revision":2`) {
+		t.Fatalf("patch status=%d body=%s", patch.Code, patch.Body.String())
+	}
+	create := httptest.NewRecorder()
+	handler.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/quality-schedules", strings.NewReader(`{"accountId":"acct","model":"gpt-5.6","intervalMinutes":60,"profile":"quick","penaltyThreshold":70,"penaltyAction":"fallback","recoveryIntervalMinutes":10}`)))
+	if create.Code != http.StatusOK || !strings.Contains(create.Body.String(), `"id":"sch"`) {
+		t.Fatalf("schedule status=%d body=%s", create.Code, create.Body.String())
 	}
 }
 

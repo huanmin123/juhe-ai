@@ -32,7 +32,10 @@ type RunRequest struct {
 	ProviderCode                                                 string
 	Threshold                                                    int
 	PenaltyAction                                                string
+	RecoveryIntervalMinutes                                      int
 	IdentityKey, ConfigRevision, PolicyRevision, ProbeSetVersion string
+	TrustedComparison                                            bool
+	TrustedComparisonAccountID, TrustedComparisonConfigRevision  string
 	Endpoint, Prompt                                             string
 	Protocol                                                     string
 	Headers                                                      http.Header
@@ -52,6 +55,46 @@ type ProgressEvent struct {
 type RunListQuery struct {
 	SystemAccountID string
 	Page, PageSize  int
+}
+
+// AccountOptionsQuery is the read-only selector used by the model-check
+// management UI. It deliberately carries only filtering inputs; credentials
+// and runtime state never cross this transport boundary.
+type AccountOptionsQuery struct {
+	Purpose    string
+	AccountID  string
+	Keyword    string
+	SelectedID []string
+	Limit      int
+}
+
+type AccountOption struct {
+	ID                      string   `json:"id"`
+	Name                    string   `json:"name"`
+	ProviderCode            string   `json:"providerCode"`
+	ProviderProtocolProfile string   `json:"providerProtocolProfileId"`
+	ProtocolCode            string   `json:"protocolCode"`
+	ProtocolVersion         string   `json:"protocolVersion"`
+	ModelCheckModels        []string `json:"modelCheckModels,omitempty"`
+}
+
+type ModelCheckSupportedOption struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+type ModelCheckOptions struct {
+	SupportedModels   []ModelCheckSupportedOption `json:"supportedModels"`
+	SupportedProfiles []ModelCheckSupportedOption `json:"supportedProfiles"`
+	DefaultModel      string                      `json:"defaultModel"`
+	DefaultProfile    string                      `json:"defaultProfile"`
+	TrustedComparison map[string]any              `json:"trustedComparison"`
+}
+
+type AccountOptions interface {
+	ListAccountOptions(context.Context, AccountOptionsQuery) ([]AccountOption, error)
+	ModelCheckOptions() ModelCheckOptions
 }
 
 type Authorize func(context.Context, *http.Request) (string, error)
@@ -84,12 +127,14 @@ type RunCommand struct {
 }
 
 type HTTPHandler struct {
-	Service   RunService
-	Active    *modelcheckactive.Registry
-	Authorize Authorize
-	Build     BuildRequest
-	MaxBody   int64
-	Heartbeat time.Duration
+	Service        RunService
+	AccountOptions AccountOptions
+	Quality        QualityManagement
+	Active         *modelcheckactive.Registry
+	Authorize      Authorize
+	Build          BuildRequest
+	MaxBody        int64
+	Heartbeat      time.Duration
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -120,9 +165,237 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveList(w, r, systemAccountID)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/runs/"):
 		h.serveDetail(w, r, strings.TrimPrefix(path, "/runs/"), systemAccountID)
+	case r.Method == http.MethodGet && path == "/quality-policy":
+		h.serveQualityPolicy(w, r, systemAccountID)
+	case r.Method == http.MethodGet && path == "/options":
+		h.serveOptions(w)
+	case r.Method == http.MethodGet && (path == "/account-options" || path == "/options/accounts"):
+		h.serveAccountOptions(w, r)
+	case r.Method == http.MethodPatch && path == "/quality-policy":
+		h.patchQualityPolicy(w, r, systemAccountID)
+	case r.Method == http.MethodGet && path == "/quality-schedules":
+		h.listQualitySchedules(w, r, systemAccountID)
+	case r.Method == http.MethodPost && path == "/quality-schedules":
+		h.createQualitySchedule(w, r, systemAccountID)
+	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/quality-schedules/"):
+		h.patchQualitySchedule(w, r, systemAccountID, strings.TrimPrefix(path, "/quality-schedules/"))
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/quality-schedules/"):
+		h.deleteQualitySchedule(w, r, systemAccountID, strings.TrimPrefix(path, "/quality-schedules/"))
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (h *HTTPHandler) serveOptions(w http.ResponseWriter) {
+	if h.AccountOptions == nil {
+		writeOwnerError(w, http.StatusServiceUnavailable, "J3b Gateway 账户选项 owner 未完成接线")
+		return
+	}
+	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": h.AccountOptions.ModelCheckOptions()})
+}
+
+func (h *HTTPHandler) serveAccountOptions(w http.ResponseWriter, r *http.Request) {
+	if h.AccountOptions == nil {
+		writeOwnerError(w, http.StatusServiceUnavailable, "J3b Gateway 账户选项 owner 未完成接线")
+		return
+	}
+	query, err := parseAccountOptionsQuery(r)
+	if err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	items, err := h.AccountOptions.ListAccountOptions(r.Context(), query)
+	if err != nil {
+		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
+func parseAccountOptionsQuery(r *http.Request) (AccountOptionsQuery, error) {
+	q := r.URL.Query()
+	purpose := q.Get("purpose")
+	if purpose != "run" && purpose != "history" && purpose != "schedule" {
+		return AccountOptionsQuery{}, errors.New("模型检测账户选项 purpose 仅支持 run、history 或 schedule")
+	}
+	keyword := strings.TrimSpace(q.Get("keyword"))
+	if len(keyword) > 100 {
+		return AccountOptionsQuery{}, errors.New("模型检测账户选项 keyword 无效")
+	}
+	accountID := strings.TrimSpace(q.Get("accountId"))
+	if accountID != "" && (len(accountID) > 120 || strings.ContainsAny(accountID, ",[]")) {
+		return AccountOptionsQuery{}, errors.New("模型检测账户选项 accountId 无效")
+	}
+	limit := 50
+	if raw := q.Get("limit"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 || parsed > 50 {
+			return AccountOptionsQuery{}, errors.New("模型检测账户选项 limit 必须是 1 到 50 的整数")
+		}
+		limit = parsed
+	}
+	selectedRaw, hasSelected := q["selectedIds"]
+	_, hasBracketSelected := q["selectedIds[]"]
+	if hasSelected && hasBracketSelected {
+		return AccountOptionsQuery{}, errors.New("模型检测账户选项 selectedIds 无效")
+	}
+	if !hasSelected {
+		selectedRaw = q["selectedIds[]"]
+	}
+	selected := make([]string, 0, len(selectedRaw))
+	for _, value := range selectedRaw {
+		value = strings.TrimSpace(value)
+		if value == "" || len(value) > 120 || strings.ContainsAny(value, ",[]") {
+			return AccountOptionsQuery{}, errors.New("模型检测账户选项 selectedIds 无效")
+		}
+		selected = append(selected, value)
+	}
+	if len(selected) > 20 {
+		return AccountOptionsQuery{}, errors.New("模型检测账户选项 selectedIds 无效")
+	}
+	if accountID != "" && (keyword != "" || len(selected) > 0 || limit != 1) {
+		return AccountOptionsQuery{}, errors.New("模型检测账户定点模型选项只接受 accountId、purpose 和 limit=1")
+	}
+	if accountID != "" {
+		limit = 1
+	}
+	return AccountOptionsQuery{Purpose: purpose, AccountID: accountID, Keyword: keyword, SelectedID: selected, Limit: limit}, nil
+}
+
+func (h *HTTPHandler) quality() (QualityManagement, error) {
+	if h == nil || h.Quality == nil {
+		return nil, errors.New("J3b Gateway 质量管理 owner 未完成接线")
+	}
+	return h.Quality, nil
+}
+func (h *HTTPHandler) serveQualityPolicy(w http.ResponseWriter, r *http.Request, systemID string) {
+	q, err := h.quality()
+	if err == nil {
+		var v QualityPolicyView
+		v, err = q.Policy(r.Context(), systemID)
+		if err == nil {
+			writeOwnerJSON(w, http.StatusOK, map[string]any{"data": v})
+			return
+		}
+	}
+	writeOwnerError(w, http.StatusInternalServerError, err.Error())
+}
+func (h *HTTPHandler) patchQualityPolicy(w http.ResponseWriter, r *http.Request, systemID string) {
+	var input QualityPolicyPatch
+	if err := decodeOwnerJSON(r, h.maxBody(), &input); err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	q, err := h.quality()
+	if err == nil {
+		var v QualityPolicyView
+		v, err = q.PatchPolicy(r.Context(), systemID, input)
+		if err == nil {
+			writeOwnerJSON(w, http.StatusOK, map[string]any{"data": v})
+			return
+		}
+	}
+	writeQualityError(w, err)
+}
+func (h *HTTPHandler) listQualitySchedules(w http.ResponseWriter, r *http.Request, systemID string) {
+	q, err := h.quality()
+	if err == nil {
+		page, size := parsePage(r)
+		var v QualityScheduleList
+		v, err = q.ListSchedules(r.Context(), systemID, page, size)
+		if err == nil {
+			writeOwnerJSON(w, http.StatusOK, map[string]any{"data": v})
+			return
+		}
+	}
+	writeOwnerError(w, http.StatusInternalServerError, err.Error())
+}
+func (h *HTTPHandler) createQualitySchedule(w http.ResponseWriter, r *http.Request, systemID string) {
+	var input QualityScheduleInput
+	if err := decodeOwnerJSON(r, h.maxBody(), &input); err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	q, err := h.quality()
+	if err == nil {
+		var v QualityScheduleView
+		v, err = q.CreateSchedule(r.Context(), systemID, input)
+		if err == nil {
+			writeOwnerJSON(w, http.StatusOK, map[string]any{"data": v})
+			return
+		}
+	}
+	writeQualityError(w, err)
+}
+func (h *HTTPHandler) patchQualitySchedule(w http.ResponseWriter, r *http.Request, systemID, id string) {
+	if strings.TrimSpace(id) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	var input QualitySchedulePatch
+	if err := decodeOwnerJSON(r, h.maxBody(), &input); err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	q, err := h.quality()
+	if err == nil {
+		var v QualityScheduleView
+		v, err = q.PatchSchedule(r.Context(), systemID, id, input)
+		if err == nil {
+			writeOwnerJSON(w, http.StatusOK, map[string]any{"data": v})
+			return
+		}
+	}
+	writeQualityError(w, err)
+}
+func (h *HTTPHandler) deleteQualitySchedule(w http.ResponseWriter, r *http.Request, systemID, id string) {
+	if strings.TrimSpace(id) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	q, err := h.quality()
+	if err == nil {
+		var deleted bool
+		deleted, err = q.DeleteSchedule(r.Context(), systemID, id)
+		if err == nil {
+			if !deleted {
+				http.NotFound(w, r)
+				return
+			}
+			writeOwnerJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"deleted": true}})
+			return
+		}
+	}
+	writeOwnerError(w, http.StatusInternalServerError, err.Error())
+}
+func decodeOwnerJSON(r *http.Request, max int64, target any) error {
+	if r.Body == nil {
+		return errors.New("请求体不能为空")
+	}
+	d := json.NewDecoder(io.LimitReader(r.Body, max))
+	d.DisallowUnknownFields()
+	if err := d.Decode(target); err != nil {
+		return errors.New("请求体无效")
+	}
+	var trailing any
+	if err := d.Decode(&trailing); err != io.EOF {
+		return errors.New("请求体必须是单个 JSON 对象")
+	}
+	return nil
+}
+func writeQualityError(w http.ResponseWriter, err error) {
+	if err == nil {
+		err = errors.New("质量管理操作失败")
+	}
+	if strings.Contains(err.Error(), "已被其他操作修改") || strings.Contains(err.Error(), "已变化") {
+		writeOwnerError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if strings.Contains(err.Error(), "不存在") {
+		writeOwnerError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeOwnerError(w, http.StatusBadRequest, err.Error())
 }
 
 func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, accountID string) {

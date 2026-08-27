@@ -104,7 +104,7 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 	if s.Postgres {
 		lock = " FOR UPDATE OF mqs SKIP LOCKED"
 	}
-	rows, err := tx.QueryContext(ctx, q(`SELECT mqs.id,mqs.revision,mqs.system_account_id,mqs.account_id,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,a.config_revision,a.provider_code FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id WHERE mqs.enabled=1 AND mqs.next_run_at<=? AND (mqs.lease_until IS NULL OR mqs.lease_until<=?) AND a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.status='active' ORDER BY mqs.next_run_at,mqs.id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
+	rows, err := tx.QueryContext(ctx, q(`SELECT mqs.id,mqs.revision,mqs.system_account_id,mqs.account_id,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,a.config_revision,a.provider_code FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id WHERE mqs.enabled=1 AND mqs.next_run_at<=? AND (mqs.lease_until IS NULL OR mqs.lease_until<=?) AND a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.status='active' ORDER BY mqs.next_run_at,mqs.id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim J3b schedules: %w", err)
 	}
@@ -112,8 +112,8 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 	var tasks []ScheduleTask
 	for rows.Next() {
 		var id, systemID, accountID, model, profile, action, provider string
-		var revision, interval, threshold, configRevision int
-		if err := rows.Scan(&id, &revision, &systemID, &accountID, &model, &interval, &profile, &threshold, &action, &configRevision, &provider); err != nil {
+		var revision, interval, recoveryInterval, threshold, configRevision int
+		if err := rows.Scan(&id, &revision, &systemID, &accountID, &model, &interval, &profile, &threshold, &action, &recoveryInterval, &configRevision, &provider); err != nil {
 			return nil, err
 		}
 		res, err := tx.ExecContext(ctx, q(`UPDATE `+s.table("model_quality_schedules")+` SET lease_owner=?,lease_until=?,updated_at=? WHERE id=? AND revision=? AND enabled=1 AND (lease_until IS NULL OR lease_until<=?)`), s.OwnerID, now.Add(lease).UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), id, revision, now.UTC().Format(time.RFC3339Nano))
@@ -123,7 +123,7 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 		if n, _ := res.RowsAffected(); n != 1 {
 			continue
 		}
-		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: action, ConfigRevision: strconv.Itoa(configRevision), PolicyRevision: strconv.Itoa(revision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: id, OwnerID: s.OwnerID, ScheduleRevision: revision, IntervalMinutes: interval})
+		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: action, ConfigRevision: strconv.Itoa(configRevision), PolicyRevision: strconv.Itoa(revision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: id, OwnerID: s.OwnerID, ScheduleRevision: revision, IntervalMinutes: interval, RecoveryIntervalMinutes: recoveryInterval})
 		if err != nil {
 			return nil, err
 		}

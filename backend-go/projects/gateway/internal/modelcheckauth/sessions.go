@@ -2,8 +2,10 @@ package modelcheckauth
 
 import (
 	"context"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -111,6 +113,88 @@ func (a *Authenticator) RevokeOtherSessions(ctx context.Context, systemAccountID
 		return fmt.Errorf("revoke other sessions: %w", err)
 	}
 	return nil
+}
+
+// ChangePassword updates the account hash and revokes every other session in
+// one owner transaction. expectedRevision prevents an old form submission
+// from overwriting a newer password change.
+func (a *Authenticator) ChangePassword(ctx context.Context, systemAccountID, expectedRevision, newPassword, keepSessionID string) (bool, error) {
+	if a == nil || a.db == nil || strings.TrimSpace(systemAccountID) == "" || strings.TrimSpace(expectedRevision) == "" || newPassword == "" || strings.TrimSpace(keepSessionID) == "" {
+		return false, errors.New("password change input is incomplete")
+	}
+	passwordHash, err := newNodePasswordHash(newPassword)
+	if err != nil {
+		return false, err
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin password change: %w", err)
+	}
+	defer tx.Rollback()
+	lock := ""
+	if a.mode == Postgres {
+		lock = " FOR UPDATE"
+	}
+	var current string
+	if err := tx.QueryRowContext(ctx, a.bind(`SELECT password_hash FROM `+a.table("system_accounts")+` WHERE id=? AND status='active' LIMIT 1`+lock), systemAccountID).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read password revision: %w", err)
+	}
+	if hashString(current) != expectedRevision {
+		return false, nil
+	}
+	now := nodeISOTime(a.now().UTC())
+	if _, err := tx.ExecContext(ctx, a.bind(`UPDATE `+a.table("system_accounts")+` SET password_hash=?,must_change_password=0,updated_at=? WHERE id=?`), passwordHash, now, systemAccountID); err != nil {
+		return false, fmt.Errorf("persist password change: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, a.bind(`DELETE FROM `+a.table("system_sessions")+` WHERE system_account_id=? AND id<>?`), systemAccountID, keepSessionID); err != nil {
+		return false, fmt.Errorf("revoke sessions after password change: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit password change: %w", err)
+	}
+	return true, nil
+}
+
+func newNodePasswordHash(password string) (string, error) {
+	var saltBytes [16]byte
+	if _, err := rand.Read(saltBytes[:]); err != nil {
+		return "", fmt.Errorf("generate password salt: %w", err)
+	}
+	salt := base64.RawURLEncoding.EncodeToString(saltBytes[:])
+	derived, err := pbkdf2.Key(sha512.New, password, []byte(salt), 120000, 32)
+	if err != nil {
+		return "", fmt.Errorf("derive password hash: %w", err)
+	}
+	return "pbkdf2$sha512$120000$" + salt + "$" + base64.RawURLEncoding.EncodeToString(derived), nil
+}
+
+func (a *Authenticator) UpdateDisplayName(ctx context.Context, systemAccountID, displayName string) (bool, error) {
+	if a == nil || a.db == nil || strings.TrimSpace(systemAccountID) == "" || strings.TrimSpace(displayName) == "" {
+		return false, errors.New("display name input is incomplete")
+	}
+	result, err := a.db.ExecContext(ctx, a.bind(`UPDATE `+a.table("system_accounts")+` SET display_name=?,updated_at=? WHERE id=? AND status='active'`), displayName, nodeISOTime(a.now().UTC()), systemAccountID)
+	if err != nil {
+		return false, fmt.Errorf("update display name: %w", err)
+	}
+	count, err := result.RowsAffected()
+	return count > 0, err
+}
+
+func (a *Authenticator) CurrentCredentialRevision(ctx context.Context, systemAccountID string) (string, error) {
+	if a == nil || a.db == nil || strings.TrimSpace(systemAccountID) == "" {
+		return "", errors.New("credential revision input is incomplete")
+	}
+	var passwordHash string
+	if err := a.db.QueryRowContext(ctx, a.bind(`SELECT password_hash FROM `+a.table("system_accounts")+` WHERE id=? AND status='active'`), systemAccountID).Scan(&passwordHash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read credential revision: %w", err)
+	}
+	return hashString(passwordHash), nil
 }
 
 func (a *Authenticator) CleanupExpiredSessions(ctx context.Context, now time.Time, limit int) (int64, error) {

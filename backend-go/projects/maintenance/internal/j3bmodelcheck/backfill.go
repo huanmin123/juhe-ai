@@ -2,7 +2,9 @@ package j3bmodelcheck
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -10,9 +12,11 @@ import (
 )
 
 type BackfillReport struct {
-	SourceRows   map[string]int64 `json:"sourceRows"`
-	InsertedRows map[string]int64 `json:"insertedRows"`
-	TargetRows   map[string]int64 `json:"targetRows"`
+	SourceRows   map[string]int64  `json:"sourceRows"`
+	InsertedRows map[string]int64  `json:"insertedRows"`
+	TargetRows   map[string]int64  `json:"targetRows"`
+	SourceDigest map[string]string `json:"sourceDigest"`
+	TargetDigest map[string]string `json:"targetDigest"`
 }
 
 // BackfillSQLite copies only J3b fact tables from read-only legacy SQLite
@@ -44,13 +48,17 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		return BackfillReport{}, fmt.Errorf("begin J3b SQLite backfill: %w", err)
 	}
 	defer tx.Rollback()
-	report := BackfillReport{SourceRows: map[string]int64{}, InsertedRows: map[string]int64{}, TargetRows: map[string]int64{}}
+	report := BackfillReport{SourceRows: map[string]int64{}, InsertedRows: map[string]int64{}, TargetRows: map[string]int64{}, SourceDigest: map[string]string{}, TargetDigest: map[string]string{}}
 	for _, item := range []struct {
 		db       *sql.DB
 		table    string
 		optional bool
 	}{
-		{dataset, "model_check_input_versions", false}, {dataset, "model_check_inputs", false}, {dataset, "model_check_execution_claims", false}, {dataset, "model_check_outcomes", false},
+		// Node legacy dataset owns run/item/observation facts. The input,
+		// claim, outcome and scheduler tables are Go-owned additions and are
+		// intentionally absent before cutover; their empty target tables are
+		// still validated by inspectSQLite above.
+		{dataset, "model_check_input_versions", true}, {dataset, "model_check_inputs", true}, {dataset, "model_check_execution_claims", true}, {dataset, "model_check_outcomes", true},
 		{dataset, "model_check_runs", false}, {dataset, "model_check_items", false}, {dataset, "model_check_observations", false}, {dataset, "model_check_scheduler_tasks", true}, {stats, "account_quality_health_hourly", false},
 	} {
 		exists, err := sqliteTableExists(ctx, item.db, item.table)
@@ -59,7 +67,12 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		}
 		if !exists {
 			if item.optional {
-				report.SourceRows[item.table], report.InsertedRows[item.table], report.TargetRows[item.table] = 0, 0, 0
+				var targetRows int64
+				if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoteIdent(item.table)).Scan(&targetRows); err != nil {
+					return BackfillReport{}, fmt.Errorf("count J3b target table %s: %w", item.table, err)
+				}
+				report.SourceRows[item.table], report.InsertedRows[item.table], report.TargetRows[item.table] = 0, 0, targetRows
+				report.SourceDigest[item.table] = ""
 				continue
 			}
 			return BackfillReport{}, fmt.Errorf("legacy J3b source table %s is missing", item.table)
@@ -70,6 +83,7 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		}
 		report.SourceRows[item.table] = copied.source
 		report.InsertedRows[item.table] = copied.inserted
+		report.SourceDigest[item.table] = copied.digest
 		var count int64
 		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoteIdent(item.table)).Scan(&count); err != nil {
 			return BackfillReport{}, err
@@ -78,6 +92,13 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 	}
 	if err := tx.Commit(); err != nil {
 		return BackfillReport{}, fmt.Errorf("commit J3b SQLite backfill: %w", err)
+	}
+	for table := range report.TargetRows {
+		digest, err := sqliteTableDigest(ctx, target, table)
+		if err != nil {
+			return BackfillReport{}, fmt.Errorf("digest J3b target table %s: %w", table, err)
+		}
+		report.TargetDigest[table] = digest
 	}
 	return report, nil
 }
@@ -103,7 +124,10 @@ func openReadOnlySQLite(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-type copyStats struct{ source, inserted int64 }
+type copyStats struct {
+	source, inserted int64
+	digest           string
+}
 
 func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table string) (copyStats, error) {
 	sourceColumns, err := sqliteColumns(ctx, source, table)
@@ -147,6 +171,7 @@ func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table stri
 		}
 	}
 	var stats copyStats
+	digest := sha256.New()
 	for rows.Next() {
 		values := make([]any, len(columns))
 		pointers := make([]any, len(values))
@@ -157,6 +182,7 @@ func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table stri
 			return copyStats{}, fmt.Errorf("scan legacy J3b table %s: %w", table, err)
 		}
 		stats.source++
+		writeDigestRow(digest, values)
 		where := make([]string, len(primaryKeys))
 		args := make([]any, len(primaryKeys))
 		for i, key := range primaryKeys {
@@ -189,11 +215,87 @@ func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table stri
 	if err := rows.Err(); err != nil {
 		return copyStats{}, err
 	}
+	stats.digest = hex.EncodeToString(digest.Sum(nil))
 	return stats, nil
+}
+
+func sqliteTableDigest(ctx context.Context, db *sql.DB, table string) (string, error) {
+	columns, err := sqliteColumns(ctx, db, table)
+	if err != nil {
+		return "", err
+	}
+	keys, err := sqlitePrimaryKeysDB(ctx, db, table)
+	if err != nil || len(keys) == 0 {
+		return "", fmt.Errorf("table %s has no primary key: %w", table, err)
+	}
+	query := "SELECT " + joinQuoted(columns) + " FROM " + quoteIdent(table) + " ORDER BY " + joinQuoted(keys)
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	digest := sha256.New()
+	for rows.Next() {
+		values := make([]any, len(columns))
+		pointers := make([]any, len(values))
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			return "", err
+		}
+		writeDigestRow(digest, values)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func writeDigestRow(digest interface{ Write([]byte) (int, error) }, values []any) {
+	for _, value := range values {
+		encoded := normalizeValue(value)
+		_, _ = fmt.Fprintf(digest, "%d:", len(encoded))
+		_, _ = digest.Write([]byte(encoded))
+	}
+	_, _ = digest.Write([]byte{0})
 }
 
 func sqlitePrimaryKeys(ctx context.Context, tx *sql.Tx, table string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table)+")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := map[int]string{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		if pk > 0 {
+			keys[pk] = name
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	positions := make([]int, 0, len(keys))
+	for position := range keys {
+		positions = append(positions, position)
+	}
+	sort.Ints(positions)
+	result := make([]string, len(positions))
+	for i, position := range positions {
+		result[i] = keys[position]
+	}
+	return result, nil
+}
+
+func sqlitePrimaryKeysDB(ctx context.Context, db *sql.DB, table string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table)+")")
 	if err != nil {
 		return nil, err
 	}

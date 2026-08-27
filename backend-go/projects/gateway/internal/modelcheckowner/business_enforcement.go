@@ -32,7 +32,7 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 	if a == nil || a.db == nil {
 		return errors.New("J3b Business enforcement owner is not initialized")
 	}
-	if strings.TrimSpace(input.AccountID) == "" || strings.TrimSpace(input.SystemAccountID) == "" || strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Action) == "" || input.Threshold < 40 || input.Threshold > 100 || input.Score >= input.Threshold {
+	if strings.TrimSpace(input.AccountID) == "" || strings.TrimSpace(input.SystemAccountID) == "" || strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Action) == "" || input.Threshold < 40 || input.Threshold > 100 || input.Score >= input.Threshold || input.RecoveryIntervalMinutes < 10 || input.RecoveryIntervalMinutes > 10080 {
 		return errors.New("J3b Business enforcement input is invalid")
 	}
 	if input.Action != "disable" && input.Action != "fallback" && input.Action != "quality_isolate" {
@@ -55,6 +55,13 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 		return fmt.Errorf("begin J3b Business enforcement: %w", err)
 	}
 	defer tx.Rollback()
+	matched, err := a.configurationMatches(ctx, tx, input, policyRevision)
+	if err != nil {
+		return fmt.Errorf("read J3b Business enforcement configuration: %w", err)
+	}
+	if !matched {
+		return errors.New("J3b Business enforcement configuration is stale")
+	}
 	accountTable := a.table("accounts")
 	var status string
 	var currentRevision, fallbackEnabled, superPriority int
@@ -109,12 +116,13 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 		return errors.New("J3b Business enforcement account changed before commit")
 	}
 	enforcementID := newEnforcementID()
-	interval := 10
-	if input.Action == "quality_isolate" {
-		interval = 10
+	interval := input.RecoveryIntervalMinutes
+	source, sourceID := "manual", any(nil)
+	if strings.TrimSpace(input.ScheduleID) != "" {
+		source, sourceID = "schedule", input.ScheduleID
 	}
-	enforcement := `INSERT INTO ` + a.table("account_quality_enforcements") + ` (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,config_source,policy_revision,profile,penalty_threshold,recovery_interval_minutes,account_config_revision,before_status,after_status,fallback_was_enabled,super_priority_was_enabled,started_at,recovery_due_at,created_at,updated_at) VALUES (` + a.placeholders(21) + `) ON CONFLICT(account_id) DO UPDATE SET system_account_id=excluded.system_account_id,enforcement_id=excluded.enforcement_id,generation=generation+1,state='active',action=excluded.action,trigger_run_id=excluded.trigger_run_id,config_source=excluded.config_source,policy_revision=excluded.policy_revision,profile=excluded.profile,penalty_threshold=excluded.penalty_threshold,recovery_interval_minutes=excluded.recovery_interval_minutes,account_config_revision=excluded.account_config_revision,before_status=excluded.before_status,after_status=excluded.after_status,fallback_was_enabled=excluded.fallback_was_enabled,super_priority_was_enabled=excluded.super_priority_was_enabled,started_at=excluded.started_at,recovery_due_at=excluded.recovery_due_at,cleared_at=NULL,updated_at=excluded.updated_at`
-	args := []any{input.AccountID, input.SystemAccountID, enforcementID, 1, "active", input.Action, input.RunID, "manual", policyRevision, defaultProfile(input.Profile), input.Threshold, interval, accountRevision, status, newStatus, fallbackEnabled, superPriority, now.Format(time.RFC3339Nano), nullableTime(now.Add(time.Duration(interval)*time.Minute), input.Action == "quality_isolate"), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)}
+	enforcement := `INSERT INTO ` + a.table("account_quality_enforcements") + ` (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,config_source,config_source_id,policy_revision,profile,penalty_threshold,recovery_interval_minutes,account_config_revision,before_status,after_status,fallback_was_enabled,super_priority_was_enabled,started_at,recovery_due_at,created_at,updated_at) VALUES (` + a.placeholders(22) + `) ON CONFLICT(account_id) DO UPDATE SET system_account_id=excluded.system_account_id,enforcement_id=excluded.enforcement_id,generation=generation+1,state='active',action=excluded.action,trigger_run_id=excluded.trigger_run_id,config_source=excluded.config_source,config_source_id=excluded.config_source_id,policy_revision=excluded.policy_revision,profile=excluded.profile,penalty_threshold=excluded.penalty_threshold,recovery_interval_minutes=excluded.recovery_interval_minutes,account_config_revision=excluded.account_config_revision,before_status=excluded.before_status,after_status=excluded.after_status,fallback_was_enabled=excluded.fallback_was_enabled,super_priority_was_enabled=excluded.super_priority_was_enabled,started_at=excluded.started_at,recovery_due_at=excluded.recovery_due_at,cleared_at=NULL,updated_at=excluded.updated_at`
+	args := []any{input.AccountID, input.SystemAccountID, enforcementID, 1, "active", input.Action, input.RunID, source, sourceID, policyRevision, defaultProfile(input.Profile), input.Threshold, interval, accountRevision, status, newStatus, fallbackEnabled, superPriority, now.Format(time.RFC3339Nano), nullableTime(now.Add(time.Duration(interval)*time.Minute), input.Action == "quality_isolate"), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)}
 	if _, err := tx.ExecContext(ctx, enforcement, args...); err != nil {
 		return fmt.Errorf("persist J3b Business enforcement: %w", err)
 	}
@@ -122,6 +130,31 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 		return fmt.Errorf("commit J3b Business enforcement: %w", err)
 	}
 	return nil
+}
+
+func (a *BusinessEnforcementApplier) configurationMatches(ctx context.Context, tx *sql.Tx, input QualityEnforcement, policyRevision int) (bool, error) {
+	if strings.TrimSpace(input.ScheduleID) != "" {
+		var revision, threshold, recovery int
+		var profile, action, model string
+		err := tx.QueryRowContext(ctx, `SELECT revision,profile,penalty_threshold,penalty_action,recovery_interval_minutes,model FROM `+a.table("model_quality_schedules")+` WHERE id=`+a.placeholder(1)+` AND system_account_id=`+a.placeholder(2)+` AND account_id=`+a.placeholder(3), input.ScheduleID, input.SystemAccountID, input.AccountID).Scan(&revision, &profile, &threshold, &action, &recovery, &model)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return revision == policyRevision && profile == defaultProfile(input.Profile) && threshold == input.Threshold && action == input.Action && recovery == input.RecoveryIntervalMinutes && (input.Model == "" || model == input.Model), nil
+	}
+	var revision, threshold, recovery int
+	var profile, action string
+	err := tx.QueryRowContext(ctx, `SELECT revision,profile,penalty_threshold,penalty_action,recovery_interval_minutes FROM `+a.table("model_quality_policies")+` WHERE system_account_id=`+a.placeholder(1), input.SystemAccountID).Scan(&revision, &profile, &threshold, &action, &recovery)
+	if errors.Is(err, sql.ErrNoRows) {
+		return policyRevision == 0 && defaultProfile(input.Profile) == "quick" && input.Threshold == 70 && input.Action == "fallback" && input.RecoveryIntervalMinutes == 10, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return revision == policyRevision && profile == defaultProfile(input.Profile) && threshold == input.Threshold && action == input.Action && recovery == input.RecoveryIntervalMinutes, nil
 }
 
 func positiveInt(value string) (int, error) {

@@ -6,11 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
 )
 
 func main() {
@@ -26,6 +28,8 @@ func main() {
 	goStopped := flag.Bool("go-stopped", false, "confirm Go owners are stopped for an offline migration")
 	backupConfirmed := flag.Bool("backup-confirmed", false, "confirm a recoverable backup was verified")
 	j3bBackfill := flag.Bool("backfill-j3b-model-check-sqlite", false, "copy legacy J3b SQLite facts into the dedicated file")
+	ownerManifestCheck := flag.Bool("verify-business-owner-manifest", false, "read-only verify the Business SQLite operation handoff manifest")
+	nodeActivePathCheck := flag.Bool("scan-node-j3b-active-path", false, "read-only scan Node J3b routes, workers and writers")
 	flag.Parse()
 	if *version {
 		fmt.Printf("juhe-ai-maintenance project=%s contract=%s\n", contracts.ProjectMaintenance, contracts.ArchitectureVersion)
@@ -33,6 +37,14 @@ func main() {
 	}
 	if *check {
 		fmt.Println("juhe-ai-maintenance boundary=ready runtime=one-shot-scaffold")
+		return
+	}
+	if *ownerManifestCheck {
+		runBusinessOwnerManifestCheck()
+		return
+	}
+	if *nodeActivePathCheck {
+		runNodeJ3bActivePathCheck()
 		return
 	}
 	if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill {
@@ -65,6 +77,85 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
 	os.Exit(2)
+}
+
+func runNodeJ3bActivePathCheck() {
+	root := resolveRepositoryRoot()
+	report, err := ownermanifest.ScanNodeJ3bActivePaths(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Node J3b active-path scan failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode Node J3b active-path report: %v\n", err)
+		os.Exit(1)
+	}
+	if len(report.Findings) > 0 {
+		os.Exit(3)
+	}
+}
+
+func resolveRepositoryRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	for depth := 0; depth <= 8; depth++ {
+		if info, statErr := os.Stat(filepath.Join(dir, "backend", "src")); statErr == nil && info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "."
+}
+
+func runBusinessOwnerManifestCheck() {
+	manifestPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json"))
+	typesPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_TYPES", "backend/src/modules/db-service/db-service-types.ts"))
+	accessPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_ACCESS", "backend/src/modules/db-service/db-service-operation-access-mode.ts"))
+	handlerPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", "backend/src/modules/db-service/db-service-handlers.ts"))
+	report, err := ownermanifest.Verify(manifestPath, typesPath, accessPath, handlerPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Business SQLite owner manifest verification failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode Business SQLite owner manifest report: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func resolveRepoPath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return path
+	}
+	for depth := 0; depth <= 8; depth++ {
+		candidate := filepath.Join(dir, path)
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return path
 }
 
 func runJ3bModelCheckSQLiteBackfill(nodeStopped, goStopped, backupConfirmed bool) {

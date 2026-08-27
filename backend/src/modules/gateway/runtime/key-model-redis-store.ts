@@ -1,0 +1,392 @@
+import { runtimeConfig } from '../../../config/runtime.js'
+import { getRedisClient, runRedisOperationWithDeadline, type RedisCommandClient } from '../../../shared/redis-client.js'
+import { redisNamespacedKey } from '../../../shared/redis-namespace.js'
+import {
+  capabilityHash,
+  createKeyModelOpenState,
+  keyModelForegroundLimit,
+  keyModelForegroundPrecommitLeaseMs,
+  keyModelForegroundRedisOperationTimeoutMs,
+  type CapabilityKey,
+  type KeyModelState
+} from './key-model-runtime.js'
+
+export interface KeyModelFailureIntent {
+  intentId: string
+  requestId: string
+  attemptId: string
+  capability: CapabilityKey
+  observedAtMs: number
+  outcome: 'upstream_not_complete'
+  sourceFence: string
+  permit?: KeyModelForegroundPermit
+}
+
+export type KeyModelFailureResult =
+  | { status: 'applied' | 'idempotent'; state: KeyModelState }
+  | { status: 'capacity_exhausted' | 'stale' }
+
+export type KeyModelAdmissionResult =
+  | { status: 'admitted'; permit: KeyModelForegroundPermit }
+  | { status: 'busy' | 'blocked'; wakeSequence: number }
+
+export interface KeyModelForegroundPermit {
+  capabilityHash: string
+  attemptId: string
+  leaseUntilMs: number
+}
+
+interface KeyModelRedisKeys {
+  state(hash: string): string
+  due: string
+  closed: string
+  receipt(intentId: string): string
+  admission(hash: string): string
+  admissionLease(hash: string, attemptId: string): string
+  admissionWake(hash: string): string
+  mainProbeFence(hash: string): string
+  j1Confirmation(sourceAccountId: string, dispatchRevision: number): string
+  admissionEvents: string
+  capacity: string
+}
+
+export class RedisKeyModelRuntimeStore {
+  readonly keys: KeyModelRedisKeys
+
+  constructor(
+    private readonly redisUrl = requiredRedisStateUrl(),
+    private readonly getClient: () => Promise<RedisCommandClient> = () => getRedisClient(redisUrl),
+    private readonly evalRunner?: (script: string, keys: string[], args: string[]) => Promise<unknown>
+  ) {
+    this.keys = keyModelRedisKeys()
+  }
+
+  async get(capability: CapabilityKey): Promise<KeyModelState | undefined> {
+    const hash = capabilityHash(capability)
+    const value = await this.readWithSingleRetry(this.keys.state(hash))
+    if (value === null) return undefined
+    return parseState(value, hash, capability.dispatchRevision)
+  }
+
+  async recordFailure(intent: KeyModelFailureIntent): Promise<KeyModelFailureResult> {
+    validateFailureIntent(intent)
+    const state = createKeyModelOpenState(intent.capability, intent.observedAtMs)
+    const hash = state.capabilityHash
+    if (intent.permit && intent.permit.capabilityHash !== hash) throw new Error('Key-model 失败意图 permit 与 CapabilityKey 不匹配')
+    const result = redisArray(await this.evalWithSingleRetry('Key-model 失败意图写入', recordKeyModelFailureScript, [
+      this.keys.state(state.capabilityHash),
+      this.keys.due,
+      this.keys.receipt(intent.intentId),
+      this.keys.capacity,
+      this.keys.admission(hash),
+      this.keys.admissionLease(hash, intent.permit?.attemptId ?? intent.attemptId),
+      this.keys.admissionWake(hash),
+      this.keys.admissionEvents,
+      this.keys.closed
+    ], [
+        JSON.stringify(state),
+        String(intent.capability.dispatchRevision),
+        '50000',
+        String(5 * 60_000),
+        intent.permit?.attemptId ?? intent.attemptId,
+        hash
+      ]))
+    const status = String(result[0])
+    if (status === 'capacity_exhausted' || status === 'stale') return { status }
+    if (status !== 'applied' && status !== 'idempotent') throw new Error(`Key-model 失败意图返回未知状态：${status}`)
+    return { status, state: parseState(String(result[1]), state.capabilityHash, intent.capability.dispatchRevision) }
+  }
+
+  async admitForeground(capability: CapabilityKey, attemptId: string): Promise<KeyModelAdmissionResult> {
+    const hash = capabilityHash(capability)
+    const normalizedAttemptId = requiredText(attemptId, 'attemptId')
+    const result = redisArray(await this.evalWithSingleRetry('Key-model foreground admission', admitKeyModelForegroundScript, [
+        this.keys.state(hash),
+        this.keys.admission(hash),
+        this.keys.admissionLease(hash, normalizedAttemptId),
+        this.keys.admissionWake(hash),
+        this.keys.mainProbeFence(hash)
+      ], [normalizedAttemptId, String(keyModelForegroundPrecommitLeaseMs), String(keyModelForegroundLimit), String(capability.dispatchRevision)]))
+    const status = String(result[0])
+    const wakeSequence = finiteInteger(result[1])
+    if (status === 'busy' || status === 'blocked') return { status, wakeSequence }
+    if (status !== 'admitted' && status !== 'idempotent') throw new Error(`Key-model admission 返回未知状态：${status}`)
+    return {
+      status: 'admitted',
+      permit: { capabilityHash: hash, attemptId: normalizedAttemptId, leaseUntilMs: finiteInteger(result[2]) }
+    }
+  }
+
+  async releaseForeground(permit: KeyModelForegroundPermit): Promise<boolean> {
+    const hash = requiredHash(permit.capabilityHash)
+    const result = redisArray(await this.evalWithSingleRetry('Key-model foreground permit 释放', releaseKeyModelForegroundScript, [
+        this.keys.admission(hash),
+        this.keys.admissionLease(hash, requiredText(permit.attemptId, 'attemptId')),
+        this.keys.admissionWake(hash),
+        this.keys.admissionEvents
+      ], [hash, requiredText(permit.attemptId, 'attemptId')]))
+    return finiteInteger(result[0]) === 1
+  }
+
+  async renewForeground(permit: KeyModelForegroundPermit): Promise<KeyModelForegroundPermit | undefined> {
+    const hash = requiredHash(permit.capabilityHash)
+    const attemptId = requiredText(permit.attemptId, 'attemptId')
+    const result = redisArray(await this.evalWithSingleRetry('Key-model foreground permit 续租', renewKeyModelForegroundScript, [
+      this.keys.admission(hash),
+      this.keys.admissionLease(hash, attemptId)
+    ], [attemptId, String(keyModelForegroundPrecommitLeaseMs)]))
+    if (String(result[0]) === 'lost') return undefined
+    if (String(result[0]) !== 'renewed') throw new Error(`Key-model foreground 续租返回未知状态：${String(result[0])}`)
+    return { capabilityHash: hash, attemptId, leaseUntilMs: finiteInteger(result[1]) }
+  }
+
+  async recordMainProbeFailure(capability: CapabilityKey, permit: KeyModelForegroundPermit): Promise<void> {
+    const hash = capabilityHash(capability)
+    if (permit.capabilityHash !== hash) throw new Error('MainProbe fence permit 与 CapabilityKey 不匹配')
+    await this.evalWithSingleRetry('MainProbe foreground fence 写入', recordMainProbeFenceScript, [
+      this.keys.mainProbeFence(hash),
+      this.keys.admission(hash),
+      this.keys.admissionLease(hash, permit.attemptId),
+      this.keys.admissionWake(hash),
+      this.keys.admissionEvents
+    ], [permit.attemptId, hash, String(90_000)])
+  }
+
+  async claimJ1Confirmation(sourceAccountId: string, dispatchRevision: number): Promise<boolean> {
+    const sourceHash = capabilityHash({
+      credentialSourceAccountId: requiredText(sourceAccountId, 'credentialSourceAccountId'),
+      keyFingerprint: 'j1-confirmation',
+      clientModel: 'j1-confirmation',
+      clientEndpointFamily: 'j1-confirmation',
+      finalUpstreamModel: 'j1-confirmation',
+      upstreamEndpointMode: 'j1-confirmation',
+      dispatchRevision
+    })
+    const result = redisArray(await this.evalWithSingleRetry('Key-model J1 confirmation 限频', claimJ1ConfirmationScript, [
+      this.keys.j1Confirmation(sourceHash, dispatchRevision)
+    ], [String(2 * 60_000)]))
+    return String(result[0]) === 'claimed'
+  }
+
+  private async readWithSingleRetry(key: string): Promise<string | null> {
+    try {
+      return await (await this.getClient()).get(key)
+    } catch (firstError) {
+      await wait(50)
+      try {
+        return await (await this.getClient()).get(key)
+      } catch (secondError) {
+        throw new AggregateError([firstError, secondError], 'Key-model Redis state 连续两次读取失败')
+      }
+    }
+  }
+
+  private async evalWithSingleRetry(operationName: string, script: string, keys: string[], args: string[]): Promise<unknown> {
+    try {
+      return await this.eval(operationName, script, keys, args)
+    } catch (firstError) {
+      await wait(50)
+      try {
+        return await this.eval(operationName, script, keys, args)
+      } catch (secondError) {
+        throw new AggregateError([firstError, secondError], `${operationName}连续两次失败`)
+      }
+    }
+  }
+
+  private eval(operationName: string, script: string, keys: string[], args: string[]): Promise<unknown> {
+    if (this.evalRunner) return this.evalRunner(script, keys, args)
+    return runRedisOperationWithDeadline(this.redisUrl, { timeoutMs: keyModelForegroundRedisOperationTimeoutMs, operationName }, (client) => (
+      client.eval(script, { keys, arguments: args })
+    ))
+  }
+}
+
+export function keyModelRedisKeys(): KeyModelRedisKeys {
+  const prefix = redisNamespacedKey('gateway-account-circuit-key-model')
+  return {
+    state: (hash) => `${prefix}:state:${requiredHash(hash)}`,
+    due: `${prefix}:due`,
+    closed: `${prefix}:closed`,
+    receipt: (intentId) => `${prefix}:receipt:${requiredText(intentId, 'intentId')}`,
+    admission: (hash) => `${prefix}:admission:${requiredHash(hash)}`,
+    admissionLease: (hash, attemptId) => `${prefix}:admissionLease:${requiredHash(hash)}:${requiredText(attemptId, 'attemptId')}`,
+    admissionWake: (hash) => `${prefix}:admissionWake:${requiredHash(hash)}`,
+    mainProbeFence: (hash) => `${prefix}:mainProbeFence:${requiredHash(hash)}`,
+    j1Confirmation: (sourceHash, revision) => `${prefix}:j1Confirmation:${requiredHash(sourceHash)}:${positiveInteger(revision, 'dispatchRevision')}`,
+    admissionEvents: `${prefix}:admission-events`,
+    capacity: `${prefix}:capacity`
+  }
+}
+
+export const recordKeyModelFailureScript = `
+local redisTime = redis.call('TIME')
+local now = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local incoming = cjson.decode(ARGV[1])
+incoming.lastObservedAtMs = now
+incoming.retryAtMs = now + 5000
+local function releasePermit()
+  if redis.call('DEL', KEYS[6]) == 0 then return end
+  redis.call('ZREM', KEYS[5], ARGV[6])
+  local wake = redis.call('INCR', KEYS[7])
+  redis.call('PUBLISH', KEYS[8], ARGV[7] .. ':' .. tostring(wake))
+end
+local receipt = redis.call('GET', KEYS[3])
+if receipt then
+  releasePermit()
+  local current = redis.call('GET', KEYS[1])
+  return {'idempotent', current or receipt}
+end
+local currentRaw = redis.call('GET', KEYS[1])
+if currentRaw then
+  local current = cjson.decode(currentRaw)
+  if tonumber(current.dispatchRevision) > tonumber(ARGV[2]) then releasePermit(); return {'stale', ''} end
+  if tonumber(current.dispatchRevision) == tonumber(ARGV[2]) and current.phase ~= 'CLOSED' then
+    current.lastObservedAtMs = now
+    current.lastOutcome = 'upstream_not_complete'
+    local encoded = cjson.encode(current)
+    redis.call('SET', KEYS[1], encoded)
+    redis.call('SET', KEYS[3], encoded, 'PX', ARGV[4])
+    releasePermit()
+    return {'idempotent', encoded}
+  end
+  incoming.generation = tonumber(current.generation or 0) + 1
+elseif tonumber(redis.call('GET', KEYS[4]) or '0') >= tonumber(ARGV[3]) then
+  local removed = 0
+  local closed = redis.call('ZRANGE', KEYS[9], 0, 999)
+  for _, hash in ipairs(closed) do
+    local closedState = redis.call('GET', string.gsub(KEYS[1], '[^:]+$', hash))
+    if closedState and cjson.decode(closedState).phase == 'CLOSED' then
+      redis.call('DEL', string.gsub(KEYS[1], '[^:]+$', hash))
+      redis.call('ZREM', KEYS[2], hash)
+      redis.call('DECR', KEYS[4])
+      removed = removed + 1
+      if tonumber(redis.call('GET', KEYS[4]) or '0') < tonumber(ARGV[3]) then break end
+    end
+    redis.call('ZREM', KEYS[9], hash)
+  end
+  if tonumber(redis.call('GET', KEYS[4]) or '0') >= tonumber(ARGV[3]) then
+    releasePermit()
+    return {'capacity_exhausted', ''}
+  end
+  redis.call('INCR', KEYS[4])
+else
+  redis.call('INCR', KEYS[4])
+end
+local encoded = cjson.encode(incoming)
+redis.call('SET', KEYS[1], encoded)
+redis.call('ZADD', KEYS[2], incoming.retryAtMs, incoming.capabilityHash)
+redis.call('SET', KEYS[3], encoded, 'PX', ARGV[4])
+releasePermit()
+return {'applied', encoded}
+`
+
+export const admitKeyModelForegroundScript = `
+local redisTime = redis.call('TIME')
+local now = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local stateRaw = redis.call('GET', KEYS[1])
+if stateRaw then
+  local state = cjson.decode(stateRaw)
+  if tonumber(state.dispatchRevision) == tonumber(ARGV[4]) and state.phase ~= 'CLOSED' then
+    return {'blocked', redis.call('GET', KEYS[4]) or '0', '0'}
+  end
+end
+if redis.call('EXISTS', KEYS[5]) == 1 then return {'blocked', redis.call('GET', KEYS[4]) or '0', '0'} end
+local existing = redis.call('GET', KEYS[3])
+if existing then return {'idempotent', redis.call('GET', KEYS[4]) or '0', existing} end
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+local count = tonumber(redis.call('ZCARD', KEYS[2]) or '0')
+if count >= tonumber(ARGV[3]) then return {'busy', redis.call('GET', KEYS[4]) or '0', '0'} end
+local leaseUntil = now + tonumber(ARGV[2])
+redis.call('SET', KEYS[3], leaseUntil, 'PX', ARGV[2])
+redis.call('ZADD', KEYS[2], leaseUntil, ARGV[1])
+redis.call('PEXPIRE', KEYS[2], ARGV[2])
+return {'admitted', redis.call('GET', KEYS[4]) or '0', tostring(leaseUntil)}
+`
+
+export const releaseKeyModelForegroundScript = `
+if redis.call('DEL', KEYS[2]) == 0 then return {0, redis.call('GET', KEYS[3]) or '0'} end
+redis.call('ZREM', KEYS[1], ARGV[2])
+local wake = redis.call('INCR', KEYS[3])
+redis.call('PUBLISH', KEYS[4], ARGV[1] .. ':' .. tostring(wake))
+return {1, wake}
+`
+
+export const renewKeyModelForegroundScript = `
+local existing = redis.call('GET', KEYS[2])
+if not existing then return {'lost', '0'} end
+local redisTime = redis.call('TIME')
+local now = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local leaseUntil = now + tonumber(ARGV[2])
+redis.call('SET', KEYS[2], leaseUntil, 'PX', ARGV[2])
+redis.call('ZADD', KEYS[1], leaseUntil, ARGV[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return {'renewed', tostring(leaseUntil)}
+`
+
+export const recordMainProbeFenceScript = `
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
+if redis.call('DEL', KEYS[3]) == 1 then redis.call('ZREM', KEYS[2], ARGV[1]) end
+local wake = redis.call('INCR', KEYS[4])
+redis.call('PUBLISH', KEYS[5], ARGV[2] .. ':' .. tostring(wake))
+return {'applied', wake}
+`
+
+export const claimJ1ConfirmationScript = `
+if redis.call('SET', KEYS[1], '1', 'NX', 'PX', ARGV[1]) then return {'claimed'} end
+return {'limited'}
+`
+
+function validateFailureIntent(intent: KeyModelFailureIntent): void {
+  requiredText(intent.intentId, 'intentId')
+  requiredText(intent.requestId, 'requestId')
+  requiredText(intent.attemptId, 'attemptId')
+  requiredText(intent.sourceFence, 'sourceFence')
+  if (intent.outcome !== 'upstream_not_complete') throw new Error('Key-model 失败意图 outcome 只能为 upstream_not_complete')
+  if (!Number.isSafeInteger(intent.observedAtMs) || intent.observedAtMs < 1) throw new Error('Key-model observedAtMs 无效')
+  capabilityHash(intent.capability)
+}
+
+function parseState(value: string, expectedHash: string, expectedRevision: number): KeyModelState {
+  const parsed = JSON.parse(value) as KeyModelState
+  if (parsed.capabilityHash !== expectedHash || parsed.dispatchRevision !== expectedRevision) throw new Error('Key-model Redis state 完整性校验失败')
+  return parsed
+}
+
+function requiredRedisStateUrl(): string {
+  const url = runtimeConfig.redis.stateUrl?.trim()
+  if (!url) throw new Error('启用 Key-model runtime guard 必须配置 JUHE_AI_REDIS_STATE_URL')
+  return url
+}
+
+function requiredText(value: string, name: string): string {
+  const normalized = value.trim()
+  if (!normalized) throw new Error(`Key-model 缺少 ${name}`)
+  return normalized
+}
+
+function requiredHash(value: string): string {
+  const normalized = value.trim().toLowerCase()
+  if (!/^[a-f0-9]{64}$/.test(normalized)) throw new Error('Key-model capabilityHash 无效')
+  return normalized
+}
+
+function finiteInteger(value: unknown): number {
+  const normalized = Number(value)
+  if (!Number.isSafeInteger(normalized) || normalized < 0) throw new Error(`Key-model Redis 数字结果无效：${String(value)}`)
+  return normalized
+}
+
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Key-model ${name} 无效`)
+  return value
+}
+
+function redisArray(value: unknown): unknown[] {
+  if (!Array.isArray(value)) throw new Error('Key-model Redis 返回值必须为数组')
+  return value
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}

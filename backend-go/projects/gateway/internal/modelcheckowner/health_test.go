@@ -115,7 +115,7 @@ func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
@@ -123,9 +123,9 @@ func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
 		}
 	}
 	finished := "2026-08-27T10:15:00Z"
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,account_id,system_account_id,provider_code,model,profile,level,score,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at,quality_health_sync_status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"run-retry", "acct-1", "sys-1", "openai", "gpt-5.6-sol", "quick", "success", 92,
-		`{"revision":"policy-7","threshold":70,"action":"quality_isolate"}`,
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at,quality_health_sync_status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"run-retry", "acct-1", "sys-1", "openai", "gpt-5.6-sol", "quick", "success", 92, nil,
+		`{"revision":"policy-7","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
 		`{"evidenceFormed":true,"trustFormed":true}`,
 		`{"configRevision":"3"}`,
 		finished, "failed", finished); err != nil {

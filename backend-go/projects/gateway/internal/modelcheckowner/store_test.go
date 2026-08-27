@@ -144,12 +144,12 @@ func TestListHealthSyncRetriesRequiresDurablePolicySnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	_, err = db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`)
+	_, err = db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	finished := "2026-08-27T10:15:00Z"
-	_, err = db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "run-1", "acct-1", "sys-1", "openai", "gpt-5.6", "full", "failure", 12, `{"revision":"policy-1","threshold":70,"action":"quality_isolate"}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, finished, "failed", finished)
+	_, err = db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "run-1", "acct-1", "sys-1", "openai", "gpt-5.6", "full", "failure", 12, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, finished, "failed", finished)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/keymodelrecovery"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckruntime"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
@@ -139,6 +140,7 @@ func main() {
 	var accountHealthInputDB *sql.DB
 	var accountHealthInputPool *pgpool.Handle
 	var accountHealthRunner *accounthealth.Runner
+	var accountHealthReader *accounthealth.PostgresDirectInputReader
 	if accountHealthConfig.Enabled {
 		if accountHealthConfig.Store.Mode == accounthealth.StorePostgres {
 			accountHealthConfig.Store.PostgresPool, err = postgresPools.Acquire("pgx", accountHealthConfig.Store.PostgresURL, "jobs-store", accountHealthConfig.Store.PostgresMaxOpenConns, accountHealthConfig.Store.PostgresMaxIdleConns)
@@ -183,10 +185,34 @@ func main() {
 				_ = accountHealthStore.Close()
 				fail(fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
 			}
+			accountHealthReader = reader
 			accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
 		} else {
 			accountHealthRunner = accounthealth.NewRunner(accountHealthConfig, accountHealthStore, logger)
 		}
+	}
+	modelRecoveryConfig, err := keymodelrecovery.LoadRedisConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load model-recovery config: %w", err))
+	}
+	var modelRecoveryStore *keymodelrecovery.RedisStore
+	var modelRecoveryRunner *keymodelrecovery.Runner
+	if modelRecoveryConfig.Enabled {
+		if accountHealthReader == nil {
+			fail(errors.New("启用 model-recovery 必须同时启用 PostgreSQL J1 direct input reader"))
+		}
+		modelRecoveryStore, err = keymodelrecovery.OpenRedisStore(modelRecoveryConfig)
+		if err != nil {
+			fail(fmt.Errorf("open model-recovery Redis store: %w", err))
+		}
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = modelRecoveryStore.Ping(pingCtx)
+		pingCancel()
+		if err != nil {
+			_ = modelRecoveryStore.Close()
+			fail(fmt.Errorf("ping model-recovery Redis store: %w", err))
+		}
+		modelRecoveryRunner = keymodelrecovery.NewRunner(modelRecoveryStore, accountHealthReader, logger)
 	}
 	accountBalanceConfig, err := accountbalance.LoadRuntimeConfig(os.Getenv)
 	if err != nil {
@@ -380,6 +406,13 @@ func main() {
 			},
 		})
 	}
+	if modelRecoveryRunner != nil {
+		components = append(components, supervisor.Component{
+			Name:  "model-recovery key-model",
+			Run:   modelRecoveryRunner.Run,
+			Close: modelRecoveryStore.Close,
+		})
+	}
 	accountBalanceReady := func() bool { return true }
 	if accountBalanceService != nil {
 		accountBalanceReady = accountBalanceService.Ready
@@ -469,7 +502,7 @@ func main() {
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", false)
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", false)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
