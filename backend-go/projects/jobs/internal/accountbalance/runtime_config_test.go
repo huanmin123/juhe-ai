@@ -102,7 +102,7 @@ func TestRuntimeConfigUsesHighPerformanceConcurrencyAndPoolDefaults(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxConcurrency != defaultAccountBalanceConcurrency || cfg.BatchSize != defaultAccountBalanceBatchSize || cfg.RecoveryBatchSize != defaultAccountBalanceRecoveryBatchSize || cfg.PostgresMaxOpenConns != defaultPostgresMaxOpenConns || cfg.PostgresMaxIdleConns != defaultPostgresMaxIdleConns || cfg.InputPostgresMaxOpenConns != defaultPostgresMaxOpenConns || cfg.InputPostgresMaxIdleConns != defaultPostgresMaxIdleConns {
+	if cfg.MaxConcurrency != defaultAccountBalanceConcurrency || cfg.IOConcurrency != defaultAccountBalanceConcurrency || cfg.DBConcurrency != defaultAccountBalanceDBConcurrency || cfg.DBQueueSize != defaultAccountBalanceDBQueueSize || cfg.BatchSize != defaultAccountBalanceBatchSize || cfg.RecoveryBatchSize != defaultAccountBalanceRecoveryBatchSize || cfg.PostgresMaxOpenConns != defaultPostgresMaxOpenConns || cfg.PostgresMaxIdleConns != defaultPostgresMaxIdleConns || cfg.InputPostgresMaxOpenConns != defaultPostgresMaxOpenConns || cfg.InputPostgresMaxIdleConns != defaultPostgresMaxIdleConns {
 		t.Fatalf("unexpected high-performance defaults: %#v", cfg)
 	}
 }
@@ -118,6 +118,9 @@ func TestRuntimeConfigAcceptsExternalPoolAndConcurrency(t *testing.T) {
 		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":             "secret",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":              "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY":               "64",
+		"JUHE_AI_ACCOUNT_BALANCE_IO_CONCURRENCY":                "128",
+		"JUHE_AI_ACCOUNT_BALANCE_DB_CONCURRENCY":                "12",
+		"JUHE_AI_ACCOUNT_BALANCE_DB_QUEUE_SIZE":                 "300",
 		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS":       "1200",
 		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS":       "10",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS": "900",
@@ -127,7 +130,7 @@ func TestRuntimeConfigAcceptsExternalPoolAndConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxConcurrency != 64 || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 10 || cfg.InputPostgresMaxOpenConns != 900 || cfg.InputPostgresMaxIdleConns != 8 {
+	if cfg.MaxConcurrency != 64 || cfg.IOConcurrency != 128 || cfg.DBConcurrency != 12 || cfg.DBQueueSize != 300 || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 10 || cfg.InputPostgresMaxOpenConns != 900 || cfg.InputPostgresMaxIdleConns != 8 {
 		t.Fatalf("external pool configuration not applied: %#v", cfg)
 	}
 }

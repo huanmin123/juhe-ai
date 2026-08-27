@@ -75,7 +75,7 @@ func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: config.OwnerID, OwnerLeaseTTL: config.OwnerLease, AccountLeaseTTL: config.AccountLease, InputTTL: config.InputTTL, MaxConcurrent: config.MaxConcurrency, CredentialSecret: config.CredentialSecret, ProbeTimeout: config.ProbeTimeout, MaxResponseBytes: config.MaxResponseBytes, Now: config.Now})
+	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: config.OwnerID, OwnerLeaseTTL: config.OwnerLease, AccountLeaseTTL: config.AccountLease, InputTTL: config.InputTTL, MaxConcurrent: config.MaxConcurrency, IOConcurrency: config.IOConcurrency, DBConcurrency: config.DBConcurrency, DBQueueSize: config.DBQueueSize, CredentialSecret: config.CredentialSecret, ProbeTimeout: config.ProbeTimeout, MaxResponseBytes: config.MaxResponseBytes, Now: config.Now, Logger: logger})
 	if err != nil {
 		_ = inputPool.Close()
 		_ = store.Close()

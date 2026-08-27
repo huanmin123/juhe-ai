@@ -38,6 +38,9 @@ type RuntimeConfig struct {
 	CycleBudget               time.Duration
 	MaxResponseBytes          int64
 	MaxConcurrency            int
+	IOConcurrency             int
+	DBConcurrency             int
+	DBQueueSize               int
 	BatchSize                 int
 	RecoveryBatchSize         int
 	PostgresMaxOpenConns      int
@@ -136,13 +139,22 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.MaxConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY", defaultAccountBalanceConcurrency, 1, maxAccountBalanceWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}
+	if cfg.IOConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_IO_CONCURRENCY", cfg.MaxConcurrency, 1, maxAccountBalanceWorkItems); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.DBConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_DB_CONCURRENCY", defaultAccountBalanceDBConcurrency, 1, maxAccountBalanceWorkItems); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.DBQueueSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_DB_QUEUE_SIZE", defaultAccountBalanceDBQueueSize, 1, maxAccountBalanceWorkItems); err != nil {
+		return RuntimeConfig{}, err
+	}
 	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE", defaultAccountBalanceBatchSize, 1, maxAccountBalanceWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}
 	if cfg.RecoveryBatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE", defaultAccountBalanceRecoveryBatchSize, 1, cfg.BatchSize); err != nil {
 		return RuntimeConfig{}, err
 	}
-	waves := (cfg.BatchSize + cfg.MaxConcurrency - 1) / cfg.MaxConcurrency
+	waves := (cfg.BatchSize + cfg.IOConcurrency - 1) / cfg.IOConcurrency
 	if cfg.OwnerLease < time.Duration(waves)*cfg.ProbeTimeout+10*time.Second {
 		return RuntimeConfig{}, errors.New("J2 owner lease 必须覆盖一轮 batch 的最坏 probe 时间")
 	}

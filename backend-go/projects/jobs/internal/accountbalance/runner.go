@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,11 @@ import (
 
 const maxBalanceRunnerConcurrency = 5096
 
+const (
+	defaultAccountBalanceDBConcurrency = 16
+	defaultAccountBalanceDBQueueSize   = 512
+)
+
 type RunnerConfig struct {
 	Store            *Store
 	OwnerID          string
@@ -23,6 +29,10 @@ type RunnerConfig struct {
 	AccountLeaseTTL  time.Duration
 	InputTTL         time.Duration
 	MaxConcurrent    int
+	IOConcurrency    int
+	DBConcurrency    int
+	DBQueueSize      int
+	Logger           *slog.Logger
 	CredentialSecret string
 	HTTPClient       HTTPDoer
 	ProbeTimeout     time.Duration
@@ -37,6 +47,10 @@ type Runner struct {
 	accountLeaseTTL  time.Duration
 	inputTTL         time.Duration
 	maxConcurrent    int
+	ioConcurrency    int
+	dbConcurrency    int
+	dbQueueSize      int
+	logger           *slog.Logger
 	credentialSecret string
 	httpClient       HTTPDoer
 	probeTimeout     time.Duration
@@ -63,6 +77,24 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 	if config.MaxConcurrent > maxBalanceRunnerConcurrency {
 		return nil, fmt.Errorf("account-balance runner 最大并发不能超过 %d", maxBalanceRunnerConcurrency)
 	}
+	if config.IOConcurrency <= 0 {
+		config.IOConcurrency = config.MaxConcurrent
+	}
+	if config.IOConcurrency > maxBalanceRunnerConcurrency {
+		return nil, fmt.Errorf("account-balance 最大并发(IO)不能超过 %d", maxBalanceRunnerConcurrency)
+	}
+	if config.DBConcurrency <= 0 {
+		config.DBConcurrency = defaultAccountBalanceDBConcurrency
+	}
+	if config.DBConcurrency > maxBalanceRunnerConcurrency {
+		return nil, fmt.Errorf("account-balance 最大并发(DB)不能超过 %d", maxBalanceRunnerConcurrency)
+	}
+	if config.DBQueueSize <= 0 {
+		config.DBQueueSize = defaultAccountBalanceDBQueueSize
+	}
+	if config.DBQueueSize > maxAccountBalanceWorkItems {
+		return nil, fmt.Errorf("account-balance DB 队列不能超过 %d", maxAccountBalanceWorkItems)
+	}
 	if config.ProbeTimeout <= 0 || config.ProbeTimeout > defaultBalanceTimeout {
 		config.ProbeTimeout = defaultBalanceTimeout
 	}
@@ -72,7 +104,10 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &Runner{store: config.Store, ownerID: config.OwnerID, ownerLeaseTTL: config.OwnerLeaseTTL, accountLeaseTTL: config.AccountLeaseTTL, inputTTL: config.InputTTL, maxConcurrent: config.MaxConcurrent, credentialSecret: config.CredentialSecret, httpClient: config.HTTPClient, probeTimeout: config.ProbeTimeout, maxResponseBytes: config.MaxResponseBytes, now: config.Now}, nil
+	if config.Logger == nil {
+		config.Logger = slog.Default()
+	}
+	return &Runner{store: config.Store, ownerID: config.OwnerID, ownerLeaseTTL: config.OwnerLeaseTTL, accountLeaseTTL: config.AccountLeaseTTL, inputTTL: config.InputTTL, maxConcurrent: config.IOConcurrency, ioConcurrency: config.IOConcurrency, dbConcurrency: config.DBConcurrency, dbQueueSize: config.DBQueueSize, credentialSecret: config.CredentialSecret, httpClient: config.HTTPClient, probeTimeout: config.ProbeTimeout, maxResponseBytes: config.MaxResponseBytes, now: config.Now, logger: config.Logger}, nil
 }
 
 // RunPeriodic executes a bounded batch of already-frozen due candidates.
@@ -172,25 +207,48 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 	}
 	defer func() { _ = r.store.ReleaseOwnerLease(context.Background(), owner) }()
 
-	workers := r.maxConcurrent
-	if workers > len(inputs) {
-		workers = len(inputs)
+	ioWorkers := r.ioConcurrency
+	if ioWorkers > len(inputs) {
+		ioWorkers = len(inputs)
 	}
-	if workers == 0 {
+	dbWorkers := r.dbConcurrency
+	if dbWorkers > len(inputs) {
+		dbWorkers = len(inputs)
+	}
+	if ioWorkers == 0 || dbWorkers == 0 {
 		return result, nil
 	}
-	jobs := make(chan Input)
-	var wg sync.WaitGroup
+	type dbTask struct {
+		input   Input
+		account AccountLease
+		query   QueryResult
+	}
+	ioJobs := make(chan Input)
+	dbQueue := make(chan dbTask, r.dbQueueSize)
+	var ioWG, dbWG sync.WaitGroup
 	var executed atomic.Int64
 	var skipped atomic.Int64
 	var stale atomic.Int64
 	var mu sync.Mutex
-	for index := 0; index < workers; index++ {
-		wg.Add(1)
+	recordError := func(accountID string, itemErr error) {
+		if itemErr == nil {
+			return
+		}
+		mu.Lock()
+		result.addError(accountID, itemErr)
+		mu.Unlock()
+	}
+	for index := 0; index < dbWorkers; index++ {
+		dbWG.Add(1)
 		go func() {
-			defer wg.Done()
-			for input := range jobs {
-				state, itemErr := r.runInput(ctx, owner, input)
+			defer dbWG.Done()
+			for task := range dbQueue {
+				started := time.Now()
+				state, itemErr := r.persistInput(ctx, owner, task.input, task.account, task.query)
+				releaseErr := r.store.ReleaseAccountLease(context.Background(), owner, task.account)
+				if itemErr == nil && releaseErr != nil {
+					itemErr = releaseErr
+				}
 				switch state {
 				case runStateExecuted:
 					executed.Add(1)
@@ -199,10 +257,38 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 				case runStateExecutedStale:
 					stale.Add(1)
 				}
+				r.logger.Debug("J2 account-balance DB worker 完成", "phase", "db_write", "account_id", task.input.AccountID, "latency_ms", time.Since(started).Milliseconds(), "queue_depth", len(dbQueue), "error", itemErr)
+				recordError(task.input.AccountID, itemErr)
+			}
+		}()
+	}
+	for index := 0; index < ioWorkers; index++ {
+		ioWG.Add(1)
+		go func() {
+			defer ioWG.Done()
+			for input := range ioJobs {
+				state, account, query, itemErr := r.prepareInput(ctx, owner, input)
+				if query == nil && state == runStateExecuted {
+					executed.Add(1)
+				}
+				if state == runStateSkipped {
+					skipped.Add(1)
+				}
 				if itemErr != nil {
-					mu.Lock()
-					result.addError(input.AccountID, itemErr)
-					mu.Unlock()
+					recordError(input.AccountID, itemErr)
+					continue
+				}
+				if query == nil {
+					continue
+				}
+				task := dbTask{input: input, account: account, query: *query}
+				queuedAt := time.Now()
+				select {
+				case <-ctx.Done():
+					_ = r.store.ReleaseAccountLease(context.Background(), owner, account)
+					recordError(input.AccountID, ctx.Err())
+				case dbQueue <- task:
+					r.logger.Debug("J2 account-balance DB queue 入队", "phase", "db_queue", "account_id", input.AccountID, "queue_depth", len(dbQueue), "queue_wait_ms", time.Since(queuedAt).Milliseconds())
 				}
 			}
 		}()
@@ -210,17 +296,21 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 	for _, input := range inputs {
 		select {
 		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
+			close(ioJobs)
+			ioWG.Wait()
+			close(dbQueue)
+			dbWG.Wait()
 			result.Executed = int(executed.Load())
 			result.Skipped = int(skipped.Load())
 			result.Stale = int(stale.Load())
 			return result, ctx.Err()
-		case jobs <- input:
+		case ioJobs <- input:
 		}
 	}
-	close(jobs)
-	wg.Wait()
+	close(ioJobs)
+	ioWG.Wait()
+	close(dbQueue)
+	dbWG.Wait()
 	result.Executed = int(executed.Load())
 	result.Skipped = int(skipped.Load())
 	result.Stale = int(stale.Load())
@@ -235,30 +325,34 @@ const (
 	runStateExecutedStale
 )
 
-func (r *Runner) runInput(ctx context.Context, owner OwnerLease, input Input) (runState, error) {
+func (r *Runner) prepareInput(ctx context.Context, owner OwnerLease, input Input) (runState, AccountLease, *QueryResult, error) {
 	if err := input.Validate(r.now().UTC()); err != nil {
-		return runStateSkipped, err
+		return runStateSkipped, AccountLease{}, nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return runStateSkipped, err
+		return runStateSkipped, AccountLease{}, nil, err
 	}
 	accountLease, acquired, err := r.store.AcquireAccountLease(ctx, owner, input.AccountID, r.accountLeaseTTL)
 	if err != nil {
 		if errors.Is(err, ErrAccountLeaseHeld) {
-			return runStateSkipped, nil
+			return runStateSkipped, AccountLease{}, nil, nil
 		}
-		return runStateSkipped, err
+		return runStateSkipped, AccountLease{}, nil, err
 	}
 	if !acquired {
-		return runStateSkipped, nil
+		return runStateSkipped, AccountLease{}, nil, nil
 	}
-	defer func() { _ = r.store.ReleaseAccountLease(context.Background(), owner, accountLease) }()
 	query, queryErr := ExecuteBalanceQuery(ctx, input, QueryOptions{Secret: r.credentialSecret, Client: r.httpClient, Timeout: r.probeTimeout, MaxResponseBytes: r.maxResponseBytes, Now: r.now})
 	if queryErr != nil {
 		// Local setup/decryption errors are not upstream balance diagnostics.
 		// Keep the original error visible and do not fabricate a snapshot.
-		return runStateExecuted, queryErr
+		_ = r.store.ReleaseAccountLease(context.Background(), owner, accountLease)
+		return runStateExecuted, AccountLease{}, nil, queryErr
 	}
+	return runStateExecuted, accountLease, &query, nil
+}
+
+func (r *Runner) persistInput(ctx context.Context, owner OwnerLease, input Input, accountLease AccountLease, query QueryResult) (runState, error) {
 	now := r.now().UTC()
 	if !now.Before(input.ExpiresAt.UTC()) {
 		return runStateExecuted, errors.New("account-balance input 在上游查询后已过期，拒绝写入")
