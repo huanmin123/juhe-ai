@@ -29,7 +29,7 @@ func TestLoadConfigDirectInputSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if cfg.InputSource != "postgres" || cfg.BusinessPostgresURL != env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"] || cfg.DirectInputLimit != 17 || cfg.MaxConcurrency != 19 || cfg.Store.PostgresMaxOpenConns != 23 || cfg.Store.PostgresMaxIdleConns != 10 || cfg.DirectInputPostgresMaxOpenConns != 29 || cfg.DirectInputPostgresMaxIdleConns != 10 {
+	if cfg.InputSource != "postgres" || cfg.BusinessPostgresURL != env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"] || cfg.DirectInputLimit != 17 || cfg.MaxConcurrency != 19 || cfg.IOConcurrency != 19 || cfg.DBConcurrency != defaultDBConcurrency || cfg.DBQueueSize != defaultDBQueueSize || cfg.Store.PostgresMaxOpenConns != 23 || cfg.Store.PostgresMaxIdleConns != 10 || cfg.DirectInputPostgresMaxOpenConns != 29 || cfg.DirectInputPostgresMaxIdleConns != 10 {
 		t.Fatalf("unexpected direct input config: %#v", cfg)
 	}
 }
@@ -52,7 +52,7 @@ func TestLoadConfigJ1CapacityDefaultsAndUpperBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if cfg.DirectInputLimit != defaultDirectInputLimit || cfg.MaxConcurrency != defaultPostgresConcurrency || cfg.Store.PostgresMaxOpenConns != defaultPostgresPoolSize || cfg.Store.PostgresMaxIdleConns != defaultPostgresMaxIdleConns {
+	if cfg.DirectInputLimit != defaultDirectInputLimit || cfg.MaxConcurrency != defaultPostgresConcurrency || cfg.IOConcurrency != defaultPostgresConcurrency || cfg.DBConcurrency != defaultDBConcurrency || cfg.DBQueueSize != defaultDBQueueSize || cfg.Store.PostgresMaxOpenConns != defaultPostgresPoolSize || cfg.Store.PostgresMaxIdleConns != defaultPostgresMaxIdleConns {
 		t.Fatalf("defaults changed: %#v", cfg)
 	}
 	for _, name := range []string{"JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY", "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT"} {

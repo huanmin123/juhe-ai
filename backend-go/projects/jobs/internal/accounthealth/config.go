@@ -26,6 +26,8 @@ const (
 	defaultSQLiteConcurrency      = 512
 	defaultPerformanceConcurrency = 512
 	defaultPostgresConcurrency    = 512
+	defaultDBConcurrency          = 16
+	defaultDBQueueSize            = 512
 	minJ1Concurrency              = 1
 	maxJ1Concurrency              = 5096
 	maxJ1Capacity                 = 5096
@@ -51,6 +53,9 @@ type Config struct {
 	ProbeTimeout                    time.Duration
 	MaxResponseBytes                int64
 	MaxConcurrency                  int
+	IOConcurrency                   int
+	DBConcurrency                   int
+	DBQueueSize                     int
 	Now                             func() time.Time
 }
 
@@ -171,6 +176,15 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		concurrencyDefault = defaultPerformanceConcurrency
 	}
 	if cfg.MaxConcurrency, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY", concurrencyDefault, minJ1Concurrency, maxJ1Concurrency); err != nil {
+		return Config{}, err
+	}
+	if cfg.IOConcurrency, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_IO_CONCURRENCY", cfg.MaxConcurrency, minJ1Concurrency, maxJ1Concurrency); err != nil {
+		return Config{}, err
+	}
+	if cfg.DBConcurrency, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_DB_CONCURRENCY", defaultDBConcurrency, minJ1Concurrency, maxJ1Concurrency); err != nil {
+		return Config{}, err
+	}
+	if cfg.DBQueueSize, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_DB_QUEUE_SIZE", defaultDBQueueSize, minJ1Concurrency, maxJ1Capacity); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

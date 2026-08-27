@@ -31,6 +31,15 @@ type Runner struct {
 	status RunnerStatus
 }
 
+type scheduledDBTask struct {
+	ready   bool
+	input   Input
+	state   CurrentState
+	found   bool
+	kind    string
+	outcome Outcome
+}
+
 // directInputLoader permits the scheduler to load immutable, currently eligible
 // inputs from the independently configured business read model.  It deliberately
 // has no Node/Gateway client surface: signed request files only carry a trigger
@@ -277,41 +286,92 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 		}
 	}
 	sort.Slice(inputs, func(left, right int) bool { return inputs[left].AccountID < inputs[right].AccountID })
-	jobs := make(chan Input)
-	var workers sync.WaitGroup
+	ioJobs := make(chan Input)
+	dbQueueSize := r.cfg.DBQueueSize
+	if dbQueueSize <= 0 {
+		dbQueueSize = defaultDBQueueSize
+	}
+	dbQueue := make(chan scheduledDBTask, dbQueueSize)
+	var ioWorkers, dbWorkers sync.WaitGroup
 	var firstErr error
 	var errMu sync.Mutex
 	var executed atomic.Int64
-	for range r.cfg.MaxConcurrency {
-		workers.Add(1)
+	recordError := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+	}
+	dbConcurrency := r.cfg.DBConcurrency
+	if dbConcurrency <= 0 {
+		dbConcurrency = defaultDBConcurrency
+	}
+	for range maxInt(1, minInt(dbConcurrency, len(inputs))) {
+		dbWorkers.Add(1)
 		go func() {
-			defer workers.Done()
-			for input := range jobs {
-				if err := r.runInput(ctx, lease, input, now); err != nil {
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					errMu.Unlock()
+			defer dbWorkers.Done()
+			for task := range dbQueue {
+				if !task.ready {
 					continue
 				}
+				started := time.Now()
+				r.applyScheduledOutcome(&task.outcome, task.input, task.state, task.found, task.kind)
+				if _, err := r.store.AppendOutcome(ctx, lease, task.outcome); err != nil {
+					recordError(err)
+				}
+				r.logger.Debug("account-health DB worker 完成", "phase", "db_write", "account_id", task.input.AccountID, "latency_ms", time.Since(started).Milliseconds(), "queue_depth", len(dbQueue))
 				// This is a scan-attempt metric; durable outcome count remains in
 				// the store and is never inferred from this in-memory value.
 				executed.Add(1)
 			}
 		}()
 	}
+	ioConcurrency := r.cfg.IOConcurrency
+	if ioConcurrency <= 0 {
+		ioConcurrency = r.cfg.MaxConcurrency
+	}
+	for range maxInt(1, minInt(ioConcurrency, len(inputs))) {
+		ioWorkers.Add(1)
+		go func() {
+			defer ioWorkers.Done()
+			for input := range ioJobs {
+				task, err := r.prepareScheduledInput(ctx, lease, input, now)
+				if err != nil {
+					recordError(err)
+					continue
+				}
+				if !task.ready {
+					continue
+				}
+				queuedAt := time.Now()
+				select {
+				case <-ctx.Done():
+					recordError(context.Cause(ctx))
+				case dbQueue <- task:
+					r.logger.Debug("account-health DB queue 入队", "phase", "db_queue", "account_id", input.AccountID, "queue_depth", len(dbQueue), "queue_wait_ms", time.Since(queuedAt).Milliseconds())
+				}
+			}
+		}()
+	}
 	for _, input := range inputs {
 		select {
 		case <-ctx.Done():
-			close(jobs)
-			workers.Wait()
+			close(ioJobs)
+			ioWorkers.Wait()
+			close(dbQueue)
+			dbWorkers.Wait()
 			return context.Cause(ctx)
-		case jobs <- input:
+		case ioJobs <- input:
 		}
 	}
-	close(jobs)
-	workers.Wait()
+	close(ioJobs)
+	ioWorkers.Wait()
+	close(dbQueue)
+	dbWorkers.Wait()
 	errMu.Lock()
 	err = firstErr
 	errMu.Unlock()
@@ -484,23 +544,24 @@ func sourceFenceHealthMutationAllowed(input Input, prior CurrentState, found boo
 	return prior.AccountStatus == "active" || prior.AccountStatus == "pending_test"
 }
 
-func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, now time.Time) error {
+func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, input Input, now time.Time) (scheduledDBTask, error) {
+	var task scheduledDBTask
 	// A signed revoke/disable snapshot deliberately carries no credential or
 	// protocol data. It immediately suppresses older durable state and makes no
 	// upstream call; treating it as malformed would create noisy retries.
 	if !inputEligible(input) {
-		return nil
+		return task, nil
 	}
 	if err := validateScheduledInput(input, now); err != nil {
-		return r.persistTaskFailure(ctx, lease, input, now, "input_invalid", err.Error())
+		return task, r.persistTaskFailure(ctx, lease, input, now, "input_invalid", err.Error())
 	}
 	state, found, err := r.store.LoadCurrentState(ctx, input.AccountID)
 	if err != nil {
-		return err
+		return task, err
 	}
 	kind, due, ok := nextDue(input, state, found, now)
 	if !ok || due.After(now) {
-		return nil
+		return task, nil
 	}
 	request := ProbeRequest{
 		RequestID:        scheduledRequestID(input, kind, due),
@@ -513,10 +574,10 @@ func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, no
 	}
 	already, err := r.store.HasRequest(ctx, request.RequestID)
 	if err != nil {
-		return err
+		return task, err
 	}
 	if already {
-		return nil
+		return task, nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, r.cfg.ProbeTimeout)
 	outcome, err := ExecuteInputProbe(probeCtx, r.store, lease, input, request, ProbeOptions{
@@ -527,14 +588,31 @@ func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, no
 	})
 	cancel()
 	if err != nil {
-		return err
+		return task, err
 	}
+	task.input, task.state, task.found, task.kind, task.outcome = input, state, found, kind, outcome
+	task.ready = true
+	return task, nil
+}
+
+func (r *Runner) applyScheduledOutcome(outcome *Outcome, input Input, state CurrentState, found bool, kind string) {
 	decisionKind := kind
 	if kind == "health" {
 		decisionKind = "scheduled_health"
 	}
-	applyOutcomeDecision(&outcome, input, state, found, decisionKind)
-	_, err = r.store.AppendOutcome(ctx, lease, outcome)
+	applyOutcomeDecision(outcome, input, state, found, decisionKind)
+}
+
+func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, now time.Time) error {
+	task, err := r.prepareScheduledInput(ctx, lease, input, now)
+	if err != nil {
+		return err
+	}
+	if !task.ready {
+		return nil
+	}
+	r.applyScheduledOutcome(&task.outcome, task.input, task.state, task.found, task.kind)
+	_, err = r.store.AppendOutcome(ctx, lease, task.outcome)
 	return err
 }
 
@@ -989,6 +1067,20 @@ func passiveDelayBefore(deadline time.Duration) time.Duration {
 }
 
 func maxDuration(left, right time.Duration) time.Duration {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func maxInt(left, right int) int {
 	if left > right {
 		return left
 	}
