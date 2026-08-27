@@ -157,6 +157,12 @@ func TestLoadConfigValidatesSamplingAndRetentionBounds(t *testing.T) {
 	if performanceCfg.MaxConcurrentSources != defaultPerformanceSources {
 		t.Fatalf("SQLite performance source concurrency = %d, want %d", performanceCfg.MaxConcurrentSources, defaultPerformanceSources)
 	}
+	deployed := sqliteTestEnv(root)
+	deployed["JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"] = "512"
+	deployedCfg, err := LoadConfig(func(key string) string { return deployed[key] })
+	if err != nil || deployedCfg.MaxConcurrentSources != 512 {
+		t.Fatalf("deployed table-monitor concurrency must be accepted: cfg=%+v err=%v", deployedCfg, err)
+	}
 	for key, value := range map[string]string{
 		"JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES": "0",
 		"JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE":   "0",
@@ -168,6 +174,11 @@ func TestLoadConfigValidatesSamplingAndRetentionBounds(t *testing.T) {
 		if _, err := LoadConfig(func(name string) string { return invalid[name] }); err == nil || !strings.Contains(err.Error(), key) {
 			t.Fatalf("%s=%s must fail fast", key, value)
 		}
+	}
+	tooLarge := sqliteTestEnv(root)
+	tooLarge["JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"] = "5097"
+	if _, err := LoadConfig(func(key string) string { return tooLarge[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES") {
+		t.Fatalf("table-monitor concurrency above the deployed bound must fail, got %v", err)
 	}
 }
 

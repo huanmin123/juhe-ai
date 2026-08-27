@@ -11,6 +11,7 @@ pipeline {
     booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '仅手动运行：在 activeSlot=prod-a 时将已验证的 test 三镜像晋级到 prod-B；activeSlot=prod-b 时 fail-closed。')
     booleanParam(name: 'REVERSE_DEPLOY_PROD', defaultValue: false, description: '仅手动运行：明确创建 prod-B stable -> prod-A candidate 的反向蓝绿 release intent；只写候选，不切 owner 或 stable Service。')
     booleanParam(name: 'ROLLBACK_PROD', defaultValue: false, description: '仅手动运行：从已验证的 prod 三镜像历史中选择一个版本回滚。')
+    booleanParam(name: 'RECOVERY_TEST_RELEASE', defaultValue: false, description: '仅手动运行：仅在 test 已 Synced|Progressing 时恢复旧版本故障；跳过旧版本健康前置检查，但保留新版本完整验证。')
   }
 
   environment {
@@ -61,11 +62,11 @@ pipeline {
     }
 
     stage('检查手动发布参数') {
-      when { expression { params.DEPLOY_PROD || reverseDeployRequested() || rollbackRequested() } }
+      when { expression { params.DEPLOY_PROD || reverseDeployRequested() || rollbackRequested() || recoveryTestReleaseRequested() } }
       steps {
         script {
-          if ([params.DEPLOY_PROD, reverseDeployRequested(), rollbackRequested()].findAll { it }.size() > 1) {
-            error 'DEPLOY_PROD、REVERSE_DEPLOY_PROD 与 ROLLBACK_PROD 只能选择一个。'
+          if ([params.DEPLOY_PROD, reverseDeployRequested(), rollbackRequested(), recoveryTestReleaseRequested()].findAll { it }.size() > 1) {
+            error 'DEPLOY_PROD、REVERSE_DEPLOY_PROD、ROLLBACK_PROD 与 RECOVERY_TEST_RELEASE 只能选择一个。'
           }
         }
       }
@@ -297,6 +298,7 @@ def validHarborDigestImage(value) {
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
 def rollbackRequested() { return params.ROLLBACK_PROD }
 def reverseDeployRequested() { return params.REVERSE_DEPLOY_PROD }
+def recoveryTestReleaseRequested() { return params.RECOVERY_TEST_RELEASE }
 
 def assertStandardProdPromotionAllowed() {
   refreshPlatformReleaseWorkspace()
@@ -691,8 +693,12 @@ def preflightTestRelease() {
       exit 1
     }
     if [ "\$state" != 'Synced|Healthy' ]; then
-      echo "test 当前不是 Synced|Healthy：\$state；拒绝在不稳定基线上构建。" >&2
-      exit 1
+      if [ '${recoveryTestReleaseRequested()}' != 'true' ] || [ "\$state" != 'Synced|Progressing' ]; then
+        echo "test 当前不是 Synced|Healthy：\$state；仅可通过显式 RECOVERY_TEST_RELEASE 在 Synced|Progressing 状态恢复。" >&2
+        exit 1
+      fi
+      echo 'RECOVERY_TEST_RELEASE 已启用：跳过旧版本健康、数据库与告警前置检查；新版本仍需完成完整 Argo 与入口验证。'
+      exit 0
     fi
     health=\$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 10 -H 'Host: test.aijh.huanmin.top' '${env.INGRESS_ENDPOINT}/__aisys__/api/health' 2>/dev/null || true)
     if ! printf '%s' "\$health" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'; then
