@@ -32,6 +32,11 @@ pipeline {
     // failed application release.
     INGRESS_ENDPOINT = 'http://127.0.0.1:32080'
     PROMETHEUS_ENDPOINT = 'http://127.0.0.1:19091'
+    // Stable, non-sensitive proxy profile ids used by the J3a release verifier.
+    // The corresponding disabled rows are provisioned in each environment DB;
+    // they are only exercised by the exact manual verification request.
+    J3A_TEST_MANUAL_PROXY_ID = 'j3a-release-probe-test'
+    J3A_PROD_MANUAL_PROXY_ID = 'j3a-release-probe-prod'
     BUILD_HTTP_PROXY = 'http://10.66.45.2:7890'
     BUILD_NO_PROXY = '127.0.0.1,localhost,192.168.1.76,192.168.1.203,10.66.45.2'
   }
