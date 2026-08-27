@@ -41,7 +41,7 @@ func TestLoadRuntimeConfigUsesNodeBatchAndCandidatePoolDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.InputLimit != 80 || cfg.BatchSize != 20 || cfg.CandidatePoolFactor != 4 || cfg.WorkerConcurrency != 4 {
+	if cfg.InputLimit != 512 || cfg.BatchSize != 512 || cfg.CandidatePoolFactor != 4 || cfg.WorkerConcurrency != 512 {
 		t.Fatalf("unexpected Node-aligned scheduler defaults: %+v", cfg)
 	}
 }

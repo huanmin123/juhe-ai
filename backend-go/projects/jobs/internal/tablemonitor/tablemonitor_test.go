@@ -176,7 +176,7 @@ func TestLoadConfigValidatesSamplingAndRetentionBounds(t *testing.T) {
 		}
 	}
 	tooLarge := sqliteTestEnv(root)
-	tooLarge["JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"] = "513"
+	tooLarge["JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"] = "5097"
 	if _, err := LoadConfig(func(key string) string { return tooLarge[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES") {
 		t.Fatalf("table-monitor concurrency above the deployed bound must fail, got %v", err)
 	}

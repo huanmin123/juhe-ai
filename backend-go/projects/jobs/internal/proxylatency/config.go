@@ -14,10 +14,10 @@ const (
 	defaultProxyLatencyInterval     = time.Minute
 	defaultProxyLatencyOwnerLease   = 90 * time.Second
 	defaultProxyLatencyProxyLease   = 75 * time.Second
-	defaultProxyLatencyBatchSize    = 20
+	defaultProxyLatencyBatchSize    = 512
 	defaultProxyLatencyPoolFactor   = 4
-	defaultProxyLatencyConcurrency  = 4
-	defaultProxyLatencyProbeLimit   = defaultProxyLatencyBatchSize * defaultProxyLatencyPoolFactor
+	defaultProxyLatencyConcurrency  = 512
+	defaultProxyLatencyProbeLimit   = 512
 	defaultProxyLatencyProbeTimeout = 30 * time.Second
 )
 
@@ -77,16 +77,16 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_POSTGRES_URL")
 	}
 	var err error
-	if cfg.PostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+	if cfg.PostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.PostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+	if cfg.PostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+	if cfg.InputPostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+	if cfg.InputPostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL"))
@@ -97,16 +97,16 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.ResultPostgresURL == "" {
 		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL")
 	}
-	if cfg.InputLimit, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_LIMIT", defaultProxyLatencyProbeLimit, 1, 1024); err != nil {
+	if cfg.InputLimit, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_LIMIT", defaultProxyLatencyProbeLimit, 1, 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_BATCH_SIZE", defaultProxyLatencyBatchSize, 1, 1024); err != nil {
+	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_BATCH_SIZE", defaultProxyLatencyBatchSize, 1, 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
 	if cfg.CandidatePoolFactor, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_CANDIDATE_POOL_FACTOR", defaultProxyLatencyPoolFactor, 1, 100); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.WorkerConcurrency, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY", defaultProxyLatencyConcurrency, 1, 128); err != nil {
+	if cfg.WorkerConcurrency, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY", defaultProxyLatencyConcurrency, 1, 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
 	if cfg.InputTTL, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_TTL", 5*time.Minute, time.Minute, 15*time.Minute); err != nil {

@@ -18,12 +18,12 @@ import (
 const (
 	defaultOwnerLease               = 30 * time.Second
 	defaultRetentionInterval        = time.Minute
-	defaultRetentionBatchSize       = 100
+	defaultRetentionBatchSize       = 512
 	defaultSuccessHotRetentionHours = 1
 	defaultSuccessSampleRate        = 0.1
 	defaultSuccessRetentionDays     = 3
 	defaultProblemRetentionDays     = 7
-	defaultPostgresPoolSize         = 1000
+	defaultPostgresPoolSize         = 5096
 )
 
 type Config struct {
@@ -105,7 +105,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL 必须为 1s 到 24h 的正 duration")
 	}
 	cfg.RetentionInterval = retentionInterval
-	retentionBatchSize, err := parseBoundedInteger("JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE", getenv("JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE"), defaultRetentionBatchSize, 1, 10000)
+	retentionBatchSize, err := parseBoundedInteger("JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE", getenv("JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE"), defaultRetentionBatchSize, 1, 5096)
 	if err != nil {
 		return Config{}, err
 	}
@@ -319,8 +319,8 @@ func (cfg Config) validateRetentionPolicy() error {
 	if cfg.RetentionInterval < time.Second || cfg.RetentionInterval > 24*time.Hour {
 		return fmt.Errorf("JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL 必须为 1s 到 24h 的正 duration")
 	}
-	if cfg.RetentionBatchSize < 1 || cfg.RetentionBatchSize > 10000 {
-		return fmt.Errorf("JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE 必须是 1 到 10000 之间的整数")
+	if cfg.RetentionBatchSize < 1 || cfg.RetentionBatchSize > 5096 {
+		return fmt.Errorf("JUHE_AI_AUDIT_LOG_RETENTION_BATCH_SIZE 必须是 1 到 5096 之间的整数")
 	}
 	if cfg.SuccessHotRetentionHours < 0 || cfg.SuccessHotRetentionHours > 168 {
 		return fmt.Errorf("JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS 必须是 0 到 168 之间的整数")

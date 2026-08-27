@@ -123,8 +123,8 @@ func TestLoadConfigPrefersDedicatedPostgresURL(t *testing.T) {
 	if cfg.PostgresURL != env["JUHE_AI_AUDIT_LOG_POSTGRES_URL"] {
 		t.Fatalf("PostgresURL=%q want dedicated F3 URL", cfg.PostgresURL)
 	}
-	if cfg.PostgresMaxOpenConns != 1000 || cfg.PostgresMaxIdleConns != 1000 {
-		t.Fatalf("default F3 PostgreSQL pool=%d/%d want 1000/1000", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
+	if cfg.PostgresMaxOpenConns != 5096 || cfg.PostgresMaxIdleConns != 5096 {
+		t.Fatalf("default F3 PostgreSQL pool=%d/%d want 5096/5096", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
 	}
 	env["JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS"] = "1200"
 	env["JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS"] = "1100"
@@ -149,12 +149,12 @@ func TestLoadConfigParsesNodeCompatibleRetentionPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RetentionInterval != time.Minute || cfg.RetentionBatchSize != 100 || cfg.SuccessHotRetentionHours != 1 || cfg.SuccessSampleRate != 0.1 || cfg.SuccessRetentionDays != 3 || cfg.ProblemRetentionDays != 7 {
+	if cfg.RetentionInterval != time.Minute || cfg.RetentionBatchSize != 512 || cfg.SuccessHotRetentionHours != 1 || cfg.SuccessSampleRate != 0.1 || cfg.SuccessRetentionDays != 3 || cfg.ProblemRetentionDays != 7 {
 		t.Fatalf("Node-compatible retention defaults mismatch: %+v", cfg)
 	}
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	retention := cfg.RetentionConfigAt(now)
-	if !retention.SuccessHotCutoff.Equal(now.Add(-time.Hour)) || !retention.SuccessCutoff.Equal(now.Add(-72*time.Hour)) || !retention.FailureCutoff.Equal(now.Add(-168*time.Hour)) || !retention.ErrorGroupCutoff.Equal(now.Add(-168*time.Hour)) || retention.SuccessSampleBucketThreshold != 1000 || retention.BatchSize != 100 {
+	if !retention.SuccessHotCutoff.Equal(now.Add(-time.Hour)) || !retention.SuccessCutoff.Equal(now.Add(-72*time.Hour)) || !retention.FailureCutoff.Equal(now.Add(-168*time.Hour)) || !retention.ErrorGroupCutoff.Equal(now.Add(-168*time.Hour)) || retention.SuccessSampleBucketThreshold != 1000 || retention.BatchSize != 512 {
 		t.Fatalf("Node-compatible retention cutoffs mismatch: %+v", retention)
 	}
 

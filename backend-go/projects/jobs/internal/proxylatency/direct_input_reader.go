@@ -68,8 +68,8 @@ var proxyLatencyRequiredRelations = []string{
 }
 
 func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]InputDraft, error) {
-	if limit < 1 || limit > 1024 {
-		return nil, errors.New("J3a PG direct input limit 必须在 1..1024")
+	if limit < 1 || limit > 5096 {
+		return nil, errors.New("J3a PG direct input limit 必须在 1..5096")
 	}
 	tx, err := r.beginReadOnly(ctx)
 	if err != nil {
@@ -82,8 +82,8 @@ func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]I
 	if pageSize < 40 {
 		pageSize = 40
 	}
-	if pageSize > 1024 {
-		pageSize = 1024
+	if pageSize > 5096 {
+		pageSize = 5096
 	}
 	for offset := 0; len(result) < limit; offset += pageSize {
 		rows, err := tx.QueryContext(ctx, proxyLatencyCandidatesSQL, pageSize, offset)

@@ -102,7 +102,7 @@ func TestRuntimeConfigUsesHighPerformanceConcurrencyAndPoolDefaults(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxConcurrency != 256 || cfg.PostgresMaxOpenConns != 1000 || cfg.PostgresMaxIdleConns != 1000 || cfg.InputPostgresMaxOpenConns != 1000 || cfg.InputPostgresMaxIdleConns != 1000 {
+	if cfg.MaxConcurrency != 512 || cfg.PostgresMaxOpenConns != 5096 || cfg.PostgresMaxIdleConns != 5096 || cfg.InputPostgresMaxOpenConns != 5096 || cfg.InputPostgresMaxIdleConns != 5096 {
 		t.Fatalf("unexpected high-performance defaults: %#v", cfg)
 	}
 }

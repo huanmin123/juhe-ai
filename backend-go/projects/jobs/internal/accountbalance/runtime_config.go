@@ -63,16 +63,16 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL")
 	}
 	var err error
-	if cfg.PostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+	if cfg.PostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.PostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+	if cfg.PostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS", 1000); err != nil {
+	if cfg.InputPostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.InputPostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", 1000); err != nil {
+	if cfg.InputPostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL"))
@@ -117,13 +117,13 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.MaxResponseBytes, err = runtimeInt64(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_RESPONSE_BYTES", defaultMaxBodyBytes, 1, defaultMaxBodyBytes); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.MaxConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY", 256, 4, 256); err != nil {
+	if cfg.MaxConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY", 512, 1, 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE", 36, 1, 1024); err != nil {
+	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE", 512, 1, 5096); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.RecoveryBatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE", 4, 1, cfg.BatchSize); err != nil {
+	if cfg.RecoveryBatchSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE", 512, 1, cfg.BatchSize); err != nil {
 		return RuntimeConfig{}, err
 	}
 	waves := (cfg.BatchSize + cfg.MaxConcurrency - 1) / cfg.MaxConcurrency
