@@ -64,7 +64,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	} else if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_MODE")), "performance") {
 		concurrencyDefault = defaultPerformanceSources
 	}
-	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), concurrencyDefault, 4, 256)
+	maxConcurrentSources, err := intOrDefault(getenv("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES"), concurrencyDefault, 4, 512)
 	if err != nil {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES 无效: %w", err)
 	}

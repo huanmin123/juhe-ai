@@ -24,8 +24,8 @@ const (
 	defaultPerformanceConcurrency = 64
 	defaultPostgresConcurrency    = 256
 	minJ1Concurrency              = 4
-	maxJ1Concurrency              = 256
-	maxJ1Capacity                 = 1000
+	maxJ1Concurrency              = 512
+	maxJ1Capacity                 = 512
 )
 
 // Config is deliberately opt-in.  A release cannot accidentally claim J1
