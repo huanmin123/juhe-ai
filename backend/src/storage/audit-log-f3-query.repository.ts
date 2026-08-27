@@ -570,7 +570,7 @@ async function createPostgresBackend(
   const { Pool } = await import('pg')
   const pool = new Pool({
     connectionString: url,
-    max: Math.max(1, Math.min(32, Math.trunc(poolMax))),
+    max: Math.max(1, Math.min(10, Math.trunc(poolMax))),
     idleTimeoutMillis: Math.max(1_000, Math.min(600_000, Math.trunc(idleTimeoutMs)))
   })
   return {
