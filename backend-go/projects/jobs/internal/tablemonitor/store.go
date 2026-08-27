@@ -532,7 +532,7 @@ func (s *Store) previousTableSnapshots(ctx context.Context, snapshots []TableSna
 		}
 		if s.mode == ModePostgres {
 			base := index*4 + 1
-			fmt.Fprintf(&values, "($%d, $%d, $%d, $%d)", base, base+1, base+2, base+3)
+			fmt.Fprintf(&values, "($%d::int, $%d::text, $%d::text, $%d::timestamptz)", base, base+1, base+2, base+3)
 			args = append(args, index, snapshot.Role, snapshot.TableName, snapshot.SampledAt.Add(-lookback).UTC())
 			continue
 		}
