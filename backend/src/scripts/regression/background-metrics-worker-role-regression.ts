@@ -124,7 +124,7 @@ assert(workerSource.includes('if (isIngestWorker()) {'), 'worker.ts 必须把 ap
 assert(workerSource.includes('await stopBackgroundJobs()') && workerSource.indexOf('await stopBackgroundJobs()') < workerSource.indexOf('await stopUsageRecordRedisStreamConsumer()'), 'worker 停机必须先停止后台 producer，再排空消费队列')
 assert(workerSource.includes('} else if (isOpsWorker()) {'), 'ops-worker 必须启动账号测试和轻量运维本地队列')
 assert(workerSource.includes('startAccountTestTaskQueue()'), 'ops-worker 应启动手动账号测试队列')
-assert.match(accountTestQueueSource, /if \(runtimeConfig\.workerReplicaIndex === 0\)\s*\{[\s\S]*?runAccountTestTaskMaintenance\('start'\)/, '账号测试启动恢复只能由主 ops 副本执行，其他副本仍可消费投递消息')
+assert.match(accountTestQueueSource, /runAccountTestTaskMaintenance\('start'\)/, '每个 ops 副本都应尝试启动恢复，依赖数据库原子认领避免重复执行')
 assert.match(accountTestQueueSource, /staleRunningMs:\s*action === 'start' \? manualAccountTestRunningStaleMs/, '账号测试启动恢复必须只接管过期 running 任务')
 assert(workerSource.includes("isPrimaryWorkerReplica() && runtimeConfig.blueGreenOwnerMode !== 'drain'"), 'active/standby 都应启动周期调度器，drain 才停止 producer')
 for (const jobName of [

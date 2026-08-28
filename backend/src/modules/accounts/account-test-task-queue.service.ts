@@ -118,19 +118,17 @@ export function startAccountTestTaskQueue(): void {
   if (runtimeConfig.processRole !== 'worker') {
     return
   }
-  // Only the primary ops replica performs crash recovery. Every replica still
-  // runs the normal sweep/refill and consumes dispatched task messages.
-  if (runtimeConfig.workerReplicaIndex === 0) {
-    void runAccountTestTaskMaintenance('start').then((taskIds) => {
-      for (const taskId of taskIds) {
-        enqueueAccountTestTaskLocal(taskId)
-      }
-    }).catch((error) => {
-      logger.warn(errorLogFields(error, {
-        event: 'manual_account_test_start_maintenance_failed'
-      }), '账号测试队列启动维护失败')
-    })
-  }
+  // Every ops replica may attempt crash recovery. The DB-side stale cutoff,
+  // atomic queued claim, and started_at fence make concurrent attempts safe.
+  void runAccountTestTaskMaintenance('start').then((taskIds) => {
+    for (const taskId of taskIds) {
+      enqueueAccountTestTaskLocal(taskId)
+    }
+  }).catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'manual_account_test_start_maintenance_failed'
+    }), '账号测试队列启动维护失败')
+  })
   startAccountTestSessionStaleSweep()
   refillManualAccountTestQueue()
 }
