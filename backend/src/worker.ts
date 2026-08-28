@@ -91,9 +91,11 @@ if (isIngestWorker()) {
 } else if (isOpsWorker()) {
   startAccountTestTaskQueue()
 }
-// Every ready slot serves dispatchable local queues. Periodic work is kept on
-// the current owner until each job's database fencing contract is verified.
-if (isPrimaryWorkerReplica() && runtimeConfig.blueGreenOwnerMode === 'active') {
+// Every ready slot serves dispatchable local queues. Active and standby
+// replicas may schedule the same periodic jobs; each PostgreSQL-backed job
+// is protected by either a scheduled lease or an item-level claim/fence.
+// Drain replicas never start producers while they are being removed.
+if (isPrimaryWorkerReplica() && runtimeConfig.blueGreenOwnerMode !== 'drain') {
   startBackgroundJobs()
 }
 

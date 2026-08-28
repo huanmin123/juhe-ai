@@ -13,7 +13,7 @@ export const backgroundScheduledJobs = [
     hotspot: true,
     singleOwner: true,
     shardable: false,
-    leaseRequired: false,
+    leaseRequired: true,
     blocksUserVisibleFreshness: true,
     writes: ['stats:system_metrics_samples', 'stats:process_event_loop_samples'],
     notes: '系统采样写入 stats 库，必须经 stats-worker 串行提交；其他进程事件循环样本通过 IPC 拉取'
@@ -187,7 +187,7 @@ export const backgroundScheduledJobs = [
     hotspot: false,
     singleOwner: true,
     shardable: false,
-    leaseRequired: false,
+    leaseRequired: true,
     blocksUserVisibleFreshness: false,
     writes: ['stats:background_task_runs', 'stats:background_job_leases'],
     notes: '启动后及低频周期回收无有效租约的临时维护任务陈旧状态；近期心跳和有效租约均阻止回收'

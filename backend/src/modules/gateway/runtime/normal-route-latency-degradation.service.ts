@@ -58,6 +58,13 @@ export interface NormalRouteLatencyProbeCandidate {
   recoveryProbeRoundSuccessCount: number
 }
 
+export interface NormalRouteLatencyProbeClaim {
+  stateKey: string
+  generation: string
+  lockKey: string
+  token: string
+}
+
 interface NormalRouteLatencyState {
   generation: string
   accountId: string
@@ -111,6 +118,8 @@ const latencyStateGenerationCasMaxAttempts = 8
 const latencyStateIndexCasMaxAttempts = 8
 const normalRouteRecoveryProbeRoundSize = 2
 const normalRouteRecoveryProbeIntervalMs = 5_000
+const normalRouteLatencyProbeClaimTtlMs = 2 * 60 * 1000
+export const normalRouteLatencyProbeClaimRenewIntervalMs = 30_000
 const latencyStateInitialGenerationEvent: NormalRouteLatencyGenerationEvent = {
   version: 'initial',
   publishedAt: '1970-01-01T00:00:00.000Z'
@@ -409,6 +418,42 @@ export async function listNormalRouteLatencyProbeCandidatesAsync(
     .sort((left, right) => left.nextProbeAtMs - right.nextProbeAtMs || left.accountId.localeCompare(right.accountId))
     .slice(0, normalizedLimit)
     .map(({ nextProbeAtMs: _nextProbeAtMs, ...candidate }) => candidate)
+}
+
+// The scheduler only discovers candidates. This claim owns the external
+// probe itself, so independently scheduled replicas cannot probe one state
+// transition concurrently.
+export async function acquireNormalRouteLatencyProbeClaimAsync(
+  candidate: Pick<NormalRouteLatencyProbeCandidate, 'stateKey' | 'generation'>
+): Promise<NormalRouteLatencyProbeClaim | undefined> {
+  const token = randomUUID()
+  const lockKey = normalRouteLatencyProbeClaimLockKey(candidate)
+  const acquired = await latencyStateStore.acquireLock(lockKey, {
+    ttlMs: normalRouteLatencyProbeClaimTtlMs,
+    token
+  })
+  if (!acquired) return undefined
+  return {
+    stateKey: candidate.stateKey,
+    generation: candidate.generation,
+    lockKey,
+    token
+  }
+}
+
+export async function renewNormalRouteLatencyProbeClaimAsync(
+  claim: NormalRouteLatencyProbeClaim
+): Promise<boolean> {
+  return await latencyStateStore.renewLock(claim.lockKey, {
+    ttlMs: normalRouteLatencyProbeClaimTtlMs,
+    token: claim.token
+  })
+}
+
+export async function releaseNormalRouteLatencyProbeClaimAsync(
+  claim: NormalRouteLatencyProbeClaim
+): Promise<void> {
+  await latencyStateStore.releaseLock(claim.lockKey, claim.token)
 }
 
 export async function recordNormalRouteProbeFailureAsync(
@@ -1046,6 +1091,12 @@ async function acquireLatencyStateMutationLockStrictAsync(key: string): Promise<
 
 function latencyStateMutationLockKey(key: string): string {
   return `${latencyStateVersion}:mutation-lock:${key}`
+}
+
+function normalRouteLatencyProbeClaimLockKey(
+  candidate: Pick<NormalRouteLatencyProbeCandidate, 'stateKey' | 'generation'>
+): string {
+  return `${latencyStateVersion}:probe-claim:${candidate.generation}:${candidate.stateKey}`
 }
 
 async function acquireLatencyStateIndexLock(lockKey: string, token: string): Promise<boolean> {

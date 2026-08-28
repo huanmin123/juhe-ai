@@ -8,6 +8,8 @@ import type { BackgroundWorkerMessage } from '../../modules/background/backgroun
 const supervisorSource = readSource('../../modules/background/background-worker-supervisor.ts')
 const serverSource = readSource('../../server.ts')
 const backgroundJobsSource = readSource('../../modules/background/background-jobs.ts')
+const normalRouteRecoveryProbeSource = readSource('../../modules/background/normal-route-speed-first-recovery-probe.service.ts')
+const normalRouteLatencyStateSource = readSource('../../modules/gateway/runtime/normal-route-latency-degradation.service.ts')
 const backgroundIpcWorkerRolesSource = readSource('../../modules/background/background-ipc-worker-roles.ts')
 const workerSource = readSource('../../worker.ts')
 const runtimeSource = readSource('../../config/runtime.ts')
@@ -106,6 +108,7 @@ assertRoleBlockContainsOnly('ops-worker', [
   'model-quality-scheduled-check',
   'model-quality-recovery',
   'model-quality-health-sync-retry',
+  'key-model-memory-recovery',
   'account-api-key-cooldown-retest',
   'openai-oauth-access-token-refresh',
   'api-key-availability-schedule-status-sync',
@@ -120,7 +123,28 @@ assert(workerSource.includes('if (isIngestWorker()) {'), 'worker.ts 必须把 ap
 assert(workerSource.includes('await stopBackgroundJobs()') && workerSource.indexOf('await stopBackgroundJobs()') < workerSource.indexOf('await stopUsageRecordRedisStreamConsumer()'), 'worker 停机必须先停止后台 producer，再排空消费队列')
 assert(workerSource.includes('} else if (isOpsWorker()) {'), 'ops-worker 必须启动账号测试和轻量运维本地队列')
 assert(workerSource.includes('startAccountTestTaskQueue()'), 'ops-worker 应启动手动账号测试队列')
-assert(workerSource.includes("isPrimaryWorkerReplica() && runtimeConfig.blueGreenOwnerMode === 'active'"), 'standby 必须启动可投递 worker，但不得在未完成逐项 fencing 审核前启动周期调度器')
+assert(workerSource.includes("isPrimaryWorkerReplica() && runtimeConfig.blueGreenOwnerMode !== 'drain'"), 'active/standby 都应启动周期调度器，drain 才停止 producer')
+for (const jobName of [
+  'background-task-run-reconcile',
+  'system-metrics-sample',
+  'usage-stats-consistency-check',
+  'api-key-availability-schedule-status-sync',
+  'account-availability-schedule-status-sync',
+  'resource-authorization-expiry-sweep',
+  'expired-deleted-account-cleanup',
+  'openai-oauth-access-token-refresh',
+  'api-key-record-cleanup-retry',
+  'account-record-cleanup-retry'
+] as const) {
+  assert.match(backgroundJobsSource, new RegExp(`runWithPostgresScheduledLease\\(\\s*'[^']*${jobName}[^']*'`), `${jobName} 必须通过独立 PostgreSQL scheduled lease 防止多节点重复扫描`)
+}
+assert.doesNotMatch(scheduledJobRegistration('normal-route-speed-first-recovery-probe'), /runWithPostgresScheduledLease/, '普通路由恢复调度器只能发现候选，不能以全局 lease 串行化每个 Pod 的本地队列')
+assert(normalRouteRecoveryProbeSource.includes('acquireNormalRouteLatencyProbeClaimAsync(item)'), '普通路由恢复探针入队后必须以 stateKey/generation claim 领用候选')
+assert(normalRouteRecoveryProbeSource.includes('renewNormalRouteLatencyProbeClaimAsync(claim)') && normalRouteRecoveryProbeSource.includes('releaseNormalRouteLatencyProbeClaimAsync(claim)'), '普通路由恢复探针在上游 I/O 期间必须续租并释放对象 claim')
+assert(normalRouteRecoveryProbeSource.includes('background_normal_route_speed_first_recovery_probe_claim_busy'), '多节点重复候选必须输出可观测的 claim busy 日志')
+assert(normalRouteRecoveryProbeSource.includes('background_normal_route_speed_first_recovery_probe_claim_release_failed'), 'claim 释放失败必须保留告警并等待 TTL，不能把已完成探针重试成重复上游调用')
+assert(normalRouteLatencyStateSource.includes('normalRouteLatencyProbeClaimLockKey') && normalRouteLatencyStateSource.includes('probe-claim'), '普通路由恢复探针 claim 必须使用与 mutation lock 分离的共享运行态锁')
+assert.doesNotMatch(scheduledJobRegistration('key-model-memory-recovery'), /runWithPostgresScheduledLease/, 'memory runtime-state 恢复不得被 PostgreSQL 全局 lease 阻断其他 Pod 的进程内状态扫描')
 assert(workerSource.includes('getAccountApiKeyCooldownRetestQueueSnapshot') && workerSource.includes('accountApiKeyCooldownRetestQueue'), 'ops-worker runtime snapshot 必须暴露 Key 级冷却复测队列')
 assert(!workerSource.includes('isProbeWorkerMessage'), 'worker.ts 不应保留 probe-worker 消息过滤')
 assert(!workerSource.includes('isMaintenanceWorkerMessage'), 'worker.ts 不应保留 maintenance-worker 消息过滤')

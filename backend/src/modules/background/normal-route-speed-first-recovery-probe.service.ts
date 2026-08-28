@@ -13,10 +13,14 @@ import {
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import {
+  acquireNormalRouteLatencyProbeClaimAsync,
   deferNormalRouteLatencyProbeCandidateAsync,
   discardNormalRouteLatencyProbeCandidateAsync,
+  normalRouteLatencyProbeClaimRenewIntervalMs,
   recordNormalRouteRecoveryProbeSuccessAsync,
   recordNormalRouteProbeFailureAsync,
+  releaseNormalRouteLatencyProbeClaimAsync,
+  renewNormalRouteLatencyProbeClaimAsync,
   type NormalRouteLatencyProbeCandidate
 } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -57,12 +61,87 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
   item: NormalRouteSpeedFirstRecoveryProbeQueueItem,
   context: { attemptIndex: number; retryNumber: number }
 ) {
+  const claim = await acquireNormalRouteLatencyProbeClaimAsync(item)
+  if (!claim) {
+    logger.debug({
+      event: 'background_normal_route_speed_first_recovery_probe_claim_busy',
+      accountId: item.accountId,
+      routeStrategyId: item.scope.routeStrategyId,
+      groupId: item.scope.groupId,
+      generation: item.generation,
+      attemptIndex: context.attemptIndex,
+      retryNumber: context.retryNumber
+    }, '普通路由速度优先恢复探针已由其他节点领用，本节点跳过重复上游探测')
+    return true
+  }
+
+  let claimLost = false
+  const ensureClaim = async (phase: string): Promise<boolean> => {
+    if (claimLost) return false
+    try {
+      const renewed = await renewNormalRouteLatencyProbeClaimAsync(claim)
+      if (renewed) return true
+    } catch (error) {
+      logger.warn({
+        event: 'background_normal_route_speed_first_recovery_probe_claim_renew_failed',
+        accountId: item.accountId,
+        routeStrategyId: item.scope.routeStrategyId,
+        groupId: item.scope.groupId,
+        generation: item.generation,
+        phase,
+        error
+      }, '普通路由速度优先恢复探针 claim 续租失败，停止提交该节点的探测结果')
+      claimLost = true
+      return false
+    }
+    claimLost = true
+    logger.warn({
+      event: 'background_normal_route_speed_first_recovery_probe_claim_lost',
+      accountId: item.accountId,
+      routeStrategyId: item.scope.routeStrategyId,
+      groupId: item.scope.groupId,
+      generation: item.generation,
+      phase
+    }, '普通路由速度优先恢复探针 claim 已失效，停止提交该节点的探测结果')
+    return false
+  }
+  const renewTimer = setInterval(() => {
+    void ensureClaim('heartbeat')
+  }, normalRouteLatencyProbeClaimRenewIntervalMs)
+  renewTimer.unref()
+
+  try {
+    return await runNormalRouteSpeedFirstRecoveryProbeQueueItemClaimed(item, context, ensureClaim)
+  } finally {
+    clearInterval(renewTimer)
+    try {
+      await releaseNormalRouteLatencyProbeClaimAsync(claim)
+    } catch (error) {
+      logger.warn({
+        event: 'background_normal_route_speed_first_recovery_probe_claim_release_failed',
+        accountId: item.accountId,
+        routeStrategyId: item.scope.routeStrategyId,
+        groupId: item.scope.groupId,
+        generation: item.generation,
+        error
+      }, '普通路由速度优先恢复探针 claim 释放失败，将等待 TTL 自动过期')
+    }
+  }
+}
+
+async function runNormalRouteSpeedFirstRecoveryProbeQueueItemClaimed(
+  item: NormalRouteSpeedFirstRecoveryProbeQueueItem,
+  context: { attemptIndex: number; retryNumber: number },
+  ensureClaim: (phase: string) => Promise<boolean>
+) {
+  if (!await ensureClaim('before_account_load')) return true
   const account = await loadAccountForTestViaDbService(item.accountId, {
     systemAccountId: item.scope.systemAccountId,
     role: 'user'
   })
   const accountForInvalidLog = account
   if (!isNormalRouteSpeedFirstProbeAccountEligible(account)) {
+    if (!await ensureClaim('before_discard_ineligible_account')) return true
     await discardNormalRouteLatencyProbeCandidateAsync(item)
     logger.debug({
       event: 'background_normal_route_speed_first_recovery_probe_discarded',
@@ -83,6 +162,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     { ignoreAvailability: true }
   )
   if (!candidateAccount) {
+    if (!await ensureClaim('before_discard_missing_group_account')) return true
     await discardNormalRouteLatencyProbeCandidateAsync(item)
     logger.debug({
       event: 'background_normal_route_speed_first_recovery_probe_account_missing',
@@ -94,6 +174,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     return true
   }
 
+  if (!await ensureClaim('before_upstream_probe')) return true
   let upstreamAttempt: UpstreamAttempt | undefined
   const result = await testOpenAIAccount(account, {
     diagnostics: 'limited',
@@ -120,6 +201,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
   const transportOutcome = transportProbeOutcomeFromAccountTestResult(result, { upstreamAttempt })
   const firstByteMs = result.firstTokenMs
   if (transportProbeMeetsFirstByteTarget(result, transportOutcome, item.config.firstByteDeadlineMs)) {
+    if (!await ensureClaim('before_record_success')) return true
     const recovery = await recordNormalRouteRecoveryProbeSuccessAsync(candidateAccount, item, firstByteMs)
     logger.info({
       event: recovery?.cleared
@@ -146,6 +228,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
   // slow. It must discard the current two-probe window, rather than join a
   // preceding failure into an FF lease renewal.
   if (normalRouteSpeedFirstRecoveryProbeRequiresWindowReset(result, transportOutcome)) {
+    if (!await ensureClaim('before_defer_neutral_result')) return true
     const deferred = await deferNormalRouteLatencyProbeCandidateAsync(item)
     logger.debug({
       event: 'background_normal_route_speed_first_recovery_probe_neutral',
@@ -161,6 +244,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     return true
   }
 
+  if (!await ensureClaim('before_record_failure')) return true
   await recordNormalRouteProbeFailureAsync(item, probeFailureReason(result, item.config.firstByteDeadlineMs))
   logger.debug({
     event: 'background_normal_route_speed_first_recovery_probe_failed',

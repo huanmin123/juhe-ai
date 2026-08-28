@@ -12,13 +12,16 @@ const {
   clearNormalRouteLatencyDegradationForRouteStrategyAsync,
   clearAllNormalRouteLatencyDegradationAsync,
   clearNormalRouteLatencyDegradationForAccountBindingAsync,
+  acquireNormalRouteLatencyProbeClaimAsync,
   deferNormalRouteLatencyProbeCandidateAsync,
   discardNormalRouteLatencyProbeCandidateAsync,
   listNormalRouteLatencyProbeCandidatesAsync,
   recordNormalRouteProbeFailureAsync,
   recordNormalRouteFirstByteSlowAsync,
   recordNormalRouteFirstByteSuccessAsync,
-  recordNormalRouteRecoveryProbeSuccessAsync
+  recordNormalRouteRecoveryProbeSuccessAsync,
+  releaseNormalRouteLatencyProbeClaimAsync,
+  renewNormalRouteLatencyProbeClaimAsync
 } = await import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js')
 const config: NormalRouteSpeedFirstRuntimeConfig = {
   firstByteDeadlineMs: 30000,
@@ -94,6 +97,18 @@ const futureProbeAtMs = Date.now() + config.probeIntervalSeconds * 2000
 const futureProbeCandidates = await listNormalRouteLatencyProbeCandidatesAsync(10, futureProbeAtMs)
   assert.equal(futureProbeCandidates.length, 1, '速度降级后应产生到期恢复探针候选')
   assert.equal(futureProbeCandidates[0]?.accountId, accounts[0]!.id, '恢复探针候选应指向被降级账号')
+  const [firstProbeClaim, duplicateProbeClaim] = await Promise.all([
+    acquireNormalRouteLatencyProbeClaimAsync(futureProbeCandidates[0]!),
+    acquireNormalRouteLatencyProbeClaimAsync(futureProbeCandidates[0]!)
+  ])
+  assert.equal([firstProbeClaim, duplicateProbeClaim].filter(Boolean).length, 1, '两个独立恢复队列对同一候选只能有一个节点取得探针 claim')
+  const probeClaim = firstProbeClaim ?? duplicateProbeClaim
+  assert(probeClaim, '速度优先恢复探针 claim 必须可取得')
+  assert.equal(await renewNormalRouteLatencyProbeClaimAsync(probeClaim), true, '探针执行期间必须能由持有节点续租 claim')
+  await releaseNormalRouteLatencyProbeClaimAsync(probeClaim)
+  const reissuedProbeClaim = await acquireNormalRouteLatencyProbeClaimAsync(futureProbeCandidates[0]!)
+  assert(reissuedProbeClaim, 'claim 释放后下一轮候选必须可以由一个节点重新领取')
+  await releaseNormalRouteLatencyProbeClaimAsync(reissuedProbeClaim)
   const originalDegradedUntil = futureProbeCandidates[0]?.degradedUntil
   assert.equal(await deferNormalRouteLatencyProbeCandidateAsync(futureProbeCandidates[0]!), true, '中性恢复探针应只顺延下一次检查')
   assert.equal((await listNormalRouteLatencyProbeCandidatesAsync(10)).length, 0, '中性恢复探针不得立即重复入队')
