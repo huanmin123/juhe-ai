@@ -83,7 +83,10 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 		if cfg.BusinessHandoffConfirmed {
 			mode = "rw"
 		}
-		driver, dsn = "sqlite", "file:"+cfg.BusinessDatabasePath+"?mode="+mode+"&_pragma=busy_timeout(5000)"
+		// SQLite foreign-key enforcement is connection-local and disabled by
+		// default. The Gateway owner must enable it explicitly so the schema
+		// contract's cascade/relationship guarantees hold for every connection.
+		driver, dsn = "sqlite", "file:"+cfg.BusinessDatabasePath+"?mode="+mode+"&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 		if strings.TrimSpace(cfg.BusinessDatabasePath) == "" {
 			return nil, errors.New("J3b Business SQLite path is required")
 		}

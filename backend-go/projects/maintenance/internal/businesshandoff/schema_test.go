@@ -92,6 +92,23 @@ func TestAnnouncementContractMatchesBusinessSQLiteShape(t *testing.T) {
 	}
 }
 
+func TestSystemSessionContractIncludesCascadeOwnerRelation(t *testing.T) {
+	sessions, ok := contracts.BusinessSQLiteSchema["system_sessions"]
+	if !ok {
+		t.Fatal("system_sessions contract is missing")
+	}
+	if got, want := join(sessions.Columns), "id,system_account_id,token_hash,expires_at,created_at,last_seen_at"; got != want {
+		t.Fatalf("system_sessions columns=%q, want %q", got, want)
+	}
+	if len(sessions.ForeignKeys) != 1 {
+		t.Fatalf("system_sessions foreign key count=%d, want 1", len(sessions.ForeignKeys))
+	}
+	relation := sessions.ForeignKeys[0]
+	if relation.RefTable != "system_accounts" || join(relation.Columns) != "system_account_id" || join(relation.RefColumns) != "id" || relation.OnDelete != "CASCADE" || relation.OnUpdate != "" {
+		t.Fatalf("unexpected system_sessions foreign key=%+v", relation)
+	}
+}
+
 func quoteColumns(values []string) string {
 	quoted := make([]string, 0, len(values))
 	for _, value := range values {

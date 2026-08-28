@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
-import { passiveScheduleDelayMs } from '../../../shared/passive-schedule-jitter.js'
+import {
+  passiveScheduleDelayMs,
+  passiveScheduleJitterWindowMs
+} from '../../../shared/passive-schedule-jitter.js'
 
 export type AccountCircuitPhase = 'CLOSED' | 'SUSPECT' | 'OPEN' | 'HALF_OPEN' | 'RECOVERING'
 
@@ -192,10 +195,18 @@ export function accountCircuitBackoffDelayMs(attempt: number, jitterSeed?: strin
   const index = Math.min(accountCircuitBackoffMs.length - 1, Math.max(0, Math.trunc(attempt) - 1))
   const base = accountCircuitBackoffMs[index]!
   if (index < 4) return base
-  // The seed remains part of the API for callers that already provide a
-  // transition identity, but each long passive retry receives a fresh global
-  // offset instead of a stable account-specific phase.
-  void jitterSeed
+  // Redis and memory stores must derive the same deadline from the same
+  // capability/state identity. Callers without a seed retain the existing
+  // fresh global jitter behavior.
+  if (jitterSeed !== undefined) {
+    const windowMs = passiveScheduleJitterWindowMs(base)
+    if (windowMs <= 0) return base
+    const digest = createHash('sha1').update(jitterSeed).digest('hex')
+    const sample = Number.parseInt(digest.slice(0, 8), 16)
+    let offset = (sample % (windowMs * 2 + 1)) - windowMs
+    if (offset === 0) offset = 1
+    return Math.max(1, base + offset)
+  }
   return passiveScheduleDelayMs(base)
 }
 

@@ -201,11 +201,12 @@
       "operation_count": 1,
       "current_owner": "node-db-service",
       "target_owner": "go-gateway",
-      "gateway_target_module": "backend-go/projects/gateway/internal/modelcheckauth",
-      "status": "missing",
+      "gateway_target_module": "backend-go/projects/gateway/internal/business/session_retention and backend-go/projects/gateway/cmd/juhe-ai-gateway",
+      "status": "partial",
       "migration_method": "complete-session-auth-lifecycle-and-retention-handoff-in-one-process",
       "acceptance_gates": ["B1-session-retention", "GATE-auth-lifecycle", "GATE-active-path-zero", "GATE-isolated-sqlite-pg", "GATE-rollback"],
-      "rollback": "fence session cleanup by owner epoch, preserve login/logout/revoke receipts, and return to Node only after session expiry counts and revocation state match"
+      "rollback": "fence session cleanup by owner epoch, preserve login/logout/revoke receipts, and return to Node only after session expiry counts and revocation state match",
+      "evidence": ["backend-go/projects/gateway/internal/business/session_retention/retention.go", "backend-go/projects/gateway/cmd/juhe-ai-gateway/main.go"]
     }
   ]
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
+	sessionretention "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/session_retention"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
@@ -98,6 +100,9 @@ func main() {
 	var j3bManagementServer *http.Server
 	var j3bManagementListener net.Listener
 	var j3bManagementServeErr chan error
+	var retentionComponent supervisor.Component
+	var retentionEnabled bool
+	var retentionRunning atomic.Bool
 	if j3bConfig.Enabled {
 		var businessMode modelcheckauth.Mode = modelcheckauth.SQLite
 		if j3bConfig.StoreMode == "postgres" {
@@ -115,6 +120,25 @@ func main() {
 		}
 		if authErr := authenticator.CheckContract(context.Background()); authErr != nil {
 			fail(fmt.Errorf("verify J3b Gateway auth contract: %w", authErr))
+		}
+		retentionGate := sessionretention.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped}
+		retentionStore, retentionErr := sessionretention.New(businessConnection.DB, sessionretention.Mode(businessMode), "juhe_business", retentionGate)
+		if retentionErr != nil {
+			fail(fmt.Errorf("create J3b Gateway session retention owner: %w", retentionErr))
+		}
+		if retentionErr := retentionStore.CheckContract(context.Background()); retentionErr != nil {
+			fail(fmt.Errorf("verify J3b Gateway session retention contract: %w", retentionErr))
+		}
+		retentionInterval, retentionLimit, retentionConfigErr := loadSessionRetentionConfig(os.Getenv)
+		if retentionConfigErr != nil {
+			fail(fmt.Errorf("load J3b Gateway session retention config: %w", retentionConfigErr))
+		}
+		retentionEnabled = true
+		retentionComponent = supervisor.Component{
+			Name: "J3b session-retention-owner",
+			Run: func(runCtx context.Context) error {
+				return runSessionRetention(runCtx, retentionStore, retentionInterval, retentionLimit, func() { retentionRunning.Store(true) })
+			},
 		}
 		enforcement, enforcementErr := modelcheckowner.NewBusinessEnforcementApplier(businessConnection.DB, businessMode == modelcheckauth.Postgres)
 		if enforcementErr != nil {
@@ -280,6 +304,18 @@ func main() {
 	if j3bHostComponent.Run != nil {
 		components = append(components, j3bHostComponent)
 	}
+	if retentionEnabled {
+		baseRetentionComponent := retentionComponent
+		retentionComponent = supervisor.Component{
+			Name: baseRetentionComponent.Name,
+			Run: func(runCtx context.Context) error {
+				defer retentionRunning.Store(false)
+				return baseRetentionComponent.Run(runCtx)
+			},
+			Close: baseRetentionComponent.Close,
+		}
+		components = append(components, retentionComponent)
+	}
 	if operationConfig.Enabled {
 		components = append(components, supervisor.Component{
 			Name: "F4 operation-log-owner",
@@ -297,12 +333,12 @@ func main() {
 				http.NotFound(response, request)
 				return
 			}
-			ready := auditRunning.Load() && (!operationConfig.Enabled || operationRunning.Load()) && (j3bHostComponent.Run == nil || j3bRunning.Load())
+			ready := auditRunning.Load() && (!operationConfig.Enabled || operationRunning.Load()) && (j3bHostComponent.Run == nil || j3bRunning.Load()) && (!retentionEnabled || retentionRunning.Load())
 			response.Header().Set("Content-Type", "application/json")
 			if !ready {
 				response.WriteHeader(http.StatusServiceUnavailable)
 			}
-			_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load(), "j3bReady": j3bRunning.Load()})
+			_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load(), "j3bReady": j3bRunning.Load(), "sessionRetentionReady": retentionRunning.Load()})
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -432,6 +468,62 @@ func commaList(value string) []string {
 func envBool(name string) bool {
 	value := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
 	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func loadSessionRetentionConfig(getenv func(string) string) (time.Duration, int, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	interval := 15 * time.Minute
+	if raw := strings.TrimSpace(getenv("JUHE_AI_SESSION_RETENTION_INTERVAL")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			return 0, 0, fmt.Errorf("JUHE_AI_SESSION_RETENTION_INTERVAL must be a positive duration: %q", raw)
+		}
+		interval = parsed
+	}
+	// This is a transaction-size/recovery window, not a product throughput
+	// limit. Keep the default high; operators can raise it when the storage
+	// backend and transaction budget support larger cleanup batches.
+	limit := 10000
+	if raw := strings.TrimSpace(getenv("JUHE_AI_SESSION_RETENTION_BATCH_SIZE")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			return 0, 0, fmt.Errorf("JUHE_AI_SESSION_RETENTION_BATCH_SIZE must be a positive integer: %q", raw)
+		}
+		limit = parsed
+	}
+	return interval, limit, nil
+}
+
+func runSessionRetention(ctx context.Context, store *sessionretention.Store, interval time.Duration, limit int, markReady func()) error {
+	if store == nil || interval <= 0 || limit <= 0 {
+		return errors.New("session retention component configuration is invalid")
+	}
+	cleanup := func() error {
+		if _, err := store.Cleanup(ctx, sessionretention.CleanupInput{Limit: limit}); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := cleanup(); err != nil {
+		return err
+	}
+	if markReady != nil {
+		markReady()
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if err := cleanup(); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func fail(err error) {

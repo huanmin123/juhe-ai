@@ -24,11 +24,11 @@ type SQLiteForeignKeySpec struct {
 // new table, column, index, or foreign key. This is a contract identifier,
 // not a migration instruction; maintenance never creates missing objects at
 // runtime.
-const BusinessSQLiteSchemaVersion = "business-sqlite-gateway-v2"
+const BusinessSQLiteSchemaVersion = "business-sqlite-gateway-v3"
 
 var BusinessSQLiteSchema = map[string]SQLiteTableSpec{
 	"system_accounts":              {Columns: []string{"id", "username", "status", "password_hash", "last_login_at", "updated_at"}},
-	"system_sessions":              {Columns: []string{"id", "system_account_id", "token_hash", "expires_at", "last_seen_at"}, Indexes: []string{"idx_system_sessions_expires_at"}},
+	"system_sessions":              {Columns: []string{"id", "system_account_id", "token_hash", "expires_at", "created_at", "last_seen_at"}, Indexes: []string{"idx_system_sessions_expires_at"}, ForeignKeys: []SQLiteForeignKeySpec{{Columns: []string{"system_account_id"}, RefTable: "system_accounts", RefColumns: []string{"id"}, OnDelete: "CASCADE"}}},
 	"providers":                    {Columns: []string{"id", "code", "name", "enabled"}},
 	"provider_protocol_profiles":   {Columns: []string{"id", "provider_code", "protocol_code", "protocol_version", "base_url", "enabled"}},
 	"provider_model_catalog":       {Columns: []string{"id", "provider_code", "model", "status", "context_window_tokens", "max_input_tokens", "max_output_tokens"}, Indexes: []string{"idx_provider_model_catalog_lookup"}},

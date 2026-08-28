@@ -24,7 +24,7 @@ const baseConfig = {
   }
 }
 
-assert.equal(NODE_POSTGRES_SCHEMA_CONTRACT_VERSION, 94)
+assert.equal(NODE_POSTGRES_SCHEMA_CONTRACT_VERSION, 95)
 assert.equal(parsePostgresSchemaOwner('node'), 'node')
 assert.equal(parsePostgresSchemaOwner('goose'), 'goose')
 
@@ -35,7 +35,7 @@ assert.throws(
     missingIndexes: [],
     gooseLedgerPresent: false
   }),
-  /schema contract 94 不完整/
+  /schema contract 95 不完整/
 )
 assert.throws(
   () => validatePostgresNodeSchemaPreflight({

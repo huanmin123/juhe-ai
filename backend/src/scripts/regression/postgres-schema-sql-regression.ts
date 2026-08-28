@@ -345,6 +345,7 @@ assert.match(sql, /DROP INDEX IF EXISTS idx_usage_records_created_at/, 'PostgreS
 const schemaWithoutCurrentRuntimeUpgrades = sql
   .replace(/ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text;/g, '')
   .replace(/ALTER TABLE account_test_tasks ADD COLUMN IF NOT EXISTS queued_deadline_at timestamptz;/g, '')
+  .replace(/ALTER TABLE system_accounts ADD COLUMN IF NOT EXISTS ai_account_limit integer CHECK \(ai_account_limit BETWEEN 0 AND 1000000\);/g, '')
   .replace(/ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'finalized';/g, '')
   .replace(/ALTER TABLE audit_payload_refs ADD COLUMN IF NOT EXISTS drop_reason text;/g, '')
 assert.doesNotMatch(schemaWithoutCurrentRuntimeUpgrades, /\bALTER TABLE\b[\s\S]+\bADD COLUMN\b/i, 'PostgreSQL schema 不应包含截止线前的运行时补列语句')

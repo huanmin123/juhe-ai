@@ -1178,6 +1178,31 @@ try {
   assert.equal(redisJitterFailure.state.backoffAttempt, memoryJitterFailure.state.backoffAttempt)
   assert.equal(redisJitterFailure.state.retryAtMs, memoryJitterFailure.state.retryAtMs, 'Redis 与 memory 的长期 backoff jitter 必须逐毫秒一致')
   assert.equal(redisJitterFailure.state.incidentId, memoryJitterFailure.state.incidentId)
+
+  const confirmationUnknownState = {
+    ...jitterState,
+    phase: 'SUSPECT' as const,
+    lease: { kind: 'confirmation' as const, leaseId: 'redis-jitter-confirmation', leaseUntilMs: now + 1_000 }
+  }
+  await Promise.all([memoryJitter.restore(confirmationUnknownState, now), redisJitter.restore(confirmationUnknownState, now)])
+  const [memoryConfirmationUnknown, redisConfirmationUnknown] = await Promise.all([
+    memoryJitter.completeConfirmation({ scope: jitterScope, generation: 1, dispatchRevision: '1', transitionId: 'redis-jitter-confirmation-unknown', leaseId: 'redis-jitter-confirmation', outcome: 'unknown', nowMs: now }),
+    redisJitter.completeConfirmation({ scope: jitterScope, generation: 1, dispatchRevision: '1', transitionId: 'redis-jitter-confirmation-unknown', leaseId: 'redis-jitter-confirmation', outcome: 'unknown', nowMs: now })
+  ])
+  assert.equal(redisConfirmationUnknown.state.retryAtMs, memoryConfirmationUnknown.state.retryAtMs, 'Redis 与 memory 的 confirmation unknown 长退避必须逐毫秒一致')
+
+  const canaryUnknownState = {
+    ...jitterState,
+    phase: 'HALF_OPEN' as const,
+    halfOpenOrigin: 'OPEN' as const,
+    lease: { kind: 'half_open' as const, leaseId: 'redis-jitter-canary', leaseUntilMs: now + 1_000 }
+  }
+  await Promise.all([memoryJitter.restore(canaryUnknownState, now), redisJitter.restore(canaryUnknownState, now)])
+  const [memoryCanaryUnknown, redisCanaryUnknown] = await Promise.all([
+    memoryJitter.completeCanary({ scope: jitterScope, generation: 1, dispatchRevision: '1', transitionId: 'redis-jitter-canary-unknown', leaseId: 'redis-jitter-canary', outcome: 'unknown', nowMs: now }),
+    redisJitter.completeCanary({ scope: jitterScope, generation: 1, dispatchRevision: '1', transitionId: 'redis-jitter-canary-unknown', leaseId: 'redis-jitter-canary', outcome: 'unknown', nowMs: now })
+  ])
+  assert.equal(redisCanaryUnknown.state.retryAtMs, memoryCanaryUnknown.state.retryAtMs, 'Redis 与 memory 的 canary unknown 长退避必须逐毫秒一致')
   console.log('account-circuit-redis-smoke passed')
 } finally {
   try {

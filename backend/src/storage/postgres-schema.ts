@@ -76,6 +76,11 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   },
   {
     schemaName: 'juhe_business',
+    source: 'account-circuit-key-model-capability-index',
+    sql: "CREATE UNIQUE INDEX IF NOT EXISTS idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, capability_hash) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL"
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((name COLLATE "C"), id)'
   },

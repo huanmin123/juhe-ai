@@ -95,6 +95,44 @@ try {
   assert.deepEqual(incident.incident?.confirmationFailureEvidenceKeys, confirmationEvidenceKeys)
   assert.deepEqual(incident.incident?.childIncidentIds, childIncidentIds)
 
+  const keyModelScopeKey = `${scopeKey}:key_model`
+  const keyModelHash = 'c'.repeat(64)
+  const keyModel = await compareAndSetAccountCircuitIncidentInClient(client, {
+    accountId: marker,
+    accountRuntimeKey,
+    circuitScopeKey: keyModelScopeKey,
+    scopeKind: 'key_model',
+    keyFingerprint: 'a'.repeat(64),
+    clientModel: 'gpt-5.6-sol',
+    capabilityHash: keyModelHash,
+    credentialSourceAccountId: `${marker}:source`,
+    clientEndpointFamily: 'responses',
+    finalUpstreamModel: 'gpt-5.6-sol',
+    upstreamEndpointMode: 'responses_sse',
+    incidentId: `${marker}:key-model-incident`,
+    state: 'OPEN',
+    failureScope: 'key_model',
+    generation: 1,
+    dispatchRevision: 2,
+    expectedLedgerRevision: null,
+    transitionId: `${marker}:key-model-incident`,
+    openUntilMs: now + 3_000,
+    nextTransitionAtMs: now + 3_000,
+    lastFailureClass: 'timeout_before_complete',
+    consecutiveFailures: 1,
+    confirmationFailuresRequired: 1,
+    confirmationFailureEvidenceKeys: [],
+    nowMs: now
+  })
+  assert.equal(keyModel.status, 'applied')
+  assert.equal(keyModel.incident?.scopeKind, 'key_model')
+  assert.equal(keyModel.incident?.capabilityHash, keyModelHash)
+  assert.equal(keyModel.incident?.clientModel, 'gpt-5.6-sol')
+  assert.equal(keyModel.incident?.credentialSourceAccountId, `${marker}:source`)
+  assert.equal(keyModel.incident?.clientEndpointFamily, 'responses')
+  assert.equal(keyModel.incident?.finalUpstreamModel, 'gpt-5.6-sol')
+  assert.equal(keyModel.incident?.upstreamEndpointMode, 'responses_sse')
+
   const delayedOlderGeneration = await compareAndSetAccountCircuitIncidentInClient(client, {
     accountId: marker,
     accountRuntimeKey,
@@ -118,7 +156,7 @@ try {
 
   const rebuild = await listAccountCircuitIncidentsForRebuildInClient(client, {
     nowMs: now,
-    limit: 20
+    limit: 500
   })
   const rebuiltIncident = rebuild.items.find((item) => item.circuitScopeKey === scopeKey)
   assert.equal(rebuiltIncident?.confirmationFailuresRequired, 2)
@@ -127,21 +165,14 @@ try {
   assert.deepEqual(rebuiltIncident?.childIncidentIds, childIncidentIds)
 
   const constraints = await pool.query(`
-    SELECT conname, pg_get_constraintdef(oid) AS definition
+    SELECT pg_get_constraintdef(oid) AS definition
     FROM pg_constraint
     WHERE conrelid = 'juhe_business.account_circuit_incidents'::regclass
-      AND conname IN (
-        'account_circuit_confirmation_failures_required_check',
-        'account_circuit_confirmation_failure_count_check',
-        'account_circuit_confirmation_evidence_json_check'
-      )
   `)
-  assert.equal(constraints.rows.length, 3, 'PG smoke 必须加载确认阈值、计数和 JSON evidence 三个约束')
-  assert.match(
-    String((constraints.rows.find((row) => row.conname === 'account_circuit_confirmation_evidence_json_check') as { definition?: string } | undefined)?.definition),
-    /jsonb_array_length[\s\S]*confirmation_failures_required/i,
-    'PG evidence 约束必须使用 jsonb_array_length 并限制 N+1'
-  )
+  const definitions = constraints.rows.map((row) => String((row as { definition?: string }).definition ?? ''))
+  assert.ok(definitions.some((definition) => /confirmation_failures_required\s+>=\s+1[\s\S]+confirmation_failures_required\s+<=\s+5/i.test(definition)), 'PG smoke 必须加载确认阈值约束')
+  assert.ok(definitions.some((definition) => /consecutive_failures\s*<=\s*confirmation_failures_required/i.test(definition)), 'PG smoke 必须加载确认计数约束')
+  assert.ok(definitions.some((definition) => /jsonb_array_length[\s\S]*confirmation_failures_required/i.test(definition)), 'PG evidence 约束必须使用 jsonb_array_length 并限制 N+1')
 
   const claims = await claimAccountCircuitOutboxInClient(client, {
     ownerId: `${marker}:projector`,
@@ -149,7 +180,9 @@ try {
     leaseMs: 5_000,
     limit: 20
   })
-  assert.equal(claims.length, 2, 'PG smoke 应 claim revision 与 incident 两条 outbox')
+  assert.ok(claims.length >= 2, 'PG smoke 应 claim 当前 fixture 的 revision 与 incident outbox')
+  assert.ok(claims.some((item) => item.accountId === marker && item.eventType === 'dispatch_revision_changed'), 'PG smoke 必须 claim 当前 fixture revision outbox')
+  assert.ok(claims.some((item) => item.accountId === marker && item.eventType === 'incident_changed'), 'PG smoke 必须 claim 当前 fixture incident outbox')
   for (const item of claims) {
     assert.equal(await acknowledgeAccountCircuitOutboxInClient(client, {
       eventId: item.eventId,

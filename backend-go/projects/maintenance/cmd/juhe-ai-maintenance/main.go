@@ -38,6 +38,7 @@ func main() {
 	businessSQLitePath := flag.String("business-sqlite-path", "", "Business SQLite path for handoff preflight (or JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH)")
 	j3bSQLitePath := flag.String("j3b-sqlite-path", "", "dedicated J3b SQLite path for handoff preflight (or JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH)")
 	nodeActivePathCheck := flag.Bool("scan-node-j3b-active-path", false, "read-only scan Node J3b routes, workers and writers")
+	j3cReadOnlyCheck := flag.Bool("verify-j3c-readonly-boundary", false, "read-only audit the J3b-to-J3c health reader boundary")
 	flag.Parse()
 	if *version {
 		fmt.Printf("juhe-ai-maintenance project=%s contract=%s\n", contracts.ProjectMaintenance, contracts.ArchitectureVersion)
@@ -71,6 +72,10 @@ func main() {
 		runNodeJ3bActivePathCheck()
 		return
 	}
+	if *j3cReadOnlyCheck {
+		runJ3cReadOnlyBoundaryCheck()
+		return
+	}
 	if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
 		if *j3Check && *j3Apply {
 			fmt.Fprintln(os.Stderr, "J3a PostgreSQL bootstrap flags are mutually exclusive")
@@ -82,6 +87,10 @@ func main() {
 		}
 		if *j3bSQLiteCheck && *j3bSQLiteApply {
 			fmt.Fprintln(os.Stderr, "J3b SQLite bootstrap flags are mutually exclusive")
+			os.Exit(2)
+		}
+		if *j3bBackfill && *j3bReadback {
+			fmt.Fprintln(os.Stderr, "J3b SQLite backfill and readback flags are mutually exclusive")
 			os.Exit(2)
 		}
 		if *j3bSQLiteCheck || *j3bSQLiteApply {
@@ -105,6 +114,22 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
 	os.Exit(2)
+}
+
+func runJ3cReadOnlyBoundaryCheck() {
+	root := resolveRepositoryRoot()
+	report, err := ownermanifest.VerifyJ3cReadOnlyBoundary(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "J3c read-only boundary verification failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode J3c read-only boundary report: %v\n", err)
+		os.Exit(1)
+	}
+	if !report.ReadOnlyAuditReady || !report.J3cOwnerReady {
+		os.Exit(3)
+	}
 }
 
 func runGatewayRouteOwnerManifestCheck() {
@@ -301,6 +326,10 @@ func runJ3bModelCheckSQLiteBackfill(nodeStopped, goStopped, backupConfirmed bool
 	statsPath := strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH"))
 	if targetPath == "" || datasetPath == "" || statsPath == "" {
 		fmt.Fprintln(os.Stderr, "J3b SQLite backfill requires JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH, JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH and JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH")
+		os.Exit(2)
+	}
+	if err := j3bmodelcheck.ValidateSQLiteBackfillPaths(targetPath, datasetPath, statsPath); err != nil {
+		fmt.Fprintf(os.Stderr, "J3b SQLite backfill path isolation failed: %v\n", err)
 		os.Exit(2)
 	}
 	target, err := j3bmodelcheck.OpenSQLite(targetPath)

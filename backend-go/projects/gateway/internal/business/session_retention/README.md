@@ -10,6 +10,6 @@
 - 删除条件是严格 `expires_at < expiredBefore`；等于 cutoff 的行不删。
 - 返回提交事务实际 `RowsAffected`；重复执行只删除剩余候选，天然可重放。
 
-所有写操作要求 `OwnerGate{Confirmed, SchemaReady, NodeWriterStopped}` 三项完整。该原语不调用 `businessauth`，不接入 HTTP/main，不调用 Node、IPC、队列或外部服务，也不创建 schema。`CheckContract` 仅验证既有关系是否可读。
+所有写操作要求 `OwnerGate{Confirmed, SchemaReady, NodeWriterStopped}` 三项完整。该原语不调用 `businessauth`，不调用 Node、IPC、队列或外部服务，也不创建 schema。Gateway main 在同一 Business owner 连接上完成 `CheckContract` 后，以 supervisor component 周期调用该原语；组件失败会使 Gateway retention readiness 变为 false 并进入受控重试。`CheckContract` 仅验证既有关系是否可读。
 
-`CoveredManifestOperations` 仅为覆盖证据，不更新迁移 manifest 状态。
+`CoveredManifestOperations` 仅为覆盖证据；能力 manifest 仍须同时满足 Node active-path-zero、隔离存储、回滚和发布证据，不能因该组件已装配而宣称切换完成。

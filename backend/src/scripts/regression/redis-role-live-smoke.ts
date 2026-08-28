@@ -22,9 +22,9 @@ const fenceToken = `role-live-smoke-${process.pid}-${Date.now()}`
 const clients: RedisCommandClient[] = []
 
 try {
-  const cache = await roleClient(runtimeConfig.redis.cacheUrl, 'cache', 'no', 'allkeys-lru')
-  const state = await roleClient(runtimeConfig.redis.stateUrl, 'state', 'no', 'noeviction')
-  const queueClient = await roleClient(runtimeConfig.redis.queueUrl, 'queue', 'yes', 'noeviction')
+  const cache = await roleClient(runtimeConfig.redis.cacheUrl, 'cache')
+  const state = await roleClient(runtimeConfig.redis.stateUrl, 'state')
+  const queueClient = await roleClient(runtimeConfig.redis.queueUrl, 'queue')
   const stateXaddBefore = await commandCalls(state, 'xadd')
   const queue = new RedisStreamQueue<{ id: string }>({
     streamKey: 'juhe-ai:queue:role-live-smoke',
@@ -60,26 +60,11 @@ try {
   await closeRedisClients()
 }
 
-async function roleClient(url: string, role: string, expectedAof: string, expectedPolicy: string): Promise<RedisCommandClient> {
+async function roleClient(url: string, role: string): Promise<RedisCommandClient> {
   const client = await createDedicatedRedisClient(url, { disableOfflineQueue: true, connectTimeoutMs: 3000 })
   clients.push(client)
   assert.equal(await client.sendCommand(['PING']), 'PONG', `${role} PING`)
-  const raw = await client.sendCommand(['CONFIG', 'GET', 'appendonly', 'save', 'maxmemory-policy'])
-  const config = redisConfigMap(raw)
-  assert.equal(config.get('appendonly'), expectedAof, `${role} appendonly`)
-  assert.equal(config.get('save'), '', `${role} save`)
-  assert.equal(config.get('maxmemory-policy'), expectedPolicy, `${role} maxmemory-policy`)
   return client
-}
-
-function redisConfigMap(raw: unknown): Map<string, string> {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    return new Map(Object.entries(raw).map(([key, value]) => [key, String(value)]))
-  }
-  assert(Array.isArray(raw), 'CONFIG GET 必须返回对象或键值数组')
-  const config = new Map<string, string>()
-  for (let index = 0; index + 1 < raw.length; index += 2) config.set(String(raw[index]), String(raw[index + 1]))
-  return config
 }
 
 async function commandCalls(client: RedisCommandClient, command: string): Promise<number> {

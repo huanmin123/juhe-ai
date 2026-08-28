@@ -114,12 +114,16 @@ func RunSQLite(ctx context.Context, db *sql.DB, apply bool) (SQLiteReport, error
 }
 
 type SQLiteReport struct {
-	MissingTables  []string `json:"missingTables"`
-	MissingColumns []string `json:"missingColumns"`
-	Applied        bool     `json:"applied"`
+	MissingTables      []string `json:"missingTables"`
+	MissingColumns     []string `json:"missingColumns"`
+	InvalidPrimaryKeys []string `json:"invalidPrimaryKeys"`
+	MissingIndexes     []string `json:"missingIndexes"`
+	Applied            bool     `json:"applied"`
 }
 
-func (r SQLiteReport) Ready() bool { return len(r.MissingTables) == 0 && len(r.MissingColumns) == 0 }
+func (r SQLiteReport) Ready() bool {
+	return len(r.MissingTables) == 0 && len(r.MissingColumns) == 0 && len(r.InvalidPrimaryKeys) == 0 && len(r.MissingIndexes) == 0
+}
 
 func inspectSQLite(ctx context.Context, db *sql.DB) (SQLiteReport, error) {
 	report := SQLiteReport{}
@@ -158,10 +162,83 @@ func inspectSQLite(ctx context.Context, db *sql.DB) (SQLiteReport, error) {
 				report.MissingColumns = append(report.MissingColumns, table+"."+column)
 			}
 		}
+		primaryKeys, err := sqlitePrimaryKeysDB(ctx, db, table)
+		if err != nil {
+			return SQLiteReport{}, err
+		}
+		if expected, ok := sqliteRequiredPrimaryKeys[table]; ok && !sameStringSlice(primaryKeys, expected) {
+			report.InvalidPrimaryKeys = append(report.InvalidPrimaryKeys, table)
+		}
 	}
 	sort.Strings(report.MissingTables)
 	sort.Strings(report.MissingColumns)
+	sort.Strings(report.InvalidPrimaryKeys)
+	for table, indexes := range sqliteRequiredIndexes {
+		found, err := sqliteIndexes(ctx, db, table)
+		if err != nil {
+			return SQLiteReport{}, err
+		}
+		for _, index := range indexes {
+			if !found[index] {
+				report.MissingIndexes = append(report.MissingIndexes, index)
+			}
+		}
+	}
+	sort.Strings(report.MissingIndexes)
 	return report, nil
+}
+
+var sqliteRequiredPrimaryKeys = map[string][]string{
+	"model_check_input_versions":              {"identity_key"},
+	"model_check_inputs":                      {"input_id"},
+	"model_check_execution_claims":            {"input_id"},
+	"model_check_outcomes":                    {"outcome_id"},
+	"model_check_runs":                        {"id"},
+	"model_check_items":                       {"id"},
+	"model_check_observations":                {"id"},
+	"account_quality_health_hourly":           {"account_id", "stat_hour"},
+	"model_check_scheduler_tasks":             {"id"},
+	"model_token_intercept_baseline_versions": {"cohort_key_hmac", "requested_model", "tokenizer_version", "probe_set_version", "baseline_version"},
+}
+
+var sqliteRequiredIndexes = map[string][]string{
+	"model_check_scheduler_tasks":             {"idx_model_check_scheduler_tasks_due"},
+	"model_check_runs":                        {"idx_model_check_runs_quality_health_sync_retry"},
+	"model_token_intercept_baseline_versions": {"idx_model_token_intercept_baseline_active"},
+}
+
+func sqliteIndexes(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA index_list("+quoteIdent(table)+")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	indexes := map[string]bool{}
+	for rows.Next() {
+		var seq, unique, partial int
+		var origin string
+		var name string
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return nil, err
+		}
+		indexes[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return indexes, nil
+}
+
+func sameStringSlice(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 var sqliteRequiredColumns = map[string][]string{

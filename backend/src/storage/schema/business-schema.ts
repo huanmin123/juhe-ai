@@ -474,17 +474,23 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       circuit_scope_key TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
       account_runtime_key TEXT NOT NULL,
-      scope_kind TEXT NOT NULL CHECK (scope_kind IN ('account', 'key', 'protocol_model')),
+      scope_kind TEXT NOT NULL CHECK (scope_kind IN ('account', 'key', 'protocol_model', 'key_model')),
       key_fingerprint TEXT,
       protocol_code TEXT,
       request_lane TEXT,
       model_family TEXT,
+      client_model TEXT,
+      capability_hash TEXT,
+      credential_source_account_id TEXT,
+      client_endpoint_family TEXT,
+      final_upstream_model TEXT,
+      upstream_endpoint_mode TEXT,
       incident_id TEXT NOT NULL,
       parent_incident_id TEXT,
       child_incident_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(child_incident_ids_json) AND json_type(child_incident_ids_json) = 'array'),
       caused_by_terminal_outcome_id TEXT,
       state TEXT NOT NULL CHECK (state IN ('CLOSED', 'SUSPECT', 'OPEN', 'HALF_OPEN', 'RECOVERING', 'PERSISTING', 'SHADOWED_BY_PERSISTENT')),
-      failure_scope TEXT CHECK (failure_scope IN ('account', 'key', 'protocol_model')),
+      failure_scope TEXT CHECK (failure_scope IN ('account', 'key', 'protocol_model', 'key_model')),
       generation INTEGER NOT NULL CHECK (generation >= 0),
       dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
       ledger_revision INTEGER NOT NULL CHECK (ledger_revision >= 1),
@@ -516,9 +522,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       CHECK (length(transition_id) BETWEEN 1 AND 256),
       CHECK (consecutive_failures <= confirmation_failures_required),
       CHECK (json_array_length(confirmation_failure_evidence_keys_json) <= confirmation_failures_required + 1),
-      CHECK ((scope_kind = 'account' AND key_fingerprint IS NULL AND protocol_code IS NULL AND request_lane IS NULL AND model_family IS NULL)
-        OR (scope_kind = 'key' AND key_fingerprint IS NOT NULL AND protocol_code IS NULL AND request_lane IS NULL AND model_family IS NULL)
-        OR (scope_kind = 'protocol_model' AND key_fingerprint IS NULL AND protocol_code IS NOT NULL AND request_lane IS NOT NULL AND model_family IS NOT NULL)),
+      CHECK ((scope_kind = 'account' AND key_fingerprint IS NULL AND protocol_code IS NULL AND request_lane IS NULL AND model_family IS NULL AND client_model IS NULL AND capability_hash IS NULL AND credential_source_account_id IS NULL AND client_endpoint_family IS NULL AND final_upstream_model IS NULL AND upstream_endpoint_mode IS NULL)
+        OR (scope_kind = 'key' AND key_fingerprint IS NOT NULL AND protocol_code IS NULL AND request_lane IS NULL AND model_family IS NULL AND client_model IS NULL AND capability_hash IS NULL AND credential_source_account_id IS NULL AND client_endpoint_family IS NULL AND final_upstream_model IS NULL AND upstream_endpoint_mode IS NULL)
+        OR (scope_kind = 'protocol_model' AND key_fingerprint IS NULL AND protocol_code IS NOT NULL AND request_lane IS NOT NULL AND model_family IS NOT NULL AND client_model IS NULL AND capability_hash IS NULL AND credential_source_account_id IS NULL AND client_endpoint_family IS NULL AND final_upstream_model IS NULL AND upstream_endpoint_mode IS NULL)
+        OR (scope_kind = 'key_model' AND key_fingerprint IS NOT NULL AND capability_hash IS NOT NULL AND client_model IS NOT NULL AND credential_source_account_id IS NOT NULL AND client_endpoint_family IS NOT NULL AND final_upstream_model IS NOT NULL AND upstream_endpoint_mode IS NOT NULL AND protocol_code IS NULL AND request_lane IS NULL AND model_family IS NULL)),
       CHECK ((state = 'CLOSED' AND retained_until_ms IS NOT NULL) OR (state <> 'CLOSED' AND retained_until_ms IS NULL))
     );
 
@@ -1695,6 +1702,22 @@ function ensureAccountCircuitControlPlaneSchema(database: DatabaseSync): void {
           AND json_type(confirmation_failure_evidence_keys_json) = 'array')
     `)
   }
+
+  for (const column of [
+    'client_model',
+    'capability_hash',
+    'credential_source_account_id',
+    'client_endpoint_family',
+    'final_upstream_model',
+    'upstream_endpoint_mode'
+  ]) {
+    if (!columnNames.has(column)) database.exec(`ALTER TABLE account_circuit_incidents ADD COLUMN ${column} TEXT`)
+  }
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_circuit_incidents_key_model_capability
+      ON account_circuit_incidents(scope_kind, capability_hash)
+      WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL
+  `)
 }
 
 function ensureAccountHealthCheckEndpointModeSchema(database: DatabaseSync): void {

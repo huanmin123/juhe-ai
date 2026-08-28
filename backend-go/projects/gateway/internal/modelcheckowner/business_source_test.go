@@ -201,6 +201,13 @@ func TestOpenBusinessTargetConnectionAllowsWritesOnlyAfterHandoff(t *testing.T) 
 	if stats.MaxOpenConnections != 1 {
 		t.Fatalf("SQLite Business owner must use one connection, stats=%+v", stats)
 	}
+	var foreignKeys int
+	if err := connection.DB.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("SQLite Business owner must enable foreign-key enforcement: %d", foreignKeys)
+	}
 }
 
 func TestOpenBusinessTargetConnectionRejectsActiveNodeWriterAfterHandoff(t *testing.T) {

@@ -13,7 +13,7 @@ import {
  * create tables, update goose_db_version, or infer a Goose history from an
  * already-populated Node database.
  */
-export const NODE_POSTGRES_SCHEMA_CONTRACT_VERSION = 94
+export const NODE_POSTGRES_SCHEMA_CONTRACT_VERSION = 95
 
 export const POSTGRES_NODE_SCHEMA_PREFLIGHT_QUERY = `
 SELECT
@@ -53,6 +53,19 @@ SELECT
       INNER JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
       INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'juhe_business'
+        AND c.relname = 'account_circuit_incidents'
+        AND a.attname IN ('client_model', 'capability_hash', 'credential_source_account_id', 'client_endpoint_family', 'final_upstream_model', 'upstream_endpoint_mode')
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+      GROUP BY c.oid
+      HAVING COUNT(*) = 6
+    ) THEN 'juhe_business.account_circuit_incidents.key_model_columns' END,
+    CASE WHEN NOT EXISTS (
+      SELECT 1
+      FROM pg_catalog.pg_attribute a
+      INNER JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'juhe_business'
         AND c.relname = 'account_test_tasks'
         AND a.attname = 'queued_deadline_at'
         AND a.attnum > 0
@@ -66,6 +79,12 @@ SELECT
       WHERE schemaname = 'juhe_business'
         AND indexname = 'idx_accounts_balance_auto_detect_due'
     ) THEN 'juhe_business.idx_accounts_balance_auto_detect_due' END
+    ,CASE WHEN NOT EXISTS (
+      SELECT 1
+      FROM pg_catalog.pg_indexes
+      WHERE schemaname = 'juhe_business'
+        AND indexname = 'idx_account_circuit_incidents_key_model_capability'
+    ) THEN 'juhe_business.idx_account_circuit_incidents_key_model_capability' END
   ], NULL) AS missing_indexes,
   (to_regclass('public.goose_db_version') IS NOT NULL) AS goose_ledger_present
 `

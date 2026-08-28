@@ -750,15 +750,15 @@ local function passive_delay(base, seed)
   end
   window = math.min(window, math.floor(base / 2))
   if window <= 0 then return base end
-  local digest = redis.sha1hex(tostring(seed or '') .. ':' .. tostring(input['transitionId'] or '') .. ':' .. tostring(now_ms))
-  local sample = tonumber(string.sub(digest, 1, 8), 16) / 4294967295
-  local offset = math.floor(sample * (window * 2 + 1)) - window
+  local digest = redis.sha1hex(tostring(seed or ''))
+  local sample = tonumber(string.sub(digest, 1, 8), 16)
+  local offset = (sample % (window * 2 + 1)) - window
   if offset == 0 then offset = 1 end
   return math.max(1, base + offset)
 end
-local function jittered_backoff(base, attempt, generation)
+local function jittered_backoff(base, attempt, generation, suffix)
   if attempt < 5 then return base end
-  return passive_delay(base, scope_key .. ':' .. tostring(generation) .. ':' .. tostring(attempt))
+  return passive_delay(base, scope_key .. ':' .. tostring(generation) .. ':' .. tostring(attempt) .. (suffix or ''))
 end
 local function open(entry)
   local state = entry['state']
@@ -954,7 +954,7 @@ if operation == 'complete_confirmation' then
   state['transitionId'] = input['transitionId']
   state['backoffAttempt'] = attempt
   state['lease'] = nil
-  state['retryAtMs'] = now_ms + jittered_backoff(backoffs[index], attempt, tonumber(state['generation'] or 0))
+  state['retryAtMs'] = now_ms + jittered_backoff(backoffs[index], attempt, tonumber(state['generation'] or 0), ':confirmation-unknown')
   state['updatedAtMs'] = now_ms
   return apply(entry)
 end
@@ -991,7 +991,7 @@ if operation == 'complete_canary' then
     state['backoffAttempt'] = attempt
     state['lease'] = nil
     state['halfOpenOrigin'] = nil
-    state['retryAtMs'] = now_ms + jittered_backoff(backoffs[index], attempt, tonumber(state['generation'] or 0))
+    state['retryAtMs'] = now_ms + jittered_backoff(backoffs[index], attempt, tonumber(state['generation'] or 0), ':unknown')
     state['updatedAtMs'] = now_ms
     return apply(entry)
   end

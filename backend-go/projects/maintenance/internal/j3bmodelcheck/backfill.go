@@ -135,11 +135,31 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 			ready = false
 			continue
 		}
-		sourceRows, sourceDigest, err := sqliteTableEvidence(ctx, item.db, item.table)
+		sourceColumns, err := sqliteColumns(ctx, item.db, item.table)
 		if err != nil {
 			return BackfillVerificationReport{}, err
 		}
-		targetRows, targetDigest, err := sqliteTableEvidenceAgainstSource(ctx, target, item.db, item.table)
+		targetColumns, err := sqliteColumns(ctx, target, item.table)
+		if err != nil {
+			return BackfillVerificationReport{}, err
+		}
+		columns := intersectColumns(sourceColumns, targetColumns)
+		if len(columns) == 0 {
+			return BackfillVerificationReport{}, fmt.Errorf("J3b readback table %s has no common columns", item.table)
+		}
+		sourceDigest, err := sqliteTableDigestColumns(ctx, item.db, item.table, columns)
+		if err != nil {
+			return BackfillVerificationReport{}, err
+		}
+		targetDigest, err := sqliteTableDigestColumns(ctx, target, item.table, columns)
+		if err != nil {
+			return BackfillVerificationReport{}, err
+		}
+		sourceRows, err := tableRowCount(ctx, item.db, item.table)
+		if err != nil {
+			return BackfillVerificationReport{}, err
+		}
+		targetRows, err := tableRowCount(ctx, target, item.table)
 		if err != nil {
 			return BackfillVerificationReport{}, err
 		}
@@ -162,6 +182,13 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath string) (BackfillReport, error) {
 	if target == nil || strings.TrimSpace(datasetPath) == "" || strings.TrimSpace(statsPath) == "" {
 		return BackfillReport{}, errors.New("J3b SQLite backfill requires target, dataset and stats paths")
+	}
+	targetPath, err := sqliteDatabasePath(ctx, target)
+	if err != nil {
+		return BackfillReport{}, fmt.Errorf("resolve J3b SQLite backfill target path: %w", err)
+	}
+	if err := ValidateSQLiteBackfillPaths(targetPath, datasetPath, statsPath); err != nil {
+		return BackfillReport{}, err
 	}
 	dataset, err := openReadOnlySQLite(datasetPath)
 	if err != nil {
@@ -231,7 +258,27 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		return BackfillReport{}, fmt.Errorf("commit J3b SQLite backfill: %w", err)
 	}
 	for table := range report.TargetRows {
-		digest, err := sqliteTableDigest(ctx, target, table)
+		if report.SourceRows[table] == 0 && report.SourceDigest[table] == "" {
+			continue
+		}
+		sourceColumns, err := sqliteColumns(ctx, dataset, table)
+		if err != nil {
+			if table == "account_quality_health_hourly" || table == "model_token_intercept_baseline_versions" {
+				sourceColumns, err = sqliteColumns(ctx, stats, table)
+			}
+		}
+		if err != nil {
+			return BackfillReport{}, fmt.Errorf("digest J3b source table %s: %w", table, err)
+		}
+		targetColumns, err := sqliteColumns(ctx, target, table)
+		if err != nil {
+			return BackfillReport{}, fmt.Errorf("digest J3b target columns %s: %w", table, err)
+		}
+		columns := intersectColumns(sourceColumns, targetColumns)
+		if len(columns) == 0 {
+			return BackfillReport{}, fmt.Errorf("digest J3b target table %s has no common columns", table)
+		}
+		digest, err := sqliteTableDigestColumns(ctx, target, table, columns)
 		if err != nil {
 			return BackfillReport{}, fmt.Errorf("digest J3b target table %s: %w", table, err)
 		}
@@ -312,7 +359,7 @@ func sqliteTableDigestColumns(ctx context.Context, db *sql.DB, table string, col
 			return "", fmt.Errorf("table %s primary key %s is not in digest projection", table, key)
 		}
 	}
-	query := "SELECT " + joinQuoted(columns) + " FROM " + quoteIdent(table) + " ORDER BY " + joinQuoted(keys)
+	query := "SELECT " + joinQuoted(columns) + " FROM " + quoteIdent(table) + " ORDER BY " + joinQuotedInOrder(keys)
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return "", err
@@ -364,6 +411,69 @@ func distinctSQLitePaths(paths ...string) (bool, error) {
 	return true, nil
 }
 
+// ValidateSQLiteBackfillPaths performs the write-side three-file isolation
+// check. The target may not exist yet (OpenSQLite creates it), while both
+// legacy source files must already exist as regular files.
+func ValidateSQLiteBackfillPaths(targetPath, datasetPath, statsPath string) error {
+	targetPath = strings.TrimSpace(targetPath)
+	datasetPath = strings.TrimSpace(datasetPath)
+	statsPath = strings.TrimSpace(statsPath)
+	if targetPath == "" || datasetPath == "" || statsPath == "" {
+		return errors.New("J3b SQLite backfill requires target, dataset and stats paths")
+	}
+	paths := []string{targetPath, datasetPath, statsPath}
+	abs := make([]string, len(paths))
+	for i, path := range paths {
+		resolved, err := filepath.Abs(path)
+		if err != nil {
+			return fmt.Errorf("resolve J3b SQLite path %s: %w", path, err)
+		}
+		abs[i] = resolved
+	}
+	infos := make([]os.FileInfo, len(paths))
+	for i := 1; i < len(paths); i++ {
+		info, err := os.Stat(abs[i])
+		if err != nil {
+			return fmt.Errorf("stat J3b SQLite source path %s: %w", abs[i], err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("J3b SQLite source path %s is not a regular file", abs[i])
+		}
+		infos[i] = info
+	}
+	if info, err := os.Stat(abs[0]); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("J3b SQLite target path %s is not a regular file", abs[0])
+		}
+		infos[0] = info
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat J3b SQLite target path %s: %w", abs[0], err)
+	}
+	for i := range abs {
+		for j := i + 1; j < len(abs); j++ {
+			if abs[i] == abs[j] {
+				return fmt.Errorf("J3b SQLite backfill paths must be distinct: %s", abs[i])
+			}
+			if infos[i] != nil && infos[j] != nil && os.SameFile(infos[i], infos[j]) {
+				return fmt.Errorf("J3b SQLite backfill paths share a physical file: %s and %s", abs[i], abs[j])
+			}
+		}
+	}
+	return nil
+}
+
+func sqliteDatabasePath(ctx context.Context, db *sql.DB) (string, error) {
+	var file string
+	if err := db.QueryRowContext(ctx, "PRAGMA database_list").Scan(new(int), new(string), &file); err != nil {
+		return "", err
+	}
+	file = strings.TrimSpace(file)
+	if file == "" || file == ":memory:" {
+		return "", errors.New("target SQLite connection is not backed by a regular file")
+	}
+	return file, nil
+}
+
 func openReadOnlySQLite(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", "file:"+strings.TrimSpace(path)+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -400,20 +510,6 @@ func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table stri
 		return copyStats{}, fmt.Errorf("J3b backfill table %s has no compatible columns", table)
 	}
 	sort.Strings(columns)
-	rows, err := source.QueryContext(ctx, "SELECT "+joinQuoted(columns)+" FROM "+quoteIdent(table))
-	if err != nil {
-		return copyStats{}, fmt.Errorf("read legacy J3b table %s: %w", table, err)
-	}
-	defer rows.Close()
-	placeholders := make([]string, len(columns))
-	for i := range placeholders {
-		placeholders[i] = "?"
-	}
-	stmt, err := tx.PrepareContext(ctx, "INSERT OR IGNORE INTO "+quoteIdent(table)+" ("+joinQuoted(columns)+") VALUES ("+strings.Join(placeholders, ",")+")")
-	if err != nil {
-		return copyStats{}, fmt.Errorf("prepare J3b backfill table %s: %w", table, err)
-	}
-	defer stmt.Close()
 	primaryKeys, err := sqlitePrimaryKeys(ctx, tx, table)
 	if err != nil || len(primaryKeys) == 0 {
 		return copyStats{}, fmt.Errorf("J3b backfill table %s has no primary key: %w", table, err)
@@ -427,6 +523,20 @@ func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table stri
 			return copyStats{}, fmt.Errorf("J3b backfill table %s primary key %s is not copyable", table, key)
 		}
 	}
+	rows, err := source.QueryContext(ctx, "SELECT "+joinQuoted(columns)+" FROM "+quoteIdent(table)+" ORDER BY "+joinQuotedInOrder(primaryKeys))
+	if err != nil {
+		return copyStats{}, fmt.Errorf("read legacy J3b table %s: %w", table, err)
+	}
+	defer rows.Close()
+	placeholders := make([]string, len(columns))
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+	stmt, err := tx.PrepareContext(ctx, "INSERT OR IGNORE INTO "+quoteIdent(table)+" ("+joinQuoted(columns)+") VALUES ("+strings.Join(placeholders, ",")+")")
+	if err != nil {
+		return copyStats{}, fmt.Errorf("prepare J3b backfill table %s: %w", table, err)
+	}
+	defer stmt.Close()
 	var stats copyStats
 	digest := sha256.New()
 	for rows.Next() {
@@ -485,7 +595,7 @@ func sqliteTableDigest(ctx context.Context, db *sql.DB, table string) (string, e
 	if err != nil || len(keys) == 0 {
 		return "", fmt.Errorf("table %s has no primary key: %w", table, err)
 	}
-	query := "SELECT " + joinQuoted(columns) + " FROM " + quoteIdent(table) + " ORDER BY " + joinQuoted(keys)
+	query := "SELECT " + joinQuoted(columns) + " FROM " + quoteIdent(table) + " ORDER BY " + joinQuotedInOrder(keys)
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return "", err
@@ -663,8 +773,16 @@ func quoteIdent(value string) string { return `"` + strings.ReplaceAll(value, `"
 func joinQuoted(values []string) string {
 	copied := append([]string(nil), values...)
 	sort.Strings(copied)
-	quoted := make([]string, len(copied))
-	for i, value := range copied {
+	return joinQuotedInOrder(copied)
+}
+
+// joinQuotedInOrder preserves declaration order. SELECT projections are
+// sorted for digest stability, while ORDER BY primary keys must retain the
+// composite-key sequence declared by SQLite; sorting key names can change
+// row ordering for a valid legacy schema.
+func joinQuotedInOrder(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
 		quoted[i] = quoteIdent(value)
 	}
 	return strings.Join(quoted, ",")

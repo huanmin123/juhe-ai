@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
@@ -40,6 +41,15 @@ func CheckBusinessSQLiteSchema(ctx context.Context, db *sql.DB) error {
 		for _, required := range spec.Indexes {
 			if !indexes[required] {
 				return fmt.Errorf("Business SQLite schema %s missing index %s", contracts.BusinessSQLiteSchemaVersion, required)
+			}
+		}
+		foreignKeys, err := sqliteSchemaForeignKeys(ctx, db, table)
+		if err != nil {
+			return err
+		}
+		for _, required := range spec.ForeignKeys {
+			if !foreignKeys[businessSQLiteForeignKeySignature(table, required)] {
+				return fmt.Errorf("Business SQLite schema %s missing foreign key %s", contracts.BusinessSQLiteSchemaVersion, businessSQLiteForeignKeySignature(table, required))
 			}
 		}
 	}
@@ -80,6 +90,59 @@ func sqliteSchemaColumns(ctx context.Context, db *sql.DB, table string) (map[str
 		columns[name] = true
 	}
 	return columns, rows.Err()
+}
+
+func sqliteSchemaForeignKeys(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA foreign_key_list("+quoteSQLiteIdentifier(table)+")")
+	if err != nil {
+		return nil, fmt.Errorf("inspect Business SQLite foreign keys for table %s: %w", table, err)
+	}
+	defer rows.Close()
+	type relation struct {
+		id       int
+		seq      int
+		table    string
+		from     string
+		to       string
+		onUpdate string
+		onDelete string
+	}
+	groups := map[int][]relation{}
+	for rows.Next() {
+		var item relation
+		var match string
+		if err := rows.Scan(&item.id, &item.seq, &item.table, &item.from, &item.to, &item.onUpdate, &item.onDelete, &match); err != nil {
+			return nil, fmt.Errorf("scan Business SQLite foreign keys for table %s: %w", table, err)
+		}
+		groups[item.id] = append(groups[item.id], item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	foreignKeys := map[string]bool{}
+	for _, group := range groups {
+		sort.Slice(group, func(i, j int) bool { return group[i].seq < group[j].seq })
+		fromColumns := make([]string, 0, len(group))
+		toColumns := make([]string, 0, len(group))
+		for _, item := range group {
+			fromColumns = append(fromColumns, item.from)
+			toColumns = append(toColumns, item.to)
+		}
+		foreignKeys[fmt.Sprintf("%s(%s)->%s(%s) onDelete=%s onUpdate=%s", table, strings.Join(fromColumns, ","), group[0].table, strings.Join(toColumns, ","), group[0].onDelete, group[0].onUpdate)] = true
+	}
+	return foreignKeys, nil
+}
+
+func businessSQLiteForeignKeySignature(table string, spec contracts.SQLiteForeignKeySpec) string {
+	onDelete := spec.OnDelete
+	if onDelete == "" {
+		onDelete = "NO ACTION"
+	}
+	onUpdate := spec.OnUpdate
+	if onUpdate == "" {
+		onUpdate = "NO ACTION"
+	}
+	return fmt.Sprintf("%s(%s)->%s(%s) onDelete=%s onUpdate=%s", table, strings.Join(spec.Columns, ","), spec.RefTable, strings.Join(spec.RefColumns, ","), onDelete, onUpdate)
 }
 
 func quoteSQLiteIdentifier(value string) string {

@@ -10,6 +10,16 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestQuotedColumnHelpersSeparateProjectionAndPrimaryKeyOrder(t *testing.T) {
+	primaryKeys := []string{"tenant_id", "account_id"}
+	if got, want := joinQuoted(primaryKeys), `"account_id","tenant_id"`; got != want {
+		t.Fatalf("digest projection should be canonicalized: got %q want %q", got, want)
+	}
+	if got, want := joinQuotedInOrder(primaryKeys), `"tenant_id","account_id"`; got != want {
+		t.Fatalf("primary-key order must preserve SQLite declaration: got %q want %q", got, want)
+	}
+}
+
 func TestJ3bSQLiteBootstrapCheckAndApply(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/j3b.db?mode=rwc")
 	if err != nil {
@@ -76,6 +86,38 @@ func TestJ3bSQLiteBootstrapUpgradesLegacyRunColumnsAtomically(t *testing.T) {
 	}
 	if scheduleID.Valid || traceID.Valid || probeSet.String != "openai-model-check-v1" || startedAt.String != "2026-08-27T00:00:00Z" {
 		t.Fatalf("legacy upgraded fields schedule=%+v probe=%+v started=%+v trace=%+v", scheduleID, probeSet, startedAt, traceID)
+	}
+}
+
+func TestJ3bSQLiteBootstrapReadinessRejectsPrimaryKeyAndIndexDrift(t *testing.T) {
+	db, err := OpenSQLite(t.TempDir() + "/j3b-structure.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := RunSQLite(context.Background(), db, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX idx_model_check_runs_quality_health_sync_retry`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE malformed_model_check_runs (id TEXT, created_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the required table with a structurally invalid relation while
+	// preserving its name; readiness must report both defects explicitly.
+	if _, err := db.Exec(`ALTER TABLE model_check_runs RENAME TO model_check_runs_valid`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE malformed_model_check_runs RENAME TO model_check_runs`); err != nil {
+		t.Fatal(err)
+	}
+	report, err := RunSQLite(context.Background(), db, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready() || len(report.InvalidPrimaryKeys) == 0 || len(report.MissingIndexes) == 0 {
+		t.Fatalf("structural drift must fail closed: %+v", report)
 	}
 }
 
@@ -179,6 +221,93 @@ func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	}
 }
 
+func TestJ3bSQLiteBackfillHandlesLegacyExtraColumnsAndMultipleRows(t *testing.T) {
+	root := t.TempDir()
+	targetPath, datasetPath, statsPath := root+"/target.db", root+"/dataset.db", root+"/stats.db"
+	target, err := OpenSQLite(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RunSQLite(context.Background(), target, true); err != nil {
+		target.Close()
+		t.Fatal(err)
+	}
+	if err := target.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dataset, err := OpenSQLite(datasetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RunSQLite(context.Background(), dataset, true); err != nil {
+		dataset.Close()
+		t.Fatal(err)
+	}
+	// This column exists only in a real legacy source and must not be required
+	// by the dedicated Go target schema or included in the digest projection.
+	if _, err := dataset.Exec(`ALTER TABLE model_check_runs ADD COLUMN legacy_node_extra TEXT`); err != nil {
+		dataset.Close()
+		t.Fatal(err)
+	}
+	insertRun := `INSERT INTO model_check_runs(id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,account_id,model,profile,trigger_kind,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,created_at,updated_at,legacy_node_extra) VALUES (` + strings.TrimSuffix(strings.Repeat("?,", 24), ",") + ")"
+	values := func(id string, score int, extra string) []any {
+		return []any{id, "sys", "actor", "openai", "account", "acct", "acct", "gpt-5.6", "quick", "manual", "completed", "success", score, 100, "ok", "{}", "{}", `{}`,
+			`{}`, "legacy-node-v1", "2026-08-27T10:00:00Z", "2026-08-27T10:00:00Z", "2026-08-27T10:00:00Z", extra}
+	}
+	// Insert in reverse order; the copier must impose primary-key order rather
+	// than depending on SQLite's incidental insertion order.
+	run2 := values("run-2", 80, "legacy-b")
+	if _, err := dataset.Exec(insertRun, run2...); err != nil {
+		dataset.Close()
+		t.Fatal(err)
+	}
+	run1 := values("run-1", 90, "legacy-a")
+	if _, err := dataset.Exec(insertRun, run1...); err != nil {
+		dataset.Close()
+		t.Fatal(err)
+	}
+	if err := dataset.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := OpenSQLite(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RunSQLite(context.Background(), stats, true); err != nil {
+		stats.Close()
+		t.Fatal(err)
+	}
+	if _, err := stats.Exec(`INSERT INTO account_quality_health_hourly(account_id,system_account_id,provider_code,stat_hour,observed_at,model_check_run_id,model,profile,score,threshold,level,updated_at) VALUES ('acct','sys','openai','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z','run-1','gpt-5.6','quick',90,70,'success','2026-08-27T10:00:00Z')`); err != nil {
+		stats.Close()
+		t.Fatal(err)
+	}
+	if _, err := stats.Exec(`INSERT INTO model_token_intercept_baseline_versions(cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version,version_status,evidence_status,independent_source_count,retained_source_count,excluded_source_count,q90_intercept,strong_gate_enabled,first_observed_at,last_observed_at,updated_at) VALUES ('hmac-sha256-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','gpt-5.6','o200k_base@1','probe-v1',1,'calibration_pending','stable',10,10,0,120,0,'2026-08-27T10:00:00Z','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z')`); err != nil {
+		stats.Close()
+		t.Fatal(err)
+	}
+	if err := stats.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target, err = OpenSQLite(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	report, err := BackfillSQLite(context.Background(), target, datasetPath, statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SourceRows["model_check_runs"] != 2 || report.InsertedRows["model_check_runs"] != 2 || report.TargetRows["model_check_runs"] != 2 {
+		t.Fatalf("legacy extra-column/multi-row report=%+v", report)
+	}
+	if report.SourceDigest["model_check_runs"] == "" || report.SourceDigest["model_check_runs"] != report.TargetDigest["model_check_runs"] {
+		t.Fatalf("common-column digest mismatch: %+v", report)
+	}
+	if readback, err := VerifySQLiteBackfill(context.Background(), targetPath, datasetPath, statsPath); err != nil || !readback.Ready || readback.Tables["model_check_runs"] != "match" {
+		t.Fatalf("legacy extra-column readback=%+v err=%v", readback, err)
+	}
+}
+
 func TestJ3bSQLiteBackfillReadbackDetectsDriftAndSharedPaths(t *testing.T) {
 	root := t.TempDir()
 	targetPath, datasetPath, statsPath := root+"/target.db", root+"/dataset.db", root+"/stats.db"
@@ -246,6 +375,40 @@ func TestJ3bSQLiteBackfillReadbackDetectsDriftAndSharedPaths(t *testing.T) {
 	}
 	if shared.Ready || shared.PathsDistinct {
 		t.Fatalf("shared paths must fail closed, report=%+v", shared)
+	}
+	sharedTarget, err := OpenSQLite(datasetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BackfillSQLite(context.Background(), sharedTarget, datasetPath, statsPath); err == nil {
+		sharedTarget.Close()
+		t.Fatal("backfill must reject a target that shares the dataset physical file")
+	}
+	if err := sharedTarget.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateSQLiteBackfillPathsAllowsNewTargetAndRejectsSharedSource(t *testing.T) {
+	root := t.TempDir()
+	datasetPath, statsPath := root+"/dataset.db", root+"/stats.db"
+	for _, path := range []string{datasetPath, statsPath} {
+		db, err := OpenSQLite(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RunSQLite(context.Background(), db, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ValidateSQLiteBackfillPaths(root+"/new-target.db", datasetPath, statsPath); err != nil {
+		t.Fatalf("new target should be allowed before OpenSQLite creates it: %v", err)
+	}
+	if err := ValidateSQLiteBackfillPaths(datasetPath, datasetPath, statsPath); err == nil {
+		t.Fatal("target and dataset must be rejected when they share a path")
 	}
 }
 

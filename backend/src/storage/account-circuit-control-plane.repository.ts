@@ -17,7 +17,7 @@ export type AccountCircuitIncidentState =
   | 'PERSISTING'
   | 'SHADOWED_BY_PERSISTENT'
 
-export type AccountCircuitScopeKind = 'account' | 'key' | 'protocol_model'
+export type AccountCircuitScopeKind = 'account' | 'key' | 'protocol_model' | 'key_model'
 export type AccountCircuitFailureClass =
   | 'connect_failed'
   | 'timeout_before_complete'
@@ -43,6 +43,12 @@ export interface AccountCircuitIncidentRecord {
   protocolCode?: string
   requestLane?: string
   modelFamily?: string
+  clientModel?: string
+  capabilityHash?: string
+  credentialSourceAccountId?: string
+  clientEndpointFamily?: string
+  finalUpstreamModel?: string
+  upstreamEndpointMode?: string
   incidentId: string
   parentIncidentId?: string
   childIncidentIds: string[]
@@ -124,6 +130,12 @@ export interface CompareAndSetAccountCircuitIncidentInput {
   protocolCode?: string
   requestLane?: string
   modelFamily?: string
+  clientModel?: string
+  capabilityHash?: string
+  credentialSourceAccountId?: string
+  clientEndpointFamily?: string
+  finalUpstreamModel?: string
+  upstreamEndpointMode?: string
   incidentId: string
   parentIncidentId?: string
   childIncidentIds?: string[]
@@ -191,6 +203,12 @@ interface AccountCircuitIncidentRow {
   protocol_code: string | null
   request_lane: string | null
   model_family: string | null
+  client_model: string | null
+  capability_hash: string | null
+  credential_source_account_id: string | null
+  client_endpoint_family: string | null
+  final_upstream_model: string | null
+  upstream_endpoint_mode: string | null
   incident_id: string
   parent_incident_id: string | null
   child_incident_ids_json: string
@@ -267,7 +285,9 @@ interface NormalizedIncidentMutation extends Omit<
 const businessSchemaName = 'juhe_business'
 const incidentColumnList = `
   circuit_scope_key, account_id, account_runtime_key, scope_kind, key_fingerprint,
-  protocol_code, request_lane, model_family, incident_id, parent_incident_id,
+  protocol_code, request_lane, model_family, client_model, capability_hash,
+  credential_source_account_id, client_endpoint_family, final_upstream_model,
+  upstream_endpoint_mode, incident_id, parent_incident_id,
   child_incident_ids_json, caused_by_terminal_outcome_id, state, failure_scope,
   generation, dispatch_revision, ledger_revision, projected_ledger_revision,
   transition_id, cooldown_observation_generation, open_until_ms, next_transition_at_ms,
@@ -916,6 +936,12 @@ async function upsertIncident(
     input.protocolCode ?? null,
     input.requestLane ?? null,
     input.modelFamily ?? null,
+    input.clientModel ?? null,
+    input.capabilityHash ?? null,
+    input.credentialSourceAccountId ?? null,
+    input.clientEndpointFamily ?? null,
+    input.finalUpstreamModel ?? null,
+    input.upstreamEndpointMode ?? null,
     input.incidentId,
     input.parentIncidentId ?? null,
     JSON.stringify(input.childIncidentIds),
@@ -959,6 +985,12 @@ async function upsertIncident(
       protocol_code = excluded.protocol_code,
       request_lane = excluded.request_lane,
       model_family = excluded.model_family,
+      client_model = excluded.client_model,
+      capability_hash = excluded.capability_hash,
+      credential_source_account_id = excluded.credential_source_account_id,
+      client_endpoint_family = excluded.client_endpoint_family,
+      final_upstream_model = excluded.final_upstream_model,
+      upstream_endpoint_mode = excluded.upstream_endpoint_mode,
       incident_id = excluded.incident_id,
       parent_incident_id = excluded.parent_incident_id,
       child_incident_ids_json = excluded.child_incident_ids_json,
@@ -1059,6 +1091,12 @@ function mapIncidentRow(row: AccountCircuitIncidentRow): AccountCircuitIncidentR
     ...(row.protocol_code ? { protocolCode: row.protocol_code } : {}),
     ...(row.request_lane ? { requestLane: row.request_lane } : {}),
     ...(row.model_family ? { modelFamily: row.model_family } : {}),
+    ...(row.client_model ? { clientModel: row.client_model } : {}),
+    ...(row.capability_hash ? { capabilityHash: row.capability_hash } : {}),
+    ...(row.credential_source_account_id ? { credentialSourceAccountId: row.credential_source_account_id } : {}),
+    ...(row.client_endpoint_family ? { clientEndpointFamily: row.client_endpoint_family } : {}),
+    ...(row.final_upstream_model ? { finalUpstreamModel: row.final_upstream_model } : {}),
+    ...(row.upstream_endpoint_mode ? { upstreamEndpointMode: row.upstream_endpoint_mode } : {}),
     incidentId: row.incident_id,
     ...(row.parent_incident_id ? { parentIncidentId: row.parent_incident_id } : {}),
     childIncidentIds: parseBoundedIdArray(row.child_incident_ids_json),
@@ -1144,7 +1182,24 @@ function normalizeIncidentMutation(input: CompareAndSetAccountCircuitIncidentInp
   const protocolCode = optionalText(input.protocolCode, 64, 'protocolCode')
   const requestLane = optionalText(input.requestLane, 64, 'requestLane')
   const modelFamily = optionalText(input.modelFamily, 256, 'modelFamily')
-  assertScopeShape(scopeKind, { keyFingerprint, protocolCode, requestLane, modelFamily })
+  const clientModel = optionalText(input.clientModel, 256, 'clientModel')
+  const capabilityHash = optionalText(input.capabilityHash, 128, 'capabilityHash')
+  const credentialSourceAccountId = optionalText(input.credentialSourceAccountId, 256, 'credentialSourceAccountId')
+  const clientEndpointFamily = optionalText(input.clientEndpointFamily, 128, 'clientEndpointFamily')
+  const finalUpstreamModel = optionalText(input.finalUpstreamModel, 256, 'finalUpstreamModel')
+  const upstreamEndpointMode = optionalText(input.upstreamEndpointMode, 128, 'upstreamEndpointMode')
+  assertScopeShape(scopeKind, {
+    keyFingerprint,
+    protocolCode,
+    requestLane,
+    modelFamily,
+    clientModel,
+    capabilityHash,
+    credentialSourceAccountId,
+    clientEndpointFamily,
+    finalUpstreamModel,
+    upstreamEndpointMode
+  })
   const retainedUntilMs = optionalNonNegativeInteger(input.retainedUntilMs, 'retainedUntilMs')
   if (state === 'CLOSED') {
     if (retainedUntilMs === undefined || retainedUntilMs < nowMs) {
@@ -1183,6 +1238,12 @@ function normalizeIncidentMutation(input: CompareAndSetAccountCircuitIncidentInp
     ...(protocolCode ? { protocolCode } : {}),
     ...(requestLane ? { requestLane } : {}),
     ...(modelFamily ? { modelFamily } : {}),
+    ...(clientModel ? { clientModel } : {}),
+    ...(capabilityHash ? { capabilityHash } : {}),
+    ...(credentialSourceAccountId ? { credentialSourceAccountId } : {}),
+    ...(clientEndpointFamily ? { clientEndpointFamily } : {}),
+    ...(finalUpstreamModel ? { finalUpstreamModel } : {}),
+    ...(upstreamEndpointMode ? { upstreamEndpointMode } : {}),
     incidentId: requiredText(input.incidentId, 256, 'incidentId'),
     ...optionalTextProperty('parentIncidentId', input.parentIncidentId, 256),
     childIncidentIds: boundedIdArray(input.childIncidentIds ?? []),
@@ -1259,11 +1320,33 @@ function parseConfirmationFailureEvidenceKeys(value: string, confirmationFailure
 
 function assertScopeShape(
   scopeKind: AccountCircuitScopeKind,
-  input: { keyFingerprint?: string; protocolCode?: string; requestLane?: string; modelFamily?: string }
+  input: {
+    keyFingerprint?: string
+    protocolCode?: string
+    requestLane?: string
+    modelFamily?: string
+    clientModel?: string
+    capabilityHash?: string
+    credentialSourceAccountId?: string
+    clientEndpointFamily?: string
+    finalUpstreamModel?: string
+    upstreamEndpointMode?: string
+  }
 ): void {
-  if (scopeKind === 'account' && !input.keyFingerprint && !input.protocolCode && !input.requestLane && !input.modelFamily) return
-  if (scopeKind === 'key' && input.keyFingerprint && !input.protocolCode && !input.requestLane && !input.modelFamily) return
-  if (scopeKind === 'protocol_model' && !input.keyFingerprint && input.protocolCode && input.requestLane && input.modelFamily) return
+  const hasKeyModelFields = input.clientModel && input.capabilityHash && input.credentialSourceAccountId
+    && input.clientEndpointFamily && input.finalUpstreamModel && input.upstreamEndpointMode
+  if (scopeKind === 'account'
+    && !input.keyFingerprint && !input.protocolCode && !input.requestLane && !input.modelFamily
+    && !input.clientModel && !input.capabilityHash && !input.credentialSourceAccountId
+    && !input.clientEndpointFamily && !input.finalUpstreamModel && !input.upstreamEndpointMode) return
+  if (scopeKind === 'key' && input.keyFingerprint && !input.protocolCode && !input.requestLane && !input.modelFamily
+    && !input.clientModel && !input.capabilityHash && !input.credentialSourceAccountId
+    && !input.clientEndpointFamily && !input.finalUpstreamModel && !input.upstreamEndpointMode) return
+  if (scopeKind === 'protocol_model' && !input.keyFingerprint && input.protocolCode && input.requestLane && input.modelFamily
+    && !input.clientModel && !input.capabilityHash && !input.credentialSourceAccountId
+    && !input.clientEndpointFamily && !input.finalUpstreamModel && !input.upstreamEndpointMode) return
+  if (scopeKind === 'key_model' && input.keyFingerprint && hasKeyModelFields
+    && !input.protocolCode && !input.requestLane && !input.modelFamily) return
   throw new Error(`账户 circuit ${scopeKind} 作用域字段组合无效`)
 }
 
@@ -1274,7 +1357,7 @@ function incidentState(value: string): AccountCircuitIncidentState {
 }
 
 function circuitScopeKind(value: string, name: string): AccountCircuitScopeKind {
-  if (value !== 'account' && value !== 'key' && value !== 'protocol_model') throw new Error(`${name} 无效：${value}`)
+  if (value !== 'account' && value !== 'key' && value !== 'protocol_model' && value !== 'key_model') throw new Error(`${name} 无效：${value}`)
   return value
 }
 

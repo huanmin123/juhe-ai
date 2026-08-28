@@ -728,6 +728,7 @@
     "postgres:init-schema-only": "tsx src/scripts/maintenance/init-postgres-schema.ts --schema-only",
     "postgres:print-schema": "tsx src/scripts/maintenance/init-postgres-schema.ts --print",
     "postgres:schema-preflight": "tsx src/scripts/maintenance/postgres-schema-preflight.ts",
+    "postgres:migrate-key-model": "tsx src/scripts/maintenance/migrate-account-circuit-key-model-postgres.ts",
     "ops:verify-business-preservation": "tsx src/scripts/operations/verify-business-data-preservation.ts",
     "test:settings-query-boundary": "tsx src/scripts/regression/settings-query-boundary-regression.ts",
     "test:usage-stats-lag-unavailable": "tsx src/scripts/regression/usage-stats-lag-unavailable-regression.ts",
