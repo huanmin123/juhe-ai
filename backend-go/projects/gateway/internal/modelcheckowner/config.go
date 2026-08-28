@@ -3,7 +3,9 @@ package modelcheckowner
 import (
 	"errors"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the Gateway-side owner contract for J3b. Loading it only validates
@@ -24,10 +26,14 @@ type Config struct {
 	// NodeWriterStopped is an explicit cutover fence. It must be true before
 	// Gateway can enable a confirmed Business handoff; otherwise a stale Node
 	// writer could race the new owner and silently corrupt Business state.
-	NodeWriterStopped   bool
-	SchemaReady         bool
-	RuntimeReady        bool
-	HealthBoundaryReady bool
+	NodeWriterStopped            bool
+	SchemaReady                  bool
+	RuntimeReady                 bool
+	HealthBoundaryReady          bool
+	CircuitRuntimeRedisURL       string
+	CircuitRuntimeRedisNamespace string
+	CircuitRuntimeCapacity       int
+	CircuitRuntimeRetention      time.Duration
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -99,6 +105,30 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg.RuntimeReady = trueValue(getenv("JUHE_AI_J3B_RUNTIME_READY"))
 	if !cfg.RuntimeReady {
 		return Config{}, errors.New("J3b runtime readiness 未确认，必须保持关闭")
+	}
+	cfg.CircuitRuntimeRedisURL = strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_URL"))
+	if cfg.CircuitRuntimeRedisURL == "" {
+		return Config{}, errors.New("J3b account circuit runtime 缺少 JUHE_AI_J3B_CIRCUIT_REDIS_URL")
+	}
+	cfg.CircuitRuntimeRedisNamespace = strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE"))
+	if cfg.CircuitRuntimeRedisNamespace == "" {
+		return Config{}, errors.New("J3b account circuit runtime 缺少 JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE")
+	}
+	cfg.CircuitRuntimeCapacity = 100000
+	if raw := strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_RUNTIME_CAPACITY")); raw != "" {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 1 || value > 10000000 {
+			return Config{}, errors.New("JUHE_AI_J3B_CIRCUIT_RUNTIME_CAPACITY 无效")
+		}
+		cfg.CircuitRuntimeCapacity = value
+	}
+	cfg.CircuitRuntimeRetention = 5 * time.Minute
+	if raw := strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_RUNTIME_RETENTION")); raw != "" {
+		value, parseErr := time.ParseDuration(raw)
+		if parseErr != nil || value <= 0 || value > 7*24*time.Hour {
+			return Config{}, errors.New("JUHE_AI_J3B_CIRCUIT_RUNTIME_RETENTION 无效")
+		}
+		cfg.CircuitRuntimeRetention = value
 	}
 	return cfg, nil
 }

@@ -62,9 +62,11 @@ func TestAcceptsOnlyWhenAllOwnerGatesAreExplicit(t *testing.T) {
 		"JUHE_AI_J3B_SCHEMA_READY":               "true",
 		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY":      "true",
 		"JUHE_AI_J3B_RUNTIME_READY":              "true",
+		"JUHE_AI_J3B_CIRCUIT_REDIS_URL":          "redis://127.0.0.1:6379/9",
+		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE":    "dev",
 	}
 	cfg, err := LoadConfig(func(key string) string { return values[key] })
-	if err != nil || !cfg.Enabled || !cfg.BusinessHandoffConfirmed || !cfg.NodeWriterStopped || !cfg.SchemaReady || !cfg.HealthBoundaryReady || !cfg.RuntimeReady {
+	if err != nil || !cfg.Enabled || !cfg.BusinessHandoffConfirmed || !cfg.NodeWriterStopped || !cfg.SchemaReady || !cfg.HealthBoundaryReady || !cfg.RuntimeReady || cfg.CircuitRuntimeCapacity != 100000 || cfg.CircuitRuntimeRetention <= 0 {
 		t.Fatalf("cfg=%+v err=%v", cfg, err)
 	}
 }

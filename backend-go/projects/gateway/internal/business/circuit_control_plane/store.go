@@ -60,6 +60,9 @@ type DispatchResult struct {
 type Incident struct {
 	CircuitScopeKey, AccountID, AccountRuntimeKey, ScopeKind string
 	KeyFingerprint, ProtocolCode, RequestLane, ModelFamily   *string
+	ClientModel, CapabilityHash                              *string
+	CredentialSourceAccountID, ClientEndpointFamily          *string
+	FinalUpstreamModel, UpstreamEndpointMode                 *string
 	IncidentID, ParentIncidentID, CausedByTerminalOutcomeID  *string
 	ChildIncidentIDs                                         []string
 	State, FailureScope                                      string
@@ -131,8 +134,10 @@ const defaultBusinessSchema = "juhe_business"
 const (
 	maxClaimLeaseMS = int64(60 * 60_000)
 	maxRetryDelayMS = int64(24 * 60 * 60_000)
-	maxBatchLimit   = 500
-	maxInt64        = int64(1<<63 - 1)
+	// This is a transaction/recovery window, never an artificial throughput or
+	// concurrency limit. Keep it far above the former Node event-loop batch cap.
+	maxBatchLimit = 100_000
+	maxInt64      = int64(1<<63 - 1)
 )
 
 var postgresIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -223,6 +228,27 @@ func (s *Store) CheckContract(ctx context.Context) error {
 			return fmt.Errorf("verify circuit contract %s: %w", contract.name, err)
 		}
 	}
+	if err := s.checkKeyModelCapabilityIndex(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) checkKeyModelCapabilityIndex(ctx context.Context) error {
+	const indexName = "idx_account_circuit_incidents_key_model_capability"
+	var exists bool
+	var err error
+	if s.mode == SQLite {
+		err = s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?)", indexName).Scan(&exists)
+	} else {
+		err = s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_indexes WHERE schemaname=? AND indexname=?)", s.schema, indexName).Scan(&exists)
+	}
+	if err != nil {
+		return fmt.Errorf("verify circuit key_model capability index: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("verify circuit key_model capability index: %s is missing", indexName)
+	}
 	return nil
 }
 
@@ -230,13 +256,16 @@ func (s *Store) AdvanceDispatchRevision(ctx context.Context, in DispatchRevision
 	if err := s.requireOwner(); err != nil {
 		return DispatchResult{}, err
 	}
-	if err := requireText(in.AccountID, "account id"); err != nil {
+	in.AccountID = strings.TrimSpace(in.AccountID)
+	in.AccountRuntimeKey = strings.TrimSpace(in.AccountRuntimeKey)
+	in.TransitionID = strings.TrimSpace(in.TransitionID)
+	if err := requireTextBounded(in.AccountID, 256, "account id"); err != nil {
 		return DispatchResult{}, err
 	}
 	if err := validateRuntimeKey(in.AccountRuntimeKey); err != nil {
 		return DispatchResult{}, err
 	}
-	if err := requireText(in.TransitionID, "transition id"); err != nil {
+	if err := requireTextBounded(in.TransitionID, 256, "transition id"); err != nil {
 		return DispatchResult{}, err
 	}
 	if err := requireNonNegativeMS(in.NowMS, "nowMs"); err != nil {
@@ -394,7 +423,8 @@ func (s *Store) GetIncident(ctx context.Context, scopeKey string) (Incident, boo
 	if err := s.requireOwner(); err != nil {
 		return Incident{}, false, err
 	}
-	if err := requireText(scopeKey, "circuit scope key"); err != nil {
+	scopeKey = strings.TrimSpace(scopeKey)
+	if err := requireTextBounded(scopeKey, 2048, "circuit scope key"); err != nil {
 		return Incident{}, false, err
 	}
 	return s.incidentByScope(ctx, s.db, scopeKey)
@@ -404,7 +434,8 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, nowMS, leaseMS in
 	if err := s.requireOwner(); err != nil {
 		return nil, err
 	}
-	if err := requireText(owner, "claim owner"); err != nil {
+	owner = strings.TrimSpace(owner)
+	if err := requireTextBounded(owner, 128, "claim owner"); err != nil {
 		return nil, err
 	}
 	if leaseMS <= 0 || leaseMS > maxClaimLeaseMS || limit <= 0 || limit > maxBatchLimit {
@@ -475,13 +506,16 @@ func (s *Store) AcknowledgeOutbox(ctx context.Context, eventID, projectionKey, c
 	if err := s.requireOwner(); err != nil {
 		return false, err
 	}
-	if err := requireText(eventID, "event id"); err != nil {
+	eventID = strings.TrimSpace(eventID)
+	projectionKey = strings.TrimSpace(projectionKey)
+	claimToken = strings.TrimSpace(claimToken)
+	if err := requireTextBounded(eventID, 256, "event id"); err != nil {
 		return false, err
 	}
 	if projectionKey != ProjectionKey {
 		return false, nil
 	}
-	if err := requireText(claimToken, "claim token"); err != nil {
+	if err := requireTextBounded(claimToken, 256, "claim token"); err != nil {
 		return false, err
 	}
 	if err := requireNonNegativeMS(acknowledgedAtMS, "acknowledgedAtMs"); err != nil {
@@ -528,10 +562,13 @@ func (s *Store) ReleaseOutboxForReplay(ctx context.Context, eventID, claimToken,
 	if err := s.requireOwner(); err != nil {
 		return false, err
 	}
-	if err := requireText(eventID, "event id"); err != nil {
+	eventID = strings.TrimSpace(eventID)
+	claimToken = strings.TrimSpace(claimToken)
+	errorClass = strings.TrimSpace(errorClass)
+	if err := requireTextBounded(eventID, 256, "event id"); err != nil {
 		return false, err
 	}
-	if err := requireText(claimToken, "claim token"); err != nil {
+	if err := requireTextBounded(claimToken, 256, "claim token"); err != nil {
 		return false, err
 	}
 	if err := requireText(errorClass, "error class"); err != nil {
@@ -563,6 +600,12 @@ func (s *Store) ReleaseOutboxForReplay(ctx context.Context, eventID, claimToken,
 func (s *Store) ListForRebuild(ctx context.Context, nowMS, afterUpdatedMS int64, afterScope string, limit int) (RebuildPage, error) {
 	if err := s.requireOwner(); err != nil {
 		return RebuildPage{}, err
+	}
+	afterScope = strings.TrimSpace(afterScope)
+	if afterScope != "" {
+		if err := requireTextBounded(afterScope, 2048, "afterScope"); err != nil {
+			return RebuildPage{}, err
+		}
 	}
 	if limit <= 0 || limit > maxBatchLimit {
 		return RebuildPage{}, errors.New("rebuild limit is outside the allowed bounds")
@@ -626,6 +669,18 @@ func (s *Store) ListByRuntimeKeys(ctx context.Context, keys []string, includeRet
 func (s *Store) ListProjectionGaps(ctx context.Context, afterAccountID string, afterUpdatedMS int64, afterScope string, limit int) (ProjectionGaps, error) {
 	if err := s.requireOwner(); err != nil {
 		return ProjectionGaps{}, err
+	}
+	afterAccountID = strings.TrimSpace(afterAccountID)
+	afterScope = strings.TrimSpace(afterScope)
+	if afterAccountID != "" {
+		if err := requireTextBounded(afterAccountID, 256, "afterAccountId"); err != nil {
+			return ProjectionGaps{}, err
+		}
+	}
+	if afterScope != "" {
+		if err := requireTextBounded(afterScope, 2048, "afterScope"); err != nil {
+			return ProjectionGaps{}, err
+		}
 	}
 	if limit <= 0 || limit > maxBatchLimit {
 		return ProjectionGaps{}, errors.New("projection gap limit is outside the allowed bounds")
@@ -771,8 +826,9 @@ func (s *Store) upsertIncident(ctx context.Context, tx *sql.Tx, v Incident) erro
 	if err != nil {
 		return err
 	}
-	q := "INSERT INTO " + s.table("account_circuit_incidents") + " (" + incidentColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(circuit_scope_key) DO UPDATE SET account_id=excluded.account_id,account_runtime_key=excluded.account_runtime_key,scope_kind=excluded.scope_kind,key_fingerprint=excluded.key_fingerprint,protocol_code=excluded.protocol_code,request_lane=excluded.request_lane,model_family=excluded.model_family,incident_id=excluded.incident_id,parent_incident_id=excluded.parent_incident_id,child_incident_ids_json=excluded.child_incident_ids_json,caused_by_terminal_outcome_id=excluded.caused_by_terminal_outcome_id,state=excluded.state,failure_scope=excluded.failure_scope,generation=excluded.generation,dispatch_revision=excluded.dispatch_revision,ledger_revision=excluded.ledger_revision,projected_ledger_revision=excluded.projected_ledger_revision,transition_id=excluded.transition_id,cooldown_observation_generation=excluded.cooldown_observation_generation,open_until_ms=excluded.open_until_ms,next_transition_at_ms=excluded.next_transition_at_ms,lease_id=excluded.lease_id,lease_purpose=excluded.lease_purpose,lease_owner_run_id=excluded.lease_owner_run_id,lease_until_ms=excluded.lease_until_ms,attempt_started_at_ms=excluded.attempt_started_at_ms,attempt_hard_deadline_ms=excluded.attempt_hard_deadline_ms,upstream_attempt_observed=excluded.upstream_attempt_observed,backoff_level=excluded.backoff_level,consecutive_failures=excluded.consecutive_failures,confirmation_failures_required=excluded.confirmation_failures_required,confirmation_failure_evidence_keys_json=excluded.confirmation_failure_evidence_keys_json,recovering_successes=excluded.recovering_successes,last_failure_class=excluded.last_failure_class,retained_until_ms=excluded.retained_until_ms,updated_at_ms=excluded.updated_at_ms WHERE account_id=excluded.account_id"
-	res, err := tx.ExecContext(ctx, s.bind(q), v.CircuitScopeKey, v.AccountID, v.AccountRuntimeKey, v.ScopeKind, v.KeyFingerprint, v.ProtocolCode, v.RequestLane, v.ModelFamily, v.IncidentID, v.ParentIncidentID, string(children), v.CausedByTerminalOutcomeID, v.State, nullableText(v.FailureScope), v.Generation, v.DispatchRevision, v.LedgerRevision, v.ProjectedLedgerRevision, v.TransitionID, v.CooldownObservationGeneration, v.OpenUntilMS, v.NextTransitionAtMS, v.LeaseID, v.LeasePurpose, v.LeaseOwnerRunID, v.LeaseUntilMS, v.AttemptStartedAtMS, v.AttemptHardDeadlineMS, boolInt(v.UpstreamAttemptObserved), v.BackoffLevel, v.ConsecutiveFailures, v.ConfirmationFailuresRequired, string(evidence), v.RecoveringSuccesses, v.LastFailureClass, v.RetainedUntilMS, v.CreatedAtMS, v.UpdatedAtMS)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", strings.Count(incidentColumns, ",")+1), ",")
+	q := "INSERT INTO " + s.table("account_circuit_incidents") + " (" + incidentColumns + ") VALUES (" + placeholders + ") ON CONFLICT(circuit_scope_key) DO UPDATE SET account_id=excluded.account_id,account_runtime_key=excluded.account_runtime_key,scope_kind=excluded.scope_kind,key_fingerprint=excluded.key_fingerprint,protocol_code=excluded.protocol_code,request_lane=excluded.request_lane,model_family=excluded.model_family,client_model=excluded.client_model,capability_hash=excluded.capability_hash,credential_source_account_id=excluded.credential_source_account_id,client_endpoint_family=excluded.client_endpoint_family,final_upstream_model=excluded.final_upstream_model,upstream_endpoint_mode=excluded.upstream_endpoint_mode,incident_id=excluded.incident_id,parent_incident_id=excluded.parent_incident_id,child_incident_ids_json=excluded.child_incident_ids_json,caused_by_terminal_outcome_id=excluded.caused_by_terminal_outcome_id,state=excluded.state,failure_scope=excluded.failure_scope,generation=excluded.generation,dispatch_revision=excluded.dispatch_revision,ledger_revision=excluded.ledger_revision,projected_ledger_revision=excluded.projected_ledger_revision,transition_id=excluded.transition_id,cooldown_observation_generation=excluded.cooldown_observation_generation,open_until_ms=excluded.open_until_ms,next_transition_at_ms=excluded.next_transition_at_ms,lease_id=excluded.lease_id,lease_purpose=excluded.lease_purpose,lease_owner_run_id=excluded.lease_owner_run_id,lease_until_ms=excluded.lease_until_ms,attempt_started_at_ms=excluded.attempt_started_at_ms,attempt_hard_deadline_ms=excluded.attempt_hard_deadline_ms,upstream_attempt_observed=excluded.upstream_attempt_observed,backoff_level=excluded.backoff_level,consecutive_failures=excluded.consecutive_failures,confirmation_failures_required=excluded.confirmation_failures_required,confirmation_failure_evidence_keys_json=excluded.confirmation_failure_evidence_keys_json,recovering_successes=excluded.recovering_successes,last_failure_class=excluded.last_failure_class,retained_until_ms=excluded.retained_until_ms,updated_at_ms=excluded.updated_at_ms WHERE account_id=excluded.account_id"
+	res, err := tx.ExecContext(ctx, s.bind(q), v.CircuitScopeKey, v.AccountID, v.AccountRuntimeKey, v.ScopeKind, v.KeyFingerprint, v.ProtocolCode, v.RequestLane, v.ModelFamily, v.ClientModel, v.CapabilityHash, v.CredentialSourceAccountID, v.ClientEndpointFamily, v.FinalUpstreamModel, v.UpstreamEndpointMode, v.IncidentID, v.ParentIncidentID, string(children), v.CausedByTerminalOutcomeID, v.State, nullableText(v.FailureScope), v.Generation, v.DispatchRevision, v.LedgerRevision, v.ProjectedLedgerRevision, v.TransitionID, v.CooldownObservationGeneration, v.OpenUntilMS, v.NextTransitionAtMS, v.LeaseID, v.LeasePurpose, v.LeaseOwnerRunID, v.LeaseUntilMS, v.AttemptStartedAtMS, v.AttemptHardDeadlineMS, boolInt(v.UpstreamAttemptObserved), v.BackoffLevel, v.ConsecutiveFailures, v.ConfirmationFailuresRequired, string(evidence), v.RecoveringSuccesses, v.LastFailureClass, v.RetainedUntilMS, v.CreatedAtMS, v.UpdatedAtMS)
 	if err != nil {
 		return err
 	}
@@ -817,7 +873,7 @@ func (s *Store) deleteLimited(ctx context.Context, tx *sql.Tx, table, id, condit
 	return res.RowsAffected()
 }
 
-const incidentColumns = "circuit_scope_key,account_id,account_runtime_key,scope_kind,key_fingerprint,protocol_code,request_lane,model_family,incident_id,parent_incident_id,child_incident_ids_json,caused_by_terminal_outcome_id,state,failure_scope,generation,dispatch_revision,ledger_revision,projected_ledger_revision,transition_id,cooldown_observation_generation,open_until_ms,next_transition_at_ms,lease_id,lease_purpose,lease_owner_run_id,lease_until_ms,attempt_started_at_ms,attempt_hard_deadline_ms,upstream_attempt_observed,backoff_level,consecutive_failures,confirmation_failures_required,confirmation_failure_evidence_keys_json,recovering_successes,last_failure_class,retained_until_ms,created_at_ms,updated_at_ms"
+const incidentColumns = "circuit_scope_key,account_id,account_runtime_key,scope_kind,key_fingerprint,protocol_code,request_lane,model_family,client_model,capability_hash,credential_source_account_id,client_endpoint_family,final_upstream_model,upstream_endpoint_mode,incident_id,parent_incident_id,child_incident_ids_json,caused_by_terminal_outcome_id,state,failure_scope,generation,dispatch_revision,ledger_revision,projected_ledger_revision,transition_id,cooldown_observation_generation,open_until_ms,next_transition_at_ms,lease_id,lease_purpose,lease_owner_run_id,lease_until_ms,attempt_started_at_ms,attempt_hard_deadline_ms,upstream_attempt_observed,backoff_level,consecutive_failures,confirmation_failures_required,confirmation_failure_evidence_keys_json,recovering_successes,last_failure_class,retained_until_ms,created_at_ms,updated_at_ms"
 const outboxColumns = "event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,last_error_class,acknowledged_at_ms,created_at_ms,updated_at_ms"
 
 type scanner interface{ Scan(...any) error }
@@ -827,7 +883,7 @@ func scanIncident(s scanner) (Incident, error) {
 	var children, evidence sql.NullString
 	var failureScope sql.NullString
 	var upstream int
-	err := s.Scan(&v.CircuitScopeKey, &v.AccountID, &v.AccountRuntimeKey, &v.ScopeKind, &v.KeyFingerprint, &v.ProtocolCode, &v.RequestLane, &v.ModelFamily, &v.IncidentID, &v.ParentIncidentID, &children, &v.CausedByTerminalOutcomeID, &v.State, &failureScope, &v.Generation, &v.DispatchRevision, &v.LedgerRevision, &v.ProjectedLedgerRevision, &v.TransitionID, &v.CooldownObservationGeneration, &v.OpenUntilMS, &v.NextTransitionAtMS, &v.LeaseID, &v.LeasePurpose, &v.LeaseOwnerRunID, &v.LeaseUntilMS, &v.AttemptStartedAtMS, &v.AttemptHardDeadlineMS, &upstream, &v.BackoffLevel, &v.ConsecutiveFailures, &v.ConfirmationFailuresRequired, &evidence, &v.RecoveringSuccesses, &v.LastFailureClass, &v.RetainedUntilMS, &v.CreatedAtMS, &v.UpdatedAtMS)
+	err := s.Scan(&v.CircuitScopeKey, &v.AccountID, &v.AccountRuntimeKey, &v.ScopeKind, &v.KeyFingerprint, &v.ProtocolCode, &v.RequestLane, &v.ModelFamily, &v.ClientModel, &v.CapabilityHash, &v.CredentialSourceAccountID, &v.ClientEndpointFamily, &v.FinalUpstreamModel, &v.UpstreamEndpointMode, &v.IncidentID, &v.ParentIncidentID, &children, &v.CausedByTerminalOutcomeID, &v.State, &failureScope, &v.Generation, &v.DispatchRevision, &v.LedgerRevision, &v.ProjectedLedgerRevision, &v.TransitionID, &v.CooldownObservationGeneration, &v.OpenUntilMS, &v.NextTransitionAtMS, &v.LeaseID, &v.LeasePurpose, &v.LeaseOwnerRunID, &v.LeaseUntilMS, &v.AttemptStartedAtMS, &v.AttemptHardDeadlineMS, &upstream, &v.BackoffLevel, &v.ConsecutiveFailures, &v.ConfirmationFailuresRequired, &evidence, &v.RecoveringSuccesses, &v.LastFailureClass, &v.RetainedUntilMS, &v.CreatedAtMS, &v.UpdatedAtMS)
 	if err != nil {
 		return Incident{}, err
 	}
@@ -865,6 +921,7 @@ func scanIncident(s scanner) (Incident, error) {
 		return Incident{}, errors.New("decode confirmation evidence: array exceeds configured bound")
 	}
 	for _, evidenceKey := range v.ConfirmationFailureEvidenceKeys {
+		evidenceKey = strings.ToLower(strings.TrimSpace(evidenceKey))
 		if !sha256Hex.MatchString(evidenceKey) {
 			return Incident{}, errors.New("decode confirmation evidence: values must be SHA256")
 		}
@@ -894,6 +951,9 @@ func readIncidents(rows *sql.Rows) ([]Incident, error) {
 	return out, rows.Err()
 }
 func validateIncident(v *Incident) error {
+	if err := normalizeIncidentText(v); err != nil {
+		return err
+	}
 	for name, field := range map[string]struct {
 		value string
 		max   int
@@ -919,17 +979,14 @@ func validateIncident(v *Incident) error {
 	if !allowedScopeKinds[v.ScopeKind] {
 		return fmt.Errorf("invalid scope kind: %s", v.ScopeKind)
 	}
-	if v.FailureScope != "" && !allowedFailureScopes[v.FailureScope] {
+	if v.FailureScope != "" && !allowedScopeKinds[v.FailureScope] {
 		return fmt.Errorf("invalid failure scope: %s", v.FailureScope)
 	}
 	if err := validateScopeShape(v); err != nil {
 		return err
 	}
-	if err := validateOptionalText(v.KeyFingerprint, 64, "key fingerprint"); err != nil {
+	if err := validateOptionalText(v.KeyFingerprint, 256, "key fingerprint"); err != nil {
 		return err
-	}
-	if v.KeyFingerprint != nil && !sha256Hex.MatchString(*v.KeyFingerprint) {
-		return errors.New("key fingerprint must be a SHA256 value")
 	}
 	if err := validateOptionalText(v.ProtocolCode, 64, "protocol code"); err != nil {
 		return err
@@ -939,6 +996,21 @@ func validateIncident(v *Incident) error {
 	}
 	if err := validateOptionalText(v.ModelFamily, 256, "model family"); err != nil {
 		return err
+	}
+	for name, field := range map[string]struct {
+		value *string
+		max   int
+	}{
+		"client model":                 {v.ClientModel, 256},
+		"capability hash":              {v.CapabilityHash, 128},
+		"credential source account id": {v.CredentialSourceAccountID, 256},
+		"client endpoint family":       {v.ClientEndpointFamily, 128},
+		"final upstream model":         {v.FinalUpstreamModel, 256},
+		"upstream endpoint mode":       {v.UpstreamEndpointMode, 128},
+	} {
+		if err := validateOptionalText(field.value, field.max, name); err != nil {
+			return err
+		}
 	}
 	if err := validateOptionalText(v.LeaseID, 256, "lease id"); err != nil {
 		return err
@@ -984,7 +1056,9 @@ func validateIncident(v *Incident) error {
 		return errors.New("child incident ids exceed the maximum of 64")
 	}
 	childIDs := make(map[string]struct{}, len(v.ChildIncidentIDs))
-	for _, childID := range v.ChildIncidentIDs {
+	for i, childID := range v.ChildIncidentIDs {
+		childID = strings.TrimSpace(childID)
+		v.ChildIncidentIDs[i] = childID
 		if err := requireTextBounded(childID, 256, "child incident id"); err != nil {
 			return err
 		}
@@ -997,7 +1071,9 @@ func validateIncident(v *Incident) error {
 		return errors.New("confirmation evidence keys exceed the configured bound")
 	}
 	evidenceKeys := make(map[string]struct{}, len(v.ConfirmationFailureEvidenceKeys))
-	for _, evidenceKey := range v.ConfirmationFailureEvidenceKeys {
+	for i, evidenceKey := range v.ConfirmationFailureEvidenceKeys {
+		evidenceKey = strings.ToLower(strings.TrimSpace(evidenceKey))
+		v.ConfirmationFailureEvidenceKeys[i] = evidenceKey
 		if !sha256Hex.MatchString(evidenceKey) {
 			return errors.New("confirmation evidence keys must be SHA256 values")
 		}
@@ -1052,19 +1128,31 @@ func validateIncidentTimes(v *Incident, nowMS int64) error {
 func validateScopeShape(v *Incident) error {
 	switch v.ScopeKind {
 	case "account":
-		if v.KeyFingerprint != nil || v.ProtocolCode != nil || v.RequestLane != nil || v.ModelFamily != nil {
+		if v.KeyFingerprint != nil || v.ProtocolCode != nil || v.RequestLane != nil || v.ModelFamily != nil || hasKeyModelFields(v) {
 			return errors.New("account scope cannot carry key/protocol/model fields")
 		}
 	case "key":
-		if v.KeyFingerprint == nil || !sha256Hex.MatchString(*v.KeyFingerprint) || v.ProtocolCode != nil || v.RequestLane != nil || v.ModelFamily != nil {
+		if v.KeyFingerprint == nil || v.ProtocolCode != nil || v.RequestLane != nil || v.ModelFamily != nil || hasKeyModelFields(v) {
 			return errors.New("key scope requires only key fingerprint")
 		}
 	case "protocol_model":
-		if v.KeyFingerprint != nil || v.ProtocolCode == nil || v.RequestLane == nil || v.ModelFamily == nil {
+		if v.KeyFingerprint != nil || v.ProtocolCode == nil || v.RequestLane == nil || v.ModelFamily == nil || hasKeyModelFields(v) {
 			return errors.New("protocol_model scope requires protocol, request lane and model family")
+		}
+	case "key_model":
+		if v.KeyFingerprint == nil || v.ProtocolCode != nil || v.RequestLane != nil || v.ModelFamily != nil || !hasAllKeyModelFields(v) {
+			return errors.New("key_model scope requires key fingerprint and complete key-model identity")
 		}
 	}
 	return nil
+}
+
+func hasKeyModelFields(v *Incident) bool {
+	return v.ClientModel != nil || v.CapabilityHash != nil || v.CredentialSourceAccountID != nil || v.ClientEndpointFamily != nil || v.FinalUpstreamModel != nil || v.UpstreamEndpointMode != nil
+}
+
+func hasAllKeyModelFields(v *Incident) bool {
+	return v.ClientModel != nil && v.CapabilityHash != nil && v.CredentialSourceAccountID != nil && v.ClientEndpointFamily != nil && v.FinalUpstreamModel != nil && v.UpstreamEndpointMode != nil
 }
 func validateOptionalText(value *string, maxLength int, name string) error {
 	if value == nil {
@@ -1138,15 +1226,12 @@ var allowedIncidentStates = map[string]bool{
 	"CLOSED": true, "SUSPECT": true, "OPEN": true, "HALF_OPEN": true,
 	"RECOVERING": true, "PERSISTING": true, "SHADOWED_BY_PERSISTENT": true,
 }
-var allowedScopeKinds = map[string]bool{"account": true, "key": true, "protocol_model": true}
-var allowedFailureScopes = map[string]bool{"upstream": true, "gateway": true, "none": true}
+var allowedScopeKinds = map[string]bool{"account": true, "key": true, "protocol_model": true, "key_model": true}
 var allowedLeasePurposes = map[string]bool{"confirmation": true, "half_open": true, "recovery": true, "cooldown_retest": true, "background_probe": true}
 var allowedFailureClasses = map[string]bool{"connect_failed": true, "timeout_before_complete": true, "read_interrupted": true, "incomplete_response": true, "explicit_policy": true}
 
 func normalizeErrorClass(v string) (string, error) {
-	if v != strings.TrimSpace(v) {
-		return "", errors.New("error class cannot contain leading or trailing whitespace")
-	}
+	v = strings.TrimSpace(v)
 	if err := requireText(v, "error class"); err != nil {
 		return "", err
 	}
@@ -1159,11 +1244,59 @@ func normalizeErrorClass(v string) (string, error) {
 	return v, nil
 }
 func validateRuntimeKey(v string) error {
-	if err := requireTextBounded(v, 1024, "account runtime key"); err != nil {
-		return err
+	// Node's persistence contract treats runtime keys as trimmed, bounded text;
+	// they are not restricted to machine-category characters.
+	return requireTextBounded(v, 1024, "account runtime key")
+}
+
+func normalizeIncidentText(v *Incident) error {
+	for name, field := range map[string]*string{
+		"circuit scope key":   &v.CircuitScopeKey,
+		"account id":          &v.AccountID,
+		"account runtime key": &v.AccountRuntimeKey,
+		"transition id":       &v.TransitionID,
+	} {
+		*field = strings.TrimSpace(*field)
+		if err := requireTextBounded(*field, map[string]int{
+			"circuit scope key": 2048, "account id": 256, "account runtime key": 1024,
+			"transition id": 256,
+		}[name], name); err != nil {
+			return err
+		}
 	}
-	if !machineCategory.MatchString(v) {
-		return errors.New("account runtime key must be a bounded machine category")
+	for name, field := range map[string]*string{
+		"incident id": v.IncidentID, "parent incident id": v.ParentIncidentID,
+		"caused by terminal outcome id": v.CausedByTerminalOutcomeID,
+		"key fingerprint":               v.KeyFingerprint, "protocol code": v.ProtocolCode,
+		"request lane": v.RequestLane, "model family": v.ModelFamily,
+		"client model": v.ClientModel, "capability hash": v.CapabilityHash,
+		"credential source account id": v.CredentialSourceAccountID,
+		"client endpoint family":       v.ClientEndpointFamily, "final upstream model": v.FinalUpstreamModel,
+		"upstream endpoint mode": v.UpstreamEndpointMode, "lease id": v.LeaseID,
+		"lease owner run id": v.LeaseOwnerRunID,
+	} {
+		if field == nil {
+			continue
+		}
+		*field = strings.TrimSpace(*field)
+		max := 256
+		switch name {
+		case "key fingerprint":
+			max = 256
+		case "protocol code", "request lane":
+			max = 64
+		case "model family", "client model", "final upstream model":
+			max = 256
+		case "capability hash":
+			max = 128
+		case "credential source account id":
+			max = 256
+		case "client endpoint family", "upstream endpoint mode":
+			max = 128
+		}
+		if err := requireTextBounded(*field, max, name); err != nil {
+			return err
+		}
 	}
 	return nil
 }

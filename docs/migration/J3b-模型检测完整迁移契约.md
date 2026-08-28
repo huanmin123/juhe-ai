@@ -79,6 +79,8 @@ J3b 仍不具备删除 Node 的条件。方案 A 架构已冻结为：`gateway` 
 
 Gateway `internal/modelcheckowner` 现已增加不可变 input 记录边界：payload 先规范化并计算 SHA-256，`input_id` 重放要求摘要和内容一致，不同内容复用 ID 会 fail-closed；写入使用单事务并保留 identity/version/config/policy/trigger/expiry 字段。该层仍是库级能力，未接入 listener、scheduler 或 Node 路径。
 
+本轮复核还校正了 Gateway Business `circuit-control-plane` 的双模式数据契约：Go owner 现在完整读写 `key_model` 的 `client_model`、`capability_hash`、`credential_source_account_id`、`client_endpoint_family`、`final_upstream_model`、`upstream_endpoint_mode` 六个身份字段，按 Node 的作用域组合执行 fail-closed 校验，并在 SQLite/PostgreSQL 预检中要求 `idx_account_circuit_incidents_key_model_capability` 唯一索引；运行时文本输入遵循 Node 的 trim、有界文本和证据哈希规范，不再额外限制 `keyFingerprint` 或 `accountRuntimeKey` 的字符集，公开入口的 ID、owner 和游标也执行同等长度边界。Go 回归覆盖完整/部分 key_model 身份、重复 capability hash、字段回读、缺索引、文本规范化、输入长度和 `failure_scope` 枚举漂移；运维批次上限提升为 100000，仅表示事务恢复窗口，不作为产品并发限制。Gateway 主进程现在会在 J3b owner 启动时用同一 Business 连接预检该控制面契约，但仍未接入 circuit runtime dispatch、Node active-path-zero、Business handoff、真实 SQLite/PostgreSQL 切换和回滚证据。
+
 Gateway `internal/modelcheckowner` 现已增加 run/item/observation 持久化边界：只有 running run 可追加检测项和 observation，终态 projection 在同一事务内写入全部 item 与终态摘要；相同终态可幂等重放，状态、分数、摘要或 item 集合漂移会拒绝。运行时会把请求模型和解析后的上游模型同时冻结到 durable input，并以该上游模型执行所有 probe；observation 保留请求/上游模型及 `mapped|unmapped` 状态。隔离回归覆盖六个 core probe 的实际上游请求、冻结 input 和 observation 三者一致。该事实不解除完整证据、Business SQLite handoff、三库 backfill、Node active-path-zero 或切换门禁。
 
 Gateway `internal/modelcheckowner` 现已增加 claim/outcome durable fence：input 过期或活动租约竞争会拒绝，租约接管时 fence 严格递增；旧 owner 的 release/commit 会被拒绝；相同 outcome digest 可重放，内容漂移会冲突。该边界仍未由 Gateway runtime 调用，不能替代完整 scheduler、probe 和恢复验证。
@@ -250,3 +252,9 @@ Gateway 已补齐 `POST /model-checks/token-intercept-baselines/activate` 的进
 Gateway 新增 `internal/j3creadonly.Reader`，将 `modelcheckowner.HealthReader` 投影为 J3c 专用的 `PublishedHealth` 值对象。该包不持有数据库连接、不暴露 `ApplyHealthFact`、`MarkHealthSync` 或 baseline/enforcement 写方法；每次读取都必须带 `accountID + statHour`，缺失事实、范围漂移或不完整字段均 fail-closed。定向 `go test -race ./internal/j3creadonly ./internal/modelcheckowner` 覆盖单次限定读取、缺失事实、非法事实、空 scope 和 nil source。maintenance 的 `--verify-j3c-readonly-boundary` 还会用 AST 检查该适配包的方法面，并列出仍存在的 Node J3c owner 文件；当前 Go boundary 通过，但命令按预期以退出码 3 报告 Node owner 尚存。
 
 这只是 J3b -> J3c 的进程内只读契约和静态审计证据，不是 J3c owner 接管。`account-quality-refresh`、`account-quality-failure-precheck-queue` 及其 Node writer/worker 仍未迁移；在 J3c 自身契约、双模式实现、回滚和 active-path-zero 完成前，不能启用该 reader 作为生产消费者，也不能删除或归档 Node J3c 路径。
+
+### 9.7.3 Account circuit Redis owner 接线（2026-08-28）
+
+Gateway 新增 `internal/business/circuit_runtime`，通过 `go-redis/v9` 直连 Node 兼容的 `juhe-ai:<namespace>:account-circuit:gateway-account-circuit:*` 键空间。J3b owner 启动时在 handoff/schema/Node-writer 三道门满足后执行 Redis ping 与 `runtime-index-meta(version=1,status=ready,ownerMode=go-runtime-state-v1)` 只读校验；健康端点新增 `accountCircuitRuntimeReady`。`PutClosed` 提供单 Lua、dispatch-revision fence 的 Go-only 写入原语，无 Node bridge、IPC 或跨进程补偿。
+
+该接线仍是阶段性 owner seam：完整 suspect/open/recovering/half-open、lease、父子升级、due/rebuild、outbox/projector 及真实上游 dispatch 尚未全部接入；因此 Node circuit runtime 仍保持 active，不能删除或归档，`migration-backup` 也暂不新增该路径备份。

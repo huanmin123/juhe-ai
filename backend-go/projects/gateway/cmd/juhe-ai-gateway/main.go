@@ -19,6 +19,8 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
+	circuitcontrolplane "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_control_plane"
+	circuitruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_runtime"
 	sessionretention "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/session_retention"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
@@ -103,6 +105,9 @@ func main() {
 	var retentionComponent supervisor.Component
 	var retentionEnabled bool
 	var retentionRunning atomic.Bool
+	var circuitRuntimeComponent supervisor.Component
+	var circuitRuntimeEnabled bool
+	var circuitRuntimeRunning atomic.Bool
 	if j3bConfig.Enabled {
 		var businessMode modelcheckauth.Mode = modelcheckauth.SQLite
 		if j3bConfig.StoreMode == "postgres" {
@@ -129,6 +134,51 @@ func main() {
 		if retentionErr := retentionStore.CheckContract(context.Background()); retentionErr != nil {
 			fail(fmt.Errorf("verify J3b Gateway session retention contract: %w", retentionErr))
 		}
+		circuitMode := circuitcontrolplane.SQLite
+		if businessMode == modelcheckauth.Postgres {
+			circuitMode = circuitcontrolplane.Postgres
+		}
+		circuitGate := circuitcontrolplane.OwnerGate{
+			Confirmed:         j3bConfig.BusinessHandoffConfirmed,
+			SchemaReady:       j3bConfig.SchemaReady,
+			NodeWriterStopped: j3bConfig.NodeWriterStopped,
+		}
+		circuitStore, circuitErr := circuitcontrolplane.New(businessConnection.DB, circuitMode, "juhe_business", circuitGate)
+		if circuitErr != nil {
+			fail(fmt.Errorf("create J3b Gateway circuit control-plane owner: %w", circuitErr))
+		}
+		if circuitErr := circuitStore.CheckContract(context.Background()); circuitErr != nil {
+			fail(fmt.Errorf("verify J3b Gateway circuit control-plane contract: %w", circuitErr))
+		}
+		runtimeStore, runtimeErr := circuitruntime.New(circuitruntime.Config{URL: j3bConfig.CircuitRuntimeRedisURL, Namespace: j3bConfig.CircuitRuntimeRedisNamespace, Capacity: j3bConfig.CircuitRuntimeCapacity, Retention: j3bConfig.CircuitRuntimeRetention}, circuitruntime.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped})
+		if runtimeErr != nil {
+			fail(fmt.Errorf("create J3b Gateway circuit runtime owner: %w", runtimeErr))
+		}
+		if pingErr := runtimeStore.Ping(context.Background()); pingErr != nil {
+			_ = runtimeStore.Close()
+			fail(fmt.Errorf("ping J3b Gateway circuit runtime Redis: %w", pingErr))
+		}
+		if readyErr := runtimeStore.CheckReady(context.Background()); readyErr != nil {
+			_ = runtimeStore.Close()
+			fail(fmt.Errorf("verify J3b Gateway circuit runtime owner fence: %w", readyErr))
+		}
+		circuitRuntimeEnabled = true
+		circuitRuntimeComponent = supervisor.Component{Name: "J3b account-circuit-runtime-owner", Run: func(runCtx context.Context) error {
+			circuitRuntimeRunning.Store(true)
+			defer circuitRuntimeRunning.Store(false)
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				if err := runtimeStore.CheckReady(runCtx); err != nil {
+					return err
+				}
+				select {
+				case <-runCtx.Done():
+					return runCtx.Err()
+				case <-ticker.C:
+				}
+			}
+		}, Close: runtimeStore.Close}
 		retentionInterval, retentionLimit, retentionConfigErr := loadSessionRetentionConfig(os.Getenv)
 		if retentionConfigErr != nil {
 			fail(fmt.Errorf("load J3b Gateway session retention config: %w", retentionConfigErr))
@@ -316,6 +366,9 @@ func main() {
 		}
 		components = append(components, retentionComponent)
 	}
+	if circuitRuntimeEnabled {
+		components = append(components, circuitRuntimeComponent)
+	}
 	if operationConfig.Enabled {
 		components = append(components, supervisor.Component{
 			Name: "F4 operation-log-owner",
@@ -333,12 +386,12 @@ func main() {
 				http.NotFound(response, request)
 				return
 			}
-			ready := auditRunning.Load() && (!operationConfig.Enabled || operationRunning.Load()) && (j3bHostComponent.Run == nil || j3bRunning.Load()) && (!retentionEnabled || retentionRunning.Load())
+			ready := auditRunning.Load() && (!operationConfig.Enabled || operationRunning.Load()) && (j3bHostComponent.Run == nil || j3bRunning.Load()) && (!retentionEnabled || retentionRunning.Load()) && (!circuitRuntimeEnabled || circuitRuntimeRunning.Load())
 			response.Header().Set("Content-Type", "application/json")
 			if !ready {
 				response.WriteHeader(http.StatusServiceUnavailable)
 			}
-			_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load(), "j3bReady": j3bRunning.Load(), "sessionRetentionReady": retentionRunning.Load()})
+			_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load(), "j3bReady": j3bRunning.Load(), "sessionRetentionReady": retentionRunning.Load(), "accountCircuitRuntimeReady": circuitRuntimeRunning.Load()})
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

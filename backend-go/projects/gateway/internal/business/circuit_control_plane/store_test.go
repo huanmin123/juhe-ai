@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -20,7 +21,8 @@ func testStore(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY, dispatch_revision INTEGER NOT NULL DEFAULT 1, circuit_projection_revision INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE account_circuit_incidents (
  circuit_scope_key TEXT PRIMARY KEY, account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, scope_kind TEXT NOT NULL,
- key_fingerprint TEXT, protocol_code TEXT, request_lane TEXT, model_family TEXT, incident_id TEXT NOT NULL,
+ key_fingerprint TEXT, protocol_code TEXT, request_lane TEXT, model_family TEXT, client_model TEXT, capability_hash TEXT,
+ credential_source_account_id TEXT, client_endpoint_family TEXT, final_upstream_model TEXT, upstream_endpoint_mode TEXT, incident_id TEXT NOT NULL,
  parent_incident_id TEXT, child_incident_ids_json TEXT NOT NULL, caused_by_terminal_outcome_id TEXT, state TEXT NOT NULL,
  failure_scope TEXT, generation INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, ledger_revision INTEGER NOT NULL,
  projected_ledger_revision INTEGER NOT NULL, transition_id TEXT NOT NULL, cooldown_observation_generation INTEGER NOT NULL,
@@ -40,6 +42,9 @@ func testStore(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, capability_hash) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a1',1,0)`); err != nil {
 		t.Fatal(err)
@@ -136,6 +141,44 @@ func TestIncidentCASAndProjection(t *testing.T) {
 	}
 }
 
+func TestKeyModelIncidentRoundTripsAndRequiresCompleteIdentity(t *testing.T) {
+	s, _ := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	incidentID := "key-model-incident"
+	fingerprint := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	clientModel, capabilityHash := "gpt-4.1", "capability-v1"
+	credentialSourceAccountID, clientEndpointFamily := "source-account", "chat-completions"
+	finalUpstreamModel, upstreamEndpointMode := "gpt-4.1-2025-04-14", "responses"
+	incident := Incident{
+		CircuitScopeKey: "key-model-scope", AccountID: "a1", AccountRuntimeKey: "a1", ScopeKind: "key_model",
+		KeyFingerprint: &fingerprint, ClientModel: &clientModel, CapabilityHash: &capabilityHash,
+		CredentialSourceAccountID: &credentialSourceAccountID, ClientEndpointFamily: &clientEndpointFamily,
+		FinalUpstreamModel: &finalUpstreamModel, UpstreamEndpointMode: &upstreamEndpointMode,
+		IncidentID: &incidentID, State: "OPEN", FailureScope: "key_model", DispatchRevision: 1,
+		TransitionID: "key-model-transition", ConfirmationFailuresRequired: 1, CreatedAtMS: 100, UpdatedAtMS: 100,
+	}
+	result, err := s.CompareAndSetIncident(context.Background(), IncidentMutation{Incident: incident})
+	if err != nil || result.Status != "applied" || result.Incident == nil || result.Incident.CapabilityHash == nil || *result.Incident.CapabilityHash != capabilityHash || result.Incident.FailureScope != "key_model" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	loaded, found, err := s.GetIncident(context.Background(), incident.CircuitScopeKey)
+	if err != nil || !found || loaded.ClientModel == nil || *loaded.ClientModel != clientModel || loaded.UpstreamEndpointMode == nil || *loaded.UpstreamEndpointMode != upstreamEndpointMode {
+		t.Fatalf("loaded=%+v found=%v err=%v", loaded, found, err)
+	}
+	duplicate := incident
+	duplicate.CircuitScopeKey = "duplicate-key-model-scope"
+	duplicateIncidentID, duplicateTransitionID := "duplicate-key-model-incident", "duplicate-key-model-transition"
+	duplicate.IncidentID, duplicate.TransitionID = &duplicateIncidentID, duplicateTransitionID
+	if _, err := s.CompareAndSetIncident(context.Background(), IncidentMutation{Incident: duplicate}); err == nil {
+		t.Fatal("key_model incident accepted a duplicate capability hash")
+	}
+	partial := incident
+	partial.CircuitScopeKey = "partial-key-model-scope"
+	partial.UpstreamEndpointMode = nil
+	if err := validateIncident(&partial); err == nil {
+		t.Fatal("key_model incident accepted a partial identity")
+	}
+}
+
 func TestPostgresSchemaIsValidatedDefaultedAndQuoted(t *testing.T) {
 	db := openTestDB(t)
 	for _, schema := range []string{"bad.schema", "tenant;drop", "tenant space", "1tenant", `tenant"x`} {
@@ -161,6 +204,9 @@ func TestPostgresSchemaIsValidatedDefaultedAndQuoted(t *testing.T) {
 
 func TestCheckContractChecksCircuitColumns(t *testing.T) {
 	store, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	if err := store.CheckContract(context.Background()); err != nil {
+		t.Fatalf("complete circuit contract failed: %v", err)
+	}
 	if _, err := db.Exec(`DROP TABLE account_circuit_incidents`); err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +215,16 @@ func TestCheckContractChecksCircuitColumns(t *testing.T) {
 	}
 	if err := store.CheckContract(context.Background()); err == nil {
 		t.Fatal("CheckContract accepted a relation missing circuit columns")
+	}
+}
+
+func TestCheckContractRequiresKeyModelCapabilityIndex(t *testing.T) {
+	store, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	if _, err := db.Exec(`DROP INDEX idx_account_circuit_incidents_key_model_capability`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckContract(context.Background()); err == nil {
+		t.Fatal("CheckContract accepted a missing key_model capability index")
 	}
 }
 
@@ -215,8 +271,11 @@ func TestCircuitInputBoundsAndZeroTime(t *testing.T) {
 	if _, err := store.AdvanceDispatchRevision(ctx, DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "negative-time", NowMS: -1}); err == nil {
 		t.Fatal("negative dispatch time was accepted")
 	}
-	if _, err := store.AdvanceDispatchRevision(ctx, DispatchRevision{AccountID: "a1", AccountRuntimeKey: "runtime key", TransitionID: "invalid-runtime-key", NowMS: 0}); err == nil {
-		t.Fatal("unbounded runtime key was accepted")
+	if _, err := store.AdvanceDispatchRevision(ctx, DispatchRevision{AccountID: strings.Repeat("a", 257), AccountRuntimeKey: "a1", TransitionID: "too-long-account", NowMS: 0}); err == nil {
+		t.Fatal("oversized account id was accepted")
+	}
+	if _, err := store.AdvanceDispatchRevision(ctx, DispatchRevision{AccountID: "a1", AccountRuntimeKey: "runtime/key 1", TransitionID: "valid-runtime-key", NowMS: 0}); err != nil {
+		t.Fatalf("Node-compatible runtime key was rejected: %v", err)
 	}
 	if _, err := store.ListByRuntimeKeys(ctx, []string{"a1", "  "}, false, 0); err == nil {
 		t.Fatal("blank runtime key was silently dropped")
@@ -224,11 +283,27 @@ func TestCircuitInputBoundsAndZeroTime(t *testing.T) {
 	if _, err := store.ReleaseOutboxForReplay(ctx, "missing", "token", "upstream timeout", 0, 0); err == nil {
 		t.Fatal("unbounded error class was accepted")
 	}
-	if _, err := store.ReleaseOutboxForReplay(ctx, "missing", "token", " upstream_timeout", 0, 0); err == nil {
-		t.Fatal("non-canonical error class was accepted")
+	if ok, err := store.ReleaseOutboxForReplay(ctx, "missing", "token", " upstream_timeout ", 0, 0); err != nil || ok {
+		t.Fatalf("Node-compatible trimmed error class failed: ok=%v err=%v", ok, err)
 	}
 	if _, err := store.ClaimOutbox(ctx, "worker", -1, 1, 1); err == nil {
 		t.Fatal("negative claim time was accepted")
+	}
+	if _, err := store.ClaimOutbox(ctx, strings.Repeat("w", 129), 0, 1, 1); err == nil {
+		t.Fatal("oversized claim owner was accepted")
+	}
+	const largeOperationalBatch = 50_000
+	if _, err := store.ClaimOutbox(ctx, "worker", 0, 1, largeOperationalBatch); err != nil {
+		t.Fatalf("large claim batch was rejected: %v", err)
+	}
+	if _, err := store.ListForRebuild(ctx, 0, 0, "", largeOperationalBatch); err != nil {
+		t.Fatalf("large rebuild batch was rejected: %v", err)
+	}
+	if _, err := store.ListProjectionGaps(ctx, "", 0, "", largeOperationalBatch); err != nil {
+		t.Fatalf("large projection-gap batch was rejected: %v", err)
+	}
+	if _, err := store.Cleanup(ctx, 0, 0, largeOperationalBatch); err != nil {
+		t.Fatalf("large cleanup batch was rejected: %v", err)
 	}
 }
 
@@ -250,7 +325,7 @@ func TestIncidentStateScopeLeaseAndRetentionBounds(t *testing.T) {
 			until := int64(100)
 			v.LeaseID, v.LeasePurpose, v.LeaseOwnerRunID, v.LeaseUntilMS = &lease, &purpose, &owner, &until
 		}},
-		{name: "invalid failure scope", edit: func(v *Incident) { v.FailureScope = "account" }},
+		{name: "invalid failure scope", edit: func(v *Incident) { v.FailureScope = "upstream" }},
 		{name: "negative created time", edit: func(v *Incident) { v.CreatedAtMS = -1 }},
 		{name: "negative recovery successes", edit: func(v *Incident) { v.RecoveringSuccesses = -1 }},
 		{name: "duplicate evidence", edit: func(v *Incident) {
@@ -287,12 +362,33 @@ func TestIncidentStateScopeLeaseAndRetentionBounds(t *testing.T) {
 	}
 }
 
-func TestKeyIncidentRequiresSHA256Fingerprint(t *testing.T) {
+func TestKeyIncidentAcceptsNodeCompatibleFingerprint(t *testing.T) {
 	id := "key-incident"
 	fingerprint := "not-a-fingerprint"
 	incident := Incident{CircuitScopeKey: "key-scope", AccountID: "account", AccountRuntimeKey: "runtime", ScopeKind: "key", KeyFingerprint: &fingerprint, IncidentID: &id, State: "OPEN", DispatchRevision: 1, TransitionID: "transition", ConfirmationFailuresRequired: 1}
+	if err := validateIncident(&incident); err != nil {
+		t.Fatalf("Node-compatible non-SHA256 fingerprint was rejected: %v", err)
+	}
+	tooLong := strings.Repeat("x", 257)
+	incident.KeyFingerprint = &tooLong
 	if err := validateIncident(&incident); err == nil {
-		t.Fatal("key incident accepted a non-SHA256 fingerprint")
+		t.Fatal("oversized key fingerprint was accepted")
+	}
+}
+
+func TestIncidentTextInputsAreTrimmedLikeNode(t *testing.T) {
+	id := " incident-id "
+	fingerprint := " key/fingerprint "
+	incident := Incident{
+		CircuitScopeKey: " scope ", AccountID: " account ", AccountRuntimeKey: " runtime/key ", ScopeKind: "key",
+		KeyFingerprint: &fingerprint, IncidentID: &id, State: "OPEN", DispatchRevision: 1,
+		TransitionID: " transition ", ConfirmationFailuresRequired: 1,
+	}
+	if err := validateIncident(&incident); err != nil {
+		t.Fatalf("trimmed Node-compatible incident was rejected: %v", err)
+	}
+	if incident.CircuitScopeKey != "scope" || incident.AccountID != "account" || incident.AccountRuntimeKey != "runtime/key" || incident.TransitionID != "transition" || *incident.KeyFingerprint != "key/fingerprint" || *incident.IncidentID != "incident-id" {
+		t.Fatalf("incident text was not normalized: %+v", incident)
 	}
 }
 
