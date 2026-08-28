@@ -244,12 +244,12 @@ export async function accountBalanceGoOwnerHealth(
     const response = await (dependencies.fetch ?? fetch)(healthUrl, { signal: AbortSignal.timeout(2_000) })
     const payload: unknown = await response.json()
     const health = payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
-    const processReady = response.ok && health?.accountBalanceEnabled === true
+    const processReady = response.ok
     // A standby slot intentionally does not acquire the account-balance owner.
     // Its health contract is process reachability plus a fresh read-only
     // projector, not active-owner readiness.
     const ready = ownerMode === 'standby'
-      ? processReady && projectorReady
+      ? processReady && health?.ownerMode === 'standby' && projectorReady
       : processReady && health?.ready === true && health.accountBalanceReady === true
     return {
       enabled: true,

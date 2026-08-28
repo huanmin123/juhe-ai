@@ -43,13 +43,28 @@ const standby = await accountBalanceGoOwnerHealth({
 }, {
   projectorReady: () => true,
   fetch: async () => new Response(JSON.stringify({
-    ready: true,
-    accountBalanceEnabled: true,
+    ready: false,
+    ownerMode: 'standby',
+    accountBalanceEnabled: false,
     accountBalanceReady: false
   }), { status: 200 })
 })
 assert.deepEqual(standby, { enabled: true, ready: true, projectorReady: true, ownerMode: 'standby' as const }, 'standby 不持有 J2 owner 时，健康检查必须以进程可达和投影新鲜度判定')
 assert.equal(resolveSystemApiHealth(standby, { enabled: false, ready: true }).status, 'ok', '正常 standby 不得被误报为 degraded')
+
+const standbyWithWrongMode = await accountBalanceGoOwnerHealth({
+  ...goOwnerEnv,
+  JUHE_AI_BLUE_GREEN_OWNER_MODE: 'standby'
+}, {
+  projectorReady: () => true,
+  fetch: async () => new Response(JSON.stringify({
+    ready: true,
+    ownerMode: 'active',
+    accountBalanceEnabled: true,
+    accountBalanceReady: true
+  }), { status: 200 })
+})
+assert.equal(standbyWithWrongMode.ready, false, 'standby 探测到错误 ownerMode 时必须拒绝 ready')
 
 assert.deepEqual(resolveRuntimeReadiness({
   dbServiceReady: true,
