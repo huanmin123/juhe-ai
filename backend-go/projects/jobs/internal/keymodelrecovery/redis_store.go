@@ -171,7 +171,7 @@ func (s *RedisStore) Commit(ctx context.Context, prior State, next State, leaseI
 	if !next.RetryAt.IsZero() {
 		retryAt = next.RetryAt.UnixMilli()
 	}
-	result, err := s.client.Eval(ctx, commitRecoveryResultScript, []string{s.keys.State(prior.CapabilityHash), s.keys.Lease(prior.CapabilityHash), s.keys.Due(), s.keys.GlobalProbes(), s.keys.SourceProbes(prior.CredentialSourceAccountID), s.keys.Closed()}, prior.Generation, prior.DispatchRevision, leaseID, string(encoded), retryAt, next.Phase).Text()
+	result, err := s.client.Eval(ctx, commitRecoveryResultScript, []string{s.keys.State(prior.CapabilityHash), s.keys.Lease(prior.CapabilityHash), s.keys.Due(), s.keys.GlobalProbes(), s.keys.SourceProbes(prior.CredentialSourceAccountID), s.keys.Closed()}, prior.Generation, prior.DispatchRevision, leaseID, string(encoded), retryAt, string(next.Phase)).Text()
 	return MutationStatus(result), err
 }
 

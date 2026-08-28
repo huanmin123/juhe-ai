@@ -603,6 +603,7 @@
     "test:key-model-j1-fence": "tsx src/scripts/regression/key-model-j1-fence-regression.ts",
     "test:key-model-memory-store": "tsx src/scripts/regression/key-model-memory-store-regression.ts",
     "test:key-model-memory-recovery": "tsx src/scripts/regression/key-model-memory-recovery-regression.ts",
+    "test:key-model-redis-go-interop": "tsx src/scripts/regression/key-model-redis-go-interop-smoke.ts",
     "test:account-circuit-escalation-config": "tsx src/scripts/regression/account-circuit-escalation-config-regression.ts",
     "test:account-circuit-control-plane": "tsx src/scripts/regression/account-circuit-control-plane-regression.ts",
     "test:account-list-availability-projection": "tsx src/scripts/regression/account-list-availability-projection-regression.ts",

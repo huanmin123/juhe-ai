@@ -28,11 +28,11 @@ import {
 import type { WorkerScheduledJobTaskResult } from '../../background/worker-scheduler.js'
 
 export const keyModelRecoveryScanIntervalMs = 1_000
-const keyModelRecoveryBatchSize = 32
+const keyModelRecoveryBatchSize = 128
 const keyModelRecoveryConcurrency = 32
 const keyModelRecoveryContinuationSlots = 8
-const keyModelRecoveryContinuationSourceLimit = 2
-const keyModelRecoveryOpenSourceLimit = 2
+const keyModelRecoverySourceLimit = 2
+const keyModelRecoveryContinuationSourceReserve = 1
 
 export interface KeyModelRecoveryProbeInput {
   state: KeyModelState
@@ -59,6 +59,8 @@ export class KeyModelMemoryRecoveryRunner {
   private readonly concurrency: number
   private readonly running = new Set<string>()
   private readonly runningSources = new Map<string, number>()
+  private readonly runningContinuationSources = new Map<string, number>()
+  private runningOpenCount = 0
 
   constructor(options: KeyModelMemoryRecoveryRunnerOptions = {}) {
     this.store = options.store ?? getInMemoryKeyModelRuntimeStore()
@@ -72,35 +74,52 @@ export class KeyModelMemoryRecoveryRunner {
     const nowMs = this.now()
     const due = await this.store.listDue(nowMs, keyModelRecoveryBatchSize)
     const continuationWaiting = due.some((state) => state.phase === 'RECOVERING')
+    const continuationDueSources = new Set(due
+      .filter((state) => state.phase === 'RECOVERING')
+      .map((state) => state.credentialSourceAccountId))
     const selected: KeyModelState[] = []
-    const selectedOpenSources = new Map<string, number>()
-    let continuationCount = 0
-    let openCount = 0
+    const selectedSources = new Map<string, number>()
+    const selectedContinuationSources = new Map<string, number>()
+    let selectedOpenCount = 0
     for (const state of due) {
       if (signal?.aborted) break
       if (this.running.has(state.capabilityHash)) continue
+      if (this.running.size + selected.length >= this.concurrency) break
       const source = state.credentialSourceAccountId
       const runningSourceCount = this.runningSources.get(source) ?? 0
-      const sourceLimit = state.phase === 'RECOVERING' ? keyModelRecoveryContinuationSourceLimit : keyModelRecoveryOpenSourceLimit
-      if (runningSourceCount >= sourceLimit) continue
-      if (state.phase === 'RECOVERING') {
-        if (continuationCount >= keyModelRecoveryContinuationSlots) continue
-        continuationCount += 1
-      } else {
-        const selectedSourceCount = selectedOpenSources.get(source) ?? 0
-        if (selectedSourceCount + runningSourceCount >= sourceLimit) continue
-        if (continuationWaiting && openCount >= keyModelRecoveryConcurrency - keyModelRecoveryContinuationSlots) continue
-        selectedOpenSources.set(source, selectedSourceCount + 1)
-        openCount += 1
+      const selectedSourceCount = selectedSources.get(source) ?? 0
+      const activeSourceCount = runningSourceCount + selectedSourceCount
+      if (activeSourceCount >= keyModelRecoverySourceLimit) continue
+      if (state.phase === 'OPEN' && continuationWaiting) {
+        if (this.runningOpenCount + selectedOpenCount >= this.concurrency - keyModelRecoveryContinuationSlots) continue
+        const activeContinuationsForSource = (this.runningContinuationSources.get(source) ?? 0)
+          + (selectedContinuationSources.get(source) ?? 0)
+        const sourceOpenLimit = continuationDueSources.has(source) && activeContinuationsForSource === 0
+          ? keyModelRecoverySourceLimit - keyModelRecoveryContinuationSourceReserve
+          : keyModelRecoverySourceLimit
+        if (activeSourceCount >= sourceOpenLimit) continue
       }
-      if (selected.length >= this.concurrency) break
       selected.push(state)
+      selectedSources.set(source, selectedSourceCount + 1)
+      if (state.phase === 'RECOVERING') {
+        selectedContinuationSources.set(source, (selectedContinuationSources.get(source) ?? 0) + 1)
+      } else {
+        selectedOpenCount += 1
+      }
     }
     let startedCount = 0
     let settledCount = 0
     await Promise.all(selected.map(async (state) => {
       this.running.add(state.capabilityHash)
       this.runningSources.set(state.credentialSourceAccountId, (this.runningSources.get(state.credentialSourceAccountId) ?? 0) + 1)
+      if (state.phase === 'RECOVERING') {
+        this.runningContinuationSources.set(
+          state.credentialSourceAccountId,
+          (this.runningContinuationSources.get(state.credentialSourceAccountId) ?? 0) + 1
+        )
+      } else {
+        this.runningOpenCount += 1
+      }
       try {
         const target = this.store.getRecoveryTarget(state)
         if (!target) return
@@ -135,6 +154,13 @@ export class KeyModelMemoryRecoveryRunner {
         const remaining = (this.runningSources.get(state.credentialSourceAccountId) ?? 1) - 1
         if (remaining > 0) this.runningSources.set(state.credentialSourceAccountId, remaining)
         else this.runningSources.delete(state.credentialSourceAccountId)
+        if (state.phase === 'RECOVERING') {
+          const remainingContinuations = (this.runningContinuationSources.get(state.credentialSourceAccountId) ?? 1) - 1
+          if (remainingContinuations > 0) this.runningContinuationSources.set(state.credentialSourceAccountId, remainingContinuations)
+          else this.runningContinuationSources.delete(state.credentialSourceAccountId)
+        } else {
+          this.runningOpenCount = Math.max(0, this.runningOpenCount - 1)
+        }
       }
     }))
     return { dueCount: due.length, startedCount, settledCount }

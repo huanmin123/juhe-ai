@@ -76,6 +76,10 @@ export interface KeyModelForegroundPermit {
   leaseUntilMs: number
 }
 
+export const keyModelStateCapacity = 50_000
+export const keyModelClosedRetentionMs = 5 * 60_000
+export const keyModelReceiptRetentionMs = 5 * 60_000
+
 interface KeyModelRedisKeys {
   state(hash: string): string
   due: string
@@ -265,7 +269,8 @@ export class RedisKeyModelRuntimeStore implements KeyModelRuntimeStore {
  */
 export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoveryStore {
   private readonly states = new Map<string, KeyModelState>()
-  private readonly receipts = new Map<string, KeyModelState>()
+  private readonly receipts = new Map<string, { state: KeyModelState; expiresAtMs: number }>()
+  private readonly closedUntil = new Map<string, number>()
   private readonly permits = new Map<string, Map<string, number>>()
   private readonly wakes = new Map<string, number>()
   private readonly mainFences = new Map<string, { ownerId: string; expiresAtMs: number }>()
@@ -273,6 +278,7 @@ export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoverySto
   private readonly recoveryTargets = new Map<string, KeyModelRecoveryTarget>()
 
   async get(capability: CapabilityKey): Promise<KeyModelState | undefined> {
+    this.cleanup(Date.now())
     const state = this.states.get(capabilityHash(capability))
     return state ? cloneMemoryState(state) : undefined
   }
@@ -284,6 +290,7 @@ export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoverySto
 
   async listDue(nowMs: number, limit: number): Promise<KeyModelState[]> {
     if (!Number.isSafeInteger(nowMs) || nowMs < 1) throw new Error('Key-model memory listDue nowMs 无效')
+    this.cleanup(nowMs)
     const boundedLimit = Math.max(0, Math.trunc(limit))
     return [...this.states.values()]
       .filter((state) => (state.phase === 'OPEN' || state.phase === 'RECOVERING') && (state.retryAtMs ?? Infinity) <= nowMs)
@@ -296,6 +303,7 @@ export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoverySto
   }
 
   async acquireRecoveryLease(input: { capability: CapabilityKey; generation: number; dispatchRevision: number; leaseId: string; nowMs: number }): Promise<{ status: KeyModelMutationStatus; state: KeyModelState }> {
+    this.cleanup(input.nowMs)
     const hash = capabilityHash(input.capability)
     const current = this.states.get(hash)
     if (!current) return { status: 'stale', state: createKeyModelOpenState(input.capability, input.nowMs) }
@@ -305,6 +313,7 @@ export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoverySto
   }
 
   async renewRecoveryLease(input: { capabilityHash: string; generation: number; dispatchRevision: number; leaseId: string; nowMs: number }): Promise<boolean> {
+    this.cleanup(input.nowMs)
     const state = this.states.get(requiredHash(input.capabilityHash))
     if (!state || state.generation !== input.generation || state.dispatchRevision !== input.dispatchRevision || state.phase !== 'HALF_OPEN') return false
     if (!state.probeLease || state.probeLease.leaseId !== input.leaseId || state.probeLease.leaseUntilMs < input.nowMs) return false
@@ -314,27 +323,28 @@ export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoverySto
   }
 
   async settleRecovery(input: { capability: CapabilityKey; generation: number; dispatchRevision: number; leaseId: string; outcome: KeyModelOutcome; nowMs: number }): Promise<{ status: KeyModelMutationStatus; state: KeyModelState }> {
+    this.cleanup(input.nowMs)
     const hash = capabilityHash(input.capability)
     const current = this.states.get(hash)
     if (!current) return { status: 'stale', state: createKeyModelOpenState(input.capability, input.nowMs) }
     const result = settleKeyModelRecovery(current, input)
     if (result.status === 'applied') {
-      if (result.state.phase === 'CLOSED') {
-        this.states.delete(hash)
-        this.recoveryTargets.delete(hash)
-      } else this.states.set(hash, result.state)
+      this.states.set(hash, result.state)
+      if (result.state.phase === 'CLOSED') this.closedUntil.set(hash, input.nowMs + keyModelClosedRetentionMs)
+      else this.closedUntil.delete(hash)
     }
     return { status: result.status, state: cloneMemoryState(result.state) }
   }
 
   async recordFailure(intent: KeyModelFailureIntent): Promise<KeyModelFailureResult> {
     validateFailureIntent(intent)
+    this.cleanup(intent.observedAtMs)
     const hash = capabilityHash(intent.capability)
     if (intent.permit && intent.permit.capabilityHash !== hash) throw new Error('Key-model 失败意图 permit 与 CapabilityKey 不匹配')
     const priorReceipt = this.receipts.get(intent.intentId)
     if (priorReceipt) {
       await this.releaseForegroundIfPresent(intent.permit, hash)
-      return { status: 'idempotent', state: cloneMemoryState(priorReceipt) }
+      return { status: 'idempotent', state: cloneMemoryState(priorReceipt.state) }
     }
     const current = this.states.get(hash)
     if (current && current.dispatchRevision > intent.capability.dispatchRevision) {
@@ -344,12 +354,17 @@ export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoverySto
     // Standalone has no shared Redis clock; use the captured failure fact so
     // memory transitions follow the same deterministic contract.
     const now = intent.observedAtMs
+    if (!current && !this.ensureStateCapacity()) {
+      await this.releaseForegroundIfPresent(intent.permit, hash)
+      return { status: 'capacity_exhausted' }
+    }
     const state = current && current.dispatchRevision === intent.capability.dispatchRevision && current.phase !== 'CLOSED'
       ? { ...current, lastObservedAtMs: now, lastOutcome: 'upstream_not_complete' as const }
       : { ...createKeyModelOpenState(intent.capability, now), generation: current ? current.generation + 1 : 1 }
     this.states.set(hash, state)
+    this.closedUntil.delete(hash)
     if (intent.recoveryTarget) this.recoveryTargets.set(hash, normalizeRecoveryTarget(intent.recoveryTarget))
-    this.receipts.set(intent.intentId, cloneMemoryState(state))
+    this.receipts.set(intent.intentId, { state: cloneMemoryState(state), expiresAtMs: now + keyModelReceiptRetentionMs })
     await this.releaseForegroundIfPresent(intent.permit, hash)
     return { status: current && current.dispatchRevision === intent.capability.dispatchRevision && current.phase !== 'CLOSED' ? 'idempotent' : 'applied', state: cloneMemoryState(state) }
   }
@@ -359,8 +374,9 @@ export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoverySto
     const normalizedAttemptId = requiredText(attemptId, 'attemptId')
     const existing = this.permits.get(hash)?.get(normalizedAttemptId)
     if (existing !== undefined) return { status: 'admitted', permit: { capabilityHash: hash, attemptId: normalizedAttemptId, leaseUntilMs: existing } }
-    const state = this.states.get(hash)
     const now = Date.now()
+    this.cleanup(now)
+    const state = this.states.get(hash)
     const fence = this.mainFences.get(hash)
     if (fence && fence.expiresAtMs <= now) this.mainFences.delete(hash)
     if ((state && state.dispatchRevision === capability.dispatchRevision && state.phase !== 'CLOSED') || this.mainFences.has(hash)) {
@@ -423,6 +439,35 @@ export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoverySto
 
   private async releaseForegroundIfPresent(permit: KeyModelForegroundPermit | undefined, hash: string): Promise<void> {
     if (permit) await this.releaseForeground(permit)
+  }
+
+  private cleanup(nowMs: number): void {
+    for (const [intentId, receipt] of this.receipts) {
+      if (receipt.expiresAtMs <= nowMs) this.receipts.delete(intentId)
+    }
+    for (const [hash, retainedUntilMs] of this.closedUntil) {
+      if (retainedUntilMs > nowMs) continue
+      const state = this.states.get(hash)
+      if (state?.phase === 'CLOSED') {
+        this.states.delete(hash)
+        this.recoveryTargets.delete(hash)
+      }
+      this.closedUntil.delete(hash)
+    }
+  }
+
+  private ensureStateCapacity(): boolean {
+    if (this.states.size < keyModelStateCapacity) return true
+    for (const [hash] of [...this.closedUntil].sort((left, right) => left[1] - right[1])) {
+      const state = this.states.get(hash)
+      if (state?.phase === 'CLOSED') {
+        this.states.delete(hash)
+        this.recoveryTargets.delete(hash)
+      }
+      this.closedUntil.delete(hash)
+      if (this.states.size < keyModelStateCapacity) return true
+    }
+    return false
   }
 }
 
