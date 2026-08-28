@@ -1048,11 +1048,13 @@ export type DbServiceOperation =
     type: 'mark_account_test_task_canceled'
     taskId: string
     message: string
+    expectedStartedAt?: string
   }
   | {
     type: 'complete_account_test_task'
     taskId: string
     result: AccountTestResult
+    expectedStartedAt?: string
     matchingRecovery?: {
       accountId: string
       expectedConfigRevision: number
@@ -1065,11 +1067,13 @@ export type DbServiceOperation =
     taskId: string
     message: string
     result?: AccountTestResult
+    expectedStartedAt?: string
   }
   | {
     type: 'update_account_test_task_message'
     taskId: string
     message: string
+    expectedStartedAt?: string
   }
   | {
     type: 'is_account_test_task_cancel_requested'

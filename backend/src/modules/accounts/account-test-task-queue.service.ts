@@ -191,14 +191,15 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
   }
   const controller = new AbortController()
   runningAccountTestControllers.set(task.id, controller)
-  const onDiagnosticAttemptProgress = accountTestTaskProgressReporter(task.id, task.testEndpointMode)
+  const expectedStartedAt = task.startedAt
+  const onDiagnosticAttemptProgress = accountTestTaskProgressReporter(task.id, task.testEndpointMode, expectedStartedAt)
 
   try {
     if (task.draftAccount) {
       const draft = task.draftAccount
       const draftAccount = accountSummaryFromDraftSnapshot(draft)
       if (!isGatewaySupportedProtocolProfile(draftAccount)) {
-          await failAccountTestTaskViaDbService(task.id, unsupportedGatewayProtocolTestMessage, failedAccountTestResult(draftAccount, task.message ?? unsupportedGatewayProtocolTestMessage, task.model))
+          await failAccountTestTaskViaDbService(task.id, unsupportedGatewayProtocolTestMessage, failedAccountTestResult(draftAccount, task.message ?? unsupportedGatewayProtocolTestMessage, task.model), expectedStartedAt)
         return true
       }
 
@@ -206,20 +207,20 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       if (stateTargetAccountId) {
         const account = await loadAccountForTestViaDbService(stateTargetAccountId, access)
         if (!account) {
-          await failAccountTestTaskViaDbService(task.id, '账户不存在')
+          await failAccountTestTaskViaDbService(task.id, '账户不存在', undefined, expectedStartedAt)
           return true
         }
         if (account.accessType === 'authorized') {
-          await failAccountTestTaskViaDbService(task.id, '授权账户测试不支持使用未保存表单配置', failedAccountTestResult(account, task.message ?? '授权账户测试不支持使用未保存表单配置', task.model))
+          await failAccountTestTaskViaDbService(task.id, '授权账户测试不支持使用未保存表单配置', failedAccountTestResult(account, task.message ?? '授权账户测试不支持使用未保存表单配置', task.model), expectedStartedAt)
           return true
         }
         if (!isGatewaySupportedProtocolProfile(account)) {
-          await failAccountTestTaskViaDbService(task.id, unsupportedGatewayProtocolTestMessage, failedAccountTestResult(account, task.message ?? unsupportedGatewayProtocolTestMessage, task.model))
+          await failAccountTestTaskViaDbService(task.id, unsupportedGatewayProtocolTestMessage, failedAccountTestResult(account, task.message ?? unsupportedGatewayProtocolTestMessage, task.model), expectedStartedAt)
           return true
         }
         const unavailableMessage = accountTestUnavailableMessage(account)
         if (unavailableMessage) {
-          await failAccountTestTaskViaDbService(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model))
+          await failAccountTestTaskViaDbService(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model), expectedStartedAt)
           return true
         }
         const result = await runOpenAIAccountTestWithoutStateMutation(account, access, {
@@ -230,14 +231,14 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
           draftAccount: draft,
           onDiagnosticAttemptProgress,
           onStatusMessage: (message) => {
-            void updateAccountTestTaskMessageViaDbService(task.id, message)
+            void updateAccountTestTaskMessageViaDbService(task.id, message, expectedStartedAt)
           }
         })
         if (controller.signal.aborted) {
-          await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试')
+          await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试', expectedStartedAt)
           return true
         }
-        await completeAccountTestTaskViaDbService(task.id, result)
+        await completeAccountTestTaskViaDbService(task.id, result, expectedStartedAt)
         return true
       }
 
@@ -248,29 +249,29 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
         signal: controller.signal,
         onDiagnosticAttemptProgress,
         onStatusMessage: (message) => {
-          void updateAccountTestTaskMessageViaDbService(task.id, message)
+          void updateAccountTestTaskMessageViaDbService(task.id, message, expectedStartedAt)
         }
       })
       if (controller.signal.aborted) {
-        await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试')
+        await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试', expectedStartedAt)
         return true
       }
-      await completeAccountTestTaskViaDbService(task.id, result)
+      await completeAccountTestTaskViaDbService(task.id, result, expectedStartedAt)
       return true
     }
 
     const account = await loadAccountForTestViaDbService(task.accountId, access)
     if (!account) {
-      await failAccountTestTaskViaDbService(task.id, '账户不存在')
+      await failAccountTestTaskViaDbService(task.id, '账户不存在', undefined, expectedStartedAt)
       return true
     }
     if (!isGatewaySupportedProtocolProfile(account)) {
-      await failAccountTestTaskViaDbService(task.id, unsupportedGatewayProtocolTestMessage, failedAccountTestResult(account, task.message ?? unsupportedGatewayProtocolTestMessage, task.model))
+      await failAccountTestTaskViaDbService(task.id, unsupportedGatewayProtocolTestMessage, failedAccountTestResult(account, task.message ?? unsupportedGatewayProtocolTestMessage, task.model), expectedStartedAt)
       return true
     }
     const unavailableMessage = accountTestUnavailableMessage(account)
     if (unavailableMessage) {
-      await failAccountTestTaskViaDbService(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model))
+      await failAccountTestTaskViaDbService(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model), expectedStartedAt)
       return true
     }
 
@@ -281,20 +282,20 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       signal: controller.signal,
       onDiagnosticAttemptProgress,
       onStatusMessage: (message) => {
-        void updateAccountTestTaskMessageViaDbService(task.id, message)
+        void updateAccountTestTaskMessageViaDbService(task.id, message, expectedStartedAt)
       }
     })
 
     if (controller.signal.aborted) {
-      await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试')
+      await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试', expectedStartedAt)
       return true
     }
 
-    await completeAccountTestTaskViaDbService(task.id, result)
+    await completeAccountTestTaskViaDbService(task.id, result, expectedStartedAt)
     return true
   } catch (error) {
     if (controller.signal.aborted) {
-      await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试')
+      await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试', expectedStartedAt)
       return true
     }
     logger.warn(errorLogFields(error, {
@@ -302,7 +303,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       taskId: task.id,
       accountId: task.accountId
     }), '账号测试后台任务执行失败')
-    await failAccountTestTaskViaDbService(task.id, error instanceof Error ? error.message : '账号测试任务执行失败')
+    await failAccountTestTaskViaDbService(task.id, error instanceof Error ? error.message : '账号测试任务执行失败', undefined, expectedStartedAt)
     return true
   } finally {
     runningAccountTestControllers.delete(task.id)
@@ -311,10 +312,11 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
 
 function accountTestTaskProgressReporter(
   taskId: string,
-  testEndpointMode: AccountSupportedEndpointMode | undefined
+  testEndpointMode: AccountSupportedEndpointMode | undefined,
+  expectedStartedAt?: string
 ): (progress: AccountDiagnosticAttemptProgress) => void {
   return (progress) => {
-    void updateAccountTestTaskMessageViaDbService(taskId, accountDiagnosticAttemptMessage(progress, testEndpointMode))
+    void updateAccountTestTaskMessageViaDbService(taskId, accountDiagnosticAttemptMessage(progress, testEndpointMode), expectedStartedAt)
   }
 }
 
@@ -360,39 +362,44 @@ async function markAccountTestTaskRunningViaDbService(taskId: string) {
   })
 }
 
-async function markAccountTestTaskCanceledViaDbService(taskId: string, message: string) {
+async function markAccountTestTaskCanceledViaDbService(taskId: string, message: string, expectedStartedAt?: string) {
   return await requestBackgroundWorkerDbService({
     type: 'mark_account_test_task_canceled',
     taskId,
-    message
+    message,
+    expectedStartedAt
   })
 }
 
 async function completeAccountTestTaskViaDbService(
   taskId: string,
-  result: AccountTestResult
+  result: AccountTestResult,
+  expectedStartedAt?: string
 ) {
   return await requestBackgroundWorkerDbService({
     type: 'complete_account_test_task',
     taskId,
-    result
+    result,
+    expectedStartedAt
   })
 }
 
-async function failAccountTestTaskViaDbService(taskId: string, message: string, result?: AccountTestResult) {
+async function failAccountTestTaskViaDbService(taskId: string, message: string, result?: AccountTestResult, expectedStartedAt?: string) {
   return await requestBackgroundWorkerDbService({
     type: 'fail_account_test_task',
     taskId,
     message,
-    result
+    result,
+    expectedStartedAt
   })
 }
 
-async function updateAccountTestTaskMessageViaDbService(taskId: string, message: string) {
+async function updateAccountTestTaskMessageViaDbService(taskId: string, message: string, expectedStartedAt?: string) {
   return await requestBackgroundWorkerDbService({
     type: 'update_account_test_task_message',
     taskId,
-    message
+    message,
+    expectedStartedAt
   })
 }
 

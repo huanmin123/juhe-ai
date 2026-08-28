@@ -413,7 +413,7 @@ export function markAccountTestTaskRunning(id: string): AccountTestTaskRecord | 
     UPDATE account_test_tasks
     SET status = 'running',
         status_message = '后台测试中',
-        started_at = COALESCE(started_at, ?),
+        started_at = ?,
         updated_at = ?
     WHERE id = ?
       AND status = 'queued'
@@ -429,7 +429,7 @@ export function markAccountTestTaskRunning(id: string): AccountTestTaskRecord | 
   return getAccountTestTaskRecord(id)
 }
 
-export function updateAccountTestTaskMessage(id: string, message: string): AccountTestTaskRecord | undefined {
+export function updateAccountTestTaskMessage(id: string, message: string, expectedStartedAt?: string): AccountTestTaskRecord | undefined {
   const normalizedMessage = normalizedOptionalText(message)
   if (!normalizedMessage) return getAccountTestTaskRecord(id)
   const now = nowIso()
@@ -440,11 +440,12 @@ export function updateAccountTestTaskMessage(id: string, message: string): Accou
     WHERE id = ?
       AND status = 'running'
       AND cancel_requested = 0
-  `).run(normalizedMessage, now, id)
+      AND (? IS NULL OR started_at = ?)
+  `).run(normalizedMessage, now, id, expectedStartedAt ?? null, expectedStartedAt ?? null)
   return getAccountTestTaskRecord(id)
 }
 
-export function completeAccountTestTask(id: string, result: AccountTestResult): AccountTestTaskRecord | undefined {
+export function completeAccountTestTask(id: string, result: AccountTestResult, expectedStartedAt?: string): AccountTestTaskRecord | undefined {
   const now = nowIso()
   const status: AccountTestTaskStatus = result.success ? 'success' : 'failed'
   const write = getBusinessDatabase().prepare(`
@@ -458,6 +459,7 @@ export function completeAccountTestTask(id: string, result: AccountTestResult): 
     WHERE id = ?
       AND status = 'running'
       AND cancel_requested = 0
+      AND (? IS NULL OR started_at = ?)
   `).run(
     status,
     result.message,
@@ -465,7 +467,9 @@ export function completeAccountTestTask(id: string, result: AccountTestResult): 
     result.success ? null : result.message,
     now,
     now,
-    id
+    id,
+    expectedStartedAt ?? null,
+    expectedStartedAt ?? null
   )
   if (Number(write.changes ?? 0) === 0) {
     return finalizeAccountTestTaskIfCanceled(id)
@@ -473,7 +477,7 @@ export function completeAccountTestTask(id: string, result: AccountTestResult): 
   return getAccountTestTaskRecord(id)
 }
 
-export function failAccountTestTask(id: string, message: string, result?: AccountTestResult): AccountTestTaskRecord | undefined {
+export function failAccountTestTask(id: string, message: string, result?: AccountTestResult, expectedStartedAt?: string): AccountTestTaskRecord | undefined {
   const now = nowIso()
   const write = getBusinessDatabase().prepare(`
     UPDATE account_test_tasks
@@ -486,7 +490,8 @@ export function failAccountTestTask(id: string, message: string, result?: Accoun
     WHERE id = ?
       AND status IN ('queued', 'running')
       AND cancel_requested = 0
-  `).run(message, result ? JSON.stringify(result) : null, message, now, now, id)
+      AND (? IS NULL OR started_at = ?)
+  `).run(message, result ? JSON.stringify(result) : null, message, now, now, id, expectedStartedAt ?? null, expectedStartedAt ?? null)
   if (Number(write.changes ?? 0) === 0) {
     return finalizeAccountTestTaskIfCanceled(id)
   }
@@ -514,7 +519,7 @@ export function cancelAccountTestTask(id: string, access?: AccessScope): Account
   return getAccountTestTask(id, access)
 }
 
-export function markAccountTestTaskCanceled(id: string, message: string): AccountTestTaskRecord | undefined {
+export function markAccountTestTaskCanceled(id: string, message: string, expectedStartedAt?: string): AccountTestTaskRecord | undefined {
   const now = nowIso()
   getBusinessDatabase().prepare(`
     UPDATE account_test_tasks
@@ -528,7 +533,8 @@ export function markAccountTestTaskCanceled(id: string, message: string): Accoun
         updated_at = ?
     WHERE id = ?
       AND status IN ('queued', 'running')
-  `).run(message, now, now, id)
+      AND (? IS NULL OR started_at = ?)
+  `).run(message, now, now, id, expectedStartedAt ?? null, expectedStartedAt ?? null)
   return getAccountTestTaskRecord(id)
 }
 
@@ -952,7 +958,7 @@ export async function markAccountTestTaskRunningAsync(id: string): Promise<Accou
     UPDATE ${accountTestTable(client, 'account_test_tasks')}
     SET status = 'running',
         status_message = '后台测试中',
-        started_at = COALESCE(started_at, ?),
+        started_at = ?,
         updated_at = ?
     WHERE id = ?
       AND status = 'queued'
@@ -968,9 +974,9 @@ export async function markAccountTestTaskRunningAsync(id: string): Promise<Accou
   return getAccountTestTaskRecordAsync(id)
 }
 
-export async function updateAccountTestTaskMessageAsync(id: string, message: string): Promise<AccountTestTaskRecord | undefined> {
+export async function updateAccountTestTaskMessageAsync(id: string, message: string, expectedStartedAt?: string): Promise<AccountTestTaskRecord | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return updateAccountTestTaskMessage(id, message)
+    return updateAccountTestTaskMessage(id, message, expectedStartedAt)
   }
   const normalizedMessage = normalizedOptionalText(message)
   if (!normalizedMessage) return getAccountTestTaskRecordAsync(id)
@@ -983,13 +989,14 @@ export async function updateAccountTestTaskMessageAsync(id: string, message: str
     WHERE id = ?
       AND status = 'running'
       AND cancel_requested = false
-  `, [normalizedMessage, now, id])
+      AND (? IS NULL OR started_at = ?)
+  `, [normalizedMessage, now, id, expectedStartedAt ?? null, expectedStartedAt ?? null])
   return getAccountTestTaskRecordAsync(id)
 }
 
-export async function completeAccountTestTaskAsync(id: string, result: AccountTestResult): Promise<AccountTestTaskRecord | undefined> {
+export async function completeAccountTestTaskAsync(id: string, result: AccountTestResult, expectedStartedAt?: string): Promise<AccountTestTaskRecord | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return completeAccountTestTask(id, result)
+    return completeAccountTestTask(id, result, expectedStartedAt)
   }
   const client = await accountTestTaskDatabaseClient()
   const now = nowIso()
@@ -1005,6 +1012,7 @@ export async function completeAccountTestTaskAsync(id: string, result: AccountTe
     WHERE id = ?
       AND status = 'running'
       AND cancel_requested = false
+      AND (? IS NULL OR started_at = ?)
   `, [
     status,
     result.message,
@@ -1012,7 +1020,9 @@ export async function completeAccountTestTaskAsync(id: string, result: AccountTe
     result.success ? null : result.message,
     now,
     now,
-    id
+    id,
+    expectedStartedAt ?? null,
+    expectedStartedAt ?? null
   ])
   if (Number(write.changes ?? 0) === 0) {
     return finalizeAccountTestTaskIfCanceledAsync(id)
@@ -1020,9 +1030,9 @@ export async function completeAccountTestTaskAsync(id: string, result: AccountTe
   return getAccountTestTaskRecordAsync(id)
 }
 
-export async function failAccountTestTaskAsync(id: string, message: string, result?: AccountTestResult): Promise<AccountTestTaskRecord | undefined> {
+export async function failAccountTestTaskAsync(id: string, message: string, result?: AccountTestResult, expectedStartedAt?: string): Promise<AccountTestTaskRecord | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return failAccountTestTask(id, message, result)
+    return failAccountTestTask(id, message, result, expectedStartedAt)
   }
   const client = await accountTestTaskDatabaseClient()
   const now = nowIso()
@@ -1037,7 +1047,8 @@ export async function failAccountTestTaskAsync(id: string, message: string, resu
     WHERE id = ?
       AND status IN ('queued', 'running')
       AND cancel_requested = false
-  `, [message, result ? JSON.stringify(result) : null, message, now, now, id])
+      AND (? IS NULL OR started_at = ?)
+  `, [message, result ? JSON.stringify(result) : null, message, now, now, id, expectedStartedAt ?? null, expectedStartedAt ?? null])
   if (Number(write.changes ?? 0) === 0) {
     return finalizeAccountTestTaskIfCanceledAsync(id)
   }
@@ -1069,9 +1080,9 @@ export async function cancelAccountTestTaskAsync(id: string, access?: AccessScop
   return getAccountTestTaskAsync(id, access)
 }
 
-export async function markAccountTestTaskCanceledAsync(id: string, message: string): Promise<AccountTestTaskRecord | undefined> {
+export async function markAccountTestTaskCanceledAsync(id: string, message: string, expectedStartedAt?: string): Promise<AccountTestTaskRecord | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return markAccountTestTaskCanceled(id, message)
+    return markAccountTestTaskCanceled(id, message, expectedStartedAt)
   }
   const client = await accountTestTaskDatabaseClient()
   const now = nowIso()
@@ -1087,7 +1098,8 @@ export async function markAccountTestTaskCanceledAsync(id: string, message: stri
         updated_at = ?
     WHERE id = ?
       AND status IN ('queued', 'running')
-  `, [message, now, now, id])
+      AND (? IS NULL OR started_at = ?)
+  `, [message, now, now, id, expectedStartedAt ?? null, expectedStartedAt ?? null])
   return getAccountTestTaskRecordAsync(id)
 }
 

@@ -206,17 +206,19 @@ export interface MatchingManualAccountTestTaskCompletionResult {
 export function completeAccountTestTaskWithMatchingManualRecovery(
   taskId: string,
   result: AccountTestResult,
-  _matchingRecovery?: unknown
+  _matchingRecovery?: unknown,
+  expectedStartedAt?: string
 ): MatchingManualAccountTestTaskCompletionResult {
-  return { task: completeAccountTestTask(taskId, result), recoveryChanged: false }
+  return { task: completeAccountTestTask(taskId, result, expectedStartedAt), recoveryChanged: false }
 }
 
 export async function completeAccountTestTaskWithMatchingManualRecoveryAsync(
   taskId: string,
   result: AccountTestResult,
-  _matchingRecovery?: unknown
+  _matchingRecovery?: unknown,
+  expectedStartedAt?: string
 ): Promise<MatchingManualAccountTestTaskCompletionResult> {
-  return { task: await completeAccountTestTaskAsync(taskId, result), recoveryChanged: false }
+  return { task: await completeAccountTestTaskAsync(taskId, result, expectedStartedAt), recoveryChanged: false }
 }
 
 export function forceActivatePendingAccount(id: string, access?: AccessScope): AccountForceActivateResult {

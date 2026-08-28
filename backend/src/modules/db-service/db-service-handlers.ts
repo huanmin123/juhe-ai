@@ -632,7 +632,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return handleDbServiceOperationSync(operation)
     case 'mark_account_test_task_canceled':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await markAccountTestTaskCanceledAsync(operation.taskId, operation.message)
+        return await markAccountTestTaskCanceledAsync(operation.taskId, operation.message, operation.expectedStartedAt)
       }
       return handleDbServiceOperationSync(operation)
     case 'complete_account_test_task':
@@ -640,18 +640,19 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return await completeAccountTestTaskWithMatchingManualRecoveryAsync(
           operation.taskId,
           operation.result,
-          operation.matchingRecovery
+          operation.matchingRecovery,
+          operation.expectedStartedAt
         )
       }
       return handleDbServiceOperationSync(operation)
     case 'fail_account_test_task':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await failAccountTestTaskAsync(operation.taskId, operation.message, operation.result)
+        return await failAccountTestTaskAsync(operation.taskId, operation.message, operation.result, operation.expectedStartedAt)
       }
       return handleDbServiceOperationSync(operation)
     case 'update_account_test_task_message':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await updateAccountTestTaskMessageAsync(operation.taskId, operation.message)
+        return await updateAccountTestTaskMessageAsync(operation.taskId, operation.message, operation.expectedStartedAt)
       }
       return handleDbServiceOperationSync(operation)
     case 'is_account_test_task_cancel_requested':
@@ -1663,17 +1664,18 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'mark_account_test_task_running':
       return markAccountTestTaskRunning(operation.taskId)
     case 'mark_account_test_task_canceled':
-      return markAccountTestTaskCanceled(operation.taskId, operation.message)
+      return markAccountTestTaskCanceled(operation.taskId, operation.message, operation.expectedStartedAt)
     case 'complete_account_test_task':
       return completeAccountTestTaskWithMatchingManualRecovery(
         operation.taskId,
         operation.result,
-        operation.matchingRecovery
+        operation.matchingRecovery,
+        operation.expectedStartedAt
       )
     case 'fail_account_test_task':
-      return failAccountTestTask(operation.taskId, operation.message, operation.result)
+      return failAccountTestTask(operation.taskId, operation.message, operation.result, operation.expectedStartedAt)
     case 'update_account_test_task_message':
-      return updateAccountTestTaskMessage(operation.taskId, operation.message)
+      return updateAccountTestTaskMessage(operation.taskId, operation.message, operation.expectedStartedAt)
     case 'is_account_test_task_cancel_requested':
       return { canceled: isAccountTestTaskCancelRequested(operation.taskId) }
     case 'read_account_test_task_cancel_message':
