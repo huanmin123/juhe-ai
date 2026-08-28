@@ -172,7 +172,6 @@ assert.deepEqual(noEncryptedContent, {
 const genericClient = await recoverCodexEncryptedContentRequest({
   req: request(originalBody),
   account,
-  requestClientCompatibility: 'openai_standard',
   body: Buffer.from(JSON.stringify(originalBody), 'utf8'),
   upstreamErrorText: 'thinking_signature_invalid'
 })
@@ -219,25 +218,6 @@ assert.equal(
   'encrypted_content_decryption_failed',
   'HTTP JSON error.message 仍可触发受限恢复'
 )
-const wrappedHttp400Error = 'HTTP 400; cause: The encrypted content gAAA...F0A= could not be verified. Reason: Encrypted content could not be decrypted or parsed.'
-assert.equal(
-  classifyCodexEncryptedContentRecoverySignal(wrappedHttp400Error),
-  'encrypted_content_decryption_failed',
-  'HTTP 400 cause wrapper 中的完整加密内容解密失败文案必须触发受限恢复'
-)
-assert.equal(
-  classifyCodexEncryptedContentRecoverySignal('普通正文：The encrypted content gAAA...F0A= could not be verified.'),
-  undefined,
-  '普通正文中的片段不得触发加密内容恢复'
-)
-const http400Recovery = await recoverCodexEncryptedContentRequest({
-  req: request(originalBody),
-  account,
-  body: Buffer.from(JSON.stringify(originalBody), 'utf8'),
-  upstreamErrorText: wrappedHttp400Error
-})
-assert.equal(http400Recovery.action, 'retry_with_body_variant', '真实 HTTP 400 加密内容错误文案必须触发清理重试')
-
 console.log('Codex 加密内容恢复回归通过：精确失败后清理 reasoning、工具输出、agent_message 与 compaction 密文，保留关联且不修改原始请求')
 
 function countEncryptedContent(value: unknown): number {

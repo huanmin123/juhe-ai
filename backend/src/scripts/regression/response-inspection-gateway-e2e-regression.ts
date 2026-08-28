@@ -38,7 +38,7 @@ type ScenarioName =
   | 'codex_broken_gzip_sse'
   | 'codex_encrypted_content_recovery_sse'
   | 'codex_encrypted_content_recovery_exhausted_sse'
-  | 'responses_encrypted_content_recovery_http_400_sse'
+  | 'openai_responses_encrypted_content_recovery_sse'
 
 interface UpstreamHit {
   path: string
@@ -121,11 +121,11 @@ try {
     if (requestedScenario === 'codex_encrypted_content_recovery_sse') {
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl)
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, false, true)
+    } else if (requestedScenario === 'openai_responses_encrypted_content_recovery_sse') {
+      await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, false, false, true)
     } else if (requestedScenario === 'codex_encrypted_content_recovery_exhausted_sse') {
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, true)
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, true, true)
-    } else if (requestedScenario === 'responses_encrypted_content_recovery_http_400_sse') {
-      await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, false, false, true)
     } else if (requestedScenario === 'codex_compaction_sse') {
       await runScenario(baseUrl, upstreamBaseUrl, 'codex_compaction_sse')
     } else if (requestedScenario === 'codex_compaction_interrupted_sse') {
@@ -448,10 +448,10 @@ async function runCodexEncryptedContentRecoveryScenario(
   upstreamBaseUrl: string,
   expectRecoveryExhausted = false,
   includeCompaction = false,
-  genericHttp400Wrapper = false
+  standardOpenAI = false
 ): Promise<void> {
-  const scenario: ScenarioName = genericHttp400Wrapper
-    ? 'responses_encrypted_content_recovery_http_400_sse'
+  const scenario: ScenarioName = standardOpenAI
+    ? 'openai_responses_encrypted_content_recovery_sse'
     : expectRecoveryExhausted
     ? 'codex_encrypted_content_recovery_exhausted_sse'
     : 'codex_encrypted_content_recovery_sse'
@@ -535,7 +535,7 @@ async function runCodexEncryptedContentRecoveryScenario(
     'content-type': 'application/json',
     accept: 'text/event-stream'
   }
-  if (!genericHttp400Wrapper) {
+  if (!standardOpenAI) {
     requestHeaders['x-codex-turn-metadata'] = JSON.stringify({
       turn_id: `turn_${scenario}`,
       session_id: `session_${scenario}`,
@@ -565,15 +565,16 @@ async function runCodexEncryptedContentRecoveryScenario(
     clientIp: '127.0.0.1'
   })
   const codexTurnStateKey = turnStrategy.codexTurn?.stateKey
-  if (!genericHttp400Wrapper) {
-    assert(codexTurnStateKey, 'E2E 请求必须解析出 Codex turn state key')
+  if (standardOpenAI) {
+    assert.equal(turnStrategy.requestClientCompatibility, 'openai_standard', '普通 OpenAI Responses 回归不得依赖 Codex 画像')
+    assert.equal(codexTurnStateKey, undefined, '普通 OpenAI Responses 回归不应生成 Codex turn state')
   } else {
-    assert.equal(turnStrategy.requestClientCompatibility, 'openai_standard', 'HTTP 400 回归必须使用普通 OpenAI Responses 客户端画像')
+    assert(codexTurnStateKey, 'E2E 请求必须解析出 Codex turn state key')
   }
   const response = await sendRequest()
   const responseText = await response.text()
   assert.equal(response.status, 200, `密文恢复应保留 Codex SSE 协议响应：${responseText}`)
-  assert.equal(upstreamHits.length, 2, `精确密文错误只能额外重试一次；HTTP ${response.status} ${responseText}：${JSON.stringify(upstreamHits)}`)
+  assert.equal(upstreamHits.length, 2, `精确密文错误只能额外重试一次：${JSON.stringify(upstreamHits)}`)
   assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-clean-${scenario}`)
   assert.equal(upstreamHits[1]?.authorization, `Bearer sk-upstream-clean-${scenario}`)
   assert.equal(upstreamHits[0]?.path, upstreamHits[1]?.path, 'cleanup retry 必须发送到相同上游 URL 路径')
@@ -613,6 +614,7 @@ async function runCodexEncryptedContentRecoveryScenario(
     assert.doesNotMatch(responseText, /fixture-rejected-reasoning-content|fixture-rejected-agent-message-content/, '客户端响应不得泄露 fixture 密文')
     assert.doesNotMatch(responseText, /Encrypted function output content could not be decrypted or decoded\./, '客户端响应不得泄露上游拒绝正文')
     assert.doesNotMatch(responseText, /response\.completed/, '清洗后的第二次失败不得伪造完成事件')
+    if (!codexTurnStateKey) throw new Error('exhausted Codex 回归必须保留 Codex turn state key')
     assert.deepEqual(
       getCodexTurnRetryStateForTest(codexTurnStateKey),
       { failureCount: 1, failedAccountIds: [account.id] },
@@ -717,9 +719,9 @@ function createMockOpenAIUpstream(): http.Server {
         if (
           scenario === 'codex_encrypted_content_recovery_sse'
           || scenario === 'codex_encrypted_content_recovery_exhausted_sse'
-          || scenario === 'responses_encrypted_content_recovery_http_400_sse'
+          || scenario === 'openai_responses_encrypted_content_recovery_sse'
         ) {
-          sendCodexEncryptedContentRecoverySse(res, bodyText, scenario, scenario === 'responses_encrypted_content_recovery_http_400_sse')
+          sendCodexEncryptedContentRecoverySse(res, bodyText, scenario)
           return
         }
         if (scenario === 'codex_compaction_sse') {
@@ -867,8 +869,7 @@ function sendResponsesSse(res: http.ServerResponse, scenario: ScenarioName, poll
 function sendCodexEncryptedContentRecoverySse(
   res: http.ServerResponse,
   bodyText: string,
-  scenario: ScenarioName,
-  rejectWithHttp400Wrapper = false
+  scenario: ScenarioName
 ): void {
   const requestBody = JSON.parse(bodyText) as { input?: Array<{ type?: string; encrypted_content?: unknown; content?: unknown }> }
   const rejectedReasoning = requestBody.input?.some((item) => (
@@ -889,11 +890,6 @@ function sendCodexEncryptedContentRecoverySse(
       && typeof item.encrypted_content === 'string'
   )) === true
   if (rejectedReasoning || rejectedAgentMessage || rejectedCompaction) {
-    if (rejectWithHttp400Wrapper) {
-      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end('HTTP 400; cause: The encrypted content gAAA...F0A= could not be verified. Reason: Encrypted content could not be decrypted or parsed.')
-      return
-    }
     sendCodexEncryptedContentRecoveryFailure(res, 'resp-rejected-encrypted-content')
     return
   }

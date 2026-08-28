@@ -223,7 +223,7 @@ export class GatewayKeyModelAttempt {
       capabilityHash: this.capabilityHash,
       dispatchRevision: this.route.capability.dispatchRevision,
       outcome
-    }), 'Key-model runtime guard 操作失败')
+    }), 'Key-model state 操作失败')
   }
 }
 

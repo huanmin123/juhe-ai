@@ -1589,7 +1589,6 @@ let codexTurnAvoidedFallbackEnabled = false
           const compatibilityRecovery = await recoverCodexEncryptedContentRequest({
             req,
             account,
-            requestClientCompatibility: currentPreflight.clientStrategy.requestClientCompatibility,
             body: upstreamResult.requestBody,
             upstreamErrorText: compatibilityRecoveryErrorText,
             signal: requestExecutionSignal

@@ -649,7 +649,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     const codexEncryptedContentRecoverySignal = codexEncryptedContentRecoverySignalFor({
       streamResult,
       account,
-      clientStrategy,
       responseEndpointFamily,
       response: res
     })
@@ -1781,7 +1780,6 @@ function isResponsePrecommitDeadlineStreamResult(
 function codexEncryptedContentRecoverySignalFor(input: {
   streamResult: StreamPipeResult
   account: UpstreamAccount
-  clientStrategy?: OpenAIGatewayClientStrategyContext
   responseEndpointFamily?: string
   response: Pick<Response, 'writableEnded' | 'destroyed'>
 }): ReturnType<typeof classifyCodexEncryptedContentRecoverySignal> {

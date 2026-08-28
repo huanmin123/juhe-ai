@@ -18,7 +18,7 @@ const recoveryBatchLimit int64 = 128
 type Store interface {
 	ServerNow(context.Context) (time.Time, error)
 	ListDue(context.Context, time.Time, int64) ([]State, error)
-	Acquire(context.Context, State, string, bool) (State, MutationStatus, error)
+	Acquire(context.Context, State, string, bool, bool) (State, MutationStatus, error)
 	Renew(context.Context, State, string) (bool, error)
 	Commit(context.Context, State, State, string) (MutationStatus, error)
 }
@@ -95,10 +95,11 @@ func (r *Runner) RunCycle(ctx context.Context) error {
 		return fmt.Errorf("读取 model-recovery due state: %w", err)
 	}
 	continuationWaiting := false
+	continuationSources := map[string]bool{}
 	for _, item := range due {
 		if item.Phase == Recovering {
 			continuationWaiting = true
-			break
+			continuationSources[item.CredentialSourceAccountID] = true
 		}
 	}
 	r.mu.Lock()
@@ -106,19 +107,19 @@ func (r *Runner) RunCycle(ctx context.Context) error {
 	for _, candidate := range selected {
 		leaseID := newLeaseID()
 		r.running[leaseID] = Running{SourceID: candidate.State.CredentialSourceAccountID, Continuation: candidate.State.Phase == Recovering}
-		go r.runCandidate(ctx, candidate.State, leaseID, continuationWaiting)
+		go r.runCandidate(ctx, candidate.State, leaseID, continuationWaiting, continuationSources[candidate.State.CredentialSourceAccountID])
 	}
 	r.mu.Unlock()
 	return nil
 }
 
-func (r *Runner) runCandidate(parent context.Context, candidate State, leaseID string, continuationWaiting bool) {
+func (r *Runner) runCandidate(parent context.Context, candidate State, leaseID string, continuationWaiting bool, sourceContinuationWaiting bool) {
 	defer func() {
 		r.mu.Lock()
 		delete(r.running, leaseID)
 		r.mu.Unlock()
 	}()
-	state, status, err := r.store.Acquire(parent, candidate, leaseID, continuationWaiting)
+	state, status, err := r.store.Acquire(parent, candidate, leaseID, continuationWaiting, sourceContinuationWaiting)
 	if err != nil || status != Applied {
 		if err != nil {
 			r.logger.Warn("model-recovery acquire failed", "capabilityHash", candidate.CapabilityHash, "error", err)

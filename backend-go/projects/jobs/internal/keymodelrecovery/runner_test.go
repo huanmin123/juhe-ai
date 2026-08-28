@@ -20,7 +20,7 @@ func (s *runnerStore) ServerNow(context.Context) (time.Time, error) { return s.n
 func (s *runnerStore) ListDue(context.Context, time.Time, int64) ([]State, error) {
 	return []State{s.candidate}, nil
 }
-func (s *runnerStore) Acquire(_ context.Context, candidate State, leaseID string, _ bool) (State, MutationStatus, error) {
+func (s *runnerStore) Acquire(_ context.Context, candidate State, leaseID string, _, _ bool) (State, MutationStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next, status := Acquire(candidate, candidate.Generation, candidate.DispatchRevision, leaseID, s.now)

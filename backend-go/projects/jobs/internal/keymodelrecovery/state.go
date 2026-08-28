@@ -301,10 +301,11 @@ func PrioritizeDue(items []Due, now time.Time) []Due {
 func SelectDue(items []Due, running []Running, now time.Time) []Due {
 	ordered := PrioritizeDue(items, now)
 	continuationWaiting := false
+	continuationSources := map[string]bool{}
 	for _, item := range ordered {
 		if item.State.Phase == Recovering {
 			continuationWaiting = true
-			break
+			continuationSources[item.SourceID] = true
 		}
 	}
 	globalRunning := len(running)
@@ -320,7 +321,7 @@ func SelectDue(items []Due, running []Running, now time.Time) []Due {
 		if item.State.Phase == Open && continuationWaiting {
 			// Reserve capacity is unavailable to new OPEN work whenever a due
 			// continuation exists. Already-running OPEN probes are never killed.
-			if globalRunning >= RecoveryGlobalLimit-ContinuationGlobalReserve || bySource[item.SourceID] >= RecoverySourceLimit-ContinuationSourceReserve {
+			if globalRunning >= RecoveryGlobalLimit-ContinuationGlobalReserve || (continuationSources[item.SourceID] && bySource[item.SourceID] >= RecoverySourceLimit-ContinuationSourceReserve) {
 				continue
 			}
 		}

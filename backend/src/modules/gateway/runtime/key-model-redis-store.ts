@@ -673,7 +673,7 @@ function parseState(value: string, expectedHash: string, expectedRevision: numbe
 
 function requiredRedisStateUrl(): string {
   const url = runtimeConfig.redis.stateUrl?.trim()
-  if (!url) throw new Error('启用 Key-model runtime guard 必须配置 JUHE_AI_REDIS_STATE_URL')
+  if (!url) throw new Error('启用 Key-model Redis state 必须配置 JUHE_AI_REDIS_STATE_URL')
   return url
 }
 

@@ -1,7 +1,6 @@
 import type { Request } from 'express'
 
 import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
-import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { gatewayJsonBodyInlineParseMaxBytes } from './body.js'
@@ -54,8 +53,6 @@ export type CodexEncryptedContentRecoveryResult =
 export async function recoverCodexEncryptedContentRequest(input: {
   req: Request
   account: UpstreamAccount
-  /** 保留调用兼容性；恢复门槛由协议画像和 endpoint family 决定。 */
-  requestClientCompatibility?: ClientCompatibilityCapability
   body: Buffer | string | undefined
   upstreamErrorText: string
   signal?: AbortSignal
@@ -114,9 +111,6 @@ export function classifyCodexEncryptedContentRecoverySignal(
   for (const payload of structuredErrorPayloads(upstreamErrorText)) {
     const signal = signalForStructuredErrorPayload(payload)
     if (signal) return signal
-  }
-  if (looksLikeHttpErrorWrapper(upstreamErrorText) && looksLikeEncryptedContentDecryptionFailure(upstreamErrorText)) {
-    return 'encrypted_content_decryption_failed'
   }
   return undefined
 }
@@ -187,10 +181,6 @@ function looksLikeEncryptedContentDecryptionFailure(value: string): boolean {
       || normalized.includes('could not be verified')
       || normalized.includes('could not be parsed')
     )
-}
-
-function looksLikeHttpErrorWrapper(value: string): boolean {
-  return /^\s*http\s+4\d{2}\b[\s;,:-]*cause\s*:/i.test(value)
 }
 
 function parseJsonRecord(value: string): JsonRecord | undefined {

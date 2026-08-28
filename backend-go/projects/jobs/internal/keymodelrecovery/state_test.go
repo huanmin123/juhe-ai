@@ -80,6 +80,13 @@ func TestFailureUnknownAndContinuationPriority(t *testing.T) {
 	if len(selected) != 1 || selected[0].State.Phase != Recovering {
 		t.Fatalf("continuation reserve violated: %#v", selected)
 	}
+	otherSourceOpen := open
+	otherSourceOpen.Phase = Open
+	otherSourceOpen.RetryAt = now
+	selected = SelectDue([]Due{{State: continuation, SourceID: "continuation"}, {State: otherSourceOpen, SourceID: "new-other"}}, running[:22], now)
+	if len(selected) != 2 || selected[1].SourceID != "new-other" {
+		t.Fatalf("continuation source reserve leaked to unrelated source: %#v", selected)
+	}
 	// Unknown after a valid lease preserves the recovery sequence.
 	continuation.Lease = &Lease{ID: "unknown", Until: now.Add(ProbeLease)}
 	continuation.Phase = HalfOpen

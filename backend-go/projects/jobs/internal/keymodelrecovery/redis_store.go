@@ -29,8 +29,8 @@ func LoadRedisConfig(getenv func(string) string) (RedisConfig, error) {
 		return RedisConfig{}, errors.New("getenv 不能为空")
 	}
 	cfg := RedisConfig{URL: strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL")), Namespace: strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))}
-	// The runtime guard is part of the Redis-state profile and has no kill
-	// switch. Jobs without a Redis state URL are the standalone topology.
+	// Redis state selects the distributed profile; jobs without a Redis state
+	// URL are the standalone topology.
 	cfg.Enabled = cfg.URL != ""
 	if !cfg.Enabled {
 		return cfg, nil
@@ -138,8 +138,8 @@ func (s *RedisStore) CleanClosed(ctx context.Context, limit int64) (int64, error
 	return result, err
 }
 
-func (s *RedisStore) Acquire(ctx context.Context, candidate State, leaseID string, continuationWaiting bool) (State, MutationStatus, error) {
-	result, err := s.client.Eval(ctx, acquireRecoveryLeaseScript, []string{s.keys.State(candidate.CapabilityHash), s.keys.Lease(candidate.CapabilityHash), s.keys.Due(), s.keys.GlobalProbes(), s.keys.SourceProbes(candidate.CredentialSourceAccountID)}, candidate.Generation, candidate.DispatchRevision, leaseID, ProbeLease.Milliseconds(), boolArg(continuationWaiting), string(candidate.Phase)).Slice()
+func (s *RedisStore) Acquire(ctx context.Context, candidate State, leaseID string, continuationWaiting bool, sourceContinuationWaiting bool) (State, MutationStatus, error) {
+	result, err := s.client.Eval(ctx, acquireRecoveryLeaseScript, []string{s.keys.State(candidate.CapabilityHash), s.keys.Lease(candidate.CapabilityHash), s.keys.Due(), s.keys.GlobalProbes(), s.keys.SourceProbes(candidate.CredentialSourceAccountID)}, candidate.Generation, candidate.DispatchRevision, leaseID, ProbeLease.Milliseconds(), boolArg(continuationWaiting), boolArg(sourceContinuationWaiting), string(candidate.Phase)).Slice()
 	if err != nil {
 		return State{}, "", err
 	}
@@ -189,7 +189,7 @@ redis.call('ZREMRANGEBYSCORE', KEYS[4], '-inf', now)
 redis.call('ZREMRANGEBYSCORE', KEYS[5], '-inf', now)
 local globalLimit = 32
 local sourceLimit = 2
-if ARGV[5] == 'true' and ARGV[6] == 'OPEN' then globalLimit = 24; sourceLimit = 1 end
+if ARGV[5] == 'true' and ARGV[6] == 'true' and ARGV[7] == 'OPEN' then globalLimit = 24; sourceLimit = 1 end
 if tonumber(redis.call('ZCARD', KEYS[4])) >= globalLimit or tonumber(redis.call('ZCARD', KEYS[5])) >= sourceLimit then
   redis.call('DEL', KEYS[2])
   return {'not_due', raw}
