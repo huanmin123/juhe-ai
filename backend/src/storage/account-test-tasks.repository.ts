@@ -989,7 +989,7 @@ export async function updateAccountTestTaskMessageAsync(id: string, message: str
     WHERE id = ?
       AND status = 'running'
       AND cancel_requested = false
-      AND (? IS NULL OR started_at = ?)
+      AND (?::timestamptz IS NULL OR started_at = ?::timestamptz)
   `, [normalizedMessage, now, id, expectedStartedAt ?? null, expectedStartedAt ?? null])
   return getAccountTestTaskRecordAsync(id)
 }
@@ -1012,7 +1012,7 @@ export async function completeAccountTestTaskAsync(id: string, result: AccountTe
     WHERE id = ?
       AND status = 'running'
       AND cancel_requested = false
-      AND (? IS NULL OR started_at = ?)
+      AND (?::timestamptz IS NULL OR started_at = ?::timestamptz)
   `, [
     status,
     result.message,
@@ -1047,7 +1047,7 @@ export async function failAccountTestTaskAsync(id: string, message: string, resu
     WHERE id = ?
       AND status IN ('queued', 'running')
       AND cancel_requested = false
-      AND (? IS NULL OR started_at = ?)
+      AND (?::timestamptz IS NULL OR started_at = ?::timestamptz)
   `, [message, result ? JSON.stringify(result) : null, message, now, now, id, expectedStartedAt ?? null, expectedStartedAt ?? null])
   if (Number(write.changes ?? 0) === 0) {
     return finalizeAccountTestTaskIfCanceledAsync(id)
@@ -1098,7 +1098,7 @@ export async function markAccountTestTaskCanceledAsync(id: string, message: stri
         updated_at = ?
     WHERE id = ?
       AND status IN ('queued', 'running')
-      AND (? IS NULL OR started_at = ?)
+      AND (?::timestamptz IS NULL OR started_at = ?::timestamptz)
   `, [message, now, now, id, expectedStartedAt ?? null, expectedStartedAt ?? null])
   return getAccountTestTaskRecordAsync(id)
 }
