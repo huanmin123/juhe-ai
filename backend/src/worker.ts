@@ -91,7 +91,9 @@ if (isIngestWorker()) {
 } else if (isOpsWorker()) {
   startAccountTestTaskQueue()
 }
-if (isPrimaryWorkerReplica()) {
+// Every ready slot serves dispatchable local queues. Periodic work is kept on
+// the current owner until each job's database fencing contract is verified.
+if (isPrimaryWorkerReplica() && runtimeConfig.blueGreenOwnerMode === 'active') {
   startBackgroundJobs()
 }
 

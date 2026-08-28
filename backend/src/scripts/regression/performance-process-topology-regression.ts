@@ -67,7 +67,14 @@ if (childMode) {
     assert.equal(runtimeConfig.performanceNodeRole, 'combined')
     assert.equal(runtimeConfig.blueGreenOwnerMode, 'standby')
     assert.equal(runtimeConfig.topology.backgroundWorkerSupervisorEnabled, true)
-    assert.deepEqual(processes, [])
+    assert.deepEqual(processes.map((item) => `${item.role}:${item.replicaIndex}`), [
+      'usage-worker:0',
+      'usage-worker:1',
+      'log-worker:0',
+      'log-worker:1',
+      'stats-worker:0',
+      'ops-worker:0'
+    ])
   } else if (childMode === 'performance-supervisor-disabled') {
     assert.equal(runtimeConfig.runtimeMode, 'performance')
     assert.equal(runtimeConfig.blueGreenOwnerMode, 'active')

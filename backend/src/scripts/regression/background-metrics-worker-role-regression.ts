@@ -120,6 +120,7 @@ assert(workerSource.includes('if (isIngestWorker()) {'), 'worker.ts 必须把 ap
 assert(workerSource.includes('await stopBackgroundJobs()') && workerSource.indexOf('await stopBackgroundJobs()') < workerSource.indexOf('await stopUsageRecordRedisStreamConsumer()'), 'worker 停机必须先停止后台 producer，再排空消费队列')
 assert(workerSource.includes('} else if (isOpsWorker()) {'), 'ops-worker 必须启动账号测试和轻量运维本地队列')
 assert(workerSource.includes('startAccountTestTaskQueue()'), 'ops-worker 应启动手动账号测试队列')
+assert(workerSource.includes("isPrimaryWorkerReplica() && runtimeConfig.blueGreenOwnerMode === 'active'"), 'standby 必须启动可投递 worker，但不得在未完成逐项 fencing 审核前启动周期调度器')
 assert(workerSource.includes('getAccountApiKeyCooldownRetestQueueSnapshot') && workerSource.includes('accountApiKeyCooldownRetestQueue'), 'ops-worker runtime snapshot 必须暴露 Key 级冷却复测队列')
 assert(!workerSource.includes('isProbeWorkerMessage'), 'worker.ts 不应保留 probe-worker 消息过滤')
 assert(!workerSource.includes('isMaintenanceWorkerMessage'), 'worker.ts 不应保留 maintenance-worker 消息过滤')
