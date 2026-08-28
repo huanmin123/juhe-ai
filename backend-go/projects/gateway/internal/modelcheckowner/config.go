@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// Config is the Gateway-side owner contract for J3b. It deliberately does
-// not start a listener or scheduler; callers must complete the storage
-// handoff/readiness checks before constructing the runtime.
+// Config is the Gateway-side owner contract for J3b. Loading it only validates
+// the explicit readiness gates; listener and scheduler startup remains the
+// caller's responsibility after the full dependency graph is assembled.
 type Config struct {
 	Enabled                  bool
 	StoreMode                string
@@ -21,9 +21,13 @@ type Config struct {
 	Owner                    string
 	InstanceID               string
 	BusinessHandoffConfirmed bool
-	SchemaReady              bool
-	RuntimeReady             bool
-	HealthBoundaryReady      bool
+	// NodeWriterStopped is an explicit cutover fence. It must be true before
+	// Gateway can enable a confirmed Business handoff; otherwise a stale Node
+	// writer could race the new owner and silently corrupt Business state.
+	NodeWriterStopped   bool
+	SchemaReady         bool
+	RuntimeReady        bool
+	HealthBoundaryReady bool
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
@@ -79,6 +83,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg.BusinessHandoffConfirmed = trueValue(getenv("JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED"))
 	if !cfg.BusinessHandoffConfirmed {
 		return Config{}, errors.New("J3b Business owner handoff 未确认，必须保持关闭")
+	}
+	cfg.NodeWriterStopped = trueValue(getenv("JUHE_AI_J3B_NODE_WRITER_STOPPED"))
+	if !cfg.NodeWriterStopped {
+		return Config{}, errors.New("J3b Business owner handoff 已确认但 Node writer 未停止，必须保持关闭")
 	}
 	cfg.SchemaReady = trueValue(getenv("JUHE_AI_J3B_SCHEMA_READY"))
 	if !cfg.SchemaReady {

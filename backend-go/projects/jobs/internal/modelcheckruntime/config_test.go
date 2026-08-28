@@ -1,6 +1,9 @@
 package modelcheckruntime
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLoadConfigDisabledDoesNotRequireSecrets(t *testing.T) {
 	cfg, err := LoadConfig(func(string) string { return "" })
@@ -21,5 +24,7 @@ func TestLoadConfigRejectsEnabledPostgresInJobs(t *testing.T) {
 	values := map[string]string{"JUHE_AI_MODEL_CHECK_ENABLED": "true", "JUHE_AI_MODEL_CHECK_JOBS_OWNER": "go", "JUHE_AI_MODEL_CHECK_INSTANCE_ID": "j3b", "JUHE_AI_MODEL_CHECK_STORE": "postgres", "JUHE_AI_MODEL_CHECK_POSTGRES_URL": "postgres://jobs", "JUHE_AI_MODEL_CHECK_BUSINESS_POSTGRES_URL": "postgres://business", "JUHE_AI_MODEL_CHECK_CREDENTIAL_SECRET": "credential", "JUHE_AI_MODEL_CHECK_IDENTITY_SECRET": "identity"}
 	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
 		t.Fatal("jobs must reject enabled PostgreSQL J3b because gateway is the sole runtime owner")
+	} else if !strings.Contains(err.Error(), "juhe-ai-gateway") {
+		t.Fatalf("error=%v, want explicit gateway owner fail-closed message", err)
 	}
 }

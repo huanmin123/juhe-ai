@@ -65,6 +65,7 @@ import {
   runScheduledAccountCircuitRecovery
 } from './account-circuit-recovery.service.js'
 import { runGatewayAccountCircuitControlPlaneMaintenance } from '../gateway/runtime/account-circuit.service.js'
+import { keyModelRecoveryScanIntervalMs, runScheduledKeyModelMemoryRecovery } from '../gateway/runtime/key-model-memory-recovery.js'
 import {
   retryFailedModelQualityHealthSyncs,
   runDueModelQualityRecoveries,
@@ -367,6 +368,19 @@ function scheduleBackgroundJobs(): void {
         })
       }
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-recovery'), intervalMs: 5 * secondMs, initialDelayMs: 5 * secondMs, passiveJitter: true, task: runScheduledAccountCircuitRecovery })
+      if (runtimeConfig.runtimeStateDriver !== 'redis') {
+        scheduler.schedule({
+          name: backgroundScheduledJobName('key-model-memory-recovery'),
+          intervalMs: keyModelRecoveryScanIntervalMs,
+          initialDelayMs: keyModelRecoveryScanIntervalMs,
+          passiveJitter: false,
+          overlapPolicy: 'coalesceOne',
+          resourceLane: 'external-account-maintenance',
+          timeoutMs: 45 * secondMs,
+          failureBackoff: { baseMs: 1 * secondMs, maxMs: 5 * secondMs },
+          task: ({ signal }) => runScheduledKeyModelMemoryRecovery(signal)
+        })
+      }
       scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, stablePhaseWindowMs: 5 * secondMs, passiveJitter: true, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 90 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runOpenAIOAuthAccessTokenRefresh(signal) })
       return
     default:

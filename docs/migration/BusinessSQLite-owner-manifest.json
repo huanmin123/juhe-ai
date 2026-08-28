@@ -20,6 +20,12 @@
       "single_writer": true
     },
     {
+      "id": "stats-usage-observation",
+      "current_owner": "node-stats-worker",
+      "target_owner": "unchanged-excluded",
+      "single_writer": true
+    },
+    {
       "id": "chat-codex",
       "current_owner": "node-db-service",
       "target_owner": "unchanged",
@@ -1321,12 +1327,12 @@
         "entrypoint": "db-service-handler",
         "writer_kind": "business-writer"
       },
-      "tables": "accounts",
-      "transaction_group": "oauth-credentials",
-      "current_owner": "node-db-service",
-      "target_owner": "go-gateway",
-      "rollback": "owner-epoch drain; replay committed receipt; no backup restore after accepted writes",
-      "verification": "B1-oauth-credentials"
+      "tables": "stats account_usage_snapshots (typed OpenAI Codex usage observation only; raw headers are not persisted)",
+      "transaction_group": "codex-usage-observation",
+      "current_owner": "node-stats-worker",
+      "target_owner": "unchanged-excluded",
+      "rollback": "outside the Business owner epoch; preserve only typed observations and restore the independent stats owner without raw-header replay",
+      "verification": "B1-excluded-codex-usage-observation"
     },
     {
       "operation": "read_account_health_projection_cursor",

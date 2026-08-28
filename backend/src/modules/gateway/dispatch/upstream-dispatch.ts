@@ -279,6 +279,8 @@ const accountConcurrencyRetryPolicy = exponentialRetryPolicy(
   runtimeConfig.gateway.accountConcurrencyRetryInitialDelayMs,
   runtimeConfig.gateway.accountConcurrencyRetryMaxDelayMs
 )
+const keyModelForegroundQueueWaitMs = 1_200
+const keyModelForegroundQueuePollMs = 25
 // A route may traverse multiple 50-key account pools. Bound total request fan-out
 // while auditing that untried keys remain, rather than claiming pool exhaustion.
 export const gatewayAccountApiKeyRequestAttemptSafetyLimit = runtimeConfig.gateway.accountApiKeyRequestAttemptSafetyLimit
@@ -323,7 +325,8 @@ export async function fetchFirstAvailableUpstream(
   requestCoordination?: GatewayUpstreamRequestCoordinationContext,
   interpretUpstreamResponseSemantics = false,
   waitForRecoverableFailures = true,
-  accountCircuitConfirmation?: GatewayAccountCircuitConfirmation
+  accountCircuitConfirmation?: GatewayAccountCircuitConfirmation,
+  bypassKeyModelAdmission = false
 ): Promise<OpenAIUpstreamDispatchResult> {
   if (!requestCoordination) {
     throw new Error('fetchFirstAvailableUpstream requires shared request coordination context')
@@ -677,6 +680,7 @@ export async function fetchFirstAvailableUpstream(
       let accountApiKeyAttemptCount = 0
       let previousSelectedApiKeyFingerprint: string | undefined
       let reacquireConcurrencyForNextKey = false
+      let keyModelForegroundWaitStartedAtMs: number | undefined
       try {
         let retryAccountApiKey = false
         do {
@@ -985,14 +989,45 @@ export async function fetchFirstAvailableUpstream(
               const keyModelAttemptId = `keymodel:${usageContext.traceId}:${attemptIndex}:${auditAttemptIndex + 1}:${randomUUID()}`
               let keyModelAttempt: GatewayKeyModelAttempt | undefined
               try {
-                const preparation = await prepareGatewayKeyModelAttempt({
-                  req,
-                  account,
-                  requestId: usageContext.traceId,
-                  attemptId: keyModelAttemptId,
-                  failureBudget: keyModelFailureBudget
-                })
+                const preparation = bypassKeyModelAdmission
+                  ? { status: 'disabled' as const }
+                  : await prepareGatewayKeyModelAttempt({
+                      req,
+                      account,
+                      requestId: usageContext.traceId,
+                      attemptId: keyModelAttemptId,
+                      failureBudget: keyModelFailureBudget
+                    })
                 if (preparation.status === 'busy' || preparation.status === 'blocked') {
+                  // Selection happens before admission so the actual Key is
+                  // available to capability construction. Admission rejection
+                  // means no upstream request was committed, therefore it must
+                  // not consume the same-account Key attempt budget.
+                  if (account.selectedApiKeyFingerprint) {
+                    accountApiKeyAttemptCount = Math.max(0, accountApiKeyAttemptCount - 1)
+                  }
+                  // The current physical Key is unavailable for this attempt.
+                  // Mark it as tried before rotating so the next selection
+                  // cannot immediately pick the same blocked capability again.
+                  if (account.selectedApiKeyFingerprint) {
+                    if (preparation.status === 'blocked') {
+                      excludedApiKeyFingerprints.add(account.selectedApiKeyFingerprint)
+                    } else {
+                      const nowMs = Date.now()
+                      keyModelForegroundWaitStartedAtMs ??= nowMs
+                      const waitRemainingMs = keyModelForegroundQueueWaitMs - (nowMs - keyModelForegroundWaitStartedAtMs)
+                      const requestRemainingMs = gatewayRequestWallBudget.remainingMs() - defaultGatewayFinalResponseReserveMs
+                      if (waitRemainingMs > 0 && requestRemainingMs > 0) {
+                        // `busy` is capacity, not health. Keep this Key
+                        // eligible while a bounded wait gives an existing
+                        // foreground permit time to settle.
+                        excludedApiKeyFingerprints.delete(account.selectedApiKeyFingerprint)
+                      } else {
+                        excludedApiKeyFingerprints.add(account.selectedApiKeyFingerprint)
+                      }
+                    }
+                    previousSelectedApiKeyFingerprint = account.selectedApiKeyFingerprint
+                  }
                   concurrencySlot.release()
                   reacquireConcurrencyForNextKey = true
                   lastAttempt = keyModelUnavailableAttempt(account, preparation.status)
@@ -1014,9 +1049,19 @@ export async function fetchFirstAvailableUpstream(
                     }
                   })
                   retryAccountApiKey = true
+                  if (preparation.status === 'busy') {
+                    const elapsedMs = Date.now() - (keyModelForegroundWaitStartedAtMs ?? Date.now())
+                    const waitMs = Math.min(
+                      keyModelForegroundQueuePollMs,
+                      Math.max(0, keyModelForegroundQueueWaitMs - elapsedMs),
+                      Math.max(0, gatewayRequestWallBudget.remainingMs() - defaultGatewayFinalResponseReserveMs)
+                    )
+                    if (waitMs > 0) await waitForRetryDelayMs(waitMs, { signal })
+                  }
                   break
                 }
                 keyModelAttempt = preparation.status === 'admitted' ? preparation.attempt : undefined
+                keyModelForegroundWaitStartedAtMs = undefined
                 if (keyModelAttempt && !keyModelAttempt.route.isMainProbe && accountCircuitAttempt) {
                   // The existing protocol_model circuit remains responsible
                   // for MainProbe/account semantics. Once this concrete route
@@ -1250,7 +1295,11 @@ export async function fetchFirstAvailableUpstream(
                   accountCircuitAttemptTransferred = true
                   return dispatchResult
                 }
-                await keyModelAttempt?.reportUpstreamNotComplete()
+                // A complete HTTP response is not evidence that the upstream
+                // lifecycle was incomplete. Keep Key-model state neutral;
+                // trusted transport/body lifecycle failures are classified in
+                // the catch path and may open the short-block state.
+                await keyModelAttempt?.reportUnknown()
                 if (failedResponseResult.action === 'retry_with_compatibility_recovery') {
                   body = failedResponseResult.recovery.body
                   activeSemanticRetryId = failedResponseResult.recovery.semanticRetryId
@@ -1335,8 +1384,6 @@ export async function fetchFirstAvailableUpstream(
                 // upstream are unknown; they must not open a shared state.
                 if (attemptSignal?.aborted || firstByteDeadlineTriggered || localRequestFailure || !provenStartedTransportFailure) {
                   await keyModelAttempt?.reportUnknown()
-                } else {
-                  await keyModelAttempt?.reportUpstreamNotComplete()
                 }
                 const pendingKeyTransportFailure = accountStateMutationEnabled
                   && usageContext.trafficSource === 'gateway'
@@ -1562,10 +1609,15 @@ export async function fetchFirstAvailableUpstream(
                       'upstream_transport_failure'
                     )
                     if (sameAccountRetryId) {
+                      // The request will retry the same physical credential;
+                      // this attempt did not reach a terminal outcome for the
+                      // Key-model circuit.
+                      await keyModelAttempt?.reportUnknown()
                       activeSameAccountRetryId = sameAccountRetryId
                       continue
                     }
                   }
+                  await keyModelAttempt?.reportUpstreamNotComplete()
                   failedAccountIds.add(account.id)
                   skipAccount = true
                   break
@@ -1577,6 +1629,7 @@ export async function fetchFirstAvailableUpstream(
                   await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error, lastAttempt?.message))
                 }
                 if (retryAnotherAccountApiKey) {
+                  await keyModelAttempt?.reportUpstreamNotComplete()
                   if (pendingKeyTransportFailure) {
                     pendingApiKeyFailures.push(pendingKeyTransportFailure)
                   }

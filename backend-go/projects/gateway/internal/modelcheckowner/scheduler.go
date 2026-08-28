@@ -3,6 +3,7 @@ package modelcheckowner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -67,6 +68,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	if len(kinds) == 0 {
 		kinds = []SchedulerKind{SchedulerScheduled, SchedulerQualityRecovery, SchedulerHealthRetry}
 	}
+	if err := validateSchedulerKinds(kinds); err != nil {
+		return err
+	}
 	now := time.Now
 	if s.Now != nil {
 		now = s.Now
@@ -77,24 +81,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			for _, task := range tasks {
-				if task.Kind == "" {
-					task.Kind = kind
-				}
-				err := s.Executor.Execute(ctx, task)
-				if lifecycle, ok := s.Source.(SchedulerLifecycle); ok {
-					if err != nil {
-						if releaseErr := lifecycle.Fail(ctx, task, err); releaseErr != nil {
-							return errors.Join(err, releaseErr)
-						}
-						continue
-					}
-					if completeErr := lifecycle.Complete(ctx, task); completeErr != nil {
-						return completeErr
-					}
-				} else if err != nil {
-					return err
-				}
+			if err := executeSchedulerBatch(ctx, s.Executor, s.Source, kind, tasks); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -114,6 +102,83 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// executeSchedulerBatch runs independently leased tasks concurrently. Each
+// task owns its own completion/failure fence; one slow or failed probe does
+// not serialize unrelated work in the same claimed batch. Execution errors
+// are persisted through lifecycle.Fail for retry and therefore do not stop a
+// healthy scheduler cycle unless that durable failure write itself fails.
+func executeSchedulerBatch(ctx context.Context, executor SchedulerExecutor, source SchedulerSource, kind SchedulerKind, tasks []ScheduleTask) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	lifecycle, hasLifecycle := source.(SchedulerLifecycle)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+	recordErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+	}
+	for _, original := range tasks {
+		task := original
+		if task.Kind == "" {
+			task.Kind = kind
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			execErr := executor.Execute(ctx, task)
+			if hasLifecycle {
+				if execErr != nil {
+					if releaseErr := lifecycle.Fail(ctx, task, execErr); releaseErr != nil {
+						recordErr(errors.Join(execErr, releaseErr))
+					}
+					return
+				}
+				if completeErr := lifecycle.Complete(ctx, task); completeErr != nil {
+					recordErr(completeErr)
+				}
+				return
+			}
+			recordErr(execErr)
+		}()
+	}
+	wg.Wait()
+	return firstErr
+}
+
+// validateSchedulerKinds prevents a partially wired Gateway owner from
+// silently running only one scheduler family. Production J3b ownership is
+// complete only when scheduled, quality recovery, and health-sync retry are
+// all present exactly once; unknown/duplicate kinds fail closed.
+func validateSchedulerKinds(kinds []SchedulerKind) error {
+	if len(kinds) != 3 {
+		return errors.New("J3b scheduler must configure all owner kinds")
+	}
+	seen := make(map[SchedulerKind]struct{}, len(kinds))
+	for _, kind := range kinds {
+		switch kind {
+		case SchedulerScheduled, SchedulerQualityRecovery, SchedulerHealthRetry:
+			if _, exists := seen[kind]; exists {
+				return fmt.Errorf("J3b scheduler kind %q is configured more than once", kind)
+			}
+			seen[kind] = struct{}{}
+		default:
+			return fmt.Errorf("unsupported J3b scheduler kind %q", kind)
+		}
+	}
+	if len(seen) != 3 {
+		return errors.New("J3b scheduler must configure scheduled, quality recovery, and health retry")
+	}
+	return nil
 }
 
 type memorySchedulerSource struct {

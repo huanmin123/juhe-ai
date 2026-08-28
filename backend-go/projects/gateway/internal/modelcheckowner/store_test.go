@@ -25,6 +25,16 @@ func TestStoreSchemaCheckFailsClosedWhenMigrationIsMissing(t *testing.T) {
 	}
 }
 
+func TestOpenStoreRejectsConfirmedHandoffWhileNodeWriterIsActive(t *testing.T) {
+	_, err := OpenStore(Config{
+		Enabled: true, StoreMode: "sqlite", DatabasePath: filepath.Join(t.TempDir(), "j3b.db"),
+		BusinessHandoffConfirmed: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "readiness gates") {
+		t.Fatalf("confirmed handoff with active Node writer must fail closed, err=%v", err)
+	}
+}
+
 func TestStoreSchemaCheckDoesNotCreateTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j3b.db")
 	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
@@ -435,5 +445,5 @@ func TestLoadInputAndListCommittedOutcomesVerifyDigests(t *testing.T) {
 }
 
 func testSQLiteConfig(path string) Config {
-	return Config{Enabled: true, StoreMode: "sqlite", DatabasePath: path, BusinessHandoffConfirmed: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true}
+	return Config{Enabled: true, StoreMode: "sqlite", DatabasePath: path, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true}
 }

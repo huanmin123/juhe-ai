@@ -139,7 +139,7 @@ CapabilityKey =
 
 | 参数 | 固定值 | 作用 |
 | --- | --- | --- |
-| Key-model runtime guard | performance/dev Redis 模式直接启用；standalone 无 Redis 时不启用 | 不再提供运行时 kill switch；Redis-backed admission、短屏蔽和候选过滤随 performance/dev profile 生效 |
+| Key-model runtime guard | performance/dev 使用 Redis state；standalone 使用进程内 memory state；两者均直接启用 | 不再提供运行时 kill switch；两种模式共享 admission、短屏蔽和候选过滤语义，区别仅为状态作用域与持久性 |
 | 首次 `OPEN` | `5 秒` | 非主 Key-model 第一次真实失败后的最短屏蔽窗口 |
 | 退避序列 | `5 秒 -> 15 秒 -> 1 分钟 -> 5 分钟` | 恢复失败后的下一次探测时间，第四次以后保持 5 分钟封顶 |
 | `recoverySuccessThreshold` | `3` 次连续成功 | 防止一次偶然成功立即放行坏 Key-model |
@@ -389,7 +389,7 @@ CapabilityKey + requestId + attemptId + dispatchRevision + observedAt + sourceFe
 
 ### 8.5 重启与多实例
 
-phase、generation、`retryAt`、`lastRecoverySuccessAt` 和 probe lease 必须在跨进程共享运行时存储中。model-recovery worker 重启后，未过期 `OPEN` 仍过滤，过期的 45 秒 probe lease 可被新 worker 接管；model-recovery lease 每 10 秒续租一次，续租失败立即停止探测并将结果记为 `unknown`。J1 自身仍沿用现有 lease/续租参数；foreground permit 使用 90 秒租约并每 30 秒续租。旧结果因 generation/revision 不匹配失效。不能用进程内 Map 代替权威事实。
+performance/dev 的 phase、generation、`retryAt`、`lastRecoverySuccessAt` 和 probe lease 必须在跨进程共享运行时存储中；model-recovery worker 重启后，未过期 `OPEN` 仍过滤，过期的 45 秒 probe lease 可被新 worker 接管。standalone 没有跨进程 worker，使用同一状态机的进程内 memory state，生命周期限定为当前 Node 进程。model-recovery lease 每 10 秒续租一次，续租失败立即停止探测并将结果记为 `unknown`。J1 自身仍沿用现有 lease/续租参数；foreground permit 使用 90 秒租约并每 30 秒续租。旧结果因 generation/revision 不匹配失效。
 
 ## 9. Job 与代码所有权
 
@@ -437,7 +437,7 @@ Node 网关负责捕获最终 Key/模型/入口、记录统一观察、提交 ty
 
 Key-模型的 phase 过滤必须在选择最终 Key 前完成，但 foreground permit 必须在最终 Key 已确定后申请；不能提前把整个账户从候选窗口删除。某模型所有 Key 被过滤，或所有未过滤 Key 都返回 `busy` 时，只表示该账户对本次模型暂时没有可派发候选；继续走其他账户、后备分组或一次有界等待，不写账户 `temporary_unavailable`。`busy` 不算业务失败、不能写 `key_model OPEN`，也不能触发 J1。
 
-运行时状态读取失败不能静默当作 `CLOSED`，也不能借机修改账户健康状态。Node 对同一 state store 只做 1 次 50 毫秒后重试；仍不可读时，对受影响的精确 Key-模型本次按不可选处理并尝试其他已通过硬门禁的 Key/账户，其他 Key、其他模型和账户状态不受影响。必须记录不可读事件并保留原始错误；不能把读取异常伪装成模型健康结论。performance/dev profile 的 Redis state 不可用时按 fail-closed 处理，standalone profile 不进入 Redis-backed guard。
+运行时状态读取失败不能静默当作 `CLOSED`，也不能借机修改账户健康状态。Node 对同一 state store 只做 1 次 50 毫秒后重试；仍不可读时，对受影响的精确 Key-模型本次按不可选处理并尝试其他已通过硬门禁的 Key/账户，其他 Key、其他模型和账户状态不受影响。必须记录不可读事件并保留原始错误；不能把读取异常伪装成模型健康结论。performance/dev profile 的 Redis state 不可用时按 fail-closed 处理；standalone 使用进程内 memory state，进程重启后状态清空，不跨进程共享。
 
 ## 11. 授权、映射和协议
 
@@ -544,9 +544,9 @@ Node 失败意图固定字段为 `intentId`、`requestId`、`attemptId`、`capab
 | state store 写入失败 | 当前 Key 本地排除，继续其他候选 | 保留原始错误，不假装 `OPEN` | 不影响 |
 | model-recovery 容量不足 | 不启动该 probe，保留 `retryAt` | 写 `recovery_capacity_exhausted` | 不影响 |
 | Go owner/lease 丢失 | 终止当前 probe | 结果为 `unknown/stale` | 不影响 |
-| standalone 或 Redis state 不可用 | 不进入 Redis-backed admission；保留原有本地调度并记录配置/运行时错误 | 不创建共享 `key_model` state | 不影响 |
+| standalone 或 Redis state 不可用 | standalone 进入进程内 memory admission；Redis state 不可用时 performance/dev fail-closed | standalone 状态仅限当前进程，重启清空；Redis 模式保持共享 state | 不影响其他 Key、模型和账户 |
 
-本版本移除 `JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED` kill switch。performance/dev profile 必须配置 Redis state 并直接启用 admission、短屏蔽和精确恢复；standalone profile 没有 Redis state，保持原有无共享 state 的本地调度行为。启用前仍必须完成 shadow、UAT、单生产分组验收和 Node/Go/Redis 互操作 smoke，不得以配置开关替代验收。
+本版本移除 `JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED` kill switch。performance/dev profile 必须配置 Redis state，standalone profile 使用进程内 memory state；两者均直接启用 admission、短屏蔽和精确恢复语义。standalone 状态不跨进程、不跨重启；启用前仍必须完成 shadow、UAT、单生产分组验收和 Node/Go/Redis 互操作 smoke，不得以配置开关替代验收。
 
 ## 16. 启用与灰度
 

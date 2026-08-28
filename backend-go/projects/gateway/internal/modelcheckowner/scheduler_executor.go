@@ -91,7 +91,9 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	request, err := e.Build(ctx, payload)
 	if err != nil {
 		if task.Kind == SchedulerScheduled {
-			_ = e.Scheduled(ctx, payload, RunResult{Status: string(RunFailed)})
+			if completeErr := e.Scheduled(ctx, payload, RunResult{Status: string(RunFailed)}); completeErr != nil {
+				return errors.Join(fmt.Errorf("build J3b scheduled request: %w", err), fmt.Errorf("complete J3b scheduled task: %w", completeErr))
+			}
 		}
 		return fmt.Errorf("build J3b scheduled request: %w", err)
 	}
@@ -111,18 +113,21 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	request.PolicyRevision = payload.PolicyRevision
 	request.ProbeSetVersion = payload.ProbeSetVersion
 	request.IdentityKey = payload.IdentityKey
-	result, err := e.Runtime.Run(ctx, request)
+	result, runErr := e.Runtime.Run(ctx, request)
 	if task.Kind == SchedulerScheduled {
 		completion := result
-		if completion.Status == "" {
+		if runErr != nil {
+			completion.Status = string(RunFailed)
+		} else if completion.Status == "" {
 			completion.Status = string(RunFailed)
 		}
 		if completeErr := e.Scheduled(ctx, payload, completion); completeErr != nil {
 			return fmt.Errorf("complete J3b scheduled task: %w", completeErr)
 		}
-	}
-	if err != nil {
-		return err
+		// The durable schedule completion records failed probe results and
+		// advances the next due time. Do not stop the owner cycle merely because
+		// an upstream probe failed; only the completion write is fatal.
+		return nil
 	}
 	if task.Kind == SchedulerQualityRecovery {
 		var generation, policyRevision, interval int
@@ -139,8 +144,11 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 		// quality-isolated account. Recovery must observe the same durable
 		// evidence/trust gates used by health projection; missing metadata is
 		// fail-closed so an older/partial runtime cannot accidentally recover.
-		passed := result.Status == string(RunCompleted) && runResultEvidenceFormed(result)
+		passed := runErr == nil && result.Status == string(RunCompleted) && runResultEvidenceFormed(result)
 		return e.Recovery(ctx, RecoveryPayload{OwnerID: payload.OwnerID, AccountID: payload.TargetID, EnforcementID: payload.EnforcementID, RunID: result.RunID, Generation: generation, PolicyRevision: policyRevision, RecoveryIntervalMinutes: interval, CompletedAt: time.Now().UTC()}, passed)
+	}
+	if runErr != nil {
+		return runErr
 	}
 	return nil
 }

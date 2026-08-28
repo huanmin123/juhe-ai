@@ -3,11 +3,13 @@ import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { getRequestContext } from '../../../shared/request-context.js'
 import { dispatchAccountHealthCheck } from '../../internal-api/account-health-check-dispatch.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { resolveGatewayKeyModelCapability, type GatewayKeyModelCapability } from './key-model-capability.js'
 import {
-  RedisKeyModelRuntimeStore,
+  type KeyModelRuntimeStore,
+  createKeyModelRuntimeStore,
   type KeyModelFenceReference,
   type KeyModelAdmissionResult,
   type KeyModelForegroundPermit
@@ -15,7 +17,8 @@ import {
 import { capabilityHash, keyModelForegroundLeaseRenewMs, type KeyModelOutcome } from './key-model-runtime.js'
 
 const keyModelFailureIntentLimit = 8
-let runtimeStore: RedisKeyModelRuntimeStore | undefined
+let runtimeStore: KeyModelRuntimeStore | undefined
+let runtimeStoreDriver: typeof runtimeConfig.runtimeStateDriver | undefined
 
 export class GatewayKeyModelFailureBudget {
   private readonly submitted = new Set<string>()
@@ -44,9 +47,9 @@ export interface PrepareGatewayKeyModelAttemptInput {
 export async function prepareGatewayKeyModelAttempt(
   input: PrepareGatewayKeyModelAttemptInput
 ): Promise<GatewayKeyModelAttemptPreparation> {
-  // Standalone mode has no Redis state backend, so the Redis-backed guard is
-  // unavailable there. Performance/dev profiles use Redis and enter directly.
-  if (runtimeConfig.runtimeStateDriver !== 'redis') return { status: 'disabled' }
+  // Both runtime modes use the same state-machine contract. Performance/dev
+  // profiles persist it in Redis; standalone keeps an equivalent process-local
+  // state store.
   const route = resolveGatewayKeyModelCapability(input.req, input.account)
   if (!route) return { status: 'disabled' }
   const store = getKeyModelRuntimeStore()
@@ -69,7 +72,7 @@ export class GatewayKeyModelAttempt {
   private terminal: Promise<void> | undefined
 
   constructor(
-    private readonly store: RedisKeyModelRuntimeStore,
+    private readonly store: KeyModelRuntimeStore,
     readonly route: GatewayKeyModelCapability,
     admission: Extract<KeyModelAdmissionResult, { status: 'admitted' }>,
     private readonly requestId: string,
@@ -150,7 +153,8 @@ export class GatewayKeyModelAttempt {
         observedAtMs: Date.now(),
         outcome: 'upstream_not_complete',
         sourceFence: sourceFence(this.route),
-        permit: this.permit
+        permit: this.permit,
+        recoveryTarget: recoveryTarget(this.route)
       })
       if (result.status === 'applied' && await this.store.claimJ1Confirmation(
         this.route.capability.credentialSourceAccountId,
@@ -223,8 +227,19 @@ export class GatewayKeyModelAttempt {
   }
 }
 
-function getKeyModelRuntimeStore(): RedisKeyModelRuntimeStore {
-  runtimeStore ??= new RedisKeyModelRuntimeStore()
+function recoveryTarget(route: GatewayKeyModelCapability): { accountId: string; groupId: string; systemAccountId: string } | undefined {
+  const context = getRequestContext()
+  const groupId = context?.groupId?.trim()
+  const systemAccountId = context?.systemAccountId?.trim()
+  if (!groupId || !systemAccountId) return undefined
+  return { accountId: route.accountId, groupId, systemAccountId }
+}
+
+function getKeyModelRuntimeStore(): KeyModelRuntimeStore {
+  if (!runtimeStore || runtimeStoreDriver !== runtimeConfig.runtimeStateDriver) {
+    runtimeStore = createKeyModelRuntimeStore()
+    runtimeStoreDriver = runtimeConfig.runtimeStateDriver
+  }
   return runtimeStore
 }
 

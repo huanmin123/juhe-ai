@@ -95,6 +95,7 @@ export type AccountTestInput = {
   trafficSource?: OpenAIGatewayTrafficSource
   gatewaySettingsOverride?: Partial<GatewaySettings>
   disableAccountStateMutation?: boolean
+  bypassKeyModelAdmission?: boolean
   candidateAccount?: OpenAIAccountSecret
   onDiagnosticAttemptProgress?: AccountDiagnosticAttemptProgressHandler
   onDiagnosticAttemptResult?: AccountDiagnosticAttemptResultHandler
@@ -488,6 +489,7 @@ export async function testOpenAIAccount(
       settingsOverride: input.gatewaySettingsOverride,
       disableAccountStateMutation: input.disableAccountStateMutation ?? true,
       ignoreAccountRuntimeSuppression: true,
+      bypassKeyModelAdmission: input.bypassKeyModelAdmission === true,
       forwardModelsRequestToUpstream: probeKind === 'models_catalog',
       accountProbeModel: probeKind === 'models_catalog' ? testedModel : undefined,
       onUpstreamAttemptDiagnostic: (lastAttempt) => {

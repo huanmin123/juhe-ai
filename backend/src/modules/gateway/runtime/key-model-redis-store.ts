@@ -8,9 +8,34 @@ import {
   keyModelForegroundPrecommitLeaseMs,
   keyModelForegroundRedisOperationTimeoutMs,
   keyModelMainProbeUnknownRetryMs,
+  keyModelProbeLeaseMs,
   type CapabilityKey,
-  type KeyModelState
+  type KeyModelState,
+  acquireKeyModelRecoveryLease,
+  settleKeyModelRecovery,
+  type KeyModelMutationStatus,
+  type KeyModelOutcome
 } from './key-model-runtime.js'
+
+export interface KeyModelRuntimeStore {
+  get(capability: CapabilityKey): Promise<KeyModelState | undefined>
+  recordFailure(intent: KeyModelFailureIntent): Promise<KeyModelFailureResult>
+  admitForeground(capability: CapabilityKey, attemptId: string): Promise<KeyModelAdmissionResult>
+  releaseForeground(permit: KeyModelForegroundPermit): Promise<boolean>
+  renewForeground(permit: KeyModelForegroundPermit): Promise<KeyModelForegroundPermit | undefined>
+  recordMainProbeFailure(capability: CapabilityKey, permit: KeyModelForegroundPermit): Promise<void>
+  clearMainProbeFence(fence: KeyModelFenceReference, winnerKeyFingerprint: string): Promise<boolean>
+  deferMainProbeFence(fence: KeyModelFenceReference): Promise<boolean>
+  claimJ1Confirmation(sourceAccountId: string, dispatchRevision: number): Promise<boolean>
+}
+
+export interface InMemoryKeyModelRecoveryStore extends KeyModelRuntimeStore {
+  listDue(nowMs: number, limit: number): Promise<KeyModelState[]>
+  getRecoveryTarget(capability: CapabilityKey): KeyModelRecoveryTarget | undefined
+  acquireRecoveryLease(input: { capability: CapabilityKey; generation: number; dispatchRevision: number; leaseId: string; nowMs: number }): Promise<{ status: KeyModelMutationStatus; state: KeyModelState }>
+  renewRecoveryLease(input: { capabilityHash: string; generation: number; dispatchRevision: number; leaseId: string; nowMs: number }): Promise<boolean>
+  settleRecovery(input: { capability: CapabilityKey; generation: number; dispatchRevision: number; leaseId: string; outcome: KeyModelOutcome; nowMs: number }): Promise<{ status: KeyModelMutationStatus; state: KeyModelState }>
+}
 
 export interface KeyModelFailureIntent {
   intentId: string
@@ -21,6 +46,13 @@ export interface KeyModelFailureIntent {
   outcome: 'upstream_not_complete'
   sourceFence: string
   permit?: KeyModelForegroundPermit
+  recoveryTarget?: KeyModelRecoveryTarget
+}
+
+export interface KeyModelRecoveryTarget {
+  accountId: string
+  groupId: string
+  systemAccountId: string
 }
 
 export interface KeyModelFenceReference {
@@ -58,7 +90,7 @@ interface KeyModelRedisKeys {
   capacity: string
 }
 
-export class RedisKeyModelRuntimeStore {
+export class RedisKeyModelRuntimeStore implements KeyModelRuntimeStore {
   readonly keys: KeyModelRedisKeys
 
   constructor(
@@ -227,13 +259,183 @@ export class RedisKeyModelRuntimeStore {
   }
 }
 
+/**
+ * Single-process equivalent of the Redis adapter. It intentionally shares the
+ * exact pure state transitions and limits, but has no cross-process durability.
+ */
+export class InMemoryKeyModelRuntimeStore implements InMemoryKeyModelRecoveryStore {
+  private readonly states = new Map<string, KeyModelState>()
+  private readonly receipts = new Map<string, KeyModelState>()
+  private readonly permits = new Map<string, Map<string, number>>()
+  private readonly wakes = new Map<string, number>()
+  private readonly mainFences = new Map<string, { ownerId: string; expiresAtMs: number }>()
+  private readonly j1Claims = new Map<string, number>()
+  private readonly recoveryTargets = new Map<string, KeyModelRecoveryTarget>()
+
+  async get(capability: CapabilityKey): Promise<KeyModelState | undefined> {
+    const state = this.states.get(capabilityHash(capability))
+    return state ? cloneMemoryState(state) : undefined
+  }
+
+  getRecoveryTarget(capability: CapabilityKey): KeyModelRecoveryTarget | undefined {
+    const target = this.recoveryTargets.get(capabilityHash(capability))
+    return target ? { ...target } : undefined
+  }
+
+  async listDue(nowMs: number, limit: number): Promise<KeyModelState[]> {
+    if (!Number.isSafeInteger(nowMs) || nowMs < 1) throw new Error('Key-model memory listDue nowMs 无效')
+    const boundedLimit = Math.max(0, Math.trunc(limit))
+    return [...this.states.values()]
+      .filter((state) => (state.phase === 'OPEN' || state.phase === 'RECOVERING') && (state.retryAtMs ?? Infinity) <= nowMs)
+      .sort((left, right) => {
+        const continuationOrder = Number(right.phase === 'RECOVERING') - Number(left.phase === 'RECOVERING')
+        return continuationOrder || (left.retryAtMs ?? Infinity) - (right.retryAtMs ?? Infinity)
+      })
+      .slice(0, boundedLimit)
+      .map(cloneMemoryState)
+  }
+
+  async acquireRecoveryLease(input: { capability: CapabilityKey; generation: number; dispatchRevision: number; leaseId: string; nowMs: number }): Promise<{ status: KeyModelMutationStatus; state: KeyModelState }> {
+    const hash = capabilityHash(input.capability)
+    const current = this.states.get(hash)
+    if (!current) return { status: 'stale', state: createKeyModelOpenState(input.capability, input.nowMs) }
+    const result = acquireKeyModelRecoveryLease(current, input)
+    if (result.status === 'applied') this.states.set(hash, result.state)
+    return { status: result.status, state: cloneMemoryState(result.state) }
+  }
+
+  async renewRecoveryLease(input: { capabilityHash: string; generation: number; dispatchRevision: number; leaseId: string; nowMs: number }): Promise<boolean> {
+    const state = this.states.get(requiredHash(input.capabilityHash))
+    if (!state || state.generation !== input.generation || state.dispatchRevision !== input.dispatchRevision || state.phase !== 'HALF_OPEN') return false
+    if (!state.probeLease || state.probeLease.leaseId !== input.leaseId || state.probeLease.leaseUntilMs < input.nowMs) return false
+    state.probeLease = { ...state.probeLease, leaseUntilMs: input.nowMs + keyModelProbeLeaseMs }
+    this.states.set(state.capabilityHash, state)
+    return true
+  }
+
+  async settleRecovery(input: { capability: CapabilityKey; generation: number; dispatchRevision: number; leaseId: string; outcome: KeyModelOutcome; nowMs: number }): Promise<{ status: KeyModelMutationStatus; state: KeyModelState }> {
+    const hash = capabilityHash(input.capability)
+    const current = this.states.get(hash)
+    if (!current) return { status: 'stale', state: createKeyModelOpenState(input.capability, input.nowMs) }
+    const result = settleKeyModelRecovery(current, input)
+    if (result.status === 'applied') {
+      if (result.state.phase === 'CLOSED') {
+        this.states.delete(hash)
+        this.recoveryTargets.delete(hash)
+      } else this.states.set(hash, result.state)
+    }
+    return { status: result.status, state: cloneMemoryState(result.state) }
+  }
+
+  async recordFailure(intent: KeyModelFailureIntent): Promise<KeyModelFailureResult> {
+    validateFailureIntent(intent)
+    const hash = capabilityHash(intent.capability)
+    if (intent.permit && intent.permit.capabilityHash !== hash) throw new Error('Key-model 失败意图 permit 与 CapabilityKey 不匹配')
+    const priorReceipt = this.receipts.get(intent.intentId)
+    if (priorReceipt) {
+      await this.releaseForegroundIfPresent(intent.permit, hash)
+      return { status: 'idempotent', state: cloneMemoryState(priorReceipt) }
+    }
+    const current = this.states.get(hash)
+    if (current && current.dispatchRevision > intent.capability.dispatchRevision) {
+      await this.releaseForegroundIfPresent(intent.permit, hash)
+      return { status: 'stale' }
+    }
+    // Standalone has no shared Redis clock; use the captured failure fact so
+    // memory transitions follow the same deterministic contract.
+    const now = intent.observedAtMs
+    const state = current && current.dispatchRevision === intent.capability.dispatchRevision && current.phase !== 'CLOSED'
+      ? { ...current, lastObservedAtMs: now, lastOutcome: 'upstream_not_complete' as const }
+      : { ...createKeyModelOpenState(intent.capability, now), generation: current ? current.generation + 1 : 1 }
+    this.states.set(hash, state)
+    if (intent.recoveryTarget) this.recoveryTargets.set(hash, normalizeRecoveryTarget(intent.recoveryTarget))
+    this.receipts.set(intent.intentId, cloneMemoryState(state))
+    await this.releaseForegroundIfPresent(intent.permit, hash)
+    return { status: current && current.dispatchRevision === intent.capability.dispatchRevision && current.phase !== 'CLOSED' ? 'idempotent' : 'applied', state: cloneMemoryState(state) }
+  }
+
+  async admitForeground(capability: CapabilityKey, attemptId: string): Promise<KeyModelAdmissionResult> {
+    const hash = capabilityHash(capability)
+    const normalizedAttemptId = requiredText(attemptId, 'attemptId')
+    const existing = this.permits.get(hash)?.get(normalizedAttemptId)
+    if (existing !== undefined) return { status: 'admitted', permit: { capabilityHash: hash, attemptId: normalizedAttemptId, leaseUntilMs: existing } }
+    const state = this.states.get(hash)
+    const now = Date.now()
+    const fence = this.mainFences.get(hash)
+    if (fence && fence.expiresAtMs <= now) this.mainFences.delete(hash)
+    if ((state && state.dispatchRevision === capability.dispatchRevision && state.phase !== 'CLOSED') || this.mainFences.has(hash)) {
+      return { status: 'blocked', wakeSequence: this.wakes.get(hash) ?? 0 }
+    }
+    const active = this.permits.get(hash) ?? new Map<string, number>()
+    for (const [id, lease] of active) if (lease <= now) active.delete(id)
+    if (active.size >= keyModelForegroundLimit) return { status: 'busy', wakeSequence: this.wakes.get(hash) ?? 0 }
+    const leaseUntilMs = now + keyModelForegroundPrecommitLeaseMs
+    active.set(normalizedAttemptId, leaseUntilMs)
+    this.permits.set(hash, active)
+    return { status: 'admitted', permit: { capabilityHash: hash, attemptId: normalizedAttemptId, leaseUntilMs } }
+  }
+
+  async releaseForeground(permit: KeyModelForegroundPermit): Promise<boolean> {
+    const active = this.permits.get(requiredHash(permit.capabilityHash))
+    if (!active || !active.delete(requiredText(permit.attemptId, 'attemptId'))) return false
+    this.wakes.set(permit.capabilityHash, (this.wakes.get(permit.capabilityHash) ?? 0) + 1)
+    return true
+  }
+
+  async renewForeground(permit: KeyModelForegroundPermit): Promise<KeyModelForegroundPermit | undefined> {
+    const hash = requiredHash(permit.capabilityHash)
+    const active = this.permits.get(hash)
+    if (!active || !active.has(permit.attemptId)) return undefined
+    const leaseUntilMs = Date.now() + keyModelForegroundPrecommitLeaseMs
+    active.set(permit.attemptId, leaseUntilMs)
+    return { ...permit, leaseUntilMs }
+  }
+
+  async recordMainProbeFailure(capability: CapabilityKey, permit: KeyModelForegroundPermit): Promise<void> {
+    const hash = capabilityHash(capability)
+    if (permit.capabilityHash !== hash) throw new Error('MainProbe fence permit 与 CapabilityKey 不匹配')
+    await this.releaseForeground(permit)
+    this.mainFences.set(hash, { ownerId: permit.attemptId, expiresAtMs: Date.now() + 90_000 })
+  }
+
+  async clearMainProbeFence(fence: KeyModelFenceReference, winnerKeyFingerprint: string): Promise<boolean> {
+    if (fence.keyFingerprint !== winnerKeyFingerprint) return false
+    const current = this.mainFences.get(requiredHash(fence.capabilityHash))
+    if (!current || current.ownerId !== fence.ownerId) return false
+    this.mainFences.delete(fence.capabilityHash)
+    return true
+  }
+
+  async deferMainProbeFence(fence: KeyModelFenceReference): Promise<boolean> {
+    const current = this.mainFences.get(requiredHash(fence.capabilityHash))
+    if (!current || current.ownerId !== fence.ownerId) return false
+    current.expiresAtMs = Date.now() + keyModelMainProbeUnknownRetryMs
+    return true
+  }
+
+  async claimJ1Confirmation(sourceAccountId: string, dispatchRevision: number): Promise<boolean> {
+    const key = `${sourceAccountId}:${dispatchRevision}`
+    const now = Date.now()
+    if ((this.j1Claims.get(key) ?? 0) > now) return false
+    this.j1Claims.set(key, now + 2 * 60_000)
+    return true
+  }
+
+  private async releaseForegroundIfPresent(permit: KeyModelForegroundPermit | undefined, hash: string): Promise<void> {
+    if (permit) await this.releaseForeground(permit)
+  }
+}
+
+function cloneMemoryState(state: KeyModelState): KeyModelState {
+  return { ...state, probeLease: state.probeLease ? { ...state.probeLease } : undefined }
+}
+
 export async function settleMainProbeFenceOutcome(input: {
   fence: KeyModelFenceReference
   outcome: string
   winnerKeyFingerprint?: string
 }): Promise<boolean> {
-  if (runtimeConfig.runtimeStateDriver !== 'redis') return true
-  const store = new RedisKeyModelRuntimeStore()
+  const store = createKeyModelRuntimeStore()
   if (input.outcome === 'complete_success') {
     if (!input.winnerKeyFingerprint || input.winnerKeyFingerprint !== input.fence.keyFingerprint) return true
     await store.clearMainProbeFence(input.fence, input.winnerKeyFingerprint)
@@ -244,6 +446,18 @@ export async function settleMainProbeFenceOutcome(input: {
     return true
   }
   return true
+}
+
+export function createKeyModelRuntimeStore(): KeyModelRuntimeStore {
+  return runtimeConfig.runtimeStateDriver === 'redis'
+    ? new RedisKeyModelRuntimeStore()
+    : inMemoryKeyModelRuntimeStore
+}
+
+const inMemoryKeyModelRuntimeStore = new InMemoryKeyModelRuntimeStore()
+
+export function getInMemoryKeyModelRuntimeStore(): InMemoryKeyModelRecoveryStore {
+  return inMemoryKeyModelRuntimeStore
 }
 
 export function keyModelRedisKeys(): KeyModelRedisKeys {
@@ -422,6 +636,14 @@ function requiredText(value: string, name: string): string {
   const normalized = value.trim()
   if (!normalized) throw new Error(`Key-model 缺少 ${name}`)
   return normalized
+}
+
+function normalizeRecoveryTarget(target: KeyModelRecoveryTarget): KeyModelRecoveryTarget {
+  return {
+    accountId: requiredText(target.accountId, 'recoveryTarget.accountId'),
+    groupId: requiredText(target.groupId, 'recoveryTarget.groupId'),
+    systemAccountId: requiredText(target.systemAccountId, 'recoveryTarget.systemAccountId')
+  }
 }
 
 function requiredHash(value: string): string {

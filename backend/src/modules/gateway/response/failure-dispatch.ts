@@ -291,7 +291,6 @@ export async function handleFailedUpstreamResponse(
   const compatibilityRecovery = await recoverCodexEncryptedContentRequest({
     req,
     account,
-    requestClientCompatibility: input.requestClientCompatibility,
     body: input.requestBody,
     upstreamErrorText: responseBodyText,
     signal

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/businesshandoff"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
@@ -28,7 +29,14 @@ func main() {
 	goStopped := flag.Bool("go-stopped", false, "confirm Go owners are stopped for an offline migration")
 	backupConfirmed := flag.Bool("backup-confirmed", false, "confirm a recoverable backup was verified")
 	j3bBackfill := flag.Bool("backfill-j3b-model-check-sqlite", false, "copy legacy J3b SQLite facts into the dedicated file")
+	j3bReadback := flag.Bool("verify-j3b-model-check-sqlite-backfill", false, "read-only verify legacy-to-dedicated J3b SQLite row and digest parity")
 	ownerManifestCheck := flag.Bool("verify-business-owner-manifest", false, "read-only verify the Business SQLite operation handoff manifest")
+	capabilityManifestCheck := flag.Bool("verify-business-capability-manifest", false, "read-only verify the Go Business capability handoff manifest")
+	routeOwnerManifestCheck := flag.Bool("verify-gateway-route-owner-manifest", false, "read-only verify Node system-api mutation routes and Gateway owner mapping")
+	businessHandoffCheck := flag.Bool("verify-business-sqlite-handoff", false, "read-only verify Business/J3b SQLite path isolation and query_only write fencing")
+	businessSchemaCheck := flag.Bool("verify-business-sqlite-schema", false, "read-only verify required Gateway Business SQLite tables, columns and indexes")
+	businessSQLitePath := flag.String("business-sqlite-path", "", "Business SQLite path for handoff preflight (or JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH)")
+	j3bSQLitePath := flag.String("j3b-sqlite-path", "", "dedicated J3b SQLite path for handoff preflight (or JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH)")
 	nodeActivePathCheck := flag.Bool("scan-node-j3b-active-path", false, "read-only scan Node J3b routes, workers and writers")
 	flag.Parse()
 	if *version {
@@ -43,11 +51,27 @@ func main() {
 		runBusinessOwnerManifestCheck()
 		return
 	}
+	if *capabilityManifestCheck {
+		runBusinessCapabilityManifestCheck()
+		return
+	}
+	if *routeOwnerManifestCheck {
+		runGatewayRouteOwnerManifestCheck()
+		return
+	}
+	if *businessHandoffCheck {
+		runBusinessSQLiteHandoffCheck(*businessSQLitePath, *j3bSQLitePath)
+		return
+	}
+	if *businessSchemaCheck {
+		runBusinessSQLiteSchemaCheck(*businessSQLitePath)
+		return
+	}
 	if *nodeActivePathCheck {
 		runNodeJ3bActivePathCheck()
 		return
 	}
-	if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill {
+	if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
 		if *j3Check && *j3Apply {
 			fmt.Fprintln(os.Stderr, "J3a PostgreSQL bootstrap flags are mutually exclusive")
 			os.Exit(2)
@@ -68,6 +92,10 @@ func main() {
 			runJ3bModelCheckSQLiteBackfill(*nodeStopped, *goStopped, *backupConfirmed)
 			return
 		}
+		if *j3bReadback {
+			runJ3bModelCheckSQLiteReadback()
+			return
+		}
 		if *j3bCheck || *j3bApply {
 			runJ3bModelCheckBootstrap(*j3bApply)
 			return
@@ -77,6 +105,111 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
 	os.Exit(2)
+}
+
+func runGatewayRouteOwnerManifestCheck() {
+	manifestPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_GATEWAY_ROUTE_MANIFEST", "docs/migration/GatewayManagementRouteOwnerManifest.json"))
+	root := resolveRepositoryRoot()
+	report, err := ownermanifest.VerifyGatewayRouteOwnerManifest(manifestPath, root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Gateway route owner manifest verification failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode Gateway route owner manifest report: %v\n", err)
+		os.Exit(1)
+	}
+	if len(report.PendingFamilies) > 0 {
+		os.Exit(3)
+	}
+}
+
+func runBusinessSQLiteSchemaCheck(path string) {
+	if strings.TrimSpace(path) == "" {
+		path = strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH"))
+	}
+	if strings.TrimSpace(path) == "" {
+		fmt.Fprintln(os.Stderr, "Business SQLite schema preflight requires --business-sqlite-path or JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH")
+		os.Exit(2)
+	}
+	report, err := businesshandoff.VerifySQLiteSchema(context.Background(), path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Business SQLite schema preflight failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode Business SQLite schema preflight report: %v\n", err)
+		os.Exit(1)
+	}
+	if !report.Ready {
+		os.Exit(3)
+	}
+}
+
+func runBusinessCapabilityManifestCheck() {
+	capabilityPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_CAPABILITY_MANIFEST", "docs/migration/GoBusinessCapabilityManifest.json"))
+	operationPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json"))
+	report, err := ownermanifest.VerifyCapabilityManifest(capabilityPath, operationPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Business capability manifest verification failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode Business capability manifest report: %v\n", err)
+		os.Exit(1)
+	}
+	// A valid manifest is still only a completeness proof. Any capability
+	// marked missing/partial keeps the handoff gate closed.
+	if report.StatusCoverage["missing"] > 0 || report.StatusCoverage["partial"] > 0 {
+		os.Exit(3)
+	}
+}
+
+func runJ3bModelCheckSQLiteReadback() {
+	targetPath := strings.TrimSpace(os.Getenv(j3bmodelcheck.SQLiteBootstrapEnv))
+	datasetPath := strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH"))
+	statsPath := strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH"))
+	if targetPath == "" || datasetPath == "" || statsPath == "" {
+		fmt.Fprintln(os.Stderr, "J3b SQLite readback requires JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH, JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH and JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH")
+		os.Exit(2)
+	}
+	report, err := j3bmodelcheck.VerifySQLiteBackfill(context.Background(), targetPath, datasetPath, statsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "J3b SQLite readback failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode J3b SQLite readback report: %v\n", err)
+		os.Exit(1)
+	}
+	if !report.Ready {
+		os.Exit(3)
+	}
+}
+
+func runBusinessSQLiteHandoffCheck(businessPath, j3bPath string) {
+	if strings.TrimSpace(businessPath) == "" {
+		businessPath = strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH"))
+	}
+	if strings.TrimSpace(j3bPath) == "" {
+		j3bPath = strings.TrimSpace(os.Getenv(j3bmodelcheck.SQLiteBootstrapEnv))
+	}
+	if strings.TrimSpace(businessPath) == "" || strings.TrimSpace(j3bPath) == "" {
+		fmt.Fprintln(os.Stderr, "Business SQLite handoff preflight requires --business-sqlite-path/--j3b-sqlite-path or JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH/JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH")
+		os.Exit(2)
+	}
+	report, err := businesshandoff.Verify(context.Background(), businessPath, j3bPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Business SQLite handoff preflight failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode Business SQLite handoff preflight report: %v\n", err)
+		os.Exit(1)
+	}
+	if !report.Ready {
+		os.Exit(3)
+	}
 }
 
 func runNodeJ3bActivePathCheck() {

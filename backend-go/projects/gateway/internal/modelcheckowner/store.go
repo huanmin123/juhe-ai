@@ -211,7 +211,7 @@ func OpenStore(cfg Config) (*Store, error) {
 	if !cfg.Enabled {
 		return nil, errors.New("J3b owner config is disabled")
 	}
-	if !cfg.BusinessHandoffConfirmed || !cfg.SchemaReady || !cfg.HealthBoundaryReady || !cfg.RuntimeReady {
+	if !cfg.BusinessHandoffConfirmed || !cfg.NodeWriterStopped || !cfg.SchemaReady || !cfg.HealthBoundaryReady || !cfg.RuntimeReady {
 		return nil, errors.New("J3b owner readiness gates are incomplete")
 	}
 	var driver, dsn, schema string

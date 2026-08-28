@@ -34,3 +34,66 @@ func TestAggregateEvidenceUnknownStatusFailsClosed(t *testing.T) {
 		t.Fatalf("unknown evidence status must fail closed: %+v", aggregate)
 	}
 }
+
+func TestAggregateEvidenceRejectsIncompleteReceiptsAndDuplicates(t *testing.T) {
+	items := make([]map[string]any, 0, len(requiredEvidenceFamilies)+1)
+	for _, family := range requiredEvidenceFamilies {
+		items = append(items, map[string]any{
+			"kind": family, "status": "passed", "score": 10, "maxScore": 10,
+			"evidence": map[string]any{},
+		})
+	}
+	items[0]["evidence"] = map[string]any{"partial": true}
+	items = append(items, map[string]any{"kind": "stability", "status": "passed", "score": 10, "maxScore": 10, "evidence": map[string]any{}})
+	aggregate := AggregateEvidence(items)
+	if aggregate.Formed || aggregate.TrustFormed || len(aggregate.Invalid) != 1 || aggregate.Invalid[0] != "identity_observation" {
+		t.Fatalf("incomplete or duplicate receipts must fail closed: %+v", aggregate)
+	}
+}
+
+func TestAggregateEvidenceTrustScoreUsesReceiptCoverage(t *testing.T) {
+	items := make([]map[string]any, 0, len(requiredEvidenceFamilies))
+	for _, family := range requiredEvidenceFamilies {
+		items = append(items, map[string]any{"kind": family, "status": "failed", "score": 0, "maxScore": 100, "evidence": map[string]any{}})
+	}
+	aggregate := AggregateEvidence(items)
+	if !aggregate.Formed || !aggregate.TrustFormed || aggregate.TrustScore != 1 {
+		t.Fatalf("complete failed receipts remain trustworthy evidence: %+v", aggregate)
+	}
+}
+
+func TestAggregateEvidenceAllowsScopedNeutralExclusions(t *testing.T) {
+	items := make([]map[string]any, 0, len(requiredEvidenceFamilies))
+	for _, family := range requiredEvidenceFamilies {
+		item := map[string]any{"kind": family, "status": "passed", "score": 10, "maxScore": 10, "evidence": map[string]any{}}
+		switch family {
+		case "juice":
+			item["status"] = "skipped"
+			item["evidence"] = map[string]any{"excludedFromScoring": true, "notApplicable": true, "reason": "juice_scope_not_applicable"}
+		case "distribution":
+			item["status"] = "skipped"
+			item["evidence"] = map[string]any{"excludedFromScoring": true, "reason": "trusted_comparison_not_attached"}
+		}
+		items = append(items, item)
+	}
+	aggregate := AggregateEvidence(items)
+	if !aggregate.Formed || !aggregate.TrustFormed || aggregate.TrustScore != 1 || len(aggregate.Neutral) != 2 || len(aggregate.Invalid) != 0 {
+		t.Fatalf("scoped neutral exclusions should be formed: %+v", aggregate)
+	}
+}
+
+func TestAggregateEvidenceDoesNotTreatArbitraryExcludedFamilyAsNeutral(t *testing.T) {
+	items := make([]map[string]any, 0, len(requiredEvidenceFamilies))
+	for _, family := range requiredEvidenceFamilies {
+		item := map[string]any{"kind": family, "status": "passed", "score": 10, "maxScore": 10, "evidence": map[string]any{}}
+		if family == "token_integrity" {
+			item["status"] = "skipped"
+			item["evidence"] = map[string]any{"excludedFromScoring": true, "reason": "tokenizer_snapshot_not_attached"}
+		}
+		items = append(items, item)
+	}
+	aggregate := AggregateEvidence(items)
+	if aggregate.Formed || aggregate.TrustFormed || len(aggregate.Invalid) != 1 || aggregate.Invalid[0] != "token_integrity" {
+		t.Fatalf("arbitrary exclusions must remain fail-closed: %+v", aggregate)
+	}
+}

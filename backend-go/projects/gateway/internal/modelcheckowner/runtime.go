@@ -211,7 +211,15 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	resultPayload, _ := json.Marshal(map[string]any{"evaluations": items, "score": score, "maxScore": 100, "level": level})
 	evidenceItems := make([]map[string]any, 0, len(items))
 	for _, evaluation := range items {
-		evidenceItems = append(evidenceItems, map[string]any{"kind": evaluation.Kind, "status": evaluation.Status, "score": evaluation.Score})
+		// Keep the evaluator's bounded, credential-free evidence available to
+		// the trust projector. Dropping it here would make Juice/token/identity
+		// anomalies indistinguishable from a successful receipt and would force
+		// downstream code to infer trust from score alone.
+		evidenceItems = append(evidenceItems, map[string]any{
+			"kind": evaluation.Kind, "status": evaluation.Status,
+			"score": evaluation.Score, "maxScore": evaluation.MaxScore,
+			"evidence": evaluation.Evidence,
+		})
 	}
 	aggregate := AggregateEvidence(evidenceItems)
 	trustReport := BuildTrustReport(aggregate, evidenceItems)
@@ -235,7 +243,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 			return RunResult{}, err
 		}
 	}
-	qualityDecision, _ := json.Marshal(map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "trust": trustReport})
+	qualityDecision, _ := json.Marshal(map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "trust": trustReport})
 	if err := s.Store.CommitOutcome(ctx, Outcome{OutcomeID: outcomeID, InputID: input.InputID, InputDigest: input.InputDigest, Payload: resultPayload}, claim, now); err != nil {
 		return RunResult{}, err
 	}
@@ -257,8 +265,11 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		"message": message,
 		// Scheduler quality recovery consumes these explicit durable quality
 		// gates. Omitting either flag must remain fail-closed in the executor.
-		"evidenceFormed": aggregate.Formed,
-		"trustFormed":    aggregate.TrustFormed,
+		"evidenceFormed":  aggregate.Formed,
+		"trustFormed":     aggregate.TrustFormed,
+		"missingFamilies": aggregate.Missing,
+		"partialFamilies": aggregate.Partial,
+		"invalidFamilies": aggregate.Invalid,
 	}}, nil
 }
 

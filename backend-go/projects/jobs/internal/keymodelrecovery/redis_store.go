@@ -28,7 +28,10 @@ func LoadRedisConfig(getenv func(string) string) (RedisConfig, error) {
 	if getenv == nil {
 		return RedisConfig{}, errors.New("getenv 不能为空")
 	}
-	cfg := RedisConfig{Enabled: strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED")), "true"), URL: strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL")), Namespace: strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))}
+	cfg := RedisConfig{URL: strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL")), Namespace: strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))}
+	// The runtime guard is part of the Redis-state profile and has no kill
+	// switch. Jobs without a Redis state URL are the standalone topology.
+	cfg.Enabled = cfg.URL != ""
 	if !cfg.Enabled {
 		return cfg, nil
 	}

@@ -60,6 +60,9 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 	if !cfg.Enabled || strings.TrimSpace(cfg.CredentialSecret) == "" {
 		return nil, errors.New("J3b Business source configuration is incomplete")
 	}
+	if cfg.BusinessHandoffConfirmed && !cfg.NodeWriterStopped {
+		return nil, errors.New("J3b Business owner handoff 已确认但 Node writer 未停止，必须保持关闭")
+	}
 	if cfg.StoreMode != "sqlite" && cfg.StoreMode != "postgres" {
 		return nil, errors.New("J3b Business source store mode is invalid")
 	}
@@ -97,6 +100,15 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 		db.SetMaxIdleConns(1)
 	}
 	closeDB := db.Close
+	// schemaReady is evidence, not a trust-me switch: on SQLite it must be
+	// backed by the same versioned table/column/index contract that
+	// maintenance reports before Gateway exposes the owner.
+	if cfg.SchemaReady && !postgres {
+		if err := CheckBusinessSQLiteSchema(ctx, db); err != nil {
+			_ = closeDB()
+			return nil, err
+		}
+	}
 	source, err := NewBusinessTargetSource(db, postgres, cfg.CredentialSecret)
 	if err != nil {
 		_ = closeDB()

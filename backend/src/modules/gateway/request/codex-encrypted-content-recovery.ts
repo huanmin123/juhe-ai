@@ -47,21 +47,21 @@ export type CodexEncryptedContentRecoveryResult =
     }
 
 /**
- * Retry one pre-commit Codex Responses attempt with opaque encrypted state
+ * Retry one pre-commit OpenAI Responses attempt with opaque encrypted state
  * removed only after the upstream explicitly rejects that state.  The caller
  * owns the one-attempt budget; this helper never mutates the client request.
  */
 export async function recoverCodexEncryptedContentRequest(input: {
   req: Request
   account: UpstreamAccount
+  /** 保留调用兼容性；恢复门槛由协议画像和 endpoint family 决定。 */
   requestClientCompatibility?: ClientCompatibilityCapability
   body: Buffer | string | undefined
   upstreamErrorText: string
   signal?: AbortSignal
 }): Promise<CodexEncryptedContentRecoveryResult> {
   if (
-    input.requestClientCompatibility !== 'codex_responses'
-    || !isOpenAIProtocolProfile(input.account)
+    !isOpenAIProtocolProfile(input.account)
     || gatewayRequestEndpointFamily(input.req) !== 'responses'
   ) {
     return { action: 'not_applicable' }
@@ -114,6 +114,9 @@ export function classifyCodexEncryptedContentRecoverySignal(
   for (const payload of structuredErrorPayloads(upstreamErrorText)) {
     const signal = signalForStructuredErrorPayload(payload)
     if (signal) return signal
+  }
+  if (looksLikeHttpErrorWrapper(upstreamErrorText) && looksLikeEncryptedContentDecryptionFailure(upstreamErrorText)) {
+    return 'encrypted_content_decryption_failed'
   }
   return undefined
 }
@@ -184,6 +187,10 @@ function looksLikeEncryptedContentDecryptionFailure(value: string): boolean {
       || normalized.includes('could not be verified')
       || normalized.includes('could not be parsed')
     )
+}
+
+function looksLikeHttpErrorWrapper(value: string): boolean {
+  return /^\s*http\s+4\d{2}\b[\s;,:-]*cause\s*:/i.test(value)
 }
 
 function parseJsonRecord(value: string): JsonRecord | undefined {

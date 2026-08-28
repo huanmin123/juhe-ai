@@ -75,7 +75,6 @@ const originalBody = {
 const recovery = await recoverCodexEncryptedContentRequest({
   req: request(originalBody),
   account,
-  requestClientCompatibility: 'codex_responses',
   body: Buffer.from(JSON.stringify(originalBody), 'utf8'),
   upstreamErrorText: 'event: error\ndata: {"type":"error","code":"thinking_signature_invalid","message":"Encrypted function output content could not be decrypted or decoded."}\n\n'
 })
@@ -129,7 +128,6 @@ const onlyEncryptedFunctionOutput = {
 const functionOutputRecovery = await recoverCodexEncryptedContentRequest({
   req: request(onlyEncryptedFunctionOutput),
   account,
-  requestClientCompatibility: 'codex_responses',
   body: JSON.stringify(onlyEncryptedFunctionOutput),
   upstreamErrorText: 'event: error\ndata: {"type":"error","message":"Encrypted function output content could not be decrypted or decoded."}\n\n'
 })
@@ -150,7 +148,6 @@ const singleAgentMessage = {
 const singleAgentMessageRecovery = await recoverCodexEncryptedContentRequest({
   req: request(singleAgentMessage),
   account,
-  requestClientCompatibility: 'codex_responses',
   body: JSON.stringify(singleAgentMessage),
   upstreamErrorText: 'thinking_signature_invalid'
 })
@@ -163,7 +160,6 @@ assert.equal(singleAgentMessageRecovery.metadata.removedAgentMessageItemCount, 1
 const noEncryptedContent = await recoverCodexEncryptedContentRequest({
   req: request({ model: 'gpt-5.6-codex', input: 'continue' }),
   account,
-  requestClientCompatibility: 'codex_responses',
   body: JSON.stringify({ model: 'gpt-5.6-codex', input: 'continue' }),
   upstreamErrorText: 'thinking_signature_invalid'
 })
@@ -180,7 +176,7 @@ const genericClient = await recoverCodexEncryptedContentRequest({
   body: Buffer.from(JSON.stringify(originalBody), 'utf8'),
   upstreamErrorText: 'thinking_signature_invalid'
 })
-assert.deepEqual(genericClient, { action: 'not_applicable' }, '普通 OpenAI 客户端不得继承 Codex 加密恢复语义')
+assert.equal(genericClient.action, 'retry_with_body_variant', 'OpenAI Responses 协议不得依赖 Codex 客户端画像才能恢复')
 
 const exactSignals = [
   'thinking_signature_invalid',
@@ -196,7 +192,6 @@ for (const signal of exactSignals) {
   const exactSignalRecovery = await recoverCodexEncryptedContentRequest({
     req: request(originalBody),
     account,
-    requestClientCompatibility: 'codex_responses',
     body: Buffer.from(JSON.stringify(originalBody), 'utf8'),
     upstreamErrorText: signal
   })
@@ -224,6 +219,24 @@ assert.equal(
   'encrypted_content_decryption_failed',
   'HTTP JSON error.message 仍可触发受限恢复'
 )
+const wrappedHttp400Error = 'HTTP 400; cause: The encrypted content gAAA...F0A= could not be verified. Reason: Encrypted content could not be decrypted or parsed.'
+assert.equal(
+  classifyCodexEncryptedContentRecoverySignal(wrappedHttp400Error),
+  'encrypted_content_decryption_failed',
+  'HTTP 400 cause wrapper 中的完整加密内容解密失败文案必须触发受限恢复'
+)
+assert.equal(
+  classifyCodexEncryptedContentRecoverySignal('普通正文：The encrypted content gAAA...F0A= could not be verified.'),
+  undefined,
+  '普通正文中的片段不得触发加密内容恢复'
+)
+const http400Recovery = await recoverCodexEncryptedContentRequest({
+  req: request(originalBody),
+  account,
+  body: Buffer.from(JSON.stringify(originalBody), 'utf8'),
+  upstreamErrorText: wrappedHttp400Error
+})
+assert.equal(http400Recovery.action, 'retry_with_body_variant', '真实 HTTP 400 加密内容错误文案必须触发清理重试')
 
 console.log('Codex 加密内容恢复回归通过：精确失败后清理 reasoning、工具输出、agent_message 与 compaction 密文，保留关联且不修改原始请求')
 

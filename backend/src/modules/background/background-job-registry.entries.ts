@@ -423,6 +423,19 @@ export const backgroundScheduledJobs = [
     writes: ['runtime:account_circuit']
   }),
   scheduled({
+    jobName: 'key-model-memory-recovery',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: true,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['runtime:key_model_memory']
+  }),
+  scheduled({
     jobName: 'data-retention-cleanup',
     category: 'scheduled',
     kind: 'maintenance',

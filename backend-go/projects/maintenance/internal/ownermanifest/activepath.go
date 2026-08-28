@@ -8,37 +8,51 @@ import (
 	"strings"
 )
 
-// ActivePathReport is a read-only inventory of Node J3b entry points. A
-// non-empty finding list is expected before cutover and blocks the release.
 type ActivePathReport struct {
-	Root         string          `json:"root"`
-	ScannedFiles int             `json:"scannedFiles"`
-	Findings     []ActiveFinding `json:"findings"`
+	RuleVersion     string           `json:"ruleVersion"`
+	Root            string           `json:"root"`
+	ScannedFiles    int              `json:"scannedFiles"`
+	Findings        []ActiveFinding  `json:"findings"`
+	BlockedFindings int              `json:"blockedFindings"`
+	Skipped         []ActivePathSkip `json:"skipped"`
+	Rules           []ActivePathRule `json:"rules"`
 }
 
 type ActiveFinding struct {
-	Path    string `json:"path"`
-	Line    int    `json:"line"`
-	Pattern string `json:"pattern"`
+	Path        string `json:"path"`
+	Line        int    `json:"line"`
+	Pattern     string `json:"pattern"`
+	Category    string `json:"category"`
+	Disposition string `json:"disposition"`
+	Reason      string `json:"reason"`
 }
 
-var nodeJ3bPatterns = []struct {
-	name   string
-	needle string
-}{
-	{name: "model-check-route", needle: "modelChecksRouter"},
-	{name: "model-check-proxy", needle: "modelCheckHttpProxy"},
-	{name: "model-check-token-worker", needle: "startModelCheckTokenWorker"},
-	{name: "model-quality-scheduler", needle: "model-quality-scheduled-check"},
-	{name: "model-quality-command", needle: "model_quality_command"},
-	{name: "model-check-dataset-write", needle: "model_check_runs"},
-	{name: "model-check-dataset-write", needle: "model_check_items"},
-	{name: "model-check-health-write", needle: "account_quality_health_hourly"},
+type ActivePathSkip struct {
+	Path        string `json:"path"`
+	Rule        string `json:"rule"`
+	Disposition string `json:"disposition"`
+	Reason      string `json:"reason"`
 }
 
-// ScanNodeJ3bActivePaths scans only backend/src and intentionally ignores
-// generated/dependency directories. The result is suitable for CI evidence;
-// it does not attempt to infer runtime reachability from text alone.
+type ActivePathRule struct {
+	Name        string `json:"name"`
+	Needle      string `json:"needle"`
+	Category    string `json:"category"`
+	Disposition string `json:"disposition"`
+	Reason      string `json:"reason"`
+}
+
+var nodeJ3bPatterns = []ActivePathRule{
+	{Name: "model-check-route", Needle: "modelChecksRouter", Category: "management-route", Disposition: "block", Reason: "Node J3b management route must be removed or retargeted to Gateway"},
+	{Name: "model-check-proxy", Needle: "modelCheckHttpProxy", Category: "management-proxy", Disposition: "block", Reason: "Node proxy remains an active J3b entry point"},
+	{Name: "model-check-token-worker", Needle: "startModelCheckTokenWorker", Category: "token-worker", Disposition: "block", Reason: "Node token worker must be stopped before Gateway cutover"},
+	{Name: "model-quality-scheduler", Needle: "model-quality-scheduled-check", Category: "scheduler", Disposition: "block", Reason: "Node quality scheduler must be drained before cutover"},
+	{Name: "model-quality-command", Needle: "model_quality_command", Category: "business-command", Disposition: "block", Reason: "Node quality command is a Business writer path"},
+	{Name: "model-check-dataset-write", Needle: "model_check_runs", Category: "dataset-writer", Disposition: "block", Reason: "Node J3b run writer must be archived after backfill"},
+	{Name: "model-check-dataset-write", Needle: "model_check_items", Category: "dataset-writer", Disposition: "block", Reason: "Node J3b item writer must be archived after backfill"},
+	{Name: "model-check-health-write", Needle: "account_quality_health_hourly", Category: "health-writer", Disposition: "block", Reason: "Node health projection writer must be removed or retargeted"},
+}
+
 func ScanNodeJ3bActivePaths(root string) (ActivePathReport, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -51,18 +65,31 @@ func ScanNodeJ3bActivePaths(root string) (ActivePathReport, error) {
 		}
 		return ActivePathReport{}, fmt.Errorf("Node active-path scan source root %s: %w", sourceRoot, err)
 	}
-	report := ActivePathReport{Root: sourceRoot}
+	report := ActivePathReport{Root: sourceRoot, RuleVersion: "j3b-active-path-v2", Rules: append([]ActivePathRule(nil), nodeJ3bPatterns...)}
+	addSkip := func(path, rule, reason string) {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			rel = path
+		}
+		report.Skipped = append(report.Skipped, ActivePathSkip{Path: filepath.ToSlash(rel), Rule: rule, Disposition: "allow", Reason: reason})
+	}
 	err := filepath.Walk(sourceRoot, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if info.IsDir() {
-			if info.Name() == "node_modules" || info.Name() == "dist" || info.Name() == ".git" || info.Name() == "regression" {
+			switch info.Name() {
+			case "node_modules", "dist", ".git":
+				addSkip(path, "generated-or-dependency", "generated/dependency directory is outside production Node active path")
+				return filepath.SkipDir
+			case "regression":
+				addSkip(path, "regression-fixture", "regression fixtures are evidence only")
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if filepath.Ext(path) != ".ts" && filepath.Ext(path) != ".tsx" {
+		ext := filepath.Ext(path)
+		if ext != ".ts" && ext != ".tsx" {
 			return nil
 		}
 		report.ScannedFiles++
@@ -76,13 +103,17 @@ func ScanNodeJ3bActivePaths(root string) (ActivePathReport, error) {
 		for scanner.Scan() {
 			line++
 			text := scanner.Text()
-			for _, pattern := range nodeJ3bPatterns {
-				if strings.Contains(text, pattern.needle) {
-					rel, relErr := filepath.Rel(root, path)
-					if relErr != nil {
-						rel = path
-					}
-					report.Findings = append(report.Findings, ActiveFinding{Path: filepath.ToSlash(rel), Line: line, Pattern: pattern.name})
+			for _, rule := range nodeJ3bPatterns {
+				if !strings.Contains(text, rule.Needle) {
+					continue
+				}
+				rel, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					rel = path
+				}
+				report.Findings = append(report.Findings, ActiveFinding{Path: filepath.ToSlash(rel), Line: line, Pattern: rule.Name, Category: rule.Category, Disposition: rule.Disposition, Reason: rule.Reason})
+				if rule.Disposition != "allow" {
+					report.BlockedFindings++
 				}
 			}
 		}

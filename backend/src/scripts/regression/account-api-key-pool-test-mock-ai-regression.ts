@@ -370,7 +370,17 @@ async function waitForApiReady(baseUrl: string, cookie: string, child: ChildProc
     }
     try {
       const response = await fetch(`${baseUrl}/__aisys__/api/auth/me`, { headers: { cookie } })
-      if (response.ok) return
+      if (response.ok) {
+        // Standalone health intentionally does not gate on worker topology;
+        // wait here until the ops worker that accepts account-test tasks is
+        // ready, otherwise the first dispatch can race worker startup.
+        const health = await fetch(`${baseUrl}/__aisys__/health`)
+        if (health.ok) {
+          const snapshot = await health.json() as { workerProcesses?: Array<{ role?: string; ready?: boolean }> }
+          const opsWorker = snapshot.workerProcesses?.find((item) => item.role === 'ops-worker')
+          if (!opsWorker || opsWorker.ready === true) return
+        }
+      }
     } catch {
     }
     await sleep(200)

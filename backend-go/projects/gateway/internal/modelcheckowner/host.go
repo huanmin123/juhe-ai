@@ -45,6 +45,9 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 	if !cfg.Enabled {
 		return nil, errors.New("J3b Gateway owner config is disabled")
 	}
+	if cfg.BusinessHandoffConfirmed && !cfg.NodeWriterStopped {
+		return nil, errors.New("J3b Business owner handoff 已确认但 Node writer 未停止，必须保持关闭")
+	}
 	if deps.Resolve == nil || deps.Authorize == nil || deps.Build == nil || deps.Enforcement == nil || deps.Quality == nil {
 		return nil, errors.New("J3b Gateway owner dependencies are incomplete")
 	}

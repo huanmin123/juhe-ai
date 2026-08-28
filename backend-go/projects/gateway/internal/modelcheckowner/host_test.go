@@ -5,14 +5,25 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestOpenHostFailsClosedBeforeOpeningStoreWhenDependenciesMissing(t *testing.T) {
-	_, err := OpenHost(context.Background(), Config{Enabled: true, StoreMode: "sqlite", DatabasePath: "unused.db", BusinessHandoffConfirmed: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true, InstanceID: "gateway-1"}, HostDependencies{})
+	_, err := OpenHost(context.Background(), Config{Enabled: true, StoreMode: "sqlite", DatabasePath: "unused.db", BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true, InstanceID: "gateway-1"}, HostDependencies{})
 	if err == nil {
 		t.Fatal("missing in-process owner dependencies must fail closed")
+	}
+}
+
+func TestOpenHostRejectsConfirmedHandoffWhileNodeWriterIsActive(t *testing.T) {
+	_, err := OpenHost(context.Background(), Config{
+		Enabled: true, StoreMode: "sqlite", DatabasePath: "unused.db", BusinessHandoffConfirmed: true,
+		SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true, InstanceID: "gateway-1",
+	}, HostDependencies{})
+	if err == nil || !strings.Contains(err.Error(), "Node writer") {
+		t.Fatalf("confirmed handoff with active Node writer must fail closed, err=%v", err)
 	}
 }
 
@@ -30,7 +41,7 @@ func TestOpenHostRequiresCompleteSchedulerDependencies(t *testing.T) {
 	}
 	_, err := OpenHost(context.Background(), Config{
 		Enabled: true, StoreMode: "sqlite", DatabasePath: "unused.db",
-		BusinessHandoffConfirmed: true, SchemaReady: true, HealthBoundaryReady: true,
+		BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true,
 		RuntimeReady: true, InstanceID: "gateway-1",
 	}, HostDependencies{
 		Resolve:   freezer,

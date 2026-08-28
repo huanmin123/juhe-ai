@@ -2,6 +2,7 @@ import type { Request, Response } from 'express'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestLogger, markRequestHttpMetricFailureScope } from '../../../shared/request-context.js'
+import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { type GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
@@ -647,6 +648,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     }
     const codexEncryptedContentRecoverySignal = codexEncryptedContentRecoverySignalFor({
       streamResult,
+      account,
       clientStrategy,
       responseEndpointFamily,
       response: res
@@ -1778,6 +1780,7 @@ function isResponsePrecommitDeadlineStreamResult(
 
 function codexEncryptedContentRecoverySignalFor(input: {
   streamResult: StreamPipeResult
+  account: UpstreamAccount
   clientStrategy?: OpenAIGatewayClientStrategyContext
   responseEndpointFamily?: string
   response: Pick<Response, 'writableEnded' | 'destroyed'>
@@ -1787,7 +1790,7 @@ function codexEncryptedContentRecoverySignalFor(input: {
     || input.streamResult.semanticCommitted
     || input.response.writableEnded
     || input.response.destroyed
-    || input.clientStrategy?.requestClientCompatibility !== 'codex_responses'
+    || !isOpenAIProtocolProfile(input.account)
     || input.responseEndpointFamily !== 'responses'
   ) {
     return undefined

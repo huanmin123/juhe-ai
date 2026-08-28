@@ -22,17 +22,17 @@ func TestRedisKeysMatchNodeContract(t *testing.T) {
 	}
 }
 
-func TestRedisConfigIsOptIn(t *testing.T) {
+func TestRedisConfigFollowsRedisStateProfile(t *testing.T) {
 	env := map[string]string{}
 	cfg, err := LoadRedisConfig(func(name string) string { return env[name] })
 	if err != nil || cfg.Enabled {
 		t.Fatalf("disabled cfg=%#v err=%v", cfg, err)
 	}
-	env["JUHE_AI_GATEWAY_KEY_MODEL_RUNTIME_GUARD_ENABLED"] = "true"
+	env["JUHE_AI_REDIS_STATE_URL"] = "redis://127.0.0.1:6379/9"
 	if _, err := LoadRedisConfig(func(name string) string { return env[name] }); err == nil {
-		t.Fatal("enabled config without Redis must fail")
+		t.Fatal("Redis state without namespace must fail")
 	}
-	env["JUHE_AI_REDIS_STATE_URL"], env["JUHE_AI_REDIS_NAMESPACE"] = "redis://127.0.0.1:6379/9", "test-space"
+	env["JUHE_AI_REDIS_NAMESPACE"] = "test-space"
 	cfg, err = LoadRedisConfig(func(name string) string { return env[name] })
 	if err != nil || !cfg.Enabled {
 		t.Fatalf("enabled cfg=%#v err=%v", cfg, err)

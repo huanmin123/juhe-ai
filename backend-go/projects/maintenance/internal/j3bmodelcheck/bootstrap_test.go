@@ -179,6 +179,76 @@ func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	}
 }
 
+func TestJ3bSQLiteBackfillReadbackDetectsDriftAndSharedPaths(t *testing.T) {
+	root := t.TempDir()
+	targetPath, datasetPath, statsPath := root+"/target.db", root+"/dataset.db", root+"/stats.db"
+	for _, path := range []string{targetPath, datasetPath, statsPath} {
+		db, err := OpenSQLite(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RunSQLite(context.Background(), db, true); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dataset, err := OpenSQLite(datasetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dataset.Exec(`INSERT INTO model_check_runs(id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,account_id,model,profile,trigger_kind,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,created_at,updated_at) VALUES ('run-1','sys','actor','openai','account','acct','acct','gpt-5.6','quick','manual','completed','success',90,100,'ok','{}','{}','{}','{}','probe-v1','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z')`); err != nil {
+		dataset.Close()
+		t.Fatal(err)
+	}
+	if err := dataset.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target, err := OpenSQLite(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BackfillSQLite(context.Background(), target, datasetPath, statsPath); err != nil {
+		target.Close()
+		t.Fatal(err)
+	}
+	if err := target.Close(); err != nil {
+		t.Fatal(err)
+	}
+	report, err := VerifySQLiteBackfill(context.Background(), targetPath, datasetPath, statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Ready || report.Tables["model_check_runs"] != "match" {
+		t.Fatalf("expected readback match, report=%+v", report)
+	}
+	drift, err := OpenSQLite(datasetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := drift.Exec(`UPDATE model_check_runs SET score=1 WHERE id='run-1'`); err != nil {
+		drift.Close()
+		t.Fatal(err)
+	}
+	drift.Close()
+	report, err = VerifySQLiteBackfill(context.Background(), targetPath, datasetPath, statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready || report.Tables["model_check_runs"] != "drift" {
+		t.Fatalf("expected readback drift, report=%+v", report)
+	}
+	shared, err := VerifySQLiteBackfill(context.Background(), targetPath, targetPath, statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared.Ready || shared.PathsDistinct {
+		t.Fatalf("shared paths must fail closed, report=%+v", shared)
+	}
+}
+
 func TestJ3bBootstrapDDLIsScopedAndComplete(t *testing.T) {
 	for _, table := range contracts.J3BModelCheckTables {
 		if !strings.Contains(postgresSchema, "juhe_j3b."+table) {

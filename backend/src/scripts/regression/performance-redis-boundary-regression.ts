@@ -181,11 +181,16 @@ assert.doesNotMatch(proxyHealthSource, /upstreamBucketFailureStateStore\.delete|
 assert.match(source('modules/gateway/dispatch/preparation.ts'), /await orderGatewayAccountsByUpstreamBucketHealthAsync/, '调度准备必须等待 Redis 上游桶健康排序')
 assert.doesNotMatch(
   failureDispatchSource,
-  /\b(?:recordGateway(?:UpstreamBucket|Proxy)Failure(?:Async)?|rememberClientIpAccountPendingFailure|recordGatewayAccountApiKey(?:Local)?Failure|recordGatewayAccountFailureForPrecheck|suppressGatewayAccountLocally)\b/,
-  '未知 HTTP、正文和普通 foreground transport 不得从 failure dispatch 写共享 proxy/IP、账户或 Key 避让状态'
+  /\b(?:recordGateway(?:UpstreamBucket|Proxy)Failure(?:Async)?|rememberClientIpAccountPendingFailure|recordGatewayAccountFailureForPrecheck|suppressGatewayAccountLocally)\b/,
+  '未知 HTTP、正文和普通 foreground transport 不得从 failure dispatch 写共享 proxy/IP 或账户避让状态'
 )
 assert.match(source('modules/gateway/response/finalization.ts'), /await recordGatewayUpstreamBucketSuccessAsync/, '上游成功最终化必须等待 Redis 上游桶恢复清理')
 const failureDispatchBody = functionBody(failureDispatchSource, 'handleFailedUpstreamResponse')
+assert.match(
+  failureDispatchBody,
+  /if \(explicitPolicyDecision\?\.keyScoped && input\.accountStateMutationEnabled !== false\)[\s\S]*await recordGatewayAccountApiKeyFailure\(account,[\s\S]*authority: 'system_quota_policy'[\s\S]*source: 'system_quota_policy'/,
+  'Key runtime state 只能由系统额度 key-scoped 策略在显式 mutation guard 内写入'
+)
 assert.match(failureDispatchBody, /const explicitPolicyDecision =[\s\S]*decideAccountErrorPolicy[\s\S]*return \{[\s\S]*action: 'skip_account'[\s\S]*failureKind: explicitPolicyDecision \? 'explicit_policy' : 'opaque_http'/, '完整未知 HTTP 必须进入统一账户级切号并保留 opaque 失败归因')
 assert.match(failureDispatchBody, /if \(explicitPolicyDecision && input\.accountStateMutationEnabled !== false\)[\s\S]*applyAccountErrorHandlingWithCacheInvalidation/, '完整 HTTP 只有精确命中的用户显式策略可以触发账户状态副作用；状态动作不能阻断当前请求切号')
 

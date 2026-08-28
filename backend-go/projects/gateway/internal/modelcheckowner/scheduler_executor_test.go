@@ -3,17 +3,19 @@ package modelcheckowner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
 type schedulerRunnerStub struct {
 	request    RunRequest
 	resultData any
+	err        error
 }
 
 func (s *schedulerRunnerStub) Run(_ context.Context, request RunRequest) (RunResult, error) {
 	s.request = request
-	return RunResult{RunID: "run-1", Status: string(RunCompleted), Data: s.resultData}, nil
+	return RunResult{RunID: "run-1", Status: string(RunCompleted), Data: s.resultData}, s.err
 }
 
 func TestSchedulerRunExecutorRejectsIncompleteDurablePolicy(t *testing.T) {
@@ -92,5 +94,50 @@ func TestSchedulerRecoveryRequiresFormedEvidenceAndTrust(t *testing.T) {
 	}
 	if len(passed) != 2 || !passed[1] {
 		t.Fatalf("formed evidence/trust should pass recovery: %#v", passed)
+	}
+}
+
+func TestSchedulerRecoveryRunErrorReschedulesThroughCompletion(t *testing.T) {
+	runner := &schedulerRunnerStub{err: errors.New("upstream unavailable")}
+	var passed bool
+	called := false
+	executor := &SchedulerRunExecutor{
+		Runtime: runner,
+		Build: func(_ context.Context, _ ScheduledPayload) (RunRequest, error) {
+			return RunRequest{Endpoint: "https://example.invalid", Prompt: "probe"}, nil
+		},
+		Recovery: func(_ context.Context, _ RecoveryPayload, value bool) error {
+			called, passed = true, value
+			return nil
+		},
+	}
+	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", EnforcementID: "enf-1", Generation: 2, RecoveryIntervalMinutes: 10})
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: payload}); err != nil {
+		t.Fatalf("runtime error should be handled by recovery completion: %v", err)
+	}
+	if !called || passed {
+		t.Fatalf("recovery completion=%v passed=%v, want called with false", called, passed)
+	}
+}
+
+func TestSchedulerScheduledRunErrorCompletesAsFailed(t *testing.T) {
+	runner := &schedulerRunnerStub{err: errors.New("upstream unavailable")}
+	var status string
+	executor := &SchedulerRunExecutor{
+		Runtime: runner,
+		Build: func(_ context.Context, _ ScheduledPayload) (RunRequest, error) {
+			return RunRequest{Endpoint: "https://example.invalid", Prompt: "probe"}, nil
+		},
+		Scheduled: func(_ context.Context, _ ScheduledPayload, result RunResult) error {
+			status = result.Status
+			return nil
+		},
+	}
+	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "fallback", ConfigRevision: "4", PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", ScheduleID: "sch-1", ScheduleRevision: 2, IntervalMinutes: 60})
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerScheduled, Payload: payload}); err != nil {
+		t.Fatalf("runtime error should be recorded by scheduled completion: %v", err)
+	}
+	if status != string(RunFailed) {
+		t.Fatalf("scheduled completion status=%q, want failed", status)
 	}
 }

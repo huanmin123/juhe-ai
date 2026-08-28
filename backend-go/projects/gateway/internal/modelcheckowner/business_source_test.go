@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -184,7 +185,7 @@ func TestOpenBusinessTargetConnectionAllowsWritesOnlyAfterHandoff(t *testing.T) 
 		}
 	}
 	_ = db.Close()
-	connection, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "sqlite", BusinessDatabasePath: path, CredentialSecret: "secret", BusinessHandoffConfirmed: true})
+	connection, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "sqlite", BusinessDatabasePath: path, CredentialSecret: "secret", BusinessHandoffConfirmed: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +200,33 @@ func TestOpenBusinessTargetConnectionAllowsWritesOnlyAfterHandoff(t *testing.T) 
 	stats := connection.DB.Stats()
 	if stats.MaxOpenConnections != 1 {
 		t.Fatalf("SQLite Business owner must use one connection, stats=%+v", stats)
+	}
+}
+
+func TestOpenBusinessTargetConnectionRejectsActiveNodeWriterAfterHandoff(t *testing.T) {
+	_, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "sqlite", BusinessDatabasePath: filepath.Join(t.TempDir(), "business.db"), CredentialSecret: "secret", BusinessHandoffConfirmed: true})
+	if err == nil || !strings.Contains(err.Error(), "Node writer") {
+		t.Fatalf("confirmed handoff with active Node writer must fail closed, err=%v", err)
+	}
+}
+
+func TestOpenBusinessTargetConnectionRejectsUnprovenSQLiteSchemaReady(t *testing.T) {
+	path := t.TempDir() + "/business.db"
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range businessSourceContractDDL() {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "sqlite", BusinessDatabasePath: path, CredentialSecret: "secret", SchemaReady: true})
+	if err == nil || !strings.Contains(err.Error(), "Business SQLite schema") {
+		t.Fatalf("schemaReady must be proven against SQLite contract, err=%v", err)
 	}
 }
 
