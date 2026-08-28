@@ -1036,6 +1036,7 @@ export type DbServiceOperation =
     type: 'account_test_task_maintenance'
     action: 'start' | 'sweep'
     maxQueuedMs?: number
+    staleRunningMs?: number
     sweepLimit?: number
     refillLimit?: number
   }

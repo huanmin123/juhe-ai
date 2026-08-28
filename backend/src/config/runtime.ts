@@ -253,6 +253,7 @@ export interface RuntimeConfig {
     accountTestRefillMaxBatchSize: number
     accountTestQueuedSweepBatchSize: number
     accountTestQueuedMaxWaitMs: number
+    accountTestRunningStaleMs: number
     accountApiKeyProbeCandidateScanLimit: number
     accountBalanceRecoveryMaxScanPages: number
     accountAvailabilityScheduleSyncBatchLimit: number
@@ -808,6 +809,7 @@ export const runtimeConfig: RuntimeConfig = {
     accountTestRefillMaxBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_TEST_REFILL_MAX_BATCH_SIZE', 1_000, 1, 100_000),
     accountTestQueuedSweepBatchSize: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_SWEEP_BATCH_SIZE', 500, 1, 100_000),
     accountTestQueuedMaxWaitMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_MAX_WAIT_MS', 10 * 60_000, 1_000, 24 * 60 * 60_000),
+    accountTestRunningStaleMs: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_TEST_RUNNING_STALE_MS', 10 * 60_000, 60_000, 60 * 60_000),
     accountApiKeyProbeCandidateScanLimit: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_API_KEY_PROBE_CANDIDATE_SCAN_LIMIT', 10_000, 1, 1_000_000),
     accountBalanceRecoveryMaxScanPages: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_BALANCE_RECOVERY_MAX_SCAN_PAGES', 4, 1, 1_000),
     accountAvailabilityScheduleSyncBatchLimit: integerConfig('JUHE_AI_BACKGROUND_ACCOUNT_AVAILABILITY_SCHEDULE_SYNC_BATCH_LIMIT', 500, 1, 100_000),

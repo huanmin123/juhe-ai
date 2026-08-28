@@ -45,6 +45,7 @@ interface AccountTestQueueItem {
 const unsupportedGatewayProtocolTestMessage = '当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户'
 const manualAccountTestRefillMaxBatchSize = runtimeConfig.background.accountTestRefillMaxBatchSize
 const manualAccountTestQueuedMaxWaitMs = runtimeConfig.background.accountTestQueuedMaxWaitMs
+const manualAccountTestRunningStaleMs = runtimeConfig.background.accountTestRunningStaleMs
 const manualAccountTestQueuedSweepBatchSize = runtimeConfig.background.accountTestQueuedSweepBatchSize
 const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
@@ -117,15 +118,19 @@ export function startAccountTestTaskQueue(): void {
   if (runtimeConfig.processRole !== 'worker') {
     return
   }
-  void runAccountTestTaskMaintenance('start').then((taskIds) => {
-    for (const taskId of taskIds) {
-      enqueueAccountTestTaskLocal(taskId)
-    }
-  }).catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'manual_account_test_start_maintenance_failed'
-    }), '账号测试队列启动维护失败')
-  })
+  // Only the primary ops replica performs crash recovery. Every replica still
+  // runs the normal sweep/refill and consumes dispatched task messages.
+  if (runtimeConfig.workerReplicaIndex === 0) {
+    void runAccountTestTaskMaintenance('start').then((taskIds) => {
+      for (const taskId of taskIds) {
+        enqueueAccountTestTaskLocal(taskId)
+      }
+    }).catch((error) => {
+      logger.warn(errorLogFields(error, {
+        event: 'manual_account_test_start_maintenance_failed'
+      }), '账号测试队列启动维护失败')
+    })
+  }
   startAccountTestSessionStaleSweep()
   refillManualAccountTestQueue()
 }
@@ -318,6 +323,7 @@ async function runAccountTestTaskMaintenance(action: 'start' | 'sweep'): Promise
     type: 'account_test_task_maintenance',
     action,
     maxQueuedMs: manualAccountTestQueuedMaxWaitMs,
+    staleRunningMs: action === 'start' ? manualAccountTestRunningStaleMs : undefined,
     sweepLimit: manualAccountTestQueuedSweepBatchSize,
     refillLimit: manualAccountTestRefillBatchSize()
   })

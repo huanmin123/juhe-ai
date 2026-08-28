@@ -375,8 +375,9 @@ export function failExpiredQueuedAccountTestTasks(maxQueuedMs: number, limit = 2
   return taskIds
 }
 
-export function requeueInterruptedAccountTestTasks(): string[] {
+export function requeueInterruptedAccountTestTasks(staleRunningMs = runtimeConfig.background.accountTestRunningStaleMs): string[] {
   const now = nowIso()
+  const staleCutoff = new Date(Date.now() - Math.max(60_000, Math.trunc(staleRunningMs))).toISOString()
   getBusinessDatabase().prepare(`
     UPDATE account_test_tasks
     SET status = 'canceled',
@@ -395,7 +396,8 @@ export function requeueInterruptedAccountTestTasks(): string[] {
         updated_at = ?
     WHERE status = 'running'
       AND cancel_requested = 0
-  `).run(now)
+      AND updated_at < ?
+  `).run(now, staleCutoff)
   cleanupExpiredAccountTestTasks()
   return listRunnableAccountTestTaskIds()
 }
@@ -904,12 +906,13 @@ export async function failExpiredQueuedAccountTestTasksAsync(maxQueuedMs: number
   return taskIds
 }
 
-export async function requeueInterruptedAccountTestTasksAsync(): Promise<string[]> {
+export async function requeueInterruptedAccountTestTasksAsync(staleRunningMs = runtimeConfig.background.accountTestRunningStaleMs): Promise<string[]> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return requeueInterruptedAccountTestTasks()
+    return requeueInterruptedAccountTestTasks(staleRunningMs)
   }
   const client = await accountTestTaskDatabaseClient()
   const now = nowIso()
+  const staleCutoff = new Date(Date.now() - Math.max(60_000, Math.trunc(staleRunningMs))).toISOString()
   await client.execute(`
     UPDATE ${accountTestTable(client, 'account_test_tasks')}
     SET status = 'canceled',
@@ -928,7 +931,8 @@ export async function requeueInterruptedAccountTestTasksAsync(): Promise<string[
         updated_at = ?
     WHERE status = 'running'
       AND cancel_requested = false
-  `, [now])
+      AND updated_at < ?
+  `, [now, staleCutoff])
   await cleanupExpiredAccountTestTasksAsync()
   return listRunnableAccountTestTaskIdsAsync()
 }

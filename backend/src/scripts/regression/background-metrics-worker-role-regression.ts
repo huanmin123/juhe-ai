@@ -10,6 +10,7 @@ const serverSource = readSource('../../server.ts')
 const backgroundJobsSource = readSource('../../modules/background/background-jobs.ts')
 const normalRouteRecoveryProbeSource = readSource('../../modules/background/normal-route-speed-first-recovery-probe.service.ts')
 const normalRouteLatencyStateSource = readSource('../../modules/gateway/runtime/normal-route-latency-degradation.service.ts')
+const accountTestQueueSource = readSource('../../modules/accounts/account-test-task-queue.service.ts')
 const backgroundIpcWorkerRolesSource = readSource('../../modules/background/background-ipc-worker-roles.ts')
 const workerSource = readSource('../../worker.ts')
 const runtimeSource = readSource('../../config/runtime.ts')
@@ -123,6 +124,8 @@ assert(workerSource.includes('if (isIngestWorker()) {'), 'worker.ts 必须把 ap
 assert(workerSource.includes('await stopBackgroundJobs()') && workerSource.indexOf('await stopBackgroundJobs()') < workerSource.indexOf('await stopUsageRecordRedisStreamConsumer()'), 'worker 停机必须先停止后台 producer，再排空消费队列')
 assert(workerSource.includes('} else if (isOpsWorker()) {'), 'ops-worker 必须启动账号测试和轻量运维本地队列')
 assert(workerSource.includes('startAccountTestTaskQueue()'), 'ops-worker 应启动手动账号测试队列')
+assert.match(accountTestQueueSource, /if \(runtimeConfig\.workerReplicaIndex === 0\)\s*\{[\s\S]*?runAccountTestTaskMaintenance\('start'\)/, '账号测试启动恢复只能由主 ops 副本执行，其他副本仍可消费投递消息')
+assert.match(accountTestQueueSource, /staleRunningMs:\s*action === 'start' \? manualAccountTestRunningStaleMs/, '账号测试启动恢复必须只接管过期 running 任务')
 assert(workerSource.includes("isPrimaryWorkerReplica() && runtimeConfig.blueGreenOwnerMode !== 'drain'"), 'active/standby 都应启动周期调度器，drain 才停止 producer')
 for (const jobName of [
   'background-task-run-reconcile',

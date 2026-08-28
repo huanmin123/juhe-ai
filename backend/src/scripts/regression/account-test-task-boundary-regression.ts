@@ -195,6 +195,11 @@ assert.match(
   /queued_deadline_at\s+IS\s+NOT\s+NULL[\s\S]*queued_deadline_at\s+<=/,
   '账户测试任务过期 sweep 必须按持久化排队截止时间收口'
 )
+assert.match(
+  taskRepository,
+  /requeueInterruptedAccountTestTasks\([^)]*staleRunningMs[\s\S]*updated_at\s*<\s*\?/,
+  '多节点启动恢复只能接管 updated_at 已过期的 running 任务，不能抢占刚由其他副本接管的任务'
+)
 assert.doesNotMatch(
   postgresTaskRepository,
   /cancel_requested\s*=\s*[01]/,

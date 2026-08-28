@@ -1183,7 +1183,7 @@ async function handleAccountTestTaskMaintenanceAsync(
     ? await failExpiredQueuedAccountTestTasksAsync(operation.maxQueuedMs ?? 10 * 60_000, operation.sweepLimit ?? 500)
     : []
   const taskIds = operation.action === 'start'
-    ? await requeueInterruptedAccountTestTasksAsync()
+    ? await requeueInterruptedAccountTestTasksAsync(operation.staleRunningMs)
     : await listRunnableAccountTestTaskIdsAsync(operation.refillLimit ?? 100)
   return { taskIds, canceledTaskIds, expiredQueuedTaskIds }
 }
@@ -1656,7 +1656,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         ? failExpiredQueuedAccountTestTasks(operation.maxQueuedMs ?? 10 * 60_000, operation.sweepLimit ?? 500)
         : []
       const taskIds = operation.action === 'start'
-        ? requeueInterruptedAccountTestTasks()
+        ? requeueInterruptedAccountTestTasks(operation.staleRunningMs)
         : listRunnableAccountTestTaskIds(operation.refillLimit ?? 100)
       return { taskIds, canceledTaskIds, expiredQueuedTaskIds }
     }
