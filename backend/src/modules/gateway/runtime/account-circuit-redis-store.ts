@@ -220,12 +220,13 @@ export class RedisAccountCircuitStore implements AccountCircuitStore {
     if (!encoded) throw new Error('Redis 账户电路作用域升级返回值无效')
     const parsed = JSON.parse(encoded) as AccountCircuitEscalationResult
     if (!parsed?.status || !parsed.accountState) throw new Error('Redis 账户电路作用域升级结果结构无效')
+    const relatedStates = Array.isArray(parsed.relatedStates)
+      ? parsed.relatedStates.map(cloneAccountCircuitState)
+      : undefined
     return {
       ...parsed,
       accountState: cloneAccountCircuitState(parsed.accountState),
-      ...(parsed.relatedStates?.length
-        ? { relatedStates: parsed.relatedStates.map(cloneAccountCircuitState) }
-        : {})
+      ...(relatedStates && relatedStates.length > 0 ? { relatedStates } : {})
     }
   }
 
@@ -341,12 +342,13 @@ export class RedisAccountCircuitStore implements AccountCircuitStore {
     const encoded = typeof raw === 'string' ? raw : Buffer.isBuffer(raw) ? raw.toString('utf8') : ''
     if (!encoded) throw new Error('Redis 账户电路重建返回值无效')
     const parsed = JSON.parse(encoded) as AccountCircuitMutationResult
+    const relatedStates = Array.isArray(parsed.relatedStates)
+      ? parsed.relatedStates.map(cloneAccountCircuitState)
+      : undefined
     return {
       status: parsed.status,
       state: cloneAccountCircuitState(parsed.state),
-      ...(parsed.relatedStates?.length
-        ? { relatedStates: parsed.relatedStates.map(cloneAccountCircuitState) }
-        : {})
+      ...(relatedStates && relatedStates.length > 0 ? { relatedStates } : {})
     }
   }
 
@@ -436,12 +438,13 @@ export class RedisAccountCircuitStore implements AccountCircuitStore {
     if (!encoded) throw new Error('Redis 账户电路转换返回值无效')
     const parsed = JSON.parse(encoded) as AccountCircuitMutationResult
     if (!parsed?.status || !parsed.state) throw new Error('Redis 账户电路转换结果结构无效')
+    const relatedStates = Array.isArray(parsed.relatedStates)
+      ? parsed.relatedStates.map(cloneAccountCircuitState)
+      : undefined
     return {
       status: parsed.status,
       state: cloneAccountCircuitState(parsed.state),
-      ...(parsed.relatedStates?.length
-        ? { relatedStates: parsed.relatedStates.map(cloneAccountCircuitState) }
-        : {})
+      ...(relatedStates && relatedStates.length > 0 ? { relatedStates } : {})
     }
   }
 
