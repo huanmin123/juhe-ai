@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
@@ -26,6 +27,8 @@ type Suite struct {
 	Comparison  *Suite
 	Tokenizer   Tokenizer
 	ModelLimits ModelLimitSnapshot
+	Dispatcher  DispatcherPort
+	Capability  keymodelruntime.Capability
 }
 
 func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evaluation, error) {
@@ -54,7 +57,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		requests = append(requests, stability)
 	}
 	for _, request := range requests {
-		result, executeErr := Execute(ctx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: timeout})
+		result, executeErr := Execute(ctx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: timeout, Dispatcher: input.Dispatcher, Capability: input.Capability})
 		if executeErr != nil {
 			return nil, executeErr
 		}
@@ -80,27 +83,27 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 	}
 	if input.Profile == "full" {
 		behavior, behaviorErr := RunBehavior(ctx, input.Protocol, input.Model, func(runCtx context.Context, request Request) (Result, error) {
-			return Execute(runCtx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: timeout})
+			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
 		})
 		if behaviorErr != nil {
 			return nil, behaviorErr
 		}
 		items = append(items, behavior)
 		identity, identityErr := RunIdentity(ctx, input.Protocol, input.Model, func(runCtx context.Context, request Request) (Result, error) {
-			return Execute(runCtx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: timeout})
+			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
 		})
 		if identityErr != nil {
 			return nil, identityErr
 		}
 		items = append(items, identity)
 		tokenIntegrity, tokenErr := RunTokenIntegrity(ctx, input.Protocol, input.Model, input.Tokenizer, func(runCtx context.Context, request Request) (Result, error) {
-			return Execute(runCtx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: timeout})
+			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
 		})
 		if tokenErr != nil {
 			return nil, tokenErr
 		}
 		longContext, longErr := RunLongContext(ctx, input.ProviderCode, input.Model, input.Protocol, input.Tokenizer, input.ModelLimits, func(runCtx context.Context, request Request) (Result, error) {
-			return Execute(runCtx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: timeout})
+			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
 		})
 		if longErr != nil {
 			return nil, longErr
@@ -109,7 +112,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		if ShouldRunJuice(input.Model, input.Profile, string(input.Protocol)) {
 			juiceResults := make([]Result, 0, 6)
 			for _, request := range JuiceRequests(input.Model) {
-				result, executeErr := Execute(ctx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: timeout})
+				result, executeErr := Execute(ctx, request, input.options(input.Endpoint, input.Headers, timeout))
 				if executeErr != nil {
 					return nil, executeErr
 				}
@@ -154,11 +157,15 @@ func RunSelfCrossModel(ctx context.Context, input Suite, targetBasic Result, tim
 	if err != nil {
 		return Evaluation{}, err
 	}
-	paired, err := Execute(ctx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Timeout: timeout})
+	paired, err := Execute(ctx, request, input.options(input.Endpoint, input.Headers, timeout))
 	if err != nil {
 		return Evaluation{}, err
 	}
 	return EvaluateCrossModelPair(targetBasic, paired, input.Model, pairedModel), nil
+}
+
+func (s Suite) options(endpoint string, headers http.Header, timeout time.Duration) Options {
+	return Options{Endpoint: endpoint, Headers: headers, Timeout: timeout, Dispatcher: s.Dispatcher, Capability: s.Capability}
 }
 
 func (s Suite) ProfileForModel() modelcheckprofile.ProtocolProfile {
@@ -185,7 +192,11 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	targetEndpoint, targetHeaders, targetProtocol, targetModel := target.Endpoint, target.Headers, target.Protocol, target.Model
 	comparisonEndpoint, comparisonHeaders, comparisonProtocol, comparisonModel := comparison.Endpoint, comparison.Headers, comparison.Protocol, comparison.Model
 	execute := func(endpoint string, headers http.Header, request Request) (Result, error) {
-		return Execute(ctx, request, Options{Endpoint: endpoint, Headers: headers, Timeout: timeout})
+		owner := target
+		if endpoint == comparisonEndpoint {
+			owner = comparison
+		}
+		return Execute(ctx, request, owner.options(endpoint, headers, timeout))
 	}
 	targetBasic, err := BuildBasic(targetProtocol, targetModel, "Reply with exactly: OK-MODEL-CHECK", false)
 	if err != nil {

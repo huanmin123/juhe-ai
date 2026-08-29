@@ -68,6 +68,21 @@ func TestOwnerGateBlocksWrites(t *testing.T) {
 	}
 }
 
+func TestListDispatchRevisionsIsOrderedAndFenced(t *testing.T) {
+	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a2',3,0),('a3',2,0)`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.ListDispatchRevisions(context.Background(), "", 2)
+	if err != nil || len(page.Items) != 2 || page.Items[0].AccountID != "a1" || page.Items[1].AccountID != "a2" || page.NextAfterAccountID != "a2" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	next, err := s.ListDispatchRevisions(context.Background(), page.NextAfterAccountID, 2)
+	if err != nil || len(next.Items) != 1 || next.Items[0].AccountID != "a3" {
+		t.Fatalf("next=%+v err=%v", next, err)
+	}
+}
+
 func TestAdvanceReplayClaimAckAndRelease(t *testing.T) {
 	s, _ := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	ctx := context.Background()

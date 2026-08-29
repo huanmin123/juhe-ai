@@ -24,6 +24,7 @@ const (
 	GatewayAccountCircuitScopeAccount       GatewayAccountCircuitScopeKind = "account"
 	GatewayAccountCircuitScopeAPIKey        GatewayAccountCircuitScopeKind = "key"
 	GatewayAccountCircuitScopeProtocolModel GatewayAccountCircuitScopeKind = "protocol_model"
+	GatewayAccountCircuitScopeKeyModel      GatewayAccountCircuitScopeKind = "key_model"
 )
 
 type GatewayAccountCircuitPhase string
@@ -81,12 +82,18 @@ const (
 )
 
 type GatewayAccountCircuitScope struct {
-	Kind              GatewayAccountCircuitScopeKind
-	AccountRuntimeKey string
-	KeyFingerprint    string
-	ProtocolProfile   string
-	RequestLane       string
-	ModelBucket       string
+	Kind                      GatewayAccountCircuitScopeKind
+	AccountRuntimeKey         string
+	KeyFingerprint            string
+	ProtocolProfile           string
+	RequestLane               string
+	ModelBucket               string
+	ClientModel               string
+	CapabilityHash            string
+	CredentialSourceAccountID string
+	ClientEndpointFamily      string
+	FinalUpstreamModel        string
+	UpstreamEndpointMode      string
 }
 
 type GatewayAccountCircuitLease struct {
@@ -296,6 +303,10 @@ func GatewayAccountCircuitScopeKey(scope GatewayAccountCircuitScope) (string, er
 		parts = append(parts, scope.KeyFingerprint)
 	case GatewayAccountCircuitScopeProtocolModel:
 		parts = append(parts, scope.ProtocolProfile, scope.RequestLane, scope.ModelBucket)
+	case GatewayAccountCircuitScopeKeyModel:
+		parts = append(parts, scope.KeyFingerprint, scope.ClientModel, scope.CapabilityHash,
+			scope.CredentialSourceAccountID, scope.ClientEndpointFamily, scope.FinalUpstreamModel,
+			scope.UpstreamEndpointMode)
 	}
 	encoded := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -310,14 +321,14 @@ func ValidateGatewayAccountCircuitScope(scope GatewayAccountCircuitScope) error 
 	}
 	switch scope.Kind {
 	case GatewayAccountCircuitScopeAccount:
-		if scope.KeyFingerprint != "" || scope.ProtocolProfile != "" || scope.RequestLane != "" || scope.ModelBucket != "" {
+		if scope.KeyFingerprint != "" || scope.ProtocolProfile != "" || scope.RequestLane != "" || scope.ModelBucket != "" || hasKeyModelScopeFields(scope) {
 			return fmt.Errorf("account circuit account scope contains unrelated fields")
 		}
 	case GatewayAccountCircuitScopeAPIKey:
 		if err := validateGatewayAccountCircuitText(scope.KeyFingerprint, 512, "key fingerprint"); err != nil {
 			return err
 		}
-		if scope.ProtocolProfile != "" || scope.RequestLane != "" || scope.ModelBucket != "" {
+		if scope.ProtocolProfile != "" || scope.RequestLane != "" || scope.ModelBucket != "" || hasKeyModelScopeFields(scope) {
 			return fmt.Errorf("account circuit key scope contains unrelated fields")
 		}
 	case GatewayAccountCircuitScopeProtocolModel:
@@ -330,13 +341,37 @@ func ValidateGatewayAccountCircuitScope(scope GatewayAccountCircuitScope) error 
 		if err := validateGatewayAccountCircuitText(scope.ModelBucket, 512, "model bucket"); err != nil {
 			return err
 		}
-		if scope.KeyFingerprint != "" {
+		if scope.KeyFingerprint != "" || hasKeyModelScopeFields(scope) {
 			return fmt.Errorf("account circuit protocol-model scope contains key fingerprint")
+		}
+	case GatewayAccountCircuitScopeKeyModel:
+		if err := validateGatewayAccountCircuitText(scope.KeyFingerprint, 256, "key fingerprint"); err != nil {
+			return err
+		}
+		for name, value := range map[string]string{
+			"client model":                 scope.ClientModel,
+			"capability hash":              scope.CapabilityHash,
+			"credential source account id": scope.CredentialSourceAccountID,
+			"client endpoint family":       scope.ClientEndpointFamily,
+			"final upstream model":         scope.FinalUpstreamModel,
+			"upstream endpoint mode":       scope.UpstreamEndpointMode,
+		} {
+			if err := validateGatewayAccountCircuitText(value, 256, name); err != nil {
+				return err
+			}
+		}
+		if scope.ProtocolProfile != "" || scope.RequestLane != "" || scope.ModelBucket != "" {
+			return fmt.Errorf("account circuit key-model scope contains protocol fields")
 		}
 	default:
 		return fmt.Errorf("account circuit scope kind is invalid")
 	}
 	return nil
+}
+
+func hasKeyModelScopeFields(scope GatewayAccountCircuitScope) bool {
+	return scope.ClientModel != "" || scope.CapabilityHash != "" || scope.CredentialSourceAccountID != "" ||
+		scope.ClientEndpointFamily != "" || scope.FinalUpstreamModel != "" || scope.UpstreamEndpointMode != ""
 }
 
 func GatewayAccountCircuitRuntimeKeyMatchesFamily(target, candidate string) bool {

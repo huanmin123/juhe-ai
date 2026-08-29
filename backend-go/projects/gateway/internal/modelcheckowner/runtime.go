@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
@@ -40,6 +41,7 @@ type Runtime struct {
 	Now               func() time.Time
 	Lease             time.Duration
 	OnEvent           func(ProgressEvent)
+	Dispatcher        modelcheckprobe.DispatcherPort
 }
 
 func (s *Runtime) Run(ctx context.Context, request RunRequest) (RunResult, error) {
@@ -166,8 +168,12 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	emit(ProgressEvent{Kind: "run_started", Data: map[string]any{"runId": runID}})
 	probeModel := upstreamModel
 	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, Headers: target.Headers, Model: probeModel, Profile: request.Profile, Protocol: target.Protocol, Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits}
+	probeSuite.Dispatcher = s.Dispatcher
+	probeSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: request.TargetID, KeyFingerprint: request.TargetID, ClientModel: request.Model, ClientEndpointFamily: string(target.Protocol), FinalUpstreamModel: probeModel, UpstreamEndpointMode: string(target.Protocol), DispatchRevision: 1}
 	if request.TrustedComparison {
-		probeSuite.Comparison = &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, Profile: request.Profile, Protocol: comparisonTarget.Protocol}
+		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, Profile: request.Profile, Protocol: comparisonTarget.Protocol, Dispatcher: s.Dispatcher}
+		comparisonSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: request.TrustedComparisonAccountID, KeyFingerprint: request.TrustedComparisonAccountID, ClientModel: request.Model, ClientEndpointFamily: string(comparisonTarget.Protocol), FinalUpstreamModel: comparisonTarget.UpstreamModel, UpstreamEndpointMode: string(comparisonTarget.Protocol), DispatchRevision: 1}
+		probeSuite.Comparison = comparisonSuite
 	}
 	items, probeErr := modelcheckprobe.RunSuite(ctx, probeSuite, lease)
 	if probeErr != nil {

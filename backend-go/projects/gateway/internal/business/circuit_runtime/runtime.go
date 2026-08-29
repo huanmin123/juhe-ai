@@ -1064,12 +1064,18 @@ var (
 )
 
 type accountCircuitRuntimeScopeWire struct {
-	Kind              string `json:"kind"`
-	AccountRuntimeKey string `json:"accountRuntimeKey"`
-	KeyFingerprint    string `json:"keyFingerprint,omitempty"`
-	ProtocolProfile   string `json:"protocolProfile,omitempty"`
-	RequestLane       string `json:"requestLane,omitempty"`
-	ModelBucket       string `json:"modelBucket,omitempty"`
+	Kind                      string `json:"kind"`
+	AccountRuntimeKey         string `json:"accountRuntimeKey"`
+	KeyFingerprint            string `json:"keyFingerprint,omitempty"`
+	ProtocolProfile           string `json:"protocolProfile,omitempty"`
+	RequestLane               string `json:"requestLane,omitempty"`
+	ModelBucket               string `json:"modelBucket,omitempty"`
+	ClientModel               string `json:"clientModel,omitempty"`
+	CapabilityHash            string `json:"capabilityHash,omitempty"`
+	CredentialSourceAccountID string `json:"credentialSourceAccountId,omitempty"`
+	ClientEndpointFamily      string `json:"clientEndpointFamily,omitempty"`
+	FinalUpstreamModel        string `json:"finalUpstreamModel,omitempty"`
+	UpstreamEndpointMode      string `json:"upstreamEndpointMode,omitempty"`
 }
 
 type accountCircuitRuntimeLeaseWire struct {
@@ -1506,7 +1512,7 @@ func (s *AccountCircuitRuntimeStore) resolveNow(value time.Time) time.Time {
 }
 
 func runtimeScopeWire(scope GatewayAccountCircuitScope) accountCircuitRuntimeScopeWire {
-	return accountCircuitRuntimeScopeWire{Kind: string(scope.Kind), AccountRuntimeKey: scope.AccountRuntimeKey, KeyFingerprint: scope.KeyFingerprint, ProtocolProfile: scope.ProtocolProfile, RequestLane: scope.RequestLane, ModelBucket: scope.ModelBucket}
+	return accountCircuitRuntimeScopeWire{Kind: string(scope.Kind), AccountRuntimeKey: scope.AccountRuntimeKey, KeyFingerprint: scope.KeyFingerprint, ProtocolProfile: scope.ProtocolProfile, RequestLane: scope.RequestLane, ModelBucket: scope.ModelBucket, ClientModel: scope.ClientModel, CapabilityHash: scope.CapabilityHash, CredentialSourceAccountID: scope.CredentialSourceAccountID, ClientEndpointFamily: scope.ClientEndpointFamily, FinalUpstreamModel: scope.FinalUpstreamModel, UpstreamEndpointMode: scope.UpstreamEndpointMode}
 }
 
 func runtimeStateFromWire(value accountCircuitRuntimeStateWire) (GatewayAccountCircuitState, error) {
@@ -1521,7 +1527,7 @@ func runtimeStateFromWire(value accountCircuitRuntimeStateWire) (GatewayAccountC
 			return GatewayAccountCircuitState{}, err
 		}
 	}
-	scope := GatewayAccountCircuitScope{Kind: GatewayAccountCircuitScopeKind(value.Scope.Kind), AccountRuntimeKey: value.Scope.AccountRuntimeKey, KeyFingerprint: value.Scope.KeyFingerprint, ProtocolProfile: value.Scope.ProtocolProfile, RequestLane: value.Scope.RequestLane, ModelBucket: value.Scope.ModelBucket}
+	scope := GatewayAccountCircuitScope{Kind: GatewayAccountCircuitScopeKind(value.Scope.Kind), AccountRuntimeKey: value.Scope.AccountRuntimeKey, KeyFingerprint: value.Scope.KeyFingerprint, ProtocolProfile: value.Scope.ProtocolProfile, RequestLane: value.Scope.RequestLane, ModelBucket: value.Scope.ModelBucket, ClientModel: value.Scope.ClientModel, CapabilityHash: value.Scope.CapabilityHash, CredentialSourceAccountID: value.Scope.CredentialSourceAccountID, ClientEndpointFamily: value.Scope.ClientEndpointFamily, FinalUpstreamModel: value.Scope.FinalUpstreamModel, UpstreamEndpointMode: value.Scope.UpstreamEndpointMode}
 	openedAt := runtimeWireTime(value.OpenedAtMS)
 	retryAt := runtimeWireTime(value.RetryAtMS)
 	var lease *GatewayAccountCircuitLease

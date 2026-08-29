@@ -108,11 +108,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	cfg.CircuitRuntimeRedisURL = strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_URL"))
 	if cfg.CircuitRuntimeRedisURL == "" {
-		return Config{}, errors.New("J3b account circuit runtime 缺少 JUHE_AI_J3B_CIRCUIT_REDIS_URL")
+		cfg.CircuitRuntimeRedisURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
+	}
+	if cfg.CircuitRuntimeRedisURL == "" {
+		return Config{}, errors.New("J3b account circuit runtime 缺少 Redis state URL")
 	}
 	cfg.CircuitRuntimeRedisNamespace = strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE"))
 	if cfg.CircuitRuntimeRedisNamespace == "" {
-		return Config{}, errors.New("J3b account circuit runtime 缺少 JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE")
+		cfg.CircuitRuntimeRedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
+	}
+	if cfg.CircuitRuntimeRedisNamespace == "" {
+		return Config{}, errors.New("J3b account circuit runtime 缺少 Redis namespace")
 	}
 	cfg.CircuitRuntimeCapacity = 100000
 	if raw := strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_RUNTIME_CAPACITY")); raw != "" {

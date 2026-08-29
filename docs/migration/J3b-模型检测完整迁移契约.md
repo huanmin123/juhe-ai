@@ -255,6 +255,26 @@ Gateway 新增 `internal/j3creadonly.Reader`，将 `modelcheckowner.HealthReader
 
 ### 9.7.3 Account circuit Redis owner 接线（2026-08-28）
 
-Gateway 新增 `internal/business/circuit_runtime`，通过 `go-redis/v9` 直连 Node 兼容的 `juhe-ai:<namespace>:account-circuit:gateway-account-circuit:*` 键空间。J3b owner 启动时在 handoff/schema/Node-writer 三道门满足后执行 Redis ping 与 `runtime-index-meta(version=1,status=ready,ownerMode=go-runtime-state-v1)` 只读校验；健康端点新增 `accountCircuitRuntimeReady`。`PutClosed` 提供单 Lua、dispatch-revision fence 的 Go-only 写入原语，无 Node bridge、IPC 或跨进程补偿。
+Gateway 新增 `internal/business/circuit_runtime`，通过 `go-redis/v9` 直连 Node 兼容的 `juhe-ai:<namespace>:account-circuit:gateway-account-circuit:*` 键空间，并移植完整的 suspect/open/recovering/half-open、lease、父子升级、due、revision、incident restore、outbox revision projector 与 runtime-index backfill Lua/typed contract。J3b owner 启动时在 handoff/schema/Node-writer 三道门满足后执行 Redis ping 与 `runtime-index-meta(version=1,status=ready,ownerMode=go-runtime-state-v1)` 只读校验；健康端点新增 `accountCircuitRuntimeReady`。Owner facade 对所有 runtime mutation 先执行该 fence，无 Node bridge、IPC 或跨进程补偿。
 
-该接线仍是阶段性 owner seam：完整 suspect/open/recovering/half-open、lease、父子升级、due/rebuild、outbox/projector 及真实上游 dispatch 尚未全部接入；因此 Node circuit runtime 仍保持 active，不能删除或归档，`migration-backup` 也暂不新增该路径备份。
+同批新增 `internal/business/key_model_runtime`，按 Node 的 `CapabilityKey` canonical identity 实现 `OPEN/RECOVERING/HALF_OPEN/CLOSED` 状态、三次成功恢复、固定退避、foreground admission、lease、main-probe fence 和 J1 限频；Memory 版本只用于单元测试，Redis 版本使用 `gateway-account-circuit-key-model:*` 兼容键和 Lua 原子操作，并要求同一 owner gate。`key_model` durable incident 的六个身份字段也已接入 circuit runtime scope/wire/restore，避免恢复时丢失能力身份。
+
+该接线仍未闭合真实上游 dispatch、`key_model` foreground/recovery 调用者接入、Business SQL outbox reader/projector 的当前模块适配、双模式集成和 Node active-path-zero；当前已补充 `circuit_control_plane.ListDispatchRevisions` 与 runtime-index reader seam，但尚未执行 backfill/publish。Node circuit/key-model runtime 仍保持 active，不能删除或归档，`migration-backup` 也暂不新增该路径备份。
+
+### 9.7.4 Key-model Redis 互操作修正（2026-08-29）
+
+复核 Node `redisNamespacedKey` 与 Go adapter 后修正两项确定偏差：Go `RedisStore` 现在同时接受 `dev-*` 短 namespace 与 `juhe-ai:dev-*` 完整 namespace，并统一生成 `juhe-ai:<namespace>:gateway-account-circuit-key-model:*`；`RecordMainProbeFence` 改为与 Node 相同的 Lua 原子操作，在写 fence 的同时释放实际 attempt lease、移除 admission zset、递增 wake 并发布唤醒事件。`RecordFailureIntent` 将 receipt identity 与实际 foreground permit identity 分开，失败记录会按 permit 的真实 attempt ID 恰好释放，并发布同一 wake 事件；恢复 Lua 保留 `retryAtMs`、generation、dispatchRevision 和 distributed lease fence。
+
+Go 定向测试覆盖短 namespace、main-probe permit 释放、failure intent permit 释放和 wake sequence；Node `test:key-model-runtime`、`test:key-model-redis-store`、`test:key-model-j1-fence` 继续通过。上述修正只证明状态原语和 Node/Go Redis wire 兼容，不改变本节未完成项；没有真实 gateway request caller、双模式生产 smoke、Node active-path-zero 和可恢复备份前，不得删除 Node。
+
+2026-08-29 复核证据：`go test -count=1 -p 1 ./...`、定向 `go test -race` 与 `go vet ./...` 均通过；`-verify-gateway-route-owner-manifest` 仍报告 22 个业务族中 21 个缺失、1 个 partial；`-scan-node-j3b-active-path` 仍报告 143 个 blocked findings。审计结果确认本轮没有误删 Node 活跃路径，`migration-backup` 继续保持为空。
+
+### 9.7.5 真实 dispatch 调用链与 active-path 复核（2026-08-29）
+
+独立只读审计重新核对了实际调用者，而不是只检查 Go 类型或启动装配。Node `backend/src/modules/gateway/dispatch/upstream-dispatch.ts` 在约 989--1071 行为每次上游尝试调用 `prepareGatewayKeyModelAttempt`，并在 transport、响应、取消及异常路径调用 `reportUnknown`、`reportUpstreamNotComplete`、permit renew/release；同一文件约 466--508 行调用 account circuit `prepareAttempt`，随后将 confirmation/half-open lease 与 `reportTransportFailure`、`reportFramingComplete` 等终态交给响应 owner。该文件仍是 key_model/account circuit 包住实际上游请求的生产调用链。
+
+同次扫描维护命令 `-scan-node-j3b-active-path` 覆盖 966 个 Node TS/TSX 文件，返回 `findings=143`、`blockedFindings=143`、退出码 3；分类为 `dataset-writer=80`、`health-writer=23`、`management-route=20`、`business-command=14`、`management-proxy=3`、`scheduler=3`。Go `backend-go/projects/gateway` 只存在 runtime/store/projector/runner 与主进程 readiness 装配，未发现生产 `gatewaydispatch`、`gatewayupstream`、请求 listener 或调用 `AdmitForeground`、`RecordFailureIntent`、account circuit transition 的真实 caller。故 Go runtime 仍是已验证能力而非生产 owner，active-path-zero、Business handoff、Node 归档和 `migration-backup` 创建继续禁止。
+
+本次结论不以增加空壳 caller 或静态 allowlist 解决；下一阶段必须在同一 Gateway 进程内实现真实 ingress、候选/凭据解析、上游 dispatch、响应/usage/audit 终态，并把 key_model 与 account circuit 的所有 admission、lease、failure、success、unknown、取消和重试边界接入后，再以 Node golden、SQLite/PG 双模式和 owner manifest 证据复核切换。
+
+本轮在 `backend-go/projects/gateway/internal/business/gateway_dispatch` 增加了同进程 typed upstream-attempt owner：真实 `http.Client` 调用前执行 key-model foreground admission，transport 或缺失 body 进入 unknown 终态，响应 body 由调用方显式消费并释放 permit，并提供 renew/release 接口。该包不创建 Node/IPC/跨进程依赖，也不持有候选、凭据或 HTTP listener；它是可测试的接线基础，不等价于生产 ingress 已注册。对应契约测试已通过，但在真实候选解析、account circuit transition、response/usage/audit owner 和 listener 接入完成前，仍不得宣称 Go 唯一 owner。

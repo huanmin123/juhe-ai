@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
@@ -46,6 +47,15 @@ type Options struct {
 	Client           *http.Client
 	Timeout          time.Duration
 	MaxResponseBytes int64
+	Dispatcher       DispatcherPort
+	Capability       keymodelruntime.Capability
+}
+
+// Dispatcher is the in-process transport owner used by a fully wired
+// Gateway. The release callback must be invoked exactly once with the final
+// upstream framing outcome.
+type DispatcherPort interface {
+	Dispatch(context.Context, *http.Request, keymodelruntime.Capability, string) (response *http.Response, settle func(success bool), err error)
 }
 
 func BuildBasic(protocol modelcheckprofile.Protocol, model, prompt string, stream bool) (Request, error) {
@@ -197,9 +207,31 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 	if client == nil {
 		client = &http.Client{}
 	}
-	response, err := client.Do(httpRequest)
+	var response *http.Response
+	var settle func(bool)
+	if options.Dispatcher != nil {
+		capability := options.Capability
+		if capability.ClientModel == "" {
+			capability.ClientModel = request.ExpectedModel
+		}
+		if capability.FinalUpstreamModel == "" {
+			capability.FinalUpstreamModel = request.ExpectedModel
+		}
+		if capability.ClientEndpointFamily == "" {
+			capability.ClientEndpointFamily = string(request.Protocol)
+		}
+		if capability.UpstreamEndpointMode == "" {
+			capability.UpstreamEndpointMode = string(request.Protocol)
+		}
+		response, settle, err = options.Dispatcher.Dispatch(requestCtx, httpRequest, capability, fmt.Sprintf("model-check-%d", started.UnixNano()))
+	} else {
+		response, err = client.Do(httpRequest)
+	}
 	result.Duration = time.Since(started)
 	if err != nil {
+		if settle != nil {
+			settle(false)
+		}
 		if errors.Is(requestCtx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 			result.ErrorMessage = "J3b probe canceled"
 		} else if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
@@ -208,6 +240,9 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 			result.ErrorMessage = "J3b upstream request failed"
 		}
 		return result, nil
+	}
+	if settle != nil {
+		defer settle(false)
 	}
 	defer response.Body.Close()
 	maxBytes := options.MaxResponseBytes
@@ -226,6 +261,10 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 	}
 	result.ObservedModel, result.Output, result.Usage, result.JSON = parseResponse(request.Protocol, body)
 	result.Success = response.StatusCode == http.StatusOK
+	if result.Success && settle != nil {
+		settle(true)
+		settle = nil
+	}
 	if !result.Success && result.ErrorMessage == "" {
 		result.ErrorMessage = fmt.Sprintf("J3b upstream returned HTTP %d", response.StatusCode)
 	}

@@ -291,6 +291,12 @@ type AccountCircuitRuntimeIndexBackfiller struct {
 	now            func() time.Time
 }
 
+type DispatchRevisionReaderFunc func(context.Context, GatewayAccountCircuitDispatchRevisionPageInput) (GatewayAccountCircuitDispatchRevisionPage, error)
+
+func (f DispatchRevisionReaderFunc) ListGatewayAccountCircuitDispatchRevisions(ctx context.Context, input GatewayAccountCircuitDispatchRevisionPageInput) (GatewayAccountCircuitDispatchRevisionPage, error) {
+	return f(ctx, input)
+}
+
 func (b *AccountCircuitRuntimeIndexBackfiller) WithDispatchRevisionReader(reader GatewayAccountCircuitDispatchRevisionReader) *AccountCircuitRuntimeIndexBackfiller {
 	b.revisionReader = reader
 	return b

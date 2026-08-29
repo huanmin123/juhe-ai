@@ -57,6 +57,22 @@ type DispatchResult struct {
 	DispatchRevision                           int64
 }
 
+type DispatchRevisionSnapshot struct {
+	AccountID        string
+	DispatchRevision int64
+}
+
+type DispatchRevisionPage struct {
+	Items              []DispatchRevisionSnapshot
+	NextAfterAccountID string
+}
+
+type IncidentProjectionLoad struct {
+	Status                  string
+	CurrentDispatchRevision int64
+	Incident                Incident
+}
+
 type Incident struct {
 	CircuitScopeKey, AccountID, AccountRuntimeKey, ScopeKind string
 	KeyFingerprint, ProtocolCode, RequestLane, ModelFamily   *string
@@ -313,6 +329,74 @@ func (s *Store) AdvanceDispatchRevision(ctx context.Context, in DispatchRevision
 		return DispatchResult{}, err
 	}
 	return DispatchResult{Status: "applied", AccountID: in.AccountID, AccountRuntimeKey: in.AccountRuntimeKey, TransitionID: in.TransitionID, DispatchRevision: revision}, nil
+}
+
+// ListDispatchRevisions is the read side used by the in-process Redis runtime
+// index backfill. It reads the current Business revision fence; it never
+// creates schema or writes Redis/Node state.
+func (s *Store) ListDispatchRevisions(ctx context.Context, afterAccountID string, limit int) (DispatchRevisionPage, error) {
+	if err := s.requireOwner(); err != nil {
+		return DispatchRevisionPage{}, err
+	}
+	afterAccountID = strings.TrimSpace(afterAccountID)
+	if afterAccountID != "" {
+		if err := requireTextBounded(afterAccountID, 256, "afterAccountId"); err != nil {
+			return DispatchRevisionPage{}, err
+		}
+	}
+	if limit <= 0 || limit > maxBatchLimit {
+		return DispatchRevisionPage{}, errors.New("dispatch revision page limit is outside the allowed bounds")
+	}
+	rows, err := s.db.QueryContext(ctx, s.bind("SELECT id,dispatch_revision FROM "+s.table("accounts")+" WHERE id>? ORDER BY id LIMIT ?"), afterAccountID, limit)
+	if err != nil {
+		return DispatchRevisionPage{}, err
+	}
+	defer rows.Close()
+	page := DispatchRevisionPage{}
+	for rows.Next() {
+		var item DispatchRevisionSnapshot
+		if err := rows.Scan(&item.AccountID, &item.DispatchRevision); err != nil {
+			return page, err
+		}
+		page.Items = append(page.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return page, err
+	}
+	if len(page.Items) == limit {
+		page.NextAfterAccountID = page.Items[len(page.Items)-1].AccountID
+	}
+	return page, nil
+}
+
+// LoadIncidentForProjection returns the durable incident snapshot fenced to the
+// account's current dispatch revision. It is consumed by the in-process Redis
+// projector; it never calls Node or another process.
+func (s *Store) LoadIncidentForProjection(ctx context.Context, event Outbox) (IncidentProjectionLoad, error) {
+	if err := s.requireOwner(); err != nil {
+		return IncidentProjectionLoad{}, err
+	}
+	if event.AccountID == "" || event.CircuitScopeKey == nil || *event.CircuitScopeKey == "" || event.IncidentID == nil || *event.IncidentID == "" {
+		return IncidentProjectionLoad{}, errors.New("incident projection event identity is invalid")
+	}
+	var currentRevision int64
+	if err := s.db.QueryRowContext(ctx, s.bind("SELECT dispatch_revision FROM "+s.table("accounts")+" WHERE id=?"), event.AccountID).Scan(&currentRevision); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return IncidentProjectionLoad{Status: "missing"}, nil
+		}
+		return IncidentProjectionLoad{}, err
+	}
+	if currentRevision != event.DispatchRevision {
+		return IncidentProjectionLoad{Status: "stale", CurrentDispatchRevision: currentRevision}, nil
+	}
+	incident, found, err := s.incidentByScope(ctx, s.db, *event.CircuitScopeKey)
+	if err != nil {
+		return IncidentProjectionLoad{}, err
+	}
+	if !found || incident.IncidentID == nil || *incident.IncidentID != *event.IncidentID || incident.DispatchRevision != currentRevision || (event.Generation != nil && incident.Generation != *event.Generation) || (event.LedgerRevision != nil && incident.LedgerRevision < *event.LedgerRevision) {
+		return IncidentProjectionLoad{Status: "missing", CurrentDispatchRevision: currentRevision}, nil
+	}
+	return IncidentProjectionLoad{Status: "current", CurrentDispatchRevision: currentRevision, Incident: incident}, nil
 }
 
 func (s *Store) CompareAndSetIncident(ctx context.Context, in IncidentMutation) (IncidentResult, error) {

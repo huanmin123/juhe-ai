@@ -20,7 +20,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	circuitcontrolplane "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_control_plane"
+	circuitprojector "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_projector"
 	circuitruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_runtime"
+	gatewaydispatch "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/gateway_dispatch"
+	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	sessionretention "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/session_retention"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
@@ -108,6 +111,7 @@ func main() {
 	var circuitRuntimeComponent supervisor.Component
 	var circuitRuntimeEnabled bool
 	var circuitRuntimeRunning atomic.Bool
+	var keyModelStore *keymodelruntime.RedisStore
 	if j3bConfig.Enabled {
 		var businessMode modelcheckauth.Mode = modelcheckauth.SQLite
 		if j3bConfig.StoreMode == "postgres" {
@@ -162,14 +166,32 @@ func main() {
 			_ = runtimeStore.Close()
 			fail(fmt.Errorf("verify J3b Gateway circuit runtime owner fence: %w", readyErr))
 		}
+		keyModelStore, runtimeErr = keymodelruntime.NewRedisStore(j3bConfig.CircuitRuntimeRedisURL, j3bConfig.CircuitRuntimeRedisNamespace, keymodelruntime.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped})
+		if runtimeErr != nil {
+			_ = runtimeStore.Close()
+			fail(fmt.Errorf("create J3b Gateway key-model runtime owner: %w", runtimeErr))
+		}
+		if pingErr := keyModelStore.Ping(context.Background()); pingErr != nil {
+			_ = keyModelStore.Close()
+			_ = runtimeStore.Close()
+			fail(fmt.Errorf("ping J3b Gateway key-model runtime Redis: %w", pingErr))
+		}
+		projector, projectorErr := circuitprojector.New(circuitStore, runtimeStore, j3bConfig.InstanceID)
+		if projectorErr != nil {
+			_ = runtimeStore.Close()
+			fail(fmt.Errorf("create J3b Gateway circuit projector: %w", projectorErr))
+		}
 		circuitRuntimeEnabled = true
 		circuitRuntimeComponent = supervisor.Component{Name: "J3b account-circuit-runtime-owner", Run: func(runCtx context.Context) error {
 			circuitRuntimeRunning.Store(true)
 			defer circuitRuntimeRunning.Store(false)
-			ticker := time.NewTicker(15 * time.Second)
+			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
 			for {
 				if err := runtimeStore.CheckReady(runCtx); err != nil {
+					return err
+				}
+				if _, err := projector.RunOnce(runCtx, time.Now().UTC(), 500); err != nil {
 					return err
 				}
 				select {
@@ -220,6 +242,7 @@ func main() {
 			AccountOptions:    businessSource,
 			Authorize:         modelcheckowner.NewAdminAuthorize(authenticator),
 			Build:             businessSource.BuildRequest,
+			Dispatcher:        &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelStore, Circuit: gatewaydispatch.RuntimeCircuitGate{Store: runtimeStore}}},
 			Enforcement:       enforcement,
 			Quality:           quality,
 			Tokenizer:         tokenizer,
@@ -246,8 +269,10 @@ func main() {
 			},
 		})
 		if hostErr != nil {
+			_ = keyModelStore.Close()
 			fail(fmt.Errorf("open J3b Gateway owner host: %w", hostErr))
 		}
+		defer keyModelStore.Close()
 		managementMux := http.NewServeMux()
 		var captchaService *modelcheckauth.CaptchaService
 		if !envBool("JUHE_AI_AUTH_CAPTCHA_DISABLED") {
