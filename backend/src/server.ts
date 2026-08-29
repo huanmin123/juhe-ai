@@ -330,14 +330,12 @@ async function requireHelpSession(req: Request, res: Response, next: NextFunctio
   try {
     user = await readHelpCurrentUser(req)
   } catch (error) {
-    getRequestLogger().warn({
+    getRequestLogger().warn(errorLogFields(error, {
       event: 'help_auth_check_failed',
-      err: error instanceof Error ? error : undefined,
-      errorMessage: error instanceof Error ? undefined : String(error),
       method: req.method,
       path: req.path,
       originalUrl: sanitizeUrlForLog(req.originalUrl)
-    }, '帮助文档登录态校验失败')
+    }), '帮助文档登录态校验失败')
     res.status(503).json({ message: '登录态校验暂不可用，请稍后重试' })
     return
   }
@@ -532,14 +530,12 @@ app.use((_req, res) => {
 })
 
 app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
-  getRequestLogger().error({
+  getRequestLogger().error(errorLogFields(error, {
     event: 'http_request_unhandled_error',
-    err: error instanceof Error ? error : undefined,
-    errorMessage: error instanceof Error ? undefined : String(error),
     method: req.method,
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl)
-  }, '未处理的 HTTP 请求错误')
+  }), '未处理的 HTTP 请求错误')
 
   if (res.headersSent) {
     res.end()
@@ -566,7 +562,7 @@ const server = app.listen(port, host, httpListenBacklog, () => {
     logDirectory: runtimeConfig.log.fileEnabled ? runtimeConfig.log.directory : undefined
   }, `juhe-ai 后端已监听 http://${host}:${port}`)
 })
-// Node's default requestTimeout is 300s, which aborts slow large-body uploads.
+// Keep Node's requestTimeout aligned with the Traefik upload window for large bodies.
 server.requestTimeout = gatewayRequestTimeoutMs
 
 function startInternalGatewayRegistryWhenReady(): void {
