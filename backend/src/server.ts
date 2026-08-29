@@ -90,6 +90,7 @@ let backgroundWorkerSupervisorStarted = false
 let dbServiceReady = false
 let httpServerListening = false
 let serverShutdownInProgress = false
+const gatewayRequestTimeoutMs = 900_000
 const serverShutdownGraceMs = 40_000
 const httpShutdownGraceMs = 10_000
 
@@ -565,6 +566,8 @@ const server = app.listen(port, host, httpListenBacklog, () => {
     logDirectory: runtimeConfig.log.fileEnabled ? runtimeConfig.log.directory : undefined
   }, `juhe-ai 后端已监听 http://${host}:${port}`)
 })
+// Node's default requestTimeout is 300s, which aborts slow large-body uploads.
+server.requestTimeout = gatewayRequestTimeoutMs
 
 function startInternalGatewayRegistryWhenReady(): void {
   if (dbServiceReady && httpServerListening) startInternalGatewayRegistry()
