@@ -56,7 +56,7 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	defer server.Close()
 	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	runtime := &Runtime{Store: store, OwnerID: "gateway-1", Now: func() time.Time { return now }, Resolve: func(context.Context, RunRequest) (Target, error) {
-		return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello"}, nil
+		return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", DispatchRevision: 3}, nil
 	}}
 	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
 	if err != nil || result.Status != string(RunCompleted) || result.RunID == "" {
@@ -111,7 +111,7 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 func TestRuntimeRejectsIncompleteTargetContract(t *testing.T) {
 	store := &Store{}
 	runtime := &Runtime{Store: store, Resolve: func(context.Context, RunRequest) (Target, error) {
-		return Target{Endpoint: "https://example.invalid", Prompt: "OK"}, nil
+		return Target{Endpoint: "https://example.invalid", Prompt: "OK", DispatchRevision: 3}, nil
 	}}
 	base := RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "quick"}
 	for name, request := range map[string]RunRequest{
@@ -178,7 +178,7 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 	defer server.Close()
 	now := time.Date(2026, 8, 28, 10, 0, 0, 0, time.UTC)
 	runtime := &Runtime{Store: store, OwnerID: "gateway-1", Now: func() time.Time { return now }, Resolve: func(context.Context, RunRequest) (Target, error) {
-		return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra"}, nil
+		return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", DispatchRevision: 3}, nil
 	}}
 	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
 	if err != nil || result.Status != string(RunCompleted) {
@@ -250,10 +250,10 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 		OwnerID: "gateway-1",
 		Now:     func() time.Time { return now },
 		Resolve: func(context.Context, RunRequest) (Target, error) {
-			return Target{Endpoint: targetServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai"}, nil
+			return Target{Endpoint: targetServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai", DispatchRevision: 3}, nil
 		},
 		ResolveComparison: func(context.Context, RunRequest) (Target, error) {
-			return Target{Endpoint: comparisonServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai"}, nil
+			return Target{Endpoint: comparisonServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai", DispatchRevision: 4}, nil
 		},
 	}
 	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "comparison-acct", TrustedComparisonConfigRevision: "cfg-2"})

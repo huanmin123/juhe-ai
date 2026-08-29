@@ -184,11 +184,11 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 		return Target{}, fmt.Errorf("open J3b Business target transaction: %w", err)
 	}
 	defer tx.Rollback()
-	query := `SELECT a.provider_code,a.provider_protocol_profile_id,a.protocol_code,a.config_revision,a.status,a.schedulable,a.credentials_encrypted,p.base_url,p.enabled FROM ` + s.table("accounts") + ` a JOIN ` + s.table("provider_protocol_profiles") + ` p ON p.id=a.provider_protocol_profile_id JOIN ` + s.table("group_accounts") + ` ga ON ga.account_id=a.id AND ga.system_account_id=a.system_account_id AND ga.enabled=1 JOIN ` + s.table("groups") + ` g ON g.id=ga.group_id AND g.enabled=1 WHERE a.id=` + s.placeholder(1) + ` AND a.system_account_id=` + s.placeholder(2) + ` AND a.deleted_at IS NULL`
+	query := `SELECT a.provider_code,a.provider_protocol_profile_id,a.protocol_code,a.config_revision,a.dispatch_revision,a.status,a.schedulable,a.credentials_encrypted,p.base_url,p.enabled FROM ` + s.table("accounts") + ` a JOIN ` + s.table("provider_protocol_profiles") + ` p ON p.id=a.provider_protocol_profile_id JOIN ` + s.table("group_accounts") + ` ga ON ga.account_id=a.id AND ga.system_account_id=a.system_account_id AND ga.enabled=1 JOIN ` + s.table("groups") + ` g ON g.id=ga.group_id AND g.enabled=1 WHERE a.id=` + s.placeholder(1) + ` AND a.system_account_id=` + s.placeholder(2) + ` AND a.deleted_at IS NULL`
 	var provider, profileID, protocolCode, encrypted, baseURL, status string
-	var revision int64
+	var revision, dispatchRevision int64
 	var schedulable, profileEnabled bool
-	if err := tx.QueryRowContext(ctx, query, request.TargetID, request.SystemAccountID).Scan(&provider, &profileID, &protocolCode, &revision, &status, &schedulable, &encrypted, &baseURL, &profileEnabled); err != nil {
+	if err := tx.QueryRowContext(ctx, query, request.TargetID, request.SystemAccountID).Scan(&provider, &profileID, &protocolCode, &revision, &dispatchRevision, &status, &schedulable, &encrypted, &baseURL, &profileEnabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Target{}, errors.New("J3b Business account does not exist or is outside scope")
 		}
@@ -229,7 +229,10 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	} else {
 		headers.Set("Authorization", "Bearer "+token)
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, ConfigRevision: strconv.FormatInt(revision, 10), Protocol: profile.Protocol, UpstreamModel: upstreamModel, Headers: headers, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	if dispatchRevision < 1 {
+		return Target{}, errors.New("J3b Business account dispatch revision is invalid")
+	}
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, ConfigRevision: strconv.FormatInt(revision, 10), DispatchRevision: dispatchRevision, Protocol: profile.Protocol, UpstreamModel: upstreamModel, Headers: headers, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
 }
 
 // BuildRequest freezes the Business target and quality policy in one

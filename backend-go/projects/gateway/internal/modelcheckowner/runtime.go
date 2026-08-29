@@ -20,6 +20,7 @@ import (
 
 type Target struct {
 	Endpoint, ProviderCode, ConfigRevision, UpstreamModel string
+	DispatchRevision                                      int64
 	Protocol                                              modelcheckprofile.Protocol
 	Headers                                               http.Header
 	Prompt                                                string
@@ -76,6 +77,9 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if target.Endpoint == "" || target.Prompt == "" {
 		return RunResult{}, errors.New("resolved J3b target is incomplete")
 	}
+	if target.DispatchRevision < 1 {
+		return RunResult{}, errors.New("resolved J3b target dispatch revision is invalid")
+	}
 	var comparisonTarget Target
 	if request.TrustedComparison {
 		if request.Profile != "full" || strings.TrimSpace(request.TrustedComparisonAccountID) == "" || s.ResolveComparison == nil {
@@ -85,7 +89,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		if err != nil {
 			return RunResult{}, fmt.Errorf("resolve J3b trusted comparison: %w", err)
 		}
-		if comparisonTarget.Endpoint == "" || comparisonTarget.Prompt == "" || comparisonTarget.UpstreamModel == "" {
+		if comparisonTarget.Endpoint == "" || comparisonTarget.Prompt == "" || comparisonTarget.UpstreamModel == "" || comparisonTarget.DispatchRevision < 1 {
 			return RunResult{}, errors.New("resolved J3b trusted comparison target is incomplete")
 		}
 	}
@@ -169,10 +173,10 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	probeModel := upstreamModel
 	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, Headers: target.Headers, Model: probeModel, Profile: request.Profile, Protocol: target.Protocol, Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits}
 	probeSuite.Dispatcher = s.Dispatcher
-	probeSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: request.TargetID, KeyFingerprint: request.TargetID, ClientModel: request.Model, ClientEndpointFamily: string(target.Protocol), FinalUpstreamModel: probeModel, UpstreamEndpointMode: string(target.Protocol), DispatchRevision: 1}
+	probeSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: request.TargetID, KeyFingerprint: request.TargetID, ClientModel: request.Model, ClientEndpointFamily: string(target.Protocol), FinalUpstreamModel: probeModel, UpstreamEndpointMode: string(target.Protocol), DispatchRevision: target.DispatchRevision}
 	if request.TrustedComparison {
 		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, Profile: request.Profile, Protocol: comparisonTarget.Protocol, Dispatcher: s.Dispatcher}
-		comparisonSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: request.TrustedComparisonAccountID, KeyFingerprint: request.TrustedComparisonAccountID, ClientModel: request.Model, ClientEndpointFamily: string(comparisonTarget.Protocol), FinalUpstreamModel: comparisonTarget.UpstreamModel, UpstreamEndpointMode: string(comparisonTarget.Protocol), DispatchRevision: 1}
+		comparisonSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: request.TrustedComparisonAccountID, KeyFingerprint: request.TrustedComparisonAccountID, ClientModel: request.Model, ClientEndpointFamily: string(comparisonTarget.Protocol), FinalUpstreamModel: comparisonTarget.UpstreamModel, UpstreamEndpointMode: string(comparisonTarget.Protocol), DispatchRevision: comparisonTarget.DispatchRevision}
 		probeSuite.Comparison = comparisonSuite
 	}
 	items, probeErr := modelcheckprobe.RunSuite(ctx, probeSuite, lease)

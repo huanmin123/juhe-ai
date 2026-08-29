@@ -22,7 +22,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,config_revision INTEGER,status TEXT,schedulable INTEGER,credentials_encrypted TEXT,deleted_at TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,status TEXT,schedulable INTEGER,credentials_encrypted TEXT,deleted_at TEXT)`,
 		`CREATE TABLE provider_protocol_profiles (id TEXT PRIMARY KEY,provider_code TEXT,enabled INTEGER,protocol_code TEXT,base_url TEXT)`,
 		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,enabled INTEGER)`,
 		`CREATE TABLE groups (id TEXT PRIMARY KEY,enabled INTEGER)`,
@@ -44,13 +44,13 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO group_accounts VALUES ('acct-1','sys-1','group-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','openai','profile_openai_openai_v1','openai',3,'active',1,?,NULL)`, envelope); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','openai','profile_openai_openai_v1','openai',3,7,'active',1,?,NULL)`, envelope); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-2','sys-2','openai','profile_openai_openai_v1','openai',3,'active',1,?,NULL)`, envelope); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-2','sys-2','openai','profile_openai_openai_v1','openai',3,2,'active',1,?,NULL)`, envelope); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-3','sys-1','openai','profile_openai_openai_v1','openai',4,'active',1,?,NULL)`, envelope); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-3','sys-1','openai','profile_openai_openai_v1','openai',4,9,'active',1,?,NULL)`, envelope); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO group_accounts VALUES ('acct-3','sys-1','group-1',1)`); err != nil {
@@ -67,7 +67,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Endpoint != "https://example.invalid/v1" || target.Headers.Get("Authorization") != "Bearer key-1" {
+	if target.Endpoint != "https://example.invalid/v1" || target.DispatchRevision != 7 || target.Headers.Get("Authorization") != "Bearer key-1" {
 		t.Fatalf("target=%+v headers=%v", target, target.Headers)
 	}
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-2", Model: "gpt-5.6-sol"}); err == nil {
@@ -106,7 +106,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 		t.Fatalf("trusted comparison request=%+v", comparisonRequest)
 	}
 	comparisonTarget, err := source.ComparisonResolver()(context.Background(), comparisonRequest)
-	if err != nil || comparisonTarget.ConfigRevision != "4" {
+	if err != nil || comparisonTarget.ConfigRevision != "4" || comparisonTarget.DispatchRevision != 9 {
 		t.Fatalf("trusted comparison target=%+v err=%v", comparisonTarget, err)
 	}
 	if _, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol", Profile: "quick", TrustedComparison: true, TrustedComparisonID: "acct-3"}); err == nil {
