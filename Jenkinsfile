@@ -612,24 +612,37 @@ def verifyJ3aRelease(environmentName, enabled) {
         echo 'J3a release observer 缺少 stable Endpoint 读取权限。' >&2
         exit 1
       fi
-      active_pod=\$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' get endpoints juhe-ai -o jsonpath='{.subsets[0].addresses[0].targetRef.name}')
-      case "\$active_pod" in juhe-ai-0|juhe-ai-b-0) ;; *) echo 'J3a stable Endpoint 未指向允许的 jobs Pod。' >&2; exit 1 ;; esac
-      if [ "\$(sh -c "\$observer -n ${namespace} auth can-i get pods/\$active_pod")" != 'yes' ]; then
-        echo "J3a release observer 缺少 \$active_pod 的读取权限。" >&2
-        exit 1
-      fi
       forward_log=\$(mktemp)
-      KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' port-forward "pod/\$active_pod" 33050:3305 >"\$forward_log" 2>&1 &
-      forward_pid=\$!
-      cleanup() { kill "\$forward_pid" 2>/dev/null || true; wait "\$forward_pid" 2>/dev/null || true; rm -f "\$forward_log"; }
+      forward_pid=''
+      active_pod=''
+      cleanup() { if [ -n "\$forward_pid" ]; then kill "\$forward_pid" 2>/dev/null || true; wait "\$forward_pid" 2>/dev/null || true; fi; rm -f "\$forward_log"; }
       trap cleanup EXIT HUP INT TERM
       health=''
-      i=0
-      while [ \$i -lt 20 ]; do
-        health=\$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 3 http://127.0.0.1:33050/health 2>/dev/null || true)
-        if [ -n "\$health" ]; then break; fi
-        i=\$((i + 1)); sleep 1
+      for candidate in \$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' get endpoints juhe-ai -o jsonpath='{range .subsets[*].addresses[*]}{.targetRef.name}{"\\n"}{end}'); do
+        case "\$candidate" in juhe-ai-0|juhe-ai-b-0) ;; *) continue ;; esac
+        if [ "\$(sh -c "\$observer -n ${namespace} auth can-i get pods/\$candidate")" != 'yes' ]; then continue; fi
+        : >"\$forward_log"
+        KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' port-forward "pod/\$candidate" 33050:3305 >"\$forward_log" 2>&1 &
+        forward_pid=\$!
+        i=0
+        while [ \$i -lt 20 ]; do
+          health=\$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY curl --fail --silent --show-error --max-time 3 http://127.0.0.1:33050/health 2>/dev/null || true)
+          if [ -n "\$health" ]; then break; fi
+          i=\$((i + 1)); sleep 1
+        done
+        if printf '%s' "\$health" | grep -Eq '\"ready\"[[:space:]]*:[[:space:]]*true' && printf '%s' "\$health" | grep -Eq '\"proxyLatencyOwnerHeld\"[[:space:]]*:[[:space:]]*true'; then
+          active_pod="\$candidate"
+          break
+        fi
+        kill "\$forward_pid" 2>/dev/null || true
+        wait "\$forward_pid" 2>/dev/null || true
+        forward_pid=''
+        health=''
       done
+      if [ -z "\$active_pod" ]; then
+        echo 'J3a stable Endpoint 未找到 ready=true 且 owner-held 的 jobs Pod。' >&2
+        exit 1
+      fi
       for field in ready proxyLatencyEnabled proxyLatencyReady proxyLatencyOwnerHeld; do
         if ! printf '%s' "\$health" | grep -Eq "\\\"\$field\\\"[[:space:]]*:[[:space:]]*true"; then
           echo "${environmentName} J3a Go health 未满足 \$field=true。" >&2
