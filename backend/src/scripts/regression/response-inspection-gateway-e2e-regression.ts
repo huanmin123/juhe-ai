@@ -38,6 +38,7 @@ type ScenarioName =
   | 'codex_broken_gzip_sse'
   | 'codex_encrypted_content_recovery_sse'
   | 'codex_encrypted_content_recovery_exhausted_sse'
+  | 'openai_responses_encrypted_content_recovery_sse'
 
 interface UpstreamHit {
   path: string
@@ -120,6 +121,8 @@ try {
     if (requestedScenario === 'codex_encrypted_content_recovery_sse') {
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl)
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, false, true)
+    } else if (requestedScenario === 'openai_responses_encrypted_content_recovery_sse') {
+      await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, false, false, true)
     } else if (requestedScenario === 'codex_encrypted_content_recovery_exhausted_sse') {
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, true)
       await runCodexEncryptedContentRecoveryScenario(baseUrl, upstreamBaseUrl, true, true)
@@ -444,9 +447,12 @@ async function runCodexEncryptedContentRecoveryScenario(
   baseUrl: string,
   upstreamBaseUrl: string,
   expectRecoveryExhausted = false,
-  includeCompaction = false
+  includeCompaction = false,
+  standardOpenAI = false
 ): Promise<void> {
-  const scenario: ScenarioName = expectRecoveryExhausted
+  const scenario: ScenarioName = standardOpenAI
+    ? 'openai_responses_encrypted_content_recovery_sse'
+    : expectRecoveryExhausted
     ? 'codex_encrypted_content_recovery_exhausted_sse'
     : 'codex_encrypted_content_recovery_sse'
   upstreamHits.length = 0
@@ -524,11 +530,13 @@ async function runCodexEncryptedContentRecoveryScenario(
     stream: true,
     input
   }
-  const requestHeaders = {
+  const requestHeaders: Record<string, string> = {
     authorization: `Bearer ${apiKey.key}`,
     'content-type': 'application/json',
-    accept: 'text/event-stream',
-    'x-codex-turn-metadata': JSON.stringify({
+    accept: 'text/event-stream'
+  }
+  if (!standardOpenAI) {
+    requestHeaders['x-codex-turn-metadata'] = JSON.stringify({
       turn_id: `turn_${scenario}`,
       session_id: `session_${scenario}`,
       thread_id: `thread_${scenario}`
@@ -557,7 +565,12 @@ async function runCodexEncryptedContentRecoveryScenario(
     clientIp: '127.0.0.1'
   })
   const codexTurnStateKey = turnStrategy.codexTurn?.stateKey
-  assert(codexTurnStateKey, 'E2E 请求必须解析出 Codex turn state key')
+  if (standardOpenAI) {
+    assert.equal(turnStrategy.requestClientCompatibility, 'openai_standard', '普通 OpenAI Responses 回归不得依赖 Codex 画像')
+    assert.equal(codexTurnStateKey, undefined, '普通 OpenAI Responses 回归不应生成 Codex turn state')
+  } else {
+    assert(codexTurnStateKey, 'E2E 请求必须解析出 Codex turn state key')
+  }
   const response = await sendRequest()
   const responseText = await response.text()
   assert.equal(response.status, 200, `密文恢复应保留 Codex SSE 协议响应：${responseText}`)
@@ -590,6 +603,7 @@ async function runCodexEncryptedContentRecoveryScenario(
   }
   assert.doesNotMatch(responseText, /resp-rejected-encrypted-content/, '上游首个 response.created 不得泄露给下游')
   if (expectRecoveryExhausted) {
+    assert(codexTurnStateKey, 'exhausted Codex 回归必须保留 Codex turn state key')
     assert.doesNotMatch(responseText, /resp-rejected-cleaned-content/, '第二次上游失败的 response.created 不得泄露给下游')
     assert.doesNotMatch(responseText, /resp-rejected-encrypted-content/, '首次上游拒绝 response ID 不得泄露给下游')
     assert.equal((responseText.match(/^event: response\.failed$/gm) ?? []).length, 1, '第二次失败必须只发送一个本地 response.failed')
@@ -600,6 +614,7 @@ async function runCodexEncryptedContentRecoveryScenario(
     assert.doesNotMatch(responseText, /fixture-rejected-reasoning-content|fixture-rejected-agent-message-content/, '客户端响应不得泄露 fixture 密文')
     assert.doesNotMatch(responseText, /Encrypted function output content could not be decrypted or decoded\./, '客户端响应不得泄露上游拒绝正文')
     assert.doesNotMatch(responseText, /response\.completed/, '清洗后的第二次失败不得伪造完成事件')
+    if (!codexTurnStateKey) throw new Error('exhausted Codex 回归必须保留 Codex turn state key')
     assert.deepEqual(
       getCodexTurnRetryStateForTest(codexTurnStateKey),
       { failureCount: 1, failedAccountIds: [account.id] },
@@ -621,7 +636,7 @@ async function runCodexEncryptedContentRecoveryScenario(
     )
     return
   }
-  assert.match(responseText, /clean codex_encrypted_content_recovery_sse/, `恢复请求必须完成：${responseText}`)
+  assert.match(responseText, new RegExp(`clean ${scenario}`), `恢复请求必须完成：${responseText}`)
   assert.match(responseText, /response\.completed/, `恢复请求必须返回完成终态：${responseText}`)
 }
 
@@ -704,6 +719,7 @@ function createMockOpenAIUpstream(): http.Server {
         if (
           scenario === 'codex_encrypted_content_recovery_sse'
           || scenario === 'codex_encrypted_content_recovery_exhausted_sse'
+          || scenario === 'openai_responses_encrypted_content_recovery_sse'
         ) {
           sendCodexEncryptedContentRecoverySse(res, bodyText, scenario)
           return
@@ -746,7 +762,7 @@ function createMockOpenAIUpstream(): http.Server {
 }
 
 function scenarioFromAuthorization(authorization: string): ScenarioName {
-  const match = authorization.match(/sk-upstream-(?:polluted|clean)-([a-z_]+)/)
+  const match = authorization.match(/sk-upstream-(?:polluted|clean)-([a-z0-9_]+)/)
   assert(match?.[1], `无法从上游 Authorization 识别回归场景：${authorization}`)
   return match[1] as ScenarioName
 }
@@ -881,7 +897,7 @@ function sendCodexEncryptedContentRecoverySse(
     sendCodexEncryptedContentRecoveryFailure(res, 'resp-rejected-cleaned-content', 'invalid_encrypted_content')
     return
   }
-  sendResponsesSse(res, 'codex_encrypted_content_recovery_sse', false)
+  sendResponsesSse(res, scenario, false)
 }
 
 function sendCodexEncryptedContentRecoveryFailure(

@@ -1,7 +1,6 @@
 import type { Request } from 'express'
 
 import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
-import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { gatewayJsonBodyInlineParseMaxBytes } from './body.js'
@@ -47,21 +46,19 @@ export type CodexEncryptedContentRecoveryResult =
     }
 
 /**
- * Retry one pre-commit Codex Responses attempt with opaque encrypted state
+ * Retry one pre-commit OpenAI Responses attempt with opaque encrypted state
  * removed only after the upstream explicitly rejects that state.  The caller
  * owns the one-attempt budget; this helper never mutates the client request.
  */
 export async function recoverCodexEncryptedContentRequest(input: {
   req: Request
   account: UpstreamAccount
-  requestClientCompatibility?: ClientCompatibilityCapability
   body: Buffer | string | undefined
   upstreamErrorText: string
   signal?: AbortSignal
 }): Promise<CodexEncryptedContentRecoveryResult> {
   if (
-    input.requestClientCompatibility !== 'codex_responses'
-    || !isOpenAIProtocolProfile(input.account)
+    !isOpenAIProtocolProfile(input.account)
     || gatewayRequestEndpointFamily(input.req) !== 'responses'
   ) {
     return { action: 'not_applicable' }

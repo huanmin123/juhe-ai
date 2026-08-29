@@ -162,6 +162,7 @@ export interface OpenAIGatewayHandleOptions {
   accountProbeModel?: string
   onUpstreamAttemptDiagnostic?: (lastAttempt: UpstreamAttempt) => void
   onUpstreamAttemptStartedDiagnostic?: (account: UpstreamAccount, upstreamUrl: string) => void
+  bypassKeyModelAdmission?: boolean
 }
 
 interface GatewayResponseErrorBoundaryOptions {
@@ -1040,7 +1041,8 @@ let codexTurnAvoidedFallbackEnabled = false
           forceRecoverableFailureWait
             || (currentPreflight.apiKeyRecord?.group_bindings?.length ?? 0) <= 1
             || fallbackSwitchCount >= (currentPreflight.apiKeyRecord?.group_bindings?.length ?? 0) - 1,
-          dispatchAccountCircuitConfirmation
+          dispatchAccountCircuitConfirmation,
+          options.bypassKeyModelAdmission === true
         )
       } catch (error) {
         if (dispatchAccountCircuitConfirmation) {
@@ -1587,7 +1589,6 @@ let codexTurnAvoidedFallbackEnabled = false
           const compatibilityRecovery = await recoverCodexEncryptedContentRequest({
             req,
             account,
-            requestClientCompatibility: currentPreflight.clientStrategy.requestClientCompatibility,
             body: upstreamResult.requestBody,
             upstreamErrorText: compatibilityRecoveryErrorText,
             signal: requestExecutionSignal
