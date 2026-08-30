@@ -42,7 +42,7 @@ assert.match(jenkinsfile, /node_health=[\s\S]*?proxyLatency[\s\S]*?enabled[\s\S]
   'J3a 启用时必须验证 Node 旧 proxyLatency active-path-zero')
 assert.match(jenkinsfile, /withCredentials\(\[string\(credentialsId: credentialID, variable: 'J3A_RELEASE_VERIFIER_TOKEN'\)\]\)/,
   'J3a 管理验证必须使用受控 Jenkins credential，而非源码或日志中的 token')
-assert.match(jenkinsfile, /--subresource=portforward[\s\S]*?--resource-name=\\\$active_pod[\s\S]*?port-forward[\s\S]*?33050:3305/,
+assert.match(jenkinsfile, /auth can-i create pods\/\\\$active_pod --subresource=portforward[\s\S]*?port-forward[\s\S]*?33050:3305/,
   'J3a Go health 必须经具体 Pod 的受限 port-forward 读取，不能由 Node health 代替')
 assert.match(jenkinsfile, /\/__aisys__\/api\/proxies\/\$\{proxyID\}\/test[\s\S]*?\/__aisys__\/api\/operation-logs/,
   'J3a 启用时必须先执行精确管理 POST，再回读 F4 operation log')

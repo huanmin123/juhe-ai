@@ -622,7 +622,7 @@ def verifyJ3aRelease(environmentName, enabled) {
         case "\$candidate" in juhe-ai-0|juhe-ai-b-0) ;; *) continue ;; esac
         active_pod="\$candidate"
         if [ "\$(sh -c "\$observer -n ${namespace} auth can-i get pods/\$active_pod")" != 'yes' ]; then active_pod=''; continue; fi
-        if [ "\$(sh -c "\$observer -n ${namespace} auth can-i create pods/portforward --subresource=portforward --resource-name=\$active_pod")" != 'yes' ]; then active_pod=''; continue; fi
+        if [ "\$(sh -c "\$observer -n ${namespace} auth can-i create pods/\$active_pod --subresource=portforward")" != 'yes' ]; then active_pod=''; continue; fi
         : >"\$forward_log"
         KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' port-forward "pod/\$active_pod" 33050:3305 >"\$forward_log" 2>&1 &
         forward_pid=\$!
