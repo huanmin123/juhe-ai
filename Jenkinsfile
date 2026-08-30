@@ -620,9 +620,11 @@ def verifyJ3aRelease(environmentName, enabled) {
       health=''
       for candidate in \$(KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' get endpoints juhe-ai -o jsonpath='{range .subsets[*].addresses[*]}{.targetRef.name}{"\\n"}{end}'); do
         case "\$candidate" in juhe-ai-0|juhe-ai-b-0) ;; *) continue ;; esac
-        if [ "\$(sh -c "\$observer -n ${namespace} auth can-i get pods/\$candidate")" != 'yes' ]; then continue; fi
+        active_pod="\$candidate"
+        if [ "\$(sh -c "\$observer -n ${namespace} auth can-i get pods/\$active_pod")" != 'yes' ]; then active_pod=''; continue; fi
+        if [ "\$(sh -c "\$observer -n ${namespace} auth can-i create pods/portforward --subresource=portforward --resource-name=\$active_pod")" != 'yes' ]; then active_pod=''; continue; fi
         : >"\$forward_log"
-        KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' port-forward "pod/\$candidate" 33050:3305 >"\$forward_log" 2>&1 &
+        KUBECONFIG='${env.RELEASE_OBSERVER_KUBECONFIG}' kubectl -n '${namespace}' port-forward "pod/\$active_pod" 33050:3305 >"\$forward_log" 2>&1 &
         forward_pid=\$!
         i=0
         while [ \$i -lt 20 ]; do
@@ -637,6 +639,7 @@ def verifyJ3aRelease(environmentName, enabled) {
         kill "\$forward_pid" 2>/dev/null || true
         wait "\$forward_pid" 2>/dev/null || true
         forward_pid=''
+        active_pod=''
         health=''
       done
       if [ -z "\$active_pod" ]; then

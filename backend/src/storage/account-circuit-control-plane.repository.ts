@@ -168,7 +168,7 @@ export interface CompareAndSetAccountCircuitIncidentInput {
 }
 
 export interface CompareAndSetAccountCircuitIncidentResult {
-  status: 'applied' | 'idempotent' | 'cas_conflict' | 'stale_dispatch_revision'
+  status: 'applied' | 'idempotent' | 'cas_conflict' | 'stale_dispatch_revision' | 'account_not_found'
   incident?: AccountCircuitIncidentRecord
   currentDispatchRevision: number
 }
@@ -192,6 +192,7 @@ interface AccountDispatchRevisionRow {
   id: string
   dispatch_revision: number | bigint | string
   circuit_projection_revision: number | bigint | string
+  deleted_at: string | null
 }
 
 interface AccountCircuitIncidentRow {
@@ -522,8 +523,13 @@ export async function compareAndSetAccountCircuitIncidentInClient(
   const input = normalizeIncidentMutation(rawInput)
   return client.transaction(async (tx) => {
     const account = await lockAccountDispatchRevision(tx, input.accountId)
-    if (!account) throw new Error(`AI 账户不存在：${input.accountId}`)
+    // Physical cleanup cascades the circuit ledger after logical deletion. A
+    // late runtime observation must be terminal instead of becoming a retry.
+    if (!account) return { status: 'account_not_found', currentDispatchRevision: 0 }
     const currentDispatchRevision = integerValue(account.dispatch_revision, 'dispatch_revision')
+    if (account.deleted_at !== null) {
+      return { status: 'account_not_found', currentDispatchRevision }
+    }
     if (currentDispatchRevision !== input.dispatchRevision) {
       return { status: 'stale_dispatch_revision', currentDispatchRevision }
     }
@@ -883,7 +889,7 @@ export async function cleanupAccountCircuitControlPlaneInClient(
 async function lockAccountDispatchRevision(client: DatabaseClient, accountId: string): Promise<AccountDispatchRevisionRow | undefined> {
   const accounts = businessTable(client, 'accounts')
   return client.one<AccountDispatchRevisionRow>(`
-    SELECT id, dispatch_revision, circuit_projection_revision
+    SELECT id, dispatch_revision, circuit_projection_revision, deleted_at
     FROM ${accounts}
     WHERE id = ?${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
   `, [accountId])

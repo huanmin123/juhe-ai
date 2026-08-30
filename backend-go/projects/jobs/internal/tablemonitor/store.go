@@ -540,13 +540,26 @@ func (s *Store) previousTableSnapshots(ctx context.Context, snapshots []TableSna
 		args = append(args, index, snapshot.Role, snapshot.TableName, sqliteTimestamp(snapshot.SampledAt.Add(-lookback).UTC()))
 	}
 
-	table := "table_storage_snapshots"
-	beforeAt := "target.before_at"
+	var query string
 	if s.mode == ModePostgres {
-		table = "juhe_stats.table_storage_snapshots"
-		beforeAt = "target.before_at::timestamptz"
-	}
-	query := fmt.Sprintf(`WITH target(target_index, database_role, table_name, before_at) AS (
+		query = fmt.Sprintf(`WITH target(target_index, database_role, table_name, before_at) AS (
+  VALUES %s
+)
+SELECT target.target_index, latest.total_bytes, latest.row_count
+FROM target
+LEFT JOIN LATERAL (
+  SELECT snapshot.total_bytes, snapshot.row_count
+  FROM juhe_stats.table_storage_snapshots AS snapshot
+  WHERE snapshot.database_role = target.database_role
+    AND snapshot.table_name = target.table_name
+    AND snapshot.sampled_at <= target.before_at
+  ORDER BY snapshot.sampled_at DESC, snapshot.id DESC
+  LIMIT 1
+) AS latest ON TRUE`, values.String())
+	} else {
+		table := "table_storage_snapshots"
+		beforeAt := "target.before_at"
+		query = fmt.Sprintf(`WITH target(target_index, database_role, table_name, before_at) AS (
   VALUES %s
 ), ranked AS (
   SELECT target.target_index, snapshot.total_bytes, snapshot.row_count,
@@ -563,6 +576,7 @@ func (s *Store) previousTableSnapshots(ctx context.Context, snapshots []TableSna
 SELECT target_index, total_bytes, row_count
 FROM ranked
 WHERE baseline_rank = 1`, values.String(), table, beforeAt)
+	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

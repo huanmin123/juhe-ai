@@ -450,6 +450,9 @@ export class AccountCircuitControlPlaneBridge {
           stateUpdatedAtMs: desiredState.updatedAtMs,
           nowMs: this.now()
         })
+        // Physical account cleanup is a terminal outcome for late runtime
+        // observations; do not retain a pending item or schedule retries.
+        if (persisted.status === 'account_not_found') return
         this.dispatchRevisions.set(accountId, persisted.currentDispatchRevision)
         if (persisted.incident) this.ledgerRevisions.set(desiredState.scopeKey, persisted.incident.ledgerRevision)
         if (persisted.status === 'stale_dispatch_revision') return

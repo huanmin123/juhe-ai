@@ -323,6 +323,32 @@ try {
   })
   assert.deepEqual(finalRebuild.items, [])
 
+  database.prepare('UPDATE accounts SET deleted_at = ? WHERE id = ?').run(new Date(20_002).toISOString(), accountId)
+  const deletedAccountIncident = await compareAndSetAccountCircuitIncidentInClient(client, incidentMutation({
+    expectedLedgerRevision: null,
+    state: 'SUSPECT',
+    transitionId: 'incident-after-account-delete',
+    generation: 1,
+    dispatchRevision: 3
+  }))
+  assert.deepEqual(deletedAccountIncident, {
+    status: 'account_not_found',
+    currentDispatchRevision: 3
+  }, '逻辑删除后的账户 circuit 写入必须返回幂等终态而不是落账')
+
+  database.prepare('DELETE FROM accounts WHERE id = ?').run(accountId)
+  const physicallyDeletedAccountIncident = await compareAndSetAccountCircuitIncidentInClient(client, incidentMutation({
+    expectedLedgerRevision: null,
+    state: 'SUSPECT',
+    transitionId: 'incident-after-account-physical-cleanup',
+    generation: 1,
+    dispatchRevision: 3
+  }))
+  assert.deepEqual(physicallyDeletedAccountIncident, {
+    status: 'account_not_found',
+    currentDispatchRevision: 0
+  }, '物理清理后的账户 circuit 写入必须返回幂等终态而不是抛错')
+
   console.log(JSON.stringify({
     message: '账户 circuit 控制面账本回归通过',
     dispatchRevision: 3,

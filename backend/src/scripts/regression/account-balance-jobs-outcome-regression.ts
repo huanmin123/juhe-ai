@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -100,6 +100,40 @@ assert.equal(
   'a legacy millisecond cursor must advance through the first replayed microsecond outcome'
 )
 assert.equal(repairedCursorParams?.[0], '2026-08-19T04:07:26.724170Z')
+
+// Simulate two replicas draining overlapping source windows. Replica A tries
+// to write its older window after replica B has advanced the shared cursor.
+let sharedCursor: { observedAt: string; outcomeId: string } | undefined = {
+  observedAt: '2026-08-19T04:07:26.724000Z',
+  outcomeId: 'account-balance-outcome-replica-base'
+}
+const contentionClient: any = {
+  driver: 'postgres',
+  dialect: { qualifyTable: (schema: string, name: string) => `${schema}.${name}` },
+  transaction: async (operation: (client: unknown) => Promise<unknown>) => {
+    const tx = {
+      ...contentionClient,
+      one: async () => sharedCursor ? { observed_at: sharedCursor.observedAt, outcome_id: sharedCursor.outcomeId } : undefined,
+      execute: async (sql: string, params: readonly unknown[]) => {
+        if (sql.startsWith('INSERT')) sharedCursor = { observedAt: String(params[1]), outcomeId: String(params[2]) }
+        else if (sql.startsWith('UPDATE')) sharedCursor = { observedAt: String(params[0]), outcomeId: String(params[1]) }
+        return { changes: 1 }
+      }
+    }
+    return operation(tx)
+  }
+}
+const replicaAWindow = { observedAt: '2026-08-19T04:07:26.724170Z', outcomeId: 'account-balance-outcome-replica-a' }
+const replicaBWindow = { observedAt: '2026-08-19T04:07:26.724455Z', outcomeId: 'account-balance-outcome-replica-b' }
+assert.equal(
+  await advanceAccountBalanceProjectionCursorAsync(contentionClient, 'j2-double-replica', replicaBWindow),
+  true,
+  '副本 B 必须能够推进共享游标'
+)
+assert.equal(await advanceAccountBalanceProjectionCursorAsync(contentionClient, 'j2-double-replica', replicaAWindow), false, '副本 A 看到较新共享游标时必须报告 contention，而不是回退游标')
+const runtimeSource = readFileSync(new URL('../../modules/background/account-balance-jobs-outcome-projection-runtime.service.ts', import.meta.url), 'utf8')
+assert.match(runtimeSource, /account_balance_jobs_outcome_projection_cursor_contended/u, 'runtime 必须记录双副本 contention')
+assert.doesNotMatch(runtimeSource, /J2 projection cursor 未前进/u, '双副本 contention 不得再被抛为失败')
 
 const postgresOutcomeRow = {
   outcome_id: 'account-balance-outcome-1',
