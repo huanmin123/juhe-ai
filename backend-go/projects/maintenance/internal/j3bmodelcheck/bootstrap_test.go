@@ -121,6 +121,39 @@ func TestJ3bSQLiteBootstrapReadinessRejectsPrimaryKeyAndIndexDrift(t *testing.T)
 	}
 }
 
+func TestJ3bSQLiteBootstrapReadinessRejectsRuntimeProjectionColumnDrift(t *testing.T) {
+	db, err := OpenSQLite(t.TempDir() + "/j3b-columns.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := RunSQLite(context.Background(), db, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE account_quality_health_hourly RENAME TO account_quality_health_hourly_valid`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`); err != nil {
+		t.Fatal(err)
+	}
+	report, err := RunSQLite(context.Background(), db, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready() || !containsString(report.MissingColumns, "account_quality_health_hourly.error_code") || !containsString(report.MissingColumns, "account_quality_health_hourly.error_message") {
+		t.Fatalf("missing health error projection columns must fail readiness: %+v", report)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	root := t.TempDir()
 	target, err := OpenSQLite(root + "/target.db")
@@ -303,8 +336,18 @@ func TestJ3bSQLiteBackfillHandlesLegacyExtraColumnsAndMultipleRows(t *testing.T)
 	if report.SourceDigest["model_check_runs"] == "" || report.SourceDigest["model_check_runs"] != report.TargetDigest["model_check_runs"] {
 		t.Fatalf("common-column digest mismatch: %+v", report)
 	}
-	if readback, err := VerifySQLiteBackfill(context.Background(), targetPath, datasetPath, statsPath); err != nil || !readback.Ready || readback.Tables["model_check_runs"] != "match" {
+	if got := report.IgnoredSourceColumns["model_check_runs"]; len(got) != 1 || got[0] != "legacy_node_extra" {
+		t.Fatalf("ignored source columns not reported: %+v", report.IgnoredSourceColumns)
+	}
+	readback, err := VerifySQLiteBackfill(context.Background(), targetPath, datasetPath, statsPath)
+	if err != nil || !readback.Ready || readback.Tables["model_check_runs"] != "match" {
 		t.Fatalf("legacy extra-column readback=%+v err=%v", readback, err)
+	}
+	if readback.ProjectionComplete || readback.Complete {
+		t.Fatalf("source-only column must reject complete/cutover evidence while preserving Ready compatibility: %+v", readback)
+	}
+	if got := readback.IgnoredSourceColumns["model_check_runs"]; len(got) != 1 || got[0] != "legacy_node_extra" {
+		t.Fatalf("ignored source columns not reported by readback: %+v", readback.IgnoredSourceColumns)
 	}
 }
 
@@ -332,6 +375,10 @@ func TestJ3bSQLiteBackfillReadbackDetectsDriftAndSharedPaths(t *testing.T) {
 		dataset.Close()
 		t.Fatal(err)
 	}
+	if _, err := dataset.Exec(`DROP TABLE model_check_input_versions`); err != nil {
+		dataset.Close()
+		t.Fatal(err)
+	}
 	if err := dataset.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -343,6 +390,10 @@ func TestJ3bSQLiteBackfillReadbackDetectsDriftAndSharedPaths(t *testing.T) {
 		target.Close()
 		t.Fatal(err)
 	}
+	if _, err := target.Exec(`INSERT INTO model_check_input_versions(identity_key,next_version,updated_at) VALUES('go-owned',1,'2026-08-28T00:00:00Z')`); err != nil {
+		target.Close()
+		t.Fatal(err)
+	}
 	if err := target.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +401,7 @@ func TestJ3bSQLiteBackfillReadbackDetectsDriftAndSharedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Ready || report.Tables["model_check_runs"] != "match" {
+	if !report.Ready || !report.ProjectionComplete || !report.Complete || !report.SourceReadOnly || !report.StatsReadOnly || !report.TargetReadOnly || report.Tables["model_check_runs"] != "match" || report.Tables["model_check_input_versions"] != "optional source absent; target retained" || report.TargetRows["model_check_input_versions"] != 1 {
 		t.Fatalf("expected readback match, report=%+v", report)
 	}
 	drift, err := OpenSQLite(datasetPath)

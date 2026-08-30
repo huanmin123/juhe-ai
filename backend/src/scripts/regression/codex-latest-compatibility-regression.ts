@@ -99,6 +99,45 @@ assert.ok(standardBodyBuffer, '非 Lite Codex Responses 请求仍必须生成兼
 const standardBody = JSON.parse(standardBodyBuffer.toString('utf8')) as Record<string, unknown>
 assert.equal(standardBody.reasoning, undefined, '非 Lite 模型不能被注入 reasoning context')
 assert.equal(standardBody.parallel_tool_calls, true, '非 Lite 模型保持现有并行工具默认值')
+assert.deepEqual(standardBody.tools, [], '没有 additional_tools 时仍保持 API Key Codex 兼容层的空工具数组')
+
+const additionalToolsInput = [{
+  type: 'additional_tools',
+  role: 'developer',
+  tools: [{ type: 'custom', name: 'exec' }]
+}]
+const additionalToolsBodyBuffer = await buildOpenAIClientCompatibilityBody(createRequest('/v1/responses', {
+  model: 'gpt-5.5',
+  input: additionalToolsInput
+}), undefined, {
+  requestClientCompatibility: 'codex_responses'
+})
+assert.ok(additionalToolsBodyBuffer, '带 additional_tools 的 API Key Codex 请求必须生成兼容请求体')
+const additionalToolsBody = JSON.parse(additionalToolsBodyBuffer.toString('utf8')) as Record<string, unknown>
+assert.equal(Object.hasOwn(additionalToolsBody, 'tools'), false, 'additional_tools 存在时不得凭空注入顶层 tools=[]')
+assert.deepEqual(additionalToolsBody.input, additionalToolsInput, 'additional_tools 输入项必须保持原始 Responses 形态')
+
+const explicitEmptyToolsBodyBuffer = await buildOpenAIClientCompatibilityBody(createRequest('/v1/responses', {
+  model: 'gpt-5.5',
+  input: additionalToolsInput,
+  tools: []
+}), undefined, {
+  requestClientCompatibility: 'codex_responses'
+})
+assert.ok(explicitEmptyToolsBodyBuffer, '显式 tools=[] 的 API Key Codex 请求必须生成兼容请求体')
+const explicitEmptyToolsBody = JSON.parse(explicitEmptyToolsBodyBuffer.toString('utf8')) as Record<string, unknown>
+assert.deepEqual(explicitEmptyToolsBody.tools, [], '客户端显式 tools=[] 必须保留，不与 additional_tools 混淆')
+
+const malformedTopLevelToolsBodyBuffer = await buildOpenAIClientCompatibilityBody(createRequest('/v1/responses', {
+  model: 'gpt-5.5',
+  input: additionalToolsInput,
+  tools: null
+}), undefined, {
+  requestClientCompatibility: 'codex_responses'
+})
+assert.ok(malformedTopLevelToolsBodyBuffer, '显式非法 tools 字段的 API Key Codex 请求必须生成兼容请求体')
+const malformedTopLevelToolsBody = JSON.parse(malformedTopLevelToolsBodyBuffer.toString('utf8')) as Record<string, unknown>
+assert.deepEqual(malformedTopLevelToolsBody.tools, [], '显式非法 tools 字段仍保持既有空数组归一化')
 
 const liteToStandardParts = await gptProviderDriver.buildUpstreamRequestParts(
   createRequest('/v1/responses', { model: 'gpt-5.6-sol', input: '只输出 OK' }),

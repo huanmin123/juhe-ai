@@ -10,37 +10,51 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 type BackfillReport struct {
-	SourceRows   map[string]int64  `json:"sourceRows"`
-	InsertedRows map[string]int64  `json:"insertedRows"`
-	TargetRows   map[string]int64  `json:"targetRows"`
-	SourceDigest map[string]string `json:"sourceDigest"`
-	TargetDigest map[string]string `json:"targetDigest"`
+	SourceRows           map[string]int64    `json:"sourceRows"`
+	InsertedRows         map[string]int64    `json:"insertedRows"`
+	TargetRows           map[string]int64    `json:"targetRows"`
+	SourceDigest         map[string]string   `json:"sourceDigest"`
+	TargetDigest         map[string]string   `json:"targetDigest"`
+	IgnoredSourceColumns map[string][]string `json:"ignoredSourceColumns,omitempty"`
 }
 
 // BackfillVerificationReport is a read-only, post-cutover evidence report.
 // It compares the legacy dataset/stats files with the dedicated J3b file
 // after backfill. No source or target file is opened with write permissions.
 type BackfillVerificationReport struct {
-	Ready          bool              `json:"ready"`
-	PathsDistinct  bool              `json:"pathsDistinct"`
-	SourceReadOnly bool              `json:"sourceReadOnly"`
-	TargetReadOnly bool              `json:"targetReadOnly"`
-	Tables         map[string]string `json:"tables"`
-	SourceRows     map[string]int64  `json:"sourceRows"`
-	TargetRows     map[string]int64  `json:"targetRows"`
-	SourceDigest   map[string]string `json:"sourceDigest"`
-	TargetDigest   map[string]string `json:"targetDigest"`
+	Ready bool `json:"ready"`
+	// ProjectionComplete is stricter than Ready: Ready preserves the
+	// historical common-column compatibility signal, while this field proves
+	// every source column was represented by the target projection.
+	ProjectionComplete bool `json:"projectionComplete"`
+	// Complete is the cutover-safe readback gate. Callers must consume this
+	// field instead of treating Ready as proof of a lossless migration.
+	Complete             bool                `json:"complete"`
+	PathsDistinct        bool                `json:"pathsDistinct"`
+	SourceReadOnly       bool                `json:"sourceReadOnly"`
+	StatsReadOnly        bool                `json:"statsReadOnly"`
+	TargetReadOnly       bool                `json:"targetReadOnly"`
+	Tables               map[string]string   `json:"tables"`
+	SourceRows           map[string]int64    `json:"sourceRows"`
+	TargetRows           map[string]int64    `json:"targetRows"`
+	SourceDigest         map[string]string   `json:"sourceDigest"`
+	TargetDigest         map[string]string   `json:"targetDigest"`
+	IgnoredSourceColumns map[string][]string `json:"ignoredSourceColumns,omitempty"`
 }
 
 // VerifySQLiteBackfill compares every J3b fact table in the legacy dataset
 // and stats files with the dedicated target. It is intentionally read-only:
 // this command is safe to run after cutover and is suitable for rollback
 // evidence. Missing mandatory source tables, shared physical files, row
-// count drift, or digest drift all fail closed (Ready=false).
+// count drift, or digest drift all fail closed (Ready=false). A source-only
+// column keeps the historical Ready compatibility signal true when the common
+// projection matches, but sets ProjectionComplete/Complete false so callers
+// cannot use lossy readback as complete cutover evidence.
 func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPath string) (BackfillVerificationReport, error) {
 	targetPath = strings.TrimSpace(targetPath)
 	datasetPath = strings.TrimSpace(datasetPath)
@@ -53,12 +67,13 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 		return BackfillVerificationReport{}, err
 	}
 	report := BackfillVerificationReport{
-		PathsDistinct: distinct,
-		Tables:        map[string]string{},
-		SourceRows:    map[string]int64{},
-		TargetRows:    map[string]int64{},
-		SourceDigest:  map[string]string{},
-		TargetDigest:  map[string]string{},
+		PathsDistinct:        distinct,
+		Tables:               map[string]string{},
+		SourceRows:           map[string]int64{},
+		TargetRows:           map[string]int64{},
+		SourceDigest:         map[string]string{},
+		TargetDigest:         map[string]string{},
+		IgnoredSourceColumns: map[string][]string{},
 	}
 	if !distinct {
 		report.Tables["__paths__"] = "shared physical file"
@@ -88,11 +103,11 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 	if err != nil {
 		return BackfillVerificationReport{}, err
 	}
-	statsReadOnly, err := verifyQueryOnly(ctx, stats)
+	report.StatsReadOnly, err = verifyQueryOnly(ctx, stats)
 	if err != nil {
 		return BackfillVerificationReport{}, err
 	}
-	if !report.SourceReadOnly || !report.TargetReadOnly || !statsReadOnly {
+	if !report.SourceReadOnly || !report.StatsReadOnly || !report.TargetReadOnly {
 		report.Tables["__query_only__"] = "one or more readers are writable"
 		report.Ready = false
 		return report, nil
@@ -104,6 +119,7 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 		return report, nil
 	}
 	ready := true
+	projectionComplete := true
 	for _, item := range []struct {
 		db       *sql.DB
 		table    string
@@ -119,15 +135,14 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 		}
 		if !exists {
 			if item.optional {
-				report.Tables[item.table] = "optional source absent"
+				// These tables are Go-owned facts with no Node legacy counterpart.
+				// A post-cutover target may legitimately contain them, so their
+				// absence from the legacy source is not readback drift.
+				report.Tables[item.table] = "optional source absent; target retained"
 				report.SourceRows[item.table] = 0
 				report.TargetRows[item.table], err = tableRowCount(ctx, target, item.table)
 				if err != nil {
 					return BackfillVerificationReport{}, err
-				}
-				if report.TargetRows[item.table] != 0 {
-					report.Tables[item.table] = "target has rows but source absent"
-					ready = false
 				}
 				continue
 			}
@@ -146,6 +161,10 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 		columns := intersectColumns(sourceColumns, targetColumns)
 		if len(columns) == 0 {
 			return BackfillVerificationReport{}, fmt.Errorf("J3b readback table %s has no common columns", item.table)
+		}
+		if ignored := differenceColumns(sourceColumns, targetColumns); len(ignored) > 0 {
+			report.IgnoredSourceColumns[item.table] = ignored
+			projectionComplete = false
 		}
 		sourceDigest, err := sqliteTableDigestColumns(ctx, item.db, item.table, columns)
 		if err != nil {
@@ -173,6 +192,8 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 		}
 	}
 	report.Ready = ready
+	report.ProjectionComplete = projectionComplete
+	report.Complete = ready && projectionComplete
 	return report, nil
 }
 
@@ -200,6 +221,24 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		return BackfillReport{}, err
 	}
 	defer stats.Close()
+	// Keep the source connections explicitly read-only before inspecting or
+	// copying any rows. The URI requests query_only, but verify the live
+	// connection so a driver/configuration regression cannot turn this into a
+	// writable source path.
+	datasetReadOnly, err := verifyQueryOnly(ctx, dataset)
+	if err != nil {
+		return BackfillReport{}, fmt.Errorf("verify J3b legacy dataset query_only: %w", err)
+	}
+	if !datasetReadOnly {
+		return BackfillReport{}, errors.New("J3b legacy dataset must be query_only")
+	}
+	statsReadOnly, err := verifyQueryOnly(ctx, stats)
+	if err != nil {
+		return BackfillReport{}, fmt.Errorf("verify J3b legacy stats query_only: %w", err)
+	}
+	if !statsReadOnly {
+		return BackfillReport{}, errors.New("J3b legacy stats must be query_only")
+	}
 	ready, err := inspectSQLite(ctx, target)
 	if err != nil {
 		return BackfillReport{}, fmt.Errorf("verify J3b target schema: %w", err)
@@ -212,7 +251,7 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		return BackfillReport{}, fmt.Errorf("begin J3b SQLite backfill: %w", err)
 	}
 	defer tx.Rollback()
-	report := BackfillReport{SourceRows: map[string]int64{}, InsertedRows: map[string]int64{}, TargetRows: map[string]int64{}, SourceDigest: map[string]string{}, TargetDigest: map[string]string{}}
+	report := BackfillReport{SourceRows: map[string]int64{}, InsertedRows: map[string]int64{}, TargetRows: map[string]int64{}, SourceDigest: map[string]string{}, TargetDigest: map[string]string{}, IgnoredSourceColumns: map[string][]string{}}
 	for _, item := range []struct {
 		db       *sql.DB
 		table    string
@@ -244,6 +283,9 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		copied, err := copySQLiteTable(ctx, tx, item.db, item.table)
 		if err != nil {
 			return BackfillReport{}, err
+		}
+		if len(copied.ignoredSourceColumns) > 0 {
+			report.IgnoredSourceColumns[item.table] = copied.ignoredSourceColumns
 		}
 		report.SourceRows[item.table] = copied.source
 		report.InsertedRows[item.table] = copied.inserted
@@ -492,8 +534,9 @@ func verifyQueryOnly(ctx context.Context, db *sql.DB) (bool, error) {
 }
 
 type copyStats struct {
-	source, inserted int64
-	digest           string
+	source, inserted     int64
+	digest               string
+	ignoredSourceColumns []string
 }
 
 func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table string) (copyStats, error) {
@@ -509,6 +552,7 @@ func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table stri
 	if len(columns) == 0 {
 		return copyStats{}, fmt.Errorf("J3b backfill table %s has no compatible columns", table)
 	}
+	ignoredSourceColumns := differenceColumns(sourceColumns, targetColumns)
 	sort.Strings(columns)
 	primaryKeys, err := sqlitePrimaryKeys(ctx, tx, table)
 	if err != nil || len(primaryKeys) == 0 {
@@ -583,6 +627,7 @@ func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table stri
 		return copyStats{}, err
 	}
 	stats.digest = hex.EncodeToString(digest.Sum(nil))
+	stats.ignoredSourceColumns = ignoredSourceColumns
 	return stats, nil
 }
 
@@ -697,11 +742,25 @@ func sqlitePrimaryKeysDB(ctx context.Context, db *sql.DB, table string) ([]strin
 func normalizeValue(value any) string {
 	switch typed := value.(type) {
 	case []byte:
-		return string(typed)
+		return "text:" + string(typed)
+	case sql.RawBytes:
+		return "text:" + string(typed)
 	case nil:
-		return "<nil>"
+		return "null:"
+	case string:
+		return "text:" + typed
+	case int64:
+		return "int64:" + strconv.FormatInt(typed, 10)
+	case int:
+		return "int:" + strconv.Itoa(typed)
+	case float64:
+		return "float64:" + strconv.FormatFloat(typed, 'g', -1, 64)
+	case float32:
+		return "float32:" + strconv.FormatFloat(float64(typed), 'g', -1, 32)
+	case bool:
+		return "bool:" + strconv.FormatBool(typed)
 	default:
-		return fmt.Sprintf("%v", typed)
+		return fmt.Sprintf("%T:%v", typed, typed)
 	}
 }
 
@@ -766,6 +825,21 @@ func intersectColumns(source, target []string) []string {
 			result = append(result, value)
 		}
 	}
+	return result
+}
+
+func differenceColumns(source, target []string) []string {
+	targetSet := make(map[string]struct{}, len(target))
+	for _, value := range target {
+		targetSet[value] = struct{}{}
+	}
+	result := make([]string, 0)
+	for _, value := range source {
+		if _, ok := targetSet[value]; !ok {
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
 	return result
 }
 

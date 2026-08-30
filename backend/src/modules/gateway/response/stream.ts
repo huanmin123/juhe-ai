@@ -1,6 +1,7 @@
 import type { Response } from 'express'
 
 import { getRequestLogger, markRequestProtocolTerminalOutcome } from '../../../shared/request-context.js'
+import { errorLogFields } from '../../../shared/logger.js'
 import type {
   GatewayCommittedFailureSignal,
   OpenAIGatewayDownstreamProtocol
@@ -513,7 +514,7 @@ export async function pipeUpstreamStream(
           accountFailureEligible: input.accountFailureEligible === true
         })
       } catch (error) {
-        streamLogger.warn({ error }, 'Codex turn 提交后失败状态记录失败，继续发送协议终态')
+        streamLogger.warn(errorLogFields(error), 'Codex turn 提交后失败状态记录失败，继续发送协议终态')
       }
     }
     prepareDownstreamForWrite()
@@ -1192,7 +1193,7 @@ export async function pipeUpstreamStream(
       if ((terminalEventWritten || (inspection.terminalReceived && downstreamCommit.semanticCommitted)) && !interpretedProtocolFailure(inspection)) {
         await closeIteratorPromise
         endResponse(res)
-        streamLogger.info({
+        streamLogger.info(errorLogFields(error, {
           event: 'gateway_stream_client_closed_after_terminal',
           elapsedMs: Date.now() - startedAt,
           chunkCount: chunkIndex,
@@ -1206,9 +1207,8 @@ export async function pipeUpstreamStream(
           sseEventTypeCounts: inspection.eventTypeCounts,
           recentSseEventTypes: inspection.recentEventTypes,
           parserSkipped: inspection.skipped,
-          skipReason: inspection.skipReason,
-          errorMessage: error instanceof Error ? error.message : String(error)
-        }, '客户端在协议终止事件后关闭连接，按成功流式响应收尾')
+          skipReason: inspection.skipReason
+        }), '客户端在协议终止事件后关闭连接，按成功流式响应收尾')
         return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
       }
       const incompleteAbortPromise = options.onIncompleteClientAbort
@@ -1226,7 +1226,7 @@ export async function pipeUpstreamStream(
             failedReceived: false,
             parserSkipped: false
           }).catch((callbackError) => {
-            streamLogger.warn({ error: callbackError }, 'Codex turn 不完整下游断流状态记录失败，按 downstream_closed 继续')
+            streamLogger.warn(errorLogFields(callbackError), 'Codex turn 不完整下游断流状态记录失败，按 downstream_closed 继续')
           })
         : Promise.resolve()
       await Promise.all([closeIteratorPromise, incompleteAbortPromise])
@@ -1290,13 +1290,12 @@ export async function pipeUpstreamStream(
     const rawMessage = error instanceof Error ? error.message : '上游流式响应已中断'
     const inspection = publishGatewayStreamInspection(res, inspector.finish())
     omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
-    streamLogger.warn({
+    streamLogger.warn(errorLogFields(error, {
       event: 'gateway_stream_pipe_error',
       elapsedMs: Date.now() - startedAt,
       chunkCount: chunkIndex,
       totalUpstreamBytes,
       totalResponseBytes,
-      rawMessage,
       terminalReceived: inspection.terminalReceived,
       failedReceived: inspection.failedReceived,
       outputReceived: inspection.outputReceived,
@@ -1306,14 +1305,13 @@ export async function pipeUpstreamStream(
       recentSseEventTypes: inspection.recentEventTypes,
       parserSkipped: inspection.skipped,
       skipReason: inspection.skipReason
-    }, '网关流式转发捕获异常')
+    }), '网关流式转发捕获异常')
     if ((terminalEventWritten || (inspection.terminalReceived && downstreamCommit.semanticCommitted)) && !interpretedProtocolFailure(inspection)) {
       endResponse(res)
-      streamLogger.info({
+      streamLogger.info(errorLogFields(error, {
         event: 'gateway_stream_error_ignored_after_terminal',
-        elapsedMs: Date.now() - startedAt,
-        rawMessage
-      }, '网关已收到终止事件，忽略终止后的流式异常')
+        elapsedMs: Date.now() - startedAt
+      }), '网关已收到终止事件，忽略终止后的流式异常')
       return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
     const transportFailure = streamTransportFailureForError(error, rawMessage)

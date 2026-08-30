@@ -84,17 +84,20 @@ func TestEnsureHealthRetryTasksMaterializesOneTaskPerFailedRun(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,finished_at TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`,
 		`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT NOT NULL,due_at TEXT NOT NULL,claim_owner TEXT,claim_until TEXT,fence_token INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',last_error TEXT,completed_at TEXT,payload TEXT NOT NULL,updated_at TEXT NOT NULL)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES ('run-1','failed','2030-01-01T00:00:00Z','2030-01-01T00:00:00Z'),('run-2','applied','2030-01-01T00:00:00Z','2030-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"run-1", "completed", "acct-1", "sys-1", "openai", "gpt-5.6", "quick", "failure", 20, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, "2030-01-01T00:00:00Z", "failed", "2030-01-01T00:00:00Z",
+		"run-2", "completed", "acct-2", "sys-2", "openai", "gpt-5.6", "quick", "success", 92, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, "2030-01-01T00:00:00Z", "failed", "2030-01-01T00:00:00Z",
+		"run-3", "running", "acct-3", "sys-3", "openai", "gpt-5.6", "quick", "failure", 20, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, "2030-01-01T00:00:00Z", "failed", "2030-01-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "sqlite"}
+	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	if err := store.EnsureHealthRetryTasks(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}

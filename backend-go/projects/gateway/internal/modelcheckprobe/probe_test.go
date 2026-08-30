@@ -3,12 +3,15 @@ package modelcheckprobe
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
@@ -62,6 +65,52 @@ func TestBuildStructuredAndToolRequestsPreserveProtocolShapes(t *testing.T) {
 	}
 }
 
+func TestBuildBasicForEndpointModeUsesExplicitPathAndStream(t *testing.T) {
+	tests := []struct {
+		name, mode, wantPath string
+		protocol             modelcheckprofile.Protocol
+		stream               bool
+	}{
+		{"responses json", modelcheckprofile.EndpointModeResponsesJSON, "/v1/responses", modelcheckprofile.ProtocolOpenAIResponses, false},
+		{"responses sse", modelcheckprofile.EndpointModeResponsesSSE, "/v1/responses", modelcheckprofile.ProtocolOpenAIResponses, true},
+		{"chat json", modelcheckprofile.EndpointModeChatJSON, "/v1/chat/completions", modelcheckprofile.ProtocolOpenAIChat, false},
+		{"chat sse", modelcheckprofile.EndpointModeChatSSE, "/v1/chat/completions", modelcheckprofile.ProtocolOpenAIChat, true},
+		{"messages sse", modelcheckprofile.EndpointModeMessagesSSE, "/v1/messages", modelcheckprofile.ProtocolAnthropic, true},
+		{"gemini sse", modelcheckprofile.EndpointModeGenerateContentSSE, "/v1beta/models/gemini-model:streamGenerateContent?alt=sse", modelcheckprofile.ProtocolGeminiNative, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request, err := BuildBasicForEndpointMode(test.protocol, "gemini-model", "hello", test.mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.Path != test.wantPath || request.EndpointMode != test.mode {
+				t.Fatalf("request path=%q mode=%q want path=%q mode=%q", request.Path, request.EndpointMode, test.wantPath, test.mode)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(request.Body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := payload["stream"].(bool); ok && got != test.stream {
+				t.Fatalf("stream=%v want=%v payload=%#v", got, test.stream, payload)
+			}
+			if test.protocol == modelcheckprofile.ProtocolGeminiNative {
+				if _, ok := payload["stream"]; ok {
+					t.Fatal("Gemini native request must select stream through action/query, not JSON stream")
+				}
+			}
+		})
+	}
+}
+
+func TestBuildBasicForEndpointModeRejectsUnsupportedCrossProtocolMode(t *testing.T) {
+	for _, mode := range []string{"images_json", "interactions_json", modelcheckprofile.EndpointModeChatJSON} {
+		if _, err := BuildBasicForEndpointMode(modelcheckprofile.ProtocolOpenAIResponses, "model", "hello", mode); err == nil {
+			t.Fatalf("mode %q must fail closed", mode)
+		}
+	}
+}
+
 func TestBuildAndExecuteOpenAIProbe(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" || r.Header.Get("Authorization") != "Bearer secret" {
@@ -78,6 +127,37 @@ func TestBuildAndExecuteOpenAIProbe(t *testing.T) {
 	result, err := Execute(context.Background(), request, Options{Endpoint: server.URL, Headers: http.Header{"Authorization": []string{"Bearer secret"}}, Timeout: time.Second})
 	if err != nil || !result.Success || result.ObservedModel != "gpt-5.6-sol" || result.Output != "ok" {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+type clientCapturingDispatcher struct {
+	legacyCalls int
+	client      *http.Client
+}
+
+func (d *clientCapturingDispatcher) Dispatch(context.Context, *http.Request, keymodelruntime.Capability, string) (*http.Response, func(bool), error) {
+	d.legacyCalls++
+	return nil, nil, errors.New("legacy dispatcher path must not be used")
+}
+
+func (d *clientCapturingDispatcher) DispatchWithClient(_ context.Context, _ *http.Request, _ keymodelruntime.Capability, _ string, client *http.Client) (*http.Response, func(bool), error) {
+	d.client = client
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"model":"gpt-5.6-sol","output_text":"ok"}`))}, func(bool) {}, nil
+}
+
+func TestExecuteDispatcherUsesResolvedTargetClient(t *testing.T) {
+	request, err := BuildBasic(modelcheckprofile.ProtocolOpenAIResponses, "gpt-5.6-sol", "hello", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedClient := &http.Client{}
+	dispatcher := &clientCapturingDispatcher{}
+	result, err := Execute(context.Background(), request, Options{Endpoint: "https://example.test", Client: resolvedClient, Dispatcher: dispatcher, Timeout: time.Second})
+	if err != nil || !result.Success {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if dispatcher.client != resolvedClient || dispatcher.legacyCalls != 0 {
+		t.Fatalf("dispatcher did not receive resolved client: got=%p want=%p legacyCalls=%d", dispatcher.client, resolvedClient, dispatcher.legacyCalls)
 	}
 }
 

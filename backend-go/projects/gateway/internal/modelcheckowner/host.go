@@ -31,6 +31,7 @@ type HostDependencies struct {
 	ExecutorFactory   func(*Runtime, *QualityProjector) SchedulerExecutor
 	SchedulerFactory  func(*Store, *Runtime, *QualityProjector) (SchedulerSource, SchedulerExecutor)
 	Dispatcher        modelcheckprobe.DispatcherPort
+	HealthStatHour    HealthStatHourFunc
 }
 
 type Host struct {
@@ -49,7 +50,7 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 	if cfg.BusinessHandoffConfirmed && !cfg.NodeWriterStopped {
 		return nil, errors.New("J3b Business owner handoff 已确认但 Node writer 未停止，必须保持关闭")
 	}
-	if deps.Resolve == nil || deps.Authorize == nil || deps.Build == nil || deps.Enforcement == nil || deps.Quality == nil {
+	if deps.Resolve == nil || deps.Authorize == nil || deps.Build == nil || deps.Enforcement == nil || deps.Quality == nil || deps.HealthStatHour == nil {
 		return nil, errors.New("J3b Gateway owner dependencies are incomplete")
 	}
 	// Full-profile probes must have explicit tokenizer and model-limit
@@ -74,6 +75,7 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 	if err := store.CheckSchema(ctx); err != nil {
 		return closeOnError(fmt.Errorf("verify J3b Gateway schema: %w", err))
 	}
+	store.HealthStatHour = deps.HealthStatHour
 	projector := &QualityProjector{Store: store, Enforcement: deps.Enforcement}
 	runtime := &Runtime{Store: store, Resolve: deps.Resolve, ResolveComparison: deps.ResolveComparison, Tokenizer: deps.Tokenizer, ModelLimits: deps.ModelLimits, Projector: projector, OwnerID: cfg.InstanceID, Dispatcher: deps.Dispatcher}
 	handler := &HTTPHandler{Service: runtime, Quality: deps.Quality, AccountOptions: deps.AccountOptions, Baseline: store, Active: modelcheckactive.NewRegistry(), Authorize: deps.Authorize, Build: deps.Build}
@@ -153,6 +155,35 @@ func (h *Host) Mount(mux *http.ServeMux, prefix string) error {
 		return errors.New("J3b Gateway route prefix must be an absolute path ending with slash")
 	}
 	mux.Handle(prefix, http.StripPrefix(strings.TrimSuffix(prefix, "/"), h.Handler))
+	return nil
+}
+
+// MountScoped registers a public management entrance with an explicit
+// authorization function and scope policy. A nil authorize function keeps
+// the host's default adapter. The handler is cloned so admin and self mounts
+// cannot mutate each other's scope policy.
+func (h *Host) MountScoped(mux *http.ServeMux, prefix string, authorize Authorize, allowCrossAccount bool) error {
+	if h == nil || !h.Ready() || h.Handler == nil {
+		return errors.New("J3b Gateway host is not ready")
+	}
+	if mux == nil {
+		return errors.New("J3b Gateway route mux is nil")
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" || prefix[0] != '/' || !strings.HasSuffix(prefix, "/") {
+		return errors.New("J3b Gateway route prefix must be an absolute path ending with slash")
+	}
+	handler, ok := h.Handler.(*HTTPHandler)
+	if !ok || handler == nil {
+		return errors.New("J3b Gateway host handler has unexpected type")
+	}
+	clone := *handler
+	if authorize != nil {
+		clone.Authorize = authorize
+	}
+	clone.AllowCrossAccount = allowCrossAccount
+	clone.ForceActorScope = !allowCrossAccount
+	mux.Handle(prefix, http.StripPrefix(strings.TrimSuffix(prefix, "/"), &clone))
 	return nil
 }
 

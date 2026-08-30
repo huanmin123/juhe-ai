@@ -59,7 +59,51 @@ func TestScanNodeJ3bActivePathsReportsRulesAndSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Rules) != 8 || len(report.Skipped) != 1 || report.Skipped[0].Disposition != "allow" {
+	if len(report.Rules) != 12 || len(report.Skipped) != 1 || report.Skipped[0].Disposition != "allow" {
 		t.Fatalf("rules/skips=%+v", report)
+	}
+}
+
+func TestScanNodeJ3bActivePathsBlocksTokenWorkerTrustAggregationAndStatsIPC(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "backend", "src", "modules", "model-checks")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte("import './model-checks-token-worker.service.js'\n" +
+		"const legacy = startModelCheckTokenWorker\n" +
+		"const schedule = 'model-trust-observation-aggregation'\n" +
+		"const aggregate = 'aggregate_model_trust_observations'\n" +
+		"const health = 'record_model_quality_health_failure'\n")
+	if err := os.WriteFile(filepath.Join(source, "active.ts"), contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ScanNodeJ3bActivePaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ScannedFiles != 1 || len(report.Findings) != 5 || report.BlockedFindings != 5 {
+		t.Fatalf("report=%+v", report)
+	}
+	want := map[string]string{
+		"model-check-token-worker":          "token-worker",
+		"model-check-token-worker-service":  "token-worker",
+		"model-trust-aggregation-scheduler": "trust-aggregation",
+		"model-trust-aggregation-stats-ipc": "stats-ipc",
+		"model-quality-health-stats-ipc":    "stats-ipc",
+	}
+	for _, finding := range report.Findings {
+		category, ok := want[finding.Pattern]
+		if !ok {
+			t.Fatalf("unexpected finding=%+v", finding)
+		}
+		if finding.Category != category || finding.Disposition != "block" {
+			t.Fatalf("finding=%+v", finding)
+		}
+		delete(want, finding.Pattern)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing findings=%v", want)
 	}
 }

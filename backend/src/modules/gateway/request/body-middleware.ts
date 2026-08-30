@@ -6,6 +6,7 @@ import { nowIso } from '../../../storage/database.js'
 import type { AuditLogInput } from '../../../storage/audit-log-types.js'
 import type { UsageFailureAttribution } from '../../../storage/usage-records.repository.js'
 import { getRequestContext } from '../../../shared/request-context.js'
+import { errorLogFields } from '../../../shared/logger.js'
 import {
   createTraceId,
   getRequestLogger,
@@ -585,14 +586,13 @@ async function extractLargeJsonBodyMetadata(
       }
       return undefined
     }
-    getRequestLogger().warn({
+    getRequestLogger().warn(errorLogFields(error, {
       event: 'gateway_large_json_body_metadata_worker_failed',
       method: req.method,
       path: req.path,
       originalUrl: sanitizeUrlForLog(req.originalUrl),
-      rawBodyBytes: rawBody.length,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    }, '网关大 JSON 请求体元数据 worker 扫描失败，拒绝本次请求以保护主进程')
+      rawBodyBytes: rawBody.length
+    }), '网关大 JSON 请求体元数据 worker 扫描失败，拒绝本次请求以保护主进程')
     await recordGatewayBodyRejection(req, {
       statusCode: 503,
       responsePayload: gatewayErrorPayload('网关请求解析暂时不可用，请稍后重试', 'server_overloaded', 'gateway_json_parser_failed'),
@@ -698,16 +698,15 @@ export async function recordGatewayBodyRejection(req: GatewayRawBodyRequest, inp
       failureAttribution: input.failureAttribution
     })
   } catch (error) {
-    getRequestLogger().warn({
+    getRequestLogger().warn(errorLogFields(error, {
       event: 'gateway_body_rejection_record_failed',
       reason: input.reason,
       method: req.method,
       path: req.path,
       originalUrl: sanitizeUrlForLog(req.originalUrl),
       statusCode: input.statusCode,
-      rawBodyBytes: input.rawBodyBytes,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    }, '网关请求体拒绝记录写入失败，已保留原始拒绝响应')
+      rawBodyBytes: input.rawBodyBytes
+    }), '网关请求体拒绝记录写入失败，已保留原始拒绝响应')
   }
 }
 

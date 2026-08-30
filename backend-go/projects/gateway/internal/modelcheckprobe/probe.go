@@ -26,7 +26,10 @@ const (
 type Request struct {
 	Path, ExpectedModel string
 	Protocol            modelcheckprofile.Protocol
-	Body                json.RawMessage
+	// EndpointMode is the immutable Business health-check request shape. It
+	// remains explicit so callers do not infer a path from protocol alone.
+	EndpointMode string
+	Body         json.RawMessage
 }
 
 type Result struct {
@@ -56,6 +59,13 @@ type Options struct {
 // upstream framing outcome.
 type DispatcherPort interface {
 	Dispatch(context.Context, *http.Request, keymodelruntime.Capability, string) (response *http.Response, settle func(success bool), err error)
+}
+
+// ClientDispatcherPort is an optional extension for dispatchers that can
+// honor the resolved per-target HTTP client. DispatcherPort remains the
+// compatibility surface for existing fakes and older adapters.
+type ClientDispatcherPort interface {
+	DispatchWithClient(context.Context, *http.Request, keymodelruntime.Capability, string, *http.Client) (response *http.Response, settle func(success bool), err error)
 }
 
 func BuildBasic(protocol modelcheckprofile.Protocol, model, prompt string, stream bool) (Request, error) {
@@ -91,7 +101,33 @@ func BuildBasic(protocol modelcheckprofile.Protocol, model, prompt string, strea
 	if err != nil {
 		return Request{}, err
 	}
-	return Request{Path: path, ExpectedModel: model, Protocol: protocol, Body: body}, nil
+	return Request{Path: path, ExpectedModel: model, Protocol: protocol, EndpointMode: modelcheckprofile.EndpointModeForProtocol(protocol, stream), Body: body}, nil
+}
+
+// BuildBasicForEndpointMode builds the same bounded probe using the explicit
+// account health-check mode. Unsupported modes fail closed instead of being
+// rewritten to a different protocol or path.
+func BuildBasicForEndpointMode(protocol modelcheckprofile.Protocol, model, prompt, endpointMode string) (Request, error) {
+	mode := strings.TrimSpace(endpointMode)
+	if mode == "" {
+		return BuildBasic(protocol, model, prompt, false)
+	}
+	if !modelcheckprofile.EndpointModeMatchesProtocol(protocol, mode) {
+		return Request{}, fmt.Errorf("J3b probe endpoint mode %q does not match protocol %q", mode, protocol)
+	}
+	request, err := BuildBasic(protocol, model, prompt, modelcheckprofile.EndpointModeIsStreaming(mode))
+	if err != nil {
+		return Request{}, err
+	}
+	request.EndpointMode = mode
+	return request, nil
+}
+
+func buildBasicWithEndpointMode(protocol modelcheckprofile.Protocol, model, prompt string, stream bool, endpointMode string) (Request, error) {
+	if strings.TrimSpace(endpointMode) != "" {
+		return BuildBasicForEndpointMode(protocol, model, prompt, endpointMode)
+	}
+	return BuildBasic(protocol, model, prompt, stream)
 }
 
 // BuildStructured creates the protocol-native JSON-schema probe. The schema
@@ -99,6 +135,44 @@ func BuildBasic(protocol modelcheckprofile.Protocol, model, prompt string, strea
 // persisting provider response bytes.
 func BuildStructured(protocol modelcheckprofile.Protocol, model string, stream bool) (Request, error) {
 	request, err := BuildBasic(protocol, model, `Return {"status":"ok","value":7} as JSON.`, stream)
+	if err != nil {
+		return Request{}, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(request.Body, &payload); err != nil {
+		return Request{}, err
+	}
+	schema := map[string]any{
+		"type": "object", "additionalProperties": false,
+		"properties": map[string]any{
+			"status": map[string]any{"type": "string", "enum": []string{"ok"}},
+			"value":  map[string]any{"type": "integer"},
+		},
+		"required": []string{"status", "value"},
+	}
+	switch protocol {
+	case modelcheckprofile.ProtocolOpenAIResponses:
+		payload["text"] = map[string]any{"format": map[string]any{"type": "json_schema", "name": "model_check_structured_output", "strict": true, "schema": schema}}
+	case modelcheckprofile.ProtocolOpenAIChat:
+		payload["response_format"] = map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "model_check_structured_output", "strict": true, "schema": schema}}
+	case modelcheckprofile.ProtocolGeminiNative:
+		payload["generationConfig"] = map[string]any{"maxOutputTokens": 128, "responseMimeType": "application/json", "responseSchema": map[string]any{
+			"type": "OBJECT", "properties": map[string]any{
+				"status": map[string]any{"type": "STRING", "enum": []string{"ok"}},
+				"value":  map[string]any{"type": "INTEGER"},
+			}, "required": []string{"status", "value"},
+		}}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return Request{}, err
+	}
+	request.Body = body
+	return request, nil
+}
+
+func BuildStructuredForEndpointMode(protocol modelcheckprofile.Protocol, model, endpointMode string) (Request, error) {
+	request, err := BuildBasicForEndpointMode(protocol, model, `Return {"status":"ok","value":7} as JSON.`, endpointMode)
 	if err != nil {
 		return Request{}, err
 	}
@@ -174,6 +248,43 @@ func BuildTool(protocol modelcheckprofile.Protocol, model string, stream bool) (
 	return request, nil
 }
 
+func BuildToolForEndpointMode(protocol modelcheckprofile.Protocol, model, endpointMode string) (Request, error) {
+	request, err := BuildBasicForEndpointMode(protocol, model, `Call the provided function with code "ok" and count 1.`, endpointMode)
+	if err != nil {
+		return Request{}, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(request.Body, &payload); err != nil {
+		return Request{}, err
+	}
+	parameters := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+		"code": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer"},
+	}, "required": []string{"code", "count"}}
+	switch protocol {
+	case modelcheckprofile.ProtocolOpenAIResponses:
+		payload["tools"] = []any{map[string]any{"type": "function", "name": "record_model_check", "description": "Record a model check marker.", "parameters": parameters}}
+		payload["tool_choice"] = map[string]any{"type": "function", "name": "record_model_check"}
+	case modelcheckprofile.ProtocolOpenAIChat:
+		payload["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{"name": "record_model_check", "description": "Record a model check marker.", "parameters": parameters}}}
+		payload["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": "record_model_check"}}
+	case modelcheckprofile.ProtocolAnthropic:
+		payload["tools"] = []any{map[string]any{"name": "record_model_check", "description": "Record a model check marker.", "input_schema": parameters}}
+		payload["tool_choice"] = map[string]any{"type": "tool", "name": "record_model_check"}
+	case modelcheckprofile.ProtocolGeminiNative:
+		payload["tools"] = []any{map[string]any{"functionDeclarations": []any{map[string]any{
+			"name": "record_model_check", "description": "Record a model check marker.",
+			"parameters": map[string]any{"type": "OBJECT", "properties": map[string]any{"code": map[string]any{"type": "STRING"}, "count": map[string]any{"type": "INTEGER"}}, "required": []string{"code", "count"}},
+		}}}}
+		payload["toolConfig"] = map[string]any{"functionCallingConfig": map[string]any{"mode": "ANY", "allowedFunctionNames": []string{"record_model_check"}}}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return Request{}, err
+	}
+	request.Body = body
+	return request, nil
+}
+
 func Execute(ctx context.Context, request Request, options Options) (Result, error) {
 	started := time.Now()
 	result := Result{ExpectedModel: request.ExpectedModel}
@@ -203,10 +314,6 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 			httpRequest.Header.Add(key, value)
 		}
 	}
-	client := options.Client
-	if client == nil {
-		client = &http.Client{}
-	}
 	var response *http.Response
 	var settle func(bool)
 	if options.Dispatcher != nil {
@@ -221,10 +328,24 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 			capability.ClientEndpointFamily = string(request.Protocol)
 		}
 		if capability.UpstreamEndpointMode == "" {
-			capability.UpstreamEndpointMode = string(request.Protocol)
+			capability.UpstreamEndpointMode = request.EndpointMode
+			if capability.UpstreamEndpointMode == "" {
+				capability.UpstreamEndpointMode = string(request.Protocol)
+			}
 		}
-		response, settle, err = options.Dispatcher.Dispatch(requestCtx, httpRequest, capability, fmt.Sprintf("model-check-%d", started.UnixNano()))
+		attemptID := fmt.Sprintf("model-check-%d", started.UnixNano())
+		if dispatcher, ok := options.Dispatcher.(ClientDispatcherPort); ok {
+			// A nil client means the dispatcher should use its configured
+			// default. Do not pass the direct-transport fallback here.
+			response, settle, err = dispatcher.DispatchWithClient(requestCtx, httpRequest, capability, attemptID, options.Client)
+		} else {
+			response, settle, err = options.Dispatcher.Dispatch(requestCtx, httpRequest, capability, attemptID)
+		}
 	} else {
+		client := options.Client
+		if client == nil {
+			client = &http.Client{}
+		}
 		response, err = client.Do(httpRequest)
 	}
 	result.Duration = time.Since(started)

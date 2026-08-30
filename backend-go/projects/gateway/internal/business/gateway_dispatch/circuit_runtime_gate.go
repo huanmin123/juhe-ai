@@ -40,6 +40,13 @@ func (g RuntimeCircuitGate) Prepare(ctx context.Context, input AccountCircuitInp
 			return AccountCircuitBlocked, nil, nil
 		}
 	}
+	// A SUSPECT circuit may only be probed by a request independently qualified
+	// for confirmation. Node settles an ineligible request as neutral and
+	// blocks it; acquiring a confirmation lease here would let an ordinary
+	// retry confirm the preceding failure.
+	if circuitConfirmationIneligible(state, input) {
+		return AccountCircuitBlocked, nil, nil
+	}
 	identity := circuitruntime.GatewayAccountCircuitTransitionIdentity{AccountID: input.AccountID, Scope: circuitruntime.GatewayAccountCircuitScope{Kind: circuitruntime.GatewayAccountCircuitScopeAccount, AccountRuntimeKey: input.AccountID}, Generation: state.Generation, DispatchRevision: input.DispatchRevision, TransitionID: input.FailureEvidenceKey, Now: now}
 	attempt := &runtimeCircuitAttempt{store: g.Store, input: input, state: state, identity: identity}
 	leaseID := fmt.Sprintf("dispatch-%s", input.FailureEvidenceKey)
@@ -67,6 +74,10 @@ func (g RuntimeCircuitGate) Prepare(ctx context.Context, input AccountCircuitInp
 		attempt.leaseID, attempt.leaseKind = leaseID, circuitruntime.GatewayAccountCircuitLeaseHalfOpen
 	}
 	return AccountCircuitDispatchable, attempt, nil
+}
+
+func circuitConfirmationIneligible(state circuitruntime.GatewayAccountCircuitState, input AccountCircuitInput) bool {
+	return state.Phase == circuitruntime.GatewayAccountCircuitPhaseSuspect && !input.ConfirmationEligible
 }
 
 type runtimeCircuitAttempt struct {
@@ -108,7 +119,14 @@ func (a *runtimeCircuitAttempt) ReportUnknown(ctx context.Context) error {
 		return nil
 	}
 	a.settled = true
-	return a.suspect(ctx, "unknown", nil, circuitruntime.GatewayAccountCircuitCompletionUnknown)
+	// An unknown lifecycle is deliberately neutral unless this attempt owns a
+	// confirmation/canary lease. In particular, local admission failures,
+	// cancellation and an attempt that never reached the upstream must never
+	// turn an otherwise closed account circuit into SUSPECT.
+	if a.leaseID == "" {
+		return nil
+	}
+	return a.completeLease(ctx, "unknown", nil, circuitruntime.GatewayAccountCircuitCompletionUnknown)
 }
 
 func (a *runtimeCircuitAttempt) suspect(ctx context.Context, reason string, cause error, outcome circuitruntime.GatewayAccountCircuitCompletionOutcome) error {
@@ -116,12 +134,7 @@ func (a *runtimeCircuitAttempt) suspect(ctx context.Context, reason string, caus
 		reason += ": " + cause.Error()
 	}
 	if a.leaseID != "" {
-		if a.leaseKind == circuitruntime.GatewayAccountCircuitLeaseConfirmation {
-			_, err := a.store.CompleteGatewayAccountCircuitConfirmation(ctx, circuitruntime.GatewayAccountCircuitCompleteConfirmationInput{GatewayAccountCircuitTransitionIdentity: a.identity, LeaseID: a.leaseID, Outcome: outcome, Reason: reason})
-			return err
-		}
-		_, err := a.store.CompleteGatewayAccountCircuitCanary(ctx, circuitruntime.GatewayAccountCircuitCompleteCanaryInput{GatewayAccountCircuitTransitionIdentity: a.identity, LeaseID: a.leaseID, Outcome: outcome, Reason: reason})
-		return err
+		return a.completeLease(ctx, reason, nil, outcome)
 	}
 	_, err := a.store.SuspectGatewayAccountCircuit(ctx, circuitruntime.GatewayAccountCircuitSuspectInput{
 		AccountID:        a.input.AccountID,
@@ -131,5 +144,17 @@ func (a *runtimeCircuitAttempt) suspect(ctx context.Context, reason string, caus
 		Reason:           reason,
 		Now:              time.Now().UTC(),
 	})
+	return err
+}
+
+func (a *runtimeCircuitAttempt) completeLease(ctx context.Context, reason string, cause error, outcome circuitruntime.GatewayAccountCircuitCompletionOutcome) error {
+	if cause != nil {
+		reason += ": " + cause.Error()
+	}
+	if a.leaseKind == circuitruntime.GatewayAccountCircuitLeaseConfirmation {
+		_, err := a.store.CompleteGatewayAccountCircuitConfirmation(ctx, circuitruntime.GatewayAccountCircuitCompleteConfirmationInput{GatewayAccountCircuitTransitionIdentity: a.identity, LeaseID: a.leaseID, Outcome: outcome, Reason: reason})
+		return err
+	}
+	_, err := a.store.CompleteGatewayAccountCircuitCanary(ctx, circuitruntime.GatewayAccountCircuitCompleteCanaryInput{GatewayAccountCircuitTransitionIdentity: a.identity, LeaseID: a.leaseID, Outcome: outcome, Reason: reason})
 	return err
 }

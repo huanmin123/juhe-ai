@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -40,13 +41,36 @@ type SchedulerLifecycle interface {
 	Fail(context.Context, ScheduleTask, error) error
 }
 
+// SchedulerErrorOperation identifies the durable scheduler step that failed.
+// It is intentionally stable so a Gateway host can turn the events into
+// structured logs and alerts without parsing error strings.
+type SchedulerErrorOperation string
+
+const (
+	SchedulerErrorClaim    SchedulerErrorOperation = "claim"
+	SchedulerErrorExecute  SchedulerErrorOperation = "execute"
+	SchedulerErrorComplete SchedulerErrorOperation = "complete"
+	SchedulerErrorFail     SchedulerErrorOperation = "fail"
+)
+
+// SchedulerError preserves the scheduler kind and, when one has been leased,
+// the exact task whose durable lifecycle operation failed. A claim failure has
+// no task because no lease was acquired.
+type SchedulerError struct {
+	Operation SchedulerErrorOperation
+	Kind      SchedulerKind
+	Task      ScheduleTask
+	Err       error
+}
+
 type Scheduler struct {
-	Source   SchedulerSource
-	Executor SchedulerExecutor
-	Interval time.Duration
-	Batch    int
-	Kinds    []SchedulerKind
-	Now      func() time.Time
+	Source    SchedulerSource
+	Executor  SchedulerExecutor
+	Interval  time.Duration
+	Batch     int
+	Kinds     []SchedulerKind
+	Now       func() time.Time
+	ErrorSink func(SchedulerError)
 }
 
 // Run executes all configured scheduler kinds in one Gateway owner process.
@@ -75,21 +99,30 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	if s.Now != nil {
 		now = s.Now
 	}
-	runCycle := func() error {
+	report := func(event SchedulerError) {
+		slog.Error("J3b scheduler task operation failed",
+			"operation", event.Operation,
+			"kind", event.Kind,
+			"task_id", event.Task.ID,
+			"owner_id", event.Task.OwnerID,
+			"fence_token", event.Task.FenceToken,
+			"err", event.Err,
+		)
+		if s.ErrorSink != nil {
+			s.ErrorSink(event)
+		}
+	}
+	runCycle := func() {
 		for _, kind := range kinds {
 			tasks, err := s.Source.Claim(ctx, kind, now().UTC(), batch)
 			if err != nil {
-				return err
+				report(SchedulerError{Operation: SchedulerErrorClaim, Kind: kind, Err: err})
+				continue
 			}
-			if err := executeSchedulerBatch(ctx, s.Executor, s.Source, kind, tasks); err != nil {
-				return err
-			}
+			executeSchedulerBatch(ctx, s.Executor, s.Source, kind, tasks, report)
 		}
-		return nil
 	}
-	if err := runCycle(); err != nil {
-		return err
-	}
+	runCycle()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -97,9 +130,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := runCycle(); err != nil {
-				return err
-			}
+			runCycle()
 		}
 	}
 }
@@ -107,25 +138,22 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // executeSchedulerBatch runs independently leased tasks concurrently. Each
 // task owns its own completion/failure fence; one slow or failed probe does
 // not serialize unrelated work in the same claimed batch. Execution errors
-// are persisted through lifecycle.Fail for retry and therefore do not stop a
-// healthy scheduler cycle unless that durable failure write itself fails.
-func executeSchedulerBatch(ctx context.Context, executor SchedulerExecutor, source SchedulerSource, kind SchedulerKind, tasks []ScheduleTask) error {
+// are persisted through lifecycle.Fail for retry. Every error is emitted to
+// report, but no single leased task is allowed to terminate the owner loop.
+// report may be called concurrently because sibling tasks run concurrently.
+func executeSchedulerBatch(ctx context.Context, executor SchedulerExecutor, source SchedulerSource, kind SchedulerKind, tasks []ScheduleTask, report func(SchedulerError)) {
 	if len(tasks) == 0 {
-		return nil
+		return
 	}
 	lifecycle, hasLifecycle := source.(SchedulerLifecycle)
 	var wg sync.WaitGroup
-	var firstErr error
-	var errMu sync.Mutex
-	recordErr := func(err error) {
+	recordErr := func(operation SchedulerErrorOperation, task ScheduleTask, err error) {
 		if err == nil {
 			return
 		}
-		errMu.Lock()
-		if firstErr == nil {
-			firstErr = err
+		if report != nil {
+			report(SchedulerError{Operation: operation, Kind: kind, Task: task, Err: err})
 		}
-		errMu.Unlock()
 	}
 	for _, original := range tasks {
 		task := original
@@ -138,21 +166,21 @@ func executeSchedulerBatch(ctx context.Context, executor SchedulerExecutor, sour
 			execErr := executor.Execute(ctx, task)
 			if hasLifecycle {
 				if execErr != nil {
+					recordErr(SchedulerErrorExecute, task, execErr)
 					if releaseErr := lifecycle.Fail(ctx, task, execErr); releaseErr != nil {
-						recordErr(errors.Join(execErr, releaseErr))
+						recordErr(SchedulerErrorFail, task, errors.Join(execErr, releaseErr))
 					}
 					return
 				}
 				if completeErr := lifecycle.Complete(ctx, task); completeErr != nil {
-					recordErr(completeErr)
+					recordErr(SchedulerErrorComplete, task, completeErr)
 				}
 				return
 			}
-			recordErr(execErr)
+			recordErr(SchedulerErrorExecute, task, execErr)
 		}()
 	}
 	wg.Wait()
-	return firstErr
 }
 
 // validateSchedulerKinds prevents a partially wired Gateway owner from

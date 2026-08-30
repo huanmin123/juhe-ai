@@ -14,6 +14,7 @@ import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig, type RuntimeConfig } from '../config/runtime.js'
 import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
+import { captureUnexpectedFailureContext } from './logging/log-failure-context.js'
 import { passiveScheduleDelayMs } from './passive-schedule-jitter.js'
 import {
   drainProcessDiagnosticAsync,
@@ -868,7 +869,7 @@ const loggerOptions: LoggerOptions = {
     level: (label) => ({ level: label })
   },
   serializers: {
-    err: pino.stdSerializers.err
+    err: serializeLogError
   }
 }
 
@@ -1030,10 +1031,54 @@ export async function closeLogger(timeoutMs = 30_000): Promise<void> {
 }
 
 export function errorLogFields(error: unknown, fields: Record<string, unknown> = {}): Record<string, unknown> {
-  if (error instanceof Error) {
-    return { ...fields, err: pino.stdSerializers.err(error) }
+  return { ...fields, err: serializeLogError(error) }
+}
+
+const boundedLogErrorMarker = Symbol('bounded-log-error')
+
+interface CapturedLogError {
+  name: string
+  message: string
+  stack?: string
+  code?: string
+  cause?: CapturedLogError
+}
+
+type BoundedLogError = Record<string, unknown> & {
+  [boundedLogErrorMarker]: true
+}
+
+/**
+ * Keep normal runtime logs diagnostic, but never let an error message, stack,
+ * or nested cause turn one Pino event into an unbounded upstream payload dump.
+ */
+export function serializeLogError(error: unknown): Record<string, unknown> {
+  if (isBoundedLogError(error)) return error
+  const context = captureUnexpectedFailureContext(error)
+  const captured = context.error
+  const result: Record<string, unknown> = captured
+    ? serializeCapturedLogError(captured)
+    : {
+        type: 'NonErrorThrown',
+        message: error === undefined ? 'undefined' : 'null'
+      }
+  if (context.truncationReason) result.errorTruncated = true
+  Object.defineProperty(result, boundedLogErrorMarker, { value: true })
+  return result
+}
+
+function serializeCapturedLogError(error: CapturedLogError): Record<string, unknown> {
+  return {
+    type: error.name,
+    message: error.message,
+    ...(error.stack ? { stack: error.stack } : {}),
+    ...(error.code ? { code: error.code } : {}),
+    ...(error.cause ? { cause: serializeCapturedLogError(error.cause) } : {})
   }
-  return { ...fields, errorMessage: String(error) }
+}
+
+function isBoundedLogError(value: unknown): value is BoundedLogError {
+  return Boolean(value && typeof value === 'object' && (value as Partial<BoundedLogError>)[boundedLogErrorMarker] === true)
 }
 
 function redactSensitiveLogText(value: string): string {

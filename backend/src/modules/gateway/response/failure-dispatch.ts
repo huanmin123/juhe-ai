@@ -1,6 +1,7 @@
 import type { Request } from 'express'
 
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
+import { errorLogFields } from '../../../shared/logger.js'
 import {
   type UpstreamAttempt
 } from '../upstream/attempt.js'
@@ -675,11 +676,10 @@ function scheduleGatewayClientSourceAvoidanceFailure(input: {
       activation: failure.activation
     })
   }).catch((error) => {
-    getRequestLogger().warn({
+    getRequestLogger().warn(errorLogFields(error, {
       event: 'gateway_client_source_avoidance_failure_schedule_failed',
-      accountId: input.account.id,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    }, '来源级失败避让未能投递探活，保留短期避让')
+      accountId: input.account.id
+    }), '来源级失败避让未能投递探活，保留短期避让')
   })
 }
 

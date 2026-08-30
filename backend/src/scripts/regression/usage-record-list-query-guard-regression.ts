@@ -1,14 +1,17 @@
 import { strict as assert } from 'node:assert'
 import http from 'node:http'
+import type { Request } from 'express'
 import type { SQLInputValue } from 'node:sqlite'
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import type { Logger } from 'pino'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import { withRequestContext, type RequestContext } from '../../shared/request-context.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-record-list-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -22,12 +25,14 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [{ createSystemApiApp }, databaseModule, repositories, usageRecordShards, usageRecordListQuery] = await Promise.all([
+const [{ createSystemApiApp }, databaseModule, repositories, usageRecordShards, usageRecordListQuery, gatewayUsageRecords, usageRecordQueue] = await Promise.all([
   import('../../modules/system-api/system-api-app.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/usage-record-shards.js'),
-  import('../../storage/usage-record-list-query.js')
+  import('../../storage/usage-record-list-query.js'),
+  import('../../modules/gateway/usage/records.js'),
+  import('../../modules/gateway/usage/record-queue.service.js')
 ])
 
 interface ApiEnvelope<T> {
@@ -547,11 +552,122 @@ try {
   const usageRecordsRepositorySource = readFileSync(resolve('src/storage/usage-records.repository.ts'), 'utf8')
   const gatewayUsageRecordsSource = readFileSync(resolve('src/modules/gateway/usage/records.ts'), 'utf8')
   assert.match(gatewayUsageRecordsSource, /const errorMessage = rawOptionalDiagnosticMessage\(/, '网关使用记录写入必须使用原始错误消息规范化')
-  const failedUpstreamAttemptSource = gatewayUsageRecordsSource.match(/export async function recordFailedUpstreamAttempt\([\s\S]*?\n}\n\nfunction isSuccessStatusCode/)?.[0] ?? ''
+  const failedUpstreamAttemptSource = gatewayUsageRecordsSource.match(/export async function recordFailedUpstreamAttempt\([\s\S]*?\n}\n\nexport async function recordCompletedUpstreamAttempt/)?.[0] ?? ''
   assert.doesNotMatch(failedUpstreamAttemptSource, /上游返回 HTTP|上游请求失败/, '未捕获上游错误消息时不得在使用记录中虚构错误文本')
   const rawDiagnosticHelper = gatewayUsageRecordsSource.match(/function rawOptionalDiagnosticMessage\([\s\S]*?\n}/)?.[0] ?? ''
   assert.match(rawDiagnosticHelper, /return value\n}/, '网关错误消息写入必须原样保留非空持久化值')
   assert.doesNotMatch(rawDiagnosticHelper, /sanitizeDiagnosticPayload|slice\(/, '网关原始错误消息写入不得 sanitize 或截断')
+  const boundedDiagnosticHelper = gatewayUsageRecordsSource.match(/export function buildGatewayLogErrorMessage\([\s\S]*?\n}\n\nfunction sliceGatewayLogErrorMessageByUtf8Bytes/)?.[0] ?? ''
+  assert.match(boundedDiagnosticHelper, /Buffer\.byteLength\(value, 'utf8'\)/, '普通运行日志摘要必须按 UTF-8 字节计算原始错误消息大小')
+  assert.match(gatewayUsageRecordsSource, /const gatewayLogErrorMessageMaxBytes = 4 \* 1024/, '普通运行日志错误消息必须有 4 KiB 上限')
+  assert.match(boundedDiagnosticHelper, /\.{3}\[truncated \$\{errorMessageBytes - prefixBytes\} bytes\]/, '普通运行日志摘要必须带真实剩余字节数截断标记')
+  assert.match(failedUpstreamAttemptSource, /\.\.\.logErrorMessage,/, '上游失败普通日志必须使用有界错误摘要')
+  const gatewayRequestFailureSource = gatewayUsageRecordsSource.match(/export async function recordGatewayFailure\([\s\S]*?\n}\n\nfunction usageRecordSnapshot/)?.[0] ?? ''
+  assert.match(gatewayRequestFailureSource, /\.\.\.logErrorMessage,/, '网关请求失败普通日志必须使用有界错误摘要')
+  const shortLogMessage = '上游错误'
+  const shortLogSummary = gatewayUsageRecords.buildGatewayLogErrorMessage(shortLogMessage)
+  assert.equal(shortLogSummary.errorMessage, shortLogMessage, '短错误日志摘要必须保留原文')
+  assert.equal(shortLogSummary.errorMessageBytes, Buffer.byteLength(shortLogMessage, 'utf8'), '短错误日志摘要必须报告原始 UTF-8 字节数')
+  assert.equal(shortLogSummary.errorMessageTruncated, false, '短错误日志摘要不应标记为截断')
+  const longLogMessage = '上游响应'.repeat(2_000)
+  const longLogSummary = gatewayUsageRecords.buildGatewayLogErrorMessage(longLogMessage)
+  assert.equal(longLogSummary.errorMessageBytes, Buffer.byteLength(longLogMessage, 'utf8'), '长错误日志摘要必须报告原始 UTF-8 字节数')
+  assert.equal(longLogSummary.errorMessageTruncated, true, '长错误日志摘要必须标记为截断')
+  assert.equal(Buffer.byteLength(longLogSummary.errorMessage ?? '', 'utf8') <= 4 * 1024, true, '长错误日志摘要必须保持在 4 KiB 内')
+  assert.match(longLogSummary.errorMessage ?? '', /\.\.\.\[truncated \d+ bytes\]$/, '长错误日志摘要必须保留截断标记')
+  const longMultibyteLogMessage = '😀中文'.repeat(2_000)
+  const longMultibyteLogSummary = gatewayUsageRecords.buildGatewayLogErrorMessage(longMultibyteLogMessage)
+  const multibyteMarkerIndex = longMultibyteLogSummary.errorMessage?.indexOf('...[truncated ') ?? -1
+  assert(multibyteMarkerIndex > 0, '多字节长错误日志摘要必须保留前缀和截断标记')
+  assert.equal(longMultibyteLogMessage.startsWith(longMultibyteLogSummary.errorMessage?.slice(0, multibyteMarkerIndex) ?? ''), true, '多字节日志摘要必须保留完整 UTF-8 字符前缀')
+  assert.equal(longMultibyteLogSummary.errorMessage?.includes('\uFFFD'), false, '多字节日志摘要不得产生 UTF-8 replacement character')
+
+  const oversizedRuntimeLogMessage = '😀中文\u0000"'.repeat(23_000)
+  const oversizedRuntimeLogBytes = Buffer.byteLength(oversizedRuntimeLogMessage, 'utf8')
+  assert(oversizedRuntimeLogBytes > 266 * 1024, '运行日志边界回归必须使用超过生产拒绝样本的上游正文')
+  const capturedWarnings: Array<Record<string, unknown>> = []
+  const requestLogger = {
+    warn(fields: Record<string, unknown>) { capturedWarnings.push(fields) },
+    debug() {}
+  } as unknown as Logger
+  const logUsageContext: Parameters<typeof gatewayUsageRecords.recordFailedUpstreamAttempt>[1] = {
+    traceId: 'trace-usage-record-log-boundary',
+    trafficSource: 'gateway',
+    clientIp: '127.0.0.1',
+    systemAccountId: 'sys_admin',
+    apiKeyId: apiKey.id,
+    groupId: group.id,
+    endpoint: '/v1/responses',
+    requestSnapshot: {
+      method: 'POST',
+      path: '/v1/responses',
+      originalUrl: '/v1/responses',
+      traceId: 'trace-usage-record-log-boundary',
+      headers: {}
+    }
+  }
+  const logRequestContext: RequestContext = {
+    traceId: logUsageContext.traceId,
+    requestId: 'request-usage-record-log-boundary',
+    startedAt: Date.now(),
+    method: 'POST',
+    path: '/v1/responses',
+    originalUrl: '/v1/responses',
+    logger: requestLogger
+  }
+  const dispatchAccount = repositories.findOpenAIAccountForGroup(group.id, account.id, 'sys_admin', { ignoreAvailability: true })
+  assert(dispatchAccount, '运行日志边界回归需要可用的网关账户')
+  const logRequest = {
+    body: { model: 'gpt-5.5', stream: false },
+    method: 'POST',
+    path: '/v1/responses',
+    originalUrl: '/v1/responses'
+  } as Request
+  const originalWorkerRole = runtimeConfig.workerRole
+  runtimeConfig.workerRole = 'ingest-worker'
+  usageRecordQueue.clearUsageRecordQueueForTest()
+  try {
+    await withRequestContext(logRequestContext, async () => {
+      await gatewayUsageRecords.recordFailedUpstreamAttempt(logRequest, logUsageContext, dispatchAccount, {
+        upstreamUrl: 'https://api.openai.com/v1/responses',
+        startedAt: Date.now() - 5,
+        statusCode: 502,
+        errorMessage: oversizedRuntimeLogMessage,
+        errorPayload: { code: 'oversized_upstream_response' }
+      })
+      await gatewayUsageRecords.recordGatewayFailure(logRequest, logUsageContext, {
+        statusCode: 502,
+        startedAt: Date.now() - 5,
+        errorCode: 'oversized_gateway_failure',
+        errorMessage: oversizedRuntimeLogMessage,
+        responsePayload: {
+          error: {
+            message: oversizedRuntimeLogMessage,
+            type: 'upstream_error',
+            code: 'oversized_gateway_failure'
+          }
+        }
+      })
+    })
+    const queuedUsageRecord = usageRecordQueue.peekPendingUsageRecordForTest()
+    assert.equal(queuedUsageRecord?.errorMessage, oversizedRuntimeLogMessage, '使用记录必须继续接收完整原始错误正文')
+    for (const [event, errorCode] of [
+      ['gateway_upstream_attempt_failed', 'oversized_upstream_response'],
+      ['gateway_request_failed', 'oversized_gateway_failure']
+    ] as const) {
+      const captured = capturedWarnings.find((fields) => fields.event === event)
+      assert(captured, `${event} 必须实际写入 request logger`)
+      assert.equal(captured.errorCode, errorCode, `${event} 必须保留错误分类`)
+      assert.equal(captured.statusCode, 502, `${event} 必须保留上游 HTTP 状态`)
+      assert.equal(captured.errorMessageBytes, oversizedRuntimeLogBytes, `${event} 必须保留原始错误正文 UTF-8 字节数`)
+      assert.equal(captured.errorMessageTruncated, true, `${event} 必须标记错误正文已截断`)
+      assert.equal(Buffer.byteLength(String(captured.errorMessage), 'utf8') <= 4 * 1024, true, `${event} 实际日志错误摘要必须不超过 4 KiB`)
+      assert.equal(Buffer.byteLength(JSON.stringify(captured), 'utf8') < 16 * 1024, true, `${event} 实际日志字段必须远低于 Loki 单条上限`)
+    }
+  } finally {
+    usageRecordQueue.clearUsageRecordQueueForTest()
+    runtimeConfig.workerRole = originalWorkerRole
+  }
   assert(
     usageRecordsRepositorySource.includes('const accountNameExpression = \'(accounts.name COLLATE "C")\''),
     'PG 使用记录账号关键词预解析必须使用 accounts.name COLLATE "C" 表达式'

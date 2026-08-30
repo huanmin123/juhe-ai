@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/businesshandoff"
@@ -23,6 +24,17 @@ func main() {
 	j3Apply := flag.Bool("apply-j3a-proxy-latency-postgres", false, "add missing J3a PostgreSQL jobs tables/indexes after explicit authorization")
 	j3bCheck := flag.Bool("check-j3b-model-check-postgres", false, "read-only verify pre-provisioned J3b PostgreSQL juhe_j3b schema")
 	j3bApply := flag.Bool("apply-j3b-model-check-postgres", false, "add missing J3b PostgreSQL juhe_j3b tables/indexes after explicit authorization")
+	j3bPostgresReadback := flag.Bool("verify-j3b-model-check-postgres-backfill", false, "read-only compare legacy PostgreSQL J3b facts with juhe_j3b; never writes")
+	j3bPostgresReadbackURL := flag.String("j3b-postgres-readback-url", "", "explicit maintenance-scoped PostgreSQL URL for --verify-j3b-model-check-postgres-backfill")
+	j3bPostgresReadbackMaxRows := flag.Int64("j3b-postgres-readback-max-rows", j3bmodelcheck.DefaultPostgresReadbackMaxRows, "maximum rows per J3b fact table accepted as complete readback evidence")
+	j3bPostgresBackfill := flag.Bool("backfill-j3b-model-check-postgres", false, "copy whitelisted legacy PostgreSQL J3b facts into juhe_j3b after explicit stop and backup confirmations")
+	j3bPostgresBackfillURL := flag.String("j3b-postgres-backfill-url", "", "explicit maintenance-scoped PostgreSQL URL for --backfill-j3b-model-check-postgres")
+	j3bPostgresBackfillMaxRows := flag.Int64("j3b-postgres-backfill-max-rows", j3bmodelcheck.DefaultPostgresBackfillMaxRows, "maximum rows per J3b fact table accepted by PostgreSQL backfill")
+	j3bPostgresBackfillMaxBytes := flag.Int64("j3b-postgres-backfill-max-bytes", j3bmodelcheck.DefaultPostgresBackfillMaxBytes, "maximum source bytes per J3b fact table accepted by PostgreSQL backfill")
+	j3bBackfillEvidence := flag.String("j3b-backfill-evidence", "", "explicit JSON pre-backfill handoff evidence required before J3b PostgreSQL/SQLite backfill")
+	j3bInventoryCheck := flag.Bool("verify-j3b-model-check-inventory", false, "read-only verify legacy J3b fact inventory against explicit evidence; never writes")
+	j3bInventoryEvidence := flag.String("j3b-inventory-evidence", "", "explicit JSON evidence file for --verify-j3b-model-check-inventory")
+	j3bCutoverEvidence := flag.String("verify-j3b-cutover-evidence", "", "read-only verify J3b cutover evidence JSON; never writes")
 	j3bSQLiteCheck := flag.Bool("check-j3b-model-check-sqlite", false, "read-only verify dedicated J3b SQLite schema")
 	j3bSQLiteApply := flag.Bool("apply-j3b-model-check-sqlite", false, "bootstrap dedicated J3b SQLite schema after stop and backup confirmations")
 	nodeStopped := flag.Bool("node-stopped", false, "confirm Node writers are stopped for an offline migration")
@@ -40,6 +52,14 @@ func main() {
 	nodeActivePathCheck := flag.Bool("scan-node-j3b-active-path", false, "read-only scan Node J3b routes, workers and writers")
 	j3cReadOnlyCheck := flag.Bool("verify-j3c-readonly-boundary", false, "read-only audit the J3b-to-J3c health reader boundary")
 	flag.Parse()
+	if strings.TrimSpace(*j3bCutoverEvidence) != "" {
+		if strings.TrimSpace(*j3bBackfillEvidence) != "" || *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "J3b cutover evidence verification is mutually exclusive with other maintenance commands")
+			os.Exit(2)
+		}
+		runJ3bCutoverEvidenceCheck(*j3bCutoverEvidence)
+		return
+	}
 	if *version {
 		fmt.Printf("juhe-ai-maintenance project=%s contract=%s\n", contracts.ProjectMaintenance, contracts.ArchitectureVersion)
 		return
@@ -76,7 +96,19 @@ func main() {
 		runJ3cReadOnlyBoundaryCheck()
 		return
 	}
-	if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+	if *j3bInventoryCheck {
+		if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "J3b inventory verification flag is mutually exclusive with bootstrap, backfill and readback flags")
+			os.Exit(2)
+		}
+		runJ3bModelCheckInventory(*j3bInventoryEvidence)
+		return
+	}
+	if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+		if (*j3bPostgresReadback || *j3bPostgresBackfill) && (*j3Check || *j3Apply || *j3bCheck || *j3bApply || (*j3bPostgresReadback && *j3bPostgresBackfill) || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback) {
+			fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill/readback flags are mutually exclusive with bootstrap, SQLite and other backfill flags")
+			os.Exit(2)
+		}
 		if *j3Check && *j3Apply {
 			fmt.Fprintln(os.Stderr, "J3a PostgreSQL bootstrap flags are mutually exclusive")
 			os.Exit(2)
@@ -98,11 +130,19 @@ func main() {
 			return
 		}
 		if *j3bBackfill {
-			runJ3bModelCheckSQLiteBackfill(*nodeStopped, *goStopped, *backupConfirmed)
+			runJ3bModelCheckSQLiteBackfill(*nodeStopped, *goStopped, *backupConfirmed, *j3bBackfillEvidence)
 			return
 		}
 		if *j3bReadback {
 			runJ3bModelCheckSQLiteReadback()
+			return
+		}
+		if *j3bPostgresReadback {
+			runJ3bModelCheckPostgresBackfillReadback(*j3bPostgresReadbackURL, *j3bPostgresReadbackMaxRows)
+			return
+		}
+		if *j3bPostgresBackfill {
+			runJ3bModelCheckPostgresBackfill(*j3bPostgresBackfillURL, *j3bPostgresBackfillMaxRows, *j3bPostgresBackfillMaxBytes, *nodeStopped, *goStopped, *backupConfirmed, *j3bBackfillEvidence)
 			return
 		}
 		if *j3bCheck || *j3bApply {
@@ -114,6 +154,134 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
 	os.Exit(2)
+}
+
+func runJ3bModelCheckPostgresBackfill(rawURL string, maxRowsPerTable, maxBytesPerTable int64, nodeStopped, goStopped, backupConfirmed bool, evidencePath string) {
+	if strings.TrimSpace(rawURL) == "" {
+		fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill requires --j3b-postgres-backfill-url with an explicit maintenance-scoped PostgreSQL URL")
+		os.Exit(2)
+	}
+	if j3bPostgresBackfillPreflightExitCode(rawURL, nodeStopped, goStopped, backupConfirmed) != 0 {
+		fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill requires --node-stopped --go-stopped --backup-confirmed")
+		os.Exit(2)
+	}
+	if report, exitCode, err := j3bBackfillEvidencePreflight(evidencePath); err != nil {
+		fmt.Fprintf(os.Stderr, "J3b backfill evidence input failed: %v\n", err)
+		os.Exit(exitCode)
+	} else if exitCode != 0 {
+		fmt.Fprintf(os.Stderr, "J3b backfill evidence verification failed: %s\n", strings.Join(report.Errors, "; "))
+		os.Exit(exitCode)
+	}
+	db, err := j3bmodelcheck.Open(rawURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open J3b PostgreSQL backfill connection: %v\n", err)
+		os.Exit(2)
+	}
+	defer db.Close()
+	report, err := j3bmodelcheck.BackfillPostgres(context.Background(), db, j3bmodelcheck.PostgresBackfillOptions{MaxRowsPerTable: maxRowsPerTable, MaxBytesPerTable: maxBytesPerTable})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "J3b PostgreSQL backfill failed and was rolled back: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode J3b PostgreSQL backfill report: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func j3bPostgresBackfillPreflightExitCode(rawURL string, nodeStopped, goStopped, backupConfirmed bool) int {
+	if strings.TrimSpace(rawURL) == "" || !nodeStopped || !goStopped || !backupConfirmed {
+		return 2
+	}
+	return 0
+}
+
+func j3bBackfillEvidencePreflight(path string) (businesshandoff.J3bCutoverEvidenceReport, int, error) {
+	if strings.TrimSpace(path) == "" {
+		return businesshandoff.J3bCutoverEvidenceReport{}, 2, fmt.Errorf("requires --j3b-backfill-evidence with an explicit JSON evidence file")
+	}
+	report, err := businesshandoff.VerifyJ3bBackfillEvidence(path, time.Now().UTC())
+	if err != nil {
+		return report, 2, err
+	}
+	if !report.Ready {
+		return report, 3, nil
+	}
+	return report, 0, nil
+}
+
+func runJ3bModelCheckPostgresBackfillReadback(rawURL string, maxRowsPerTable int64) {
+	rawURL = strings.TrimSpace(rawURL)
+	if j3bPostgresReadbackURLRequiredExitCode(rawURL) != 0 {
+		fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill readback requires --j3b-postgres-readback-url with an explicit maintenance-scoped PostgreSQL URL")
+		os.Exit(2)
+	}
+	db, err := j3bmodelcheck.Open(rawURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open J3b PostgreSQL backfill readback connection: %v\n", err)
+		os.Exit(2)
+	}
+	defer db.Close()
+	report, err := j3bmodelcheck.VerifyPostgresBackfill(context.Background(), db, j3bmodelcheck.PostgresReadbackOptions{MaxRowsPerTable: maxRowsPerTable})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "J3b PostgreSQL backfill readback failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode J3b PostgreSQL backfill readback report: %v\n", err)
+		os.Exit(1)
+	}
+	if j3bPostgresReadbackExitCode(report) != 0 {
+		os.Exit(3)
+	}
+}
+
+func j3bPostgresReadbackURLRequiredExitCode(rawURL string) int {
+	if strings.TrimSpace(rawURL) == "" {
+		return 2
+	}
+	return 0
+}
+
+func j3bPostgresReadbackExitCode(report j3bmodelcheck.PostgresBackfillVerificationReport) int {
+	if !report.Ready {
+		return 3
+	}
+	return 0
+}
+
+func runJ3bModelCheckInventory(evidencePath string) {
+	if j3bInventoryEvidenceRequiredExitCode(evidencePath) != 0 {
+		fmt.Fprintln(os.Stderr, "J3b inventory verification requires --j3b-inventory-evidence with an explicit JSON evidence file")
+		os.Exit(2)
+	}
+	evidence, err := j3bmodelcheck.LoadLegacyJ3bFactEvidence(evidencePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "J3b inventory evidence input failed: %v\n", err)
+		os.Exit(2)
+	}
+	report := j3bmodelcheck.ValidateLegacyJ3bFactCoverage(j3bmodelcheck.LegacyJ3bFactInventory, evidence)
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode J3b inventory coverage report: %v\n", err)
+		os.Exit(1)
+	}
+	if j3bInventoryExitCode(report) != 0 {
+		os.Exit(3)
+	}
+}
+
+func j3bInventoryEvidenceRequiredExitCode(path string) int {
+	if strings.TrimSpace(path) == "" {
+		return 2
+	}
+	return 0
+}
+
+func j3bInventoryExitCode(report j3bmodelcheck.LegacyJ3bFactCoverageReport) int {
+	if !report.Ready {
+		return 3
+	}
+	return 0
 }
 
 func runJ3cReadOnlyBoundaryCheck() {
@@ -130,6 +298,28 @@ func runJ3cReadOnlyBoundaryCheck() {
 	if !report.ReadOnlyAuditReady || !report.J3cOwnerReady {
 		os.Exit(3)
 	}
+}
+
+func runJ3bCutoverEvidenceCheck(path string) {
+	report, err := businesshandoff.VerifyJ3bCutoverEvidence(path, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "J3b cutover evidence input failed: %v\n", err)
+		os.Exit(2)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode J3b cutover evidence report: %v\n", err)
+		os.Exit(1)
+	}
+	if exitCode := j3bCutoverEvidenceExitCode(report); exitCode != 0 {
+		os.Exit(exitCode)
+	}
+}
+
+func j3bCutoverEvidenceExitCode(report businesshandoff.J3bCutoverEvidenceReport) int {
+	if !report.Ready {
+		return 3
+	}
+	return 0
 }
 
 func runGatewayRouteOwnerManifestCheck() {
@@ -207,9 +397,19 @@ func runJ3bModelCheckSQLiteReadback() {
 		fmt.Fprintf(os.Stderr, "encode J3b SQLite readback report: %v\n", err)
 		os.Exit(1)
 	}
-	if !report.Ready {
+	if j3bSQLiteReadbackExitCode(report) != 0 {
 		os.Exit(3)
 	}
+}
+
+// j3bSQLiteReadbackExitCode gates cutover evidence on the lossless projection
+// result. Ready intentionally retains the legacy common-column compatibility
+// signal and is therefore insufficient for this command's success status.
+func j3bSQLiteReadbackExitCode(report j3bmodelcheck.BackfillVerificationReport) int {
+	if !report.Complete {
+		return 3
+	}
+	return 0
 }
 
 func runBusinessSQLiteHandoffCheck(businessPath, j3bPath string) {
@@ -316,10 +516,17 @@ func resolveRepoPath(path string) string {
 	return path
 }
 
-func runJ3bModelCheckSQLiteBackfill(nodeStopped, goStopped, backupConfirmed bool) {
+func runJ3bModelCheckSQLiteBackfill(nodeStopped, goStopped, backupConfirmed bool, evidencePath string) {
 	if !nodeStopped || !goStopped || !backupConfirmed {
 		fmt.Fprintln(os.Stderr, "J3b SQLite backfill requires --node-stopped --go-stopped --backup-confirmed")
 		os.Exit(2)
+	}
+	if report, exitCode, err := j3bBackfillEvidencePreflight(evidencePath); err != nil {
+		fmt.Fprintf(os.Stderr, "J3b backfill evidence input failed: %v\n", err)
+		os.Exit(exitCode)
+	} else if exitCode != 0 {
+		fmt.Fprintf(os.Stderr, "J3b backfill evidence verification failed: %s\n", strings.Join(report.Errors, "; "))
+		os.Exit(exitCode)
 	}
 	targetPath := strings.TrimSpace(os.Getenv(j3bmodelcheck.SQLiteBootstrapEnv))
 	datasetPath := strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH"))

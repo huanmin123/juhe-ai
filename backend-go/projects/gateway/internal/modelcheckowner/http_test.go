@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -54,6 +56,40 @@ func TestNewAdminAuthorizeUsesGatewaySessionContract(t *testing.T) {
 	}
 }
 
+func TestNewSelfAuthorizeAllowsAuthenticatedNonAdmin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE system_accounts (id TEXT PRIMARY KEY,username TEXT,display_name TEXT,status TEXT,role TEXT,must_change_password INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT,token_hash TEXT,expires_at TEXT,last_seen_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	token := "juhe_tmp_" + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM1234"
+	digest := sha256.Sum256([]byte(token))
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`INSERT INTO system_accounts VALUES ('sys-user','user','User','active','user',0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO system_sessions VALUES ('s-user','sys-user',?,?,?)`, hex.EncodeToString(digest[:]), now.Add(time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := modelcheckauth.New(db, modelcheckauth.SQLite, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/run", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	got, err := NewSelfAuthorize(auth)(context.Background(), request)
+	if err != nil || got != "sys-user" {
+		t.Fatalf("self actor=%q err=%v", got, err)
+	}
+}
+
 func TestHTTPHandlerMapsForbiddenAdminScopeTo403(t *testing.T) {
 	handler := newTestHTTPHandler()
 	handler.Authorize = func(context.Context, *http.Request) (string, error) {
@@ -63,6 +99,18 @@ func TestHTTPHandlerMapsForbiddenAdminScopeTo403(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/run/active", nil))
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status=%d body=%s, want 403", response.Code, response.Body.String())
+	}
+}
+
+func TestHTTPHandlerMapsMustChangePasswordTo403WithCode(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Authorize = func(context.Context, *http.Request) (string, error) {
+		return "", modelcheckauth.ErrMustChange
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/run/active", nil))
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"must_change_password"`) {
+		t.Fatalf("status=%d body=%s, want 403 must_change_password", response.Code, response.Body.String())
 	}
 }
 
@@ -116,6 +164,7 @@ func (fakeRunService) GetRun(context.Context, string) (any, bool, error) {
 type scopedRunService struct {
 	query RunListQuery
 	view  RunView
+	list  any
 }
 
 type blockingRunService struct{}
@@ -129,6 +178,30 @@ func (blockingRunService) RunStream(ctx context.Context, _ RunRequest, _ func(Pr
 }
 func (blockingRunService) ListRuns(context.Context, RunListQuery) (any, error) { return nil, nil }
 func (blockingRunService) GetRun(context.Context, string) (any, bool, error)   { return nil, false, nil }
+
+type contractRunService struct {
+	runResult    RunResult
+	runErr       error
+	streamResult RunResult
+	streamErr    error
+	detail       any
+	found        bool
+	detailErr    error
+}
+
+func (s contractRunService) Run(context.Context, RunRequest) (RunResult, error) {
+	return s.runResult, s.runErr
+}
+
+func (s contractRunService) RunStream(_ context.Context, _ RunRequest, progress func(ProgressEvent)) (RunResult, error) {
+	progress(ProgressEvent{Kind: "run_started", Data: map[string]any{"runId": s.streamResult.RunID}})
+	return s.streamResult, s.streamErr
+}
+
+func (s contractRunService) ListRuns(context.Context, RunListQuery) (any, error) { return nil, nil }
+func (s contractRunService) GetRun(context.Context, string) (any, bool, error) {
+	return s.detail, s.found, s.detailErr
+}
 
 type safeStreamRecorder struct {
 	mu     sync.Mutex
@@ -159,6 +232,9 @@ func (s *scopedRunService) RunStream(context.Context, RunRequest, func(ProgressE
 }
 func (s *scopedRunService) ListRuns(_ context.Context, query RunListQuery) (any, error) {
 	s.query = query
+	if s.list != nil {
+		return s.list, nil
+	}
 	return RunListResult{}, nil
 }
 func (s *scopedRunService) GetRun(context.Context, string) (any, bool, error) {
@@ -250,7 +326,7 @@ func TestHTTPHandlerJSONAndActiveStopContract(t *testing.T) {
 	handler := newTestHTTPHandler()
 	run := httptest.NewRecorder()
 	handler.ServeHTTP(run, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
-	if run.Code != http.StatusOK || !strings.Contains(run.Body.String(), `"runId":"run-1"`) {
+	if run.Code != http.StatusServiceUnavailable || !strings.Contains(run.Body.String(), "完整持久化报告尚未就绪") {
 		t.Fatalf("run status=%d body=%s", run.Code, run.Body.String())
 	}
 	active := httptest.NewRecorder()
@@ -279,6 +355,95 @@ func TestHTTPHandlerJSONRejectsConcurrentActiveRun(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
 	if response.Code != http.StatusConflict || response.Header().Get("Retry-After") != "1" {
 		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+}
+
+func TestHTTPHandlerRunReturnsDurableCompleteDetailWithoutFabricatingFields(t *testing.T) {
+	handler := newTestHTTPHandler()
+	detail := map[string]any{
+		"id":             "run-detail",
+		"requestSummary": map[string]any{"targetId": "acct-1"},
+		"resultSummary":  map[string]any{"score": 100},
+		"checks":         []any{map[string]any{"id": "check-1"}},
+	}
+	handler.Service = contractRunService{
+		runResult: RunResult{RunID: "run-detail", Status: "completed"},
+		detail:    detail,
+		found:     true,
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusOK || response.Header().Get("X-Juhe-Model-Check-Detail") != "" {
+		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+	var body struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"id", "requestSummary", "resultSummary", "checks"} {
+		if _, ok := body.Data[field]; !ok {
+			t.Fatalf("durable detail missing %q: %s", field, response.Body.String())
+		}
+	}
+}
+
+func TestHTTPHandlerRunFailsClosedWhenDurableDetailIsUnavailable(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Service = contractRunService{runResult: RunResult{RunID: "run-missing", Status: "completed"}}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Message string `json:"message"`
+		Error   struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Message == "" || body.Message != body.Error.Message {
+		t.Fatalf("Node root envelope / legacy compatibility missing: %#v", body)
+	}
+}
+
+func TestHTTPHandlerRunFailsClosedWhenOnlySummaryIsAvailable(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Service = contractRunService{
+		runResult: RunResult{RunID: "run-summary", Status: "completed"},
+		detail:    RunView{ID: "run-summary"},
+		found:     true,
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "完整持久化报告尚未就绪") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestHTTPHandlerRunPreservesRequestErrorStatusAndEnvelope(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Service = contractRunService{runErr: &RequestError{StatusCode: http.StatusNotFound, Message: "账户不存在或无权检测"}}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"message":"账户不存在或无权检测"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestHTTPHandlerBuildPreservesRequestErrorStatusAndEnvelope(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Build = func(context.Context, string, RunCommand) (RunRequest, error) {
+		return RunRequest{}, &RequestError{StatusCode: http.StatusNotFound, Message: "账户不存在或无权检测"}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-missing","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"message":"账户不存在或无权检测"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -325,9 +490,19 @@ func TestDecodeRunCommandValidatesTrustedComparisonContract(t *testing.T) {
 
 func TestHTTPHandlerSSEAndConflictContract(t *testing.T) {
 	handler := newTestHTTPHandler()
+	handler.Service = contractRunService{
+		streamResult: RunResult{RunID: "run-1", Status: "completed"},
+		detail: map[string]any{
+			"id":             "run-1",
+			"requestSummary": map[string]any{"targetId": "acct-1"},
+			"resultSummary":  map[string]any{"score": 100},
+			"checks":         []any{map[string]any{"id": "check-1"}},
+		},
+		found: true,
+	}
 	stream := httptest.NewRecorder()
 	handler.ServeHTTP(stream, httptest.NewRequest(http.MethodPost, "/run/stream", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
-	if stream.Code != http.StatusOK || !strings.Contains(stream.Header().Get("Content-Type"), "text/event-stream") || !strings.Contains(stream.Body.String(), "event: complete") {
+	if stream.Code != http.StatusOK || !strings.Contains(stream.Header().Get("Content-Type"), "text/event-stream") || stream.Header().Get("Cache-Control") != "no-cache, no-transform" || stream.Header().Get("Connection") != "keep-alive" || stream.Header().Get("X-Accel-Buffering") != "no" || !strings.Contains(stream.Body.String(), "event: complete") {
 		t.Fatalf("stream status=%d headers=%v body=%s", stream.Code, stream.Header(), stream.Body.String())
 	}
 	_, acquired, _ := handler.Active.TryStart(context.Background(), "system-account:sys-1", modelcheckactive.Summary{RunID: "existing"})
@@ -338,6 +513,59 @@ func TestHTTPHandlerSSEAndConflictContract(t *testing.T) {
 	handler.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/run/stream", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
 	if conflict.Code != http.StatusConflict || conflict.Header().Get("Retry-After") != "1" {
 		t.Fatalf("conflict status=%d headers=%v body=%s", conflict.Code, conflict.Header(), conflict.Body.String())
+	}
+}
+
+func TestHTTPHandlerSSERequestErrorIncludesNodeStatusCode(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Service = contractRunService{
+		streamResult: RunResult{RunID: "run-stream"},
+		streamErr:    &RequestError{StatusCode: http.StatusBadRequest, Message: "检测目标不能为空"},
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run/stream", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "event: error") || !strings.Contains(response.Body.String(), `"statusCode":400`) || !strings.Contains(response.Body.String(), `"message":"检测目标不能为空"`) {
+		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+}
+
+func TestHTTPHandlerSSEGenericErrorDoesNotInventStatusCode(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Service = contractRunService{
+		streamResult: RunResult{RunID: "run-stream"},
+		streamErr:    errors.New("上游探针连接失败"),
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run/stream", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "event: error") || strings.Contains(response.Body.String(), `"statusCode"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestHTTPHandlerSSEFailsClosedWhenOnlySummaryIsAvailable(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Service = contractRunService{
+		streamResult: RunResult{RunID: "run-summary", Status: "completed"},
+		detail:       RunView{ID: "run-summary"},
+		found:        true,
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run/stream", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "event: error") || strings.Contains(response.Body.String(), "event: complete") || !strings.Contains(response.Body.String(), "完整持久化报告尚未就绪") || !strings.Contains(response.Body.String(), `"statusCode":503`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestHTTPHandlerSSEDetailReadErrorIncludesNodeStatusCode(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Service = contractRunService{
+		streamResult: RunResult{RunID: "run-stream", Status: "completed"},
+		detailErr:    &RequestError{StatusCode: http.StatusServiceUnavailable, Message: "持久化报告读取失败"},
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run/stream", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "event: error") || strings.Contains(response.Body.String(), "event: complete") || !strings.Contains(response.Body.String(), `"statusCode":503`) || !strings.Contains(response.Body.String(), `"message":"持久化报告读取失败"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -361,6 +589,48 @@ func TestHTTPHandlerScopesDetailAndParsesPagination(t *testing.T) {
 		if invalid.Code != http.StatusBadRequest {
 			t.Fatalf("invalid pagination %s status=%d body=%s", query, invalid.Code, invalid.Body.String())
 		}
+	}
+}
+
+func TestHTTPHandlerSelfScopeRedactsTenantFieldsFromListAndDetail(t *testing.T) {
+	service := &scopedRunService{
+		view: RunView{ID: "run-1", SystemAccountID: "sys-1"},
+		list: RunListResult{Items: []RunView{{ID: "run-1", SystemAccountID: "sys-1"}}},
+	}
+	handler := newTestHTTPHandler()
+	handler.Service = service
+	handler.ForceActorScope = true
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/runs", nil))
+	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), "systemAccountId") {
+		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
+	}
+	detail := httptest.NewRecorder()
+	handler.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/runs/run-1", nil))
+	if detail.Code != http.StatusOK || strings.Contains(detail.Body.String(), "systemAccountId") {
+		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+}
+
+func TestHTTPHandlerSelfScopeRedactsNestedTenantFieldsFromCompletedRun(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.ForceActorScope = true
+	handler.Service = contractRunService{
+		runResult: RunResult{RunID: "run-1", Status: "completed"},
+		detail: map[string]any{
+			"id":                   "run-1",
+			"systemAccountId":      "sys-1",
+			"actorSystemAccountId": "sys-1",
+			"requestSummary":       map[string]any{"systemAccountId": "sys-1"},
+			"resultSummary":        map[string]any{"targetOwnerSystemAccountId": "sys-owner"},
+			"checks":               []any{map[string]any{"id": "check-1"}},
+		},
+		found: true,
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "systemAccountId") || strings.Contains(response.Body.String(), "actorSystemAccountId") || strings.Contains(response.Body.String(), "targetOwnerSystemAccountId") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

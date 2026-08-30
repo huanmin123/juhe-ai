@@ -58,7 +58,7 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	runtime := &Runtime{Store: store, OwnerID: "gateway-1", Now: func() time.Time { return now }, Resolve: func(context.Context, RunRequest) (Target, error) {
 		return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", DispatchRevision: 3}, nil
 	}}
-	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", ManualEnforcementEnabled: true, OwnPhysicalAccount: true})
 	if err != nil || result.Status != string(RunCompleted) || result.RunID == "" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -81,7 +81,7 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	var snapshot map[string]any
-	if err := json.Unmarshal([]byte(requestSummary), &snapshot); err != nil || snapshot["configRevision"] != "cfg-1" || snapshot["policyRevision"] != "pol-1" {
+	if err := json.Unmarshal([]byte(requestSummary), &snapshot); err != nil || snapshot["configRevision"] != "cfg-1" || snapshot["policyRevision"] != "pol-1" || snapshot["manualEnforcementEnabled"] != true || snapshot["ownPhysicalAccount"] != true {
 		t.Fatalf("request snapshot=%s err=%v", requestSummary, err)
 	}
 	var count int
@@ -123,6 +123,57 @@ func TestRuntimeRejectsIncompleteTargetContract(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := runtime.Run(context.Background(), request); err == nil {
 				t.Fatal("invalid runtime request must be rejected")
+			}
+		})
+	}
+}
+
+func TestRuntimeRejectsStaleDispatchRevision(t *testing.T) {
+	runtime := &Runtime{Store: &Store{}, Resolve: func(context.Context, RunRequest) (Target, error) {
+		return Target{Endpoint: "https://example.invalid", Prompt: "OK", DispatchRevision: 7}, nil
+	}}
+	request := RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "quick", DispatchRevision: 6}
+	if _, err := runtime.Run(context.Background(), request); err == nil || !strings.Contains(err.Error(), "dispatch revision") {
+		t.Fatalf("stale dispatch revision must be rejected, err=%v", err)
+	}
+}
+
+func TestRuntimeRejectsStaleSourceRevision(t *testing.T) {
+	runtime := &Runtime{Store: &Store{}, Resolve: func(context.Context, RunRequest) (Target, error) {
+		return Target{Endpoint: "https://example.invalid", Prompt: "OK", DispatchRevision: 7, SourceConfigRevision: "source-7", SourceDispatchRevision: 9}, nil
+	}}
+	base := RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "quick"}
+	t.Run("config", func(t *testing.T) {
+		request := base
+		request.SourceConfigRevision = "source-6"
+		if _, err := runtime.Run(context.Background(), request); err == nil || !strings.Contains(err.Error(), "source account config revision") {
+			t.Fatalf("stale source config revision must be rejected, err=%v", err)
+		}
+	})
+	t.Run("dispatch", func(t *testing.T) {
+		request := base
+		request.SourceDispatchRevision = 8
+		if _, err := runtime.Run(context.Background(), request); err == nil || !strings.Contains(err.Error(), "source account dispatch revision") {
+			t.Fatalf("stale source dispatch revision must be rejected, err=%v", err)
+		}
+	})
+}
+
+func TestRuntimeManualEnforcementRequiresEnabledPhysicalAccount(t *testing.T) {
+	for name, input := range map[string]struct {
+		trigger string
+		request RunRequest
+		want    bool
+	}{
+		"manual enabled physical":               {request: RunRequest{ManualEnforcementEnabled: true, OwnPhysicalAccount: true}, want: true},
+		"manual disabled physical":              {request: RunRequest{ManualEnforcementEnabled: false, OwnPhysicalAccount: true}, want: false},
+		"manual enabled authorization instance": {request: RunRequest{ManualEnforcementEnabled: true, OwnPhysicalAccount: false}, want: false},
+		"scheduled remains automatic":           {trigger: "scheduled", request: RunRequest{}, want: true},
+		"recovery remains automatic":            {trigger: "quality_recovery", request: RunRequest{}, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := runtimeEnforcementAllowed(input.trigger, input.request); got != input.want {
+				t.Fatalf("enforcement allowed=%v want=%v", got, input.want)
 			}
 		})
 	}

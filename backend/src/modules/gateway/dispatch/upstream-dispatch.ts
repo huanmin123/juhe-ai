@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { UnsafeResolvedUpstreamUrlError } from '../../../shared/upstream-url-policy.js'
+import { errorLogFields } from '../../../shared/logger.js'
 import {
   loadAccountCurrentConcurrencyByIdsAsync,
   tryAcquireAccountConcurrencyAsync,
@@ -1074,13 +1075,12 @@ export async function fetchFirstAvailableUpstream(
                 concurrencySlot.release()
                 reacquireConcurrencyForNextKey = true
                 lastAttempt = keyModelUnavailableAttempt(account, 'state_unavailable')
-                getRequestLogger().warn({
+                getRequestLogger().warn(errorLogFields(error, {
                   event: 'key_model_runtime_state_unavailable',
                   accountId: account.id,
                   keyFingerprint: account.selectedApiKeyFingerprint,
-                  attemptId: keyModelAttemptId,
-                  error
-                }, 'Key-model 运行态不可读，精确候选按不可选处理')
+                  attemptId: keyModelAttemptId
+                }), 'Key-model 运行态不可读，精确候选按不可选处理')
                 retryAccountApiKey = true
                 break
               }
@@ -1140,18 +1140,16 @@ export async function fetchFirstAvailableUpstream(
                 // Settlement/observability must not add latency to the upstream
                 // request or turn a successful dispatch into a gateway failure.
                 void Promise.resolve(requestCoordination.onUpstreamAttemptStarted?.(account, upstreamUrl)).catch((error) => {
-                  getRequestLogger().warn({
+                  getRequestLogger().warn(errorLogFields(error, {
                     event: 'gateway_upstream_attempt_started_callback_failed',
-                    accountId: account.id,
-                    error
-                  }, '上游 attempt started 回调失败')
+                    accountId: account.id
+                  }), '上游 attempt started 回调失败')
                 })
               } catch (error) {
-                getRequestLogger().warn({
+                getRequestLogger().warn(errorLogFields(error, {
                   event: 'gateway_upstream_attempt_started_callback_failed',
-                  accountId: account.id,
-                  error
-                }, '上游 attempt started 回调失败')
+                  accountId: account.id
+                }), '上游 attempt started 回调失败')
               }
               const attemptSignal = keyModelAttempt?.transportSignal(signal) ?? signal
               const markFirstOutput = () => {

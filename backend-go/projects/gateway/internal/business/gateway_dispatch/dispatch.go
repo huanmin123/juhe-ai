@@ -67,7 +67,10 @@ type AccountCircuitAttempt interface {
 }
 
 type Request struct {
-	HTTP           *http.Request
+	HTTP *http.Request
+	// Client optionally overrides Dispatcher.Client for this single attempt.
+	// The resolved model-check target supplies this when it has a scoped proxy.
+	Client         Client
 	Capability     keymodelruntime.Capability
 	AttemptID      string
 	AccountCircuit *AccountCircuitInput
@@ -180,7 +183,11 @@ type Dispatcher struct {
 }
 
 func (d Dispatcher) Dispatch(ctx context.Context, input Request) (Result, error) {
-	if d.Client == nil {
+	client := input.Client
+	if client == nil {
+		client = d.Client
+	}
+	if client == nil {
 		return Result{}, ErrClientRequired
 	}
 	if input.HTTP == nil || input.HTTP.Context() == nil {
@@ -219,7 +226,7 @@ func (d Dispatcher) Dispatch(ctx context.Context, input Request) (Result, error)
 		return Result{}, ErrAttemptBlocked
 	}
 	attempt := &Attempt{gate: d.KeyModel, permit: permit, cap: input.Capability, attemptID: input.AttemptID, circuit: circuitAttempt}
-	response, err := d.Client.Do(input.HTTP.WithContext(ctx))
+	response, err := client.Do(input.HTTP.WithContext(ctx))
 	if err != nil {
 		_ = attempt.Unknown(context.WithoutCancel(ctx), time.Now().UTC(), input.AttemptID)
 		_ = attempt.ReportTransportFailure(context.WithoutCancel(ctx), err)

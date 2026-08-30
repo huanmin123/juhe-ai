@@ -134,7 +134,10 @@ function applyCodexResponsesCompatibility(body: Record<string, unknown>, preserv
   if (!Object.prototype.hasOwnProperty.call(body, 'instructions')) {
     body.instructions = ''
   }
-  if (!Array.isArray(body.tools)) {
+  if (
+    !Array.isArray(body.tools)
+    && (Object.prototype.hasOwnProperty.call(body, 'tools') || !hasCodexResponsesAdditionalTools(body.input))
+  ) {
     body.tools = []
   }
   if (typeof body.tool_choice !== 'string' && !isPlainObject(body.tool_choice)) {
@@ -179,6 +182,12 @@ function normalizeCodexResponsesInputItems(input: unknown[]): unknown[] {
       role: 'developer'
     }
   })
+}
+
+function hasCodexResponsesAdditionalTools(value: unknown): boolean {
+  return Array.isArray(value) && value.some((item) => (
+    isPlainObject(item) && item.type === 'additional_tools'
+  ))
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

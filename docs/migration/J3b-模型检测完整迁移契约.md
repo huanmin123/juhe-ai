@@ -117,7 +117,7 @@ Gateway `modelcheckowner.Runtime` 现已形成一个进程内的 L2 运行时闭
 
 `backend-go/projects/jobs/internal/modelcheckactive` 已补齐 Go 进程内活动任务生命周期：以 system-account 作用域做互斥，句柄绑定取消 context，`Stop` 只取消匹配作用域并标记 `stopRequested`，`Finish` 以句柄身份清理，旧句柄不会误删新任务；并发启动、跨作用域隔离和停止取消均有 `-race` 覆盖。runtime 可选接入该注册表，停止动作会沿同一 context 进入 executor，最终由终态投影记录 canceled。它只负责请求级协调，不替代 durable claim/fence 和跨实例恢复；管理 JSON/SSE 与持久化 active-run 查询仍未接线。
 
-Gateway `internal/modelcheckowner` 已建立 Go-owned JSON/SSE 管理边界：`/run`、`/run/stream`、`/run/active`、`/run/stop` 使用统一 `{data: ...}` envelope，严格拒绝未知字段和客户端伪造的 provider/threshold，默认 profile 与 trusted comparison 参数校验对齐 Node；handler 还会复核 Build 返回的 system/actor scope、目标和 profile 快照，防止装配层发生授权漂移。JSON 与 SSE 均在写响应前取得同一 system-account 活动租约，冲突返回 `409`/`Retry-After`，并在 run started 后回填真实 `runId`；SSE 下游写失败或客户端取消会取消同一 Go run context，suite item 进度按顺序发送且不静默丢弃。当前对管理员传入不同 `systemAccountId` 的跨账号筛选明确 fail-closed，避免在完整 system-account/team 授权迁移前静默扩大或错误缩小作用域；`all` 和当前认证账号仍保持原有 scope。Host 的 `Mount` 只在 owner ready 后把完整 handler 以显式前缀挂入 Gateway mux，避免路由已曝光但 owner 未装配。主进程已有真实 auth、账号 source/build、enforcement、scheduler 与 listener 装配路径；缺少 handoff/backfill/active-path-zero 时仍不得启用或删除 Node 管理路由。
+Gateway `internal/modelcheckowner` 已建立 Go-owned JSON/SSE 管理边界：`/run`、`/run/stream`、`/run/active`、`/run/stop` 使用统一 `{data: ...}` envelope，严格拒绝未知字段和客户端伪造的 provider/threshold，默认 profile 与 trusted comparison 参数校验对齐 Node；handler 还会复核 Build 返回的 system/actor scope、目标和 profile 快照，防止装配层发生授权漂移。JSON 与 SSE 均在写响应前取得同一 system-account 活动租约，冲突返回 `409`/`Retry-After`，并在 run started 后回填真实 `runId`；SSE 下游写失败或客户端取消会取消同一 Go run context，suite item 进度按顺序发送且不静默丢弃。公开 listener 分别挂载 `/__aisys__/api/model-checks/`（管理员）和 `/__aisys__/api/my-model-checks/`（登录账户自身作用域）；self 路径忽略调用方提供的 `systemAccountId`，并拒绝管理员专属的 token 截距基线激活；未修改初始密码的请求返回 `403` 与 `must_change_password`。管理员显式单账户 scope 已接线，但 Node 的无筛选/`systemAccountId=all` 全局管理、授权账户可见性、完整详情 DTO 与 self 脱敏仍未迁移，不能把双入口当作 Node 等价替代。Host 的 `Mount` 只在 owner ready 后把完整 handler 以显式前缀挂入 Gateway mux，避免路由已曝光但 owner 未装配。主进程已有真实 auth、账号 source/build、enforcement、scheduler 与 listener 装配路径；缺少 handoff/backfill/active-path-zero 时仍不得启用或删除 Node 管理路由。
 
 Gateway full suite 现已补齐 Node 的非 trusted comparison 行为：即使未选择独立可信账户，也会在同一 resolved endpoint 上执行 profile 配置的 paired-model cross-model probe；只有显式 trusted comparison 才执行跨账户 distribution similarity。该探针只持久化比较结果摘要和模型身份，不保留响应原文；质量 projector 仍以完整 evidence family 和 trust 形成作为前置条件。
 
@@ -210,11 +210,11 @@ J3b 不建立 `gateway`/`jobs` typed command、HTTP、IPC、queue、RPC 或任�
 
 ### 9.5 SQLite/PG 切换与回滚
 
-J3b SQLite 回填完成后，必须执行 maintenance 的只读 `--verify-j3b-model-check-sqlite-backfill` readback。该命令对 dataset、stats 与专属 target 做 regular-file/物理路径隔离检查，验证三方 `query_only`、mandatory/optional 表、行数和按源列投影的 SHA-256 digest；漂移、共享文件或只读边界失败均以退出码 3 fail-closed。readback 报告作为切换及 rollback epoch 证据，不能替代 Node active-path-zero 或完整三库回填验收。
+J3b SQLite 回填完成后，必须执行 maintenance 的只读 `--verify-j3b-model-check-sqlite-backfill` readback。该命令对 dataset、stats 与专属 target 做 regular-file/物理路径隔离检查，验证三方 `query_only`、mandatory/optional 表、行数和按源列投影的 SHA-256 digest；报告同时输出每张表的 `ignoredSourceColumns`，明确记录 legacy 源端存在但专属目标未映射的兼容列，不能将公共投影摘要当成完整字段迁移。漂移、共享文件或只读边界失败均以退出码 3 fail-closed。readback 报告作为切换及 rollback epoch 证据，不能替代 Node active-path-zero 或完整三库回填验收。
 
 SQLite 和 PostgreSQL 都是正式目标模式，必须分别保持唯一 writer、schema 生命周期、权限、事务语义和恢复证据；通过 PostgreSQL 不能替代 SQLite handoff，反之亦然。PostgreSQL runtime 只做权限/schema/readiness 预检，DDL 归 B0 `maintenance` 的显式流程；SQLite 同样不得由 runtime 隐式建表或修复 schema。
 
-每次 owner 切换前必须固化 owner manifest、epoch、版本兼容性、drain 状态、数据库备份/恢复点、健康/readiness、精确路由和回滚责任人。回滚只能整组恢复到先前已验证的单 owner：先停止新 owner 的 mutation/consumer，处理或隔离在途 command，再恢复旧 owner、路由与相同物理文件的写权限，并验证 revision/fence、session touch、lease、outbox、J3b/J3c 相关投影和 freshness。仅回滚镜像、开关或 Git 提交而未恢复 writer epoch，不构成有效回滚。
+每次 owner 切换前必须固化 owner manifest、epoch、版本兼容性、drain 状态、数据库备份/恢复点、健康/readiness、精确路由和回滚责任人。回滚只能整组恢复到先前已验证的单 owner：先停止新 owner 的 mutation/consumer，处理或隔离在途 command，再恢复旧 owner、路由与相同物理文件的写权限，并验证 revision/fence、session touch、lease、outbox、J3b/J3c 相关投影和 freshness。仅回滚镜像、开关或 Git 提交而未恢复 writer epoch，不构成有效回滚。维护命令的 owner-manifest verifier 还会强制解析 `operation_source_contract`，要求 `cutover_epoch_required`、`drain_required` 与 `rollback_requires_stop_and_replay` 明确为 `true`；这只是静态契约完整性校验，不是实际 handoff 证据。
 
 ### 9.6 J3b/J3c 边界、L2 准入与验证矩阵
 
@@ -278,3 +278,80 @@ Go 定向测试覆盖短 namespace、main-probe permit 释放、failure intent p
 本次结论不以增加空壳 caller 或静态 allowlist 解决；下一阶段必须在同一 Gateway 进程内实现真实 ingress、候选/凭据解析、上游 dispatch、响应/usage/audit 终态，并把 key_model 与 account circuit 的所有 admission、lease、failure、success、unknown、取消和重试边界接入后，再以 Node golden、SQLite/PG 双模式和 owner manifest 证据复核切换。
 
 本轮在 `backend-go/projects/gateway/internal/business/gateway_dispatch` 增加了同进程 typed upstream-attempt owner：真实 `http.Client` 调用前执行 key-model foreground admission，transport 或缺失 body 进入 unknown 终态，响应 body 由调用方显式消费并释放 permit，并提供 renew/release 接口。该包不创建 Node/IPC/跨进程依赖，也不持有候选、凭据或 HTTP listener；它是可测试的接线基础，不等价于生产 ingress 已注册。对应契约测试已通过，但在真实候选解析、account circuit transition、response/usage/audit owner 和 listener 接入完成前，仍不得宣称 Go 唯一 owner。
+
+### 9.7.6 本轮 Gateway 收敛与未通过门禁（2026-08-29）
+
+本轮新增的分组可见性规则：同 owner 分组直接允许；跨 owner 分组必须具备有效的 group `resource_authorizations(scope='use', status='active', 未过期)`，否则保持 fail-closed。该规则已有 Go SQLite 定向回归，但真实 PostgreSQL 与完整代理/type 语义仍未验证。
+
+本节只记录本轮本地源码及命令验证证据，**不构成切换授权，也不表示 Gateway 已成为生产唯一 owner**。Gateway 侧本轮已收敛以下可独立核对的边界：quality health 投影只接受 `failed` 或 `unavailable` 结果，成功质量结果不能写 health；调度恢复必须同时满足 completed、evidence/trust 已形成、score 达到阈值且 level 非 `unavailable`；单个 scheduler 完成处理错误被隔离，不能直接终止 owner 调度循环。请求构建继续冻结 account scope，并沿用既有 query contract；stat-hour 取自 Business 设置而非进程本地时区推断。新增的 Gateway ingress boundary 仅提供进程内接线边界，尚未注册为真实业务入口。maintenance 还补充了 PostgreSQL readback CLI 和显式确认保护的 PostgreSQL backfill CLI；两者都只提供可审计的一次性工具入口，未连接生产数据库、未执行真实回填，也不能替代三库 readback、唯一 writer handoff 或 Node active-path-zero。
+
+本轮进一步收敛 Business target/options 的授权实例路径：`run/history` 已按 `resource_authorizations`、source account、viewer 授权分组绑定和 active/expiry 条件执行只读 UNION，目标解析从 source account 读取 provider/profile/凭据并将 `OwnPhysicalAccount=false`；`schedule` 仍保持 owner-only。账户模型选项和目标模型解析均以 source account 的 `account_supported_models`/`account_model_mappings` 为事实来源。缺失授权记录、source 或绑定时统一按 404 隐私语义关闭。新增的 `account_expires_at`、`cooldown_until`、`last_error_code` 已纳入 Go 只读 contract 和 run/target 的 fail-closed 可用性判断；授权实例的 CAS/dispatch revision 保留实例行版本，物理 source 的 config/dispatch revision 也进入 target/request 复核；熔断/key-model 的 credential source 使用物理 source account。授权过期判断按 SQLite `datetime(TEXT)` 与 PostgreSQL `::timestamptz` 分方言生成。options 查询现在在 SQL 层过滤固定 model-check profile catalog，并在授权多分组绑定时 `DISTINCT` 去重。该实现仍未覆盖 API-key pool、quota project、单一一致性快照和真实 PostgreSQL 双模式 smoke，因此不代表 authorized-account 能力已完成或可切换。
+
+Gateway target 现已接入受限的进程内 proxy client：读取并校验 `proxy_profiles` 的 enabled、host、port、协议，`socks5` 归一为 `socks5h`，可选密码只在内存中解封装；代理 profile 缺失、停用、协议非法或密码不可解封时 fail-closed，禁止静默退回直连。授权 target 按 Node 语义优先使用 source proxy；source 未配置 proxy 时回退到 virtual instance proxy。当前仅覆盖 J3b target 的单代理 profile，不覆盖 API-key pool、OAuth refresh、quota project，完整代理/type 语义仍是上线前门禁。
+
+本轮进一步纳入 source `type` 到 target snapshot，并按协议生成认证头：Anthropic API key 使用 `x-api-key`、OAuth 使用 Bearer；OAuth 请求同时带固定 Claude CLI identity 与 OAuth beta headers；GLM Coding Anthropic API key 使用 Bearer；Gemini native API key 使用 `x-goog-api-key`、仅 `google_oauth` 使用 Bearer，并在凭据包含 `quota_project_id` 时发送 `x-goog-user-project`；OpenAI-compatible profile 仅接受 `api_key`/`oauth` 并拒绝 `google_oauth`，Anthropic 也拒绝 `google_oauth`，Gemini native 拒绝普通 `oauth`。未知 credential type 或未知 JSON 字段 fail-closed。Go 当前没有 OAuth refresh owner：OAuth/Google OAuth 的结构化凭据缺少 `access_token` 时（即使存在 `refresh_token`）直接拒绝，不把 refresh token 当 Bearer；凭据中的合法 `base_url` 优先于 profile base URL。仍未覆盖 API-key pool、OAuth refresh/Codex adapter、完整 quota project 与所有 provider/type 接管。
+
+Account options 与 target 解析现在共享同一类型边界：列表查询仅返回 `api_key`、`oauth`、`google_oauth`，未知账户类型不会先出现在可运行选项中再于提交阶段失败。该边界仍不代表完整 OAuth refresh、API-key pool 或所有 provider/type 组合已迁移。
+
+本轮追加的本地契约修复：model-check probe 的 Dispatcher 现在接受每次 target 解析得到的 `http.Client` 覆盖值，代理 client 会沿着 Dispatcher/ProbeAdapter 实际请求路径生效；trusted comparison 按显式 Suite owner 选择请求，不再用共享 endpoint URL 推断 owner，避免同 endpoint 账户的凭据、代理和 header 串用。Store、shared schema contract 与 SQLite bootstrap readiness 同步要求 `model_check_items` 的详情列（score/max_score/duration_ms/trace_id/error_code/error_message）以及 health 的 `error_code/error_message`，缺列会在 readiness 阶段 fail-closed。PostgreSQL readback 对 source-only 未映射列拒绝 Ready；SQLite readback 保留既有公共投影兼容语义（legacy extra columns 仍需由现行契约确认），并显式输出 `sourceReadOnly`、`statsReadOnly`、`targetReadOnly` 三方状态，任一未满足则保持未就绪。上述均为本地代码和定向回归证据，不代表真实代理、数据库或生产环境已验证。
+
+本轮已记录的本地验证包括 Gateway 的 `go test -count=1 ./...`、`GOMAXPROCS=2 go test -race -p 1 -count=1 ./...` 与 `go vet ./...`，以及 maintenance 的等价 `go test`、受限并发 `go test -race` 和 `go vet`。首次使用默认并行度的 Gateway 全量 race 构建因 Windows `VirtualAlloc errno=1455` 资源耗尽而中止，受限并发复跑通过；这不构成生产并发或资源容量证据。这些结果只覆盖当前源码和相应测试，不覆盖真实候选、凭据、上游响应或生产切换。维护扫描的最新结果仍为未通过：`juhe-ai-maintenance -scan-node-j3b-active-path` 返回 `blockedFindings=161`；`-verify-gateway-route-owner-manifest` 仍将 `model-checks` 列为 pending。它们与本节前述的历史 `143` 项扫描共同说明 Node 活跃路径没有清零，不能以任一局部 Go 测试替代 owner 交接证据。
+
+以下门禁仍必须逐项通过：真实 ingress 的 candidate/凭据解析与响应、usage、audit 终态使用审计；`/model-checks` 及相关管理路由的完整 scope/错误/事务语义对照；dataset、stats、专属 J3b 三物理库的回填与 readback（包括 trust/token facts）；Business SQLite 的唯一 writer handoff；外部 GitOps 的 candidate、Node drain、owner epoch 与整组 rollback 演练；以及 active-path-zero 的最终扫描。上述任一项缺失时，严禁删除或移动 Node 活跃路径，`migration-backup` 也不得创建为提前归档或被当作已完成证据。
+
+### 9.7.7 BuildRequest 显式 target/source/mapping fence（2026-08-30）
+
+`BuildRequest` 现对首次解析与复核解析之间增加事务内的 canonical fence digest。摘要覆盖目标账户和物理 source account 的配置、传输、可用性、凭据密文、provider profile、proxy profile、授权/分组绑定、授权记录、supported models 与 model mappings；摘要只保留 SHA-256，不把凭据写入 request。复核阶段同时比较完整 `Target` 语义（endpoint、provider、upstream model、credential type/source、dispatch/config revision、协议和认证头），trusted comparison 也执行同样的双读 fence。这样可拒绝不会推进 virtual instance `config_revision` 的 mapping、source credential、proxy 或 grant drift。
+
+该 fence 是请求构建阶段的显式漂移检测，不等价于把后续上游调用与 Business writer 串行化；最终 dispatch/enforcement 仍必须依赖 owner epoch、CAS 和 source revision，单一 repeatable-read/生产 handoff 仍是上线门禁。当前 `Target`/`RunRequest` 还会显式携带授权物理 source 的 `SourceConfigRevision` 与 `SourceDispatchRevision`，并在复核解析和 Runtime 入口校验；virtual instance revision 仍是对外目标 CAS，不能被 source revision 替代。当前定向回归已验证 mapping、credential drift 及 source revision mismatch 会 fail-closed；未执行真实 PostgreSQL 或生产切换验证。
+
+### 9.7.8 结构化 cutover evidence 只读门禁（2026-08-30）
+
+maintenance 新增 `-verify-j3b-cutover-evidence <json>`，只读取外部生成的结构化证据，不连接业务数据库、不停止进程、不修改 owner 状态。校验器要求旧/新 owner 与 epoch、drain 完成且 `inFlight=0`、Node `activePathZero` 且 `blockedFindings=0`、备份文件及 SHA-256、source/target readback 摘要、rollback replay cursor 和带最大年龄的 RFC3339 freshness；缺字段、未知字段、摘要/备份哈希不匹配或证据过期均以退出码 3 fail-closed，证据文件不可读以退出码 2 返回。该命令把“布尔自报”与可核验材料分开，但不会生成或伪造 handoff 事实，也不会替代真实 Business SQLite 唯一 writer、三库回填/readback、Node drain、owner epoch、GitOps rollback 和生产恢复演练。当前仍未取得任何真实环境证据。
+
+Gateway 在启用 J3b 且确认 Business handoff 时，必须提供 `JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH`；启动会在打开 Business 数据库和 management listener 之前读取并验证该文件，要求 `newOwner=go-gateway` 且 `ownerEpoch` 与 `JUHE_AI_J3B_OWNER_EPOCH` 完全一致。缺失、不可读、过期或任一证据门失败均保持 fail-closed；这项绑定只证明启动前消费了外部证据，不代表当前环境已有真实 handoff，也不允许绕过后续 Node active-path-zero、三库 readback 和 rollback 门禁。
+
+J3b PostgreSQL/SQLite backfill 另要求显式 `-j3b-backfill-evidence <json>`。该前置校验复用同一 owner/drain/active-path/备份/freshness 结构，但允许 target readback digest 在回填前为空；缺失、不可读或未就绪时，在打开目标数据库前以退出码 2/3 fail-closed。回填完成后仍必须运行上述 `-verify-j3b-cutover-evidence`，以 source/target digest parity 作为切换证据；不能把回填前证据误当作回填完成证明。
+Gateway 的 J3b 配置在 `BUSINESS_HANDOFF_CONFIRMED=true` 时还必须显式提供 `JUHE_AI_J3B_OWNER_EPOCH`；该值只是启动配置中的不透明标识，不能替代上述证据文件对 epoch、drain 和 freshness 的真实性校验。
+
+SQLite readback 报告现在分别输出 `sourceReadOnly`、`statsReadOnly` 与 `targetReadOnly`，三者任一缺失或未处于 `query_only` 均保持 `ready=false`；这只是机器可核验的读回状态，不代表三库真实回填或唯一 writer handoff 已完成。
+
+账户 `availability_schedule_json` 的时区、跨日窗口、日期范围和例外解析已在 Go recovery 原语中与 Node 规则对齐；Gateway owner/authorized Resolve 及 run options 现在也会读取并校验实例与 source 的计划，普通运行在计划窗口外 fail-closed，quality recovery 保留既有隔离账户例外。列表查询仍使用有限候选窗口并依赖 Business 状态同步提供排序/分页基础，因此 schedule worker 的边界执行、source/实例双侧一致性和真实运行证据仍需在 handoff 前核验，不能把本地定向回归当作生产 schedule 接管证明。
+
+`-verify-business-sqlite-handoff` 的既有 `ready` 字段仅保留为路径隔离预检的兼容别名；报告现同时输出 `pathIsolationReady` 与始终为 `false` 的 `handoffReady`。它不打开用户数据库，因而不能观察真实 writer、drain、epoch、备份或回滚，任何切换自动化都必须使用结构化 cutover evidence，而不得以路径预检的 `ready=true` 作为 owner handoff 结论。
+
+### 9.7.9 当前工作区定向验证（2026-08-30）
+
+本轮在不访问 `.local`、真实数据库或生产服务的前提下，并行完成了迁移相关 Go 包的定向验证：Gateway `modelcheckowner`、`modelcheckprobe`、`gateway_dispatch`、`gateway_ingress`、Gateway command，maintenance `businesshandoff`、`j3bmodelcheck`、`ownermanifest`、maintenance command，shared contracts 以及 jobs `runtimelog` 的 `go test -count=1` 均通过；对应包的 `go vet` 与 `git diff --check` 也通过。该验证只证明当前源码和测试夹具的一致性，不替代真实三库 readback、唯一 writer、上游/凭据、Node drain、active-path-zero、owner epoch 或 rollback 证据；按迁移策略，统一全量 test/race/vet 仍待所有外部门禁闭合后执行。
+
+PostgreSQL readback 现复用 backfill 的完整列投影校验，同时检查 source-only/target-only 列、数据类型、底层 UDT 和 NULL 约束；任何结构漂移在摘要比较前即保持 `ready=false`。因此 readback 不再仅凭同名公共列的 digest 生成完整迁移证据；仍不代表真实 source 冻结、writer 停止或恢复点有效。
+
+### 9.7.10 Gateway 运行时 schema gate 与 circuit 索引语义收敛（2026-08-30）
+
+复核发现 Gateway 启动路径的 `CheckBusinessSQLiteSchema` 仍只按索引名称检查，可能绕过 shared v10 contract 对 circuit key-model capability 索引及关键 PK/UNIQUE 约束的结构要求。本轮已将运行时 gate 与 maintenance verifier 统一：`account_circuit_incidents` 的 `idx_account_circuit_incidents_key_model_capability` 必须是 `UNIQUE(scope_kind, capability_hash) WHERE scope_kind='key_model' AND capability_hash IS NOT NULL`，同时核对 SQLite `PRAGMA index_list/index_info`、列顺序和 `sqlite_master.sql` predicate；`system_accounts.username`、`system_settings(system_account_id,key)`、`model_quality_schedules(system_account_id,account_id)`、`account_quality_enforcements(account_id)`、`account_circuit_incidents(circuit_scope_key)` 的 PK/UNIQUE 结构也按列顺序 fail-closed 检查。SQLite 单连接池场景在关闭游标后再执行后续查询，避免 schemaReady 阻塞。PostgreSQL circuit contract 同时限定目标 schema/table，并要求 key 列数量与索引总列数量精确一致，拒绝错误表、额外 included/expression 列和 predicate 漂移；关键 PK/UNIQUE 通过 `pg_catalog.pg_constraint` 核对。
+
+新增 Gateway 运行时 schema fixture 覆盖正确唯一 partial index、错列、非唯一和缺 predicate 四类 fail-closed 情形；`modelcheckowner`、`circuit_control_plane`、maintenance handoff 与相关 `go vet` 定向验证通过，`git diff --check` 通过。本节仍只是启动前结构证据，不代表 Business SQLite 已完成唯一 writer handoff、真实 PostgreSQL 验证、Node drain 或生产切换；统一全量测试继续留到全部外部门禁闭合之后。
+
+### 9.7.11 Gateway API-key 授权过期时间方言收敛（2026-08-30）
+
+`account_runtime.ValidateGatewayAPIKey` 的跨租户分组授权查询现按 Business schema 的 ISO-8601 文本字段生成方言条件：SQLite 使用 `datetime(column) > datetime(?)`，PostgreSQL 使用 `column::timestamptz > ?::timestamptz`。这样带时区偏移的授权不会按字符串顺序误判；新增定向回归覆盖有效授权与过期授权的入口行为。该修复仅收敛本地查询语义，仍不提供真实授权数据、唯一 owner 或生产切换证据。
+
+### 9.7.12 Gateway API-key 分组授权 scope 与 schema 前门（2026-08-30）
+
+`account_runtime` 的跨租户分组绑定现要求 `resource_authorizations.scope='use'`，与模型检测候选及 Node 授权语义一致；`CheckContract` 同时显式检查 `resource_authorizations` 和 `group_authorization_settings` 两张直接查询依赖。定向回归覆盖非 `use` 授权被拒绝，避免只拥有读取权限的授权进入 Gateway 路由。该前门仍只是代码级 fail-closed 检查，不替代真实 owner handoff 或授权数据审计。
+
+### 9.7.13 Gateway health timezone schema dependency（2026-08-30）
+
+Gateway 启动时的 `LoadBusinessHealthStatHour` 会读取 `system_settings(system_account_id,key,value_json,updated_at)`。该表及其指向 `system_accounts` 的级联外键、复合主键已纳入 Business SQLite `v10` shared contract，并由 Gateway/maintenance 两侧 schema verifier 共同检查；缺表、缺列、缺外键或错误约束均保持 `schemaReady=false`。这仍是结构门禁，不代表真实 Business handoff 或统计配置已在目标环境验证。
+
+### 9.7.14 Scheduler source revision payload fence（2026-08-30）
+
+周期调度与质量恢复任务的不可变 `ScheduledPayload` 现同时保存目标 `configRevision/dispatchRevision` 对应的物理 source revision。claim 阶段从账户（授权实例则从 `authorization_instance_source_account_id`）读取 source config/dispatch revision；Gateway scheduler builder 将其作为 `RunRequest.SourceConfigRevision/SourceDispatchRevision` 传入 `Resolve`，Runtime 在执行入口再次校验，排队期间 source 凭据或 dispatch 配置漂移时 fail-closed。旧 payload 缺少 source 字段时由 scheduler executor 直接拒绝，不伪造版本，需重新 claim 生成新 payload。该修复仅覆盖进程内调度快照，不能替代 durable owner epoch、writer 串行化或生产 handoff 证据。
+
+### 9.7.15 SQLite backfill canonical value encoding（2026-08-30）
+
+SQLite 回填与冲突比较的 canonical 编码现明确区分 `NULL`、文本/驱动返回的字节文本、整数、浮点和布尔值；`NULL` 不再与字面量 `<nil>` 混淆，整数 `1` 也不再与浮点 `1` 混淆，同时保留 PostgreSQL/SQLite 驱动间 bytes/text 的既有等价语义。新增定向回归覆盖这些碰撞边界。该修复只提高摘要与冲突检测的本地准确性，不能替代 source 冻结、唯一 writer 或真实 readback 证据。
+
+### 9.7.16 J3b Business endpoint mode source contract（2026-08-30）
+
+Gateway target Resolve 现把 `accounts.health_check_endpoint_mode` 作为虚拟目标账户选择的探测形态；授权实例的 provider、凭据和 `credentials.supported_endpoint_modes` 仍取物理 source account，与 Node/Jobs 的 effective-source 规则一致。选择值必须是 Go 已实现、与 source protocol profile 匹配且出现在物理凭据支持列表中的文本 mode；缺失、空值、畸形列表、`images_*`/`interactions_*` 等 Go 未实现选择值或不一致配置均 fail-closed。支持列表中的其他 Node-only mode 不会被重写，只要已选 mode 可执行即可保留为 target capability。shared Business SQLite schema 已升级为 `v11`，启动 schema gate 与 `CheckContract` 均要求 `accounts.health_check_endpoint_mode`；凭据 JSON 的结构仍由 resolver 在解密后严格校验，而不是交给 schema gate 推断。

@@ -9,6 +9,7 @@ import { getGatewayRequestBodyState } from '../request/body.js'
 import { requestModel } from '../request/metadata.js'
 import { readGatewayApiKeyQuotaCostsSnapshotAsync } from './api-key-quota.service.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
+import { errorLogFields } from '../../../shared/logger.js'
 
 const defaultEstimatedOutputTokens = 4096
 const defaultReleaseDelayMs = 65_000
@@ -46,11 +47,10 @@ export async function reserveGatewayApiKeyInflightCost(input: {
         apiKey: input.apiKey
       }, { timeoutMs: 1000 })
     } catch (error) {
-      getRequestLogger().warn({
+      getRequestLogger().warn(errorLogFields(error, {
         event: 'gateway_api_key_inflight_quota_exact_cost_failed',
-        apiKeyId: input.apiKey.id,
-        errorMessage: error instanceof Error ? error.message : String(error)
-      }, 'API Key 在途额度缺少成本快照且精确成本读取失败，按保护策略拒绝请求')
+        apiKeyId: input.apiKey.id
+      }), 'API Key 在途额度缺少成本快照且精确成本读取失败，按保护策略拒绝请求')
       return { allowed: false, estimatedCostUsd }
     }
   }

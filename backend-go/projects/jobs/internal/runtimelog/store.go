@@ -31,6 +31,8 @@ const (
 	postgresOwnerLeaseTimeout      = 5 * time.Second
 )
 
+var errPostgresRuntimeLogSchemaMissing = errors.New("PostgreSQL 运行日志 schema 不完整")
+
 type facetRow struct {
 	Time  string
 	Level string
@@ -173,6 +175,13 @@ func EnsureSchema(ctx context.Context, store Store) error {
 		}
 		return ensureSQLiteFenceTokenColumn(ctx, value.db)
 	case *postgresStore:
+		bootstrap, err := postgresRuntimeLogSchemaBootstrapRequired(value.CheckSchema(ctx))
+		if err != nil {
+			return err
+		}
+		if !bootstrap {
+			return nil
+		}
 		for _, statement := range strings.Split(postgresSchema, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue
@@ -180,6 +189,9 @@ func EnsureSchema(ctx context.Context, store Store) error {
 			if _, err := value.pool.Exec(ctx, statement); err != nil {
 				return err
 			}
+		}
+		if err := value.CheckSchema(ctx); err != nil {
+			return fmt.Errorf("初始化 PostgreSQL 运行日志 schema 后校验失败: %w", err)
 		}
 		return nil
 	default:
@@ -494,11 +506,19 @@ func (store *postgresStore) ReleaseOwnerLease(ctx context.Context, lease OwnerLe
 	now := time.Now().UTC()
 	leaseCtx, cancel := ownerLeaseContext(ctx)
 	defer cancel()
-	result, err := store.pool.Exec(leaseCtx, "UPDATE juhe_dataset.runtime_log_index_owner_leases SET owner_id = '', lease_until = $1, updated_at = $1 WHERE lease_key = $2 AND owner_id = $3 AND fence_token = $4", now, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
+	tx, err := beginPostgresTx(leaseCtx, store.pool)
 	if err != nil {
 		return err
 	}
-	return requireOwnerLeaseMutation(result.RowsAffected())
+	defer rollbackPostgresTx(tx)
+	result, err := tx.Exec(leaseCtx, "UPDATE juhe_dataset.runtime_log_index_owner_leases SET owner_id = '', lease_until = $1, updated_at = $1 WHERE lease_key = $2 AND owner_id = $3 AND fence_token = $4", now, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken)
+	if err != nil {
+		return err
+	}
+	if err := requireOwnerLeaseMutation(result.RowsAffected()); err != nil {
+		return err
+	}
+	return tx.Commit(leaseCtx)
 }
 
 func (store *postgresStore) CheckSchema(ctx context.Context) error {
@@ -506,6 +526,9 @@ func (store *postgresStore) CheckSchema(ctx context.Context) error {
 		var found string
 		err := store.pool.QueryRow(ctx, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'juhe_dataset' AND table_name = $1", table).Scan(&found)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: 缺少 PostgreSQL 表 juhe_dataset.%s", errPostgresRuntimeLogSchemaMissing, table)
+			}
 			return fmt.Errorf("缺少 PostgreSQL 表 juhe_dataset.%s: %w", table, err)
 		}
 		if err := checkPostgresColumns(ctx, store.pool, table); err != nil {
@@ -516,6 +539,9 @@ func (store *postgresStore) CheckSchema(ctx context.Context) error {
 		var found string
 		err := store.pool.QueryRow(ctx, "SELECT indexname FROM pg_indexes WHERE schemaname = 'juhe_dataset' AND indexname = $1", index).Scan(&found)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: 缺少 PostgreSQL 运行日志索引 juhe_dataset.%s", errPostgresRuntimeLogSchemaMissing, index)
+			}
 			return fmt.Errorf("缺少 PostgreSQL 运行日志索引 juhe_dataset.%s: %w", index, err)
 		}
 	}
@@ -641,7 +667,12 @@ func postgresAcquireOwnerLease(ctx context.Context, pool *pgxpool.Pool, ownerID 
 	var token int64
 	leaseCtx, cancel := ownerLeaseContext(ctx)
 	defer cancel()
-	err := pool.QueryRow(leaseCtx, `
+	tx, err := beginPostgresTx(leaseCtx, pool)
+	if err != nil {
+		return OwnerLease{}, false, err
+	}
+	defer rollbackPostgresTx(tx)
+	err = tx.QueryRow(leaseCtx, `
     INSERT INTO juhe_dataset.runtime_log_index_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
     VALUES ($1, $2, 1, $3, $4)
     ON CONFLICT(lease_key) DO UPDATE SET
@@ -651,11 +682,14 @@ func postgresAcquireOwnerLease(ctx context.Context, pool *pgxpool.Pool, ownerID 
       updated_at = excluded.updated_at
     WHERE juhe_dataset.runtime_log_index_owner_leases.lease_until <= $5
     RETURNING fence_token
-  `, runtimeLogOwnerLeaseKey, ownerID, leaseUntil, now, now).Scan(&token)
+	`, runtimeLogOwnerLeaseKey, ownerID, leaseUntil, now, now).Scan(&token)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
 	if err != nil {
+		return OwnerLease{}, false, err
+	}
+	if err := tx.Commit(leaseCtx); err != nil {
 		return OwnerLease{}, false, err
 	}
 	return OwnerLease{OwnerID: ownerID, FenceToken: token}, true, nil
@@ -666,12 +700,20 @@ func postgresRenewOwnerLease(ctx context.Context, pool *pgxpool.Pool, lease Owne
 	leaseUntil := now.Add(duration)
 	leaseCtx, cancel := ownerLeaseContext(ctx)
 	defer cancel()
-	result, err := pool.Exec(leaseCtx, `
+	tx, err := beginPostgresTx(leaseCtx, pool)
+	if err != nil {
+		return false, err
+	}
+	defer rollbackPostgresTx(tx)
+	result, err := tx.Exec(leaseCtx, `
     UPDATE juhe_dataset.runtime_log_index_owner_leases
     SET lease_until = $1, updated_at = $2
     WHERE lease_key = $3 AND owner_id = $4 AND fence_token = $5 AND lease_until > $6
   `, leaseUntil, now, runtimeLogOwnerLeaseKey, lease.OwnerID, lease.FenceToken, now)
 	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(leaseCtx); err != nil {
 		return false, err
 	}
 	return result.RowsAffected() == 1, nil
@@ -815,7 +857,7 @@ func checkPostgresColumns(ctx context.Context, pool *pgxpool.Pool, table string)
 	}
 	for _, column := range runtimeLogColumns[table] {
 		if _, ok := found[column]; !ok {
-			return fmt.Errorf("PostgreSQL 表 juhe_dataset.%s 缺少运行日志字段 %s", table, column)
+			return fmt.Errorf("%w: PostgreSQL 表 juhe_dataset.%s 缺少运行日志字段 %s", errPostgresRuntimeLogSchemaMissing, table, column)
 		}
 	}
 	for column := range runtimeLogPostgresInstantColumns[table] {
@@ -824,6 +866,22 @@ func checkPostgresColumns(ctx context.Context, pool *pgxpool.Pool, table string)
 		}
 	}
 	return nil
+}
+
+func shouldBootstrapPostgresRuntimeLogSchema(err error) bool {
+	return errors.Is(err, errPostgresRuntimeLogSchemaMissing)
+}
+
+func postgresRuntimeLogSchemaBootstrapRequired(checkErr error) (bool, error) {
+	if checkErr == nil {
+		// 正常启动只做元数据校验。对已有的大表重复执行
+		// CREATE INDEX IF NOT EXISTS 仍可能等待 DDL 锁，拖慢 worker 启动。
+		return false, nil
+	}
+	if shouldBootstrapPostgresRuntimeLogSchema(checkErr) {
+		return true, nil
+	}
+	return false, fmt.Errorf("检查 PostgreSQL 运行日志 schema 失败，拒绝执行初始化 DDL: %w", checkErr)
 }
 
 const sqliteCursorSelect = `SELECT log_file, COALESCE(file_identity, ''), cursor_offset, line_number, file_size, truncation_generation, COALESCE(file_mtime_ms, 0), COALESCE(last_read_at, ''), COALESCE(last_error_message, ''), created_at, updated_at FROM runtime_log_file_cursors`

@@ -1287,7 +1287,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       firstTokenMs = error.partialResult.firstByteMs ?? firstTokenMs
       const errorMessage = error instanceof Error ? error.message : '上游非流式响应正文中断'
       const errorCode = responsePrecommitDeadlineError?.code ?? 'upstream_body_interrupted'
-      logger.warn({
+      logger.warn(errorLogFields(error, {
         event: 'gateway_non_stream_body_interrupted_after_output',
         accountId: account.id,
         accountName: account.name,
@@ -1295,9 +1295,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         endpoint: usageContext.endpoint,
         firstTokenMs,
         transferredBytes: error.partialResult.transferredBytes,
-        captureTruncated: error.partialResult.captureTruncated,
-        errorMessage
-      }, '上游非流式响应正文已输出后中断，下游连接已按网络失败关闭')
+        captureTruncated: error.partialResult.captureTruncated
+      }), '上游非流式响应正文已输出后中断，下游连接已按网络失败关闭')
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       // The downstream response is already committed and cannot be replayed.
       // Keep this request's audit/usage failure; shared account state still
@@ -1598,11 +1597,10 @@ async function finalizeNonStreamResponseAfterSseHeartbeat(
     const iterator = input.upstreamResponse.body?.[Symbol.asyncIterator]()
     await iterator?.return?.()
   } catch (error) {
-    logger.debug({
+    logger.debug(errorLogFields(error, {
       event: 'gateway_non_stream_after_sse_heartbeat_cancel_failed',
-      accountId: input.account.id,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    }, 'SSE 保活连接无法承接非流式响应，取消上游正文时出现非阻断异常')
+      accountId: input.account.id
+    }), 'SSE 保活连接无法承接非流式响应，取消上游正文时出现非阻断异常')
   }
   const failureEvent = writeGatewayStreamFailureEvent(
     input.res,

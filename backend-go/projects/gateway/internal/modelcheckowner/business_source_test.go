@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	_ "modernc.org/sqlite"
 )
 
@@ -22,11 +24,13 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,status TEXT,schedulable INTEGER,credentials_encrypted TEXT,deleted_at TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,type TEXT,config_revision INTEGER,dispatch_revision INTEGER,status TEXT,schedulable INTEGER,health_check_endpoint_mode TEXT,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,credentials_encrypted TEXT,proxy_profile_id TEXT,availability_schedule_json TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT)`,
 		`CREATE TABLE provider_protocol_profiles (id TEXT PRIMARY KEY,provider_code TEXT,enabled INTEGER,protocol_code TEXT,base_url TEXT)`,
-		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,enabled INTEGER)`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY,enabled INTEGER)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER)`,
+		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY,enabled INTEGER,type TEXT,host TEXT,port INTEGER,username TEXT,password_encrypted TEXT)`,
+		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,account_authorization_id TEXT,enabled INTEGER)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
+		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
 		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,enabled INTEGER)`,
 	} {
@@ -34,41 +38,139 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-1"}`)
+	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-1","supported_endpoint_modes":["responses_sse"]}`)
+	sourceEnvelope := testCredentialEnvelope(t, "secret", `{"api_key":"source-key","supported_endpoint_modes":["responses_sse","interactions_json"]}`)
 	if _, err := db.Exec(`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1','openai',1,'openai_responses','https://example.invalid/v1')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO group_accounts VALUES ('acct-1','sys-1','group-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','openai','profile_openai_openai_v1','openai',3,7,'active',1,?,NULL)`, envelope); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,7,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL)`, envelope); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-2','sys-2','openai','profile_openai_openai_v1','openai',3,2,'active',1,?,NULL)`, envelope); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-2','sys-2','openai','profile_openai_openai_v1','openai','api_key',3,2,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL)`, envelope); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-3','sys-1','openai','profile_openai_openai_v1','openai',4,9,'active',1,?,NULL)`, envelope); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-3','sys-1','openai','profile_openai_openai_v1','openai','api_key',4,9,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL)`, envelope); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO group_accounts VALUES ('acct-3','sys-1','group-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-3','sys-1','group-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-1',4,'quick',82,'fallback',15)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-1',4,'quick',1,82,'fallback',15)`); err != nil {
 		t.Fatal(err)
 	}
 	source, err := NewBusinessTargetSource(db, false, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
+	source.now = func() time.Time { return time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC) }
+	if _, err := db.Exec(`UPDATE accounts SET availability_schedule_json=? WHERE id='acct-1'`, `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[7],"start":"11:00","end":"13:00"}]}`); err != nil {
+		t.Fatal(err)
+	}
 	target, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Endpoint != "https://example.invalid/v1" || target.DispatchRevision != 7 || target.Headers.Get("Authorization") != "Bearer key-1" {
+	if target.Endpoint != "https://example.invalid/v1" || target.DispatchRevision != 7 || target.Headers.Get("Authorization") != "Bearer key-1" || target.EndpointMode != "responses_sse" || !sameStringSet(target.SupportedEndpointModes, []string{"responses_sse"}) {
 		t.Fatalf("target=%+v headers=%v", target, target.Headers)
+	}
+	if !target.OwnPhysicalAccount {
+		t.Fatalf("physical account target must retain immutable physical-account fact: %+v", target)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET availability_schedule_json=? WHERE id='acct-1'`, `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[7],"start":"13:00","end":"14:00"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil {
+		t.Fatal("schedule-denied account must reject target resolution")
+	}
+	if _, err := db.Exec(`UPDATE accounts SET availability_schedule_json=? WHERE id='acct-1'`, `{`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil {
+		t.Fatal("invalid availability schedule must reject target resolution")
+	}
+	if _, err := db.Exec(`UPDATE accounts SET availability_schedule_json=NULL WHERE id='acct-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE groups SET system_account_id='sys-2' WHERE id='group-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil {
+		t.Fatal("foreign group owner must reject target resolution")
+	}
+	if _, err := db.Exec(`UPDATE groups SET system_account_id='sys-1' WHERE id='group-1'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, update := range []string{
+		`UPDATE accounts SET account_expires_at='2000-01-01T00:00:00Z' WHERE id='acct-1'`,
+		`UPDATE accounts SET account_expires_at=NULL,cooldown_until='2099-01-01T00:00:00Z' WHERE id='acct-1'`,
+		`UPDATE accounts SET cooldown_until='not-a-timestamp' WHERE id='acct-1'`,
+		`UPDATE accounts SET cooldown_until=NULL,last_error_code='account_expired' WHERE id='acct-1'`,
+	} {
+		if _, err := db.Exec(update); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil {
+			t.Fatalf("account availability fence must reject update %q", update)
+		}
+	}
+	if _, err := db.Exec(`UPDATE accounts SET last_error_code=NULL WHERE id='acct-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-authorized','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,6,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,'authorization-1',NULL,NULL)`, envelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-authorized','sys-1','group-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO resource_authorizations VALUES ('authorization-1','account','source-account-1','sys-1','sys-1','use','active',NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('source-account-1','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,8,'active',1,'responses_json',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL)`, sourceEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET authorization_instance_source_account_id='source-account-1' WHERE id='acct-authorized'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE group_accounts SET account_authorization_id='authorization-1' WHERE account_id='acct-authorized'`); err != nil {
+		t.Fatal(err)
+	}
+	authorizedRequest, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol"})
+	if err != nil || authorizedRequest.OwnPhysicalAccount || authorizedRequest.TargetID != "acct-authorized" {
+		t.Fatalf("authorized account must resolve through source account: request=%+v err=%v", authorizedRequest, err)
+	}
+	nowCalls := 0
+	source.now = func() time.Time {
+		nowCalls++
+		return time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	}
+	authorizedTarget, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol"})
+	if nowCalls != 1 {
+		t.Fatalf("authorized target availability must use one frozen clock value, calls=%d", nowCalls)
+	}
+	if err != nil || authorizedTarget.ProviderCode != "openai" || authorizedTarget.Headers.Get("Authorization") != "Bearer source-key" || authorizedTarget.OwnPhysicalAccount || authorizedTarget.ConfigRevision != "3" || authorizedTarget.SourceConfigRevision != "3" || authorizedTarget.DispatchRevision != 6 || authorizedTarget.SourceDispatchRevision != 8 || authorizedTarget.CredentialSourceAccountID != "source-account-1" || authorizedTarget.EndpointMode != "responses_sse" || !sameStringSet(authorizedTarget.SupportedEndpointModes, []string{"responses_sse", "interactions_json"}) {
+		t.Fatalf("authorized target must use source credentials: target=%+v err=%v", authorizedTarget, err)
+	}
+	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol", SourceConfigRevision: "stale"}); err == nil || !strings.Contains(err.Error(), "source account config revision") {
+		t.Fatalf("stale source config revision must be rejected: err=%v", err)
+	}
+	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol", SourceDispatchRevision: 7}); err == nil || !strings.Contains(err.Error(), "source account dispatch revision") {
+		t.Fatalf("stale source dispatch revision must be rejected: err=%v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-authorized-source','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,6,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,'source-account-1',NULL)`, envelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-authorized-source','sys-1','group-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	sourceOnly, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-authorized-source", Model: "gpt-5.6-sol"})
+	if err == nil || sourceOnly.TargetID != "" || !strings.Contains(err.Error(), "outside scope") {
+		t.Fatalf("source-bound account without a valid grant must remain private: request=%+v err=%v", sourceOnly, err)
 	}
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-2", Model: "gpt-5.6-sol"}); err == nil {
 		t.Fatal("cross-account target must be rejected")
@@ -76,33 +178,44 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol", ConfigRevision: "2"}); err == nil || !strings.Contains(err.Error(), "config revision") {
 		t.Fatalf("stale config revision err=%v", err)
 	}
-	if _, err := db.Exec(`UPDATE accounts SET status='quality_isolated' WHERE id='acct-1'`); err != nil {
+	if _, err := db.Exec(`UPDATE accounts SET status='quality_isolated',schedulable=0 WHERE id='acct-1'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil {
 		t.Fatal("ordinary runs must reject a quality-isolated account")
 	}
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol", TriggerKind: string(SchedulerQualityRecovery)}); err != nil {
-		t.Fatalf("quality recovery must resolve the isolated account: %v", err)
+		t.Fatalf("quality recovery must resolve isolated unschedulable account: %v", err)
 	}
-	if _, err := db.Exec(`UPDATE accounts SET status='active' WHERE id='acct-1'`); err != nil {
+	if _, err := db.Exec(`UPDATE accounts SET status='active',schedulable=1 WHERE id='acct-1'`); err != nil {
 		t.Fatal(err)
 	}
 	request, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if request.PolicyRevision != "4" || request.Threshold != 82 || request.PenaltyAction != "fallback" || request.RecoveryIntervalMinutes != 15 || request.ConfigRevision != "3" || request.ProviderCode != "openai" {
+	if request.PolicyRevision != "4" || !request.ManualEnforcementEnabled || !request.OwnPhysicalAccount || request.Threshold != 82 || request.PenaltyAction != "fallback" || request.RecoveryIntervalMinutes != 15 || request.ConfigRevision != "3" || request.SourceConfigRevision != "3" || request.SourceDispatchRevision != 7 || request.ProviderCode != "openai" {
 		t.Fatalf("built request=%+v", request)
 	}
-	if _, err := db.Exec(`UPDATE model_quality_policies SET profile='full' WHERE system_account_id='sys-1'`); err != nil {
+	if _, err := db.Exec(`UPDATE model_quality_policies SET manual_enforcement_enabled=0 WHERE system_account_id='sys-1'`); err != nil {
 		t.Fatal(err)
+	}
+	diagnosticRequest, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
+	if err != nil || diagnosticRequest.ManualEnforcementEnabled {
+		t.Fatalf("manual policy disable must freeze into request: request=%+v err=%v", diagnosticRequest, err)
+	}
+	if _, err := db.Exec(`UPDATE model_quality_policies SET profile='full',manual_enforcement_enabled=1 WHERE system_account_id='sys-1'`); err != nil {
+		t.Fatal(err)
+	}
+	quickRequest, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol", Profile: "quick"})
+	if err != nil || quickRequest.Profile != "quick" || quickRequest.ProbeSetVersion != modelcheckprofile.QuickProbeSetVersion {
+		t.Fatalf("explicit quick request must not be constrained by quality policy: request=%+v err=%v", quickRequest, err)
 	}
 	comparisonRequest, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol", Profile: "full", TrustedComparison: true, TrustedComparisonID: "acct-3"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !comparisonRequest.TrustedComparison || comparisonRequest.TrustedComparisonAccountID != "acct-3" || comparisonRequest.TrustedComparisonConfigRevision != "4" || !strings.Contains(comparisonRequest.IdentityKey, "comparison:acct-3:4") {
+	if !comparisonRequest.TrustedComparison || comparisonRequest.TrustedComparisonAccountID != "acct-3" || comparisonRequest.TrustedComparisonConfigRevision != "4" || comparisonRequest.ProbeSetVersion != modelcheckprofile.ProbeSetVersion || !strings.Contains(comparisonRequest.IdentityKey, "comparison:acct-3:4") {
 		t.Fatalf("trusted comparison request=%+v", comparisonRequest)
 	}
 	comparisonTarget, err := source.ComparisonResolver()(context.Background(), comparisonRequest)
@@ -125,6 +238,36 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if err != nil || mapped.UpstreamModel != "gpt-5.6-terra" {
 		t.Fatalf("enabled mapping must resolve the configured upstream model: target=%+v err=%v", mapped, err)
 	}
+	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id='proxy-1' WHERE id='acct-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil || !strings.Contains(err.Error(), "proxy profile") {
+		t.Fatalf("proxy-configured account with missing profile must fail closed, err=%v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO proxy_profiles VALUES ('proxy-1',1,'http','127.0.0.1',8080,'',NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	proxied, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
+	if err != nil || proxied.Client == nil {
+		t.Fatalf("valid proxy profile must produce an explicit client: target=%+v err=%v", proxied, err)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id='proxy-1' WHERE id='acct-authorized'`); err != nil {
+		t.Fatal(err)
+	}
+	instanceProxy, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol"})
+	if err != nil || instanceProxy.Client == nil {
+		t.Fatalf("authorized account without source proxy must fall back to instance proxy: target=%+v err=%v", instanceProxy, err)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id='missing-instance-proxy' WHERE id='acct-authorized'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id='proxy-1' WHERE id='source-account-1'`); err != nil {
+		t.Fatal(err)
+	}
+	sourceProxy, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol"})
+	if err != nil || sourceProxy.Client == nil {
+		t.Fatalf("authorized account must prefer a valid source proxy over instance proxy: target=%+v err=%v", sourceProxy, err)
+	}
 }
 
 func TestBusinessTargetSourceCheckContractIsReadOnly(t *testing.T) {
@@ -144,6 +287,298 @@ func TestBusinessTargetSourceCheckContractIsReadOnly(t *testing.T) {
 	}
 	if err := source.CheckContract(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBusinessTargetSourceCheckContractRejectsMissingHealthCheckEndpointMode(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ddls := businessSourceContractDDL()
+	ddls[0] = strings.Replace(ddls[0], ",health_check_endpoint_mode TEXT", "", 1)
+	for _, ddl := range ddls {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err := NewBusinessTargetSource(db, false, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.CheckContract(context.Background()); err == nil || !strings.Contains(err.Error(), "accounts") {
+		t.Fatalf("missing health_check_endpoint_mode must fail contract validation, err=%v", err)
+	}
+}
+
+func TestBusinessTargetSourceRejectsInvalidEndpointModeConfiguration(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range businessSourceContractDDL() {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1,'https://example.invalid/v1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	credential := func(plaintext string) string { return testCredentialEnvelope(t, "secret", plaintext) }
+	if _, err := db.Exec(`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('acct-1','sys-1','openai','profile_openai_openai_v1','openai','api_key',1,1,'active',1,'responses_sse',?)`, credential(`{"api_key":"key","supported_endpoint_modes":["responses_sse","images_json"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewBusinessTargetSource(db, false, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}
+	target, err := source.Resolve(context.Background(), request)
+	if err != nil || target.EndpointMode != "responses_sse" || !sameStringSet(target.SupportedEndpointModes, []string{"responses_sse", "images_json"}) {
+		t.Fatalf("selected executable mode and Node-only capabilities must remain explicit: target=%+v err=%v", target, err)
+	}
+	for _, tc := range []struct {
+		name       string
+		mode       string
+		credential string
+	}{
+		{name: "profile mismatch", mode: "chat_json", credential: `{"api_key":"key","supported_endpoint_modes":["chat_json"]}`},
+		{name: "selected mode absent", mode: "responses_sse", credential: `{"api_key":"key","supported_endpoint_modes":["responses_json"]}`},
+		{name: "malformed list", mode: "responses_sse", credential: `{"api_key":"key","supported_endpoint_modes":"responses_sse"}`},
+		{name: "unsupported selected mode", mode: "images_json", credential: `{"api_key":"key","supported_endpoint_modes":["images_json"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.Exec(`UPDATE accounts SET health_check_endpoint_mode=?,credentials_encrypted=? WHERE id='acct-1'`, tc.mode, credential(tc.credential)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := source.Resolve(context.Background(), request); err == nil {
+				t.Fatal("invalid endpoint mode configuration must fail closed")
+			}
+		})
+	}
+}
+
+func TestBusinessTargetFenceDetectsMappingAndCredentialDrift(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range businessSourceContractDDL() {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-1","supported_endpoint_modes":["responses_sse"]}`)
+	rotatedEnvelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-2","supported_endpoint_modes":["responses_sse"]}`)
+	if _, err := db.Exec(`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1,'https://example.invalid/v1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,7,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL)`, envelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewBusinessTargetSource(db, false, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fenceBefore, err := source.readTargetFence(context.Background(), "sys-1", "acct-1", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_supported_models VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_model_mappings VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra',1)`); err != nil {
+		t.Fatal(err)
+	}
+	mapped, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
+	if err != nil || mapped.UpstreamModel != "gpt-5.6-terra" {
+		t.Fatalf("mapping drift fixture target=%+v err=%v", mapped, err)
+	}
+	fenceAfterMapping, err := source.readTargetFence(context.Background(), "sys-1", "acct-1", mapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fenceAfterMapping == fenceBefore || sameTargetFence(target, mapped) {
+		t.Fatalf("mapping change must move target fence: before=%s after=%s target=%+v mapped=%+v", fenceBefore, fenceAfterMapping, target, mapped)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted=? WHERE id='acct-1'`, rotatedEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
+	if err != nil || rotated.Headers.Get("Authorization") != "Bearer key-2" {
+		t.Fatalf("credential drift fixture target=%+v err=%v", rotated, err)
+	}
+	fenceAfterCredential, err := source.readTargetFence(context.Background(), "sys-1", "acct-1", rotated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fenceAfterCredential == fenceAfterMapping || sameTargetFence(mapped, rotated) {
+		t.Fatalf("credential change must move target fence: mapping=%s credential=%s mapped=%+v rotated=%+v", fenceAfterMapping, fenceAfterCredential, mapped, rotated)
+	}
+}
+
+func TestCredentialHeadersFollowProtocolAndType(t *testing.T) {
+	cases := []struct {
+		name     string
+		protocol modelcheckprofile.Protocol
+		typeName string
+		wantAuth string
+		wantKey  string
+	}{
+		{name: "anthropic api key", protocol: modelcheckprofile.ProtocolAnthropic, typeName: "api_key", wantKey: "key"},
+		{name: "anthropic oauth", protocol: modelcheckprofile.ProtocolAnthropic, typeName: "oauth", wantAuth: "Bearer key"},
+		{name: "gemini api key", protocol: modelcheckprofile.ProtocolGeminiNative, typeName: "api_key", wantKey: "key"},
+		{name: "gemini oauth", protocol: modelcheckprofile.ProtocolGeminiNative, typeName: "google_oauth", wantAuth: "Bearer key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			headers, err := credentialHeaders("", "", tc.protocol, string(tc.protocol), tc.typeName, "key")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := headers.Get("Authorization"); got != tc.wantAuth {
+				t.Fatalf("Authorization=%q want %q", got, tc.wantAuth)
+			}
+			keyHeader := "x-api-key"
+			if tc.protocol == modelcheckprofile.ProtocolGeminiNative {
+				keyHeader = "x-goog-api-key"
+			}
+			if got := headers.Get(keyHeader); got != tc.wantKey {
+				t.Fatalf("%s=%q want %q", keyHeader, got, tc.wantKey)
+			}
+		})
+	}
+	anthropicOAuthHeaders, err := credentialHeaders("anthropic", "profile_anthropic_anthropic_v1", modelcheckprofile.ProtocolAnthropic, "anthropic", "oauth", "key")
+	if err != nil || anthropicOAuthHeaders.Get("anthropic-beta") != "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14" {
+		t.Fatalf("Anthropic OAuth beta headers=%v err=%v", anthropicOAuthHeaders, err)
+	}
+	if anthropicOAuthHeaders.Get("user-agent") != "claude-cli/2.1.161 (external, cli)" || anthropicOAuthHeaders.Get("x-stainless-runtime") != "node" {
+		t.Fatalf("Anthropic OAuth CLI identity headers=%v", anthropicOAuthHeaders)
+	}
+	if _, err := credentialHeaders("", "", modelcheckprofile.ProtocolOpenAIChat, "openai", "google_oauth", "key"); err == nil {
+		t.Fatal("google_oauth must be rejected for OpenAI-compatible protocol")
+	}
+	if _, err := credentialHeaders("", "", modelcheckprofile.ProtocolGeminiNative, "gemini", "oauth", "key"); err == nil {
+		t.Fatal("oauth must be rejected for Gemini native protocol")
+	}
+	if _, err := credentialHeaders("deepseek", "profile_deepseek_anthropic_v1", modelcheckprofile.ProtocolAnthropic, "anthropic", "oauth", "key"); err == nil {
+		t.Fatal("DeepSeek Anthropic profile must reject OAuth")
+	}
+	if _, err := credentialHeaders("glm", "profile_glm_coding_anthropic_v1", modelcheckprofile.ProtocolAnthropic, "anthropic", "oauth", "key"); err == nil {
+		t.Fatal("GLM Coding Anthropic profile must reject OAuth")
+	}
+	if _, err := credentialHeaders("", "", modelcheckprofile.ProtocolAnthropic, "anthropic", "google_oauth", "key"); err == nil {
+		t.Fatal("google_oauth must be rejected for Anthropic protocol")
+	}
+	glmHeaders, err := credentialHeaders("glm", "profile_glm_coding_anthropic_v1", modelcheckprofile.ProtocolAnthropic, "anthropic", "api_key", "key")
+	if err != nil || glmHeaders.Get("Authorization") != "Bearer key" || glmHeaders.Get("x-api-key") != "" {
+		t.Fatalf("GLM Coding Anthropic API key headers=%v err=%v", glmHeaders, err)
+	}
+	if glmHeaders.Get("anthropic-beta") != "" || glmHeaders.Get("user-agent") != "" {
+		t.Fatalf("GLM Coding API key must not inherit Anthropic OAuth headers=%v", glmHeaders)
+	}
+}
+
+func TestDecryptProxyPasswordUsesPasswordField(t *testing.T) {
+	envelope := testCredentialEnvelope(t, "secret", `{"password":"proxy-secret"}`)
+	password, err := decryptProxyPassword("secret", envelope)
+	if err != nil || password != "proxy-secret" {
+		t.Fatalf("password=%q err=%v", password, err)
+	}
+	if _, err := decryptProxyPassword("secret", testCredentialEnvelope(t, "secret", `{"api_key":"not-a-password"}`)); err == nil {
+		t.Fatal("proxy password envelope without password field must fail closed")
+	}
+}
+
+func TestDecryptAccountCredentialRejectsOAuthRefreshTokenWhenAccessTokenMissing(t *testing.T) {
+	refreshOnly := testCredentialEnvelope(t, "secret", `{"refresh_token":"refresh-secret"}`)
+	if token, err := decryptAccountCredential("secret", refreshOnly, "oauth"); err == nil || token != "" || !strings.Contains(err.Error(), "refresh_token only") {
+		t.Fatalf("refresh-only OAuth must fail closed: token=%q err=%v", token, err)
+	}
+	accessPreferred := testCredentialEnvelope(t, "secret", `{"access_token":"access-secret","refresh_token":"refresh-secret"}`)
+	token, err := decryptAccountCredential("secret", accessPreferred, "oauth")
+	if err != nil || token != "access-secret" {
+		t.Fatalf("access token must remain preferred: token=%q err=%v", token, err)
+	}
+	invalidJSON := testCredentialEnvelope(t, "secret", `{"metadata":"missing-token"}`)
+	if _, err := decryptAccountCredential("secret", invalidJSON, "google_oauth"); err == nil {
+		t.Fatal("OAuth credential without a usable token must fail closed")
+	}
+}
+
+func TestCredentialMaterialUsesCredentialBaseURLAndRejectsUnknownJSON(t *testing.T) {
+	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key","base_url":"https://custom.example/v1/"}`)
+	baseURL, err := decryptCredentialBaseURL("secret", envelope)
+	if err != nil || baseURL != "https://custom.example/v1" {
+		t.Fatalf("credential base_url=%q err=%v", baseURL, err)
+	}
+	if _, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", `{"metadata":"not-a-token"}`), "api_key"); err == nil {
+		t.Fatal("unknown credential JSON must not become an API key")
+	}
+	if _, err := decryptCredentialBaseURL("secret", testCredentialEnvelope(t, "secret", `{"api_key":"key","base_url":"file:///tmp/secret"}`)); err == nil {
+		t.Fatal("credential base_url must require an HTTP(S) URL")
+	}
+	if _, err := decryptCredentialBaseURL("secret", testCredentialEnvelope(t, "secret", `{"api_key":"key","base_url":"http://127.0.0.1/v1"}`)); err == nil {
+		t.Fatal("credential base_url must reject loopback targets")
+	}
+}
+
+func TestBusinessTargetSourceUsesCredentialBaseURLAndGeminiOAuthHeaders(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range businessSourceContractDDL() {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	credential := testCredentialEnvelope(t, "secret", `{"access_token":"google-access","refresh_token":"google-refresh","base_url":"https://credential.example/v1beta/","quota_project_id":"quota-project","supported_endpoint_modes":["generate_content_json"]}`)
+	if _, err := db.Exec(`INSERT INTO provider_protocol_profiles VALUES ('profile_gemini_native_v1beta',1,'https://profile.example')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('gemini-1','sys-1','group-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('gemini-1','sys-1','gemini','profile_gemini_native_v1beta','gemini','google_oauth',1,1,'active',1,'generate_content_json',?)`, credential); err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewBusinessTargetSource(db, false, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "gemini-1", Model: "gemini-3.5-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Endpoint != "https://credential.example/v1beta" {
+		t.Fatalf("credential base_url must override profile URL: %q", target.Endpoint)
+	}
+	if target.Headers.Get("Authorization") != "Bearer google-access" || target.Headers.Get("x-goog-api-key") != "" || target.Headers.Get("x-goog-user-project") != "quota-project" {
+		t.Fatalf("Gemini OAuth headers=%v", target.Headers)
 	}
 }
 
@@ -265,11 +700,13 @@ func TestOpenBusinessTargetConnectionSharesValidatedHandle(t *testing.T) {
 
 func businessSourceContractDDL() []string {
 	return []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,config_revision INTEGER,status TEXT,schedulable INTEGER,credentials_encrypted TEXT,deleted_at TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,type TEXT,config_revision INTEGER,dispatch_revision INTEGER,status TEXT,schedulable INTEGER,health_check_endpoint_mode TEXT,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,credentials_encrypted TEXT,proxy_profile_id TEXT,availability_schedule_json TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT)`,
 		`CREATE TABLE provider_protocol_profiles (id TEXT PRIMARY KEY,enabled INTEGER,base_url TEXT)`,
-		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,enabled INTEGER)`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY,enabled INTEGER)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER)`,
+		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY,enabled INTEGER,type TEXT,host TEXT,port INTEGER,username TEXT,password_encrypted TEXT)`,
+		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,account_authorization_id TEXT,enabled INTEGER)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
+		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
 		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,enabled INTEGER)`,
 	}

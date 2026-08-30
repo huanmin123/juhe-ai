@@ -231,7 +231,7 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 
 - 非 2xx Chat 上游错误当前仍走现有网关错误处理和统一失败响应，不在桥接层主动包装成 Responses `response.failed`。
 - 首版只支持流式 Codex 请求，不承接非流式 `/v1/responses`。
-- 当前支持能映射到 Chat function tool 的 `function/custom/namespace function`。`web_search`、MCP tool、tool search、local shell call、image generation 和 computer use 必须由上游原生能力或调用方本地 agent / MCP 配置承接；Chat-only bridge 不会在网关内伪造这些结果，缺少真实能力时返回正常 agent guidance。
+- 当前支持能映射到 Chat function tool 的 `function/custom/namespace function`。桥接请求的有效工具集合是顶层 `tools` 与 `input[].type=additional_tools` 的 `tools` 合并结果；客户端明确发送顶层 `tools=[]` 时保持禁用工具语义，不重新打开 `additional_tools`，而工具字符串简写按 `custom` 工具处理。相同 `(type, namespace, name)` 且定义一致的工具只保留一份；定义冲突时返回本地 400，避免后声明静默覆盖先声明。`additional_tools` 输入项本身不会变成 Chat message，结构非法时返回本地请求错误。原生 Responses 路径保留 `additional_tools` 原始结构，不把它改写成顶层 `tools`。`web_search`、MCP tool、tool search、local shell call、image generation 和 computer use 必须由上游原生能力或调用方本地 agent / MCP 配置承接；Chat-only bridge 不会在网关内伪造这些结果，缺少真实能力时返回正常 agent guidance。
 - `previous_response_id` 当前只在 Chat-only bridge 的本网关 file-backed 状态层内有效；跨网关、跨 API Key、跨分组、跨供应商或 7 天未使用过期后都会受控失败。
 - Gateway summary compact 当前已使用本网关 compact snapshot；它只能恢复为 Chat summary，不能宣称为原生 Responses opaque compact，也不能跨网关、跨 API Key、跨分组或跨供应商使用。
 - 当前只把 `reasoning_content` 映射成 reasoning summary；不支持 encrypted reasoning 的生成，也不承诺和原生 OpenAI reasoning state 等价。

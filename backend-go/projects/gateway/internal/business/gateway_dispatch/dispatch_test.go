@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	circuitruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_runtime"
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 )
 
@@ -91,6 +92,34 @@ func TestDispatchAdmitsAndReleasesBody(t *testing.T) {
 	}
 }
 
+func TestDispatchUsesPerRequestClientOverride(t *testing.T) {
+	gate := &fakeGate{admitted: true}
+	defaultClient := &countingClient{response: &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("default"))}}
+	targetClient := &countingClient{response: &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("target"))}}
+	d := Dispatcher{Client: defaultClient, KeyModel: gate}
+	req, _ := http.NewRequest(http.MethodGet, "https://example.test", nil)
+	result, err := d.Dispatch(context.Background(), Request{HTTP: req, Client: targetClient, Capability: dispatchCapability(), AttemptID: "attempt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response == nil || defaultClient.calls != 0 || targetClient.calls != 1 {
+		t.Fatalf("per-request client was not selected: default=%d target=%d", defaultClient.calls, targetClient.calls)
+	}
+	if err := result.CloseResponse(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type countingClient struct {
+	response *http.Response
+	calls    int
+}
+
+func (c *countingClient) Do(*http.Request) (*http.Response, error) {
+	c.calls++
+	return c.response, nil
+}
+
 func TestDispatchTransportReportsUnknown(t *testing.T) {
 	gate := &fakeGate{admitted: true}
 	d := Dispatcher{Client: fakeClient{err: errors.New("timeout")}, KeyModel: gate}
@@ -150,5 +179,28 @@ func TestDispatchCircuitBlockPreventsKeyModelAdmission(t *testing.T) {
 	}
 	if gate.unknown != 0 || gate.released != 0 {
 		t.Fatalf("key model gate unexpectedly mutated: %+v", gate)
+	}
+}
+
+func TestRuntimeCircuitAttemptUnknownWithoutLeaseIsNeutral(t *testing.T) {
+	attempt := &runtimeCircuitAttempt{}
+	if err := attempt.ReportUnknown(context.Background()); err != nil {
+		t.Fatalf("report unknown: %v", err)
+	}
+	if !attempt.settled {
+		t.Fatal("unknown lifecycle must settle the local attempt")
+	}
+}
+
+func TestSuspectCircuitRequiresConfirmationEligibleRequest(t *testing.T) {
+	suspect := circuitruntime.GatewayAccountCircuitState{Phase: circuitruntime.GatewayAccountCircuitPhaseSuspect}
+	if !circuitConfirmationIneligible(suspect, AccountCircuitInput{}) {
+		t.Fatal("ineligible request must not acquire a suspect confirmation lease")
+	}
+	if circuitConfirmationIneligible(suspect, AccountCircuitInput{ConfirmationEligible: true}) {
+		t.Fatal("qualified request must remain eligible for a suspect confirmation lease")
+	}
+	if circuitConfirmationIneligible(circuitruntime.GatewayAccountCircuitState{Phase: circuitruntime.GatewayAccountCircuitPhaseClosed}, AccountCircuitInput{}) {
+		t.Fatal("closed circuit must not require a confirmation qualification")
 	}
 }

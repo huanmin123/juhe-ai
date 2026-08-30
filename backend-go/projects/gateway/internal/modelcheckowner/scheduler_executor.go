@@ -23,6 +23,8 @@ type ScheduledPayload struct {
 	Threshold               int    `json:"threshold"`
 	PenaltyAction           string `json:"penaltyAction"`
 	ConfigRevision          string `json:"configRevision"`
+	SourceConfigRevision    string `json:"sourceConfigRevision,omitempty"`
+	SourceDispatchRevision  int64  `json:"sourceDispatchRevision,omitempty"`
 	PolicyRevision          string `json:"policyRevision"`
 	ProbeSetVersion         string `json:"probeSetVersion"`
 	IdentityKey             string `json:"identityKey"`
@@ -82,7 +84,7 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	if err := json.Unmarshal(task.Payload, &payload); err != nil {
 		return fmt.Errorf("decode J3b scheduler payload: %w", err)
 	}
-	if strings.TrimSpace(payload.SystemAccountID) == "" || strings.TrimSpace(payload.ActorSystemAccountID) == "" || strings.TrimSpace(payload.TargetType) == "" || strings.TrimSpace(payload.TargetID) == "" || strings.TrimSpace(payload.Model) == "" || strings.TrimSpace(payload.Profile) == "" || strings.TrimSpace(payload.ProviderCode) == "" || strings.TrimSpace(payload.ConfigRevision) == "" || strings.TrimSpace(payload.PolicyRevision) == "" || strings.TrimSpace(payload.ProbeSetVersion) == "" || strings.TrimSpace(payload.IdentityKey) == "" || (payload.PenaltyAction != "disable" && payload.PenaltyAction != "fallback" && payload.PenaltyAction != "quality_isolate") || payload.Threshold < 40 || payload.Threshold > 100 {
+	if strings.TrimSpace(payload.SystemAccountID) == "" || strings.TrimSpace(payload.ActorSystemAccountID) == "" || strings.TrimSpace(payload.TargetType) == "" || strings.TrimSpace(payload.TargetID) == "" || strings.TrimSpace(payload.Model) == "" || strings.TrimSpace(payload.Profile) == "" || strings.TrimSpace(payload.ProviderCode) == "" || strings.TrimSpace(payload.ConfigRevision) == "" || strings.TrimSpace(payload.SourceConfigRevision) == "" || payload.SourceDispatchRevision < 1 || strings.TrimSpace(payload.PolicyRevision) == "" || strings.TrimSpace(payload.ProbeSetVersion) == "" || strings.TrimSpace(payload.IdentityKey) == "" || (payload.PenaltyAction != "disable" && payload.PenaltyAction != "fallback" && payload.PenaltyAction != "quality_isolate") || payload.Threshold < 40 || payload.Threshold > 100 {
 		return errors.New("J3b scheduler payload scope or policy snapshot is incomplete")
 	}
 	if task.Kind == SchedulerScheduled && (e.Scheduled == nil || strings.TrimSpace(payload.OwnerID) == "" || payload.ScheduleRevision < 1 || payload.IntervalMinutes < 10) {
@@ -110,6 +112,8 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	request.PenaltyAction = payload.PenaltyAction
 	request.RecoveryIntervalMinutes = payload.RecoveryIntervalMinutes
 	request.ConfigRevision = payload.ConfigRevision
+	request.SourceConfigRevision = payload.SourceConfigRevision
+	request.SourceDispatchRevision = payload.SourceDispatchRevision
 	request.PolicyRevision = payload.PolicyRevision
 	request.ProbeSetVersion = payload.ProbeSetVersion
 	request.IdentityKey = payload.IdentityKey
@@ -144,7 +148,7 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 		// quality-isolated account. Recovery must observe the same durable
 		// evidence/trust gates used by health projection; missing metadata is
 		// fail-closed so an older/partial runtime cannot accidentally recover.
-		passed := runErr == nil && result.Status == string(RunCompleted) && runResultEvidenceFormed(result)
+		passed := runErr == nil && result.Status == string(RunCompleted) && runResultRecoveryEligible(result, payload.Threshold)
 		return e.Recovery(ctx, RecoveryPayload{OwnerID: payload.OwnerID, AccountID: payload.TargetID, EnforcementID: payload.EnforcementID, RunID: result.RunID, Generation: generation, PolicyRevision: policyRevision, RecoveryIntervalMinutes: interval, CompletedAt: time.Now().UTC()}, passed)
 	}
 	if runErr != nil {
@@ -161,6 +165,23 @@ func runResultEvidenceFormed(result RunResult) bool {
 	evidence, evidenceOK := data["evidenceFormed"].(bool)
 	trust, trustOK := data["trustFormed"].(bool)
 	return evidenceOK && trustOK && evidence && trust
+}
+
+// runResultRecoveryEligible mirrors the Node recovery boundary: only a
+// completed, formed and trusted result whose score meets the frozen threshold
+// and whose level is not unavailable may clear quality isolation. A successful
+// transport alone must never release an enforcement lease.
+func runResultRecoveryEligible(result RunResult, threshold int) bool {
+	if !runResultEvidenceFormed(result) || threshold < 40 || threshold > 100 {
+		return false
+	}
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		return false
+	}
+	score, scoreOK := data["score"].(int)
+	level, levelOK := data["level"].(string)
+	return scoreOK && levelOK && score >= threshold && level != "unavailable"
 }
 
 var _ SchedulerExecutor = (*SchedulerRunExecutor)(nil)

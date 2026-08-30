@@ -17,6 +17,7 @@ type HealthFact struct {
 	ObservedAt                                                                            time.Time
 	Score, Threshold, RecoveryIntervalMinutes                                             int
 	Level, ErrorCode, ErrorMessage, PenaltyAction                                         string
+	EnforcementAllowed                                                                    bool
 }
 
 // HealthReader is the narrow read-only contract that a future J3c consumer
@@ -77,7 +78,7 @@ func (e *HealthSyncRetryExecutor) Execute(ctx context.Context, task ScheduleTask
 		if retry.RunID != payload.RunID {
 			continue
 		}
-		return e.Projector.Project(ctx, retry.RunID, EvidenceAggregate{Formed: retry.EvidenceFormed, TrustFormed: retry.TrustFormed}, HealthFact{AccountID: retry.AccountID, SystemAccountID: retry.SystemAccountID, StatHour: retry.StatHour, RunID: retry.RunID, ProviderCode: retry.ProviderCode, Model: retry.Model, Profile: retry.Profile, ScheduleID: retry.ScheduleID, PolicyRevision: retry.PolicyRevision, AccountConfigRevision: retry.AccountConfigRevision, PenaltyAction: retry.PenaltyAction, RecoveryIntervalMinutes: retry.RecoveryIntervalMinutes, ObservedAt: retry.ObservedAt, Score: retry.Score, Threshold: retry.Threshold, Level: retry.Level})
+		return e.Projector.Project(ctx, retry.RunID, EvidenceAggregate{Formed: retry.EvidenceFormed, TrustFormed: retry.TrustFormed}, HealthFact{AccountID: retry.AccountID, SystemAccountID: retry.SystemAccountID, StatHour: retry.StatHour, RunID: retry.RunID, ProviderCode: retry.ProviderCode, Model: retry.Model, Profile: retry.Profile, ScheduleID: retry.ScheduleID, PolicyRevision: retry.PolicyRevision, AccountConfigRevision: retry.AccountConfigRevision, PenaltyAction: retry.PenaltyAction, RecoveryIntervalMinutes: retry.RecoveryIntervalMinutes, EnforcementAllowed: retry.EnforcementAllowed, ObservedAt: retry.ObservedAt, Score: retry.Score, Threshold: retry.Threshold, Level: retry.Level})
 	}
 	return fmt.Errorf("J3b health retry run %s not found", payload.RunID)
 }
@@ -103,7 +104,10 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 		_ = p.Store.MarkHealthSync(ctx, runID, "failed")
 		return errors.New("J3b health projection scope is incomplete")
 	}
-	if fact.Score < fact.Threshold {
+	if fact.Score >= fact.Threshold && fact.Level != "unavailable" {
+		return errors.New("J3b health projection requires a quality failure or unavailable result")
+	}
+	if fact.Score < fact.Threshold && fact.EnforcementAllowed {
 		if p.Enforcement == nil {
 			_ = p.Store.MarkHealthSync(ctx, runID, "failed")
 			return errors.New("J3b quality enforcement owner is not configured")

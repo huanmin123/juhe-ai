@@ -46,11 +46,15 @@ var nodeJ3bPatterns = []ActivePathRule{
 	{Name: "model-check-route", Needle: "modelChecksRouter", Category: "management-route", Disposition: "block", Reason: "Node J3b management route must be removed or retargeted to Gateway"},
 	{Name: "model-check-proxy", Needle: "modelCheckHttpProxy", Category: "management-proxy", Disposition: "block", Reason: "Node proxy remains an active J3b entry point"},
 	{Name: "model-check-token-worker", Needle: "startModelCheckTokenWorker", Category: "token-worker", Disposition: "block", Reason: "Node token worker must be stopped before Gateway cutover"},
+	{Name: "model-check-token-worker-service", Needle: "model-checks-token-worker.service", Category: "token-worker", Disposition: "block", Reason: "Node token worker service remains an active J3b probe dependency"},
 	{Name: "model-quality-scheduler", Needle: "model-quality-scheduled-check", Category: "scheduler", Disposition: "block", Reason: "Node quality scheduler must be drained before cutover"},
+	{Name: "model-trust-aggregation-scheduler", Needle: "model-trust-observation-aggregation", Category: "trust-aggregation", Disposition: "block", Reason: "Node model trust aggregation scheduler must be drained before Gateway cutover"},
 	{Name: "model-quality-command", Needle: "model_quality_command", Category: "business-command", Disposition: "block", Reason: "Node quality command is a Business writer path"},
 	{Name: "model-check-dataset-write", Needle: "model_check_runs", Category: "dataset-writer", Disposition: "block", Reason: "Node J3b run writer must be archived after backfill"},
 	{Name: "model-check-dataset-write", Needle: "model_check_items", Category: "dataset-writer", Disposition: "block", Reason: "Node J3b item writer must be archived after backfill"},
 	{Name: "model-check-health-write", Needle: "account_quality_health_hourly", Category: "health-writer", Disposition: "block", Reason: "Node health projection writer must be removed or retargeted"},
+	{Name: "model-trust-aggregation-stats-ipc", Needle: "aggregate_model_trust_observations", Category: "stats-ipc", Disposition: "block", Reason: "Node stats IPC retains the J3b model trust aggregation operation"},
+	{Name: "model-quality-health-stats-ipc", Needle: "record_model_quality_health_failure", Category: "stats-ipc", Disposition: "block", Reason: "Node stats IPC retains the J3b quality-health projection operation"},
 }
 
 func ScanNodeJ3bActivePaths(root string) (ActivePathReport, error) {

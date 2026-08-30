@@ -171,6 +171,7 @@ export async function recordFailedUpstreamAttempt(
       ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
       ?? input.bodyText
   )
+  const logErrorMessage = buildGatewayLogErrorMessage(errorMessage)
   const failureObservation: ReturnType<typeof classifyGatewayUpstreamFailure> | undefined = interpretUpstreamSemantics && input.failureAttribution !== 'downstream_closed'
       ? classifyGatewayUpstreamFailure({
           phase: typeof input.statusCode === 'number'
@@ -197,7 +198,7 @@ export async function recordFailedUpstreamAttempt(
     statusCode: input.statusCode,
     durationMs: Date.now() - input.startedAt,
     errorCode,
-    errorMessage,
+    ...logErrorMessage,
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
     endpoint: usageContext.endpoint,
@@ -525,6 +526,7 @@ export async function recordGatewayFailure(
 ): Promise<void> {
   const completedAtMs = input.completedAtMs ?? Date.now()
   const errorMessage = input.errorMessage ?? input.responsePayload.error.message
+  const logErrorMessage = buildGatewayLogErrorMessage(errorMessage)
   const errorCode = input.errorCode
     ?? (typeof input.responsePayload.error.code === 'string' ? input.responsePayload.error.code : undefined)
     ?? (typeof input.responsePayload.error.type === 'string' ? input.responsePayload.error.type : undefined)
@@ -532,7 +534,7 @@ export async function recordGatewayFailure(
     event: 'gateway_request_failed',
     statusCode: input.statusCode,
     durationMs: Math.max(0, completedAtMs - input.startedAt),
-    errorMessage,
+    ...logErrorMessage,
     errorCode,
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
@@ -633,6 +635,63 @@ function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | 
 function rawOptionalDiagnosticMessage(value: string | undefined): string | undefined {
   if (value === undefined || value.length === 0) return undefined
   return value
+}
+
+const gatewayLogErrorMessageMaxBytes = 4 * 1024
+
+export interface GatewayLogErrorMessage {
+  errorMessage?: string
+  errorMessageBytes: number
+  errorMessageTruncated: boolean
+}
+
+export function buildGatewayLogErrorMessage(value: string | undefined): GatewayLogErrorMessage {
+  if (value === undefined || value.length === 0) {
+    return {
+      errorMessageBytes: 0,
+      errorMessageTruncated: false
+    }
+  }
+
+  const errorMessageBytes = Buffer.byteLength(value, 'utf8')
+  if (errorMessageBytes <= gatewayLogErrorMessageMaxBytes) {
+    return {
+      errorMessage: value,
+      errorMessageBytes,
+      errorMessageTruncated: false
+    }
+  }
+
+  const suffix = `...[truncated ${errorMessageBytes} bytes]`
+  const suffixBytes = Buffer.byteLength(suffix, 'utf8')
+  const prefix = sliceGatewayLogErrorMessageByUtf8Bytes(
+    value,
+    Math.max(0, gatewayLogErrorMessageMaxBytes - suffixBytes - 32)
+  )
+  const prefixBytes = Buffer.byteLength(prefix, 'utf8')
+  const truncatedSuffix = `...[truncated ${errorMessageBytes - prefixBytes} bytes]`
+
+  return {
+    errorMessage: `${prefix}${truncatedSuffix}`,
+    errorMessageBytes,
+    errorMessageTruncated: true
+  }
+}
+
+function sliceGatewayLogErrorMessageByUtf8Bytes(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  let bytes = 0
+  let index = 0
+  while (index < value.length) {
+    const codePoint = value.codePointAt(index)
+    if (codePoint === undefined) break
+    const character = String.fromCodePoint(codePoint)
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (bytes + characterBytes > maxBytes) break
+    bytes += characterBytes
+    index += character.length
+  }
+  return value.slice(0, index)
 }
 
 function accountUsageModelAccounting(

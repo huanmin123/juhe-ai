@@ -16,9 +16,10 @@ import (
 // Store is a J3b-owned connection. It never creates or mutates schema; schema
 // migration and data backfill belong to the offline maintenance command.
 type Store struct {
-	db     *sql.DB
-	mode   string
-	schema string
+	db             *sql.DB
+	mode           string
+	schema         string
+	HealthStatHour HealthStatHourFunc
 }
 
 func (s *Store) schedulerTaskTable() string {
@@ -59,7 +60,10 @@ var requiredColumns = map[string][]string{
 		"policy_snapshot_json", "quality_decision_json", "probe_set_version", "started_at", "trace_id", "quality_health_sync_status", "created_at", "updated_at", "finished_at",
 	},
 	"model_check_items": {
-		"id", "run_id", "item_key", "item_type", "status", "evidence_summary_json", "created_at", "updated_at",
+		// Runtime.GetRun reads the complete durable item projection. Keep the
+		// detail columns in the readiness contract so an older projection cannot
+		// open successfully and fail only when a detail request arrives.
+		"id", "run_id", "item_key", "item_type", "status", "score", "max_score", "duration_ms", "trace_id", "evidence_summary_json", "error_code", "error_message", "created_at", "updated_at",
 	},
 	"model_check_observations": {
 		"id", "run_id", "system_account_id", "account_id", "provider_code", "requested_model",
@@ -68,7 +72,7 @@ var requiredColumns = map[string][]string{
 	},
 	"account_quality_health_hourly": {
 		"account_id", "system_account_id", "provider_code", "stat_hour", "observed_at", "model_check_run_id",
-		"model", "profile", "score", "threshold", "level", "updated_at",
+		"model", "profile", "score", "threshold", "level", "error_code", "error_message", "updated_at",
 	},
 	"model_check_scheduler_tasks": {
 		"id", "kind", "due_at", "claim_owner", "claim_until", "fence_token", "state", "last_error", "completed_at", "payload", "updated_at",
@@ -417,16 +421,18 @@ type HealthSyncRetry struct {
 	Score, Threshold, RecoveryIntervalMinutes                                                    int
 	ObservedAt                                                                                   time.Time
 	EvidenceFormed, TrustFormed                                                                  bool
+	EnforcementAllowed                                                                           bool
 }
 
-// ListHealthSyncRetries re-discovers failed health publications from durable
-// run facts. It is intentionally bounded and does not infer a decision from a
-// missing policy snapshot.
+// ListHealthSyncRetries re-discovers Node-equivalent failed health
+// publications from durable completed run facts. Invalid rows intentionally
+// remain in their durable failed state, but are skipped so one malformed row
+// cannot prevent a later valid retry from being scheduled.
 func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthSyncRetry, error) {
 	if s == nil || s.db == nil || limit <= 0 || limit > 10000 {
 		return nil, errors.New("J3b health retry scan input is invalid")
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at FROM `+s.table("model_check_runs")+` WHERE quality_health_sync_status IN ('failed','pending_retry') AND finished_at IS NOT NULL ORDER BY updated_at ASC,id ASC LIMIT ?`), limit)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at FROM `+s.table("model_check_runs")+` WHERE status='completed' AND quality_health_sync_status='failed' AND account_id IS NOT NULL AND finished_at IS NOT NULL ORDER BY updated_at ASC,id ASC`))
 	if err != nil {
 		return nil, fmt.Errorf("list J3b health sync retries: %w", err)
 	}
@@ -440,39 +446,50 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 			return nil, fmt.Errorf("scan J3b health sync retry: %w", err)
 		}
 		if retry.AccountID == "" || retry.SystemAccountID == "" || retry.ProviderCode == "" || retry.Model == "" || retry.Profile == "" {
-			return nil, fmt.Errorf("J3b health sync retry %s has incomplete scope", retry.RunID)
+			continue
 		}
 		var policyFields map[string]any
 		if err := json.Unmarshal([]byte(policy), &policyFields); err != nil {
-			return nil, fmt.Errorf("J3b health sync retry %s policy snapshot: %w", retry.RunID, err)
+			continue
 		}
 		threshold, ok := policyFields["threshold"].(float64)
 		if !ok || threshold < 40 || threshold > 100 {
-			return nil, fmt.Errorf("J3b health sync retry %s threshold is unavailable", retry.RunID)
+			continue
 		}
 		var decisionFields struct {
-			EvidenceFormed bool `json:"evidenceFormed"`
-			TrustFormed    bool `json:"trustFormed"`
+			EvidenceFormed     bool  `json:"evidenceFormed"`
+			TrustFormed        bool  `json:"trustFormed"`
+			EnforcementAllowed *bool `json:"enforcementAllowed"`
 		}
 		if err := json.Unmarshal([]byte(decision), &decisionFields); err != nil || !decisionFields.EvidenceFormed || !decisionFields.TrustFormed {
-			return nil, fmt.Errorf("J3b health sync retry %s evidence is not formed", retry.RunID)
+			continue
 		}
 		retry.EvidenceFormed, retry.TrustFormed = true, true
 		retry.Threshold = int(threshold)
 		var policySnapshot struct {
-			Revision                string `json:"revision"`
-			Action                  string `json:"action"`
-			RecoveryIntervalMinutes int    `json:"recoveryIntervalMinutes"`
+			Revision                  string `json:"revision"`
+			Action                    string `json:"action"`
+			RecoveryIntervalMinutes   int    `json:"recoveryIntervalMinutes"`
+			ManualEnforcementEligible *bool  `json:"manualEnforcementEligible"`
 		}
 		if err := json.Unmarshal([]byte(policy), &policySnapshot); err != nil || strings.TrimSpace(policySnapshot.Revision) == "" {
-			return nil, fmt.Errorf("J3b health retry %s policy revision is unavailable", retry.RunID)
+			continue
 		}
 		retry.PolicyRevision = policySnapshot.Revision
 		retry.PenaltyAction = policySnapshot.Action
 		if retry.PenaltyAction == "" || policySnapshot.RecoveryIntervalMinutes < 10 || policySnapshot.RecoveryIntervalMinutes > 10080 {
-			return nil, fmt.Errorf("J3b health retry %s penalty action is unavailable", retry.RunID)
+			continue
 		}
 		retry.RecoveryIntervalMinutes = policySnapshot.RecoveryIntervalMinutes
+		// The finished decision records the exact gate that applied to this
+		// run. For pre-field runs, a policy snapshot is the only available
+		// evidence. Missing both must fail closed for enforcement while keeping
+		// the health fact retryable.
+		if decisionFields.EnforcementAllowed != nil {
+			retry.EnforcementAllowed = *decisionFields.EnforcementAllowed
+		} else if policySnapshot.ManualEnforcementEligible != nil && retry.Level != "unavailable" {
+			retry.EnforcementAllowed = *policySnapshot.ManualEnforcementEligible
+		}
 		if schedule.Valid {
 			retry.ScheduleID = schedule.String
 		}
@@ -480,15 +497,24 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 			ConfigRevision string `json:"configRevision"`
 		}
 		if err := json.Unmarshal([]byte(requestSummary), &requestSnapshot); err != nil || strings.TrimSpace(requestSnapshot.ConfigRevision) == "" {
-			return nil, fmt.Errorf("J3b health retry %s account config revision is unavailable", retry.RunID)
+			continue
 		}
 		retry.AccountConfigRevision = requestSnapshot.ConfigRevision
 		retry.ObservedAt, err = time.Parse(time.RFC3339Nano, finished)
 		if err != nil {
-			return nil, fmt.Errorf("J3b health sync retry %s finished_at: %w", retry.RunID, err)
+			continue
 		}
-		retry.StatHour = retry.ObservedAt.UTC().Truncate(time.Hour).Format(time.RFC3339Nano)
+		retry.StatHour, err = s.formatHealthStatHour(retry.ObservedAt)
+		if err != nil {
+			continue
+		}
+		if retry.Score >= retry.Threshold && retry.Level != "unavailable" {
+			continue
+		}
 		result = append(result, retry)
+		if len(result) == limit {
+			break
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate J3b health sync retries: %w", err)

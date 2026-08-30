@@ -101,6 +101,15 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load J3b gateway owner config: %w", err))
 	}
+	if j3bConfig.Enabled {
+		evidenceReport, evidenceErr := modelcheckowner.VerifyConfiguredCutoverEvidence(j3bConfig.CutoverEvidencePath, j3bConfig.OwnerEpoch, time.Now().UTC())
+		if evidenceErr != nil {
+			fail(fmt.Errorf("read J3b cutover evidence: %w", evidenceErr))
+		}
+		if !evidenceReport.Ready {
+			fail(fmt.Errorf("verify J3b cutover evidence: %s", strings.Join(evidenceReport.Errors, "; ")))
+		}
+	}
 	var j3bHostComponent supervisor.Component
 	var j3bManagementServer *http.Server
 	var j3bManagementListener net.Listener
@@ -236,6 +245,10 @@ func main() {
 		if modelLimitsErr != nil {
 			fail(fmt.Errorf("create J3b Gateway model-limit source: %w", modelLimitsErr))
 		}
+		healthStatHour, healthStatHourErr := modelcheckowner.LoadBusinessHealthStatHour(context.Background(), businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		if healthStatHourErr != nil {
+			fail(fmt.Errorf("load J3b Gateway usage stats timezone: %w", healthStatHourErr))
+		}
 		j3bHost, hostErr := modelcheckowner.OpenHost(context.Background(), j3bConfig, modelcheckowner.HostDependencies{
 			Resolve:           businessSource.Resolver(),
 			ResolveComparison: businessSource.ComparisonResolver(),
@@ -247,6 +260,7 @@ func main() {
 			Quality:           quality,
 			Tokenizer:         tokenizer,
 			ModelLimits:       modelLimits,
+			HealthStatHour:    healthStatHour,
 			SchedulerFactory: func(store *modelcheckowner.Store, runtime *modelcheckowner.Runtime, projector *modelcheckowner.QualityProjector) (modelcheckowner.SchedulerSource, modelcheckowner.SchedulerExecutor) {
 				source := schedulerSource
 				source.Store = store
@@ -255,14 +269,14 @@ func main() {
 					if payload.EnforcementID != "" {
 						trigger = "quality_recovery"
 					}
-					target, err := businessSource.Resolve(ctx, modelcheckowner.RunRequest{SystemAccountID: payload.SystemAccountID, TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, ConfigRevision: payload.ConfigRevision, TriggerKind: trigger})
+					target, err := businessSource.Resolve(ctx, modelcheckowner.RunRequest{SystemAccountID: payload.SystemAccountID, TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, ConfigRevision: payload.ConfigRevision, SourceConfigRevision: payload.SourceConfigRevision, SourceDispatchRevision: payload.SourceDispatchRevision, TriggerKind: trigger})
 					if err != nil {
 						return modelcheckowner.RunRequest{}, err
 					}
 					if target.ConfigRevision != payload.ConfigRevision {
 						return modelcheckowner.RunRequest{}, errors.New("J3b scheduled account config revision is stale")
 					}
-					return modelcheckowner.RunRequest{TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, Profile: payload.Profile, SystemAccountID: payload.SystemAccountID, ActorSystemAccountID: payload.ActorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: payload.Threshold, PenaltyAction: payload.PenaltyAction, ConfigRevision: payload.ConfigRevision, PolicyRevision: payload.PolicyRevision, ProbeSetVersion: payload.ProbeSetVersion, IdentityKey: payload.IdentityKey}, nil
+					return modelcheckowner.RunRequest{TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, Profile: payload.Profile, SystemAccountID: payload.SystemAccountID, ActorSystemAccountID: payload.ActorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: payload.Threshold, PenaltyAction: payload.PenaltyAction, ConfigRevision: payload.ConfigRevision, SourceConfigRevision: payload.SourceConfigRevision, SourceDispatchRevision: payload.SourceDispatchRevision, PolicyRevision: payload.PolicyRevision, ProbeSetVersion: payload.ProbeSetVersion, IdentityKey: payload.IdentityKey, DispatchRevision: target.DispatchRevision}, nil
 				}
 				executor := &modelcheckowner.SchedulerExecutorMux{Runs: &modelcheckowner.SchedulerRunExecutor{Runtime: runtime, Build: build, Recovery: recovery.Complete, Scheduled: source.CompleteScheduled}, Health: &modelcheckowner.HealthSyncRetryExecutor{Projector: projector}}
 				return source, executor
@@ -279,6 +293,12 @@ func main() {
 			captchaService = modelcheckauth.NewCaptchaService(time.Now)
 		}
 		managementMux.Handle("/auth/", http.StripPrefix("/auth", &modelcheckauth.HTTPHandler{Auth: authenticator, Captcha: captchaService, TemporaryAccessIPAllowlist: commaList(os.Getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST"))}))
+		if err := j3bHost.MountScoped(managementMux, "/__aisys__/api/model-checks/", modelcheckowner.NewAdminAuthorize(authenticator), true); err != nil {
+			fail(fmt.Errorf("mount J3b Gateway administrator routes: %w", err))
+		}
+		if err := j3bHost.MountScoped(managementMux, "/__aisys__/api/my-model-checks/", modelcheckowner.NewSelfAuthorize(authenticator), false); err != nil {
+			fail(fmt.Errorf("mount J3b Gateway self routes: %w", err))
+		}
 		if err := j3bHost.Mount(managementMux, "/model-checks/"); err != nil {
 			fail(fmt.Errorf("mount J3b Gateway management routes: %w", err))
 		}

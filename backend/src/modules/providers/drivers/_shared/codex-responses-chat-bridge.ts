@@ -72,6 +72,7 @@ interface CodexResponsesChatBridgeToolPlan {
   chatTools: JsonRecord[]
   adaptersByChatName: Map<string, CodexResponsesChatBridgeToolAdapter>
   adaptersByResponsesKey: Map<string, CodexResponsesChatBridgeToolAdapter>
+  declaredToolSignatures: Map<string, string>
   unsupportedTools: string[]
 }
 
@@ -111,6 +112,7 @@ interface ResponsesInputToChatMessagesOptions {
   includeReasoningContent?: boolean
   forcedToolChoiceMessage?: string
   unsupportedTools?: string[]
+  toolPlan?: CodexResponsesChatBridgeToolPlan
 }
 
 interface ChatToResponsesState {
@@ -207,7 +209,7 @@ export async function buildCodexResponsesChatBridgeBody(
   const body = await parseGatewayJsonObject(req, signal)
   validateCodexResponsesChatBridgeBody(body)
   const model = options.modelOverride ?? stringValue(body.model) ?? options.defaultModel
-  const toolPlan = responsesToolsToChatToolPlan(body.tools)
+  const toolPlan = responsesToolsToChatToolPlan(effectiveResponsesToolsForChatBridge(body))
   const runtimeRequest = req as CodexResponsesChatBridgeRuntimeRequest
   runtimeRequest.codexResponsesChatBridgeToolAdaptersByChatName = toolPlan.adaptersByChatName
   const toolChoice = responsesToolChoiceToChatToolChoice(body.tool_choice, toolPlan)
@@ -216,7 +218,8 @@ export async function buildCodexResponsesChatBridgeBody(
     messages: responsesInputToChatMessages(body, {
       includeReasoningContent: options.includeReasoningContent === true,
       forcedToolChoiceMessage: forcedToolChoiceSystemMessage(body.tool_choice, toolPlan),
-      unsupportedTools: unsupportedToolsForSystemMessage(body.tool_choice, toolPlan)
+      unsupportedTools: unsupportedToolsForSystemMessage(body.tool_choice, toolPlan),
+      toolPlan
     }),
     stream: true
   }
@@ -382,6 +385,26 @@ function validateCodexResponsesChatBridgeBody(body: JsonRecord): void {
   }
 }
 
+function effectiveResponsesToolsForChatBridge(body: JsonRecord): unknown[] {
+  const tools = Array.isArray(body.tools) ? [...body.tools] : []
+  if (Object.prototype.hasOwnProperty.call(body, 'tools') && Array.isArray(body.tools) && tools.length === 0) {
+    return tools
+  }
+  if (!Array.isArray(body.input)) return tools
+
+  for (const item of body.input) {
+    if (!isPlainObject(item) || item.type !== 'additional_tools') continue
+    if (!Array.isArray(item.tools)) {
+      throw new GatewayRequestValidationError(
+        'Codex Responses additional_tools 必须包含 tools 数组',
+        'invalid_codex_bridge_additional_tools'
+      )
+    }
+    tools.push(...item.tools)
+  }
+  return tools
+}
+
 function responsesInputToChatMessages(
   body: JsonRecord,
   options: ResponsesInputToChatMessagesOptions = {}
@@ -454,13 +477,14 @@ function appendResponsesInputItemAsChatMessage(
     const callId = stringValue(item.call_id) ?? stringValue(item.id)
     if (!name || !callId) return pendingToolGroup
     const namespace = stringValue(item.namespace)
+    const adapter = options.toolPlan?.adaptersByResponsesKey.get(responsesToolAdapterKey('function', name, namespace))
     if (pendingToolGroup.calls.length > 0 && pendingToolCallsAllAnswered(pendingToolGroup)) {
       flushPendingChatToolCallGroup(messages, pendingToolGroup, options)
       pendingToolGroup = createPendingChatToolCallGroup()
     }
     pendingToolGroup.calls.push({
       callId,
-      name: namespace ? chatToolNameFromParts([namespace, name]) : name,
+      name: adapter?.chatName ?? (namespace ? chatToolNameFromParts([namespace, name]) : name),
       arguments: stringValue(item.arguments) ?? ''
     })
     return pendingToolGroup
@@ -469,13 +493,15 @@ function appendResponsesInputItemAsChatMessage(
     const name = stringValue(item.name)
     const callId = stringValue(item.call_id) ?? stringValue(item.id)
     if (!name || !callId) return pendingToolGroup
+    const namespace = stringValue(item.namespace)
+    const adapter = options.toolPlan?.adaptersByResponsesKey.get(responsesToolAdapterKey('custom', name, namespace))
     if (pendingToolGroup.calls.length > 0 && pendingToolCallsAllAnswered(pendingToolGroup)) {
       flushPendingChatToolCallGroup(messages, pendingToolGroup, options)
       pendingToolGroup = createPendingChatToolCallGroup()
     }
     pendingToolGroup.calls.push({
       callId,
-      name: customChatToolName(name),
+      name: adapter?.chatName ?? customChatToolName(name, namespace),
       arguments: JSON.stringify({ input: stringValue(item.input) ?? '' })
     })
     return pendingToolGroup
@@ -679,6 +705,7 @@ function responsesToolsToChatToolPlan(value: unknown): CodexResponsesChatBridgeT
     chatTools: [],
     adaptersByChatName: new Map(),
     adaptersByResponsesKey: new Map(),
+    declaredToolSignatures: new Map(),
     unsupportedTools: []
   }
   if (!Array.isArray(value)) return plan
@@ -697,11 +724,15 @@ function appendResponsesToolToChatPlan(
   item: unknown,
   namespace?: string
 ): void {
+  if (typeof item === 'string') {
+    item = { type: 'custom', name: item.trim() }
+  }
   if (!isPlainObject(item)) return
   const type = stringValue(item.type)
   if (type === 'function') {
     const name = stringValue(item.name)
     if (!name) return
+    if (!registerResponsesToolDeclaration(plan, 'function', name, namespace, item)) return
     const chatName = uniqueChatToolName(namespace ? chatToolNameFromParts([namespace, name]) : sanitizeChatToolName(name), usedChatNames)
     const adapter: CodexResponsesChatBridgeToolAdapter = {
       kind: 'function',
@@ -717,6 +748,7 @@ function appendResponsesToolToChatPlan(
   if (type === 'custom') {
     const name = stringValue(item.name)
     if (!name) return
+    if (!registerResponsesToolDeclaration(plan, 'custom', name, namespace, item)) return
     const chatName = uniqueChatToolName(customChatToolName(name, namespace), usedChatNames)
     const adapter: CodexResponsesChatBridgeToolAdapter = {
       kind: 'custom',
@@ -735,7 +767,9 @@ function appendResponsesToolToChatPlan(
   }
   if (type === 'namespace') {
     const nextNamespace = stringValue(item.namespace) ?? stringValue(item.name) ?? namespace
-    const tools = Array.isArray(item.tools) ? item.tools : []
+    const tools = Array.isArray(item.tools)
+      ? item.tools
+      : Array.isArray(item.children) ? item.children : []
     for (const child of tools) {
       appendResponsesToolToChatPlan(plan, usedChatNames, child, nextNamespace)
     }
@@ -747,6 +781,42 @@ function appendResponsesToolToChatPlan(
   if (type) {
     plan.unsupportedTools.push(unsupportedResponsesToolLabel(item, namespace))
   }
+}
+
+function registerResponsesToolDeclaration(
+  plan: CodexResponsesChatBridgeToolPlan,
+  kind: 'function' | 'custom',
+  name: string,
+  namespace: string | undefined,
+  item: JsonRecord
+): boolean {
+  const key = responsesToolAdapterKey(kind, name, namespace)
+  const signature = canonicalJsonString({ namespace: namespace ?? '', item })
+  const existingSignature = plan.declaredToolSignatures.get(key)
+  if (existingSignature !== undefined) {
+    if (existingSignature === signature) return false
+    const qualifiedName = namespace ? `${namespace}.${name}` : name
+    throw new GatewayRequestValidationError(
+      `Codex Responses 工具 ${kind}:${qualifiedName} 重复声明且定义冲突`,
+      'conflicting_codex_bridge_tool_definition'
+    )
+  }
+  plan.declaredToolSignatures.set(key, signature)
+  return true
+}
+
+function canonicalJsonString(value: unknown): string {
+  return JSON.stringify(canonicalJsonValue(value))
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => canonicalJsonValue(item))
+  if (!isPlainObject(value)) return value
+  const sorted: JsonRecord = {}
+  for (const key of Object.keys(value).sort()) {
+    sorted[key] = canonicalJsonValue(value[key])
+  }
+  return sorted
 }
 
 function responsesFunctionToolToChatTool(item: JsonRecord, chatName: string): JsonRecord {
@@ -1047,11 +1117,12 @@ function sanitizeChatToolName(name: string): string {
 }
 
 function uniqueChatToolName(base: string, used: Set<string>): string {
-  let name = base.slice(0, 64) || 'tool'
-  let index = 2
-  while (used.has(name)) {
-    const suffix = `_${index++}`
-    name = `${base.slice(0, Math.max(1, 64 - suffix.length))}${suffix}`
+  const name = base.slice(0, 64) || 'tool'
+  if (used.has(name)) {
+    throw new GatewayRequestValidationError(
+      `Codex Responses 工具映射后 Chat 工具名 ${name} 冲突，无法区分多个工具`,
+      'conflicting_codex_bridge_chat_tool_name'
+    )
   }
   used.add(name)
   return name
@@ -1544,7 +1615,7 @@ function completeToolCallOutputItem(
 
 function toolCallInProgressItem(toolCall: ChatToolCallState): JsonRecord {
   if (toolCall.itemType === 'custom_tool_call') {
-    return {
+    const item: JsonRecord = {
       id: toolCall.id,
       type: 'custom_tool_call',
       status: 'in_progress',
@@ -1552,6 +1623,10 @@ function toolCallInProgressItem(toolCall: ChatToolCallState): JsonRecord {
       name: toolCall.name,
       input: ''
     }
+    if (toolCall.adapter.namespace) {
+      item.namespace = toolCall.adapter.namespace
+    }
+    return item
   }
   const item: JsonRecord = {
     id: toolCall.id,
@@ -1569,7 +1644,7 @@ function toolCallInProgressItem(toolCall: ChatToolCallState): JsonRecord {
 
 function completedToolCallItem(toolCall: ChatToolCallState): JsonRecord {
   if (toolCall.itemType === 'custom_tool_call') {
-    return {
+    const item: JsonRecord = {
       id: toolCall.id,
       type: 'custom_tool_call',
       status: 'completed',
@@ -1577,6 +1652,10 @@ function completedToolCallItem(toolCall: ChatToolCallState): JsonRecord {
       name: toolCall.name,
       input: customToolInputFromChatArguments(toolCall.arguments, toolCall.adapter.responsesName)
     }
+    if (toolCall.adapter.namespace) {
+      item.namespace = toolCall.adapter.namespace
+    }
+    return item
   }
   const item: JsonRecord = {
     id: toolCall.id,

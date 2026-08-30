@@ -16,6 +16,16 @@ type ProbeAdapter struct {
 }
 
 func (a ProbeAdapter) Dispatch(ctx context.Context, request *http.Request, capability keymodelruntime.Capability, attemptID string) (*http.Response, func(bool), error) {
+	return a.dispatch(ctx, request, capability, attemptID, nil)
+}
+
+// DispatchWithClient preserves the model-check target's resolved HTTP client
+// for this attempt while retaining the legacy DispatcherPort method above.
+func (a ProbeAdapter) DispatchWithClient(ctx context.Context, request *http.Request, capability keymodelruntime.Capability, attemptID string, client *http.Client) (*http.Response, func(bool), error) {
+	return a.dispatch(ctx, request, capability, attemptID, client)
+}
+
+func (a ProbeAdapter) dispatch(ctx context.Context, request *http.Request, capability keymodelruntime.Capability, attemptID string, client *http.Client) (*http.Response, func(bool), error) {
 	if a.Dispatcher == nil {
 		return nil, nil, ErrClientRequired
 	}
@@ -28,7 +38,7 @@ func (a ProbeAdapter) Dispatch(ctx context.Context, request *http.Request, capab
 		ConfirmationEligible:      true,
 		FailureEvidenceKey:        attemptID,
 	}
-	result, err := a.Dispatcher.Dispatch(ctx, Request{HTTP: request, Capability: capability, AttemptID: attemptID, AccountCircuit: circuitInput})
+	result, err := a.Dispatcher.Dispatch(ctx, Request{HTTP: request, Client: client, Capability: capability, AttemptID: attemptID, AccountCircuit: circuitInput})
 	if err != nil {
 		return result.Response, func(bool) {}, err
 	}

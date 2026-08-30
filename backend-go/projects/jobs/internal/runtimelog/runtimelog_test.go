@@ -649,6 +649,23 @@ func TestCheckSchemaRejectsMissingRuntimeLogIndex(t *testing.T) {
 	}
 }
 
+func TestPostgresSchemaBootstrapOnlyRunsForKnownMissingSchema(t *testing.T) {
+	bootstrap, err := postgresRuntimeLogSchemaBootstrapRequired(nil)
+	if err != nil || bootstrap {
+		t.Fatalf("健康 PostgreSQL schema 必须跳过 bootstrap DDL: bootstrap=%t err=%v", bootstrap, err)
+	}
+	bootstrap, err = postgresRuntimeLogSchemaBootstrapRequired(fmt.Errorf("%w: 缺少索引", errPostgresRuntimeLogSchemaMissing))
+	if err != nil || !bootstrap {
+		t.Fatalf("已分类的 PostgreSQL schema 缺失必须允许 bootstrap: bootstrap=%t err=%v", bootstrap, err)
+	}
+	for _, checkErr := range []error{context.DeadlineExceeded, errors.New("permission denied")} {
+		bootstrap, err = postgresRuntimeLogSchemaBootstrapRequired(checkErr)
+		if err == nil || bootstrap {
+			t.Fatalf("%v 不得触发 PostgreSQL bootstrap DDL: bootstrap=%t err=%v", checkErr, bootstrap, err)
+		}
+	}
+}
+
 func TestLoadConfigRejectsInvalidBoundedValues(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":   "test-instance",

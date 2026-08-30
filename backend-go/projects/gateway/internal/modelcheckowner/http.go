@@ -26,25 +26,47 @@ type RunService interface {
 }
 
 type RunRequest struct {
-	TargetType, TargetID, Model, Profile                         string
-	SystemAccountID, ActorSystemAccountID                        string
-	TriggerKind, ScheduleID                                      string
-	ProviderCode                                                 string
-	Threshold                                                    int
-	PenaltyAction                                                string
-	RecoveryIntervalMinutes                                      int
-	IdentityKey, ConfigRevision, PolicyRevision, ProbeSetVersion string
-	TrustedComparison                                            bool
-	TrustedComparisonAccountID, TrustedComparisonConfigRevision  string
-	Endpoint, Prompt                                             string
-	Protocol                                                     string
-	Headers                                                      http.Header
+	TargetType, TargetID, Model, Profile                                               string
+	SystemAccountID, ActorSystemAccountID                                              string
+	TriggerKind, ScheduleID                                                            string
+	ProviderCode                                                                       string
+	Threshold                                                                          int
+	PenaltyAction                                                                      string
+	RecoveryIntervalMinutes                                                            int
+	ManualEnforcementEnabled, OwnPhysicalAccount                                       bool
+	IdentityKey, ConfigRevision, SourceConfigRevision, PolicyRevision, ProbeSetVersion string
+	SourceDispatchRevision                                                             int64
+	DispatchRevision                                                                   int64
+	TrustedComparison                                                                  bool
+	TrustedComparisonAccountID, TrustedComparisonConfigRevision                        string
+	TrustedComparisonSourceConfigRevision                                              string
+	TrustedComparisonSourceDispatchRevision                                            int64
+	Endpoint, Prompt                                                                   string
+	Protocol                                                                           string
+	Headers                                                                            http.Header
 }
 
 type RunResult struct {
 	RunID  string `json:"runId"`
 	Status string `json:"status"`
 	Data   any    `json:"data,omitempty"`
+}
+
+// RequestError is the HTTP-safe equivalent of Node's
+// ModelCheckRequestError. Runtime and target resolvers may return it when a
+// request is well formed but cannot be fulfilled because of caller-visible
+// state (for example an inaccessible account). Transport errors must keep
+// their status code in both JSON and SSE responses.
+type RequestError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *RequestError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
 }
 
 type ProgressEvent struct {
@@ -55,17 +77,28 @@ type ProgressEvent struct {
 type RunListQuery struct {
 	SystemAccountID string
 	Page, PageSize  int
+	TargetID        string
+	Model           string
+	Level           string
+	Status          string
+	TriggerKind     string
+	StartAt         string
+	EndAt           string
 }
 
 // AccountOptionsQuery is the read-only selector used by the model-check
 // management UI. It deliberately carries only filtering inputs; credentials
 // and runtime state never cross this transport boundary.
 type AccountOptionsQuery struct {
-	Purpose    string
-	AccountID  string
-	Keyword    string
-	SelectedID []string
-	Limit      int
+	// SystemAccountID is the authenticated tenant boundary. Account-option
+	// reads must never infer an unscoped cross-tenant view from administrator
+	// authentication alone.
+	SystemAccountID string
+	Purpose         string
+	AccountID       string
+	Keyword         string
+	SelectedID      []string
+	Limit           int
 }
 
 type AccountOption struct {
@@ -122,6 +155,23 @@ func NewAdminAuthorize(auth *modelcheckauth.Authenticator) Authorize {
 	}
 }
 
+// NewSelfAuthorize adapts the authenticated-user management contract used by
+// /my-model-checks. It intentionally accepts non-admin actors and lets the
+// handler's non-cross-account scope force all requests to the actor's own
+// system account.
+func NewSelfAuthorize(auth *modelcheckauth.Authenticator) Authorize {
+	return func(ctx context.Context, request *http.Request) (string, error) {
+		if auth == nil || request == nil {
+			return "", errors.New("J3b Gateway authenticator is not initialized")
+		}
+		actor, err := auth.Authenticate(ctx, request.Header.Get("Authorization"), request.Header.Get("Cookie"))
+		if err != nil {
+			return "", err
+		}
+		return actor.SystemAccountID, nil
+	}
+}
+
 type BuildRequest func(context.Context, string, RunCommand) (RunRequest, error)
 
 type RunCommand struct {
@@ -143,6 +193,14 @@ type HTTPHandler struct {
 	Build          BuildRequest
 	MaxBody        int64
 	Heartbeat      time.Duration
+	// AllowCrossAccount is enabled only on the administrator public mount.
+	// The self mount leaves it false and always ignores a requested foreign
+	// systemAccountId rather than permitting a caller-controlled scope.
+	AllowCrossAccount bool
+	// ForceActorScope is set only by the self public mount. It preserves the
+	// legacy handler's fail-closed behavior for an unwired foreign scope while
+	// making the self route ignore any caller-supplied systemAccountId.
+	ForceActorScope bool
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -153,23 +211,33 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	systemAccountID, err := h.Authorize(r.Context(), r)
 	if err != nil || strings.TrimSpace(systemAccountID) == "" {
 		status := http.StatusUnauthorized
+		if errors.Is(err, modelcheckauth.ErrMustChange) {
+			writeOwnerErrorCode(w, http.StatusForbidden, "must_change_password", err.Error())
+			return
+		}
 		if errors.Is(err, modelcheckauth.ErrForbidden) {
 			status = http.StatusForbidden
 		}
 		writeOwnerError(w, status, "模型检测管理请求未授权")
 		return
 	}
-	if scoped, scopeErr := resolveRequestedSystemAccount(r, systemAccountID); scopeErr != nil {
-		writeOwnerError(w, http.StatusServiceUnavailable, scopeErr.Error())
-		return
-	} else {
-		systemAccountID = scoped
+	if !h.ForceActorScope {
+		if scoped, scopeErr := resolveRequestedSystemAccount(r, systemAccountID, h.AllowCrossAccount); scopeErr != nil {
+			writeOwnerError(w, http.StatusServiceUnavailable, scopeErr.Error())
+			return
+		} else {
+			systemAccountID = scoped
+		}
 	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	switch {
 	case r.Method == http.MethodPost && path == "/run":
 		h.serveRun(w, r, systemAccountID)
 	case r.Method == http.MethodPost && path == "/token-intercept-baselines/activate":
+		if h.ForceActorScope {
+			writeOwnerError(w, http.StatusForbidden, "模型检测 token 截距基线仅限管理员激活")
+			return
+		}
 		h.activateTokenInterceptBaseline(w, r)
 	case r.Method == http.MethodPost && path == "/run/stream":
 		h.serveStream(w, r, systemAccountID)
@@ -186,7 +254,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/options":
 		h.serveOptions(w)
 	case r.Method == http.MethodGet && (path == "/account-options" || path == "/options/accounts"):
-		h.serveAccountOptions(w, r)
+		h.serveAccountOptions(w, r, systemAccountID)
 	case r.Method == http.MethodPatch && path == "/quality-policy":
 		h.patchQualityPolicy(w, r, systemAccountID)
 	case r.Method == http.MethodGet && path == "/quality-schedules":
@@ -233,7 +301,17 @@ func (h *HTTPHandler) activateTokenInterceptBaseline(w http.ResponseWriter, r *h
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"activated": true, "baselineVersion": input.BaselineVersion}})
 }
 
-func resolveRequestedSystemAccount(r *http.Request, authenticated string) (string, error) {
+func resolveRequestedSystemAccount(r *http.Request, authenticated string, allowCrossAccount ...bool) (string, error) {
+	if len(allowCrossAccount) > 0 && allowCrossAccount[0] {
+		values, exists := r.URL.Query()["systemAccountId"]
+		if !exists || len(values) == 0 || (len(values) == 1 && strings.TrimSpace(values[0]) == "") {
+			return authenticated, nil
+		}
+		if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
+			return "", errors.New("J3b systemAccountId 作用域参数无效")
+		}
+		return strings.TrimSpace(values[0]), nil
+	}
 	values, exists := r.URL.Query()["systemAccountId"]
 	if !exists || len(values) == 0 || (len(values) == 1 && strings.TrimSpace(values[0]) == "") {
 		return authenticated, nil
@@ -256,7 +334,7 @@ func (h *HTTPHandler) serveOptions(w http.ResponseWriter) {
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": h.AccountOptions.ModelCheckOptions()})
 }
 
-func (h *HTTPHandler) serveAccountOptions(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPHandler) serveAccountOptions(w http.ResponseWriter, r *http.Request, systemAccountID string) {
 	if h.AccountOptions == nil {
 		writeOwnerError(w, http.StatusServiceUnavailable, "J3b Gateway 账户选项 owner 未完成接线")
 		return
@@ -264,6 +342,11 @@ func (h *HTTPHandler) serveAccountOptions(w http.ResponseWriter, r *http.Request
 	query, err := parseAccountOptionsQuery(r)
 	if err != nil {
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	query.SystemAccountID = strings.TrimSpace(systemAccountID)
+	if query.SystemAccountID == "" {
+		writeOwnerError(w, http.StatusUnauthorized, "模型检测账户选项缺少认证 systemAccountId 作用域")
 		return
 	}
 	items, err := h.AccountOptions.ListAccountOptions(r.Context(), query)
@@ -472,7 +555,7 @@ func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, accountID
 	}
 	runRequest, err := h.Build(r.Context(), accountID, command)
 	if err != nil {
-		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		writeBuildError(w, err)
 		return
 	}
 	if err := validateBuiltRequest(accountID, command, runRequest); err != nil {
@@ -483,7 +566,7 @@ func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, accountID
 	handle, acquired, current := h.Active.TryStart(r.Context(), key, modelcheckactive.Summary{TargetID: runRequest.TargetID, Model: runRequest.Model, Profile: runRequest.Profile, StartedAt: time.Now().UTC()})
 	if !acquired {
 		w.Header().Set("Retry-After", "1")
-		writeOwnerJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "active", "active": current}})
+		writeOwnerActiveConflict(w, current)
 		return
 	}
 	defer handle.Finish()
@@ -492,10 +575,10 @@ func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, accountID
 		handle.Update(modelcheckactive.Summary{RunID: result.RunID})
 	}
 	if err != nil {
-		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		writeRunError(w, err)
 		return
 	}
-	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": result})
+	h.writeRunDetail(w, r, result)
 }
 
 func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accountID string) {
@@ -506,7 +589,7 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accoun
 	}
 	runRequest, err := h.Build(r.Context(), accountID, command)
 	if err != nil {
-		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		writeBuildError(w, err)
 		return
 	}
 	if err := validateBuiltRequest(accountID, command, runRequest); err != nil {
@@ -517,7 +600,7 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accoun
 	handle, acquired, current := h.Active.TryStart(r.Context(), key, modelcheckactive.Summary{TargetID: runRequest.TargetID, Model: runRequest.Model, Profile: runRequest.Profile, StartedAt: time.Now().UTC()})
 	if !acquired {
 		w.Header().Set("Retry-After", "1")
-		writeOwnerJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "active", "active": current}})
+		writeOwnerActiveConflict(w, current)
 		return
 	}
 	defer handle.Finish()
@@ -529,6 +612,7 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accoun
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	if _, err := io.WriteString(w, ": connected\n\n"); err != nil {
 		return
 	}
@@ -582,15 +666,151 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accoun
 			}
 		case outcome := <-results:
 			if outcome.err != nil {
-				_ = writeEvent("error", map[string]any{"message": outcome.err.Error()})
+				_ = writeEvent("error", ownerStreamError(outcome.err))
 				return
 			}
-			_ = writeEvent("complete", outcome.result)
+			detail, detailErr := h.runDetailForStream(r.Context(), outcome.result)
+			if detailErr != nil {
+				_ = writeEvent("error", ownerStreamError(detailErr))
+				return
+			}
+			_ = writeEvent("complete", detail)
 			return
 		case <-handle.Context().Done():
 			return
 		}
 	}
+}
+
+func (h *HTTPHandler) writeRunDetail(w http.ResponseWriter, r *http.Request, result RunResult) {
+	detail, err := h.runDetail(r.Context(), result)
+	if err != nil {
+		writeRunError(w, err)
+		return
+	}
+	if detail, err = h.presentRunResult(detail); err != nil {
+		writeRunError(w, err)
+		return
+	}
+	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": detail})
+}
+
+func (h *HTTPHandler) runDetailForStream(ctx context.Context, result RunResult) (any, error) {
+	detail, err := h.runDetail(ctx, result)
+	if err != nil {
+		return nil, err
+	}
+	return h.presentRunResult(detail)
+}
+
+// presentRunResult keeps the owner-facing record intact while applying the
+// same system-account field boundary as Node's self management namespace.
+// Redaction is performed on a marshalled copy to cover the durable JSON
+// summaries too; if a value cannot be copied safely, the self response fails
+// closed instead of leaking a caller's tenant metadata.
+func (h *HTTPHandler) presentRunResult(value any) (any, error) {
+	if h == nil || !h.ForceActorScope {
+		return value, nil
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil, &RequestError{StatusCode: http.StatusInternalServerError, Message: "模型检测 self 响应脱敏失败"}
+	}
+	var copied any
+	if err := json.Unmarshal(payload, &copied); err != nil {
+		return nil, &RequestError{StatusCode: http.StatusInternalServerError, Message: "模型检测 self 响应脱敏失败"}
+	}
+	redactSystemAccountFields(copied)
+	return copied, nil
+}
+
+func redactSystemAccountFields(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"systemAccountId", "actorSystemAccountId", "targetOwnerSystemAccountId"} {
+			delete(typed, key)
+		}
+		for _, child := range typed {
+			redactSystemAccountFields(child)
+		}
+	case []any:
+		for _, child := range typed {
+			redactSystemAccountFields(child)
+		}
+	}
+}
+
+func (h *HTTPHandler) runDetail(ctx context.Context, result RunResult) (detail any, err error) {
+	if strings.TrimSpace(result.RunID) == "" {
+		return nil, &RequestError{StatusCode: http.StatusInternalServerError, Message: "模型检测完成后缺少运行 ID"}
+	}
+	detail, found, err := h.Service.GetRun(ctx, result.RunID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || detail == nil {
+		return nil, &RequestError{StatusCode: http.StatusInternalServerError, Message: "模型检测已完成但持久化报告不可读取"}
+	}
+	if !hasCompleteRunDetailShape(detail) {
+		// A 200 response here is consumed by the UI as ModelCheckRunDetail.
+		// Returning an abbreviated durable summary would therefore be a silent,
+		// incompatible fallback. Keep the owner closed until the query/store
+		// layer can supply Node's persisted report contract.
+		return nil, &RequestError{StatusCode: http.StatusServiceUnavailable, Message: "模型检测已完成但完整持久化报告尚未就绪"}
+	}
+	return detail, nil
+}
+
+func hasCompleteRunDetailShape(value any) bool {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return false
+	}
+	for _, key := range []string{"id", "requestSummary", "resultSummary", "checks"} {
+		if _, ok := object[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func writeRunError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	var requestError *RequestError
+	if errors.As(err, &requestError) && requestError.StatusCode >= http.StatusBadRequest && requestError.StatusCode <= 599 {
+		status = requestError.StatusCode
+	}
+	message := "模型检测失败"
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		message = err.Error()
+	}
+	writeOwnerError(w, status, message)
+}
+
+func writeBuildError(w http.ResponseWriter, err error) {
+	var requestError *RequestError
+	if errors.As(err, &requestError) {
+		writeRunError(w, err)
+		return
+	}
+	writeOwnerError(w, http.StatusBadRequest, err.Error())
+}
+
+func ownerStreamError(err error) map[string]any {
+	message := "模型检测失败"
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		message = err.Error()
+	}
+	payload := map[string]any{"message": message}
+	var requestError *RequestError
+	if errors.As(err, &requestError) && requestError.StatusCode >= http.StatusBadRequest && requestError.StatusCode <= 599 {
+		payload["statusCode"] = requestError.StatusCode
+	}
+	return payload
 }
 
 func (h *HTTPHandler) serveActive(w http.ResponseWriter, accountID string) {
@@ -611,14 +831,19 @@ func (h *HTTPHandler) serveStop(w http.ResponseWriter, accountID string) {
 }
 
 func (h *HTTPHandler) serveList(w http.ResponseWriter, r *http.Request, accountID string) {
-	page, pageSize, err := parsePage(r)
+	query, err := parseRunListQuery(r)
 	if err != nil {
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := h.Service.ListRuns(r.Context(), RunListQuery{SystemAccountID: accountID, Page: page, PageSize: pageSize})
+	query.SystemAccountID = accountID
+	result, err := h.Service.ListRuns(r.Context(), query)
 	if err != nil {
 		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if result, err = h.presentRunResult(result); err != nil {
+		writeRunError(w, err)
 		return
 	}
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": result})
@@ -638,15 +863,49 @@ func (h *HTTPHandler) serveDetail(w http.ResponseWriter, r *http.Request, runID,
 		http.NotFound(w, r)
 		return
 	}
-	if view, ok := result.(RunView); ok && view.SystemAccountID != accountID {
+	if systemAccountID, ok := resultSystemAccountID(result); !ok || systemAccountID != accountID {
 		http.NotFound(w, r)
+		return
+	}
+	if result, err = h.presentRunResult(result); err != nil {
+		writeRunError(w, err)
 		return
 	}
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": result})
 }
 
+func resultSystemAccountID(result any) (string, bool) {
+	switch value := result.(type) {
+	case RunView:
+		return value.SystemAccountID, true
+	case RunDetail:
+		return value.SystemAccountID, true
+	default:
+		return "", false
+	}
+}
+
+func parseRunListQuery(r *http.Request) (RunListQuery, error) {
+	page, pageSize, err := parsePage(r)
+	if err != nil {
+		return RunListQuery{}, err
+	}
+	values := r.URL.Query()
+	return RunListQuery{
+		Page:        page,
+		PageSize:    pageSize,
+		TargetID:    strings.TrimSpace(values.Get("targetId")),
+		Model:       strings.TrimSpace(values.Get("model")),
+		Level:       strings.TrimSpace(values.Get("level")),
+		Status:      strings.TrimSpace(values.Get("status")),
+		TriggerKind: strings.TrimSpace(values.Get("triggerKind")),
+		StartAt:     strings.TrimSpace(values.Get("startAt")),
+		EndAt:       strings.TrimSpace(values.Get("endAt")),
+	}, nil
+}
+
 func parsePage(r *http.Request) (int, int, error) {
-	page, pageSize := 1, 50
+	page, pageSize := 1, 20
 	if value := r.URL.Query().Get("page"); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed <= 0 {
@@ -656,8 +915,8 @@ func parsePage(r *http.Request) (int, int, error) {
 	}
 	if value := r.URL.Query().Get("pageSize"); value != "" {
 		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed <= 0 || parsed > 1000 {
-			return 0, 0, errors.New("分页参数 pageSize 必须是 1 到 1000 之间的整数")
+		if err != nil || parsed <= 0 || parsed > 100 {
+			return 0, 0, errors.New("分页参数 pageSize 必须是 1 到 100 之间的整数")
 		}
 		pageSize = parsed
 	}
@@ -742,5 +1001,29 @@ func writeOwnerJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeOwnerError(w http.ResponseWriter, status int, message string) {
-	writeOwnerJSON(w, status, map[string]any{"error": map[string]any{"message": message}})
+	// Node routes expose a root message for all caller-visible failures. Keep
+	// the former nested message during the local owner transition so existing
+	// Gateway-only callers do not lose their error extraction path.
+	writeOwnerJSON(w, status, map[string]any{
+		"message": message,
+		"error":   map[string]any{"message": message},
+	})
+}
+
+func writeOwnerErrorCode(w http.ResponseWriter, status int, code, message string) {
+	writeOwnerJSON(w, status, map[string]any{
+		"message": message,
+		"code":    code,
+		"error":   map[string]any{"code": code, "message": message},
+	})
+}
+
+func writeOwnerActiveConflict(w http.ResponseWriter, active modelcheckactive.Summary) {
+	const message = "当前用户已有模型检测正在运行，请等待完成或先手动停止"
+	writeOwnerJSON(w, http.StatusConflict, map[string]any{
+		"message": message,
+		"active":  active,
+		// Retain the previous local shape while matching Node's root fields.
+		"error": map[string]any{"code": "active", "message": message, "active": active},
+	})
 }

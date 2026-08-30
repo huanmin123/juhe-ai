@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from 'express'
 
+import { errorLogFields } from '../../shared/logger.js'
 import { accountsRouter } from '../accounts/accounts.routes.js'
 import { announcementsRouter } from '../announcements/announcements.routes.js'
 import { apiKeysRouter } from '../api-keys/api-keys.routes.js'
@@ -302,14 +303,12 @@ function handleJsonBodyError(error: BodyParserError, req: Request, res: Response
 }
 
 function handleSystemApiError(error: unknown, req: Request, res: Response, _next: NextFunction): void {
-  getRequestLogger().error({
+  getRequestLogger().error(errorLogFields(error, {
     event: 'system_api_unhandled_error',
-    err: error instanceof Error ? error : undefined,
-    errorMessage: error instanceof Error ? undefined : String(error),
     method: req.method,
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl)
-  }, '系统 API 未处理错误')
+  }), '系统 API 未处理错误')
 
   if (res.headersSent) {
     res.end()

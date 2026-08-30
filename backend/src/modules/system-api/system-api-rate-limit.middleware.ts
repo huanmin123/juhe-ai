@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { NextFunction, Request, Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { errorLogFields } from '../../shared/logger.js'
 import { getRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
 import { redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
@@ -332,14 +333,12 @@ function respondRateLimited(
 }
 
 function respondRateLimitFailure(req: Request, res: Response, error: unknown): void {
-  getRequestLogger().error({
+  getRequestLogger().error(errorLogFields(error, {
     event: 'system_api_rate_limit_failed',
-    err: error instanceof Error ? error : undefined,
-    errorMessage: error instanceof Error ? undefined : String(error),
     method: req.method,
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl)
-  }, '后台系统 API 限流检查失败')
+  }), '后台系统 API 限流检查失败')
   res.status(500).json({ message: '服务器内部错误' })
 }
 
@@ -360,15 +359,13 @@ async function isClientIpRateLimitAllowlisted(req: Request): Promise<boolean> {
     const decision = await inspectClientIpPolicy(clientIpKey(req), { ensureSnapshotLoaded: true })
     return decision.allowlisted
   } catch (error) {
-    getRequestLogger().warn({
+    getRequestLogger().warn(errorLogFields(error, {
       event: 'system_api_rate_limit_allowlist_check_failed',
-      err: error instanceof Error ? error : undefined,
-      errorMessage: error instanceof Error ? undefined : String(error),
       method: req.method,
       path: req.path,
       originalUrl: sanitizeUrlForLog(req.originalUrl),
       clientIp: clientIpKey(req)
-    }, '后台系统 API 白名单检查失败，本次请求继续执行限流')
+    }), '后台系统 API 白名单检查失败，本次请求继续执行限流')
     return false
   }
 }

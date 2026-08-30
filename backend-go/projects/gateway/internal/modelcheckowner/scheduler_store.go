@@ -72,25 +72,13 @@ func (s *Store) EnsureHealthRetryTasks(ctx context.Context, limit int) error {
 	if s == nil || s.db == nil || limit < 1 || limit > 10000 {
 		return errors.New("J3b health retry task materialization input is invalid")
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id FROM `+s.table("model_check_runs")+` WHERE quality_health_sync_status IN ('failed','pending_retry') AND finished_at IS NOT NULL ORDER BY updated_at ASC,id ASC LIMIT ?`), limit)
+	retries, err := s.ListHealthSyncRetries(ctx, limit)
 	if err != nil {
-		return fmt.Errorf("scan J3b health retry tasks: %w", err)
+		return fmt.Errorf("list J3b health retry tasks: %w", err)
 	}
-	runIDs := make([]string, 0, limit)
-	for rows.Next() {
-		var runID string
-		if err := rows.Scan(&runID); err != nil {
-			rows.Close()
-			return err
-		}
-		runIDs = append(runIDs, runID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
+	runIDs := make([]string, 0, len(retries))
+	for _, retry := range retries {
+		runIDs = append(runIDs, retry.RunID)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, runID := range runIDs {

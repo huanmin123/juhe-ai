@@ -20,10 +20,27 @@ import (
 
 type Target struct {
 	Endpoint, ProviderCode, ConfigRevision, UpstreamModel string
-	DispatchRevision                                      int64
-	Protocol                                              modelcheckprofile.Protocol
-	Headers                                               http.Header
-	Prompt                                                string
+	CredentialType                                        string
+	Client                                                *http.Client
+	// CredentialSourceAccountID identifies the physical account whose secret
+	// was used. Authorized instances keep their virtual TargetID for reporting,
+	// but admission/circuit identity must remain source-account scoped.
+	CredentialSourceAccountID string
+	// SourceConfigRevision and SourceDispatchRevision fence the physical
+	// credential source used by an authorized instance. The virtual account
+	// revisions above remain the public target CAS values.
+	SourceConfigRevision   string
+	SourceDispatchRevision int64
+	DispatchRevision       int64
+	OwnPhysicalAccount     bool
+	Protocol               modelcheckprofile.Protocol
+	// EndpointMode is the Business-selected health-check request shape. An
+	// empty value preserves compatibility with older resolver fixtures and is
+	// deterministically derived from protocol/stream by modelcheckprobe.
+	EndpointMode           string
+	SupportedEndpointModes []string
+	Headers                http.Header
+	Prompt                 string
 }
 
 type Resolver func(context.Context, RunRequest) (Target, error)
@@ -80,6 +97,15 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if target.DispatchRevision < 1 {
 		return RunResult{}, errors.New("resolved J3b target dispatch revision is invalid")
 	}
+	if request.DispatchRevision > 0 && request.DispatchRevision != target.DispatchRevision {
+		return RunResult{}, errors.New("resolved J3b target dispatch revision is stale")
+	}
+	if request.SourceConfigRevision != "" && request.SourceConfigRevision != target.SourceConfigRevision {
+		return RunResult{}, errors.New("resolved J3b source account config revision is stale")
+	}
+	if request.SourceDispatchRevision > 0 && request.SourceDispatchRevision != target.SourceDispatchRevision {
+		return RunResult{}, errors.New("resolved J3b source account dispatch revision is stale")
+	}
 	var comparisonTarget Target
 	if request.TrustedComparison {
 		if request.Profile != "full" || strings.TrimSpace(request.TrustedComparisonAccountID) == "" || s.ResolveComparison == nil {
@@ -111,11 +137,6 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if upstreamModel == "" {
 		upstreamModel = request.Model
 	}
-	payloadSnapshot := map[string]any{"targetType": request.TargetType, "targetId": request.TargetID, "model": request.Model, "upstreamModel": upstreamModel, "profile": request.Profile, "protocol": target.Protocol, "endpointFingerprint": endpointFingerprint(target.Endpoint), "probeSetVersion": probeSet, "configRevision": request.ConfigRevision, "policyRevision": request.PolicyRevision}
-	if request.TrustedComparison {
-		payloadSnapshot["trustedComparison"] = map[string]any{"accountId": request.TrustedComparisonAccountID, "configRevision": request.TrustedComparisonConfigRevision, "upstreamModel": comparisonTarget.UpstreamModel, "protocol": comparisonTarget.Protocol, "endpointFingerprint": endpointFingerprint(comparisonTarget.Endpoint)}
-	}
-	payload, _ := json.Marshal(payloadSnapshot)
 	penaltyAction := request.PenaltyAction
 	if penaltyAction == "" {
 		penaltyAction = "quality_isolate"
@@ -130,7 +151,6 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if recoveryInterval < 10 || recoveryInterval > 10080 {
 		return RunResult{}, errors.New("J3b runtime recovery interval is invalid")
 	}
-	policySnapshot, _ := json.Marshal(map[string]any{"revision": request.PolicyRevision, "threshold": request.Threshold, "action": penaltyAction, "recoveryIntervalMinutes": recoveryInterval})
 	providerCode := request.ProviderCode
 	if providerCode == "" {
 		providerCode = "unknown"
@@ -142,6 +162,13 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if triggerKind != "manual" && triggerKind != "scheduled" && triggerKind != "quality_recovery" {
 		return RunResult{}, errors.New("J3b runtime trigger is invalid")
 	}
+	manualEnforcementEligible := runtimeEnforcementAllowed(triggerKind, request)
+	payloadSnapshot := map[string]any{"targetType": request.TargetType, "targetId": request.TargetID, "model": request.Model, "upstreamModel": upstreamModel, "profile": request.Profile, "protocol": target.Protocol, "credentialType": target.CredentialType, "endpointFingerprint": endpointFingerprint(target.Endpoint), "probeSetVersion": probeSet, "configRevision": request.ConfigRevision, "sourceConfigRevision": request.SourceConfigRevision, "sourceDispatchRevision": request.SourceDispatchRevision, "policyRevision": request.PolicyRevision, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible}
+	if request.TrustedComparison {
+		payloadSnapshot["trustedComparison"] = map[string]any{"accountId": request.TrustedComparisonAccountID, "configRevision": request.TrustedComparisonConfigRevision, "sourceConfigRevision": request.TrustedComparisonSourceConfigRevision, "sourceDispatchRevision": request.TrustedComparisonSourceDispatchRevision, "upstreamModel": comparisonTarget.UpstreamModel, "protocol": comparisonTarget.Protocol, "endpointFingerprint": endpointFingerprint(comparisonTarget.Endpoint)}
+	}
+	payload, _ := json.Marshal(payloadSnapshot)
+	policySnapshot, _ := json.Marshal(map[string]any{"revision": request.PolicyRevision, "threshold": request.Threshold, "action": penaltyAction, "recoveryIntervalMinutes": recoveryInterval, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible})
 	input, err := s.Store.IssueInput(ctx, InputRecord{InputID: inputID, IdentityKey: identity, TargetID: request.TargetID, ConfigRevision: request.ConfigRevision, PolicyRevision: request.PolicyRevision, Trigger: triggerKind, IssuedAt: now, ExpiresAt: now.Add(time.Minute), Payload: payload})
 	if err != nil {
 		return RunResult{}, err
@@ -171,12 +198,30 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	emit(ProgressEvent{Kind: "run_started", Data: map[string]any{"runId": runID}})
 	probeModel := upstreamModel
-	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, Headers: target.Headers, Model: probeModel, Profile: request.Profile, Protocol: target.Protocol, Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits}
+	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, Headers: target.Headers, Model: probeModel, Profile: request.Profile, Protocol: target.Protocol, EndpointMode: target.EndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits}
 	probeSuite.Dispatcher = s.Dispatcher
-	probeSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: request.TargetID, KeyFingerprint: request.TargetID, ClientModel: request.Model, ClientEndpointFamily: string(target.Protocol), FinalUpstreamModel: probeModel, UpstreamEndpointMode: string(target.Protocol), DispatchRevision: target.DispatchRevision}
+	probeSuite.Client = target.Client
+	credentialSourceID := target.CredentialSourceAccountID
+	if credentialSourceID == "" {
+		credentialSourceID = request.TargetID
+	}
+	upstreamEndpointMode := target.EndpointMode
+	if upstreamEndpointMode == "" {
+		upstreamEndpointMode = modelcheckprofile.EndpointModeForProtocol(target.Protocol, false)
+	}
+	probeSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: credentialSourceID, KeyFingerprint: credentialSourceID, ClientModel: request.Model, ClientEndpointFamily: string(target.Protocol), FinalUpstreamModel: probeModel, UpstreamEndpointMode: upstreamEndpointMode, DispatchRevision: target.DispatchRevision}
 	if request.TrustedComparison {
-		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, Profile: request.Profile, Protocol: comparisonTarget.Protocol, Dispatcher: s.Dispatcher}
-		comparisonSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: request.TrustedComparisonAccountID, KeyFingerprint: request.TrustedComparisonAccountID, ClientModel: request.Model, ClientEndpointFamily: string(comparisonTarget.Protocol), FinalUpstreamModel: comparisonTarget.UpstreamModel, UpstreamEndpointMode: string(comparisonTarget.Protocol), DispatchRevision: comparisonTarget.DispatchRevision}
+		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, Profile: request.Profile, Protocol: comparisonTarget.Protocol, EndpointMode: comparisonTarget.EndpointMode, SupportedEndpointModes: append([]string(nil), comparisonTarget.SupportedEndpointModes...), Dispatcher: s.Dispatcher}
+		comparisonSuite.Client = comparisonTarget.Client
+		comparisonSourceID := comparisonTarget.CredentialSourceAccountID
+		if comparisonSourceID == "" {
+			comparisonSourceID = request.TrustedComparisonAccountID
+		}
+		comparisonEndpointMode := comparisonTarget.EndpointMode
+		if comparisonEndpointMode == "" {
+			comparisonEndpointMode = modelcheckprofile.EndpointModeForProtocol(comparisonTarget.Protocol, false)
+		}
+		comparisonSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: comparisonSourceID, KeyFingerprint: comparisonSourceID, ClientModel: request.Model, ClientEndpointFamily: string(comparisonTarget.Protocol), FinalUpstreamModel: comparisonTarget.UpstreamModel, UpstreamEndpointMode: comparisonEndpointMode, DispatchRevision: comparisonTarget.DispatchRevision}
 		probeSuite.Comparison = comparisonSuite
 	}
 	items, probeErr := modelcheckprobe.RunSuite(ctx, probeSuite, lease)
@@ -253,16 +298,31 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 			return RunResult{}, err
 		}
 	}
-	qualityDecision, _ := json.Marshal(map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "trust": trustReport})
+	qualityUnavailable := level == "unavailable"
+	qualityFailed := status == RunCompleted && !qualityUnavailable && score < request.Threshold
+	enforcementAllowed := manualEnforcementEligible && qualityFailed
+	qualityDecision, _ := json.Marshal(map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "enforcementAllowed": enforcementAllowed, "trust": trustReport})
 	if err := s.Store.CommitOutcome(ctx, Outcome{OutcomeID: outcomeID, InputID: input.InputID, InputDigest: input.InputDigest, Payload: resultPayload}, claim, now); err != nil {
 		return RunResult{}, err
 	}
-	if err := s.Store.ProjectOutcome(ctx, OutcomeProjection{RunID: runID, Status: status, Level: level, Score: score, MaxScore: 100, Message: message, FinishedAt: now, Items: itemRecords, ResultSummary: resultPayload, QualityDecision: qualityDecision}); err != nil {
+	finishedAt := time.Now().UTC()
+	if s.Now != nil {
+		finishedAt = s.Now().UTC()
+	}
+	if err := s.Store.ProjectOutcome(ctx, OutcomeProjection{RunID: runID, Status: status, Level: level, Score: score, MaxScore: 100, Message: message, FinishedAt: finishedAt, Items: itemRecords, ResultSummary: resultPayload, QualityDecision: qualityDecision}); err != nil {
 		return RunResult{}, err
 	}
-	if aggregate.Formed && aggregate.TrustFormed && s.Projector != nil && request.Threshold > 0 && request.ProviderCode != "" {
-		fact := HealthFact{AccountID: request.TargetID, SystemAccountID: request.SystemAccountID, StatHour: now.Truncate(time.Hour).Format(time.RFC3339Nano), RunID: runID, ProviderCode: request.ProviderCode, Model: request.Model, Profile: request.Profile, ScheduleID: request.ScheduleID, PolicyRevision: request.PolicyRevision, AccountConfigRevision: request.ConfigRevision, PenaltyAction: penaltyAction, RecoveryIntervalMinutes: recoveryInterval, ObservedAt: now, Score: score, Threshold: request.Threshold, Level: level}
-		if err := s.Projector.Project(ctx, runID, aggregate, fact); err != nil {
+	// Node publishes a health failure only for a completed quality failure or
+	// unavailable result. Publishing successful probes would make the existing
+	// health reader treat a healthy account as failed.
+	if status == RunCompleted && (qualityFailed || qualityUnavailable) && aggregate.Formed && aggregate.TrustFormed && s.Projector != nil && request.Threshold > 0 && request.ProviderCode != "" {
+		statHour, err := s.Store.formatHealthStatHour(finishedAt)
+		if err != nil {
+			if markErr := s.Store.MarkHealthSync(ctx, runID, "failed"); markErr != nil {
+				err = fmt.Errorf("%w; mark J3b health sync failed: %v", err, markErr)
+			}
+			emit(ProgressEvent{Kind: "health_sync_failed", Data: map[string]any{"runId": runID, "message": err.Error()}})
+		} else if err := s.Projector.Project(ctx, runID, aggregate, HealthFact{AccountID: request.TargetID, SystemAccountID: request.SystemAccountID, StatHour: statHour, RunID: runID, ProviderCode: request.ProviderCode, Model: request.Model, Profile: request.Profile, ScheduleID: request.ScheduleID, PolicyRevision: request.PolicyRevision, AccountConfigRevision: request.ConfigRevision, PenaltyAction: penaltyAction, RecoveryIntervalMinutes: recoveryInterval, EnforcementAllowed: enforcementAllowed, ObservedAt: finishedAt, Score: score, Threshold: request.Threshold, Level: level}); err != nil {
 			// The run/outcome is already durable. Keep the health publication
 			// retryable instead of reporting a false applied state.
 			emit(ProgressEvent{Kind: "health_sync_failed", Data: map[string]any{"runId": runID, "message": err.Error()}})
@@ -281,6 +341,20 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		"partialFamilies": aggregate.Partial,
 		"invalidFamilies": aggregate.Invalid,
 	}}, nil
+}
+
+// runtimeEnforcementAllowed freezes the Node manual-diagnostics rule before
+// any probe runs. Scheduled and recovery checks are policy-owned automation;
+// only a manual run additionally requires both the explicit policy flag and a
+// physical account, never an authorization instance.
+func runtimeEnforcementAllowed(triggerKind string, request RunRequest) bool {
+	if triggerKind == "" {
+		triggerKind = "manual"
+	}
+	if triggerKind != "manual" {
+		return triggerKind == "scheduled" || triggerKind == "quality_recovery"
+	}
+	return request.ManualEnforcementEnabled && request.OwnPhysicalAccount
 }
 
 // appendEvaluationObservations writes one bounded, durable receipt for every

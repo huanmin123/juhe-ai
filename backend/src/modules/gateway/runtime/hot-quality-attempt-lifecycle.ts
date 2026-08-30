@@ -1,4 +1,5 @@
 import { getRequestLogger } from '../../../shared/request-context.js'
+import { errorLogFields } from '../../../shared/logger.js'
 import { observeGatewayRouting } from '../observability/routing-observability.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
@@ -90,7 +91,10 @@ async function recordAttemptSafely(
       status: hotQualityObservationStatus(result.status)
     }, nowMs)
   } catch (error) {
-    getRequestLogger().warn({ event: 'gateway_hot_quality_attempt_record_failed', attemptId, error }, '记录热质量 attempt 失败')
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'gateway_hot_quality_attempt_record_failed',
+      attemptId
+    }), '记录热质量 attempt 失败')
   }
 }
 
@@ -111,7 +115,11 @@ async function recordTerminalSafely(
       status: hotQualityObservationStatus(result.status)
     }, nowMs)
   } catch (error) {
-    getRequestLogger().warn({ event: 'gateway_hot_quality_terminal_record_failed', attemptId: input.attemptId, outcomeClass: input.outcomeClass, error }, '记录热质量终态失败')
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'gateway_hot_quality_terminal_record_failed',
+      attemptId: input.attemptId,
+      outcomeClass: input.outcomeClass
+    }), '记录热质量终态失败')
   }
 }
 

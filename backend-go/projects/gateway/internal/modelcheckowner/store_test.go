@@ -94,6 +94,56 @@ func TestStoreSchemaCheckRejectsMissingRequiredColumn(t *testing.T) {
 	}
 }
 
+func TestStoreSchemaCheckRejectsRuntimeProjectionColumnDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		table string
+		col   string
+	}{
+		{name: "run item score", table: "model_check_items", col: "score"},
+		{name: "run item max score", table: "model_check_items", col: "max_score"},
+		{name: "run item duration", table: "model_check_items", col: "duration_ms"},
+		{name: "run item trace", table: "model_check_items", col: "trace_id"},
+		{name: "run item error code", table: "model_check_items", col: "error_code"},
+		{name: "run item error message", table: "model_check_items", col: "error_message"},
+		{name: "health error code", table: "account_quality_health_hourly", col: "error_code"},
+		{name: "health error message", table: "account_quality_health_hourly", col: "error_message"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "j3b-drift.db")
+			seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for table, columns := range requiredColumns {
+				definitions := make([]string, 0, len(columns))
+				for _, column := range columns {
+					if table == tc.table && column == tc.col {
+						continue
+					}
+					definitions = append(definitions, column+" TEXT")
+				}
+				if _, err := seed.Exec(`CREATE TABLE ` + table + ` (` + strings.Join(definitions, ",") + `)`); err != nil {
+					seed.Close()
+					t.Fatal(err)
+				}
+			}
+			if err := seed.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err := OpenStore(testSQLiteConfig(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			err = store.CheckSchema(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.table) || !strings.Contains(err.Error(), tc.col) {
+				t.Fatalf("schema drift must fail closed for %s.%s, err=%v", tc.table, tc.col, err)
+			}
+		})
+	}
+}
+
 func TestActivateTokenInterceptBaselineUsesAtomicCAS(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "baseline.db")
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
@@ -214,28 +264,28 @@ func TestApplyHealthFactUsesLatestWinsOrdering(t *testing.T) {
 	}
 }
 
-func TestListHealthSyncRetriesRequiresDurablePolicySnapshot(t *testing.T) {
+func TestListHealthSyncRetriesSkipsInvalidRowsAndPreservesFailureState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "health-retry.db")
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	_, err = db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`)
+	_, err = db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	finished := "2026-08-27T10:15:00Z"
-	_, err = db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "run-1", "acct-1", "sys-1", "openai", "gpt-5.6", "full", "failure", 12, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, finished, "failed", finished)
+	_, err = db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "run-1", "completed", "acct-1", "sys-1", "openai", "gpt-5.6", "full", "failure", 12, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, finished, "failed", finished)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "sqlite"}
+	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 1 {
 		t.Fatalf("retries=%#v err=%v", retries, err)
 	}
-	if retries[0].Threshold != 70 || retries[0].StatHour != "2026-08-27T10:00:00Z" {
+	if retries[0].Threshold != 70 || retries[0].StatHour != "2026-08-27T18" {
 		t.Fatalf("retry=%#v", retries[0])
 	}
 	if !retries[0].EvidenceFormed || !retries[0].TrustFormed {
@@ -244,8 +294,42 @@ func TestListHealthSyncRetriesRequiresDurablePolicySnapshot(t *testing.T) {
 	if _, err := db.Exec(`UPDATE model_check_runs SET policy_snapshot_json='{}' WHERE id='run-1'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ListHealthSyncRetries(context.Background(), 10); err == nil {
-		t.Fatal("missing threshold must fail closed")
+	retries, err = store.ListHealthSyncRetries(context.Background(), 10)
+	if err != nil || len(retries) != 0 {
+		t.Fatalf("invalid retry must be skipped without blocking scan: retries=%#v err=%v", retries, err)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-1'`).Scan(&state); err != nil || state != "failed" {
+		t.Fatalf("invalid retry state=%q err=%v, want durable failed", state, err)
+	}
+}
+
+func TestListHealthSyncRetriesSkipsMalformedRowsBeforeLaterValidRow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "health-retry-batch.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	finished := "2026-08-27T10:15:00Z"
+	validPolicy := `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`
+	validDecision := `{"evidenceFormed":true,"trustFormed":true}`
+	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"run-bad", "completed", "acct-bad", "sys-bad", "openai", "gpt-5.6", "full", "failure", 20, nil, `{}`, validDecision, `{"configRevision":"3"}`, finished, "failed", "2026-08-27T10:00:00Z",
+		"run-valid", "completed", "acct-valid", "sys-valid", "openai", "gpt-5.6", "full", "failure", 20, nil, validPolicy, validDecision, `{"configRevision":"3"}`, finished, "failed", "2026-08-27T10:01:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	retries, err := store.ListHealthSyncRetries(context.Background(), 1)
+	if err != nil || len(retries) != 1 || retries[0].RunID != "run-valid" {
+		t.Fatalf("retries=%#v err=%v", retries, err)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-bad'`).Scan(&state); err != nil || state != "failed" {
+		t.Fatalf("malformed run state=%q err=%v, want durable failed", state, err)
 	}
 }
 
