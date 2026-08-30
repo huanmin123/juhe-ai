@@ -25,8 +25,14 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN dispatch_revision INTEGER NOT NULL DEFAULT 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN authorization_instance_source_account_id TEXT`); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct','openai',4,NULL,NULL,'active','gpt-5.6-sol')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','openai',4,NULL,NULL,'active','gpt-5.6-sol')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,1,?,NULL,NULL,NULL,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
@@ -76,8 +82,14 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
+	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN dispatch_revision INTEGER NOT NULL DEFAULT 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN authorization_instance_source_account_id TEXT`); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct','openai',8,NULL,NULL,'quality_isolated','gpt-5.6-sol')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','openai',8,NULL,NULL,'quality_isolated','gpt-5.6-sol')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {

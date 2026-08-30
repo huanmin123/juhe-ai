@@ -59,3 +59,47 @@ func TestResolveTokenRejectsInvalidBearer(t *testing.T) {
 		t.Fatalf("err=%v, want ErrInvalidToken", err)
 	}
 }
+
+func TestCheckContractRejectsMissingAuthRuntimeColumn(t *testing.T) {
+	for _, omitted := range []string{"display_name", "role", "must_change_password", "last_login_at", "updated_at"} {
+		t.Run(omitted, func(t *testing.T) {
+			db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "business.db")+"?mode=rwc")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			accountColumns := []string{"id TEXT PRIMARY KEY", "username TEXT NOT NULL", "display_name TEXT", "status TEXT NOT NULL", "role TEXT NOT NULL", "must_change_password INTEGER NOT NULL", "password_hash TEXT NOT NULL", "last_login_at TEXT", "updated_at TEXT NOT NULL"}
+			filtered := make([]string, 0, len(accountColumns)-1)
+			for _, definition := range accountColumns {
+				if len(definition) >= len(omitted) && definition[:len(omitted)] == omitted {
+					continue
+				}
+				filtered = append(filtered, definition)
+			}
+			if _, err := db.Exec(`CREATE TABLE system_accounts (` + joinDefinitions(filtered) + `)`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`CREATE TABLE system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,last_seen_at TEXT NOT NULL)`); err != nil {
+				t.Fatal(err)
+			}
+			auth, err := New(db, SQLite, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := auth.CheckContract(context.Background()); err == nil {
+				t.Fatalf("missing %s must fail the auth contract", omitted)
+			}
+		})
+	}
+}
+
+func joinDefinitions(values []string) string {
+	result := ""
+	for index, value := range values {
+		if index > 0 {
+			result += ","
+		}
+		result += value
+	}
+	return result
+}

@@ -31,7 +31,7 @@ func TestVerifyUsesIsolatedQueryOnlyProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Ready || !report.PathsDistinct || !report.QueryOnlyEnabled || !report.WriteRejected || !report.IsolatedRowsUnchanged || report.UserDatabaseTouched {
+	if !report.Ready || !report.PathIsolationReady || report.HandoffReady || !report.PathsDistinct || !report.QueryOnlyEnabled || !report.WriteRejected || !report.IsolatedRowsUnchanged || report.UserDatabaseTouched {
 		t.Fatalf("unexpected report: %+v", report)
 	}
 	if report.BusinessPath != canonicalPath(business) || report.J3BPath != canonicalPath(j3b) {
@@ -57,14 +57,14 @@ func TestVerifyRejectsSharedOrMissingPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Ready || !report.SameFile || report.PathsDistinct {
+	if report.Ready || report.PathIsolationReady || report.HandoffReady || !report.SameFile || report.PathsDistinct {
 		t.Fatalf("shared path must fail closed: %+v", report)
 	}
 	report, err = Verify(context.Background(), business, filepath.Join(dir, "missing.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Ready || report.J3BExists {
+	if report.Ready || report.PathIsolationReady || report.HandoffReady || report.J3BExists {
 		t.Fatalf("missing J3b path must fail closed: %+v", report)
 	}
 }
@@ -82,7 +82,7 @@ func TestVerifyDoesNotRequireWritableUserFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Ready || report.UserDatabaseTouched {
+	if !report.Ready || !report.PathIsolationReady || report.HandoffReady || report.UserDatabaseTouched {
 		t.Fatalf("preflight should only stat user files: %+v", report)
 	}
 }

@@ -23,6 +23,13 @@ type Config struct {
 	Owner                    string
 	InstanceID               string
 	BusinessHandoffConfirmed bool
+	// OwnerEpoch identifies the externally coordinated cutover epoch. The
+	// value is intentionally opaque here; the deployment evidence verifier
+	// remains responsible for proving that the epoch is real and current.
+	OwnerEpoch string
+	// CutoverEvidencePath points to the externally generated post-cutover
+	// evidence consumed before any Business DB or listener is opened.
+	CutoverEvidencePath string
 	// NodeWriterStopped is an explicit cutover fence. It must be true before
 	// Gateway can enable a confirmed Business handoff; otherwise a stale Node
 	// writer could race the new owner and silently corrupt Business state.
@@ -93,6 +100,14 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg.NodeWriterStopped = trueValue(getenv("JUHE_AI_J3B_NODE_WRITER_STOPPED"))
 	if !cfg.NodeWriterStopped {
 		return Config{}, errors.New("J3b Business owner handoff 已确认但 Node writer 未停止，必须保持关闭")
+	}
+	cfg.OwnerEpoch = strings.TrimSpace(getenv("JUHE_AI_J3B_OWNER_EPOCH"))
+	if cfg.OwnerEpoch == "" {
+		return Config{}, errors.New("J3b Business owner handoff 已确认但 JUHE_AI_J3B_OWNER_EPOCH 未提供，必须保持关闭")
+	}
+	cfg.CutoverEvidencePath = strings.TrimSpace(getenv("JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH"))
+	if cfg.CutoverEvidencePath == "" {
+		return Config{}, errors.New("J3b Business owner handoff 已确认但 JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH 未提供，必须保持关闭")
 	}
 	cfg.SchemaReady = trueValue(getenv("JUHE_AI_J3B_SCHEMA_READY"))
 	if !cfg.SchemaReady {

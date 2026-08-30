@@ -18,20 +18,26 @@ import (
 // query_only write probe always runs against a disposable temporary SQLite
 // file so this command cannot mutate an application database.
 type Report struct {
-	BusinessPath          string   `json:"businessPath"`
-	J3BPath               string   `json:"j3bPath"`
-	BusinessExists        bool     `json:"businessExists"`
-	J3BExists             bool     `json:"j3bExists"`
-	BusinessRegularFile   bool     `json:"businessRegularFile"`
-	J3BRegularFile        bool     `json:"j3bRegularFile"`
-	PathsDistinct         bool     `json:"pathsDistinct"`
-	SameFile              bool     `json:"sameFile"`
-	QueryOnlyEnabled      bool     `json:"queryOnlyEnabled"`
-	WriteRejected         bool     `json:"writeRejected"`
-	IsolatedRowsUnchanged bool     `json:"isolatedRowsUnchanged"`
-	UserDatabaseTouched   bool     `json:"userDatabaseTouched"`
-	Ready                 bool     `json:"ready"`
-	Errors                []string `json:"errors,omitempty"`
+	BusinessPath          string `json:"businessPath"`
+	J3BPath               string `json:"j3bPath"`
+	BusinessExists        bool   `json:"businessExists"`
+	J3BExists             bool   `json:"j3bExists"`
+	BusinessRegularFile   bool   `json:"businessRegularFile"`
+	J3BRegularFile        bool   `json:"j3bRegularFile"`
+	PathsDistinct         bool   `json:"pathsDistinct"`
+	SameFile              bool   `json:"sameFile"`
+	QueryOnlyEnabled      bool   `json:"queryOnlyEnabled"`
+	WriteRejected         bool   `json:"writeRejected"`
+	IsolatedRowsUnchanged bool   `json:"isolatedRowsUnchanged"`
+	UserDatabaseTouched   bool   `json:"userDatabaseTouched"`
+	// PathIsolationReady is the actual scope of this local preflight. It does
+	// not establish a writer handoff, epoch, drain, rollback, or freshness.
+	PathIsolationReady bool `json:"pathIsolationReady"`
+	// HandoffReady intentionally remains false here: it can only be proven by
+	// external cutover evidence from the real writer-drain window.
+	HandoffReady bool     `json:"handoffReady"`
+	Ready        bool     `json:"ready"`
+	Errors       []string `json:"errors,omitempty"`
 }
 
 // Verify runs the non-mutating handoff preflight. Both configured files must
@@ -87,7 +93,11 @@ func Verify(ctx context.Context, businessPath, j3bPath string) (Report, error) {
 		return Report{}, err
 	}
 	report.UserDatabaseTouched = false
-	report.Ready = report.BusinessExists && report.J3BExists && report.BusinessRegularFile && report.J3BRegularFile && report.PathsDistinct && !report.SameFile && report.QueryOnlyEnabled && report.WriteRejected && report.IsolatedRowsUnchanged && len(report.Errors) == 0
+	report.PathIsolationReady = report.BusinessExists && report.J3BExists && report.BusinessRegularFile && report.J3BRegularFile && report.PathsDistinct && !report.SameFile && report.QueryOnlyEnabled && report.WriteRejected && report.IsolatedRowsUnchanged && len(report.Errors) == 0
+	// Keep Ready as the compatibility alias consumed by the existing path
+	// isolation CLI. Consumers that need an owner handoff must require the
+	// separate cutover-evidence gate instead.
+	report.Ready = report.PathIsolationReady
 	sort.Strings(report.Errors)
 	return report, nil
 }

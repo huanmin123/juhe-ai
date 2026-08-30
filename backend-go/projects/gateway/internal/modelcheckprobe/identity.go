@@ -23,7 +23,7 @@ type identityCanary struct {
 // RunIdentity executes the stable seven-category canary set. Only bounded
 // previews and pass/fail counters leave this function; provider output is
 // never returned as durable evidence.
-func RunIdentity(ctx context.Context, protocol modelcheckprofile.Protocol, model string, run func(context.Context, Request) (Result, error)) (Evaluation, error) {
+func RunIdentity(ctx context.Context, protocol modelcheckprofile.Protocol, model string, run func(context.Context, Request) (Result, error), endpointModes ...string) (Evaluation, error) {
 	if strings.TrimSpace(model) == "" || run == nil {
 		return Evaluation{}, fmt.Errorf("J3b identity input is invalid")
 	}
@@ -48,7 +48,11 @@ func RunIdentity(ctx context.Context, protocol modelcheckprofile.Protocol, model
 	passed, success, total := 0, 0, 0
 	for _, canary := range canaries {
 		for _, candidate := range models {
-			request, err := BuildBasic(protocol, candidate, canary.Prompt, false)
+			endpointMode := ""
+			if len(endpointModes) > 0 {
+				endpointMode = endpointModes[0]
+			}
+			request, err := buildBasicWithEndpointMode(protocol, candidate, canary.Prompt, modelcheckprofile.EndpointModeIsStreaming(endpointMode), endpointMode)
 			if err != nil {
 				return Evaluation{}, err
 			}

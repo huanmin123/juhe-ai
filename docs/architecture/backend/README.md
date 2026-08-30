@@ -178,7 +178,7 @@ flowchart LR
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
 - 使用记录和账号状态副作用必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；J3a 代理延迟检测是 Go owner 例外，由 `juhe-ai-jobs` 直接执行和写回，Node 不提供等价 writer/fallback。J3a 的 Go 管理 handler 在 PostgreSQL 中通过 F4 兼容的受控 append DTO 直接记录操作日志，以避免 Go→Go HTTP；它不是 F4 schema/read/retention owner。其余原始审计和操作日志仍按各自 F3/F4 契约由 Node 一次性 loopback HMAC RPC 交给 Go `juhe-ai-gateway`。server 到 worker / DB service 的 IPC、worker 本地落库队列和账号状态副作用本地队列都必须有数量或字节上限。普通运行日志是例外：业务进程只顺序追加完整 JSONL 文件，`juhe-ai-jobs` 内 F1 按持久化 cursor 直接索引到专用运行日志库，不得另建 Node IPC、内存或 Redis 逐行队列。F1 不能由 Node 开关关闭或回退，且不得借此关闭或清理使用记录。
-- 真实上游派发开始后，opaque 非 `2xx`、本地 transport failure、timeout、正文中断或精确协议声明的失败结构都属于当前 attempt，默认直接向客户端返回实际失败；不得按 Key -> 账户 -> 后续分组隐式接管。只有用户显式账户错误策略命中 `retry_next` 时，才允许在 `semanticCommitted = false` 且端点可安全重放的前提下切换候选。已经提交真实协议语义的响应不得再次执行或拼接第二候选。图片使用独立长时限且排除文本 `speed_first` 首 token 机制。
+- 真实上游派发开始后，opaque 非 `2xx`、下游尚未提交且已确认的本地 transport failure、timeout 或正文中断都属于当前 attempt；先按账户内 Key 隔离和响应检查规则处理，Key 池耗尽后在端点、墙钟和 attempt 预算允许时排除当前候选并继续扫描后续账号 / 分组。精确协议声明的失败结构按客户端画像和响应检查策略处理，只有规则明确授权时才能重放或切换。账户错误策略 `retry_next` 仍额外表达其声明的同账户兄弟 Key 行为。已经提交真实协议语义的响应不得再次执行或拼接第二候选。图片使用独立长时限且排除文本 `speed_first` 首 token 机制。
 
 ## 6. 数据库设计
 

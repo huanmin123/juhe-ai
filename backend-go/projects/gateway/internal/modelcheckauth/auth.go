@@ -71,9 +71,15 @@ func (a *Authenticator) CheckContract(ctx context.Context) error {
 		return fmt.Errorf("open management auth contract transaction: %w", err)
 	}
 	defer tx.Rollback()
-	for _, relation := range []string{a.table("system_sessions"), a.table("system_accounts")} {
-		if _, err := tx.ExecContext(ctx, "SELECT 1 FROM "+relation+" LIMIT 0"); err != nil {
-			return fmt.Errorf("verify management auth relation %s: %w", relation, err)
+	for _, relation := range []struct {
+		name    string
+		columns string
+	}{
+		{name: a.table("system_sessions"), columns: "id,system_account_id,token_hash,expires_at,created_at,last_seen_at"},
+		{name: a.table("system_accounts"), columns: "id,username,display_name,status,role,must_change_password,password_hash,last_login_at,updated_at"},
+	} {
+		if _, err := tx.ExecContext(ctx, "SELECT "+relation.columns+" FROM "+relation.name+" LIMIT 0"); err != nil {
+			return fmt.Errorf("verify management auth relation %s: %w", relation.name, err)
 		}
 	}
 	if a.mode == Postgres {

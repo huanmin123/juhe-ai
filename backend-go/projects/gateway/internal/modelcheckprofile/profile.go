@@ -23,6 +23,20 @@ const (
 	EndpointStreamGenerate  EndpointFamily = "stream_generate_content"
 )
 
+// Endpoint modes are the immutable request shapes selected by the Business
+// account health-check configuration. Keep these values separate from
+// Protocol: one protocol can have a JSON and a streaming request shape.
+const (
+	EndpointModeResponsesJSON       = "responses_json"
+	EndpointModeResponsesSSE        = "responses_sse"
+	EndpointModeChatJSON            = "chat_json"
+	EndpointModeChatSSE             = "chat_sse"
+	EndpointModeMessagesJSON        = "messages_json"
+	EndpointModeMessagesSSE         = "messages_sse"
+	EndpointModeGenerateContentJSON = "generate_content_json"
+	EndpointModeGenerateContentSSE  = "generate_content_sse"
+)
+
 type ProtocolProfile struct {
 	ID                         string
 	Protocol                   Protocol
@@ -134,6 +148,67 @@ func SourceEndpointFamilies(profile ProtocolProfile) []EndpointFamily {
 	default:
 		return nil
 	}
+}
+
+// EndpointModeForProtocol provides the deterministic default used only when
+// an older caller has not yet supplied the Business health-check mode.
+func EndpointModeForProtocol(protocol Protocol, stream bool) string {
+	switch protocol {
+	case ProtocolOpenAIResponses:
+		if stream {
+			return EndpointModeResponsesSSE
+		}
+		return EndpointModeResponsesJSON
+	case ProtocolOpenAIChat:
+		if stream {
+			return EndpointModeChatSSE
+		}
+		return EndpointModeChatJSON
+	case ProtocolAnthropic:
+		if stream {
+			return EndpointModeMessagesSSE
+		}
+		return EndpointModeMessagesJSON
+	case ProtocolGeminiNative:
+		if stream {
+			return EndpointModeGenerateContentSSE
+		}
+		return EndpointModeGenerateContentJSON
+	default:
+		return ""
+	}
+}
+
+// ProtocolForEndpointMode rejects modes that the Gateway J3b probe does not
+// implement. In particular, images/interactions are not silently rewritten
+// into a text probe.
+func ProtocolForEndpointMode(mode string) (Protocol, bool) {
+	switch strings.TrimSpace(mode) {
+	case EndpointModeResponsesJSON, EndpointModeResponsesSSE:
+		return ProtocolOpenAIResponses, true
+	case EndpointModeChatJSON, EndpointModeChatSSE:
+		return ProtocolOpenAIChat, true
+	case EndpointModeMessagesJSON, EndpointModeMessagesSSE:
+		return ProtocolAnthropic, true
+	case EndpointModeGenerateContentJSON, EndpointModeGenerateContentSSE:
+		return ProtocolGeminiNative, true
+	default:
+		return "", false
+	}
+}
+
+func EndpointModeIsStreaming(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case EndpointModeResponsesSSE, EndpointModeChatSSE, EndpointModeMessagesSSE, EndpointModeGenerateContentSSE:
+		return true
+	default:
+		return false
+	}
+}
+
+func EndpointModeMatchesProtocol(protocol Protocol, mode string) bool {
+	resolved, ok := ProtocolForEndpointMode(mode)
+	return ok && resolved == protocol
 }
 func clone(profile ProtocolProfile) ProtocolProfile {
 	profile.ProviderProtocolProfileIDs = append([]string(nil), profile.ProviderProtocolProfileIDs...)

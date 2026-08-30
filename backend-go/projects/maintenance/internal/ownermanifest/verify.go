@@ -38,8 +38,22 @@ type Source struct {
 }
 
 type manifest struct {
-	ManifestVersion int         `json:"manifest_version"`
-	Operations      []Operation `json:"operations"`
+	ManifestVersion         int                     `json:"manifest_version"`
+	OperationSourceContract OperationSourceContract `json:"operation_source_contract"`
+	Operations              []Operation             `json:"operations"`
+}
+
+// OperationSourceContract is the machine-readable cutover contract shared by
+// the owner manifest and its verifier. Pointer booleans distinguish an
+// explicitly required gate from an omitted field; omission must fail closed.
+type OperationSourceContract struct {
+	Path                          string `json:"path"`
+	Range                         string `json:"range"`
+	HandlerPath                   string `json:"handler_path"`
+	AccessModePath                string `json:"access_mode_path"`
+	CutoverEpochRequired          *bool  `json:"cutover_epoch_required"`
+	DrainRequired                 *bool  `json:"drain_required"`
+	RollbackRequiresStopAndReplay *bool  `json:"rollback_requires_stop_and_replay"`
 }
 
 // Report is intentionally serializable so CI and release evidence can retain
@@ -84,6 +98,9 @@ func Verify(manifestPath, typesPath, accessPath, handlerPath string) (Report, er
 	}
 	if value.ManifestVersion != 1 || len(value.Operations) == 0 {
 		return Report{}, errors.New("owner manifest version or operations are invalid")
+	}
+	if err := validateOperationSourceContract(value.OperationSourceContract); err != nil {
+		return Report{}, err
 	}
 	typesData, err := os.ReadFile(typesPath)
 	if err != nil {
@@ -228,6 +245,22 @@ func Verify(manifestPath, typesPath, accessPath, handlerPath string) (Report, er
 		}
 	}
 	return report, nil
+}
+
+func validateOperationSourceContract(contract OperationSourceContract) error {
+	if strings.TrimSpace(contract.Path) == "" || strings.TrimSpace(contract.Range) == "" || strings.TrimSpace(contract.HandlerPath) == "" || strings.TrimSpace(contract.AccessModePath) == "" {
+		return errors.New("owner manifest operation_source_contract is incomplete")
+	}
+	if contract.CutoverEpochRequired == nil || !*contract.CutoverEpochRequired {
+		return errors.New("owner manifest requires cutover_epoch_required=true")
+	}
+	if contract.DrainRequired == nil || !*contract.DrainRequired {
+		return errors.New("owner manifest requires drain_required=true")
+	}
+	if contract.RollbackRequiresStopAndReplay == nil || !*contract.RollbackRequiresStopAndReplay {
+		return errors.New("owner manifest requires rollback_requires_stop_and_replay=true")
+	}
+	return nil
 }
 
 func bytesContainsHandler(source []byte, operation string) bool {

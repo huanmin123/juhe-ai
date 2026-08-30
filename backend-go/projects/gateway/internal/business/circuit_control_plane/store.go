@@ -11,8 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+
+	sharedcontracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 )
 
 const ProjectionKey = "account_circuit_runtime_v1"
@@ -251,21 +254,162 @@ func (s *Store) CheckContract(ctx context.Context) error {
 }
 
 func (s *Store) checkKeyModelCapabilityIndex(ctx context.Context) error {
+	spec, exists := sharedcontracts.BusinessSQLiteSchema["account_circuit_incidents"]
 	const indexName = "idx_account_circuit_incidents_key_model_capability"
-	var exists bool
-	var err error
+	if !exists || len(spec.IndexDefinitions) == 0 {
+		return fmt.Errorf("verify circuit key_model capability index: shared contract definition is missing")
+	}
+	var required sharedcontracts.SQLiteIndexDefinition
+	foundDefinition := false
+	for _, definition := range spec.IndexDefinitions {
+		if definition.Name != indexName {
+			continue
+		}
+		if foundDefinition {
+			return fmt.Errorf("verify circuit key_model capability index: shared contract definition is duplicated")
+		}
+		required = definition
+		foundDefinition = true
+	}
+	if !foundDefinition {
+		return fmt.Errorf("verify circuit key_model capability index %s: shared contract definition is missing", indexName)
+	}
 	if s.mode == SQLite {
-		err = s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?)", indexName).Scan(&exists)
-	} else {
-		err = s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_indexes WHERE schemaname=? AND indexname=?)", s.schema, indexName).Scan(&exists)
+		ok, detail, err := checkSQLiteIndexDefinition(ctx, s.db, "account_circuit_incidents", required)
+		if err != nil {
+			return fmt.Errorf("verify circuit key_model capability index: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("verify circuit key_model capability index %s is incompatible: %s", required.Name, detail)
+		}
+		return nil
+	}
+	var unique bool
+	var predicate sql.NullString
+	var columns sql.NullString
+	query := `SELECT i.indisunique, pg_get_expr(i.indpred,i.indrelid), array_to_string(ARRAY(SELECT a.attname FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum,ord) JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum ORDER BY k.ord), ',') FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN pg_catalog.pg_class target ON target.oid=i.indrelid JOIN pg_catalog.pg_namespace target_ns ON target_ns.oid=target.relnamespace WHERE n.nspname=? AND c.relname=? AND target_ns.nspname=? AND target.relname=? AND i.indisvalid AND i.indisready AND i.indnkeyatts=? AND i.indnatts=i.indnkeyatts`
+	err := s.db.QueryRowContext(ctx, s.bind(query), s.schema, required.Name, s.schema, "account_circuit_incidents", len(required.Columns)).Scan(&unique, &predicate, &columns)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("verify circuit key_model capability index %s is missing", required.Name)
 	}
 	if err != nil {
 		return fmt.Errorf("verify circuit key_model capability index: %w", err)
 	}
-	if !exists {
-		return fmt.Errorf("verify circuit key_model capability index: %s is missing", indexName)
+	actualColumns := strings.Split(columns.String, ",")
+	if !unique || !sameIndexColumns(actualColumns, required.Columns) || !predicatesEquivalent(predicate.String, required.Predicate) {
+		return fmt.Errorf("verify circuit key_model capability index %s is incompatible: unique=%t columns=%v predicate=%q", required.Name, unique, actualColumns, predicate.String)
 	}
 	return nil
+}
+
+func checkSQLiteIndexDefinition(ctx context.Context, db *sql.DB, table string, required sharedcontracts.SQLiteIndexDefinition) (bool, string, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA index_list("+quoteIdentifier(table)+")")
+	if err != nil {
+		return false, "read index_list failed", err
+	}
+	defer rows.Close()
+	var found, unique, partial bool
+	for rows.Next() {
+		var seq, u, p int
+		var name, origin string
+		if err := rows.Scan(&seq, &name, &u, &origin, &p); err != nil {
+			return false, "scan index_list failed", err
+		}
+		if name == required.Name {
+			found, unique, partial = true, u == 1, p == 1
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, "read index_list failed", err
+	}
+	if err := rows.Close(); err != nil {
+		return false, "close index_list failed", err
+	}
+	if !found {
+		return false, "index is missing", nil
+	}
+	if unique != required.Unique {
+		return false, fmt.Sprintf("unique=%t want=%t", unique, required.Unique), nil
+	}
+	colRows, err := db.QueryContext(ctx, "PRAGMA index_info("+quoteIdentifier(required.Name)+")")
+	if err != nil {
+		return false, "read index_info failed", err
+	}
+	defer colRows.Close()
+	columns := []string{}
+	for colRows.Next() {
+		var seq, cid int
+		var name sql.NullString
+		if err := colRows.Scan(&seq, &cid, &name); err != nil {
+			return false, "scan index_info failed", err
+		}
+		if !name.Valid {
+			return false, "index contains an expression", nil
+		}
+		columns = append(columns, name.String)
+	}
+	if err := colRows.Err(); err != nil {
+		return false, "read index_info failed", err
+	}
+	if err := colRows.Close(); err != nil {
+		return false, "close index_info failed", err
+	}
+	if !sameIndexColumns(columns, required.Columns) {
+		return false, fmt.Sprintf("columns=%v want=%v", columns, required.Columns), nil
+	}
+	var definition sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", required.Name).Scan(&definition); err != nil {
+		return false, "read sqlite_master definition failed", err
+	}
+	actualPredicate := indexPredicate(definition.String)
+	if strings.TrimSpace(required.Predicate) == "" {
+		if partial || actualPredicate != "" {
+			return false, "unexpected partial predicate", nil
+		}
+	} else if !partial || !predicatesEquivalent(actualPredicate, required.Predicate) {
+		return false, fmt.Sprintf("predicate=%q want=%q", actualPredicate, required.Predicate), nil
+	}
+	return true, "", nil
+}
+
+func sameIndexColumns(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+func indexPredicate(sqlText string) string {
+	lower := strings.ToLower(sqlText)
+	idx := strings.Index(lower, " where ")
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(sqlText[idx+7:])
+}
+func predicatesEquivalent(actual, expected string) bool {
+	norm := func(v string) []string {
+		v = strings.ToLower(strings.TrimSpace(v))
+		v = strings.NewReplacer("`", "", "[", "", "]", "", `"`, "").Replace(v)
+		v = regexp.MustCompile(`::[a-z0-9_]+`).ReplaceAllString(v, "")
+		v = strings.ReplaceAll(strings.ReplaceAll(v, "(", ""), ")", "")
+		v = strings.Join(strings.Fields(v), " ")
+		for strings.HasPrefix(v, "(") && strings.HasSuffix(v, ")") {
+			v = strings.TrimSpace(v[1 : len(v)-1])
+		}
+		parts := strings.Split(v, " and ")
+		for i := range parts {
+			parts[i] = strings.Join(strings.Fields(parts[i]), " ")
+		}
+		sort.Strings(parts)
+		return parts
+	}
+	return sameIndexColumns(norm(actual), norm(expected))
 }
 
 func (s *Store) AdvanceDispatchRevision(ctx context.Context, in DispatchRevision) (DispatchResult, error) {

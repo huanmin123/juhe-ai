@@ -22,7 +22,7 @@ type Tokenizer interface {
 // RunTokenIntegrity executes the same bounded differential sequence as Node.
 // It returns an excluded/skipped item when usage is incomplete; callers must
 // not turn that state into a formed quality fact.
-func RunTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol, model string, tokenizer Tokenizer, run func(context.Context, Request) (Result, error)) (Evaluation, error) {
+func RunTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol, model string, tokenizer Tokenizer, run func(context.Context, Request) (Result, error), endpointModes ...string) (Evaluation, error) {
 	if tokenizer == nil || strings.TrimSpace(tokenizer.Version()) == "" {
 		return Evaluation{Kind: "token_integrity", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "tokenizer_snapshot_not_attached"}}, nil
 	}
@@ -38,7 +38,11 @@ func RunTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol,
 			if err != nil {
 				return Evaluation{}, err
 			}
-			request, err := BuildBasic(protocol, model, prompt, false)
+			endpointMode := ""
+			if len(endpointModes) > 0 {
+				endpointMode = endpointModes[0]
+			}
+			request, err := buildBasicWithEndpointMode(protocol, model, prompt, modelcheckprofile.EndpointModeIsStreaming(endpointMode), endpointMode)
 			if err != nil {
 				return Evaluation{}, err
 			}

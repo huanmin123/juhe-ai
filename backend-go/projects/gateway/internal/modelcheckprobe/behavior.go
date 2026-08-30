@@ -22,13 +22,17 @@ var behaviorProbes = []BehaviorProbe{
 	{"logic_ordering", "小赵比小钱高，小孙比小赵高，小李比小孙矮但比小钱高。只输出最高者的姓。"},
 }
 
-func RunBehavior(ctx context.Context, protocol modelcheckprofile.Protocol, model string, run func(context.Context, Request) (Result, error)) (Evaluation, error) {
+func RunBehavior(ctx context.Context, protocol modelcheckprofile.Protocol, model string, run func(context.Context, Request) (Result, error), endpointModes ...string) (Evaluation, error) {
 	if strings.TrimSpace(model) == "" || run == nil {
 		return Evaluation{}, errors.New("J3b behavior input is invalid")
 	}
 	passed, success := 0, 0
 	for _, probe := range behaviorProbes {
-		request, err := BuildBasic(protocol, model, probe.Prompt, false)
+		endpointMode := ""
+		if len(endpointModes) > 0 {
+			endpointMode = endpointModes[0]
+		}
+		request, err := buildBasicWithEndpointMode(protocol, model, probe.Prompt, modelcheckprofile.EndpointModeIsStreaming(endpointMode), endpointMode)
 		if err != nil {
 			return Evaluation{}, err
 		}

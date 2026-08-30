@@ -21,7 +21,7 @@ func testStore(t *testing.T, gate OwnerGate, deps Dependencies) (*Store, *sql.DB
 		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, config_json TEXT)`,
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, enabled INTEGER NOT NULL)`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)`,
-		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT, grantee_system_account_id TEXT, status TEXT, expires_at TEXT)`,
+		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT, grantee_system_account_id TEXT, scope TEXT, status TEXT, expires_at TEXT)`,
 		`CREATE TABLE group_authorization_settings (authorization_id TEXT PRIMARY KEY, system_account_id TEXT, group_id TEXT, enabled INTEGER)`,
 		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY, config_revision INTEGER NOT NULL DEFAULT 1, dispatch_revision INTEGER NOT NULL DEFAULT 1, system_account_id TEXT NOT NULL, status TEXT NOT NULL, schedulable INTEGER NOT NULL DEFAULT 1, account_expires_at TEXT, cooldown_until TEXT, last_error_code TEXT, last_error_message TEXT, last_error_trace_id TEXT, cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0, cooldown_retest_observation_started_at TEXT, cooldown_retest_generation TEXT, cooldown_retest_last_at TEXT, cooldown_retest_last_status_code INTEGER, last_health_check_at TEXT, next_health_check_at TEXT, last_health_success_at TEXT, health_check_failure_count INTEGER NOT NULL DEFAULT 0, health_check_failure_started_at TEXT, last_health_check_status_code INTEGER, last_health_check_error_code TEXT, last_health_check_error_message TEXT, last_health_check_trace_id TEXT, stream_failure_count INTEGER NOT NULL DEFAULT 0, stream_failure_window_started_at TEXT, deleted_at TEXT, name TEXT NOT NULL, credentials_encrypted TEXT NOT NULL, type TEXT NOT NULL, provider_code TEXT NOT NULL, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`,
@@ -157,6 +157,50 @@ func TestGatewayValidationAndQuotaOwner(t *testing.T) {
 	}
 	if _, err := s.ValidateGatewayAPIKey(context.Background(), "not-a-key"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("invalid key err=%v", err)
+	}
+}
+
+func TestGatewayValidationAuthorizationExpiryUsesChronologicalTime(t *testing.T) {
+	s, db := testStore(t, OwnerGate{}, Dependencies{})
+	defer db.Close()
+	seedAccount(t, db, "active")
+	if _, err := db.Exec(`INSERT INTO system_accounts(id,status) VALUES('sys-2','active')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO route_strategies(id,system_account_id,mode,status) VALUES('route-auth','sys-1','normal','active')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO groups(id,system_account_id,provider_code,enabled) VALUES('group-auth','sys-2','openai',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO route_strategy_groups(id,route_strategy_id,system_account_id,group_id,priority,weight,status,created_at) VALUES('binding-auth','route-auth','sys-1','group-auth',1,1,'active','2029-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO resource_authorizations(id,resource_type,resource_id,grantee_system_account_id,scope,status,expires_at) VALUES('group-grant','group','group-auth','sys-1','use','active','2030-01-01T02:00:00+01:00')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys(id,system_account_id,route_strategy_id,key_hash,status) VALUES('key-auth','sys-1','route-auth',?,'active')`, hashKey("sk-auth")); err != nil {
+		t.Fatal(err)
+	}
+	s.now = func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) }
+	row, err := s.ValidateGatewayAPIKey(context.Background(), "sk-auth")
+	if err != nil || row.SelectedGroupID != "group-auth" {
+		t.Fatalf("authorized row=%+v err=%v", row, err)
+	}
+	if _, err := db.Exec(`UPDATE resource_authorizations SET scope='read' WHERE id='group-grant'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ValidateGatewayAPIKey(context.Background(), "sk-auth"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("non-use authorization err=%v", err)
+	}
+	if _, err := db.Exec(`UPDATE resource_authorizations SET scope='use' WHERE id='group-grant'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE resource_authorizations SET expires_at='2029-12-31T23:59:59Z' WHERE id='group-grant'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ValidateGatewayAPIKey(context.Background(), "sk-auth"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expired authorization err=%v", err)
 	}
 }
 

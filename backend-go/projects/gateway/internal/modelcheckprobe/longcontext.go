@@ -22,7 +22,7 @@ type LongContextDefinition struct {
 	TargetInputTokens int
 }
 
-func RunLongContext(ctx context.Context, providerCode, model string, protocol modelcheckprofile.Protocol, tokenizer Tokenizer, limits ModelLimitSnapshot, run func(context.Context, Request) (Result, error)) (Evaluation, error) {
+func RunLongContext(ctx context.Context, providerCode, model string, protocol modelcheckprofile.Protocol, tokenizer Tokenizer, limits ModelLimitSnapshot, run func(context.Context, Request) (Result, error), endpointModes ...string) (Evaluation, error) {
 	if tokenizer == nil || limits == nil || strings.TrimSpace(tokenizer.Version()) == "" || strings.TrimSpace(limits.Version()) == "" {
 		return Evaluation{Kind: "long_context", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "model_limit_snapshot_not_attached"}}, nil
 	}
@@ -45,7 +45,11 @@ func RunLongContext(ctx context.Context, providerCode, model string, protocol mo
 		if buildErr != nil {
 			return Evaluation{}, buildErr
 		}
-		request, buildErr := BuildBasic(protocol, model, prompt, false)
+		endpointMode := ""
+		if len(endpointModes) > 0 {
+			endpointMode = endpointModes[0]
+		}
+		request, buildErr := buildBasicWithEndpointMode(protocol, model, prompt, modelcheckprofile.EndpointModeIsStreaming(endpointMode), endpointMode)
 		if buildErr != nil {
 			return Evaluation{}, buildErr
 		}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	_ "modernc.org/sqlite"
 )
 
@@ -241,6 +242,63 @@ func TestCheckContractRequiresKeyModelCapabilityIndex(t *testing.T) {
 	if err := store.CheckContract(context.Background()); err == nil {
 		t.Fatal("CheckContract accepted a missing key_model capability index")
 	}
+}
+
+func TestCheckContractRejectsMalformedSameNameCapabilityIndex(t *testing.T) {
+	tests := []struct{ name, ddl string }{
+		{"wrong columns", `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(capability_hash,scope_kind) WHERE scope_kind='key_model' AND capability_hash IS NOT NULL`},
+		{"not unique", `CREATE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind,capability_hash) WHERE scope_kind='key_model' AND capability_hash IS NOT NULL`},
+		{"missing predicate", `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind,capability_hash)`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+			if _, err := db.Exec(`DROP INDEX idx_account_circuit_incidents_key_model_capability`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(tc.ddl); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CheckContract(context.Background()); err == nil {
+				t.Fatal("CheckContract accepted malformed same-name capability index")
+			}
+		})
+	}
+}
+
+func TestSharedSQLiteSchemaCoversCircuitContract(t *testing.T) {
+	for table, required := range map[string][]string{
+		"accounts":                  {"id", "dispatch_revision", "circuit_projection_revision"},
+		"account_circuit_incidents": strings.Split(incidentColumns, ","),
+		"account_circuit_outbox":    strings.Split(outboxColumns, ","),
+	} {
+		spec, ok := contracts.BusinessSQLiteSchema[table]
+		if !ok {
+			t.Fatalf("shared schema is missing %s", table)
+		}
+		actual := make(map[string]bool, len(spec.Columns))
+		for _, column := range spec.Columns {
+			actual[column] = true
+		}
+		for _, column := range required {
+			if !actual[column] {
+				t.Fatalf("shared schema is missing %s.%s", table, column)
+			}
+		}
+	}
+	incidentSpec := contracts.BusinessSQLiteSchema["account_circuit_incidents"]
+	if !containsString(incidentSpec.Indexes, "idx_account_circuit_incidents_key_model_capability") {
+		t.Fatal("shared schema is missing the key_model capability index")
+	}
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNilIncidentSlicesPersistAsEmptyArrays(t *testing.T) {

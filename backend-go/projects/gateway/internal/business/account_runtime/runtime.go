@@ -346,7 +346,7 @@ func (s *Store) CheckContract(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return ErrOwnerGate
 	}
-	for _, t := range []string{"accounts", "account_api_key_runtime_states", "account_api_key_pool_probe_cursors", "api_keys", "route_strategies", "route_strategy_groups", "groups", "system_accounts"} {
+	for _, t := range []string{"accounts", "account_api_key_runtime_states", "account_api_key_pool_probe_cursors", "api_keys", "route_strategies", "route_strategy_groups", "groups", "system_accounts", "resource_authorizations", "group_authorization_settings"} {
 		if _, err := s.db.ExecContext(ctx, "SELECT 1 FROM "+s.table(t)+" LIMIT 0"); err != nil {
 			return fmt.Errorf("verify account runtime relation %s: %w", t, err)
 		}
@@ -360,6 +360,17 @@ func (s *Store) clock() time.Time {
 	return time.Now().UTC()
 }
 func nowString(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+// authorizationExpiryAfterNow keeps the Business TEXT ISO-8601 contract
+// comparable on both SQLite and PostgreSQL.  PostgreSQL must cast both the
+// stored text and bound value; SQLite needs datetime() so offsets and the
+// RFC3339 `T` separator are interpreted chronologically rather than lexically.
+func (s *Store) authorizationExpiryAfterNow(column string) string {
+	if s.mode == Postgres {
+		return "(" + column + " IS NULL OR " + column + "::timestamptz > ?::timestamptz)"
+	}
+	return "(" + column + " IS NULL OR datetime(" + column + ") > datetime(?))"
+}
 func parseTime(v string) (time.Time, error) {
 	if strings.TrimSpace(v) == "" {
 		return time.Time{}, ErrInvalidInput
@@ -429,7 +440,7 @@ func (s *Store) ValidateGatewayAPIKey(ctx context.Context, key string) (GatewayA
 			return GatewayAPIKey{}, sql.ErrNoRows
 		}
 	}
-	q = `SELECT rsg.id,rsg.group_id,rsg.priority,rsg.weight,rsg.status,g.provider_code,g.enabled FROM ` + s.table("route_strategies") + ` rs JOIN ` + s.table("route_strategy_groups") + ` rsg ON rsg.route_strategy_id=rs.id AND rsg.system_account_id=rs.system_account_id JOIN ` + s.table("groups") + ` g ON g.id=rsg.group_id LEFT JOIN ` + s.table("resource_authorizations") + ` ga ON ga.resource_type='group' AND ga.resource_id=g.id AND ga.grantee_system_account_id=rsg.system_account_id AND ga.status='active' AND (ga.expires_at IS NULL OR ga.expires_at>?) LEFT JOIN ` + s.table("group_authorization_settings") + ` gas ON gas.authorization_id=ga.id AND gas.system_account_id=rsg.system_account_id AND gas.group_id=g.id WHERE rs.id=? AND rs.system_account_id=? AND rs.status='active' AND rsg.status='active' AND g.enabled=1 AND (g.system_account_id=rsg.system_account_id OR (ga.id IS NOT NULL AND COALESCE(gas.enabled,1)=1)) ORDER BY rsg.priority ASC,rsg.created_at ASC,rsg.id ASC`
+	q = `SELECT rsg.id,rsg.group_id,rsg.priority,rsg.weight,rsg.status,g.provider_code,g.enabled FROM ` + s.table("route_strategies") + ` rs JOIN ` + s.table("route_strategy_groups") + ` rsg ON rsg.route_strategy_id=rs.id AND rsg.system_account_id=rs.system_account_id JOIN ` + s.table("groups") + ` g ON g.id=rsg.group_id LEFT JOIN ` + s.table("resource_authorizations") + ` ga ON ga.resource_type='group' AND ga.resource_id=g.id AND ga.grantee_system_account_id=rsg.system_account_id AND ga.scope='use' AND ga.status='active' AND ` + s.authorizationExpiryAfterNow("ga.expires_at") + ` LEFT JOIN ` + s.table("group_authorization_settings") + ` gas ON gas.authorization_id=ga.id AND gas.system_account_id=rsg.system_account_id AND gas.group_id=g.id WHERE rs.id=? AND rs.system_account_id=? AND rs.status='active' AND rsg.status='active' AND g.enabled=1 AND (g.system_account_id=rsg.system_account_id OR (ga.id IS NOT NULL AND COALESCE(gas.enabled,1)=1)) ORDER BY rsg.priority ASC,rsg.created_at ASC,rsg.id ASC`
 	rows, err := s.db.QueryContext(ctx, s.bind(q), nowString(s.clock()), a.RouteStrategyID, a.SystemAccountID)
 	if err != nil {
 		return GatewayAPIKey{}, err

@@ -3,6 +3,7 @@ package ownermanifest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,48 @@ func TestVerifyRejectsMissingOperation(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("missing operation must fail closed")
+	}
+}
+
+func TestVerifyRejectsIncompleteOperationSourceContract(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `{"manifest_version":1,"operations":[{"operation":"one","access":"read","tables":"t","transaction_group":"g","current_owner":"node","target_owner":"read-consumer","rollback":"r","verification":"v"}]}`
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	_, err := Verify(
+		write("manifest.json", manifest),
+		write("types.ts", "export type DbServiceOperation =\n | { type: 'one' }\n"),
+		write("access.ts", "one: 'read',\n"),
+		write("handlers.ts", "case 'one':\n"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "operation_source_contract") {
+		t.Fatalf("incomplete operation source contract error=%v", err)
+	}
+}
+
+func TestVerifyRejectsDisabledOperationSourceContractGate(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `{"manifest_version":1,"operation_source_contract":{"path":"types.ts","range":"1-2","handler_path":"handlers.ts","access_mode_path":"access.ts","cutover_epoch_required":true,"drain_required":true,"rollback_requires_stop_and_replay":false},"operations":[{"operation":"one","access":"read","tables":"t","transaction_group":"g","current_owner":"node","target_owner":"read-consumer","rollback":"r","verification":"v"}]}`
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	_, err := Verify(
+		write("manifest.json", manifest),
+		write("types.ts", "export type DbServiceOperation =\n | { type: 'one' }\n"),
+		write("access.ts", "one: 'read',\n"),
+		write("handlers.ts", "case 'one':\n"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "rollback_requires_stop_and_replay=true") {
+		t.Fatalf("disabled operation source contract gate error=%v", err)
 	}
 }
 
