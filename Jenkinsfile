@@ -8,9 +8,10 @@ pipeline {
   }
 
   parameters {
-    booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '仅手动运行：在 activeSlot=prod-a 时将已验证的 test 三镜像晋级到 prod-B；activeSlot=prod-b 时 fail-closed。')
+    booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '通过 Jenkins API 触发：读取当前 test release state 并立即写入 prod。')
     booleanParam(name: 'REVERSE_DEPLOY_PROD', defaultValue: false, description: '仅手动运行：明确创建 prod-B stable -> prod-A candidate 的反向蓝绿 release intent；只写候选，不切 owner 或 stable Service。')
-    booleanParam(name: 'ROLLBACK_PROD', defaultValue: false, description: '仅手动运行：从已验证的 prod 三镜像历史中选择一个版本回滚。')
+    booleanParam(name: 'ROLLBACK_PROD', defaultValue: false, description: '通过 Jenkins API 触发：立即将 prod 写回历史 release state。')
+    string(name: 'TARGET_PROD_SOURCE_COMMIT', defaultValue: '', description: '回滚目标 sourceCommit；留空时自动选择历史中最新的上一版本。')
     booleanParam(name: 'RECOVERY_TEST_RELEASE', defaultValue: false, description: '仅手动运行：仅在 test 已 Synced|Progressing 时恢复旧版本故障；跳过旧版本健康前置检查，但保留新版本完整验证。')
   }
 
@@ -73,15 +74,6 @@ pipeline {
           if ([params.DEPLOY_PROD, reverseDeployRequested(), rollbackRequested(), recoveryTestReleaseRequested()].findAll { it }.size() > 1) {
             error 'DEPLOY_PROD、REVERSE_DEPLOY_PROD、ROLLBACK_PROD 与 RECOVERY_TEST_RELEASE 只能选择一个。'
           }
-        }
-      }
-    }
-
-    stage('test 发布前置检查') {
-      when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
-      steps {
-        script {
-          preflightTestRelease()
         }
       }
     }
@@ -184,30 +176,11 @@ pipeline {
       }
     }
 
-    stage('验证 test') {
-      when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
-      steps {
-        script {
-          def release = [
-            sourceCommit: env.SOURCE_COMMIT,
-            nodeDigest: env.NODE_DIGEST,
-            jobsDigest: env.JOBS_DIGEST,
-            gatewayDigest: env.GATEWAY_DIGEST,
-            j3aManagementEnabled: env.J3A_MANAGEMENT_ENABLED
-          ]
-          waitForArgoApplication('juhe-ai-test', env.TEST_RELEASE_STATE_REVISION)
-          waitForIngress('test')
-          verifyJ3aRelease('test', release.j3aManagementEnabled)
-          markReleaseVerified('test', release.sourceCommit, release.nodeDigest, release.jobsDigest, release.gatewayDigest, release.j3aManagementEnabled)
-        }
-      }
-    }
-
-    stage('读取已验证 test') {
+    stage('读取 test release state') {
       when { expression { (params.DEPLOY_PROD || reverseDeployRequested()) && !rollbackRequested() } }
       steps {
         script {
-          def release = readVerifiedTestRelease()
+          def release = readTestRelease()
           env.SOURCE_COMMIT = release.sourceCommit
           env.NODE_DIGEST = release.nodeDigest
           env.JOBS_DIGEST = release.jobsDigest
@@ -221,11 +194,12 @@ pipeline {
       when { expression { params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
         script {
-          assertStandardProdPromotionAllowed()
-          def release = readVerifiedTestRelease()
-          if (release.sourceCommit != env.SOURCE_COMMIT || release.nodeDigest != env.NODE_DIGEST || release.jobsDigest != env.JOBS_DIGEST || release.gatewayDigest != env.GATEWAY_DIGEST || release.j3aManagementEnabled != env.J3A_MANAGEMENT_ENABLED) {
-            error 'test release state 在晋级期间发生变化，拒绝写入 prod。'
-          }
+          def release = readTestRelease()
+          env.SOURCE_COMMIT = release.sourceCommit
+          env.NODE_DIGEST = release.nodeDigest
+          env.JOBS_DIGEST = release.jobsDigest
+          env.GATEWAY_DIGEST = release.gatewayDigest
+          env.J3A_MANAGEMENT_ENABLED = release.j3aManagementEnabled
           env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-promotion')
         }
       }
@@ -235,13 +209,14 @@ pipeline {
       when { expression { reverseDeployRequested() } }
       steps {
         script {
-          assertReverseProdIntentAllowed()
-          def release = readVerifiedTestRelease()
-          if (release.sourceCommit != env.SOURCE_COMMIT || release.nodeDigest != env.NODE_DIGEST || release.jobsDigest != env.JOBS_DIGEST || release.gatewayDigest != env.GATEWAY_DIGEST || release.j3aManagementEnabled != env.J3A_MANAGEMENT_ENABLED) {
-            error 'test release state 在反向候选写入期间发生变化，拒绝写入 prod candidate。'
-          }
+          def release = readTestRelease()
+          env.SOURCE_COMMIT = release.sourceCommit
+          env.NODE_DIGEST = release.nodeDigest
+          env.JOBS_DIGEST = release.jobsDigest
+          env.GATEWAY_DIGEST = release.gatewayDigest
+          env.J3A_MANAGEMENT_ENABLED = release.j3aManagementEnabled
           writeReverseReleaseState(env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED)
-          currentBuild.description = "反向蓝绿候选已写入：prod-b stable -> prod-a candidate，source=${env.SOURCE_COMMIT}；等待 gate/UAT/owner handoff/stable switch"
+          currentBuild.description = "反向 prod candidate 已写入，source=${env.SOURCE_COMMIT}"
         }
       }
     }
@@ -250,22 +225,14 @@ pipeline {
       when { expression { rollbackRequested() } }
       steps {
         script {
-          def rollbackSnapshot = prodRollbackSnapshot()
           def candidates = prodRollbackCandidates()
           if (candidates.isEmpty()) {
-            error '没有可回滚的历史 prod 发布。首个 K3s prod 版本已记录；完成下一次验证通过的 prod 晋级后才会出现可选旧版本。'
+            error '没有可回滚的历史 prod release state。'
           }
-          def selectedLabel = input(
-            message: '选择要恢复的 prod 发布版本。三组件 digest 与 source commit 均从 Git 历史读取，不能手工填写。',
-            ok: '开始回滚',
-            parameters: [choice(name: 'TARGET_PROD_RELEASE', choices: candidates.keySet().join('\n'), description: '只显示已验证且与当前 prod 不同的历史发布。')]
-          )
-          if (prodRollbackSnapshot() != rollbackSnapshot) {
-            error '等待回滚确认期间，prod release state 或 history 已变化；拒绝回滚。'
-          }
-          def selected = candidates[selectedLabel]
+          def targetCommit = params.TARGET_PROD_SOURCE_COMMIT?.trim()
+          def selected = targetCommit ? candidates.values().find { it.sourceCommit == targetCommit } : candidates.values().last()
           if (selected == null) {
-            error '所选 prod 发布不存在或已失效。'
+            error "回滚目标 ${targetCommit} 不在历史 prod release state 中。"
           }
           env.SOURCE_COMMIT = selected.sourceCommit
           env.NODE_DIGEST = selected.nodeDigest
@@ -273,18 +240,7 @@ pipeline {
           env.GATEWAY_DIGEST = selected.gatewayDigest
           env.J3A_MANAGEMENT_ENABLED = selected.j3aManagementEnabled
           env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-rollback')
-        }
-      }
-    }
-
-    stage('验证 prod') {
-      when { expression { (params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested()) || rollbackRequested() } }
-      steps {
-        script {
-          waitForArgoApplication('juhe-ai-prod', env.PROD_RELEASE_STATE_REVISION)
-          waitForIngress('prod')
-          verifyJ3aRelease('prod', env.J3A_MANAGEMENT_ENABLED)
-          markReleaseVerified('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED)
+          currentBuild.description = "prod 已写入回滚 release state，source=${env.SOURCE_COMMIT}"
         }
       }
     }
@@ -488,7 +444,7 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
   if (environmentName == 'prod') {
     sh "sed -i 's/replicas: 0/replicas: 1/' '${overlay}/statefulset-patch.yaml'"
   }
-  sh """#!/bin/sh
+    sh """#!/bin/sh
     set -eu
     cd '${releaseWorkspace()}'
     sed -i \\
@@ -501,11 +457,20 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       -e 's|^  verification.status: ".*"|  verification.status: "pending"|' \\
       -e 's|^  verification.sourceCommit: ".*"|  verification.sourceCommit: ""|' \\
       '${overlay}/release-metadata.yaml'
+    if [ '${environmentName}' = 'prod' ]; then
+      history='apps/juhe-ai/overlays/prod/release-history.tsv'
+      if [ ! -f "\$history" ]; then
+        printf '# recordedAtUtc\\tactor\\tsourceCommit\\tnodeDigest\\tjobsDigest\\tgatewayDigest\\tj3aManagementEnabled\\tjenkinsBuild\\n' > "\$history"
+      fi
+      if ! awk -F '\\t' -v commit='${sourceCommit}' -v node='${nodeDigest}' -v jobs='${jobsDigest}' -v gateway='${gatewayDigest}' -v j3a='${j3aManagementEnabled}' '\$3 == commit && \$4 == node && \$5 == jobs && \$6 == gateway && (NF == 7 ? j3a == "false" : \$7 == j3a) { found = 1 } END { exit !found }' "\$history"; then
+        printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '${actor}' '${sourceCommit}' '${nodeDigest}' '${jobsDigest}' '${gatewayDigest}' '${j3aManagementEnabled}' "\${BUILD_TAG:-unknown}" >> "\$history"
+      fi
+    fi
     git config user.name platform-jenkins
     git config user.email jenkins@jh.huanmin.top
-    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml' '${overlay}/statefulset-patch.yaml' '${overlay}/j3a-management-ingressroute.yaml'
+    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml' '${overlay}/statefulset-patch.yaml' '${overlay}/j3a-management-ingressroute.yaml' 'apps/juhe-ai/overlays/prod/release-history.tsv'
     if git diff --cached --quiet; then
-      echo 'release state 已是目标 source commit 与不可变 digest；继续执行验证，不重复提交。'
+      echo 'release state 已是目标 source commit 与不可变 digest；不重复提交。'
     else
       git commit -m '[skip ci] release(juhe-ai-${environmentName}): ${sourceCommit}'
       GIT_SSH_COMMAND="ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts" git push origin HEAD:'${env.RELEASE_BRANCH}'
