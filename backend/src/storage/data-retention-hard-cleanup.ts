@@ -17,8 +17,6 @@ interface HardCleanupTableRule {
 }
 
 const nonBusinessDatasetCleanupTables: HardCleanupTableRule[] = [
-  { databaseRole: 'dataset', tableName: 'model_check_items', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'model_check_runs', timeColumnName: 'created_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'public_api_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'api_key_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'account_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' }

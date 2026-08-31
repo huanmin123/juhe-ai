@@ -27,9 +27,6 @@ export function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): nu
     case 'background_worker_record_maintenance':
       bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
       break
-    case 'background_worker_dataset_write_request':
-      bytes = estimateJsonBytes(message.operation) + 256
-      break
     case 'background_worker_account_test_tasks':
       bytes = message.taskIds.reduce((sum, taskId) => Math.min(workerMessageEstimateMaxBytes, sum + Buffer.byteLength(taskId, 'utf8') + 64), 128)
       break

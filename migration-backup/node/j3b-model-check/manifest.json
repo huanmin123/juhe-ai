@@ -1,0 +1,58 @@
+{
+  "featureId": "j3b-model-check",
+  "archivedAt": "2026-08-31T00:00:00+08:00",
+  "maintainer": "juhe-ai migration",
+  "cutoverCommit": "4073250e407ea25d37a9d33d47a99bff1d8ffded",
+  "rollbackCommit": "4073250e407ea25d37a9d33d47a99bff1d8ffded",
+  "goImplementationPaths": [
+    "backend-go/projects/gateway/internal/modelcheckowner",
+    "backend-go/projects/gateway/internal/modelcheckprobe",
+    "backend-go/projects/maintenance/internal/j3bmodelcheck",
+    "backend-go/shared/contracts"
+  ],
+  "disabledNodeEntrypoints": [
+    "backend/src/server.ts model-checks proxy",
+    "backend/src/modules/system-api/system-api-app.ts model-checks routes",
+    "backend/src/modules/background/background-jobs.ts J3b schedules",
+    "backend/src/modules/background/background-ipc.ts dataset writer IPC",
+    "backend/src/worker.ts J3b worker dispatch"
+  ],
+  "restoreProcedure": "Stop the Gateway J3b owner, fence its owner epoch, restore this exact feature at the recorded rollback commit, and validate durable readback before enabling the Node owner. The archive is comparison-only: never overlay individual files or enable Node and Gateway writers together.",
+  "dualModeVerification": {
+    "sqlite": "docs/migration/J3b-模型检测完整迁移契约.md sections 9.5 and 9.7.36 record isolated SQLite schema, backfill/readback and Gateway runtime evidence.",
+    "postgresRedis": "docs/migration/J3b-模型检测完整迁移契约.md section 9.7.36 records isolated dev PostgreSQL/PgBouncer backfill/readback, Gateway candidate and Redis verification."
+  },
+  "activeNodePathZeroEvidence": "cd backend-go && go run ./projects/maintenance/cmd/juhe-ai-maintenance -scan-node-j3b-active-path; expected blockedFindings=0",
+  "originalFiles": [
+    {"originalPath":"backend/src/modules/background/background-dataset-writer.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/background/background-dataset-writer.ts","sha256":"4e18407dbe76ad40085aa11051ada31385e80c43b9071bafbc568182019ceebb"},
+    {"originalPath":"backend/src/modules/background/model-quality-scheduled-check.service.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/background/model-quality-scheduled-check.service.ts","sha256":"fd356bcfc38798fdb5cb775ffc554c3b500c30db2a04766ad35dae0cb993ad3d"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-active-runs.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-active-runs.ts","sha256":"c0e5b159a29090276c0fd15c033cd79de7c362928d9ba15acb0ba9a3f4f72067"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-evaluation.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-evaluation.ts","sha256":"bd41358d2d83186115b8a232976ce8940fe77ed93750a88d7511b4b5f5364d38"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-gateway-probe.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-gateway-probe.ts","sha256":"ad79cf96fa00b2833d1595535b2f250a187f4896584e77634c101a9f3ac22e63"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-gpt56-juice.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-gpt56-juice.ts","sha256":"60c51eb046fe960d7607e8910f8b557c984748930612ed11439720cced09e958"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-identity-features.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-identity-features.ts","sha256":"515625d856e50fbcdc02b4637406b99ef9ccebc88b50bfac314ac3ea6720da7d"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-observation-security.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-observation-security.ts","sha256":"2e300394a7140e85506f3e8be121ea75c51ece89f8ec74268a8ae9f42b6d5a18"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-parsing.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-parsing.ts","sha256":"eafe3e00770fa13b5d70521e7fa0de380426d4cdd155c5b7999967eedb91d079"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-probe-retry.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-probe-retry.ts","sha256":"4cb9b67a7da43c601d09c5e89b4bbb29c7c8fd60f1cebe3387b293453ff6172a"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-response-parsing.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-response-parsing.ts","sha256":"62a775c023a76e125ce7a94e622bbc9ed246e94fe93dae50d4d628aba26bf008"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-token-integrity.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-token-integrity.ts","sha256":"88096cf5a5952b7d66779aa806759671b44c7c6baaa442bec25669633c6265f4"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-token-probes.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-token-probes.ts","sha256":"337ab0be498bfa7a7a030ea438b124b9a59972d18edee7277a788a5c37e0eeb9"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-token-worker.service.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-token-worker.service.ts","sha256":"3eb1615c81c9ca7a99d3731740bc5afeaa7258f813685ef89c762543b091156c"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-token-worker.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-token-worker.ts","sha256":"c6b6c4e59b0dac2fb02b769bb8611ad6e27c302ab7f0cf664497e46881db002d"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks-trust-report.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks-trust-report.ts","sha256":"21dcc008c04c91c43b43123b27e9235353f494f6476042acbc6f07a8d6237fe3"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks.constants.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks.constants.ts","sha256":"25ee65ba095537eaa9e8230ef4169762e34729e522aaf6f78fc4e710c2a7c9ec"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks.payloads.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks.payloads.ts","sha256":"d67947495a0c957c5ef1a98ed66dd21a398d031ec8c7719686632667d92d43f2"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks.probes.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks.probes.ts","sha256":"3b2172d6c47b3889b26a5bc2fb91bf682dd791c2b6acdd61fd9ccb1705dc3268"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks.profiles.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks.profiles.ts","sha256":"c7b5b0afbbe2dcaa01925ada909cbbd1a1e51efc7a6d57e387359999af7ad96c"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks.provider-capabilities.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks.provider-capabilities.ts","sha256":"e9623c514089d82f644b802b33d30c78e49f8e35f965dba0d0aa2ef8606a1dfb"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks.routes.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks.routes.ts","sha256":"5b1d77f7150d607ef30c9cfe9b30dbfc29f4a5a31b248228a426476d7c6321e2"},
+    {"originalPath":"backend/src/modules/model-checks/model-checks.service.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks.service.ts","sha256":"47f4a6028218221061a222b428cd4e7497b854d8711273b5e413a4cb8f86ea7f"},
+    {"originalPath":"backend/src/storage/model-checks.repository.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/storage/model-checks.repository.ts","sha256":"52d428c80d5eb64ad304d9c8becfc339fa80d4840e23c08dbfb767abb7c346b2"},
+    {"originalPath":"backend/src/storage/model-quality-health.repository.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/storage/model-quality-health.repository.ts","sha256":"b1fa12003759f3ba246c6c718591ac63aece3f3d0768c269ce34f233b42a158d"},
+    {"originalPath":"backend/src/storage/model-quality.repository.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/storage/model-quality.repository.ts","sha256":"2b9925b48d4978a9272aecad9701ee33cf64e57f9289ea557e5a1d9ba8e91c20"},
+    {"originalPath":"backend/src/storage/model-trust-identity.repository.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/storage/model-trust-identity.repository.ts","sha256":"599683fce5c3e4e572ee8881cec246c35eda22465b4fe77a060b0f28f6c5c4fa"},
+    {"originalPath":"backend/src/storage/model-trust-statistics.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/storage/model-trust-statistics.ts","sha256":"5076f6614755a99c9716458aa131f1b7dbac428d3c1d5f1ea18dee8ffc9484e1"},
+    {"originalPath":"backend/src/storage/model-trust-token-baseline.repository.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/storage/model-trust-token-baseline.repository.ts","sha256":"ea04d59c2e15045d9e57cb66746a586cef54083dc98a7202a4fa65915a43a85c"},
+    {"originalPath":"backend/src/storage/model-trust.repository.ts","archivePath":"migration-backup/node/j3b-model-check/backend/src/storage/model-trust.repository.ts","sha256":"7a688fb6603a3e887fc709bda3a26671d8887f9d374bc8f6c82710f1b775eeb6"}
+  ]
+}

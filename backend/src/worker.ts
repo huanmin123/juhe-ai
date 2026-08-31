@@ -36,7 +36,6 @@ import { getAccountApiKeyCooldownRetestQueueSnapshot } from './modules/backgroun
 import { getAccountQualityFailurePrecheckQueueSnapshot } from './modules/background/account-quality-failure-precheck.service.js'
 import { getNormalRouteSpeedFirstRecoveryProbeQueueSnapshot } from './modules/background/normal-route-speed-first-recovery-probe.service.js'
 import { handleStatsWriteOperation, type BackgroundStatsWriteOperation } from './modules/background/background-stats-writer.js'
-import { handleDatasetWriteOperation, type BackgroundDatasetWriteOperation } from './modules/background/background-dataset-writer.js'
 import {
   cancelAccountTestTaskLocal,
   enqueueAccountTestTaskLocal,
@@ -55,7 +54,6 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
-  | { type: 'background_worker_dataset_write_request'; requestId: unknown; operation: unknown }
   | { type: 'background_worker_stats_write_request'; requestId: unknown; operation: unknown }
   | { type: 'background_worker_process_event_loop_request'; requestId: unknown }
 
@@ -153,11 +151,6 @@ process.on('message', (message: unknown) => {
         })
       }
       break
-    case 'background_worker_dataset_write_request':
-      if (typeof message.requestId === 'string' && (isIngestWorker() || (isUsageWorker() && isPrimaryWorkerReplica()))) {
-        void respondToDatasetWriteRequest(message.requestId, message.operation)
-      }
-      break
     case 'background_worker_stats_write_request':
       if (typeof message.requestId === 'string' && isStatsWorker()) {
         void respondToStatsWriteRequest(message.requestId, message.operation)
@@ -239,25 +232,6 @@ async function respondToStatsWriteRequest(requestId: string, operation: unknown)
   } catch (error) {
     sendWorkerMessage({
       type: 'background_worker_stats_write_response',
-      requestId,
-      ok: false,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    })
-  }
-}
-
-async function respondToDatasetWriteRequest(requestId: string, operation: unknown): Promise<void> {
-  try {
-    const result = await handleDatasetWriteOperation(operation as BackgroundDatasetWriteOperation)
-    sendWorkerMessage({
-      type: 'background_worker_dataset_write_response',
-      requestId,
-      ok: true,
-      result
-    })
-  } catch (error) {
-    sendWorkerMessage({
-      type: 'background_worker_dataset_write_response',
       requestId,
       ok: false,
       errorMessage: error instanceof Error ? error.message : String(error)
@@ -424,14 +398,12 @@ function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
     || message.type === 'background_worker_usage_records'
     || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_record_maintenance'
-    || message.type === 'background_worker_dataset_write_request'
 }
 
 function isUsageWorkerMessage(message: WorkerIncomingMessage): boolean {
   return isWorkerControlMessage(message)
     || message.type === 'background_worker_usage_records'
     || message.type === 'background_worker_record_maintenance'
-    || message.type === 'background_worker_dataset_write_request'
 }
 
 function isLogWorkerMessage(message: WorkerIncomingMessage): boolean {

@@ -134,17 +134,6 @@ import {
 } from '../../storage/runtime-logs.repository.js'
 import { getRuntimeLogFacetsAsync } from '../../storage/runtime-log-query.repository.js'
 import {
-  applyModelQualityEnforcementAsync,
-  claimDueModelQualitySchedulesAsync,
-  completeModelQualityScheduleRunAsync,
-  claimDueModelQualityRecoveriesAsync,
-  completeModelQualityRecoveryAsync,
-  deleteModelQualityScheduleAsync,
-  saveModelQualityPolicyAsync,
-  patchModelQualityScheduleAsync,
-  createModelQualityScheduleAsync
-} from '../../storage/model-quality.repository.js'
-import {
   listActiveClientIpPolicies,
   listActiveClientIpPoliciesAsync,
 } from '../../storage/client-ip-stats.repository.js'
@@ -1135,18 +1124,6 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return await listAccountCircuitProjectionGaps(operation)
     case 'cleanup_account_circuit_control_plane':
       return await cleanupAccountCircuitControlPlane(operation)
-    case 'model_quality_command': {
-      const command = operation.command
-      if (command.kind === 'save_policy') return { kind: 'policy', policy: await saveModelQualityPolicyAsync(command.systemAccountId, command.input) }
-      if (command.kind === 'create_schedule') return { kind: 'schedule', schedule: await createModelQualityScheduleAsync(command.systemAccountId, command.input) }
-      if (command.kind === 'patch_schedule') return { kind: 'schedule', schedule: await patchModelQualityScheduleAsync(command.systemAccountId, command.scheduleId, command.input) }
-      if (command.kind === 'delete_schedule') return { kind: 'deleted', deleted: await deleteModelQualityScheduleAsync(command.systemAccountId, command.scheduleId) }
-      if (command.kind === 'apply_enforcement') return { kind: 'enforcement', enforcement: await applyModelQualityEnforcementAsync(command.input) }
-      if (command.kind === 'claim_due_schedules') return { kind: 'claimed', candidates: await claimDueModelQualitySchedulesAsync(command.ownerId, command) }
-      if (command.kind === 'complete_schedule_run') return { kind: 'completed', completed: await completeModelQualityScheduleRunAsync(command.input) }
-      if (command.kind === 'claim_due_recoveries') return { kind: 'recoveries_claimed', candidates: await claimDueModelQualityRecoveriesAsync(command.ownerId, command) }
-      return { kind: 'recovery_completed', recovery: await completeModelQualityRecoveryAsync(command.input) }
-    }
     case 'cleanup_chat_retention': {
       if (runtimeConfig.databaseDriver === 'postgres' && !operation.scheduledLease) {
         throw new Error('PostgreSQL AI 问答保留清理缺少 scheduledLease')
@@ -1716,8 +1693,6 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return getRuntimeLogFacetsAsync()
     case 'cleanup_chat_retention':
       throw new Error('cleanup_chat_retention 必须走异步 DB service handler')
-    case 'model_quality_command':
-      throw new Error(`${operation.type} 必须走异步 DB service handler`)
     case 'status':
       return buildDbServiceRuntimeSnapshot()
     default:

@@ -1271,15 +1271,6 @@ async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, i
   }
   if (await postgresRowsExist(client, `
     SELECT 1
-    FROM juhe_dataset.model_check_runs
-    WHERE target_type = 'account'
-      AND target_id = ANY(?::text[])
-    LIMIT 1
-  `, [accountIds])) {
-    return true
-  }
-  if (await postgresRowsExist(client, `
-    SELECT 1
     FROM juhe_stats.account_quality_scores
     WHERE account_id = ANY(?::text[])
     LIMIT 1

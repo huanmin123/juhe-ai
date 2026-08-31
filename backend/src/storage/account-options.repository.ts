@@ -1,4 +1,4 @@
-import type { AccountListItem, AccountOptionSummary, AccountStatus, AuthorizationStatus, ModelCheckAccountOption } from '../domain/types.js'
+import type { AccountListItem, AccountOptionSummary, AccountStatus, AuthorizationStatus } from '../domain/types.js'
 import { accountFilterStatuses } from '../domain/account-status-classification.js'
 import { canAccessAll, includeSystemAccountFields, manageableSystemAccountId, resolveAccessScope, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, normalizeAccountOptionListOptions, type AccountOptionListOptions } from './account-list-options.js'
@@ -16,9 +16,6 @@ import { getPostgresPool } from './postgres-client.js'
 import { loadAuthorizationQuotaExceededByAuthorizationIdAsync } from './account-summary.repository.js'
 import type { AccountListRow } from './repository-row-types.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
-import { loadSupportedModelsByAccountIds, loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
-import { loadModelMappingsByAccountIds, loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
-import { configuredModelCheckModelsForAccount } from '../modules/model-checks/model-checks.profiles.js'
 import { listAccountListAvailabilityProjectionPageInClient } from './account-list-availability-projection.repository.js'
 
 type AccountOptionFilterValue = string | number
@@ -68,148 +65,6 @@ interface AccountOptionRow {
 interface AccountOptionCandidatePage<T> {
   items: T[]
   exhausted: boolean
-}
-
-export interface ModelCheckAccountOptionListOptions {
-  purpose: 'run' | 'history' | 'schedule'
-  accountId?: string
-  keyword?: string
-  selectedIds?: string[]
-  limit: number
-}
-
-export function listModelCheckAccountOptions(access: AccessScope | undefined, options: ModelCheckAccountOptionListOptions): ModelCheckAccountOption[] {
-  const base = modelCheckAccountOptionQuery(options)
-  const rows = options.purpose === 'schedule'
-    ? queryOwnedAccountOptionRows(access, base)
-    : queryAccountOptionRowsForAccess(access, base)
-  const selected = !options.accountId && options.selectedIds?.length
-    ? (options.purpose === 'schedule' ? queryOwnedAccountOptionRows : queryAccountOptionRowsForAccess)(access, modelCheckSelectedAccountOptionQuery(options))
-    : []
-  const selectedRows = selectModelCheckRows([...rows, ...selected])
-  if (!options.accountId) return finalizeModelCheckOptions(modelCheckBaseOptionsFromRows(selectedRows), options)
-  const resourceAccountIds = selectedRows.map(modelCheckResourceAccountId)
-  return finalizeModelCheckOptions(
-    modelCheckOptionsFromRows(
-      selectedRows,
-      loadSupportedModelsByAccountIds(resourceAccountIds),
-      loadModelMappingsByAccountIds(resourceAccountIds)
-    ),
-    options
-  )
-}
-
-export async function listModelCheckAccountOptionsAsync(access: AccessScope | undefined, options: ModelCheckAccountOptionListOptions): Promise<ModelCheckAccountOption[]> {
-  if (sqliteReadWorkerPoolEnabled()) return requestSqliteReadWorker({ type: 'list_model_check_account_options_read_only', access, options })
-  if (runtimeConfig.databaseDriver !== 'postgres') return listModelCheckAccountOptions(access, options)
-  const client = createPostgresDatabaseClient(await getPostgresPool())
-  const base = modelCheckAccountOptionQuery(options)
-  const rows = options.purpose === 'schedule'
-    ? await queryOwnerAccountOptionRowsAsync(client, access, base)
-    : await queryAccountOptionRowsForAccessAsync(client, access, base)
-  const selected = !options.accountId && options.selectedIds?.length
-    ? options.purpose === 'schedule'
-      ? await queryOwnerAccountOptionRowsAsync(client, access, modelCheckSelectedAccountOptionQuery(options))
-      : await queryAccountOptionRowsForAccessAsync(client, access, modelCheckSelectedAccountOptionQuery(options))
-    : []
-  const selectedRows = selectModelCheckRows([...rows, ...selected])
-  if (!options.accountId) return finalizeModelCheckOptions(modelCheckBaseOptionsFromRows(selectedRows), options)
-  const resourceAccountIds = selectedRows.map(modelCheckResourceAccountId)
-  const [supportedModelsByAccountId, modelMappingsByAccountId] = await Promise.all([
-    loadSupportedModelsByAccountIdsAsync(resourceAccountIds),
-    loadModelMappingsByAccountIdsAsync(resourceAccountIds)
-  ])
-  return finalizeModelCheckOptions(
-    modelCheckOptionsFromRows(selectedRows, supportedModelsByAccountId, modelMappingsByAccountId),
-    options
-  )
-}
-
-function modelCheckBaseOptionsFromRows(rows: AccountOptionRow[]): ModelCheckAccountOption[] {
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    providerCode: row.provider_code,
-    providerProtocolProfileId: row.provider_protocol_profile_id,
-    protocolCode: row.protocol_code,
-    protocolVersion: row.protocol_version
-  }))
-}
-
-function selectModelCheckRows(rows: AccountOptionRow[]): AccountOptionRow[] {
-  const seen = new Set<string>()
-  return rows.filter((row) => {
-    if (seen.has(row.id) || !row.name.trim()) return false
-    seen.add(row.id)
-    return [
-      ['gpt', 'profile_gpt_openai_v1'], ['openai', 'profile_openai_openai_v1'],
-      ['deepseek', 'profile_deepseek_openai_v1'], ['deepseek', 'profile_deepseek_anthropic_v1'],
-      ['glm', 'profile_glm_general_openai_v1'], ['glm', 'profile_glm_coding_openai_v1'], ['glm', 'profile_glm_coding_anthropic_v1'],
-      ['anthropic', 'profile_anthropic_anthropic_v1'], ['gemini', 'profile_gemini_native_v1beta'], ['gemini', 'profile_gemini_openai_chat_v1beta']
-    ].some(([provider, profile]) => provider === row.provider_code && profile === row.provider_protocol_profile_id)
-  }).sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }) || left.id.localeCompare(right.id))
-}
-
-function modelCheckOptionsFromRows(
-  rows: AccountOptionRow[],
-  supportedModelsByAccountId: Map<string, string[]>,
-  modelMappingsByAccountId: Map<string, import('../domain/types.js').AccountModelMapping[]>
-): ModelCheckAccountOption[] {
-  return rows.map((row) => {
-    const resourceAccountId = modelCheckResourceAccountId(row)
-    return {
-      id: row.id,
-      name: row.name,
-      providerCode: row.provider_code,
-      providerProtocolProfileId: row.provider_protocol_profile_id,
-      protocolCode: row.protocol_code,
-      protocolVersion: row.protocol_version,
-      modelCheckModels: configuredModelCheckModelsForAccount({
-        providerCode: row.provider_code,
-        providerProtocolProfileId: row.provider_protocol_profile_id,
-        protocolCode: row.protocol_code,
-        protocolVersion: row.protocol_version,
-        supportedModels: supportedModelsByAccountId.get(resourceAccountId) ?? [],
-        modelMappings: modelMappingsByAccountId.get(resourceAccountId) ?? []
-      })
-    }
-  })
-}
-
-function modelCheckResourceAccountId(row: AccountOptionRow): string {
-  return row.authorization_instance_source_account_id?.trim() || row.id
-}
-
-function finalizeModelCheckOptions(
-  items: ModelCheckAccountOption[],
-  options: ModelCheckAccountOptionListOptions
-): ModelCheckAccountOption[] {
-  return items.slice(0, options.limit)
-}
-
-function modelCheckCandidateLimit(options: ModelCheckAccountOptionListOptions): number {
-  return options.accountId ? 1 : options.purpose === 'run' || options.purpose === 'schedule' ? 50 : options.limit
-}
-
-function modelCheckAccountOptionQuery(options: ModelCheckAccountOptionListOptions) {
-  const runnable = options.purpose !== 'history'
-  return normalizeAccountOptionListOptions({
-    ids: options.accountId ? [options.accountId] : undefined,
-    keyword: options.accountId ? undefined : options.keyword,
-    status: runnable ? 'active' : undefined,
-    schedulable: runnable ? 'enabled' : 'all',
-    limit: modelCheckCandidateLimit(options)
-  })
-}
-
-function modelCheckSelectedAccountOptionQuery(options: ModelCheckAccountOptionListOptions) {
-  const runnable = options.purpose !== 'history'
-  return normalizeAccountOptionListOptions({
-    ids: options.selectedIds,
-    status: runnable ? 'active' : undefined,
-    schedulable: runnable ? 'enabled' : 'all',
-    limit: options.selectedIds?.length ?? 1
-  })
 }
 
 export async function collectAccountOptionCandidateMatches<T>(

@@ -1,6 +1,4 @@
 import type { AccountListOptions, AccountOptionListOptions } from './account-list-options.js'
-import type { ModelCheckAccountOptionListOptions } from './account-options.repository.js'
-import type { ModelCheckAccountOption } from '../domain/types.js'
 import type { ManagementSettingsSectionKey } from './settings.repository.js'
 import type { AccountListResult } from './account-summary.repository.js'
 import type { AccountManagementListPage } from './account-management-list.repository.js'
@@ -51,8 +49,6 @@ import type {
   GroupEditDetail,
   GroupOptionSummary,
   GroupSummary,
-  ModelCheckRunDetail,
-  ModelCheckRunListResult,
   ProviderDefinition,
   ProviderCode,
   ProviderProtocolProfileDefinition,
@@ -89,7 +85,6 @@ import type {
   ExternalIntegrationSourceTokenRow,
   ExternalIntegrationSourceTokenSecret
 } from './external-integration-source.repository.js'
-import type { ModelCheckRunListOptions } from './model-checks.repository.js'
 import type {
   PublicApiLogDetail,
   PublicApiLogDetailSupplement,
@@ -206,11 +201,6 @@ export type SqliteReadWorkerOperation =
     type: 'list_account_options_read_only'
     access?: AccessScope
     options?: AccountOptionListOptions
-  }
-  | {
-    type: 'list_model_check_account_options_read_only'
-    access?: AccessScope
-    options: ModelCheckAccountOptionListOptions
   }
   | {
     type: 'list_account_tags_read_only'
@@ -391,16 +381,6 @@ export type SqliteReadWorkerOperation =
   | {
     type: 'list_database_storage_history_read_only'
     input?: { startAt?: string; endAt?: string; limit?: number }
-  }
-  | {
-    type: 'list_model_check_runs_read_only'
-    access?: AccessScope
-    options?: ModelCheckRunListOptions
-  }
-  | {
-    type: 'get_model_check_run_detail_read_only'
-    runId: string
-    access?: AccessScope
   }
   | {
     type: 'list_response_inspection_policies_read_only'
@@ -836,7 +816,6 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'hydrate_account_management_status_filter_seeds_read_only' } ? AccountStatusFilterProjection[] :
   T extends { type: 'find_account_summary_read_only' } ? AccountSummary | undefined :
   T extends { type: 'list_account_options_read_only' } ? AccountOptionSummary[] :
-  T extends { type: 'list_model_check_account_options_read_only' } ? ModelCheckAccountOption[] :
   T extends { type: 'list_account_tags_read_only' } ? AccountTagSummary[] :
   T extends { type: 'get_account_test_session_read_only' } ? AccountTestSession | undefined :
   T extends { type: 'get_account_test_task_read_only' } ? AccountTestTask | undefined :
@@ -874,8 +853,6 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'get_table_storage_overview_read_only' } ? TableStorageOverview :
   T extends { type: 'list_table_storage_history_read_only' } ? TableStorageHistoryPoint[] :
   T extends { type: 'list_database_storage_history_read_only' } ? DatabaseStorageHistoryPoint[] :
-  T extends { type: 'list_model_check_runs_read_only' } ? ModelCheckRunListResult :
-  T extends { type: 'get_model_check_run_detail_read_only' } ? ModelCheckRunDetail | undefined :
   T extends { type: 'list_response_inspection_policies_read_only' } ? ResponseInspectionPolicyListResult :
   T extends { type: 'get_response_inspection_policy_detail_read_only' } ? ResponseInspectionPolicyDetail | undefined :
   T extends { type: 'list_response_inspection_policy_provider_options_read_only' } ? ResponseInspectionPolicyProviderOption[] :

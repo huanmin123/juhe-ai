@@ -30,8 +30,6 @@ type StatsDatabase = ReturnType<typeof getStatsDatabase>
 const usageRecordCleanupRequiredCursorJobNames = ['usage_stats_aggregation', 'client_ip_stats_aggregation'] as const
 const postgresHardCleanupTables: Record<HardCleanupDatabaseRole, Array<{ tableName: string; timeColumnName: string; cutoffKey: HardCleanupCutoffKey }>> = {
   dataset: [
-    { tableName: 'model_check_items', timeColumnName: 'created_at', cutoffKey: 'iso' },
-    { tableName: 'model_check_runs', timeColumnName: 'created_at', cutoffKey: 'iso' },
     { tableName: 'public_api_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
     { tableName: 'api_key_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
     { tableName: 'account_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' }
@@ -144,7 +142,6 @@ export interface UsageRecordsCleanupPreviewResult {
 export interface UsageStatsRetentionCleanupResult {
   accountQualityMinuteStats: number
   accountHealthHourly: number
-  accountQualityHealthHourly: number
   usageStatsMinute: number
   usageModelMinute: number
   usageErrorMinute: number
@@ -194,11 +191,6 @@ export interface SystemMetricsRetentionCleanupResult {
   processEventLoopTrendWindows: number
 }
 
-export interface ModelCheckRetentionCleanupResult {
-  modelCheckRuns: number
-  modelCheckItems: number
-}
-
 export interface NonBusinessDataHardCleanupResult {
   cutoffAt: string
   deletedRows: number
@@ -206,6 +198,18 @@ export interface NonBusinessDataHardCleanupResult {
   hasMore: boolean
   tableRows: Record<string, number>
   fileDeletes: Record<string, number>
+}
+
+/**
+ * Compatibility shim for retired Node J3b callers. Gateway owns model-check
+ * retention now; Node deliberately performs no writes or deletes here.
+ */
+export function cleanupModelCheckRunsBefore(_cutoffCreatedAt: string, _limit = 10000): { modelCheckRuns: number; modelCheckItems: number } {
+  throw new Error('Node J3b retention is retired; Gateway owns model-check cleanup')
+}
+
+export async function cleanupModelCheckRunsBeforeAsync(_cutoffCreatedAt: string, _limit = 10000): Promise<{ modelCheckRuns: number; modelCheckItems: number }> {
+  throw new Error('Node J3b retention is retired; Gateway owns model-check cleanup')
 }
 
 export function cleanupProcessedUsageRecordsBefore(cutoffCreatedAt: string, limit = 10000): number {
@@ -831,7 +835,6 @@ export function cleanupUsageStatsBucketsBefore(input: {
   return {
     accountQualityMinuteStats: deleteRowsBeforeByRowid(database, 'account_quality_minute_stats', 'stat_minute', input.accountQualityMinuteCutoffMinute, limit),
     accountHealthHourly: deleteRowsBeforeByRowid(database, 'account_health_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
-    accountQualityHealthHourly: deleteRowsBeforeByRowid(database, 'account_quality_health_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
     usageStatsMinute: deleteRowsBeforeByRowid(database, 'usage_stats_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageModelMinute: deleteRowsBeforeByRowid(database, 'usage_model_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageErrorMinute: deleteRowsBeforeByRowid(database, 'usage_error_minute', 'stat_minute', input.minuteCutoffMinute, limit),
@@ -882,7 +885,6 @@ export async function cleanupUsageStatsBucketsBeforeAsync(input: Parameters<type
   return await client.transaction(async (tx) => ({
     accountQualityMinuteStats: await deletePostgresStatsRowsBeforeByCtid(tx, 'account_quality_minute_stats', 'stat_minute', input.accountQualityMinuteCutoffMinute, limit),
     accountHealthHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'account_health_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
-    accountQualityHealthHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'account_quality_health_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
     usageStatsMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_stats_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageModelMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_model_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageErrorMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_error_minute', 'stat_minute', input.minuteCutoffMinute, limit),
@@ -951,82 +953,6 @@ export async function cleanupSystemMetricsBeforeAsync(input: Parameters<typeof c
     processEventLoopHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'process_event_loop_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
     processEventLoopTrendWindows: await deletePostgresStatsRowsBeforeByCtid(tx, 'process_event_loop_trend_windows', 'end_date', input.trendWindowCutoffDate, limit)
   }))
-}
-
-export function cleanupModelCheckRunsBefore(cutoffCreatedAt: string, limit = 10000): ModelCheckRetentionCleanupResult {
-  const database = getDatasetDatabase()
-  const batchLimit = positiveLimit(limit)
-  const rows = database
-    .prepare(`
-    SELECT id
-    FROM model_check_runs
-      WHERE created_at < ?
-        AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(cutoffCreatedAt, batchLimit) as CleanupRow[]
-  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
-  if (ids.length === 0) {
-    return {
-      modelCheckRuns: 0,
-      modelCheckItems: 0
-    }
-  }
-
-  return runInDatabaseTransaction(() => {
-    let modelCheckItems = 0
-    let modelCheckRuns = 0
-    for (const chunk of chunkValues(ids, 900)) {
-      const placeholders = sqlPlaceholders(chunk.length)
-      modelCheckItems += changed(database.prepare(`DELETE FROM model_check_items WHERE run_id IN (${placeholders})`).run(...chunk))
-      modelCheckRuns += changed(database.prepare(`DELETE FROM model_check_runs WHERE id IN (${placeholders})`).run(...chunk))
-    }
-    return {
-      modelCheckRuns,
-      modelCheckItems
-    }
-  }, database)
-}
-
-export async function cleanupModelCheckRunsBeforeAsync(cutoffCreatedAt: string, limit = 10000): Promise<ModelCheckRetentionCleanupResult> {
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    return cleanupModelCheckRunsBefore(cutoffCreatedAt, limit)
-  }
-  const client = createPostgresDatabaseClient(await getPostgresPool())
-  return client.transaction(async (tx) => {
-    const rows = await tx.query<CleanupRow>(`
-      SELECT id
-      FROM juhe_dataset.model_check_runs
-      WHERE created_at < ?
-        AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-      FOR UPDATE SKIP LOCKED
-    `, [cutoffCreatedAt, positiveLimit(limit)])
-    const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
-    if (ids.length === 0) {
-      return {
-        modelCheckRuns: 0,
-        modelCheckItems: 0
-      }
-    }
-
-    let modelCheckItems = 0
-    let modelCheckRuns = 0
-    for (const chunk of chunkValues(ids, 10000)) {
-      modelCheckItems += changed(await tx.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY(?::text[])', [chunk]))
-      modelCheckRuns += changed(await tx.execute(`
-        DELETE FROM juhe_dataset.model_check_runs
-        WHERE id = ANY(?::text[])
-          AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
-      `, [chunk]))
-    }
-    return {
-      modelCheckRuns,
-      modelCheckItems
-    }
-  })
 }
 
 export function cleanupExpiredSystemSessions(expiredBefore = nowIso(), limit = 1000): number {

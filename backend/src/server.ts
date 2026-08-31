@@ -53,7 +53,6 @@ import {
   createAccountTestDispatchRouter
 } from './modules/internal-api/account-test-dispatch.routes.js'
 import { controlReadReplicaPrimaryOnlyRequestGuard } from './modules/system-api/control-read-replica-proxy.js'
-import { stopModelCheckTokenWorker } from './modules/model-checks/model-checks-token-worker.service.js'
 import {
   getPendingGatewayFailureUsageFinalizationCount,
   waitForGatewayFailureUsageFinalizationsIdle
@@ -76,10 +75,6 @@ const helpPrefix = `${systemPrefix}/help`
 const gatewayRawBodyLimit = gatewayRawBodyHardLimit
 const httpListenBacklog = 8192
 const dbServiceHttpProxy = createDbServiceHttpProxy()
-const modelCheckHttpProxy = createDbServiceHttpProxy({
-  maxInFlight: runtimeConfig.dbServiceHttpProxy.maxInFlight,
-  timeoutMs: runtimeConfig.dbServiceHttpProxy.chatTimeoutMs
-})
 const chatHttpProxy = createDbServiceHttpProxy({
   maxInFlight: runtimeConfig.dbServiceHttpProxy.chatMaxInFlight,
   timeoutMs: runtimeConfig.dbServiceHttpProxy.chatTimeoutMs
@@ -268,8 +263,6 @@ app.get(`${systemPrefix}/metrics`, (_req, res) => {
 })
 
 app.use(`${systemApiPrefix}/my-chat`, chatHttpProxy)
-app.use(`${systemApiPrefix}/my-model-checks`, modelCheckHttpProxy)
-app.use(`${systemApiPrefix}/model-checks`, modelCheckHttpProxy)
 app.use('/.well-known', dbServiceHttpProxy)
 app.use('/oauth', dbServiceHttpProxy)
 app.use('/__aidelegated__', dbServiceHttpProxy)
@@ -617,7 +610,6 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
         pendingFailureUsageFinalizationCount: getPendingGatewayFailureUsageFinalizationCount(),
       }, '服务退出前部分请求或审计任务未在时限内排空')
     }
-    await stopModelCheckTokenWorker()
     await closeLogger()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'server_shutdown_failed' }), '服务优雅退出失败')

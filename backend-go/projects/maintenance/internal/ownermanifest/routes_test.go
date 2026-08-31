@@ -43,14 +43,17 @@ func TestVerifyGatewayRouteOwnerManifestRejectsSourceDrift(t *testing.T) {
 	}
 }
 
-func TestVerifyGatewayRouteOwnerManifestModelChecksPartialRemainsPending(t *testing.T) {
+func TestVerifyGatewayRouteOwnerManifestModelChecksArchiveClosesFamily(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "..")
 	report, err := VerifyGatewayRouteOwnerManifest(filepath.Join(root, "docs", "migration", "GatewayManagementRouteOwnerManifest.json"), root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contains(report.PendingFamilies, "model-checks") {
-		t.Fatalf("model-checks partial ownership must remain pending: %+v", report)
+	if contains(report.PendingFamilies, "model-checks") {
+		t.Fatalf("archived model-checks must not remain pending: %+v", report)
+	}
+	if report.StatusCoverage["implemented"] != 1 {
+		t.Fatalf("model-checks must be the implemented route family: %+v", report)
 	}
 }
 

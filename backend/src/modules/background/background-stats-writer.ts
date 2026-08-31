@@ -65,7 +65,6 @@ import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
 import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
 import type { AccountBalanceQueryConfig, AccountBalanceSnapshot } from '../accounts/account-balance.types.js'
-import { activateModelTokenInterceptBaselineAsync, aggregateModelTrustObservationsAsync } from '../../storage/model-trust.repository.js'
 import {
   deleteAccountBalanceSnapshotAsync,
   replaceAccountBalanceSnapshotIfCurrentAsync
@@ -75,25 +74,12 @@ import {
   releaseBackgroundJobLeaseAsync
 } from '../../storage/background-task-runs.repository.js'
 import { accountBalanceGoOwnerEnabled } from './account-balance-handover.js'
-import {
-  recordModelQualityHealthFailureAsync,
-  type ModelQualityHealthFailureInput,
-  type ModelQualityHealthFailureResult
-} from '../../storage/model-quality-health.repository.js'
 
 const statsAggregationBatchPauseMs = 25
 const usageStatsAggregationOnlineBatchSizeCap = 1000
 const usageStatsAggregationMaxRunMsCap = 60_000
 
 export type BackgroundStatsWriteOperation = (
-  | {
-    type: 'record_model_quality_health_failure'
-    input: ModelQualityHealthFailureInput
-  }
-  | {
-    type: 'aggregate_model_trust_observations'
-    batchSize: number
-  }
   | {
     type: 'aggregate_usage_stats'
     batchSize: number
@@ -183,10 +169,6 @@ export type BackgroundStatsWriteOperation = (
     ownerId: string
   }
   | {
-    type: 'activate_model_token_intercept_baseline'
-    input: Parameters<typeof activateModelTokenInterceptBaselineAsync>[0]
-  }
-  | {
     type: 'cleanup_usage_stats_retention'
     input: Parameters<typeof cleanupUsageStatsBucketsBefore>[0]
   }
@@ -210,7 +192,6 @@ export type BackgroundStatsWriteOperation = (
 ) & { scheduledLease?: ScheduledJobLeaseFence }
 
 export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOperation = BackgroundStatsWriteOperation> =
-  T extends { type: 'record_model_quality_health_failure' } ? ModelQualityHealthFailureResult :
   T extends { type: 'aggregate_usage_stats' } ? { processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number } :
   T extends { type: 'aggregate_client_ip_stats' } ? { processed: number } :
   T extends { type: 'refresh_group_account_stats' } ? { refreshed: number } :
@@ -254,10 +235,6 @@ export async function requestStatsWriter<T extends BackgroundStatsWriteOperation
 
 export async function handleStatsWriteOperation(operation: BackgroundStatsWriteOperation): Promise<unknown> {
   switch (operation.type) {
-    case 'record_model_quality_health_failure':
-      return await recordModelQualityHealthFailureAsync(operation.input)
-    case 'aggregate_model_trust_observations':
-      return { processed: await aggregateModelTrustObservationsAsync(operation.batchSize, requiredPostgresScheduledLease(operation)) }
     case 'aggregate_usage_stats': {
       const result = await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore, requiredPostgresScheduledLease(operation))
       return result
@@ -331,9 +308,6 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
     case 'release_account_balance_lease':
       if (accountBalanceGoOwnerEnabled()) throw new Error('J2 Go owner 模式禁止 Node 余额 lease writer')
       return { released: await releaseBackgroundJobLeaseAsync(operation.leaseKey, operation.ownerId) }
-    case 'activate_model_token_intercept_baseline':
-      await activateModelTokenInterceptBaselineAsync(operation.input)
-      return { activated: true }
     case 'cleanup_usage_stats_retention':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await cleanupUsageStatsBucketsBeforeAsync(operation.input)

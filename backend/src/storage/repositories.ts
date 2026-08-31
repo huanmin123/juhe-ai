@@ -855,12 +855,10 @@ export {
 export {
   cleanupExpiredSystemSessions,
   cleanupExpiredSystemSessionsAsync,
-  cleanupModelCheckRunsBefore,
   cleanupProcessedUsageRecordsBefore,
   cleanupProcessedUsageRecordsBeforeWithResult,
   cleanupSystemMetricsBefore,
   cleanupUsageStatsBucketsBefore,
-  type ModelCheckRetentionCleanupResult,
   type ProcessedUsageRecordsCleanupBatchResult,
   type SystemMetricsRetentionCleanupResult,
   type UsageStatsRetentionCleanupResult
@@ -898,22 +896,6 @@ export {
   type BackgroundTaskRunSummary
 } from './background-task-runs.repository.js'
 
-export {
-  createModelCheckItems,
-  createModelCheckItemsAsync,
-  createModelCheckRun,
-  createModelCheckRunAsync,
-  finishModelCheckRun,
-  finishModelCheckRunAsync,
-  getModelCheckRunDetail,
-  getModelCheckRunDetailAsync,
-  listModelCheckRuns,
-  listModelCheckRunsAsync,
-  type ModelCheckItemCreateInput,
-  type ModelCheckRunCreateInput,
-  type ModelCheckRunFinishInput,
-  type ModelCheckRunListOptions
-} from './model-checks.repository.js'
 export {
   listAccountQualityFailurePrecheckCandidates,
   listAccountQualityFailurePrecheckCandidatesAsync,

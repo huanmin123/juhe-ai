@@ -72,7 +72,6 @@ export const dbServiceOperationAccessModeByType = {
   list_account_circuit_incidents_by_runtime_keys: 'read',
   list_account_circuit_projection_gaps: 'read',
   cleanup_account_circuit_control_plane: 'maintenance',
-  model_quality_command: 'maintenance',
   cleanup_chat_retention: 'maintenance',
   save_codex_context_response_state: 'write',
   save_codex_context_compact_state: 'write',

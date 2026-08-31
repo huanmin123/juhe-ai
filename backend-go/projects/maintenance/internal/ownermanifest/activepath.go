@@ -89,6 +89,11 @@ func ScanNodeJ3bActivePaths(root string) (ActivePathReport, error) {
 			case "regression":
 				addSkip(path, "regression-fixture", "regression fixtures are evidence only")
 				return filepath.SkipDir
+			case "mockdata":
+				if filepath.Base(filepath.Dir(path)) == "maintenance" {
+					addSkip(path, "maintenance-fixture", "maintenance mockdata helpers are evidence-only and have no runtime imports")
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}

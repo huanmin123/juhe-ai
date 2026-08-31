@@ -2,7 +2,6 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/account-record-cleanup.js'
 import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api-key-record-cleanup.js'
-import { cleanupModelCheckRunsBeforeAsync } from '../../storage/data-retention.repository.js'
 import { cleanupPublicApiLogsBeforeAsync } from '../../storage/public-api-logs.repository.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
 import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
@@ -31,13 +30,11 @@ const systemMetricsRawRetentionMaxDays = 7
 const statsRetentionMaxDays = 30
 const snapshotRetentionMaxDays = 30
 const publicApiLogRetentionMaxDays = 365
-const modelCheckRetentionMaxDays = 365
 const expiredDeletedAccountCleanupDbServiceTimeoutMs = 60_000
 let postgresDataRetentionDispatchRunning = false
 
 interface PostgresRetentionPolicy {
   publicApiLogDays: number
-  modelCheckDays: number
   usageRecordDays: number
   statsMinuteHours: number
   statsHourlyDays: number
@@ -187,11 +184,6 @@ async function cleanupPostgresDatasetRetainedData(input: {
     input.batchSize,
     input.signal
   )
-  await runRetentionBatches(input.maxBatches, async () => {
-    const deleted = await cleanupModelCheckRunsBeforeAsync(cutoffIso(input.nowMs, input.retention.modelCheckDays), input.batchSize)
-    addNumberResult(result, deleted)
-    return deleted.modelCheckRuns
-  }, input.batchSize, input.signal)
   return result
 }
 
@@ -313,7 +305,6 @@ function sumNumbers(deleted: object): number {
 function postgresRetentionPolicy(settings: Record<string, unknown>): PostgresRetentionPolicy {
   return {
     publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
-    modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
     usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays),
     statsMinuteHours: settingNumber(settings, 'usageStatsMinuteRetentionHours', 1, statsMinuteRetentionMaxHours),
     statsHourlyDays: settingNumber(settings, 'usageStatsHourlyRetentionDays', 1, statsHourlyRetentionMaxDays),

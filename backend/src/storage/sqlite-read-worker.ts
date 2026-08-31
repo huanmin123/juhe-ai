@@ -18,7 +18,7 @@ import {
   hydrateAccountManagementStatusSeedsReadOnly,
   listAccountStatusProjectionsReadOnly
 } from './account-status-snapshot.repository.js'
-import { listAccountOptions, listModelCheckAccountOptions } from './account-options.repository.js'
+import { listAccountOptions } from './account-options.repository.js'
 import { listAccountTags } from './account-tags.repository.js'
 import {
   accountTestTaskCancelMessage,
@@ -56,7 +56,6 @@ import {
   listGroupsPageReadOnly,
   listGroupsReadOnly
 } from './group-summary.repository.js'
-import { getModelCheckRunDetail, listModelCheckRuns } from './model-checks.repository.js'
 import { listProviderDefaultHealthCheckModelPreferenceEntriesReadOnly } from './provider-default-health-check-model.repository.js'
 import {
   defaultProviderProtocolProfile,
@@ -208,8 +207,6 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return findAccountSummary(operation.accountId, operation.access)
     case 'list_account_options_read_only':
       return listAccountOptions(operation.access, operation.options)
-    case 'list_model_check_account_options_read_only':
-      return listModelCheckAccountOptions(operation.access, operation.options)
     case 'list_account_tags_read_only':
       return listAccountTags(operation.access)
     case 'get_account_test_session_read_only':
@@ -284,10 +281,6 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listTableStorageHistory(operation.input)
     case 'list_database_storage_history_read_only':
       return listDatabaseStorageHistory(operation.input)
-    case 'list_model_check_runs_read_only':
-      return listModelCheckRuns(operation.access, operation.options)
-    case 'get_model_check_run_detail_read_only':
-      return getModelCheckRunDetail(operation.runId, operation.access)
     case 'list_response_inspection_policies_read_only':
       return listResponseInspectionPolicies()
     case 'get_response_inspection_policy_detail_read_only':

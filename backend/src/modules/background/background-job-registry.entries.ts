@@ -59,20 +59,6 @@ export const backgroundScheduledJobs = [
     notes: 'usage 增量聚合后由独立 scheduler job 合并刷新热窗口，不阻塞在线聚合主链路'
   }),
   scheduled({
-    jobName: 'model-trust-observation-aggregation',
-    category: 'scheduled',
-    kind: 'stats',
-    lifecycle: 'persistent',
-    defaultRole: 'stats-worker',
-    hotspot: false,
-    singleOwner: true,
-    shardable: false,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: true,
-    writes: ['stats:model_token_integrity_windows', 'stats:model_token_integrity_rounds', 'stats:model_token_intercept_baseline_versions', 'stats:model_trust_window_sources', 'stats:model_identity_*', 'stats:model_paired_similarity_windows', 'stats:model_account_trust_results', 'stats:stats_job_state'],
-    notes: '按 dataset observation 游标增量构建模型可信窗口和账号最新结果，API 只读结果表'
-  }),
-  scheduled({
     jobName: 'client-ip-stats-aggregation',
     category: 'scheduled',
     kind: 'stats',
@@ -310,46 +296,6 @@ export const backgroundScheduledJobs = [
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
     writes: ['business:accounts']
-  }),
-  scheduled({
-    jobName: 'model-quality-scheduled-check',
-    category: 'scheduled',
-    kind: 'probe',
-    lifecycle: 'persistent',
-    defaultRole: 'ops-worker',
-    hotspot: true,
-    singleOwner: false,
-    shardable: true,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: true,
-    writes: ['business:model_quality_schedules', 'business:accounts', 'business:account_quality_enforcements', 'dataset:model_check_runs', 'stats:account_quality_health_hourly']
-  }),
-  scheduled({
-    jobName: 'model-quality-recovery',
-    category: 'scheduled',
-    kind: 'probe',
-    lifecycle: 'persistent',
-    defaultRole: 'ops-worker',
-    hotspot: true,
-    singleOwner: false,
-    shardable: true,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: true,
-    writes: ['business:accounts', 'business:account_quality_enforcements', 'dataset:model_check_runs', 'stats:account_quality_health_hourly']
-  }),
-  scheduled({
-    jobName: 'model-quality-health-sync-retry',
-    category: 'scheduled',
-    kind: 'stats',
-    lifecycle: 'persistent',
-    defaultRole: 'ops-worker',
-    hotspot: false,
-    singleOwner: true,
-    shardable: false,
-    leaseRequired: true,
-    blocksUserVisibleFreshness: true,
-    writes: ['dataset:model_check_runs', 'stats:account_quality_health_hourly'],
-    notes: '有界重放质量判定中 healthSyncResult=failed 的 run；统计小时表和 run 决策更新均幂等'
   }),
   scheduled({
     jobName: 'account-api-key-cooldown-retest',

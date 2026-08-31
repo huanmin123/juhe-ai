@@ -2,10 +2,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getDatasetDatabase } from '../../storage/database.js'
 import { cleanupPublicApiLogsBefore } from '../../storage/public-api-logs.repository.js'
-import {
-  cleanupModelCheckRunsBefore,
-  cleanupProcessedUsageRecordsBeforeWithResultAsync
-} from '../../storage/data-retention.repository.js'
+import { cleanupProcessedUsageRecordsBeforeWithResultAsync } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import { checkpointSqliteWal, type SqliteWalCheckpointResult } from '../../storage/sqlite-maintenance.js'
 import { checkpointOpenUsageRecordShardDatabases } from '../../storage/usage-record-shards.js'
@@ -32,12 +29,10 @@ const systemMetricsRawRetentionMaxDays = 7
 const statsRetentionMaxDays = 30
 const snapshotRetentionMaxDays = 30
 const publicApiLogRetentionMaxDays = 365
-const modelCheckRetentionMaxDays = 365
 let cleanupRunning = false
 
 interface DataRetentionPolicy {
   publicApiLogDays: number
-  modelCheckDays: number
   usageRecordDays: number
   statsMinuteHours: number
   statsHourlyDays: number
@@ -53,12 +48,9 @@ interface DataRetentionPolicy {
 
 export interface DataRetentionCleanupResult {
   publicApiLogs: number
-  modelCheckRuns: number
-  modelCheckItems: number
   usageRecords: number
   accountQualityMinuteStats: number
   accountHealthHourly: number
-  accountQualityHealthHourly: number
   usageStatsMinute: number
   usageModelMinute: number
   usageErrorMinute: number
@@ -132,7 +124,6 @@ export async function cleanupExpiredRetainedData(signal: AbortSignal): Promise<D
     const now = Date.now()
     const retention: DataRetentionPolicy = {
       publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
-      modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 1, modelCheckRetentionMaxDays),
       usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 1, usageRecordRetentionMaxDays),
       statsMinuteHours: settingNumber(settings, 'usageStatsMinuteRetentionHours', 1, statsMinuteRetentionMaxHours),
       statsHourlyDays: settingNumber(settings, 'usageStatsHourlyRetentionDays', 1, statsHourlyRetentionMaxDays),
@@ -213,14 +204,6 @@ async function cleanupDatasetAndUsageRetainedData(input: {
       result.publicApiLogs = await cleanupInBatches(
         () => cleanupPublicApiLogsBefore(cutoffIso(now, retention.publicApiLogDays), batchSize),
         batchSize,
-        maxBatches,
-        input.signal
-      )
-    },
-    async () => {
-      await cleanupRetentionInBatches(
-        result,
-        () => cleanupModelCheckRunsBefore(cutoffIso(now, retention.modelCheckDays), batchSize),
         maxBatches,
         input.signal
       )
@@ -489,12 +472,9 @@ function settingNumber(settings: Record<string, unknown>, key: string, min: numb
 function emptyCleanupResult(): DataRetentionCleanupResult {
   return {
     publicApiLogs: 0,
-    modelCheckRuns: 0,
-    modelCheckItems: 0,
     usageRecords: 0,
     accountQualityMinuteStats: 0,
     accountHealthHourly: 0,
-    accountQualityHealthHourly: 0,
     usageStatsMinute: 0,
     usageModelMinute: 0,
     usageErrorMinute: 0,

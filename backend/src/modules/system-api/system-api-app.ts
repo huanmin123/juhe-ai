@@ -15,7 +15,6 @@ import { delegatedApiRouter } from '../delegated-api/delegated-api.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
 import { chatRouter } from '../chat/chat.routes.js'
 import { ipStatsRouter } from '../ip-stats/ip-stats.routes.js'
-import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/operation-logs.routes.js'
 import { anthropicOAuthRouter } from '../anthropic-oauth/anthropic-oauth.routes.js'
 import { geminiOAuthRouter } from '../gemini-oauth/gemini-oauth.routes.js'
@@ -175,7 +174,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-grok-oauth`, forceSelfAccessScope, grokOAuthRouter)
   app.use(`${systemApiPrefix}/my-openai-oauth`, forceSelfAccessScope, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/my-usage-records`, forceSelfAccessScope, usageRecordsRouter)
-  app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
   app.use(`${systemApiPrefix}/providers`, providersRouter)
@@ -193,7 +191,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/openai-oauth`, requireAdmin, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/proxies`, proxiesRouter)
   app.use(`${systemApiPrefix}/usage-records`, requireAdmin, usageRecordsRouter)
-  app.use(`${systemApiPrefix}/model-checks`, requireAdmin, modelChecksRouter)
   app.use(`${systemApiPrefix}/operation-logs`, requireAdmin, operationLogsRouter)
   app.use(`${systemApiPrefix}/public-api-logs`, requireAdmin, publicApiLogsRouter)
   app.use(`${systemApiPrefix}/audit-logs`, requireAdmin, auditLogsRouter)

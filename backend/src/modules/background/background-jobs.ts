@@ -66,17 +66,11 @@ import {
 } from './account-circuit-recovery.service.js'
 import { runGatewayAccountCircuitControlPlaneMaintenance } from '../gateway/runtime/account-circuit.service.js'
 import { keyModelRecoveryScanIntervalMs, runScheduledKeyModelMemoryRecovery } from '../gateway/runtime/key-model-memory-recovery.js'
-import {
-  retryFailedModelQualityHealthSyncs,
-  runDueModelQualityRecoveries,
-  runDueModelQualityScheduledChecks
-} from './model-quality-scheduled-check.service.js'
 import { runAccountListAvailabilityProjectionMaintenance } from '../accounts/account-list-availability-projection.service.js'
 
 let started = false
 let startGeneration = 0
 let usageStatsAggregationRunning = false
-let modelTrustAggregationRunning = false
 let clientIpStatsAggregationRunning = false
 let usageRankSnapshotsRefreshRunning = false
 let groupAccountStatsStartupDirtyMarked = false
@@ -288,7 +282,6 @@ function scheduleBackgroundJobs(): void {
           () => runBackgroundTaskRunReconcile()
         )
       })
-      scheduler.schedule({ name: backgroundScheduledJobName('model-trust-observation-aggregation'), intervalMs: 30 * secondMs, initialDelayMs: 12 * secondMs, stablePhaseWindowMs: 5 * secondMs, passiveJitter: true, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 3 * minuteMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('model-trust-observation-aggregation', 10 * minuteMs, signal, runModelTrustAggregation) })
       if (isPostgresHighPerformanceMode()) {
         scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 4 * secondMs, passiveJitter: true, overlapPolicy: 'coalesceOne', timeoutMs: 20 * secondMs, task: ({ signal }) => runWithPostgresScheduledLease('system-metrics-sample', 15 * secondMs, signal, () => runSystemMetricsSample()) })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, initialDelayMs: 3 * secondMs, stablePhaseWindowMs: 2 * secondMs, passiveJitter: true, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 20 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('usage-stats-aggregation', minuteMs, signal, runUsageStatsAggregation) })
@@ -329,9 +322,6 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('account-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: 2 * secondMs, passiveJitter: true, task: ({ signal }) => runWithPostgresScheduledLease('account-availability-schedule-status-sync', 30 * secondMs, signal, () => runAccountAvailabilityScheduleStatusSync()) })
       scheduler.schedule({ name: backgroundScheduledJobName('resource-authorization-expiry-sweep'), intervalMs: minuteMs, initialDelayMs: 54 * secondMs, passiveJitter: true, task: ({ signal }) => runWithPostgresScheduledLease('resource-authorization-expiry-sweep', 2 * minuteMs, signal, () => runResourceAuthorizationExpirySweep()) })
       scheduler.schedule({ name: backgroundScheduledJobName('expired-deleted-account-cleanup'), intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, passiveJitter: true, task: ({ signal }) => runWithPostgresScheduledLease('expired-deleted-account-cleanup', 10 * minuteMs, signal, () => runExpiredDeletedAccountCleanup()) })
-      scheduler.schedule({ name: backgroundScheduledJobName('model-quality-scheduled-check'), intervalMs: minuteMs, initialDelayMs: 45 * secondMs, stablePhaseWindowMs: 5 * secondMs, passiveJitter: true, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 20 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await runDueModelQualityScheduledChecks(signal), '模型质量定时检查') })
-      scheduler.schedule({ name: backgroundScheduledJobName('model-quality-recovery'), intervalMs: minuteMs, initialDelayMs: 55 * secondMs, stablePhaseWindowMs: 5 * secondMs, passiveJitter: true, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 20 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await runDueModelQualityRecoveries(signal), '模型质量恢复检查') })
-      scheduler.schedule({ name: backgroundScheduledJobName('model-quality-health-sync-retry'), intervalMs: minuteMs, initialDelayMs: 58 * secondMs, stablePhaseWindowMs: 2 * secondMs, passiveJitter: true, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('model-quality-health-sync-retry', 2 * minuteMs, signal, async (leaseSignal) => modelQualityBatchOutcome(await retryFailedModelQualityHealthSyncs(leaseSignal), '模型质量健康同步补偿')) })
       if (accountBalanceNodeOwnerEnabled()) {
         scheduler.schedule({ name: backgroundScheduledJobName('account-balance-refresh'), intervalMs: minuteMs, initialDelayMs: 20 * secondMs, stablePhaseWindowMs: 5 * secondMs, passiveJitter: true, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceRefresh({ signal }) })
         scheduler.schedule({ name: backgroundScheduledJobName('account-balance-auto-detect-recovery'), intervalMs: minuteMs, initialDelayMs: 25 * secondMs, stablePhaseWindowMs: 5 * secondMs, passiveJitter: true, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 45 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceAutoDetectionRecovery({ signal }) })
@@ -449,19 +439,6 @@ async function runAccountCircuitControlPlaneMaintenance(): Promise<void> {
   }
 }
 
-function modelQualityBatchOutcome(
-  result: { completed: number; failed: number },
-  label: string
-): WorkerScheduledJobTaskResult {
-  if (result.failed > 0) {
-    return {
-      outcome: 'partial',
-      warning: `${label}部分完成：成功 ${result.completed}，失败 ${result.failed}`
-    }
-  }
-  return { outcome: 'success' }
-}
-
 function handleBackgroundJobsStartError(error: unknown, generation: number): void {
   if (generation !== startGeneration || !started) return
   started = false
@@ -525,35 +502,6 @@ async function runUsageStatsAggregation(_signal: AbortSignal, scheduledLease?: S
     throw error
   } finally {
     usageStatsAggregationRunning = false
-  }
-}
-
-async function runModelTrustAggregation(signal: AbortSignal, scheduledLease?: ScheduledJobLeaseFence): Promise<void | WorkerScheduledJobTaskResult> {
-  if (modelTrustAggregationRunning) return
-  modelTrustAggregationRunning = true
-  const startedAtMs = Date.now()
-  const maxRunMs = 2 * minuteMs
-  const batchSize = runtimeConfig.background.modelTrustObservationAggregationBatchSize
-  try {
-    for (let index = 0; index < 10; index += 1) {
-      throwIfBackgroundJobAborted(signal, 'model-trust-observation-aggregation')
-      if (Date.now() - startedAtMs >= maxRunMs) {
-        return { outcome: 'partial', warning: `模型可信 observation 聚合达到 ${maxRunMs}ms 单轮预算` }
-      }
-      const result = await requestStatsWriter({
-        type: 'aggregate_model_trust_observations',
-        batchSize,
-        scheduledLease
-      }, 45 * secondMs) as { processed?: number }
-      if ((result.processed ?? 0) < batchSize) break
-      throwIfBackgroundJobAborted(signal, 'model-trust-observation-aggregation')
-      await yieldToEventLoop()
-    }
-  } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_model_trust_aggregation_failed' }), '模型可信 observation 增量聚合失败')
-    throw error
-  } finally {
-    modelTrustAggregationRunning = false
   }
 }
 

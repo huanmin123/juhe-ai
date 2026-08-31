@@ -4,10 +4,6 @@ import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.reposit
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { AccountRuntimeAvailabilityClearTarget, DbServiceOperation, DbServiceRequestPriority } from '../db-service/db-service-types.js'
 import type {
-  BackgroundDatasetWriteOperation,
-  BackgroundDatasetWriteOperationResult
-} from './background-dataset-writer.js'
-import type {
   BackgroundStatsWriteOperation,
   BackgroundStatsWriteOperationResult
 } from './background-stats-writer.js'
@@ -140,9 +136,6 @@ export type BackgroundWorkerMessage =
   | { type: 'background_worker_db_service_request'; requestId: string; operation: DbServiceOperation; options?: BackgroundWorkerDbServiceRequestOptions }
   | { type: 'background_worker_db_service_response'; requestId: string; ok: true; result: unknown }
   | { type: 'background_worker_db_service_response'; requestId: string; ok: false; errorMessage: string }
-  | { type: 'background_worker_dataset_write_request'; requestId: string; operation: BackgroundDatasetWriteOperation }
-  | { type: 'background_worker_dataset_write_response'; requestId: string; ok: true; result: BackgroundDatasetWriteOperationResult }
-  | { type: 'background_worker_dataset_write_response'; requestId: string; ok: false; errorMessage: string }
   | { type: 'background_worker_stats_write_request'; requestId: string; operation: BackgroundStatsWriteOperation }
   | { type: 'background_worker_stats_write_response'; requestId: string; ok: true; result: BackgroundStatsWriteOperationResult }
   | { type: 'background_worker_stats_write_response'; requestId: string; ok: false; errorMessage: string }

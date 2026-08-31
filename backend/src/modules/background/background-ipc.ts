@@ -96,7 +96,6 @@ export const accountHealthCheckWorkerIpcQueueLimits = {
   maxQueueMessages: regularWorkerMessageQueueMaxMessages,
   maxQueueBytes: regularWorkerMessageQueueMaxBytes
 } as const
-const pendingDatasetWriteRequestMaxCount = runtimeConfig.background.ipcPendingDbServiceRequestMaxCount
 const pendingStatsWriteRequestMaxCount = runtimeConfig.background.ipcPendingDbServiceRequestMaxCount
 const pendingBackgroundDbServiceRequestMaxCount = runtimeConfig.background.ipcPendingDbServiceRequestMaxCount
 const ingestUsageBurstBeforeRegular = 8
@@ -120,10 +119,7 @@ const ingestPendingQueueRuntime = emptyIpcQueuesRuntime()
 const opsPendingQueueRuntime = emptyIpcQueuesRuntime()
 let pendingParentIngestStatusRequests = new Map<string, PendingIngestStatusRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
-let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let pendingStatsWriteRequests = new Map<string, PendingStatsWriteRequest>()
-let rejectedDatasetWriteRequestCount = 0
-let timedOutDatasetWriteRequestCount = 0
 let rejectedStatsWriteRequestCount = 0
 let timedOutStatsWriteRequestCount = 0
 let rejectedBackgroundDbServiceRequestCount = 0
@@ -634,10 +630,6 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
         pendingMessageCount: ingestUsageRecordMessageQueue.length + ingestRegularWorkerMessageQueue.length,
         pendingMessageBytes: ingestUsageRecordMessageQueueBytes + ingestRegularWorkerMessageQueueBytes,
         pendingQueues: buildIngestPendingQueuesRuntime(),
-        pendingWriteRequestCount: pendingDatasetWriteRequests.size,
-        oldestPendingWriteMs: oldestPendingRequestMs(pendingDatasetWriteRequests),
-        rejectedWriteRequestCount: rejectedDatasetWriteRequestCount,
-        timedOutWriteRequestCount: timedOutDatasetWriteRequestCount,
         pendingSnapshotRequestCount: ingestSnapshotStats.pendingSnapshotRequestCount,
         timedOutSnapshotRequestCount: ingestSnapshotStats.timedOutSnapshotRequestCount,
         rejectedSnapshotRequestCount: ingestSnapshotStats.rejectedSnapshotRequestCount
@@ -704,15 +696,6 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
           isBackgroundWorkerDbServiceRequestOptions(record.options) ? record.options : undefined
         )
       }
-      break
-    case 'background_worker_dataset_write_request':
-      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
-        void forwardDatasetWriteRequest(record.requestId, record.operation as import('./background-dataset-writer.js').BackgroundDatasetWriteOperation, child)
-      }
-      break
-    case 'background_worker_dataset_write_response':
-      if (typeof record.requestId !== 'string') break
-      finishDatasetWriteRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'dataset-writer 请求失败' })
       break
     case 'background_worker_stats_write_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
@@ -816,21 +799,10 @@ function handleParentMessage(message: unknown): void {
     finishBackgroundDbServiceRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : '本地数据库服务请求失败' })
     return
   }
-  if (record.type === 'background_worker_dataset_write_response' && typeof record.requestId === 'string') {
-    finishDatasetWriteRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'dataset-writer 请求失败' })
-    return
-  }
   if (record.type === 'background_worker_stats_write_response' && typeof record.requestId === 'string') {
     finishStatsWriteRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'stats-writer 请求失败' })
     return
   }
-}
-
-interface PendingDatasetWriteRequest {
-  resolve: (result: unknown) => void
-  reject: (error: Error) => void
-  timeout: NodeJS.Timeout
-  createdAt: number
 }
 
 interface PendingStatsWriteRequest {
@@ -838,107 +810,6 @@ interface PendingStatsWriteRequest {
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
   createdAt: number
-}
-
-export async function requestBackgroundWorkerDatasetWrite<T extends import('./background-dataset-writer.js').BackgroundDatasetWriteOperation>(
-  operation: T,
-  timeoutMs = 30_000
-): Promise<import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined> {
-  if (runtimeConfig.processRole === 'worker') {
-    if (runtimeConfig.workerRole === 'ingest-worker') {
-      const { handleDatasetWriteOperation } = await import('./background-dataset-writer.js')
-      return await handleDatasetWriteOperation(operation) as import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T>
-    }
-    if (typeof process.send !== 'function') {
-      return undefined
-    }
-    if (pendingDatasetWriteRequests.size >= pendingDatasetWriteRequestMaxCount) {
-      rejectedDatasetWriteRequestCount += 1
-      rejectPendingBackgroundRequest('dataset-writer', pendingDatasetWriteRequests.size, pendingDatasetWriteRequestMaxCount, operation.type)
-      throw new Error('后台 dataset-writer pending 请求过多，请稍后重试')
-    }
-    const requestId = randomUUID()
-    return await new Promise<import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        const pending = pendingDatasetWriteRequests.get(requestId)
-        if (!pending) {
-          return
-        }
-        timedOutDatasetWriteRequestCount += 1
-        pendingDatasetWriteRequests.delete(requestId)
-        pending.reject(new Error('后台 dataset-writer 请求超时'))
-      }, timeoutMs)
-      pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout, createdAt: Date.now() })
-      sendToParentOrServer({
-        type: 'background_worker_dataset_write_request',
-        requestId,
-        operation
-      }, (error) => {
-        finishDatasetWriteRequest(requestId, undefined)
-        markParentIpcBroken(error)
-      })
-    })
-  }
-
-  if (runtimeConfig.processRole === 'db-service') {
-    const { requestDbServiceDatasetWrite } = await import('../db-service/db-service-ipc.js')
-    return await requestDbServiceDatasetWrite(operation, timeoutMs) as import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined
-  }
-
-  if (runtimeConfig.processRole !== 'server') {
-    return undefined
-  }
-
-  const child = ingestWorkerProcess
-  if (!child || !child.connected || !ingestWorkerReady) {
-    return undefined
-  }
-  if (pendingDatasetWriteRequests.size >= pendingDatasetWriteRequestMaxCount) {
-    rejectedDatasetWriteRequestCount += 1
-    rejectPendingBackgroundRequest('dataset-writer', pendingDatasetWriteRequests.size, pendingDatasetWriteRequestMaxCount, operation.type)
-    return undefined
-  }
-  const requestId = randomUUID()
-  return await new Promise<import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined>((resolve) => {
-    const timeout = setTimeout(() => {
-      timedOutDatasetWriteRequestCount += 1
-      finishDatasetWriteRequest(requestId, undefined)
-    }, timeoutMs)
-    pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject: () => resolve(undefined), timeout, createdAt: Date.now() })
-    try {
-      child.send({
-        type: 'background_worker_dataset_write_request',
-        requestId,
-        operation
-      } satisfies BackgroundWorkerMessage, (error) => {
-        if (error) {
-          finishDatasetWriteRequest(requestId, undefined)
-          markIpcBrokenForChild('ingest-worker', error, child)
-        }
-      })
-    } catch (error) {
-      finishDatasetWriteRequest(requestId, undefined)
-      markIpcBrokenForChild('ingest-worker', error, child)
-    }
-  })
-}
-
-function finishDatasetWriteRequest(requestId: string, response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined): void {
-  const pending = pendingDatasetWriteRequests.get(requestId)
-  if (!pending) {
-    return
-  }
-  clearTimeout(pending.timeout)
-  pendingDatasetWriteRequests.delete(requestId)
-  if (!response) {
-    pending.resolve(undefined)
-    return
-  }
-  if (response.ok) {
-    pending.resolve(response.result)
-    return
-  }
-  pending.reject(new Error(response.errorMessage))
 }
 
 export async function requestBackgroundWorkerStatsWrite<T extends import('./background-stats-writer.js').BackgroundStatsWriteOperation>(
@@ -1050,7 +921,7 @@ function oldestPendingRequestMs(
 }
 
 function rejectPendingBackgroundRequest(
-  channel: 'dataset-writer' | 'stats-writer' | 'background-db-service',
+  channel: 'stats-writer' | 'background-db-service',
   pendingCount: number,
   maxPendingCount: number,
   operationType: string
@@ -1721,19 +1592,10 @@ function failPendingRequests(): void {
 
 function failIngestPendingRequests(): void {
   failWorkerSnapshotPendingRequests('ingest-worker')
-  failDatasetPendingRequests()
 }
 
 function failStatsPendingRequests(): void {
   failWorkerSnapshotPendingRequests('stats-worker')
-}
-
-function failDatasetPendingRequests(): void {
-  for (const [requestId, pending] of pendingDatasetWriteRequests) {
-    clearTimeout(pending.timeout)
-    pending.resolve(undefined)
-    pendingDatasetWriteRequests.delete(requestId)
-  }
 }
 
 function failOpsPendingRequests(): void {
@@ -2006,48 +1868,6 @@ async function respondToDbServiceRequest(
       })
     } catch (sendError) {
       markIpcBrokenForChild(roleForChild(child), sendError, child)
-    }
-  }
-}
-
-async function forwardDatasetWriteRequest(
-  requestId: string,
-  operation: import('./background-dataset-writer.js').BackgroundDatasetWriteOperation,
-  requesterChild: ChildProcess | undefined
-): Promise<void> {
-  const requester = requesterChild
-  if (!requester || !requester.connected) {
-    return
-  }
-  try {
-    const result = await requestBackgroundWorkerDatasetWrite(operation)
-    if (result === undefined) {
-      throw new Error(`dataset-writer 不可用，无法执行数据集写操作：${operation.type}`)
-    }
-    requester.send({
-      type: 'background_worker_dataset_write_response',
-      requestId,
-      ok: true,
-      result
-    } satisfies BackgroundWorkerMessage, (error) => {
-      if (error) {
-        markIpcBrokenForChild(roleForChild(requester), error, requester)
-      }
-    })
-  } catch (error) {
-    try {
-      requester.send({
-        type: 'background_worker_dataset_write_response',
-        requestId,
-        ok: false,
-        errorMessage: error instanceof Error ? error.message : String(error)
-      } satisfies BackgroundWorkerMessage, (sendError) => {
-        if (sendError) {
-          markIpcBrokenForChild(roleForChild(requester), sendError, requester)
-        }
-      })
-    } catch (sendError) {
-      markIpcBrokenForChild(roleForChild(requester), sendError, requester)
     }
   }
 }

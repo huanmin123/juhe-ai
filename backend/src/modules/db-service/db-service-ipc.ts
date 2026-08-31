@@ -79,7 +79,6 @@ const requestTimeoutMs = 5000
 const invalidateTimeoutMs = 10_000
 const unavailableCircuitOpenMs = 3000
 const maxPendingRequests = 2000
-const maxPendingDatasetWriteRequests = 1000
 const maxPendingStatsWriteRequests = 1000
 
 let dbServiceProcess: ChildProcess | undefined
@@ -92,15 +91,12 @@ let pendingServerRuntimeRequests = new Map<string, PendingServerRuntimeRequest>(
 let pendingServerAccountRuntimeClearRequests = new Map<string, PendingServerAccountRuntimeClearRequest>()
 let pendingOpenAIAccountTrafficMigrationRuntimeRequests = new Map<string, PendingOpenAIAccountTrafficMigrationRuntimeRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
-let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
-let pendingStatsWriteRequests = new Map<string, PendingDatasetWriteRequest>()
+let pendingStatsWriteRequests = new Map<string, PendingStatsWriteRequest>()
 let pendingGatewayApiKeyCacheInvalidationRequests = new Map<string, PendingRequest>()
 let pendingAccountTestDispatchRequests = new Map<string, PendingAccountTestDispatchRequest>()
 let timedOutRequestCount = 0
 let rejectedRequestCount = 0
 let failedRequestCount = 0
-let timedOutDatasetWriteRequestCount = 0
-let rejectedDatasetWriteRequestCount = 0
 let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
 let processEventLoopTimeoutStreak = 0
@@ -138,7 +134,7 @@ interface PendingAccountTestDispatchRequest {
   timeout: NodeJS.Timeout
 }
 
-interface PendingDatasetWriteRequest {
+interface PendingStatsWriteRequest {
   resolve: (result: unknown) => void
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
@@ -293,10 +289,10 @@ export function getDbServiceState(): DbServiceState {
     httpPort: dbServiceHttpPort,
     lastSnapshot,
     pendingRequestCount: pendingRequests.size,
-    pendingDatasetWriteRequestCount: pendingDatasetWriteRequests.size,
-    oldestDatasetWriteRequestMs: oldestDbServiceDatasetWriteRequestMs(),
-    timedOutDatasetWriteRequestCount,
-    rejectedDatasetWriteRequestCount,
+    pendingDatasetWriteRequestCount: 0,
+    oldestDatasetWriteRequestMs: 0,
+    timedOutDatasetWriteRequestCount: 0,
+    rejectedDatasetWriteRequestCount: 0,
     timedOutRequestCount,
     rejectedRequestCount,
     failedRequestCount,
@@ -480,50 +476,6 @@ export async function migrateServerOpenAIAccountTrafficRuntime(
   })
 }
 
-export async function requestDbServiceDatasetWrite<T extends import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperation>(
-  operation: T,
-  timeoutMs = 30_000
-): Promise<import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined> {
-  if (runtimeConfig.processRole === 'server') {
-    const backgroundIpc = await import('../background/background-ipc.js')
-    return await backgroundIpc.requestBackgroundWorkerDatasetWrite(operation, timeoutMs) as import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined
-  }
-  if (runtimeConfig.processRole !== 'db-service' || typeof process.send !== 'function') {
-    return undefined
-  }
-
-  if (pendingDatasetWriteRequests.size >= maxPendingDatasetWriteRequests) {
-    rejectedDatasetWriteRequestCount += 1
-    logger.warn({
-      event: 'db_service_dataset_write_pending_full',
-      operationType: operation.type,
-      pendingCount: pendingDatasetWriteRequests.size,
-      maxPendingCount: maxPendingDatasetWriteRequests
-    }, 'DB service dataset-writer pending 请求已达上限，已拒绝本次请求')
-    throw new Error('后台 dataset-writer pending 请求过多，请稍后重试')
-  }
-  const requestId = randomUUID()
-  return await new Promise<import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      const pending = pendingDatasetWriteRequests.get(requestId)
-      if (!pending) {
-        return
-      }
-      timedOutDatasetWriteRequestCount += 1
-      pendingDatasetWriteRequests.delete(requestId)
-      pending.reject(new Error('后台 dataset-writer 请求超时'))
-    }, timeoutMs)
-    pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout, createdAt: Date.now() })
-    sendDbServiceChildMessage({
-      type: 'background_worker_dataset_write_request',
-      requestId,
-      operation
-    }, () => {
-      finishDatasetWriteRequest(requestId, undefined)
-    })
-  })
-}
-
 export async function requestDbServiceStatsWrite<T extends import('../background/background-stats-writer.js').BackgroundStatsWriteOperation>(
   operation: T,
   timeoutMs = 10_000
@@ -581,14 +533,6 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
     finishOpenAIAccountTrafficMigrationRuntimeRequest(
       record.requestId,
       record.ok === true ? record.result as OpenAIAccountTrafficMigrationRuntimeResult : undefined
-    )
-    return true
-  }
-
-  if (record.type === 'background_worker_dataset_write_response' && typeof record.requestId === 'string') {
-    finishDatasetWriteRequest(
-      record.requestId,
-      record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'dataset-writer 请求失败' }
     )
     return true
   }
@@ -689,11 +633,6 @@ function handleDbServiceMessage(message: unknown): void {
         if (input) {
           void respondToOpenAIAccountTrafficMigrationRuntimeRequest(record.requestId, input)
         }
-      }
-      break
-    case 'background_worker_dataset_write_request':
-      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
-        void respondToDatasetWriteRequest(record.requestId, record.operation as import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperation)
       }
       break
     case 'background_worker_stats_write_request':
@@ -806,11 +745,6 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingOpenAIAccountTrafficMigrationRuntimeRequests.delete(requestId)
-  }
-  for (const [requestId, pending] of pendingDatasetWriteRequests) {
-    clearTimeout(pending.timeout)
-    pending.resolve(undefined)
-    pendingDatasetWriteRequests.delete(requestId)
   }
   for (const [requestId, pending] of pendingStatsWriteRequests) {
     clearTimeout(pending.timeout)
@@ -1096,28 +1030,6 @@ function finishOpenAIAccountTrafficMigrationRuntimeRequest(
   pending.resolve(result)
 }
 
-function finishDatasetWriteRequest(
-  requestId: string,
-  response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined
-): void {
-  const pending = pendingDatasetWriteRequests.get(requestId)
-  if (!pending) {
-    return
-  }
-
-  clearTimeout(pending.timeout)
-  pendingDatasetWriteRequests.delete(requestId)
-  if (!response) {
-    pending.resolve(undefined)
-    return
-  }
-  if (response.ok) {
-    pending.resolve(response.result)
-    return
-  }
-  pending.reject(new Error(response.errorMessage))
-}
-
 function finishStatsWriteRequest(
   requestId: string,
   response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined
@@ -1133,16 +1045,6 @@ function finishStatsWriteRequest(
   } else {
     pending.reject(new Error(response.errorMessage))
   }
-}
-
-function oldestDbServiceDatasetWriteRequestMs(): number {
-  let oldestAt = 0
-  for (const pending of pendingDatasetWriteRequests.values()) {
-    if (oldestAt === 0 || pending.createdAt < oldestAt) {
-      oldestAt = pending.createdAt
-    }
-  }
-  return oldestAt === 0 ? 0 : Math.max(0, Date.now() - oldestAt)
 }
 
 function sendToDbServiceProcess(child: ChildProcess, message: DbServiceParentMessage): void {
@@ -1362,10 +1264,6 @@ async function buildServerSystemMetricsRuntimeSnapshot(): Promise<DbServiceSyste
         : undefined
     },
     dbService: {
-      pendingDatasetWriteRequestCount: dbServiceState.pendingDatasetWriteRequestCount,
-      oldestDatasetWriteRequestMs: dbServiceState.oldestDatasetWriteRequestMs,
-      timedOutDatasetWriteRequestCount: dbServiceState.timedOutDatasetWriteRequestCount,
-      rejectedDatasetWriteRequestCount: dbServiceState.rejectedDatasetWriteRequestCount,
       queuedRequestCount: dbServiceState.lastSnapshot?.queuedRequestCount,
       queuedRequestBytes: dbServiceState.lastSnapshot?.queuedRequestBytes,
       queuedHighRequestCount: dbServiceState.lastSnapshot?.queuedHighRequestCount,
@@ -1456,37 +1354,6 @@ async function respondToOpenAIAccountTrafficMigrationRuntimeRequest(
   } catch (error) {
     sendToDbServiceProcess(child, {
       type: 'db_service_openai_traffic_migration_runtime_response',
-      requestId,
-      ok: false,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    })
-  }
-}
-
-async function respondToDatasetWriteRequest(
-  requestId: string,
-  operation: import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperation
-): Promise<void> {
-  const child = dbServiceProcess
-  if (!child) {
-    return
-  }
-
-  try {
-    const backgroundIpc = await import('../background/background-ipc.js')
-    const result = await backgroundIpc.requestBackgroundWorkerDatasetWrite(operation)
-    if (result === undefined) {
-      throw new Error(`dataset-writer 不可用，无法执行数据集写操作：${operation.type}`)
-    }
-    sendToDbServiceProcess(child, {
-      type: 'background_worker_dataset_write_response',
-      requestId,
-      ok: true,
-      result
-    })
-  } catch (error) {
-    sendToDbServiceProcess(child, {
-      type: 'background_worker_dataset_write_response',
       requestId,
       ok: false,
       errorMessage: error instanceof Error ? error.message : String(error)

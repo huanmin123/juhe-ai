@@ -53,24 +53,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (account_id, stat_hour)
         );
 
-    CREATE TABLE IF NOT EXISTS account_quality_health_hourly (
-          account_id TEXT NOT NULL,
-          system_account_id TEXT NOT NULL,
-          provider_code TEXT NOT NULL,
-          stat_hour TEXT NOT NULL,
-          observed_at TEXT NOT NULL,
-          model_check_run_id TEXT NOT NULL,
-          model TEXT NOT NULL,
-          profile TEXT NOT NULL CHECK (profile IN ('quick', 'full')),
-          score INTEGER NOT NULL,
-          threshold INTEGER NOT NULL CHECK (threshold BETWEEN 40 AND 100),
-          level TEXT NOT NULL,
-          error_code TEXT,
-          error_message TEXT,
-          updated_at TEXT NOT NULL,
-          PRIMARY KEY (account_id, stat_hour)
-        );
-
     CREATE TABLE IF NOT EXISTS group_account_stats (
           system_account_id TEXT NOT NULL,
           group_id TEXT NOT NULL,
@@ -1076,6 +1058,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (scope_type, scope_id, job_name)
         );
 
+    /* J3b ownership moved to Gateway; its schemas must not be created by Node. */
+    /*
     CREATE TABLE IF NOT EXISTS model_token_integrity_windows (
           system_account_id TEXT NOT NULL,
           account_id TEXT NOT NULL,
@@ -1304,6 +1288,7 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_model_identity_baseline_active ON model_identity_baseline_versions(population_key_hmac, requested_model, feature_version, version_status, baseline_version);
 
     CREATE INDEX IF NOT EXISTS idx_model_paired_similarity_account ON model_paired_similarity_windows(account_id, updated_at);
+    */
 
     CREATE TABLE IF NOT EXISTS background_task_runs (
           run_id TEXT PRIMARY KEY,
@@ -1506,9 +1491,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_account_health_hourly_scope
       ON account_health_hourly(system_account_id, stat_hour, account_id);
-
-    CREATE INDEX IF NOT EXISTS idx_account_quality_health_hourly_scope
-      ON account_quality_health_hourly(system_account_id, stat_hour, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_group ON group_account_stats(group_id);
 

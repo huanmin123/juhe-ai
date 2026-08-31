@@ -160,7 +160,9 @@ func VerifyGatewayRouteOwnerManifest(manifestPath, repositoryRoot string) (Gatew
 		if err != nil {
 			return GatewayRouteOwnerReport{}, fmt.Errorf("read route family %q source: %w", family.ID, err)
 		}
-		if !regexp.MustCompile(`(?m)^\s*app\.use\([^\n]*\b` + regexp.QuoteMeta(family.NodeRouterSymbol) + `\b`).Match(appSource) {
+		mounted := regexp.MustCompile(`(?m)^\s*app\.use\([^\n]*\b` + regexp.QuoteMeta(family.NodeRouterSymbol) + `\b`).Match(appSource)
+		archivedSource := strings.HasPrefix(filepath.ToSlash(family.NodeRouterFile), "migration-backup/node/")
+		if !mounted && !(family.ID == "model-checks" && ((family.Status == "partial") || (family.Status == "implemented" && archivedSource))) {
 			return GatewayRouteOwnerReport{}, fmt.Errorf("route family %q router %q is not mounted by %s", family.ID, family.NodeRouterSymbol, manifest.SourceApp)
 		}
 		actual := make([]string, 0)
@@ -294,8 +296,15 @@ func verifyModelChecksRouteOwner(family GatewayRouteFamily, source, appSource []
 	}
 	const selfMount = "app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)"
 	const adminMount = "app.use(`${systemApiPrefix}/model-checks`, requireAdmin, modelChecksRouter)"
-	if strings.Count(string(appSource), selfMount) != 1 || strings.Count(string(appSource), adminMount) != 1 {
-		return errors.New("model-checks Node dual management mount or scope contract drifted")
+	selfCount, adminCount := strings.Count(string(appSource), selfMount), strings.Count(string(appSource), adminMount)
+	archivedSource := strings.HasPrefix(filepath.ToSlash(family.NodeRouterFile), "migration-backup/node/")
+	if selfCount != 1 || adminCount != 1 {
+		// During the staged handoff the Node mounts are intentionally removed;
+		// the Gateway baseline below remains the source of truth until the
+		// archived router is moved out of backend/src.
+		if !((family.Status == "partial" || (family.Status == "implemented" && archivedSource)) && selfCount == 0 && adminCount == 0) {
+			return errors.New("model-checks Node dual management mount or scope contract drifted")
+		}
 	}
 	if err := verifyModelChecksGatewayBaseline(family, repositoryRoot); err != nil {
 		return err

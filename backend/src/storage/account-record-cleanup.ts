@@ -67,7 +67,6 @@ interface AccountUsageCleanupStepResult {
 
 interface AccountDatasetCleanupStepResult {
   deletedRows: number
-  hasModelCheckMore: boolean
 }
 
 export interface DeletedAccountRecordStatsCleanupInput {
@@ -228,10 +227,6 @@ export function hasDeletedAccountRelatedRecordData(input: DeletedAccountRecordCl
   if (hasAccountUsageRecords(input)) {
     return true
   }
-  const datasetDatabase = getDatasetDatabase()
-  if (hasAccountModelCheckRuns(datasetDatabase, input)) {
-    return true
-  }
   return hasDeletedAccountStatsRows(getStatsDatabase(), input)
 }
 
@@ -277,7 +272,7 @@ function cleanupDeletedAccountRelatedRecordDataCore(input: DeletedAccountRecordC
   const batchLimit = deletedAccountRecordCleanupBatchLimit
   try {
     const usageCleanup = cleanupDeletedAccountUsageData(statsDatabase, input, updatedAt, batchLimit)
-    const datasetCleanup = cleanupDeletedAccountDatasetRecordData(database, input, batchLimit)
+    const datasetCleanup: AccountDatasetCleanupStepResult = { deletedRows: 0 }
     let blockedReason = usageCleanup.blockedReason
     let hasUsageMore = true
     if (blockedReason) {
@@ -293,8 +288,7 @@ function cleanupDeletedAccountRelatedRecordDataCore(input: DeletedAccountRecordC
         hasUsageMore = true
       }
     }
-    const hasModelCheckMore = datasetCleanup.hasModelCheckMore
-    let hasMore = hasUsageMore || hasModelCheckMore
+    let hasMore = hasUsageMore
     if (!blockedReason && !hasMore) {
       blockedReason = cleanupDeletedAccountFinalStats(statsDatabase, input)
       hasMore = Boolean(blockedReason)
@@ -309,7 +303,7 @@ function cleanupDeletedAccountRelatedRecordDataCore(input: DeletedAccountRecordC
       hasMore,
       blockedReason: blockedReason ?? (hasMore
         ? accountCleanupPendingReason({
-          hasModelCheckMore,
+          hasModelCheckMore: false,
           hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
           hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
         })
@@ -357,7 +351,7 @@ async function cleanupDeletedAccountRelatedRecordDataCoreAsync(
       })
     }
     const deletedUsageRows = blockedReason ? 0 : deleteAccountUsageRows(rowsToDelete, input)
-    const datasetCleanup = cleanupDeletedAccountDatasetRecordData(database, input, batchLimit)
+    const datasetCleanup: AccountDatasetCleanupStepResult = { deletedRows: 0 }
     if (!blockedReason && rowsToDelete.length > 0) {
       await statsWriter({
         target: input,
@@ -380,8 +374,7 @@ async function cleanupDeletedAccountRelatedRecordDataCoreAsync(
         hasUsageMore = true
       }
     }
-    const hasModelCheckMore = datasetCleanup.hasModelCheckMore
-    let hasMore = hasUsageMore || hasModelCheckMore || Boolean(blockedReason)
+    let hasMore = hasUsageMore || Boolean(blockedReason)
     if (!blockedReason && !hasMore) {
       await statsWriter({
         target: input,
@@ -397,7 +390,7 @@ async function cleanupDeletedAccountRelatedRecordDataCoreAsync(
       hasMore,
       blockedReason: blockedReason ?? (hasMore
         ? accountCleanupPendingReason({
-          hasModelCheckMore,
+          hasModelCheckMore: false,
           hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
           hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
         })
@@ -429,14 +422,9 @@ async function cleanupDeletedAccountRelatedRecordDataCorePostgresAsync(
     let deletedRows = 0
     await client.transaction(async (tx) => {
       deletedRows += await deletePostgresAccountUsageDataBatch(tx, input, batchLimit, updatedAt)
-      deletedRows += await deletePostgresAccountModelCheckRunsBatch(tx, input, batchLimit)
     })
-
-    const [hasUsageMore, hasModelCheckMore] = await Promise.all([
-      hasPostgresAccountUsageRecords(client, input),
-      hasPostgresAccountModelCheckRuns(client, input)
-    ])
-    let hasMore = hasUsageMore || hasModelCheckMore
+    const hasUsageMore = await hasPostgresAccountUsageRecords(client, input)
+    let hasMore = hasUsageMore
     if (!hasMore) {
       await cleanupDeletedAccountFinalStatsAsync(client, input)
     }
@@ -448,7 +436,7 @@ async function cleanupDeletedAccountRelatedRecordDataCorePostgresAsync(
       hasMore,
       blockedReason: hasMore
         ? accountCleanupPendingReason({
-          hasModelCheckMore,
+          hasModelCheckMore: false,
           hasMoreCoveredRows: hasUsageMore,
           hasUncoveredRows: false
         })
@@ -515,27 +503,6 @@ function selectDeletedAccountUsageData(
   }
 }
 
-function cleanupDeletedAccountDatasetRecordData(
-  database: DatabaseSync,
-  input: DeletedAccountRecordCleanupTarget,
-  batchLimit: number
-): AccountDatasetCleanupStepResult {
-  let deletedRows = 0
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    deletedRows += deleteAccountModelCheckRunsBatch(database, input, batchLimit)
-    const hasModelCheckMore = hasAccountModelCheckRuns(database, input)
-    commitDatabaseTransaction(database, transactionStarted)
-    return {
-      deletedRows,
-      hasModelCheckMore
-    }
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-}
-
 function cleanupDeletedAccountFinalStats(statsDatabase: DatabaseSync, input: DeletedAccountRecordCleanupTarget): string | undefined {
   let transactionStarted = false
   try {
@@ -566,9 +533,7 @@ function accountCleanupPendingReason(input: {
   hasMoreCoveredRows: boolean
   hasUncoveredRows: boolean
 }): string {
-  return input.hasModelCheckMore
-    ? '仍有已删除 AI 账户的模型检测记录待后续批次清理，已保留待后台重试'
-    : input.hasMoreCoveredRows
+  return input.hasMoreCoveredRows
     ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
     : input.hasUncoveredRows
     ? '仍有使用记录尚未被对应分片统计安全游标覆盖，已保留待后台重试清理'
@@ -1095,78 +1060,6 @@ async function hasPostgresAccountUsageRecords(client: DatabaseClient, input: Del
   return Boolean(row?.found)
 }
 
-async function hasPostgresAccountModelCheckRuns(client: DatabaseClient, input: DeletedAccountRecordCleanupTarget): Promise<boolean> {
-  const accountIds = deletedAccountCleanupAccountIds(input)
-  if (!accountIds.length) return false
-  const row = await client.one<{ found?: number }>(`
-    SELECT 1 AS found
-    FROM juhe_dataset.model_check_runs
-    WHERE account_id = ANY(?::text[])
-      OR (target_type = 'account' AND target_id = ANY(?::text[]))
-    LIMIT 1
-  `, [accountIds, accountIds])
-  return Boolean(row?.found)
-}
-
-async function deletePostgresAccountModelCheckRunsBatch(
-  client: DatabaseClient,
-  input: DeletedAccountRecordCleanupTarget,
-  limit: number
-): Promise<number> {
-  const accountIds = deletedAccountCleanupAccountIds(input)
-  if (!accountIds.length) return 0
-  const rows = await client.query<{ id?: string | null }>(`
-    SELECT id
-    FROM juhe_dataset.model_check_runs
-    WHERE account_id = ANY(?::text[])
-      OR (target_type = 'account' AND target_id = ANY(?::text[]))
-    ORDER BY created_at ASC, id ASC
-    LIMIT ?
-  `, [accountIds, accountIds, Math.max(1, Math.trunc(limit))])
-  const runIds = uniqueNonEmpty(rows.map((row) => row.id))
-  if (!runIds.length) return 0
-  let deletedRows = 0
-  deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY(?::text[])', [runIds]))
-  deletedRows += changed(await client.execute('DELETE FROM juhe_dataset.model_check_runs WHERE id = ANY(?::text[])', [runIds]))
-  return deletedRows
-}
-
-function hasAccountModelCheckRuns(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget): boolean {
-  const accountIds = deletedAccountCleanupAccountIds(input)
-  if (!accountIds.length) return false
-  const placeholders = sqlPlaceholders(accountIds.length)
-  const row = database
-    .prepare(`SELECT id FROM model_check_runs WHERE account_id IN (${placeholders}) OR (target_type = 'account' AND target_id IN (${placeholders})) LIMIT 1`)
-    .get(...accountIds, ...accountIds) as unknown as { id?: string } | undefined
-  return Boolean(row?.id)
-}
-
-function deleteAccountModelCheckRunsBatch(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget, limit: number): number {
-  const batchLimit = Math.max(1, Math.trunc(limit))
-  const accountIds = deletedAccountCleanupAccountIds(input)
-  if (!accountIds.length) return 0
-  const placeholders = sqlPlaceholders(accountIds.length)
-  const rows = database
-    .prepare(`
-      SELECT id
-      FROM model_check_runs
-      WHERE account_id IN (${placeholders})
-        OR (target_type = 'account' AND target_id IN (${placeholders}))
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(...accountIds, ...accountIds, batchLimit) as unknown as Array<{ id?: string }>
-  const runIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
-  if (!runIds.length) return 0
-  let deletedRows = 0
-  for (const chunk of chunkValues(runIds, 100)) {
-    const childPlaceholders = sqlPlaceholders(chunk.length)
-    deletedRows += changed(database.prepare(`DELETE FROM model_check_items WHERE run_id IN (${childPlaceholders})`).run(...chunk))
-    deletedRows += changed(database.prepare(`DELETE FROM model_check_runs WHERE id IN (${childPlaceholders})`).run(...chunk))
-  }
-  return deletedRows
-}
-
 function deleteAccountScopeStatsRows(
   database: DatabaseSync,
   input: DeletedAccountRecordCleanupTarget,
@@ -1211,15 +1104,7 @@ function deleteAccountScopeStatsRows(
     database.prepare('DELETE FROM account_quality_dirty_accounts WHERE account_id = ?').run(accountId)
     database.prepare('DELETE FROM account_quality_minute_stats WHERE account_id = ?').run(accountId)
     database.prepare('DELETE FROM account_health_hourly WHERE account_id = ?').run(accountId)
-    database.prepare('DELETE FROM account_quality_health_hourly WHERE account_id = ?').run(accountId)
     database.prepare('DELETE FROM account_usage_snapshots WHERE account_id = ?').run(accountId)
-    database.prepare('DELETE FROM model_token_integrity_windows WHERE account_id = ?').run(accountId)
-    database.prepare('DELETE FROM model_token_integrity_rounds WHERE account_id = ?').run(accountId)
-    database.prepare('DELETE FROM model_trust_window_sources WHERE account_id = ?').run(accountId)
-    database.prepare('DELETE FROM model_identity_source_features WHERE account_id = ?').run(accountId)
-    database.prepare('DELETE FROM model_paired_similarity_windows WHERE account_id = ?').run(accountId)
-    database.prepare('DELETE FROM model_account_trust_results WHERE account_id = ?').run(accountId)
-    database.prepare('DELETE FROM model_trust_latest_dirty_accounts WHERE account_id = ?').run(accountId)
     deleteAccountAuthorizationReportRows(database, accountId)
   }
 }
@@ -1263,15 +1148,7 @@ async function deletePostgresAccountScopeStatsRows(
     await client.execute('DELETE FROM juhe_stats.account_quality_dirty_accounts WHERE account_id = ANY(?::text[])', [accountIds])
     await client.execute('DELETE FROM juhe_stats.account_quality_minute_stats WHERE account_id = ANY(?::text[])', [accountIds])
     await client.execute('DELETE FROM juhe_stats.account_health_hourly WHERE account_id = ANY(?::text[])', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.account_quality_health_hourly WHERE account_id = ANY(?::text[])', [accountIds])
     await client.execute('DELETE FROM juhe_stats.account_usage_snapshots WHERE account_id = ANY(?::text[])', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.model_token_integrity_windows WHERE account_id = ANY(?::text[])', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.model_token_integrity_rounds WHERE account_id = ANY(?::text[])', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.model_trust_window_sources WHERE account_id = ANY(?::text[])', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.model_identity_source_features WHERE account_id = ANY(?::text[])', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.model_paired_similarity_windows WHERE account_id = ANY(?::text[])', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.model_account_trust_results WHERE account_id = ANY(?::text[])', [accountIds])
-    await client.execute('DELETE FROM juhe_stats.model_trust_latest_dirty_accounts WHERE account_id = ANY(?::text[])', [accountIds])
     await deletePostgresAccountAuthorizationReportRows(client, accountIds)
   }
   for (const chunk of chunkValues(normalizedAuthorizationIds, 900)) {
@@ -1323,11 +1200,6 @@ async function hasPostgresDeletedAccountStatsRows(client: DatabaseClient, input:
   `, [accountIds])) {
     return true
   }
-  for (const tableName of ['account_quality_health_hourly', 'model_token_integrity_windows', 'model_token_integrity_rounds', 'model_trust_window_sources', 'model_identity_source_features', 'model_paired_similarity_windows', 'model_account_trust_results', 'model_trust_latest_dirty_accounts']) {
-    if (accountIds.length > 0 && await postgresRowsExist(client, `SELECT 1 FROM juhe_stats.${tableName} WHERE account_id = ANY(?::text[]) LIMIT 1`, [accountIds])) {
-      return true
-    }
-  }
   return false
 }
 
@@ -1350,15 +1222,7 @@ function hasDeletedAccountStatsRows(database: DatabaseSync, input: DeletedAccoun
       || singleStatsRowExists(database, 'account_quality_dirty_accounts', 'account_id = ?', [accountId])
       || singleStatsRowExists(database, 'account_quality_minute_stats', 'account_id = ?', [accountId])
       || singleStatsRowExists(database, 'account_health_hourly', 'account_id = ?', [accountId])
-      || singleStatsRowExists(database, 'account_quality_health_hourly', 'account_id = ?', [accountId])
       || singleStatsRowExists(database, 'account_usage_snapshots', 'account_id = ?', [accountId])
-      || singleStatsRowExists(database, 'model_token_integrity_windows', 'account_id = ?', [accountId])
-      || singleStatsRowExists(database, 'model_token_integrity_rounds', 'account_id = ?', [accountId])
-      || singleStatsRowExists(database, 'model_trust_window_sources', 'account_id = ?', [accountId])
-      || singleStatsRowExists(database, 'model_identity_source_features', 'account_id = ?', [accountId])
-      || singleStatsRowExists(database, 'model_paired_similarity_windows', 'account_id = ?', [accountId])
-      || singleStatsRowExists(database, 'model_account_trust_results', 'account_id = ?', [accountId])
-      || singleStatsRowExists(database, 'model_trust_latest_dirty_accounts', 'account_id = ?', [accountId])
       || hasAccountAuthorizationReportRows(database, accountId)) {
       return true
     }

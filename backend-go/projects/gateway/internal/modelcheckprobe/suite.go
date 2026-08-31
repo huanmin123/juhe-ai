@@ -15,6 +15,9 @@ import (
 // transport failure so that partial evidence is explicit and never treated as
 // a complete quality fact.
 type Suite struct {
+	// Prefix scopes durable item keys (for example target.* or
+	// trusted_comparison.*). Empty preserves the package's legacy unscoped keys.
+	Prefix           string
 	Endpoint         string
 	ProviderCode     string
 	Headers          http.Header
@@ -86,17 +89,17 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		return nil, fmt.Errorf("J3b probe suite produced no results")
 	}
 	items := make([]Evaluation, 0, len(results)+1)
-	items = append(items, EvaluateBasic(results[0], input.Model))
+	items = append(items, scopeEvaluation(input.Prefix, EvaluateBasic(results[0], input.Model)))
 	if len(results) > 1 {
-		items = append(items, EvaluateStructured(results[1], input.Model))
+		items = append(items, scopeEvaluation(input.Prefix, EvaluateStructured(results[1], input.Model)))
 	}
 	if len(results) > 2 {
-		items = append(items, EvaluateTool(results[2], input.Model))
+		items = append(items, scopeEvaluation(input.Prefix, EvaluateTool(results[2], input.Model)))
 	}
 	// A terminal core failure keeps the formed items and prevents unrelated
 	// profile extensions from hiding the failed request.
 	if len(results) < len(requests) || !results[len(results)-1].Success {
-		items = append(items, EvaluateUsage(results))
+		items = append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results)))
 		return items, nil
 	}
 	if input.Profile == "quick" {
@@ -106,7 +109,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		if tokenErr != nil {
 			return nil, tokenErr
 		}
-		items = append(items, tokenIntegrity, EvaluateUsage(results))
+		items = append(items, scopeEvaluation(input.Prefix, tokenIntegrity), scopeEvaluation(input.Prefix, EvaluateUsage(results)))
 		return items, nil
 	}
 	if input.Profile == "full" {
@@ -123,9 +126,9 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		if behaviorErr != nil {
 			return nil, behaviorErr
 		}
-		items = append(items, behavior)
+		items = append(items, scopeEvaluation(input.Prefix, behavior))
 		if behaviorTerminal {
-			items = append(items, EvaluateUsage(results))
+			items = append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results)))
 			return items, nil
 		}
 		longContextTerminal := false
@@ -139,9 +142,9 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		if longErr != nil {
 			return nil, longErr
 		}
-		items = append(items, longContext)
+		items = append(items, scopeEvaluation(input.Prefix, longContext))
 		if longContextTerminal {
-			items = append(items, EvaluateUsage(results))
+			items = append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results)))
 			return items, nil
 		}
 		stabilityResults := make([]Result, 0, 3)
@@ -159,9 +162,9 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 				break
 			}
 		}
-		items = append(items, EvaluateStability(stabilityResults, input.Model))
+		items = append(items, scopeEvaluation(input.Prefix, EvaluateStability(stabilityResults, input.Model)))
 		if len(stabilityResults) > 0 && !stabilityResults[len(stabilityResults)-1].Success {
-			items = append(items, EvaluateUsage(results))
+			items = append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results)))
 			return items, nil
 		}
 		tokenIntegrity, tokenErr := runTokenIntegrity(ctx, input.UpstreamProtocol, input.Model, input.Tokenizer, func(runCtx context.Context, request Request) (Result, error) {
@@ -170,14 +173,14 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		if tokenErr != nil {
 			return nil, tokenErr
 		}
-		items = append(items, tokenIntegrity)
+		items = append(items, scopeEvaluation(input.Prefix, tokenIntegrity))
 		identity, identityErr := RunIdentity(ctx, input.UpstreamProtocol, input.Model, func(runCtx context.Context, request Request) (Result, error) {
 			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
 		}, upstreamMode)
 		if identityErr != nil {
 			return nil, identityErr
 		}
-		items = append(items, identity)
+		items = append(items, scopeEvaluation(input.Prefix, identity))
 		if ShouldRunJuice(input.Model, input.Profile, string(input.UpstreamProtocol)) {
 			juiceResults := make([]Result, 0, 6)
 			for _, request := range JuiceRequests(input.Model) {
@@ -187,9 +190,9 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 				}
 				juiceResults = append(juiceResults, result)
 			}
-			items = append(items, EvaluateJuice(input.Model, juiceResults, "0"))
+			items = append(items, scopeEvaluation(input.Prefix, EvaluateJuice(input.Model, juiceResults, "0")))
 		} else {
-			items = append(items, Evaluation{Kind: "juice", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "juice_scope_not_applicable"}})
+			items = append(items, scopeEvaluation(input.Prefix, Evaluation{Kind: "juice", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "juice_scope_not_applicable"}}))
 		}
 		if input.Comparison == nil {
 			if results[0].Success {
@@ -197,20 +200,22 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 				if crossErr != nil {
 					return nil, crossErr
 				}
-				items = append(items, crossModel)
+				items = append(items, scopeEvaluation(input.Prefix, crossModel))
 			} else {
-				items = append(items, Evaluation{Kind: "cross_model", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "target_basic_probe_failed"}})
+				items = append(items, scopeEvaluation(input.Prefix, Evaluation{Kind: "cross_model", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "target_basic_probe_failed"}}))
 			}
-			items = append(items, Evaluation{Kind: "distribution", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "trusted_comparison_not_attached"}})
+			items = append(items, scopeEvaluation(input.Prefix, Evaluation{Kind: "distribution", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "trusted_comparison_not_attached"}}))
 		} else {
 			comparison, comparisonErr := RunTrustedComparison(ctx, input, *input.Comparison, timeout)
 			if comparisonErr != nil {
 				return nil, comparisonErr
 			}
-			items = append(items, comparison...)
+			for _, item := range comparison {
+				items = append(items, scopeEvaluation(input.Prefix, item))
+			}
 		}
 	}
-	items = append(items, EvaluateUsage(results))
+	items = append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results)))
 	return items, nil
 }
 
@@ -344,6 +349,15 @@ func (s Suite) ProfileForModel() modelcheckprofile.ProtocolProfile {
 	return modelcheckprofile.ProtocolProfile{Protocol: s.Protocol, Models: []string{s.Model}}
 }
 
+func scopeEvaluation(prefix string, item Evaluation) Evaluation {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" || strings.Contains(item.Kind, ".") {
+		return item
+	}
+	item.Kind = prefix + "." + item.Kind
+	return item
+}
+
 // RunTrustedComparison directly executes the bounded distribution and model
 // identity probes against the target and its independently resolved trusted
 // comparison account. Only evaluated summaries are returned; provider output
@@ -415,8 +429,10 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 		}
 		pairs = append(pairs, DistributionPair{Definition: definition, Target: targetResult, Comparison: comparisonResult})
 	}
-	return []Evaluation{
-		EvaluateDistribution(pairs),
-		EvaluateCrossModelPair(targetBasicResult, comparisonBasicResult, targetModel, comparisonModel),
-	}, nil
+	distribution := EvaluateDistribution(pairs)
+	crossModel := EvaluateCrossModelPair(targetBasicResult, comparisonBasicResult, targetModel, comparisonModel)
+	if strings.TrimSpace(target.Prefix) == "" {
+		return []Evaluation{distribution, crossModel}, nil
+	}
+	return []Evaluation{scopeEvaluation("trusted_comparison", distribution), scopeEvaluation("trusted_comparison", crossModel)}, nil
 }

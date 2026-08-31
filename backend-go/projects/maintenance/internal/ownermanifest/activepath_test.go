@@ -64,6 +64,24 @@ func TestScanNodeJ3bActivePathsReportsRulesAndSkips(t *testing.T) {
 	}
 }
 
+func TestScanNodeJ3bActivePathsIgnoresMaintenanceMockdata(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "backend", "src", "scripts", "maintenance", "mockdata")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "fixture.ts"), []byte("modelChecksRouter\nmodel_check_runs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ScanNodeJ3bActivePaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ScannedFiles != 0 || report.BlockedFindings != 0 || len(report.Skipped) != 1 || report.Skipped[0].Rule != "maintenance-fixture" {
+		t.Fatalf("maintenance mockdata must be evidence-only: %+v", report)
+	}
+}
+
 func TestScanNodeJ3bActivePathsBlocksTokenWorkerTrustAggregationAndStatsIPC(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "backend", "src", "modules", "model-checks")
