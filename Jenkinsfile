@@ -12,7 +12,6 @@ pipeline {
     booleanParam(name: 'REVERSE_DEPLOY_PROD', defaultValue: false, description: '仅手动运行：明确创建 prod-B stable -> prod-A candidate 的反向蓝绿 release intent；只写候选，不切 owner 或 stable Service。')
     booleanParam(name: 'ROLLBACK_PROD', defaultValue: false, description: '通过 Jenkins API 触发：立即将 prod 写回历史 release state。')
     string(name: 'TARGET_PROD_SOURCE_COMMIT', defaultValue: '', description: '回滚目标 sourceCommit；留空时自动选择历史中最新的上一版本。')
-    booleanParam(name: 'RECOVERY_TEST_RELEASE', defaultValue: false, description: '仅手动运行：仅在 test 已 Synced|Progressing 时恢复旧版本故障；跳过旧版本健康前置检查，但保留新版本完整验证。')
   }
 
   environment {
@@ -25,19 +24,8 @@ pipeline {
     HARBOR_REGISTRY_FILE = '/run/jenkins-secrets/harbor-registry'
     HARBOR_BASE_IMAGES_FILE = '/run/jenkins-secrets/harbor-base-images'
     GITEE_WRITE_KEY = '/run/jenkins-secrets/gitee-k8s-write'
-    RELEASE_OBSERVER_KUBECONFIG = '/run/jenkins-secrets/kubeconfig-release-observer'
     PLATFORM_REPOSITORY = 'git@gitee.com:huanminabc/k8s-juhe.git'
     RELEASE_BRANCH = 'main'
-    // Jenkins runs on infra-linux.  Keep release verification on the local
-    // NodePort path so an app-mac-vm LAN/NAT flap cannot be mistaken for a
-    // failed application release.
-    INGRESS_ENDPOINT = 'http://127.0.0.1:32080'
-    PROMETHEUS_ENDPOINT = 'http://127.0.0.1:19091'
-    // Stable, non-sensitive proxy profile ids used by the J3a release verifier.
-    // The corresponding disabled rows are provisioned in each environment DB;
-    // they are only exercised by the exact manual verification request.
-    J3A_TEST_MANUAL_PROXY_ID = 'j3a-release-probe-test'
-    J3A_PROD_MANUAL_PROXY_ID = 'j3a-release-probe-prod'
     BUILD_HTTP_PROXY = 'http://10.66.45.2:7890'
     BUILD_NO_PROXY = '127.0.0.1,localhost,192.168.1.76,192.168.1.203,10.66.45.2'
   }
@@ -68,11 +56,11 @@ pipeline {
     }
 
     stage('检查手动发布参数') {
-      when { expression { params.DEPLOY_PROD || reverseDeployRequested() || rollbackRequested() || recoveryTestReleaseRequested() } }
+      when { expression { params.DEPLOY_PROD || reverseDeployRequested() || rollbackRequested() } }
       steps {
         script {
-          if ([params.DEPLOY_PROD, reverseDeployRequested(), rollbackRequested(), recoveryTestReleaseRequested()].findAll { it }.size() > 1) {
-            error 'DEPLOY_PROD、REVERSE_DEPLOY_PROD、ROLLBACK_PROD 与 RECOVERY_TEST_RELEASE 只能选择一个。'
+          if ([params.DEPLOY_PROD, reverseDeployRequested(), rollbackRequested()].findAll { it }.size() > 1) {
+            error 'DEPLOY_PROD、REVERSE_DEPLOY_PROD 与 ROLLBACK_PROD 只能选择一个。'
           }
         }
       }
@@ -259,26 +247,6 @@ def validHarborDigestImage(value) {
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
 def rollbackRequested() { return params.ROLLBACK_PROD }
 def reverseDeployRequested() { return params.REVERSE_DEPLOY_PROD }
-def recoveryTestReleaseRequested() { return params.RECOVERY_TEST_RELEASE }
-
-def assertStandardProdPromotionAllowed() {
-  refreshPlatformReleaseWorkspace()
-  def activeSlot = metadataValue('prod', 'activeSlot')
-  def candidateSlot = metadataValue('prod', 'candidateSlot')
-  if (activeSlot != 'prod-a' || candidateSlot != 'prod-b') {
-    error "普通 DEPLOY_PROD 只允许 A stable -> B candidate；当前 activeSlot=${activeSlot}, candidateSlot=${candidateSlot}。请使用明确的 REVERSE_DEPLOY_PROD 创建 B stable -> A candidate intent，禁止误入旧单槽位路径。"
-  }
-}
-
-def assertReverseProdIntentAllowed() {
-  refreshPlatformReleaseWorkspace()
-  def activeSlot = metadataValue('prod', 'activeSlot')
-  def candidateSlot = metadataValue('prod', 'candidateSlot')
-  def candidateGate = metadataValue('prod', 'candidateGate')
-  if (activeSlot != 'prod-b' || candidateSlot != 'prod-a' || candidateGate != 'blocked') {
-    error "反向发布 intent 只允许当前 B stable -> A candidate 且 candidateGate=blocked；实际 activeSlot=${activeSlot}, candidateSlot=${candidateSlot}, candidateGate=${candidateGate}。"
-  }
-}
 
 def readHarborBaseImages() {
   if (!fileExists(env.HARBOR_BASE_IMAGES_FILE)) {
@@ -343,25 +311,6 @@ def readTestRelease() {
     error 'test release state 未通过完整性检查。'
   }
   return release
-}
-
-def readVerifiedTestRelease() {
-  def release = readTestRelease()
-  if (release.status != 'passed' || release.verifiedCommit != release.sourceCommit) {
-    error 'test release state 未通过验证门禁。'
-  }
-  return release
-}
-
-def prodRollbackSnapshot() {
-  refreshPlatformReleaseWorkspace()
-  def metadataFile = "${releaseWorkspace()}/apps/juhe-ai/overlays/prod/release-metadata.yaml"
-  def historyFile = prodHistoryPath()
-  return [
-    gitHead: sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim(),
-    metadata: readFile(metadataFile),
-    history: fileExists(historyFile) ? readFile(historyFile) : null
-  ]
 }
 
 def prodRollbackCandidates() {
