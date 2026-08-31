@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,7 +94,7 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 		t.Fatalf("observation count=%d err=%v", count, err)
 	}
 	var familyCount int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family IN ('protocol_basic','structured_output','tool_calling','stability','usage_shape')`, result.RunID).Scan(&familyCount); err != nil || familyCount != 5 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family IN ('protocol_basic','structured_output','tool_calling','token_integrity','usage_shape')`, result.RunID).Scan(&familyCount); err != nil || familyCount != 5 {
 		t.Fatalf("family observation count=%d err=%v", familyCount, err)
 	}
 	var observationStatus string
@@ -157,6 +159,35 @@ func TestRuntimeRejectsStaleSourceRevision(t *testing.T) {
 			t.Fatalf("stale source dispatch revision must be rejected, err=%v", err)
 		}
 	})
+}
+
+func TestRuntimeRejectsStaleTrustedComparisonRevision(t *testing.T) {
+	runtime := &Runtime{
+		Store: &Store{},
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: "https://target.example", Prompt: "OK", UpstreamModel: "gpt-5.6", DispatchRevision: 3, ConfigRevision: "cfg-1", SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
+		},
+		ResolveComparison: func(_ context.Context, request RunRequest) (Target, error) {
+			if request.TargetID != "comparison" || request.ConfigRevision != "cfg-2" || request.DispatchRevision != 8 || request.SourceConfigRevision != "src-2" || request.SourceDispatchRevision != 9 {
+				return Target{}, fmt.Errorf("comparison resolver received incomplete frozen revisions: %+v", request)
+			}
+			return Target{Endpoint: "https://comparison.example", Prompt: "OK", UpstreamModel: "gpt-5.6", DispatchRevision: 8, ConfigRevision: "cfg-2", SourceConfigRevision: "src-2", SourceDispatchRevision: 9}, nil
+		},
+	}
+	base := RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "target", Model: "gpt-5.6", Profile: "full", TrustedComparison: true, TrustedComparisonAccountID: "comparison", ConfigRevision: "cfg-1", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 8, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 9}
+	for name, mutate := range map[string]func(*RunRequest){
+		"dispatch":        func(request *RunRequest) { request.TrustedComparisonDispatchRevision = 7 },
+		"source config":   func(request *RunRequest) { request.TrustedComparisonSourceConfigRevision = "src-1" },
+		"source dispatch": func(request *RunRequest) { request.TrustedComparisonSourceDispatchRevision = 8 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := base
+			mutate(&request)
+			if _, err := runtime.Run(context.Background(), request); err == nil || !strings.Contains(err.Error(), "trusted comparison") {
+				t.Fatalf("stale trusted comparison revision must be rejected, err=%v", err)
+			}
+		})
+	}
 }
 
 func TestRuntimeManualEnforcementRequiresEnabledPhysicalAccount(t *testing.T) {
@@ -236,9 +267,9 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	mu.Lock()
-	if len(models) != 6 {
+	if len(models) != 3 {
 		mu.Unlock()
-		t.Fatalf("probe calls=%d models=%v", len(models), models)
+		t.Fatalf("terminal quick suite probe calls=%d models=%v", len(models), models)
 	}
 	for _, model := range models {
 		if model != "gpt-5.6-terra" {
@@ -301,13 +332,13 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 		OwnerID: "gateway-1",
 		Now:     func() time.Time { return now },
 		Resolve: func(context.Context, RunRequest) (Target, error) {
-			return Target{Endpoint: targetServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai", DispatchRevision: 3}, nil
+			return Target{Endpoint: targetServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai", ConfigRevision: "cfg-1", DispatchRevision: 3, SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
 		},
 		ResolveComparison: func(context.Context, RunRequest) (Target, error) {
-			return Target{Endpoint: comparisonServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai", DispatchRevision: 4}, nil
+			return Target{Endpoint: comparisonServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai", ConfigRevision: "cfg-2", DispatchRevision: 4, SourceConfigRevision: "src-2", SourceDispatchRevision: 5}, nil
 		},
 	}
-	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "comparison-acct", TrustedComparisonConfigRevision: "cfg-2"})
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "comparison-acct", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 4, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 5})
 	if err != nil || result.RunID == "" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -326,7 +357,7 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 		t.Fatal(err)
 	}
 	comparison, ok := frozen["trustedComparison"].(map[string]any)
-	if !ok || comparison["accountId"] != "comparison-acct" || comparison["configRevision"] != "cfg-2" || comparison["upstreamModel"] != "gpt-5.6-terra" || comparison["endpointFingerprint"] != endpointFingerprint(comparisonServer.URL) {
+	if !ok || comparison["accountId"] != "comparison-acct" || comparison["configRevision"] != "cfg-2" || comparison["dispatchRevision"] != float64(4) || comparison["sourceConfigRevision"] != "src-2" || comparison["sourceDispatchRevision"] != float64(5) || comparison["upstreamModel"] != "gpt-5.6-terra" || comparison["endpointFingerprint"] != endpointFingerprint(comparisonServer.URL) {
 		t.Fatalf("frozen trusted comparison=%#v", frozen["trustedComparison"])
 	}
 	var observations int
@@ -413,6 +444,104 @@ func TestAppendEvaluationObservationsPersistsFamilyRowsWithoutEvidencePayload(t 
 	}
 	if len(got) != 3 || got[0][0] != "token_integrity" || got[0][1] != "partial" || got[1][0] != "identity_observation" || got[1][1] != "partial" || got[2][0] != "stability" || got[2][1] != "complete" {
 		t.Fatalf("family observations=%v", got)
+	}
+}
+
+func TestRuntimeFailureCommitsOutcomeBeforeProjection(t *testing.T) {
+	store := newRuntimeTestStore(t)
+	defer store.Close()
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+	runtime := &Runtime{
+		Store:   store,
+		OwnerID: "gateway-failure",
+		Now:     func() time.Time { return now },
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: "https://target.invalid", Prompt: "hello", Protocol: modelcheckprofile.Protocol("unsupported"), DispatchRevision: 1}, nil
+		},
+	}
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
+	if err == nil || result.Status != string(RunFailed) {
+		t.Fatalf("result=%+v err=%v, want durable failed result", result, err)
+	}
+	assertRuntimeTerminalDurability(t, store, result.RunID, RunFailed, now)
+}
+
+func TestRuntimeCancelCommitsCanceledOutcomeWithIndependentFinalizeContext(t *testing.T) {
+	store := newRuntimeTestStore(t)
+	defer store.Close()
+	started := make(chan struct{})
+	var once sync.Once
+	now := time.Date(2026, 8, 29, 11, 0, 0, 0, time.UTC)
+	runtime := &Runtime{
+		Store:   store,
+		OwnerID: "gateway-cancel",
+		Now:     func() time.Time { return now },
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: "https://target.invalid", Prompt: "hello", Protocol: modelcheckprofile.ProtocolOpenAIResponses, DispatchRevision: 1, Client: &http.Client{Transport: cancelRoundTripper{started: started, once: &once}}}, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-started
+		cancel()
+	}()
+	result, err := runtime.Run(ctx, RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
+	if err == nil || !errors.Is(err, context.Canceled) || result.Status != string(RunCanceled) {
+		t.Fatalf("result=%+v err=%v, want canceled durable result", result, err)
+	}
+	assertRuntimeTerminalDurability(t, store, result.RunID, RunCanceled, now)
+}
+
+type cancelRoundTripper struct {
+	started chan struct{}
+	once    *sync.Once
+}
+
+func (t cancelRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	t.once.Do(func() { close(t.started) })
+	<-request.Context().Done()
+	return nil, request.Context().Err()
+}
+
+func newRuntimeTestStore(t *testing.T) *Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runtime-failure.db")
+	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range runtimeTestDDL() {
+		if _, err := seed.Exec(ddl); err != nil {
+			_ = seed.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(testSQLiteConfig(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func assertRuntimeTerminalDurability(t *testing.T, store *Store, runID string, status RunStatus, now time.Time) {
+	t.Helper()
+	var gotStatus, finished string
+	if err := store.db.QueryRow(`SELECT status,finished_at FROM model_check_runs WHERE id=?`, runID).Scan(&gotStatus, &finished); err != nil {
+		t.Fatal(err)
+	}
+	if gotStatus != string(status) || finished != now.Format(time.RFC3339Nano) {
+		t.Fatalf("run status=%q finished=%q, want %q at %s", gotStatus, finished, status, now.Format(time.RFC3339Nano))
+	}
+	var outcomes int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_outcomes WHERE input_id IN (SELECT input_id FROM model_check_inputs WHERE target_id='acct')`).Scan(&outcomes); err != nil {
+		t.Fatal(err)
+	}
+	if outcomes != 1 {
+		t.Fatalf("durable outcome count=%d, want 1", outcomes)
 	}
 }
 

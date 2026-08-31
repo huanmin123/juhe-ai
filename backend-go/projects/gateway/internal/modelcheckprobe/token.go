@@ -23,17 +23,25 @@ type Tokenizer interface {
 // It returns an excluded/skipped item when usage is incomplete; callers must
 // not turn that state into a formed quality fact.
 func RunTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol, model string, tokenizer Tokenizer, run func(context.Context, Request) (Result, error), endpointModes ...string) (Evaluation, error) {
+	return runTokenIntegrity(ctx, protocol, model, tokenizer, run, 3, endpointModes...)
+}
+
+func runTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol, model string, tokenizer Tokenizer, run func(context.Context, Request) (Result, error), rounds int, endpointModes ...string) (Evaluation, error) {
 	if tokenizer == nil || strings.TrimSpace(tokenizer.Version()) == "" {
 		return Evaluation{Kind: "token_integrity", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "tokenizer_snapshot_not_attached"}}, nil
 	}
 	if strings.TrimSpace(model) == "" || run == nil {
 		return Evaluation{}, errors.New("J3b token integrity input is invalid")
 	}
-	samples := make([]TokenSample, 0, 9)
-	results := make([]Result, 0, 9)
-	for round := 0; round < 3; round++ {
+	if rounds < 1 {
+		return Evaluation{}, errors.New("J3b token integrity rounds must be positive")
+	}
+	samples := make([]TokenSample, 0, rounds*3)
+	results := make([]Result, 0, rounds*3)
+	terminalFailure := false
+	for round := 0; round < rounds && !terminalFailure; round++ {
 		prefix := fmt.Sprintf("Controlled token integrity probe token-integrity-v1. Nonce %d. Reply with exactly OK.\n", round+1)
-		for _, padding := range []int{0, 512, 2048} {
+		for _, padding := range tokenPaddingOrder(round) {
 			prompt, localTokens, err := buildTokenPrompt(tokenizer, prefix, padding)
 			if err != nil {
 				return Evaluation{}, err
@@ -57,11 +65,13 @@ func RunTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol,
 			}
 			samples = append(samples, TokenSample{RoundIndex: round, PaddingTokens: padding, LocalInputTokens: localTokens, ReportedInputTokens: reported})
 			if !result.Success {
+				terminalFailure = true
 				break
 			}
 		}
 	}
 	analysis := AnalyzeTokenIntegrity(samples)
+	lastResult := results[len(results)-1]
 	status := "skipped"
 	score, maxScore := 0, 0
 	switch analysis.Status {
@@ -76,8 +86,15 @@ func RunTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol,
 		"tokenizerVersion": tokenizer.Version(), "probeVersion": "token-integrity-v1", "slope": analysis.Slope,
 		"intercept": analysis.Intercept, "confidenceLow": analysis.ConfidenceLow, "confidenceHigh": analysis.ConfidenceHigh,
 		"sampleCount": analysis.SampleCount, "roundCount": analysis.RoundCount, "reasonCodes": analysis.ReasonCodes,
-		"requestCount": len(results), "partial": len(results) < 9,
+		"requestCount": len(results), "partial": len(results) < rounds*3, "terminalFailure": terminalFailure,
+		"httpStatus": lastResult.HTTPStatus, "success": lastResult.Success,
 	}}, nil
+}
+
+func tokenPaddingOrder(round int) []int {
+	orders := [][3]int{{0, 512, 2048}, {2048, 0, 512}, {512, 2048, 0}}
+	order := orders[round%len(orders)]
+	return []int{order[0], order[1], order[2]}
 }
 
 func buildTokenPrompt(tokenizer Tokenizer, prefix string, target int) (string, int, error) {

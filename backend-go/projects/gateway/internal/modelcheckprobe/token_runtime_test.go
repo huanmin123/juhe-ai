@@ -62,6 +62,20 @@ func TestRunTokenIntegrityWithoutSnapshotIsExcluded(t *testing.T) {
 	}
 }
 
+func TestRunTokenIntegrityTerminalFailureStopsPaddingAndRounds(t *testing.T) {
+	requests := 0
+	item, err := RunTokenIntegrity(context.Background(), modelcheckprofile.ProtocolOpenAIResponses, "gpt-5.6-sol", deterministicTokenizer{}, func(_ context.Context, _ Request) (Result, error) {
+		requests++
+		return Result{Success: false, HTTPStatus: 503, ErrorMessage: "upstream unavailable"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || item.Status != "skipped" || item.Evidence["partial"] != true || item.Evidence["terminalFailure"] != true || item.Evidence["requestCount"] != 1 {
+		t.Fatalf("requests=%d item=%+v", requests, item)
+	}
+}
+
 func TestRunLongContextRequiresVersionedLimitAndPreservesMarker(t *testing.T) {
 	item, err := RunLongContext(context.Background(), "openai", "gpt-5.6-sol", modelcheckprofile.ProtocolOpenAIResponses, deterministicTokenizer{}, deterministicLimits{}, func(_ context.Context, request Request) (Result, error) {
 		var body struct {

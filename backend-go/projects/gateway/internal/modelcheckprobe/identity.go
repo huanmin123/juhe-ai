@@ -41,10 +41,7 @@ func RunIdentity(ctx context.Context, protocol modelcheckprofile.Protocol, model
 		{"tool_schema", "tool_schema", fmt.Sprintf(`按工具参数 schema 生成且只输出 JSON：必填 action 枚举只能是 inspect，payload 必须含 ids 数组 [2,7,9] 和布尔值 dryRun=true，tag="%s"。`, tag)},
 		{"knowledge_window", "knowledge_window", fmt.Sprintf(`知识截止 2024-10。只输出严格 JSON：{"version":"B","tag":"%s"}。`, tag)},
 	}
-	models := []string{model}
-	if strings.HasPrefix(model, "gpt-") {
-		models = uniqueModels(model, "gpt-5.6-sol", "gpt-5.6-terra")
-	}
+	models := pairedIdentityModels(model)
 	passed, success, total := 0, 0, 0
 	for _, canary := range canaries {
 		for _, candidate := range models {
@@ -83,6 +80,17 @@ func RunIdentity(ctx context.Context, protocol modelcheckprofile.Protocol, model
 	return Evaluation{Kind: "identity_observation", Status: status, Score: score, MaxScore: 10, Evidence: map[string]any{"featureVersion": IdentityFeatureVersion, "probeVersion": IdentityProbeVersion, "observationCount": total, "successCount": success, "constraintPassedCount": passed, "constraintRate": rate, "partial": success < total}}, nil
 }
 
+func pairedIdentityModels(model string) []string {
+	switch model {
+	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+		return uniqueModels(model, "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+	case "gpt-5.5", "gpt-5.4":
+		return uniqueModels(model, "gpt-5.5", "gpt-5.4")
+	default:
+		return []string{model}
+	}
+}
+
 func uniqueModels(models ...string) []string {
 	seen := make(map[string]bool, len(models))
 	result := make([]string, 0, len(models))
@@ -116,7 +124,7 @@ func identityPassed(key, output, tag string) bool {
 	case "tool_schema":
 		payload, _ := value["payload"].(map[string]any)
 		ids, _ := payload["ids"].([]any)
-		return value["action"] == "inspect" && value["tag"] == tag && payload["dryRun"] == true && len(ids) == 3
+		return value["action"] == "inspect" && value["tag"] == tag && payload["dryRun"] == true && len(ids) == 3 && ids[0] == float64(2) && ids[1] == float64(7) && ids[2] == float64(9)
 	case "knowledge_window":
 		return value["version"] == "B" && value["tag"] == tag
 	default:

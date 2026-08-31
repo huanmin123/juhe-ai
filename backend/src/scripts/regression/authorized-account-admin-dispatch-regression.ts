@@ -545,7 +545,7 @@ function createMockOpenAIServer(): http.Server {
             {
               type: 'message',
               role: 'assistant',
-              content: [{ type: 'output_text', text: 'OK' }]
+              content: [{ type: 'output_text', text: 'juhe' }]
             }
           ],
           usage: {
@@ -561,7 +561,7 @@ function createMockOpenAIServer(): http.Server {
         'data: {"type":"response.created","response":{"id":"resp_authorized_admin_dispatch","status":"in_progress"}}',
         '',
         'event: response.output_text.delta',
-        'data: {"type":"response.output_text.delta","delta":"OK"}',
+        'data: {"type":"response.output_text.delta","delta":"juhe"}',
         '',
         'event: response.completed',
         `data: ${JSON.stringify(completedEvent)}`,

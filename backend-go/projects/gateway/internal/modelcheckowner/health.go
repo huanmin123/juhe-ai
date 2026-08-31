@@ -87,18 +87,17 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 	if p == nil || p.Store == nil {
 		return errors.New("J3b quality projector is not initialized")
 	}
-	if !aggregate.Formed || !aggregate.TrustFormed {
-		if strings.TrimSpace(runID) != "" {
-			_ = p.Store.MarkHealthSync(ctx, strings.TrimSpace(runID), "failed")
-		}
-		return errors.New("J3b evidence is not formed; health projection is denied")
-	}
 	runID = strings.TrimSpace(runID)
-	if runID == "" || strings.TrimSpace(fact.RunID) == "" || fact.RunID != runID {
+	factRunID := strings.TrimSpace(fact.RunID)
+	if runID == "" || (factRunID != "" && factRunID != runID) || (aggregate.Formed && factRunID == "") {
 		// Do not mutate any run on an identity mismatch: the caller supplied
 		// contradictory identities, so marking runID failed could poison an
 		// unrelated durable run and make retries replay the wrong fact.
 		return errors.New("J3b health projection run identity mismatch")
+	}
+	if !aggregate.Formed || !aggregate.TrustFormed {
+		_ = p.Store.MarkHealthSync(ctx, runID, "failed")
+		return errors.New("J3b evidence is not formed; health projection is denied")
 	}
 	if strings.TrimSpace(fact.AccountID) == "" || strings.TrimSpace(fact.SystemAccountID) == "" || strings.TrimSpace(fact.ProviderCode) == "" || strings.TrimSpace(fact.Model) == "" || strings.TrimSpace(fact.Profile) == "" || !validHealthStatHour(fact.StatHour) || fact.ObservedAt.IsZero() || fact.Threshold < 40 || fact.Threshold > 100 || fact.Score < 0 || fact.Score > 100 {
 		_ = p.Store.MarkHealthSync(ctx, runID, "failed")
@@ -106,6 +105,9 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 	}
 	if fact.Score >= fact.Threshold && fact.Level != "unavailable" {
 		return errors.New("J3b health projection requires a quality failure or unavailable result")
+	}
+	if fact.Level == "unavailable" {
+		fact.EnforcementAllowed = false
 	}
 	if fact.Score < fact.Threshold && fact.EnforcementAllowed {
 		if p.Enforcement == nil {
