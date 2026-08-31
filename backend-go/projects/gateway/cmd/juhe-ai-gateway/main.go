@@ -255,6 +255,7 @@ func main() {
 			AccountOptions:    businessSource,
 			Authorize:         modelcheckowner.NewAdminAuthorize(authenticator),
 			Build:             businessSource.BuildRequest,
+			BuildScoped:       businessSource.BuildScopedRequest,
 			Dispatcher:        &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelStore, Circuit: gatewaydispatch.RuntimeCircuitGate{Store: runtimeStore}}},
 			Enforcement:       enforcement,
 			Quality:           quality,

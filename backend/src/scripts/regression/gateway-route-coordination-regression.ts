@@ -14,6 +14,19 @@ import {
   type GatewayRouteCoordinatorOwner,
   type RouteCoordinationResult
 } from '../../modules/gateway/routing/route-coordination.js'
+import {
+  GatewayRequestWallBudgetExhaustedError,
+  waitForAccountLockDelay
+} from '../../modules/gateway/dispatch/upstream-dispatch.js'
+
+const coordinationBudgetError = new GatewayRequestWallBudgetExhaustedError(120_000, 0, 'coordination')
+assert.equal(coordinationBudgetError.code, 'gateway_request_coordination_budget_exhausted')
+assert.equal(coordinationBudgetError.budgetKind, 'coordination')
+assert.equal(coordinationBudgetError.minimumMeaningfulAttemptMs, 0)
+assert.match(coordinationBudgetError.message, /协调等待预算/)
+const upstreamDispatchSource = readFileSync('src/modules/gateway/dispatch/upstream-dispatch.ts', 'utf8')
+assert.match(upstreamDispatchSource, /waiter with a lease id owns the already-sampled reservation/, '锁死等待完成后必须消费原租约，不能重新采样下一次延迟')
+assert.match(upstreamDispatchSource, /gateway_request_coordination_budget_exhausted/, '协调预算终止不得复用 wall exhausted code')
 
 let nowMs = 1_000
 const wallBudget = new GatewayRequestWallBudget({
@@ -96,6 +109,42 @@ assert.equal(waitPaused.outcome, 'applied')
 assert.equal(waitPaused.snapshot.version, 2)
 assert.equal(waitPaused.snapshot.remainingMs, 2_300)
 assert.equal(waitPaused.snapshot.activeSinceMs, undefined)
+
+const lockWaitStartedAt = Date.now()
+const lockWaitWallBudget = new GatewayRequestWallBudget({ requestAcceptedAtMs: lockWaitStartedAt })
+const lockWaitCoordinationBudget = new RouteCoordinationBudget({
+  requestId: 'account-lock-wait',
+  budgetMs: 10
+})
+const lockWaitResult = await waitForAccountLockDelay({
+  accountId: 'account-lock-wait',
+  delayMs: 100,
+  gatewayRequestWallBudget: lockWaitWallBudget,
+  routeCoordinationBudget: lockWaitCoordinationBudget
+})
+assert.equal(lockWaitResult, 'coordination', '锁死等待不得超过 routeCoordinationBudget')
+assert.ok(Date.now() - lockWaitStartedAt < 200, '锁死等待必须在协调预算耗尽后及时返回')
+
+const wallLimitedStartedAt = Date.now()
+const wallLimitedWait = await waitForAccountLockDelay({
+  accountId: 'account-lock-wall',
+  delayMs: 100,
+  gatewayRequestWallBudget: new GatewayRequestWallBudget({
+    requestAcceptedAtMs: wallLimitedStartedAt - defaultGatewayRequestWallBudgetMs + defaultGatewayFinalResponseReserveMs + 10
+  }),
+  routeCoordinationBudget: new RouteCoordinationBudget({ requestId: 'account-lock-wall', budgetMs: 1_000 })
+})
+assert.equal(wallLimitedWait, 'wall', '锁死等待不得越过最终响应预留后的墙钟')
+
+const canceledLockWaitController = new AbortController()
+canceledLockWaitController.abort()
+assert.equal(await waitForAccountLockDelay({
+  accountId: 'account-lock-canceled',
+  delayMs: 100,
+  gatewayRequestWallBudget: new GatewayRequestWallBudget({ requestAcceptedAtMs: Date.now() }),
+  routeCoordinationBudget: new RouteCoordinationBudget({ requestId: 'account-lock-canceled', budgetMs: 1_000 }),
+  signal: canceledLockWaitController.signal
+}), 'aborted', '客户端取消不得被伪装为墙钟或协调预算耗尽')
 
 coordinationNowMs = 20_000
 assert.equal(coordinationBudget.remainingMs(), 2_300, 'attempt 和读取期间协调预算必须暂停')
@@ -581,6 +630,16 @@ assert.match(routesSource, /gatewayRequestWallBudget: currentPreflight\.gatewayR
 assert.match(routesSource, /routeCoordinationBudget: currentPreflight\.routeCoordinationBudget/g, '分组和混合重入必须复用同一路由协调预算')
 assert.match(routesSource, /requestAttemptTracker: currentPreflight\.requestAttemptTracker/g, '分组和混合重入必须复用同一尝试集合')
 assert.match(routesSource, /gateway_request_client_handoff/, '主循环必须在决策点执行墙钟 handoff')
+assert.match(routesSource, /if \(accountLockTrafficEnabled\) \{[\s\S]*deadConfirmedAccountIds/, 'DEAD_CONFIRMED 过滤不得被 pending 特殊路径绕过')
+assert.match(routesSource, /pendingSameAccountRetry = undefined[\s\S]*streamRetryDispatchAccounts/, '死亡 pending 同账号重试必须清理并重建候选')
+assert.match(routesSource, /reserveSameAccountRetryForRoute/, '锁死保留重试必须通过 tracker 正式注册 token')
+assert.doesNotMatch(routesSource, /retryId:\s*`lock:/, '路由不得伪造 lock:* 同账号重试 token')
+assert.match(routesSource, /recordAccountLockFailureAsync\(account\.id, 'upstream_body_transport_failure'(?:, accountLockObservation)?\)/, '可信 body transport failure 必须进入锁死事故记录')
+assert.match(routesSource, /releaseAccountLockRetryLease\(accountLockLeaseScheduleNextRetry\)/, '上游终态必须释放锁死在途租约')
+assert.match(routesSource, /accountLockTrafficEnabled[\s\S]*transportFailure[\s\S]*!requestExecutionSignal\.aborted/, 'body 锁死事故必须限定 gateway、状态变更开启且排除客户端取消')
+assert.match(routesSource, /oldest_incident_then_account_id/, '多个 ENGAGED 账号必须使用确定性冲突选择规则')
+assert.match(routesSource, /routeCoordinationHandoffRequested/, '路由协调预算耗尽必须走独立 handoff')
+assert.match(routesSource, /reason: 'route_coordination_budget_exhausted'/, '协调预算耗尽不得伪装成 wall exhaustion')
 assert.match(dispatchSource, /fetchFirstAvailableUpstream requires shared request coordination context/, '派发器不得为旁路请求静默创建独立预算')
 assert.match(dispatchSource, /tryRecordDispatchAttempt/, '实际 HTTP attempt 前必须登记请求去重键')
 assert.match(compactPreflightSource, /requestCoordination: GatewayUpstreamRequestCoordinationContext/, 'compact 预检必须接收主请求协调上下文')

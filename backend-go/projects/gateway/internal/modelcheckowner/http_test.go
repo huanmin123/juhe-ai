@@ -361,10 +361,11 @@ func TestHTTPHandlerJSONRejectsConcurrentActiveRun(t *testing.T) {
 func TestHTTPHandlerRunReturnsDurableCompleteDetailWithoutFabricatingFields(t *testing.T) {
 	handler := newTestHTTPHandler()
 	detail := map[string]any{
-		"id":             "run-detail",
-		"requestSummary": map[string]any{"targetId": "acct-1"},
-		"resultSummary":  map[string]any{"score": 100},
-		"checks":         []any{map[string]any{"id": "check-1"}},
+		"id":              "run-detail",
+		"systemAccountId": "sys-1",
+		"requestSummary":  map[string]any{"targetId": "acct-1"},
+		"resultSummary":   map[string]any{"score": 100},
+		"checks":          []any{map[string]any{"id": "check-1"}},
 	}
 	handler.Service = contractRunService{
 		runResult: RunResult{RunID: "run-detail", Status: "completed"},
@@ -493,10 +494,11 @@ func TestHTTPHandlerSSEAndConflictContract(t *testing.T) {
 	handler.Service = contractRunService{
 		streamResult: RunResult{RunID: "run-1", Status: "completed"},
 		detail: map[string]any{
-			"id":             "run-1",
-			"requestSummary": map[string]any{"targetId": "acct-1"},
-			"resultSummary":  map[string]any{"score": 100},
-			"checks":         []any{map[string]any{"id": "check-1"}},
+			"id":              "run-1",
+			"systemAccountId": "sys-1",
+			"requestSummary":  map[string]any{"targetId": "acct-1"},
+			"resultSummary":   map[string]any{"score": 100},
+			"checks":          []any{map[string]any{"id": "check-1"}},
 		},
 		found: true,
 	}
@@ -634,21 +636,75 @@ func TestHTTPHandlerSelfScopeRedactsNestedTenantFieldsFromCompletedRun(t *testin
 	}
 }
 
-func TestResolveRequestedSystemAccountFailsClosedForUnwiredCrossScope(t *testing.T) {
-	if scoped, err := resolveRequestedSystemAccount(httptest.NewRequest(http.MethodGet, "/runs", nil), "sys-1"); err != nil || scoped != "sys-1" {
-		t.Fatalf("default scope=%q err=%v", scoped, err)
+func TestResolveManagementScopeSeparatesActorAndSelectedTenant(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/runs", nil)
+	scope, err := resolveManagementScope(request, "sys-1", false, false)
+	if err != nil || scope.ActorSystemAccountID != "sys-1" || scope.SelectedSystemAccountID != "sys-1" || scope.AllSystemAccounts {
+		t.Fatalf("default scope=%+v err=%v", scope, err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/runs?systemAccountId=all", nil)
-	if scoped, err := resolveRequestedSystemAccount(request, "sys-1"); err != nil || scoped != "sys-1" {
-		t.Fatalf("all scope=%q err=%v", scoped, err)
+	request = httptest.NewRequest(http.MethodGet, "/runs?systemAccountId=all", nil)
+	scope, err = resolveManagementScope(request, "sys-1", true, false)
+	if err != nil || scope.ActorSystemAccountID != "sys-1" || scope.SelectedSystemAccountID != "" || !scope.AllSystemAccounts {
+		t.Fatalf("global scope=%+v err=%v", scope, err)
 	}
 	request = httptest.NewRequest(http.MethodGet, "/runs?systemAccountId=sys-2", nil)
-	if _, err := resolveRequestedSystemAccount(request, "sys-1"); err == nil {
-		t.Fatal("cross system-account scope must fail closed until authorization migration")
+	scope, err = resolveManagementScope(request, "sys-1", true, false)
+	if err != nil || scope.ActorSystemAccountID != "sys-1" || scope.SelectedSystemAccountID != "sys-2" || scope.AllSystemAccounts {
+		t.Fatalf("selected scope=%+v err=%v", scope, err)
+	}
+	if _, err := resolveManagementScope(request, "sys-1", false, false); err == nil {
+		t.Fatal("self mount foreign scope must remain rejected")
 	}
 	request = httptest.NewRequest(http.MethodGet, "/runs?systemAccountId=sys-1&systemAccountId=sys-1", nil)
-	if _, err := resolveRequestedSystemAccount(request, "sys-1"); err == nil {
+	if _, err := resolveManagementScope(request, "sys-1", true, false); err == nil {
 		t.Fatal("duplicate system-account scope must be rejected")
+	}
+}
+
+func TestHTTPHandlerAdminScopeForwardsGlobalAndForeignReadSelection(t *testing.T) {
+	for _, requested := range []string{"all", "sys-2"} {
+		t.Run(requested, func(t *testing.T) {
+			handler := newTestHTTPHandler()
+			handler.AllowCrossAccount = true
+			service := &scopedRunService{}
+			handler.Service = service
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/runs?systemAccountId="+requested, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if requested == "all" && (!service.query.AllSystemAccounts || service.query.SystemAccountID != "") {
+				t.Fatalf("global query=%+v", service.query)
+			}
+			if requested == "sys-2" && (service.query.AllSystemAccounts || service.query.SystemAccountID != "sys-2") {
+				t.Fatalf("selected query=%+v", service.query)
+			}
+		})
+	}
+}
+
+func TestHTTPHandlerGlobalScopeBuildsTargetTenantAndKeepsQualitySpecific(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.AllowCrossAccount = true
+	var builtScope ManagementScope
+	handler.BuildScoped = func(_ context.Context, scope ManagementScope, command RunCommand) (RunRequest, error) {
+		builtScope = scope
+		return RunRequest{SystemAccountID: "sys-2", ActorSystemAccountID: "sys-1", TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: "quick"}, nil
+	}
+	handler.Service = contractRunService{
+		runResult: RunResult{RunID: "run-global", Status: "completed"},
+		detail:    RunDetail{RunView: RunView{ID: "run-global", SystemAccountID: "sys-2"}, RequestSummary: json.RawMessage(`{}`), ResultSummary: json.RawMessage(`{}`), Checks: []RunCheck{}},
+		found:     true,
+	}
+	run := httptest.NewRecorder()
+	handler.ServeHTTP(run, httptest.NewRequest(http.MethodPost, "/run?systemAccountId=all", strings.NewReader(`{"targetType":"account","targetId":"acct-2","model":"gpt-5.6"}`)))
+	if run.Code != http.StatusOK || !builtScope.AllSystemAccounts || builtScope.ActorSystemAccountID != "sys-1" {
+		t.Fatalf("run status=%d scope=%+v body=%s", run.Code, builtScope, run.Body.String())
+	}
+	quality := httptest.NewRecorder()
+	handler.ServeHTTP(quality, httptest.NewRequest(http.MethodGet, "/quality-policy?systemAccountId=all", nil))
+	if quality.Code != http.StatusBadRequest || !strings.Contains(quality.Body.String(), "请先选择具体系统账户") {
+		t.Fatalf("quality status=%d body=%s", quality.Code, quality.Body.String())
 	}
 }
 

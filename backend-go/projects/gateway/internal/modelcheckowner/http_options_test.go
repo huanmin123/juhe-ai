@@ -50,6 +50,18 @@ func TestHTTPAccountOptionsUsesAuthenticatedSystemAccountScope(t *testing.T) {
 	}
 }
 
+func TestHTTPAccountOptionsForwardsAdministratorGlobalScope(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.AllowCrossAccount = true
+	spy := &accountOptionsScopeSpy{}
+	handler.AccountOptions = spy
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/account-options?purpose=run&systemAccountId=all", nil))
+	if response.Code != http.StatusOK || !spy.query.AllSystemAccounts || spy.query.SystemAccountID != "" {
+		t.Fatalf("status=%d scope query=%+v body=%s", response.Code, spy.query, response.Body.String())
+	}
+}
+
 func TestHTTPAccountOptionsRejectsMissingAuthenticatedScope(t *testing.T) {
 	handler := newTestHTTPHandler()
 	handler.AccountOptions = &accountOptionsScopeSpy{}

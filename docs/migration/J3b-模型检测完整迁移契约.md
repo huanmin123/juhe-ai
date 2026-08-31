@@ -107,6 +107,8 @@ Gateway 已将 `Runtime` 接入 `RunService` 契约：在注入 target resolver 
 
 Gateway `modelcheckowner.Runtime` 现已形成一个进程内的 L2 运行时闭环：它在同一 Go 进程中完成版本化 input 签发、run 创建、resolver 双读与 durable claim、直接 probe suite、durable outcome commit，以及 run/item 的原子终态投影。成功、上游失败和客户端取消均会写入完整终态；调用方 context 已取消时，终态投影使用独立的短超时上下文，避免留下永久 `running` 记录。该服务没有 Node、IPC 或跨进程依赖，并以 Gateway SQLite 集成测试覆盖成功投影、取消失败投影和 durable outcome readback。immutable comparison snapshot 存在时可由 Go 独立执行第二套 suite 并生成比较摘要；但完整 observation/trust/quality 形成、Business handoff、三库回填和 PostgreSQL 端到端 wiring 仍是归档前门禁，因此本实现不改变 Node owner。
 
+Gateway 现将 Go 可形成的 trust 摘要固化为 J3b 事实：每个 scope observation 先写去重 receipt，再标记 `aggregation_completed_at`，随后以 `(created_at,id)` 单调 cursor 写入 `model_trust_aggregation_state`，并更新 `model_account_trust_results`、清理相同 scope 的 dirty entry；同 cursor 不同事实会 fail-closed。`juhe_j3b` schema、SQLite bootstrap、inventory、PostgreSQL/SQLite readback manifest 均已纳入 `model_account_trust_results`、`model_trust_latest_dirty_accounts`、`model_trust_observation_receipts` 与 `model_trust_aggregation_state`。隔离 dev PostgreSQL 经 PgBouncer 的 Gateway runtime smoke 已覆盖 `Run → observation → receipt → latest/cursor`，且临时库已删除；另有 9 张 legacy fact（run/item/observation/health/baseline/trust latest/dirty/receipt/cursor state）零行结构 readback 通过。零行/夹具结果只证明契约可执行，不是历史数据回填或 owner handoff 证据；token/identity window、aggregation lease 的历史 handoff、真实非空 source freeze/readback 及最终 retention 仍是未闭合门禁。
+
 `backend-go/projects/jobs/internal/modelcheckquality` 现已冻结 Node 质量 gate 的纯事实层，并由 runtime 在终态投影完成后以 CAS 方式追加版本化 `quality_decision_json`（包含 outcome/policy/evidence 摘要身份）。证据未由 trust/identity/Juice projector 完整形成时，Go 显式写入 `quality_evidence_not_formed` / `not_triggered`，不会处罚、隔离、降级或写健康失败；缺失、空值或未知 item status 同样按 partial evidence 处理，不得借 score 推断形成；相同事实可幂等重放，漂移会 fail-closed。追加会在同一行锁事务内结构化比对终态 status、result summary 与 policy snapshot，不以 JSON 文本等值作为 SQL 条件，避免 PostgreSQL JSONB 与 SQLite TEXT 的序列化差异；隔离 dev PostgreSQL writer smoke 已覆盖首次追加与幂等重放，并清理临时 run。该增量仍不是业务质量 projector：`account_quality_enforcements`、恢复、health-hour 写入与失败重试尚未接线，因此 Node 质量 writer、scheduler 和 SQLite business writer 仍不可删除或归档。
 
 首个 Go 直接业务写入原语 `modelcheckquality.ApplyEnforcement` 已实现为单事务的 PostgreSQL/SQLite business CAS：先逐字段复核冻结的 manual policy 或 schedule，再复核自有物理账户、删除状态、授权实例、来源状态与 `config_revision`；账户更新成功后才 upsert generation 单调递增的 active enforcement。相同旧快照在账户 revision 已递增后按 Node 源码顺序返回 `stale`，而不是把旧 run 误判为成功重放。该原语尚未从 runtime 调用，也未形成 SQLite writer handoff，故不会改变现有 Node owner；后续必须接入 formed evidence、Go cache invalidation、recovery/health projector 与 scheduler 后，才能启用。
@@ -117,7 +119,7 @@ Gateway `modelcheckowner.Runtime` 现已形成一个进程内的 L2 运行时闭
 
 `backend-go/projects/jobs/internal/modelcheckactive` 已补齐 Go 进程内活动任务生命周期：以 system-account 作用域做互斥，句柄绑定取消 context，`Stop` 只取消匹配作用域并标记 `stopRequested`，`Finish` 以句柄身份清理，旧句柄不会误删新任务；并发启动、跨作用域隔离和停止取消均有 `-race` 覆盖。runtime 可选接入该注册表，停止动作会沿同一 context 进入 executor，最终由终态投影记录 canceled。它只负责请求级协调，不替代 durable claim/fence 和跨实例恢复；管理 JSON/SSE 与持久化 active-run 查询仍未接线。
 
-Gateway `internal/modelcheckowner` 已建立 Go-owned JSON/SSE 管理边界：`/run`、`/run/stream`、`/run/active`、`/run/stop` 使用统一 `{data: ...}` envelope，严格拒绝未知字段和客户端伪造的 provider/threshold，默认 profile 与 trusted comparison 参数校验对齐 Node；handler 还会复核 Build 返回的 system/actor scope、目标和 profile 快照，防止装配层发生授权漂移。JSON 与 SSE 均在写响应前取得同一 system-account 活动租约，冲突返回 `409`/`Retry-After`，并在 run started 后回填真实 `runId`；SSE 下游写失败或客户端取消会取消同一 Go run context，suite item 进度按顺序发送且不静默丢弃。公开 listener 分别挂载 `/__aisys__/api/model-checks/`（管理员）和 `/__aisys__/api/my-model-checks/`（登录账户自身作用域）；self 路径忽略调用方提供的 `systemAccountId`，并拒绝管理员专属的 token 截距基线激活；未修改初始密码的请求返回 `403` 与 `must_change_password`。管理员显式单账户 scope 已接线，但 Node 的无筛选/`systemAccountId=all` 全局管理、授权账户可见性、完整详情 DTO 与 self 脱敏仍未迁移，不能把双入口当作 Node 等价替代。Host 的 `Mount` 只在 owner ready 后把完整 handler 以显式前缀挂入 Gateway mux，避免路由已曝光但 owner 未装配。主进程已有真实 auth、账号 source/build、enforcement、scheduler 与 listener 装配路径；缺少 handoff/backfill/active-path-zero 时仍不得启用或删除 Node 管理路由。
+Gateway `internal/modelcheckowner` 已建立 Go-owned JSON/SSE 管理边界：`/run`、`/run/stream`、`/run/active`、`/run/stop` 使用统一 `{data: ...}` envelope，严格拒绝未知字段和客户端伪造的 provider/threshold，默认 profile 与 trusted comparison 参数校验对齐 Node；handler 还会复核 Build 返回的 system/actor scope、目标和 profile 快照，防止装配层发生授权漂移。JSON 与 SSE 均在写响应前取得以认证 actor 为 key 的活动租约，冲突返回 `409`/`Retry-After`，并在 run started 后回填真实 `runId`；SSE 下游写失败或客户端取消会取消同一 Go run context，suite item 进度按顺序发送且不静默丢弃。公开 listener 分别挂载 `/__aisys__/api/model-checks/`（管理员）和 `/__aisys__/api/my-model-checks/`（登录账户自身作用域）；self 路径忽略调用方提供的 `systemAccountId`，并拒绝管理员专属的 token 截距基线激活；未修改初始密码的请求返回 `403` 与 `must_change_password`。管理员入口现以 `actor + selected tenant | all` 显式 scope 传递：未传或传 `systemAccountId=all` 时历史/详情/自有账户候选可读取全局，显式 tenant 时才合并可证实的授权实例；发起检测时 Go 读取主目标和可信对照账户各自 owner，run 保留目标 tenant 与 actor metadata，可信对照只作为同一 run 的检查输入，长期 observation/trust projection 始终归主目标，不能把管理员、主目标或对照账户租户伪写为另一方；quality policy/schedule 在全局 scope 仍明确返回 `400` 要求选择具体租户。Gateway 写入 run/item 摘要时现复用 Node 的字段名和字符串形态脱敏，并限制 JSON 深度、对象键、数组和字符串长度；因此凭据、代理 URL 密码、原始 body/完整 response 等不会进入 durable J3b projection。该局部对齐不证明授权账户可见性、完整详情 DTO、错误/事务 golden 与 self 脱敏已经完成，owner manifest 仍为 `partial`。Host 的 `Mount` 只在 owner ready 后把完整 handler 以显式前缀挂入 Gateway mux，避免路由已曝光但 owner 未装配。主进程已有真实 auth、账号 source/build、enforcement、scheduler 与 listener 装配路径；缺少 handoff/backfill/active-path-zero 时仍不得启用或删除 Node 管理路由。
 
 Gateway full suite 现已补齐 Node 的非 trusted comparison 行为：即使未选择独立可信账户，也会在同一 resolved endpoint 上执行 profile 配置的 paired-model cross-model probe；只有显式 trusted comparison 才执行跨账户 distribution similarity。该探针只持久化比较结果摘要和模型身份，不保留响应原文；质量 projector 仍以完整 evidence family 和 trust 形成作为前置条件。
 
@@ -369,3 +371,93 @@ Gateway 的 `CheckBusinessPostgresSchema` 现对 `juhe_business` 只读核验使
 ### 9.7.19 SQLite backfill lossless write gate（2026-08-30）
 
 `BackfillSQLite` 在复制任一 J3b 事实表前比较 source/target 列集合；发现 source-only 列时立即返回错误并回滚整个目标事务，不再先提交公共列投影再依赖 readback 报告拦截。`VerifySQLiteBackfill` 仍输出 `ignoredSourceColumns` 与 `ProjectionComplete/Complete`，用于诊断历史或外部报告，但任何 source-only projection 都不能产生完整回填证据。该行为会要求目标 schema 先覆盖 Node 事实列，避免把列丢失隐藏在“回填成功”状态中；未连接真实三库，仍需在停写窗口验证 source 冻结、唯一 writer、逐表 digest 和恢复点。
+
+### 9.7.20 Trust 聚合游标无损映射（2026-08-31）
+
+J3b maintenance 现将 Node `juhe_stats.stats_job_state` 中唯一的 `scope_type='global'`、空 `scope_id`、`job_name='model-trust-observation-aggregation'` 游标映射到 Go `model_trust_aggregation_state`，保留 `cursor_created_at`、`cursor_id`、`last_success_at`、`last_error_message`、`lag_seconds` 和 `updated_at` 全部字段，并以固定 `scope_key` 做插入式冲突校验和 PG/SQLite readback 摘要。其他 Node `stats_job_state` 作业不会被误拷贝；`background_job_leases` 仍是 Node 调度所有权状态，必须作为独立 drain/epoch/唯一 writer handoff 证据处理，不能用历史数据回填代替。该映射已通过本地定向测试以及开发主库 PG 直连/PgBouncer 空状态 readback，但尚无真实停写窗口、三库数据快照或切换证据。
+
+### 9.7.21 Dev PgBouncer Gateway runtime smoke（2026-08-31）
+
+本轮在远端 dev Docker PostgreSQL 的一次性隔离库 `juhe_ai_sub2api_dev_j3b_dataset_projector_20260826` 中完成了真实 Go Gateway runtime smoke。测试通过 PgBouncer `6432` 连接，在目标 `juhe_j3b` schema 已预置后执行完整 probe，并核验 durable run、五类 observations、trust observation receipts、aggregation cursor 与 latest trust result 均已写入；测试结束后先定向终止该 disposable 库的 2 个空闲连接，再删除数据库并确认目标不存在。过程中未写入主库或 Redis，也未触碰生产。
+
+同一 dev Docker 环境还在另一一次性 scratch 库执行了 PostgreSQL 非空 backfill/readback smoke：合成 `juhe_dataset` 的 run/item/observation、`juhe_stats` 的 health/baseline/trust/dirty/receipt 以及唯一 trust aggregation cursor 各 1 行，`BackfillPostgres` 在 serializable 事务内均插入 `1→1`，只读 repeatable-read readback 对全部 9 项报告 `match`，第二次 backfill 仅对同值主键行计为 skip。测试会删除其三个临时 schema，外层随后删除整个 scratch 库；它验证真实 PostgreSQL/PgBouncer 上的非空工具行为和幂等性。
+
+### 9.7.22 管理员跨租户 scope 的 actor/target 分离（2026-08-31）
+
+复核 Node 的 `getRequestAccessScope` 后确认，管理员请求的 `systemAccountId=all` 或无筛选代表未过滤的全局 scope，而不是字面量租户；质量策略/调度写入仍要求先选择具体租户。Go 现以 `ManagementScope{ActorSystemAccountID, SelectedSystemAccountID, AllSystemAccounts}` 显式传递该三态：管理员全局 scope 可读取全部 run/history 与自有账户候选，但不把授权实例提升为全局候选；显式 tenant 可收窄并合并可证实的授权实例；self 路径仍固定 actor 自身并忽略伪造参数。管理员发起 run 时 `BuildScopedRequest` 按主目标账户读取其 owner，run 持久化该 target tenant 并保留认证 actor；可信对照账户在 global scope 另行读取自己的 owner、fence 和 revision，仅作为同一 run 的检查输入，不产生对照账户 observation 或 trust projection，长期事实仍归主目标。active/stop 互斥键继续按 actor，避免一次管理员操作跨选择 scope 遗失自身活动生命周期；quality policy/schedule 对 global scope 明确返回 `400` 要求具体 tenant。定向 Gateway/Business/runtime 回归已覆盖 actor-target 分离、global account options/list、global run、comparison owner/fence，以及 comparison 不生成长期跨租户事实。
+
+这只完成管理 scope 的局部行为对齐，不证明授权账户可见性、全量 DTO 脱敏、错误/事务 golden、真实认证、外部上游 usage/audit 或 Node/Go 双路径行为均已验收；Gateway route owner manifest 的 `model-checks` 仍为 `partial`，也不解除 Business handoff、三库 backfill/readback、GitOps rollback 或 active-path-zero 门禁。
+
+对应的 SQLite 三物理文件回填回归也已对相同 9 项非空事实覆盖首次 `1→1` 写入、幂等重跑、只读 readback、源列漂移和共享路径拒绝。该回归使用 `t.TempDir()` 生成的 dataset/stats/target 文件，只证明 SQLite 工具和 fail-closed 边界，不是运行中 Node 数据库的停写窗口或正式三库迁移证据。
+
+同期对 cache/state/queue 三个 dev Redis 实例的 DB `9` 鉴权 PING 均返回 `PONG`；J3b runtime/backfill smoke 没有写入 Redis，故该结果只证明依赖环境可用，不代表 Redis 状态迁移或 owner handoff 已完成。上述均不证明 Node drain、Business SQLite 唯一 writer、真实 Node dataset/stats/J3b 三库正式 backfill、真实上游凭据/usage/audit、GitOps rollback 或 active-path-zero。scratch 库最初因 PgBouncer 对尚不存在数据库保留缓存错误，数据库创建并预置 schema 后通过发送 HUP 刷新 PgBouncer，再次运行成功；该处理仅针对 dev PgBouncer，不应作为生产切换步骤。
+
+### 9.7.23 Go run projection metadata 与 Dev PgBouncer 回归（2026-08-31）
+
+Gateway `modelcheckowner` 现从 Business source 冻结并持久化 `targetName`、`targetOwnerSystemAccountId`、`groupId` 和独立 `traceId`；`trustedComparisonAvailable` 仅在比较目标完成独立 resolver、revision 和 fence 校验后写为可用，不再简单镜像请求开关。管理 run 列表/详情现读取 Node 对齐的 actor、目标/租户、schedule、trusted comparison、probe/set、started/finished/duration、错误和 policy/quality JSON 字段；durable JSON 仍经过对象校验与敏感信息脱敏。`go test ./projects/gateway/internal/modelcheckowner`、`go vet` 通过，并在一次性 dev PostgreSQL/PgBouncer scratch 库完成新增字段的 Gateway runtime/trust smoke，随后删除 scratch 库。
+
+该增量只闭合 Go 内部的 run projection/DTO 缺口，不证明完整详情授权可见性、Node active-path-zero、Business SQLite 唯一 writer、真实三库停写回填、GitOps rollback 或 Node 归档条件。
+
+### 9.7.24 Go full detail latest trust readback（2026-08-31）
+
+Go `GetRun` 现与 Node `getModelCheckRun` 的 full-profile 详情行为对齐：在目标账户和模型匹配、run 未标记 `modelCheckUnverified` 且 profile 不是 `quick` 时，按 `(system_account_id, account_id, requested_model)` 读取 `model_account_trust_results` 的最新 durable projection，并将 `identityStatus`、`mappingStatus`、`usageIntegrityStatus`、`protocolStatus`、`evidenceStatus`、coverage/count、reason codes 与最后观测时间合并到 `resultSummary.trustReport`。若当前 run 已标记 `model_response_evidence_unavailable`，或为 `unavailable` 且没有本次 `observedModel`，则保持本次 run 摘要、不读取 latest；latest 行缺失、表暂时不可读或 JSON reason codes 畸形时同样保留已落盘的基础详情，不把读取失败伪装成新的可信结果；comparison tenant 仍不会被查询或投影。新增 SQLite durable-detail 回归、race 与 vet 通过。
+
+这只闭合 Go 管理读路径的一项 Node parity，不证明 latest trust 的历史窗口/token/identity 事实已经从 Node stats 完整回填，也不解除真实 source freeze、唯一 writer、Node active-path-zero、owner manifest、GitOps rollback 或归档门禁。
+
+### 9.7.25 Node-to-Go PostgreSQL non-empty backfill fixture（2026-08-31）
+
+PostgreSQL `BackfillPostgres` 已修复一项会阻断真实 Node source 的过度门禁：legacy 表必须存在、列/类型/NULL/主键投影完整，且所有非空行仍须在 serializable transaction 中逐主键 insert-or-equal；但已验证的零行表不再被当作 fail-open 错误。Node 正常完成 trust aggregation 后，baseline、dirty queue 或 transient receipt 表可以合法为零，readback 仍要求 source/target 行数和 digest 均为 `0`，不会跳过缺表、结构漂移、超限、非空 digest 漂移或已有行冲突。
+
+本轮在一次性 dev PostgreSQL/PgBouncer 库中以当前 Node storage repository 写入带唯一 marker 的 legacy `run/item/observation/health/latest trust/aggregation cursor` 事实，Node 进程退出后由 Go maintenance core 执行 backfill；前置只读 readback 为上述六项 `1→0` drift，首次 backfill 为 `1→1`，第二次为 equal-row skip，最终只读 readback 对九项均 `match`，其中 baseline/dirty/receipt 为 `0→0`。该流程有显式 opt-in、数据库名前缀限制的 Go fixture 覆盖，scratch 库和临时脚本均已删除。它证明同一隔离 PG/PgBouncer 中 Node writer 的数据形状可被 Go 工具无损读取和投影；不等于 Node active-path-zero、真实业务停写窗口、Business SQLite 唯一 writer、GitOps cutover、备份恢复或 rollback 证据。
+
+### 9.7.26 Node 模型检测 golden 回归快照（2026-08-31）
+
+本轮重新执行 Node 模型检测回归：可信对照、存储脱敏、不可用边界、full profile、严格模型匹配、多协议 profile、Token integrity 均通过。`model-check-user-authorized-resource-regression.ts` 连续两次在同一隔离临时 SQLite 夹具失败于固定断言 `detail.level === 'high_confidence'`，实际结果为 `likely`；失败发生在测试断言阶段，且本轮没有修改该 Node 脚本或 `backend/src/modules/model-checks/**`。因此这不是 Go 回填通过的证据，也不能被忽略为“全量 golden 已通过”；在 owner 复核评分输入（实际 score/探针状态）并决定修正 Node 行为或测试预期前，该项保持未验收。该失败不改变 Go 侧定向 test/race/vet 已通过的结论，也不解除 Node active-path-zero、唯一 writer handoff、真实三库停写回填、GitOps rollback 或归档门禁。
+
+### 9.7.27 Readback manifest 扩展后的 maintenance 全量复验（2026-08-31）
+
+将 readback required table 从五张扩展为九张后，首次 maintenance 全量测试发现 `businesshandoff` 的“complete”证据 fixture 仍缺少 `model_account_trust_results`、`model_trust_aggregation_state`、`model_trust_latest_dirty_accounts` 和 `model_trust_observation_receipts`；这是测试数据与现行契约的漂移，不是验证器放宽问题。本轮已只更新 `cutover_evidence_test.go` 的合法 fixture，未改变生产校验规则；maintenance、Gateway、jobs、shared contracts 和 platform 各 module 的全量 `go test` 均通过，各 module `go vet` 也通过。该修复只证明源码测试夹具与九表契约一致，仍不构成真实 readback manifest、writer handoff 或 rollback 证据。
+
+### 9.7.28 Readback manifest 固定 scope fail-closed（2026-08-31）
+
+`j3b-readback-manifest/v2` 现不仅要求九张固定 legacy fact 全部存在，还拒绝任何未列入 scope 的额外表；未知表不会被静默纳入 `manifestHash` 后当作可接受证据。新增 contracts 回归覆盖额外事实表，contracts、maintenance 与 Gateway module 全量 `go test`/`go vet` 通过。该校验仍只证明 manifest 自洽和 scope 完整，不证明数据库快照、Node drain、唯一 writer、备份恢复或 GitOps rollback。
+
+### 9.7.29 Dev Redis 依赖连通性探针（2026-08-31）
+
+使用 `.local/project-resources/dev/env/shared.env` 中的隔离连接配置，对 cache/state/queue 三个 dev Redis 实例的 DB `9` 执行只读 `PING`，结果均为 `PONG`。探针未执行写命令，也未改变 namespace、队列或租约状态；该证据只证明 Gateway/runtime 所需 Redis 依赖可达，不代表 Redis 状态迁移、租约 drain、唯一 writer handoff、GitOps rollback 或 Node 归档门禁已完成。
+
+### 9.7.30 Dev 主 PostgreSQL 空状态 schema/readback（2026-08-31）
+
+使用 dev `shared.env` 的显式维护连接执行 `-check-j3b-model-check-postgres` 与 `-verify-j3b-model-check-postgres-backfill`。结果显示数据库 `juhe_ai_sub2api_dev` 的 `juhe_j3b` schema/table/index/owner 均符合 contract，当前角色为 `juhe_ai_sub2api_dev_app`；readback 事务为 read-only，九张固定事实表均为 source `0`、target `0`、digest `match`。由于 source 为空，这只是候选目标结构和空状态一致性证据，不是 Node 事实已回填的证据，也不替代 source freeze、writer drain、三库非空快照、恢复点或 rollback 验收。
+
+### 9.7.31 Business/J3c 只读 manifest 复核（2026-08-31）
+
+维护命令复核显示 Business capability manifest 当前 `capabilities=15`、`operations=92`，但 status coverage 仍为 `missing=9`、`partial=4`，命令保持非零退出；Business owner manifest 的 92 个操作可映射到 52 个 writer、40 个 read、15 个 transaction group，但该清单只是源码装配覆盖，不证明运行中唯一 writer 或 handoff。J3c readonly boundary 的 Go reader 与 forbidden-findings 检查已就绪，但 `j3cOwnerReady=false`，Node 仍是实际 owner。上述结果进一步确认 J3b 不能以局部清单通过替代 Node drain、owner epoch、三库回填和 active-path-zero。
+
+### 9.7.32 Dev Docker/数据库运行态复核（2026-08-31）
+
+按 dev runbook 使用远端 `huanmin@192.168.1.203` 只读检查 Docker：Server `29.1.3`，PostgreSQL、PgBouncer 和 cache/state/queue Redis 均为 healthy；当前没有运行中的 `juhe-ai` Node 应用或 Go Gateway 容器，只有基础设施容器。对主 dev 库读取 `pg_stat_activity` 仅见一个管理员 idle 连接和一个 `juhe-ai:server` idle 连接，没有活动事务。该结果证明当前没有可供演练的 Node writer 进程，但“没有进程”不等于完成 drain/handoff，也不产生 owner epoch、备份恢复或 rollback 证据；因此不能据此把 Node 标记为已归档。
+
+### 9.7.33 远端 Go Gateway 镜像 J3b 启动门探针（2026-08-31）
+
+远端标签 `192.168.1.203:31080/platform/juhe-ai-go-gateway:4073250e407e` 与当前 Git `HEAD=4073250e407ea25d37a9d33d47a99bff1d8ffded` 对齐，镜像创建时间为 `2026-08-31T10:37:56+08:00`；工作区未提交改动不包含在该镜像内。其 `--help` 只显示通用 F3/F4 CLI，不能单凭 CLI 判断 J3b（J3b 通过环境变量配置）。在不连接数据库、不开 listener 的前提下，以 `JUHE_AI_J3B_ENABLED=true` 和其余最小 owner 配置运行一次性容器探针：镜像先拒绝缺失 `JUHE_AI_J3B_OWNER`，补齐 owner/instance/store/secret/epoch 后继续拒绝缺失的 cutover evidence 文件。这证明该镜像对应的提交包含 J3b fail-closed 启动门；但尚未用当前工作区构建物和真实 handoff evidence 启动隔离 DB/Redis runtime，也未完成 GitOps candidate、rollback 或 Node handoff，因此仍不能作为已接管证据或触发 Node 归档。
+
+### 9.7.34 当前工作树 Gateway candidate 容器打包（2026-08-31）
+
+为验证未提交 J3b 修复可以形成 Linux runtime，在 Windows 工作区以 `CGO_ENABLED=0 GOOS=linux` 交叉编译当前 `projects/gateway/cmd/juhe-ai-gateway`，传入 dev Docker 后以基础镜像 `platform/juhe-ai-go-gateway:4073250e407e` 构建临时标签 `juhe-ai-go-gateway:j3b-worktree-20260831`。Dockerfile 显式 `chmod 0755`，修复 Windows 传输不保留 Unix executable bit 的首轮构建失败；最终镜像 digest 为 `sha256:fd95fe420942581523ba4d2e83941f03eb01836786e5fd4719c9ee7647e7f166`，`-check-boundary` 返回 0。用完整最小 J3b owner 配置启动一次性容器时，在读取不存在的 cutover evidence `/missing` 处 fail-closed，返回非零且未打开 DB/listener；远端 `/tmp` 临时二进制、Dockerfile 和 build context 均已清理。该 candidate 只证明当前工作树可打包并保留启动安全门，不证明真实 DB/Redis runtime、三库 backfill、Node drain、owner epoch、rollback 或 GitOps 切换。
+
+### 9.7.35 Candidate 后源码回归与硬门禁复扫（2026-08-31）
+
+candidate 打包后，从当前工作树分别运行 Gateway、maintenance、shared contracts 的全量 `go test -count=1 ./...` 与 `go vet ./...`，均通过；`git diff --check` 通过。随后重跑维护扫描：`-scan-node-j3b-active-path` 仍为 `scannedFiles=968`、`blockedFindings=161`，`-verify-gateway-route-owner-manifest` 仍为 `families=22`、`mutationRoutes=98`、`missing=21`、`partial=1`、`pending=22`，两者均以未就绪状态退出。源码和 candidate 回归不能覆盖或覆盖掉这些 Node owner、route scope、drain、backfill、rollback 硬门禁；Node 归档继续禁止。
+
+### 9.7.36 本轮本地/dev 接管进度（2026-08-31）
+
+本轮按“本地与隔离 dev 为验收边界”完成 J3b Node owner 拆离：Go Gateway 的模型检测运行时已接入质量摘要决策（包含 high-confidence/likely/uncertain/suspicious 梯级、模型不匹配与 Juice hard anomaly 的 fail-closed 分支），并补充对应单元回归；Go Gateway、maintenance、modelcheckprobe 定向测试通过。Node 侧已移除 `/model-checks` 与 `/my-model-checks` 的 server/system-api 挂载、HTTP proxy、token worker 停止入口及质量/信任后台调度；dataset/stats/db-service IPC writer 链也已拆除，兼容监控字段仅保留 deprecated 的零值读取。
+
+Node J3b 实现及其专属存储文件已完整移入 `migration-backup/node/j3b-model-check/`，共 30 个文件；归档 `manifest.json` 记录原路径、归档路径和逐文件 SHA-256，完整性校验结果为 `entries=30 errors=0`。归档后的 active-path 扫描为 `ruleVersion=j3b-active-path-v2`、`scannedFiles=912`、`blockedFindings=0`，退出码 0；`scripts/maintenance/mockdata` 与回归脚本仅作为 evidence-only 夹具跳过，不属于运行时路径。`pnpm exec tsc --noEmit` 与 `pnpm run build` 均通过，归档内容不再参与构建、测试、部署或运行时加载。
+
+Gateway route owner manifest 已将 `model-checks` 标为 `implemented`，并记录 admin/self 两个 scoped mount 与 16 条 HTTP/JSON/SSE 方法矩阵；定向 ownership 测试通过。全局 manifest 仍报告其它 21 个未迁移 route families，故全局 verifier 继续以退出码 3 保持关闭，这是其它迁移批次的门禁，不是 J3b 残留。
+
+dev Docker 侧已确认 PostgreSQL 18、PgBouncer、cache/state/queue Redis 容器 healthy；当前工作树 candidate 镜像 `juhe-ai-go-gateway:j3b-worktree-20260831` digest 为 `sha256:fd95fe420942581523ba4d2e83941f03eb01836786e5fd4719c9ee7647e7f166`，J3b 缺失 evidence 时按预期 fail-closed。既有隔离 dev 证据显示九表 Node→Go backfill/readback、PgBouncer runtime smoke 和 Redis DB9 鉴权 PING 通过；本轮未触碰主库数据或生产资源。J3b 本地代码与归档门禁已闭合，但生产 GitOps canary、真实停写窗口和全局其它 route families 仍不在本轮完成范围。
+
+当前判断：J3b 在本地与隔离 dev 验收边界内已完成 Go 接管，Node J3b 已归档且 active-path-zero、model-checks route proof、TypeScript 构建和归档哈希复核均通过。全局迁移仍未完成：route owner manifest 还有 21 个非 J3b family 待迁移；生产 GitOps canary、真实停写窗口、owner epoch 和生产 rollback 也不属于本轮证据。因此只能宣称“J3b 本地/dev 已 Go 化并归档”，不能宣称整个 Node 后端已完成迁移或生产已切换。

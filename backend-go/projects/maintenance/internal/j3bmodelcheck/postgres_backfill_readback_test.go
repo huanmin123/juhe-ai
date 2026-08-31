@@ -26,6 +26,9 @@ func TestPostgresReadbackMapsOnlyLegacyJ3bFacts(t *testing.T) {
 		"model_check_observations":                "juhe_dataset",
 		"account_quality_health_hourly":           "juhe_stats",
 		"model_token_intercept_baseline_versions": "juhe_stats",
+		"model_account_trust_results":             "juhe_stats",
+		"model_trust_latest_dirty_accounts":       "juhe_stats",
+		"model_trust_observation_receipts":        "juhe_stats",
 	}
 	if len(postgresLegacyJ3bFactTables) != len(want) {
 		t.Fatalf("fact mapping count=%d want=%d", len(postgresLegacyJ3bFactTables), len(want))

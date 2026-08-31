@@ -70,6 +70,15 @@ func TestValidateJ3bReadbackManifestFailsClosed(t *testing.T) {
 	if errors := ValidateJ3bReadbackManifest(manifest, now, 60); len(errors) == 0 {
 		t.Fatal("schema mismatch unexpectedly accepted")
 	}
+	manifest = validJ3bReadbackManifest(t, now)
+	manifest.Tables = append(manifest.Tables, J3bReadbackTableDigest{
+		Name: "unapproved_legacy_fact", SourceRows: 1, TargetRows: 1,
+		SourceDigest: strings.Repeat("a", 64), TargetDigest: strings.Repeat("a", 64),
+	})
+	refreshJ3bReadbackManifestHash(t, &manifest)
+	if errors := ValidateJ3bReadbackManifest(manifest, now, 60); len(errors) == 0 {
+		t.Fatal("out-of-scope table unexpectedly accepted")
+	}
 }
 
 func refreshJ3bReadbackManifestHash(t *testing.T, manifest *J3bReadbackManifest) {

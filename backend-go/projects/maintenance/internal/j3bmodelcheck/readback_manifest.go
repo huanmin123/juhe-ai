@@ -22,7 +22,7 @@ func NewSQLiteJ3bReadbackManifest(report BackfillVerificationReport, options J3b
 		return contracts.J3bReadbackManifest{}, fmt.Errorf("SQLite readback report is not complete")
 	}
 	return newJ3bReadbackManifest(
-		"j3bmodelcheck/sqlite-readback-v1",
+		"j3bmodelcheck/sqlite-readback-v2",
 		"legacy-sqlite-dataset+stats",
 		"juhe-j3b-sqlite",
 		report.Tables,
@@ -44,7 +44,7 @@ func NewPostgresJ3bReadbackManifest(report PostgresBackfillVerificationReport, o
 		}
 	}
 	return newJ3bReadbackManifest(
-		"j3bmodelcheck/postgres-readback-v1",
+		"j3bmodelcheck/postgres-readback-v2",
 		"juhe_dataset+juhe_stats",
 		SchemaName,
 		report.Tables,
@@ -107,6 +107,10 @@ func j3bReadbackRequiredTables() []string {
 		"model_check_items",
 		"model_check_observations",
 		"model_check_runs",
+		"model_account_trust_results",
 		"model_token_intercept_baseline_versions",
+		"model_trust_aggregation_state",
+		"model_trust_latest_dirty_accounts",
+		"model_trust_observation_receipts",
 	}
 }

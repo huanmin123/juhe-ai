@@ -146,8 +146,8 @@ func (s *BusinessTargetSource) Resolver() Resolver {
 }
 
 // ComparisonResolver resolves the separately frozen trusted-comparison
-// account inside the same Gateway process and business scope. It never uses
-// the primary target ID as a fallback.
+// account inside the same Gateway process and its own frozen business scope.
+// It never uses the primary target ID or tenant as a fallback.
 func (s *BusinessTargetSource) ComparisonResolver() Resolver {
 	if s == nil {
 		return nil
@@ -156,7 +156,11 @@ func (s *BusinessTargetSource) ComparisonResolver() Resolver {
 		if !request.TrustedComparison || strings.TrimSpace(request.TrustedComparisonAccountID) == "" {
 			return Target{}, errors.New("J3b trusted comparison target is not configured")
 		}
+		if strings.TrimSpace(request.TrustedComparisonSystemAccountID) == "" {
+			return Target{}, errors.New("J3b trusted comparison system account is not configured")
+		}
 		comparisonRequest := request
+		comparisonRequest.SystemAccountID = request.TrustedComparisonSystemAccountID
 		comparisonRequest.TargetID = request.TrustedComparisonAccountID
 		comparisonRequest.ConfigRevision = request.TrustedComparisonConfigRevision
 		comparisonRequest.DispatchRevision = request.TrustedComparisonDispatchRevision
@@ -175,7 +179,7 @@ func (s *BusinessTargetSource) CheckContract(ctx context.Context) error {
 		return fmt.Errorf("open J3b Business source contract: %w", err)
 	}
 	defer tx.Rollback()
-	contracts := map[string]string{"accounts": "id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,account_expires_at,cooldown_until,last_error_code,credentials_encrypted,proxy_profile_id,availability_schedule_json,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at", "provider_protocol_profiles": "id,enabled,base_url", "proxy_profiles": "id,enabled,type,host,port,username,password_encrypted", "group_accounts": "account_id,system_account_id,group_id,account_authorization_id,enabled", "groups": "id,system_account_id,enabled", "resource_authorizations": "id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at", "model_quality_policies": "system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes", "account_supported_models": "account_id,model", "account_model_mappings": "account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled"}
+	contracts := map[string]string{"accounts": "id,name,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,account_expires_at,cooldown_until,last_error_code,credentials_encrypted,proxy_profile_id,availability_schedule_json,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at", "provider_protocol_profiles": "id,enabled,base_url", "proxy_profiles": "id,enabled,type,host,port,username,password_encrypted", "group_accounts": "account_id,system_account_id,group_id,account_authorization_id,enabled", "groups": "id,system_account_id,enabled", "resource_authorizations": "id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at", "model_quality_policies": "system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes", "account_supported_models": "account_id,model", "account_model_mappings": "account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled"}
 	for table, columns := range contracts {
 		if _, err := tx.ExecContext(ctx, "SELECT "+columns+" FROM "+s.table(table)+" LIMIT 0"); err != nil {
 			return fmt.Errorf("verify J3b Business source table %s: %w", table, err)
@@ -199,8 +203,9 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 		return Target{}, fmt.Errorf("open J3b Business target transaction: %w", err)
 	}
 	defer tx.Rollback()
-	query := `SELECT a.provider_code,a.provider_protocol_profile_id,a.protocol_code,a.type,a.config_revision,a.dispatch_revision,a.status,a.schedulable,a.health_check_endpoint_mode,a.account_expires_at,a.cooldown_until,a.last_error_code,COALESCE(a.availability_schedule_json,''),a.credentials_encrypted,a.authorization_instance_authorization_id,a.authorization_instance_source_account_id,p.base_url,p.enabled,a.proxy_profile_id,proxy.enabled,proxy.type,proxy.host,proxy.port,proxy.username,proxy.password_encrypted FROM ` + s.table("accounts") + ` a JOIN ` + s.table("provider_protocol_profiles") + ` p ON p.id=a.provider_protocol_profile_id LEFT JOIN ` + s.table("proxy_profiles") + ` proxy ON proxy.id=a.proxy_profile_id JOIN ` + s.table("group_accounts") + ` ga ON ga.account_id=a.id AND ga.system_account_id=a.system_account_id AND ga.enabled=` + s.boolLiteral(true) + ` JOIN ` + s.table("groups") + ` g ON g.id=ga.group_id AND g.enabled=` + s.boolLiteral(true) + ` WHERE a.id=` + s.placeholder(1) + ` AND a.system_account_id=` + s.placeholder(2) + ` AND a.deleted_at IS NULL AND (g.system_account_id=a.system_account_id OR EXISTS (SELECT 1 FROM ` + s.table("resource_authorizations") + ` group_auth WHERE group_auth.resource_type='group' AND group_auth.resource_id=g.id AND group_auth.resource_owner_system_account_id=g.system_account_id AND group_auth.grantee_system_account_id=a.system_account_id AND group_auth.scope='use' AND group_auth.status='active' AND ` + s.expiryAfterNow("group_auth.expires_at") + `))`
+	query := `SELECT a.provider_code,a.provider_protocol_profile_id,a.protocol_code,a.type,a.config_revision,a.dispatch_revision,a.status,a.schedulable,a.health_check_endpoint_mode,a.account_expires_at,a.cooldown_until,a.last_error_code,COALESCE(a.availability_schedule_json,''),a.credentials_encrypted,a.authorization_instance_authorization_id,a.authorization_instance_source_account_id,p.base_url,p.enabled,a.proxy_profile_id,proxy.enabled,proxy.type,proxy.host,proxy.port,proxy.username,proxy.password_encrypted,a.name,ga.group_id FROM ` + s.table("accounts") + ` a JOIN ` + s.table("provider_protocol_profiles") + ` p ON p.id=a.provider_protocol_profile_id LEFT JOIN ` + s.table("proxy_profiles") + ` proxy ON proxy.id=a.proxy_profile_id JOIN ` + s.table("group_accounts") + ` ga ON ga.account_id=a.id AND ga.system_account_id=a.system_account_id AND ga.enabled=` + s.boolLiteral(true) + ` JOIN ` + s.table("groups") + ` g ON g.id=ga.group_id AND g.enabled=` + s.boolLiteral(true) + ` WHERE a.id=` + s.placeholder(1) + ` AND a.system_account_id=` + s.placeholder(2) + ` AND a.deleted_at IS NULL AND (g.system_account_id=a.system_account_id OR EXISTS (SELECT 1 FROM ` + s.table("resource_authorizations") + ` group_auth WHERE group_auth.resource_type='group' AND group_auth.resource_id=g.id AND group_auth.resource_owner_system_account_id=g.system_account_id AND group_auth.grantee_system_account_id=a.system_account_id AND group_auth.scope='use' AND group_auth.status='active' AND ` + s.expiryAfterNow("group_auth.expires_at") + `))`
 	var provider, profileID, protocolCode, credentialType, encrypted, baseURL, status, endpointMode string
+	var targetName, groupID sql.NullString
 	var accountExpiresAt, cooldownUntil, lastErrorCode, availabilitySchedule sql.NullString
 	var authorizationInstance, authorizationSource sql.NullString
 	var proxyProfileID, proxyType, proxyHost, proxyUsername, proxyPassword sql.NullString
@@ -208,7 +213,7 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	var proxyPort sql.NullInt64
 	var revision, dispatchRevision int64
 	var schedulable, profileEnabled bool
-	if err := tx.QueryRowContext(ctx, query, request.TargetID, request.SystemAccountID).Scan(&provider, &profileID, &protocolCode, &credentialType, &revision, &dispatchRevision, &status, &schedulable, &endpointMode, &accountExpiresAt, &cooldownUntil, &lastErrorCode, &availabilitySchedule, &encrypted, &authorizationInstance, &authorizationSource, &baseURL, &profileEnabled, &proxyProfileID, &proxyEnabled, &proxyType, &proxyHost, &proxyPort, &proxyUsername, &proxyPassword); err != nil {
+	if err := tx.QueryRowContext(ctx, query, request.TargetID, request.SystemAccountID).Scan(&provider, &profileID, &protocolCode, &credentialType, &revision, &dispatchRevision, &status, &schedulable, &endpointMode, &accountExpiresAt, &cooldownUntil, &lastErrorCode, &availabilitySchedule, &encrypted, &authorizationInstance, &authorizationSource, &baseURL, &profileEnabled, &proxyProfileID, &proxyEnabled, &proxyType, &proxyHost, &proxyPort, &proxyUsername, &proxyPassword, &targetName, &groupID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Target{}, &RequestError{StatusCode: http.StatusNotFound, Message: "J3b Business account does not exist or is outside scope"}
 		}
@@ -306,12 +311,13 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if dispatchRevision < 1 {
 		return Target{}, errors.New("J3b Business account dispatch revision is invalid")
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(revision, 10), CredentialSourceAccountID: request.TargetID, SourceDispatchRevision: dispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: true, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(revision, 10), CredentialSourceAccountID: request.TargetID, SourceDispatchRevision: dispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: true, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
 }
 
 func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, request RunRequest) (Target, error) {
-	query := `SELECT a.config_revision,a.dispatch_revision,a.health_check_endpoint_mode,sa.config_revision,sa.dispatch_revision,a.status,a.schedulable,a.account_expires_at,a.cooldown_until,a.last_error_code,COALESCE(a.availability_schedule_json,''),sa.id,sa.provider_code,sa.provider_protocol_profile_id,sa.protocol_code,sa.type,sa.credentials_encrypted,p.base_url,p.enabled,sa.status,sa.schedulable,sa.account_expires_at,sa.cooldown_until,sa.last_error_code,COALESCE(sa.availability_schedule_json,''),ra.status,ra.expires_at,a.proxy_profile_id,sa.proxy_profile_id,instance_proxy.enabled,instance_proxy.type,instance_proxy.host,instance_proxy.port,instance_proxy.username,instance_proxy.password_encrypted,source_proxy.enabled,source_proxy.type,source_proxy.host,source_proxy.port,source_proxy.username,source_proxy.password_encrypted FROM ` + s.table("accounts") + ` a JOIN ` + s.table("resource_authorizations") + ` ra ON ra.id=a.authorization_instance_authorization_id AND ra.resource_type='account' AND ra.resource_id=a.authorization_instance_source_account_id AND ra.grantee_system_account_id=` + s.placeholder(1) + ` AND ra.scope='use' JOIN ` + s.table("accounts") + ` sa ON sa.id=a.authorization_instance_source_account_id AND sa.system_account_id=ra.resource_owner_system_account_id AND sa.deleted_at IS NULL JOIN ` + s.table("provider_protocol_profiles") + ` p ON p.id=sa.provider_protocol_profile_id LEFT JOIN ` + s.table("proxy_profiles") + ` instance_proxy ON instance_proxy.id=a.proxy_profile_id LEFT JOIN ` + s.table("proxy_profiles") + ` source_proxy ON source_proxy.id=sa.proxy_profile_id JOIN ` + s.table("group_accounts") + ` ga ON ga.account_id=a.id AND ga.system_account_id=` + s.placeholder(2) + ` AND ga.enabled=` + s.boolLiteral(true) + ` AND ga.account_authorization_id=ra.id JOIN ` + s.table("groups") + ` g ON g.id=ga.group_id AND g.enabled=` + s.boolLiteral(true) + ` WHERE a.id=` + s.placeholder(3) + ` AND a.system_account_id=` + s.placeholder(4) + ` AND a.deleted_at IS NULL AND a.authorization_instance_source_account_id IS NOT NULL AND ra.status='active' AND ` + s.expiryAfterNow("ra.expires_at") + ` AND (g.system_account_id=a.system_account_id OR EXISTS (SELECT 1 FROM ` + s.table("resource_authorizations") + ` group_auth WHERE group_auth.resource_type='group' AND group_auth.resource_id=g.id AND group_auth.resource_owner_system_account_id=g.system_account_id AND group_auth.grantee_system_account_id=a.system_account_id AND group_auth.scope='use' AND group_auth.status='active' AND ` + s.expiryAfterNow("group_auth.expires_at") + `))`
+	query := `SELECT a.config_revision,a.dispatch_revision,a.health_check_endpoint_mode,sa.config_revision,sa.dispatch_revision,a.status,a.schedulable,a.account_expires_at,a.cooldown_until,a.last_error_code,COALESCE(a.availability_schedule_json,''),sa.id,sa.provider_code,sa.provider_protocol_profile_id,sa.protocol_code,sa.type,sa.credentials_encrypted,p.base_url,p.enabled,sa.status,sa.schedulable,sa.account_expires_at,sa.cooldown_until,sa.last_error_code,COALESCE(sa.availability_schedule_json,''),ra.status,ra.expires_at,a.proxy_profile_id,sa.proxy_profile_id,instance_proxy.enabled,instance_proxy.type,instance_proxy.host,instance_proxy.port,instance_proxy.username,instance_proxy.password_encrypted,source_proxy.enabled,source_proxy.type,source_proxy.host,source_proxy.port,source_proxy.username,source_proxy.password_encrypted,a.name,a.system_account_id,ga.group_id FROM ` + s.table("accounts") + ` a JOIN ` + s.table("resource_authorizations") + ` ra ON ra.id=a.authorization_instance_authorization_id AND ra.resource_type='account' AND ra.resource_id=a.authorization_instance_source_account_id AND ra.grantee_system_account_id=` + s.placeholder(1) + ` AND ra.scope='use' JOIN ` + s.table("accounts") + ` sa ON sa.id=a.authorization_instance_source_account_id AND sa.system_account_id=ra.resource_owner_system_account_id AND sa.deleted_at IS NULL JOIN ` + s.table("provider_protocol_profiles") + ` p ON p.id=sa.provider_protocol_profile_id LEFT JOIN ` + s.table("proxy_profiles") + ` instance_proxy ON instance_proxy.id=a.proxy_profile_id LEFT JOIN ` + s.table("proxy_profiles") + ` source_proxy ON source_proxy.id=sa.proxy_profile_id JOIN ` + s.table("group_accounts") + ` ga ON ga.account_id=a.id AND ga.system_account_id=` + s.placeholder(2) + ` AND ga.enabled=` + s.boolLiteral(true) + ` AND ga.account_authorization_id=ra.id JOIN ` + s.table("groups") + ` g ON g.id=ga.group_id AND g.enabled=` + s.boolLiteral(true) + ` WHERE a.id=` + s.placeholder(3) + ` AND a.system_account_id=` + s.placeholder(4) + ` AND a.deleted_at IS NULL AND a.authorization_instance_source_account_id IS NOT NULL AND ra.status='active' AND ` + s.expiryAfterNow("ra.expires_at") + ` AND (g.system_account_id=a.system_account_id OR EXISTS (SELECT 1 FROM ` + s.table("resource_authorizations") + ` group_auth WHERE group_auth.resource_type='group' AND group_auth.resource_id=g.id AND group_auth.resource_owner_system_account_id=g.system_account_id AND group_auth.grantee_system_account_id=a.system_account_id AND group_auth.scope='use' AND group_auth.status='active' AND ` + s.expiryAfterNow("group_auth.expires_at") + `))`
 	var sourceID, provider, profileID, protocolCode, credentialType, encrypted, accountStatus, sourceStatus, authorizationStatus, endpointMode string
+	var targetName, targetOwnerSystemAccountID, groupID sql.NullString
 	var accountExpiresAt, cooldownUntil, lastErrorCode, availabilitySchedule, sourceExpiresAt, sourceCooldownUntil, sourceLastErrorCode, sourceAvailabilitySchedule sql.NullString
 	var baseURL string
 	var revision, dispatchRevision, sourceRevision, sourceDispatchRevision int64
@@ -320,7 +326,7 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	var instanceProxyProfileID, sourceProxyProfileID, instanceProxyType, instanceProxyHost, instanceProxyUsername, instanceProxyPassword, sourceProxyType, sourceProxyHost, sourceProxyUsername, sourceProxyPassword sql.NullString
 	var instanceProxyEnabled, sourceProxyEnabled sql.NullBool
 	var instanceProxyPort, sourceProxyPort sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, query, request.SystemAccountID, request.SystemAccountID, request.TargetID, request.SystemAccountID).Scan(&revision, &dispatchRevision, &endpointMode, &sourceRevision, &sourceDispatchRevision, &accountStatus, &schedulable, &accountExpiresAt, &cooldownUntil, &lastErrorCode, &availabilitySchedule, &sourceID, &provider, &profileID, &protocolCode, &credentialType, &encrypted, &baseURL, &profileEnabled, &sourceStatus, &sourceSchedulable, &sourceExpiresAt, &sourceCooldownUntil, &sourceLastErrorCode, &sourceAvailabilitySchedule, &authorizationStatus, &expiresAt, &instanceProxyProfileID, &sourceProxyProfileID, &instanceProxyEnabled, &instanceProxyType, &instanceProxyHost, &instanceProxyPort, &instanceProxyUsername, &instanceProxyPassword, &sourceProxyEnabled, &sourceProxyType, &sourceProxyHost, &sourceProxyPort, &sourceProxyUsername, &sourceProxyPassword); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, request.SystemAccountID, request.SystemAccountID, request.TargetID, request.SystemAccountID).Scan(&revision, &dispatchRevision, &endpointMode, &sourceRevision, &sourceDispatchRevision, &accountStatus, &schedulable, &accountExpiresAt, &cooldownUntil, &lastErrorCode, &availabilitySchedule, &sourceID, &provider, &profileID, &protocolCode, &credentialType, &encrypted, &baseURL, &profileEnabled, &sourceStatus, &sourceSchedulable, &sourceExpiresAt, &sourceCooldownUntil, &sourceLastErrorCode, &sourceAvailabilitySchedule, &authorizationStatus, &expiresAt, &instanceProxyProfileID, &sourceProxyProfileID, &instanceProxyEnabled, &instanceProxyType, &instanceProxyHost, &instanceProxyPort, &instanceProxyUsername, &instanceProxyPassword, &sourceProxyEnabled, &sourceProxyType, &sourceProxyHost, &sourceProxyPort, &sourceProxyUsername, &sourceProxyPassword, &targetName, &targetOwnerSystemAccountID, &groupID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Target{}, &RequestError{StatusCode: http.StatusNotFound, Message: "J3b Business account does not exist or is outside scope"}
 		}
@@ -421,7 +427,7 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if sourceDispatchRevision < 1 {
 		return Target{}, errors.New("J3b Business source account dispatch revision is invalid")
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(sourceRevision, 10), CredentialSourceAccountID: sourceID, SourceDispatchRevision: sourceDispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: false, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: strings.TrimSpace(targetOwnerSystemAccountID.String), GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(sourceRevision, 10), CredentialSourceAccountID: sourceID, SourceDispatchRevision: sourceDispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: false, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
 }
 
 // BuildRequest freezes the Business target and quality policy across bounded
@@ -429,8 +435,49 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 // are never copied into the request snapshot. The revision recheck below
 // closes the account/auth/mapping drift window before the request is issued;
 // it is not a substitute for the eventual single repeatable-read snapshot.
-func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAccountID string, command RunCommand) (RunRequest, error) {
-	if s == nil || strings.TrimSpace(actorSystemAccountID) == "" {
+func (s *BusinessTargetSource) BuildRequest(ctx context.Context, systemAccountID string, command RunCommand) (RunRequest, error) {
+	return s.buildRequest(ctx, strings.TrimSpace(systemAccountID), strings.TrimSpace(systemAccountID), false, command)
+}
+
+// BuildScopedRequest preserves the authenticated actor independently from the
+// selected tenant. The legacy BuildRequest entry remains for scheduler paths,
+// whose payloads are already single-tenant and do not carry administrator
+// scope.
+func (s *BusinessTargetSource) BuildScopedRequest(ctx context.Context, scope ManagementScope, command RunCommand) (RunRequest, error) {
+	if s == nil || !scope.valid() {
+		return RunRequest{}, errors.New("J3b Business management scope is incomplete")
+	}
+	targetSystemAccountID := strings.TrimSpace(scope.SelectedSystemAccountID)
+	if scope.AllSystemAccounts {
+		var err error
+		targetSystemAccountID, err = s.targetSystemAccountID(ctx, command.TargetID)
+		if err != nil {
+			return RunRequest{}, err
+		}
+	}
+	return s.buildRequest(ctx, strings.TrimSpace(scope.ActorSystemAccountID), targetSystemAccountID, scope.AllSystemAccounts, command)
+}
+
+func (s *BusinessTargetSource) targetSystemAccountID(ctx context.Context, targetID string) (string, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(targetID) == "" {
+		return "", errors.New("J3b Business global target is incomplete")
+	}
+	var systemAccountID string
+	err := s.db.QueryRowContext(ctx, `SELECT system_account_id FROM `+s.table("accounts")+` WHERE id=`+s.placeholder(1)+` AND deleted_at IS NULL`, strings.TrimSpace(targetID)).Scan(&systemAccountID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", &RequestError{StatusCode: http.StatusNotFound, Message: "J3b Business account does not exist or is outside scope"}
+	}
+	if err != nil {
+		return "", fmt.Errorf("read J3b Business global target owner: %w", err)
+	}
+	if strings.TrimSpace(systemAccountID) == "" {
+		return "", errors.New("J3b Business global target owner is empty")
+	}
+	return strings.TrimSpace(systemAccountID), nil
+}
+
+func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAccountID, targetSystemAccountID string, allSystemAccounts bool, command RunCommand) (RunRequest, error) {
+	if s == nil || strings.TrimSpace(actorSystemAccountID) == "" || strings.TrimSpace(targetSystemAccountID) == "" {
 		return RunRequest{}, errors.New("J3b Business request actor is required")
 	}
 	if command.TargetType == "" {
@@ -439,29 +486,29 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 	if command.TargetType != "account" || strings.TrimSpace(command.TargetID) == "" || strings.TrimSpace(command.Model) == "" {
 		return RunRequest{}, errors.New("J3b Business request target is incomplete")
 	}
-	target, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model})
+	target, err := s.Resolve(ctx, RunRequest{SystemAccountID: targetSystemAccountID, TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model})
 	if err != nil {
 		return RunRequest{}, err
 	}
-	targetFence, err := s.readTargetFence(ctx, actorSystemAccountID, command.TargetID, target)
+	targetFence, err := s.readTargetFence(ctx, targetSystemAccountID, command.TargetID, target)
 	if err != nil {
 		return RunRequest{}, err
 	}
-	policyProfile, revision, manualEnforcementEnabled, threshold, action, recoveryInterval, err := s.readPolicy(ctx, actorSystemAccountID)
+	policyProfile, revision, manualEnforcementEnabled, threshold, action, recoveryInterval, err := s.readPolicy(ctx, targetSystemAccountID)
 	if err != nil {
 		return RunRequest{}, err
 	}
 	// Resolve again with the first target's immutable config revision. This
 	// catches account changes, revoked grants and mapping changes that occur
 	// while the policy row is being read, and fails closed before issuing input.
-	recheckedTarget, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision})
+	recheckedTarget, err := s.Resolve(ctx, RunRequest{SystemAccountID: targetSystemAccountID, TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision})
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("J3b Business target changed while freezing request: %w", err)
 	}
 	if !sameTargetFence(recheckedTarget, target) {
 		return RunRequest{}, errors.New("J3b Business target revision changed while freezing request")
 	}
-	recheckedTargetFence, err := s.readTargetFence(ctx, actorSystemAccountID, command.TargetID, recheckedTarget)
+	recheckedTargetFence, err := s.readTargetFence(ctx, targetSystemAccountID, command.TargetID, recheckedTarget)
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("J3b Business target fence changed while freezing request: %w", err)
 	}
@@ -469,7 +516,7 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 		return RunRequest{}, errors.New("J3b Business target/source/mapping fence changed while freezing request")
 	}
 	target = recheckedTarget
-	currentPolicyProfile, currentRevision, currentManualEnforcementEnabled, currentThreshold, currentAction, currentRecoveryInterval, err := s.readPolicy(ctx, actorSystemAccountID)
+	currentPolicyProfile, currentRevision, currentManualEnforcementEnabled, currentThreshold, currentAction, currentRecoveryInterval, err := s.readPolicy(ctx, targetSystemAccountID)
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("J3b Business policy changed while freezing request: %w", err)
 	}
@@ -487,29 +534,36 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 	if selectedProfile != "quick" && selectedProfile != "full" {
 		return RunRequest{}, errors.New("J3b Business policy profile is invalid")
 	}
-	request := RunRequest{TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: selectedProfile, SystemAccountID: actorSystemAccountID, ActorSystemAccountID: actorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: threshold, PenaltyAction: action, RecoveryIntervalMinutes: recoveryInterval, ManualEnforcementEnabled: manualEnforcementEnabled, OwnPhysicalAccount: target.OwnPhysicalAccount, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision, PolicyRevision: revision, ProbeSetVersion: probeSetForProfile(selectedProfile), IdentityKey: actorSystemAccountID + ":" + command.TargetID + ":" + command.Model + ":" + selectedProfile, SourceEndpointFamily: string(target.SourceEndpointFamily), UpstreamEndpointFamily: string(target.UpstreamEndpointFamily), UpstreamProtocol: string(target.UpstreamProtocol), UpstreamEndpointMode: target.UpstreamEndpointMode}
+	request := RunRequest{TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: selectedProfile, SystemAccountID: targetSystemAccountID, ActorSystemAccountID: actorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: threshold, PenaltyAction: action, RecoveryIntervalMinutes: recoveryInterval, ManualEnforcementEnabled: manualEnforcementEnabled, OwnPhysicalAccount: target.OwnPhysicalAccount, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision, PolicyRevision: revision, ProbeSetVersion: probeSetForProfile(selectedProfile), IdentityKey: targetSystemAccountID + ":" + command.TargetID + ":" + command.Model + ":" + selectedProfile + ":actor:" + actorSystemAccountID, SourceEndpointFamily: string(target.SourceEndpointFamily), UpstreamEndpointFamily: string(target.UpstreamEndpointFamily), UpstreamProtocol: string(target.UpstreamProtocol), UpstreamEndpointMode: target.UpstreamEndpointMode}
 	if !command.TrustedComparison {
 		return request, nil
 	}
 	if selectedProfile != "full" || strings.TrimSpace(command.TrustedComparisonID) == "" || command.TrustedComparisonID == command.TargetID {
 		return RunRequest{}, errors.New("J3b trusted comparison requires a distinct full-profile account")
 	}
-	comparison, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: "account", TargetID: command.TrustedComparisonID, Model: command.Model})
+	comparisonSystemAccountID := targetSystemAccountID
+	if allSystemAccounts {
+		comparisonSystemAccountID, err = s.targetSystemAccountID(ctx, command.TrustedComparisonID)
+		if err != nil {
+			return RunRequest{}, fmt.Errorf("resolve J3b trusted comparison owner: %w", err)
+		}
+	}
+	comparison, err := s.Resolve(ctx, RunRequest{SystemAccountID: comparisonSystemAccountID, TargetType: "account", TargetID: command.TrustedComparisonID, Model: command.Model})
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("resolve J3b trusted comparison: %w", err)
 	}
-	comparisonFence, err := s.readTargetFence(ctx, actorSystemAccountID, command.TrustedComparisonID, comparison)
+	comparisonFence, err := s.readTargetFence(ctx, comparisonSystemAccountID, command.TrustedComparisonID, comparison)
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("read J3b trusted comparison fence: %w", err)
 	}
-	comparisonRechecked, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: "account", TargetID: command.TrustedComparisonID, Model: command.Model, ConfigRevision: comparison.ConfigRevision, DispatchRevision: comparison.DispatchRevision, SourceConfigRevision: comparison.SourceConfigRevision, SourceDispatchRevision: comparison.SourceDispatchRevision})
+	comparisonRechecked, err := s.Resolve(ctx, RunRequest{SystemAccountID: comparisonSystemAccountID, TargetType: "account", TargetID: command.TrustedComparisonID, Model: command.Model, ConfigRevision: comparison.ConfigRevision, DispatchRevision: comparison.DispatchRevision, SourceConfigRevision: comparison.SourceConfigRevision, SourceDispatchRevision: comparison.SourceDispatchRevision})
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("J3b trusted comparison changed while freezing request: %w", err)
 	}
 	if !sameTargetFence(comparisonRechecked, comparison) {
 		return RunRequest{}, errors.New("J3b trusted comparison revision changed while freezing request")
 	}
-	comparisonRecheckedFence, err := s.readTargetFence(ctx, actorSystemAccountID, command.TrustedComparisonID, comparisonRechecked)
+	comparisonRecheckedFence, err := s.readTargetFence(ctx, comparisonSystemAccountID, command.TrustedComparisonID, comparisonRechecked)
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("J3b trusted comparison fence changed while freezing request: %w", err)
 	}
@@ -519,11 +573,12 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 	comparison = comparisonRechecked
 	request.TrustedComparison = true
 	request.TrustedComparisonAccountID = command.TrustedComparisonID
+	request.TrustedComparisonSystemAccountID = comparisonSystemAccountID
 	request.TrustedComparisonConfigRevision = comparison.ConfigRevision
 	request.TrustedComparisonDispatchRevision = comparison.DispatchRevision
 	request.TrustedComparisonSourceConfigRevision = comparison.SourceConfigRevision
 	request.TrustedComparisonSourceDispatchRevision = comparison.SourceDispatchRevision
-	request.IdentityKey += ":comparison:" + command.TrustedComparisonID + ":" + comparison.ConfigRevision
+	request.IdentityKey += ":comparison:" + comparisonSystemAccountID + ":" + command.TrustedComparisonID + ":" + comparison.ConfigRevision
 	return request, nil
 }
 

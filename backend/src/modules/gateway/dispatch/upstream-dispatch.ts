@@ -89,12 +89,15 @@ import type { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import { requestModel } from '../request/metadata.js'
 import { gatewayAccountRuntimeKey } from '../runtime/account-runtime-keys.js'
 import {
+  abandonAccountLockRetryReservationAsync,
   acquireAccountLockRetryLeaseAsync,
   accountLockBlocksCrossAccount,
   consumeAccountLockRetryLeaseAsync,
   findAccountLockStateAsync,
+  releaseAccountLockRetryLeaseAsync,
   recordAccountLockFailureAsync,
-  settleAccountLockDeadlineAsync
+  settleAccountLockDeadlineAsync,
+  type AccountLockObservation
 } from '../../../storage/account-lock.repository.js'
 import {
   defaultGatewayFinalResponseReserveMs,
@@ -200,6 +203,9 @@ export interface OpenAIUpstreamDispatchResult {
   responsePrecommitDeadlineAtMs?: number
   onFirstByteDeadline?: FirstByteDeadlineHandler
   firstByteDeadlineCoordinator?: NormalRouteFirstByteAttemptCoordinator
+  accountLockObservation?: AccountLockObservation
+  accountLockRetryLease?: { accountId: string; leaseId: string }
+  releaseAccountLockRetryLease: (scheduleNextRetry?: boolean) => Promise<boolean>
 }
 
 export interface GatewayUpstreamRequestCoordinationContext {
@@ -213,7 +219,9 @@ export interface GatewayUpstreamRequestCoordinationContext {
   sameAccountRetry?: {
     retryId: string
     account: UpstreamAccount
+    accountLockLeaseId?: string
   }
+  accountLockRetryLease?: { accountId: string; leaseId: string }
   semanticRetryId?: string
   requestBodyOverride?: {
     accountId: string
@@ -259,13 +267,19 @@ export class NormalRouteFirstByteCutoverError extends Error {
 }
 
 export class GatewayRequestWallBudgetExhaustedError extends Error {
-  readonly code = 'gateway_request_wall_budget_exhausted'
+  readonly code: 'gateway_request_wall_budget_exhausted' | 'gateway_request_coordination_budget_exhausted'
 
   constructor(
     readonly wallRemainingMs: number,
-    readonly minimumMeaningfulAttemptMs = 0
+    readonly minimumMeaningfulAttemptMs = 0,
+    readonly budgetKind: 'wall' | 'coordination' = 'wall'
   ) {
-    super('网关请求墙钟预算已进入最终响应预留区')
+    super(budgetKind === 'coordination'
+      ? '网关请求协调等待预算已耗尽，需要交接客户端重试'
+      : '网关请求墙钟预算已进入最终响应预留区')
+    this.code = budgetKind === 'coordination'
+      ? 'gateway_request_coordination_budget_exhausted'
+      : 'gateway_request_wall_budget_exhausted'
     this.name = 'GatewayRequestWallBudgetExhaustedError'
   }
 }
@@ -405,7 +419,50 @@ export async function fetchFirstAvailableUpstream(
   const observedEscapedTiers = new Set<string>()
   let requestApiKeyAttemptCount = requestAttemptTracker.snapshot().attemptedKeyFingerprints.length
   let activeSameAccountRetryId = requestCoordination.sameAccountRetry?.retryId
+  let activeAccountLockRetryLease = requestCoordination.accountLockRetryLease
+    ?? (requestCoordination.sameAccountRetry?.accountLockLeaseId
+      ? { accountId: requestCoordination.sameAccountRetry.account.id, leaseId: requestCoordination.sameAccountRetry.accountLockLeaseId }
+      : undefined)
+  let activeAccountLockObservation: AccountLockObservation | undefined
   const maxSameAccountRetries = Math.min(2, settings.temporaryUnschedulableRetryAttempts)
+  const releaseActiveAccountLockLease = async (scheduleNextRetry: boolean): Promise<void> => {
+    const lease = activeAccountLockRetryLease
+    if (!lease) return
+    activeAccountLockRetryLease = undefined
+    await releaseAccountLockRetryLeaseAsync({
+      accountId: lease.accountId,
+      leaseId: lease.leaseId,
+      globalDelayMs: settings.temporaryUnschedulableRetryIntervalSeconds * 1000,
+      scheduleNextRetry
+    })
+  }
+  const abandonActiveAccountLockReservation = async (
+    fallback?: { accountId: string; leaseId?: string }
+  ): Promise<void> => {
+    const lease = activeAccountLockRetryLease
+      ?? (fallback?.leaseId ? { accountId: fallback.accountId, leaseId: fallback.leaseId } : undefined)
+    if (!lease) return
+    if (activeAccountLockRetryLease?.leaseId === lease.leaseId) {
+      activeAccountLockRetryLease = undefined
+    }
+    await abandonAccountLockRetryReservationAsync(lease)
+  }
+  const createAccountLockLeaseRelease = (): ((scheduleNextRetry?: boolean) => Promise<boolean>) => {
+    const lease = activeAccountLockRetryLease
+    activeAccountLockRetryLease = undefined
+    let released = false
+    return async (scheduleNextRetry = false): Promise<boolean> => {
+      if (released) return true
+      released = true
+      if (!lease) return true
+      return releaseAccountLockRetryLeaseAsync({
+        accountId: lease.accountId,
+        leaseId: lease.leaseId,
+        globalDelayMs: settings.temporaryUnschedulableRetryIntervalSeconds * 1000,
+        scheduleNextRetry
+      })
+    }
+  }
   const reserveSameAccountRetry = async (
     identity: GatewayDispatchAttemptIdentity,
     reason: string,
@@ -444,24 +501,96 @@ export async function fetchFirstAvailableUpstream(
     // was incomplete. It may still be retried on the same account, but that
     // response must not open a new lock incident. Transport/body failures
     // are recorded below before reserving the lock-aware retry lease.
+    if (accountLockTrafficEnabled && accountId && activeAccountLockRetryLease?.accountId === accountId) {
+      await releaseActiveAccountLockLease(true)
+    }
     if (accountLockTrafficEnabled && accountId && reason === 'upstream_transport_failure') {
-      await recordAccountLockFailureAsync(accountId, reason)
+      await recordAccountLockFailureAsync(accountId, reason, activeAccountLockObservation)
     }
     let lockRetryScheduled = false
     if (accountLockTrafficEnabled && accountId) {
       let lockLease = await acquireAccountLockRetryLeaseAsync(accountId, configuredDelayMs)
       if (!lockLease.allowed && lockLease.waitMs > 0) {
-        await waitForRetryDelayMs(lockLease.waitMs, { signal })
-        lockLease = await acquireAccountLockRetryLeaseAsync(accountId, configuredDelayMs)
+        const waitResult = await waitForAccountLockDelay({
+          accountId,
+          leaseId: lockLease.leaseId,
+          delayMs: lockLease.waitMs,
+          gatewayRequestWallBudget,
+          routeCoordinationBudget,
+          signal
+        })
+        if (waitResult !== 'completed') {
+          if (waitResult === 'aborted') {
+            return undefined
+          }
+          if (waitResult === 'wall') {
+            throw new GatewayRequestWallBudgetExhaustedError(gatewayRequestWallBudget.remainingMs(), lockLease.waitMs)
+          }
+          throw new GatewayRequestWallBudgetExhaustedError(
+            gatewayRequestWallBudget.remainingMs(),
+            0,
+            'coordination'
+          )
+        }
+        // A waiter with a lease id owns the already-sampled reservation after
+        // its due time. Do not reacquire that path: doing so can observe the
+        // still-valid lease fence and sample another future delay, creating an
+        // endless 3s-coordination handoff loop.
+        // A released in-flight lease leaves only the shared due time and no
+        // lease id. Re-claim that due time with a fresh CAS lease before
+        // dispatching; consuming an undefined id would otherwise bypass the
+        // single-sender fence.
+        if (!lockLease.leaseId) {
+          lockLease = await acquireAccountLockRetryLeaseAsync(accountId, configuredDelayMs)
+          if (!lockLease.allowed || !lockLease.leaseId || lockLease.waitMs > 0) return undefined
+        }
+        if (!await consumeAccountLockRetryLeaseAsync(accountId, lockLease.leaseId)) return undefined
+        lockRetryScheduled = true
+        if (lockLease.leaseId) {
+          activeAccountLockRetryLease = { accountId, leaseId: lockLease.leaseId }
+        }
       }
-      if (!lockLease.allowed) return undefined
-      if (gatewayRequestWallBudget.handoffRequired({
-        finalResponseReserveMs: defaultGatewayFinalResponseReserveMs,
-        minimumMeaningfulAttemptMs: lockLease.waitMs
-      })) return undefined
-      if (lockLease.waitMs > 0) await waitForRetryDelayMs(lockLease.waitMs, { signal })
-      if (!await consumeAccountLockRetryLeaseAsync(accountId, lockLease.leaseId)) return undefined
-      lockRetryScheduled = Boolean(lockLease.leaseId)
+      if (!lockRetryScheduled) {
+        if (!lockLease.allowed) return undefined
+        if (gatewayRequestWallBudget.handoffRequired({
+          finalResponseReserveMs: defaultGatewayFinalResponseReserveMs,
+          minimumMeaningfulAttemptMs: lockLease.waitMs
+        })) {
+          await abandonActiveAccountLockReservation({ accountId, leaseId: lockLease.leaseId })
+          return undefined
+        }
+        if (lockLease.waitMs > 0) {
+          const waitResult = await waitForAccountLockDelay({
+            accountId,
+            leaseId: lockLease.leaseId,
+            delayMs: lockLease.waitMs,
+            gatewayRequestWallBudget,
+            routeCoordinationBudget,
+            signal
+          })
+          if (waitResult !== 'completed') {
+            if (waitResult === 'aborted') {
+              await abandonActiveAccountLockReservation({ accountId, leaseId: lockLease.leaseId })
+              return undefined
+            }
+            if (waitResult === 'wall') {
+              await abandonActiveAccountLockReservation({ accountId, leaseId: lockLease.leaseId })
+              throw new GatewayRequestWallBudgetExhaustedError(gatewayRequestWallBudget.remainingMs(), lockLease.waitMs)
+            }
+            await abandonActiveAccountLockReservation({ accountId, leaseId: lockLease.leaseId })
+            throw new GatewayRequestWallBudgetExhaustedError(
+              gatewayRequestWallBudget.remainingMs(),
+              0,
+              'coordination'
+            )
+          }
+        }
+        if (lockLease.leaseId) {
+          if (!await consumeAccountLockRetryLeaseAsync(accountId, lockLease.leaseId)) return undefined
+          lockRetryScheduled = true
+          activeAccountLockRetryLease = { accountId, leaseId: lockLease.leaseId }
+        }
+      }
     }
     // Preserve the pre-lock retry delay for disabled/idle accounts. Once an
     // engaged account owns a lock lease, its sampled delay is authoritative
@@ -482,6 +611,7 @@ export async function fetchFirstAvailableUpstream(
     return reservation.retryId
   }
 
+  try {
   while (dispatchAccounts.length > 0) {
     const cycleRecoverableAccountIds = new Set<string>()
     const capacityLimitFailures: AccountCapacityLimitFailure[] = []
@@ -1147,6 +1277,19 @@ export async function fetchFirstAvailableUpstream(
               }
               if (account.selectedApiKeyFingerprint) requestApiKeyAttemptCount += 1
               activeSameAccountRetryId = undefined
+              activeAccountLockObservation = undefined
+              if (accountLockTrafficEnabled) {
+                const lockState = await findAccountLockStateAsync(account.id)
+                activeAccountLockObservation = lockState
+                  ? {
+                      generation: lockState.generation,
+                      incidentId: lockState.incidentId,
+                      leaseId: activeAccountLockRetryLease?.accountId === account.id
+                        ? activeAccountLockRetryLease.leaseId
+                        : null
+                    }
+                  : undefined
+              }
               auditAttemptIndex += 1
               const auditAttemptId = auditCapture.startAttempt({
                 account,
@@ -1258,7 +1401,10 @@ export async function fetchFirstAvailableUpstream(
                       ? undefined
                       : gatewayRequestWallBudget.deadlineAtMs - defaultGatewayFinalResponseReserveMs,
                     onFirstByteDeadline,
-                    firstByteDeadlineCoordinator
+                    firstByteDeadlineCoordinator,
+                    accountLockObservation: activeAccountLockObservation,
+                    accountLockRetryLease: activeAccountLockRetryLease,
+                    releaseAccountLockRetryLease: createAccountLockLeaseRelease()
                   }
                   keepConcurrencySlot = true
                   accountCircuitAttemptTransferred = true
@@ -1323,7 +1469,10 @@ export async function fetchFirstAvailableUpstream(
                     responsePrecommitDeadlineAtMs: requestLane === 'image' || gatewayRequestWallBudget.unbounded
                       ? undefined
                       : gatewayRequestWallBudget.deadlineAtMs - defaultGatewayFinalResponseReserveMs,
-                    onFirstByteDeadline
+                    onFirstByteDeadline,
+                    accountLockObservation: activeAccountLockObservation,
+                    accountLockRetryLease: activeAccountLockRetryLease,
+                    releaseAccountLockRetryLease: createAccountLockLeaseRelease()
                   }
                   keepConcurrencySlot = true
                   accountCircuitAttemptTransferred = true
@@ -1397,6 +1546,9 @@ export async function fetchFirstAvailableUpstream(
                 skipAccount = true
                 break
               } catch (error) {
+                if (error instanceof GatewayRequestWallBudgetExhaustedError) {
+                  throw error
+                }
                 const configuredFirstByteDeadline = isGatewayFirstByteTimeoutError(error)
                   && error.source === 'configured_deadline'
                 const neutralFirstByteDeadline = configuredFirstByteDeadline
@@ -1625,8 +1777,8 @@ export async function fetchFirstAvailableUpstream(
                   accountStateMutationEnabled: automaticAccountStateMutationAllowed
                 })
                 if (accountLockTrafficEnabled) {
-                  await recordAccountLockFailureAsync(account.id, 'upstream_transport_failure')
-                  await settleAccountLockDeadlineAsync(account.id)
+                  await recordAccountLockFailureAsync(account.id, 'upstream_transport_failure', activeAccountLockObservation)
+                  await settleAccountLockDeadlineAsync(account.id, Date.now(), activeAccountLockObservation)
                 }
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
                 if (requestErrorResult.action === 'skip_account' && !retryAnotherAccountApiKey) {
@@ -1899,6 +2051,9 @@ export async function fetchFirstAvailableUpstream(
     agentGuidanceResponse,
     [...recoverableFailedAccountIds]
   )
+  } finally {
+    await releaseActiveAccountLockLease(false)
+  }
 }
 
 function isAbortLike(error: unknown, signal?: AbortSignal): boolean {
@@ -1989,6 +2144,48 @@ function keyModelUnavailableAttempt(
 
 function shouldRetainTransportFailureForRecovery(upstreamUrl: string, signal?: AbortSignal): boolean {
   return !signal?.aborted && /^https?:\/\//i.test(upstreamUrl)
+}
+
+export async function waitForAccountLockDelay(input: {
+  accountId: string
+  leaseId?: string
+  delayMs: number
+  gatewayRequestWallBudget: GatewayRequestWallBudget
+  routeCoordinationBudget: RouteCoordinationBudget
+  signal?: AbortSignal
+}): Promise<'completed' | 'wall' | 'coordination' | 'aborted'> {
+  const delayMs = Math.max(0, Math.trunc(input.delayMs))
+  if (delayMs <= 0) return 'completed'
+  const nowMs = Date.now()
+  const wallRemainingMs = input.gatewayRequestWallBudget.availableDecisionMs({
+    nowMs,
+    finalResponseReserveMs: defaultGatewayFinalResponseReserveMs
+  })
+  const coordinationRemainingMs = input.routeCoordinationBudget.remainingMs(nowMs)
+  if (delayMs > wallRemainingMs) return 'wall'
+  if (delayMs > coordinationRemainingMs) return 'coordination'
+  const snapshot = input.routeCoordinationBudget.snapshot(nowMs)
+  const waitToken = `account-lock:${input.accountId}:${input.leaseId ?? randomUUID()}`
+  const started = input.routeCoordinationBudget.beginWait({
+    waitToken,
+    expectedVersion: snapshot.version,
+    nowMs
+  })
+  if (started.outcome !== 'applied') return 'coordination'
+  let completed = false
+  let aborted = false
+  try {
+    await waitForRetryDelayMs(delayMs, { signal: input.signal })
+    aborted = input.signal?.aborted === true
+    completed = !aborted
+  } finally {
+    input.routeCoordinationBudget.pauseWait({
+      waitToken,
+      expectedVersion: started.snapshot.version,
+      nowMs: Date.now()
+    })
+  }
+  return completed ? 'completed' : aborted ? 'aborted' : 'coordination'
 }
 
 function isTransientSameAccountHttpStatus(status: number | undefined): boolean {

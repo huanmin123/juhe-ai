@@ -26,27 +26,27 @@ type RunService interface {
 }
 
 type RunRequest struct {
-	TargetType, TargetID, Model, Profile                                               string
-	SystemAccountID, ActorSystemAccountID                                              string
-	TriggerKind, ScheduleID                                                            string
-	ProviderCode                                                                       string
-	Threshold                                                                          int
-	PenaltyAction                                                                      string
-	RecoveryIntervalMinutes                                                            int
-	ManualEnforcementEnabled, OwnPhysicalAccount                                       bool
-	IdentityKey, ConfigRevision, SourceConfigRevision, PolicyRevision, ProbeSetVersion string
-	SourceDispatchRevision                                                             int64
-	DispatchRevision                                                                   int64
-	TrustedComparison                                                                  bool
-	TrustedComparisonAccountID, TrustedComparisonConfigRevision                        string
-	TrustedComparisonDispatchRevision                                                  int64
-	TrustedComparisonSourceConfigRevision                                              string
-	TrustedComparisonSourceDispatchRevision                                            int64
-	Endpoint, Prompt                                                                   string
-	Protocol                                                                           string
-	SourceEndpointFamily, UpstreamEndpointFamily                                       string
-	UpstreamProtocol, UpstreamEndpointMode                                             string
-	Headers                                                                            http.Header
+	TargetType, TargetID, Model, Profile                                                          string
+	SystemAccountID, ActorSystemAccountID                                                         string
+	TriggerKind, ScheduleID                                                                       string
+	ProviderCode                                                                                  string
+	Threshold                                                                                     int
+	PenaltyAction                                                                                 string
+	RecoveryIntervalMinutes                                                                       int
+	ManualEnforcementEnabled, OwnPhysicalAccount                                                  bool
+	IdentityKey, ConfigRevision, SourceConfigRevision, PolicyRevision, ProbeSetVersion            string
+	SourceDispatchRevision                                                                        int64
+	DispatchRevision                                                                              int64
+	TrustedComparison                                                                             bool
+	TrustedComparisonAccountID, TrustedComparisonSystemAccountID, TrustedComparisonConfigRevision string
+	TrustedComparisonDispatchRevision                                                             int64
+	TrustedComparisonSourceConfigRevision                                                         string
+	TrustedComparisonSourceDispatchRevision                                                       int64
+	Endpoint, Prompt                                                                              string
+	Protocol                                                                                      string
+	SourceEndpointFamily, UpstreamEndpointFamily                                                  string
+	UpstreamProtocol, UpstreamEndpointMode                                                        string
+	Headers                                                                                       http.Header
 }
 
 type RunResult struct {
@@ -78,30 +78,31 @@ type ProgressEvent struct {
 }
 
 type RunListQuery struct {
-	SystemAccountID string
-	Page, PageSize  int
-	TargetID        string
-	Model           string
-	Level           string
-	Status          string
-	TriggerKind     string
-	StartAt         string
-	EndAt           string
+	SystemAccountID   string
+	AllSystemAccounts bool
+	Page, PageSize    int
+	TargetID          string
+	Model             string
+	Level             string
+	Status            string
+	TriggerKind       string
+	StartAt           string
+	EndAt             string
 }
 
 // AccountOptionsQuery is the read-only selector used by the model-check
 // management UI. It deliberately carries only filtering inputs; credentials
 // and runtime state never cross this transport boundary.
 type AccountOptionsQuery struct {
-	// SystemAccountID is the authenticated tenant boundary. Account-option
-	// reads must never infer an unscoped cross-tenant view from administrator
-	// authentication alone.
-	SystemAccountID string
-	Purpose         string
-	AccountID       string
-	Keyword         string
-	SelectedID      []string
-	Limit           int
+	// SystemAccountID is the selected tenant boundary. It is empty only when
+	// AllSystemAccounts was explicitly authorized on the administrator mount.
+	SystemAccountID   string
+	AllSystemAccounts bool
+	Purpose           string
+	AccountID         string
+	Keyword           string
+	SelectedID        []string
+	Limit             int
 }
 
 type AccountOption struct {
@@ -142,6 +143,31 @@ type TokenInterceptBaselineActivator interface {
 
 type Authorize func(context.Context, *http.Request) (string, error)
 
+// ManagementScope separates the authenticated actor from the target tenant.
+// Node records model-check runs under the target account's tenant while
+// retaining the administrator who initiated the work as actor metadata.
+// An empty SelectedSystemAccountID is valid only with AllSystemAccounts.
+type ManagementScope struct {
+	ActorSystemAccountID    string
+	SelectedSystemAccountID string
+	AllSystemAccounts       bool
+}
+
+func (s ManagementScope) valid() bool {
+	actor := strings.TrimSpace(s.ActorSystemAccountID)
+	selected := strings.TrimSpace(s.SelectedSystemAccountID)
+	return actor != "" && ((s.AllSystemAccounts && selected == "") || (!s.AllSystemAccounts && selected != ""))
+}
+
+func (s ManagementScope) activeKey() string {
+	return "system-account:" + strings.TrimSpace(s.ActorSystemAccountID)
+}
+
+func (s ManagementScope) specificSystemAccountID() (string, bool) {
+	selected := strings.TrimSpace(s.SelectedSystemAccountID)
+	return selected, !s.AllSystemAccounts && selected != ""
+}
+
 // NewAdminAuthorize adapts the Gateway-owned session contract to the J3b
 // handler. Authentication and administrator scope checks stay in-process;
 // this adapter never proxies to Node or another Go service.
@@ -176,6 +202,7 @@ func NewSelfAuthorize(auth *modelcheckauth.Authenticator) Authorize {
 }
 
 type BuildRequest func(context.Context, string, RunCommand) (RunRequest, error)
+type ScopedBuildRequest func(context.Context, ManagementScope, RunCommand) (RunRequest, error)
 
 type RunCommand struct {
 	TargetType          string `json:"targetType"`
@@ -194,11 +221,11 @@ type HTTPHandler struct {
 	Active         *modelcheckactive.Registry
 	Authorize      Authorize
 	Build          BuildRequest
+	BuildScoped    ScopedBuildRequest
 	MaxBody        int64
 	Heartbeat      time.Duration
-	// AllowCrossAccount is enabled only on the administrator public mount.
-	// The self mount leaves it false and always ignores a requested foreign
-	// systemAccountId rather than permitting a caller-controlled scope.
+	// AllowCrossAccount identifies the administrator public mount. It is the
+	// only mount permitted to construct a global or foreign-tenant scope.
 	AllowCrossAccount bool
 	// ForceActorScope is set only by the self public mount. It preserves the
 	// legacy handler's fail-closed behavior for an unwired foreign scope while
@@ -207,12 +234,12 @@ type HTTPHandler struct {
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.Service == nil || h.Authorize == nil || h.Build == nil || h.Active == nil {
+	if h == nil || h.Service == nil || h.Authorize == nil || (h.Build == nil && h.BuildScoped == nil) || h.Active == nil {
 		writeOwnerError(w, http.StatusServiceUnavailable, "J3b Gateway 管理入口未完成 owner 接线")
 		return
 	}
-	systemAccountID, err := h.Authorize(r.Context(), r)
-	if err != nil || strings.TrimSpace(systemAccountID) == "" {
+	actorSystemAccountID, err := h.Authorize(r.Context(), r)
+	if err != nil || strings.TrimSpace(actorSystemAccountID) == "" {
 		status := http.StatusUnauthorized
 		if errors.Is(err, modelcheckauth.ErrMustChange) {
 			writeOwnerErrorCode(w, http.StatusForbidden, "must_change_password", err.Error())
@@ -224,18 +251,15 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeOwnerError(w, status, "模型检测管理请求未授权")
 		return
 	}
-	if !h.ForceActorScope {
-		if scoped, scopeErr := resolveRequestedSystemAccount(r, systemAccountID, h.AllowCrossAccount); scopeErr != nil {
-			writeOwnerError(w, http.StatusServiceUnavailable, scopeErr.Error())
-			return
-		} else {
-			systemAccountID = scoped
-		}
+	scope, scopeErr := resolveManagementScope(r, actorSystemAccountID, h.AllowCrossAccount, h.ForceActorScope)
+	if scopeErr != nil {
+		writeOwnerError(w, http.StatusBadRequest, scopeErr.Error())
+		return
 	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	switch {
 	case r.Method == http.MethodPost && path == "/run":
-		h.serveRun(w, r, systemAccountID)
+		h.serveRun(w, r, scope)
 	case r.Method == http.MethodPost && path == "/token-intercept-baselines/activate":
 		if h.ForceActorScope {
 			writeOwnerError(w, http.StatusForbidden, "模型检测 token 截距基线仅限管理员激活")
@@ -243,31 +267,31 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.activateTokenInterceptBaseline(w, r)
 	case r.Method == http.MethodPost && path == "/run/stream":
-		h.serveStream(w, r, systemAccountID)
+		h.serveStream(w, r, scope)
 	case r.Method == http.MethodGet && path == "/run/active":
-		h.serveActive(w, systemAccountID)
+		h.serveActive(w, scope)
 	case r.Method == http.MethodPost && path == "/run/stop":
-		h.serveStop(w, systemAccountID)
+		h.serveStop(w, scope)
 	case r.Method == http.MethodGet && path == "/runs":
-		h.serveList(w, r, systemAccountID)
+		h.serveList(w, r, scope)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/runs/"):
-		h.serveDetail(w, r, strings.TrimPrefix(path, "/runs/"), systemAccountID)
+		h.serveDetail(w, r, strings.TrimPrefix(path, "/runs/"), scope)
 	case r.Method == http.MethodGet && path == "/quality-policy":
-		h.serveQualityPolicy(w, r, systemAccountID)
+		h.serveScopedQualityPolicy(w, r, scope)
 	case r.Method == http.MethodGet && path == "/options":
 		h.serveOptions(w)
 	case r.Method == http.MethodGet && (path == "/account-options" || path == "/options/accounts"):
-		h.serveAccountOptions(w, r, systemAccountID)
+		h.serveAccountOptions(w, r, scope)
 	case r.Method == http.MethodPatch && path == "/quality-policy":
-		h.patchQualityPolicy(w, r, systemAccountID)
+		h.patchScopedQualityPolicy(w, r, scope)
 	case r.Method == http.MethodGet && path == "/quality-schedules":
-		h.listQualitySchedules(w, r, systemAccountID)
+		h.listScopedQualitySchedules(w, r, scope)
 	case r.Method == http.MethodPost && path == "/quality-schedules":
-		h.createQualitySchedule(w, r, systemAccountID)
+		h.createScopedQualitySchedule(w, r, scope)
 	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/quality-schedules/"):
-		h.patchQualitySchedule(w, r, systemAccountID, strings.TrimPrefix(path, "/quality-schedules/"))
+		h.patchScopedQualitySchedule(w, r, scope, strings.TrimPrefix(path, "/quality-schedules/"))
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/quality-schedules/"):
-		h.deleteQualitySchedule(w, r, systemAccountID, strings.TrimPrefix(path, "/quality-schedules/"))
+		h.deleteScopedQualitySchedule(w, r, scope, strings.TrimPrefix(path, "/quality-schedules/"))
 	default:
 		http.NotFound(w, r)
 	}
@@ -304,29 +328,38 @@ func (h *HTTPHandler) activateTokenInterceptBaseline(w http.ResponseWriter, r *h
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"activated": true, "baselineVersion": input.BaselineVersion}})
 }
 
-func resolveRequestedSystemAccount(r *http.Request, authenticated string, allowCrossAccount ...bool) (string, error) {
-	if len(allowCrossAccount) > 0 && allowCrossAccount[0] {
-		values, exists := r.URL.Query()["systemAccountId"]
-		if !exists || len(values) == 0 || (len(values) == 1 && strings.TrimSpace(values[0]) == "") {
-			return authenticated, nil
-		}
-		if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
-			return "", errors.New("J3b systemAccountId 作用域参数无效")
-		}
-		return strings.TrimSpace(values[0]), nil
+func resolveManagementScope(r *http.Request, authenticated string, allowCrossAccount, forceActorScope bool) (ManagementScope, error) {
+	actor := strings.TrimSpace(authenticated)
+	if actor == "" {
+		return ManagementScope{}, errors.New("J3b 管理请求缺少认证 systemAccountId")
+	}
+	if forceActorScope {
+		return ManagementScope{ActorSystemAccountID: actor, SelectedSystemAccountID: actor}, nil
 	}
 	values, exists := r.URL.Query()["systemAccountId"]
 	if !exists || len(values) == 0 || (len(values) == 1 && strings.TrimSpace(values[0]) == "") {
-		return authenticated, nil
+		if allowCrossAccount {
+			return ManagementScope{ActorSystemAccountID: actor, AllSystemAccounts: true}, nil
+		}
+		return ManagementScope{ActorSystemAccountID: actor, SelectedSystemAccountID: actor}, nil
 	}
 	if len(values) != 1 {
-		return "", errors.New("J3b systemAccountId 作用域参数无效")
+		return ManagementScope{}, errors.New("J3b systemAccountId 作用域参数无效")
 	}
 	requested := strings.TrimSpace(values[0])
-	if requested == "all" || requested == authenticated {
-		return authenticated, nil
+	if requested == "" {
+		return ManagementScope{}, errors.New("J3b systemAccountId 作用域参数无效")
 	}
-	return "", errors.New("J3b 管理员跨 systemAccountId 作用域尚未完成，当前请求已拒绝")
+	if requested == "all" {
+		if !allowCrossAccount {
+			return ManagementScope{ActorSystemAccountID: actor, SelectedSystemAccountID: actor}, nil
+		}
+		return ManagementScope{ActorSystemAccountID: actor, AllSystemAccounts: true}, nil
+	}
+	if !allowCrossAccount && requested != actor {
+		return ManagementScope{}, errors.New("J3b 管理员跨 systemAccountId 作用域尚未完成，当前请求已拒绝")
+	}
+	return ManagementScope{ActorSystemAccountID: actor, SelectedSystemAccountID: requested}, nil
 }
 
 func (h *HTTPHandler) serveOptions(w http.ResponseWriter) {
@@ -337,7 +370,7 @@ func (h *HTTPHandler) serveOptions(w http.ResponseWriter) {
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": h.AccountOptions.ModelCheckOptions()})
 }
 
-func (h *HTTPHandler) serveAccountOptions(w http.ResponseWriter, r *http.Request, systemAccountID string) {
+func (h *HTTPHandler) serveAccountOptions(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
 	if h.AccountOptions == nil {
 		writeOwnerError(w, http.StatusServiceUnavailable, "J3b Gateway 账户选项 owner 未完成接线")
 		return
@@ -347,8 +380,9 @@ func (h *HTTPHandler) serveAccountOptions(w http.ResponseWriter, r *http.Request
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query.SystemAccountID = strings.TrimSpace(systemAccountID)
-	if query.SystemAccountID == "" {
+	query.SystemAccountID = strings.TrimSpace(scope.SelectedSystemAccountID)
+	query.AllSystemAccounts = scope.AllSystemAccounts
+	if query.SystemAccountID == "" && !query.AllSystemAccounts {
 		writeOwnerError(w, http.StatusUnauthorized, "模型检测账户选项缺少认证 systemAccountId 作用域")
 		return
 	}
@@ -428,6 +462,14 @@ func (h *HTTPHandler) serveQualityPolicy(w http.ResponseWriter, r *http.Request,
 	}
 	writeOwnerError(w, http.StatusInternalServerError, err.Error())
 }
+
+func (h *HTTPHandler) serveScopedQualityPolicy(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
+	if systemID, ok := scope.specificSystemAccountID(); ok {
+		h.serveQualityPolicy(w, r, systemID)
+		return
+	}
+	writeOwnerError(w, http.StatusBadRequest, "请先选择具体系统账户")
+}
 func (h *HTTPHandler) patchQualityPolicy(w http.ResponseWriter, r *http.Request, systemID string) {
 	var input QualityPolicyPatch
 	if err := decodeOwnerJSON(r, h.maxBody(), &input); err != nil {
@@ -444,6 +486,14 @@ func (h *HTTPHandler) patchQualityPolicy(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	writeQualityError(w, err)
+}
+
+func (h *HTTPHandler) patchScopedQualityPolicy(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
+	if systemID, ok := scope.specificSystemAccountID(); ok {
+		h.patchQualityPolicy(w, r, systemID)
+		return
+	}
+	writeOwnerError(w, http.StatusBadRequest, "请先选择具体系统账户")
 }
 func (h *HTTPHandler) listQualitySchedules(w http.ResponseWriter, r *http.Request, systemID string) {
 	q, err := h.quality()
@@ -462,6 +512,14 @@ func (h *HTTPHandler) listQualitySchedules(w http.ResponseWriter, r *http.Reques
 	}
 	writeOwnerError(w, http.StatusInternalServerError, err.Error())
 }
+
+func (h *HTTPHandler) listScopedQualitySchedules(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
+	if systemID, ok := scope.specificSystemAccountID(); ok {
+		h.listQualitySchedules(w, r, systemID)
+		return
+	}
+	writeOwnerError(w, http.StatusBadRequest, "请先选择具体系统账户")
+}
 func (h *HTTPHandler) createQualitySchedule(w http.ResponseWriter, r *http.Request, systemID string) {
 	var input QualityScheduleInput
 	if err := decodeOwnerJSON(r, h.maxBody(), &input); err != nil {
@@ -478,6 +536,14 @@ func (h *HTTPHandler) createQualitySchedule(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	writeQualityError(w, err)
+}
+
+func (h *HTTPHandler) createScopedQualitySchedule(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
+	if systemID, ok := scope.specificSystemAccountID(); ok {
+		h.createQualitySchedule(w, r, systemID)
+		return
+	}
+	writeOwnerError(w, http.StatusBadRequest, "请先选择具体系统账户")
 }
 func (h *HTTPHandler) patchQualitySchedule(w http.ResponseWriter, r *http.Request, systemID, id string) {
 	if strings.TrimSpace(id) == "" {
@@ -500,6 +566,14 @@ func (h *HTTPHandler) patchQualitySchedule(w http.ResponseWriter, r *http.Reques
 	}
 	writeQualityError(w, err)
 }
+
+func (h *HTTPHandler) patchScopedQualitySchedule(w http.ResponseWriter, r *http.Request, scope ManagementScope, id string) {
+	if systemID, ok := scope.specificSystemAccountID(); ok {
+		h.patchQualitySchedule(w, r, systemID, id)
+		return
+	}
+	writeOwnerError(w, http.StatusBadRequest, "请先选择具体系统账户")
+}
 func (h *HTTPHandler) deleteQualitySchedule(w http.ResponseWriter, r *http.Request, systemID, id string) {
 	if strings.TrimSpace(id) == "" {
 		http.NotFound(w, r)
@@ -519,6 +593,14 @@ func (h *HTTPHandler) deleteQualitySchedule(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	writeOwnerError(w, http.StatusInternalServerError, err.Error())
+}
+
+func (h *HTTPHandler) deleteScopedQualitySchedule(w http.ResponseWriter, r *http.Request, scope ManagementScope, id string) {
+	if systemID, ok := scope.specificSystemAccountID(); ok {
+		h.deleteQualitySchedule(w, r, systemID, id)
+		return
+	}
+	writeOwnerError(w, http.StatusBadRequest, "请先选择具体系统账户")
 }
 func decodeOwnerJSON(r *http.Request, max int64, target any) error {
 	if r.Body == nil {
@@ -550,22 +632,22 @@ func writeQualityError(w http.ResponseWriter, err error) {
 	writeOwnerError(w, http.StatusBadRequest, err.Error())
 }
 
-func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, accountID string) {
+func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
 	command, err := decodeRunCommand(r, h.maxBody())
 	if err != nil {
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	runRequest, err := h.Build(r.Context(), accountID, command)
+	runRequest, err := h.buildRequest(r.Context(), scope, command)
 	if err != nil {
 		writeBuildError(w, err)
 		return
 	}
-	if err := validateBuiltRequest(accountID, command, runRequest); err != nil {
+	if err := validateBuiltRequest(scope, command, runRequest); err != nil {
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	key := "system-account:" + accountID
+	key := scope.activeKey()
 	handle, acquired, current := h.Active.TryStart(r.Context(), key, modelcheckactive.Summary{TargetID: runRequest.TargetID, Model: runRequest.Model, Profile: runRequest.Profile, StartedAt: time.Now().UTC()})
 	if !acquired {
 		w.Header().Set("Retry-After", "1")
@@ -581,25 +663,25 @@ func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, accountID
 		writeRunError(w, err)
 		return
 	}
-	h.writeRunDetail(w, r, result)
+	h.writeRunDetail(w, r, result, scope)
 }
 
-func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accountID string) {
+func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
 	command, err := decodeRunCommand(r, h.maxBody())
 	if err != nil {
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	runRequest, err := h.Build(r.Context(), accountID, command)
+	runRequest, err := h.buildRequest(r.Context(), scope, command)
 	if err != nil {
 		writeBuildError(w, err)
 		return
 	}
-	if err := validateBuiltRequest(accountID, command, runRequest); err != nil {
+	if err := validateBuiltRequest(scope, command, runRequest); err != nil {
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	key := "system-account:" + accountID
+	key := scope.activeKey()
 	handle, acquired, current := h.Active.TryStart(r.Context(), key, modelcheckactive.Summary{TargetID: runRequest.TargetID, Model: runRequest.Model, Profile: runRequest.Profile, StartedAt: time.Now().UTC()})
 	if !acquired {
 		w.Header().Set("Retry-After", "1")
@@ -672,7 +754,7 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accoun
 				_ = writeEvent("error", ownerStreamError(outcome.err))
 				return
 			}
-			detail, detailErr := h.runDetailForStream(r.Context(), outcome.result)
+			detail, detailErr := h.runDetailForStream(r.Context(), outcome.result, scope)
 			if detailErr != nil {
 				_ = writeEvent("error", ownerStreamError(detailErr))
 				return
@@ -685,10 +767,14 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, accoun
 	}
 }
 
-func (h *HTTPHandler) writeRunDetail(w http.ResponseWriter, r *http.Request, result RunResult) {
+func (h *HTTPHandler) writeRunDetail(w http.ResponseWriter, r *http.Request, result RunResult, scope ManagementScope) {
 	detail, err := h.runDetail(r.Context(), result)
 	if err != nil {
 		writeRunError(w, err)
+		return
+	}
+	if !scopeAllowsRun(scope, detail) {
+		writeOwnerError(w, http.StatusNotFound, "模型检测记录不存在")
 		return
 	}
 	if detail, err = h.presentRunResult(detail); err != nil {
@@ -698,10 +784,13 @@ func (h *HTTPHandler) writeRunDetail(w http.ResponseWriter, r *http.Request, res
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": detail})
 }
 
-func (h *HTTPHandler) runDetailForStream(ctx context.Context, result RunResult) (any, error) {
+func (h *HTTPHandler) runDetailForStream(ctx context.Context, result RunResult, scope ManagementScope) (any, error) {
 	detail, err := h.runDetail(ctx, result)
 	if err != nil {
 		return nil, err
+	}
+	if !scopeAllowsRun(scope, detail) {
+		return nil, &RequestError{StatusCode: http.StatusNotFound, Message: "模型检测记录不存在"}
 	}
 	return h.presentRunResult(detail)
 }
@@ -816,16 +905,16 @@ func ownerStreamError(err error) map[string]any {
 	return payload
 }
 
-func (h *HTTPHandler) serveActive(w http.ResponseWriter, accountID string) {
-	if summary, ok := h.Active.Get("system-account:" + accountID); ok {
+func (h *HTTPHandler) serveActive(w http.ResponseWriter, scope ManagementScope) {
+	if summary, ok := h.Active.Get(scope.activeKey()); ok {
 		writeOwnerJSON(w, http.StatusOK, map[string]any{"data": summary})
 		return
 	}
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": nil})
 }
 
-func (h *HTTPHandler) serveStop(w http.ResponseWriter, accountID string) {
-	summary, stopped := h.Active.Stop("system-account:" + accountID)
+func (h *HTTPHandler) serveStop(w http.ResponseWriter, scope ManagementScope) {
+	summary, stopped := h.Active.Stop(scope.activeKey())
 	var active any
 	if stopped {
 		active = summary
@@ -833,13 +922,14 @@ func (h *HTTPHandler) serveStop(w http.ResponseWriter, accountID string) {
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"stopped": stopped, "active": active}})
 }
 
-func (h *HTTPHandler) serveList(w http.ResponseWriter, r *http.Request, accountID string) {
+func (h *HTTPHandler) serveList(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
 	query, err := parseRunListQuery(r)
 	if err != nil {
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	query.SystemAccountID = accountID
+	query.SystemAccountID = scope.SelectedSystemAccountID
+	query.AllSystemAccounts = scope.AllSystemAccounts
 	result, err := h.Service.ListRuns(r.Context(), query)
 	if err != nil {
 		writeOwnerError(w, http.StatusInternalServerError, err.Error())
@@ -852,7 +942,7 @@ func (h *HTTPHandler) serveList(w http.ResponseWriter, r *http.Request, accountI
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": result})
 }
 
-func (h *HTTPHandler) serveDetail(w http.ResponseWriter, r *http.Request, runID, accountID string) {
+func (h *HTTPHandler) serveDetail(w http.ResponseWriter, r *http.Request, runID string, scope ManagementScope) {
 	if strings.TrimSpace(runID) == "" {
 		http.NotFound(w, r)
 		return
@@ -866,7 +956,7 @@ func (h *HTTPHandler) serveDetail(w http.ResponseWriter, r *http.Request, runID,
 		http.NotFound(w, r)
 		return
 	}
-	if systemAccountID, ok := resultSystemAccountID(result); !ok || systemAccountID != accountID {
+	if !scopeAllowsRun(scope, result) {
 		http.NotFound(w, r)
 		return
 	}
@@ -877,12 +967,23 @@ func (h *HTTPHandler) serveDetail(w http.ResponseWriter, r *http.Request, runID,
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": result})
 }
 
+func scopeAllowsRun(scope ManagementScope, result any) bool {
+	if !scope.valid() {
+		return false
+	}
+	systemAccountID, ok := resultSystemAccountID(result)
+	return ok && (scope.AllSystemAccounts || systemAccountID == scope.SelectedSystemAccountID)
+}
+
 func resultSystemAccountID(result any) (string, bool) {
 	switch value := result.(type) {
 	case RunView:
 		return value.SystemAccountID, true
 	case RunDetail:
 		return value.SystemAccountID, true
+	case map[string]any:
+		systemAccountID, ok := value["systemAccountId"].(string)
+		return strings.TrimSpace(systemAccountID), ok && strings.TrimSpace(systemAccountID) != ""
 	default:
 		return "", false
 	}
@@ -955,11 +1056,14 @@ func decodeRunCommand(r *http.Request, maxBody int64) (RunCommand, error) {
 	return command, nil
 }
 
-func validateBuiltRequest(systemAccountID string, command RunCommand, request RunRequest) error {
-	if strings.TrimSpace(request.SystemAccountID) != strings.TrimSpace(systemAccountID) {
-		return errors.New("模型检测请求 scope 与认证账号不一致")
+func validateBuiltRequest(scope ManagementScope, command RunCommand, request RunRequest) error {
+	if !scope.valid() || strings.TrimSpace(request.SystemAccountID) == "" {
+		return errors.New("模型检测请求 scope 不完整")
 	}
-	if strings.TrimSpace(request.ActorSystemAccountID) == "" {
+	if !scope.AllSystemAccounts && strings.TrimSpace(request.SystemAccountID) != strings.TrimSpace(scope.SelectedSystemAccountID) {
+		return errors.New("模型检测请求 scope 与选中账号不一致")
+	}
+	if strings.TrimSpace(request.ActorSystemAccountID) != strings.TrimSpace(scope.ActorSystemAccountID) {
 		return errors.New("模型检测请求缺少 actor scope")
 	}
 	if request.TargetType != "account" || request.TargetID != command.TargetID || request.Model != command.Model {
@@ -976,6 +1080,16 @@ func (h *HTTPHandler) maxBody() int64 {
 		return h.MaxBody
 	}
 	return 512 << 10
+}
+
+func (h *HTTPHandler) buildRequest(ctx context.Context, scope ManagementScope, command RunCommand) (RunRequest, error) {
+	if h.BuildScoped != nil {
+		return h.BuildScoped(ctx, scope, command)
+	}
+	if scope.AllSystemAccounts || strings.TrimSpace(scope.SelectedSystemAccountID) == "" {
+		return RunRequest{}, errors.New("J3b 管理员全局 scope 尚未接入目标租户构建器")
+	}
+	return h.Build(ctx, scope.SelectedSystemAccountID, command)
 }
 
 func (h *HTTPHandler) heartbeat() time.Duration {

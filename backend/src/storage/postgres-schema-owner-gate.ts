@@ -13,13 +13,14 @@ import {
  * create tables, update goose_db_version, or infer a Goose history from an
  * already-populated Node database.
  */
-export const NODE_POSTGRES_SCHEMA_CONTRACT_VERSION = 95
+export const NODE_POSTGRES_SCHEMA_CONTRACT_VERSION = 96
 
 export const POSTGRES_NODE_SCHEMA_PREFLIGHT_QUERY = `
 SELECT
   ARRAY_REMOVE(ARRAY[
     CASE WHEN to_regclass('juhe_business.accounts') IS NULL THEN 'juhe_business.accounts' END,
     CASE WHEN to_regclass('juhe_business.api_keys') IS NULL THEN 'juhe_business.api_keys' END,
+    CASE WHEN to_regclass('juhe_business.account_lock_states') IS NULL THEN 'juhe_business.account_lock_states' END,
     CASE WHEN to_regclass('juhe_business.account_circuit_incidents') IS NULL THEN 'juhe_business.account_circuit_incidents' END,
     CASE WHEN to_regclass('juhe_business.account_health_jobs_input_versions') IS NULL THEN 'juhe_business.account_health_jobs_input_versions' END,
     CASE WHEN to_regclass('juhe_business.account_balance_projection_cursors') IS NULL THEN 'juhe_business.account_balance_projection_cursors' END
@@ -60,6 +61,30 @@ SELECT
       GROUP BY c.oid
       HAVING COUNT(*) = 6
     ) THEN 'juhe_business.account_circuit_incidents.key_model_columns' END,
+    CASE WHEN NOT EXISTS (
+      SELECT 1
+      FROM pg_catalog.pg_attribute a
+      INNER JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'juhe_business'
+        AND c.relname = 'account_lock_states'
+        AND a.attname = 'next_retry_at_ms'
+        AND a.atttypid = 'pg_catalog.int8'::regtype
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+    ) THEN 'juhe_business.account_lock_states.next_retry_at_ms(bigint)' END,
+    CASE WHEN NOT EXISTS (
+      SELECT 1
+      FROM pg_catalog.pg_attribute a
+      INNER JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'juhe_business'
+        AND c.relname = 'account_lock_states'
+        AND a.attname = 'lease_until_ms'
+        AND a.atttypid = 'pg_catalog.int8'::regtype
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+    ) THEN 'juhe_business.account_lock_states.lease_until_ms(bigint)' END,
     CASE WHEN NOT EXISTS (
       SELECT 1
       FROM pg_catalog.pg_attribute a

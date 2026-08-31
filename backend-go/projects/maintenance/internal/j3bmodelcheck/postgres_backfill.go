@@ -53,7 +53,14 @@ type postgresBackfillColumn struct {
 	HasDefault bool
 }
 
-// BackfillPostgres copies the five explicitly whitelisted Node legacy facts
+const (
+	trustAggregationStateTable     = "model_trust_aggregation_state"
+	trustAggregationStateScopeKey  = "model-trust-observation-aggregation"
+	trustAggregationStateScopeType = "global"
+	trustAggregationStateJobName   = "model-trust-observation-aggregation"
+)
+
+// BackfillPostgres copies the explicitly whitelisted Node legacy facts
 // into juhe_j3b. It uses one serializable transaction, validates target and
 // source structure before the first INSERT, and never UPDATEs or DELETEs a
 // target row. Existing rows are compared over the complete validated public
@@ -104,7 +111,7 @@ func BackfillPostgres(ctx context.Context, db *sql.DB, options PostgresBackfillO
 		TransactionIsolation: strings.ToLower(strings.TrimSpace(transactionIsolation)),
 		MaxRowsPerTable:      normalized.maxRows,
 		MaxBytesPerTable:     normalized.maxBytes,
-		Tables:               make(map[string]PostgresBackfillTable, len(postgresLegacyJ3bFactTables)),
+		Tables:               make(map[string]PostgresBackfillTable, len(postgresLegacyJ3bFactTables)+1),
 	}
 	for _, item := range postgresLegacyJ3bFactTables {
 		result, err := backfillPostgresTable(ctx, tx, item, normalized)
@@ -113,10 +120,141 @@ func BackfillPostgres(ctx context.Context, db *sql.DB, options PostgresBackfillO
 		}
 		report.Tables[item.name] = result
 	}
+	state, err := backfillPostgresTrustAggregationState(ctx, tx, normalized)
+	if err != nil {
+		return PostgresBackfillReport{}, err
+	}
+	report.Tables[trustAggregationStateTable] = state
 	if err := tx.Commit(); err != nil {
 		return PostgresBackfillReport{}, fmt.Errorf("commit J3b PostgreSQL backfill: %w", err)
 	}
 	return report, nil
+}
+
+// backfillPostgresTrustAggregationState maps only the one Node cursor that
+// determines the trust-observation replay boundary. The Node lease is
+// deliberately not copied: it represents Node scheduler ownership and is a
+// separate drain/handoff gate, not historical J3b data.
+func backfillPostgresTrustAggregationState(ctx context.Context, tx *sql.Tx, options normalizedPostgresBackfillOptions) (PostgresBackfillTable, error) {
+	result := PostgresBackfillTable{
+		SourceSchema: "juhe_stats",
+		TargetSchema: SchemaName,
+		Projection:   []string{"scope_key", "cursor_created_at", "cursor_id", "last_success_at", "last_error_message", "lag_seconds", "updated_at"},
+		PrimaryKeys:  []string{"scope_key"},
+	}
+	sourceExists, err := postgresTableExists(ctx, tx, result.SourceSchema, "stats_job_state")
+	if err != nil {
+		return result, err
+	}
+	if !sourceExists {
+		return result, errors.New("J3b PostgreSQL legacy source table juhe_stats.stats_job_state is missing")
+	}
+	targetExists, err := postgresTableExists(ctx, tx, SchemaName, trustAggregationStateTable)
+	if err != nil {
+		return result, err
+	}
+	if !targetExists {
+		return result, fmt.Errorf("J3b PostgreSQL target table %s.%s is missing", SchemaName, trustAggregationStateTable)
+	}
+	if err := validatePostgresTrustAggregationStateColumns(ctx, tx); err != nil {
+		return result, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT cursor_created_at,cursor_id,last_success_at,last_error_message,lag_seconds,updated_at FROM juhe_stats.stats_job_state WHERE scope_type=$1 AND scope_id=$2 AND job_name=$3 LIMIT $4`, trustAggregationStateScopeType, "", trustAggregationStateJobName, options.maxRows+1)
+	if err != nil {
+		return result, fmt.Errorf("read J3b PostgreSQL trust aggregation cursor: %w", err)
+	}
+	valuesList := make([][]any, 0, 1)
+	for rows.Next() {
+		if int64(len(valuesList)) >= options.maxRows {
+			rows.Close()
+			return result, fmt.Errorf("J3b PostgreSQL trust aggregation cursor exceeds max rows (%d)", options.maxRows)
+		}
+		values := make([]any, 7)
+		values[0] = trustAggregationStateScopeKey
+		pointers := make([]any, 6)
+		for index := range pointers {
+			pointers[index] = &values[index+1]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			rows.Close()
+			return result, fmt.Errorf("scan J3b PostgreSQL trust aggregation cursor: %w", err)
+		}
+		if bytes := postgresBackfillRowBytes(values); bytes > options.maxBytes {
+			rows.Close()
+			return result, fmt.Errorf("J3b PostgreSQL trust aggregation cursor exceeds max bytes (%d)", options.maxBytes)
+		} else {
+			result.SourceBytes += bytes
+		}
+		valuesList = append(valuesList, values)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return result, fmt.Errorf("iterate J3b PostgreSQL trust aggregation cursor: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return result, fmt.Errorf("close J3b PostgreSQL trust aggregation cursor: %w", err)
+	}
+	for _, values := range valuesList {
+		result.SourceRows++
+		existing := make([]any, len(values))
+		pointers := make([]any, len(existing))
+		for index := range pointers {
+			pointers[index] = &existing[index]
+		}
+		err := tx.QueryRowContext(ctx, `SELECT scope_key,cursor_created_at,cursor_id,last_success_at,last_error_message,lag_seconds,updated_at FROM juhe_j3b.model_trust_aggregation_state WHERE scope_key=$1`, trustAggregationStateScopeKey).Scan(pointers...)
+		if err == nil {
+			for index := range values {
+				if !postgresBackfillValuesEqual(existing[index], values[index]) {
+					return result, errors.New("J3b PostgreSQL backfill conflict in model_trust_aggregation_state primary key row")
+				}
+			}
+			result.SkippedRows++
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return result, fmt.Errorf("check J3b PostgreSQL trust aggregation cursor: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO juhe_j3b.model_trust_aggregation_state (scope_key,cursor_created_at,cursor_id,last_success_at,last_error_message,lag_seconds,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`, values...); err != nil {
+			return result, fmt.Errorf("insert J3b PostgreSQL trust aggregation cursor: %w", err)
+		}
+		result.InsertedRows++
+	}
+	return result, nil
+}
+
+func validatePostgresTrustAggregationStateColumns(ctx context.Context, tx *sql.Tx) error {
+	source, err := postgresBackfillColumns(ctx, tx, "juhe_stats", "stats_job_state")
+	if err != nil {
+		return err
+	}
+	target, err := postgresBackfillColumns(ctx, tx, SchemaName, trustAggregationStateTable)
+	if err != nil {
+		return err
+	}
+	if err := validatePostgresColumnShape(source, map[string]postgresBackfillColumn{
+		"scope_type": {DataType: "text", UdtName: "text"}, "scope_id": {DataType: "text", UdtName: "text"}, "job_name": {DataType: "text", UdtName: "text"},
+		"cursor_created_at": {DataType: "text", UdtName: "text", Nullable: true}, "cursor_id": {DataType: "text", UdtName: "text", Nullable: true}, "last_success_at": {DataType: "text", UdtName: "text", Nullable: true},
+		"last_error_message": {DataType: "text", UdtName: "text", Nullable: true}, "lag_seconds": {DataType: "integer", UdtName: "int4", Nullable: true}, "updated_at": {DataType: "text", UdtName: "text"},
+	}, "juhe_stats.stats_job_state"); err != nil {
+		return err
+	}
+	return validatePostgresColumnShape(target, map[string]postgresBackfillColumn{
+		"scope_key": {DataType: "text", UdtName: "text"}, "cursor_created_at": {DataType: "text", UdtName: "text", Nullable: true}, "cursor_id": {DataType: "text", UdtName: "text", Nullable: true},
+		"last_success_at": {DataType: "text", UdtName: "text", Nullable: true}, "last_error_message": {DataType: "text", UdtName: "text", Nullable: true}, "lag_seconds": {DataType: "integer", UdtName: "int4", Nullable: true}, "updated_at": {DataType: "text", UdtName: "text"},
+	}, SchemaName+"."+trustAggregationStateTable)
+}
+
+func validatePostgresColumnShape(actual, expected map[string]postgresBackfillColumn, table string) error {
+	if len(actual) != len(expected) {
+		return fmt.Errorf("J3b PostgreSQL trust aggregation mapping table %s has unexpected columns", table)
+	}
+	for name, wanted := range expected {
+		got, found := actual[name]
+		if !found || got.DataType != wanted.DataType || got.UdtName != wanted.UdtName || got.Nullable != wanted.Nullable {
+			return fmt.Errorf("J3b PostgreSQL trust aggregation mapping table %s column %s is incompatible", table, name)
+		}
+	}
+	return nil
 }
 
 type normalizedPostgresBackfillOptions struct {
@@ -262,9 +400,6 @@ func backfillPostgresTable(ctx context.Context, tx *sql.Tx, item postgresBackfil
 			return result, fmt.Errorf("insert J3b PostgreSQL backfill table %s: %w", item.name, err)
 		}
 		result.InsertedRows++
-	}
-	if result.SourceRows == 0 {
-		return result, fmt.Errorf("J3b PostgreSQL legacy source table %s.%s is empty; refusing fail-open backfill", item.sourceSchema, item.name)
 	}
 	return result, nil
 }

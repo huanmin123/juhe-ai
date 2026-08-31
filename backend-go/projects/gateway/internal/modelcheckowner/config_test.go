@@ -178,7 +178,11 @@ func writeValidConfiguredReadbackManifest(t *testing.T, now time.Time) (string, 
 		"model_check_items",
 		"model_check_observations",
 		"model_check_runs",
+		"model_account_trust_results",
 		"model_token_intercept_baseline_versions",
+		"model_trust_aggregation_state",
+		"model_trust_latest_dirty_accounts",
+		"model_trust_observation_receipts",
 	} {
 		manifest.Tables = append(manifest.Tables, contracts.J3bReadbackTableDigest{
 			Name: name, SourceRows: 1, TargetRows: 1,

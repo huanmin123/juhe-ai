@@ -135,10 +135,10 @@ type LegacyJ3bFactCoverageReport struct {
 
 // LegacyJ3bFactInventory is derived from Node's current dataset schema
 // (model_check_*) and stats schema/read paths (model-trust.repository.ts and
-// model-checks.repository.ts). The first five entries are the original
-// backfill/readback set. The remaining trust projections and scoped shared
-// state are intentionally visible as retention gates until a semantically
-// equivalent Go storage mapping is implemented and verified.
+// model-checks.repository.ts). The first five entries and the durable trust
+// latest/dirty/receipt relations and the one trust aggregation replay cursor
+// have an explicit Go-owned backfill target. The remaining trust projections
+// and the Node scheduler lease are intentionally visible as retention gates.
 //
 // This inventory performs no DDL or DML and must not be treated as proof that
 // any real backfill has completed.
@@ -155,10 +155,10 @@ var LegacyJ3bFactInventory = []LegacyJ3bFact{
 	{Name: "model_identity_source_features", SourceSchema: "juhe_stats", SourceTable: "model_identity_source_features", Disposition: LegacyFactRetain, RetentionWhy: "Go has no equivalent identity-feature projection relation yet; retain immutable historical evidence until mapped and read back."},
 	{Name: "model_identity_baseline_versions", SourceSchema: "juhe_stats", SourceTable: "model_identity_baseline_versions", Disposition: LegacyFactRetain, RetentionWhy: "Go has no equivalent identity-baseline relation yet; retain immutable historical evidence until mapped and read back."},
 	{Name: "model_paired_similarity_windows", SourceSchema: "juhe_stats", SourceTable: "model_paired_similarity_windows", Disposition: LegacyFactRetain, RetentionWhy: "Go has no equivalent paired-similarity projection relation yet; retain immutable historical evidence until mapped and read back."},
-	{Name: "model_account_trust_results", SourceSchema: "juhe_stats", SourceTable: "model_account_trust_results", Disposition: LegacyFactRetain, RetentionWhy: "Go has no equivalent trust-result projection relation yet; retain immutable historical evidence until mapped and read back."},
-	{Name: "model_trust_latest_dirty_accounts", SourceSchema: "juhe_stats", SourceTable: "model_trust_latest_dirty_accounts", Disposition: LegacyFactRetain, RetentionWhy: "Go has no equivalent dirty-projection queue relation yet; retain immutable historical evidence until mapped and read back."},
-	{Name: "model_trust_observation_receipts", SourceSchema: "juhe_stats", SourceTable: "model_trust_observation_receipts", Disposition: LegacyFactRetain, RetentionWhy: "Go has no equivalent aggregation receipt relation yet; retain immutable historical evidence until mapped and read back."},
-	{Name: "stats_job_state:model-trust-observation-aggregation", SourceSchema: "juhe_stats", SourceTable: "stats_job_state", Scope: "scope_type=global;scope_id=;job_name=model-trust-observation-aggregation", Disposition: LegacyFactRetain, RetentionWhy: "The scoped Node aggregation cursor affects replay and retention boundaries; retain exact historical state until Go owns an equivalent cursor."},
+	{Name: "model_account_trust_results", SourceSchema: "juhe_stats", SourceTable: "model_account_trust_results", Disposition: LegacyFactBackfill, TargetSchema: SchemaName, TargetTable: "model_account_trust_results"},
+	{Name: "model_trust_latest_dirty_accounts", SourceSchema: "juhe_stats", SourceTable: "model_trust_latest_dirty_accounts", Disposition: LegacyFactBackfill, TargetSchema: SchemaName, TargetTable: "model_trust_latest_dirty_accounts"},
+	{Name: "model_trust_observation_receipts", SourceSchema: "juhe_stats", SourceTable: "model_trust_observation_receipts", Disposition: LegacyFactBackfill, TargetSchema: SchemaName, TargetTable: "model_trust_observation_receipts"},
+	{Name: "stats_job_state:model-trust-observation-aggregation", SourceSchema: "juhe_stats", SourceTable: "stats_job_state", Scope: "scope_type=global;scope_id=;job_name=model-trust-observation-aggregation", Disposition: LegacyFactBackfill, TargetSchema: SchemaName, TargetTable: trustAggregationStateTable},
 	{Name: "background_job_leases:scheduled:model-trust-observation-aggregation:global", SourceSchema: "juhe_stats", SourceTable: "background_job_leases", Scope: "lease_key=scheduled:model-trust-observation-aggregation:global", Disposition: LegacyFactRetain, RetentionWhy: "The scoped Node aggregation lease is owner state, not disposable history; retain its final state until Go owns the corresponding coordinator."},
 }
 

@@ -126,7 +126,7 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 		optional bool
 	}{
 		{dataset, "model_check_runs", false}, {dataset, "model_check_items", false}, {dataset, "model_check_observations", false},
-		{stats, "account_quality_health_hourly", false}, {stats, "model_token_intercept_baseline_versions", false},
+		{stats, "account_quality_health_hourly", false}, {stats, "model_token_intercept_baseline_versions", false}, {stats, "model_account_trust_results", false}, {stats, "model_trust_latest_dirty_accounts", false}, {stats, "model_trust_observation_receipts", false},
 		{dataset, "model_check_input_versions", true}, {dataset, "model_check_inputs", true}, {dataset, "model_check_execution_claims", true}, {dataset, "model_check_outcomes", true}, {dataset, "model_check_scheduler_tasks", true},
 	} {
 		exists, err := sqliteTableExists(ctx, item.db, item.table)
@@ -191,6 +191,32 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 		} else {
 			report.Tables[item.table] = "match"
 		}
+	}
+	if exists, err := sqliteTableExists(ctx, stats, "stats_job_state"); err != nil {
+		return BackfillVerificationReport{}, err
+	} else if !exists {
+		return BackfillVerificationReport{}, errors.New("J3b legacy stats source table stats_job_state is missing")
+	}
+	if err := validateSQLiteTrustAggregationStateSource(ctx, stats); err != nil {
+		return BackfillVerificationReport{}, err
+	}
+	sourceRows, sourceDigest, err := sqliteTrustAggregationStateEvidence(ctx, stats, true)
+	if err != nil {
+		return BackfillVerificationReport{}, err
+	}
+	targetRows, targetDigest, err := sqliteTrustAggregationStateEvidence(ctx, target, false)
+	if err != nil {
+		return BackfillVerificationReport{}, err
+	}
+	report.SourceRows[trustAggregationStateTable] = sourceRows
+	report.TargetRows[trustAggregationStateTable] = targetRows
+	report.SourceDigest[trustAggregationStateTable] = sourceDigest
+	report.TargetDigest[trustAggregationStateTable] = targetDigest
+	if sourceRows != targetRows || sourceDigest != targetDigest {
+		report.Tables[trustAggregationStateTable] = "drift"
+		ready = false
+	} else {
+		report.Tables[trustAggregationStateTable] = "match"
 	}
 	report.Ready = ready
 	report.ProjectionComplete = projectionComplete
@@ -263,7 +289,7 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		// intentionally absent before cutover; their empty target tables are
 		// still validated by inspectSQLite above.
 		{dataset, "model_check_input_versions", true}, {dataset, "model_check_inputs", true}, {dataset, "model_check_execution_claims", true}, {dataset, "model_check_outcomes", true},
-		{dataset, "model_check_runs", false}, {dataset, "model_check_items", false}, {dataset, "model_check_observations", false}, {dataset, "model_check_scheduler_tasks", true}, {stats, "account_quality_health_hourly", false}, {stats, "model_token_intercept_baseline_versions", false},
+		{dataset, "model_check_runs", false}, {dataset, "model_check_items", false}, {dataset, "model_check_observations", false}, {dataset, "model_check_scheduler_tasks", true}, {stats, "account_quality_health_hourly", false}, {stats, "model_token_intercept_baseline_versions", false}, {stats, "model_account_trust_results", false}, {stats, "model_trust_latest_dirty_accounts", false}, {stats, "model_trust_observation_receipts", false},
 	} {
 		exists, err := sqliteTableExists(ctx, item.db, item.table)
 		if err != nil {
@@ -297,16 +323,27 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		}
 		report.TargetRows[item.table] = count
 	}
+	trustState, err := copySQLiteTrustAggregationState(ctx, tx, stats)
+	if err != nil {
+		return BackfillReport{}, err
+	}
+	report.SourceRows[trustAggregationStateTable] = trustState.source
+	report.InsertedRows[trustAggregationStateTable] = trustState.inserted
+	report.TargetRows[trustAggregationStateTable] = trustState.target
+	report.SourceDigest[trustAggregationStateTable] = trustState.digest
 	if err := tx.Commit(); err != nil {
 		return BackfillReport{}, fmt.Errorf("commit J3b SQLite backfill: %w", err)
 	}
 	for table := range report.TargetRows {
+		if table == trustAggregationStateTable {
+			continue
+		}
 		if report.SourceRows[table] == 0 && report.SourceDigest[table] == "" {
 			continue
 		}
 		sourceColumns, err := sqliteColumns(ctx, dataset, table)
 		if err != nil {
-			if table == "account_quality_health_hourly" || table == "model_token_intercept_baseline_versions" {
+			if table == "account_quality_health_hourly" || table == "model_token_intercept_baseline_versions" || table == "model_account_trust_results" || table == "model_trust_latest_dirty_accounts" || table == "model_trust_observation_receipts" {
 				sourceColumns, err = sqliteColumns(ctx, stats, table)
 			}
 		}
@@ -327,6 +364,11 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		}
 		report.TargetDigest[table] = digest
 	}
+	_, targetDigest, err := sqliteTrustAggregationStateEvidence(ctx, target, false)
+	if err != nil {
+		return BackfillReport{}, err
+	}
+	report.TargetDigest[trustAggregationStateTable] = targetDigest
 	return report, nil
 }
 
@@ -340,6 +382,131 @@ func sqliteTableExists(ctx context.Context, db *sql.DB, table string) (bool, err
 		return false, err
 	}
 	return found == table, nil
+}
+
+var trustAggregationStateSourceColumns = []string{
+	"scope_type", "scope_id", "job_name", "cursor_created_at", "cursor_id", "last_success_at", "last_error_message", "lag_seconds", "updated_at",
+}
+
+// copySQLiteTrustAggregationState maps the one historic trust replay cursor.
+// Node's scheduler lease is intentionally excluded: transferring it would
+// falsely imply that the Go scheduler owns the stopped Node worker.
+func copySQLiteTrustAggregationState(ctx context.Context, tx *sql.Tx, source *sql.DB) (copyStats, error) {
+	if exists, err := sqliteTableExists(ctx, source, "stats_job_state"); err != nil {
+		return copyStats{}, err
+	} else if !exists {
+		return copyStats{}, errors.New("J3b legacy stats source table stats_job_state is missing")
+	}
+	if err := validateSQLiteTrustAggregationStateSource(ctx, source); err != nil {
+		return copyStats{}, err
+	}
+	rows, err := source.QueryContext(ctx, `SELECT cursor_created_at,cursor_id,last_success_at,last_error_message,lag_seconds,updated_at FROM stats_job_state WHERE scope_type=? AND scope_id=? AND job_name=? LIMIT 2`, trustAggregationStateScopeType, "", trustAggregationStateJobName)
+	if err != nil {
+		return copyStats{}, fmt.Errorf("read J3b legacy trust aggregation cursor: %w", err)
+	}
+	defer rows.Close()
+	stats := copyStats{}
+	digest := sha256.New()
+	for rows.Next() {
+		if stats.source == 1 {
+			return copyStats{}, errors.New("J3b legacy trust aggregation cursor is not unique")
+		}
+		values := make([]any, 7)
+		values[0] = trustAggregationStateScopeKey
+		pointers := make([]any, 6)
+		for index := range pointers {
+			pointers[index] = &values[index+1]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			return copyStats{}, fmt.Errorf("scan J3b legacy trust aggregation cursor: %w", err)
+		}
+		stats.source++
+		writeDigestRow(digest, values)
+		existing := make([]any, len(values))
+		existingPointers := make([]any, len(existing))
+		for index := range existingPointers {
+			existingPointers[index] = &existing[index]
+		}
+		err := tx.QueryRowContext(ctx, `SELECT scope_key,cursor_created_at,cursor_id,last_success_at,last_error_message,lag_seconds,updated_at FROM model_trust_aggregation_state WHERE scope_key=?`, trustAggregationStateScopeKey).Scan(existingPointers...)
+		if err == nil {
+			for index := range values {
+				if normalizeValue(existing[index]) != normalizeValue(values[index]) {
+					return copyStats{}, errors.New("J3b SQLite backfill conflict in model_trust_aggregation_state primary key row")
+				}
+			}
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return copyStats{}, fmt.Errorf("check J3b trust aggregation cursor: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO model_trust_aggregation_state (scope_key,cursor_created_at,cursor_id,last_success_at,last_error_message,lag_seconds,updated_at) VALUES (?,?,?,?,?,?,?)`, values...); err != nil {
+			return copyStats{}, fmt.Errorf("insert J3b trust aggregation cursor: %w", err)
+		}
+		stats.inserted++
+	}
+	if err := rows.Err(); err != nil {
+		return copyStats{}, fmt.Errorf("iterate J3b legacy trust aggregation cursor: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_trust_aggregation_state WHERE scope_key=?`, trustAggregationStateScopeKey).Scan(&stats.target); err != nil {
+		return copyStats{}, fmt.Errorf("count J3b trust aggregation cursor target: %w", err)
+	}
+	stats.digest = hex.EncodeToString(digest.Sum(nil))
+	return stats, nil
+}
+
+func validateSQLiteTrustAggregationStateSource(ctx context.Context, source *sql.DB) error {
+	columns, err := sqliteColumns(ctx, source, "stats_job_state")
+	if err != nil {
+		return err
+	}
+	if extra := differenceColumns(columns, trustAggregationStateSourceColumns); len(extra) > 0 {
+		return fmt.Errorf("J3b legacy trust aggregation cursor has unmapped source columns: %s", strings.Join(extra, ","))
+	}
+	if missing := differenceColumns(trustAggregationStateSourceColumns, columns); len(missing) > 0 {
+		return fmt.Errorf("J3b legacy trust aggregation cursor is missing source columns: %s", strings.Join(missing, ","))
+	}
+	return nil
+}
+
+// sqliteTrustAggregationStateEvidence uses the canonical target scope on both
+// sides. All unrelated Node jobs and the Node lease remain outside this
+// historical-data projection and require their own handoff evidence.
+func sqliteTrustAggregationStateEvidence(ctx context.Context, db *sql.DB, source bool) (int64, string, error) {
+	var query string
+	var args []any
+	if source {
+		query = `SELECT ?,cursor_created_at,cursor_id,last_success_at,last_error_message,lag_seconds,updated_at FROM stats_job_state WHERE scope_type=? AND scope_id=? AND job_name=? LIMIT 2`
+		args = []any{trustAggregationStateScopeKey, trustAggregationStateScopeType, "", trustAggregationStateJobName}
+	} else {
+		query = `SELECT scope_key,cursor_created_at,cursor_id,last_success_at,last_error_message,lag_seconds,updated_at FROM model_trust_aggregation_state WHERE scope_key=? LIMIT 2`
+		args = []any{trustAggregationStateScopeKey}
+	}
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, "", err
+	}
+	defer rows.Close()
+	digest := sha256.New()
+	var count int64
+	for rows.Next() {
+		count++
+		if count > 1 {
+			return 0, "", errors.New("J3b trust aggregation cursor is not unique")
+		}
+		values := make([]any, 7)
+		pointers := make([]any, len(values))
+		for index := range pointers {
+			pointers[index] = &values[index]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			return 0, "", err
+		}
+		writeDigestRow(digest, values)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, "", err
+	}
+	return count, hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 func tableRowCount(ctx context.Context, db *sql.DB, table string) (int64, error) {
@@ -535,9 +702,9 @@ func verifyQueryOnly(ctx context.Context, db *sql.DB) (bool, error) {
 }
 
 type copyStats struct {
-	source, inserted     int64
-	digest               string
-	ignoredSourceColumns []string
+	source, inserted, target int64
+	digest                   string
+	ignoredSourceColumns     []string
 }
 
 func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table string) (copyStats, error) {

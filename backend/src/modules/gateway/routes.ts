@@ -78,6 +78,7 @@ import {
   GatewayRequestWallBudgetExhaustedError,
   NormalRouteFirstByteCutoverError,
   UpstreamAttemptError,
+  waitForAccountLockDelay,
   type GatewayUpstreamRequestCoordinationContext
 } from './dispatch/upstream-dispatch.js'
 import type { UpstreamAttempt } from './upstream/attempt.js'
@@ -108,11 +109,14 @@ import { forgetOpenAIAccountForSessionAsync } from './runtime/session-affinity.s
 import { gatewayProtocolClientErrorProtocolForRequest } from './protocols/registry.js'
 import { gatewayClientAllowsUpstreamSemanticInterpretation } from './client-profiles/strategy.js'
 import {
+  abandonAccountLockRetryReservationAsync,
   accountLockBlocksCrossAccount,
   acquireAccountLockRetryLeaseAsync,
   completeAccountLockSuccessAsync,
   consumeAccountLockRetryLeaseAsync,
   findAccountLockStateAsync,
+  recordAccountLockFailureAsync,
+  releaseAccountLockRetryLeaseAsync,
   settleAccountLockDeadlineAsync
 } from '../../storage/account-lock.repository.js'
 import {
@@ -537,25 +541,27 @@ export async function handleOpenAIGatewayRequest(
   let streamServerRetryCount = 0
   let speedFirstByteRetryCount = 0
   let gatewayWallMinimumMeaningfulAttemptMs = 0
+  let routeCoordinationHandoffRequested = false
   let speedFirstRetryCandidateAccountIds: Set<string> | undefined
   let speedFirstCutoverReservation: SpeedFirstCutoverReservation | undefined
   let activeCompactSseWaitHeartbeat: ReturnType<typeof createGatewaySseWaitHeartbeat> | undefined
-let pendingAccountCircuitConfirmation: GatewayAccountCircuitConfirmation | undefined
+  let pendingAccountCircuitConfirmation: GatewayAccountCircuitConfirmation | undefined
   let pendingSemanticRetryId: string | undefined
   let pendingSameAccountRetry: { retryId: string; account: UpstreamAccount } | undefined
-let pendingCodexEncryptedContentRecovery: {
-  accountId: string
-  body: Buffer
-  semanticRetryId: string
-} | undefined
-let codexEncryptedContentRecoveryRetryMarker: {
-  accountId: string
-  upstreamUrl: string
-  body: Buffer
-  semanticRetryId: string
-  cleanupRequestDelivered: boolean
-} | undefined
-let codexTurnAvoidedFallbackEnabled = false
+  let activeAccountLockRetryLease: { accountId: string; leaseId: string } | undefined
+  let pendingCodexEncryptedContentRecovery: {
+    accountId: string
+    body: Buffer
+    semanticRetryId: string
+  } | undefined
+  let codexEncryptedContentRecoveryRetryMarker: {
+    accountId: string
+    upstreamUrl: string
+    body: Buffer
+    semanticRetryId: string
+    cleanupRequestDelivered: boolean
+  } | undefined
+  let codexTurnAvoidedFallbackEnabled = false
   let fallbackSwitchCount = 0
   const enteredRouteGroupIds = new Set<string>([currentPreflight.usageContext.groupId])
   let forceRecoverableFailureWait = false
@@ -790,6 +796,36 @@ let codexTurnAvoidedFallbackEnabled = false
     while (true) {
       activeCompactSseWaitHeartbeat?.stop()
       activeCompactSseWaitHeartbeat = undefined
+      if (routeCoordinationHandoffRequested) {
+        routeCoordinationHandoffRequested = false
+        observeGatewayRouting({ kind: 'budget', outcome: 'client_handoff' })
+        if (pendingAccountCircuitConfirmation) {
+          await getGatewayAccountCircuitService().completeConfirmation(pendingAccountCircuitConfirmation, 'unknown')
+          pendingAccountCircuitConfirmation = undefined
+        }
+        auditCapture.addGatewayMetadata({
+          label: 'gateway_request_client_handoff',
+          metadata: {
+            reason: 'route_coordination_budget_exhausted',
+            wallRemainingMs: currentPreflight.gatewayRequestWallBudget.remainingMs(),
+            routeCoordinationRemainingMs: currentPreflight.routeCoordinationBudget.remainingMs(),
+            attempts: currentPreflight.requestAttemptTracker.snapshot()
+          }
+        })
+        await sendStreamServerRetryExhaustedResponse({
+          req,
+          res,
+          auditCapture,
+          usageContext: currentPreflight.usageContext,
+          startedAt,
+          retryReason: 'pre_commit_stream_failure',
+          message: '网关请求协调预算已到，请客户端重试并重新选择可用账户',
+          errorCode: gatewayStreamClientRetryErrorCode,
+          clientStrategy: currentPreflight.clientStrategy,
+          downstreamCommitState: currentPreflight.downstreamCommitState
+        })
+        return
+      }
       if (currentPreflight.gatewayRequestWallBudget.handoffRequired({
         finalResponseReserveMs: defaultGatewayFinalResponseReserveMs,
         minimumMeaningfulAttemptMs: gatewayWallMinimumMeaningfulAttemptMs
@@ -842,6 +878,34 @@ let codexTurnAvoidedFallbackEnabled = false
         precheckHalfOpenEligible
       } = currentPreflight
       const codexTurnAvoidedAccountIdSet = new Set(codexTurnAvoidedAccountIds ?? [])
+      const reserveSameAccountRetryForRoute = (
+        account: UpstreamAccount,
+        retryReason: string
+      ): string | undefined => {
+        const reservation = currentPreflight.requestAttemptTracker.tryReserveSameAccountRetry({
+          accountRuntimeKey: gatewayAccountRuntimeKey(account),
+          physicalCredentialKey: account.credentialSourceAccountId?.trim() || account.id,
+          protocolModelKey: gatewayAttemptProtocolModelKey({
+            accountRuntimeKey: gatewayAccountRuntimeKey(account),
+            protocolCode: account.protocolCode,
+            protocolVersion: account.protocolVersion,
+            model: requestModel(req)
+          }),
+          keyFingerprint: account.selectedApiKeyFingerprint,
+          maxRetries: Math.min(
+            maxSameAccountRetriesPerAccount,
+            activeGatewaySettings.temporaryUnschedulableRetryAttempts
+          )
+        })
+        if (!reservation.reserved) {
+          auditCapture.addGatewayMetadata({
+            label: 'account_lock_same_account_retry_exhausted',
+            metadata: { accountId: account.id, retryReason, reason: reservation.reason }
+          })
+          return undefined
+        }
+        return reservation.retryId
+      }
       let dispatchAccounts = pendingSameAccountRetry
         ? [pendingSameAccountRetry.account]
         : pendingAccountCircuitConfirmation
@@ -860,13 +924,61 @@ let codexTurnAvoidedFallbackEnabled = false
       if (pendingCodexEncryptedContentRecovery) {
         dispatchAccounts = dispatchAccounts.filter((account) => account.id === pendingCodexEncryptedContentRecovery?.accountId)
       }
-      if (accountLockTrafficEnabled && !pendingAccountCircuitConfirmation && !pendingCodexEncryptedContentRecovery) {
-        const lockedAccount = (await Promise.all(
+      if (accountLockTrafficEnabled) {
+        const lockStates = await Promise.all(
           accounts.map(async (account) => {
             await settleAccountLockDeadlineAsync(account.id)
             return { account, state: await findAccountLockStateAsync(account.id) }
           })
-        )).find(({ state }) => accountLockBlocksCrossAccount(state))?.account
+        )
+        const deadConfirmedAccountIds = new Set(
+          lockStates
+            .filter(({ state }) => state?.enabled && state.lockState === 'DEAD_CONFIRMED')
+            .map(({ account }) => account.id)
+        )
+        dispatchAccounts = dispatchAccounts.filter((account) => !deadConfirmedAccountIds.has(account.id))
+        if (pendingSameAccountRetry && deadConfirmedAccountIds.has(pendingSameAccountRetry.account.id)) {
+          pendingSameAccountRetry = undefined
+          dispatchAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
+        }
+        const pendingCircuitAccount = pendingAccountCircuitConfirmation
+          ? accounts.find((account) => gatewayAccountRuntimeKey(account) === pendingAccountCircuitConfirmation?.accountRuntimeKey)
+          : undefined
+        if (pendingCircuitAccount && deadConfirmedAccountIds.has(pendingCircuitAccount.id)) {
+          await getGatewayAccountCircuitService().completeConfirmation(pendingAccountCircuitConfirmation!, 'unknown')
+          pendingAccountCircuitConfirmation = undefined
+          dispatchAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
+        }
+        if (pendingCodexEncryptedContentRecovery && deadConfirmedAccountIds.has(pendingCodexEncryptedContentRecovery.accountId)) {
+          pendingCodexEncryptedContentRecovery = undefined
+          codexEncryptedContentRecoveryRetryMarker = undefined
+          dispatchAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
+        }
+        const pendingRetryLockedAccount = pendingSameAccountRetry
+          ? lockStates.find(({ account, state }) => account.id === pendingSameAccountRetry?.account.id && accountLockBlocksCrossAccount(state))?.account
+          : undefined
+        const lockedAccount = pendingSameAccountRetry
+          ? pendingRetryLockedAccount
+          : (pendingAccountCircuitConfirmation || pendingCodexEncryptedContentRecovery
+            ? undefined
+            : lockStates
+              .filter(({ state }) => accountLockBlocksCrossAccount(state))
+              .sort((left, right) => (
+                (left.state?.incidentStartedAt ?? '').localeCompare(right.state?.incidentStartedAt ?? '')
+                || left.account.id.localeCompare(right.account.id)
+              ))[0]?.account
+          )
+        const engagedAccounts = lockStates.filter(({ state }) => accountLockBlocksCrossAccount(state))
+        if (engagedAccounts.length > 1) {
+          auditCapture.addGatewayMetadata({
+            label: 'account_lock_multiple_engaged_conflict_resolved',
+            metadata: {
+              engagedAccountIds: engagedAccounts.map(({ account }) => account.id),
+              selectedAccountId: lockedAccount?.id,
+              selectionRule: 'oldest_incident_then_account_id'
+            }
+          })
+        }
         if (lockedAccount) {
           const lockLease = await acquireAccountLockRetryLeaseAsync(lockedAccount.id, 0)
           if (!lockLease.allowed) {
@@ -878,7 +990,25 @@ let codexTurnAvoidedFallbackEnabled = false
                 gatewayWallMinimumMeaningfulAttemptMs = lockLease.waitMs
                 continue
               }
-              await waitForRetryDelayMs(lockLease.waitMs, { signal: requestExecutionSignal })
+              const waitResult = await waitForAccountLockDelay({
+                accountId: lockedAccount.id,
+                leaseId: lockLease.leaseId,
+                delayMs: lockLease.waitMs,
+                gatewayRequestWallBudget: currentPreflight.gatewayRequestWallBudget,
+                routeCoordinationBudget: currentPreflight.routeCoordinationBudget,
+                signal: requestExecutionSignal
+              })
+              if (waitResult === 'aborted') {
+                return
+              }
+              if (waitResult !== 'completed') {
+                if (waitResult === 'wall') {
+                  gatewayWallMinimumMeaningfulAttemptMs = lockLease.waitMs
+                } else {
+                  routeCoordinationHandoffRequested = true
+                }
+                continue
+              }
             }
             continue
           }
@@ -887,13 +1017,40 @@ let codexTurnAvoidedFallbackEnabled = false
               finalResponseReserveMs: defaultGatewayFinalResponseReserveMs,
               minimumMeaningfulAttemptMs: lockLease.waitMs
             })) {
+              await abandonAccountLockRetryReservationAsync({ accountId: lockedAccount.id, leaseId: lockLease.leaseId })
               gatewayWallMinimumMeaningfulAttemptMs = lockLease.waitMs
               continue
             }
-            await waitForRetryDelayMs(lockLease.waitMs, { signal: requestExecutionSignal })
+            const waitResult = await waitForAccountLockDelay({
+              accountId: lockedAccount.id,
+              leaseId: lockLease.leaseId,
+              delayMs: lockLease.waitMs,
+              gatewayRequestWallBudget: currentPreflight.gatewayRequestWallBudget,
+              routeCoordinationBudget: currentPreflight.routeCoordinationBudget,
+              signal: requestExecutionSignal
+            })
+            if (waitResult === 'aborted') {
+              await abandonAccountLockRetryReservationAsync({ accountId: lockedAccount.id, leaseId: lockLease.leaseId })
+              return
+            }
+            if (waitResult !== 'completed') {
+              await abandonAccountLockRetryReservationAsync({ accountId: lockedAccount.id, leaseId: lockLease.leaseId })
+              if (waitResult === 'wall') {
+                gatewayWallMinimumMeaningfulAttemptMs = lockLease.waitMs
+              } else {
+                routeCoordinationHandoffRequested = true
+              }
+              continue
+            }
           }
           if (!await consumeAccountLockRetryLeaseAsync(lockedAccount.id, lockLease.leaseId)) {
+            if (lockLease.allowed) {
+              await abandonAccountLockRetryReservationAsync({ accountId: lockedAccount.id, leaseId: lockLease.leaseId })
+            }
             continue
+          }
+          if (lockLease.leaseId) {
+            activeAccountLockRetryLease = { accountId: lockedAccount.id, leaseId: lockLease.leaseId }
           }
           dispatchAccounts = [lockedAccount]
           speedFirstRetryCandidateAccountIds = undefined
@@ -1080,6 +1237,8 @@ let codexTurnAvoidedFallbackEnabled = false
         })
         activeCompactSseWaitHeartbeat?.start()
       }
+      const dispatchAccountLockRetryLease = activeAccountLockRetryLease
+      activeAccountLockRetryLease = undefined
       try {
         upstreamResult = await fetchFirstAvailableUpstream(
           req,
@@ -1108,6 +1267,7 @@ let codexTurnAvoidedFallbackEnabled = false
             requestAttemptTracker: currentPreflight.requestAttemptTracker,
             semanticRetryId,
             sameAccountRetry,
+            accountLockRetryLease: dispatchAccountLockRetryLease,
             requestBodyOverride,
             normalRouteFirstByteConfig,
             onNormalRouteFirstByteDeadline,
@@ -1123,6 +1283,13 @@ let codexTurnAvoidedFallbackEnabled = false
           options.bypassKeyModelAdmission === true
         )
       } catch (error) {
+        if (dispatchAccountLockRetryLease) {
+          await releaseAccountLockRetryLeaseAsync({
+            accountId: dispatchAccountLockRetryLease.accountId,
+            leaseId: dispatchAccountLockRetryLease.leaseId,
+            scheduleNextRetry: false
+          })
+        }
         if (dispatchAccountCircuitConfirmation) {
           await getGatewayAccountCircuitService().completeConfirmation(dispatchAccountCircuitConfirmation, 'unknown')
         }
@@ -1134,11 +1301,11 @@ let codexTurnAvoidedFallbackEnabled = false
             streamServerRetryExcludedAccountIds.delete(error.accountId)
             const lockedAccount = dispatchAccounts.find((item) => item.id === error.accountId) ?? accounts.find((item) => item.id === error.accountId)
             if (lockedAccount) {
-              pendingSameAccountRetry = {
-                account: lockedAccount,
-                retryId: `lock:${error.accountId}:${Date.now()}`
+              const retryId = reserveSameAccountRetryForRoute(lockedAccount, 'normal_route_first_byte_cutover')
+              if (retryId) {
+                pendingSameAccountRetry = { account: lockedAccount, retryId }
+                continue
               }
-              continue
             }
           }
           const cutoverReservation = error.cutoverReservation
@@ -1177,6 +1344,30 @@ let codexTurnAvoidedFallbackEnabled = false
           }, [error.accountId])
         }
         if (error instanceof GatewayRequestWallBudgetExhaustedError) {
+          if (error.budgetKind === 'coordination' || error.code === 'gateway_request_coordination_budget_exhausted') {
+            observeGatewayRouting({ kind: 'budget', outcome: 'client_handoff' })
+            auditCapture.addGatewayMetadata({
+              label: 'gateway_request_client_handoff',
+              metadata: {
+                reason: 'route_coordination_budget_exhausted',
+                wallRemainingMs: error.wallRemainingMs,
+                attempts: currentPreflight.requestAttemptTracker.snapshot()
+              }
+            })
+            await sendStreamServerRetryExhaustedResponse({
+              req,
+              res,
+              auditCapture,
+              usageContext: currentPreflight.usageContext,
+              startedAt,
+              retryReason: 'pre_commit_stream_failure',
+              message: '网关请求协调预算已到，请客户端重试并重新选择可用账户',
+              errorCode: gatewayStreamClientRetryErrorCode,
+              clientStrategy: currentPreflight.clientStrategy,
+              downstreamCommitState: currentPreflight.downstreamCommitState
+            })
+            return
+          }
           gatewayWallMinimumMeaningfulAttemptMs = Math.max(
             gatewayWallMinimumMeaningfulAttemptMs,
             error.minimumMeaningfulAttemptMs
@@ -1215,19 +1406,19 @@ let codexTurnAvoidedFallbackEnabled = false
               ))?.account
             : undefined
           if (lockedFailureAccount) {
-            streamServerRetryExcludedAccountIds.delete(lockedFailureAccount.id)
-            exhaustedAccountIds.delete(lockedFailureAccount.id)
-            speedFirstRetryCandidateAccountIds = undefined
-            codexTurnAvoidedFallbackEnabled = false
-            pendingSameAccountRetry = {
-              account: lockedFailureAccount,
-              retryId: `lock:${lockedFailureAccount.id}:${Date.now()}`
+            const retryId = reserveSameAccountRetryForRoute(lockedFailureAccount, 'upstream_accounts_exhausted')
+            if (retryId) {
+              streamServerRetryExcludedAccountIds.delete(lockedFailureAccount.id)
+              exhaustedAccountIds.delete(lockedFailureAccount.id)
+              speedFirstRetryCandidateAccountIds = undefined
+              codexTurnAvoidedFallbackEnabled = false
+              pendingSameAccountRetry = { account: lockedFailureAccount, retryId }
+              auditCapture.addGatewayMetadata({
+                label: 'account_lock_cross_account_switch_denied',
+                metadata: { accountId: lockedFailureAccount.id, failedAccountIds: error.failedAccountIds }
+              })
+              continue
             }
-            auditCapture.addGatewayMetadata({
-              label: 'account_lock_cross_account_switch_denied',
-              metadata: { accountId: lockedFailureAccount.id, failedAccountIds: error.failedAccountIds }
-            })
-            continue
           }
           const recoverableAccountIds = new Set(error.recoverableAccountIds)
           for (const accountId of nonStreamResponseStartedFailedAccountIds) {
@@ -1299,7 +1490,8 @@ let codexTurnAvoidedFallbackEnabled = false
           dispatchCutoverReservation.release()
         }
       }
-      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease, accountCircuitAttempt, keyModelAttempt, hotQualityAttempt, normalRouteFirstByteDeadline, responsePrecommitDeadlineAtMs, onFirstByteDeadline, firstByteDeadlineCoordinator } = upstreamResult
+      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease, accountCircuitAttempt, keyModelAttempt, hotQualityAttempt, normalRouteFirstByteDeadline, responsePrecommitDeadlineAtMs, onFirstByteDeadline, firstByteDeadlineCoordinator, accountLockObservation, releaseAccountLockRetryLease } = upstreamResult
+      let accountLockLeaseScheduleNextRetry = false
       await settleHotQualityExplorationSafely(
         currentPreflight,
         currentPreflight.hotQualityExplorationReservation?.accountRuntimeKey === gatewayAccountRuntimeKey(account)
@@ -1448,12 +1640,18 @@ let codexTurnAvoidedFallbackEnabled = false
                 source: accountTransportFailure ? 'gateway_transport' : 'request_lifecycle'
               })
               if (accountTransportFailure) {
+                if (accountLockTrafficEnabled) {
+                  await recordAccountLockFailureAsync(account.id, 'upstream_body_transport_failure', accountLockObservation)
+                }
                 await keyModelAttempt?.reportUpstreamNotComplete()
               } else {
                 await keyModelAttempt?.reportUnknown()
                 await accountCircuitAttempt?.reportUnknown()
               }
               throw error
+            }
+            if (accountLockTrafficEnabled && provenBodyTransportFailure && !requestExecutionSignal.aborted) {
+              await recordAccountLockFailureAsync(account.id, 'upstream_body_transport_failure', accountLockObservation)
             }
             if (!provenBodyTransportFailure) {
               await hotQualityAttempt.recordTerminal({
@@ -1612,6 +1810,17 @@ let codexTurnAvoidedFallbackEnabled = false
             transportFailureKind: transportFailure.kind
           })
         }
+        if (
+          accountLockTrafficEnabled
+          && transportFailure
+          && !requestExecutionSignal.aborted
+          && responseErrorCode !== 'downstream_connection_closed'
+          && !neutralSchedulingTermination
+          && !requestLocalProtocolFailure
+          && !hardNormalRouteFirstByteCutover
+        ) {
+          await recordAccountLockFailureAsync(account.id, 'upstream_body_transport_failure', accountLockObservation)
+        }
         const diagnosticUpstreamResponse = !transportFailure
           && !neutralSchedulingTermination
           && !requestLocalProtocolFailure
@@ -1695,19 +1904,20 @@ let codexTurnAvoidedFallbackEnabled = false
             accountLockBlocksCrossAccount(lockState)
             && handledResponse.retryReason !== 'codex_encrypted_content_recovery'
           ) {
-            await settleAccountLockDeadlineAsync(account.id)
+            await settleAccountLockDeadlineAsync(account.id, Date.now(), accountLockObservation)
             streamServerRetryExcludedAccountIds.delete(account.id)
             exhaustedAccountIds.delete(account.id)
             speedFirstRetryCandidateAccountIds = undefined
-            pendingSameAccountRetry = {
-              account,
-              retryId: `lock:${account.id}:${Date.now()}`
+            const retryId = reserveSameAccountRetryForRoute(account, handledResponse.retryReason)
+            if (retryId) {
+              pendingSameAccountRetry = { account, retryId }
+              accountLockLeaseScheduleNextRetry = true
+              auditCapture.addGatewayMetadata({
+                label: 'account_lock_response_retry_retained',
+                metadata: { accountId: account.id, retryReason: handledResponse.retryReason }
+              })
+              continue
             }
-            auditCapture.addGatewayMetadata({
-              label: 'account_lock_response_retry_retained',
-              metadata: { accountId: account.id, retryReason: handledResponse.retryReason }
-            })
-            continue
           }
           const recoveryRetryMarker = codexEncryptedContentRecoveryRetryMarker
           if (
@@ -1737,6 +1947,7 @@ let codexTurnAvoidedFallbackEnabled = false
               body: compatibilityRecovery.body,
               semanticRetryId: compatibilityRecovery.semanticRetryId
             }
+            accountLockLeaseScheduleNextRetry = true
             codexEncryptedContentRecoveryRetryMarker = {
               accountId: account.id,
               upstreamUrl,
@@ -1929,6 +2140,7 @@ let codexTurnAvoidedFallbackEnabled = false
                   })
                   if (repairInstructionApplied) {
                     pendingSemanticRetryId = `hybrid_quality_repair:${retryCount + 1}`
+                    accountLockLeaseScheduleNextRetry = true
                     currentPreflight = {
                       ...currentPreflight,
                       hybridRoute: {
@@ -1942,9 +2154,13 @@ let codexTurnAvoidedFallbackEnabled = false
                 const lockState = await findAccountLockStateAsync(account.id)
                 if (accountLockTrafficEnabled && accountLockBlocksCrossAccount(lockState)) {
                   streamServerRetryExcludedAccountIds.delete(account.id)
-                  pendingSameAccountRetry = { account, retryId: `lock:${account.id}:${Date.now()}` }
-                  auditCapture.addGatewayMetadata({ label: 'account_lock_hybrid_quality_upgrade_denied', metadata: { accountId: account.id } })
-                  continue
+                  const retryId = reserveSameAccountRetryForRoute(account, 'hybrid_quality_upgrade_denied')
+                  if (retryId) {
+                    pendingSameAccountRetry = { account, retryId }
+                    accountLockLeaseScheduleNextRetry = true
+                    auditCapture.addGatewayMetadata({ label: 'account_lock_hybrid_quality_upgrade_denied', metadata: { accountId: account.id } })
+                    continue
+                  }
                 }
                 const qualitySwitch = await switchToHybridQualityUpgrade(handledResponse.errorCode ?? 'hybrid_quality_failed')
                 if (qualitySwitch === 'completed') {
@@ -1958,9 +2174,13 @@ let codexTurnAvoidedFallbackEnabled = false
                 const lockState = await findAccountLockStateAsync(account.id)
                 if (accountLockTrafficEnabled && accountLockBlocksCrossAccount(lockState)) {
                   streamServerRetryExcludedAccountIds.delete(account.id)
-                  pendingSameAccountRetry = { account, retryId: `lock:${account.id}:${Date.now()}` }
-                  auditCapture.addGatewayMetadata({ label: 'account_lock_hybrid_quality_upgrade_denied', metadata: { accountId: account.id } })
-                  continue
+                  const retryId = reserveSameAccountRetryForRoute(account, 'hybrid_quality_upgrade_denied')
+                  if (retryId) {
+                    pendingSameAccountRetry = { account, retryId }
+                    accountLockLeaseScheduleNextRetry = true
+                    auditCapture.addGatewayMetadata({ label: 'account_lock_hybrid_quality_upgrade_denied', metadata: { accountId: account.id } })
+                    continue
+                  }
                 }
                 const qualitySwitch = await switchToHybridQualityUpgrade(handledResponse.errorCode ?? 'hybrid_quality_failed')
                 if (qualitySwitch === 'completed') {
@@ -1986,6 +2206,7 @@ let codexTurnAvoidedFallbackEnabled = false
                 })
                 if (repairInstructionApplied) {
                   pendingSemanticRetryId = `hybrid_quality_repair:${retryCount + 1}`
+                  accountLockLeaseScheduleNextRetry = true
                   currentPreflight = {
                     ...currentPreflight,
                     hybridRoute: {
@@ -2050,6 +2271,7 @@ let codexTurnAvoidedFallbackEnabled = false
                 await waitForRetryDelayMs(retryDelayMs, { signal: abortController.signal })
               }
               pendingSameAccountRetry = { retryId: reservation.retryId, account }
+              accountLockLeaseScheduleNextRetry = true
               auditCapture.addGatewayMetadata({
                 label: 'same_account_retry_dispatch',
                 metadata: {
@@ -2257,7 +2479,7 @@ let codexTurnAvoidedFallbackEnabled = false
         // Key failures at this final protocol oracle, never at response headers.
         if (protocolValidatedSuccess) {
           if (accountLockTrafficEnabled) {
-            await completeAccountLockSuccessAsync(account.id)
+            await completeAccountLockSuccessAsync(account.id, accountLockObservation)
           }
           await confirmHalfOpenSuccess()
           await confirmSameAccountApiKeyFailures()
@@ -2275,6 +2497,14 @@ let codexTurnAvoidedFallbackEnabled = false
         attemptErrorEscaped = true
         throw error
       } finally {
+        try {
+          await releaseAccountLockRetryLease(accountLockLeaseScheduleNextRetry)
+        } catch (error) {
+          getRequestLogger().warn(errorLogFields(error, {
+            event: 'gateway_account_lock_retry_lease_release_failed',
+            accountId: account.id
+          }), '账户锁死重试租约释放失败')
+        }
         try {
           firstByteDeadlineCoordinator?.supersede()
           await settleTransferredAccountCircuitAttemptSafely(accountCircuitAttempt, account.id)

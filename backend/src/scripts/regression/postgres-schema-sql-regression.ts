@@ -62,6 +62,12 @@ const accountTestSessionTasksCreateSql = statements.find(
 const accountUsageSnapshotsCreateSql = statements.find(
   (statement) => statement.schemaName === 'juhe_stats' && /^CREATE TABLE IF NOT EXISTS account_usage_snapshots\b/i.test(statement.sql)
 )?.sql ?? ''
+const accountLockStatesCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS account_lock_states\b/i.test(statement.sql)
+)?.sql ?? ''
+const accountLockRetryTimestampUpgradeSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && statement.source === 'account-lock-retry-timestamp-pg-column'
+)?.sql ?? ''
 const listBuiltInProviderModelsAsyncStart = providerModelCatalogRepositorySource.indexOf('export async function listBuiltInProviderModelsAsync')
 const listBuiltInProviderModelsAsyncEnd = providerModelCatalogRepositorySource.indexOf(
   'export async function findBuiltInProviderModelByIdAsync',
@@ -88,6 +94,12 @@ assert.match(listBuiltInProviderModelsAsyncSql, /\$\{availabilityFilter\}/, 'Nod
 assertFreshSqliteAllowsGeminiInteractionsHealthModes()
 
 assert.ok(statements.length > 100, 'PostgreSQL schema 应从现有 SQLite DDL 收集到完整建表和索引语句')
+assert.match(accountLockStatesCreateSql, /next_retry_at_ms bigint\b/, '账户锁重试时间戳必须使用 bigint，避免毫秒 epoch 溢出 PostgreSQL integer')
+assert.match(
+  sql,
+  /DO \$\$[\s\S]+to_regclass\('juhe_business\.account_lock_states'\)[\s\S]+ALTER TABLE account_lock_states ALTER COLUMN next_retry_at_ms TYPE bigint/,
+  '已有 PostgreSQL 账户锁表必须通过存在性保护的幂等 DDL 升级重试时间戳类型'
+)
 assert.deepEqual(
   [...schemaNames].sort(),
   ['juhe_business', 'juhe_chat', 'juhe_codex_context', 'juhe_dataset', 'juhe_stats', 'juhe_usage'].sort(),
@@ -160,6 +172,8 @@ assert.match(postgresSeedDefaultsSource, /Array\.from\(\{ length: 39 \}/, 'Node 
 assert.match(postgresSeedDefaultsSource, /model\.supportsPromptCaching === true,\s*model\.catalogVisible !== false,/, 'Node PG 模型目录 seed 必须向 boolean 字段传递 boolean，不能传 0/1')
 assert.match(sql, /health_check_endpoint_mode text NOT NULL CHECK \(health_check_endpoint_mode IN \([^)]*'interactions_json', 'interactions_sse'\)\)/, 'PG 当前 accounts schema 必须允许 Gemini Interactions 健康检查模式')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+type text NOT NULL/, 'PG 当前 accounts schema 必须保留账户认证类型字段')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS account_lock_states[\s\S]+next_retry_at_ms bigint[\s\S]+lease_until_ms bigint/, 'PG 锁死重试时间戳必须使用 bigint，避免毫秒时间溢出 integer')
+assert.match(accountLockRetryTimestampUpgradeSql, /DO \$\$[\s\S]+to_regclass\('juhe_business\.account_lock_states'\)[\s\S]+ALTER TABLE account_lock_states ALTER COLUMN next_retry_at_ms TYPE bigint/, '已有 PG 库必须通过存在性保护的幂等 schema-only 迁移补齐锁死毫秒列类型')
 assert.match(sql, /idx_accounts_health_check_candidate_order[\s\S]+type IN \('api_key', 'oauth', 'google_oauth'\)/, 'PG 当前健康检查候选索引必须覆盖当前认证类型')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS account_balance_projection_cursors[\s\S]+consumer_key text PRIMARY KEY[\s\S]+observed_at text[\s\S]+outcome_id text[\s\S]+updated_at timestamptz NOT NULL/, 'PG J2 outcome projector 必须有独立持久游标表')
 assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS audit_(?:logs|log_attempts|payload_blobs|payload_refs|error_groups)\b/, 'Node PostgreSQL schema 不得重新创建 F3 审计表')

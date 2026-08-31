@@ -58,6 +58,9 @@ var postgresLegacyJ3bFactTables = []postgresBackfillTable{
 	{name: "model_check_observations", sourceSchema: "juhe_dataset"},
 	{name: "account_quality_health_hourly", sourceSchema: "juhe_stats"},
 	{name: "model_token_intercept_baseline_versions", sourceSchema: "juhe_stats"},
+	{name: "model_account_trust_results", sourceSchema: "juhe_stats"},
+	{name: "model_trust_latest_dirty_accounts", sourceSchema: "juhe_stats"},
+	{name: "model_trust_observation_receipts", sourceSchema: "juhe_stats"},
 }
 
 // VerifyPostgresBackfill performs an explicitly bounded, repeatable-read,
@@ -77,13 +80,13 @@ func VerifyPostgresBackfill(ctx context.Context, db *sql.DB, options PostgresRea
 		return PostgresBackfillVerificationReport{}, err
 	}
 	report := PostgresBackfillVerificationReport{
-		Tables:                 make(map[string]string, len(postgresLegacyJ3bFactTables)),
-		SourceRows:             make(map[string]int64, len(postgresLegacyJ3bFactTables)),
-		TargetRows:             make(map[string]int64, len(postgresLegacyJ3bFactTables)),
-		SourceDigest:           make(map[string]string, len(postgresLegacyJ3bFactTables)),
-		TargetDigest:           make(map[string]string, len(postgresLegacyJ3bFactTables)),
-		SourceExceededRowLimit: make(map[string]bool, len(postgresLegacyJ3bFactTables)),
-		TargetExceededRowLimit: make(map[string]bool, len(postgresLegacyJ3bFactTables)),
+		Tables:                 make(map[string]string, len(postgresLegacyJ3bFactTables)+1),
+		SourceRows:             make(map[string]int64, len(postgresLegacyJ3bFactTables)+1),
+		TargetRows:             make(map[string]int64, len(postgresLegacyJ3bFactTables)+1),
+		SourceDigest:           make(map[string]string, len(postgresLegacyJ3bFactTables)+1),
+		TargetDigest:           make(map[string]string, len(postgresLegacyJ3bFactTables)+1),
+		SourceExceededRowLimit: make(map[string]bool, len(postgresLegacyJ3bFactTables)+1),
+		TargetExceededRowLimit: make(map[string]bool, len(postgresLegacyJ3bFactTables)+1),
 		MaxRowsPerTable:        maxRows,
 	}
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
@@ -192,11 +195,106 @@ func VerifyPostgresBackfill(ctx context.Context, db *sql.DB, options PostgresRea
 		}
 		report.Tables[item.name] = "match"
 	}
+	trustState, err := verifyPostgresTrustAggregationState(ctx, tx, maxRows)
+	if err != nil {
+		return PostgresBackfillVerificationReport{}, err
+	}
+	report.SourceRows[trustAggregationStateTable] = trustState.source.rows
+	report.TargetRows[trustAggregationStateTable] = trustState.target.rows
+	report.SourceDigest[trustAggregationStateTable] = trustState.source.digest
+	report.TargetDigest[trustAggregationStateTable] = trustState.target.digest
+	report.SourceExceededRowLimit[trustAggregationStateTable] = trustState.source.exceeded
+	report.TargetExceededRowLimit[trustAggregationStateTable] = trustState.target.exceeded
+	switch {
+	case trustState.source.exceeded:
+		report.Tables[trustAggregationStateTable] = "source exceeds row limit"
+		ready = false
+	case trustState.target.exceeded:
+		report.Tables[trustAggregationStateTable] = "target exceeds row limit"
+		ready = false
+	case trustState.source.rows != trustState.target.rows || trustState.source.digest != trustState.target.digest:
+		report.Tables[trustAggregationStateTable] = "drift"
+		ready = false
+	default:
+		report.Tables[trustAggregationStateTable] = "match"
+	}
 	report.Ready = ready
 	if err := tx.Commit(); err != nil {
 		return PostgresBackfillVerificationReport{}, fmt.Errorf("commit J3b PostgreSQL readback: %w", err)
 	}
 	return report, nil
+}
+
+type postgresTrustAggregationStateVerification struct {
+	source postgresEvidence
+	target postgresEvidence
+}
+
+func verifyPostgresTrustAggregationState(ctx context.Context, tx *sql.Tx, maxRows int64) (postgresTrustAggregationStateVerification, error) {
+	if exists, err := postgresTableExists(ctx, tx, "juhe_stats", "stats_job_state"); err != nil {
+		return postgresTrustAggregationStateVerification{}, err
+	} else if !exists {
+		return postgresTrustAggregationStateVerification{}, errors.New("J3b PostgreSQL legacy source table juhe_stats.stats_job_state is missing")
+	}
+	if err := validatePostgresTrustAggregationStateColumns(ctx, tx); err != nil {
+		return postgresTrustAggregationStateVerification{}, err
+	}
+	source, err := postgresTrustAggregationStateEvidence(ctx, tx, true, maxRows)
+	if err != nil {
+		return postgresTrustAggregationStateVerification{}, err
+	}
+	target, err := postgresTrustAggregationStateEvidence(ctx, tx, false, maxRows)
+	if err != nil {
+		return postgresTrustAggregationStateVerification{}, err
+	}
+	return postgresTrustAggregationStateVerification{source: source, target: target}, nil
+}
+
+// postgresTrustAggregationStateEvidence hashes the same seven-column target
+// projection on both sides. Source scope columns are asserted in the WHERE
+// clause and represented by the canonical target scope key in the digest.
+func postgresTrustAggregationStateEvidence(ctx context.Context, tx *sql.Tx, source bool, maxRows int64) (postgresEvidence, error) {
+	var (
+		query string
+		args  []any
+	)
+	if source {
+		query = `SELECT to_jsonb($1::text)::text,to_jsonb(cursor_created_at)::text,to_jsonb(cursor_id)::text,to_jsonb(last_success_at)::text,to_jsonb(last_error_message)::text,to_jsonb(lag_seconds)::text,to_jsonb(updated_at)::text FROM juhe_stats.stats_job_state WHERE scope_type=$2 AND scope_id=$3 AND job_name=$4 LIMIT $5`
+		args = []any{trustAggregationStateScopeKey, trustAggregationStateScopeType, "", trustAggregationStateJobName, maxRows + 1}
+	} else {
+		query = `SELECT to_jsonb(scope_key)::text,to_jsonb(cursor_created_at)::text,to_jsonb(cursor_id)::text,to_jsonb(last_success_at)::text,to_jsonb(last_error_message)::text,to_jsonb(lag_seconds)::text,to_jsonb(updated_at)::text FROM juhe_j3b.model_trust_aggregation_state WHERE scope_key=$1 LIMIT $2`
+		args = []any{trustAggregationStateScopeKey, maxRows + 1}
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return postgresEvidence{}, fmt.Errorf("read J3b PostgreSQL trust aggregation state: %w", err)
+	}
+	defer rows.Close()
+	digest := sha256.New()
+	result := postgresEvidence{}
+	for rows.Next() {
+		result.rows++
+		if result.rows > maxRows {
+			result.exceeded = true
+			break
+		}
+		values := make([]any, 7)
+		pointers := make([]any, len(values))
+		for index := range pointers {
+			pointers[index] = &values[index]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			return postgresEvidence{}, fmt.Errorf("scan J3b PostgreSQL trust aggregation state: %w", err)
+		}
+		writeDigestRow(digest, values)
+	}
+	if err := rows.Err(); err != nil {
+		return postgresEvidence{}, fmt.Errorf("iterate J3b PostgreSQL trust aggregation state: %w", err)
+	}
+	if !result.exceeded {
+		result.digest = hex.EncodeToString(digest.Sum(nil))
+	}
+	return result, nil
 }
 
 func postgresReadbackSchemaReady(report Report) bool {

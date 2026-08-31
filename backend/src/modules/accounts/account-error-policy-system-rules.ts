@@ -46,6 +46,8 @@ const systemRules: readonly EffectiveAccountErrorHandlingRule[] = [
       'insufficient_balance',
       'quota_exceeded',
       'quota_exhausted',
+      'default_group_global_quota_exhausted',
+      'billing_hard_limit_reached',
       'wallet_balance_exhausted',
       'pre_consume_token_quota_failed'
     ],
@@ -54,6 +56,7 @@ const systemRules: readonly EffectiveAccountErrorHandlingRule[] = [
       '额度不足',
       'insufficient balance',
       'insufficient quota',
+      'subscription quota insufficient',
       'credit balance too low',
       'wallet balance exhausted'
     ],
@@ -142,18 +145,27 @@ export function systemInsufficientQuotaRuleMatches(input: {
   if (input.statusCode !== 402 && input.statusCode !== 403) return false
   const errorCode = normalizeErrorIdentifier(input.errorCode)
   const errorType = normalizeErrorIdentifier(input.errorType)
+  if (
+    insufficientQuotaStableCodes.has(errorCode)
+    || insufficientQuotaStableCodes.has(errorType)
+    || isQuotaErrorCode(errorCode)
+    || isQuotaErrorCode(errorType)
+  ) {
+    return true
+  }
   if (nonQuota403ErrorIdentifiers.has(errorCode) || nonQuota403ErrorIdentifiers.has(errorType)) {
     return false
   }
   if (input.statusCode === 402 && !errorCode && !errorType) return true
-  if (insufficientQuotaStableCodes.has(errorCode) || insufficientQuotaStableCodes.has(errorType)) {
-    return true
-  }
   const text = input.searchableText?.toLowerCase() ?? ''
   if ([...nonQuota403ErrorIdentifiers].some((identifier) => text.includes(identifier.replaceAll('_', ' ')) || text.includes(identifier))) {
     return false
   }
   return insufficientQuotaTextMarkers.some((marker) => text.includes(marker))
+}
+
+function isQuotaErrorCode(value: string): boolean {
+  return value.includes('quota')
 }
 
 function cloneEffectiveRule(rule: EffectiveAccountErrorHandlingRule): EffectiveAccountErrorHandlingRule {

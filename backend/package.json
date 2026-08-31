@@ -594,6 +594,8 @@
     "test:runtime-probe-state-store": "tsx src/scripts/regression/runtime-probe-state-store-regression.ts",
     "test:runtime-probe-state-store-redis-smoke": "tsx src/scripts/regression/runtime-probe-state-store-redis-smoke.ts",
     "test:gateway-route-coordination": "tsx src/scripts/regression/gateway-route-coordination-regression.ts",
+    "test:account-lock-runtime": "tsx src/scripts/regression/account-lock-runtime-regression.ts",
+    "test:account-lock-postgres-smoke": "tsx src/scripts/regression/account-lock-postgres-smoke.ts",
     "test:normal-route-first-byte-deadline": "tsx src/scripts/regression/normal-route-first-byte-deadline-regression.ts",
     "test:gateway-routing-observability": "tsx src/scripts/regression/gateway-routing-observability-regression.ts",
     "test:account-circuit-memory-store": "tsx src/scripts/regression/account-circuit-memory-store-regression.ts",

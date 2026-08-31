@@ -24,9 +24,12 @@ const baseConfig = {
   }
 }
 
-assert.equal(NODE_POSTGRES_SCHEMA_CONTRACT_VERSION, 95)
+assert.equal(NODE_POSTGRES_SCHEMA_CONTRACT_VERSION, 96)
 assert.equal(parsePostgresSchemaOwner('node'), 'node')
 assert.equal(parsePostgresSchemaOwner('goose'), 'goose')
+assert.match(POSTGRES_NODE_SCHEMA_PREFLIGHT_QUERY, /to_regclass\('juhe_business\.account_lock_states'\)/, 'Node schema preflight 必须检查账户锁死状态表')
+assert.match(POSTGRES_NODE_SCHEMA_PREFLIGHT_QUERY, /account_lock_states[\s\S]+next_retry_at_ms[\s\S]+pg_catalog\.int8/, 'Node schema preflight 必须拒绝 integer 毫秒重试时间列')
+assert.match(POSTGRES_NODE_SCHEMA_PREFLIGHT_QUERY, /account_lock_states[\s\S]+lease_until_ms[\s\S]+pg_catalog\.int8/, 'Node schema preflight 必须拒绝 integer 毫秒租约列')
 
 assert.throws(
   () => validatePostgresNodeSchemaPreflight({
@@ -35,7 +38,7 @@ assert.throws(
     missingIndexes: [],
     gooseLedgerPresent: false
   }),
-  /schema contract 95 不完整/
+  /schema contract 96 不完整/
 )
 assert.throws(
   () => validatePostgresNodeSchemaPreflight({

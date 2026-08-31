@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	J3bReadbackManifestFormatVersion = "j3b-readback-manifest/v1"
-	J3bReadbackManifestScope         = "j3b-legacy-facts-v1"
+	J3bReadbackManifestFormatVersion = "j3b-readback-manifest/v2"
+	J3bReadbackManifestScope         = "j3b-legacy-facts-v2"
 )
 
 var j3bReadbackRequiredTables = []string{
@@ -22,7 +22,11 @@ var j3bReadbackRequiredTables = []string{
 	"model_check_items",
 	"model_check_observations",
 	"model_check_runs",
+	"model_account_trust_results",
 	"model_token_intercept_baseline_versions",
+	"model_trust_aggregation_state",
+	"model_trust_latest_dirty_accounts",
+	"model_trust_observation_receipts",
 }
 
 // J3bReadbackManifestReference binds cutover evidence to an independently
@@ -136,10 +140,18 @@ func ValidateJ3bReadbackManifest(manifest J3bReadbackManifest, now time.Time, ma
 		add("readback manifest manifestHash does not match canonical content")
 	}
 	tables := make(map[string]J3bReadbackTableDigest, len(manifest.Tables))
+	requiredTables := make(map[string]struct{}, len(j3bReadbackRequiredTables))
+	for _, required := range j3bReadbackRequiredTables {
+		requiredTables[required] = struct{}{}
+	}
 	for _, table := range manifest.Tables {
 		name := strings.TrimSpace(table.Name)
 		if name == "" {
 			add("readback manifest table name is required")
+			continue
+		}
+		if _, required := requiredTables[name]; !required {
+			add(fmt.Sprintf("readback manifest table %s is outside the fixed J3b legacy-facts scope", name))
 			continue
 		}
 		if _, exists := tables[name]; exists {

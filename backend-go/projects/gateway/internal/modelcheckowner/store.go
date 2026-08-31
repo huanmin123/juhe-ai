@@ -34,6 +34,7 @@ var requiredTables = []string{
 	"model_check_runs", "model_check_items", "model_check_observations",
 	"account_quality_health_hourly",
 	"model_check_scheduler_tasks", "model_token_intercept_baseline_versions",
+	"model_account_trust_results", "model_trust_latest_dirty_accounts", "model_trust_observation_receipts", "model_trust_aggregation_state",
 }
 
 // requiredColumns is intentionally a small, stable contract rather than a
@@ -55,9 +56,9 @@ var requiredColumns = map[string][]string{
 		"outcome_id", "input_id", "input_digest", "fence_token", "observed_at", "stored_at", "payload", "payload_digest", "committed",
 	},
 	"model_check_runs": {
-		"id", "system_account_id", "actor_system_account_id", "provider_code", "target_type", "target_id", "account_id",
-		"model", "profile", "trigger_kind", "schedule_id", "status", "level", "score", "max_score", "message", "request_summary_json", "result_summary_json",
-		"policy_snapshot_json", "quality_decision_json", "probe_set_version", "started_at", "trace_id", "quality_health_sync_status", "created_at", "updated_at", "finished_at",
+		"id", "system_account_id", "actor_system_account_id", "provider_code", "target_type", "target_id", "target_name", "target_owner_system_account_id", "account_id", "group_id", "api_key_id",
+		"model", "profile", "trigger_kind", "schedule_id", "trusted_comparison_enabled", "trusted_comparison_available", "status", "level", "score", "max_score", "message", "request_summary_json", "result_summary_json",
+		"policy_snapshot_json", "quality_decision_json", "probe_set_version", "started_at", "trace_id", "quality_health_sync_status", "created_at", "updated_at", "finished_at", "duration_ms", "error_code", "error_message",
 	},
 	"model_check_items": {
 		// Runtime.GetRun reads the complete durable item projection. Keep the
@@ -68,7 +69,7 @@ var requiredColumns = map[string][]string{
 	"model_check_observations": {
 		"id", "run_id", "system_account_id", "account_id", "provider_code", "requested_model",
 		"mapped_upstream_model", "probe_family", "observation_status", "identity_status", "mapping_status",
-		"protocol_status", "evidence_coverage", "created_at",
+		"protocol_status", "evidence_coverage", "created_at", "aggregation_completed_at",
 	},
 	"account_quality_health_hourly": {
 		"account_id", "system_account_id", "provider_code", "stat_hour", "observed_at", "model_check_run_id",
@@ -84,6 +85,18 @@ var requiredColumns = map[string][]string{
 		"cohort_key_hmac", "requested_model", "tokenizer_version", "probe_set_version", "baseline_version",
 		"version_status", "evidence_status", "independent_source_count", "q90_intercept",
 		"strong_threshold_intercept", "strong_gate_enabled", "calibration_note", "updated_at",
+	},
+	"model_account_trust_results": {
+		"system_account_id", "account_id", "requested_model", "identity_status", "mapping_status", "usage_integrity_status", "protocol_status", "evidence_status", "evidence_coverage", "observation_count", "reason_codes_json", "last_observed_id", "last_observed_at", "updated_at",
+	},
+	"model_trust_latest_dirty_accounts": {
+		"system_account_id", "account_id", "requested_model", "dirty_reason", "updated_at",
+	},
+	"model_trust_observation_receipts": {
+		"observation_id", "observation_created_at", "processed_at",
+	},
+	"model_trust_aggregation_state": {
+		"scope_key", "cursor_created_at", "cursor_id", "last_success_at", "last_error_message", "lag_seconds", "updated_at",
 	},
 }
 

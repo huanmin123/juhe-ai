@@ -31,6 +31,17 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
 const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_business',
+    source: 'account-lock-retry-timestamp-pg-column',
+    sql: `DO $$
+BEGIN
+  IF to_regclass('juhe_business.account_lock_states') IS NOT NULL THEN
+    ALTER TABLE account_lock_states ALTER COLUMN next_retry_at_ms TYPE bigint;
+  END IF;
+END
+$$`
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'account-list-projection-pg-trigram-extension',
     sql: 'CREATE EXTENSION IF NOT EXISTS pg_trgm'
   },
@@ -905,6 +916,7 @@ const postgresBigintColumnNames = new Set([
   'projected_ledger_revision',
   'open_until_ms',
   'next_transition_at_ms',
+  'next_retry_at_ms',
   'lease_until_ms',
   'generation',
   'fencing_token',

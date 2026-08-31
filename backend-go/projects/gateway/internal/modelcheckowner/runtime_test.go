@@ -58,7 +58,7 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	defer server.Close()
 	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	runtime := &Runtime{Store: store, OwnerID: "gateway-1", Now: func() time.Time { return now }, Resolve: func(context.Context, RunRequest) (Target, error) {
-		return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", DispatchRevision: 3}, nil
+		return Target{Endpoint: server.URL, TargetName: "Runtime Account", TargetOwnerSystemAccountID: "sys", GroupID: "group-runtime", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", DispatchRevision: 3}, nil
 	}}
 	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", ManualEnforcementEnabled: true, OwnPhysicalAccount: true})
 	if err != nil || result.Status != string(RunCompleted) || result.RunID == "" {
@@ -74,16 +74,16 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	if trusted, ok := data["trustFormed"].(bool); !ok || trusted {
 		t.Fatalf("quick profile trustFormed=%v, want explicit false", data["trustFormed"])
 	}
-	var status string
-	if err := store.db.QueryRow(`SELECT status FROM model_check_runs WHERE id=?`, result.RunID).Scan(&status); err != nil || status != string(RunCompleted) {
-		t.Fatalf("status=%s err=%v", status, err)
+	var status, targetName, targetOwner, groupID, traceID string
+	if err := store.db.QueryRow(`SELECT status,target_name,target_owner_system_account_id,group_id,trace_id FROM model_check_runs WHERE id=?`, result.RunID).Scan(&status, &targetName, &targetOwner, &groupID, &traceID); err != nil || status != string(RunCompleted) || targetName != "Runtime Account" || targetOwner != "sys" || groupID != "group-runtime" || traceID == "" {
+		t.Fatalf("run projection status=%s targetName=%q targetOwner=%q groupID=%q traceID=%q err=%v", status, targetName, targetOwner, groupID, traceID, err)
 	}
 	var requestSummary string
 	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&requestSummary); err != nil {
 		t.Fatal(err)
 	}
 	var snapshot map[string]any
-	if err := json.Unmarshal([]byte(requestSummary), &snapshot); err != nil || snapshot["configRevision"] != "cfg-1" || snapshot["policyRevision"] != "pol-1" || snapshot["manualEnforcementEnabled"] != true || snapshot["ownPhysicalAccount"] != true {
+	if err := json.Unmarshal([]byte(requestSummary), &snapshot); err != nil || snapshot["targetName"] != "Runtime Account" || snapshot["targetOwnerSystemAccountId"] != "sys" || snapshot["groupId"] != "group-runtime" || snapshot["traceId"] != traceID || snapshot["configRevision"] != "cfg-1" || snapshot["policyRevision"] != "pol-1" || snapshot["manualEnforcementEnabled"] != true || snapshot["ownPhysicalAccount"] != true {
 		t.Fatalf("request snapshot=%s err=%v", requestSummary, err)
 	}
 	var count int
@@ -100,6 +100,17 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	var observationStatus string
 	if err := store.db.QueryRow(`SELECT observation_status FROM model_check_observations WHERE run_id=? AND probe_family='usage_shape'`, result.RunID).Scan(&observationStatus); err != nil || observationStatus != "complete" {
 		t.Fatalf("usage observation status=%q err=%v", observationStatus, err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_trust_observation_receipts`).Scan(&count); err != nil || count != 5 {
+		t.Fatalf("trust receipt count=%d err=%v", count, err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND aggregation_completed_at IS NOT NULL`, result.RunID).Scan(&count); err != nil || count != 5 {
+		t.Fatalf("consumed observation count=%d err=%v", count, err)
+	}
+	var evidenceStatus string
+	var observationCount int
+	if err := store.db.QueryRow(`SELECT evidence_status,observation_count FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&evidenceStatus, &observationCount); err != nil || evidenceStatus != "insufficient" || observationCount != 5 {
+		t.Fatalf("trust latest evidence=%q observations=%d err=%v", evidenceStatus, observationCount, err)
 	}
 	var evidenceSummary string
 	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&evidenceSummary); err != nil {
@@ -174,8 +185,9 @@ func TestRuntimeRejectsStaleTrustedComparisonRevision(t *testing.T) {
 			return Target{Endpoint: "https://comparison.example", Prompt: "OK", UpstreamModel: "gpt-5.6", DispatchRevision: 8, ConfigRevision: "cfg-2", SourceConfigRevision: "src-2", SourceDispatchRevision: 9}, nil
 		},
 	}
-	base := RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "target", Model: "gpt-5.6", Profile: "full", TrustedComparison: true, TrustedComparisonAccountID: "comparison", ConfigRevision: "cfg-1", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 8, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 9}
+	base := RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "target", Model: "gpt-5.6", Profile: "full", TrustedComparison: true, TrustedComparisonAccountID: "comparison", TrustedComparisonSystemAccountID: "comparison-sys", ConfigRevision: "cfg-1", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 8, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 9}
 	for name, mutate := range map[string]func(*RunRequest){
+		"system account":  func(request *RunRequest) { request.TrustedComparisonSystemAccountID = "" },
 		"dispatch":        func(request *RunRequest) { request.TrustedComparisonDispatchRevision = 7 },
 		"source config":   func(request *RunRequest) { request.TrustedComparisonSourceConfigRevision = "src-1" },
 		"source dispatch": func(request *RunRequest) { request.TrustedComparisonSourceDispatchRevision = 8 },
@@ -338,7 +350,7 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 			return Target{Endpoint: comparisonServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai", ConfigRevision: "cfg-2", DispatchRevision: 4, SourceConfigRevision: "src-2", SourceDispatchRevision: 5}, nil
 		},
 	}
-	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "comparison-acct", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 4, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 5})
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "comparison-acct", TrustedComparisonSystemAccountID: "comparison-sys", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 4, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 5})
 	if err != nil || result.RunID == "" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -357,16 +369,23 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 		t.Fatal(err)
 	}
 	comparison, ok := frozen["trustedComparison"].(map[string]any)
-	if !ok || comparison["accountId"] != "comparison-acct" || comparison["configRevision"] != "cfg-2" || comparison["dispatchRevision"] != float64(4) || comparison["sourceConfigRevision"] != "src-2" || comparison["sourceDispatchRevision"] != float64(5) || comparison["upstreamModel"] != "gpt-5.6-terra" || comparison["endpointFingerprint"] != endpointFingerprint(comparisonServer.URL) {
+	if !ok || comparison["accountId"] != "comparison-acct" || comparison["systemAccountId"] != "comparison-sys" || comparison["configRevision"] != "cfg-2" || comparison["dispatchRevision"] != float64(4) || comparison["sourceConfigRevision"] != "src-2" || comparison["sourceDispatchRevision"] != float64(5) || comparison["upstreamModel"] != "gpt-5.6-terra" || comparison["endpointFingerprint"] != endpointFingerprint(comparisonServer.URL) {
 		t.Fatalf("frozen trusted comparison=%#v", frozen["trustedComparison"])
 	}
+	var trustedComparisonEnabled, trustedComparisonAvailable int
+	if err := store.db.QueryRow(`SELECT trusted_comparison_enabled,trusted_comparison_available FROM model_check_runs WHERE id=?`, result.RunID).Scan(&trustedComparisonEnabled, &trustedComparisonAvailable); err != nil || trustedComparisonEnabled != 1 || trustedComparisonAvailable != 1 {
+		t.Fatalf("trusted comparison durable state enabled=%d available=%d err=%v", trustedComparisonEnabled, trustedComparisonAvailable, err)
+	}
 	var observations int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations != 13 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations != 12 {
 		t.Fatalf("observations=%d err=%v", observations, err)
 	}
 	var trusted int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family='trusted-comparison'`, result.RunID).Scan(&trusted); err != nil || trusted != 1 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family='trusted-comparison'`, result.RunID).Scan(&trusted); err != nil || trusted != 0 {
 		t.Fatalf("trusted comparison observations=%d err=%v", trusted, err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='comparison-sys' AND account_id='comparison-acct' AND requested_model='gpt-5.6-sol'`).Scan(&trusted); err != nil || trusted != 0 {
+		t.Fatalf("trusted comparison projection=%d err=%v", trusted, err)
 	}
 }
 
@@ -586,10 +605,14 @@ func runtimeTestDDL() []string {
 		`CREATE TABLE model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version INTEGER NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, payload BLOB NOT NULL)`,
 		`CREATE TABLE model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, claim_until TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token INTEGER NOT NULL, observed_at TEXT NOT NULL, stored_at TEXT NOT NULL, payload BLOB NOT NULL, payload_digest TEXT NOT NULL, committed INTEGER NOT NULL)`,
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, account_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, message TEXT NOT NULL, finished_at TEXT, quality_health_sync_status TEXT)`,
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, message TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, error_code TEXT, error_message TEXT, quality_health_sync_status TEXT)`,
 		`CREATE TABLE model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL, error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, provider_code TEXT NOT NULL, requested_model TEXT NOT NULL, mapped_upstream_model TEXT NOT NULL, probe_family TEXT NOT NULL, observation_status TEXT NOT NULL, identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, protocol_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+		`CREATE TABLE model_check_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, provider_code TEXT NOT NULL, requested_model TEXT NOT NULL, mapped_upstream_model TEXT NOT NULL, probe_family TEXT NOT NULL, observation_status TEXT NOT NULL, identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, protocol_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL, created_at TEXT NOT NULL, aggregation_completed_at TEXT)`,
 		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL, score INTEGER NOT NULL, threshold INTEGER NOT NULL, level TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(account_id,stat_hour))`,
+		`CREATE TABLE model_account_trust_results (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL, identity_status TEXT NOT NULL DEFAULT 'insufficient_evidence', mapping_status TEXT NOT NULL DEFAULT 'unknown', usage_integrity_status TEXT NOT NULL DEFAULT 'insufficient_evidence', protocol_status TEXT NOT NULL DEFAULT 'insufficient_evidence', evidence_status TEXT NOT NULL DEFAULT 'insufficient', evidence_coverage INTEGER NOT NULL DEFAULT 0, observation_count INTEGER NOT NULL DEFAULT 0, reason_codes_json TEXT NOT NULL DEFAULT '[]', last_observed_id TEXT, last_observed_at TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(system_account_id,account_id,requested_model))`,
+		`CREATE TABLE model_trust_latest_dirty_accounts (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL, dirty_reason TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(system_account_id,account_id,requested_model))`,
+		`CREATE TABLE model_trust_observation_receipts (observation_id TEXT PRIMARY KEY, observation_created_at TEXT NOT NULL, processed_at TEXT NOT NULL)`,
+		`CREATE TABLE model_trust_aggregation_state (scope_key TEXT PRIMARY KEY, cursor_created_at TEXT, cursor_id TEXT, last_success_at TEXT, updated_at TEXT NOT NULL)`,
 	}
 }
 

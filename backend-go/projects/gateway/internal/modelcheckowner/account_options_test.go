@@ -135,6 +135,18 @@ func TestListAccountOptionsFiltersAndFreezesCatalog(t *testing.T) {
 	if err != nil || len(otherTenant) != 1 || otherTenant[0].ID != "a3" {
 		t.Fatalf("sys-2 options=%+v err=%v", otherTenant, err)
 	}
+	global, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{AllSystemAccounts: true, Purpose: "run", Limit: 50})
+	if err != nil || len(global) != 2 || !containsAccountOption(global, "a1") || !containsAccountOption(global, "a3") || containsAccountOption(global, "instance-1") {
+		t.Fatalf("global options=%+v err=%v", global, err)
+	}
+	globalInstance, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{AllSystemAccounts: true, Purpose: "run", AccountID: "instance-1", Limit: 1})
+	if err != nil || len(globalInstance) != 0 {
+		t.Fatalf("global options must not expose authorized instance: %+v err=%v", globalInstance, err)
+	}
+	globalHistory, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{AllSystemAccounts: true, Purpose: "history", Limit: 50})
+	if err != nil || containsAccountOption(globalHistory, "instance-1") {
+		t.Fatalf("global history must not expose authorized instance: %+v err=%v", globalHistory, err)
+	}
 	crossTenant, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", AccountID: "a3", Limit: 1})
 	if err != nil || len(crossTenant) != 0 {
 		t.Fatalf("cross-tenant account option must be hidden: %+v err=%v", crossTenant, err)

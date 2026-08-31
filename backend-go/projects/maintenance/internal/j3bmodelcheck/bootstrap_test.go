@@ -154,6 +154,13 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
+func createLegacyTrustAggregationState(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`CREATE TABLE stats_job_state (scope_type TEXT NOT NULL,scope_id TEXT NOT NULL DEFAULT '',job_name TEXT NOT NULL,cursor_created_at TEXT,cursor_id TEXT,last_success_at TEXT,last_error_message TEXT,lag_seconds INTEGER,updated_at TEXT NOT NULL,PRIMARY KEY(scope_type,scope_id,job_name))`); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	root := t.TempDir()
 	target, err := OpenSQLite(root + "/target.db")
@@ -185,6 +192,10 @@ func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	if _, err := RunSQLite(context.Background(), stats, true); err != nil {
 		t.Fatal(err)
 	}
+	createLegacyTrustAggregationState(t, stats)
+	if _, err := stats.Exec(`INSERT INTO stats_job_state(scope_type,scope_id,job_name,cursor_created_at,cursor_id,last_success_at,last_error_message,lag_seconds,updated_at) VALUES ('global','','model-trust-observation-aggregation','2026-08-27T10:00:00Z','obs-1','2026-08-27T10:01:00Z',NULL,3,'2026-08-27T10:01:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := dataset.Exec(`INSERT INTO model_check_runs(id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,account_id,model,profile,trigger_kind,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,created_at,updated_at) VALUES ('run-1','sys','actor','openai','account','acct','acct','gpt-5.6','quick','manual','completed','success',90,100,'ok','{}','{}','{"threshold":70}','{}','legacy-node-v1','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +211,15 @@ func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	if _, err := stats.Exec(`INSERT INTO model_token_intercept_baseline_versions(cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version,version_status,evidence_status,independent_source_count,retained_source_count,excluded_source_count,q90_intercept,strong_gate_enabled,first_observed_at,last_observed_at,updated_at) VALUES ('hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','gpt-5.6','o200k_base@1','probe-v1',1,'calibration_pending','stable',10,10,0,120,0,'2026-08-27T10:00:00Z','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := stats.Exec(`INSERT INTO model_account_trust_results(system_account_id,account_id,requested_model,updated_at) VALUES ('sys','acct','gpt-5.6','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stats.Exec(`INSERT INTO model_trust_latest_dirty_accounts(system_account_id,account_id,requested_model,dirty_reason,updated_at) VALUES ('sys','acct','gpt-5.6','smoke','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stats.Exec(`INSERT INTO model_trust_observation_receipts(observation_id,observation_created_at,processed_at) VALUES ('obs-1','2026-08-27T10:00:00Z','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 	if err := dataset.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +230,7 @@ func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.InsertedRows["model_check_runs"] != 1 || report.InsertedRows["model_check_items"] != 1 || report.InsertedRows["model_check_observations"] != 1 || report.InsertedRows["account_quality_health_hourly"] != 1 || report.InsertedRows["model_token_intercept_baseline_versions"] != 1 {
+	if report.InsertedRows["model_check_runs"] != 1 || report.InsertedRows["model_check_items"] != 1 || report.InsertedRows["model_check_observations"] != 1 || report.InsertedRows["account_quality_health_hourly"] != 1 || report.InsertedRows["model_token_intercept_baseline_versions"] != 1 || report.InsertedRows["model_account_trust_results"] != 1 || report.InsertedRows["model_trust_latest_dirty_accounts"] != 1 || report.InsertedRows["model_trust_observation_receipts"] != 1 || report.InsertedRows[trustAggregationStateTable] != 1 {
 		t.Fatalf("report=%+v", report)
 	}
 	if report.SourceDigest["model_check_runs"] == "" || report.SourceDigest["model_check_runs"] != report.TargetDigest["model_check_runs"] {
@@ -374,6 +394,14 @@ func TestJ3bSQLiteBackfillReadbackDetectsDriftAndSharedPaths(t *testing.T) {
 		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
+	}
+	stats, err := OpenSQLite(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createLegacyTrustAggregationState(t, stats)
+	if err := stats.Close(); err != nil {
+		t.Fatal(err)
 	}
 	dataset, err := OpenSQLite(datasetPath)
 	if err != nil {

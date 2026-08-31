@@ -384,7 +384,7 @@ func TestRunLifecycleProjectionIsAtomicAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = seed.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, account_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, message TEXT NOT NULL DEFAULT '', finished_at TEXT, quality_health_sync_status TEXT)`)
+	_, err = seed.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, message TEXT NOT NULL DEFAULT '', finished_at TEXT, duration_ms INTEGER, error_code TEXT, error_message TEXT, quality_health_sync_status TEXT)`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestRunLifecycleProjectionIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	finished := started.Add(time.Second)
-	projection := OutcomeProjection{RunID: "run-1", Status: RunCompleted, Level: "success", Score: 100, MaxScore: 100, FinishedAt: finished, ResultSummary: json.RawMessage(`{"ok":true}`), QualityDecision: json.RawMessage(`{"action":"none"}`), Items: []ItemRecord{{ID: "item-1", RunID: "run-1", ItemKey: "basic", ItemType: "basic", Status: ItemPassed, Score: 100, MaxScore: 100, EvidenceSummary: `{}`}}}
+	projection := OutcomeProjection{RunID: "run-1", Status: RunCompleted, Level: "success", Score: 100, MaxScore: 100, Message: "Bearer abcdefghijklmnop", FinishedAt: finished, ResultSummary: json.RawMessage(`{"ok":true,"api_key":"sk-secret_123456"}`), QualityDecision: json.RawMessage(`{"action":"none"}`), Items: []ItemRecord{{ID: "item-1", RunID: "run-1", ItemKey: "basic", ItemType: "basic", Status: ItemPassed, Score: 100, MaxScore: 100, EvidenceSummary: `{"authorization":"Bearer abcdefghijklmnop"}`, ErrorMessage: "sk-secret_123456"}}}
 	if err := store.ProjectOutcome(context.Background(), projection); err != nil {
 		t.Fatal(err)
 	}
@@ -417,13 +417,50 @@ func TestRunLifecycleProjectionIsAtomicAndIdempotent(t *testing.T) {
 	if err := store.ProjectOutcome(context.Background(), conflict); !errors.Is(err, ErrRunProjectionConflict) {
 		t.Fatalf("different terminal replay must conflict: %v", err)
 	}
-	var status string
+	var status, message, resultSummary, evidence, itemError string
 	var itemCount int
-	if err := store.db.QueryRow(`SELECT status FROM model_check_runs WHERE id='run-1'`).Scan(&status); err != nil || status != string(RunCompleted) {
+	if err := store.db.QueryRow(`SELECT status,message,result_summary_json FROM model_check_runs WHERE id='run-1'`).Scan(&status, &message, &resultSummary); err != nil || status != string(RunCompleted) {
 		t.Fatalf("status=%s err=%v", status, err)
 	}
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id='run-1'`).Scan(&itemCount); err != nil || itemCount != 1 {
 		t.Fatalf("item count=%d err=%v", itemCount, err)
+	}
+	if err := store.db.QueryRow(`SELECT evidence_summary_json,error_message FROM model_check_items WHERE id='item-1'`).Scan(&evidence, &itemError); err != nil {
+		t.Fatal(err)
+	}
+	for _, durable := range []string{message, resultSummary, evidence, itemError} {
+		if strings.Contains(durable, "abcdefghijklmnop") || strings.Contains(durable, "secret_123456") {
+			t.Fatalf("durable summary leaked credential: %q", durable)
+		}
+	}
+}
+
+func TestNormalizeJSONSanitizesAndBoundsDurableSummaries(t *testing.T) {
+	input := `{"authorization":"Bearer abcdefghijklmnop","nested":{"api_key":"sk-secret_123456","proxy":"https://user:password@example.test/path"},"items":["a","b","c"],"long":"` + strings.Repeat("x", maxSummaryStringLength+1) + `"}`
+	var result map[string]any
+	if err := json.Unmarshal(normalizeJSON([]byte(input)), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["authorization"] != "[redacted]" {
+		t.Fatalf("authorization=%#v", result["authorization"])
+	}
+	nested, ok := result["nested"].(map[string]any)
+	if !ok || nested["api_key"] != "[redacted]" || nested["proxy"] != "https://user:[redacted]@example.test/path" {
+		t.Fatalf("nested=%#v", result["nested"])
+	}
+	if long, ok := result["long"].(string); !ok || len(long) != maxSummaryStringLength+3 {
+		t.Fatalf("long summary=%#v", result["long"])
+	}
+}
+
+func TestRunSummaryJSONRequiresAnObject(t *testing.T) {
+	for _, value := range [][]byte{[]byte(`null`), []byte(`[]`), []byte(`"text"`), []byte(`not-json`)} {
+		if validOptionalJSONObject(value) {
+			t.Fatalf("summary %q must be rejected", value)
+		}
+	}
+	if !validOptionalJSONObject(nil) || !validOptionalJSONObject([]byte(`{}`)) {
+		t.Fatal("empty or object summaries must remain valid")
 	}
 }
 

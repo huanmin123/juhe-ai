@@ -34,11 +34,11 @@ func (s *BusinessTargetSource) ModelCheckOptions() ModelCheckOptions {
 }
 
 // ListAccountOptions reads only accounts eligible for the requested purpose.
-// The authenticated system-account scope is required even when the caller is
-// an administrator: cross-tenant option reads stay denied until their own
-// scope is explicitly selected. run/history additionally include only
-// authorized instances whose grant and viewer binding are provable. The query
-// is bounded and excludes deleted/un-grouped accounts.
+// A concrete tenant is required unless HTTP has already authorized an explicit
+// administrator global scope. A concrete tenant's run/history additionally
+// include only authorized instances whose grant and viewer binding are
+// provable; Node's global scope returns owner accounts only. The query is
+// bounded and excludes deleted/un-grouped accounts.
 func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options AccountOptionsQuery) ([]AccountOption, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("J3b Business account options source is not initialized")
@@ -46,8 +46,12 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 	if options.Purpose != "run" && options.Purpose != "history" && options.Purpose != "schedule" {
 		return nil, fmt.Errorf("J3b account options purpose is invalid")
 	}
-	if strings.TrimSpace(options.SystemAccountID) == "" {
+	scope := strings.TrimSpace(options.SystemAccountID)
+	if scope == "" && !options.AllSystemAccounts {
 		return nil, fmt.Errorf("J3b account options systemAccountId scope is required")
+	}
+	if scope != "" && options.AllSystemAccounts {
+		return nil, fmt.Errorf("J3b account options global scope cannot include systemAccountId")
 	}
 	limit := options.Limit
 	if limit < 1 || limit > 50 {
@@ -67,9 +71,11 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 		"a.type IN ('api_key','oauth','google_oauth')",
 		"p.enabled = " + s.boolLiteral(true),
 		modelCheckProfilePredicate("a", "p.id"),
-		"a.system_account_id=" + s.placeholder(len(args)+1),
 	}
-	args = append(args, strings.TrimSpace(options.SystemAccountID))
+	if !options.AllSystemAccounts {
+		where = append(where, "a.system_account_id="+s.placeholder(len(args)+1))
+		args = append(args, scope)
+	}
 	if options.Purpose == "run" || options.Purpose == "schedule" {
 		where = append(where, "a.status = 'active'", "a.schedulable = "+s.boolLiteral(true), s.accountAvailable("a"))
 	}
@@ -131,7 +137,7 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate J3b account options: %w", err)
 	}
-	if options.Purpose == "run" || options.Purpose == "history" {
+	if !options.AllSystemAccounts && (options.Purpose == "run" || options.Purpose == "history") {
 		authorizedOptions := options
 		if options.AccountID == "" {
 			authorizedOptions.Limit = 50
@@ -174,11 +180,9 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 	where := []string{
 		"a.deleted_at IS NULL",
 		"a.authorization_instance_authorization_id IS NOT NULL",
-		"a.system_account_id=" + s.placeholder(1),
 		"ra.id=a.authorization_instance_authorization_id",
 		"ra.resource_type='account'",
 		"ra.resource_id=source_accounts.id",
-		"ra.grantee_system_account_id=" + s.placeholder(2),
 		"ra.scope='use'",
 		"ra.status IN ('active','paused','expired')",
 		"source_accounts.id IS NOT NULL",
@@ -192,7 +196,17 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 		"groups.enabled=" + s.boolLiteral(true),
 		"(groups.system_account_id=bindings.system_account_id OR EXISTS (SELECT 1 FROM " + s.table("resource_authorizations") + " group_auth WHERE group_auth.resource_type='group' AND group_auth.resource_id=groups.id AND group_auth.resource_owner_system_account_id=groups.system_account_id AND group_auth.grantee_system_account_id=bindings.system_account_id AND group_auth.scope='use' AND group_auth.status='active' AND " + s.expiryAfterNow("group_auth.expires_at") + "))",
 	}
-	args := []any{scope, scope}
+	args := make([]any, 0, 8)
+	bindingScope := "bindings.system_account_id=a.system_account_id"
+	if options.AllSystemAccounts {
+		where = append(where, "ra.grantee_system_account_id=a.system_account_id")
+	} else {
+		where = append(where,
+			"a.system_account_id="+s.placeholder(len(args)+1),
+			"ra.grantee_system_account_id="+s.placeholder(len(args)+2),
+		)
+		args = append(args, scope, scope)
+	}
 	if options.Purpose == "run" {
 		where = append(where,
 			"a.status='active'", "a.schedulable="+s.boolLiteral(true),
@@ -223,8 +237,9 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 			where = append(where, "("+strings.Join(search, " OR ")+")")
 		}
 	}
-	query := "SELECT options.id,options.name,options.provider_code,options.profile_id,options.protocol_code,options.protocol_version,options.instance_schedule,options.source_schedule,options.source_id FROM (SELECT DISTINCT a.id AS id,COALESCE(source_accounts.name,a.name) AS name,COALESCE(source_accounts.provider_code,a.provider_code) AS provider_code,COALESCE(source_accounts.provider_protocol_profile_id,a.provider_protocol_profile_id) AS profile_id,COALESCE(source_accounts.protocol_code,a.protocol_code) AS protocol_code,COALESCE(source_accounts.protocol_version,a.protocol_version) AS protocol_version,COALESCE(a.availability_schedule_json,'') AS instance_schedule,COALESCE(source_accounts.availability_schedule_json,'') AS source_schedule,source_accounts.id AS source_id FROM " + s.table("accounts") + " a JOIN " + s.table("resource_authorizations") + " ra ON ra.id=a.authorization_instance_authorization_id JOIN " + s.table("accounts") + " source_accounts ON source_accounts.id=a.authorization_instance_source_account_id LEFT JOIN " + s.table("group_accounts") + " bindings ON bindings.account_id=a.id AND bindings.system_account_id=" + s.placeholder(len(args)+1) + " LEFT JOIN " + s.table("groups") + " groups ON groups.id=bindings.group_id WHERE " + strings.Join(where, " AND ") + ") AS options ORDER BY LOWER(options.name),options.id LIMIT " + s.placeholder(len(args)+2)
-	args = append(args, scope, options.Limit)
+	query := "SELECT options.id,options.name,options.provider_code,options.profile_id,options.protocol_code,options.protocol_version,options.instance_schedule,options.source_schedule,options.source_id FROM (SELECT DISTINCT a.id AS id,COALESCE(source_accounts.name,a.name) AS name,COALESCE(source_accounts.provider_code,a.provider_code) AS provider_code,COALESCE(source_accounts.provider_protocol_profile_id,a.provider_protocol_profile_id) AS profile_id,COALESCE(source_accounts.protocol_code,a.protocol_code) AS protocol_code,COALESCE(source_accounts.protocol_version,a.protocol_version) AS protocol_version,COALESCE(a.availability_schedule_json,'') AS instance_schedule,COALESCE(source_accounts.availability_schedule_json,'') AS source_schedule,source_accounts.id AS source_id FROM " + s.table("accounts") + " a JOIN " + s.table("resource_authorizations") + " ra ON ra.id=a.authorization_instance_authorization_id JOIN " + s.table("accounts") + " source_accounts ON source_accounts.id=a.authorization_instance_source_account_id LEFT JOIN " + s.table("group_accounts") + " bindings ON bindings.account_id=a.id AND " + bindingScope + " LEFT JOIN " + s.table("groups") + " groups ON groups.id=bindings.group_id WHERE " + strings.Join(where, " AND ") + ") AS options ORDER BY LOWER(options.name),options.id LIMIT "
+	query += s.placeholder(len(args) + 1)
+	args = append(args, options.Limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read J3b authorized account options: %w", err)
