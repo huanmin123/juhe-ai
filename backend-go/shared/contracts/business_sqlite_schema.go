@@ -37,11 +37,11 @@ type SQLiteForeignKeySpec struct {
 // new table, column, index, or foreign key. This is a contract identifier,
 // not a migration instruction; maintenance never creates missing objects at
 // runtime.
-const BusinessSQLiteSchemaVersion = "business-sqlite-gateway-v11"
+const BusinessSQLiteSchemaVersion = "business-sqlite-gateway-v12"
 
 var BusinessSQLiteSchema = map[string]SQLiteTableSpec{
 	"system_accounts":              {Columns: []string{"id", "username", "display_name", "status", "role", "must_change_password", "password_hash", "last_login_at", "updated_at"}, UniqueConstraints: [][]string{{"username"}}},
-	"system_sessions":              {Columns: []string{"id", "system_account_id", "token_hash", "expires_at", "created_at", "last_seen_at"}, Indexes: []string{"idx_system_sessions_expires_at"}, ForeignKeys: []SQLiteForeignKeySpec{{Columns: []string{"system_account_id"}, RefTable: "system_accounts", RefColumns: []string{"id"}, OnDelete: "CASCADE"}}},
+	"system_sessions":              {Columns: []string{"id", "system_account_id", "token_hash", "expires_at", "created_at", "last_seen_at"}, UniqueConstraints: [][]string{{"token_hash"}}, Indexes: []string{"idx_system_sessions_expires_at"}, ForeignKeys: []SQLiteForeignKeySpec{{Columns: []string{"system_account_id"}, RefTable: "system_accounts", RefColumns: []string{"id"}, OnDelete: "CASCADE"}}},
 	"system_settings":              {Columns: []string{"system_account_id", "key", "value_json", "updated_at"}, PrimaryKey: []string{"system_account_id", "key"}, ForeignKeys: []SQLiteForeignKeySpec{{Columns: []string{"system_account_id"}, RefTable: "system_accounts", RefColumns: []string{"id"}, OnDelete: "CASCADE"}}},
 	"providers":                    {Columns: []string{"id", "code", "name", "enabled"}},
 	"provider_protocol_profiles":   {Columns: []string{"id", "provider_code", "protocol_code", "protocol_version", "base_url", "enabled"}},

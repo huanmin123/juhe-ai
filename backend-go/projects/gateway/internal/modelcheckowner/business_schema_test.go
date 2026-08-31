@@ -59,6 +59,24 @@ func TestCheckBusinessSQLiteSchemaFailsClosedForMissingSessionOwnerForeignKey(t 
 	}
 }
 
+func TestCheckBusinessSQLiteSchemaFailsClosedForMissingSessionTokenUniqueness(t *testing.T) {
+	db := newBusinessSQLiteSchemaFixture(t, "", "")
+	defer db.Close()
+	if _, err := db.Exec(`DROP TABLE system_sessions`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE INDEX idx_system_sessions_expires_at ON system_sessions(expires_at)`); err != nil {
+		t.Fatal(err)
+	}
+	err := CheckBusinessSQLiteSchema(context.Background(), db)
+	if err == nil || !strings.Contains(err.Error(), "missing unique constraint system_sessions(token_hash)") {
+		t.Fatalf("missing session token uniqueness must fail closed, err=%v", err)
+	}
+}
+
 func TestCheckBusinessSQLiteSchemaFailsClosedForMissingSystemSettings(t *testing.T) {
 	db := newBusinessSQLiteSchemaFixture(t, "", "")
 	defer db.Close()
@@ -145,6 +163,78 @@ func TestPostgresConstraintMatchingRequiresExactKindAndOrder(t *testing.T) {
 	}
 	if hasPostgresConstraint(constraints, "u", []string{"account_id"}) {
 		t.Fatal("unique constraint with incomplete columns must fail")
+	}
+}
+
+func TestPostgresForeignKeyMatchingRequiresSchemaColumnsAndActions(t *testing.T) {
+	foreignKeys := map[int64]*postgresSchemaForeignKey{
+		1: {
+			refSchema:  "juhe_business",
+			refTable:   "accounts",
+			columns:    []string{"account_id"},
+			refColumns: []string{"id"},
+			onDelete:   "CASCADE",
+			onUpdate:   "NO ACTION",
+		},
+	}
+	required := contracts.SQLiteForeignKeySpec{Columns: []string{"account_id"}, RefTable: "accounts", RefColumns: []string{"id"}, OnDelete: "CASCADE"}
+	if !hasPostgresForeignKey(foreignKeys, "juhe_business", required) {
+		t.Fatal("expected matching PostgreSQL foreign key")
+	}
+	if hasPostgresForeignKey(foreignKeys, "other_schema", required) {
+		t.Fatal("foreign key in another schema must not satisfy the contract")
+	}
+	foreignKeys[1].columns = []string{"id"}
+	if hasPostgresForeignKey(foreignKeys, "juhe_business", required) {
+		t.Fatal("foreign key source column drift must fail")
+	}
+	foreignKeys[1].columns = []string{"account_id"}
+	foreignKeys[1].onDelete = "NO ACTION"
+	if hasPostgresForeignKey(foreignKeys, "juhe_business", required) {
+		t.Fatal("foreign key action drift must fail")
+	}
+}
+
+func TestPostgresIndexDefinitionMatchingIsStructural(t *testing.T) {
+	required := contracts.SQLiteIndexDefinition{
+		Name:      "idx_account_circuit_incidents_key_model_capability",
+		Columns:   []string{"scope_kind", "capability_hash"},
+		Unique:    true,
+		Predicate: "scope_kind = 'key_model' AND capability_hash IS NOT NULL",
+	}
+	actual := postgresSchemaIndex{
+		unique:    true,
+		columns:   []string{"scope_kind", "capability_hash"},
+		predicate: "((scope_kind = 'key_model'::text) AND (capability_hash IS NOT NULL))",
+	}
+	if detail := postgresSchemaIndexMismatch(actual, required); detail != "" {
+		t.Fatalf("canonical PostgreSQL predicate should match SQLite contract: %s", detail)
+	}
+	actual.columns = []string{"capability_hash", "scope_kind"}
+	if detail := postgresSchemaIndexMismatch(actual, required); detail == "" {
+		t.Fatal("index column order drift must fail")
+	}
+	actual.columns = required.Columns
+	actual.unique = false
+	if detail := postgresSchemaIndexMismatch(actual, required); detail == "" {
+		t.Fatal("index uniqueness drift must fail")
+	}
+	actual.unique = true
+	actual.predicate = "scope_kind = 'key_model'"
+	if detail := postgresSchemaIndexMismatch(actual, required); detail == "" {
+		t.Fatal("index predicate drift must fail")
+	}
+}
+
+func TestPostgresReferentialActionCodes(t *testing.T) {
+	tests := map[string]string{"a": "NO ACTION", "r": "RESTRICT", "c": "CASCADE", "n": "SET NULL", "d": "SET DEFAULT"}
+	for code, expected := range tests {
+		if actual := postgresReferentialAction(code); actual != expected {
+			t.Errorf("action %q = %q, want %q", code, actual, expected)
+		}
+	}
+	if actual := postgresReferentialAction("?"); actual != "" {
+		t.Fatalf("unknown action must fail closed, got %q", actual)
 	}
 }
 

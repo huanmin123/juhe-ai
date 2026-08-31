@@ -55,10 +55,12 @@ import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapsh
 import { registerAccountForceActivateRoutes } from './account-force-activate.routes.js'
 import { refreshAccountDraftModelCatalogAsync } from './account-model-catalog-refresh.service.js'
 import { accountCreationStatusInput } from './account-creation-status.js'
+import { registerAccountLockRoutes } from './account-lock.routes.js'
 
 export const accountsRouter = Router()
 
 registerAccountListRoutes(accountsRouter)
+registerAccountLockRoutes(accountsRouter)
 registerAccountTagsRoutes(accountsRouter)
 registerAccountExportRoutes(accountsRouter)
 

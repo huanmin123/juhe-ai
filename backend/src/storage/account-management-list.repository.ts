@@ -21,6 +21,7 @@ import { normalizeAccountListOptions, accountStatusFilterValues, type AccountLis
 import { getPostgresPool } from './postgres-client.js'
 import { pagedTotalUpperBound, takePageRows, textPrefixUpperBound } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import { listAccountLockStatesAsync } from './account-lock.repository.js'
 
 export type AccountManagementListBaseItem = Pick<AccountListItem,
   | 'id'
@@ -60,6 +61,10 @@ export type AccountManagementListBaseItem = Pick<AccountListItem,
   | 'groupBindStatus'
   | 'bindingSystemAccountId'
   | 'permissions'
+  | 'lockEnabled'
+  | 'lockState'
+  | 'lockDeathTimeoutSeconds'
+  | 'lockRetryIntervalSeconds'
 >
 
 export interface AccountManagementListPage {
@@ -466,6 +471,16 @@ async function listAccountManagementItemsPageDirect(
     canAccessAll(access),
     (tagsByAccount.get(row.id) ?? []).map(({ id, name }) => ({ id, name }))
   ))
+  const lockStates = await listAccountLockStatesAsync(items.map((item) => item.id))
+  for (const item of items) {
+    const lock = lockStates.get(item.id)
+    if (lock) {
+      item.lockEnabled = lock.enabled
+      item.lockState = lock.lockState
+      item.lockDeathTimeoutSeconds = lock.lockDeathTimeoutSeconds
+      item.lockRetryIntervalSeconds = lock.lockRetryIntervalSeconds
+    }
+  }
   return {
     items,
     statusSeeds: pageRows.rows,
@@ -740,7 +755,8 @@ function accountManagementPermissions(
       canDelete: true,
       canReturnAuthorization: false,
       canAuthorize: true,
-      canViewCredentials: true
+      canViewCredentials: true,
+      canLock: true
     }
   }
   return {
@@ -749,7 +765,8 @@ function accountManagementPermissions(
     canDelete: false,
     canReturnAuthorization: sourceType === 'manual',
     canAuthorize: false,
-    canViewCredentials: false
+    canViewCredentials: false,
+    canLock: true
   }
 }
 

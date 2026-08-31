@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ func validJ3bCutoverEvidence(t *testing.T) (J3bCutoverEvidence, time.Time) {
 	digest := sha256.Sum256(data)
 	readbackDigest := hex.EncodeToString(digest[:])
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	manifestPath, manifestHash := writeValidJ3bReadbackManifest(t, now)
 	return J3bCutoverEvidence{
 		OldOwner:       "node",
 		NewOwner:       contracts.J3bGatewayCutoverOwner,
@@ -38,10 +40,39 @@ func validJ3bCutoverEvidence(t *testing.T) (J3bCutoverEvidence, time.Time) {
 			CapturedAt:    now.Add(-2 * time.Minute).Format(time.RFC3339),
 			MaxAgeSeconds: 300,
 		},
-		SourceDigest:    readbackDigest,
-		TargetDigest:    readbackDigest,
-		BlockedFindings: 0,
+		SourceDigest:     readbackDigest,
+		TargetDigest:     readbackDigest,
+		ReadbackManifest: J3bReadbackManifestReference{Path: manifestPath, Hash: manifestHash, FormatVersion: contracts.J3bReadbackManifestFormatVersion, Scope: contracts.J3bReadbackManifestScope, SourceSnapshotIdentity: "snapshot-1", SourceSchema: "legacy-sqlite-dataset+stats", TargetSchema: "juhe-j3b-sqlite"},
+		BlockedFindings:  0,
 	}, now
+}
+
+func writeValidJ3bReadbackManifest(t *testing.T, now time.Time) (string, string) {
+	t.Helper()
+	manifest := contracts.J3bReadbackManifest{
+		FormatVersion: contracts.J3bReadbackManifestFormatVersion,
+		Scope:         contracts.J3bReadbackManifestScope,
+		Producer:      "test", SourceSnapshotIdentity: "snapshot-1", SourceSchema: "legacy-sqlite-dataset+stats", TargetSchema: "juhe-j3b-sqlite",
+		ProjectionComplete: true, VerifiedAt: now.Format(time.RFC3339),
+	}
+	for _, name := range []string{"account_quality_health_hourly", "model_check_items", "model_check_observations", "model_check_runs", "model_token_intercept_baseline_versions"} {
+		manifest.Tables = append(manifest.Tables, contracts.J3bReadbackTableDigest{Name: name, SourceRows: 1, TargetRows: 1, SourceDigest: strings.Repeat("a", 64), TargetDigest: strings.Repeat("a", 64)})
+	}
+	hash, err := contracts.ComputeJ3bReadbackManifestHash(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.ManifestHash = hash
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "readback-manifest.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fileHash := sha256.Sum256(data)
+	return path, hex.EncodeToString(fileHash[:])
 }
 
 func TestValidateJ3bCutoverEvidenceTable(t *testing.T) {
@@ -71,6 +102,46 @@ func TestValidateJ3bCutoverEvidenceTable(t *testing.T) {
 				t.Fatalf("ready=%t, want %t; errors=%v", report.Ready, test.ready, report.Errors)
 			}
 		})
+	}
+}
+
+func TestVerifyJ3bCutoverEvidenceRejectsManifestReferenceHashMismatch(t *testing.T) {
+	evidence, now := validJ3bCutoverEvidence(t)
+	evidence.ReadbackManifest.Hash = strings.Repeat("0", 64)
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "evidence.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := VerifyJ3bCutoverEvidence(path, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready {
+		t.Fatalf("bad manifest file hash unexpectedly ready: %+v", report)
+	}
+}
+
+func TestVerifyJ3bCutoverEvidenceRejectsManifestIdentityMismatch(t *testing.T) {
+	evidence, now := validJ3bCutoverEvidence(t)
+	evidence.ReadbackManifest.SourceSnapshotIdentity = "different-snapshot"
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "evidence.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := VerifyJ3bCutoverEvidence(path, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready {
+		t.Fatalf("manifest identity mismatch unexpectedly ready: %+v", report)
 	}
 }
 

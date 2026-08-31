@@ -169,7 +169,7 @@ func TestJ3bBackfillEvidencePreflightUsesCutoverValidatorExitCodes(t *testing.T)
 	}
 }
 
-func TestJ3bBackfillEvidencePreflightAcceptsCompleteEvidence(t *testing.T) {
+func TestJ3bBackfillEvidencePreflightRejectsLegacyScalarDigestEvidence(t *testing.T) {
 	backupPath := filepath.Join(t.TempDir(), "backup.bin")
 	backupData := []byte("backup")
 	if err := os.WriteFile(backupPath, backupData, 0o600); err != nil {
@@ -200,12 +200,12 @@ func TestJ3bBackfillEvidencePreflightAcceptsCompleteEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, got, err := j3bBackfillEvidencePreflight(path)
-	if err != nil || got != 0 || !report.Ready {
-		t.Fatalf("complete evidence preflight=(report %+v, exit %d, err %v), want ready exit 0", report, got, err)
+	if err != nil || got != 3 || report.Ready {
+		t.Fatalf("legacy scalar evidence preflight=(report %+v, exit %d, err %v), want unready exit 3", report, got, err)
 	}
 }
 
-func TestJ3bBackfillEvidencePreflightAllowsTargetDigestToBeAbsentBeforeCopy(t *testing.T) {
+func TestJ3bBackfillEvidencePreflightRejectsLegacyEvidenceWithoutTargetDigest(t *testing.T) {
 	evidencePath := writeCompleteJ3bCutoverEvidence(t)
 	data, err := os.ReadFile(evidencePath)
 	if err != nil {
@@ -224,8 +224,8 @@ func TestJ3bBackfillEvidencePreflightAllowsTargetDigestToBeAbsentBeforeCopy(t *t
 		t.Fatal(err)
 	}
 	report, got, err := j3bBackfillEvidencePreflight(evidencePath)
-	if err != nil || got != 0 || !report.Ready {
-		t.Fatalf("pre-backfill evidence=(report %+v, exit %d, err %v), want ready exit 0", report, got, err)
+	if err != nil || got != 3 || report.Ready {
+		t.Fatalf("legacy pre-backfill evidence=(report %+v, exit %d, err %v), want unready exit 3", report, got, err)
 	}
 }
 

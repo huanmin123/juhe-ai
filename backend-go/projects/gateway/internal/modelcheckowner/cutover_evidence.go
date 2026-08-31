@@ -28,7 +28,7 @@ func VerifyConfiguredCutoverEvidence(path, ownerEpoch string, now time.Time) (co
 	if err != nil {
 		return contracts.J3bCutoverEvidenceReport{Errors: []string{fmt.Sprintf("decode J3b cutover evidence: %v", err)}}, nil
 	}
-	report := contracts.ValidateJ3bCutoverEvidenceForOwner(evidence, contracts.J3bGatewayCutoverOwner, ownerEpoch, now, verifyConfiguredBackupArtifact)
+	report := contracts.ValidateJ3bCutoverEvidenceForOwnerWithReadback(evidence, contracts.J3bGatewayCutoverOwner, ownerEpoch, now, verifyConfiguredBackupArtifact, verifyConfiguredReadbackManifest)
 	return report, nil
 }
 
@@ -50,9 +50,46 @@ func verifyConfiguredBackupArtifact(artifact contracts.J3bBackupArtifact) error 
 		return err
 	}
 	actual := hex.EncodeToString(digest.Sum(nil))
-	expected := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(artifact.Hash)), "sha256:")
-	if actual != expected {
+	if !equalConfiguredDigest(actual, artifact.Hash) {
 		return fmt.Errorf("hash does not match file SHA-256")
 	}
 	return nil
+}
+
+// verifyConfiguredReadbackManifest is intentionally file-only. It verifies
+// the evidence reference against the exact manifest bytes, then delegates
+// schema, freshness, scope, identity and table checks to shared contracts.
+func verifyConfiguredReadbackManifest(reference contracts.J3bReadbackManifestReference, evidence contracts.J3bCutoverEvidence, now time.Time) error {
+	data, err := os.ReadFile(reference.Path)
+	if err != nil {
+		return fmt.Errorf("read manifest: %w", err)
+	}
+	digest := sha256.Sum256(data)
+	if !equalConfiguredDigest(hex.EncodeToString(digest[:]), reference.Hash) {
+		return fmt.Errorf("manifest file SHA-256 does not match evidence reference")
+	}
+	manifest, err := contracts.DecodeJ3bReadbackManifest(data)
+	if err != nil {
+		return fmt.Errorf("decode manifest: %w", err)
+	}
+	if reference.FormatVersion != manifest.FormatVersion ||
+		reference.Scope != manifest.Scope ||
+		reference.SourceSnapshotIdentity != manifest.SourceSnapshotIdentity ||
+		reference.SourceSchema != manifest.SourceSchema ||
+		reference.TargetSchema != manifest.TargetSchema {
+		return fmt.Errorf("manifest identity does not match evidence reference")
+	}
+	if errors := contracts.ValidateJ3bReadbackManifest(manifest, now, evidence.Freshness.MaxAgeSeconds); len(errors) > 0 {
+		return fmt.Errorf("manifest is not cutover-ready: %s", strings.Join(errors, "; "))
+	}
+	return nil
+}
+
+func equalConfiguredDigest(actual, expected string) bool {
+	return normalizeConfiguredDigest(actual) == normalizeConfiguredDigest(expected)
+}
+
+func normalizeConfiguredDigest(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.TrimPrefix(value, "sha256:")
 }

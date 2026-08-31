@@ -1,6 +1,7 @@
 package modelcheckowner
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -157,9 +158,61 @@ type gatewayDateRange struct {
 	End   string `json:"endDate"`
 }
 type gatewayException struct {
-	Date    string          `json:"date"`
-	Action  string          `json:"action"`
-	Windows []gatewayWindow `json:"windows"`
+	Date           string          `json:"date"`
+	Action         string          `json:"action"`
+	Windows        []gatewayWindow `json:"windows"`
+	windowsPresent bool
+}
+
+// UnmarshalJSON keeps the distinction between an omitted windows field and an
+// explicitly provided null, and applies the narrower exception-window schema
+// (start/end only) used by the Node gateway.
+func (e *gatewayException) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Date    string          `json:"date"`
+		Action  string          `json:"action"`
+		Windows json.RawMessage `json:"windows"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&raw); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing content")
+		}
+		return err
+	}
+	e.Date, e.Action = raw.Date, raw.Action
+	e.Windows = nil
+	e.windowsPresent = raw.Windows != nil
+	if !e.windowsPresent || bytes.Equal(bytes.TrimSpace(raw.Windows), []byte("null")) {
+		return nil
+	}
+	var windows []gatewayExceptionWindow
+	windowDecoder := json.NewDecoder(bytes.NewReader(raw.Windows))
+	windowDecoder.DisallowUnknownFields()
+	if err := windowDecoder.Decode(&windows); err != nil {
+		return err
+	}
+	if err := windowDecoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing content")
+		}
+		return err
+	}
+	e.Windows = make([]gatewayWindow, len(windows))
+	for i, window := range windows {
+		e.Windows[i] = gatewayWindow{Start: window.Start, End: window.End}
+	}
+	return nil
+}
+
+type gatewayExceptionWindow struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
 }
 
 func availabilityAllowedGateway(raw string, now time.Time) (bool, error) {
@@ -219,7 +272,7 @@ func validateGatewayAvailability(s gatewayAvailability) error {
 		}
 	}
 	for _, ex := range s.Exceptions {
-		if !gatewayDate(ex.Date) || (ex.Action != "allow" && ex.Action != "deny") || (ex.Action == "deny" && len(ex.Windows) > 0) || (ex.Action == "allow" && len(ex.Windows) == 0) {
+		if !gatewayDate(ex.Date) || (ex.Action != "allow" && ex.Action != "deny") || (ex.Action == "deny" && ex.windowsPresent) || (ex.Action == "allow" && (!ex.windowsPresent || len(ex.Windows) == 0)) {
 			return errors.New("invalid availability exception")
 		}
 		for _, w := range ex.Windows {

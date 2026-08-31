@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -158,6 +159,9 @@ func (s *BusinessTargetSource) ComparisonResolver() Resolver {
 		comparisonRequest := request
 		comparisonRequest.TargetID = request.TrustedComparisonAccountID
 		comparisonRequest.ConfigRevision = request.TrustedComparisonConfigRevision
+		comparisonRequest.DispatchRevision = request.TrustedComparisonDispatchRevision
+		comparisonRequest.SourceConfigRevision = request.TrustedComparisonSourceConfigRevision
+		comparisonRequest.SourceDispatchRevision = request.TrustedComparisonSourceDispatchRevision
 		return s.Resolve(ctx, comparisonRequest)
 	}
 }
@@ -171,7 +175,7 @@ func (s *BusinessTargetSource) CheckContract(ctx context.Context) error {
 		return fmt.Errorf("open J3b Business source contract: %w", err)
 	}
 	defer tx.Rollback()
-	contracts := map[string]string{"accounts": "id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,account_expires_at,cooldown_until,last_error_code,credentials_encrypted,proxy_profile_id,availability_schedule_json,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at", "provider_protocol_profiles": "id,enabled,base_url", "proxy_profiles": "id,enabled,type,host,port,username,password_encrypted", "group_accounts": "account_id,system_account_id,group_id,account_authorization_id,enabled", "groups": "id,system_account_id,enabled", "resource_authorizations": "id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at", "model_quality_policies": "system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes", "account_supported_models": "account_id,model", "account_model_mappings": "account_id,source_model,source_endpoint_family,upstream_model,enabled"}
+	contracts := map[string]string{"accounts": "id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,account_expires_at,cooldown_until,last_error_code,credentials_encrypted,proxy_profile_id,availability_schedule_json,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at", "provider_protocol_profiles": "id,enabled,base_url", "proxy_profiles": "id,enabled,type,host,port,username,password_encrypted", "group_accounts": "account_id,system_account_id,group_id,account_authorization_id,enabled", "groups": "id,system_account_id,enabled", "resource_authorizations": "id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at", "model_quality_policies": "system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes", "account_supported_models": "account_id,model", "account_model_mappings": "account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled"}
 	for table, columns := range contracts {
 		if _, err := tx.ExecContext(ctx, "SELECT "+columns+" FROM "+s.table(table)+" LIMIT 0"); err != nil {
 			return fmt.Errorf("verify J3b Business source table %s: %w", table, err)
@@ -223,6 +227,15 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if request.ConfigRevision != "" && request.ConfigRevision != strconv.FormatInt(revision, 10) {
 		return Target{}, errors.New("J3b Business account config revision is stale")
 	}
+	if request.DispatchRevision > 0 && request.DispatchRevision != dispatchRevision {
+		return Target{}, errors.New("J3b Business account dispatch revision is stale")
+	}
+	if request.SourceConfigRevision != "" && request.SourceConfigRevision != strconv.FormatInt(revision, 10) {
+		return Target{}, errors.New("J3b Business source account config revision is stale")
+	}
+	if request.SourceDispatchRevision > 0 && request.SourceDispatchRevision != dispatchRevision {
+		return Target{}, errors.New("J3b Business source account dispatch revision is stale")
+	}
 	qualityRecovery := request.TriggerKind == string(SchedulerQualityRecovery)
 	availabilityNow := s.nowUTC()
 	if (qualityRecovery && status != "quality_isolated") || (!qualityRecovery && status != "active" && status != "temporary_unavailable" && status != "rate_limited") {
@@ -241,12 +254,18 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if !ok {
 		return Target{}, errors.New("J3b Business provider profile does not support model")
 	}
-	upstreamModel, err := resolveConfiguredUpstreamModel(ctx, s.db, s.postgres, request.TargetID, profile, request.Model)
+	mapping, err := resolveConfiguredUpstreamModelMapping(ctx, s.db, s.postgres, request.TargetID, profile, request.Model)
 	if err != nil {
 		return Target{}, err
 	}
-	if upstreamModel == "" {
+	if mapping.UpstreamModel == "" {
 		return Target{}, errors.New("J3b Business account model restriction does not allow model")
+	}
+	upstreamProtocol := profile.Protocol
+	upstreamEndpointMode := endpointMode
+	if mapping.UpstreamEndpointFamily == modelcheckprofile.EndpointChatCompletions {
+		upstreamProtocol = modelcheckprofile.ProtocolOpenAIChat
+		upstreamEndpointMode = modelcheckprofile.EndpointModeForProtocol(upstreamProtocol, modelcheckprofile.EndpointModeIsStreaming(endpointMode))
 	}
 	credentialType = strings.TrimSpace(credentialType)
 	if credentialType != "api_key" && credentialType != "oauth" && credentialType != "google_oauth" {
@@ -259,12 +278,25 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if err := validateCredentialEndpointMode(endpointMode, profile.Protocol, material); err != nil {
 		return Target{}, err
 	}
+	adapter, err := openAIOAuthCodexAdapter(provider, profileID, credentialType, profile.Protocol, endpointMode)
+	if err != nil {
+		return Target{}, err
+	}
+	if adapter == modelcheckprobe.AdapterOpenAIOAuthCodex && upstreamProtocol != modelcheckprofile.ProtocolOpenAIResponses {
+		return Target{}, errors.New("J3b Business OpenAI OAuth Codex model mapping is unsupported")
+	}
 	headers, err := credentialHeaders(provider, profileID, profile.Protocol, protocolCode, credentialType, material.Token)
 	if err != nil {
 		return Target{}, err
 	}
-	if material.BaseURL != "" {
+	if material.BaseURL != "" && adapter == "" {
 		baseURL = material.BaseURL
+	}
+	if adapter == modelcheckprobe.AdapterOpenAIOAuthCodex {
+		baseURL = modelcheckprobe.OpenAIOAuthCodexBaseURL
+		if material.ChatGPTAccountID != "" {
+			headers.Set("chatgpt-account-id", material.ChatGPTAccountID)
+		}
 	}
 	if profile.Protocol == modelcheckprofile.ProtocolGeminiNative && credentialType == "google_oauth" {
 		if material.QuotaProjectID != "" {
@@ -274,7 +306,7 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if dispatchRevision < 1 {
 		return Target{}, errors.New("J3b Business account dispatch revision is invalid")
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, CredentialType: credentialType, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(revision, 10), CredentialSourceAccountID: request.TargetID, SourceDispatchRevision: dispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: true, Protocol: profile.Protocol, EndpointMode: endpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: upstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(revision, 10), CredentialSourceAccountID: request.TargetID, SourceDispatchRevision: dispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: true, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
 }
 
 func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, request RunRequest) (Target, error) {
@@ -307,6 +339,9 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if request.ConfigRevision != "" && request.ConfigRevision != strconv.FormatInt(revision, 10) {
 		return Target{}, errors.New("J3b Business account config revision is stale")
 	}
+	if request.DispatchRevision > 0 && request.DispatchRevision != dispatchRevision {
+		return Target{}, errors.New("J3b Business authorized account dispatch revision is stale")
+	}
 	if request.SourceConfigRevision != "" && request.SourceConfigRevision != strconv.FormatInt(sourceRevision, 10) {
 		return Target{}, errors.New("J3b Business source account config revision is stale")
 	}
@@ -331,12 +366,18 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if !ok {
 		return Target{}, errors.New("J3b Business provider profile does not support model")
 	}
-	upstreamModel, err := resolveConfiguredUpstreamModel(ctx, s.db, s.postgres, sourceID, profile, request.Model)
+	mapping, err := resolveConfiguredUpstreamModelMapping(ctx, s.db, s.postgres, sourceID, profile, request.Model)
 	if err != nil {
 		return Target{}, err
 	}
-	if upstreamModel == "" {
+	if mapping.UpstreamModel == "" {
 		return Target{}, errors.New("J3b Business account model restriction does not allow model")
+	}
+	upstreamProtocol := profile.Protocol
+	upstreamEndpointMode := endpointMode
+	if mapping.UpstreamEndpointFamily == modelcheckprofile.EndpointChatCompletions {
+		upstreamProtocol = modelcheckprofile.ProtocolOpenAIChat
+		upstreamEndpointMode = modelcheckprofile.EndpointModeForProtocol(upstreamProtocol, modelcheckprofile.EndpointModeIsStreaming(endpointMode))
 	}
 	credentialType = strings.TrimSpace(credentialType)
 	if credentialType != "api_key" && credentialType != "oauth" && credentialType != "google_oauth" {
@@ -349,12 +390,25 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if err := validateCredentialEndpointMode(endpointMode, profile.Protocol, material); err != nil {
 		return Target{}, err
 	}
+	adapter, err := openAIOAuthCodexAdapter(provider, profileID, credentialType, profile.Protocol, endpointMode)
+	if err != nil {
+		return Target{}, err
+	}
+	if adapter == modelcheckprobe.AdapterOpenAIOAuthCodex && upstreamProtocol != modelcheckprofile.ProtocolOpenAIResponses {
+		return Target{}, errors.New("J3b Business OpenAI OAuth Codex model mapping is unsupported")
+	}
 	headers, err := credentialHeaders(provider, profileID, profile.Protocol, protocolCode, credentialType, material.Token)
 	if err != nil {
 		return Target{}, err
 	}
-	if material.BaseURL != "" {
+	if material.BaseURL != "" && adapter == "" {
 		baseURL = material.BaseURL
+	}
+	if adapter == modelcheckprobe.AdapterOpenAIOAuthCodex {
+		baseURL = modelcheckprobe.OpenAIOAuthCodexBaseURL
+		if material.ChatGPTAccountID != "" {
+			headers.Set("chatgpt-account-id", material.ChatGPTAccountID)
+		}
 	}
 	if profile.Protocol == modelcheckprofile.ProtocolGeminiNative && credentialType == "google_oauth" {
 		if material.QuotaProjectID != "" {
@@ -367,7 +421,7 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if sourceDispatchRevision < 1 {
 		return Target{}, errors.New("J3b Business source account dispatch revision is invalid")
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, CredentialType: credentialType, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(sourceRevision, 10), CredentialSourceAccountID: sourceID, SourceDispatchRevision: sourceDispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: false, Protocol: profile.Protocol, EndpointMode: endpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: upstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), ProviderCode: provider, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(sourceRevision, 10), CredentialSourceAccountID: sourceID, SourceDispatchRevision: sourceDispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: false, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
 }
 
 // BuildRequest freezes the Business target and quality policy across bounded
@@ -400,7 +454,7 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 	// Resolve again with the first target's immutable config revision. This
 	// catches account changes, revoked grants and mapping changes that occur
 	// while the policy row is being read, and fails closed before issuing input.
-	recheckedTarget, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, ConfigRevision: target.ConfigRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision})
+	recheckedTarget, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision})
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("J3b Business target changed while freezing request: %w", err)
 	}
@@ -433,7 +487,7 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 	if selectedProfile != "quick" && selectedProfile != "full" {
 		return RunRequest{}, errors.New("J3b Business policy profile is invalid")
 	}
-	request := RunRequest{TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: selectedProfile, SystemAccountID: actorSystemAccountID, ActorSystemAccountID: actorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: threshold, PenaltyAction: action, RecoveryIntervalMinutes: recoveryInterval, ManualEnforcementEnabled: manualEnforcementEnabled, OwnPhysicalAccount: target.OwnPhysicalAccount, ConfigRevision: target.ConfigRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision, PolicyRevision: revision, ProbeSetVersion: probeSetForProfile(selectedProfile), IdentityKey: actorSystemAccountID + ":" + command.TargetID + ":" + command.Model + ":" + selectedProfile}
+	request := RunRequest{TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: selectedProfile, SystemAccountID: actorSystemAccountID, ActorSystemAccountID: actorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: threshold, PenaltyAction: action, RecoveryIntervalMinutes: recoveryInterval, ManualEnforcementEnabled: manualEnforcementEnabled, OwnPhysicalAccount: target.OwnPhysicalAccount, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision, PolicyRevision: revision, ProbeSetVersion: probeSetForProfile(selectedProfile), IdentityKey: actorSystemAccountID + ":" + command.TargetID + ":" + command.Model + ":" + selectedProfile, SourceEndpointFamily: string(target.SourceEndpointFamily), UpstreamEndpointFamily: string(target.UpstreamEndpointFamily), UpstreamProtocol: string(target.UpstreamProtocol), UpstreamEndpointMode: target.UpstreamEndpointMode}
 	if !command.TrustedComparison {
 		return request, nil
 	}
@@ -448,7 +502,7 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("read J3b trusted comparison fence: %w", err)
 	}
-	comparisonRechecked, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: "account", TargetID: command.TrustedComparisonID, Model: command.Model, ConfigRevision: comparison.ConfigRevision, SourceConfigRevision: comparison.SourceConfigRevision, SourceDispatchRevision: comparison.SourceDispatchRevision})
+	comparisonRechecked, err := s.Resolve(ctx, RunRequest{SystemAccountID: actorSystemAccountID, TargetType: "account", TargetID: command.TrustedComparisonID, Model: command.Model, ConfigRevision: comparison.ConfigRevision, DispatchRevision: comparison.DispatchRevision, SourceConfigRevision: comparison.SourceConfigRevision, SourceDispatchRevision: comparison.SourceDispatchRevision})
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("J3b trusted comparison changed while freezing request: %w", err)
 	}
@@ -466,6 +520,7 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 	request.TrustedComparison = true
 	request.TrustedComparisonAccountID = command.TrustedComparisonID
 	request.TrustedComparisonConfigRevision = comparison.ConfigRevision
+	request.TrustedComparisonDispatchRevision = comparison.DispatchRevision
 	request.TrustedComparisonSourceConfigRevision = comparison.SourceConfigRevision
 	request.TrustedComparisonSourceDispatchRevision = comparison.SourceDispatchRevision
 	request.IdentityKey += ":comparison:" + command.TrustedComparisonID + ":" + comparison.ConfigRevision
@@ -477,7 +532,7 @@ func (s *BusinessTargetSource) BuildRequest(ctx context.Context, actorSystemAcco
 // additional fields close gaps where Business model mappings or source
 // credentials change without incrementing the virtual instance revision.
 func sameTargetFence(left, right Target) bool {
-	if left.Endpoint != right.Endpoint || left.ProviderCode != right.ProviderCode || left.ConfigRevision != right.ConfigRevision || left.SourceConfigRevision != right.SourceConfigRevision || left.SourceDispatchRevision != right.SourceDispatchRevision || left.UpstreamModel != right.UpstreamModel || left.CredentialType != right.CredentialType || left.CredentialSourceAccountID != right.CredentialSourceAccountID || left.DispatchRevision != right.DispatchRevision || left.OwnPhysicalAccount != right.OwnPhysicalAccount || left.Protocol != right.Protocol || left.EndpointMode != right.EndpointMode || left.Prompt != right.Prompt || !sameStringSet(left.SupportedEndpointModes, right.SupportedEndpointModes) {
+	if left.Endpoint != right.Endpoint || left.ProviderCode != right.ProviderCode || left.ConfigRevision != right.ConfigRevision || left.SourceConfigRevision != right.SourceConfigRevision || left.SourceDispatchRevision != right.SourceDispatchRevision || left.UpstreamModel != right.UpstreamModel || left.CredentialType != right.CredentialType || left.UpstreamAdapter != right.UpstreamAdapter || left.CredentialSourceAccountID != right.CredentialSourceAccountID || left.DispatchRevision != right.DispatchRevision || left.OwnPhysicalAccount != right.OwnPhysicalAccount || left.Protocol != right.Protocol || left.SourceEndpointFamily != right.SourceEndpointFamily || left.UpstreamProtocol != right.UpstreamProtocol || left.UpstreamEndpointFamily != right.UpstreamEndpointFamily || left.EndpointMode != right.EndpointMode || left.UpstreamEndpointMode != right.UpstreamEndpointMode || left.Prompt != right.Prompt || !sameStringSet(left.SupportedEndpointModes, right.SupportedEndpointModes) {
 		return false
 	}
 	if !sameHeaderValues(left.Headers, right.Headers) {
@@ -598,7 +653,7 @@ func (s *BusinessTargetSource) readTargetFence(ctx context.Context, actorSystemA
 	if err := appendRows("supported-models", supportedQuery, modelID); err != nil {
 		return "", fmt.Errorf("read J3b Business target fence supported models: %w", err)
 	}
-	mappingQuery := `SELECT source_model,source_endpoint_family,upstream_model,enabled FROM ` + s.table("account_model_mappings") + ` WHERE account_id=` + s.placeholder(1) + ` ORDER BY source_model,source_endpoint_family,upstream_model`
+	mappingQuery := `SELECT source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled FROM ` + s.table("account_model_mappings") + ` WHERE account_id=` + s.placeholder(1) + ` ORDER BY source_model,source_endpoint_family,upstream_model,upstream_endpoint_family`
 	if err := appendRows("model-mappings", mappingQuery, modelID); err != nil {
 		return "", fmt.Errorf("read J3b Business target fence mappings: %w", err)
 	}
@@ -752,6 +807,7 @@ func decryptAccountCredential(secret, envelope, credentialType string) (string, 
 type accountCredentialMaterial struct {
 	Token                  string
 	BaseURL                string
+	ChatGPTAccountID       string
 	QuotaProjectID         string
 	SupportedEndpointModes []string
 	EndpointModesPresent   bool
@@ -768,6 +824,9 @@ func decryptAccountCredentialMaterial(secret, envelope, credentialType string) (
 	}
 	if !structured {
 		return accountCredentialMaterial{Token: plain}, nil
+	}
+	if err := validateAccountCredentialFields(fields, credentialType); err != nil {
+		return accountCredentialMaterial{}, err
 	}
 	var keys []string
 	switch credentialType {
@@ -805,6 +864,18 @@ func decryptAccountCredentialMaterial(secret, envelope, credentialType string) (
 		}
 		material.BaseURL = baseURL
 	}
+	for _, key := range []string{"account_id", "chatgpt_account_id"} {
+		raw, present := fields[key]
+		if !present {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return accountCredentialMaterial{}, errors.New("J3b Business credential ChatGPT account ID is invalid")
+		}
+		material.ChatGPTAccountID = strings.TrimSpace(value)
+		break
+	}
 	if raw, ok := fields["quota_project_id"]; ok {
 		value, ok := raw.(string)
 		if !ok || strings.TrimSpace(value) == "" {
@@ -821,6 +892,40 @@ func decryptAccountCredentialMaterial(secret, envelope, credentialType string) (
 		material.EndpointModesPresent = true
 	}
 	return material, nil
+}
+
+// validateAccountCredentialFields keeps the structured envelope closed over
+// the Node credential contract. J3b only consumes a small subset of these
+// fields, but known provider metadata may legitimately coexist with the
+// bearer token. Truly unknown fields must not be silently accepted and
+// ignored, because that would make the snapshot semantics ambiguous.
+func validateAccountCredentialFields(fields map[string]any, credentialType string) error {
+	allowed := map[string]struct{}{}
+	add := func(values ...string) {
+		for _, value := range values {
+			allowed[value] = struct{}{}
+		}
+	}
+	common := []string{"base_url", "supported_endpoint_modes", "service_tier_override", "reasoning_effort_override", "error_handling_rules", "error_handling_rule_overrides", "response_inspection_rules", "quota_recovery_policy"}
+	switch credentialType {
+	case "api_key":
+		add(common...)
+		add("api_key")
+	case "oauth":
+		add(common...)
+		add("access_token", "refresh_token", "expires_at", "client_id", "id_token", "token_type", "scope", "email", "account_id", "chatgpt_account_id", "organization_id", "chatgpt_user_id", "plan_type", "sub", "team_id", "subscription_tier", "entitlement_status")
+	case "google_oauth":
+		add(common...)
+		add("access_token", "refresh_token", "expires_at", "client_id", "client_secret", "quota_project_id", "oauth_type", "project_id", "tier_id", "scope", "token_type", "drive_storage_limit", "drive_storage_usage", "drive_tier_updated_at")
+	default:
+		return errors.New("J3b Business account credential type is unsupported")
+	}
+	for key := range fields {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("J3b Business credential JSON field %q is unsupported", key)
+		}
+	}
+	return nil
 }
 
 // parseCredentialEndpointModes deliberately permits additional Node-only
@@ -985,6 +1090,22 @@ func credentialHeaders(providerCode, profileID string, protocol modelcheckprofil
 		headers.Set("Authorization", "Bearer "+token)
 	}
 	return headers, nil
+}
+
+func openAIOAuthCodexAdapter(providerCode, profileID, credentialType string, protocol modelcheckprofile.Protocol, endpointMode string) (string, error) {
+	if credentialType != "oauth" {
+		return "", nil
+	}
+	if providerCode == "gpt" && profileID == "profile_gpt_openai_v1" {
+		if protocol != modelcheckprofile.ProtocolOpenAIResponses || (endpointMode != modelcheckprofile.EndpointModeResponsesJSON && endpointMode != modelcheckprofile.EndpointModeResponsesSSE) {
+			return "", errors.New("J3b Business OpenAI OAuth Codex endpoint mode is unsupported")
+		}
+		return modelcheckprobe.AdapterOpenAIOAuthCodex, nil
+	}
+	if protocol == modelcheckprofile.ProtocolOpenAIResponses || protocol == modelcheckprofile.ProtocolOpenAIChat {
+		return "", errors.New("J3b Business OAuth credential is incompatible with OpenAI provider profile")
+	}
+	return "", nil
 }
 
 func buildProxyClient(secret string, profileID sql.NullString, enabled sql.NullBool, proxyType, host sql.NullString, port sql.NullInt64, username, password sql.NullString) (*http.Client, error) {

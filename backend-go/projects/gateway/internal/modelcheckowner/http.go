@@ -39,10 +39,13 @@ type RunRequest struct {
 	DispatchRevision                                                                   int64
 	TrustedComparison                                                                  bool
 	TrustedComparisonAccountID, TrustedComparisonConfigRevision                        string
+	TrustedComparisonDispatchRevision                                                  int64
 	TrustedComparisonSourceConfigRevision                                              string
 	TrustedComparisonSourceDispatchRevision                                            int64
 	Endpoint, Prompt                                                                   string
 	Protocol                                                                           string
+	SourceEndpointFamily, UpstreamEndpointFamily                                       string
+	UpstreamProtocol, UpstreamEndpointMode                                             string
 	Headers                                                                            http.Header
 }
 

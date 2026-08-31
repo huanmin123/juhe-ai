@@ -275,7 +275,7 @@ func TestSystemSessionContractIncludesCascadeOwnerRelation(t *testing.T) {
 }
 
 func TestBusinessSQLiteContractIncludesGatewayTargetDependencies(t *testing.T) {
-	if got, want := contracts.BusinessSQLiteSchemaVersion, "business-sqlite-gateway-v10"; got != want {
+	if got, want := contracts.BusinessSQLiteSchemaVersion, "business-sqlite-gateway-v12"; got != want {
 		t.Fatalf("schema version=%q, want %q", got, want)
 	}
 	for table, required := range map[string][]string{

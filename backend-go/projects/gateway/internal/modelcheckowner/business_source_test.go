@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	_ "modernc.org/sqlite"
 )
@@ -32,7 +33,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,enabled INTEGER)`,
+		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
@@ -81,6 +82,22 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	}
 	if !target.OwnPhysicalAccount {
 		t.Fatalf("physical account target must retain immutable physical-account fact: %+v", target)
+	}
+	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_model_mappings VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra','chat_completions',1)`); err != nil {
+		t.Fatal(err)
+	}
+	mappedOwner, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
+	if err != nil || mappedOwner.UpstreamModel != "gpt-5.6-terra" || mappedOwner.SourceEndpointFamily != modelcheckprofile.EndpointResponses || mappedOwner.UpstreamEndpointFamily != modelcheckprofile.EndpointChatCompletions || mappedOwner.UpstreamProtocol != modelcheckprofile.ProtocolOpenAIChat || mappedOwner.UpstreamEndpointMode != modelcheckprofile.EndpointModeChatSSE {
+		t.Fatalf("owner Responses to Chat mapping must freeze family and request shape: target=%+v err=%v", mappedOwner, err)
+	}
+	if _, err := db.Exec(`DELETE FROM account_model_mappings WHERE account_id='acct-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM account_supported_models WHERE account_id='acct-1'`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE accounts SET availability_schedule_json=? WHERE id='acct-1'`, `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[7],"start":"13:00","end":"14:00"}]}`); err != nil {
 		t.Fatal(err)
@@ -156,6 +173,22 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if err != nil || authorizedTarget.ProviderCode != "openai" || authorizedTarget.Headers.Get("Authorization") != "Bearer source-key" || authorizedTarget.OwnPhysicalAccount || authorizedTarget.ConfigRevision != "3" || authorizedTarget.SourceConfigRevision != "3" || authorizedTarget.DispatchRevision != 6 || authorizedTarget.SourceDispatchRevision != 8 || authorizedTarget.CredentialSourceAccountID != "source-account-1" || authorizedTarget.EndpointMode != "responses_sse" || !sameStringSet(authorizedTarget.SupportedEndpointModes, []string{"responses_sse", "interactions_json"}) {
 		t.Fatalf("authorized target must use source credentials: target=%+v err=%v", authorizedTarget, err)
 	}
+	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('source-account-1','gpt-5.6-terra')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_model_mappings VALUES ('source-account-1','gpt-5.6-sol','responses','gpt-5.6-terra','chat_completions',1)`); err != nil {
+		t.Fatal(err)
+	}
+	mappedAuthorized, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol"})
+	if err != nil || mappedAuthorized.UpstreamModel != "gpt-5.6-terra" || mappedAuthorized.SourceEndpointFamily != modelcheckprofile.EndpointResponses || mappedAuthorized.UpstreamEndpointFamily != modelcheckprofile.EndpointChatCompletions || mappedAuthorized.UpstreamProtocol != modelcheckprofile.ProtocolOpenAIChat || mappedAuthorized.UpstreamEndpointMode != modelcheckprofile.EndpointModeChatSSE || mappedAuthorized.CredentialSourceAccountID != "source-account-1" {
+		t.Fatalf("authorized source mapping must freeze source identity and upstream family: target=%+v err=%v", mappedAuthorized, err)
+	}
+	if _, err := db.Exec(`DELETE FROM account_model_mappings WHERE account_id='source-account-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM account_supported_models WHERE account_id='source-account-1'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol", SourceConfigRevision: "stale"}); err == nil || !strings.Contains(err.Error(), "source account config revision") {
 		t.Fatalf("stale source config revision must be rejected: err=%v", err)
 	}
@@ -215,12 +248,26 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !comparisonRequest.TrustedComparison || comparisonRequest.TrustedComparisonAccountID != "acct-3" || comparisonRequest.TrustedComparisonConfigRevision != "4" || comparisonRequest.ProbeSetVersion != modelcheckprofile.ProbeSetVersion || !strings.Contains(comparisonRequest.IdentityKey, "comparison:acct-3:4") {
+	if !comparisonRequest.TrustedComparison || comparisonRequest.TrustedComparisonAccountID != "acct-3" || comparisonRequest.TrustedComparisonConfigRevision != "4" || comparisonRequest.TrustedComparisonDispatchRevision != 9 || comparisonRequest.TrustedComparisonSourceConfigRevision != "4" || comparisonRequest.TrustedComparisonSourceDispatchRevision != 9 || comparisonRequest.ProbeSetVersion != modelcheckprofile.ProbeSetVersion || !strings.Contains(comparisonRequest.IdentityKey, "comparison:acct-3:4") {
 		t.Fatalf("trusted comparison request=%+v", comparisonRequest)
 	}
 	comparisonTarget, err := source.ComparisonResolver()(context.Background(), comparisonRequest)
 	if err != nil || comparisonTarget.ConfigRevision != "4" || comparisonTarget.DispatchRevision != 9 {
 		t.Fatalf("trusted comparison target=%+v err=%v", comparisonTarget, err)
+	}
+	for name, mutate := range map[string]func(*RunRequest){
+		"config":          func(request *RunRequest) { request.TrustedComparisonConfigRevision = "3" },
+		"dispatch":        func(request *RunRequest) { request.TrustedComparisonDispatchRevision = 8 },
+		"source config":   func(request *RunRequest) { request.TrustedComparisonSourceConfigRevision = "3" },
+		"source dispatch": func(request *RunRequest) { request.TrustedComparisonSourceDispatchRevision = 8 },
+	} {
+		t.Run("comparison resolver stale "+name, func(t *testing.T) {
+			stale := comparisonRequest
+			mutate(&stale)
+			if _, err := source.ComparisonResolver()(context.Background(), stale); err == nil {
+				t.Fatalf("comparison resolver must propagate stale %s revision", name)
+			}
+		})
 	}
 	if _, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol", Profile: "quick", TrustedComparison: true, TrustedComparisonID: "acct-3"}); err == nil {
 		t.Fatal("quick profile trusted comparison must be rejected")
@@ -231,7 +278,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil {
 		t.Fatal("configured account models must restrict the static catalog")
 	}
-	if _, err := db.Exec(`INSERT INTO account_model_mappings VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO account_model_mappings VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra','responses',1)`); err != nil {
 		t.Fatal(err)
 	}
 	mapped, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
@@ -309,6 +356,28 @@ func TestBusinessTargetSourceCheckContractRejectsMissingHealthCheckEndpointMode(
 	}
 	if err := source.CheckContract(context.Background()); err == nil || !strings.Contains(err.Error(), "accounts") {
 		t.Fatalf("missing health_check_endpoint_mode must fail contract validation, err=%v", err)
+	}
+}
+
+func TestBusinessTargetSourceCheckContractRejectsMissingUpstreamEndpointFamily(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ddls := businessSourceContractDDL()
+	ddls[len(ddls)-1] = strings.Replace(ddls[len(ddls)-1], ",upstream_endpoint_family TEXT", "", 1)
+	for _, ddl := range ddls {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err := NewBusinessTargetSource(db, false, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.CheckContract(context.Background()); err == nil || !strings.Contains(err.Error(), "account_model_mappings") {
+		t.Fatalf("missing upstream_endpoint_family must fail contract validation, err=%v", err)
 	}
 }
 
@@ -406,7 +475,7 @@ func TestBusinessTargetFenceDetectsMappingAndCredentialDrift(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO account_supported_models VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO account_model_mappings VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO account_model_mappings VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra','responses',1)`); err != nil {
 		t.Fatal(err)
 	}
 	mapped, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
@@ -534,6 +603,12 @@ func TestCredentialMaterialUsesCredentialBaseURLAndRejectsUnknownJSON(t *testing
 	if _, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", `{"metadata":"not-a-token"}`), "api_key"); err == nil {
 		t.Fatal("unknown credential JSON must not become an API key")
 	}
+	if _, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", `{"api_key":"key","metadata":"unexpected"}`), "api_key"); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("unknown credential fields must fail closed: %v", err)
+	}
+	if token, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", `{"access_token":"access","client_id":"client","expires_at":"2030-01-01T00:00:00Z"}`), "oauth"); err != nil || token != "access" {
+		t.Fatalf("known OAuth metadata must remain accepted: token=%q err=%v", token, err)
+	}
 	if _, err := decryptCredentialBaseURL("secret", testCredentialEnvelope(t, "secret", `{"api_key":"key","base_url":"file:///tmp/secret"}`)); err == nil {
 		t.Fatal("credential base_url must require an HTTP(S) URL")
 	}
@@ -579,6 +654,90 @@ func TestBusinessTargetSourceUsesCredentialBaseURLAndGeminiOAuthHeaders(t *testi
 	}
 	if target.Headers.Get("Authorization") != "Bearer google-access" || target.Headers.Get("x-goog-api-key") != "" || target.Headers.Get("x-goog-user-project") != "quota-project" {
 		t.Fatalf("Gemini OAuth headers=%v", target.Headers)
+	}
+}
+
+func TestBusinessTargetSourceRoutesGPTOAuthThroughCodexAdapterIncludingAuthorizedSource(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range businessSourceContractDDL() {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO provider_protocol_profiles VALUES ('profile_gpt_openai_v1',1,'https://profile.example/v1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	oauth := testCredentialEnvelope(t, "secret", `{"access_token":"oauth-access","account_id":"chatgpt-account","base_url":"https://custom.example/v1","supported_endpoint_modes":["responses_json","responses_sse"]}`)
+	apiKey := testCredentialEnvelope(t, "secret", `{"api_key":"api-key","base_url":"https://custom.example/v1","supported_endpoint_modes":["responses_json","responses_sse"]}`)
+	if _, err := db.Exec(`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('gpt-oauth','sys-1','gpt','profile_gpt_openai_v1','openai','oauth',1,1,'active',1,'responses_json',?)`, oauth); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('gpt-oauth','sys-1','group-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewBusinessTargetSource(db, false, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "gpt-oauth", Model: "gpt-5.6-sol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Endpoint != modelcheckprobe.OpenAIOAuthCodexBaseURL || target.UpstreamAdapter != modelcheckprobe.AdapterOpenAIOAuthCodex || target.Headers.Get("Authorization") != "Bearer oauth-access" || target.Headers.Get("chatgpt-account-id") != "chatgpt-account" {
+		t.Fatalf("OAuth target=%+v", target)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET health_check_endpoint_mode='chat_json' WHERE id='gpt-oauth'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "gpt-oauth", Model: "gpt-5.6-sol"}); err == nil || !strings.Contains(err.Error(), "incompatible") {
+		t.Fatalf("OAuth chat mode must fail closed, err=%v", err)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET health_check_endpoint_mode='responses_sse' WHERE id='gpt-oauth'`); err != nil {
+		t.Fatal(err)
+	}
+	streamTarget, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "gpt-oauth", Model: "gpt-5.6-sol"})
+	if err != nil || streamTarget.UpstreamAdapter != modelcheckprobe.AdapterOpenAIOAuthCodex || streamTarget.Endpoint != modelcheckprobe.OpenAIOAuthCodexBaseURL {
+		t.Fatalf("OAuth SSE target=%+v err=%v", streamTarget, err)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET type='api_key',credentials_encrypted=? WHERE id='gpt-oauth'`, apiKey); err != nil {
+		t.Fatal(err)
+	}
+	apiTarget, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "gpt-oauth", Model: "gpt-5.6-sol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apiTarget.Endpoint != "https://custom.example/v1" || apiTarget.UpstreamAdapter != "" || apiTarget.Headers.Get("Authorization") != "Bearer api-key" {
+		t.Fatalf("API-key target=%+v", apiTarget)
+	}
+
+	if _, err := db.Exec(`INSERT INTO resource_authorizations VALUES ('grant-1','account','gpt-source','sys-1','sys-1','use','active',NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('gpt-source','sys-1','gpt','profile_gpt_openai_v1','openai','oauth',3,4,'active',1,'responses_sse',?)`, oauth); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('gpt-source','sys-1','group-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id) VALUES ('gpt-virtual','sys-1','gpt','profile_gpt_openai_v1','openai','oauth',5,6,'active',1,'responses_sse',?,'grant-1','gpt-source')`, apiKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('gpt-virtual','sys-1','group-1','grant-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	virtual, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "gpt-virtual", Model: "gpt-5.6-sol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if virtual.OwnPhysicalAccount || virtual.CredentialSourceAccountID != "gpt-source" || virtual.Endpoint != modelcheckprobe.OpenAIOAuthCodexBaseURL || virtual.UpstreamAdapter != modelcheckprobe.AdapterOpenAIOAuthCodex || virtual.Headers.Get("Authorization") != "Bearer oauth-access" {
+		t.Fatalf("authorized OAuth target=%+v", virtual)
 	}
 }
 
@@ -708,7 +867,7 @@ func businessSourceContractDDL() []string {
 		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,enabled INTEGER)`,
+		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
 	}
 }
 

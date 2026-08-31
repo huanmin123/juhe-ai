@@ -21,7 +21,10 @@ import (
 type Target struct {
 	Endpoint, ProviderCode, ConfigRevision, UpstreamModel string
 	CredentialType                                        string
-	Client                                                *http.Client
+	// UpstreamAdapter is selected only by the resolved source-account
+	// credential/profile contract. It is never inferred from a public request.
+	UpstreamAdapter string
+	Client          *http.Client
 	// CredentialSourceAccountID identifies the physical account whose secret
 	// was used. Authorized instances keep their virtual TargetID for reporting,
 	// but admission/circuit identity must remain source-account scoped.
@@ -34,6 +37,15 @@ type Target struct {
 	DispatchRevision       int64
 	OwnPhysicalAccount     bool
 	Protocol               modelcheckprofile.Protocol
+	// SourceEndpointFamily and UpstreamEndpointFamily are the immutable
+	// model-mapping decision. Keep them distinct from Protocol because a
+	// supported bridge can change the upstream request family.
+	SourceEndpointFamily   modelcheckprofile.EndpointFamily
+	UpstreamEndpointFamily modelcheckprofile.EndpointFamily
+	// UpstreamProtocol is the protocol selected by model mapping. It may differ
+	// from Protocol for a supported bridge (for example Responses -> Chat).
+	UpstreamProtocol     modelcheckprofile.Protocol
+	UpstreamEndpointMode string
 	// EndpointMode is the Business-selected health-check request shape. An
 	// empty value preserves compatibility with older resolver fixtures and is
 	// deterministically derived from protocol/stream by modelcheckprobe.
@@ -106,10 +118,25 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if request.SourceDispatchRevision > 0 && request.SourceDispatchRevision != target.SourceDispatchRevision {
 		return RunResult{}, errors.New("resolved J3b source account dispatch revision is stale")
 	}
+	if request.SourceEndpointFamily != "" && request.SourceEndpointFamily != string(target.SourceEndpointFamily) {
+		return RunResult{}, errors.New("resolved J3b source endpoint family is stale")
+	}
+	if request.UpstreamEndpointFamily != "" && request.UpstreamEndpointFamily != string(target.UpstreamEndpointFamily) {
+		return RunResult{}, errors.New("resolved J3b upstream endpoint family is stale")
+	}
+	if request.UpstreamProtocol != "" && request.UpstreamProtocol != string(target.UpstreamProtocol) {
+		return RunResult{}, errors.New("resolved J3b upstream protocol is stale")
+	}
+	if request.UpstreamEndpointMode != "" && request.UpstreamEndpointMode != target.UpstreamEndpointMode {
+		return RunResult{}, errors.New("resolved J3b upstream endpoint mode is stale")
+	}
 	var comparisonTarget Target
 	if request.TrustedComparison {
 		if request.Profile != "full" || strings.TrimSpace(request.TrustedComparisonAccountID) == "" || s.ResolveComparison == nil {
 			return RunResult{}, errors.New("resolved J3b trusted comparison contract is incomplete")
+		}
+		if strings.TrimSpace(request.TrustedComparisonConfigRevision) == "" || request.TrustedComparisonDispatchRevision < 1 || strings.TrimSpace(request.TrustedComparisonSourceConfigRevision) == "" || request.TrustedComparisonSourceDispatchRevision < 1 {
+			return RunResult{}, errors.New("resolved J3b trusted comparison revisions are incomplete")
 		}
 		comparisonTarget, err = s.ResolveComparison(ctx, request)
 		if err != nil {
@@ -117,6 +144,18 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		}
 		if comparisonTarget.Endpoint == "" || comparisonTarget.Prompt == "" || comparisonTarget.UpstreamModel == "" || comparisonTarget.DispatchRevision < 1 {
 			return RunResult{}, errors.New("resolved J3b trusted comparison target is incomplete")
+		}
+		if comparisonTarget.ConfigRevision != request.TrustedComparisonConfigRevision {
+			return RunResult{}, errors.New("resolved J3b trusted comparison config revision is stale")
+		}
+		if comparisonTarget.DispatchRevision != request.TrustedComparisonDispatchRevision {
+			return RunResult{}, errors.New("resolved J3b trusted comparison dispatch revision is stale")
+		}
+		if comparisonTarget.SourceConfigRevision != request.TrustedComparisonSourceConfigRevision {
+			return RunResult{}, errors.New("resolved J3b trusted comparison source account config revision is stale")
+		}
+		if comparisonTarget.SourceDispatchRevision != request.TrustedComparisonSourceDispatchRevision {
+			return RunResult{}, errors.New("resolved J3b trusted comparison source account dispatch revision is stale")
 		}
 	}
 	inputID, runID, outcomeID := newID("input"), newID("run"), newID("outcome")
@@ -163,9 +202,17 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		return RunResult{}, errors.New("J3b runtime trigger is invalid")
 	}
 	manualEnforcementEligible := runtimeEnforcementAllowed(triggerKind, request)
-	payloadSnapshot := map[string]any{"targetType": request.TargetType, "targetId": request.TargetID, "model": request.Model, "upstreamModel": upstreamModel, "profile": request.Profile, "protocol": target.Protocol, "credentialType": target.CredentialType, "endpointFingerprint": endpointFingerprint(target.Endpoint), "probeSetVersion": probeSet, "configRevision": request.ConfigRevision, "sourceConfigRevision": request.SourceConfigRevision, "sourceDispatchRevision": request.SourceDispatchRevision, "policyRevision": request.PolicyRevision, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible}
+	upstreamProtocol := target.UpstreamProtocol
+	if upstreamProtocol == "" {
+		upstreamProtocol = target.Protocol
+	}
+	upstreamEndpointMode := target.UpstreamEndpointMode
+	if upstreamEndpointMode == "" {
+		upstreamEndpointMode = modelcheckprofile.EndpointModeForProtocol(upstreamProtocol, false)
+	}
+	payloadSnapshot := map[string]any{"targetType": request.TargetType, "targetId": request.TargetID, "model": request.Model, "upstreamModel": upstreamModel, "profile": request.Profile, "protocol": target.Protocol, "sourceEndpointFamily": target.SourceEndpointFamily, "upstreamProtocol": upstreamProtocol, "upstreamEndpointFamily": target.UpstreamEndpointFamily, "endpointMode": target.EndpointMode, "upstreamEndpointMode": upstreamEndpointMode, "credentialType": target.CredentialType, "upstreamAdapter": target.UpstreamAdapter, "endpointFingerprint": endpointFingerprint(target.Endpoint), "probeSetVersion": probeSet, "configRevision": request.ConfigRevision, "sourceConfigRevision": request.SourceConfigRevision, "sourceDispatchRevision": request.SourceDispatchRevision, "policyRevision": request.PolicyRevision, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible}
 	if request.TrustedComparison {
-		payloadSnapshot["trustedComparison"] = map[string]any{"accountId": request.TrustedComparisonAccountID, "configRevision": request.TrustedComparisonConfigRevision, "sourceConfigRevision": request.TrustedComparisonSourceConfigRevision, "sourceDispatchRevision": request.TrustedComparisonSourceDispatchRevision, "upstreamModel": comparisonTarget.UpstreamModel, "protocol": comparisonTarget.Protocol, "endpointFingerprint": endpointFingerprint(comparisonTarget.Endpoint)}
+		payloadSnapshot["trustedComparison"] = map[string]any{"accountId": request.TrustedComparisonAccountID, "configRevision": request.TrustedComparisonConfigRevision, "dispatchRevision": request.TrustedComparisonDispatchRevision, "sourceConfigRevision": request.TrustedComparisonSourceConfigRevision, "sourceDispatchRevision": request.TrustedComparisonSourceDispatchRevision, "upstreamModel": comparisonTarget.UpstreamModel, "protocol": comparisonTarget.Protocol, "sourceEndpointFamily": comparisonTarget.SourceEndpointFamily, "upstreamProtocol": comparisonTarget.UpstreamProtocol, "upstreamEndpointFamily": comparisonTarget.UpstreamEndpointFamily, "upstreamAdapter": comparisonTarget.UpstreamAdapter, "endpointFingerprint": endpointFingerprint(comparisonTarget.Endpoint)}
 	}
 	payload, _ := json.Marshal(payloadSnapshot)
 	policySnapshot, _ := json.Marshal(map[string]any{"revision": request.PolicyRevision, "threshold": request.Threshold, "action": penaltyAction, "recoveryIntervalMinutes": recoveryInterval, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible})
@@ -198,20 +245,20 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	emit(ProgressEvent{Kind: "run_started", Data: map[string]any{"runId": runID}})
 	probeModel := upstreamModel
-	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, Headers: target.Headers, Model: probeModel, Profile: request.Profile, Protocol: target.Protocol, EndpointMode: target.EndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits}
+	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, Headers: target.Headers, Model: probeModel, Profile: request.Profile, Protocol: target.Protocol, UpstreamProtocol: target.UpstreamProtocol, EndpointMode: target.EndpointMode, UpstreamEndpointMode: target.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Adapter: target.UpstreamAdapter}
 	probeSuite.Dispatcher = s.Dispatcher
 	probeSuite.Client = target.Client
 	credentialSourceID := target.CredentialSourceAccountID
 	if credentialSourceID == "" {
 		credentialSourceID = request.TargetID
 	}
-	upstreamEndpointMode := target.EndpointMode
-	if upstreamEndpointMode == "" {
-		upstreamEndpointMode = modelcheckprofile.EndpointModeForProtocol(target.Protocol, false)
+	clientEndpointFamily := string(target.SourceEndpointFamily)
+	if clientEndpointFamily == "" {
+		clientEndpointFamily = string(target.Protocol)
 	}
-	probeSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: credentialSourceID, KeyFingerprint: credentialSourceID, ClientModel: request.Model, ClientEndpointFamily: string(target.Protocol), FinalUpstreamModel: probeModel, UpstreamEndpointMode: upstreamEndpointMode, DispatchRevision: target.DispatchRevision}
+	probeSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: credentialSourceID, KeyFingerprint: credentialSourceID, ClientModel: request.Model, ClientEndpointFamily: clientEndpointFamily, FinalUpstreamModel: probeModel, UpstreamEndpointMode: upstreamEndpointMode, DispatchRevision: target.DispatchRevision}
 	if request.TrustedComparison {
-		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, Profile: request.Profile, Protocol: comparisonTarget.Protocol, EndpointMode: comparisonTarget.EndpointMode, SupportedEndpointModes: append([]string(nil), comparisonTarget.SupportedEndpointModes...), Dispatcher: s.Dispatcher}
+		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, Profile: request.Profile, Protocol: comparisonTarget.Protocol, UpstreamProtocol: comparisonTarget.UpstreamProtocol, EndpointMode: comparisonTarget.EndpointMode, UpstreamEndpointMode: comparisonTarget.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), comparisonTarget.SupportedEndpointModes...), Dispatcher: s.Dispatcher, Adapter: comparisonTarget.UpstreamAdapter}
 		comparisonSuite.Client = comparisonTarget.Client
 		comparisonSourceID := comparisonTarget.CredentialSourceAccountID
 		if comparisonSourceID == "" {
@@ -221,13 +268,19 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		if comparisonEndpointMode == "" {
 			comparisonEndpointMode = modelcheckprofile.EndpointModeForProtocol(comparisonTarget.Protocol, false)
 		}
-		comparisonSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: comparisonSourceID, KeyFingerprint: comparisonSourceID, ClientModel: request.Model, ClientEndpointFamily: string(comparisonTarget.Protocol), FinalUpstreamModel: comparisonTarget.UpstreamModel, UpstreamEndpointMode: comparisonEndpointMode, DispatchRevision: comparisonTarget.DispatchRevision}
+		comparisonClientEndpointFamily := string(comparisonTarget.SourceEndpointFamily)
+		if comparisonClientEndpointFamily == "" {
+			comparisonClientEndpointFamily = string(comparisonTarget.Protocol)
+		}
+		comparisonSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: comparisonSourceID, KeyFingerprint: comparisonSourceID, ClientModel: request.Model, ClientEndpointFamily: comparisonClientEndpointFamily, FinalUpstreamModel: comparisonTarget.UpstreamModel, UpstreamEndpointMode: comparisonEndpointMode, DispatchRevision: comparisonTarget.DispatchRevision}
 		probeSuite.Comparison = comparisonSuite
 	}
 	items, probeErr := modelcheckprobe.RunSuite(ctx, probeSuite, lease)
 	if probeErr != nil {
-		_ = s.Store.ReleaseClaim(ctx, claim, now)
-		return s.finishFailure(ctx, runID, input, outcomeID, now, probeErr)
+		return s.finishFailure(ctx, runID, input, claim, now, probeErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return s.finishFailure(ctx, runID, input, claim, now, err)
 	}
 	itemRecords := make([]ItemRecord, 0, len(items))
 	totalScore, totalMax := 0, 0
@@ -287,7 +340,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	identityStatus := observationIdentityStatus(evidenceItems)
 	if err := appendEvaluationObservations(ctx, s.Store, runID, request.SystemAccountID, request.TargetID, providerCode, request.Model, probeModel, mappingStatus, protocolStatus, identityStatus, len(aggregate.Families), items, now); err != nil {
-		return RunResult{}, err
+		return s.finishFailure(ctx, runID, input, claim, now, err)
 	}
 	if request.TrustedComparison {
 		comparisonMappingStatus := "unmapped"
@@ -295,21 +348,28 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 			comparisonMappingStatus = "mapped"
 		}
 		if err := appendObservationIdempotent(ctx, s.Store, ObservationRecord{ID: runID + "-observation-0002", RunID: runID, SystemAccountID: request.SystemAccountID, AccountID: request.TrustedComparisonAccountID, ProviderCode: comparisonTarget.ProviderCode, RequestedModel: request.Model, MappedUpstreamModel: comparisonTarget.UpstreamModel, ProbeFamily: "trusted-comparison", ObservationStatus: observationStatus, IdentityStatus: identityStatus, MappingStatus: comparisonMappingStatus, ProtocolStatus: protocolStatus, EvidenceCoverage: len(aggregate.Families), CreatedAt: now}); err != nil {
-			return RunResult{}, err
+			return s.finishFailure(ctx, runID, input, claim, now, err)
 		}
 	}
 	qualityUnavailable := level == "unavailable"
 	qualityFailed := status == RunCompleted && !qualityUnavailable && score < request.Threshold
-	enforcementAllowed := manualEnforcementEligible && qualityFailed
+	// Recovery validates whether an existing isolation can be cleared; it must
+	// not create a second enforcement generation when the recovery probe fails.
+	enforcementAllowed := manualEnforcementEligible && qualityFailed && triggerKind != "quality_recovery"
 	qualityDecision, _ := json.Marshal(map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "enforcementAllowed": enforcementAllowed, "trust": trustReport})
-	if err := s.Store.CommitOutcome(ctx, Outcome{OutcomeID: outcomeID, InputID: input.InputID, InputDigest: input.InputDigest, Payload: resultPayload}, claim, now); err != nil {
+	if err := ctx.Err(); err != nil {
+		return s.finishFailure(ctx, runID, input, claim, now, err)
+	}
+	finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer finalizeCancel()
+	if err := s.Store.CommitOutcome(finalizeCtx, Outcome{OutcomeID: outcomeID, InputID: input.InputID, InputDigest: input.InputDigest, Payload: resultPayload}, claim, now); err != nil {
 		return RunResult{}, err
 	}
 	finishedAt := time.Now().UTC()
 	if s.Now != nil {
 		finishedAt = s.Now().UTC()
 	}
-	if err := s.Store.ProjectOutcome(ctx, OutcomeProjection{RunID: runID, Status: status, Level: level, Score: score, MaxScore: 100, Message: message, FinishedAt: finishedAt, Items: itemRecords, ResultSummary: resultPayload, QualityDecision: qualityDecision}); err != nil {
+	if err := s.Store.ProjectOutcome(finalizeCtx, OutcomeProjection{RunID: runID, Status: status, Level: level, Score: score, MaxScore: 100, Message: message, FinishedAt: finishedAt, Items: itemRecords, ResultSummary: resultPayload, QualityDecision: qualityDecision}); err != nil {
 		return RunResult{}, err
 	}
 	// Node publishes a health failure only for a completed quality failure or
@@ -473,14 +533,25 @@ func observationIdentityStatus(items []map[string]any) string {
 	return "unknown"
 }
 
-func (s *Runtime) finishFailure(ctx context.Context, runID string, input InputRecord, outcomeID string, now time.Time, cause error) (RunResult, error) {
+func (s *Runtime) finishFailure(ctx context.Context, runID string, input InputRecord, claim Claim, now time.Time, cause error) (RunResult, error) {
 	message := cause.Error()
+	status := RunFailed
+	if errors.Is(ctx.Err(), context.Canceled) {
+		status = RunCanceled
+		message = "J3b model check canceled without quality evidence"
+	}
 	payload, _ := json.Marshal(map[string]any{"success": false, "error": message})
 	item := ItemRecord{ID: runID + "-item-0001", RunID: runID, ItemKey: "target.execution", ItemType: "execution", Status: ItemFailed, Score: 0, MaxScore: 100, EvidenceSummary: fmt.Sprintf(`{"message":%q}`, message), ErrorMessage: message}
-	if err := s.Store.ProjectOutcome(ctx, OutcomeProjection{RunID: runID, Status: RunFailed, Level: "unavailable", Score: 0, MaxScore: 100, Message: message, FinishedAt: now, Items: []ItemRecord{item}, ResultSummary: payload, QualityDecision: []byte(`{}`)}); err != nil {
+	finalizeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.Store.CommitOutcome(finalizeCtx, Outcome{OutcomeID: claim.OutcomeID, InputID: input.InputID, InputDigest: input.InputDigest, ObservedAt: now, StoredAt: now, Payload: payload}, claim, now); err != nil {
 		return RunResult{}, err
 	}
-	return RunResult{RunID: runID, Status: string(RunFailed), Data: map[string]any{"message": message}}, cause
+	if err := s.Store.ProjectOutcome(finalizeCtx, OutcomeProjection{RunID: runID, Status: status, Level: "unavailable", Score: 0, MaxScore: 100, Message: message, FinishedAt: now, Items: []ItemRecord{item}, ResultSummary: payload, QualityDecision: []byte(`{}`)}); err != nil {
+		return RunResult{}, err
+	}
+	_ = s.Store.ReleaseClaim(finalizeCtx, claim, now)
+	return RunResult{RunID: runID, Status: string(status), Data: map[string]any{"message": message}}, cause
 }
 
 func ownerOrDefault(owner string) string {

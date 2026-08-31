@@ -15,18 +15,20 @@ import (
 // transport failure so that partial evidence is explicit and never treated as
 // a complete quality fact.
 type Suite struct {
-	Endpoint     string
-	ProviderCode string
-	Headers      http.Header
-	Client       *http.Client
-	Model        string
-	Profile      string
-	Protocol     modelcheckprofile.Protocol
-	Stream       bool
+	Endpoint         string
+	ProviderCode     string
+	Headers          http.Header
+	Client           *http.Client
+	Model            string
+	Profile          string
+	Protocol         modelcheckprofile.Protocol
+	UpstreamProtocol modelcheckprofile.Protocol
+	Stream           bool
 	// EndpointMode is preferred over Stream when supplied. Supported modes are
 	// checked before any request is built, preserving Business fail-closed
 	// endpoint capability semantics.
 	EndpointMode           string
+	UpstreamEndpointMode   string
 	SupportedEndpointModes []string
 	// Comparison is an independently resolved, in-process trusted target.
 	// It is only used by the full profile; callers must not provide a client
@@ -36,39 +38,42 @@ type Suite struct {
 	ModelLimits ModelLimitSnapshot
 	Dispatcher  DispatcherPort
 	Capability  keymodelruntime.Capability
+	// Adapter is set only by the resolved source-account contract. The suite
+	// never infers a subscription lane from a generic OpenAI protocol.
+	Adapter string
 }
 
 func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evaluation, error) {
-	endpointMode, stream, err := input.probeMode()
+	_, stream, err := input.probeMode()
 	if err != nil {
 		return nil, err
 	}
-	results := make([]Result, 0, 4)
+	if input.UpstreamProtocol == "" {
+		input.UpstreamProtocol = input.Protocol
+	}
+	upstreamMode := strings.TrimSpace(input.UpstreamEndpointMode)
+	if upstreamMode == "" {
+		upstreamMode = modelcheckprofile.EndpointModeForProtocol(input.UpstreamProtocol, stream)
+	}
+	results := make([]Result, 0, 3)
 	requests := []Request{}
-	basic, err := input.buildBasic(input.Model, "Reply with exactly: OK-MODEL-CHECK", endpointMode, stream)
+	basic, err := input.buildBasic(input.Model, "Reply with exactly: OK-MODEL-CHECK", upstreamMode, stream)
 	if err != nil {
 		return nil, err
 	}
 	requests = append(requests, basic)
-	structured, err := input.buildStructured(input.Model, endpointMode, stream)
+	structured, err := input.buildStructured(input.Model, upstreamMode, stream)
 	if err != nil {
 		return nil, err
 	}
 	requests = append(requests, structured)
-	tool, err := input.buildTool(input.Model, endpointMode, stream)
+	tool, err := input.buildTool(input.Model, upstreamMode, stream)
 	if err != nil {
 		return nil, err
 	}
 	requests = append(requests, tool)
-	for round := 0; round < 3; round++ {
-		stability, stabilityErr := input.buildStability(input.Model, endpointMode, stream)
-		if stabilityErr != nil {
-			return nil, stabilityErr
-		}
-		requests = append(requests, stability)
-	}
 	for _, request := range requests {
-		result, executeErr := Execute(ctx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Client: input.Client, Timeout: timeout, Dispatcher: input.Dispatcher, Capability: input.Capability})
+		result, executeErr := Execute(ctx, request, Options{Endpoint: input.Endpoint, Headers: input.Headers, Client: input.Client, Timeout: timeout, Dispatcher: input.Dispatcher, Capability: input.Capability, Adapter: input.Adapter})
 		if executeErr != nil {
 			return nil, executeErr
 		}
@@ -88,41 +93,92 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 	if len(results) > 2 {
 		items = append(items, EvaluateTool(results[2], input.Model))
 	}
-	if len(results) > 3 {
-		stabilityResults := results[3:]
-		items = append(items, EvaluateStability(stabilityResults, input.Model))
+	// A terminal core failure keeps the formed items and prevents unrelated
+	// profile extensions from hiding the failed request.
+	if len(results) < len(requests) || !results[len(results)-1].Success {
+		items = append(items, EvaluateUsage(results))
+		return items, nil
+	}
+	if input.Profile == "quick" {
+		tokenIntegrity, tokenErr := runTokenIntegrity(ctx, input.UpstreamProtocol, input.Model, input.Tokenizer, func(runCtx context.Context, request Request) (Result, error) {
+			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
+		}, 1, upstreamMode)
+		if tokenErr != nil {
+			return nil, tokenErr
+		}
+		items = append(items, tokenIntegrity, EvaluateUsage(results))
+		return items, nil
 	}
 	if input.Profile == "full" {
-		behavior, behaviorErr := RunBehavior(ctx, input.Protocol, input.Model, func(runCtx context.Context, request Request) (Result, error) {
+		behaviorTerminal := false
+		behavior, behaviorErr := RunBehavior(ctx, input.UpstreamProtocol, input.Model, func(runCtx context.Context, request Request) (Result, error) {
 			options := input.options(input.Endpoint, input.Headers, timeout)
 			options.Client = input.Client
-			return Execute(runCtx, request, options)
-		}, endpointMode)
+			result, executeErr := Execute(runCtx, request, options)
+			if executeErr == nil && !result.Success {
+				behaviorTerminal = true
+			}
+			return result, executeErr
+		}, upstreamMode)
 		if behaviorErr != nil {
 			return nil, behaviorErr
 		}
 		items = append(items, behavior)
-		identity, identityErr := RunIdentity(ctx, input.Protocol, input.Model, func(runCtx context.Context, request Request) (Result, error) {
+		if behaviorTerminal {
+			items = append(items, EvaluateUsage(results))
+			return items, nil
+		}
+		longContextTerminal := false
+		longContext, longErr := RunLongContext(ctx, input.ProviderCode, input.Model, input.UpstreamProtocol, input.Tokenizer, input.ModelLimits, func(runCtx context.Context, request Request) (Result, error) {
+			result, executeErr := Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
+			if executeErr == nil && !result.Success {
+				longContextTerminal = true
+			}
+			return result, executeErr
+		}, upstreamMode)
+		if longErr != nil {
+			return nil, longErr
+		}
+		items = append(items, longContext)
+		if longContextTerminal {
+			items = append(items, EvaluateUsage(results))
+			return items, nil
+		}
+		stabilityResults := make([]Result, 0, 3)
+		for round := 0; round < 3; round++ {
+			stability, stabilityErr := input.buildStability(input.Model, upstreamMode, stream)
+			if stabilityErr != nil {
+				return nil, stabilityErr
+			}
+			result, executeErr := Execute(ctx, stability, input.options(input.Endpoint, input.Headers, timeout))
+			if executeErr != nil {
+				return nil, executeErr
+			}
+			stabilityResults = append(stabilityResults, result)
+			if !result.Success {
+				break
+			}
+		}
+		items = append(items, EvaluateStability(stabilityResults, input.Model))
+		if len(stabilityResults) > 0 && !stabilityResults[len(stabilityResults)-1].Success {
+			items = append(items, EvaluateUsage(results))
+			return items, nil
+		}
+		tokenIntegrity, tokenErr := runTokenIntegrity(ctx, input.UpstreamProtocol, input.Model, input.Tokenizer, func(runCtx context.Context, request Request) (Result, error) {
 			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
-		}, endpointMode)
+		}, 3, upstreamMode)
+		if tokenErr != nil {
+			return nil, tokenErr
+		}
+		items = append(items, tokenIntegrity)
+		identity, identityErr := RunIdentity(ctx, input.UpstreamProtocol, input.Model, func(runCtx context.Context, request Request) (Result, error) {
+			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
+		}, upstreamMode)
 		if identityErr != nil {
 			return nil, identityErr
 		}
 		items = append(items, identity)
-		tokenIntegrity, tokenErr := RunTokenIntegrity(ctx, input.Protocol, input.Model, input.Tokenizer, func(runCtx context.Context, request Request) (Result, error) {
-			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
-		}, endpointMode)
-		if tokenErr != nil {
-			return nil, tokenErr
-		}
-		longContext, longErr := RunLongContext(ctx, input.ProviderCode, input.Model, input.Protocol, input.Tokenizer, input.ModelLimits, func(runCtx context.Context, request Request) (Result, error) {
-			return Execute(runCtx, request, input.options(input.Endpoint, input.Headers, timeout))
-		}, endpointMode)
-		if longErr != nil {
-			return nil, longErr
-		}
-		items = append(items, tokenIntegrity, longContext)
-		if ShouldRunJuice(input.Model, input.Profile, string(input.Protocol)) {
+		if ShouldRunJuice(input.Model, input.Profile, string(input.UpstreamProtocol)) {
 			juiceResults := make([]Result, 0, 6)
 			for _, request := range JuiceRequests(input.Model) {
 				result, executeErr := Execute(ctx, request, input.options(input.Endpoint, input.Headers, timeout))
@@ -162,15 +218,23 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 // sent to the same resolved endpoint, then compared using only response
 // metadata. Distribution similarity remains reserved for a trusted account.
 func RunSelfCrossModel(ctx context.Context, input Suite, targetBasic Result, timeout time.Duration) (Evaluation, error) {
-	endpointMode, stream, err := input.probeMode()
+	_, stream, err := input.probeMode()
 	if err != nil {
 		return Evaluation{}, err
+	}
+	upstreamProtocol := input.UpstreamProtocol
+	if upstreamProtocol == "" {
+		upstreamProtocol = input.Protocol
+	}
+	upstreamMode := strings.TrimSpace(input.UpstreamEndpointMode)
+	if upstreamMode == "" {
+		upstreamMode = modelcheckprofile.EndpointModeForProtocol(upstreamProtocol, stream)
 	}
 	pairedModel := modelcheckprofile.PairedModel(input.ProfileForModel(), input.Model)
 	if pairedModel == "" {
 		return Evaluation{Kind: "cross_model", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "no_paired_model"}}, nil
 	}
-	request, err := input.buildBasic(pairedModel, "Reply with exactly: CROSS-MODEL-OK", endpointMode, stream)
+	request, err := input.buildBasic(pairedModel, "Reply with exactly: CROSS-MODEL-OK", upstreamMode, stream)
 	if err != nil {
 		return Evaluation{}, err
 	}
@@ -192,6 +256,9 @@ func (s Suite) probeMode() (string, bool, error) {
 	if !modelcheckprofile.EndpointModeMatchesProtocol(s.Protocol, mode) {
 		return "", false, fmt.Errorf("J3b suite endpoint mode %q does not match protocol %q", mode, s.Protocol)
 	}
+	if s.Adapter == AdapterOpenAIOAuthCodex && (s.Protocol != modelcheckprofile.ProtocolOpenAIResponses || (mode != modelcheckprofile.EndpointModeResponsesJSON && mode != modelcheckprofile.EndpointModeResponsesSSE)) {
+		return "", false, fmt.Errorf("J3b OpenAI OAuth Codex endpoint mode %q is unsupported", mode)
+	}
 	if len(s.SupportedEndpointModes) > 0 {
 		found := false
 		for _, candidate := range s.SupportedEndpointModes {
@@ -208,35 +275,60 @@ func (s Suite) probeMode() (string, bool, error) {
 }
 
 func (s Suite) buildBasic(model, prompt, mode string, stream bool) (Request, error) {
-	if mode != "" {
-		return BuildBasicForEndpointMode(s.Protocol, model, prompt, mode)
+	protocol := s.UpstreamProtocol
+	if protocol == "" {
+		protocol = s.Protocol
 	}
-	return BuildBasic(s.Protocol, model, prompt, stream)
+	if s.Adapter == AdapterOpenAIOAuthCodex {
+		return BuildOpenAIOAuthCodexBasic(model, prompt, stream)
+	}
+	if mode != "" {
+		return BuildBasicForEndpointMode(protocol, model, prompt, mode)
+	}
+	return BuildBasic(protocol, model, prompt, stream)
 }
 
 func (s Suite) buildStructured(model, mode string, stream bool) (Request, error) {
-	if mode != "" {
-		return BuildStructuredForEndpointMode(s.Protocol, model, mode)
+	protocol := s.UpstreamProtocol
+	if protocol == "" {
+		protocol = s.Protocol
 	}
-	return BuildStructured(s.Protocol, model, stream)
+	if s.Adapter == AdapterOpenAIOAuthCodex {
+		return BuildOpenAIOAuthCodexStructured(model, stream)
+	}
+	if mode != "" {
+		return BuildStructuredForEndpointMode(protocol, model, mode)
+	}
+	return BuildStructured(protocol, model, stream)
 }
 
 func (s Suite) buildTool(model, mode string, stream bool) (Request, error) {
-	if mode != "" {
-		return BuildToolForEndpointMode(s.Protocol, model, mode)
+	protocol := s.UpstreamProtocol
+	if protocol == "" {
+		protocol = s.Protocol
 	}
-	return BuildTool(s.Protocol, model, stream)
+	if s.Adapter == AdapterOpenAIOAuthCodex {
+		return BuildOpenAIOAuthCodexTool(model, stream)
+	}
+	if mode != "" {
+		return BuildToolForEndpointMode(protocol, model, mode)
+	}
+	return BuildTool(protocol, model, stream)
 }
 
 func (s Suite) buildStability(model, mode string, stream bool) (Request, error) {
-	if mode != "" {
-		return BuildBasicForEndpointMode(s.Protocol, model, "Reply with exactly one uppercase word: VECTOR", mode)
+	protocol := s.UpstreamProtocol
+	if protocol == "" {
+		protocol = s.Protocol
 	}
-	return StabilityRequest(s.Protocol, model, stream)
+	if mode != "" {
+		return BuildBasicForEndpointMode(protocol, model, "Reply with exactly one uppercase word: VECTOR", mode)
+	}
+	return StabilityRequest(protocol, model, stream)
 }
 
 func (s Suite) options(endpoint string, headers http.Header, timeout time.Duration) Options {
-	return Options{Endpoint: endpoint, Headers: headers, Client: s.Client, Timeout: timeout, Dispatcher: s.Dispatcher, Capability: s.Capability}
+	return Options{Endpoint: endpoint, Headers: headers, Client: s.Client, Timeout: timeout, Dispatcher: s.Dispatcher, Capability: s.Capability, Adapter: s.Adapter}
 }
 
 func (s Suite) ProfileForModel() modelcheckprofile.ProtocolProfile {
@@ -267,6 +359,17 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	comparisonMode, comparisonStream, err := comparison.probeMode()
 	if err != nil {
 		return nil, err
+	}
+	if target.Profile == "full" {
+		// The trusted account must form its own full evidence families before
+		// cross-account summaries are evaluated. Clear Comparison on the copy so
+		// a nested trusted account cannot recurse back into this function.
+		comparisonSuite := comparison
+		comparisonSuite.Profile = "full"
+		comparisonSuite.Comparison = nil
+		if _, err := RunSuite(ctx, comparisonSuite, timeout); err != nil {
+			return nil, err
+		}
 	}
 	targetModel := target.Model
 	comparisonModel := comparison.Model

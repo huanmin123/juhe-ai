@@ -68,6 +68,7 @@ import {
   orderGatewayAccountsByHotQualityAsync,
   type GatewayHotQualityExplorationReservation
 } from '../runtime/hot-quality-runtime.service.js'
+import { listAccountLockStatesAsync, accountLockBlocksCrossAccount } from '../../../storage/account-lock.repository.js'
 
 export interface DispatchPreparationFallbackResult {
   attempted: boolean
@@ -227,7 +228,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   }, 'success', suppressionStartedAt)
   let precheckHalfOpenEligible = false
   if (initialLocalSuppressionFilter.allSuppressed) {
-    const fallback = await requestRouteFallback(input, 'local_account_suppressed')
+    const fallback = await requestRouteFallback({ ...input, candidateAccounts: orderedCandidateAccounts }, 'local_account_suppressed')
     if (fallback.attempted) {
       logger.warn({
         event: 'gateway_local_account_suppression_fallback',
@@ -308,7 +309,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   }
 
   if (runtimeDegradationOrder.bypassedAllDegraded) {
-    const fallback = await requestRouteFallback(input, 'runtime_degraded')
+    const fallback = await requestRouteFallback({ ...input, candidateAccounts: orderedCandidateAccounts }, 'runtime_degraded')
     if (fallback.attempted) {
       return { outcome: 'fallback', reason: 'runtime_degraded', context: fallback.context }
     }
@@ -701,7 +702,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
 
   if (accounts.length === 0) {
     if (authorizationQuotaDeniedAccountCount > 0) {
-      const fallback = await requestRouteFallback(input, 'authorization_quota_exceeded')
+      const fallback = await requestRouteFallback({ ...input, candidateAccounts: accounts }, 'authorization_quota_exceeded')
       if (fallback.attempted) {
         return { outcome: 'fallback', reason: 'authorization_quota_exceeded', context: fallback.context }
       }
@@ -779,7 +780,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   }
 
   if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
-    const fallback = await requestRouteFallback(input, 'high_concurrency_group_busy')
+    const fallback = await requestRouteFallback({ ...input, candidateAccounts: accounts }, 'high_concurrency_group_busy')
     if (fallback.attempted) {
       return { outcome: 'fallback', reason: 'high_concurrency_group_busy', context: fallback.context }
     }
@@ -791,7 +792,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       input.requestLane,
       input.groupAccess.schedulingPolicy
     )) {
-      const fallback = await requestRouteFallback(input, 'group_capacity_busy')
+      const fallback = await requestRouteFallback({ ...input, candidateAccounts: accounts }, 'group_capacity_busy')
       if (fallback.attempted) {
         return { outcome: 'fallback', reason: 'group_capacity_busy', context: fallback.context }
       }
@@ -925,7 +926,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     }
 
     if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
-      const fallback = await requestRouteFallback(input, 'high_concurrency_group_busy')
+      const fallback = await requestRouteFallback({ ...input, candidateAccounts: accounts }, 'high_concurrency_group_busy')
       if (fallback.attempted) {
         releaseClientIpConcurrencyOnce()
         return { outcome: 'fallback', reason: 'high_concurrency_group_busy', context: fallback.context }
@@ -1003,8 +1004,15 @@ function noop(): void {}
 async function requestRouteFallback(
   input: {
     routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>
+    candidateAccounts?: UpstreamAccount[]
   },
   reason: string
 ): Promise<DispatchPreparationFallbackResult> {
+  if (reason !== 'authorization_quota_exceeded') {
+    const states = await listAccountLockStatesAsync((input.candidateAccounts ?? []).map((account) => account.id))
+    if ([...(states.values())].some((state) => accountLockBlocksCrossAccount(state))) {
+      return { attempted: false }
+    }
+  }
   return input.routeCoordinator.requestFallback(reason)
 }

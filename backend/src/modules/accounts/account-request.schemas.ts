@@ -204,6 +204,12 @@ export const accountApiKeyRuntimeRevalidateSchema = z.object({
   expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
+export const accountLockSchema = z.object({
+  expectedConfigRevision: z.number().int().min(1),
+  lockDeathTimeoutSeconds: z.number().int().min(30).max(3600).optional(),
+  lockRetryIntervalSeconds: z.number().int().min(5).max(30).optional()
+}).strict()
+
 export const accountTrafficMigrationSchema = z.object({
   targetAccountId: z.string().trim().min(1, '目标账户不能为空'),
   sourceStatus: z.enum(['temporary_unavailable', 'disabled', 'unchanged']).optional()

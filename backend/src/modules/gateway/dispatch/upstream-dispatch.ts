@@ -89,6 +89,14 @@ import type { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import { requestModel } from '../request/metadata.js'
 import { gatewayAccountRuntimeKey } from '../runtime/account-runtime-keys.js'
 import {
+  acquireAccountLockRetryLeaseAsync,
+  accountLockBlocksCrossAccount,
+  consumeAccountLockRetryLeaseAsync,
+  findAccountLockStateAsync,
+  recordAccountLockFailureAsync,
+  settleAccountLockDeadlineAsync
+} from '../../../storage/account-lock.repository.js'
+import {
   defaultGatewayFinalResponseReserveMs,
   gatewayAttemptProtocolModelKey,
   type GatewayDispatchAttemptIdentity,
@@ -354,6 +362,7 @@ export async function fetchFirstAvailableUpstream(
   // suppression and health state transitions are reserved for background probes.
   const automaticAccountStateMutationAllowed = accountStateMutationEnabled
     && isAccountProbeTrafficSource(usageContext.trafficSource)
+  const accountLockTrafficEnabled = accountStateMutationEnabled && usageContext.trafficSource === 'gateway'
   let lastAttempt: UpstreamAttempt | undefined
   let agentGuidanceResponse: GatewayAgentGuidanceResponse | undefined
   let auditAttemptIndex = 0
@@ -399,7 +408,8 @@ export async function fetchFirstAvailableUpstream(
   const maxSameAccountRetries = Math.min(2, settings.temporaryUnschedulableRetryAttempts)
   const reserveSameAccountRetry = async (
     identity: GatewayDispatchAttemptIdentity,
-    reason: string
+    reason: string,
+    accountId?: string
   ): Promise<string | undefined> => {
     const configuredDelayMs = Math.max(0, settings.temporaryUnschedulableRetryIntervalSeconds * 1000)
     const retryWindowMs = gatewayRequestWallBudget.remainingMs() - defaultGatewayFinalResponseReserveMs
@@ -430,7 +440,33 @@ export async function fetchFirstAvailableUpstream(
       })
       return undefined
     }
-    if (configuredDelayMs > 0) {
+    // A complete HTTP response is not evidence that the upstream lifecycle
+    // was incomplete. It may still be retried on the same account, but that
+    // response must not open a new lock incident. Transport/body failures
+    // are recorded below before reserving the lock-aware retry lease.
+    if (accountLockTrafficEnabled && accountId && reason === 'upstream_transport_failure') {
+      await recordAccountLockFailureAsync(accountId, reason)
+    }
+    let lockRetryScheduled = false
+    if (accountLockTrafficEnabled && accountId) {
+      let lockLease = await acquireAccountLockRetryLeaseAsync(accountId, configuredDelayMs)
+      if (!lockLease.allowed && lockLease.waitMs > 0) {
+        await waitForRetryDelayMs(lockLease.waitMs, { signal })
+        lockLease = await acquireAccountLockRetryLeaseAsync(accountId, configuredDelayMs)
+      }
+      if (!lockLease.allowed) return undefined
+      if (gatewayRequestWallBudget.handoffRequired({
+        finalResponseReserveMs: defaultGatewayFinalResponseReserveMs,
+        minimumMeaningfulAttemptMs: lockLease.waitMs
+      })) return undefined
+      if (lockLease.waitMs > 0) await waitForRetryDelayMs(lockLease.waitMs, { signal })
+      if (!await consumeAccountLockRetryLeaseAsync(accountId, lockLease.leaseId)) return undefined
+      lockRetryScheduled = Boolean(lockLease.leaseId)
+    }
+    // Preserve the pre-lock retry delay for disabled/idle accounts. Once an
+    // engaged account owns a lock lease, its sampled delay is authoritative
+    // and must not be followed by a second configured sleep.
+    if (!lockRetryScheduled && configuredDelayMs > 0) {
       await waitForRetryDelayMs(configuredDelayMs, { signal })
     }
     auditCapture.addGatewayMetadata({
@@ -1346,12 +1382,17 @@ export async function fetchFirstAvailableUpstream(
                 ) {
                   const sameAccountRetryId = await reserveSameAccountRetry(
                     dispatchAttemptIdentity,
-                    'upstream_http_response'
+                    'upstream_http_response',
+                    account.id
                   )
                   if (sameAccountRetryId) {
                     activeSameAccountRetryId = sameAccountRetryId
                     continue
                   }
+                }
+                if (accountLockTrafficEnabled && accountLockBlocksCrossAccount(await findAccountLockStateAsync(account.id))) {
+                  skipAccount = true
+                  break
                 }
                 skipAccount = true
                 break
@@ -1583,6 +1624,10 @@ export async function fetchFirstAvailableUpstream(
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled: automaticAccountStateMutationAllowed
                 })
+                if (accountLockTrafficEnabled) {
+                  await recordAccountLockFailureAsync(account.id, 'upstream_transport_failure')
+                  await settleAccountLockDeadlineAsync(account.id)
+                }
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
                 if (requestErrorResult.action === 'skip_account' && !retryAnotherAccountApiKey) {
                   const requestTransportFailure = accountCircuitTransportFailure(error, lastAttempt?.message)
@@ -1604,7 +1649,8 @@ export async function fetchFirstAvailableUpstream(
                   ) {
                     const sameAccountRetryId = await reserveSameAccountRetry(
                       dispatchAttemptIdentity,
-                      'upstream_transport_failure'
+                      'upstream_transport_failure',
+                      account.id
                     )
                     if (sameAccountRetryId) {
                       // The request will retry the same physical credential;
@@ -1615,8 +1661,12 @@ export async function fetchFirstAvailableUpstream(
                       continue
                     }
                   }
-                  await keyModelAttempt?.reportUpstreamNotComplete()
                   failedAccountIds.add(account.id)
+                  if (accountLockTrafficEnabled && accountLockBlocksCrossAccount(await findAccountLockStateAsync(account.id))) {
+                    skipAccount = true
+                    break
+                  }
+                  await keyModelAttempt?.reportUpstreamNotComplete()
                   skipAccount = true
                   break
                 }

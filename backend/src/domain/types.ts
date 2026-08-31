@@ -1002,6 +1002,7 @@ export interface AccountListPermissions {
   canReturnAuthorization: boolean
   canAuthorize: boolean
   canViewCredentials: boolean
+  canLock?: boolean
 }
 
 /** Exact management-list response. Edit, credentials, model catalog and runtime detail fields belong to dedicated endpoints. */
@@ -1087,6 +1088,10 @@ export interface AccountListItem {
   authorizationLimits?: RequestQuotaLimits
   authorizationQuotaExceeded?: boolean
   permissions: AccountListPermissions
+  lockEnabled?: boolean
+  lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
+  lockDeathTimeoutSeconds?: number
+  lockRetryIntervalSeconds?: number
 }
 
 export interface AccountStatusSnapshotItem extends Pick<AccountListItem,

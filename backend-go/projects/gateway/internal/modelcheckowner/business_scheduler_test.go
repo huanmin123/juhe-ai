@@ -49,7 +49,7 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 	if err := json.Unmarshal(tasks[0].Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.ScheduleID != "sch" || payload.ScheduleRevision != 3 || payload.OwnerID != "gateway-1" || payload.ConfigRevision != "4" {
+	if payload.ScheduleID != "sch" || payload.ScheduleRevision != 3 || payload.OwnerID != "gateway-1" || payload.ConfigRevision != "4" || payload.DispatchRevision != 1 || payload.SourceConfigRevision != "4" || payload.SourceDispatchRevision != 1 {
 		t.Fatalf("payload=%+v", payload)
 	}
 	if err := source.CompleteScheduled(context.Background(), payload, RunResult{RunID: "run-1", Status: string(RunCompleted)}); err != nil {
@@ -92,6 +92,12 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','openai',8,NULL,NULL,'quality_isolated','gpt-5.6-sol')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model,dispatch_revision) VALUES ('source','openai',11,NULL,NULL,'active','gpt-5.6-sol',13)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET authorization_instance_source_account_id='source' WHERE id='acct'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +112,7 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 	if err := json.Unmarshal(tasks[0].Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.EnforcementID != "enf" || payload.Generation != 2 || payload.RecoveryIntervalMinutes != 15 || payload.PolicyRevision != "7" || payload.ConfigRevision != "8" {
+	if payload.EnforcementID != "enf" || payload.Generation != 2 || payload.RecoveryIntervalMinutes != 15 || payload.PolicyRevision != "7" || payload.ConfigRevision != "8" || payload.DispatchRevision != 1 || payload.SourceConfigRevision != "11" || payload.SourceDispatchRevision != 13 {
 		t.Fatalf("payload=%+v", payload)
 	}
 }

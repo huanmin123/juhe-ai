@@ -252,6 +252,27 @@ func TestJ3bSQLiteBackfillCopiesFactsIdempotently(t *testing.T) {
 	if _, err := BackfillSQLite(context.Background(), target, root+"/dataset.db", root+"/stats.db"); err == nil {
 		t.Fatal("conflicting durable row must fail closed")
 	}
+	source, err := OpenSQLite(root + "/dataset.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if _, err := source.Exec(`UPDATE model_check_runs SET score=90 WHERE id='run-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec(`ALTER TABLE model_check_runs ADD COLUMN legacy_node_extra TEXT`); err != nil {
+		t.Fatal(err)
+	}
+	readback, err := VerifySQLiteBackfill(context.Background(), root+"/target.db", root+"/dataset.db", root+"/stats.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readback.Ready || readback.ProjectionComplete || readback.Complete {
+		t.Fatalf("source-only mandatory column must fail every readback gate: %+v", readback)
+	}
+	if got := readback.IgnoredSourceColumns["model_check_runs"]; len(got) != 1 || got[0] != "legacy_node_extra" {
+		t.Fatalf("source-only column evidence missing: %+v", readback.IgnoredSourceColumns)
+	}
 }
 
 func TestJ3bSQLiteBackfillHandlesLegacyExtraColumnsAndMultipleRows(t *testing.T) {
@@ -276,8 +297,7 @@ func TestJ3bSQLiteBackfillHandlesLegacyExtraColumnsAndMultipleRows(t *testing.T)
 		dataset.Close()
 		t.Fatal(err)
 	}
-	// This column exists only in a real legacy source and must not be required
-	// by the dedicated Go target schema or included in the digest projection.
+	// A source-only column must fail before any partial projection is committed.
 	if _, err := dataset.Exec(`ALTER TABLE model_check_runs ADD COLUMN legacy_node_extra TEXT`); err != nil {
 		dataset.Close()
 		t.Fatal(err)
@@ -327,27 +347,15 @@ func TestJ3bSQLiteBackfillHandlesLegacyExtraColumnsAndMultipleRows(t *testing.T)
 	}
 	defer target.Close()
 	report, err := BackfillSQLite(context.Background(), target, datasetPath, statsPath)
-	if err != nil {
+	if err == nil || !strings.Contains(err.Error(), "unmapped source columns") {
+		t.Fatalf("source-only column must fail before partial write, report=%+v err=%v", report, err)
+	}
+	var rows int
+	if err := target.QueryRow(`SELECT COUNT(*) FROM model_check_runs`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
-	if report.SourceRows["model_check_runs"] != 2 || report.InsertedRows["model_check_runs"] != 2 || report.TargetRows["model_check_runs"] != 2 {
-		t.Fatalf("legacy extra-column/multi-row report=%+v", report)
-	}
-	if report.SourceDigest["model_check_runs"] == "" || report.SourceDigest["model_check_runs"] != report.TargetDigest["model_check_runs"] {
-		t.Fatalf("common-column digest mismatch: %+v", report)
-	}
-	if got := report.IgnoredSourceColumns["model_check_runs"]; len(got) != 1 || got[0] != "legacy_node_extra" {
-		t.Fatalf("ignored source columns not reported: %+v", report.IgnoredSourceColumns)
-	}
-	readback, err := VerifySQLiteBackfill(context.Background(), targetPath, datasetPath, statsPath)
-	if err != nil || !readback.Ready || readback.Tables["model_check_runs"] != "match" {
-		t.Fatalf("legacy extra-column readback=%+v err=%v", readback, err)
-	}
-	if readback.ProjectionComplete || readback.Complete {
-		t.Fatalf("source-only column must reject complete/cutover evidence while preserving Ready compatibility: %+v", readback)
-	}
-	if got := readback.IgnoredSourceColumns["model_check_runs"]; len(got) != 1 || got[0] != "legacy_node_extra" {
-		t.Fatalf("ignored source columns not reported by readback: %+v", readback.IgnoredSourceColumns)
+	if rows != 0 {
+		t.Fatalf("source-only rejection must leave target unchanged, rows=%d", rows)
 	}
 }
 

@@ -89,6 +89,34 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
   }
 
+  async function updateAccountLock(account: AccountListItem, enabled: boolean): Promise<void> {
+    if (account.permissions?.canLock === false) {
+      message.warning('当前账户不能修改锁死状态')
+      return
+    }
+    const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+    const expectedConfigRevision = Number(account.configRevision)
+    if (!Number.isInteger(expectedConfigRevision) || expectedConfigRevision < 1) {
+      message.warning('账户配置版本缺失，请刷新列表后重试')
+      return
+    }
+    try {
+      if (options.isManagementView.value) {
+        if (enabled) await api.accounts.lock(account.id, { expectedConfigRevision }, scopeParams)
+        else await api.accounts.unlock(account.id, { expectedConfigRevision }, scopeParams)
+      } else if (enabled) {
+        await api.myAccounts.lock(account.id, { expectedConfigRevision })
+      } else {
+        await api.myAccounts.unlock(account.id, { expectedConfigRevision })
+      }
+      await options.loadData()
+      message.success(enabled ? '账户已锁死' : '账户已解除锁死')
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, enabled ? '锁死账户失败' : '解除锁死失败'))
+    }
+  }
+
   async function updateAccountState(account: AccountListItem, payload: Record<string, unknown>, successText: string, updateOptions: { allowExceptionRecovery?: boolean } = {}) {
     const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     if (isAuthorizedAccount(account)) {
@@ -233,13 +261,17 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       )
       return
     }
+    if (key === 'lock' || key === 'unlock') {
+      await updateAccountLock(account, key === 'lock')
+      return
+    }
     if (!canUseAccountActions(account)) {
       if (!isAuthorizedAccount(account)) {
-        if (!['restore-normal', 'recheck-health', 'toggle-status', 'super-priority-off', 'fallback-off'].includes(key)) {
+        if (!['restore-normal', 'recheck-health', 'toggle-status', 'super-priority-off', 'fallback-off', 'unlock'].includes(key)) {
           message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、异常恢复、停用和取消调度标记' : '当前账户不能执行管理操作')
           return
         }
-      } else if (!['restore-normal', 'toggle-status', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic'].includes(key)) {
+      } else if (!['restore-normal', 'toggle-status', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic', 'lock', 'unlock'].includes(key)) {
         message.warning('授权账户仅支持使用侧调度操作')
         return
       }

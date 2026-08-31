@@ -51,6 +51,8 @@ export interface AccountFormModel {
   healthCheckModel: string
   healthCheckEndpointMode: AccountHealthCheckEndpointMode
   temporaryUnavailableContinuousProbeEnabled: boolean
+  lockDeathTimeoutSeconds: number
+  lockRetryIntervalSeconds: number
   serviceTierOverride: AccountGptServiceTierOverride
   reasoningEffortOverride: AccountGptReasoningEffortOverride
   modelMappings: AccountModelMapping[]

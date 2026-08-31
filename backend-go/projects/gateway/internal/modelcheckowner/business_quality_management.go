@@ -307,11 +307,11 @@ func (m *BusinessQualityManager) checkScheduleAccount(ctx context.Context, syste
 	if !ok || profile.ID == "" {
 		return errors.New("账户模型限制或供应商协议不支持定时检查模型")
 	}
-	upstreamModel, err := resolveConfiguredUpstreamModel(ctx, m.db, m.postgres, accountID, profile, model)
+	upstreamMapping, err := resolveConfiguredUpstreamModelMapping(ctx, m.db, m.postgres, accountID, profile, model)
 	if err != nil {
 		return err
 	}
-	if upstreamModel == "" {
+	if upstreamMapping.UpstreamModel == "" {
 		return errors.New("账户模型限制或供应商协议不支持定时检查模型")
 	}
 	return nil

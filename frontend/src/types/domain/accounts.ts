@@ -69,6 +69,7 @@ export interface ResourcePermissions {
   canViewCredentials: boolean
   canManageAccounts?: boolean
   canBindToApiKey?: boolean
+  canLock?: boolean
 }
 
 export interface AccountOAuthUsageWindow {
@@ -486,6 +487,10 @@ export interface AccountListItem {
   authorizationExpiresAt?: string
   authorizationLimits?: RequestQuotaLimits
   authorizationQuotaExceeded?: boolean
+  lockEnabled?: boolean
+  lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
+  lockDeathTimeoutSeconds?: number
+  lockRetryIntervalSeconds?: number
   permissions?: Partial<Pick<ResourcePermissions,
     | 'canUse'
     | 'canEdit'
@@ -493,6 +498,7 @@ export interface AccountListItem {
     | 'canReturnAuthorization'
     | 'canAuthorize'
     | 'canViewCredentials'
+    | 'canLock'
   >>
 }
 
@@ -544,6 +550,10 @@ export interface AccountAdvancedDetail {
   effectiveQuotaRecoveryPolicy?: Record<string, unknown>
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean
+  lockEnabled?: boolean
+  lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
+  lockDeathTimeoutSeconds?: number
+  lockRetryIntervalSeconds?: number
 }
 
 export interface AccountEffectiveErrorHandlingRule {

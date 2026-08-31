@@ -26,6 +26,7 @@ import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { canManageResourceOwner } from './resource-authorization-helpers.js'
+import { findAccountLockStateAsync } from './account-lock.repository.js'
 
 const businessSchemaName = 'juhe_business'
 
@@ -86,6 +87,10 @@ export interface AccountAdvancedDetail {
   balanceQueryConfig?: AccountBalanceQueryConfig
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean
+  lockEnabled: boolean
+  lockState: import('./account-lock.repository.js').AccountLockStateName
+  lockDeathTimeoutSeconds: number
+  lockRetryIntervalSeconds: number
 }
 
 export async function findAccountAdvancedDetailAsync(
@@ -167,6 +172,7 @@ export async function findAccountAdvancedDetailAsync(
     ? projectAdvancedEditableCredentials(ownerCredentials)
     : undefined
 
+  const lockState = await findAccountLockStateAsync(row.id)
   return {
     id: row.id,
     configRevision: Number(row.config_revision ?? 1),
@@ -187,6 +193,10 @@ export async function findAccountAdvancedDetailAsync(
       : row.temporary_unavailable_continuous_probe_enabled) === 1,
     balanceQueryEnabled: authorized ? false : Number(row.balance_query_enabled) === 1,
     balanceQueryConfig: authorized ? undefined : parseAccountAdvancedBalanceConfig(row.balance_query_config_json),
+    lockEnabled: lockState?.enabled ?? false,
+    lockState: lockState?.lockState ?? 'UNLOCKED',
+    lockDeathTimeoutSeconds: lockState?.lockDeathTimeoutSeconds ?? 300,
+    lockRetryIntervalSeconds: lockState?.lockRetryIntervalSeconds ?? 5,
     ...(authorized
       ? {
           authorizationInstanceSourceAccountStatus: row.source_status ?? undefined,

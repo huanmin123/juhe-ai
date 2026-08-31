@@ -223,7 +223,7 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 			where = append(where, "("+strings.Join(search, " OR ")+")")
 		}
 	}
-	query := "SELECT DISTINCT a.id,COALESCE(source_accounts.name,a.name),COALESCE(source_accounts.provider_code,a.provider_code),COALESCE(source_accounts.provider_protocol_profile_id,a.provider_protocol_profile_id),COALESCE(source_accounts.protocol_code,a.protocol_code),COALESCE(source_accounts.protocol_version,a.protocol_version),COALESCE(a.availability_schedule_json,''),COALESCE(source_accounts.availability_schedule_json,''),source_accounts.id FROM " + s.table("accounts") + " a JOIN " + s.table("resource_authorizations") + " ra ON ra.id=a.authorization_instance_authorization_id JOIN " + s.table("accounts") + " source_accounts ON source_accounts.id=a.authorization_instance_source_account_id LEFT JOIN " + s.table("group_accounts") + " bindings ON bindings.account_id=a.id AND bindings.system_account_id=" + s.placeholder(len(args)+1) + " LEFT JOIN " + s.table("groups") + " groups ON groups.id=bindings.group_id WHERE " + strings.Join(where, " AND ") + " ORDER BY LOWER(COALESCE(source_accounts.name,a.name)),a.id LIMIT " + s.placeholder(len(args)+2)
+	query := "SELECT options.id,options.name,options.provider_code,options.profile_id,options.protocol_code,options.protocol_version,options.instance_schedule,options.source_schedule,options.source_id FROM (SELECT DISTINCT a.id AS id,COALESCE(source_accounts.name,a.name) AS name,COALESCE(source_accounts.provider_code,a.provider_code) AS provider_code,COALESCE(source_accounts.provider_protocol_profile_id,a.provider_protocol_profile_id) AS profile_id,COALESCE(source_accounts.protocol_code,a.protocol_code) AS protocol_code,COALESCE(source_accounts.protocol_version,a.protocol_version) AS protocol_version,COALESCE(a.availability_schedule_json,'') AS instance_schedule,COALESCE(source_accounts.availability_schedule_json,'') AS source_schedule,source_accounts.id AS source_id FROM " + s.table("accounts") + " a JOIN " + s.table("resource_authorizations") + " ra ON ra.id=a.authorization_instance_authorization_id JOIN " + s.table("accounts") + " source_accounts ON source_accounts.id=a.authorization_instance_source_account_id LEFT JOIN " + s.table("group_accounts") + " bindings ON bindings.account_id=a.id AND bindings.system_account_id=" + s.placeholder(len(args)+1) + " LEFT JOIN " + s.table("groups") + " groups ON groups.id=bindings.group_id WHERE " + strings.Join(where, " AND ") + ") AS options ORDER BY LOWER(options.name),options.id LIMIT " + s.placeholder(len(args)+2)
 	args = append(args, scope, options.Limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -274,11 +274,11 @@ func (s *BusinessTargetSource) configuredModelCheckModels(ctx context.Context, a
 	}
 	models := make([]string, 0, len(profile.Models))
 	for _, model := range profile.Models {
-		resolved, err := resolveConfiguredUpstreamModel(ctx, s.db, s.postgres, accountID, profile, model)
+		resolved, err := resolveConfiguredUpstreamModelMapping(ctx, s.db, s.postgres, accountID, profile, model)
 		if err != nil {
 			return nil, err
 		}
-		if resolved != "" {
+		if resolved.UpstreamModel != "" {
 			models = append(models, model)
 		}
 	}

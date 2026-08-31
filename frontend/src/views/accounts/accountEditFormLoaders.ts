@@ -93,6 +93,8 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     proxyProfileId: advanced.proxyProfileId,
     accountExpiresAt,
     temporaryUnavailableContinuousProbeEnabled: advanced.temporaryUnavailableContinuousProbeEnabled !== false,
+    lockDeathTimeoutSeconds: advanced.lockDeathTimeoutSeconds ?? 300,
+    lockRetryIntervalSeconds: advanced.lockRetryIntervalSeconds ?? 5,
     ...accountGptRequestOverridesForForm(account.providerCode, credentials),
     modelMappings: cloneAccountModelMappings(advanced.modelMappings),
     availabilitySchedule,

@@ -200,6 +200,18 @@
                 />
               </section>
 
+              <section class="form-section">
+                <div class="form-section-title">账户锁死</div>
+                <div class="lock-config-fields">
+                  <a-form-item label="死期（秒）">
+                    <a-input-number v-model:value="form.lockDeathTimeoutSeconds" :min="30" :max="3600" :precision="0" />
+                  </a-form-item>
+                  <a-form-item label="重试间隔（秒）">
+                    <a-input-number v-model:value="form.lockRetryIntervalSeconds" :min="5" :max="30" :precision="0" />
+                  </a-form-item>
+                </div>
+              </section>
+
               <AccountExtraInfoSection
                 :form="form"
                 :readonly="authorizedEditing"
@@ -422,7 +434,9 @@ const advancedConfiguredCount = computed(() => {
     responseInspectionRules.value.length > 0,
     Boolean(form.serviceTierOverride),
     Boolean(form.reasoningEffortOverride),
-    form.temporaryUnavailableContinuousProbeEnabled === false
+    form.temporaryUnavailableContinuousProbeEnabled === false,
+    form.lockDeathTimeoutSeconds !== 300,
+    form.lockRetryIntervalSeconds !== 5
   ]
   return checks.filter(Boolean).length
 })
@@ -585,6 +599,18 @@ const emit = defineEmits<{
   display: grid;
   gap: 12px;
   min-width: 0;
+}
+
+.lock-config-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .lock-config-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 .advanced-section-stack :deep(.form-section:last-child) {

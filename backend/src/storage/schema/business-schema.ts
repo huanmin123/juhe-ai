@@ -395,6 +395,27 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id)
     );
 
+    CREATE TABLE IF NOT EXISTS account_lock_states (
+      account_id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+      lock_state TEXT NOT NULL DEFAULT 'UNLOCKED' CHECK (lock_state IN ('UNLOCKED', 'LOCKED_IDLE', 'ENGAGED', 'DEAD_CONFIRMED')),
+      lock_death_timeout_seconds INTEGER NOT NULL DEFAULT 300 CHECK (lock_death_timeout_seconds BETWEEN 30 AND 3600),
+      lock_retry_interval_seconds INTEGER NOT NULL DEFAULT 5 CHECK (lock_retry_interval_seconds BETWEEN 5 AND 30),
+      incident_id TEXT,
+      generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+      incident_started_at TEXT,
+      deadline_at TEXT,
+      original_status TEXT,
+      provenance TEXT,
+      next_retry_at_ms INTEGER,
+      lease_id TEXT,
+      lease_until_ms INTEGER,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      CHECK ((lock_state = 'UNLOCKED' AND enabled = 0) OR (lock_state <> 'UNLOCKED' AND enabled = 1))
+    );
+    CREATE INDEX IF NOT EXISTS idx_account_lock_states_deadline ON account_lock_states(lock_state, deadline_at);
+
     CREATE TABLE IF NOT EXISTS model_quality_policies (
       system_account_id TEXT PRIMARY KEY,
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),

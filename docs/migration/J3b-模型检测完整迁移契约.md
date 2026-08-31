@@ -210,7 +210,7 @@ J3b 不建立 `gateway`/`jobs` typed command、HTTP、IPC、queue、RPC 或任�
 
 ### 9.5 SQLite/PG 切换与回滚
 
-J3b SQLite 回填完成后，必须执行 maintenance 的只读 `--verify-j3b-model-check-sqlite-backfill` readback。该命令对 dataset、stats 与专属 target 做 regular-file/物理路径隔离检查，验证三方 `query_only`、mandatory/optional 表、行数和按源列投影的 SHA-256 digest；报告同时输出每张表的 `ignoredSourceColumns`，明确记录 legacy 源端存在但专属目标未映射的兼容列，不能将公共投影摘要当成完整字段迁移。漂移、共享文件或只读边界失败均以退出码 3 fail-closed。readback 报告作为切换及 rollback epoch 证据，不能替代 Node active-path-zero 或完整三库回填验收。
+J3b SQLite 回填完成后，必须执行 maintenance 的只读 `--verify-j3b-model-check-sqlite-backfill` readback。该命令对 dataset、stats 与专属 target 做 regular-file/物理路径隔离检查，验证三方 `query_only`、mandatory/optional 表、行数和按源列投影的 SHA-256 digest；报告同时输出每张表的 `ignoredSourceColumns`，明确记录 legacy 源端存在但专属目标未映射的列，不能将公共投影摘要当成完整字段迁移。回填写入端遇到 mandatory 表的 source-only 列会在打开/提交部分投影前直接 fail-closed 并回滚，避免先写入丢列数据再由 readback 拦截。漂移、共享文件、只读边界或非完整投影均以退出码 3 fail-closed。readback 报告作为切换及 rollback epoch 证据，不能替代 Node active-path-zero 或完整三库回填验收。
 
 SQLite 和 PostgreSQL 都是正式目标模式，必须分别保持唯一 writer、schema 生命周期、权限、事务语义和恢复证据；通过 PostgreSQL 不能替代 SQLite handoff，反之亦然。PostgreSQL runtime 只做权限/schema/readiness 预检，DDL 归 B0 `maintenance` 的显式流程；SQLite 同样不得由 runtime 隐式建表或修复 schema。
 
@@ -307,11 +307,11 @@ Account options 与 target 解析现在共享同一类型边界：列表查询�
 
 ### 9.7.8 结构化 cutover evidence 只读门禁（2026-08-30）
 
-maintenance 新增 `-verify-j3b-cutover-evidence <json>`，只读取外部生成的结构化证据，不连接业务数据库、不停止进程、不修改 owner 状态。校验器要求旧/新 owner 与 epoch、drain 完成且 `inFlight=0`、Node `activePathZero` 且 `blockedFindings=0`、备份文件及 SHA-256、source/target readback 摘要、rollback replay cursor 和带最大年龄的 RFC3339 freshness；缺字段、未知字段、摘要/备份哈希不匹配或证据过期均以退出码 3 fail-closed，证据文件不可读以退出码 2 返回。该命令把“布尔自报”与可核验材料分开，但不会生成或伪造 handoff 事实，也不会替代真实 Business SQLite 唯一 writer、三库回填/readback、Node drain、owner epoch、GitOps rollback 和生产恢复演练。当前仍未取得任何真实环境证据。
+maintenance 新增 `-verify-j3b-cutover-evidence <json>`，只读取外部生成的结构化证据，不连接业务数据库、不停止进程、不修改 owner 状态。校验器要求旧/新 owner 与 epoch、drain 完成且 `inFlight=0`、Node `activePathZero` 且 `blockedFindings=0`、备份文件及 SHA-256、rollback replay cursor 和带最大年龄的 RFC3339 freshness；此外必须引用一个版本化 J3b readback manifest。manifest 以文件 SHA-256 绑定到 evidence，包含 source snapshot identity、source/target schema、固定 legacy-facts scope、producer、完整投影、验证时间及逐表行数/source-target digest，并自行保存 canonical manifest hash。旧 `sourceDigest`/`targetDigest` 字段仍可读取，但不再能单独使授权 `Ready=true`；缺 manifest、缺表、行数或摘要漂移、lossy projection、格式/scope/aggregate hash 不符或过期均以退出码 3 fail-closed，证据文件不可读以退出码 2 返回。该文件校验只防止本地用相等标量 digest 伪造 readback 通过，不证明真实数据库快照、drain、epoch、备份可恢复性或 rollback 环境；这些仍须由真实 Business SQLite 唯一 writer、三库回填/readback、Node drain、owner epoch、GitOps rollback 和生产恢复演练提供证据。当前仍未取得任何真实环境证据。
 
 Gateway 在启用 J3b 且确认 Business handoff 时，必须提供 `JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH`；启动会在打开 Business 数据库和 management listener 之前读取并验证该文件，要求 `newOwner=go-gateway` 且 `ownerEpoch` 与 `JUHE_AI_J3B_OWNER_EPOCH` 完全一致。缺失、不可读、过期或任一证据门失败均保持 fail-closed；这项绑定只证明启动前消费了外部证据，不代表当前环境已有真实 handoff，也不允许绕过后续 Node active-path-zero、三库 readback 和 rollback 门禁。
 
-J3b PostgreSQL/SQLite backfill 另要求显式 `-j3b-backfill-evidence <json>`。该前置校验复用同一 owner/drain/active-path/备份/freshness 结构，但允许 target readback digest 在回填前为空；缺失、不可读或未就绪时，在打开目标数据库前以退出码 2/3 fail-closed。回填完成后仍必须运行上述 `-verify-j3b-cutover-evidence`，以 source/target digest parity 作为切换证据；不能把回填前证据误当作回填完成证明。
+J3b PostgreSQL/SQLite backfill 另要求显式 `-j3b-backfill-evidence <json>`。该前置校验复用同一 owner/drain/active-path/备份/freshness 结构，并同样要求已核验的 readback manifest binding；旧 scalar digest（即使相等、即使 target digest 为空）不会授权 backfill/cutover。缺失、不可读或未就绪时，在打开目标数据库前以退出码 2/3 fail-closed。回填完成后仍必须运行上述 `-verify-j3b-cutover-evidence`，且不得把文件一致性误当作真实 drain、epoch 或可恢复 rollback 证据。
 Gateway 的 J3b 配置在 `BUSINESS_HANDOFF_CONFIRMED=true` 时还必须显式提供 `JUHE_AI_J3B_OWNER_EPOCH`；该值只是启动配置中的不透明标识，不能替代上述证据文件对 epoch、drain 和 freshness 的真实性校验。
 
 SQLite readback 报告现在分别输出 `sourceReadOnly`、`statsReadOnly` 与 `targetReadOnly`，三者任一缺失或未处于 `query_only` 均保持 `ready=false`；这只是机器可核验的读回状态，不代表三库真实回填或唯一 writer handoff 已完成。
@@ -328,7 +328,7 @@ PostgreSQL readback 现复用 backfill 的完整列投影校验，同时检查 s
 
 ### 9.7.10 Gateway 运行时 schema gate 与 circuit 索引语义收敛（2026-08-30）
 
-复核发现 Gateway 启动路径的 `CheckBusinessSQLiteSchema` 仍只按索引名称检查，可能绕过 shared v10 contract 对 circuit key-model capability 索引及关键 PK/UNIQUE 约束的结构要求。本轮已将运行时 gate 与 maintenance verifier 统一：`account_circuit_incidents` 的 `idx_account_circuit_incidents_key_model_capability` 必须是 `UNIQUE(scope_kind, capability_hash) WHERE scope_kind='key_model' AND capability_hash IS NOT NULL`，同时核对 SQLite `PRAGMA index_list/index_info`、列顺序和 `sqlite_master.sql` predicate；`system_accounts.username`、`system_settings(system_account_id,key)`、`model_quality_schedules(system_account_id,account_id)`、`account_quality_enforcements(account_id)`、`account_circuit_incidents(circuit_scope_key)` 的 PK/UNIQUE 结构也按列顺序 fail-closed 检查。SQLite 单连接池场景在关闭游标后再执行后续查询，避免 schemaReady 阻塞。PostgreSQL circuit contract 同时限定目标 schema/table，并要求 key 列数量与索引总列数量精确一致，拒绝错误表、额外 included/expression 列和 predicate 漂移；关键 PK/UNIQUE 通过 `pg_catalog.pg_constraint` 核对。
+复核发现 Gateway 启动路径的 `CheckBusinessSQLiteSchema` 仍只按索引名称检查，可能绕过 shared v11 contract 对 circuit key-model capability 索引及关键 PK/UNIQUE 约束的结构要求。本轮已将运行时 gate 与 maintenance verifier 统一：`account_circuit_incidents` 的 `idx_account_circuit_incidents_key_model_capability` 必须是 `UNIQUE(scope_kind, capability_hash) WHERE scope_kind='key_model' AND capability_hash IS NOT NULL`，同时核对 SQLite `PRAGMA index_list/index_info`、列顺序和 `sqlite_master.sql` predicate；`system_accounts.username`、`system_settings(system_account_id,key)`、`model_quality_schedules(system_account_id,account_id)`、`account_quality_enforcements(account_id)`、`account_circuit_incidents(circuit_scope_key)` 的 PK/UNIQUE 结构也按列顺序 fail-closed 检查。SQLite 单连接池场景在关闭游标后再执行后续查询，避免 schemaReady 阻塞。PostgreSQL circuit contract 同时限定目标 schema/table，并要求 key 列数量与索引总列数量精确一致，拒绝错误表、额外 included/expression 列和 predicate 漂移；关键 PK/UNIQUE 通过 `pg_catalog.pg_constraint` 核对。
 
 新增 Gateway 运行时 schema fixture 覆盖正确唯一 partial index、错列、非唯一和缺 predicate 四类 fail-closed 情形；`modelcheckowner`、`circuit_control_plane`、maintenance handoff 与相关 `go vet` 定向验证通过，`git diff --check` 通过。本节仍只是启动前结构证据，不代表 Business SQLite 已完成唯一 writer handoff、真实 PostgreSQL 验证、Node drain 或生产切换；统一全量测试继续留到全部外部门禁闭合之后。
 
@@ -342,7 +342,7 @@ PostgreSQL readback 现复用 backfill 的完整列投影校验，同时检查 s
 
 ### 9.7.13 Gateway health timezone schema dependency（2026-08-30）
 
-Gateway 启动时的 `LoadBusinessHealthStatHour` 会读取 `system_settings(system_account_id,key,value_json,updated_at)`。该表及其指向 `system_accounts` 的级联外键、复合主键已纳入 Business SQLite `v10` shared contract，并由 Gateway/maintenance 两侧 schema verifier 共同检查；缺表、缺列、缺外键或错误约束均保持 `schemaReady=false`。这仍是结构门禁，不代表真实 Business handoff 或统计配置已在目标环境验证。
+Gateway 启动时的 `LoadBusinessHealthStatHour` 会读取 `system_settings(system_account_id,key,value_json,updated_at)`。该表及其指向 `system_accounts` 的级联外键、复合主键已纳入 Business SQLite `v11` shared contract，并由 Gateway/maintenance 两侧 schema verifier 共同检查；缺表、缺列、缺外键或错误约束均保持 `schemaReady=false`。这仍是结构门禁，不代表真实 Business handoff 或统计配置已在目标环境验证。
 
 ### 9.7.14 Scheduler source revision payload fence（2026-08-30）
 
@@ -355,3 +355,17 @@ SQLite 回填与冲突比较的 canonical 编码现明确区分 `NULL`、文本/
 ### 9.7.16 J3b Business endpoint mode source contract（2026-08-30）
 
 Gateway target Resolve 现把 `accounts.health_check_endpoint_mode` 作为虚拟目标账户选择的探测形态；授权实例的 provider、凭据和 `credentials.supported_endpoint_modes` 仍取物理 source account，与 Node/Jobs 的 effective-source 规则一致。选择值必须是 Go 已实现、与 source protocol profile 匹配且出现在物理凭据支持列表中的文本 mode；缺失、空值、畸形列表、`images_*`/`interactions_*` 等 Go 未实现选择值或不一致配置均 fail-closed。支持列表中的其他 Node-only mode 不会被重写，只要已选 mode 可执行即可保留为 target capability。shared Business SQLite schema 已升级为 `v11`，启动 schema gate 与 `CheckContract` 均要求 `accounts.health_check_endpoint_mode`；凭据 JSON 的结构仍由 resolver 在解密后严格校验，而不是交给 schema gate 推断。
+
+### 9.7.17 OpenAI OAuth Codex probe adapter（2026-08-30）
+
+J3b 模型检测现已在 Go 探针内支持 `provider_code=gpt`、`profile_gpt_openai_v1` 且 `type=oauth` 的 Codex upstream 适配。该形态只接受 `responses_json`/`responses_sse` 两种已实现的 health-check mode，固定请求到 Node oracle 对齐的 `https://chatgpt.com/backend-api/codex/responses`，并在请求尝试内规范 Responses `input`、`instructions`、`store=false`、`stream=true`、Codex client identity、session/thread metadata、`openai-beta=responses=experimental` 与 `chatgpt-account-id`（如凭据提供）。响应 JSON 与 `data:` SSE 的 bounded 终态均可被探针解析；API key 账户仍使用原有 profile base URL 与 `/v1/responses`/`/v1/chat/completions` 构造。
+
+该适配只存在于 J3b probe path，不注册或改变 public ingress，也不实现 OAuth refresh、refresh-token exchange、Codex usage snapshot、浏览器/session 生命周期、Responses history sanitizer 的完整业务语义或任何公网 owner handoff。GPT OAuth 的 `chat_*`、images/interactions 及其他没有 Node Codex oracle 的 mode 会 fail-closed，不回退为普通 OpenAI 请求；凭据中的 `base_url` 不能绕过 Codex 固定 host/path。缺少 `access_token`（即使存在 `refresh_token`）继续 fail-closed。上述仅为本地源码与定向测试证据，不构成上游、生产数据库、Node active-path-zero 或生产切换完成证明。
+
+### 9.7.18 PostgreSQL Business schema structural gate（2026-08-30）
+
+Gateway 的 `CheckBusinessPostgresSchema` 现对 `juhe_business` 只读核验使用 `information_schema` 与 `pg_catalog`：要求对象为真实 `BASE TABLE`（普通表或分区表），逐列检查 v11 contract，按列顺序核对 PK/UNIQUE，按引用 schema/表/列顺序及 `ON DELETE`/`ON UPDATE` action 核对外键，并对登记的索引检查目标表、唯一性、key 列顺序、表达式/included 列和 partial predicate。错误表同名对象、未知 referential action 或结构漂移均 fail-closed；该 gate 不执行 DDL。尚无真实 PostgreSQL 集成环境证据，不能替代候选库 schema/readback 验收。
+
+### 9.7.19 SQLite backfill lossless write gate（2026-08-30）
+
+`BackfillSQLite` 在复制任一 J3b 事实表前比较 source/target 列集合；发现 source-only 列时立即返回错误并回滚整个目标事务，不再先提交公共列投影再依赖 readback 报告拦截。`VerifySQLiteBackfill` 仍输出 `ignoredSourceColumns` 与 `ProjectionComplete/Complete`，用于诊断历史或外部报告，但任何 source-only projection 都不能产生完整回填证据。该行为会要求目标 schema 先覆盖 Node 事实列，避免把列丢失隐藏在“回填成功”状态中；未连接真实三库，仍需在停写窗口验证 source 冻结、唯一 writer、逐表 digest 和恢复点。

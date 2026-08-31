@@ -3,6 +3,8 @@ package modelcheckquality
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +127,34 @@ func TestQualityRecoveryFailureReschedulesAndInvalidScheduleFailsClosed(t *testi
 	var status string
 	if err := db.QueryRow(`SELECT status FROM accounts WHERE id='acct'`).Scan(&status); err != nil || status != "quality_isolated" {
 		t.Fatalf("invalid schedule changed account=%q err=%v", status, err)
+	}
+}
+
+func TestAvailabilityScheduleExceptionWindowSchema(t *testing.T) {
+	base := `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1],"start":"00:00","end":"23:59"}],"exceptions":[%s]}`
+	tests := []struct {
+		name      string
+		exception string
+		wantErr   bool
+	}{
+		{name: "deny windows null", exception: `{"date":"2030-01-07","action":"deny","windows":null}`, wantErr: true},
+		{name: "allow exception daysOfWeek", exception: `{"date":"2030-01-07","action":"allow","windows":[{"daysOfWeek":[1],"start":"10:00","end":"11:00"}]}`, wantErr: true},
+		{name: "valid omitted deny windows", exception: `{"date":"2030-01-07","action":"deny"}`},
+		{name: "valid allow start end", exception: `{"date":"2030-01-07","action":"allow","windows":[{"start":"10:00","end":"11:00"}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := availabilityAllowed(fmt.Sprintf(base, tt.exception), time.Date(2030, 1, 8, 12, 0, 0, 0, time.UTC))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error=%v, wantErr=%v", err, tt.wantErr)
+			}
+		})
+	}
+	tooMany := `{"date":"2030-01-07","action":"allow","windows":[%s]}`
+	window := `{"start":"10:00","end":"11:00"}`
+	windows := strings.TrimSuffix(strings.Repeat(window+",", 33), ",")
+	if _, err := availabilityAllowed(fmt.Sprintf(base, fmt.Sprintf(tooMany, windows)), time.Date(2030, 1, 8, 12, 0, 0, 0, time.UTC)); err == nil {
+		t.Fatal("exception window count above the schedule limit must fail closed")
 	}
 }
 

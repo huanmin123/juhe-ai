@@ -130,6 +130,152 @@ func TestBuildAndExecuteOpenAIProbe(t *testing.T) {
 	}
 }
 
+func TestExecuteOpenAIOAuthCodexAdapterUsesFixedCodexResponsesSSE(t *testing.T) {
+	var captured *http.Request
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		captured = request
+		body, _ := io.ReadAll(request.Body)
+		request.Body = io.NopCloser(strings.NewReader(string(body)))
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-sol\",\"output_text\":\"OK-MODEL-CHECK\"}}\n\ndata: [DONE]\n")), Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Request: request}, nil
+	})
+	request, err := BuildBasicForEndpointMode(modelcheckprofile.ProtocolOpenAIResponses, "gpt-5.6-sol", "hello", modelcheckprofile.EndpointModeResponsesJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Execute(context.Background(), request, Options{Adapter: AdapterOpenAIOAuthCodex, Endpoint: "https://custom.example/v1", Headers: http.Header{"Authorization": []string{"Bearer access-token"}, "chatgpt-account-id": []string{"acct"}}, Client: &http.Client{Transport: transport}, Timeout: time.Second})
+	if err != nil || !result.Success || result.Output != "OK-MODEL-CHECK" || result.ObservedModel != "gpt-5.6-sol" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if captured == nil || captured.URL.String() != OpenAIOAuthCodexBaseURL+"/responses" {
+		t.Fatalf("OAuth Codex URL=%v", captured)
+	}
+	if captured.Header.Get("Authorization") != "Bearer access-token" || captured.Header.Get("Accept") != "text/event-stream" || captured.Header.Get("Originator") != "Codex Desktop" || captured.Header.Get("Openai-Beta") != "responses=experimental" {
+		t.Fatalf("OAuth Codex headers=%v", captured.Header)
+	}
+	body, _ := io.ReadAll(captured.Body)
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["stream"] != true || payload["store"] != false || payload["max_output_tokens"] != nil {
+		t.Fatalf("OAuth Codex body=%#v", payload)
+	}
+	if _, ok := payload["input"].([]any); !ok {
+		t.Fatalf("OAuth Codex input was not normalized: %#v", payload["input"])
+	}
+}
+
+func TestExecuteOpenAIOAuthCodexAdapterRejectsChatModes(t *testing.T) {
+	request, err := BuildBasicForEndpointMode(modelcheckprofile.ProtocolOpenAIChat, "model", "hello", modelcheckprofile.EndpointModeChatSSE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Execute(context.Background(), request, Options{Adapter: AdapterOpenAIOAuthCodex, Endpoint: "https://custom.example", Headers: http.Header{"Authorization": []string{"Bearer access"}}, Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "endpoint mode is unsupported") {
+		t.Fatalf("OAuth Codex chat mode must fail closed, err=%v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+type responseReadErrorBody struct {
+	read bool
+}
+
+func (body *responseReadErrorBody) Read(buffer []byte) (int, error) {
+	if body.read {
+		return 0, io.EOF
+	}
+	body.read = true
+	copy(buffer, "partial response")
+	return len("partial response"), errors.New("synthetic response read failure")
+}
+
+func (body *responseReadErrorBody) Close() error { return nil }
+
+func TestExecutePreservesHTTPStatusOnReadAndLimitFailures(t *testing.T) {
+	request, err := BuildBasic(modelcheckprofile.ProtocolOpenAIResponses, "model", "hello", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		status    int
+		body      io.ReadCloser
+		maxBytes  int64
+		errorText string
+	}{
+		{name: "read failure", status: http.StatusBadGateway, body: &responseReadErrorBody{}, errorText: "J3b upstream response read failed"},
+		{name: "response limit", status: http.StatusRequestEntityTooLarge, body: io.NopCloser(strings.NewReader(strings.Repeat("x", 32))), maxBytes: 8, errorText: "J3b upstream response exceeded limit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: test.status, Body: test.body, Request: request}, nil
+			})
+			result, err := Execute(context.Background(), request, Options{Endpoint: "https://example.test", Client: &http.Client{Transport: transport}, MaxResponseBytes: test.maxBytes, Timeout: time.Second})
+			if err != nil || result.HTTPStatus != test.status || result.Success || result.ErrorMessage != test.errorText {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestExecuteHTTP200SSEFailureEnvelopeFailsClosedAfterFullBody(t *testing.T) {
+	request, err := BuildBasicForEndpointMode(modelcheckprofile.ProtocolOpenAIResponses, "model", "hello", modelcheckprofile.EndpointModeResponsesSSE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join([]string{
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"partial"}`,
+		``,
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"error":{"code":"overloaded","message":"late stream failure"}}}`,
+		``,
+		`data: [DONE]`,
+	}, "\n")
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	result, err := Execute(context.Background(), request, Options{Endpoint: "https://example.test", Client: &http.Client{Transport: transport}, Timeout: time.Second})
+	if err != nil || result.HTTPStatus != http.StatusOK || result.Success || result.ErrorMessage != "late stream failure" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestParseResponseSSEAccumulatesEventsBeforeReturning(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		protocol modelcheckprofile.Protocol
+		body     string
+		want     string
+	}{
+		{
+			name:     "chat",
+			protocol: modelcheckprofile.ProtocolOpenAIChat,
+			body:     "event: chunk\ndata: {\"model\":\"chat-model\",\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\nevent: chunk\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n",
+			want:     "hello",
+		},
+		{
+			name:     "anthropic",
+			protocol: modelcheckprofile.ProtocolAnthropic,
+			body:     "event: content_block_delta\ndata: {\"delta\":{\"text\":\"hel\"}}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"lo\"}}\n",
+			want:     "hello",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, output, _, _ := parseResponse(test.protocol, []byte(test.body))
+			if output != test.want {
+				t.Fatalf("output=%q want=%q", output, test.want)
+			}
+		})
+	}
+}
+
 type clientCapturingDispatcher struct {
 	legacyCalls int
 	client      *http.Client
@@ -232,7 +378,7 @@ func TestRunSuiteStopsOnFailureAndFormsCredentialFreeEvaluations(t *testing.T) {
 	}))
 	defer server.Close()
 	items, err := RunSuite(context.Background(), Suite{Endpoint: server.URL, Model: "gpt-5.6-sol", Protocol: modelcheckprofile.ProtocolOpenAIResponses}, time.Second)
-	if err != nil || len(items) != 5 || items[0].Kind != "protocol_basic" {
+	if err != nil || len(items) != 4 || items[0].Kind != "protocol_basic" {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
 }

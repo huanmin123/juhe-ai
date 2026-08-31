@@ -26,6 +26,44 @@ func TestSchedulerRunExecutorRejectsIncompleteDurablePolicy(t *testing.T) {
 	}
 }
 
+func TestSchedulerRunExecutorRejectsLegacyPayloadWithoutSourceRevisions(t *testing.T) {
+	buildCalled := false
+	executor := &SchedulerRunExecutor{
+		Runtime: &Runtime{},
+		Build: func(context.Context, ScheduledPayload) (RunRequest, error) {
+			buildCalled = true
+			return RunRequest{}, nil
+		},
+		Scheduled: func(context.Context, ScheduledPayload, RunResult) error { return nil },
+	}
+	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "quick", ProviderCode: "openai", Threshold: 70, PenaltyAction: "fallback", ConfigRevision: "cfg-4", DispatchRevision: 4, PolicyRevision: "pol-2", ProbeSetVersion: "probe-1", IdentityKey: "identity-1", ScheduleID: "schedule-1", OwnerID: "gateway-1", ScheduleRevision: 1, IntervalMinutes: 60})
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerScheduled, Payload: payload}); err == nil {
+		t.Fatal("legacy payload without source revisions must fail closed")
+	}
+	if buildCalled {
+		t.Fatal("legacy payload must be rejected before resolving a runtime request")
+	}
+}
+
+func TestSchedulerRunExecutorRejectsPayloadWithoutDispatchRevision(t *testing.T) {
+	buildCalled := false
+	executor := &SchedulerRunExecutor{
+		Runtime: &Runtime{},
+		Build: func(context.Context, ScheduledPayload) (RunRequest, error) {
+			buildCalled = true
+			return RunRequest{}, nil
+		},
+		Scheduled: func(context.Context, ScheduledPayload, RunResult) error { return nil },
+	}
+	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "quick", ProviderCode: "openai", Threshold: 70, PenaltyAction: "fallback", ConfigRevision: "cfg-4", SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "pol-2", ProbeSetVersion: "probe-1", IdentityKey: "identity-1", ScheduleID: "schedule-1", OwnerID: "gateway-1", ScheduleRevision: 1, IntervalMinutes: 60})
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerScheduled, Payload: payload}); err == nil {
+		t.Fatal("payload without dispatch revision must fail closed")
+	}
+	if buildCalled {
+		t.Fatal("payload without dispatch revision must be rejected before resolving a runtime request")
+	}
+}
+
 func TestSchedulerExecutorMuxRoutesHealthSeparately(t *testing.T) {
 	mux := &SchedulerExecutorMux{}
 	if err := mux.Execute(context.Background(), ScheduleTask{Kind: SchedulerScheduled}); err == nil {
@@ -44,12 +82,44 @@ func TestSchedulerRunExecutorMapsDurablePayload(t *testing.T) {
 	executor := &SchedulerRunExecutor{Runtime: runner, Build: func(_ context.Context, payload ScheduledPayload) (RunRequest, error) {
 		return RunRequest{Endpoint: "https://example.invalid", Prompt: "probe"}, nil
 	}, Scheduled: func(context.Context, ScheduledPayload, RunResult) error { return nil }}
-	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "fallback", ConfigRevision: "cfg-2", SourceConfigRevision: "src-2", SourceDispatchRevision: 2, PolicyRevision: "pol-3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", ScheduleID: "schedule-6", OwnerID: "gateway-1", ScheduleRevision: 3, IntervalMinutes: 60})
+	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "fallback", ConfigRevision: "cfg-2", DispatchRevision: 2, SourceConfigRevision: "src-2", SourceDispatchRevision: 2, PolicyRevision: "pol-3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", ScheduleID: "schedule-6", OwnerID: "gateway-1", ScheduleRevision: 3, IntervalMinutes: 60})
 	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerScheduled, Payload: payload}); err != nil {
 		t.Fatal(err)
 	}
-	if runner.request.TriggerKind != string(SchedulerScheduled) || runner.request.ScheduleID != "schedule-6" || runner.request.SystemAccountID != "sys" || runner.request.ActorSystemAccountID != "actor" || runner.request.TargetID != "acct" || runner.request.ProviderCode != "openai" || runner.request.Threshold != 70 || runner.request.PenaltyAction != "fallback" || runner.request.ConfigRevision != "cfg-2" || runner.request.SourceConfigRevision != "src-2" || runner.request.SourceDispatchRevision != 2 || runner.request.PolicyRevision != "pol-3" {
+	if runner.request.TriggerKind != string(SchedulerScheduled) || runner.request.ScheduleID != "schedule-6" || runner.request.SystemAccountID != "sys" || runner.request.ActorSystemAccountID != "actor" || runner.request.TargetID != "acct" || runner.request.ProviderCode != "openai" || runner.request.Threshold != 70 || runner.request.PenaltyAction != "fallback" || runner.request.ConfigRevision != "cfg-2" || runner.request.DispatchRevision != 2 || runner.request.SourceConfigRevision != "src-2" || runner.request.SourceDispatchRevision != 2 || runner.request.PolicyRevision != "pol-3" {
 		t.Fatalf("mapped request=%+v", runner.request)
+	}
+}
+
+func TestSchedulerRunExecutorFailsClosedForStaleDispatchPayload(t *testing.T) {
+	var resolved RunRequest
+	var completion RunResult
+	runtime := &Runtime{
+		Store: &Store{},
+		Resolve: func(_ context.Context, request RunRequest) (Target, error) {
+			resolved = request
+			return Target{Endpoint: "https://example.invalid", Prompt: "probe", DispatchRevision: 7}, nil
+		},
+	}
+	executor := &SchedulerRunExecutor{
+		Runtime: runtime,
+		Build: func(_ context.Context, _ ScheduledPayload) (RunRequest, error) {
+			return RunRequest{DispatchRevision: 99}, nil
+		},
+		Scheduled: func(_ context.Context, _ ScheduledPayload, result RunResult) error {
+			completion = result
+			return nil
+		},
+	}
+	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "quick", ProviderCode: "openai", Threshold: 70, PenaltyAction: "fallback", ConfigRevision: "cfg-2", DispatchRevision: 6, SourceConfigRevision: "src-2", SourceDispatchRevision: 2, PolicyRevision: "pol-3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", ScheduleID: "schedule-6", OwnerID: "gateway-1", ScheduleRevision: 3, IntervalMinutes: 60})
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerScheduled, Payload: payload}); err != nil {
+		t.Fatalf("stale scheduled dispatch should be recorded as failed: %v", err)
+	}
+	if resolved.DispatchRevision != 6 {
+		t.Fatalf("scheduler must preserve payload dispatch revision, request=%+v", resolved)
+	}
+	if completion.Status != string(RunFailed) {
+		t.Fatalf("stale dispatch should fail closed, completion=%+v", completion)
 	}
 }
 
@@ -58,7 +128,7 @@ func TestSchedulerRunExecutorFailsClosedWithoutRecoveryCAS(t *testing.T) {
 	executor := &SchedulerRunExecutor{Runtime: runner, Build: func(_ context.Context, payload ScheduledPayload) (RunRequest, error) {
 		return RunRequest{Endpoint: "https://example.invalid", Prompt: "probe"}, nil
 	}}
-	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5"})
+	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", DispatchRevision: 4, SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5"})
 	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: payload}); err == nil {
 		t.Fatal("quality recovery must fail closed without a Business CAS completion owner")
 	}
@@ -77,7 +147,7 @@ func TestSchedulerRecoveryRequiresFormedEvidenceAndTrust(t *testing.T) {
 			return nil
 		},
 	}
-	base := ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", EnforcementID: "enf-1", Generation: 2, RecoveryIntervalMinutes: 10}
+	base := ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", DispatchRevision: 4, SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", EnforcementID: "enf-1", Generation: 2, RecoveryIntervalMinutes: 10}
 	encoded, _ := json.Marshal(base)
 	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: encoded}); err != nil {
 		t.Fatal(err)
@@ -127,7 +197,7 @@ func TestSchedulerRecoveryRunErrorReschedulesThroughCompletion(t *testing.T) {
 			return nil
 		},
 	}
-	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", EnforcementID: "enf-1", Generation: 2, RecoveryIntervalMinutes: 10})
+	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", DispatchRevision: 4, SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", EnforcementID: "enf-1", Generation: 2, RecoveryIntervalMinutes: 10})
 	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: payload}); err != nil {
 		t.Fatalf("runtime error should be handled by recovery completion: %v", err)
 	}
@@ -149,7 +219,7 @@ func TestSchedulerScheduledRunErrorCompletesAsFailed(t *testing.T) {
 			return nil
 		},
 	}
-	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "fallback", ConfigRevision: "4", SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", ScheduleID: "sch-1", ScheduleRevision: 2, IntervalMinutes: 60})
+	payload, _ := json.Marshal(ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "full", ProviderCode: "openai", Threshold: 70, PenaltyAction: "fallback", ConfigRevision: "4", DispatchRevision: 4, SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", ScheduleID: "sch-1", ScheduleRevision: 2, IntervalMinutes: 60})
 	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerScheduled, Payload: payload}); err != nil {
 		t.Fatalf("runtime error should be recorded by scheduled completion: %v", err)
 	}

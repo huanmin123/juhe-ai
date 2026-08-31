@@ -151,14 +151,22 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
           configRevision,
           options.form.statusSelectionExplicit
         )
-        if (!updatePayload) {
+        const lockConfigChanged = accountLockConfigChanged(options.form, advancedDetail)
+        if (!updatePayload && !lockConfigChanged) {
           finishUnchangedEdit()
           return
         }
-        const updated = options.isManagementView.value
-          ? await api.accounts.update(options.editingId.value, updatePayload, options.editingAccountScopeParams())
-          : await api.myAccounts.update(options.editingId.value, updatePayload)
-        await refreshEditedAccountRows(updated)
+        let lockConfigRevision = configRevision
+        if (updatePayload) {
+          const updated = options.isManagementView.value
+            ? await api.accounts.update(options.editingId.value, updatePayload, options.editingAccountScopeParams())
+            : await api.myAccounts.update(options.editingId.value, updatePayload)
+          await refreshEditedAccountRows(updated)
+          lockConfigRevision = updated.configRevision
+        }
+        if (lockConfigChanged) {
+          await updateAccountLockConfig(options.editingId.value, lockConfigRevision)
+        }
         message.success(balanceAutoDisabled ? '账户已更新，已因多 Key 自动关闭余额查询' : '账户已更新')
         options.modalOpen.value = false
         return
@@ -243,15 +251,23 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     if (!sameTagNames(options.form.tags, account.tags)) {
       payload.tags = normalizeFormTagNames(options.form.tags)
     }
-    if (Object.keys(payload).length === 1) {
+    const lockConfigChanged = accountLockConfigChanged(options.form, options.editingAccountAdvancedDetail.value)
+    if (Object.keys(payload).length === 1 && !lockConfigChanged) {
       finishUnchangedEdit()
       return
     }
     try {
-      const updated = options.isManagementView.value
-        ? await api.accounts.update(account.id, payload, scopeParams)
-        : await api.myAccounts.update(account.id, payload)
-      await refreshEditedAccountRows(updated)
+      let lockConfigRevision = Number(expectedConfigRevision)
+      if (Object.keys(payload).length > 1) {
+        const updated = options.isManagementView.value
+          ? await api.accounts.update(account.id, payload, scopeParams)
+          : await api.myAccounts.update(account.id, payload)
+        await refreshEditedAccountRows(updated)
+        lockConfigRevision = updated.configRevision
+      }
+      if (lockConfigChanged) {
+        await updateAccountLockConfig(account.id, lockConfigRevision)
+      }
       message.success('授权账户已更新')
       options.modalOpen.value = false
     } catch (error) {
@@ -339,6 +355,32 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '保存账户失败'))
+    }
+  }
+
+  function accountLockConfigChanged(form: AccountFormModel, detail?: AccountAdvancedDetail): boolean {
+    if (!detail) return false
+    return form.lockDeathTimeoutSeconds !== (detail.lockDeathTimeoutSeconds ?? 300)
+      || form.lockRetryIntervalSeconds !== (detail.lockRetryIntervalSeconds ?? 5)
+  }
+
+  async function updateAccountLockConfig(accountId: string, expectedConfigRevision: number): Promise<void> {
+    const timeout = Math.trunc(Number(options.form.lockDeathTimeoutSeconds))
+    const interval = Math.trunc(Number(options.form.lockRetryIntervalSeconds))
+    if (!Number.isInteger(timeout) || timeout < 30 || timeout > 3600) throw new Error('锁死死期必须是 30..3600 秒的整数')
+    if (!Number.isInteger(interval) || interval < 5 || interval > 30) throw new Error('锁死重试间隔必须是 5..30 秒的整数')
+    if (!Number.isInteger(expectedConfigRevision) || Number(expectedConfigRevision) < 1) {
+      throw new Error('账户配置版本缺失，请刷新列表后重试')
+    }
+    const payload = {
+      expectedConfigRevision: Number(expectedConfigRevision),
+      lockDeathTimeoutSeconds: timeout,
+      lockRetryIntervalSeconds: interval
+    }
+    if (options.isManagementView.value) {
+      await api.accounts.updateLockConfig(accountId, payload, options.editingAccountScopeParams())
+    } else {
+      await api.myAccounts.updateLockConfig(accountId, payload)
     }
   }
 

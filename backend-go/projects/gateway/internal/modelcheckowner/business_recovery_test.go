@@ -3,6 +3,7 @@ package modelcheckowner
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -92,5 +93,27 @@ func TestAvailabilityAllowedGatewayCrossDayAndStrictJSON(t *testing.T) {
 	}
 	if _, err := availabilityAllowedGateway(`{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[],"extra":true}`, time.Now()); err == nil {
 		t.Fatal("unknown or invalid schedule must fail closed")
+	}
+}
+
+func TestAvailabilityGatewayExceptionWindowSchema(t *testing.T) {
+	base := `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1],"start":"00:00","end":"23:59"}],"exceptions":[%s]}`
+	tests := []struct {
+		name      string
+		exception string
+		wantErr   bool
+	}{
+		{name: "deny windows null", exception: `{"date":"2030-01-07","action":"deny","windows":null}`, wantErr: true},
+		{name: "allow exception daysOfWeek", exception: `{"date":"2030-01-07","action":"allow","windows":[{"daysOfWeek":[1],"start":"10:00","end":"11:00"}]}`, wantErr: true},
+		{name: "valid omitted deny windows", exception: `{"date":"2030-01-07","action":"deny"}`},
+		{name: "valid allow start end", exception: `{"date":"2030-01-07","action":"allow","windows":[{"start":"10:00","end":"11:00"}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := availabilityAllowedGateway(fmt.Sprintf(base, tt.exception), time.Date(2030, 1, 8, 12, 0, 0, 0, time.UTC))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error=%v, wantErr=%v", err, tt.wantErr)
+			}
+		})
 	}
 }

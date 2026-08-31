@@ -78,6 +78,12 @@ export interface AuthorizedAccountDispatchPayload {
   clearFailureState?: boolean
 }
 
+export interface AccountLockMutationPayload {
+  expectedConfigRevision?: number
+  lockDeathTimeoutSeconds?: number
+  lockRetryIntervalSeconds?: number
+}
+
 export const accountsApi = {
   list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params), signal: options?.signal })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
@@ -94,6 +100,9 @@ export const accountsApi = {
   importConfirm: (payload: AccountImportRequestPayload, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
   create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountCreateResult>(http.post('/accounts', payload, { params })),
   update: (id: string, payload: AccountUpdatePayload, params?: ListParams) => unwrap<AccountMutationResult>(http.patch(`/accounts/${id}`, payload, { params })),
+  lock: (id: string, payload?: AccountLockMutationPayload, params?: ListParams) => unwrap<Record<string, unknown>>(http.post(`/accounts/${id}/lock`, payload ?? {}, { params })),
+  unlock: (id: string, payload?: AccountLockMutationPayload, params?: ListParams) => unwrap<Record<string, unknown>>(http.post(`/accounts/${id}/unlock`, payload ?? {}, { params })),
+  updateLockConfig: (id: string, payload: AccountLockMutationPayload, params?: ListParams) => unwrap<Record<string, unknown>>(http.post(`/accounts/${id}/lock-config`, payload, { params })),
   forceActivate: (id: string, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/force-activate`, { acknowledgedAccountAvailable: true }, { params })),
   refreshBalance: (id: string, params?: ListParams) => unwrap<AccountSummary['balanceSnapshot']>(http.post(`/accounts/${id}/balance/refresh`, {}, { params })),
   testBalanceDraft: (payload: AccountBalanceDraftTestPayload, params?: ListParams) => unwrap<AccountSummary['balanceSnapshot']>(http.post('/accounts/balance/test-draft', payload, { params })),
@@ -133,6 +142,9 @@ export const myAccountsApi = {
   importConfirm: (payload: AccountImportRequestPayload) => unwrap<AccountImportResult>(http.post('/my-accounts/import/confirm', payload)),
   create: (payload: Record<string, unknown>) => unwrap<AccountCreateResult>(http.post('/my-accounts', payload)),
   update: (id: string, payload: AccountUpdatePayload) => unwrap<AccountMutationResult>(http.patch(`/my-accounts/${id}`, payload)),
+  lock: (id: string, payload?: AccountLockMutationPayload) => unwrap<Record<string, unknown>>(http.post(`/my-accounts/${id}/lock`, payload ?? {})),
+  unlock: (id: string, payload?: AccountLockMutationPayload) => unwrap<Record<string, unknown>>(http.post(`/my-accounts/${id}/unlock`, payload ?? {})),
+  updateLockConfig: (id: string, payload: AccountLockMutationPayload) => unwrap<Record<string, unknown>>(http.post(`/my-accounts/${id}/lock-config`, payload)),
   forceActivate: (id: string) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/force-activate`, { acknowledgedAccountAvailable: true })),
   refreshBalance: (id: string) => unwrap<AccountSummary['balanceSnapshot']>(http.post(`/my-accounts/${id}/balance/refresh`, {})),
   testBalanceDraft: (payload: AccountBalanceDraftTestPayload) => unwrap<AccountSummary['balanceSnapshot']>(http.post('/my-accounts/balance/test-draft', payload)),

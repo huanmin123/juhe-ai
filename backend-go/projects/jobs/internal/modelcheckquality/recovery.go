@@ -1,6 +1,7 @@
 package modelcheckquality
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -225,9 +226,61 @@ type availabilityDateRange struct {
 	End   string `json:"endDate"`
 }
 type availabilityException struct {
-	Date    string               `json:"date"`
-	Action  string               `json:"action"`
-	Windows []availabilityWindow `json:"windows"`
+	Date           string               `json:"date"`
+	Action         string               `json:"action"`
+	Windows        []availabilityWindow `json:"windows"`
+	windowsPresent bool
+}
+
+// UnmarshalJSON preserves whether an exception windows field was omitted or
+// explicitly provided as null, and restricts exception windows to the Node
+// contract's start/end-only shape.
+func (e *availabilityException) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Date    string          `json:"date"`
+		Action  string          `json:"action"`
+		Windows json.RawMessage `json:"windows"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&raw); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing content")
+		}
+		return err
+	}
+	e.Date, e.Action = raw.Date, raw.Action
+	e.Windows = nil
+	e.windowsPresent = raw.Windows != nil
+	if !e.windowsPresent || bytes.Equal(bytes.TrimSpace(raw.Windows), []byte("null")) {
+		return nil
+	}
+	var windows []availabilityExceptionWindow
+	windowDecoder := json.NewDecoder(bytes.NewReader(raw.Windows))
+	windowDecoder.DisallowUnknownFields()
+	if err := windowDecoder.Decode(&windows); err != nil {
+		return err
+	}
+	if err := windowDecoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing content")
+		}
+		return err
+	}
+	e.Windows = make([]availabilityWindow, len(windows))
+	for i, window := range windows {
+		e.Windows[i] = availabilityWindow{Start: window.Start, End: window.End}
+	}
+	return nil
+}
+
+type availabilityExceptionWindow struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
 }
 
 func availabilityAllowed(raw string, now time.Time) (bool, error) {
@@ -309,7 +362,7 @@ func validateAvailabilitySchedule(s availabilitySchedule) error {
 		}
 	}
 	for _, e := range s.Exceptions {
-		if !validDate(e.Date) || (e.Action != "allow" && e.Action != "deny") || (e.Action == "deny" && len(e.Windows) > 0) || (e.Action == "allow" && len(e.Windows) == 0) {
+		if !validDate(e.Date) || (e.Action != "allow" && e.Action != "deny") || (e.Action == "deny" && e.windowsPresent) || (e.Action == "allow" && (!e.windowsPresent || len(e.Windows) == 0)) || len(e.Windows) > 32 {
 			return errors.New("invalid availability exception")
 		}
 		for _, w := range e.Windows {

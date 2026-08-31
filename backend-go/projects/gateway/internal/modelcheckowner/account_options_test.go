@@ -22,7 +22,7 @@ func TestListAccountOptionsFiltersAndFreezesCatalog(t *testing.T) {
 		`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
 		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,enabled INTEGER)`,
+		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)

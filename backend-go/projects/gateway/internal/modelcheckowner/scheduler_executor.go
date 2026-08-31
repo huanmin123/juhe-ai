@@ -23,6 +23,7 @@ type ScheduledPayload struct {
 	Threshold               int    `json:"threshold"`
 	PenaltyAction           string `json:"penaltyAction"`
 	ConfigRevision          string `json:"configRevision"`
+	DispatchRevision        int64  `json:"dispatchRevision"`
 	SourceConfigRevision    string `json:"sourceConfigRevision,omitempty"`
 	SourceDispatchRevision  int64  `json:"sourceDispatchRevision,omitempty"`
 	PolicyRevision          string `json:"policyRevision"`
@@ -84,7 +85,7 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	if err := json.Unmarshal(task.Payload, &payload); err != nil {
 		return fmt.Errorf("decode J3b scheduler payload: %w", err)
 	}
-	if strings.TrimSpace(payload.SystemAccountID) == "" || strings.TrimSpace(payload.ActorSystemAccountID) == "" || strings.TrimSpace(payload.TargetType) == "" || strings.TrimSpace(payload.TargetID) == "" || strings.TrimSpace(payload.Model) == "" || strings.TrimSpace(payload.Profile) == "" || strings.TrimSpace(payload.ProviderCode) == "" || strings.TrimSpace(payload.ConfigRevision) == "" || strings.TrimSpace(payload.SourceConfigRevision) == "" || payload.SourceDispatchRevision < 1 || strings.TrimSpace(payload.PolicyRevision) == "" || strings.TrimSpace(payload.ProbeSetVersion) == "" || strings.TrimSpace(payload.IdentityKey) == "" || (payload.PenaltyAction != "disable" && payload.PenaltyAction != "fallback" && payload.PenaltyAction != "quality_isolate") || payload.Threshold < 40 || payload.Threshold > 100 {
+	if strings.TrimSpace(payload.SystemAccountID) == "" || strings.TrimSpace(payload.ActorSystemAccountID) == "" || strings.TrimSpace(payload.TargetType) == "" || strings.TrimSpace(payload.TargetID) == "" || strings.TrimSpace(payload.Model) == "" || strings.TrimSpace(payload.Profile) == "" || strings.TrimSpace(payload.ProviderCode) == "" || strings.TrimSpace(payload.ConfigRevision) == "" || payload.DispatchRevision < 1 || strings.TrimSpace(payload.SourceConfigRevision) == "" || payload.SourceDispatchRevision < 1 || strings.TrimSpace(payload.PolicyRevision) == "" || strings.TrimSpace(payload.ProbeSetVersion) == "" || strings.TrimSpace(payload.IdentityKey) == "" || (payload.PenaltyAction != "disable" && payload.PenaltyAction != "fallback" && payload.PenaltyAction != "quality_isolate") || payload.Threshold < 40 || payload.Threshold > 100 {
 		return errors.New("J3b scheduler payload scope or policy snapshot is incomplete")
 	}
 	if task.Kind == SchedulerScheduled && (e.Scheduled == nil || strings.TrimSpace(payload.OwnerID) == "" || payload.ScheduleRevision < 1 || payload.IntervalMinutes < 10) {
@@ -112,6 +113,7 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	request.PenaltyAction = payload.PenaltyAction
 	request.RecoveryIntervalMinutes = payload.RecoveryIntervalMinutes
 	request.ConfigRevision = payload.ConfigRevision
+	request.DispatchRevision = payload.DispatchRevision
 	request.SourceConfigRevision = payload.SourceConfigRevision
 	request.SourceDispatchRevision = payload.SourceDispatchRevision
 	request.PolicyRevision = payload.PolicyRevision

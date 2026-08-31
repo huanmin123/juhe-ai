@@ -271,6 +271,7 @@ export function canManageOAuthAccount(account: AccountListItem): boolean {
 
 export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
+  pushAccountLockItems(items, account)
   if (isAuthorizedAccount(account)) {
     if (canTestAccount(account)) {
       items.push({ key: 'test', label: '测试' })
@@ -400,6 +401,21 @@ function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountListIte
   }
 }
 
+function pushAccountLockItems(items: AccountMenuItem[], account: AccountListItem): void {
+  if (account.permissions?.canLock === false) return
+  const locked = account.lockState === 'LOCKED_IDLE' || account.lockState === 'ENGAGED' || account.lockState === 'DEAD_CONFIRMED'
+  items.push({
+    key: locked ? 'unlock' : 'lock',
+    label: locked ? '解除锁死' : '锁死',
+    icon: locked ? 'enable' : 'pause',
+    tone: locked ? 'success' : 'danger',
+    confirmTitle: locked
+      ? `确认解除账户「${account.name}」的锁死？`
+      : `确认锁死账户「${account.name}」？锁死期间请求不会切换到其他账户。`,
+    confirmOkText: locked ? '解除锁死' : '锁死'
+  })
+}
+
 function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
   if (item.icon || item.tone) return item
   if (item.key === 'test') return { ...item, icon: 'test', tone: 'info' }
@@ -413,5 +429,7 @@ function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
   if (item.key === 'fallback-on') return { ...item, icon: 'fallback', tone: 'purple' }
   if (item.key === 'fallback-off') return { ...item, icon: 'fallback', tone: 'default' }
   if (item.key === 'migrate-traffic') return { ...item, icon: 'migrate', tone: 'purple' }
+  if (item.key === 'lock') return { ...item, icon: 'pause', tone: 'danger' }
+  if (item.key === 'unlock') return { ...item, icon: 'enable', tone: 'success' }
   return item
 }

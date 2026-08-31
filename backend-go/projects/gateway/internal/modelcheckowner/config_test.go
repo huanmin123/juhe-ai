@@ -130,11 +130,17 @@ func TestVerifyConfiguredCutoverEvidenceBindsOwnerAndEpoch(t *testing.T) {
 	}
 	digest := sha256.Sum256(backupData)
 	now := time.Now().UTC()
+	manifestPath, manifestHash := writeValidConfiguredReadbackManifest(t, now)
 	evidence := contracts.J3bCutoverEvidence{
 		OldOwner: "node", NewOwner: contracts.J3bGatewayCutoverOwner, OwnerEpoch: "epoch-1", DrainCompleted: true,
 		ActivePathZero: true, InFlight: 0, BlockedFindings: 0,
 		BackupArtifact:       contracts.J3bBackupArtifact{Path: backupPath, Hash: hex.EncodeToString(digest[:])},
 		RollbackReplayCursor: "cursor-1", SourceDigest: strings.Repeat("a", 64), TargetDigest: strings.Repeat("a", 64),
+		ReadbackManifest: contracts.J3bReadbackManifestReference{
+			Path: manifestPath, Hash: manifestHash, FormatVersion: contracts.J3bReadbackManifestFormatVersion,
+			Scope: contracts.J3bReadbackManifestScope, SourceSnapshotIdentity: "snapshot-1",
+			SourceSchema: "legacy-sqlite-dataset+stats", TargetSchema: "juhe-j3b-sqlite",
+		},
 		Freshness: contracts.J3bEvidenceFreshness{CapturedAt: now.Format(time.RFC3339), MaxAgeSeconds: 60},
 	}
 	path := filepath.Join(dir, "evidence.json")
@@ -152,6 +158,138 @@ func TestVerifyConfiguredCutoverEvidenceBindsOwnerAndEpoch(t *testing.T) {
 	report, err = VerifyConfiguredCutoverEvidence(path, "epoch-2", now)
 	if err != nil || report.Ready || len(report.Errors) == 0 {
 		t.Fatalf("epoch mismatch report=%+v err=%v", report, err)
+	}
+}
+
+func writeValidConfiguredReadbackManifest(t *testing.T, now time.Time) (string, string) {
+	t.Helper()
+	manifest := contracts.J3bReadbackManifest{
+		FormatVersion:          contracts.J3bReadbackManifestFormatVersion,
+		Scope:                  contracts.J3bReadbackManifestScope,
+		Producer:               "gateway-config-test",
+		SourceSnapshotIdentity: "snapshot-1",
+		SourceSchema:           "legacy-sqlite-dataset+stats",
+		TargetSchema:           "juhe-j3b-sqlite",
+		ProjectionComplete:     true,
+		VerifiedAt:             now.Format(time.RFC3339),
+	}
+	for _, name := range []string{
+		"account_quality_health_hourly",
+		"model_check_items",
+		"model_check_observations",
+		"model_check_runs",
+		"model_token_intercept_baseline_versions",
+	} {
+		manifest.Tables = append(manifest.Tables, contracts.J3bReadbackTableDigest{
+			Name: name, SourceRows: 1, TargetRows: 1,
+			SourceDigest: strings.Repeat("a", 64), TargetDigest: strings.Repeat("a", 64),
+		})
+	}
+	hash, err := contracts.ComputeJ3bReadbackManifestHash(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.ManifestHash = hash
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "readback-manifest.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fileHash := sha256.Sum256(data)
+	return path, hex.EncodeToString(fileHash[:])
+}
+
+func writeConfiguredEvidence(t *testing.T, evidence contracts.J3bCutoverEvidence) string {
+	t.Helper()
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "evidence.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func validConfiguredCutoverEvidence(t *testing.T) (contracts.J3bCutoverEvidence, time.Time) {
+	t.Helper()
+	dir := t.TempDir()
+	backupData := []byte("backup")
+	backupPath := filepath.Join(dir, "backup.bin")
+	if err := os.WriteFile(backupPath, backupData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(backupData)
+	now := time.Now().UTC()
+	manifestPath, manifestHash := writeValidConfiguredReadbackManifest(t, now)
+	return contracts.J3bCutoverEvidence{
+		OldOwner: "node", NewOwner: contracts.J3bGatewayCutoverOwner, OwnerEpoch: "epoch-1", DrainCompleted: true,
+		ActivePathZero: true, InFlight: 0, BlockedFindings: 0,
+		BackupArtifact:       contracts.J3bBackupArtifact{Path: backupPath, Hash: hex.EncodeToString(digest[:])},
+		RollbackReplayCursor: "cursor-1", SourceDigest: strings.Repeat("a", 64), TargetDigest: strings.Repeat("a", 64),
+		ReadbackManifest: contracts.J3bReadbackManifestReference{
+			Path: manifestPath, Hash: manifestHash, FormatVersion: contracts.J3bReadbackManifestFormatVersion,
+			Scope: contracts.J3bReadbackManifestScope, SourceSnapshotIdentity: "snapshot-1",
+			SourceSchema: "legacy-sqlite-dataset+stats", TargetSchema: "juhe-j3b-sqlite",
+		},
+		Freshness: contracts.J3bEvidenceFreshness{CapturedAt: now.Format(time.RFC3339), MaxAgeSeconds: 60},
+	}, now
+}
+
+func TestVerifyConfiguredCutoverEvidenceRejectsManifestFileHashMismatch(t *testing.T) {
+	evidence, now := validConfiguredCutoverEvidence(t)
+	evidence.ReadbackManifest.Hash = strings.Repeat("0", 64)
+	report, err := VerifyConfiguredCutoverEvidence(writeConfiguredEvidence(t, evidence), "epoch-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready {
+		t.Fatalf("bad manifest file hash unexpectedly ready: %+v", report)
+	}
+}
+
+func TestVerifyConfiguredCutoverEvidenceRejectsManifestHashMismatch(t *testing.T) {
+	evidence, now := validConfiguredCutoverEvidence(t)
+	data, err := os.ReadFile(evidence.ReadbackManifest.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest contracts.J3bReadbackManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.ManifestHash = strings.Repeat("0", 64)
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(evidence.ReadbackManifest.Path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(data)
+	evidence.ReadbackManifest.Hash = hex.EncodeToString(digest[:])
+	report, err := VerifyConfiguredCutoverEvidence(writeConfiguredEvidence(t, evidence), "epoch-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready {
+		t.Fatalf("bad manifest hash unexpectedly ready: %+v", report)
+	}
+}
+
+func TestVerifyConfiguredCutoverEvidenceRejectsManifestIdentityMismatch(t *testing.T) {
+	evidence, now := validConfiguredCutoverEvidence(t)
+	evidence.ReadbackManifest.SourceSnapshotIdentity = "different-snapshot"
+	report, err := VerifyConfiguredCutoverEvidence(writeConfiguredEvidence(t, evidence), "epoch-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready {
+		t.Fatalf("manifest identity mismatch unexpectedly ready: %+v", report)
 	}
 }
 

@@ -21,18 +21,19 @@ const J3bGatewayCutoverOwner = "go-gateway"
 // contracts only decode and validate it; callers own file access and artifact
 // hashing so this package remains free of I/O.
 type J3bCutoverEvidence struct {
-	OldOwner             string               `json:"oldOwner"`
-	NewOwner             string               `json:"newOwner"`
-	OwnerEpoch           string               `json:"ownerEpoch"`
-	DrainCompleted       bool                 `json:"drainCompleted"`
-	InFlight             int64                `json:"inFlight"`
-	ActivePathZero       bool                 `json:"activePathZero"`
-	BackupArtifact       J3bBackupArtifact    `json:"backupArtifact"`
-	RollbackReplayCursor string               `json:"rollbackReplayCursor"`
-	Freshness            J3bEvidenceFreshness `json:"freshness"`
-	SourceDigest         string               `json:"sourceDigest"`
-	TargetDigest         string               `json:"targetDigest"`
-	BlockedFindings      int64                `json:"blockedFindings"`
+	OldOwner             string                       `json:"oldOwner"`
+	NewOwner             string                       `json:"newOwner"`
+	OwnerEpoch           string                       `json:"ownerEpoch"`
+	DrainCompleted       bool                         `json:"drainCompleted"`
+	InFlight             int64                        `json:"inFlight"`
+	ActivePathZero       bool                         `json:"activePathZero"`
+	BackupArtifact       J3bBackupArtifact            `json:"backupArtifact"`
+	RollbackReplayCursor string                       `json:"rollbackReplayCursor"`
+	Freshness            J3bEvidenceFreshness         `json:"freshness"`
+	SourceDigest         string                       `json:"sourceDigest"`
+	TargetDigest         string                       `json:"targetDigest"`
+	ReadbackManifest     J3bReadbackManifestReference `json:"readbackManifest"`
+	BlockedFindings      int64                        `json:"blockedFindings"`
 	inFlightSet          bool
 	blockedFindingsSet   bool
 	parsedFromJSON       bool
@@ -56,6 +57,10 @@ type J3bCutoverEvidenceReport struct {
 // J3bCutoverArtifactVerifier performs caller-owned artifact verification. It
 // must not mutate the artifact or external owner state.
 type J3bCutoverArtifactVerifier func(J3bBackupArtifact) error
+
+// J3bReadbackManifestVerifier performs caller-owned manifest file checks.
+// The shared contract owns no file access, database access, or owner state.
+type J3bReadbackManifestVerifier func(J3bReadbackManifestReference, J3bCutoverEvidence, time.Time) error
 
 // UnmarshalJSON rejects unknown fields and records required zero-valued
 // counters so missing inFlight/blockedFindings cannot be mistaken for zero.
@@ -99,19 +104,36 @@ func DecodeJ3bCutoverEvidence(data []byte) (J3bCutoverEvidence, error) {
 }
 
 func ValidateJ3bCutoverEvidence(evidence J3bCutoverEvidence, now time.Time, verifyArtifact J3bCutoverArtifactVerifier) J3bCutoverEvidenceReport {
-	return validateJ3bCutoverEvidence(evidence, now, verifyArtifact, true)
+	return validateJ3bCutoverEvidence(evidence, now, verifyArtifact, nil)
 }
 
-// ValidateJ3bBackfillEvidence validates the pre-backfill handoff proof. The
-// target digest is optional because the backfill itself creates that target.
+// ValidateJ3bBackfillEvidence validates the pre-backfill handoff proof. Legacy
+// scalar digests may be absent, but a complete readback manifest binding is
+// still mandatory for any authorization result.
 func ValidateJ3bBackfillEvidence(evidence J3bCutoverEvidence, now time.Time, verifyArtifact J3bCutoverArtifactVerifier) J3bCutoverEvidenceReport {
-	return validateJ3bCutoverEvidence(evidence, now, verifyArtifact, false)
+	return validateJ3bCutoverEvidence(evidence, now, verifyArtifact, nil)
+}
+
+func ValidateJ3bCutoverEvidenceWithReadback(evidence J3bCutoverEvidence, now time.Time, verifyArtifact J3bCutoverArtifactVerifier, verifyReadback J3bReadbackManifestVerifier) J3bCutoverEvidenceReport {
+	return validateJ3bCutoverEvidence(evidence, now, verifyArtifact, verifyReadback)
+}
+
+func ValidateJ3bBackfillEvidenceWithReadback(evidence J3bCutoverEvidence, now time.Time, verifyArtifact J3bCutoverArtifactVerifier, verifyReadback J3bReadbackManifestVerifier) J3bCutoverEvidenceReport {
+	return validateJ3bCutoverEvidence(evidence, now, verifyArtifact, verifyReadback)
 }
 
 // ValidateJ3bCutoverEvidenceForOwner additionally binds the proof to the
 // process owner and epoch that are about to be started.
 func ValidateJ3bCutoverEvidenceForOwner(evidence J3bCutoverEvidence, owner, epoch string, now time.Time, verifyArtifact J3bCutoverArtifactVerifier) J3bCutoverEvidenceReport {
-	report := validateJ3bCutoverEvidence(evidence, now, verifyArtifact, true)
+	return validateJ3bCutoverEvidenceForOwner(evidence, owner, epoch, now, verifyArtifact, nil)
+}
+
+func ValidateJ3bCutoverEvidenceForOwnerWithReadback(evidence J3bCutoverEvidence, owner, epoch string, now time.Time, verifyArtifact J3bCutoverArtifactVerifier, verifyReadback J3bReadbackManifestVerifier) J3bCutoverEvidenceReport {
+	return validateJ3bCutoverEvidenceForOwner(evidence, owner, epoch, now, verifyArtifact, verifyReadback)
+}
+
+func validateJ3bCutoverEvidenceForOwner(evidence J3bCutoverEvidence, owner, epoch string, now time.Time, verifyArtifact J3bCutoverArtifactVerifier, verifyReadback J3bReadbackManifestVerifier) J3bCutoverEvidenceReport {
+	report := validateJ3bCutoverEvidence(evidence, now, verifyArtifact, verifyReadback)
 	if strings.TrimSpace(owner) != "" && strings.TrimSpace(evidence.NewOwner) != strings.TrimSpace(owner) {
 		report.Errors = append(report.Errors, "newOwner does not match configured owner")
 	}
@@ -122,7 +144,7 @@ func ValidateJ3bCutoverEvidenceForOwner(evidence J3bCutoverEvidence, owner, epoc
 	return report
 }
 
-func validateJ3bCutoverEvidence(evidence J3bCutoverEvidence, now time.Time, verifyArtifact J3bCutoverArtifactVerifier, requireTargetDigest bool) J3bCutoverEvidenceReport {
+func validateJ3bCutoverEvidence(evidence J3bCutoverEvidence, now time.Time, verifyArtifact J3bCutoverArtifactVerifier, verifyReadback J3bReadbackManifestVerifier) J3bCutoverEvidenceReport {
 	report := J3bCutoverEvidenceReport{}
 	add := func(message string) { report.Errors = append(report.Errors, message) }
 	if strings.TrimSpace(evidence.OldOwner) == "" {
@@ -158,17 +180,25 @@ func validateJ3bCutoverEvidence(evidence J3bCutoverEvidence, now time.Time, veri
 	if strings.TrimSpace(evidence.RollbackReplayCursor) == "" {
 		add("rollbackReplayCursor is required")
 	}
-	if !validJ3bEvidenceDigest(evidence.SourceDigest) {
-		add("sourceDigest must be a SHA-256 digest")
+	if strings.TrimSpace(evidence.SourceDigest) != "" && !validJ3bEvidenceDigest(evidence.SourceDigest) {
+		add("sourceDigest must be a SHA-256 digest when provided")
 	}
-	if requireTargetDigest {
-		if !validJ3bEvidenceDigest(evidence.TargetDigest) {
-			add("targetDigest must be a SHA-256 digest")
-		} else if validJ3bEvidenceDigest(evidence.SourceDigest) && !equalJ3bEvidenceDigest(evidence.SourceDigest, evidence.TargetDigest) {
-			add("sourceDigest and targetDigest must match")
-		}
-	} else if strings.TrimSpace(evidence.TargetDigest) != "" && !validJ3bEvidenceDigest(evidence.TargetDigest) {
+	if strings.TrimSpace(evidence.TargetDigest) != "" && !validJ3bEvidenceDigest(evidence.TargetDigest) {
 		add("targetDigest must be a SHA-256 digest when provided")
+	}
+	if strings.TrimSpace(evidence.ReadbackManifest.Path) == "" || !validJ3bEvidenceDigest(evidence.ReadbackManifest.Hash) {
+		add("readbackManifest path and SHA-256 hash are required")
+	}
+	if evidence.ReadbackManifest.FormatVersion != J3bReadbackManifestFormatVersion || evidence.ReadbackManifest.Scope != J3bReadbackManifestScope || strings.TrimSpace(evidence.ReadbackManifest.SourceSnapshotIdentity) == "" || strings.TrimSpace(evidence.ReadbackManifest.SourceSchema) == "" || strings.TrimSpace(evidence.ReadbackManifest.TargetSchema) == "" {
+		add("readbackManifest format, scope, snapshot identity and schemas are required")
+	}
+	if strings.TrimSpace(evidence.ReadbackManifest.Path) == "" || !validJ3bEvidenceDigest(evidence.ReadbackManifest.Hash) {
+		// The structural error above is enough; do not call a verifier with an
+		// unusable file reference.
+	} else if verifyReadback == nil {
+		add("readbackManifest verifier is required")
+	} else if err := verifyReadback(evidence.ReadbackManifest, evidence, now); err != nil {
+		add(fmt.Sprintf("readbackManifest verification failed: %v", err))
 	}
 	if !validJ3bEvidenceDigest(evidence.BackupArtifact.Hash) {
 		add("backupArtifact.hash must be a SHA-256 digest")

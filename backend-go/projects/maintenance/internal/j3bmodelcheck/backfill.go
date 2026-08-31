@@ -28,12 +28,12 @@ type BackfillReport struct {
 // after backfill. No source or target file is opened with write permissions.
 type BackfillVerificationReport struct {
 	Ready bool `json:"ready"`
-	// ProjectionComplete is stricter than Ready: Ready preserves the
-	// historical common-column compatibility signal, while this field proves
-	// every source column was represented by the target projection.
+	// ProjectionComplete proves every source column was represented by the
+	// target projection. Both this field and Ready fail closed for a
+	// source-only column.
 	ProjectionComplete bool `json:"projectionComplete"`
 	// Complete is the cutover-safe readback gate. Callers must consume this
-	// field instead of treating Ready as proof of a lossless migration.
+	// field as proof of a lossless migration.
 	Complete             bool                `json:"complete"`
 	PathsDistinct        bool                `json:"pathsDistinct"`
 	SourceReadOnly       bool                `json:"sourceReadOnly"`
@@ -51,10 +51,10 @@ type BackfillVerificationReport struct {
 // and stats files with the dedicated target. It is intentionally read-only:
 // this command is safe to run after cutover and is suitable for rollback
 // evidence. Missing mandatory source tables, shared physical files, row
-// count drift, or digest drift all fail closed (Ready=false). A source-only
-// column keeps the historical Ready compatibility signal true when the common
-// projection matches, but sets ProjectionComplete/Complete false so callers
-// cannot use lossy readback as complete cutover evidence.
+// count drift, digest drift, or source-only columns all fail closed
+// (Ready=false). ProjectionComplete and Complete also remain false when a
+// source-only column is present, so callers cannot use lossy readback as
+// cutover evidence.
 func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPath string) (BackfillVerificationReport, error) {
 	targetPath = strings.TrimSpace(targetPath)
 	datasetPath = strings.TrimSpace(datasetPath)
@@ -165,6 +165,7 @@ func VerifySQLiteBackfill(ctx context.Context, targetPath, datasetPath, statsPat
 		if ignored := differenceColumns(sourceColumns, targetColumns); len(ignored) > 0 {
 			report.IgnoredSourceColumns[item.table] = ignored
 			projectionComplete = false
+			ready = false
 		}
 		sourceDigest, err := sqliteTableDigestColumns(ctx, item.db, item.table, columns)
 		if err != nil {
@@ -553,6 +554,13 @@ func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table stri
 		return copyStats{}, fmt.Errorf("J3b backfill table %s has no compatible columns", table)
 	}
 	ignoredSourceColumns := differenceColumns(sourceColumns, targetColumns)
+	// A mandatory J3b fact must be copied losslessly.  Continuing with the
+	// intersection would commit a partial projection before readback can flag
+	// it, leaving the target database permanently missing source facts.
+	if len(ignoredSourceColumns) > 0 {
+		sort.Strings(ignoredSourceColumns)
+		return copyStats{}, fmt.Errorf("J3b backfill table %s has unmapped source columns: %s", table, strings.Join(ignoredSourceColumns, ","))
+	}
 	sort.Strings(columns)
 	primaryKeys, err := sqlitePrimaryKeys(ctx, tx, table)
 	if err != nil || len(primaryKeys) == 0 {

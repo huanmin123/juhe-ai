@@ -269,14 +269,14 @@ func main() {
 					if payload.EnforcementID != "" {
 						trigger = "quality_recovery"
 					}
-					target, err := businessSource.Resolve(ctx, modelcheckowner.RunRequest{SystemAccountID: payload.SystemAccountID, TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, ConfigRevision: payload.ConfigRevision, SourceConfigRevision: payload.SourceConfigRevision, SourceDispatchRevision: payload.SourceDispatchRevision, TriggerKind: trigger})
+					target, err := businessSource.Resolve(ctx, modelcheckowner.RunRequest{SystemAccountID: payload.SystemAccountID, TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, ConfigRevision: payload.ConfigRevision, DispatchRevision: payload.DispatchRevision, SourceConfigRevision: payload.SourceConfigRevision, SourceDispatchRevision: payload.SourceDispatchRevision, TriggerKind: trigger})
 					if err != nil {
 						return modelcheckowner.RunRequest{}, err
 					}
 					if target.ConfigRevision != payload.ConfigRevision {
 						return modelcheckowner.RunRequest{}, errors.New("J3b scheduled account config revision is stale")
 					}
-					return modelcheckowner.RunRequest{TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, Profile: payload.Profile, SystemAccountID: payload.SystemAccountID, ActorSystemAccountID: payload.ActorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: payload.Threshold, PenaltyAction: payload.PenaltyAction, ConfigRevision: payload.ConfigRevision, SourceConfigRevision: payload.SourceConfigRevision, SourceDispatchRevision: payload.SourceDispatchRevision, PolicyRevision: payload.PolicyRevision, ProbeSetVersion: payload.ProbeSetVersion, IdentityKey: payload.IdentityKey, DispatchRevision: target.DispatchRevision}, nil
+					return modelcheckowner.RunRequest{TargetType: payload.TargetType, TargetID: payload.TargetID, Model: payload.Model, Profile: payload.Profile, SystemAccountID: payload.SystemAccountID, ActorSystemAccountID: payload.ActorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: payload.Threshold, PenaltyAction: payload.PenaltyAction, ConfigRevision: payload.ConfigRevision, SourceConfigRevision: payload.SourceConfigRevision, SourceDispatchRevision: payload.SourceDispatchRevision, PolicyRevision: payload.PolicyRevision, ProbeSetVersion: payload.ProbeSetVersion, IdentityKey: payload.IdentityKey, DispatchRevision: payload.DispatchRevision}, nil
 				}
 				executor := &modelcheckowner.SchedulerExecutorMux{Runs: &modelcheckowner.SchedulerRunExecutor{Runtime: runtime, Build: build, Recovery: recovery.Complete, Scheduled: source.CompleteScheduled}, Health: &modelcheckowner.HealthSyncRetryExecutor{Projector: projector}}
 				return source, executor

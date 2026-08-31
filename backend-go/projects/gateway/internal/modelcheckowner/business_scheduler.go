@@ -123,7 +123,7 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 		if n, _ := res.RowsAffected(); n != 1 {
 			continue
 		}
-		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: action, ConfigRevision: strconv.Itoa(configRevision), SourceConfigRevision: strconv.Itoa(configRevision), SourceDispatchRevision: int64(dispatchRevision), PolicyRevision: strconv.Itoa(revision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: id, OwnerID: s.OwnerID, ScheduleRevision: revision, IntervalMinutes: interval, RecoveryIntervalMinutes: recoveryInterval})
+		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: action, ConfigRevision: strconv.Itoa(configRevision), DispatchRevision: int64(dispatchRevision), SourceConfigRevision: strconv.Itoa(configRevision), SourceDispatchRevision: int64(dispatchRevision), PolicyRevision: strconv.Itoa(revision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: id, OwnerID: s.OwnerID, ScheduleRevision: revision, IntervalMinutes: interval, RecoveryIntervalMinutes: recoveryInterval})
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +160,7 @@ func (s *BusinessSchedulerSource) claimRecoveries(ctx context.Context, tx *sql.T
 		if n, _ := res.RowsAffected(); n != 1 {
 			continue
 		}
-		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: "quality_isolate", ConfigRevision: strconv.Itoa(configRevision), SourceConfigRevision: strconv.Itoa(sourceConfigRevision), SourceDispatchRevision: int64(sourceDispatchRevision), PolicyRevision: strconv.Itoa(policyRevision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: scheduleID, OwnerID: s.OwnerID, EnforcementID: enforcementID, Generation: generation, RecoveryIntervalMinutes: interval})
+		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: "quality_isolate", ConfigRevision: strconv.Itoa(configRevision), DispatchRevision: int64(dispatchRevision), SourceConfigRevision: strconv.Itoa(sourceConfigRevision), SourceDispatchRevision: int64(sourceDispatchRevision), PolicyRevision: strconv.Itoa(policyRevision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: scheduleID, OwnerID: s.OwnerID, EnforcementID: enforcementID, Generation: generation, RecoveryIntervalMinutes: interval})
 		if err != nil {
 			return nil, err
 		}
