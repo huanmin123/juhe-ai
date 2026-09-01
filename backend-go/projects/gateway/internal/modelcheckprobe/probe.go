@@ -29,6 +29,12 @@ const (
 
 type Request struct {
 	Path, ExpectedModel string
+	// RequestModel keeps the public model requested before an explicit Business
+	// mapping selected ExpectedModel. Some upstreams echo that public model even
+	// though the mapped upstream model was sent; it is valid mapping evidence,
+	// not an undeclared substitution.
+	RequestModel        string
+	ModelMappingApplied bool
 	Protocol            modelcheckprofile.Protocol
 	// EndpointMode is the immutable Business health-check request shape. It
 	// remains explicit so callers do not infer a path from protocol alone.
@@ -41,20 +47,22 @@ const (
 )
 
 type Result struct {
-	HTTPStatus         int
-	Success            bool
-	ExpectedModel      string
-	ObservedModel      string
-	Output             string
-	Usage              map[string]any
-	JSON               map[string]any
-	ErrorMessage       string
-	Duration           time.Duration
-	RetryAttemptCount  int
-	RetryMaxAttempts   int
-	AttemptStatusCodes []int
-	RetryWaitDurations []time.Duration
-	AttemptDetails     []AttemptDetail
+	HTTPStatus          int
+	Success             bool
+	ExpectedModel       string
+	RequestModel        string
+	ModelMappingApplied bool
+	ObservedModel       string
+	Output              string
+	Usage               map[string]any
+	JSON                map[string]any
+	ErrorMessage        string
+	Duration            time.Duration
+	RetryAttemptCount   int
+	RetryMaxAttempts    int
+	AttemptStatusCodes  []int
+	RetryWaitDurations  []time.Duration
+	AttemptDetails      []AttemptDetail
 }
 
 // AttemptDetail is bounded retry metadata safe to retain in diagnostic
@@ -361,7 +369,7 @@ func BuildToolForEndpointMode(protocol modelcheckprofile.Protocol, model, endpoi
 
 func Execute(ctx context.Context, request Request, options Options) (Result, error) {
 	started := time.Now()
-	result := Result{ExpectedModel: request.ExpectedModel}
+	result := Result{ExpectedModel: request.ExpectedModel, RequestModel: request.RequestModel, ModelMappingApplied: request.ModelMappingApplied}
 	headers := options.Headers.Clone()
 	if headers == nil {
 		headers = make(http.Header)

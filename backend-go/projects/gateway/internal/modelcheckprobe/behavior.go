@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
@@ -28,7 +29,8 @@ func RunBehavior(ctx context.Context, protocol modelcheckprofile.Protocol, model
 	if strings.TrimSpace(model) == "" || run == nil {
 		return Evaluation{}, errors.New("J3b behavior input is invalid")
 	}
-	passed, success := 0, 0
+	passed, success, modelMatchCount := 0, 0, 0
+	modelMismatch := false
 	for _, probe := range behaviorProbes {
 		endpointMode := ""
 		if len(endpointModes) > 0 {
@@ -44,6 +46,12 @@ func RunBehavior(ctx context.Context, protocol modelcheckprofile.Protocol, model
 		}
 		if result.Success {
 			success++
+			_, matched, mismatch := matchProbeResponseModel(result, model)
+			if matched {
+				modelMatchCount++
+			} else if mismatch {
+				modelMismatch = true
+			}
 		}
 		if result.Success && behaviorPassed(probe.Key, result.Output) {
 			passed++
@@ -52,15 +60,27 @@ func RunBehavior(ctx context.Context, protocol modelcheckprofile.Protocol, model
 	if success == 0 {
 		return Evaluation{Kind: "behavior_probe", Status: "skipped", Evidence: map[string]any{"requestFailure": true, "excludedFromScoring": true}}, nil
 	}
-	rate := float64(passed) / float64(success)
-	score := int(rate * 35)
+	constraintRate := float64(passed) / float64(success)
+	modelMatchRate := float64(modelMatchCount) / float64(success)
+	score := int(math.Round((modelMatchRate*0.3 + constraintRate*0.7) * 35))
+	if modelMismatch {
+		score = int(math.Round(constraintRate * 8))
+	}
 	status := "failed"
-	if rate >= 0.85 {
+	evidencePassed := constraintRate >= .85 && modelMatchRate >= .85
+	if modelMismatch {
+		status = "failed"
+	} else if evidencePassed && success == len(behaviorProbes) {
 		status = "passed"
-	} else if rate >= 0.6 {
+	} else if evidencePassed || (constraintRate >= .6 && modelMatchRate >= .6) {
 		status = "warning"
 	}
-	return Evaluation{Kind: "behavior_probe", Status: status, Score: score, MaxScore: 35, Evidence: map[string]any{"successCount": success, "passedCount": passed, "constraintRate": rate, "partial": success < len(behaviorProbes)}}, nil
+	return Evaluation{Kind: "behavior_probe", Status: status, Score: score, MaxScore: 35, Evidence: map[string]any{
+		"successCount": success, "passedCount": passed, "constraintRate": constraintRate,
+		"modelMatchRate": modelMatchRate, "modelMismatch": modelMismatch,
+		"requestFailureCount": len(behaviorProbes) - success, "successRate": float64(success) / float64(len(behaviorProbes)),
+		"partial": success < len(behaviorProbes),
+	}}, nil
 }
 
 func behaviorPassed(key, output string) bool {

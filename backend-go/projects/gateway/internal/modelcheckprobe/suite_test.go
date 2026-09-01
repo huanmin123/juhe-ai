@@ -428,7 +428,7 @@ func TestRunSuiteStabilityFailureStopsTokenAndPreservesGateEvidence(t *testing.T
 	for _, item := range items {
 		if item.Kind == "stability" {
 			found = true
-			if item.Status != "skipped" {
+			if item.Status != "skipped" || item.Evidence["terminalFailure"] != true {
 				t.Fatalf("stability evidence=%+v", item)
 			}
 		}
@@ -686,7 +686,12 @@ func (t *comparisonTransport) RoundTrip(request *http.Request) (*http.Response, 
 	if payload.Model != t.expectedModel {
 		return nil, fmt.Errorf("model=%q want=%q", payload.Model, t.expectedModel)
 	}
-	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"` + t.expectedModel + `","output_text":` + mustJSONTextForDistribution(body) + `,"usage":{"total_tokens":2}}`)), Request: request}, nil
+	output := mustJSONTextForDistribution(body)
+	if strings.Contains(string(body), "CROSS-MODEL-OK") {
+		encoded, _ := json.Marshal("CROSS-MODEL-OK")
+		output = string(encoded)
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"` + t.expectedModel + `","output_text":` + output + `,"usage":{"total_tokens":2}}`)), Request: request}, nil
 }
 
 func mustJSONTextForDistribution(body []byte) string {

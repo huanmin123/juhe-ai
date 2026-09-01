@@ -30,8 +30,10 @@ type HealthReader interface {
 var _ HealthReader = (*Store)(nil)
 
 // QualityProjector is the only path that may publish a J3b health fact. It
-// requires a fully formed, trusted aggregate and records failed publication
-// as retryable state on the same run.
+// requires a fully formed, trusted aggregate for full diagnostics. Quick
+// diagnostics intentionally use a smaller evidence set, so a completed quick
+// quality failure is also eligible for the Node-compatible health path; failed
+// publication remains retryable on the same run.
 type QualityProjector struct {
 	Store       *Store
 	Enforcement EnforcementApplier
@@ -110,8 +112,11 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 	}
 	// Unavailable means the upstream could not yield quality evidence. It is
 	// still a valid health fact for retry/recovery purposes, but it must never
-	// authorize enforcement. Other levels retain the formed+trusted gate.
-	if fact.Level != "unavailable" && (!aggregate.Formed || !aggregate.TrustFormed) {
+	// authorize enforcement. Quick diagnostics intentionally have a smaller
+	// family set than full diagnostics and follow Node's completed quality
+	// decision path without the full formed+trusted gate.
+	quickQualityFailure := fact.Profile == "quick" && fact.Level != "unavailable" && fact.Score < fact.Threshold
+	if fact.Level != "unavailable" && !quickQualityFailure && (!aggregate.Formed || !aggregate.TrustFormed) {
 		p.markHealthSyncFailure(ctx, runID)
 		return errors.New("J3b evidence is not formed; health projection is denied")
 	}

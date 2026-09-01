@@ -283,6 +283,39 @@ func TestQualityProjectorUnavailableNeverEnforces(t *testing.T) {
 	}
 }
 
+func TestQualityProjectorPublishesUnformedQuickFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quick-unformed-health.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,updated_at) VALUES ('run-quick-unformed','pending_retry','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &recordingEnforcement{}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-quick-unformed", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "uncertain", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
+	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: false, TrustFormed: false}, fact); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.calls != 1 {
+		t.Fatalf("quick quality failure should follow Node enforcement path, calls=%d", recorder.calls)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-quick-unformed'`).Scan(&state); err != nil || state != "applied" {
+		t.Fatalf("quick unformed health state=%q err=%v", state, err)
+	}
+}
+
 func TestQualityProjectorRejectsSuccessfulHealthFact(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "successful-health.db")
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")

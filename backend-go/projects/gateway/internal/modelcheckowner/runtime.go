@@ -328,7 +328,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	emit(ProgressEvent{Kind: "run_started", Data: map[string]any{"runId": runID}})
 	probeModel := upstreamModel
-	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, ProviderProtocolProfileID: target.ProviderProtocolProfileID, Headers: target.Headers, Model: probeModel, Profile: request.Profile, Protocol: target.Protocol, UpstreamProtocol: target.UpstreamProtocol, EndpointMode: target.EndpointMode, UpstreamEndpointMode: target.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), SupportedModels: append([]string(nil), target.SupportedModels...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Adapter: target.UpstreamAdapter, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile)}
+	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, ProviderProtocolProfileID: target.ProviderProtocolProfileID, Headers: target.Headers, Model: probeModel, RequestModel: request.Model, ModelMappingApplied: probeModel != request.Model, Profile: request.Profile, Protocol: target.Protocol, UpstreamProtocol: target.UpstreamProtocol, EndpointMode: target.EndpointMode, UpstreamEndpointMode: target.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), SupportedModels: append([]string(nil), target.SupportedModels...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Adapter: target.UpstreamAdapter, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile)}
 	probeSuite.Dispatcher = s.Dispatcher
 	probeSuite.Client = target.Client
 	credentialSourceID := target.CredentialSourceAccountID
@@ -341,7 +341,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	probeSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: credentialSourceID, KeyFingerprint: credentialSourceID, ClientModel: request.Model, ClientEndpointFamily: clientEndpointFamily, FinalUpstreamModel: probeModel, UpstreamEndpointMode: upstreamEndpointMode, DispatchRevision: target.DispatchRevision}
 	if request.TrustedComparison {
-		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, ProviderProtocolProfileID: comparisonTarget.ProviderProtocolProfileID, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, Profile: request.Profile, Protocol: comparisonTarget.Protocol, UpstreamProtocol: comparisonTarget.UpstreamProtocol, EndpointMode: comparisonTarget.EndpointMode, UpstreamEndpointMode: comparisonTarget.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), comparisonTarget.SupportedEndpointModes...), SupportedModels: append([]string(nil), comparisonTarget.SupportedModels...), Dispatcher: s.Dispatcher, Adapter: comparisonTarget.UpstreamAdapter, Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile)}
+		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, ProviderProtocolProfileID: comparisonTarget.ProviderProtocolProfileID, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, RequestModel: request.Model, ModelMappingApplied: comparisonTarget.UpstreamModel != request.Model, Profile: request.Profile, Protocol: comparisonTarget.Protocol, UpstreamProtocol: comparisonTarget.UpstreamProtocol, EndpointMode: comparisonTarget.EndpointMode, UpstreamEndpointMode: comparisonTarget.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), comparisonTarget.SupportedEndpointModes...), SupportedModels: append([]string(nil), comparisonTarget.SupportedModels...), Dispatcher: s.Dispatcher, Adapter: comparisonTarget.UpstreamAdapter, Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile)}
 		comparisonSuite.Client = comparisonTarget.Client
 		comparisonSourceID := comparisonTarget.CredentialSourceAccountID
 		if comparisonSourceID == "" {
@@ -392,11 +392,8 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	// durable quality result. Transport/execute failures are returned by
 	// RunSuite as probeErr and are finalized through finishFailure above;
 	// promoting ItemFailed here would bypass the quality/health decision path.
-	mappingStatus := "unmapped"
-	if probeModel != request.Model {
-		mappingStatus = "mapped"
-	}
-	resultPayload, _ := json.Marshal(map[string]any{"evaluations": items, "score": score, "maxScore": 100, "level": level})
+	mappingApplied := probeModel != request.Model
+	mappingStatus := "unknown"
 	evidenceItems := make([]map[string]any, 0, len(items))
 	for _, evaluation := range items {
 		// Keep the evaluator's bounded, credential-free evidence available to
@@ -409,8 +406,25 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 			"evidence": evaluation.Evidence,
 		})
 	}
+	if mappingApplied {
+		// A configured mapping may legitimately return either the frozen
+		// upstream model or the original request model. It remains configured
+		// even if another quality item reports a mismatch; Node never promotes
+		// configured mappings to the hard undeclared-mismatch gate.
+		mappingStatus = "configured_mapping"
+	} else if hasUndeclaredResponseModelMismatch(evidenceItems) {
+		mappingStatus = "undeclared_mismatch"
+	} else if hasResponseModelEvidence(evidenceItems) {
+		mappingStatus = "direct"
+	}
 	aggregate := AggregateEvidence(evidenceItems)
 	trustReport := BuildTrustReport(aggregate, evidenceItems)
+	modelCheckUnverified := hasTerminalEvidence(evidenceItems)
+	resultSummary := map[string]any{"evaluations": items, "score": score, "maxScore": 100, "level": level, "modelCheckUnverified": modelCheckUnverified}
+	if modelCheckUnverified {
+		resultSummary["qualityDecisionSuppressedReason"] = "未形成质量判定证据"
+	}
+	resultPayload, _ := json.Marshal(resultSummary)
 	protocolStatus := "passed"
 	if status == RunFailed {
 		protocolStatus = "failed"
@@ -420,12 +434,24 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		return s.finishFailure(ctx, runID, input, claim, now, err)
 	}
 	qualityUnavailable := level == "unavailable"
-	hardQualityFailure := level == "suspicious"
+	// Node's hard gate is narrower than the run-level suspicious label: a
+	// quality anomaly (for example a single Juice or long-context failure)
+	// remains score-driven until it is independently confirmed. Only an
+	// explicit, non-empty response model conflict bypasses the threshold here;
+	// repeated Juice evidence is not available in this in-process projection.
+	hardQualityFailure := mappingStatus == "undeclared_mismatch"
 	qualityFailed := status == RunCompleted && !qualityUnavailable && (score < request.Threshold || hardQualityFailure)
 	// Recovery validates whether an existing isolation can be cleared; it must
 	// not create a second enforcement generation when the recovery probe fails.
 	enforcementAllowed := manualEnforcementEligible && qualityFailed && triggerKind != "quality_recovery"
-	qualityDecision, _ := json.Marshal(map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "hardQualityFailure": hardQualityFailure, "enforcementAllowed": enforcementAllowed, "trust": trustReport})
+	qualityDecisionPayload := map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "hardQualityFailure": hardQualityFailure, "enforcementAllowed": enforcementAllowed, "trust": trustReport, "modelCheckUnverified": modelCheckUnverified}
+	if modelCheckUnverified {
+		qualityDecisionPayload["result"] = "not_triggered"
+		qualityDecisionPayload["qualityDecisionSuppressedReason"] = "未形成质量判定证据"
+		enforcementAllowed = false
+		qualityDecisionPayload["enforcementAllowed"] = false
+	}
+	qualityDecision, _ := json.Marshal(qualityDecisionPayload)
 	if err := ctx.Err(); err != nil {
 		return s.finishFailure(ctx, runID, input, claim, now, err)
 	}
@@ -455,7 +481,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	// Node publishes a health failure only for a completed quality failure or
 	// unavailable result. Publishing successful probes would make the existing
 	// health reader treat a healthy account as failed.
-	qualityHealthEligible := qualityUnavailable || (aggregate.Formed && aggregate.TrustFormed)
+	qualityHealthEligible := !modelCheckUnverified && (qualityUnavailable || request.Profile == "quick" || (aggregate.Formed && aggregate.TrustFormed))
 	if status == RunCompleted && (qualityFailed || qualityUnavailable) && qualityHealthEligible && s.Projector != nil && request.Threshold > 0 && request.ProviderCode != "" {
 		statHour, err := s.Store.formatHealthStatHour(finishedAt)
 		if err != nil {
@@ -479,11 +505,18 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		"message": message,
 		// Scheduler quality recovery consumes these explicit durable quality
 		// gates. Omitting either flag must remain fail-closed in the executor.
-		"evidenceFormed":  aggregate.Formed,
-		"trustFormed":     aggregate.TrustFormed,
-		"missingFamilies": aggregate.Missing,
-		"partialFamilies": aggregate.Partial,
-		"invalidFamilies": aggregate.Invalid,
+		"evidenceFormed":       aggregate.Formed,
+		"trustFormed":          aggregate.TrustFormed,
+		"missingFamilies":      aggregate.Missing,
+		"partialFamilies":      aggregate.Partial,
+		"invalidFamilies":      aggregate.Invalid,
+		"modelCheckUnverified": modelCheckUnverified,
+		"qualityDecisionSuppressedReason": func() string {
+			if modelCheckUnverified {
+				return "未形成质量判定证据"
+			}
+			return ""
+		}(),
 	}}, nil
 }
 
@@ -547,6 +580,56 @@ func appendEvaluationObservations(ctx context.Context, store *Store, runID, syst
 		}
 	}
 	return nil
+}
+
+func hasUndeclaredResponseModelMismatch(items []map[string]any) bool {
+	for _, item := range items {
+		kind, _ := item["kind"].(string)
+		if strings.HasPrefix(kind, "trusted_comparison.") {
+			continue
+		}
+		switch modelcheckprobe.UnscopedKindForOwner(kind) {
+		case "cross_model", "comparison", "distribution", "distribution_similarity":
+			// Node's hard mapping gate uses target response evidence only. A
+			// paired/self comparison is supporting diagnostic evidence, never a
+			// configured-model mapping decision.
+			continue
+		}
+		evidence, _ := item["evidence"].(map[string]any)
+		mismatch, _ := evidence["modelMismatch"].(bool)
+		if mismatch {
+			responseModel, _ := evidence["responseModel"].(string)
+			if strings.TrimSpace(responseModel) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasResponseModelEvidence(items []map[string]any) bool {
+	for _, item := range items {
+		kind, _ := item["kind"].(string)
+		if strings.HasPrefix(kind, "trusted_comparison.") {
+			continue
+		}
+		evidence, _ := item["evidence"].(map[string]any)
+		responseModel, _ := evidence["responseModel"].(string)
+		if strings.TrimSpace(responseModel) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTerminalEvidence(items []map[string]any) bool {
+	for _, item := range items {
+		evidence, _ := item["evidence"].(map[string]any)
+		if terminal, _ := evidence["terminalFailure"].(bool); terminal {
+			return true
+		}
+	}
+	return false
 }
 
 func appendObservationIdempotent(ctx context.Context, store *Store, observation ObservationRecord) error {

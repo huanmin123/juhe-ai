@@ -27,10 +27,15 @@ type Suite struct {
 	Headers                   http.Header
 	Client                    *http.Client
 	Model                     string
-	Profile                   string
-	Protocol                  modelcheckprofile.Protocol
-	UpstreamProtocol          modelcheckprofile.Protocol
-	Stream                    bool
+	// RequestModel is the public model selected before a configured upstream
+	// mapping. It is intentionally distinct from Model, which is the exact
+	// upstream model placed in a probe payload.
+	RequestModel        string
+	ModelMappingApplied bool
+	Profile             string
+	Protocol            modelcheckprofile.Protocol
+	UpstreamProtocol    modelcheckprofile.Protocol
+	Stream              bool
 	// EndpointMode is preferred over Stream when supplied. Supported modes are
 	// checked before any request is built, preserving Business fail-closed
 	// endpoint capability semantics.
@@ -213,8 +218,13 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 				break
 			}
 		}
-		items = append(items, scopeEvaluation(input.Prefix, EvaluateStability(stabilityResults, input.Model)))
-		if len(stabilityResults) > 0 && isTerminalProbeFailure(stabilityResults[len(stabilityResults)-1]) {
+		stabilityEvaluation := EvaluateStability(stabilityResults, input.Model)
+		stabilityTerminal := len(stabilityResults) > 0 && isTerminalProbeFailure(stabilityResults[len(stabilityResults)-1])
+		if stabilityTerminal {
+			stabilityEvaluation = terminalFamilyEvaluation(stabilityEvaluation)
+		}
+		items = append(items, scopeEvaluation(input.Prefix, stabilityEvaluation))
+		if stabilityTerminal {
 			return append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results))), nil
 		}
 		if input.supportsTokenIdentityProbes() {
@@ -446,6 +456,13 @@ func protocolScopedSkip(kind string) Evaluation {
 }
 
 func (s Suite) execute(ctx context.Context, request Request, timeout time.Duration) (Result, error) {
+	// Only the suite's primary mapped model may accept the public request model
+	// as a valid upstream echo. Auxiliary cross-model probes use their paired
+	// model directly and must retain strict matching for that paired request.
+	if request.ExpectedModel == s.Model && strings.TrimSpace(s.RequestModel) != "" {
+		request.RequestModel = s.RequestModel
+		request.ModelMappingApplied = s.ModelMappingApplied
+	}
 	options := s.options(s.Endpoint, s.Headers, timeout)
 	options.Client = s.Client
 	return ExecuteWithRetry(ctx, request, options, s.Retry)
@@ -708,7 +725,11 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	if err != nil {
 		return nil, err
 	}
-	comparisonBasic, err := comparison.buildBasic(comparisonModel, "Reply with exactly: OK-MODEL-CHECK", comparisonMode, comparisonStream)
+	// The paired request is the independent cross-model contract. The
+	// comparison suite above already ran its own ordinary basic probe; this
+	// request must use the CROSS-MODEL-OK output contract so the comparison item
+	// does not silently score as a generic basic response.
+	comparisonBasic, err := comparison.buildBasic(comparisonModel, "Reply with exactly: CROSS-MODEL-OK", comparisonMode, comparisonStream)
 	if err != nil {
 		return nil, err
 	}

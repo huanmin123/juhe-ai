@@ -78,10 +78,10 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 	if (behavior != nil && behavior.Status == "warning" && evidenceBool(behavior.Evidence, "requestFailure")) || (stability != nil && stability.Status == "warning" && evidenceBool(stability.Evidence, "requestFailure")) {
 		return SummaryResult{"uncertain", score, 100, "关键行为或稳定性探针存在请求失败，未形成完整模型可信度证据"}
 	}
-	if trustedComparison && (hasRequestFailureAny(checks, "distribution_similarity", "distribution") || hasRequestFailureAny(checks, "comparison", "cross_model")) {
-		return SummaryResult{"uncertain", score, 100, "可信对比探针请求失败，未形成完整可比模型证据"}
-	}
-	if trustedComparison && trustedComparisonEvidenceIssue(checks) {
+	// The Node oracle short-circuits only when the trusted-comparison aggregate
+	// itself is skipped. A warning/failed aggregate remains score-bearing
+	// evidence and must continue through the ordinary confidence ladder.
+	if trustedComparison && hasStatusAny(checks, "skipped", "comparison") {
 		return SummaryResult{"uncertain", score, 100, "可信对比账户存在失败或不完整证据，未形成完整可比模型结论"}
 	}
 	if profile == "quick" {
@@ -96,11 +96,16 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 	// A similar output distribution is supporting evidence only. Node requires
 	// the independently resolved trusted-comparison aggregate itself to pass
 	// before granting the highest confidence level.
+	// With a trusted comparison attached, Node accepts the independently
+	// resolved comparison aggregate in place of the self cross-model check.
+	// Without one, the self cross-model result remains mandatory for the
+	// highest confidence level.
+	crossModelSatisfied := trustedComparison || hasStatusAny(checks, "passed", "cross_model")
 	trustedOK := !trustedComparison || (hasStatusAny(checks, "passed", "comparison", "cross_model") && hasStatusAny(checks, "passed", "distribution_similarity", "distribution"))
 	behaviorPassed := behavior != nil && behavior.Status == "passed"
 	stabilityPassed := stability != nil && stability.Status == "passed"
 	longPassed := long != nil && long.Status == "passed"
-	if score >= 92 && failed == 0 && trustedOK && behaviorPassed && stabilityPassed && longPassed {
+	if score >= 92 && failed == 0 && trustedOK && crossModelSatisfied && behaviorPassed && stabilityPassed && longPassed {
 		return SummaryResult{"high_confidence", score, 100, "目标模型链路高可信，强诊断协议、行为指纹、长上下文、稳定性和辅助模型对照均通过"}
 	}
 	if score >= 78 && failed <= 1 {
@@ -166,55 +171,6 @@ func hasStatusAny(items []Evaluation, status string, kinds ...string) bool {
 		}
 	}
 	return false
-}
-
-func hasRequestFailureAny(items []Evaluation, kinds ...string) bool {
-	for _, kind := range kinds {
-		if hasRequestFailure(items, kind) {
-			return true
-		}
-	}
-	return false
-}
-
-func trustedComparisonEvidenceIssue(items []Evaluation) bool {
-	for _, item := range items {
-		kind := unscopedKind(item.Kind)
-		trusted := strings.HasPrefix(strings.TrimSpace(item.Kind), "trusted_comparison.")
-		if trusted {
-			switch kind {
-			case "juice":
-				if item.Status == "skipped" && strings.Contains(fmtEvidenceReason(item.Evidence), "juice_scope_not_applicable") {
-					continue
-				}
-			case "cross_model", "distribution":
-				// The trusted full suite intentionally has no nested trusted
-				// comparison. Its own cross-model/distribution placeholders are
-				// excluded; the unscoped summaries are checked below.
-				continue
-			}
-			if item.Status == "failed" || item.Status == "skipped" || item.Status == "warning" {
-				return true
-			}
-			continue
-		}
-		if kind == "comparison_evidence" || kind == "comparison" || kind == "distribution_similarity" {
-			if item.Status != "passed" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func fmtEvidenceReason(evidence map[string]any) string {
-	if evidence == nil {
-		return ""
-	}
-	if reason, ok := evidence["reason"].(string); ok {
-		return reason
-	}
-	return ""
 }
 
 func evidenceBool(e map[string]any, key string) bool { v, _ := e[key].(bool); return v }

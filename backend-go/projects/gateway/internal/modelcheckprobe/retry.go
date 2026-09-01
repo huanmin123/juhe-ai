@@ -9,7 +9,7 @@ import (
 
 // DefaultRetryAttempts is the total number of transport attempts, including
 // the first request. Keep this aligned with the Node J3b oracle.
-const DefaultRetryAttempts = 5
+const DefaultRetryAttempts = 3
 
 type RetryOptions struct {
 	AttemptTimeouts []time.Duration
@@ -23,14 +23,11 @@ func DefaultRetryOptions() RetryOptions {
 }
 
 func RetryOptionsForProfile(profile string) RetryOptions {
-	timeout := 30 * time.Second
-	if profile == "quick" {
-		timeout = 15 * time.Second
-	}
-	timeouts := make([]time.Duration, DefaultRetryAttempts)
-	for index := range timeouts {
-		timeouts[index] = timeout
-	}
+	// Node's diagnostic oracle uses one shared per-attempt schedule for quick
+	// and full profiles. Keep the schedule explicit so a slow reasoning turn
+	// gets the same bounded 10s/20s/30s retry budget on both paths.
+	_ = profile
+	timeouts := []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second}
 	return RetryOptions{AttemptTimeouts: timeouts}
 }
 
@@ -88,7 +85,10 @@ func ExecuteWithRetry(ctx context.Context, request Request, options Options, ret
 		}
 		result.AttemptDetails = []AttemptDetail{{StartedAt: attemptStarted, Duration: result.Duration, HTTPStatus: result.HTTPStatus, Error: result.ErrorMessage}}
 		attempts = append(attempts, result)
-		if result.Success || index == len(timeouts)-1 {
+		// HTTP 200 is definitive quality evidence even when the body carries a
+		// provider error envelope (for example model_not_found). Node does not
+		// retry such responses; only transport/non-200 failures consume retries.
+		if result.Success || result.HTTPStatus == http.StatusOK || index == len(timeouts)-1 {
 			return attachRetry(attempts, waits, started, now, len(timeouts)), nil
 		}
 	}
@@ -102,11 +102,6 @@ func ExecuteWithRetry(ctx context.Context, request Request, options Options, ret
 func isTerminalProbeFailure(result Result) bool {
 	if result.Success {
 		return false
-	}
-	// A model-scoped rejection is definitive for this model after the retry
-	// boundary, including providers that incorrectly return it as HTTP 200.
-	if IsModelUnavailable(result, result.ExpectedModel) {
-		return true
 	}
 	if result.HTTPStatus == http.StatusOK {
 		return false
@@ -142,11 +137,12 @@ func attachRetry(attempts []Result, waits []time.Duration, started time.Time, no
 }
 
 func defaultRetryDelay(ctx context.Context, attempt int) error {
-	delays := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second}
-	delay := delays[len(delays)-1]
-	if attempt > 0 && attempt <= len(delays) {
-		delay = delays[attempt-1]
-	}
+	// Node waits a bounded random 1-3 seconds between diagnostic attempts.
+	// A deterministic 2-second midpoint keeps Go tests reproducible while
+	// preserving the same retry envelope and avoiding the old 5/15/30/60s
+	// backoff that could outlive the claim lease.
+	_ = attempt
+	delay := 2 * time.Second
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {

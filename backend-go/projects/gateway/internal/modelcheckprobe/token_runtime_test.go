@@ -76,6 +76,26 @@ func TestRunTokenIntegrityTerminalFailureStopsPaddingAndRounds(t *testing.T) {
 	}
 }
 
+func TestRunTokenIntegrityWarningDoesNotDiluteScore(t *testing.T) {
+	item, err := RunTokenIntegrity(context.Background(), modelcheckprofile.ProtocolOpenAIResponses, "gpt-5.6-sol", deterministicTokenizer{}, func(_ context.Context, request Request) (Result, error) {
+		var body struct {
+			Input string `json:"input"`
+		}
+		if err := json.Unmarshal(request.Body, &body); err != nil {
+			t.Fatal(err)
+		}
+		local := strings.Count(body.Input, " x") + 1
+		reported := ((local + 63) / 64) * 64
+		return Result{Success: true, HTTPStatus: 200, ExpectedModel: request.ExpectedModel, ObservedModel: request.ExpectedModel, Output: "OK", Usage: map[string]any{"input_tokens": float64(reported)}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != "warning" || item.Score != 0 || item.MaxScore != 0 {
+		t.Fatalf("item=%+v", item)
+	}
+}
+
 func TestRunLongContextRequiresVersionedLimitAndPreservesMarker(t *testing.T) {
 	item, err := RunLongContext(context.Background(), "openai", "gpt-5.6-sol", modelcheckprofile.ProtocolOpenAIResponses, deterministicTokenizer{}, deterministicLimits{}, func(_ context.Context, request Request) (Result, error) {
 		var body struct {

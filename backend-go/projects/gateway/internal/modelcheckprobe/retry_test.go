@@ -38,11 +38,11 @@ func TestExecuteWithRetryRetriesNonOKThenStopsAtOK(t *testing.T) {
 	}
 }
 
-func TestRetryOptionsForProfileUsesFiveAttemptBudget(t *testing.T) {
+func TestRetryOptionsForProfileUsesNodeThreeAttemptBudget(t *testing.T) {
 	for _, profile := range []string{"quick", "full", "unknown"} {
 		options := RetryOptionsForProfile(profile)
-		if len(options.AttemptTimeouts) != 5 {
-			t.Fatalf("profile=%q attempts=%d want=5", profile, len(options.AttemptTimeouts))
+		if len(options.AttemptTimeouts) != 3 || options.AttemptTimeouts[0] != 10*time.Second || options.AttemptTimeouts[1] != 20*time.Second || options.AttemptTimeouts[2] != 30*time.Second {
+			t.Fatalf("profile=%q attempts=%d want=3", profile, len(options.AttemptTimeouts))
 		}
 	}
 }
@@ -71,6 +71,27 @@ func TestExecuteWithRetryDoesNotTrustAuthenticationStatusAsTerminal(t *testing.T
 	}
 	if len(result.AttemptDetails) != 5 || len(result.RetryWaitDurations) != 4 {
 		t.Fatalf("attempt evidence result=%+v", result)
+	}
+}
+
+func TestExecuteWithRetryDoesNotRetryHTTP200ProviderErrorEnvelope(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"code":"model_not_found","message":"model unavailable"}}`))
+	}))
+	defer server.Close()
+	request, err := BuildBasic(modelcheckprofile.ProtocolOpenAIResponses, "gpt-5.6-terra", "Reply with exactly: OK-MODEL-CHECK", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ExecuteWithRetry(context.Background(), request, Options{Endpoint: server.URL}, RetryOptions{
+		AttemptTimeouts: []time.Duration{time.Second, time.Second, time.Second},
+		Delay:           func(context.Context) error { return nil },
+	})
+	if err != nil || result.Success || result.HTTPStatus != http.StatusOK || calls.Load() != 1 || isTerminalProbeFailure(result) {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls.Load(), err)
 	}
 }
 

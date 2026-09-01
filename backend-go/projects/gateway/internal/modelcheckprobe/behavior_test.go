@@ -2,6 +2,7 @@ package modelcheckprobe
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
@@ -13,6 +14,43 @@ func TestRunBehaviorEvaluatesCredentialFreeConstraints(t *testing.T) {
 	})
 	if err != nil || item.Kind != "behavior_probe" || item.MaxScore != 35 || item.Score == 0 {
 		t.Fatalf("item=%#v err=%v", item, err)
+	}
+}
+
+func TestRunBehaviorTreatsMissingModelAsNeutralAndExplicitMismatchAsFailure(t *testing.T) {
+	missing, err := RunBehavior(context.Background(), modelcheckprofile.ProtocolOpenAIChat, "gpt-5.6-sol", func(_ context.Context, request Request) (Result, error) {
+		return Result{Success: true, Output: behaviorOutputForTest(request)}, nil
+	})
+	if err != nil || missing.Evidence["modelMismatch"] != false {
+		t.Fatalf("missing response model=%#v err=%v", missing, err)
+	}
+	mismatch, err := RunBehavior(context.Background(), modelcheckprofile.ProtocolOpenAIChat, "gpt-5.6-sol", func(_ context.Context, request Request) (Result, error) {
+		return Result{Success: true, ObservedModel: "gpt-5.5", Output: behaviorOutputForTest(request)}, nil
+	})
+	if err != nil || mismatch.Status != "failed" || mismatch.Evidence["modelMismatch"] != true {
+		t.Fatalf("explicit response model mismatch=%#v err=%v", mismatch, err)
+	}
+}
+
+func behaviorOutputForTest(request Request) string {
+	text := string(request.Body)
+	switch {
+	case strings.Contains(text, "QUARTZ"):
+		return "QUARTZ"
+	case strings.Contains(text, "sum"):
+		return `{"sum":83,"code":"BETA"}`
+	case strings.Contains(text, "GAMMA"):
+		return "GAMMA 9-7-2"
+	case strings.Contains(text, "并发控制"):
+		return "并发和限流的区别在于并发处理同时执行，限流控制进入速率"
+	case strings.Contains(text, "DELTA"):
+		return "DELTA 不能提供"
+	case strings.Contains(text, "ZETA"):
+		return "ZETA"
+	case strings.Contains(text, "小赵"):
+		return "孙"
+	default:
+		return "ALPHA\nBETA\nGAMMA"
 	}
 }
 

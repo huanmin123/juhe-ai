@@ -364,7 +364,7 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT requested_model,mapped_upstream_model,mapping_status FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&requested, &mapped, &mappingStatus); err != nil {
 		t.Fatal(err)
 	}
-	if requested != "gpt-5.6-sol" || mapped != "gpt-5.6-terra" || mappingStatus != "mapped" {
+	if requested != "gpt-5.6-sol" || mapped != "gpt-5.6-terra" || mappingStatus != "configured_mapping" {
 		t.Fatalf("observation requested=%q mapped=%q mappingStatus=%q", requested, mapped, mappingStatus)
 	}
 }
@@ -511,6 +511,20 @@ func TestRuntimeRejectsTargetChangeAfterClaim(t *testing.T) {
 	}
 	if resolveCalls != 2 {
 		t.Fatalf("target must be resolved before and after claim, calls=%d", resolveCalls)
+	}
+}
+
+func TestUndeclaredResponseModelMismatchOnlyUsesNonEmptyTargetEvidence(t *testing.T) {
+	if hasUndeclaredResponseModelMismatch([]map[string]any{
+		{"kind": "protocol_basic", "evidence": map[string]any{"modelMismatch": false, "responseModel": ""}},
+		{"kind": "trusted_comparison.protocol_basic", "evidence": map[string]any{"modelMismatch": true, "responseModel": "other-model"}},
+	}) {
+		t.Fatal("missing target model and comparison mismatch must not trigger target hard gate")
+	}
+	if !hasUndeclaredResponseModelMismatch([]map[string]any{
+		{"kind": "protocol_basic", "evidence": map[string]any{"modelMismatch": true, "responseModel": "other-model"}},
+	}) {
+		t.Fatal("non-empty target response mismatch must trigger target hard gate")
 	}
 }
 

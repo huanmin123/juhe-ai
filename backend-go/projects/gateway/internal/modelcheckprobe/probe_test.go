@@ -371,6 +371,53 @@ func TestEvaluateStructuredToolAndUsage(t *testing.T) {
 	}
 }
 
+func TestEvaluateMissingResponseModelIsNeutralEvidence(t *testing.T) {
+	basic := EvaluateBasic(Result{Success: true, ObservedModel: "", Output: "OK-MODEL-CHECK"}, "gpt-5.6-sol")
+	if basic.Status != "warning" || basic.Score != 7 || basic.Evidence["modelMismatch"] != false {
+		t.Fatalf("basic missing model=%#v", basic)
+	}
+	structured := EvaluateStructured(Result{Success: true, ObservedModel: "", Output: `{"status":"ok","value":7}`}, "gpt-5.6-sol")
+	if structured.Status != "warning" || structured.Score != 12 || structured.Evidence["modelMismatch"] != false {
+		t.Fatalf("structured missing model=%#v", structured)
+	}
+	tool := EvaluateTool(Result{Success: true, ObservedModel: "", JSON: map[string]any{"output": []any{map[string]any{"type": "function_call", "name": "record_model_check", "arguments": `{"code":"ok","count":1}`}}}}, "gpt-5.6-sol")
+	if tool.Status != "warning" || tool.Score != 12 || tool.Evidence["modelMismatch"] != false {
+		t.Fatalf("tool missing model=%#v", tool)
+	}
+	stream := EvaluateProtocolStream(Result{Success: true, ObservedModel: "", Output: "STREAM-OK"}, "gpt-5.6-sol", modelcheckprofile.ProtocolOpenAIResponses)
+	if stream.Status != "warning" || stream.Score != 12 || stream.Evidence["modelMismatch"] != false {
+		t.Fatalf("stream missing model=%#v", stream)
+	}
+}
+
+func TestEvaluateExplicitModelMismatchUsesReducedNodeScores(t *testing.T) {
+	basic := EvaluateBasic(Result{Success: true, ObservedModel: "other-model", Output: "OK-MODEL-CHECK"}, "gpt-5.6-sol")
+	if basic.Status != "failed" || basic.Score != 1 {
+		t.Fatalf("basic mismatch=%#v", basic)
+	}
+	structured := EvaluateStructured(Result{Success: true, ObservedModel: "other-model", Output: `{"status":"ok","value":7}`}, "gpt-5.6-sol")
+	if structured.Status != "failed" || structured.Score != 5 {
+		t.Fatalf("structured mismatch=%#v", structured)
+	}
+	tool := EvaluateTool(Result{Success: true, ObservedModel: "other-model", JSON: map[string]any{"output": []any{map[string]any{"type": "function_call", "name": "record_model_check", "arguments": `{"code":"ok","count":1}`}}}}, "gpt-5.6-sol")
+	if tool.Status != "failed" || tool.Score != 5 {
+		t.Fatalf("tool mismatch=%#v", tool)
+	}
+}
+
+func TestEvaluateMappedRequestModelEchoIsConfiguredMappingEvidence(t *testing.T) {
+	item := EvaluateBasic(Result{
+		Success:             true,
+		ObservedModel:       "gpt-5.6-sol",
+		RequestModel:        "gpt-5.6-sol",
+		ModelMappingApplied: true,
+		Output:              "OK-MODEL-CHECK",
+	}, "gpt-5.6-terra")
+	if item.Status != "passed" || item.Score != 10 || item.Evidence["modelMismatch"] != false || item.Evidence["modelMappingApplied"] != true {
+		t.Fatalf("mapped public-model echo=%#v", item)
+	}
+}
+
 func TestRunSuiteStopsOnFailureAndFormsCredentialFreeEvaluations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

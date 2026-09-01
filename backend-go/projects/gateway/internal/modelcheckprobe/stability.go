@@ -14,7 +14,7 @@ func EvaluateStability(results []Result, expectedModel string) Evaluation {
 	successCount, okCount, modelMatchCount := 0, 0, 0
 	modelMismatch := false
 	for _, result := range results {
-		matched := strings.TrimSpace(result.ObservedModel) != "" && modelMatches(result.ObservedModel, expectedModel)
+		_, matched, mismatch := matchProbeResponseModel(result, expectedModel)
 		ok := result.Success && strings.TrimSpace(result.Output) == "VECTOR"
 		if result.Success {
 			successCount++
@@ -25,7 +25,9 @@ func EvaluateStability(results []Result, expectedModel string) Evaluation {
 				modelMatchCount++
 			}
 		}
-		modelMismatch = modelMismatch || (result.Success && !matched)
+		// An omitted response model is neutral in the Node oracle: it lowers
+		// model-match evidence but is not proof of model substitution.
+		modelMismatch = modelMismatch || (result.Success && mismatch)
 		observations = append(observations, map[string]any{"success": result.Success, "ok": ok, "httpStatus": result.HTTPStatus, "responseModel": result.ObservedModel, "matchedModel": matched, "error": result.ErrorMessage})
 	}
 	if successCount == 0 {

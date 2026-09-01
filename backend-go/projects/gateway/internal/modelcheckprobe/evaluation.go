@@ -22,22 +22,35 @@ func EvaluateBasic(result Result, expectedModel string) Evaluation {
 	if !result.Success {
 		return requestFailureEvaluation("protocol_basic", result, expectedModel, 10)
 	}
-	matched := strings.TrimSpace(result.ObservedModel) != "" && modelMatches(result.ObservedModel, expectedModel)
+	responseModel, matched, modelMismatch := matchProbeResponseModel(result, expectedModel)
 	outputMatches := strings.TrimSpace(result.Output) == "OK-MODEL-CHECK"
 	score := 0
-	if matched {
-		score += 3
-	}
-	if outputMatches {
-		score += 7
+	if modelMismatch {
+		// Keep the Node oracle's reduced mismatch score. A valid response
+		// shape is still diagnostic evidence, but it must not retain normal
+		// model-identity credit.
+		if outputMatches {
+			score = 1
+		}
+	} else {
+		if matched {
+			score += 3
+		}
+		if outputMatches {
+			score += 7
+		}
 	}
 	status := "failed"
-	if result.Success && matched && outputMatches {
+	if result.Success && modelMismatch {
+		status = "failed"
+	} else if result.Success && matched && outputMatches {
 		status = "passed"
-	} else if result.Success && matched {
+	} else if result.Success && score >= 3 {
 		status = "warning"
 	}
-	return withRetryEvidence(Evaluation{Kind: "protocol_basic", Status: status, Score: score, MaxScore: 10, Evidence: map[string]any{"success": result.Success, "expectedModel": expectedModel, "responseModel": result.ObservedModel, "outputMatches": outputMatches, "modelMismatch": !matched}}, result)
+	evidence := probeModelEvidence(result, expectedModel, responseModel, matched, modelMismatch)
+	evidence["success"], evidence["outputMatches"] = result.Success, outputMatches
+	return withRetryEvidence(Evaluation{Kind: "protocol_basic", Status: status, Score: score, MaxScore: 10, Evidence: evidence}, result)
 }
 
 // EvaluateProtocolStream evaluates the independent STREAM-OK probe that is
@@ -52,9 +65,7 @@ func EvaluateProtocolStream(result Result, expectedModel string, protocol modelc
 	if !result.Success {
 		return requestFailureEvaluation(kind, result, expectedModel, 15)
 	}
-	responseModel := strings.TrimSpace(result.ObservedModel)
-	matchedModel := responseModel != "" && modelMatches(responseModel, expectedModel)
-	modelMismatch := responseModel == "" || !matchedModel
+	responseModel, matchedModel, modelMismatch := matchProbeResponseModel(result, expectedModel)
 	outputMatches := strings.TrimSpace(result.Output) == "STREAM-OK"
 	score := 0
 	if modelMismatch {
@@ -77,10 +88,9 @@ func EvaluateProtocolStream(result Result, expectedModel string, protocol modelc
 	} else if !modelMismatch && score >= 8 {
 		status = "warning"
 	}
-	return withRetryEvidence(Evaluation{Kind: kind, Status: status, Score: score, MaxScore: 15, Evidence: map[string]any{
-		"success": result.Success, "expectedModel": expectedModel, "responseModel": result.ObservedModel,
-		"expectedOutput": "STREAM-OK", "outputMatches": outputMatches, "modelMismatch": modelMismatch,
-	}}, result)
+	evidence := probeModelEvidence(result, expectedModel, responseModel, matchedModel, modelMismatch)
+	evidence["success"], evidence["expectedOutput"], evidence["outputMatches"] = result.Success, "STREAM-OK", outputMatches
+	return withRetryEvidence(Evaluation{Kind: kind, Status: status, Score: score, MaxScore: 15, Evidence: evidence}, result)
 }
 
 // EvaluateStream is retained as the Responses-specific convenience used by
@@ -95,24 +105,35 @@ func EvaluateStructured(result Result, expectedModel string) Evaluation {
 	}
 	value := safeStructured(parseJSONObject(result.Output))
 	valid := value["status"] == "ok" && value["value"] == float64(7)
-	matched := strings.TrimSpace(result.ObservedModel) != "" && modelMatches(result.ObservedModel, expectedModel)
+	responseModel, matched, modelMismatch := matchProbeResponseModel(result, expectedModel)
 	score := 0
-	if result.Success {
-		score = 8
-	}
-	if matched {
-		score += 3
-	}
-	if valid {
-		score += 4
+	if modelMismatch {
+		score = 4
+		if valid {
+			score++
+		}
+	} else {
+		if result.Success {
+			score = 8
+		}
+		if matched {
+			score += 3
+		}
+		if valid {
+			score += 4
+		}
 	}
 	status := "failed"
-	if matched && score >= 13 {
+	if modelMismatch {
+		status = "failed"
+	} else if matched && score >= 13 {
 		status = "passed"
-	} else if matched && score >= 8 {
+	} else if score >= 8 {
 		status = "warning"
 	}
-	return withRetryEvidence(Evaluation{Kind: "structured_output", Status: status, Score: score, MaxScore: 15, Evidence: map[string]any{"success": result.Success, "expectedModel": expectedModel, "responseModel": result.ObservedModel, "outputJson": value, "valid": valid, "modelMismatch": !matched}}, result)
+	evidence := probeModelEvidence(result, expectedModel, responseModel, matched, modelMismatch)
+	evidence["success"], evidence["outputJson"], evidence["valid"] = result.Success, value, valid
+	return withRetryEvidence(Evaluation{Kind: "structured_output", Status: status, Score: score, MaxScore: 15, Evidence: evidence}, result)
 }
 
 func EvaluateTool(result Result, expectedModel string) Evaluation {
@@ -120,24 +141,35 @@ func EvaluateTool(result Result, expectedModel string) Evaluation {
 		return requestFailureEvaluation("tool_calling", result, expectedModel, 15)
 	}
 	called := hasFunctionCall(result.JSON, "record_model_check")
-	matched := strings.TrimSpace(result.ObservedModel) != "" && modelMatches(result.ObservedModel, expectedModel)
+	responseModel, matched, modelMismatch := matchProbeResponseModel(result, expectedModel)
 	score := 0
-	if result.Success {
-		score = 8
-	}
-	if matched {
-		score += 3
-	}
-	if called {
-		score += 4
+	if modelMismatch {
+		score = 4
+		if called {
+			score++
+		}
+	} else {
+		if result.Success {
+			score = 8
+		}
+		if matched {
+			score += 3
+		}
+		if called {
+			score += 4
+		}
 	}
 	status := "failed"
-	if matched && score >= 13 {
+	if modelMismatch {
+		status = "failed"
+	} else if matched && score >= 13 {
 		status = "passed"
-	} else if matched && score >= 8 {
+	} else if score >= 8 {
 		status = "warning"
 	}
-	return withRetryEvidence(Evaluation{Kind: "tool_calling", Status: status, Score: score, MaxScore: 15, Evidence: map[string]any{"success": result.Success, "expectedModel": expectedModel, "responseModel": result.ObservedModel, "called": called, "modelMismatch": !matched}}, result)
+	evidence := probeModelEvidence(result, expectedModel, responseModel, matched, modelMismatch)
+	evidence["success"], evidence["called"] = result.Success, called
+	return withRetryEvidence(Evaluation{Kind: "tool_calling", Status: status, Score: score, MaxScore: 15, Evidence: evidence}, result)
 }
 
 func EvaluateUsage(results []Result) Evaluation {
@@ -165,6 +197,9 @@ func requestFailureEvaluation(kind string, result Result, expectedModel string, 
 	if IsModelUnavailable(result, expectedModel) {
 		evidence["modelUnavailable"] = true
 		evidence["reason"] = "model_unavailable"
+	}
+	if isTerminalProbeFailure(result) {
+		evidence["terminalFailure"] = true
 	}
 	if result.RetryAttemptCount > 0 {
 		evidence["retryAttemptCount"] = result.RetryAttemptCount
@@ -289,6 +324,32 @@ func argumentsMatch(value any) bool {
 		record = parseJSONObject(asText(value))
 	}
 	return asText(record["code"]) == "ok" && record["count"] == float64(1)
+}
+
+// matchProbeResponseModel mirrors Node's configured-mapping contract. A
+// response may legitimately echo either the mapped upstream model or the
+// public request model when Business explicitly configured that mapping.
+func matchProbeResponseModel(result Result, expectedModel string) (responseModel string, matched, mismatch bool) {
+	responseModel = strings.TrimSpace(result.ObservedModel)
+	if responseModel == "" {
+		return responseModel, false, false
+	}
+	matched = modelMatches(responseModel, expectedModel)
+	if !matched && result.ModelMappingApplied && strings.TrimSpace(result.RequestModel) != "" {
+		matched = modelMatches(responseModel, result.RequestModel)
+	}
+	return responseModel, matched, !matched
+}
+
+func probeModelEvidence(result Result, expectedModel, responseModel string, matched, mismatch bool) map[string]any {
+	evidence := map[string]any{"expectedModel": expectedModel, "responseModel": responseModel, "matchedModel": matched, "modelMismatch": mismatch}
+	if result.ModelMappingApplied {
+		evidence["modelMappingApplied"] = true
+	}
+	if requestModel := strings.TrimSpace(result.RequestModel); requestModel != "" {
+		evidence["requestModel"] = requestModel
+	}
+	return evidence
 }
 
 func list(value any) []any              { values, _ := value.([]any); return values }

@@ -8,9 +8,31 @@ func TestEvaluateDistributionAndCrossModel(t *testing.T) {
 	if item.Status != "passed" || item.Score != 14 {
 		t.Fatalf("distribution=%#v", item)
 	}
-	cross := EvaluateCrossModel(Result{Success: true, ObservedModel: "gpt-5.6-sol"}, Result{Success: true, ObservedModel: "gpt-5.6-sol"}, "gpt-5.6-sol")
+	cross := EvaluateCrossModel(Result{Success: true, ObservedModel: "gpt-5.6-sol", Output: "OK-MODEL-CHECK"}, Result{Success: true, ObservedModel: "gpt-5.6-sol", Output: "CROSS-MODEL-OK"}, "gpt-5.6-sol")
 	if cross.Status != "passed" || cross.Score != 10 {
 		t.Fatalf("cross=%#v", cross)
+	}
+}
+
+func TestEvaluateCrossModelMissingResponseModelsIsWarningEvidence(t *testing.T) {
+	item := EvaluateCrossModelPair(
+		Result{Success: true, Output: "OK-MODEL-CHECK"},
+		Result{Success: true, Output: "CROSS-MODEL-OK"},
+		"gpt-5.6-terra", "gpt-5.6-terra",
+	)
+	if item.Status != "warning" || item.Score != 2 || item.Evidence["modelMismatch"] != false {
+		t.Fatalf("missing response models=%#v", item)
+	}
+}
+
+func TestEvaluateCrossModelTerminalFailureIsMarkedForUnverifiedGate(t *testing.T) {
+	item := EvaluateCrossModelPair(
+		Result{Success: true, ObservedModel: "gpt-5.6-sol", Output: "OK-MODEL-CHECK"},
+		Result{HTTPStatus: 503, ErrorMessage: "upstream unavailable", RetryAttemptCount: 2, RetryMaxAttempts: 3, AttemptStatusCodes: []int{503, 503, 503}},
+		"gpt-5.6-sol", "gpt-5.6-terra",
+	)
+	if item.Status != "skipped" || item.Evidence["requestFailure"] != true || item.Evidence["terminalFailure"] != true {
+		t.Fatalf("terminal cross-model evidence=%#v", item)
 	}
 }
 

@@ -27,11 +27,11 @@ func TestEvaluateBasicSkipsUnavailableModel(t *testing.T) {
 	}
 }
 
-func TestModelUnavailableHTTP200StopsProbeFamily(t *testing.T) {
+func TestModelUnavailableHTTP200RemainsQualityEvidence(t *testing.T) {
 	result := Result{HTTPStatus: 200, ExpectedModel: "gpt-5.6-sol", ErrorMessage: "The model 'gpt-5.6-sol' does not exist", JSON: map[string]any{
 		"error": map[string]any{"code": "model_not_found", "message": "The model 'gpt-5.6-sol' does not exist"},
 	}}
-	if !isTerminalProbeFailure(result) {
-		t.Fatal("model-scoped HTTP 200 error must stop the current probe family")
+	if isTerminalProbeFailure(result) {
+		t.Fatal("HTTP 200 model-scoped error is quality evidence, not a terminal transport failure")
 	}
 }

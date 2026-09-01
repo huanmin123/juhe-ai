@@ -2,10 +2,13 @@ package modelcheckprobe
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
@@ -40,7 +43,11 @@ func runTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol,
 	results := make([]Result, 0, rounds*3)
 	terminalFailure := false
 	for round := 0; round < rounds && !terminalFailure; round++ {
-		prefix := fmt.Sprintf("Controlled token integrity probe token-integrity-v1. Nonce %d. Reply with exactly OK.\n", round+1)
+		nonce, nonceErr := randomTokenNonce()
+		if nonceErr != nil {
+			return Evaluation{}, fmt.Errorf("generate J3b token nonce: %w", nonceErr)
+		}
+		prefix := fmt.Sprintf("Controlled token integrity probe token-integrity-v1. Nonce %s. Reply with exactly OK.\n", nonce)
 		for _, padding := range tokenPaddingOrder(round) {
 			prompt, localTokens, err := buildTokenPrompt(tokenizer, prefix, padding)
 			if err != nil {
@@ -64,7 +71,10 @@ func runTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol,
 				reported = &value
 			}
 			samples = append(samples, TokenSample{RoundIndex: round, PaddingTokens: padding, LocalInputTokens: localTokens, ReportedInputTokens: reported})
-			if !result.Success {
+			// A malformed HTTP 200 is quality evidence for this sample, not a
+			// transport boundary. Stop only when the retry-aware terminal gate
+			// says the family can no longer produce comparable observations.
+			if isTerminalProbeFailure(result) {
 				terminalFailure = true
 				break
 			}
@@ -80,7 +90,8 @@ func runTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol,
 	case "suspected_padding":
 		status, maxScore = "failed", 10
 	case "warning":
-		status, maxScore = "warning", 10
+		// Node keeps warning token diagnostics outside the score denominator.
+		status = "warning"
 	}
 	return Evaluation{Kind: "token_integrity", Status: status, Score: score, MaxScore: maxScore, Evidence: map[string]any{
 		"tokenizerVersion": tokenizer.Version(), "probeVersion": "token-integrity-v1", "slope": analysis.Slope,
@@ -89,6 +100,15 @@ func runTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol,
 		"requestCount": len(results), "partial": len(results) < rounds*3, "terminalFailure": terminalFailure,
 		"httpStatus": lastResult.HTTPStatus, "success": lastResult.Success,
 	}}, nil
+}
+
+func randomTokenNonce() (string, error) {
+	value, err := rand.Int(rand.Reader, big.NewInt(9_000_000))
+	if err != nil {
+		return "", err
+	}
+	value.Add(value, big.NewInt(1_000_000))
+	return strings.ToUpper(strconv.FormatInt(value.Int64(), 36)), nil
 }
 
 func tokenPaddingOrder(round int) []int {

@@ -105,11 +105,15 @@ type LongContextObservation struct {
 
 func EvaluateLongContext(observations []LongContextObservation, expectedModel string) Evaluation {
 	success, matched, needle := 0, 0, 0
+	modelMismatch := false
 	for _, observation := range observations {
 		if observation.Result.Success {
 			success++
-			if strings.TrimSpace(observation.Result.ObservedModel) != "" && modelMatches(observation.Result.ObservedModel, expectedModel) {
+			_, isMatched, mismatch := matchProbeResponseModel(observation.Result, expectedModel)
+			if isMatched {
 				matched++
+			} else if mismatch {
+				modelMismatch = true
 			}
 			if strings.Contains(strings.ToUpper(observation.Result.Output), strings.ToUpper(observation.Marker)) {
 				needle++
@@ -122,12 +126,19 @@ func EvaluateLongContext(observations []LongContextObservation, expectedModel st
 	modelRate, needleRate := float64(matched)/float64(success), float64(needle)/float64(success)
 	score := int((modelRate*0.3 + needleRate*0.7) * 15)
 	status := "failed"
-	if modelRate >= .85 && needleRate >= .85 {
+	if modelMismatch {
+		status = "failed"
+	} else if modelRate >= .85 && needleRate >= .85 {
 		status = "passed"
 	} else if modelRate >= .6 && needleRate >= .6 {
 		status = "warning"
+	} else if needleRate > 0 {
+		// A provider may omit response.model while still returning the
+		// expected marker. Node treats that as neutral/insufficient model
+		// evidence, not as a hard mismatch.
+		status = "warning"
 	}
-	return Evaluation{Kind: "long_context", Status: status, Score: score, MaxScore: 15, Evidence: map[string]any{"probeCount": len(observations), "successRate": float64(success) / float64(maxInt(len(observations), 1)), "modelMatchRate": modelRate, "needleRate": needleRate, "partial": success < len(observations)}}
+	return Evaluation{Kind: "long_context", Status: status, Score: score, MaxScore: 15, Evidence: map[string]any{"probeCount": len(observations), "successRate": float64(success) / float64(maxInt(len(observations), 1)), "modelMatchRate": modelRate, "needleRate": needleRate, "modelMismatch": modelMismatch, "partial": success < len(observations)}}
 }
 
 func maxInt(left, right int) int {
