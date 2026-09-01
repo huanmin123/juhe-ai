@@ -19,9 +19,8 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, clientIpStats, accountUsageRepository, authorizationUsageRepository] = await Promise.all([
+const [databaseModule, clientIpStats, accountUsageRepository, authorizationUsageRepository] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js'),
   import('../../storage/client-ip-stats.repository.js'),
   import('../../storage/account-usage.repository.js'),
   import('../../storage/authorization-usage.repository.js')
@@ -42,7 +41,6 @@ try {
   seedUsageScopeWindow(statsDatabase, 'sys_admin', 'account', 'account_page_window_0', 30)
   seedAuthorizationTeamWindow(statsDatabase, 'sys_admin', 'team_page_window_0', 20)
   seedAuthorizationUserWindow(statsDatabase, 'sys_admin', 'user_page_window_0', 40)
-  seedModelCheckRun()
 
   const ipList = clientIpStats.listClientIpStats({
     startDate: range.startDate,
@@ -76,11 +74,7 @@ try {
   assert.equal(userUsage.page, 5, '用户授权消耗 pageSize=200 时页码应收敛到 5 页以内')
   assert.equal((userUsage.page - 1) * userUsage.pageSize, 800, '用户授权消耗深翻页 offset 应限制在 1000 行内')
 
-  const modelChecks = repositories.listModelCheckRuns(access, { page: 999999, pageSize: 100 })
-  assert.equal(modelChecks.page, 10, '模型检测列表 pageSize=100 时页码应收敛到 10 页以内')
-  assert.equal((modelChecks.page - 1) * modelChecks.pageSize, 900, '模型检测列表深翻页 offset 应限制在 1000 行内')
-
-  console.log('管理端列表页码窗口回归通过：IP 统计、账号用量、授权用量和模型检测列表 offset 被限制在 1000 行内')
+  console.log('管理端列表页码窗口回归通过：IP 统计、账号用量和授权用量 offset 被限制在 1000 行内')
 } finally {
   try {
     databaseModule.closeStorageDatabases()
@@ -150,20 +144,4 @@ function seedAuthorizationUserWindow(
       last_used_at, updated_at
     ) VALUES (?, ?, ?, '', ?, 'account', 'account_page_window_0', ?, 0, 0, 0, 0, ?, ?, ?)
   `).run(systemAccountId, range.startDate, range.endDate, granteeSystemAccountId, requestCount, requestCount * 0.01, '2026-02-03T00:03:00.000Z', '2026-02-03T00:03:00.000Z')
-}
-
-function seedModelCheckRun(): void {
-  repositories.createModelCheckRun({
-    id: 'model_check_page_window_0',
-    systemAccountId: 'sys_admin',
-    actorSystemAccountId: 'sys_admin',
-    providerCode: 'gpt',
-    targetType: 'account',
-    targetId: 'account_page_window_0',
-    targetName: '页码窗口账号',
-    model: 'gpt-5.5',
-    trustedComparison: false,
-    probeSetVersion: 'page-window',
-    startedAt: '2026-02-03T00:04:00.000Z'
-  })
 }

@@ -141,57 +141,89 @@ func (s *Store) upsertTrustLatest(ctx context.Context, tx *sql.Tx, projection Tr
 	if evidenceCoverage > 100 {
 		evidenceCoverage = 100
 	}
-	var currentLast, currentLastID sql.NullString
-	var currentIdentity, currentMapping, currentProtocol, currentEvidence, currentReason string
-	var currentCoverage, currentCount int
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT identity_status,mapping_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at FROM `+s.table("model_account_trust_results")+` WHERE system_account_id=? AND account_id=? AND requested_model=?`), projection.SystemAccountID, projection.AccountID, projection.RequestedModel).Scan(&currentIdentity, &currentMapping, &currentProtocol, &currentEvidence, &currentCoverage, &currentCount, &currentReason, &currentLastID, &currentLast)
-	if err == nil {
-		comparison := compareTrustCursor(currentLast.String, currentLastID.String, last.createdAt, last.id)
-		if comparison > 0 {
+	for attempt := 0; attempt < 2; attempt++ {
+		var currentLast, currentLastID sql.NullString
+		var currentIdentity, currentMapping, currentProtocol, currentEvidence, currentReason string
+		var currentCoverage, currentCount int
+		err = tx.QueryRowContext(ctx, s.bind(`SELECT identity_status,mapping_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at FROM `+s.table("model_account_trust_results")+` WHERE system_account_id=? AND account_id=? AND requested_model=?`+s.forUpdate()), projection.SystemAccountID, projection.AccountID, projection.RequestedModel).Scan(&currentIdentity, &currentMapping, &currentProtocol, &currentEvidence, &currentCoverage, &currentCount, &currentReason, &currentLastID, &currentLast)
+		if err == nil {
+			comparison := compareTrustCursor(currentLast.String, currentLastID.String, last.createdAt, last.id)
+			if comparison > 0 {
+				return nil
+			}
+			if comparison == 0 && (currentIdentity != projection.Report.IdentityStatus || currentMapping != mappingStatus || currentProtocol != protocolStatus || currentEvidence != evidenceStatus || currentCoverage != evidenceCoverage || currentCount != len(observations) || !jsonEqual([]byte(currentReason), reasonJSON)) {
+				return errors.New("J3b trust latest result replay conflicts with original projection")
+			}
+			if comparison == 0 {
+				return nil
+			}
+			result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_account_trust_results")+` SET identity_status=?,mapping_status=?,usage_integrity_status='insufficient_evidence',protocol_status=?,evidence_status=?,evidence_coverage=?,observation_count=?,reason_codes_json=?,last_observed_id=?,last_observed_at=?,updated_at=? WHERE system_account_id=? AND account_id=? AND requested_model=?`), projection.Report.IdentityStatus, mappingStatus, protocolStatus, evidenceStatus, evidenceCoverage, len(observations), string(reasonJSON), last.id, last.createdAt, updatedAt, projection.SystemAccountID, projection.AccountID, projection.RequestedModel)
+			if err != nil {
+				return fmt.Errorf("update J3b trust latest result: %w", err)
+			}
+			if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+				if err != nil {
+					return fmt.Errorf("update J3b trust latest result affected rows: %w", err)
+				}
+				return errors.New("update J3b trust latest result affected unexpected number of rows")
+			}
 			return nil
 		}
-		if comparison == 0 && (currentIdentity != projection.Report.IdentityStatus || currentMapping != mappingStatus || currentProtocol != protocolStatus || currentEvidence != evidenceStatus || currentCoverage != evidenceCoverage || currentCount != len(observations) || !jsonEqual([]byte(currentReason), reasonJSON)) {
-			return errors.New("J3b trust latest result replay conflicts with original projection")
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read J3b trust latest result: %w", err)
 		}
-		if comparison == 0 {
-			return nil
-		}
-		_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_account_trust_results")+` SET identity_status=?,mapping_status=?,usage_integrity_status='insufficient_evidence',protocol_status=?,evidence_status=?,evidence_coverage=?,observation_count=?,reason_codes_json=?,last_observed_id=?,last_observed_at=?,updated_at=? WHERE system_account_id=? AND account_id=? AND requested_model=?`), projection.Report.IdentityStatus, mappingStatus, protocolStatus, evidenceStatus, evidenceCoverage, len(observations), string(reasonJSON), last.id, last.createdAt, updatedAt, projection.SystemAccountID, projection.AccountID, projection.RequestedModel)
+		result, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_account_trust_results")+` (system_account_id,account_id,requested_model,identity_status,mapping_status,usage_integrity_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(system_account_id,account_id,requested_model) DO NOTHING`), projection.SystemAccountID, projection.AccountID, projection.RequestedModel, projection.Report.IdentityStatus, mappingStatus, "insufficient_evidence", protocolStatus, evidenceStatus, evidenceCoverage, len(observations), string(reasonJSON), last.id, last.createdAt, updatedAt)
 		if err != nil {
-			return fmt.Errorf("update J3b trust latest result: %w", err)
+			return fmt.Errorf("insert J3b trust latest result: %w", err)
 		}
-		return nil
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read J3b trust latest insert result: %w", err)
+		}
+		if changed == 1 {
+			return nil
+		}
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("read J3b trust latest result: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_account_trust_results")+` (system_account_id,account_id,requested_model,identity_status,mapping_status,usage_integrity_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), projection.SystemAccountID, projection.AccountID, projection.RequestedModel, projection.Report.IdentityStatus, mappingStatus, "insufficient_evidence", protocolStatus, evidenceStatus, evidenceCoverage, len(observations), string(reasonJSON), last.id, last.createdAt, updatedAt)
-	if err != nil {
-		return fmt.Errorf("insert J3b trust latest result: %w", err)
-	}
-	return nil
+	return errors.New("J3b trust latest row remained unavailable after insert conflict")
 }
 
 func (s *Store) advanceTrustCursor(ctx context.Context, tx *sql.Tx, last trustObservation, updatedAt string) error {
-	var currentCreated, currentID sql.NullString
-	err := tx.QueryRowContext(ctx, s.bind(`SELECT cursor_created_at,cursor_id FROM `+s.table("model_trust_aggregation_state")+` WHERE scope_key=?`), trustAggregationScope).Scan(&currentCreated, &currentID)
-	if errors.Is(err, sql.ErrNoRows) {
-		_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_trust_aggregation_state")+` (scope_key,cursor_created_at,cursor_id,last_success_at,updated_at) VALUES (?,?,?,?,?)`), trustAggregationScope, last.createdAt, last.id, updatedAt, updatedAt)
+	for attempt := 0; attempt < 2; attempt++ {
+		var currentCreated, currentID sql.NullString
+		err := tx.QueryRowContext(ctx, s.bind(`SELECT cursor_created_at,cursor_id FROM `+s.table("model_trust_aggregation_state")+` WHERE scope_key=?`+s.forUpdate()), trustAggregationScope).Scan(&currentCreated, &currentID)
+		if errors.Is(err, sql.ErrNoRows) {
+			result, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_trust_aggregation_state")+` (scope_key,cursor_created_at,cursor_id,last_success_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(scope_key) DO NOTHING`), trustAggregationScope, last.createdAt, last.id, updatedAt, updatedAt)
+			if err != nil {
+				return fmt.Errorf("insert J3b trust cursor: %w", err)
+			}
+			changed, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("read J3b trust cursor insert result: %w", err)
+			}
+			if changed == 1 {
+				return nil
+			}
+			continue
+		}
 		if err != nil {
-			return fmt.Errorf("insert J3b trust cursor: %w", err)
+			return fmt.Errorf("read J3b trust cursor: %w", err)
+		}
+		if compareTrustCursor(currentCreated.String, currentID.String, last.createdAt, last.id) >= 0 {
+			return nil
+		}
+		result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_trust_aggregation_state")+` SET cursor_created_at=?,cursor_id=?,last_success_at=?,updated_at=? WHERE scope_key=?`), last.createdAt, last.id, updatedAt, updatedAt, trustAggregationScope)
+		if err != nil {
+			return fmt.Errorf("advance J3b trust cursor: %w", err)
+		}
+		if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+			if err != nil {
+				return fmt.Errorf("advance J3b trust cursor affected rows: %w", err)
+			}
+			return errors.New("advance J3b trust cursor affected unexpected number of rows")
 		}
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("read J3b trust cursor: %w", err)
-	}
-	if compareTrustCursor(currentCreated.String, currentID.String, last.createdAt, last.id) >= 0 {
-		return nil
-	}
-	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_trust_aggregation_state")+` SET cursor_created_at=?,cursor_id=?,last_success_at=?,updated_at=? WHERE scope_key=?`), last.createdAt, last.id, updatedAt, updatedAt, trustAggregationScope); err != nil {
-		return fmt.Errorf("advance J3b trust cursor: %w", err)
-	}
-	return nil
+	return errors.New("J3b trust cursor remained unavailable after insert conflict")
 }
 
 func validTrustInstant(value string) bool {

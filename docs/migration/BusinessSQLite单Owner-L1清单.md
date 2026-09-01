@@ -1,26 +1,26 @@
 # Business SQLite 单 Owner L1 清单
 
-> 状态：方案 A 的实施前清单，不代表任何 Go writer 已启用。当前 Business SQLite writer 仍是 Node `db-service`；J3b SQLite 配置保持 fail-closed。本清单与 [J3b 模型检测完整迁移契约](J3b-模型检测完整迁移契约.md) 第 9 节共同构成 B1/B2 的可审计输入。
+> 状态：本清单仍是其余 Business SQLite 事务组的方案 A 实施前输入，当前 Business SQLite writer 仍是 Node `db-service`。J3b 已在本地/dev 验收边界内由 Go Gateway 接管并完成 Node active-path-zero；其剩余语义与生产门禁以 [J3b 模型检测完整迁移契约](J3b-模型检测完整迁移契约.md) 第 9 节为准。
 
 ## 1. 物理文件与进程边界
 
 | 物理存储 | 当前 writer | 方案 A 目标 writer | 非 owner 规则 | 切换前提 |
 | --- | --- | --- | --- | --- |
 | Business SQLite | Node `db-service` | Go `gateway` | `query_only`，不得通过 Node/Go bridge 代写 | B0-B2 全部事务组迁出、Node 路由/worker/command active-path-zero |
-| J3b 专属 SQLite | Node dataset/stats/business 分散 writer | Go `gateway` | 固定 `JUHE_AI_J3B_DATABASE_PATH` 单一物理文件；J3c 仅经 `J3bHealthReader` 只读消费，禁止写入此文件 | maintenance 逐表 schema/backfill + digest/row-count 校验；旧 writer/reader/cleanup 退出、rollback epoch 验收 |
-| PostgreSQL J3b schema | Node 多表 writer | Go `gateway` | 仅 gateway 写 J3b 事实/投影；J3c 保持自身表/事务 | maintenance schema preflight、权限和 route owner 一次切换 |
+| J3b 专属 SQLite | Go `gateway`（本地/dev） | Go `gateway` | 固定 `JUHE_AI_J3B_DATABASE_PATH` 单一物理文件；J3c 仅经 `J3bHealthReader` 只读消费，禁止写入此文件 | Node writer/reader/cleanup 已退出；生产仍需真实停写、owner epoch 与 rollback 演练 |
+| PostgreSQL J3b schema | Go `gateway`（本地/dev） | Go `gateway` | 仅 gateway 写 J3b 事实/投影；J3c 保持自身表/事务 | 本地/dev schema、权限和 route owner 已验证；生产仍需 GitOps 一次切换 |
 
-`maintenance` 只执行显式 schema、seed、backfill、审计与恢复命令后退出。`jobs` 不参与 J3b runtime，不连接 Business SQLite 写入，也不调用 gateway。共享 Go 包只能包含无 I/O、无连接、无 scheduler 副作用的领域值对象、协议和算法。
+`maintenance` 只执行显式 schema、seed、backfill、审计与恢复命令后退出。`jobs` 不参与 J3b runtime，不连接 Business SQLite 写入，也不调用 gateway。共享 Go 包只能包含无 I/O、无连接、无 scheduler 副作用的领域值对象、协议和算法。J3b 的 Node 代码归档、Gateway 接管和剩余语义验收以 [J3b 模型检测完整迁移契约](J3b-模型检测完整迁移契约.md) 为准，不再伪装为现行 Node `DbServiceOperation`。
 
-机器可读的逐 operation 清单见 [BusinessSQLite-owner-manifest.json](BusinessSQLite-owner-manifest.json)。从 `backend-go` 目录执行只读命令 `go run ./projects/maintenance/cmd/juhe-ai-maintenance -verify-business-owner-manifest`（或在 maintenance 模块目录执行 `go run ./cmd/juhe-ai-maintenance -verify-business-owner-manifest`），校验器会自动向上解析仓库源码，并严格核对 `DbServiceOperation`、access-mode、handler 引用、声明的 type/access/handler 行号、入口类别、writer 分类、重复/遗漏项及 owner/表/事务组/回滚/验证字段；同一 `transaction_group` 若出现不同 `current_owner` 或 `target_owner` 会 fail-closed。报告同时输出机器可读的 `accessCoverage`、`writerCoverage`、`transactionCoverage` 和 `transactionGroups`，用于核对逐 operation 数量与事务组覆盖；当前报告为 92 个 operation（handoff write 52、read 40；源码 access-mode 中 maintenance 16、runtime 2；handlerMatches 92；transactionGroups 15）。manifest 中的 `write` 是 handoff 粗粒度，覆盖 Node 的 `write|maintenance|runtime`；`status` 的 runtime 只读例外和已移除的历史 alias 在校验器中显式列出。该清单与校验报告是实施与 active-path-zero 扫描的输入，不代表任何目标 writer 已启用；缺少逐路由运行时审计证据时，L1 仍保持未关闭。
+机器可读的逐 operation 清单见 [BusinessSQLite-owner-manifest.json](BusinessSQLite-owner-manifest.json)。从 `backend-go` 目录执行只读命令 `go run ./projects/maintenance/cmd/juhe-ai-maintenance -verify-business-owner-manifest`（或在 maintenance 模块目录执行 `go run ./cmd/juhe-ai-maintenance -verify-business-owner-manifest`），校验器会自动向上解析仓库源码，并严格核对 `DbServiceOperation`、access-mode、handler 引用、声明的 type/access/handler 行号、入口类别、writer 分类、重复/遗漏项及 owner/表/事务组/回滚/验证字段；同一 `transaction_group` 若出现不同 `current_owner` 或 `target_owner` 会 fail-closed。报告同时输出机器可读的 `accessCoverage`、`writerCoverage`、`transactionCoverage` 和 `transactionGroups`，用于核对逐 operation 数量与事务组覆盖。manifest 中的 `write` 是 handoff 粗粒度，覆盖 Node 的 `write|maintenance|runtime`；`status` 的 runtime 只读例外和已移除的历史 alias 在校验器中显式列出。该清单与校验报告是实施与 active-path-zero 扫描的输入，不代表任何目标 writer 已启用；缺少逐路由运行时审计证据时，L1 仍保持未关闭。
 
 System API mutation 路由另有 [GatewayManagementRouteOwnerManifest.json](GatewayManagementRouteOwnerManifest.json)。执行 `go run ./projects/maintenance/cmd/juhe-ai-maintenance -verify-gateway-route-owner-manifest` 可按 Node `system-api-app.ts` 的实际 router 源码重新计数；报告输出 `families`、`mutationRoutes`、`statusCoverage` 与 `pendingFamilies`。任一路由族为 `missing|partial`、源文件计数漂移、重复归属或缺少验收/回滚字段都会 fail-closed（退出码 3 或验证错误），因此“清单完整”不等于 Gateway 已接管；当前 22 个路由族共 98 个 mutation，只有 `model-checks` 有部分 Gateway 基线，其余均待完整迁移。
 
-领域能力矩阵见 [GoBusinessCapabilityManifest.json](GoBusinessCapabilityManifest.json)。它以同一 92 operation/15 transaction group 清单为唯一输入，逐组登记 Node operation、Gateway 目标模块、迁移方式、状态、验收门和回滚动作；`partial` 只表示存在局部 Go/J3b 实现，`missing` 表示尚未具备完整接管能力，`excluded` 仅用于明确保持当前非 Business 物理存储 owner。维护包中的 `VerifyCapabilityManifest` 会 fail-closed 检查组/operation 一对一覆盖、owner 一致性、operation_count、合法状态、实现证据、验收门和回滚字段。该校验通过只证明矩阵完整，不证明切换完成。
+领域能力矩阵见 [GoBusinessCapabilityManifest.json](GoBusinessCapabilityManifest.json)。它以同一 91 operation/14 transaction group 的现行 Node 清单为唯一输入，逐组登记 Node operation、Gateway 目标模块、迁移方式、状态、验收门和回滚动作；J3b 已从现行 Node operation 矩阵移至其专属归档契约。`partial` 只表示存在局部 Go 实现，`missing` 表示尚未具备完整接管能力，`excluded` 仅用于明确保持当前非 Business 物理存储 owner。维护包中的 `VerifyCapabilityManifest` 会 fail-closed 检查组/operation 一对一覆盖、owner 一致性、operation_count、合法状态、实现证据、验收门和回滚字段。该校验通过只证明矩阵完整，不证明切换完成。
 
 方案 A 下 `juhe-ai-jobs` 的 J3b 配置无论 SQLite 或 PostgreSQL 均必须 fail-closed；jobs 不得启动 J3b host、listener、scheduler 或 store。Gateway 的 J3b listener 也必须在 Business handoff、专属 schema、health boundary、runtime/source/auth 四项门全部满足后才可监听。
 
- active-path-zero 由维护命令 `go run ./projects/maintenance/cmd/juhe-ai-maintenance -scan-node-j3b-active-path` 只读扫描 `backend/src`；规则版本固定为 `j3b-active-path-v2`，覆盖 Node J3b 路由/proxy、token worker、quality scheduler、`model_quality_command` 及 `model_check_*`/health 写入口。每个命中输出文件、行号、类别、`block` disposition 和阻断原因，同时输出显式跳过目录及 allow 原因，报告包含 `blockedFindings` 与规则清单，仍有阻断命中时以非零状态阻断验收。当前扫描覆盖 968 个文件并发现 161 个命中，仍包括 Node 路由、scheduler、DB-service、dataset/stats writer 和 cleanup/schema，因此 active-path-zero 未通过；命令本身不修改源码或运行时 owner。
+active-path-zero 由维护命令 `go run ./projects/maintenance/cmd/juhe-ai-maintenance -scan-node-j3b-active-path` 只读扫描 `backend/src`；规则版本固定为 `j3b-active-path-v2`，覆盖 Node J3b 路由/proxy、token worker、quality scheduler、`model_quality_command` 及 `model_check_*`/health 写入口。每个命中输出文件、行号、类别、`block` disposition 和阻断原因，同时输出显式跳过目录及 allow 原因，报告包含 `blockedFindings` 与规则清单，仍有阻断命中时以非零状态阻断验收。2026-08-31 本地/dev 工作树实测扫描 `912` 个文件、`blockedFindings=0`，退出码 0；命令本身不修改源码或运行时 owner。该结果证明 Node J3b active path 已归零，不替代 J3b 专属契约中的语义 golden、真实停写和生产切换证据。
 
 Business/J3b 文件切换前还必须执行隔离前置验证：`go run ./projects/maintenance/cmd/juhe-ai-maintenance -verify-business-sqlite-handoff -business-sqlite-path <Business SQLite> -j3b-sqlite-path <专属 J3b SQLite>`（也可使用 `JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH` 与 `JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH`）。命令只对两个用户文件做存在性、regular-file、同 inode/路径检查，不打开或写入用户数据库；`query_only` 写入拒绝和行数未变化断言始终在一次性临时 SQLite 中执行。输出 `ready`、`pathsDistinct`、`sameFile`、`queryOnlyEnabled`、`writeRejected`、`userDatabaseTouched` 等机器可读字段，路径缺失、共享文件或任一隔离断言失败均以退出码 3 fail-closed。
 
@@ -56,7 +56,6 @@ J3b Gateway 的启用配置也必须通过四个显式门：`JUHE_AI_J3B_BUSINES
 | group dirty/cursor | group-account stats dirty commands | group_account_stats_dirty 与 cursor | dirty 标记和 cursor 保证下游可重放 | `gateway` 写 Business dirtiness；stats consumer 不得反写此文件 |
 | circuit control plane | dispatch revision、incident/outbox claim/ack/release/cleanup | accounts、account_circuit_incidents、account_circuit_outbox | incident revision 与 dedupe outbox 同一事务、replay fence | `gateway` 迁移整组；drain/回滚核对 outbox 与 cursor |
 | deleted account/API key/session cleanup | cleanup jobs、data retention repositories | account_record_cleanup_targets、system_sessions 及删除状态 | 跨 dataset/stats/usage 顺序、batch cursor、session limit | `gateway` 迁移 Business 部分；维护跨库 completion evidence，不能 Node/Go 双 consumer |
-| J3b business projection | `model_quality_command`、J3b scheduler/recovery | accounts、model_quality_policies、model_quality_schedules、account_quality_enforcements | evidence、policy revision、lease/fence、enforcement generation CAS | gateway 同进程 J3b；旧 Node J3b route/scheduler/DB-service branch 一次退出 |
 | J3c business effect | failure-precheck queue | accounts/key runtime state | J3c 自己的 threshold、precheck 与 availability 语义 | 另立 J3c migration；J3b 不调用、不写入、不归档其 owner |
 | offline maintenance exception | `JUHE_AI_SQLITE_OFFLINE_MAINTENANCE`、temporary maintenance worker | 由具体命令决定 | 必须在常驻 writer 全部退出时运行，不能成为共存 writer | `maintenance` 显式替代；生产不得用该环境变量绕过 owner epoch |
 
@@ -75,7 +74,7 @@ J3b Gateway 的启用配置也必须通过四个显式门：`JUHE_AI_J3B_BUSINES
 
 ## 4. L1 退出条件
 
-当前实现进度（仅能力基线，尚未接入 Gateway 主路由，也不改变 Node owner）：Gateway 已新增 `internal/businessauth` session 生命周期原语，以及 `internal/business/{accounts,groups,settings,authorization,account_test_task}` 的 owner-gated 事务服务；这些模块均有 SQLite/SQL/CAS/回放定向测试，但 accounts、groups/routes/API keys、settings/authorization 和 account-test-task 尚未完成 92 operation 的全量覆盖，能力 manifest 仍保持 `missing/partial`，不得据此打开 handoff。
+当前实现进度（J3b 以外仅为能力基线，尚未接入 Gateway 主路由，也不改变 Node owner）：Gateway 已新增 `internal/businessauth` session 生命周期原语，以及 `internal/business/{accounts,groups,settings,authorization,account_test_task}` 的 owner-gated 事务服务；这些模块均有 SQLite/SQL/CAS/回放定向测试，但 accounts、groups/routes/API keys、settings/authorization 和 account-test-task 尚未完成现行 91 operation 的全量覆盖，能力 manifest 仍保持 `missing/partial`，不得据此打开 handoff。
 
 1. 每个上表行有机器可读 manifest：Node path、operation、表、transaction group、owner、epoch、drain、回滚与验证用例。
 2. Go gateway 对应模块和 J3b 专属文件的 schema/data cutover 已实现；jobs 不再编译或启动 J3b runtime。

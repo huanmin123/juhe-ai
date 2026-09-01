@@ -24,6 +24,13 @@ type identityCanary struct {
 // previews and pass/fail counters leave this function; provider output is
 // never returned as durable evidence.
 func RunIdentity(ctx context.Context, protocol modelcheckprofile.Protocol, model string, run func(context.Context, Request) (Result, error), endpointModes ...string) (Evaluation, error) {
+	return RunIdentityForModels(ctx, protocol, model, nil, run, endpointModes...)
+}
+
+// RunIdentityForModels limits the family canary to models authorized by the
+// resolved account. It keeps a target-only fallback so a stale/empty allowlist
+// cannot erase the primary model's evidence.
+func RunIdentityForModels(ctx context.Context, protocol modelcheckprofile.Protocol, model string, models []string, run func(context.Context, Request) (Result, error), endpointModes ...string) (Evaluation, error) {
 	if strings.TrimSpace(model) == "" || run == nil {
 		return Evaluation{}, fmt.Errorf("J3b identity input is invalid")
 	}
@@ -41,7 +48,9 @@ func RunIdentity(ctx context.Context, protocol modelcheckprofile.Protocol, model
 		{"tool_schema", "tool_schema", fmt.Sprintf(`按工具参数 schema 生成且只输出 JSON：必填 action 枚举只能是 inspect，payload 必须含 ids 数组 [2,7,9] 和布尔值 dryRun=true，tag="%s"。`, tag)},
 		{"knowledge_window", "knowledge_window", fmt.Sprintf(`知识截止 2024-10。只输出严格 JSON：{"version":"B","tag":"%s"}。`, tag)},
 	}
-	models := pairedIdentityModels(model)
+	if len(models) == 0 {
+		models = pairedIdentityModels(model)
+	}
 	passed, success, total := 0, 0, 0
 	for _, canary := range canaries {
 		for _, candidate := range models {

@@ -30,6 +30,7 @@ func AggregateEvidence(items []map[string]any) EvidenceAggregate {
 	duplicates := make(map[string]bool)
 	for _, item := range items {
 		kind, _ := item["kind"].(string)
+		kind = canonicalEvidenceFamily(kind)
 		if strings.TrimSpace(kind) != "" {
 			if _, exists := byKind[kind]; exists {
 				duplicates[kind] = true
@@ -89,6 +90,21 @@ func AggregateEvidence(items []map[string]any) EvidenceAggregate {
 		result.TrustFormed = true
 	}
 	return result
+}
+
+// canonicalEvidenceFamily keeps the owner aggregate compatible with the
+// gateway's scoped trusted-comparison names. The probe layer uses explicit
+// names to distinguish comparison evidence from the target's own families;
+// aggregation still consumes the stable family contract.
+func canonicalEvidenceFamily(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "comparison":
+		return "cross_model"
+	case "distribution_similarity":
+		return "distribution"
+	default:
+		return strings.TrimSpace(kind)
+	}
 }
 
 // neutralExcludedFamily recognizes only scope exclusions emitted by the

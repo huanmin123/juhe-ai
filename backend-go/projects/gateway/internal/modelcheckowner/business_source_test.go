@@ -291,8 +291,9 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 			}
 		})
 	}
-	if _, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol", Profile: "quick", TrustedComparison: true, TrustedComparisonID: "acct-3"}); err == nil {
-		t.Fatal("quick profile trusted comparison must be rejected")
+	quickComparisonRequest, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol", Profile: "quick", TrustedComparison: true, TrustedComparisonID: "acct-3"})
+	if err != nil || !quickComparisonRequest.TrustedComparison || quickComparisonRequest.Profile != "quick" || quickComparisonRequest.ProbeSetVersion != modelcheckprofile.QuickProbeSetVersion {
+		t.Fatalf("quick profile trusted comparison must preserve quick probe contract and comparison fences: request=%+v err=%v", quickComparisonRequest, err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_supported_models VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
 		t.Fatal(err)

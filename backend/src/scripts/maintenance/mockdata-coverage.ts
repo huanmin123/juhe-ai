@@ -53,7 +53,6 @@ export function assertMockdataCoverage(created: CreatedMockdata, options: Mockda
   assertUsageCoverage(created)
   assertAccountHealthMonitorCoverage(created, options)
   assertCreatedShape(created)
-  assertModelTrustCoverage()
   assertOidcProviderCoverage(database, created)
   assertApplicationTablesHaveRows()
 }
@@ -97,12 +96,6 @@ function assertAccountHealthMonitorCoverage(created: CreatedMockdata, options: M
     const spanHours = (lastAt - firstAt) / (60 * 60 * 1000)
     assertMinimum('AI 健康监控近 31 天时间跨度不足', spanHours, 31 * 24 - 2)
   }
-}
-
-function assertModelTrustCoverage(): void {
-  assertMinimum('模型可信 observation 样本缺失', scalar(getDatasetDatabase(), 'SELECT COUNT(*) AS value FROM model_check_observations'), 1)
-  assertMinimum('模型可信身份基线样本缺失', scalar(getStatsDatabase(), 'SELECT COUNT(*) AS value FROM model_identity_baseline_versions'), 1)
-  assertMinimum('模型可信最新结果样本缺失', scalar(getStatsDatabase(), 'SELECT COUNT(*) AS value FROM model_account_trust_results'), 1)
 }
 
 function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMockdata): void {

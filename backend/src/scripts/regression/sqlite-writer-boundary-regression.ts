@@ -1,7 +1,5 @@
 import { strict as assert } from 'node:assert'
-import type { ChildProcess } from 'node:child_process'
-import { EventEmitter } from 'node:events'
-import { linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -153,9 +151,8 @@ try {
   assertNonOwnerWriteBlocked(usageRecordShards.getUsageRecordShardDatabase(shardLocation), 'usage shard')
   assertCodexContextStateSchemaBoundary()
   assertRuntimeWriteQueueSourceGuards()
-  await assertDatasetWriterBridge()
 
-  console.log('SQLite writer boundary 回归通过：主库 / usage shard owner 划分、默认严格模式、usage 写入副作用边界、非 owner 写入只读保护和 dataset writer 转发边界已就绪')
+  console.log('SQLite writer boundary 回归通过：主库 / usage shard owner 划分、默认严格模式、usage 写入副作用边界、非 owner 写入只读保护和 Node J3b writer 退场边界已就绪')
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
@@ -267,28 +264,24 @@ function assertNonOwnerWriteBlocked(database: import('node:sqlite').DatabaseSync
 }
 
 function assertRuntimeWriteQueueSourceGuards(): void {
-  const modelCheckServiceSource = readFileSync(resolve('src/modules/model-checks/model-checks.service.ts'), 'utf8')
-  assert(modelCheckServiceSource.includes('requestDatasetWriter'), '模型检测运行时写入必须通过 dataset writer')
-  for (const forbidden of ['createModelCheckRun', 'createModelCheckItems', 'finishModelCheckRun']) {
-    assert.doesNotMatch(
-      modelCheckServiceSource,
-      new RegExp(`\\b${forbidden}\\s*\\(`),
-      `模型检测 service 不能直接调用数据集库写 repository：${forbidden}`
-    )
+  for (const archivedPath of [
+    'src/modules/model-checks/model-checks.service.ts',
+    'src/modules/model-checks/model-checks.routes.ts',
+    'src/modules/background/background-dataset-writer.ts',
+    'src/modules/background/model-quality-scheduled-check.service.ts',
+    'src/storage/model-checks.repository.ts',
+    'src/storage/model-quality-health.repository.ts',
+    'src/storage/model-trust.repository.ts'
+  ]) {
+    assert.equal(existsSync(resolve(archivedPath)), false, `Node J3b 归档路径不应继续存在：${archivedPath}`)
   }
 
-  const datasetWriterSource = readFileSync(resolve('src/modules/background/background-dataset-writer.ts'), 'utf8')
-  for (const required of ['create_model_check_run', 'create_model_check_items', 'create_model_check_observations', 'finish_model_check_run']) {
-    assert(datasetWriterSource.includes(required), `dataset writer 必须登记模型检测写操作：${required}`)
-  }
-
-  const workerSource = readFileSync(resolve('src/worker.ts'), 'utf8')
-  assert(workerSource.includes('background_worker_dataset_write_request'), 'ingest-worker 必须消费 dataset writer 请求')
-  assert(workerSource.includes('handleDatasetWriteOperation'), 'ingest-worker 必须通过 dataset writer handler 执行数据集写入')
-
-  const dbServiceIpcSource = readFileSync(resolve('src/modules/db-service/db-service-ipc.ts'), 'utf8')
-  assert(dbServiceIpcSource.includes('requestDbServiceDatasetWrite'), 'DB service 必须具备 dataset writer 转发入口')
-  assert(dbServiceIpcSource.includes('respondToDatasetWriteRequest'), 'server 必须把 DB service dataset writer 请求转发给 ingest-worker')
+  const serverSource = readFileSync(resolve('src/server.ts'), 'utf8')
+  const systemApiSource = readFileSync(resolve('src/modules/system-api/system-api-app.ts'), 'utf8')
+  const backgroundSource = readFileSync(resolve('src/modules/background/background-jobs.ts'), 'utf8')
+  assert.doesNotMatch(serverSource, /modelCheckHttpProxy|startModelCheckTokenWorker/)
+  assert.doesNotMatch(systemApiSource, /modelChecksRouter/)
+  assert.doesNotMatch(backgroundSource, /model-trust-observation-aggregation|model-quality-scheduled-check|model-quality-recovery|model-quality-health-sync-retry/)
 
   const healthProjectionSource = readFileSync(resolve('src/storage/account-health-projection.repository.ts'), 'utf8')
   assert(healthProjectionSource.includes('projectAccountHealthJobsOutcome'), '业务 SQLite 只能由通用 J1 outcome projector 写入健康事实')
@@ -374,95 +367,4 @@ function assertCodexContextStateSchemaBoundary(): void {
       && codexContextSchemaSource.includes('codex_context_compacts'),
     'Responses 桥接状态索引必须保留在独立 schema'
   )
-}
-
-async function assertDatasetWriterBridge(): Promise<void> {
-  runtimeConfig.processRole = 'server'
-  runtimeConfig.workerRole = 'worker'
-  const backgroundIpc = await import('../../modules/background/background-ipc.js')
-  const fakeIngestWorker = createFakeDatasetWriterWorkerProcess(56048)
-  backgroundIpc.attachBackgroundWorkerProcess(fakeIngestWorker as unknown as ChildProcess, { role: 'ingest-worker' })
-  fakeIngestWorker.ready()
-
-  const result = await backgroundIpc.requestBackgroundWorkerDatasetWrite({
-    type: 'create_model_check_run',
-    input: {
-      id: 'model_check_writer_bridge_run',
-      systemAccountId: 'sys_admin',
-      actorSystemAccountId: 'sys_admin',
-      providerCode: 'gpt',
-      targetType: 'account',
-      targetId: 'acct_writer_bridge',
-      targetName: 'writer bridge account',
-      accountId: 'acct_writer_bridge',
-      model: 'gpt-5.5',
-      profile: 'full',
-      trustedComparison: false,
-      trustedComparisonAvailable: false,
-      probeSetVersion: 'regression',
-      startedAt: '2000-01-01T00:00:00.000Z'
-    }
-  }, 1000) as { id?: string } | undefined
-
-  assert.equal(result?.id, 'model_check_writer_bridge_run', 'server dataset writer 请求必须由 ingest-worker 回包')
-  assert.equal(fakeIngestWorker.datasetWriteRequestCount, 1, 'dataset writer 请求必须投递到 ingest-worker IPC')
-  fakeIngestWorker.exit()
-}
-
-function createFakeDatasetWriterWorkerProcess(pid: number) {
-  class FakeDatasetWriterWorkerProcess extends EventEmitter {
-    connected = true
-    killed = false
-    datasetWriteRequestCount = 0
-
-    constructor(public readonly pid: number) {
-      super()
-    }
-
-    send(message: unknown, callback?: (error?: Error | null) => void): boolean {
-      callback?.(null)
-      if (isDatasetWriteRequest(message)) {
-        this.datasetWriteRequestCount += 1
-        setImmediate(() => {
-          this.emit('message', {
-            type: 'background_worker_dataset_write_response',
-            requestId: message.requestId,
-            ok: true,
-            result: { id: message.operation.input.id }
-          })
-        })
-      }
-      return true
-    }
-
-    kill(): boolean {
-      this.killed = true
-      this.connected = false
-      return true
-    }
-
-    ready(): void {
-      this.emit('message', { type: 'background_worker_ready', pid: this.pid, workerRole: 'ingest-worker' })
-    }
-
-    exit(): void {
-      this.connected = false
-      this.emit('exit', 0, null)
-    }
-  }
-
-  return new FakeDatasetWriterWorkerProcess(pid)
-}
-
-function isDatasetWriteRequest(message: unknown): message is {
-  type: 'background_worker_dataset_write_request'
-  requestId: string
-  operation: { type: 'create_model_check_run'; input: { id?: string } }
-} {
-  return typeof message === 'object'
-    && message !== null
-    && (message as { type?: unknown }).type === 'background_worker_dataset_write_request'
-    && typeof (message as { requestId?: unknown }).requestId === 'string'
-    && typeof (message as { operation?: { type?: unknown } }).operation === 'object'
-    && (message as { operation?: { type?: unknown } }).operation?.type === 'create_model_check_run'
 }

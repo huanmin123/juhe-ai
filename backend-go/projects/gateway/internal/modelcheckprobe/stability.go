@@ -14,7 +14,7 @@ func EvaluateStability(results []Result, expectedModel string) Evaluation {
 	successCount, okCount, modelMatchCount := 0, 0, 0
 	modelMismatch := false
 	for _, result := range results {
-		matched := result.ObservedModel == "" || modelMatches(result.ObservedModel, expectedModel)
+		matched := strings.TrimSpace(result.ObservedModel) != "" && modelMatches(result.ObservedModel, expectedModel)
 		ok := result.Success && strings.TrimSpace(result.Output) == "VECTOR"
 		if result.Success {
 			successCount++
@@ -25,7 +25,7 @@ func EvaluateStability(results []Result, expectedModel string) Evaluation {
 				modelMatchCount++
 			}
 		}
-		modelMismatch = modelMismatch || !matched
+		modelMismatch = modelMismatch || (result.Success && !matched)
 		observations = append(observations, map[string]any{"success": result.Success, "ok": ok, "httpStatus": result.HTTPStatus, "responseModel": result.ObservedModel, "matchedModel": matched, "error": result.ErrorMessage})
 	}
 	if successCount == 0 {

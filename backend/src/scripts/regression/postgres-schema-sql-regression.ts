@@ -20,6 +20,7 @@ const providerModelCatalogRepositorySource = readFileSync('src/storage/provider-
 const postgresSeedDefaultsSource = readFileSync('src/storage/postgres-seed-defaults.ts', 'utf8')
 const dataRetentionSource = readFileSync('src/storage/data-retention.repository.ts', 'utf8')
 const usagePartitionSource = readFileSync('src/storage/postgres-usage-record-partitions.ts', 'utf8')
+const j3bSchemaContractSource = readFileSync('../backend-go/shared/contracts/j3b_model_check_schema.go', 'utf8')
 const tableMonitorSource = readFileSync('src/storage/table-monitor.repository.ts', 'utf8')
 const tableMonitorRoutesSource = readFileSync('src/modules/table-monitor/table-monitor.routes.ts', 'utf8')
 const clientIPStatsNodeWriterFixtureSource = readFileSync(
@@ -190,14 +191,35 @@ assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_stats_totals_scope_seed\s+ON usage_stats_totals\(scope_type, system_account_id, scope_id\)/, 'PG usage rollover seed 必须有 scope_type 前导覆盖索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_overview_dirty_first_dirty\s+ON usage_overview_dirty_scopes\(first_dirty_at, system_account_id\)/, 'PG overview dirty 必须创建 first_dirty 公平索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_ai_performance_summary_dirty_first_dirty\s+ON ai_performance_summary_dirty_system_accounts\(first_dirty_at, system_account_id\)/, 'PG AI performance dirty 必须创建 first_dirty 公平索引')
-assert.match(sql, /CREATE TABLE IF NOT EXISTS model_token_integrity_windows/, 'PG 统计库应包含模型 Token 可信窗口')
-assert.match(sql, /CREATE TABLE IF NOT EXISTS model_token_intercept_baseline_versions/, 'PG 统计库应包含固定截距基线版本')
-assert.match(sql, /CREATE TABLE IF NOT EXISTS model_account_trust_results/, 'PG 统计库应包含账号模型可信最新结果')
-assert.match(sql, /CREATE TABLE IF NOT EXISTS model_trust_latest_dirty_accounts/, 'PG 统计库应包含模型可信 latest 可重试脏队列')
-assert.match(sql, /CREATE TABLE IF NOT EXISTS model_trust_observation_receipts/, 'PG 统计库应包含模型可信 observation 跨提交防重收据')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated ON model_trust_latest_dirty_accounts\(updated_at, system_account_id, account_id, requested_model\)/, 'PG 模型可信脏队列必须有有界续跑索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation\s+ON model_check_observations\(created_at, id\)\s+WHERE aggregation_completed_at IS NULL/, 'PG 未聚合 observation 必须有部分索引')
-assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_activation ON model_token_integrity_windows\(cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, account_id\)/, 'PG 固定截距激活物化必须有匹配索引')
+const requiredGoJ3BTables = [
+  'model_check_input_versions',
+  'model_check_inputs',
+  'model_check_execution_claims',
+  'model_check_outcomes',
+  'model_check_runs',
+  'model_check_items',
+  'model_check_observations',
+  'account_quality_health_hourly',
+  'model_check_scheduler_tasks',
+  'model_token_intercept_baseline_versions',
+  'model_account_trust_results',
+  'model_trust_latest_dirty_accounts',
+  'model_trust_observation_receipts',
+  'model_trust_aggregation_state'
+]
+for (const table of requiredGoJ3BTables) {
+  assert.match(j3bSchemaContractSource, new RegExp(`"${table}"`), `Go J3b schema contract 必须声明 ${table}`)
+}
+assert.match(
+  j3bSchemaContractSource,
+  /"model_check_observations":\s*\{[\s\S]+"provider_protocol_profile_id"[\s\S]+"endpoint_family"[\s\S]+"requested_model"[\s\S]+"mapped_upstream_model"[\s\S]+"observed_model"[\s\S]+"upstream_bucket_hmac"[\s\S]+"cohort_key_hmac"[\s\S]+"population_key_hmac"[\s\S]+"probe_key_hmac"[\s\S]+"system_fingerprint_hmac"[\s\S]+"probe_family"[\s\S]+"probe_set_version"[\s\S]+"tokenizer_version"[\s\S]+"feature_version"[\s\S]+"round_index"[\s\S]+"padding_tokens"[\s\S]+"local_input_tokens"[\s\S]+"reported_input_tokens"[\s\S]+"cached_input_tokens"[\s\S]+"constraint_passed"[\s\S]+"feature_1"[\s\S]+"feature_8"[\s\S]+"observation_status"[\s\S]+"identity_status"[\s\S]+"mapping_status"[\s\S]+"protocol_status"[\s\S]+"evidence_coverage"[\s\S]+"aggregation_completed_at"/,
+  'Go J3b schema contract 必须保留 rich model-check observation 字段'
+)
+assert.match(
+  j3bSchemaContractSource,
+  /"idx_model_check_observations_cursor"[\s\S]+"idx_model_check_observations_pending_aggregation"[\s\S]+"idx_model_trust_latest_dirty_updated"/,
+  'Go J3b schema contract 必须声明 observation 聚合和 trust dirty 索引'
+)
 assert.match(sql, /usage_stats_totals[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+input_tokens bigint NOT NULL DEFAULT 0[\s\S]+duration_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 统计累计字段必须使用 bigint，避免生产聚合溢出')
 assert.match(sql, /usage_scope_range_windows[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+first_token_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 范围窗口累计字段必须使用 bigint')
 assert.match(sql, /usage_scope_range_windows[\s\S]+window_key text GENERATED ALWAYS AS \(start_date \|\| ':' \|\| end_date\) STORED/, 'PG usage scope 范围窗口必须生成 window_key')
@@ -345,8 +367,6 @@ assert.match(usageRecordUpstreamResponseModelMigration, /listUsageRecordShardLoc
 const retiredPostgresSchemaPatterns = [
   /ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/,
   /ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/,
-  /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS (?:trigger_kind|schedule_id|policy_snapshot_json|quality_decision_json|quality_health_sync_status)/,
-  /ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text/,
   /ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS (?:conversation_key|session_id|session_client_type) text/,
   /ALTER TABLE client_ip_(?:account_)?range_window_dirty_ips ADD COLUMN IF NOT EXISTS (?:generation|first_dirty_at)/,
   /ALTER TABLE background_job_leases ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0/,

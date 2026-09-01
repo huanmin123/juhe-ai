@@ -57,6 +57,19 @@ type HealthSyncRetryExecutor struct {
 	Projector *QualityProjector
 }
 
+// markHealthSyncFailure must remain usable after an HTTP request is canceled:
+// the durable run is already terminal and needs a retry marker, otherwise a
+// canceled request can leave a failed health publication looking pending.
+func (p *QualityProjector) markHealthSyncFailure(ctx context.Context, runID string) {
+	if ctx == nil || ctx.Err() != nil {
+		background, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = p.Store.MarkHealthSync(background, runID, "failed")
+		return
+	}
+	_ = p.Store.MarkHealthSync(ctx, runID, "failed")
+}
+
 func (e *HealthSyncRetryExecutor) Execute(ctx context.Context, task ScheduleTask) error {
 	if e == nil || e.Projector == nil || e.Projector.Store == nil {
 		return errors.New("J3b health retry executor is not initialized")
@@ -95,23 +108,26 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 		// unrelated durable run and make retries replay the wrong fact.
 		return errors.New("J3b health projection run identity mismatch")
 	}
-	if !aggregate.Formed || !aggregate.TrustFormed {
-		_ = p.Store.MarkHealthSync(ctx, runID, "failed")
+	// Unavailable means the upstream could not yield quality evidence. It is
+	// still a valid health fact for retry/recovery purposes, but it must never
+	// authorize enforcement. Other levels retain the formed+trusted gate.
+	if fact.Level != "unavailable" && (!aggregate.Formed || !aggregate.TrustFormed) {
+		p.markHealthSyncFailure(ctx, runID)
 		return errors.New("J3b evidence is not formed; health projection is denied")
 	}
 	if strings.TrimSpace(fact.AccountID) == "" || strings.TrimSpace(fact.SystemAccountID) == "" || strings.TrimSpace(fact.ProviderCode) == "" || strings.TrimSpace(fact.Model) == "" || strings.TrimSpace(fact.Profile) == "" || !validHealthStatHour(fact.StatHour) || fact.ObservedAt.IsZero() || fact.Threshold < 40 || fact.Threshold > 100 || fact.Score < 0 || fact.Score > 100 {
-		_ = p.Store.MarkHealthSync(ctx, runID, "failed")
+		p.markHealthSyncFailure(ctx, runID)
 		return errors.New("J3b health projection scope is incomplete")
 	}
-	if fact.Score >= fact.Threshold && fact.Level != "unavailable" {
+	if fact.Score >= fact.Threshold && fact.Level != "unavailable" && fact.Level != "suspicious" {
 		return errors.New("J3b health projection requires a quality failure or unavailable result")
 	}
 	if fact.Level == "unavailable" {
 		fact.EnforcementAllowed = false
 	}
-	if fact.Score < fact.Threshold && fact.EnforcementAllowed {
+	if (fact.Score < fact.Threshold || fact.Level == "suspicious") && fact.EnforcementAllowed {
 		if p.Enforcement == nil {
-			_ = p.Store.MarkHealthSync(ctx, runID, "failed")
+			p.markHealthSyncFailure(ctx, runID)
 			return errors.New("J3b quality enforcement owner is not configured")
 		}
 		action := fact.PenaltyAction
@@ -119,16 +135,16 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 			action = "quality_isolate"
 		}
 		if action != "disable" && action != "fallback" && action != "quality_isolate" {
-			_ = p.Store.MarkHealthSync(ctx, runID, "failed")
+			p.markHealthSyncFailure(ctx, runID)
 			return errors.New("J3b quality enforcement action is invalid")
 		}
 		if err := p.Enforcement.Apply(ctx, QualityEnforcement{AccountID: fact.AccountID, SystemAccountID: fact.SystemAccountID, RunID: fact.RunID, ProviderCode: fact.ProviderCode, Model: fact.Model, Profile: fact.Profile, PolicyRevision: fact.PolicyRevision, AccountConfigRevision: fact.AccountConfigRevision, ScheduleID: fact.ScheduleID, Score: fact.Score, Threshold: fact.Threshold, RecoveryIntervalMinutes: fact.RecoveryIntervalMinutes, Action: action, OccurredAt: fact.ObservedAt, Message: fact.ErrorMessage}); err != nil {
-			_ = p.Store.MarkHealthSync(ctx, runID, "failed")
+			p.markHealthSyncFailure(ctx, runID)
 			return fmt.Errorf("apply J3b quality enforcement: %w", err)
 		}
 	}
 	if _, err := p.Store.ApplyHealthFact(ctx, fact); err != nil {
-		_ = p.Store.MarkHealthSync(ctx, runID, "failed")
+		p.markHealthSyncFailure(ctx, runID)
 		return err
 	}
 	return p.Store.MarkHealthSync(ctx, runID, "applied")

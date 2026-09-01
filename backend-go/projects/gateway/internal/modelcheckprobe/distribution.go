@@ -285,9 +285,14 @@ func EvaluateCrossModel(target, comparison Result, expectedModel string) Evaluat
 }
 
 func EvaluateCrossModelPair(target, comparison Result, targetExpectedModel, comparisonExpectedModel string) Evaluation {
-	matched := (target.ObservedModel == "" || modelMatches(target.ObservedModel, targetExpectedModel)) && (comparison.ObservedModel == "" || modelMatches(comparison.ObservedModel, comparisonExpectedModel))
+	matched := strings.TrimSpace(target.ObservedModel) != "" && modelMatches(target.ObservedModel, targetExpectedModel) && strings.TrimSpace(comparison.ObservedModel) != "" && modelMatches(comparison.ObservedModel, comparisonExpectedModel)
 	if !target.Success || !comparison.Success {
-		return Evaluation{Kind: "cross_model", Status: "skipped", Evidence: map[string]any{"requestFailure": true, "excludedFromScoring": true}}
+		evidence := map[string]any{"requestFailure": true, "excludedFromScoring": true}
+		if IsModelUnavailable(target, targetExpectedModel) || IsModelUnavailable(comparison, comparisonExpectedModel) {
+			evidence["modelUnavailable"] = true
+			evidence["reason"] = "comparison_model_unavailable"
+		}
+		return Evaluation{Kind: "cross_model", Status: "skipped", Evidence: evidence}
 	}
 	if matched {
 		return Evaluation{Kind: "cross_model", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"matchedModel": true, "targetExpectedModel": targetExpectedModel, "comparisonExpectedModel": comparisonExpectedModel}}

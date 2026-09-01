@@ -25,10 +25,11 @@ func TestCatalogMatchesCurrentNodeGoldenFixture(t *testing.T) {
 	if !ok {
 		t.Fatal("resolve test source path")
 	}
-	fixturePath := filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "..", "backend", "src", "scripts", "regression", "testdata", "node-model-check-profile-contract.json")
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "..", "..", ".."))
+	fixturePath := filepath.Join(repoRoot, "migration-backup", "node", "j3b-model-check", "backend", "src", "scripts", "regression", "testdata", "node-model-check-profile-contract.json")
 	bytes, err := os.ReadFile(fixturePath)
 	if err != nil {
-		t.Fatalf("read Node profile oracle %s: %v", fixturePath, err)
+		t.Fatalf("read archived Node profile oracle %s (comparison-only fixture; keep it under migration-backup): %v", fixturePath, err)
 	}
 	var oracle nodeProfileOracle
 	if err := json.Unmarshal(bytes, &oracle); err != nil {

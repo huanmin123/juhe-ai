@@ -33,6 +33,15 @@ var (
 	ErrOutcomeConflict = errors.New("J3b outcome conflicts with existing outcome")
 )
 
+// forUpdate serializes read/modify/write decisions on PostgreSQL. SQLite is
+// opened with a single writer connection and does not accept this clause.
+func (s *Store) forUpdate() string {
+	if s != nil && s.mode == "postgres" {
+		return " FOR UPDATE"
+	}
+	return ""
+}
+
 // ClaimInput reserves an immutable input with a monotonically increasing
 // fence. Repeating the same live claim is idempotent; a different owner/token
 // cannot overwrite it until the lease expires.
@@ -46,7 +55,7 @@ func (s *Store) ClaimInput(ctx context.Context, inputID, claimToken, outcomeID, 
 	}
 	defer tx.Rollback()
 	var expiresRaw any
-	if err := tx.QueryRowContext(ctx, s.bind(`SELECT expires_at FROM `+s.table("model_check_inputs")+` WHERE input_id=?`), inputID).Scan(&expiresRaw); err != nil {
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT expires_at FROM `+s.table("model_check_inputs")+` WHERE input_id=?`+s.forUpdate()), inputID).Scan(&expiresRaw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Claim{}, errors.New("J3b input not found")
 		}
@@ -58,7 +67,7 @@ func (s *Store) ClaimInput(ctx context.Context, inputID, claimToken, outcomeID, 
 	}
 	var claim Claim
 	var untilRaw any
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT claim_token,outcome_id,owner_id,fence_token,claim_until FROM `+s.table("model_check_execution_claims")+` WHERE input_id=?`), inputID).Scan(&claim.ClaimToken, &claim.OutcomeID, &claim.OwnerID, &claim.FenceToken, &untilRaw)
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT claim_token,outcome_id,owner_id,fence_token,claim_until FROM `+s.table("model_check_execution_claims")+` WHERE input_id=?`+s.forUpdate()), inputID).Scan(&claim.ClaimToken, &claim.OutcomeID, &claim.OwnerID, &claim.FenceToken, &untilRaw)
 	if err == nil {
 		claim.InputID = inputID
 		claim.ClaimUntil, err = parseDBTime(untilRaw)
@@ -82,11 +91,35 @@ func (s *Store) ClaimInput(ctx context.Context, inputID, claimToken, outcomeID, 
 		fence = claim.FenceToken + 1
 	}
 	claim = Claim{InputID: inputID, ClaimToken: claimToken, OutcomeID: outcomeID, OwnerID: ownerID, FenceToken: fence, ClaimUntil: now.Add(lease)}
-	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_check_execution_claims")+` (input_id,claim_token,outcome_id,owner_id,fence_token,claim_until,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(input_id) DO UPDATE SET claim_token=excluded.claim_token,outcome_id=excluded.outcome_id,owner_id=excluded.owner_id,fence_token=excluded.fence_token,claim_until=excluded.claim_until,updated_at=excluded.updated_at`), claim.InputID, claim.ClaimToken, claim.OutcomeID, claim.OwnerID, claim.FenceToken, claim.ClaimUntil.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano))
+	result, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_check_execution_claims")+` (input_id,claim_token,outcome_id,owner_id,fence_token,claim_until,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(input_id) DO UPDATE SET claim_token=excluded.claim_token,outcome_id=excluded.outcome_id,owner_id=excluded.owner_id,fence_token=excluded.fence_token,claim_until=excluded.claim_until,updated_at=excluded.updated_at`), claim.InputID, claim.ClaimToken, claim.OutcomeID, claim.OwnerID, claim.FenceToken, claim.ClaimUntil.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return Claim{}, fmt.Errorf("persist J3b claim: %w", err)
 	}
+	if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+		return Claim{}, fmt.Errorf("persist J3b claim affected %d rows: %w", changed, err)
+	}
 	return claim, tx.Commit()
+}
+
+// RenewClaim extends a live execution lease without changing its fence. The
+// update is conditional on the exact claim identity and an unexpired lease so
+// a worker that lost ownership can never revive its claim.
+func (s *Store) RenewClaim(ctx context.Context, claim Claim, lease time.Duration, now time.Time) error {
+	if s == nil || s.db == nil || claim.InputID == "" || claim.ClaimToken == "" || claim.OwnerID == "" || claim.OutcomeID == "" || claim.FenceToken < 1 || lease <= 0 || now.IsZero() {
+		return errors.New("J3b claim renewal input is invalid")
+	}
+	result, err := s.db.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_check_execution_claims")+` SET claim_until=?,updated_at=? WHERE input_id=? AND claim_token=? AND owner_id=? AND outcome_id=? AND fence_token=? AND claim_until>?`), now.Add(lease).UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), claim.InputID, claim.ClaimToken, claim.OwnerID, claim.OutcomeID, claim.FenceToken, now.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("renew J3b claim: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("renew J3b claim affected rows: %w", err)
+	}
+	if changed != 1 {
+		return ErrStaleFence
+	}
+	return nil
 }
 
 func (s *Store) ReleaseClaim(ctx context.Context, claim Claim, now time.Time) error {
@@ -135,7 +168,7 @@ func (s *Store) CommitOutcome(ctx context.Context, outcome Outcome, claim Claim,
 	var token, owner, outcomeID string
 	var fence int64
 	var untilRaw any
-	if err := tx.QueryRowContext(ctx, s.bind(`SELECT claim_token,owner_id,outcome_id,fence_token,claim_until FROM `+s.table("model_check_execution_claims")+` WHERE input_id=?`), outcome.InputID).Scan(&token, &owner, &outcomeID, &fence, &untilRaw); err != nil {
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT claim_token,owner_id,outcome_id,fence_token,claim_until FROM `+s.table("model_check_execution_claims")+` WHERE input_id=?`+s.forUpdate()), outcome.InputID).Scan(&token, &owner, &outcomeID, &fence, &untilRaw); err != nil {
 		return err
 	}
 	until, err := parseDBTime(untilRaw)
@@ -146,7 +179,7 @@ func (s *Store) CommitOutcome(ctx context.Context, outcome Outcome, claim Claim,
 		return ErrStaleFence
 	}
 	var existingID, existingDigest string
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT outcome_id,payload_digest FROM `+s.table("model_check_outcomes")+` WHERE input_id=?`), outcome.InputID).Scan(&existingID, &existingDigest)
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT outcome_id,payload_digest FROM `+s.table("model_check_outcomes")+` WHERE input_id=?`+s.forUpdate()), outcome.InputID).Scan(&existingID, &existingDigest)
 	if err == nil {
 		if existingID != outcome.OutcomeID || existingDigest != outcome.PayloadDigest {
 			return ErrOutcomeConflict

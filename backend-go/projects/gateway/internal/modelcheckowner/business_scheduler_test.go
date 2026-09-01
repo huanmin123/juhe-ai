@@ -65,6 +65,12 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 	if err := source.CompleteScheduled(context.Background(), payload, RunResult{RunID: "run-stale", Status: string(RunCompleted)}); err == nil {
 		t.Fatal("stale schedule lease must be rejected")
 	}
+	if _, err := db.Exec(`UPDATE model_quality_schedules SET lease_owner='gateway-1',lease_until='2000-01-01T00:00:00Z' WHERE id='sch'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.CompleteScheduled(context.Background(), payload, RunResult{RunID: "run-expired", Status: string(RunCompleted)}); err == nil {
+		t.Fatal("expired schedule lease must be rejected")
+	}
 }
 
 func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) {

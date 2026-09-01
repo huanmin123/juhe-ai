@@ -50,7 +50,6 @@ import {
   createStatsTableCoverageMockdata
 } from './maintenance/table-coverage.js'
 import { createAuditMockdata, createPublicApiLogMockdata } from './observability/logs.js'
-import { createModelCheckMockdata } from './records/model-checks.js'
 import { createMonitoringMockdata } from './observability/monitoring.js'
 import { createRecordCleanupMockdata } from './records/record-cleanup.js'
 import { createStorageMockdata } from './observability/storage.js'
@@ -80,7 +79,9 @@ async function main(): Promise<void> {
   const usageRecords = createUsageMockdata(created, options)
   const auditLogs = createAuditMockdata(usageRecords)
   const publicApiLogs = createPublicApiLogMockdata(created, options)
-  const modelCheckCounts = await createModelCheckMockdata(created, options)
+  // J3b model-check data is now owned by Gateway and is not fabricated in the
+  // Node mockdata writer. Keep the summary shape stable for existing tooling.
+  const modelCheckCounts = { runs: 0, items: 0 }
   const cleanupCounts = createRecordCleanupMockdata()
   createMonitoringMockdata(options)
 

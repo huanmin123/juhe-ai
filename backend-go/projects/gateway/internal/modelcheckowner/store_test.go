@@ -417,6 +417,12 @@ func TestRunLifecycleProjectionIsAtomicAndIdempotent(t *testing.T) {
 	if err := store.ProjectOutcome(context.Background(), conflict); !errors.Is(err, ErrRunProjectionConflict) {
 		t.Fatalf("different terminal replay must conflict: %v", err)
 	}
+	itemConflict := projection
+	itemConflict.Items = append([]ItemRecord(nil), projection.Items...)
+	itemConflict.Items[0].ItemKey = "different"
+	if err := store.ProjectOutcome(context.Background(), itemConflict); !errors.Is(err, ErrRunProjectionConflict) {
+		t.Fatalf("different terminal item replay must conflict: %v", err)
+	}
 	var status, message, resultSummary, evidence, itemError string
 	var itemCount int
 	if err := store.db.QueryRow(`SELECT status,message,result_summary_json FROM model_check_runs WHERE id='run-1'`).Scan(&status, &message, &resultSummary); err != nil || status != string(RunCompleted) {
@@ -501,7 +507,15 @@ func TestClaimAndOutcomeFenceLifecycle(t *testing.T) {
 	if _, err := store.ClaimInput(context.Background(), "input-1", "token-2", "outcome-2", "owner-2", time.Minute, now.Add(10*time.Second)); !errors.Is(err, ErrClaimBusy) {
 		t.Fatalf("live competing claim must be busy: %v", err)
 	}
-	if err := store.CommitOutcome(context.Background(), Outcome{OutcomeID: "outcome-1", InputID: "input-1", InputDigest: digest, Payload: payload}, first, now.Add(20*time.Second)); err != nil {
+	if err := store.RenewClaim(context.Background(), first, time.Minute, now.Add(50*time.Second)); err != nil {
+		t.Fatalf("live claim renewal must succeed: %v", err)
+	}
+	staleRenewal := first
+	staleRenewal.FenceToken++
+	if err := store.RenewClaim(context.Background(), staleRenewal, time.Minute, now.Add(55*time.Second)); !errors.Is(err, ErrStaleFence) {
+		t.Fatalf("stale claim renewal must fail: %v", err)
+	}
+	if err := store.CommitOutcome(context.Background(), Outcome{OutcomeID: "outcome-1", InputID: "input-1", InputDigest: digest, Payload: payload}, first, now.Add(100*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CommitOutcome(context.Background(), Outcome{OutcomeID: "outcome-1", InputID: "input-1", InputDigest: digest, Payload: payload}, first, now.Add(21*time.Second)); err != nil {

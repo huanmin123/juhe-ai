@@ -41,15 +41,29 @@ const (
 )
 
 type Result struct {
-	HTTPStatus    int
-	Success       bool
-	ExpectedModel string
-	ObservedModel string
-	Output        string
-	Usage         map[string]any
-	JSON          map[string]any
-	ErrorMessage  string
-	Duration      time.Duration
+	HTTPStatus         int
+	Success            bool
+	ExpectedModel      string
+	ObservedModel      string
+	Output             string
+	Usage              map[string]any
+	JSON               map[string]any
+	ErrorMessage       string
+	Duration           time.Duration
+	RetryAttemptCount  int
+	RetryMaxAttempts   int
+	AttemptStatusCodes []int
+	RetryWaitDurations []time.Duration
+	AttemptDetails     []AttemptDetail
+}
+
+// AttemptDetail is bounded retry metadata safe to retain in diagnostic
+// evidence. It never contains request headers, credentials, or response body.
+type AttemptDetail struct {
+	StartedAt  time.Time
+	Duration   time.Duration
+	HTTPStatus int
+	Error      string
 }
 
 type Options struct {

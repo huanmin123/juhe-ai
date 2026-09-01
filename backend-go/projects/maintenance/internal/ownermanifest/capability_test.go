@@ -16,10 +16,10 @@ func TestVerifyRepositoryCapabilityManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Capabilities != 15 || report.Groups != 15 || report.Operations != 92 {
+	if report.Capabilities != 14 || report.Groups != 14 || report.Operations != 91 {
 		t.Fatalf("unexpected capability report=%+v", report)
 	}
-	if report.StatusCoverage["partial"] != 4 || report.StatusCoverage["missing"] != 9 || report.StatusCoverage["excluded"] != 2 {
+	if report.StatusCoverage["partial"] != 3 || report.StatusCoverage["missing"] != 9 || report.StatusCoverage["excluded"] != 2 {
 		t.Fatalf("capability status coverage=%+v", report.StatusCoverage)
 	}
 }

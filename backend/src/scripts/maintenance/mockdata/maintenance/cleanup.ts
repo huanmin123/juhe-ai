@@ -1,5 +1,4 @@
 import { runtimeConfig } from '../../../../config/runtime.js'
-import { modelCheckObservationHmac } from '../../../../modules/model-checks/model-checks-observation-security.js'
 import {
   codexContextStateShardIndexes,
   getBusinessDatabase,
@@ -139,11 +138,6 @@ function cleanupDatasetMockdata(database: Database, mockAccountIds: string[], mo
          OR last_error_message LIKE ?
     `).run(`${namePrefix}%`, 'Mockdata%')
 
-    const modelCheckRunIds = selectIds(database, 'SELECT id FROM model_check_runs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
-    deleteWhereIn(database, 'model_check_items', 'run_id', modelCheckRunIds)
-    deleteWhereIn(database, 'model_check_runs', 'id', modelCheckRunIds)
-    database.prepare('DELETE FROM model_check_items WHERE id LIKE ? OR trace_id LIKE ?').run(`${idPrefix}%`, `${tracePrefix}%`)
-
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
@@ -158,27 +152,7 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
     deleteWhereIn(database, 'client_ip_policy_hits', 'policy_id', mockClientIpPolicyIds)
     deleteWhereIn(database, 'client_ip_policies', 'id', mockClientIpPolicyIds)
     deleteWhereIn(database, 'account_usage_snapshots', 'account_id', mockAccountIds)
-    for (const tableName of [
-      'model_token_integrity_windows',
-      'model_token_integrity_rounds',
-      'model_trust_window_sources',
-      'model_identity_source_features',
-      'model_paired_similarity_windows',
-      'model_account_trust_results',
-      'model_trust_latest_dirty_accounts'
-    ]) {
-      deleteWhereIn(database, tableName, 'account_id', mockAccountIds)
-    }
-    database.prepare(`
-      DELETE FROM model_identity_baseline_versions
-      WHERE population_key_hmac = ?
-    `).run(modelCheckObservationHmac('mockdata-model-trust-population', 'population'))
-    database.prepare(`
-      DELETE FROM stats_job_state
-      WHERE job_name = 'model-trust-observation-aggregation'
-    `).run()
     deleteWhereIn(database, 'account_quality_dirty_accounts', 'account_id', mockAccountIds)
-    deleteWhereIn(database, 'account_quality_health_hourly', 'account_id', mockAccountIds)
     database.prepare(`
       DELETE FROM client_ip_range_window_dirty_ips
       WHERE ip_hash IN (

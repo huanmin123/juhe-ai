@@ -62,9 +62,9 @@ try {
   const workerSource = readFileSync(resolve('src/storage/sqlite-read-worker.ts'), 'utf8')
   assert.doesNotMatch(monitorSource, /\busage_records\b/i, '健康监控请求路径不得扫描使用记录明细')
   assert.match(monitorSource, /FROM account_health_hourly/, '健康监控必须查询小时预聚合表')
-  assert.match(monitorSource, /SELECT account_id, stat_hour, status, last_observed_at, source_order/, '健康列表只应读取小时槽状态与选取较新结果所需的观察时间')
+  assert.match(monitorSource, /SELECT account_id, stat_hour, status, last_observed_at, 0 AS source_order/, '健康列表只应读取小时槽状态与选取较新结果所需的观察时间')
   assert.doesNotMatch(monitorSource, /SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message/, '单点详情外层不得返回未消费的账户和小时定位字段')
-  assert.match(monitorSource, /SELECT status, last_observed_at, status_code, error_code, error_message, source_order\s+FROM \(/, '单点详情外层只应投影抽屉消费字段和冲突优先级')
+  assert.match(monitorSource, /SELECT status, last_observed_at, status_code, error_code, error_message, 0 AS source_order\s+FROM account_health_hourly/, '单点详情只应投影 J1 抽屉消费字段和固定统计来源优先级')
   assert.match(monitorSource, /account_name_search_terms/, '账户名包含搜索必须使用增量维护的搜索候选表')
   assert.doesNotMatch(monitorSource, /instr\(lower\(accounts\.name\)|position\(lower\(\?\) in lower\(accounts\.name\)\)/, '健康列表不得扫描 lower(name) 完成包含搜索')
   assert.match(monitorSource, /\(accounts\.last_used_at IS NULL\) ASC,[\s\S]+accounts\.last_used_at DESC,[\s\S]+accounts\.name ASC/, '健康监控应按最近使用时间和名称稳定排序')
@@ -195,25 +195,6 @@ try {
     },
     'J1 小时详情必须返回较晚 outcome 的脱敏诊断'
   )
-  databaseModule.getStatsDatabase().prepare(`
-    INSERT INTO account_quality_health_hourly (
-      account_id, system_account_id, provider_code, stat_hour, observed_at, model_check_run_id,
-      model, profile, score, threshold, level, error_code, error_message, updated_at
-    ) VALUES (?, 'sys_admin', 'gpt', ?, ?, 'run_ai_health_quality',
-      'gpt-5.1', 'quick', 35, 70, 'suspicious', 'quality_failed', '质量检查失败', ?)
-  `).run(account.id, failureSlot.statHour, currentFailureAt, currentFailureAt)
-  assert.deepEqual(
-    healthMonitorRepository.getAiHealthHourDetail(access, account.id, failureSlot.statHour),
-    {
-      statHour: failureSlot.statHour,
-      status: 'failure',
-      lastObservedAt: currentFailureAt,
-      errorCode: 'model_quality_failed',
-      errorMessage: '模型质量检查不达标：35 分，阈值 70 分'
-    },
-    '普通健康和质量健康同小时并存时，详情必须保持质量失败优先'
-  )
-
   const bounded = healthMonitorRepository.getAiHealthList(access, { hours: 9999, pageSize: 20 })
   assert.equal(bounded.items.find((item) => item.id === account.id)?.hours.length, 31 * 24)
 

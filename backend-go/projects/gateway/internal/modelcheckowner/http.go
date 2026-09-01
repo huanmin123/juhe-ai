@@ -717,9 +717,11 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, scope 
 					}
 				}
 			}
-			select {
-			case events <- event:
-			case <-handle.Context().Done():
+			if adapted, ok := adaptFrontendProgressEvent(event, runRequest); ok {
+				select {
+				case events <- ProgressEvent{Kind: "frontend", Data: adapted}:
+				case <-handle.Context().Done():
+				}
 			}
 		})
 		results <- streamResult{result: result, err: err}
@@ -736,7 +738,7 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, scope 
 	for {
 		select {
 		case event := <-events:
-			if !writeEvent("progress", event) {
+			if !writeEvent("progress", event.Data) {
 				return
 			}
 		case <-ticker.C:
@@ -750,6 +752,21 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, scope 
 				return
 			}
 		case outcome := <-results:
+			// RunStream publishes its terminal progress notification immediately
+			// before returning. The result and event channels can nevertheless be
+			// selected in either order, so drain already-buffered notifications
+			// before writing the terminal `complete` SSE frame.
+			for {
+				select {
+				case event := <-events:
+					if !writeEvent("progress", event.Data) {
+						return
+					}
+				default:
+					goto progressDrained
+				}
+			}
+		progressDrained:
 			if outcome.err != nil {
 				_ = writeEvent("error", ownerStreamError(outcome.err))
 				return
@@ -1109,6 +1126,75 @@ func writeSSE(w io.Writer, flusher http.Flusher, event string, data any) error {
 	}
 	flusher.Flush()
 	return nil
+}
+
+// adaptFrontendProgressEvent converts the internal runtime notification into
+// the top-level discriminated union consumed by frontend/src/api/modelCheckStream.ts.
+// Runtime notifications intentionally remain sparse: until the probe runner
+// exposes per-probe hooks, unsupported internal kinds are not emitted as
+// synthetic probe events. This keeps the stream honest while ensuring the
+// events that do cross HTTP are directly consumable by the UI.
+func adaptFrontendProgressEvent(event ProgressEvent, request RunRequest) (map[string]any, bool) {
+	data, _ := event.Data.(map[string]any)
+	payload := make(map[string]any, len(data)+8)
+	for key, value := range data {
+		payload[key] = value
+	}
+	switch strings.TrimSpace(event.Kind) {
+	case "run_started":
+		payload["type"] = "run_started"
+		payload["message"] = progressText(payload, "message", "模型检测已启动")
+		payload["targetId"] = request.TargetID
+		payload["model"] = request.Model
+		payload["profile"] = request.Profile
+		payload["trustedComparison"] = request.TrustedComparison
+		if request.TrustedComparisonAccountID != "" {
+			payload["trustedComparisonAccountId"] = request.TrustedComparisonAccountID
+		}
+		return payload, true
+	case "run_completed":
+		if progressText(payload, "runId", "") == "" {
+			return nil, false
+		}
+		payload["type"] = "run_completed"
+		status := progressText(payload, "status", "completed")
+		payload["status"] = status
+		payload["message"] = progressText(payload, "message", "模型检测已完成")
+		payload["level"] = progressText(payload, "level", "unavailable")
+		if _, ok := payload["score"]; !ok {
+			payload["score"] = 0
+		}
+		if _, ok := payload["maxScore"]; !ok {
+			payload["maxScore"] = 100
+		}
+		return payload, true
+	case "quality_health_sync", "health_sync_failed":
+		payload["type"] = "quality_health_sync"
+		result := progressText(payload, "result", "")
+		if result == "" {
+			if event.Kind == "health_sync_failed" {
+				result = "failed"
+			} else {
+				result = "pending_retry"
+			}
+		}
+		payload["result"] = result
+		// An absent stat hour is kept as an empty string instead of inventing a
+		// timestamp; the frontend contract requires a string but does not permit
+		// a made-up health observation.
+		payload["statHour"] = progressText(payload, "statHour", "")
+		payload["message"] = progressText(payload, "message", "模型检测健康状态同步未完成")
+		return payload, true
+	default:
+		return nil, false
+	}
+}
+
+func progressText(data map[string]any, key, fallback string) string {
+	if value, ok := data[key].(string); ok {
+		return value
+	}
+	return fallback
 }
 
 func writeOwnerJSON(w http.ResponseWriter, status int, value any) {

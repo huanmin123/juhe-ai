@@ -205,8 +205,6 @@ function endpointCatalog(): EndpointSpec[] {
     { name: 'GET my-stats/ai-performance/accounts', path: '/__aisys__/api/my-stats/ai-performance/accounts?limit=20', profile: 'core', access: 'self', requiresAuth: true },
     { name: 'GET my-stats/account-usage', path: '/__aisys__/api/my-stats/account-usage?page=1&pageSize=20', profile: 'broad', access: 'self', requiresAuth: true },
     { name: 'GET my-operation-logs', path: '/__aisys__/api/my-operation-logs?page=1&pageSize=20', profile: 'broad', access: 'self', requiresAuth: true },
-    { name: 'GET my-model-checks/options', path: '/__aisys__/api/my-model-checks/options', profile: 'broad', access: 'self', requiresAuth: true },
-    { name: 'GET my-model-checks/runs', path: '/__aisys__/api/my-model-checks/runs?page=1&pageSize=20', profile: 'broad', access: 'self', requiresAuth: true },
     { name: 'GET my-teams', path: '/__aisys__/api/my-teams?page=1&pageSize=20', profile: 'broad', access: 'self', requiresAuth: true },
     { name: 'GET announcements/public', path: '/__aisys__/api/announcements/public?limit=20', profile: 'broad', access: 'self', requiresAuth: true },
 
@@ -253,9 +251,6 @@ function endpointCatalog(): EndpointSpec[] {
     { name: 'GET runtime-logs', path: '/__aisys__/api/runtime-logs?page=1&pageSize=20', profile: 'broad', access: 'admin', requiresAuth: true },
     { name: 'GET runtime-logs/facets', path: '/__aisys__/api/runtime-logs/facets', profile: 'broad', access: 'admin', requiresAuth: true },
     { name: 'GET runtime-log detail', path: '', profile: 'broad', access: 'admin', requiresAuth: true, dynamicFrom: { sourceName: 'GET runtime-logs', buildPath: (id) => `/__aisys__/api/runtime-logs/${encodeURIComponent(id)}` } },
-    { name: 'GET model-checks/options', path: '/__aisys__/api/model-checks/options', profile: 'broad', access: 'admin', requiresAuth: true },
-    { name: 'GET model-checks/runs', path: '/__aisys__/api/model-checks/runs?page=1&pageSize=20', profile: 'broad', access: 'admin', requiresAuth: true },
-    { name: 'GET model-check run detail', path: '', profile: 'broad', access: 'admin', requiresAuth: true, dynamicFrom: { sourceName: 'GET model-checks/runs', buildPath: (id) => `/__aisys__/api/model-checks/runs/${encodeURIComponent(id)}` } },
     { name: 'GET ip-stats', path: '/__aisys__/api/ip-stats?page=1&pageSize=20', profile: 'broad', access: 'admin', requiresAuth: true },
     { name: 'GET ip-stats detail', path: '', profile: 'broad', access: 'admin', requiresAuth: true, dynamicFrom: { sourceName: 'GET ip-stats', idField: 'ipHash', buildPath: (id) => `/__aisys__/api/ip-stats/${encodeURIComponent(id)}/detail` } },
     { name: 'GET proxies', path: '/__aisys__/api/proxies?page=1&pageSize=20', profile: 'broad', access: 'admin', requiresAuth: true },

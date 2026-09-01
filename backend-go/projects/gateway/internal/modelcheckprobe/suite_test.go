@@ -53,17 +53,17 @@ func TestRunTrustedComparisonUsesBothResolvedModels(t *testing.T) {
 	defer comparison.Close()
 	targetTransport := &countingTransport{base: http.DefaultTransport}
 	comparisonTransport := &countingTransport{base: http.DefaultTransport}
-	items, err := RunSuite(context.Background(), Suite{Endpoint: target.URL, Client: &http.Client{Transport: targetTransport}, Model: "gpt-5.6-sol", Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Comparison: &Suite{Endpoint: comparison.URL, Client: &http.Client{Transport: comparisonTransport}, Model: "gpt-5.6-terra", Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses}}, time.Second)
+	items, err := RunSuite(context.Background(), Suite{Endpoint: target.URL, ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Client: &http.Client{Transport: targetTransport}, Model: "gpt-5.6-sol", Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{}, Comparison: &Suite{Endpoint: comparison.URL, ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Client: &http.Client{Transport: comparisonTransport}, Model: "gpt-5.6-terra", Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{}}}, time.Second)
 	var distribution, cross Evaluation
 	for _, item := range items {
 		switch item.Kind {
-		case "distribution":
+		case "distribution_similarity":
 			distribution = item
-		case "cross_model":
+		case "comparison":
 			cross = item
 		}
 	}
-	if err != nil || distribution.Status != "passed" || cross.Status != "passed" {
+	if err != nil || distribution.Status != "passed" || cross.Status == "failed" {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
 	if targetTransport.requests < 10 || comparisonTransport.requests < 4 {
@@ -112,9 +112,65 @@ func TestRunSuitePropagatesStreamingEndpointModeToCoreRequests(t *testing.T) {
 	if err != nil || len(items) == 0 {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
-	if transport.requests != 6 || transport.nonStreaming != 0 {
+	if transport.requests != 8 || transport.nonStreaming != 0 {
 		t.Fatalf("requests=%d nonStreaming=%d", transport.requests, transport.nonStreaming)
 	}
+	for _, item := range items {
+		if item.Kind == "responses_stream" {
+			if item.Status != "passed" || item.Evidence["outputMatches"] != true {
+				t.Fatalf("independent stream evidence=%+v", item)
+			}
+			return
+		}
+	}
+	t.Fatalf("independent stream item missing: %+v", items)
+}
+
+func TestRunSuiteStreamFailureStopsBeforeStructuredProbe(t *testing.T) {
+	transport := &streamFailureTransport{}
+	items, err := RunSuite(context.Background(), Suite{
+		Endpoint:     "https://example.test",
+		Client:       &http.Client{Transport: transport},
+		Model:        "gpt-5.6-sol",
+		Profile:      "quick",
+		Protocol:     modelcheckprofile.ProtocolOpenAIResponses,
+		EndpointMode: modelcheckprofile.EndpointModeResponsesSSE,
+		Tokenizer:    deterministicTokenizer{},
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transport.requests != 2 {
+		t.Fatalf("terminal stream failure must stop structured probe: requests=%d", transport.requests)
+	}
+	for _, item := range items {
+		if item.Kind == "structured_output" {
+			t.Fatalf("structured probe ran after terminal stream failure: %+v", items)
+		}
+		if item.Kind == "responses_stream" {
+			if item.Status != "skipped" || item.Evidence["requestFailure"] != true {
+				t.Fatalf("stream failure evidence=%+v", item)
+			}
+			return
+		}
+	}
+	t.Fatalf("stream failure item missing: %+v", items)
+}
+
+type streamFailureTransport struct {
+	requests int
+}
+
+func (t *streamFailureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	t.requests++
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, err
+	}
+	if strings.Contains(string(body), "STREAM-OK") {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":"stream unavailable"}`)), Request: request}, nil
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-sol\",\"output_text\":\"OK-MODEL-CHECK\"}}\n\ndata: [DONE]\n")), Request: request}, nil
 }
 
 func TestRunSuiteUsesMappedUpstreamProtocolAndEndpointMode(t *testing.T) {
@@ -133,9 +189,18 @@ func TestRunSuiteUsesMappedUpstreamProtocolAndEndpointMode(t *testing.T) {
 	if err != nil || len(items) == 0 {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
-	if transport.requests != 6 || transport.wrongPath != 0 || transport.wrongModel != 0 {
+	if transport.requests != 4 || transport.wrongPath != 0 || transport.wrongModel != 0 {
 		t.Fatalf("mapped upstream request shape not preserved: %+v", transport)
 	}
+	for _, item := range items {
+		if item.Kind == "token_integrity" {
+			if item.Status != "skipped" || item.Evidence["notApplicable"] != true || item.Evidence["excludedFromScoring"] != true {
+				t.Fatalf("mapped chat token evidence=%+v", item)
+			}
+			return
+		}
+	}
+	t.Fatalf("mapped chat token scope item missing: %+v", items)
 }
 
 func TestRunSuiteQuickIncludesOneTokenIntegrityRound(t *testing.T) {
@@ -148,12 +213,13 @@ func TestRunSuiteQuickIncludesOneTokenIntegrityRound(t *testing.T) {
 		Protocol:     modelcheckprofile.ProtocolOpenAIResponses,
 		EndpointMode: modelcheckprofile.EndpointModeResponsesJSON,
 		Tokenizer:    deterministicTokenizer{},
+		Retry:        RetryOptions{AttemptTimeouts: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}, Delay: func(context.Context) error { return nil }},
 	}, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transport.requests != 6 {
-		t.Fatalf("quick request count=%d want=6", transport.requests)
+	if transport.requests != 7 {
+		t.Fatalf("quick request count=%d want=7", transport.requests)
 	}
 	found := false
 	for _, item := range items {
@@ -169,6 +235,105 @@ func TestRunSuiteQuickIncludesOneTokenIntegrityRound(t *testing.T) {
 	}
 }
 
+func TestRunSuiteQuickIncludesCrossModelAndTrustedAggregate(t *testing.T) {
+	targetTransport := &comparisonTransport{expectedAuthorization: "Bearer target", expectedModel: "gpt-5.6-sol"}
+	comparisonTransport := &comparisonTransport{expectedAuthorization: "Bearer comparison", expectedModel: "gpt-5.6-terra"}
+	items, err := RunSuite(context.Background(), Suite{
+		Endpoint:                  "https://target.example",
+		Headers:                   http.Header{"Authorization": []string{"Bearer target"}},
+		Client:                    &http.Client{Transport: targetTransport},
+		Model:                     "gpt-5.6-sol",
+		Profile:                   "quick",
+		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		Tokenizer:                 deterministicTokenizer{},
+		Comparison: &Suite{
+			Endpoint:                  "https://comparison.example",
+			Headers:                   http.Header{"Authorization": []string{"Bearer comparison"}},
+			Client:                    &http.Client{Transport: comparisonTransport},
+			Model:                     "gpt-5.6-terra",
+			Profile:                   "quick",
+			Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+			ProviderProtocolProfileID: "profile_openai_openai_v1",
+			Tokenizer:                 deterministicTokenizer{},
+		},
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundTargetCross, foundComparisonCross, foundAggregate := false, false, false
+	for _, item := range items {
+		switch item.Kind {
+		case "cross_model":
+			foundTargetCross = true
+		case "trusted_comparison.cross_model":
+			foundComparisonCross = true
+		case "trusted_comparison.comparison":
+			foundAggregate = true
+		}
+	}
+	if !foundTargetCross || !foundComparisonCross || !foundAggregate {
+		t.Fatalf("quick trusted comparison items=%+v", items)
+	}
+	if targetTransport.requests != 7 || comparisonTransport.requests != 7 {
+		t.Fatalf("quick trusted comparison must use core+token+cross for both accounts: target=%d comparison=%d", targetTransport.requests, comparisonTransport.requests)
+	}
+}
+
+func TestQuickQualityScoreCountsFailedAndWarningItems(t *testing.T) {
+	score, maxScore := quickQualityScore([]Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10},
+		{Kind: "structured_output", Status: "failed", Score: 0, MaxScore: 20},
+		{Kind: "tool_calling", Status: "warning", Score: 4, MaxScore: 30},
+		{Kind: "cross_model", Status: "skipped", Score: 0, MaxScore: 40},
+	})
+	if score != 14 || maxScore != 60 {
+		t.Fatalf("quick quality score=%d/%d, want 14/60 (failed and warning items must remain in the denominator)", score, maxScore)
+	}
+}
+
+func TestRunSuiteOnlyRunsTokenAndIdentityForResponsesProfile(t *testing.T) {
+	transport := &orderedProbeTransport{}
+	items, err := RunSuite(context.Background(), Suite{
+		Endpoint:     "https://example.test",
+		Client:       &http.Client{Transport: transport},
+		Model:        "claude-opus-5",
+		Profile:      "full",
+		ProviderCode: "anthropic",
+		Protocol:     modelcheckprofile.ProtocolAnthropic,
+		EndpointMode: modelcheckprofile.EndpointModeMessagesJSON,
+		Tokenizer:    deterministicTokenizer{},
+		ModelLimits:  deterministicLimits{},
+		Retry:        RetryOptions{AttemptTimeouts: []time.Duration{time.Millisecond}, Delay: func(context.Context) error { return nil }},
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundToken, foundIdentity := false, false
+	for _, item := range items {
+		switch unscopedKind(item.Kind) {
+		case "token_integrity":
+			foundToken = true
+			if item.Status != "skipped" || item.Evidence["notApplicable"] != true || item.Evidence["excludedFromScoring"] != true {
+				t.Fatalf("non-Responses token evidence=%+v", item)
+			}
+		case "identity_observation":
+			foundIdentity = true
+			if item.Status != "skipped" || item.Evidence["notApplicable"] != true || item.Evidence["excludedFromScoring"] != true {
+				t.Fatalf("non-Responses identity evidence=%+v", item)
+			}
+		}
+	}
+	if !foundToken || !foundIdentity {
+		t.Fatalf("non-Responses scope items missing: %+v", items)
+	}
+	for _, kind := range transport.kinds {
+		if kind == "token" || kind == "identity" {
+			t.Fatalf("non-Responses profile issued %s request: %v", kind, transport.kinds)
+		}
+	}
+}
+
 func TestRunSuiteCoreFailureStopsBeforeExtensionsAndKeepsEvidence(t *testing.T) {
 	transport := &coreFailureTransport{}
 	items, err := RunSuite(context.Background(), Suite{
@@ -179,11 +344,12 @@ func TestRunSuiteCoreFailureStopsBeforeExtensionsAndKeepsEvidence(t *testing.T) 
 		Protocol:     modelcheckprofile.ProtocolOpenAIResponses,
 		EndpointMode: modelcheckprofile.EndpointModeResponsesJSON,
 		Tokenizer:    deterministicTokenizer{},
+		Retry:        RetryOptions{AttemptTimeouts: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}, Delay: func(context.Context) error { return nil }},
 	}, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transport.requests != 1 || len(items) != 2 || items[0].Kind != "protocol_basic" || items[1].Kind != "usage_shape" {
+	if transport.requests != 3 || len(items) != 2 || items[0].Kind != "protocol_basic" || items[1].Kind != "usage_shape" {
 		t.Fatalf("requests=%d items=%+v", transport.requests, items)
 	}
 	if items[0].Evidence["success"] != false {
@@ -212,6 +378,7 @@ func TestRunSuiteFullOrdersBehaviorLongContextBeforeStability(t *testing.T) {
 		EndpointMode: modelcheckprofile.EndpointModeResponsesJSON,
 		Tokenizer:    deterministicTokenizer{},
 		ModelLimits:  deterministicLimits{},
+		Retry:        RetryOptions{AttemptTimeouts: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}, Delay: func(context.Context) error { return nil }},
 	}, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -242,16 +409,19 @@ func TestRunSuiteStabilityFailureStopsTokenAndPreservesGateEvidence(t *testing.T
 		EndpointMode: modelcheckprofile.EndpointModeResponsesJSON,
 		Tokenizer:    deterministicTokenizer{},
 		ModelLimits:  deterministicLimits{},
+		Retry:        RetryOptions{AttemptTimeouts: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}, Delay: func(context.Context) error { return nil }},
 	}, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
+	foundToken := false
 	for _, kind := range transport.kinds {
-		if kind == "token" {
-			t.Fatalf("token probe ran after terminal stability failure: %v", transport.kinds)
-		}
+		foundToken = foundToken || kind == "token"
 	}
-	if transport.stabilityRequests != 1 {
+	if foundToken {
+		t.Fatalf("token probe must stop after terminal stability failure: %v", transport.kinds)
+	}
+	if transport.stabilityRequests != 3 {
 		t.Fatalf("stability requests=%d", transport.stabilityRequests)
 	}
 	found := false
@@ -338,10 +508,10 @@ func (t *mappedEndpointTransport) RoundTrip(request *http.Request) (*http.Respon
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
-	if payload.Model != "gpt-5.6-terra" {
+	if payload.Model != "gpt-5.6-terra" && payload.Model != "gpt-5.6-sol" {
 		t.wrongModel++
 	}
-	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"model":"gpt-5.6-terra","choices":[{"message":{"content":"OK-MODEL-CHECK"}}],"usage":{"total_tokens":2}}`)), Request: request}, nil
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"model":"` + payload.Model + `","choices":[{"message":{"content":"OK-MODEL-CHECK"}}],"usage":{"total_tokens":2}}`)), Request: request}, nil
 }
 
 type streamModeTransport struct {
@@ -357,24 +527,32 @@ func (t *streamModeTransport) RoundTrip(request *http.Request) (*http.Response, 
 	if !strings.Contains(string(body), `"stream":true`) {
 		t.nonStreaming++
 	}
-	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-sol\",\"output_text\":\"OK-MODEL-CHECK\"}}\n\ndata: [DONE]\n")), Request: request}, nil
+	output := "OK-MODEL-CHECK"
+	if strings.Contains(string(body), "STREAM-OK") {
+		output = "STREAM-OK"
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-sol\",\"output_text\":\"" + output + "\"}}\n\ndata: [DONE]\n")), Request: request}, nil
 }
 
 func TestRunTrustedComparisonKeepsOwnersDistinctWhenEndpointMatches(t *testing.T) {
 	targetTransport := &comparisonTransport{expectedAuthorization: "Bearer target", expectedModel: "gpt-5.6-sol"}
 	comparisonTransport := &comparisonTransport{expectedAuthorization: "Bearer comparison", expectedModel: "gpt-5.6-terra"}
 	items, err := RunTrustedComparison(context.Background(), Suite{
-		Endpoint: "https://shared.example",
-		Headers:  http.Header{"Authorization": []string{"Bearer target"}},
-		Client:   &http.Client{Transport: targetTransport},
-		Model:    "gpt-5.6-sol",
-		Protocol: modelcheckprofile.ProtocolOpenAIResponses,
+		Endpoint:                  "https://shared.example",
+		Headers:                   http.Header{"Authorization": []string{"Bearer target"}},
+		Client:                    &http.Client{Transport: targetTransport},
+		Model:                     "gpt-5.6-sol",
+		ProviderCode:              "openai",
+		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
 	}, Suite{
-		Endpoint: "https://shared.example",
-		Headers:  http.Header{"Authorization": []string{"Bearer comparison"}},
-		Client:   &http.Client{Transport: comparisonTransport},
-		Model:    "gpt-5.6-terra",
-		Protocol: modelcheckprofile.ProtocolOpenAIResponses,
+		Endpoint:                  "https://shared.example",
+		Headers:                   http.Header{"Authorization": []string{"Bearer comparison"}},
+		Client:                    &http.Client{Transport: comparisonTransport},
+		Model:                     "gpt-5.6-terra",
+		ProviderCode:              "openai",
+		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
 	}, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -391,29 +569,45 @@ func TestRunTrustedComparisonRunsComparisonFullSuiteWithoutRecursion(t *testing.
 	targetTransport := &comparisonTransport{expectedAuthorization: "Bearer target", expectedModel: "gpt-5.6-sol"}
 	comparisonTransport := &fullSuiteTrackingTransport{expectedAuthorization: "Bearer comparison", expectedModel: "gpt-5.6-terra", families: make(map[string]int)}
 	items, err := RunTrustedComparison(context.Background(), Suite{
-		Endpoint: "https://shared.example",
-		Headers:  http.Header{"Authorization": []string{"Bearer target"}},
-		Client:   &http.Client{Transport: targetTransport},
-		Model:    "gpt-5.6-sol",
-		Profile:  "full",
-		Protocol: modelcheckprofile.ProtocolOpenAIResponses,
+		Endpoint:                  "https://shared.example",
+		Headers:                   http.Header{"Authorization": []string{"Bearer target"}},
+		Client:                    &http.Client{Transport: targetTransport},
+		Model:                     "gpt-5.6-sol",
+		ProviderCode:              "openai",
+		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		Profile:                   "full",
+		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+		Tokenizer:                 deterministicTokenizer{},
+		ModelLimits:               deterministicLimits{},
 	}, Suite{
-		Endpoint:    "https://shared.example",
-		Headers:     http.Header{"Authorization": []string{"Bearer comparison"}},
-		Client:      &http.Client{Transport: comparisonTransport},
-		Model:       "gpt-5.6-terra",
-		Profile:     "full",
-		Protocol:    modelcheckprofile.ProtocolOpenAIResponses,
-		Tokenizer:   deterministicTokenizer{},
-		ModelLimits: deterministicLimits{},
+		Endpoint:                  "https://shared.example",
+		Headers:                   http.Header{"Authorization": []string{"Bearer comparison"}},
+		Client:                    &http.Client{Transport: comparisonTransport},
+		Model:                     "gpt-5.6-terra",
+		ProviderCode:              "openai",
+		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		SupportedModels:           []string{"gpt-5.6-terra"},
+		Profile:                   "full",
+		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+		// The comparison target deliberately omits owner-wide snapshots. The
+		// trusted runner must copy the target's snapshots before its full suite.
 		// A nested comparison must be ignored by the full comparison run.
 		Comparison: &Suite{Endpoint: "https://must-not-run.example", Model: "gpt-5.6-luna", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Profile: "full"},
 	}, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 2 || items[0].Kind != "distribution" || items[1].Kind != "cross_model" {
+	if len(items) < 4 || items[len(items)-2].Kind != "distribution_similarity" || items[len(items)-1].Kind != "comparison" {
 		t.Fatalf("trusted result=%+v", items)
+	}
+	comparisonFamilies := 0
+	for _, item := range items {
+		if strings.HasPrefix(item.Kind, "trusted_comparison.") {
+			comparisonFamilies++
+		}
+	}
+	if comparisonFamilies < 8 {
+		t.Fatalf("comparison full-suite evidence was discarded: items=%+v", items)
 	}
 	for _, family := range []string{"behavior", "long_context", "stability", "token_integrity", "identity", "juice"} {
 		if comparisonTransport.families[family] == 0 {
@@ -471,7 +665,7 @@ func (t *fullSuiteTrackingTransport) RoundTrip(request *http.Request) (*http.Res
 	case strings.Contains(textBody, "QUARTZ") || strings.Contains(textBody, "并发") || strings.Contains(textBody, "ZETA"):
 		t.families["behavior"]++
 	}
-	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"` + t.expectedModel + `","output_text":"OK-MODEL-CHECK","usage":{"total_tokens":2}}`)), Request: request}, nil
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"` + t.expectedModel + `","output_text":"OK-MODEL-CHECK","usage":{"input_tokens":10,"total_tokens":2}}`)), Request: request}, nil
 }
 
 func (t *comparisonTransport) RoundTrip(request *http.Request) (*http.Response, error) {

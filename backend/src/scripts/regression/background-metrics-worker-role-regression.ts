@@ -43,8 +43,7 @@ const retiredRoles = ['metrics-worker', 'snapshot-worker', 'probe-worker', 'main
 for (const type of [
   'background_worker_usage_records',
   'background_worker_public_api_logs',
-  'background_worker_record_maintenance',
-  'background_worker_dataset_write_request'
+  'background_worker_record_maintenance'
 ] as const) {
   assert.equal(workerMessageTargetRole({ type } as BackgroundWorkerMessage), 'ingest-worker', `${type} 必须路由到 ingest-worker`)
 }
@@ -79,7 +78,6 @@ assertRoleBlockContainsOnly('stats-worker', [
   'usage-stats-aggregation',
   'client-ip-stats-aggregation',
   'group-account-stats-refresh',
-  'model-trust-observation-aggregation',
   'usage-rank-snapshots-refresh',
   'ai-performance-summary-windows-refresh',
   'system-metrics-trend-windows-refresh',
@@ -106,9 +104,6 @@ assertRoleBlockContainsOnly('ops-worker', [
   'account-circuit-control-plane-maintenance',
   'account-list-availability-projection-maintenance',
   'account-circuit-recovery',
-  'model-quality-scheduled-check',
-  'model-quality-recovery',
-  'model-quality-health-sync-retry',
   'key-model-memory-recovery',
   'account-api-key-cooldown-retest',
   'openai-oauth-access-token-refresh',
@@ -168,7 +163,7 @@ assert(dbServiceHandlersSource.includes('getCodexContextStateWriterPoolRuntime()
 assert(statsRoutesSource.includes('buildBackgroundQueueHealthSnapshot(runtime)') && statsRoutesSource.includes('queueHealth.workerQueues') && statsRoutesSource.includes('queueHealth.serverIpcQueues'), '系统指标接口必须复用后台队列健康快照接入 worker 本地队列和 IPC 队列')
 assert(!statsRoutesSource.includes('loadMockBackgroundRuntimeSnapshot'), '系统指标接口不能在 runtime snapshot 不可用时回退 mock 运行态，避免误导运维排障')
 assert(statsRoutesSource.includes('redisStreamRuntimeQueueRows()') && statsRoutesSource.includes('Redis Stream 使用记录'), '系统指标接口必须接入仍存在的高性能模式 Redis Stream 队列')
-assert(statsRoutesSource.includes('dbServiceRuntimeQueueRows(runtime)') && statsRoutesSource.includes('DB service 请求队列') && statsRoutesSource.includes('DB service dataset-writer pending') && statsRoutesSource.includes('DB service Codex 状态写入池'), '系统指标接口必须接入 DB service 请求队列和写入池队列')
+assert(statsRoutesSource.includes('dbServiceRuntimeQueueRows(runtime)') && statsRoutesSource.includes('DB service 请求队列') && statsRoutesSource.includes('DB service Codex 状态写入池'), '系统指标接口必须接入 DB service 请求队列和写入池队列')
 assert(statsRoutesSource.includes('gatewayAccountSideEffectQueueRows(runtime)') && statsRoutesSource.includes('网关账号副作用队列'), '系统指标接口必须接入网关账号副作用队列')
 assert(statsRoutesSource.includes('highConcurrencyRuntimeQueueRows(runtime)') && statsRoutesSource.includes('高并发短队列'), '系统指标接口必须接入高并发短队列')
 assert(frontendSystemMetricsSource.includes('api.stats.systemMetricsRuntimeJobs({ page: backgroundJobPage.value, pageSize: backgroundJobPageSize }') && frontendSystemMetricsSource.includes('api.stats.systemMetricsRuntimeQueues({ page: backgroundQueuePage.value, pageSize: backgroundQueuePageSize }'), '前端后台任务 / 队列卡片必须分段异步加载运行态')

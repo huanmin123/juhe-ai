@@ -162,13 +162,42 @@ func AnalyzeTokenIntegrity(samples []TokenSample) TokenAnalysis {
 	if math.IsNaN(slope) || math.IsInf(slope, 0) || slope <= 0.1 {
 		return TokenAnalysis{Status: "unsupported", SampleCount: len(valid), RoundCount: len(rounds), ReasonCodes: []string{"reported_usage_incompatible"}}
 	}
+	bucketRounding := detectsBucketRounding(valid)
 	status, reasons := "consistent", []string{}
 	if math.Abs(slope-1) > 0.05 && (low > 1 || high < 1) {
 		status, reasons = "suspected_padding", []string{"proportional_padding"}
 	} else if math.Abs(slope-1) > 0.03 {
 		status, reasons = "warning", []string{"slope_warning"}
 	}
+	if bucketRounding {
+		if status == "consistent" {
+			status = "warning"
+		}
+		reasons = append(reasons, "bucket_rounding")
+	}
 	return TokenAnalysis{Status: status, Slope: round(slope), Intercept: round(intercept), ConfidenceLow: round(low), ConfidenceHigh: round(high), SampleCount: len(valid), RoundCount: len(rounds), ReasonCodes: reasons}
+}
+
+// detectsBucketRounding mirrors the Node token-integrity oracle. Providers
+// that report padded inputs in coarse 64-token buckets are retained as
+// negative evidence instead of being accepted as fully consistent.
+func detectsBucketRounding(samples []TokenSample) bool {
+	nonBase := make([]TokenSample, 0, len(samples))
+	for _, sample := range samples {
+		if sample.PaddingTokens > 0 && sample.ReportedInputTokens != nil {
+			nonBase = append(nonBase, sample)
+		}
+	}
+	if len(nonBase) < 4 {
+		return false
+	}
+	aligned := 0
+	for _, sample := range nonBase {
+		if *sample.ReportedInputTokens%64 == 0 {
+			aligned++
+		}
+	}
+	return float64(aligned)/float64(len(nonBase)) >= 0.8
 }
 
 func tokenRegression(samples []TokenSample) (float64, float64, float64, float64) {

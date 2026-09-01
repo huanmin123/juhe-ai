@@ -42,22 +42,22 @@ func (a *BusinessRecoveryApplier) Complete(ctx context.Context, input RecoveryPa
 	if a.postgres {
 		lock = " FOR UPDATE"
 	}
+	now := input.CompletedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	var state, action, systemID string
 	var policyRevision, accountRevision int
-	row := tx.QueryRowContext(ctx, q(`SELECT state,action,system_account_id,policy_revision,account_config_revision FROM `+a.table("account_quality_enforcements")+` WHERE account_id=? AND enforcement_id=? AND generation=? AND recovery_lease_owner=?`+lock), input.AccountID, input.EnforcementID, input.Generation, input.OwnerID)
+	row := tx.QueryRowContext(ctx, q(`SELECT state,action,system_account_id,policy_revision,account_config_revision FROM `+a.table("account_quality_enforcements")+` WHERE account_id=? AND enforcement_id=? AND generation=? AND recovery_lease_owner=? AND recovery_lease_until>?`+lock), input.AccountID, input.EnforcementID, input.Generation, input.OwnerID, now.Format(time.RFC3339Nano))
 	if err := row.Scan(&state, &action, &systemID, &policyRevision, &accountRevision); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return tx.Commit()
 		}
 		return fmt.Errorf("read J3b recovery lease: %w", err)
 	}
-	now := input.CompletedAt.UTC()
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
 	next := now.Add(time.Duration(input.RecoveryIntervalMinutes) * time.Minute).Format(time.RFC3339Nano)
 	reschedule := func() error {
-		_, err := tx.ExecContext(ctx, q(`UPDATE `+a.table("account_quality_enforcements")+` SET last_recovery_run_id=?,recovery_due_at=?,recovery_lease_owner=NULL,recovery_lease_until=NULL,updated_at=? WHERE account_id=? AND enforcement_id=? AND generation=? AND recovery_lease_owner=?`), input.RunID, next, now.Format(time.RFC3339Nano), input.AccountID, input.EnforcementID, input.Generation, input.OwnerID)
+		_, err := tx.ExecContext(ctx, q(`UPDATE `+a.table("account_quality_enforcements")+` SET last_recovery_run_id=?,recovery_due_at=?,recovery_lease_owner=NULL,recovery_lease_until=NULL,updated_at=? WHERE account_id=? AND enforcement_id=? AND generation=? AND recovery_lease_owner=? AND recovery_lease_until>?`), input.RunID, next, now.Format(time.RFC3339Nano), input.AccountID, input.EnforcementID, input.Generation, input.OwnerID, now.Format(time.RFC3339Nano))
 		return err
 	}
 	if state != "active" || action != "quality_isolate" {

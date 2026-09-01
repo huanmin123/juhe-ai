@@ -179,7 +179,7 @@ func (s *BusinessSchedulerSource) CompleteScheduled(ctx context.Context, payload
 	}
 	now := time.Now().UTC()
 	next := now.Add(time.Duration(payload.IntervalMinutes) * time.Minute).Format(time.RFC3339Nano)
-	res, err := s.Business.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_quality_schedules")+` SET last_run_id=?,last_run_at=?,last_run_status=?,next_run_at=?,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=? AND revision=? AND lease_owner=?`), nullable(result.RunID), now.Format(time.RFC3339Nano), status, next, now.Format(time.RFC3339Nano), payload.ScheduleID, payload.ScheduleRevision, payload.OwnerID)
+	res, err := s.Business.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_quality_schedules")+` SET last_run_id=?,last_run_at=?,last_run_status=?,next_run_at=?,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=? AND revision=? AND lease_owner=? AND lease_until>?`), nullable(result.RunID), now.Format(time.RFC3339Nano), status, next, now.Format(time.RFC3339Nano), payload.ScheduleID, payload.ScheduleRevision, payload.OwnerID, now.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("complete J3b schedule: %w", err)
 	}

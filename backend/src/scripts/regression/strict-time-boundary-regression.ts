@@ -97,9 +97,6 @@ for (const observedAt of [undefined, '2026-08-16T06:34:49.137', 'not-a-time']) {
   )
 }
 
-const modelHealthSource = readFileSync(new URL('../../storage/model-quality-health.repository.ts', import.meta.url), 'utf8')
-assert.match(modelHealthSource, /return requiredRfc3339Instant\(value, '模型质量健康 observedAt'\)/, '模型质量 observedAt 非法时必须失败')
-
 const rangeSource = readFileSync(new URL('../../storage/usage-range-window-requests.repository.ts', import.meta.url), 'utf8')
 assert.doesNotMatch(rangeSource, /Date\.parse\(/, 'usage range requestedAt 不得使用宽松 Date.parse')
 assert.match(rangeSource, /requiredRfc3339Instant\(requestedAt, '用量范围窗口请求 requestedAt'\)/, 'requestedAt 必须 canonical/throw')

@@ -154,7 +154,7 @@ func (s *Store) ProjectOutcome(ctx context.Context, projection OutcomeProjection
 	var duration sql.NullInt64
 	var errorCode, errorMessage sql.NullString
 	var score, maxScore int
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT status,level,score,max_score,message,result_summary_json,quality_decision_json,finished_at,duration_ms,error_code,error_message FROM `+s.table("model_check_runs")+` WHERE id=?`), projection.RunID).Scan(&status, &level, &score, &maxScore, &message, &result, &decision, &finished, &duration, &errorCode, &errorMessage)
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT status,level,score,max_score,message,result_summary_json,quality_decision_json,finished_at,duration_ms,error_code,error_message FROM `+s.table("model_check_runs")+` WHERE id=?`+s.forUpdate()), projection.RunID).Scan(&status, &level, &score, &maxScore, &message, &result, &decision, &finished, &duration, &errorCode, &errorMessage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("J3b run not found")
 	}
@@ -163,7 +163,11 @@ func (s *Store) ProjectOutcome(ctx context.Context, projection OutcomeProjection
 	}
 	projectedMessage := sanitizeSummaryString(projection.Message)
 	if status != string(RunRunning) {
-		if !finished.Valid || status != string(projection.Status) || level != projection.Level || score != projection.Score || maxScore != projection.MaxScore || message != projectedMessage || finished.String != projection.FinishedAt.UTC().Format(time.RFC3339Nano) || !sameNullableInt64(duration, projection.DurationMS) || !sameNullableString(errorCode, sanitizeNullableSummaryString(projection.ErrorCode)) || !sameNullableString(errorMessage, sanitizeNullableSummaryString(projection.ErrorMessage)) || !jsonEqual([]byte(result), normalizeJSON(projection.ResultSummary)) || !jsonEqual([]byte(decision), normalizeJSON(projection.QualityDecision)) {
+		itemsMatch, itemsErr := s.terminalItemsMatch(ctx, tx, projection.RunID, projection.Items)
+		if itemsErr != nil {
+			return itemsErr
+		}
+		if !itemsMatch || !finished.Valid || status != string(projection.Status) || level != projection.Level || score != projection.Score || maxScore != projection.MaxScore || message != projectedMessage || finished.String != projection.FinishedAt.UTC().Format(time.RFC3339Nano) || !sameNullableInt64(duration, projection.DurationMS) || !sameNullableString(errorCode, sanitizeNullableSummaryString(projection.ErrorCode)) || !sameNullableString(errorMessage, sanitizeNullableSummaryString(projection.ErrorMessage)) || !jsonEqual([]byte(result), normalizeJSON(projection.ResultSummary)) || !jsonEqual([]byte(decision), normalizeJSON(projection.QualityDecision)) {
 			return ErrRunProjectionConflict
 		}
 		return tx.Commit()
@@ -178,11 +182,79 @@ func (s *Store) ProjectOutcome(ctx context.Context, projection OutcomeProjection
 			return fmt.Errorf("append projected J3b item: %w", err)
 		}
 	}
-	_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_check_runs")+` SET level=?,score=?,max_score=?,status=?,message=?,finished_at=?,duration_ms=?,error_code=?,error_message=?,result_summary_json=?,quality_decision_json=?,updated_at=? WHERE id=? AND status='running'`), projection.Level, projection.Score, projection.MaxScore, string(projection.Status), projectedMessage, when, projection.DurationMS, nullable(sanitizeNullableSummaryString(projection.ErrorCode)), nullable(sanitizeNullableSummaryString(projection.ErrorMessage)), string(normalizeJSON(projection.ResultSummary)), string(normalizeJSON(projection.QualityDecision)), when, projection.RunID)
+	updateResult, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_check_runs")+` SET level=?,score=?,max_score=?,status=?,message=?,finished_at=?,duration_ms=?,error_code=?,error_message=?,result_summary_json=?,quality_decision_json=?,updated_at=? WHERE id=? AND status='running'`), projection.Level, projection.Score, projection.MaxScore, string(projection.Status), projectedMessage, when, projection.DurationMS, nullable(sanitizeNullableSummaryString(projection.ErrorCode)), nullable(sanitizeNullableSummaryString(projection.ErrorMessage)), string(normalizeJSON(projection.ResultSummary)), string(normalizeJSON(projection.QualityDecision)), when, projection.RunID)
 	if err != nil {
 		return fmt.Errorf("finish J3b run: %w", err)
 	}
+	if changed, err := updateResult.RowsAffected(); err != nil || changed != 1 {
+		if err != nil {
+			return fmt.Errorf("finish J3b run affected rows: %w", err)
+		}
+		return errors.New("finish J3b run affected unexpected number of rows")
+	}
 	return tx.Commit()
+}
+
+func (s *Store) terminalItemsMatch(ctx context.Context, tx *sql.Tx, runID string, expected []ItemRecord) (bool, error) {
+	wantItems := append([]ItemRecord(nil), expected...)
+	sort.Slice(wantItems, func(i, j int) bool { return wantItems[i].ID < wantItems[j].ID })
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id,run_id,item_key,item_type,status,score,max_score,duration_ms,trace_id,evidence_summary_json,error_code,error_message FROM `+s.table("model_check_items")+` WHERE run_id=? ORDER BY id`), runID)
+	if err != nil {
+		return false, fmt.Errorf("read J3b terminal items: %w", err)
+	}
+	defer rows.Close()
+	actual := make([]ItemRecord, 0, len(expected))
+	for rows.Next() {
+		var item ItemRecord
+		var status string
+		var trace, evidence, errorCode, errorMessage sql.NullString
+		var duration sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.RunID, &item.ItemKey, &item.ItemType, &status, &item.Score, &item.MaxScore, &duration, &trace, &evidence, &errorCode, &errorMessage); err != nil {
+			return false, fmt.Errorf("scan J3b terminal item: %w", err)
+		}
+		item.Status = ItemStatus(status)
+		if duration.Valid {
+			value := duration.Int64
+			item.DurationMS = &value
+		}
+		if trace.Valid {
+			item.TraceID = trace.String
+		}
+		if evidence.Valid {
+			item.EvidenceSummary = evidence.String
+		}
+		if errorCode.Valid {
+			item.ErrorCode = errorCode.String
+		}
+		if errorMessage.Valid {
+			item.ErrorMessage = errorMessage.String
+		}
+		actual = append(actual, item)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate J3b terminal items: %w", err)
+	}
+	if len(actual) != len(expected) {
+		return false, nil
+	}
+	for i := range wantItems {
+		want := wantItems[i]
+		if err := validateItem(want); err != nil || want.RunID != runID {
+			return false, nil
+		}
+		got := actual[i]
+		if got.ID != want.ID || got.RunID != want.RunID || got.ItemKey != want.ItemKey || got.ItemType != want.ItemType || got.Status != want.Status || got.Score != want.Score || got.MaxScore != want.MaxScore || !sameNullableInt64Value(got.DurationMS, want.DurationMS) || got.TraceID != want.TraceID || !jsonEqual([]byte(got.EvidenceSummary), normalizeJSON([]byte(want.EvidenceSummary))) || sanitizeNullableSummaryString(got.ErrorCode) != sanitizeNullableSummaryString(want.ErrorCode) || sanitizeNullableSummaryString(got.ErrorMessage) != sanitizeNullableSummaryString(want.ErrorMessage) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func sameNullableInt64Value(actual, expected *int64) bool {
+	if actual == nil || expected == nil {
+		return actual == nil && expected == nil
+	}
+	return *actual == *expected
 }
 
 func (s *Store) beginRunning(ctx context.Context, runID string) (*sql.Tx, error) {
@@ -191,7 +263,7 @@ func (s *Store) beginRunning(ctx context.Context, runID string) (*sql.Tx, error)
 		return nil, fmt.Errorf("begin J3b append: %w", err)
 	}
 	var status string
-	if err := tx.QueryRowContext(ctx, s.bind(`SELECT status FROM `+s.table("model_check_runs")+` WHERE id=?`), runID).Scan(&status); err != nil {
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT status FROM `+s.table("model_check_runs")+` WHERE id=?`+s.forUpdate()), runID).Scan(&status); err != nil {
 		tx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New("J3b run not found")

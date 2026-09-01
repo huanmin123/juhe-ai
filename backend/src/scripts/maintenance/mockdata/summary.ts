@@ -4,7 +4,6 @@ import { dirname, join } from 'node:path'
 import type { GroupSummary, ResourceAuthorizationSummary, SystemAccountSummary } from '../../../domain/types.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { nowIso } from '../../../storage/database.js'
-import type { ModelCheckMockdataCounts } from './records/model-checks.js'
 import {
   apiKeyAuthorizedGroupBindingRule,
   idPrefix,
@@ -18,6 +17,8 @@ import {
   type MockSystemAccounts,
   type UsageRecordSeed
 } from './shared.js'
+
+type ModelCheckMockdataCounts = { runs: number; items: number }
 
 function mockUserSummaries(users: MockSystemAccounts): Array<Record<string, unknown>> {
   return Object.entries(users)

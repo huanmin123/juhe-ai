@@ -108,7 +108,7 @@ func EvaluateLongContext(observations []LongContextObservation, expectedModel st
 	for _, observation := range observations {
 		if observation.Result.Success {
 			success++
-			if observation.Result.ObservedModel == "" || modelMatches(observation.Result.ObservedModel, expectedModel) {
+			if strings.TrimSpace(observation.Result.ObservedModel) != "" && modelMatches(observation.Result.ObservedModel, expectedModel) {
 				matched++
 			}
 			if strings.Contains(strings.ToUpper(observation.Result.Output), strings.ToUpper(observation.Marker)) {

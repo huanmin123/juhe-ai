@@ -4,6 +4,6 @@
 
 当前已归档 F1“运行日志索引与保留”：[`node/runtime-log-index-retention`](node/runtime-log-index-retention)。其中不包含仍在 Node 运行的 JSONL 日志生产、grep 或只读查询。
 
-归档文件必须保留原相对路径，不得包含密钥、环境文件、数据库、日志、依赖目录或构建产物。每个 `manifest.json` 的 `files` 必须逐项列出 `originalPath`、`archivePath` 和归档时源码快照的 `sourceSnapshotSha256`；恢复前用 SHA-256 重算 `archivePath`，不匹配即停止。该哈希描述归档快照，不得误称为更早 Git 提交的 blob 哈希。
+归档文件必须保留原相对路径，不得包含密钥、环境文件、数据库、日志、依赖目录或构建产物。manifest schema 按归档批次声明：旧批次可使用 `files`/`sourceSnapshotSha256` 与嵌套 `rollback.mode`；Node J3b 及当前模板使用 `originalFiles`/`sha256` 与顶层 `cutoverCommit`、`rollbackCommit`。维护脚本必须按 schema 版本或字段形状路由，不能把两种格式混读。恢复前用 SHA-256 重算 `archivePath`，不匹配即停止。该哈希描述归档快照，不得误称为更早 Git 提交的 blob 哈希。
 
 这里的代码不参与构建、测试、部署或运行时 import；恢复只能通过明确提交恢复整个功能 owner。若 manifest 指定 `rollback.mode: exact-git-baseline`，该 Git 基线是唯一可执行恢复源，归档目录仅用于对照，不得将其文件叠加覆盖到基线。

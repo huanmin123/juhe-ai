@@ -184,6 +184,7 @@ type contractRunService struct {
 	runErr       error
 	streamResult RunResult
 	streamErr    error
+	streamEvents []ProgressEvent
 	detail       any
 	found        bool
 	detailErr    error
@@ -194,6 +195,12 @@ func (s contractRunService) Run(context.Context, RunRequest) (RunResult, error) 
 }
 
 func (s contractRunService) RunStream(_ context.Context, _ RunRequest, progress func(ProgressEvent)) (RunResult, error) {
+	if len(s.streamEvents) > 0 {
+		for _, event := range s.streamEvents {
+			progress(event)
+		}
+		return s.streamResult, s.streamErr
+	}
 	progress(ProgressEvent{Kind: "run_started", Data: map[string]any{"runId": s.streamResult.RunID}})
 	return s.streamResult, s.streamErr
 }
@@ -515,6 +522,44 @@ func TestHTTPHandlerSSEAndConflictContract(t *testing.T) {
 	handler.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/run/stream", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
 	if conflict.Code != http.StatusConflict || conflict.Header().Get("Retry-After") != "1" {
 		t.Fatalf("conflict status=%d headers=%v body=%s", conflict.Code, conflict.Header(), conflict.Body.String())
+	}
+}
+
+func TestHTTPHandlerSSEUsesFrontendProgressEnvelope(t *testing.T) {
+	handler := newTestHTTPHandler()
+	handler.Service = contractRunService{
+		streamResult: RunResult{RunID: "run-frontend", Status: "completed"},
+		streamEvents: []ProgressEvent{
+			{Kind: "run_started", Data: map[string]any{"runId": "run-frontend", "targetName": "Primary account"}},
+			{Kind: "quality_health_sync", Data: map[string]any{"result": "applied", "statHour": "2026-08-28T12:00:00Z", "message": "健康状态已同步"}},
+			{Kind: "run_completed", Data: map[string]any{"runId": "run-frontend", "status": "completed", "level": "high_confidence", "score": 100, "maxScore": 100, "message": "检测完成"}},
+		},
+		detail: map[string]any{
+			"id":              "run-frontend",
+			"systemAccountId": "sys-1",
+			"requestSummary":  map[string]any{"targetId": "acct-1"},
+			"resultSummary":   map[string]any{"score": 100},
+			"checks":          []any{},
+		},
+		found: true,
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run/stream", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, required := range []string{
+		`"type":"run_started"`, `"targetId":"acct-1"`, `"model":"gpt-5.6"`, `"profile":"quick"`, `"trustedComparison":false`,
+		`"type":"quality_health_sync"`, `"result":"applied"`, `"statHour":"2026-08-28T12:00:00Z"`,
+		`"type":"run_completed"`, `"runId":"run-frontend"`, `"level":"high_confidence"`, `"score":100`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("SSE body missing %s: %s", required, body)
+		}
+	}
+	if strings.Contains(body, `"kind":"`) {
+		t.Fatalf("SSE must expose frontend type discriminator instead of internal kind: %s", body)
 	}
 }
 

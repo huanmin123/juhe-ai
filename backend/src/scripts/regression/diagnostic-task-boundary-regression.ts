@@ -31,21 +31,4 @@ const accountTaskQueueSource = readFileSync(resolve('src/modules/accounts/accoun
 assert.doesNotMatch(accountTaskQueueSource, /tryAcquireDiagnosticTaskSlot/, '账户测试后台 worker 不应接入共享诊断任务并发闸门')
 assert.doesNotMatch(accountTaskQueueSource, /diagnosticTaskBusyMessage/, '账户测试后台 worker 不应因为共享诊断闸门繁忙而快速失败')
 
-for (const relativePath of ['src/modules/model-checks/model-checks.routes.ts']) {
-  const source = readFileSync(resolve(relativePath), 'utf8')
-  assert.match(source, /tryAcquireDiagnosticTaskSlot/, `${relativePath} 必须接入诊断任务并发闸门`)
-  assert.match(source, /diagnosticTaskBusyMessage/, `${relativePath} 过载时必须快速返回繁忙提示`)
-  assert.match(source, /Retry-After/, `${relativePath} 过载响应必须带 Retry-After`)
-}
-
-const modelChecksRoutesSource = readFileSync(resolve('src/modules/model-checks/model-checks.routes.ts'), 'utf8')
-const serverSource = readFileSync(resolve('src/server.ts'), 'utf8')
-assert.doesNotMatch(modelChecksRoutesSource, /modelCheckHttpRunDeadlineMs|AbortSignal\.timeout\(modelCheckHttpRunDeadlineMs\)/, '模型检测不能用固定总时限提前终止未完成探针')
-assert.match(serverSource, /modelCheckHttpProxy = createDbServiceHttpProxy\(\{[\s\S]*chatTimeoutMs[\s\S]*\}\)/, '模型检测必须使用长时 DB service 代理预算')
-assert.match(serverSource, /app\.use\(`\$\{systemApiPrefix\}\/my-model-checks`, modelCheckHttpProxy\)/, '用户模型检测必须绕过通用短代理超时')
-assert.match(serverSource, /app\.use\(`\$\{systemApiPrefix\}\/model-checks`, modelCheckHttpProxy\)/, '管理模型检测必须绕过通用短代理超时')
-assert.match(modelChecksRoutesSource, /export const modelCheckStreamHeartbeatMs = 10_000/, '流式模型检测必须定期输出心跳，避免 DB service HTTP proxy 空闲超时')
-assert.match(modelChecksRoutesSource, /res\.write\(': connected\\n\\n'\)/, '流式模型检测必须立即输出首个 SSE 事件建立响应')
-assert.match(modelChecksRoutesSource, /res\.write\(': heartbeat\\n\\n'\)/, '流式模型检测必须输出 SSE 心跳')
-
-console.log('诊断任务并发边界回归通过：模型检测超过上限时快速拒绝；账户测试由后台 worker 独立异步消费。J3a 代理检测不再经过 Node 诊断闸门。')
+console.log('诊断任务并发边界回归通过：共享诊断任务超过上限时快速拒绝；账户测试由后台 worker 独立异步消费。J3b 模型检测已由 Gateway 接管，不再属于 Node 诊断闸门。')

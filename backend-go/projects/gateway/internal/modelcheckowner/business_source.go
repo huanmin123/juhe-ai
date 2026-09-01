@@ -266,6 +266,10 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if mapping.UpstreamModel == "" {
 		return Target{}, errors.New("J3b Business account model restriction does not allow model")
 	}
+	supportedModels, err := s.supportedModels(ctx, request.TargetID)
+	if err != nil {
+		return Target{}, err
+	}
 	upstreamProtocol := profile.Protocol
 	upstreamEndpointMode := endpointMode
 	if mapping.UpstreamEndpointFamily == modelcheckprofile.EndpointChatCompletions {
@@ -311,7 +315,7 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if dispatchRevision < 1 {
 		return Target{}, errors.New("J3b Business account dispatch revision is invalid")
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(revision, 10), CredentialSourceAccountID: request.TargetID, SourceDispatchRevision: dispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: true, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, ProviderProtocolProfileID: profileID, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(revision, 10), CredentialSourceAccountID: request.TargetID, SourceDispatchRevision: dispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: true, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), SupportedModels: supportedModels, Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
 }
 
 func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, request RunRequest) (Target, error) {
@@ -379,6 +383,10 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if mapping.UpstreamModel == "" {
 		return Target{}, errors.New("J3b Business account model restriction does not allow model")
 	}
+	supportedModels, err := s.supportedModels(ctx, sourceID)
+	if err != nil {
+		return Target{}, err
+	}
 	upstreamProtocol := profile.Protocol
 	upstreamEndpointMode := endpointMode
 	if mapping.UpstreamEndpointFamily == modelcheckprofile.EndpointChatCompletions {
@@ -427,7 +435,29 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if sourceDispatchRevision < 1 {
 		return Target{}, errors.New("J3b Business source account dispatch revision is invalid")
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: strings.TrimSpace(targetOwnerSystemAccountID.String), GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(sourceRevision, 10), CredentialSourceAccountID: sourceID, SourceDispatchRevision: sourceDispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: false, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: strings.TrimSpace(targetOwnerSystemAccountID.String), GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, ProviderProtocolProfileID: profileID, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(sourceRevision, 10), CredentialSourceAccountID: sourceID, SourceDispatchRevision: sourceDispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: false, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), SupportedModels: supportedModels, Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+}
+
+func (s *BusinessTargetSource) supportedModels(ctx context.Context, accountID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT model FROM `+s.table("account_supported_models")+` WHERE account_id=`+s.placeholder(1)+` ORDER BY model`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("read J3b Business account supported models: %w", err)
+	}
+	defer rows.Close()
+	models := make([]string, 0)
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, fmt.Errorf("scan J3b Business account supported model: %w", err)
+		}
+		if model = strings.TrimSpace(model); model != "" {
+			models = append(models, model)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate J3b Business account supported models: %w", err)
+	}
+	return models, nil
 }
 
 // BuildRequest freezes the Business target and quality policy across bounded
@@ -538,8 +568,8 @@ func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAcco
 	if !command.TrustedComparison {
 		return request, nil
 	}
-	if selectedProfile != "full" || strings.TrimSpace(command.TrustedComparisonID) == "" || command.TrustedComparisonID == command.TargetID {
-		return RunRequest{}, errors.New("J3b trusted comparison requires a distinct full-profile account")
+	if strings.TrimSpace(command.TrustedComparisonID) == "" || command.TrustedComparisonID == command.TargetID {
+		return RunRequest{}, errors.New("J3b trusted comparison requires a distinct account")
 	}
 	comparisonSystemAccountID := targetSystemAccountID
 	if allSystemAccounts {
@@ -550,7 +580,11 @@ func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAcco
 	}
 	comparison, err := s.Resolve(ctx, RunRequest{SystemAccountID: comparisonSystemAccountID, TargetType: "account", TargetID: command.TrustedComparisonID, Model: command.Model})
 	if err != nil {
-		return RunRequest{}, fmt.Errorf("resolve J3b trusted comparison: %w", err)
+		var requestErr *RequestError
+		if !errors.As(err, &requestErr) {
+			return RunRequest{}, &RequestError{StatusCode: http.StatusBadRequest, Message: "可信对比账户不支持请求模型或协议"}
+		}
+		return RunRequest{}, requestErr
 	}
 	comparisonFence, err := s.readTargetFence(ctx, comparisonSystemAccountID, command.TrustedComparisonID, comparison)
 	if err != nil {
@@ -571,6 +605,15 @@ func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAcco
 		return RunRequest{}, errors.New("J3b trusted comparison target/source/mapping fence changed while freezing request")
 	}
 	comparison = comparisonRechecked
+	if modelcheckprofile.NormalizeToken(comparison.ProviderCode) == "" || modelcheckprofile.NormalizeToken(target.ProviderCode) == "" || modelcheckprofile.NormalizeToken(comparison.ProviderCode) != modelcheckprofile.NormalizeToken(target.ProviderCode) {
+		return RunRequest{}, &RequestError{StatusCode: http.StatusBadRequest, Message: "可信对比账户必须使用相同供应商"}
+	}
+	if modelcheckprofile.NormalizeToken(string(comparison.Protocol)) == "" || modelcheckprofile.NormalizeToken(string(target.Protocol)) == "" || modelcheckprofile.NormalizeToken(string(comparison.Protocol)) != modelcheckprofile.NormalizeToken(string(target.Protocol)) {
+		return RunRequest{}, &RequestError{StatusCode: http.StatusBadRequest, Message: "可信对比账户必须使用相同协议"}
+	}
+	if modelcheckprofile.NormalizeToken(comparison.ProviderProtocolProfileID) == "" || modelcheckprofile.NormalizeToken(target.ProviderProtocolProfileID) == "" || modelcheckprofile.NormalizeToken(comparison.ProviderProtocolProfileID) != modelcheckprofile.NormalizeToken(target.ProviderProtocolProfileID) {
+		return RunRequest{}, &RequestError{StatusCode: http.StatusBadRequest, Message: "可信对比账户必须使用相同供应商协议配置"}
+	}
 	request.TrustedComparison = true
 	request.TrustedComparisonAccountID = command.TrustedComparisonID
 	request.TrustedComparisonSystemAccountID = comparisonSystemAccountID
@@ -587,7 +630,7 @@ func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAcco
 // additional fields close gaps where Business model mappings or source
 // credentials change without incrementing the virtual instance revision.
 func sameTargetFence(left, right Target) bool {
-	if left.Endpoint != right.Endpoint || left.ProviderCode != right.ProviderCode || left.ConfigRevision != right.ConfigRevision || left.SourceConfigRevision != right.SourceConfigRevision || left.SourceDispatchRevision != right.SourceDispatchRevision || left.UpstreamModel != right.UpstreamModel || left.CredentialType != right.CredentialType || left.UpstreamAdapter != right.UpstreamAdapter || left.CredentialSourceAccountID != right.CredentialSourceAccountID || left.DispatchRevision != right.DispatchRevision || left.OwnPhysicalAccount != right.OwnPhysicalAccount || left.Protocol != right.Protocol || left.SourceEndpointFamily != right.SourceEndpointFamily || left.UpstreamProtocol != right.UpstreamProtocol || left.UpstreamEndpointFamily != right.UpstreamEndpointFamily || left.EndpointMode != right.EndpointMode || left.UpstreamEndpointMode != right.UpstreamEndpointMode || left.Prompt != right.Prompt || !sameStringSet(left.SupportedEndpointModes, right.SupportedEndpointModes) {
+	if left.Endpoint != right.Endpoint || left.ProviderCode != right.ProviderCode || left.ProviderProtocolProfileID != right.ProviderProtocolProfileID || left.ConfigRevision != right.ConfigRevision || left.SourceConfigRevision != right.SourceConfigRevision || left.SourceDispatchRevision != right.SourceDispatchRevision || left.UpstreamModel != right.UpstreamModel || left.CredentialType != right.CredentialType || left.UpstreamAdapter != right.UpstreamAdapter || left.CredentialSourceAccountID != right.CredentialSourceAccountID || left.DispatchRevision != right.DispatchRevision || left.OwnPhysicalAccount != right.OwnPhysicalAccount || left.Protocol != right.Protocol || left.SourceEndpointFamily != right.SourceEndpointFamily || left.UpstreamProtocol != right.UpstreamProtocol || left.UpstreamEndpointFamily != right.UpstreamEndpointFamily || left.EndpointMode != right.EndpointMode || left.UpstreamEndpointMode != right.UpstreamEndpointMode || left.Prompt != right.Prompt || !sameStringSet(left.SupportedEndpointModes, right.SupportedEndpointModes) || !sameStringSet(left.SupportedModels, right.SupportedModels) {
 		return false
 	}
 	if !sameHeaderValues(left.Headers, right.Headers) {

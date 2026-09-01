@@ -12,7 +12,6 @@ import {
 } from '../../modules/gateway/response/non-stream-json-body.js'
 import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
 import { MemoryGatewayResponse } from '../../modules/gateway/testing/memory-gateway-http.js'
-import { parseModelCheckProbeResponse } from '../../modules/model-checks/model-checks-response-parsing.js'
 
 const parsedValue = {
   model: 'gpt-5.6-sol',
@@ -30,19 +29,6 @@ const context = diagnosticResponseContextFromGatewayNonStream(JSON.stringify(par
 })
 assert.strictEqual(context.json, parsedValue, '诊断上下文必须直接复用网关 parsed value')
 assert.equal(contextParseCount, 0, '已有网关 parsed body 时诊断上下文不得再次 JSON.parse')
-
-let modelParseCount = 0
-const parsedModelCheck = parseModelCheckProbeResponse({
-  protocol: 'openai_responses',
-  path: '/v1/responses',
-  bodyText: JSON.stringify(parsedValue),
-  parsedNonStreamJsonBody: response.nonStreamJsonBody(),
-  parseOptions: { onJsonParseAttempt: () => { modelParseCount += 1 } }
-})
-assert.equal(parsedModelCheck.outputText, 'OK')
-assert.equal(parsedModelCheck.model, 'gpt-5.6-sol')
-assert.equal(parsedModelCheck.usage?.total_tokens, 2)
-assert.equal(modelParseCount, 0, '模型检测必须复用 MemoryGatewayResponse 保存的 parsed body')
 
 let invalidParseCount = 0
 const invalidContext = diagnosticResponseContextFromGatewayNonStream('{invalid', { status: 'invalid' }, {
@@ -97,17 +83,6 @@ assert.strictEqual(
 assert.equal(streamParseCount, 0, '已有网关 SSE event 时诊断上下文不得重放 JSON.parse')
 assert.notEqual(streamResponse.firstTokenMs(), undefined, '首 token 时间必须复用网关 inspection，不得自行重解析 SSE')
 
-let streamModelParseCount = 0
-const parsedStreamModelCheck = parseModelCheckProbeResponse({
-  protocol: 'openai_responses',
-  path: '/v1/responses',
-  bodyText: streamBodyText,
-  parsedStreamEvents: streamResponse.parsedStreamEvents(),
-  parseOptions: { onJsonParseAttempt: () => { streamModelParseCount += 1 } }
-})
-assert.equal(parsedStreamModelCheck.outputText, 'OK')
-assert.equal(streamModelParseCount, 0, '模型检测必须直接消费网关已解析 SSE event')
-
 const finalizationSource = readFileSync(resolve('src/modules/gateway/response/finalization.ts'), 'utf8')
 const streamSource = readFileSync(resolve('src/modules/gateway/response/stream.ts'), 'utf8')
 const accountTestSource = readFileSync(resolve('src/modules/accounts/account-test.service.ts'), 'utf8')
@@ -116,7 +91,7 @@ assert.match(accountTestSource, /response\.nonStreamJsonBody\(\)/, '账户诊断
 assert.match(streamSource, /publishGatewayStreamParsedEvent\(res, event\)/, '流式网关必须发布已经解析的 SSE event')
 assert.match(accountTestSource, /response\.parsedStreamEvents\(\)/, '账户诊断必须消费 MemoryGatewayResponse 保存的 SSE event')
 
-console.log('诊断响应上下文复用回归通过：MemoryGatewayResponse 保留网关 JSON/SSE 解析结果，账户和模型诊断不再重复解析')
+console.log('诊断响应上下文复用回归通过：MemoryGatewayResponse 保留网关 JSON/SSE 解析结果，账户诊断不再重复解析')
 
 async function* oneChunk(text: string): AsyncIterable<Uint8Array> {
   yield Buffer.from(text, 'utf8')

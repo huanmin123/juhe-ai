@@ -128,20 +128,6 @@
       "rollback": "freeze cursor advancement, retain dirty rows and batch receipts, and restore the previous cursor owner only after monotonicity is verified"
     },
     {
-      "id": "j3b-quality",
-      "node_writer_operation_group": "j3b-quality",
-      "node_operations": ["model_quality_command"],
-      "operation_count": 1,
-      "current_owner": "node-db-service",
-      "target_owner": "go-gateway",
-      "gateway_target_module": "backend-go/projects/gateway/internal/modelcheckowner",
-      "status": "partial",
-      "migration_method": "gateway-j3b-integrated-runtime-observation-trust-quality-and-scheduler-cutover",
-      "acceptance_gates": ["B1-j3b-quality", "GATE-runtime-ready", "GATE-evidence-trust-complete", "GATE-active-path-zero", "GATE-isolated-sqlite-pg", "GATE-rollback"],
-      "rollback": "stop Gateway claims at owner epoch, preserve durable run/observation/outcome receipts, replay projector state, and re-enable Node only after duplicate writers are fenced",
-      "evidence": ["backend-go/projects/gateway/internal/modelcheckowner/http.go", "backend-go/projects/gateway/internal/modelcheckowner/runtime.go", "backend-go/projects/gateway/internal/modelcheckowner/scheduler_executor.go"]
-    },
-    {
       "id": "business-management-mutation",
       "node_writer_operation_group": "management-mutation",
       "node_operations": ["clear_gateway_runtime_cache", "record_client_ip_policy_hits"],

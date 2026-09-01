@@ -60,7 +60,6 @@ export function createStatsTableCoverageMockdata(created: CreatedMockdata, usage
   createBackgroundJobCoverage(database, now)
   createStatsDirtyQueueCoverage(database, created, now)
   createUsageRecordCleanupDeductionCoverage(database, created, usageRecords, now)
-  createModelQualityStatsCoverage(created, now)
 }
 
 function createModelQualityBusinessCoverage(created: CreatedMockdata): void {
@@ -141,34 +140,6 @@ function createModelQualityBusinessCoverage(created: CreatedMockdata): void {
   )
 }
 
-function createModelQualityStatsCoverage(created: CreatedMockdata, now: string): void {
-  const account = created.accounts.managerPrimary
-  const statHour = new Date(Math.floor(Date.now() / (60 * minuteMs)) * 60 * minuteMs).toISOString()
-  getStatsDatabase().prepare(`
-    INSERT INTO account_quality_health_hourly (
-      account_id, system_account_id, provider_code, stat_hour, observed_at, model_check_run_id,
-      model, profile, score, threshold, level, error_code, error_message, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 'gpt-5.4', 'quick', 35, 70, 'suspicious',
-      'mockdata_model_quality_failed', 'Mockdata 模拟模型质量不达标', ?)
-    ON CONFLICT(account_id, stat_hour) DO UPDATE SET
-      observed_at = excluded.observed_at,
-      model_check_run_id = excluded.model_check_run_id,
-      score = excluded.score,
-      threshold = excluded.threshold,
-      level = excluded.level,
-      error_code = excluded.error_code,
-      error_message = excluded.error_message,
-      updated_at = excluded.updated_at
-  `).run(
-    account.id,
-    created.users.manager.id,
-    account.providerCode,
-    statHour,
-    now,
-    `${idPrefix}model_check_run_0002`,
-    now
-  )
-}
 
 function createSystemSessionCoverage(created: CreatedMockdata): void {
   const now = nowIso()

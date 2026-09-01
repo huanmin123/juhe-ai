@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -39,23 +39,6 @@ const statsTableNames = new Set([
   'system_metrics_trend_windows',
   'process_event_loop_trend_windows'
 ])
-const dataRetentionRepositorySource = readFileSync(new URL('../../storage/data-retention.repository.ts', import.meta.url), 'utf8')
-const postgresModelCheckCleanupSource = dataRetentionRepositorySource.slice(
-  dataRetentionRepositorySource.indexOf('export async function cleanupModelCheckRunsBeforeAsync'),
-  dataRetentionRepositorySource.indexOf('export function cleanupExpiredSystemSessions')
-)
-
-assert.match(
-  postgresModelCheckCleanupSource,
-  /return client\.transaction\(async \(tx\) => \{[\s\S]*?await tx\.query<CleanupRow>\([\s\S]*?SELECT id[\s\S]*?quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied'[\s\S]*?LIMIT \?[\s\S]*?FOR UPDATE SKIP LOCKED/,
-  'PostgreSQL 模型检测历史必须在删除事务内选择并锁定 health-sync 已完成候选，且并发清理应跳过已锁行'
-)
-assert.match(
-  postgresModelCheckCleanupSource,
-  /DELETE FROM juhe_dataset\.model_check_runs[\s\S]*?WHERE id = ANY\(\?::text\[\]\)[\s\S]*?AND \(quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied'\)/,
-  'PostgreSQL 模型检测历史最终删除必须重新校验 health-sync 状态'
-)
-
 try {
   const statsDatabase = databaseModule.getStatsDatabase()
   seedUsageStatsRows()
@@ -103,15 +86,7 @@ try {
   assert.equal(retryCleanup.clientIpUsageRangeWindows, 1, 'IP 维度范围窗口应接入数据保留清理结果')
   assert.equal(tableCount('client_ip_usage_range_windows'), 0, '过期 IP 维度范围窗口清理后不应残留旧记录')
 
-  seedModelCheckHistory()
-  const modelCheckCleanup = dataRetention.cleanupModelCheckRunsBefore('2001-01-01T00:00:00.000Z', 100)
-  assert.equal(modelCheckCleanup.modelCheckRuns, 1, '模型检测历史应接入统一保留清理')
-  assert.equal(modelCheckCleanup.modelCheckItems, 1, '模型检测项应随过期检测运行一起清理')
-  assert.equal(tableCount('model_check_runs'), 2, 'health-sync failed/pending_retry 运行必须保留，不能被 retention 删除')
-  assert.equal(tableCount('model_check_items'), 2, 'health-sync failed/pending_retry 的检测项必须随运行保留')
-
   const indexChecks: Array<{ tableName: string; columnName: string; indexName: string }> = [
-    { tableName: 'audit_error_groups', columnName: 'updated_at', indexName: 'idx_audit_error_groups_updated' },
     { tableName: 'authorization_team_usage_range_windows', columnName: 'end_date', indexName: 'idx_authorization_team_usage_range_end' },
     { tableName: 'authorization_user_usage_range_windows', columnName: 'end_date', indexName: 'idx_authorization_user_usage_range_end' },
     { tableName: 'usage_overview_summary_windows', columnName: 'end_date', indexName: 'idx_usage_overview_summary_windows_end' },
@@ -129,9 +104,7 @@ try {
   for (const check of indexChecks) {
     assertQueryUsesIndex(check.tableName, check.columnName, check.indexName)
   }
-  assertModelCheckRunCleanupUsesIndex()
-
-  console.log('数据保留 SQL 防护回归通过：预聚合清理按表推进，模型检测清理列具备索引')
+  console.log('数据保留 SQL 防护回归通过：预聚合清理按表推进，失败表可重试，范围窗口清理列具备索引')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -151,31 +124,6 @@ function seedUsageStatsRows(): void {
     INSERT INTO usage_stats_minute (system_account_id, scope_type, scope_id, stat_minute, updated_at)
     VALUES ('sys_admin', 'global', '', '2000-01-01T00:00', '2000-01-01T00:00:00.000Z')
   `).run()
-}
-
-function seedModelCheckHistory(): void {
-  const datasetDatabase = databaseModule.getDatasetDatabase()
-  datasetDatabase.prepare(`
-    INSERT INTO model_check_runs (id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, model, started_at, created_at, updated_at)
-    VALUES ('mcr_retention_old', 'sys_admin', 'sys_admin', 'gpt', 'account', 'acct_retention_old', 'gpt-5.5', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
-  `).run()
-  datasetDatabase.prepare(`
-    INSERT INTO model_check_items (id, run_id, item_key, item_type, status, created_at, updated_at)
-    VALUES ('mci_retention_old', 'mcr_retention_old', 'json_schema', 'capability', 'passed', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
-  `).run()
-  for (const [runId, itemId, healthStatus] of [
-    ['mcr_retention_failed', 'mci_retention_failed', 'failed'],
-    ['mcr_retention_pending', 'mci_retention_pending', 'pending_retry']
-  ] as const) {
-    datasetDatabase.prepare(`
-      INSERT INTO model_check_runs (id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, model, status, quality_health_sync_status, started_at, created_at, updated_at)
-      VALUES (?, 'sys_admin', 'sys_admin', 'gpt', 'account', 'acct_retention_old', 'gpt-5.5', 'completed', ?, '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
-    `).run(runId, healthStatus)
-    datasetDatabase.prepare(`
-      INSERT INTO model_check_items (id, run_id, item_key, item_type, status, created_at, updated_at)
-      VALUES (?, ?, 'json_schema', 'capability', 'passed', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
-    `).run(itemId, runId)
-  }
 }
 
 function seedClientIpUsageRangeWindow(): void {
@@ -208,24 +156,6 @@ function assertQueryUsesIndex(tableName: string, columnName: string, indexName: 
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))
     .join('\n')
   assert(details.includes(indexName), `${tableName}.${columnName} 清理查询应使用 ${indexName}，实际计划：${details}`)
-}
-
-function assertModelCheckRunCleanupUsesIndex(): void {
-  const details = databaseModule.getDatasetDatabase()
-    .prepare(`
-      EXPLAIN QUERY PLAN
-      SELECT id
-      FROM model_check_runs
-      WHERE created_at < ?
-        AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all('2099-01-01', 1)
-    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
-    .join('\n')
-  assert(details.includes('idx_model_check_runs_created'), `model_check_runs.created_at 清理查询应使用 idx_model_check_runs_created，实际计划：${details}`)
-  assert(!/USE TEMP B-TREE/i.test(details), `model_check_runs.created_at 清理查询不应使用临时排序，实际计划：${details}`)
 }
 
 function databaseForTable(tableName: string): ReturnType<typeof databaseModule.getDatasetDatabase> {

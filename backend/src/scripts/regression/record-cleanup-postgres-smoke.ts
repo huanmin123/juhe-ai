@@ -55,13 +55,12 @@ try {
   })
   pendingGlobalStatsSmokeUsageIds.delete(`usage_${accountId}`)
   assert.equal(accountCleanup.hasMore, false, 'AI 账户 PG 清理不应遗留后续批次')
-  assert.ok(accountCleanup.deletedRows >= 3, 'AI 账户 PG 清理应删除 usage/audit/model check 记录')
+  assert.ok(accountCleanup.deletedRows >= 2, 'AI 账户 PG 清理应删除 usage/audit 记录')
   assert.equal(await countRows('juhe_usage.usage_records', 'account_id = ? OR account_authorization_id = ?', [accountId, authorizationId]), 0, 'AI 账户 usage PG 记录应被清理')
   assert.equal(await countRows('juhe_usage.usage_record_shard_entries', 'usage_id = ?', [`usage_${accountId}`]), 0, 'AI 账户 usage catalog entry 应被清理')
   assert.equal(await countRows('juhe_usage.usage_record_account_shards', 'account_id = ?', [accountId]), 0, 'AI 账户 usage scope catalog 应被清理')
   assert.equal(await countRows('juhe_usage.usage_record_api_key_shards', 'api_key_id = ? AND system_account_id = ?', [accountApiKeyId, systemAccountId]), 0, 'AI 账户关联 API Key usage scope catalog 应被清理')
   assert.equal(await countRows('juhe_dataset.audit_logs', 'account_id = ?', [accountId]), 0, 'AI 账户 audit PG 记录应被清理')
-  assert.equal(await countRows('juhe_dataset.model_check_runs', 'target_id = ?', [accountId]), 0, 'AI 账户 model check PG 记录应被清理')
   assert.equal(await countRows('juhe_stats.usage_stats_totals', "scope_type IN ('account', 'caller_account', 'account_authorization') AND scope_id = ANY(?::text[])", [[accountId, authorizationId]]), 0, 'AI 账户 stats PG 记录应被清理')
   assert.equal(await countRows('juhe_stats.usage_stats_totals', "scope_id = ANY(?::text[])", [[systemAccountId, providerCode, modelName]]), 0, 'AI 账户 cleanup 应扣减并清理 marker 统计 scope')
   assert.equal(await countRows('juhe_dataset.account_record_cleanup_targets', 'account_id = ?', [accountId]), 0, 'AI 账户 PG 清理目标应完成后删除')
@@ -158,12 +157,6 @@ async function seedAccountRows(): Promise<void> {
       audit_outcome, success, sample_bucket, sample_reason, started_at, ended_at, created_at
     ) VALUES (?, ?, 'gateway', ?, ?, ?, 'POST', '/v1/chat/completions', 'success', 1, 0, 'smoke', ?, ?, ?)
   `, [`audit_${accountId}`, `trace_audit_${accountId}`, systemAccountId, apiKeyId, accountId, now, now, now])
-  await client.execute(`
-    INSERT INTO juhe_dataset.model_check_runs (
-      id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, account_id,
-      model, profile, status, started_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'account', ?, ?, ?, 'full', 'completed', ?, ?, ?)
-  `, [`model_check_${accountId}`, systemAccountId, systemAccountId, providerCode, accountId, accountId, modelName, now, now, now])
   await client.execute(`
     INSERT INTO juhe_stats.usage_stats_totals (
       system_account_id, scope_type, scope_id, request_count, success_count,
@@ -443,8 +436,6 @@ async function restoreCleanupCursorRows(): Promise<void> {
 async function cleanupSmokeRows(): Promise<void> {
   await client.execute('DELETE FROM juhe_dataset.account_record_cleanup_targets WHERE account_id = ?', [accountId])
   await client.execute('DELETE FROM juhe_dataset.api_key_record_cleanup_targets WHERE api_key_id = ?', [apiKeyId])
-  await client.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ?', [`model_check_${accountId}`])
-  await client.execute('DELETE FROM juhe_dataset.model_check_runs WHERE id = ?', [`model_check_${accountId}`])
   await client.execute('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY(?::text[])', [[`audit_${apiKeyId}`, `audit_${accountId}`]])
   await client.execute('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY(?::text[])', [[`audit_${apiKeyId}`, `audit_${accountId}`]])
   await client.execute('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY(?::text[])', [[`audit_${apiKeyId}`, `audit_${accountId}`]])

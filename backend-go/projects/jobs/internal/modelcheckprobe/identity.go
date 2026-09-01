@@ -45,12 +45,24 @@ type IdentityProbeInput struct {
 func PairedIdentityModels(model string) []string {
 	switch model {
 	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
-		return []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+		return uniqueModels(model, "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
 	case "gpt-5.5", "gpt-5.4":
-		return []string{"gpt-5.5", "gpt-5.4"}
+		return uniqueModels(model, "gpt-5.5", "gpt-5.4")
 	default:
 		return []string{model}
 	}
+}
+
+func uniqueModels(models ...string) []string {
+	seen := make(map[string]bool, len(models))
+	result := make([]string, 0, len(models))
+	for _, model := range models {
+		if model = strings.TrimSpace(model); model != "" && !seen[model] {
+			seen[model] = true
+			result = append(result, model)
+		}
+	}
+	return result
 }
 
 func RunIdentityObservation(ctx context.Context, input IdentityProbeInput) (EvaluationItem, []IdentityObservation, error) {

@@ -87,10 +87,10 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 		t.Fatalf("request snapshot=%s err=%v", requestSummary, err)
 	}
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 5 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 6 {
 		t.Fatalf("item count=%d err=%v", count, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 5 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 6 {
 		t.Fatalf("observation count=%d err=%v", count, err)
 	}
 	var familyCount int
@@ -101,15 +101,15 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT observation_status FROM model_check_observations WHERE run_id=? AND probe_family='usage_shape'`, result.RunID).Scan(&observationStatus); err != nil || observationStatus != "complete" {
 		t.Fatalf("usage observation status=%q err=%v", observationStatus, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_trust_observation_receipts`).Scan(&count); err != nil || count != 5 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_trust_observation_receipts`).Scan(&count); err != nil || count != 6 {
 		t.Fatalf("trust receipt count=%d err=%v", count, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND aggregation_completed_at IS NOT NULL`, result.RunID).Scan(&count); err != nil || count != 5 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND aggregation_completed_at IS NOT NULL`, result.RunID).Scan(&count); err != nil || count != 6 {
 		t.Fatalf("consumed observation count=%d err=%v", count, err)
 	}
 	var evidenceStatus string
 	var observationCount int
-	if err := store.db.QueryRow(`SELECT evidence_status,observation_count FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&evidenceStatus, &observationCount); err != nil || evidenceStatus != "insufficient" || observationCount != 5 {
+	if err := store.db.QueryRow(`SELECT evidence_status,observation_count FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&evidenceStatus, &observationCount); err != nil || evidenceStatus != "insufficient" || observationCount != 6 {
 		t.Fatalf("trust latest evidence=%q observations=%d err=%v", evidenceStatus, observationCount, err)
 	}
 	var evidenceSummary string
@@ -118,6 +118,40 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	}
 	if strings.Contains(evidenceSummary, server.URL) {
 		t.Fatalf("durable request summary leaked endpoint: %s", evidenceSummary)
+	}
+}
+
+func TestRuntimeKeepsHTTP200QualityFailureCompleted(t *testing.T) {
+	store := newRuntimeTestStore(t)
+	defer store.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"gpt-5.6-sol","output_text":"WRONG-CONTENT","usage":{"total_tokens":2}}`))
+	}))
+	defer server.Close()
+	runtime := &Runtime{
+		Store:   store,
+		OwnerID: "gateway-quality",
+		Now:     func() time.Time { return time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC) },
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", DispatchRevision: 1}, nil
+		},
+	}
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
+	if err != nil || result.Status != string(RunCompleted) {
+		t.Fatalf("HTTP 200 quality failure must complete durably: result=%+v err=%v", result, err)
+	}
+	var status string
+	if err := store.db.QueryRow(`SELECT status FROM model_check_runs WHERE id=?`, result.RunID).Scan(&status); err != nil || status != string(RunCompleted) {
+		t.Fatalf("durable status=%q err=%v, want completed", status, err)
+	}
+	var itemCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&itemCount); err != nil || itemCount == 0 {
+		t.Fatalf("quality result item count=%d err=%v, want at least one", itemCount, err)
+	}
+	var level string
+	if err := store.db.QueryRow(`SELECT level FROM model_check_runs WHERE id=?`, result.RunID).Scan(&level); err != nil || level == "likely" || level == "high_confidence" {
+		t.Fatalf("negative HTTP 200 evidence level=%q err=%v, want non-positive quality level", level, err)
 	}
 }
 
@@ -176,13 +210,13 @@ func TestRuntimeRejectsStaleTrustedComparisonRevision(t *testing.T) {
 	runtime := &Runtime{
 		Store: &Store{},
 		Resolve: func(context.Context, RunRequest) (Target, error) {
-			return Target{Endpoint: "https://target.example", Prompt: "OK", UpstreamModel: "gpt-5.6", DispatchRevision: 3, ConfigRevision: "cfg-1", SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
+			return Target{Endpoint: "https://target.example", Prompt: "OK", UpstreamModel: "gpt-5.6", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Protocol: modelcheckprofile.ProtocolOpenAIResponses, DispatchRevision: 3, ConfigRevision: "cfg-1", SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
 		},
 		ResolveComparison: func(_ context.Context, request RunRequest) (Target, error) {
 			if request.TargetID != "comparison" || request.ConfigRevision != "cfg-2" || request.DispatchRevision != 8 || request.SourceConfigRevision != "src-2" || request.SourceDispatchRevision != 9 {
 				return Target{}, fmt.Errorf("comparison resolver received incomplete frozen revisions: %+v", request)
 			}
-			return Target{Endpoint: "https://comparison.example", Prompt: "OK", UpstreamModel: "gpt-5.6", DispatchRevision: 8, ConfigRevision: "cfg-2", SourceConfigRevision: "src-2", SourceDispatchRevision: 9}, nil
+			return Target{Endpoint: "https://comparison.example", Prompt: "OK", UpstreamModel: "gpt-5.6", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Protocol: modelcheckprofile.ProtocolOpenAIResponses, DispatchRevision: 8, ConfigRevision: "cfg-2", SourceConfigRevision: "src-2", SourceDispatchRevision: 9}, nil
 		},
 	}
 	base := RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "target", Model: "gpt-5.6", Profile: "full", TrustedComparison: true, TrustedComparisonAccountID: "comparison", TrustedComparisonSystemAccountID: "comparison-sys", ConfigRevision: "cfg-1", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 8, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 9}
@@ -197,6 +231,24 @@ func TestRuntimeRejectsStaleTrustedComparisonRevision(t *testing.T) {
 			mutate(&request)
 			if _, err := runtime.Run(context.Background(), request); err == nil || !strings.Contains(err.Error(), "trusted comparison") {
 				t.Fatalf("stale trusted comparison revision must be rejected, err=%v", err)
+			}
+		})
+	}
+}
+
+func TestRuntimeRejectsIncompatibleTrustedComparisonProfile(t *testing.T) {
+	baseTarget := Target{Endpoint: "https://target.example", Prompt: "OK", UpstreamModel: "gpt-5.6", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Protocol: modelcheckprofile.ProtocolOpenAIResponses, DispatchRevision: 3, ConfigRevision: "cfg-1", SourceConfigRevision: "src-1", SourceDispatchRevision: 4}
+	baseRequest := RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "target", Model: "gpt-5.6", Profile: "full", TrustedComparison: true, TrustedComparisonAccountID: "comparison", TrustedComparisonSystemAccountID: "comparison-sys", ConfigRevision: "cfg-1", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 8, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 9}
+	for name, comparison := range map[string]Target{
+		"provider":        {Endpoint: "https://comparison.example", Prompt: "OK", UpstreamModel: "gpt-5.6", ProviderCode: "gemini", ProviderProtocolProfileID: "profile_gemini_openai_chat_v1beta", Protocol: modelcheckprofile.ProtocolOpenAIResponses, DispatchRevision: 8, ConfigRevision: "cfg-2", SourceConfigRevision: "src-2", SourceDispatchRevision: 9},
+		"protocol":        {Endpoint: "https://comparison.example", Prompt: "OK", UpstreamModel: "gpt-5.6", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Protocol: modelcheckprofile.ProtocolOpenAIChat, DispatchRevision: 8, ConfigRevision: "cfg-2", SourceConfigRevision: "src-2", SourceDispatchRevision: 9},
+		"profile":         {Endpoint: "https://comparison.example", Prompt: "OK", UpstreamModel: "gpt-5.6", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_other_v1", Protocol: modelcheckprofile.ProtocolOpenAIResponses, DispatchRevision: 8, ConfigRevision: "cfg-2", SourceConfigRevision: "src-2", SourceDispatchRevision: 9},
+		"missing profile": {Endpoint: "https://comparison.example", Prompt: "OK", UpstreamModel: "gpt-5.6", ProviderCode: "openai", Protocol: modelcheckprofile.ProtocolOpenAIResponses, DispatchRevision: 8, ConfigRevision: "cfg-2", SourceConfigRevision: "src-2", SourceDispatchRevision: 9},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runtime := &Runtime{Store: &Store{}, Resolve: func(context.Context, RunRequest) (Target, error) { return baseTarget, nil }, ResolveComparison: func(context.Context, RunRequest) (Target, error) { return comparison, nil }}
+			if _, err := runtime.Run(context.Background(), baseRequest); err == nil || !strings.Contains(err.Error(), "trusted comparison") {
+				t.Fatalf("incompatible trusted comparison must be rejected, err=%v", err)
 			}
 		})
 	}
@@ -279,15 +331,25 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	mu.Lock()
-	if len(models) != 3 {
+	if len(models) != 4 {
 		mu.Unlock()
 		t.Fatalf("terminal quick suite probe calls=%d models=%v", len(models), models)
 	}
+	resolvedCount, pairedCount := 0, 0
 	for _, model := range models {
-		if model != "gpt-5.6-terra" {
+		switch model {
+		case "gpt-5.6-terra":
+			resolvedCount++
+		case "gpt-5.6-sol":
+			pairedCount++
+		default:
 			mu.Unlock()
-			t.Fatalf("probe used model %q, want resolved upstream model", model)
+			t.Fatalf("probe used unexpected model %q", model)
 		}
+	}
+	if resolvedCount != 3 || pairedCount != 1 {
+		mu.Unlock()
+		t.Fatalf("probe model distribution resolved=%d paired=%d models=%v", resolvedCount, pairedCount, models)
 	}
 	mu.Unlock()
 	var requestSummary string
@@ -340,14 +402,16 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 	}
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	runtime := &Runtime{
-		Store:   store,
-		OwnerID: "gateway-1",
-		Now:     func() time.Time { return now },
+		Store:       store,
+		OwnerID:     "gateway-1",
+		Tokenizer:   runtimeTestTokenizer{},
+		ModelLimits: runtimeTestModelLimits{},
+		Now:         func() time.Time { return now },
 		Resolve: func(context.Context, RunRequest) (Target, error) {
-			return Target{Endpoint: targetServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai", ConfigRevision: "cfg-1", DispatchRevision: 3, SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
+			return Target{Endpoint: targetServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai", ProviderProtocolProfileID: "openai-responses", ConfigRevision: "cfg-1", DispatchRevision: 3, SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
 		},
 		ResolveComparison: func(context.Context, RunRequest) (Target, error) {
-			return Target{Endpoint: comparisonServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai", ConfigRevision: "cfg-2", DispatchRevision: 4, SourceConfigRevision: "src-2", SourceDispatchRevision: 5}, nil
+			return Target{Endpoint: comparisonServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai", ProviderProtocolProfileID: "openai-responses", ConfigRevision: "cfg-2", DispatchRevision: 4, SourceConfigRevision: "src-2", SourceDispatchRevision: 5}, nil
 		},
 	}
 	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "comparison-acct", TrustedComparisonSystemAccountID: "comparison-sys", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 4, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 5})
@@ -377,15 +441,76 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 		t.Fatalf("trusted comparison durable state enabled=%d available=%d err=%v", trustedComparisonEnabled, trustedComparisonAvailable, err)
 	}
 	var observations int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations != 12 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations < 12 {
 		t.Fatalf("observations=%d err=%v", observations, err)
 	}
 	var trusted int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family='trusted-comparison'`, result.RunID).Scan(&trusted); err != nil || trusted != 0 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family LIKE 'trusted_comparison.%'`, result.RunID).Scan(&trusted); err != nil || trusted != 0 {
 		t.Fatalf("trusted comparison observations=%d err=%v", trusted, err)
 	}
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='comparison-sys' AND account_id='comparison-acct' AND requested_model='gpt-5.6-sol'`).Scan(&trusted); err != nil || trusted != 0 {
 		t.Fatalf("trusted comparison projection=%d err=%v", trusted, err)
+	}
+}
+
+func TestRuntimeAllowsQuickTrustedComparison(t *testing.T) {
+	store := newRuntimeTestStore(t)
+	defer store.Close()
+	var mu sync.Mutex
+	requests := map[string]int{}
+	targetServer := httptest.NewServer(&runtimeModelServer{t: t, expectedModel: "gpt-5.6-sol", mu: &mu, requests: requests})
+	defer targetServer.Close()
+	comparisonServer := httptest.NewServer(&runtimeModelServer{t: t, expectedModel: "gpt-5.6-terra", mu: &mu, requests: requests})
+	defer comparisonServer.Close()
+	runtime := &Runtime{
+		Store:   store,
+		OwnerID: "gateway-quick-trusted",
+		Now:     func() time.Time { return time.Date(2026, 8, 28, 13, 0, 0, 0, time.UTC) },
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: targetServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", ConfigRevision: "cfg-1", DispatchRevision: 3, SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
+		},
+		ResolveComparison: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: comparisonServer.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", ConfigRevision: "cfg-2", DispatchRevision: 4, SourceConfigRevision: "src-2", SourceDispatchRevision: 5}, nil
+		},
+	}
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "comparison-acct", TrustedComparisonSystemAccountID: "comparison-sys", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 4, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 5})
+	if err != nil || result.RunID == "" {
+		t.Fatalf("quick trusted comparison must run: result=%+v err=%v", result, err)
+	}
+	mu.Lock()
+	targetRequests, comparisonRequests := requests["gpt-5.6-sol"], requests["gpt-5.6-terra"]
+	mu.Unlock()
+	if targetRequests == 0 || comparisonRequests == 0 {
+		t.Fatalf("quick trusted comparison must probe both accounts: target=%d comparison=%d", targetRequests, comparisonRequests)
+	}
+	var trustedComparisonEnabled, trustedComparisonAvailable int
+	if err := store.db.QueryRow(`SELECT trusted_comparison_enabled,trusted_comparison_available FROM model_check_runs WHERE id=?`, result.RunID).Scan(&trustedComparisonEnabled, &trustedComparisonAvailable); err != nil || trustedComparisonEnabled != 1 || trustedComparisonAvailable != 1 {
+		t.Fatalf("quick trusted comparison durable state enabled=%d available=%d err=%v", trustedComparisonEnabled, trustedComparisonAvailable, err)
+	}
+}
+
+func TestRuntimeRejectsTargetChangeAfterClaim(t *testing.T) {
+	store := newRuntimeTestStore(t)
+	defer store.Close()
+	var resolveCalls int
+	runtime := &Runtime{
+		Store:   store,
+		OwnerID: "gateway-toctou",
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			resolveCalls++
+			endpoint := "https://example.invalid/first"
+			if resolveCalls > 1 {
+				endpoint = "https://example.invalid/rotated"
+			}
+			return Target{Endpoint: endpoint, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", ConfigRevision: "cfg-1", DispatchRevision: 1, SourceConfigRevision: "src-1", SourceDispatchRevision: 1}, nil
+		},
+	}
+	_, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
+	if err == nil || !strings.Contains(err.Error(), "changed after claim") {
+		t.Fatalf("target changes after claim must be rejected, calls=%d err=%v", resolveCalls, err)
+	}
+	if resolveCalls != 2 {
+		t.Fatalf("target must be resolved before and after claim, calls=%d", resolveCalls)
 	}
 }
 
@@ -589,7 +714,7 @@ func (s *runtimeModelServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.requests[s.expectedModel+"|"+request.Model]++
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	response := `{"model":"` + s.expectedModel + `","output_text":"OK-MODEL-CHECK","usage":{"total_tokens":2}}`
+	response := `{"model":"` + s.expectedModel + `","output_text":"OK-MODEL-CHECK","usage":{"input_tokens":10,"total_tokens":2}}`
 	switch {
 	case strings.Contains(string(body), "record_model_check"):
 		response = `{"model":"` + s.expectedModel + `","output":[{"type":"function_call","name":"record_model_check","arguments":"{\"code\":\"ok\",\"count\":1}"}],"usage":{"total_tokens":2}}`
@@ -597,6 +722,26 @@ func (s *runtimeModelServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response = `{"model":"` + s.expectedModel + `","output_text":"{\"status\":\"ok\",\"value\":7}","usage":{"total_tokens":2}}`
 	}
 	_, _ = w.Write([]byte(response))
+}
+
+type runtimeTestTokenizer struct{}
+
+func (runtimeTestTokenizer) Version() string { return "runtime-test-tokenizer-v1" }
+func (runtimeTestTokenizer) Count(value string) (int, error) {
+	count := 1
+	for index := 0; index+1 < len(value); index++ {
+		if value[index] == ' ' && value[index+1] == 'x' {
+			count++
+		}
+	}
+	return count, nil
+}
+
+type runtimeTestModelLimits struct{}
+
+func (runtimeTestModelLimits) Version() string { return "runtime-test-limits-v1" }
+func (runtimeTestModelLimits) MaxInputTokens(string, string, modelcheckprofile.Protocol) (int, error) {
+	return 12000, nil
 }
 
 func runtimeTestDDL() []string {

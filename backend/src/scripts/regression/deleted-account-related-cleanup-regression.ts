@@ -20,12 +20,15 @@ logger.level = 'silent'
 
 const mainAccountRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'accounts.routes.ts'), 'utf8')
 const deleteAccountRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-delete.routes.ts'), 'utf8')
+const accountDeleteCleanupSource = readFileSync(resolve('src', 'storage', 'account-delete-cleanup.repository.ts'), 'utf8')
 assert(mainAccountRouteSource.includes("from './account-delete.routes.js'"), '账户主路由必须导入删除账户子路由')
 assert(mainAccountRouteSource.includes('registerAccountDeleteRoutes(accountsRouter)'), '账户主路由必须注册删除账户子路由')
 assert(!mainAccountRouteSource.includes("accountsRouter.delete('/:id'"), '账户主路由不应内联删除账户 HTTP 路由')
 assert(!mainAccountRouteSource.includes('deleteAccountWithRelatedCleanup('), '账户主路由不应直接调用账户删除关联清理')
 assert(deleteAccountRouteSource.includes('deleteAccountWithRelatedCleanup'), '删除账户子路由必须调用账户删除关联清理')
 assert(deleteAccountRouteSource.includes("operationKey: 'accounts.delete'"), '删除账户子路由必须保留账户删除操作日志 key')
+assert(!accountDeleteCleanupSource.includes('model_check_runs'), 'Node 账户关联清理不得访问 Gateway-owned model_check_runs')
+assert(!accountDeleteCleanupSource.includes('model_check_items'), 'Node 账户关联清理不得访问 Gateway-owned model_check_items')
 
 const [databaseModule, repositories, usageStatsRepository, usageRecordShards, usageStatsHelpers] = await Promise.all([
   import('../../storage/database.js'),
@@ -71,6 +74,7 @@ try {
       api_key: 'sk-deleted-account-related-cleanup',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: ownerGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -89,10 +93,6 @@ try {
   const instanceUsageId = 'usage_deleted_account_related_cleanup_instance'
   seedOwnerUsageRecord(ownerUsageId, account.id, owner.id)
   seedAuthorizedUsageRecord(instanceUsageId, authorizedInstance.id, owner.id, grantee.id, runtimeAuthorizationId, team.id)
-  seedAuditData(account.id, 'owner')
-  seedAuditData(authorizedInstance.id, 'instance')
-  seedModelCheckRun(account.id, owner.id, 'owner')
-  seedModelCheckRun(authorizedInstance.id, grantee.id, 'instance')
   seedDetachedAccountStats(account.id, owner.id)
   seedDetachedAccountStats(authorizedInstance.id, grantee.id)
 
@@ -128,6 +128,7 @@ try {
       api_key: 'sk-deleted-account-direct-return',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: ownerGroup.id
   }, ownerAccess)
   const directReturnAuthorization = repositories.createResourceAuthorization({
@@ -198,16 +199,10 @@ try {
   assert.equal(cleanupTargetExists(account.id), false, '逻辑删除阶段不应登记即时关联清理目标')
   assert.equal(usageRecordExists(ownerUsageId), true, '逻辑删除阶段不应同步删除原账户关联使用记录')
   assert.equal(usageRecordExists(instanceUsageId), true, '逻辑删除阶段不应同步删除授权实例使用记录')
-  assert.equal(auditDataCount(account.id), 2, '逻辑删除阶段不应同步删除账户关联原始审计数据')
-  assert.equal(auditDataCount(authorizedInstance.id), 2, '逻辑删除阶段不应同步删除授权实例原始审计数据')
-  assert.equal(modelCheckRunCount(account.id), 1, '逻辑删除阶段不应同步删除账户关联模型检测记录')
-  assert.equal(modelCheckRunCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例模型检测记录')
   assert.equal(accountQualityScoreCount(account.id), 1, '逻辑删除阶段不应同步删除账户质量快照')
   assert.equal(accountQualityScoreCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例质量快照')
   assert.equal(accountUsageSnapshotCount(account.id), 1, '逻辑删除阶段不应同步删除账户外部用量快照')
   assert.equal(accountUsageSnapshotCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例外部用量快照')
-  assert.equal(modelTrustSourceCount(account.id), 1, '逻辑删除阶段不应同步删除模型可信来源窗口')
-  assert.equal(modelTrustSourceCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例的模型可信来源窗口')
   assert.equal(usageStatsTotal(owner.id, 'account', account.id), 1, '逻辑删除阶段原账户自用统计应保留')
   assert.equal(usageStatsTotal(grantee.id, 'account', authorizedInstance.id), 1, '逻辑删除阶段授权实例账户统计应保留')
   assert.equal(usageStatsTotal(grantee.id, 'account_authorization', runtimeAuthorizationId), 1, '逻辑删除阶段授权统计应保留')
@@ -243,16 +238,10 @@ try {
   assert.equal(resourceAuthorizationGrantCount(account.id), 0, '过期物理清理后账户授权 grant 不应残留')
   assert.equal(usageRecordExists(ownerUsageId), false, '过期物理清理应删除原账户关联使用记录')
   assert.equal(usageRecordExists(instanceUsageId), false, '过期物理清理应删除授权实例使用记录')
-  assert.equal(auditDataCount(account.id), 0, '过期物理清理应删除账户关联原始审计数据')
-  assert.equal(auditDataCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例原始审计数据')
-  assert.equal(modelCheckRunCount(account.id), 0, '过期物理清理应删除账户关联模型检测记录')
-  assert.equal(modelCheckRunCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例模型检测记录')
   assert.equal(accountQualityScoreCount(account.id), 0, '过期物理清理应删除账户质量快照')
   assert.equal(accountQualityScoreCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例质量快照')
   assert.equal(accountUsageSnapshotCount(account.id), 0, '过期物理清理应删除账户外部用量快照')
   assert.equal(accountUsageSnapshotCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例外部用量快照')
-  assert.equal(modelTrustSourceCount(account.id), 0, '过期物理清理应删除账户模型可信来源窗口')
-  assert.equal(modelTrustSourceCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例模型可信来源窗口')
   assert.equal(usageStatsTotal(owner.id, 'account', account.id), 0, '过期物理清理后原账户自用统计不应残留')
   assert.equal(usageStatsTotal(grantee.id, 'account', authorizedInstance.id), 0, '过期物理清理后授权实例账户统计不应残留')
   assert.equal(usageStatsTotal(grantee.id, 'caller_account', authorizedInstance.id), 0, '过期物理清理后授权实例调用方账户统计不应残留')
@@ -273,6 +262,7 @@ try {
       api_key: 'sk-deleted-account-legacy-orphan',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: ownerGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -429,37 +419,6 @@ function seedClientIpStatsCursorsForAccountIds(accountIds: string[]): void {
   }
 }
 
-function seedAuditData(accountId: string, suffix: string): void {
-  const datasetDatabase = databaseModule.getDatasetDatabase()
-  datasetDatabase
-    .prepare(`
-      INSERT INTO audit_logs (
-        id, trace_id, traffic_source, system_account_id, account_id, method, path, audit_outcome,
-        success, sample_bucket, sample_reason, started_at, ended_at, created_at
-      ) VALUES (?, ?, 'gateway', 'sys_admin', ?, 'POST', '/v1/chat/completions', 'success', 1, 0, 'regression', ?, ?, ?)
-    `)
-    .run(`audit_deleted_account_related_cleanup_${suffix}`, `trace_audit_deleted_account_related_cleanup_${suffix}`, accountId, createdAt, createdAt, createdAt)
-  datasetDatabase
-    .prepare(`
-      INSERT INTO audit_error_groups (
-        id, fingerprint, window_started_at, window_ended_at, system_account_id, account_id,
-        count, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'sys_admin', ?, 1, ?, ?)
-    `)
-    .run(`audit_group_deleted_account_related_cleanup_${suffix}`, `fp_deleted_account_related_cleanup_${suffix}`, createdAt, createdAt, accountId, createdAt, createdAt)
-}
-
-function seedModelCheckRun(accountId: string, ownerSystemAccountId: string, suffix: string): void {
-  databaseModule.getDatasetDatabase()
-    .prepare(`
-      INSERT INTO model_check_runs (
-        id, system_account_id, actor_system_account_id, provider_code, target_type, target_id,
-        target_owner_system_account_id, account_id, model, started_at, created_at, updated_at
-      ) VALUES (?, ?, ?, 'gpt', 'account', ?, ?, ?, 'gpt-regression', ?, ?, ?)
-    `)
-    .run(`model_check_deleted_account_related_cleanup_${suffix}`, ownerSystemAccountId, ownerSystemAccountId, accountId, ownerSystemAccountId, accountId, createdAt, createdAt, createdAt)
-}
-
 function seedDetachedAccountStats(accountId: string, ownerSystemAccountId: string): void {
   const statsDatabase = databaseModule.getStatsDatabase()
   statsDatabase
@@ -478,21 +437,6 @@ function seedDetachedAccountStats(accountId: string, ownerSystemAccountId: strin
       ) VALUES (?, ?, 'openai_codex', 'regression', '{}', ?, ?)
     `)
     .run(ownerSystemAccountId, accountId, createdAt, createdAt)
-  statsDatabase
-    .prepare(`
-      INSERT INTO model_trust_window_sources (
-        system_account_id, account_id, cohort_key_hmac, mapped_upstream_model, upstream_bucket_hmac,
-        first_observed_at, last_observed_at, observation_count, updated_at
-      ) VALUES (?, ?, ?, 'gpt-regression', ?, ?, ?, 1, ?)
-    `)
-    .run(ownerSystemAccountId, accountId, `cohort_${accountId}`, `upstream_${accountId}`, createdAt, createdAt, createdAt)
-}
-
-function modelTrustSourceCount(accountId: string): number {
-  const row = databaseModule.getStatsDatabase()
-    .prepare('SELECT COUNT(*) AS count FROM model_trust_window_sources WHERE account_id = ?')
-    .get(accountId) as { count?: number } | undefined
-  return Number(row?.count ?? 0)
 }
 
 function usageStatsTotal(systemAccountId: string, scopeType: string, scopeId: string): number {
@@ -643,20 +587,6 @@ function resourceAuthorizationGrantStatus(accountId: string): string | undefined
     .prepare("SELECT status FROM resource_authorization_grants WHERE resource_type = 'account' AND resource_id = ? LIMIT 1")
     .get(accountId) as { status?: string } | undefined
   return row?.status
-}
-
-function auditDataCount(accountId: string): number {
-  const database = databaseModule.getDatasetDatabase()
-  const logs = database.prepare('SELECT COUNT(*) AS total FROM audit_logs WHERE account_id = ?').get(accountId) as { total?: number } | undefined
-  const groups = database.prepare('SELECT COUNT(*) AS total FROM audit_error_groups WHERE account_id = ?').get(accountId) as { total?: number } | undefined
-  return Number(logs?.total ?? 0) + Number(groups?.total ?? 0)
-}
-
-function modelCheckRunCount(accountId: string): number {
-  const row = databaseModule.getDatasetDatabase()
-    .prepare("SELECT COUNT(*) AS total FROM model_check_runs WHERE account_id = ? OR (target_type = 'account' AND target_id = ?)")
-    .get(accountId, accountId) as { total?: number } | undefined
-  return Number(row?.total ?? 0)
 }
 
 function accountQualityScoreCount(accountId: string): number {

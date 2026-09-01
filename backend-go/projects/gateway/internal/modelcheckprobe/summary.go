@@ -14,7 +14,11 @@ type SummaryResult struct {
 func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string) SummaryResult {
 	maxScore, rawScore, failed, juicePenalty := 0, 0, 0, 0
 	for _, item := range checks {
+		originalKind := item.Kind
 		item.Kind = unscopedKind(item.Kind)
+		if strings.HasPrefix(originalKind, "trusted_comparison.") && item.Kind != "comparison" && item.Kind != "distribution_similarity" {
+			continue
+		}
 		if item.Evidence != nil {
 			if value, ok := item.Evidence["scorePenalty"].(int); ok {
 				juicePenalty += value
@@ -51,8 +55,11 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 	}
 	checks = unscopedEvaluations(checks)
 	basic := findEvaluation(checks, "protocol_basic")
-	if basic != nil && (basic.Status == "failed" || !evidenceBool(basic.Evidence, "success")) {
+	if basic != nil && (basic.Status == "failed" || !evidenceBool(basic.Evidence, "success")) && coreEvidenceUnavailable(checks) {
 		return SummaryResult{"unavailable", score, 100, "目标模型链路不可检测或上游不可用"}
+	}
+	if basic != nil && (basic.Status == "failed" || !evidenceBool(basic.Evidence, "success")) {
+		return SummaryResult{"uncertain", score, 100, "基础协议探针未形成完整证据，但其他核心能力仍有响应"}
 	}
 	long := findEvaluation(checks, "long_context")
 	if long != nil && long.Status == "failed" {
@@ -71,8 +78,11 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 	if (behavior != nil && behavior.Status == "warning" && evidenceBool(behavior.Evidence, "requestFailure")) || (stability != nil && stability.Status == "warning" && evidenceBool(stability.Evidence, "requestFailure")) {
 		return SummaryResult{"uncertain", score, 100, "关键行为或稳定性探针存在请求失败，未形成完整模型可信度证据"}
 	}
-	if trustedComparison && hasRequestFailure(checks, "distribution") {
+	if trustedComparison && (hasRequestFailureAny(checks, "distribution_similarity", "distribution") || hasRequestFailureAny(checks, "comparison", "cross_model")) {
 		return SummaryResult{"uncertain", score, 100, "可信对比探针请求失败，未形成完整可比模型证据"}
+	}
+	if trustedComparison && trustedComparisonEvidenceIssue(checks) {
+		return SummaryResult{"uncertain", score, 100, "可信对比账户存在失败或不完整证据，未形成完整可比模型结论"}
 	}
 	if profile == "quick" {
 		if score >= 78 && failed <= 1 {
@@ -83,7 +93,10 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 		}
 		return SummaryResult{"suspicious", score, 100, "快速检测发现明显异常，建议检查上游配置并使用深度检测复核"}
 	}
-	trustedOK := !trustedComparison || hasStatus(checks, "distribution", "passed") || hasStatus(checks, "cross_model", "passed")
+	// A similar output distribution is supporting evidence only. Node requires
+	// the independently resolved trusted-comparison aggregate itself to pass
+	// before granting the highest confidence level.
+	trustedOK := !trustedComparison || (hasStatusAny(checks, "passed", "comparison", "cross_model") && hasStatusAny(checks, "passed", "distribution_similarity", "distribution"))
 	behaviorPassed := behavior != nil && behavior.Status == "passed"
 	stabilityPassed := stability != nil && stability.Status == "passed"
 	longPassed := long != nil && long.Status == "passed"
@@ -108,12 +121,26 @@ func findEvaluation(items []Evaluation, kind string) *Evaluation {
 	return nil
 }
 
+func coreEvidenceUnavailable(items []Evaluation) bool {
+	for _, kind := range []string{"protocol_basic", "structured_output", "tool_calling"} {
+		item := findEvaluation(items, kind)
+		if item != nil && evidenceBool(item.Evidence, "success") {
+			return false
+		}
+	}
+	return true
+}
+
 func unscopedKind(kind string) string {
 	if index := strings.LastIndex(kind, "."); index >= 0 {
 		return kind[index+1:]
 	}
 	return kind
 }
+
+// UnscopedKindForOwner exposes the stable family name to the owner package
+// without coupling it to the summary implementation details.
+func UnscopedKindForOwner(kind string) string { return unscopedKind(kind) }
 func unscopedEvaluations(items []Evaluation) []Evaluation {
 	result := make([]Evaluation, len(items))
 	copy(result, items)
@@ -130,6 +157,64 @@ func hasStatus(items []Evaluation, kind, status string) bool {
 func hasRequestFailure(items []Evaluation, kind string) bool {
 	item := findEvaluation(items, kind)
 	return item != nil && (evidenceBool(item.Evidence, "requestFailure") || evidenceBool(item.Evidence, "evidenceInsufficient"))
+}
+
+func hasStatusAny(items []Evaluation, status string, kinds ...string) bool {
+	for _, kind := range kinds {
+		if hasStatus(items, kind, status) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRequestFailureAny(items []Evaluation, kinds ...string) bool {
+	for _, kind := range kinds {
+		if hasRequestFailure(items, kind) {
+			return true
+		}
+	}
+	return false
+}
+
+func trustedComparisonEvidenceIssue(items []Evaluation) bool {
+	for _, item := range items {
+		kind := unscopedKind(item.Kind)
+		trusted := strings.HasPrefix(strings.TrimSpace(item.Kind), "trusted_comparison.")
+		if trusted {
+			switch kind {
+			case "juice":
+				if item.Status == "skipped" && strings.Contains(fmtEvidenceReason(item.Evidence), "juice_scope_not_applicable") {
+					continue
+				}
+			case "cross_model", "distribution":
+				// The trusted full suite intentionally has no nested trusted
+				// comparison. Its own cross-model/distribution placeholders are
+				// excluded; the unscoped summaries are checked below.
+				continue
+			}
+			if item.Status == "failed" || item.Status == "skipped" || item.Status == "warning" {
+				return true
+			}
+			continue
+		}
+		if kind == "comparison_evidence" || kind == "comparison" || kind == "distribution_similarity" {
+			if item.Status != "passed" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func fmtEvidenceReason(evidence map[string]any) string {
+	if evidence == nil {
+		return ""
+	}
+	if reason, ok := evidence["reason"].(string); ok {
+		return reason
+	}
+	return ""
 }
 
 func evidenceBool(e map[string]any, key string) bool { v, _ := e[key].(bool); return v }

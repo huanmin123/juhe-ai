@@ -1,13 +1,37 @@
 package modelcheckprobe
 
 import (
+	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
 func TestUniqueIdentityModels(t *testing.T) {
 	if got := uniqueModels("gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-terra"); !reflect.DeepEqual(got, []string{"gpt-5.6-sol", "gpt-5.6-terra"}) {
 		t.Fatalf("models=%v", got)
+	}
+}
+
+func TestRunIdentityForModelsRespectsSupportedModelFence(t *testing.T) {
+	seen := map[string]bool{}
+	_, err := RunIdentityForModels(context.Background(), modelcheckprofile.ProtocolOpenAIResponses, "gpt-5.6-terra", []string{"gpt-5.6-terra", "gpt-5.6-luna"}, func(_ context.Context, request Request) (Result, error) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(request.Body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		seen[payload.Model] = true
+		return Result{HTTPStatus: 200, Success: true, ObservedModel: payload.Model, Output: "{}"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen["gpt-5.6-sol"] || !seen["gpt-5.6-terra"] || !seen["gpt-5.6-luna"] {
+		t.Fatalf("identity requested outside supported models: %v", seen)
 	}
 }
 

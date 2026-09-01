@@ -11,6 +11,9 @@ func TestPairedIdentityModelsMatchesNodeFamilies(t *testing.T) {
 	if got := PairedIdentityModels("gpt-5.6-sol"); len(got) != 3 || got[0] != "gpt-5.6-sol" {
 		t.Fatalf("gpt56 family=%v", got)
 	}
+	if got := PairedIdentityModels("gpt-5.6-terra"); len(got) != 3 || got[0] != "gpt-5.6-terra" {
+		t.Fatalf("gpt56 family should probe target first=%v", got)
+	}
 	if got := PairedIdentityModels("custom"); len(got) != 1 || got[0] != "custom" {
 		t.Fatalf("custom family=%v", got)
 	}

@@ -49,21 +49,27 @@ type QualitySchedulePatch struct {
 	Enabled                 *bool   `json:"enabled,omitempty"`
 }
 type QualityScheduleView struct {
-	ID                      string  `json:"id"`
-	SystemAccountID         string  `json:"systemAccountId"`
-	AccountID               string  `json:"accountId"`
-	Model                   string  `json:"model"`
-	IntervalMinutes         int     `json:"intervalMinutes"`
-	Profile                 string  `json:"profile"`
-	PenaltyThreshold        int     `json:"penaltyThreshold"`
-	PenaltyAction           string  `json:"penaltyAction"`
-	RecoveryIntervalMinutes int     `json:"recoveryIntervalMinutes"`
-	Enabled                 bool    `json:"enabled"`
-	Revision                int     `json:"revision"`
-	NextRunAt               string  `json:"nextRunAt"`
-	LastRunID               *string `json:"lastRunId,omitempty"`
-	LastRunAt               *string `json:"lastRunAt,omitempty"`
-	LastRunStatus           *string `json:"lastRunStatus,omitempty"`
+	ID                              string  `json:"id"`
+	SystemAccountID                 string  `json:"systemAccountId"`
+	AccountID                       string  `json:"accountId"`
+	AccountName                     string  `json:"accountName,omitempty"`
+	ProviderCode                    string  `json:"providerCode,omitempty"`
+	Model                           string  `json:"model"`
+	IntervalMinutes                 int     `json:"intervalMinutes"`
+	Profile                         string  `json:"profile"`
+	PenaltyThreshold                int     `json:"penaltyThreshold"`
+	PenaltyAction                   string  `json:"penaltyAction"`
+	RecoveryIntervalMinutes         int     `json:"recoveryIntervalMinutes"`
+	Enabled                         bool    `json:"enabled"`
+	Revision                        int     `json:"revision"`
+	NextRunAt                       string  `json:"nextRunAt"`
+	LastRunID                       *string `json:"lastRunId,omitempty"`
+	LastRunAt                       *string `json:"lastRunAt,omitempty"`
+	LastRunStatus                   *string `json:"lastRunStatus,omitempty"`
+	CurrentEnforcementAction        string  `json:"currentEnforcementAction,omitempty"`
+	CurrentEnforcementRecoveryDueAt string  `json:"currentEnforcementRecoveryDueAt,omitempty"`
+	CreatedAt                       string  `json:"createdAt"`
+	UpdatedAt                       string  `json:"updatedAt"`
 }
 type QualityScheduleList struct {
 	Items    []QualityScheduleView `json:"items"`
@@ -172,10 +178,10 @@ func (m *BusinessQualityManager) ListSchedules(ctx context.Context, systemID str
 		size = 50
 	}
 	var total int
-	if err := m.db.QueryRowContext(ctx, m.bind(`SELECT COUNT(*) FROM `+m.table("model_quality_schedules")+` WHERE system_account_id=?`), systemID).Scan(&total); err != nil {
+	if err := m.db.QueryRowContext(ctx, m.bind(`SELECT COUNT(*) FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL WHERE mqs.system_account_id=?`), systemID).Scan(&total); err != nil {
 		return QualityScheduleList{}, err
 	}
-	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT id,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,revision,next_run_at,last_run_id,last_run_at,last_run_status FROM `+m.table("model_quality_schedules")+` WHERE system_account_id=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`), systemID, size+1, (page-1)*size)
+	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,a.provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.enabled,mqs.revision,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,aqe.action,aqe.recovery_due_at,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.system_account_id=? ORDER BY mqs.created_at DESC,mqs.id DESC LIMIT ? OFFSET ?`), systemID, size+1, (page-1)*size)
 	if err != nil {
 		return QualityScheduleList{}, err
 	}
@@ -287,7 +293,7 @@ func (m *BusinessQualityManager) policyTx(ctx context.Context, tx *sql.Tx, syste
 	return out, nil
 }
 func (m *BusinessQualityManager) scheduleByID(ctx context.Context, systemID, id string) (QualityScheduleView, error) {
-	row := m.db.QueryRowContext(ctx, m.bind(`SELECT id,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,revision,next_run_at,last_run_id,last_run_at,last_run_status FROM `+m.table("model_quality_schedules")+` WHERE id=? AND system_account_id=?`), id, systemID)
+	row := m.db.QueryRowContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,a.provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.enabled,mqs.revision,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,aqe.action,aqe.recovery_due_at,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.id=? AND mqs.system_account_id=?`), id, systemID)
 	v, err := scanQualitySchedule(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return QualityScheduleView{}, errors.New("定时检查配置不存在")
@@ -341,12 +347,18 @@ func (m *BusinessQualityManager) bind(s string) string {
 func scanQualitySchedule(row interface{ Scan(...any) error }) (QualityScheduleView, error) {
 	var v QualityScheduleView
 	var enabled int
-	var lastID, lastAt, lastStatus sql.NullString
-	err := row.Scan(&v.ID, &v.SystemAccountID, &v.AccountID, &v.Model, &v.IntervalMinutes, &v.Profile, &v.PenaltyThreshold, &v.PenaltyAction, &v.RecoveryIntervalMinutes, &enabled, &v.Revision, &v.NextRunAt, &lastID, &lastAt, &lastStatus)
+	var accountName, providerCode, lastID, lastAt, lastStatus, enforcementAction, enforcementRecoveryDueAt sql.NullString
+	err := row.Scan(&v.ID, &v.SystemAccountID, &v.AccountID, &accountName, &providerCode, &v.Model, &v.IntervalMinutes, &v.Profile, &v.PenaltyThreshold, &v.PenaltyAction, &v.RecoveryIntervalMinutes, &enabled, &v.Revision, &v.NextRunAt, &lastID, &lastAt, &lastStatus, &enforcementAction, &enforcementRecoveryDueAt, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return v, err
 	}
 	v.Enabled = enabled == 1
+	if accountName.Valid {
+		v.AccountName = accountName.String
+	}
+	if providerCode.Valid {
+		v.ProviderCode = providerCode.String
+	}
 	if lastID.Valid {
 		v.LastRunID = &lastID.String
 	}
@@ -355,6 +367,12 @@ func scanQualitySchedule(row interface{ Scan(...any) error }) (QualityScheduleVi
 	}
 	if lastStatus.Valid {
 		v.LastRunStatus = &lastStatus.String
+	}
+	if enforcementAction.Valid {
+		v.CurrentEnforcementAction = enforcementAction.String
+	}
+	if enforcementRecoveryDueAt.Valid {
+		v.CurrentEnforcementRecoveryDueAt = enforcementRecoveryDueAt.String
 	}
 	return v, nil
 }
