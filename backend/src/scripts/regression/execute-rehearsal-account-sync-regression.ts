@@ -72,6 +72,9 @@ const providerRows = [
 ]
 assert.deepEqual(orderProviderRows(providerRows).map((row) => row.code), ['source', 'child'])
 assert.throws(() => orderProviderRows([{ code: 'child', parent_code: 'missing' }]), /缺少 scope 内父节点/)
+assert.throws(() => orderProviderRows([{ code: 'child', parent_code: ' source ' }, { code: 'source', parent_code: null }]), /缺少 scope 内父节点/)
+assert.throws(() => orderProviderRows([{ code: 'same', parent_code: null }, { code: 'same', parent_code: null }]), /code 重复/)
+assert.throws(() => orderProviderRows([{ code: '   ', parent_code: null }]), /空 code/)
 assert.throws(() => orderProviderRows([
   { code: 'a', parent_code: 'b' },
   { code: 'b', parent_code: 'a' }
