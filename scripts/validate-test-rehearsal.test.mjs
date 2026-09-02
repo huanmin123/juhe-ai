@@ -335,6 +335,7 @@ for (const [index, table] of validEvidence.accounts.tables.entries()) {
   table.targetRows = table.rows
   table.sourceChecksum = `${String.fromCharCode(97 + (index % 6))}`.repeat(64)
   table.targetChecksum = `${String.fromCharCode(102 - (index % 6))}`.repeat(64)
+  table.readbackDigest = `${String.fromCharCode(97 + ((index + 2) % 6))}`.repeat(64)
   table.evidenceRefs = [`accounts/tables/${table.name}.json`]
 }
 validEvidence.accounts.runtimeResetTables = RUNTIME_RESET_EVIDENCE_TABLE_NAMES.map((name, index) => ({
@@ -493,6 +494,11 @@ const missingAccountTableChecksum = structuredClone(validEvidence)
 delete missingAccountTableChecksum.accounts.tables.find(table => table.name === 'accounts').targetChecksum
 assert.equal(validateTestRehearsalEvidence(missingAccountTableChecksum).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(missingAccountTableChecksum).blockers.join('\n'), /accounts\.tables.*targetChecksum/)
+
+const missingAccountReadbackDigest = structuredClone(validEvidence)
+delete missingAccountReadbackDigest.accounts.tables.find(table => table.name === 'accounts').readbackDigest
+assert.equal(validateTestRehearsalEvidence(missingAccountReadbackDigest).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(missingAccountReadbackDigest).blockers.join('\n'), /accounts\.tables.*readbackDigest/)
 
 const mismatchedAccountTableRows = structuredClone(validEvidence)
 mismatchedAccountTableRows.accounts.tables.find(table => table.name === 'accounts').targetRows += 1
