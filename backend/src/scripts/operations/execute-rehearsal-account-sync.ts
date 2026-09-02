@@ -323,6 +323,7 @@ async function copyTable(
   const targetDigest = createHash('sha256')
   for (const value of projectedRowKeys(readback.rows, copiedColumns)) targetDigest.update(value).update('\n')
   if (sourceDigest !== targetDigest.digest('hex')) throw new Error(`${table} copied 列 readback digest 不一致，事务将回滚`)
+  await advanceIdSequence(target, table)
   return {
     name: table,
     sourceRows: result.rowCount ?? result.rows.length,
@@ -333,9 +334,23 @@ async function copyTable(
 }
 
 function requiresPerRowGeneratedValue(table: string, column: string): boolean {
+  if (table === 'system_accounts' && column === 'password_hash') return true
   if (table === 'accounts' || table === 'proxy_profiles' || table === 'api_keys') return true
   if (table === 'model_quality_schedules' && ['enabled', 'next_run_at'].includes(column)) return true
   return false
+}
+
+async function advanceIdSequence(target: QueryClient, table: string): Promise<void> {
+  const sequence = await target.query<{ sequence_name: string | null }>(
+    'SELECT pg_get_serial_sequence($1, $2) AS sequence_name',
+    [`${businessSchema}.${table}`, 'id']
+  )
+  const sequenceName = sequence.rows[0]?.sequence_name
+  if (!sequenceName) return
+  await target.query(
+    `SELECT setval($1::regclass, COALESCE((SELECT max(${quoteIdentifier('id')}) FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier(table)}), 1), (SELECT count(*) > 0 FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier(table)}))`,
+    [sequenceName]
+  )
 }
 
 function buildScopePredicate(primaryKey: readonly PrimaryKeyColumn[], scopeKeys: readonly string[]): { sql: string; parameters: unknown[] } {
