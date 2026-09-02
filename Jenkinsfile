@@ -15,6 +15,7 @@ pipeline {
     string(name: 'ROLLBACK_APPROVAL_TICKET', defaultValue: '', description: '回滚必须填写受控审批单号；普通发布不得使用回滚分支。')
     string(name: 'ROLLBACK_SCHEMA_COMPATIBILITY_TICKET', defaultValue: '', description: '回滚必须填写已核对数据库 schema 前向兼容性的证据单号；不回退数据库 schema。')
     string(name: 'PROD_APPROVAL_TICKET', defaultValue: '', description: '生产晋级必须填写本次用户批准的审批单号；为空时禁止写入 prod。')
+    string(name: 'PROD_FINAL_APPROVAL', defaultValue: '', description: '生产晋级必须由用户明确输入 I_APPROVE_PROD_SINGLE_ACTIVE_STOP；缺少精确确认时禁止写入 prod。')
     string(name: 'RELEASE_MODE', defaultValue: 'single-active-stop', description: '本次生产发布固定为全停机单 active；其他模式必须先完成独立 GitOps 设计与审批。')
   }
 
@@ -89,6 +90,9 @@ pipeline {
           }
           if (params.DEPLOY_PROD && !validApprovalTicket(params.PROD_APPROVAL_TICKET)) {
             error 'PROD_APPROVAL_TICKET 格式非法，仅允许受控审批单号字符。'
+          }
+          if (params.DEPLOY_PROD && params.PROD_FINAL_APPROVAL?.trim() != 'I_APPROVE_PROD_SINGLE_ACTIVE_STOP') {
+            error 'DEPLOY_PROD 必须填写精确的 PROD_FINAL_APPROVAL=I_APPROVE_PROD_SINGLE_ACTIVE_STOP；缺少用户最终确认不得写 prod。'
           }
         }
       }

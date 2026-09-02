@@ -16,6 +16,8 @@ assert.match(jenkinsfile, /string\(name: 'ROLLBACK_SCHEMA_COMPATIBILITY_TICKET'/
   '回滚必须带 schema 前向兼容证据单号')
 assert.match(jenkinsfile, /string\(name: 'PROD_APPROVAL_TICKET'/,
   '生产晋级必须带用户最终批准单号')
+assert.match(jenkinsfile, /string\(name: 'PROD_FINAL_APPROVAL'/,
+  '生产晋级必须带用户最终确认参数')
 assert.match(jenkinsfile, /string\(name: 'RELEASE_MODE', defaultValue: 'single-active-stop'/,
   '生产发布模式必须显式固定为全停机单 active')
 
@@ -59,6 +61,8 @@ assert.match(jenkinsfile, /if \(rollbackRequested\(\) && !\(params\.ROLLBACK_SCH
   'prod 回滚缺少 schema 兼容证据时必须 fail closed')
 assert.match(jenkinsfile, /if \(params\.DEPLOY_PROD && !\(params\.PROD_APPROVAL_TICKET\?\.trim\(\)\)\)/,
   'prod 晋级缺少用户最终批准时必须 fail closed')
+assert.match(jenkinsfile, /if \(params\.DEPLOY_PROD && params\.PROD_FINAL_APPROVAL\?\.trim\(\) != 'I_APPROVE_PROD_SINGLE_ACTIVE_STOP'\)/,
+  'prod 晋级缺少精确用户确认短语时必须 fail closed')
 assert.match(jenkinsfile, /def validApprovalTicket\(value\)/,
   '审批单号必须经过受控格式校验，避免参数注入')
 assert.match(jenkinsfile, /def prodRollbackCandidates\(\) \{\s*\/\/ 回滚必须从本次构建新鲜读取平台仓库[\s\S]*?refreshPlatformReleaseWorkspace\(\)/,
