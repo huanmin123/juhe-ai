@@ -488,7 +488,7 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
     cd '${releaseWorkspace()}'
     metadata_file='${overlay}/release-metadata.yaml'
     metadata_tmp="\${metadata_file}.tmp.\$\$"
-    tr -d '\r' < "\${metadata_file}" > "\${metadata_tmp}"
+    sed 's/[[:cntrl:]]$//' "\${metadata_file}" > "\${metadata_tmp}"
     mv "\${metadata_tmp}" "\${metadata_file}"
     sed -i \\
       -e 's|^  sourceCommit: ".*"|  sourceCommit: "${sourceCommit}"|' \\
