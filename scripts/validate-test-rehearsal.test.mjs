@@ -247,6 +247,8 @@ for (const environment of ['test', 'prod']) {
       registryManifestDigest: validEvidence.release.nodeDigest,
       resolvedPlatformManifestDigest: `sha256:${'4'.repeat(64)}`,
       runtimeImageID: `sha256:${'4'.repeat(64)}`,
+      runtimeImageIDKind: 'index',
+      runtimeImageIDPlatformManifestDigest: `sha256:${'4'.repeat(64)}`,
       platform: 'linux/amd64',
       evidenceRef: `runtime/${environment}-node-image-resolution.json`
     },
@@ -255,6 +257,8 @@ for (const environment of ['test', 'prod']) {
       registryManifestDigest: validEvidence.release.jobsDigest,
       resolvedPlatformManifestDigest: `sha256:${'5'.repeat(64)}`,
       runtimeImageID: `sha256:${'5'.repeat(64)}`,
+      runtimeImageIDKind: 'index',
+      runtimeImageIDPlatformManifestDigest: `sha256:${'5'.repeat(64)}`,
       platform: 'linux/amd64',
       evidenceRef: `runtime/${environment}-jobs-image-resolution.json`
     },
@@ -263,6 +267,8 @@ for (const environment of ['test', 'prod']) {
       registryManifestDigest: validEvidence.release.gatewayDigest,
       resolvedPlatformManifestDigest: `sha256:${'6'.repeat(64)}`,
       runtimeImageID: `sha256:${'6'.repeat(64)}`,
+      runtimeImageIDKind: 'index',
+      runtimeImageIDPlatformManifestDigest: `sha256:${'6'.repeat(64)}`,
       platform: 'linux/amd64',
       evidenceRef: `runtime/${environment}-gateway-image-resolution.json`
     }
@@ -350,6 +356,11 @@ const unresolvedImageIndex = structuredClone(validEvidence)
 unresolvedImageIndex.release.test.imageResolution['go-jobs'].registryManifestDigest = `sha256:${'7'.repeat(64)}`
 assert.equal(validateTestRehearsalEvidence(unresolvedImageIndex).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(unresolvedImageIndex).blockers.join('\n'), /registryManifestDigest/)
+
+const mismatchedRuntimeResolution = structuredClone(validEvidence)
+mismatchedRuntimeResolution.release.test.imageResolution['go-gateway'].runtimeImageIDPlatformManifestDigest = `sha256:${'8'.repeat(64)}`
+assert.equal(validateTestRehearsalEvidence(mismatchedRuntimeResolution).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(mismatchedRuntimeResolution).blockers.join('\n'), /runtimeImageIDPlatformManifestDigest/)
 
 const unapprovedEnvironmentDiff = structuredClone(validEvidence)
 unapprovedEnvironmentDiff.environment.permittedDiffs.push('temporary allowlist')

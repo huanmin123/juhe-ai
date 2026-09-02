@@ -21,6 +21,7 @@ const RELEASE_IMAGE_COMPONENTS = Object.freeze([
   ['jobsDigest', 'go-jobs'],
   ['gatewayDigest', 'go-gateway']
 ])
+const RUNTIME_IMAGE_ID_KINDS = new Set(['index', 'manifest'])
 const ACCOUNT_SELF_FK_POLICIES = new Set([
   'source-before-authorization-instance',
   'deferred-constraints-verified'
@@ -208,6 +209,10 @@ function validateImageResolution(environmentEvidence, pathName, release, blocker
     requireString(resolution, 'registryManifestDigest', componentPath, blockers, DIGEST_PATTERN, '必须记录 registry 回读的 OCI index digest')
     requireString(resolution, 'resolvedPlatformManifestDigest', componentPath, blockers, DIGEST_PATTERN, '必须记录目标节点平台 manifest digest')
     requireString(resolution, 'runtimeImageID', componentPath, blockers, DIGEST_PATTERN, '必须记录 Pod status.imageID digest')
+    if (!RUNTIME_IMAGE_ID_KINDS.has(resolution.runtimeImageIDKind)) {
+      addBlocker(blockers, `${componentPath}.runtimeImageIDKind`, '必须为 index 或 manifest')
+    }
+    requireString(resolution, 'runtimeImageIDPlatformManifestDigest', componentPath, blockers, DIGEST_PATTERN, '必须记录 status.imageID 解析到的目标平台 manifest digest')
     requireExactValue(resolution, 'platform', 'linux/amd64', componentPath, blockers)
     requireString(resolution, 'evidenceRef', componentPath, blockers, EVIDENCE_REF_PATTERN, '必须引用 registry 与 Pod imageID 的受控回读证据')
     const expectedDigest = release[digestKey]
@@ -217,8 +222,8 @@ function validateImageResolution(environmentEvidence, pathName, release, blocker
     if (resolution.registryManifestDigest !== resolution.requestedDigest) {
       addBlocker(blockers, `${componentPath}.registryManifestDigest`, '必须与 requestedDigest 一致，禁止 tag 或未核对的 registry 响应')
     }
-    if (resolution.runtimeImageID !== resolution.resolvedPlatformManifestDigest) {
-      addBlocker(blockers, `${componentPath}.runtimeImageID`, '必须与 resolvedPlatformManifestDigest 一致')
+    if (resolution.runtimeImageIDPlatformManifestDigest !== resolution.resolvedPlatformManifestDigest) {
+      addBlocker(blockers, `${componentPath}.runtimeImageIDPlatformManifestDigest`, '必须与 resolvedPlatformManifestDigest 一致；index imageID 允许是同一平台 manifest 的已核验别名')
     }
   }
 }
