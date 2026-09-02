@@ -20,7 +20,8 @@ const root = await mkdtemp(path.join(os.tmpdir(), 'juhe-ai-evidence-'))
 try {
   const files = [
     { path: 'release/digests.json', contents: Buffer.from('{"ok":true}\n') },
-    { path: 'smoke/canary.json', contents: Buffer.from('{"request":"passed"}\n') }
+    { path: 'smoke/canary.json', contents: Buffer.from('{"request":"passed"}\n') },
+    { path: 'accounts/credentials-policy.json', contents: Buffer.from('{"policy":"test-only-equivalent"}\n') }
   ]
   for (const item of files) {
     const filePath = path.join(root, item.path)
@@ -41,11 +42,12 @@ try {
   const evidence = {
     release: { evidenceRefs: ['release/digests.json'] },
     smoke: { evidenceRefs: ['smoke/canary.json'] },
+    accounts: { credentialsEvidenceRef: 'accounts/credentials-policy.json' },
     controls: { evidenceManifestDigest: manifestDigest }
   }
   assert.deepEqual(await verifyEvidenceManifest(evidence, root), {
     status: 'passed',
-    evidenceRefs: 2,
+    evidenceRefs: 3,
     evidenceManifestDigest: manifestDigest
   })
 

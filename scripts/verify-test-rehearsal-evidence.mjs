@@ -80,11 +80,12 @@ function collectEvidenceRefs(value, refs = new Set()) {
   }
   if (!isRecord(value)) return refs
   for (const [key, child] of Object.entries(value)) {
+    const isEvidenceReferenceKey = key === 'evidenceRef' || key.endsWith('EvidenceRef')
     if (key === 'evidenceRefs' && Array.isArray(child)) {
       for (const ref of child) if (typeof ref === 'string') refs.add(ref)
       continue
     }
-    if (key === 'evidenceRef' && typeof child === 'string') {
+    if (isEvidenceReferenceKey && typeof child === 'string') {
       refs.add(child)
       continue
     }
