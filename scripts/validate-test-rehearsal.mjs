@@ -40,6 +40,8 @@ const PERMITTED_ENV_DIFFS = new Set([
   'test notification target',
   'owner id'
 ])
+const ENV_KEY_PATTERN = /^[A-Z][A-Z0-9_]{1,127}$/u
+const ENV_SOURCE_PATTERN = /^[A-Za-z][A-Za-z0-9._:/-]{1,127}$/u
 const REQUIRED_ACCOUNT_COLUMNS = new Map([
   ['system_accounts', new Set([
     'id',
@@ -583,6 +585,62 @@ function validateEnvironment(evidence, blockers) {
       if (typeof diff !== 'string' || !PERMITTED_ENV_DIFFS.has(diff)) addBlocker(blockers, 'environment.permittedDiffs', `存在未批准的环境差异 ${String(diff)}`)
       if (seen.has(diff)) addBlocker(blockers, 'environment.permittedDiffs', `环境差异不得重复 ${String(diff)}`)
       seen.add(diff)
+    }
+  }
+  if (!Array.isArray(environment.permittedDiffDetails) || environment.permittedDiffDetails.length === 0) {
+    addBlocker(blockers, 'environment.permittedDiffDetails', '必须逐键列出每个允许差异的来源、值哈希、审批和证据')
+    return
+  }
+  const detailKeys = new Set()
+  const detailCategories = new Set()
+  for (const [index, detail] of environment.permittedDiffDetails.entries()) {
+    const detailPath = `environment.permittedDiffDetails[${index}]`
+    if (!isRecord(detail)) {
+      addBlocker(blockers, detailPath, '必须是对象')
+      continue
+    }
+    requireString(detail, 'key', detailPath, blockers, ENV_KEY_PATTERN, '必须是环境变量键名')
+    if (typeof detail.key === 'string' && detail.key.trim() !== '') {
+      if (detailKeys.has(detail.key)) addBlocker(blockers, `${detailPath}.key`, `环境变量键不得重复 ${detail.key}`)
+      detailKeys.add(detail.key)
+    }
+    requireString(detail, 'category', detailPath, blockers, undefined, '必须有差异类别')
+    if (typeof detail.category === 'string') {
+      if (!PERMITTED_ENV_DIFFS.has(detail.category)) {
+        addBlocker(blockers, `${detailPath}.category`, `存在未批准的环境差异类别 ${detail.category}`)
+      }
+      detailCategories.add(detail.category)
+      if (Array.isArray(environment.finalPodEnvPermittedCategories)
+        && !environment.finalPodEnvPermittedCategories.includes(detail.category)) {
+        addBlocker(blockers, `${detailPath}.category`, '差异类别必须包含在 finalPodEnvPermittedCategories 中')
+      }
+    }
+    requireString(detail, 'testSource', detailPath, blockers, ENV_SOURCE_PATTERN, '必须记录 test 键的注入/解析来源')
+    requireString(detail, 'prodSource', detailPath, blockers, ENV_SOURCE_PATTERN, '必须记录 prod 键的注入/解析来源')
+    requireString(detail, 'testValueHash', detailPath, blockers, SHA256_HEX_PATTERN, '必须记录 test 解析值 sha256（不得记录原值）')
+    requireString(detail, 'prodValueHash', detailPath, blockers, SHA256_HEX_PATTERN, '必须记录 prod 解析值 sha256（不得记录原值）')
+    if (typeof detail.testValueHash === 'string' && typeof detail.prodValueHash === 'string'
+      && SHA256_HEX_PATTERN.test(detail.testValueHash) && SHA256_HEX_PATTERN.test(detail.prodValueHash)
+      && detail.testValueHash === detail.prodValueHash) {
+      addBlocker(blockers, detailPath, '允许差异的 test/prod 值哈希不能相同；相同值不应列为差异')
+    }
+    requireStringArray(detail, 'consumerContainers', detailPath, blockers, '必须列出消费该键的容器')
+    requireString(detail, 'reason', detailPath, blockers, undefined, '必须说明该差异的原因和边界')
+    requireString(detail, 'approvedBy', detailPath, blockers, /^[A-Za-z0-9._:@/-]{1,128}$/u, '必须记录批准人')
+    requireString(detail, 'approvedAt', detailPath, blockers, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u, '必须记录 UTC 批准时间')
+    requireString(detail, 'evidenceRef', detailPath, blockers, EVIDENCE_REF_PATTERN, '必须引用逐键差异现场证据')
+  }
+  if (Array.isArray(environment.permittedDiffs)) {
+    const permittedCategories = new Set(environment.permittedDiffs)
+    for (const category of permittedCategories) {
+      if (!detailCategories.has(category)) {
+        addBlocker(blockers, 'environment.permittedDiffDetails', `允许差异类别 ${category} 缺少逐键详情`)
+      }
+    }
+    for (const category of detailCategories) {
+      if (!permittedCategories.has(category)) {
+        addBlocker(blockers, 'environment.permittedDiffs', `逐键详情声明了未列入 permittedDiffs 的类别 ${category}`)
+      }
     }
   }
 }

@@ -205,7 +205,35 @@ const validEvidence = {
     finalPodEnvUnexpectedDiffs: [],
     finalPodEnvPermittedCategories: ['database endpoint', 'instance id', 'secret material', 'k8s service discovery'],
     unexpectedDiffs: [],
-    permittedDiffs: ['database endpoint', 'instance id']
+    permittedDiffs: ['database endpoint', 'instance id'],
+    permittedDiffDetails: [
+      {
+        key: 'JUHE_AI_POSTGRES_URL',
+        category: 'database endpoint',
+        testSource: 'Secret/envFrom',
+        prodSource: 'Secret/envFrom',
+        testValueHash: '1'.repeat(64),
+        prodValueHash: '2'.repeat(64),
+        consumerContainers: ['node-runtime', 'go-jobs', 'go-gateway'],
+        reason: 'test 使用隔离数据库端点；连接参数、schema 和权限契约保持一致',
+        approvedBy: 'release-owner@example',
+        approvedAt: '2026-09-02T02:00:00Z',
+        evidenceRef: 'environment/postgres-url-diff.json'
+      },
+      {
+        key: 'JUHE_AI_INSTANCE_ID',
+        category: 'instance id',
+        testSource: 'ConfigMap/envFrom',
+        prodSource: 'ConfigMap/envFrom',
+        testValueHash: '3'.repeat(64),
+        prodValueHash: '4'.repeat(64),
+        consumerContainers: ['node-runtime', 'go-jobs', 'go-gateway'],
+        reason: 'test 使用独立实例标识，避免 owner/lease 交叉',
+        approvedBy: 'release-owner@example',
+        approvedAt: '2026-09-02T02:00:00Z',
+        evidenceRef: 'environment/instance-id-diff.json'
+      }
+    ]
   },
   redis: {
     evidenceRefs: ['redis/acl-isolation.json'],
@@ -392,6 +420,21 @@ assert.match(validateTestRehearsalEvidence(mismatchedRuntimeResolution).blockers
 const unapprovedEnvironmentDiff = structuredClone(validEvidence)
 unapprovedEnvironmentDiff.environment.permittedDiffs.push('temporary allowlist')
 assert.equal(validateTestRehearsalEvidence(unapprovedEnvironmentDiff).status, 'blocked')
+
+const missingEnvironmentDiffDetails = structuredClone(validEvidence)
+delete missingEnvironmentDiffDetails.environment.permittedDiffDetails
+assert.equal(validateTestRehearsalEvidence(missingEnvironmentDiffDetails).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(missingEnvironmentDiffDetails).blockers.join('\\n'), /permittedDiffDetails/)
+
+const unboundEnvironmentDiffDetail = structuredClone(validEvidence)
+unboundEnvironmentDiffDetail.environment.permittedDiffDetails[0].testValueHash = unboundEnvironmentDiffDetail.environment.permittedDiffDetails[0].prodValueHash
+assert.equal(validateTestRehearsalEvidence(unboundEnvironmentDiffDetail).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(unboundEnvironmentDiffDetail).blockers.join('\\n'), /值哈希不能相同/)
+
+const duplicateEnvironmentDiffKey = structuredClone(validEvidence)
+duplicateEnvironmentDiffKey.environment.permittedDiffDetails[1].key = duplicateEnvironmentDiffKey.environment.permittedDiffDetails[0].key
+assert.equal(validateTestRehearsalEvidence(duplicateEnvironmentDiffKey).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(duplicateEnvironmentDiffKey).blockers.join('\\n'), /环境变量键不得重复/)
 
 const missingFinalPodEnvEvidence = structuredClone(validEvidence)
 delete missingFinalPodEnvEvidence.environment.finalPodEnvEvidenceRef
