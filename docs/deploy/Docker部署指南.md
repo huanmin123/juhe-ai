@@ -159,20 +159,23 @@ jobs 与 gateway 在 Node `/__aisys__/api/health` 确认 DB service 就绪后启
 
 ## 5. 持久化
 
-standalone/performance Compose 合计定义八个 Docker volume（不同服务按只读/读写挂载）：
+两种 Compose 场景的卷集合不同，不能用一个总数概括。卷名和读写权限必须以所选场景的 Compose 文件为准：
+
+**standalone (`docker/compose.yml`)：9 个卷**
 
 ```text
 juhe-ai-data -> /app/backend/data
-juhe-ai-logs -> /app/backend/logs
+juhe-ai-go-runtime-metrics-data -> /app/backend/go-runtime-metrics-data
 juhe-ai-runtime-log-data -> /app/backend/runtime-log-data
 juhe-ai-table-monitor-data -> /app/backend/table-monitor-data
 juhe-ai-audit-log-data -> /app/backend/audit-log-data
 juhe-ai-operation-log-data -> /app/backend/operation-log-data
 juhe-ai-account-health-data -> /app/backend/account-health-data
 juhe-ai-account-health-inputs -> /app/backend/account-health-inputs
+juhe-ai-logs -> /app/backend/logs
 ```
 
-`juhe-ai-data` 在 Node 容器中是业务数据卷（Go sidecar 只读挂载）；runtime-log、table-monitor、audit-log、operation-log、account-health-data 和 account-health-inputs 分别保存对应事实或 input。各服务的只读/读写权限以 `docker/compose.yml` 实际挂载为准。不要在生产环境执行 `docker compose down -v`，否则会删除这些数据。
+standalone 中 `juhe-ai-data` 在 Node 容器读写、Go sidecar 只读；Node 对 runtime-log/table-monitor/audit-log/account-health-data 只读，gateway 对 audit-log/operation-log 读写，go-jobs 对 runtime-log/table-monitor/account-health-data/go-runtime-metrics-data 读写；account-health-inputs 和 logs 按服务实际挂载读写。**performance (`docker/compose.performance.yml`)：9 个卷**，其中应用卷为 `juhe-ai-data`、`juhe-ai-go-runtime-metrics-data`、`juhe-ai-audit-log-data`、`juhe-ai-account-health-inputs`、`juhe-ai-logs`，基础设施卷为 `juhe-ai-postgres-data`、`juhe-ai-redis-cache-data`、`juhe-ai-redis-state-data`、`juhe-ai-redis-queue-data`；performance 下业务事实库是 PostgreSQL，`juhe-ai-data` 仅承载兼容路径/运行文件，不能按 standalone SQLite 备份口径解释。各服务的最终读写权限仍以对应 Compose 文件为准。不要在生产环境执行 `docker compose down -v`，否则会删除这些数据。
 
 ## 6. 验证
 
