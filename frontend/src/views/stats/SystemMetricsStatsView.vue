@@ -331,9 +331,9 @@ const goRuntimeSummaryItems = computed(() => {
   return result
 })
 const goRuntimeChartViewOptions = computed(() => [
-  { label: '并发', value: 'concurrency' },
-  { label: '内存', value: 'memory' },
-  { label: '健康', value: 'health', disabled: !hasGoRuntimeChartData(goRuntimeTrend.value?.items ?? [], 'health') }
+  { label: '并发（个）', value: 'concurrency' },
+  { label: '内存（MiB / 个）', value: 'memory' },
+  { label: '健康（毫秒）', value: 'health', disabled: !hasGoRuntimeChartData(goRuntimeTrend.value?.items ?? [], 'health') }
 ])
 const goRuntimeViewUnavailable = computed(() => hasGoRuntimeTrend.value && !hasGoRuntimeChartDataForView.value)
 const goRuntimeDescription = computed(() => {

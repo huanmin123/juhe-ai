@@ -80,6 +80,10 @@ assert.match(jenkinsfile, /def sourceUsesDirectJ3aManagement\(\) \{[\s\S]*?retur
   'J3a 在独立迁移契约验收前必须保持显式关闭，不能由源码文件存在性自动推断开启')
 assert.match(jenkinsfile, /route_count=.*grep -Fxc[\s\S]*?J3a IngressRoute resource must appear exactly once/,
   'J3a 路由和开关替换必须做命中数与回读校验，避免 metadata 与 kustomization 漂移')
+assert.match(jenkinsfile, /if \[ -f "\\\$runtime_config" \]; then/,
+  'J3a 关闭时必须兼容尚未迁移 runtime-config.env 的旧平台 release state')
+assert.match(jenkinsfile, /if \[ '\$\{environmentName\}' = 'prod' \] && \[ -f '.*release-history\.tsv'/,
+  'release state 提交不得对可选历史文件执行不存在路径的 git add')
 assert.match(jenkinsfile, /after_matches[\s\S]*?写入后回读命中数/,
   '镜像 digest 写入后必须回读目标块，避免 kustomization 与 metadata 不一致')
 assert.match(jenkinsfile, /def writeReleaseState\([\s\S]*?assert_metadata_value sourceCommit/,

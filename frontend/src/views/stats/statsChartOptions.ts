@@ -328,28 +328,28 @@ function goRuntimeSeries(trend: GoRuntimeTrendItem[], view: GoRuntimeChartView):
       { name: 'Heap Alloc 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapAllocBytesMax) },
       { name: 'Heap Live 平均 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapLiveBytesAvg) },
       { name: 'Heap Live 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapLiveBytesMax) },
-      { name: 'Heap Objects 平均', yAxisIndex: 1, read: (item) => item.heapObjectsAvg },
-      { name: 'Heap Objects 峰值', yAxisIndex: 1, read: (item) => item.heapObjectsMax }
+      { name: 'Heap Objects 平均（个）', yAxisIndex: 1, read: (item) => item.heapObjectsAvg },
+      { name: 'Heap Objects 峰值（个）', yAxisIndex: 1, read: (item) => item.heapObjectsMax }
     ])
   }
   if (view === 'health') {
     return series([
-      { name: 'Scheduler P95 (ms)', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.schedulerLatencyP95SecondsAvg) },
-      { name: 'Scheduler P99 (ms)', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.schedulerLatencyP99SecondsAvg) },
-      { name: 'GC Pause P95 (ms)', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.gcPauseP95SecondsAvg) },
-      { name: 'GC Pause P99 (ms)', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.gcPauseP99SecondsAvg) }
+      { name: 'Scheduler P95（毫秒）', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.schedulerLatencyP95SecondsAvg) },
+      { name: 'Scheduler P99（毫秒）', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.schedulerLatencyP99SecondsAvg) },
+      { name: 'GC Pause P95（毫秒）', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.gcPauseP95SecondsAvg) },
+      { name: 'GC Pause P99（毫秒）', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.gcPauseP99SecondsAvg) }
     ])
   }
   return series([
-    { name: 'Goroutine 平均', read: (item) => item.goroutinesAvg },
-    { name: 'Goroutine 峰值', read: (item) => item.goroutinesMax },
-    { name: 'Runnable 平均', read: (item) => item.goroutinesRunnableAvg },
-    { name: 'Runnable 峰值', read: (item) => item.goroutinesRunnableMax },
-    { name: 'Waiting 平均', read: (item) => item.goroutinesWaitingAvg },
-    { name: 'Waiting 峰值', read: (item) => item.goroutinesWaitingMax },
-    { name: '线程平均', read: (item) => item.threadsAvg },
-    { name: '线程峰值', read: (item) => item.threadsMax },
-    { name: 'GOMAXPROCS', read: (item) => item.gomaxprocsAvg }
+    { name: 'Goroutine 平均（个）', read: (item) => item.goroutinesAvg },
+    { name: 'Goroutine 峰值（个）', read: (item) => item.goroutinesMax },
+    { name: 'Runnable 平均（个）', read: (item) => item.goroutinesRunnableAvg },
+    { name: 'Runnable 峰值（个）', read: (item) => item.goroutinesRunnableMax },
+    { name: 'Waiting 平均（个）', read: (item) => item.goroutinesWaitingAvg },
+    { name: 'Waiting 峰值（个）', read: (item) => item.goroutinesWaitingMax },
+    { name: '线程平均（个）', read: (item) => item.threadsAvg },
+    { name: '线程峰值（个）', read: (item) => item.threadsMax },
+    { name: 'GOMAXPROCS（个）', read: (item) => item.gomaxprocsAvg }
   ])
 }
 
@@ -378,9 +378,9 @@ export function buildGoRuntimeOption(trend: GoRuntimeTrendItem[], timezone = 'As
     yAxis: isMemoryView
       ? [
         { type: 'value', name: 'MiB', axisLabel: { formatter: (value: number) => `${value}`, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
-        { type: 'value', name: '对象数', axisLabel: { formatter: axisNumberLabel, color: '#64748b' }, splitLine: { show: false } }
+        { type: 'value', name: '对象数（个）', axisLabel: { formatter: axisNumberLabel, color: '#64748b' }, splitLine: { show: false } }
       ]
-      : { type: 'value', name: isHealthView ? '毫秒' : '数量', axisLabel: { formatter: isHealthView ? (value: number) => `${value}` : formatInteger, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
+      : { type: 'value', name: isHealthView ? '延迟（毫秒）' : '数量（个）', axisLabel: { formatter: isHealthView ? (value: number) => `${value}` : formatInteger, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
     series: [
       ...series.map((item) => ({ ...item, type: 'line' as const, smooth: true, symbolSize: 6 }))
     ]
@@ -396,7 +396,7 @@ function goRuntimeTooltip(params: unknown, trend: GoRuntimeTrendItem[]): string 
     const value = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value.toFixed(2) : '暂无'
     return `${String(item.seriesName ?? '')}: ${value}`
   }).join('<br/>')
-  const sample = typeof sampleCount === 'number' ? `<br/>采样数: ${formatInteger(sampleCount)}` : ''
+  const sample = typeof sampleCount === 'number' ? `<br/>采样数（次）: ${formatInteger(sampleCount)}` : ''
   return axis ? `${axis}${sample}<br/>${body}` : `${sample}${body}`
 }
 

@@ -424,28 +424,41 @@ def sourceUsesDirectJ3aManagement() {
 def configureJ3aManagementRelease(overlay, enabled) {
   if (!(enabled in ['true', 'false'])) error 'J3a 管理 release 状态必须为 true 或 false。'
   def kustomization = "${overlay}/kustomization.yaml"
+  def runtimeConfig = "${overlay}/runtime-config.env"
   sh """#!/bin/sh
     set -eu
     file='${kustomization}'
+    runtime_config='${runtimeConfig}'
     route='  - j3a-management-ingressroute.yaml'
     if [ '${enabled}' = 'true' ]; then
+      [ -f "\$runtime_config" ] || { echo 'J3a 启用时必须提供环境专属 runtime-config.env，拒绝写 release state' >&2; exit 1; }
       if ! grep -Fqx "\$route" "\$file"; then
         sed -i '/^  - ingress.yaml\$/a\\  - j3a-management-ingressroute.yaml' "\$file"
       fi
     else
       sed -i '/^  - j3a-management-ingressroute.yaml\$/d' "\$file"
     fi
-    sed -i \
-      -e 's|^      - JUHE_AI_PROXY_LATENCY_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}|' \
-      -e 's|^      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}|' \
-      "\$file"
+    if [ -f "\$runtime_config" ]; then
+      sed -i \
+        -e 's|^JUHE_AI_PROXY_LATENCY_ENABLED=.*|JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}|' \
+        -e 's|^JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}|' \
+        "\$runtime_config"
+      enabled_count=\$(grep -Ec '^JUHE_AI_PROXY_LATENCY_ENABLED=' "\$runtime_config" || true)
+      management_enabled_count=\$(grep -Ec '^JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=' "\$runtime_config" || true)
+      [ "\$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
+      [ "\$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
+      grep -Fqx 'JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}' "\$runtime_config"
+      grep -Fqx 'JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}' "\$runtime_config"
+    elif [ '${enabled}' = 'true' ]; then
+      echo 'J3a 启用时 runtime-config.env 不存在' >&2
+      exit 1
+    else
+      legacy_enabled_count=\$(grep -Fxc '      - JUHE_AI_PROXY_LATENCY_ENABLED=false' "\$file" || true)
+      legacy_management_enabled_count=\$(grep -Fxc '      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=false' "\$file" || true)
+      [ "\$legacy_enabled_count" -eq 1 ] || { echo 'J3a 关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
+      [ "\$legacy_management_enabled_count" -eq 1 ] || { echo 'J3a 管理关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
+    fi
     route_count=\$(grep -Fxc "\$route" "\$file" || true)
-    enabled_count=\$(grep -Ec '^      - JUHE_AI_PROXY_LATENCY_ENABLED=' "\$file" || true)
-    management_enabled_count=\$(grep -Ec '^      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=' "\$file" || true)
-    [ "\$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
-    [ "\$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
-    grep -Fqx '      - JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}' "\$file"
-    grep -Fqx '      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}' "\$file"
     if [ '${enabled}' = 'true' ]; then
       [ "\$route_count" -eq 1 ] || { echo 'J3a IngressRoute resource must appear exactly once when enabled' >&2; exit 1; }
     else
@@ -527,7 +540,10 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
     fi
     git config user.name platform-jenkins
     git config user.email jenkins@jh.huanmin.top
-    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml' '${overlay}/statefulset-patch.yaml' '${overlay}/j3a-management-ingressroute.yaml' 'apps/juhe-ai/overlays/prod/release-history.tsv'
+    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml' '${overlay}/statefulset-patch.yaml'
+    if [ -f '${overlay}/runtime-config.env' ]; then git add '${overlay}/runtime-config.env'; fi
+    if [ -f '${overlay}/j3a-management-ingressroute.yaml' ]; then git add '${overlay}/j3a-management-ingressroute.yaml'; fi
+    if [ '${environmentName}' = 'prod' ] && [ -f 'apps/juhe-ai/overlays/prod/release-history.tsv' ]; then git add 'apps/juhe-ai/overlays/prod/release-history.tsv'; fi
     if git diff --cached --quiet; then
       echo 'release state 已是目标 source commit 与不可变 digest；不重复提交。'
     else
