@@ -200,7 +200,7 @@ pipeline {
       when { expression { (params.DEPLOY_PROD || reverseDeployRequested()) && !rollbackRequested() } }
       steps {
         script {
-          def release = readTestRelease()
+          def release = readTestRelease(params.DEPLOY_PROD)
           env.SOURCE_COMMIT = release.sourceCommit
           env.NODE_DIGEST = release.nodeDigest
           env.JOBS_DIGEST = release.jobsDigest
@@ -214,7 +214,7 @@ pipeline {
       when { expression { params.DEPLOY_PROD && !rollbackRequested() } }
       steps {
         script {
-          def release = readTestRelease()
+          def release = readTestRelease(true)
           env.SOURCE_COMMIT = release.sourceCommit
           env.NODE_DIGEST = release.nodeDigest
           env.JOBS_DIGEST = release.jobsDigest
@@ -263,6 +263,7 @@ def validHarborDigestImage(value) {
 }
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
 def validApprovalTicket(value) { return value != null && value.toString() ==~ /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/ }
+def validEvidenceRef(value) { return value != null && value.toString() ==~ /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._\/-]{1,256}$/ }
 def rollbackRequested() { return params.ROLLBACK_PROD }
 def reverseDeployRequested() { return params.REVERSE_DEPLOY_PROD }
 
@@ -330,7 +331,7 @@ def metadataValueOptional(environmentName, key) {
   return line.substring(prefix.length(), line.length() - 1)
 }
 
-def readTestRelease() {
+def readTestRelease(boolean requireVerification = false) {
   refreshPlatformReleaseWorkspace()
   def release = [
     sourceCommit: metadataValue('test', 'sourceCommit'),
@@ -338,11 +339,25 @@ def readTestRelease() {
     jobsDigest: metadataValue('test', 'jobsImageDigest'),
     gatewayDigest: metadataValue('test', 'gatewayImageDigest'),
     j3aManagementEnabled: metadataValue('test', 'j3aManagementEnabled'),
-    releaseMode: metadataValue('test', 'releaseMode')
+    releaseMode: metadataValue('test', 'releaseMode'),
+    verificationStatus: metadataValueOptional('test', 'verification.status'),
+    verificationSourceCommit: metadataValueOptional('test', 'verification.sourceCommit'),
+    verificationEvidenceRef: metadataValueOptional('test', 'verification.evidenceRef')
   ]
   release.platformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
   if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false']) || release.releaseMode != 'single-active-stop') {
     error 'test release state 未通过完整性检查。'
+  }
+  if (requireVerification) {
+    if (release.verificationStatus != 'passed') {
+      error "test release state verification.status 必须为 passed，实际为 ${release.verificationStatus ?: '<missing>'}。"
+    }
+    if (release.verificationSourceCommit != release.sourceCommit) {
+      error 'test release state verification.sourceCommit 必须与 sourceCommit 一致。'
+    }
+    if (!validEvidenceRef(release.verificationEvidenceRef)) {
+      error 'test release state verification.evidenceRef 必须是受控相对证据引用。'
+    }
   }
   return release
 }
@@ -485,8 +500,11 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
          metadataValue('test', 'jobsImageDigest') != jobsDigest ||
          metadataValue('test', 'gatewayImageDigest') != gatewayDigest ||
          metadataValue('test', 'j3aManagementEnabled') != j3aManagementEnabled ||
-         metadataValue('test', 'releaseMode') != 'single-active-stop')) {
-      error 'test release state source/digest 在晋级前未保持原子一致；拒绝写入 prod。'
+         metadataValue('test', 'releaseMode') != 'single-active-stop' ||
+         metadataValue('test', 'verification.status') != 'passed' ||
+         metadataValue('test', 'verification.sourceCommit') != sourceCommit ||
+         !validEvidenceRef(metadataValue('test', 'verification.evidenceRef')))) {
+      error 'test release state source/digest/verification 在晋级前未保持原子一致或 verifier 未通过；拒绝写入 prod。'
     }
     if (actor in ['jenkins-prod-promotion', 'jenkins-prod-rollback'] && metadataValue('prod', 'releaseMode') != 'single-active-stop') {
       error 'prod release metadata 尚未声明 releaseMode=single-active-stop；禁止将候选写入旧的双槽/standby 发布语义。'

@@ -27,16 +27,20 @@ const prodPromotion = jenkinsfile.slice(prodPromotionStart, prodPromotionEnd)
 assert(prodPromotionStart >= 0 && prodPromotionEnd > prodPromotionStart)
 assert.match(prodPromotion, /writeReleaseState\('prod'/,
   'DEPLOY_PROD 必须写入 prod release state')
-assert.match(prodPromotion, /readTestRelease\(\)/,
-  'DEPLOY_PROD 必须读取 test release state 中的 source/digest')
+assert.match(prodPromotion, /readTestRelease\(true\)/,
+  'DEPLOY_PROD 必须读取并要求 test release state 的 verifier 通过')
 assert.match(jenkinsfile, /releaseMode: metadataValue\('test', 'releaseMode'\)/,
   'Jenkins 必须读取 test releaseMode，防止旧双槽候选进入晋级链')
 assert.match(jenkinsfile, /release\.releaseMode != 'single-active-stop'/,
   'Jenkins 必须拒绝未声明 single-active-stop 的 test release state')
 assert.doesNotMatch(prodPromotion, /waitForArgoApplication|waitForIngress|verifyJ3aRelease|markReleaseVerified|assertStandardProdPromotionAllowed/,
   'Jenkins 不负责运行态观察；验证由 Jenkins 外部 AI/观测链路执行')
-assert.doesNotMatch(jenkinsfile, /verification\.(?:status|sourceCommit|evidenceRef)|validEvidenceRef|verifyRelease|verify-release|releaseObserverCredentialId/,
-  'Jenkins 不读取、重置或要求运行态 verification，也不依赖 observer/verifier 脚本')
+assert.match(jenkinsfile, /def readTestRelease\(boolean requireVerification = false\)/,
+  'Jenkins 必须支持仅生产晋级启用 verifier 硬门的读取模式')
+assert.match(jenkinsfile, /if \(requireVerification\)[\s\S]*?verificationStatus != 'passed'[\s\S]*?verificationSourceCommit != release\.sourceCommit[\s\S]*?validEvidenceRef/,
+  'DEPLOY_PROD 必须硬性要求 verifier status/source/evidenceRef')
+assert.match(jenkinsfile, /metadataValue\('test', 'verification\.status'\) != 'passed'[\s\S]*?metadataValue\('test', 'verification\.sourceCommit'\)[\s\S]*?validEvidenceRef\(metadataValue\('test', 'verification\.evidenceRef'\)\)/,
+  '写 prod 前必须二次核对 verifier 字段，防止 test release state 竞态')
 assert.doesNotMatch(jenkinsfile, /writeReverseReleaseState|candidateVerification|reverse-blue-green/,
   '当前单 active 发布契约不保留反向蓝绿 release state 写入实现')
 assert.match(jenkinsfile, /def metadataValueOptional\(environmentName, key\)/,
@@ -94,7 +98,7 @@ assert.match(jenkinsfile, /def writeReleaseState\([\s\S]*?assert_metadata_value 
   'release metadata 写入必须对关键字段做唯一命中数与目标值回读，避免静默漂移')
 assert.match(jenkinsfile, /environmentName.*test[\s\S]*?assert_metadata_value releaseMode 'single-active-stop'/,
   'test release state 写入必须回读 single-active-stop 声明')
-assert.doesNotMatch(jenkinsfile, /assert_metadata_value verification\.|sed -i[\s\S]*verification\./,
+assert.doesNotMatch(jenkinsfile, /assert_metadata_value verification\./,
   'release state 写入不能重置外部 AI 观测字段')
 assert.match(jenkinsfile, /actor in \['jenkins-prod-promotion', 'jenkins-prod-rollback'\][\s\S]*?releaseMode.*single-active-stop/,
   '生产晋级和回滚必须拒绝旧的双槽/standby releaseMode')
