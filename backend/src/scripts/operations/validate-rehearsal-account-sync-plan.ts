@@ -118,13 +118,13 @@ export function validateRehearsalAccountSyncPlan(
 
   for (const name of policiesByName.keys()) {
     if (!reportsByName.has(name)) blockers.push(`${name}: preflight 缺少表报告`)
-    if (!plansByName.has(name)) blockers.push(`${name}: 字段级 plan 缺少表处理`) 
+    if (!plansByName.has(name)) blockers.push(`${name}: 字段级 plan 缺少表处理`)
   }
   for (const name of reportsByName.keys()) {
-    if (!policiesByName.has(name)) blockers.push(`${name}: preflight 包含白名单外表`) 
+    if (!policiesByName.has(name)) blockers.push(`${name}: preflight 包含白名单外表`)
   }
   for (const name of plansByName.keys()) {
-    if (!policiesByName.has(name)) blockers.push(`${name}: field-level plan 包含白名单外表`) 
+    if (!policiesByName.has(name)) blockers.push(`${name}: field-level plan 包含白名单外表`)
   }
 
   const importOrders = new Set<number>()
@@ -271,7 +271,7 @@ function validateTablePlan(
   const seen = new Set<string>()
   for (const [action, columns] of actionColumns) {
     if (!Array.isArray(columns) || columns.some((column) => typeof column !== 'string' || !column.trim())) {
-      blockers.push(`${prefix}.${action}: 必须是非空列名数组`) 
+      blockers.push(`${prefix}.${action}: 必须是非空列名数组`)
       continue
     }
     for (const column of columns) {
@@ -317,10 +317,10 @@ function validateSpecialTableColumns(
 ): void {
   const columns = new Set((Array.isArray(report.sourceColumns) ? report.sourceColumns : []).map((column) => column.name))
   const requireGenerated = (column: string): void => {
-    if (columns.has(column) && !generated.has(column)) blockers.push(`${report.name}: ${column} 必须生成/替换`) 
+    if (columns.has(column) && !generated.has(column)) blockers.push(`${report.name}: ${column} 必须生成/替换`)
   }
   const forbidCopied = (column: string): void => {
-    if (columns.has(column) && copied.has(column)) blockers.push(`${report.name}: ${column} 不得复制生产运行态`) 
+    if (columns.has(column) && copied.has(column)) blockers.push(`${report.name}: ${column} 不得复制生产运行态`)
   }
 
   if (report.name === 'system_accounts') {
@@ -339,7 +339,7 @@ function validateSpecialTableColumns(
     ]) {
       forbidCopied(runtimeColumn)
       if (columns.has(runtimeColumn) && !cleared.has(runtimeColumn) && !generated.has(runtimeColumn)) {
-        blockers.push(`accounts: ${runtimeColumn} 必须清空或按 test 规则生成`) 
+        blockers.push(`accounts: ${runtimeColumn} 必须清空或按 test 规则生成`)
       }
     }
     if (!accountSelfForeignKeyPolicies.has(tablePlan.selfForeignKeyPolicy ?? '')) {
@@ -356,7 +356,7 @@ function validateSpecialTableColumns(
     for (const runtimeColumn of ['enabled', 'next_run_at', 'last_run_id', 'last_run_at', 'last_run_status', 'lease_owner', 'lease_until']) {
       forbidCopied(runtimeColumn)
       if (columns.has(runtimeColumn) && !cleared.has(runtimeColumn) && !generated.has(runtimeColumn)) {
-        blockers.push(`model_quality_schedules: ${runtimeColumn} 必须清空或按 test 规则生成`) 
+        blockers.push(`model_quality_schedules: ${runtimeColumn} 必须清空或按 test 规则生成`)
       }
     }
     if (tablePlan.canaryOnly !== true || tablePlan.disabledUntilSmoke !== true || tablePlan.nextRunAtControlled !== true) {
