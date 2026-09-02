@@ -488,7 +488,7 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
     cd '${releaseWorkspace()}'
     metadata_file='${overlay}/release-metadata.yaml'
     metadata_tmp="\${metadata_file}.tmp.\$\$"
-    sed 's/[[:cntrl:]]\$//' "\${metadata_file}" > "\${metadata_tmp}"
+    sed 's/[[:cntrl:]]//g' "\${metadata_file}" > "\${metadata_tmp}"
     mv "\${metadata_tmp}" "\${metadata_file}"
     sed -i \\
       -e 's|^  sourceCommit: ".*"|  sourceCommit: "${sourceCommit}"|' \\
@@ -498,12 +498,12 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       -e 's|^  j3aManagementEnabled: ".*"|  j3aManagementEnabled: "${j3aManagementEnabled}"|' \\
       -e 's|^  releaseActor: ".*"|  releaseActor: "${actor}"|' \\
       "\${metadata_file}"
-    sed -n '1,12l' "\${metadata_file}"
     assert_metadata_value() {
       key="\$1"
       expected="\$2"
       key_count=\$(grep -Ec "^  \${key}: " "\${metadata_file}" || true)
-      value_count=\$(grep -Fxc "  \${key}: \"\${expected}\"" "\${metadata_file}" || true)
+      expected_line=\$(printf '  %s: "%s"' "\${key}" "\${expected}")
+      value_count=\$(grep -Fxc "\${expected_line}" "\${metadata_file}" || true)
       [ "\$key_count" -eq 1 ] || { echo "release metadata key \${key} 命中数为 \${key_count}，期望 1" >&2; exit 1; }
       [ "\$value_count" -eq 1 ] || { echo "release metadata key \${key} 回读值不匹配" >&2; exit 1; }
     }
