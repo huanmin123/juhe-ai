@@ -458,6 +458,18 @@ function validateAccounts(evidence, blockers) {
           addBlocker(blockers, `accounts.tables[${index}]`, '存在 authorization-instance accounts 时必须先导入至少一个 source account')
         }
       }
+      if (table.name === 'providers') {
+        if (table.selfForeignKeyPolicy !== 'parent-before-child') {
+          addBlocker(blockers, `${tablePath}.selfForeignKeyPolicy`, 'providers.parent_code 自引用必须按 parent-before-child 拓扑导入')
+        }
+        requireBoolean(table, 'parentBeforeChildVerified', tablePath, blockers)
+        const copiedColumns = new Set(Array.isArray(table.copiedColumns) ? table.copiedColumns : [])
+        for (const relationshipColumn of ['code', 'parent_code']) {
+          if (!copiedColumns.has(relationshipColumn)) {
+            addBlocker(blockers, `${tablePath}.copiedColumns`, `providers 自引用拓扑列 ${relationshipColumn} 必须原值复制`)
+          }
+        }
+      }
       if (table.name === 'model_quality_schedules') {
         requireBoolean(table, 'canaryOnly', `accounts.tables[${index}]`, blockers)
         requireBoolean(table, 'disabledUntilSmoke', `accounts.tables[${index}]`, blockers)

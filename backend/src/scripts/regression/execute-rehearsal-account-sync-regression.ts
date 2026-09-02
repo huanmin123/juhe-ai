@@ -6,6 +6,7 @@ import {
   assertExecuteEnvironment,
   hashStringList,
   orderAccountRows,
+  orderProviderRows,
   stableKey,
   validateGeneratedValuesManifest,
   validateScopeManifest
@@ -65,6 +66,16 @@ assert.throws(() => orderAccountRows([
   { id: 'a', authorization_instance_source_account_id: 'b' },
   { id: 'b', authorization_instance_source_account_id: 'a' }
 ]), /缺失 source 或环/)
+const providerRows = [
+  { code: 'child', parent_code: 'source' },
+  { code: 'source', parent_code: null }
+]
+assert.deepEqual(orderProviderRows(providerRows).map((row) => row.code), ['source', 'child'])
+assert.throws(() => orderProviderRows([{ code: 'child', parent_code: 'missing' }]), /缺少 scope 内父节点/)
+assert.throws(() => orderProviderRows([
+  { code: 'a', parent_code: 'b' },
+  { code: 'b', parent_code: 'a' }
+]), /拓扑存在环/)
 
 assert.doesNotThrow(() => assertTransformedReadback(
   'accounts',

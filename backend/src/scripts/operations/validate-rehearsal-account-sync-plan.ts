@@ -16,6 +16,7 @@ const accountSelfForeignKeyPolicies = new Set([
   'source-before-authorization-instance',
   'deferred-constraints-verified'
 ])
+const providerSelfForeignKeyPolicy = 'parent-before-child'
 
 export interface RehearsalAccountSyncTablePlan {
   name: string
@@ -347,6 +348,22 @@ function validateSpecialTableColumns(
     }
     if (cleared.has('authorization_instance_source_account_id')) {
       blockers.push('accounts: 不得统一清空 authorization_instance_source_account_id')
+    }
+  }
+  if (report.name === 'providers') {
+    const hasProviderSelfForeignKey = (Array.isArray(report.sourceForeignKeys) ? report.sourceForeignKeys : [])
+      .some((foreignKey) => foreignKey.parentSchema === 'juhe_business' && foreignKey.parentTable === 'providers')
+    if (hasProviderSelfForeignKey) {
+      if (tablePlan.selfForeignKeyPolicy !== providerSelfForeignKeyPolicy) {
+        blockers.push(`providers.selfForeignKeyPolicy 必须为 ${providerSelfForeignKeyPolicy}`)
+      }
+      for (const relationshipColumn of ['code', 'parent_code']) {
+        if (!columns.has(relationshipColumn)) {
+          blockers.push(`providers: 自引用外键存在但缺少 ${relationshipColumn} 源列`)
+        } else if (!copied.has(relationshipColumn)) {
+          blockers.push(`providers: 自引用拓扑列 ${relationshipColumn} 必须原值复制，不能生成或清空`)
+        }
+      }
     }
   }
   if (report.name === 'api_keys') {

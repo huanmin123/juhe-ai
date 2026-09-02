@@ -228,6 +228,9 @@ export async function executeRehearsalAccountSync(
     if (policy.name === 'accounts' && tablePlan.selfForeignKeyPolicy !== 'source-before-authorization-instance') {
       throw new Error('当前执行器只支持 accounts.selfForeignKeyPolicy=source-before-authorization-instance；deferred 约束执行尚未实现')
     }
+    if (policy.name === 'providers' && tablePlan.selfForeignKeyPolicy !== 'parent-before-child') {
+      throw new Error('当前执行器只支持 providers.selfForeignKeyPolicy=parent-before-child')
+    }
     reports.push(await copyTable(source, target, policy.name, tablePlan, scope.tables[policy.name], generatedValues.tables[policy.name] ?? {}))
   }
 
@@ -272,6 +275,7 @@ async function copyTable(
   )
   let selected = result.rows
   if (table === 'accounts' && plan.selfForeignKeyPolicy === 'source-before-authorization-instance') selected = orderAccountRows(selected)
+  if (table === 'providers' && plan.selfForeignKeyPolicy === 'parent-before-child') selected = orderProviderRows(selected)
   if (!scopeKeys.includes('*') && result.rows.length !== scopeKeys.length) {
     throw new Error(`${table} scope 指定 ${scopeKeys.length} 行，但源库只找到 ${result.rows.length} 行，拒绝部分导入`)
   }
@@ -538,6 +542,45 @@ export function orderAccountRows(rows: Row[]): Row[] {
     }
   }
   return ordered
+}
+
+export function orderProviderRows(rows: Row[]): Row[] {
+  const byCode = new Map<string, Row>()
+  for (const row of rows) {
+    const code = providerCode(row)
+    if (byCode.has(code)) throw new Error(`providers 源库主键 code 重复：${code}`)
+    byCode.set(code, row)
+  }
+
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const ordered: Row[] = []
+  const visit = (row: Row): void => {
+    const code = providerCode(row)
+    if (visited.has(code)) return
+    if (visiting.has(code)) throw new Error(`providers parent_code 拓扑存在环：${code}`)
+    visiting.add(code)
+    const parentValue = row.parent_code
+    const parentCode = parentValue === null || parentValue === undefined ? '' : String(parentValue)
+    if (parentCode) {
+      const parent = byCode.get(parentCode)
+      if (!parent) throw new Error(`providers ${code} 缺少 scope 内父节点 ${parentCode}`)
+      visit(parent)
+    }
+    visiting.delete(code)
+    visited.add(code)
+    ordered.push(row)
+  }
+
+  for (const row of rows) visit(row)
+  return ordered
+}
+
+function providerCode(row: Row): string {
+  const value = row.code
+  const code = typeof value === 'string' ? value : String(value ?? '')
+  if (!code.trim()) throw new Error('providers 源库存在空 code，无法建立 parent_code 拓扑')
+  return code
 }
 
 async function assertTargetEmpty(target: QueryClient, preflight: AccountSyncPreflightReport): Promise<void> {

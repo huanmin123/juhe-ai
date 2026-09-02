@@ -59,6 +59,15 @@ function foreignKey(constraintName: string, parentTable: string): AccountSyncFor
   }
 }
 
+function providerSelfForeignKey(): AccountSyncForeignKey {
+  return {
+    constraintName: 'providers_parent_code_fkey',
+    parentSchema: 'juhe_business',
+    parentTable: 'providers',
+    definition: 'FOREIGN KEY (parent_code) REFERENCES juhe_business.providers(code)'
+  }
+}
+
 function makeReport(name: string, columns: string[], foreignKeys: AccountSyncForeignKey[] = []): AccountSyncTableReport {
   const sourceColumns = columns.map((column) => metadata(column))
   return {
@@ -88,13 +97,16 @@ function makeReport(name: string, columns: string[], foreignKeys: AccountSyncFor
 function buildFixture(): { preflight: AccountSyncPreflightReport; plan: RehearsalAccountSyncPlan } {
   const tableReports = ACCOUNT_SYNC_TABLE_POLICIES.map((policy, index) => {
     let columns = commonColumns
+    if (policy.name === 'providers') columns = [...commonColumns, 'code', 'parent_code']
     if (policy.name === 'system_accounts') columns = systemAccountColumns
     if (policy.name === 'accounts') columns = accountColumns
     if (policy.name === 'api_keys') columns = [...commonColumns, 'key_secret_encrypted']
     if (policy.name === 'model_quality_schedules') columns = scheduleColumns
     const foreignKeys = policy.name === 'accounts'
       ? [foreignKey('accounts_provider_fkey', 'providers')]
-      : []
+      : policy.name === 'providers'
+        ? [providerSelfForeignKey()]
+        : []
     return makeReport(policy.name, columns, foreignKeys)
   })
   const preflight: AccountSyncPreflightReport = {
@@ -166,6 +178,18 @@ function buildFixture(): { preflight: AccountSyncPreflightReport; plan: Rehearsa
         targetExtraColumns: [],
         conflictStrategy: 'source-topological-upsert',
         selfForeignKeyPolicy: 'source-before-authorization-instance'
+      }
+    }
+    if (policy.name === 'providers') {
+      return {
+        name: policy.name,
+        importOrder: index + 1,
+        copiedColumns: sourceColumns,
+        generatedColumns: [],
+        clearedColumns: [],
+        targetExtraColumns: [],
+        conflictStrategy: 'parent-topological-upsert',
+        selfForeignKeyPolicy: 'parent-before-child'
       }
     }
     if (policy.name === 'api_keys') {
@@ -254,6 +278,11 @@ const copiedAccounts = copiedSensitive.plan.tables.find((table) => table.name ==
 copiedAccounts.copiedColumns.push('credentials_encrypted')
 assert.equal(validateRehearsalAccountSyncPlan(copiedSensitive.preflight, copiedSensitive.plan).status, 'blocked')
 assert.match(validateRehearsalAccountSyncPlan(copiedSensitive.preflight, copiedSensitive.plan).blockers.join('\n'), /敏感列 credentials_encrypted/)
+
+const missingProviderSelfForeignKeyPolicy = structuredClone(fixture)
+delete missingProviderSelfForeignKeyPolicy.plan.tables.find((table) => table.name === 'providers')!.selfForeignKeyPolicy
+assert.equal(validateRehearsalAccountSyncPlan(missingProviderSelfForeignKeyPolicy.preflight, missingProviderSelfForeignKeyPolicy.plan).status, 'blocked')
+assert.match(validateRehearsalAccountSyncPlan(missingProviderSelfForeignKeyPolicy.preflight, missingProviderSelfForeignKeyPolicy.plan).blockers.join('\n'), /providers\.selfForeignKeyPolicy/)
 
 const outsideForeignKey = structuredClone(fixture)
 outsideForeignKey.preflight.tableReports.find((table) => table.name === 'accounts')!.foreignKeysOutsidePolicy = ['source:accounts_external_fkey|juhe_business.external_sources']

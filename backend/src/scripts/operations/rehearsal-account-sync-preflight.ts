@@ -99,7 +99,7 @@ const targetDatabasePattern = /^juhe_ai_test_rehearsal_[a-z0-9_]{3,48}$/u
 // execution phase is added.
 export const ACCOUNT_SYNC_TABLE_POLICIES: readonly AccountSyncTablePolicy[] = [
   policy('system_accounts', 'configuration', ['password_hash'], '保留 ID/username/角色/显示名；password_hash 必须使用 test 密码重新生成'),
-  policy('providers', 'configuration'),
+  policy('providers', 'configuration', [], 'provider.parent_code 自引用外键必须按 parent-before-child 拓扑导入，缺失父节点或环引用必须阻断'),
   policy('protocols', 'configuration'),
   policy('protocol_endpoint_families', 'configuration'),
   policy('provider_protocol_profiles', 'configuration'),
