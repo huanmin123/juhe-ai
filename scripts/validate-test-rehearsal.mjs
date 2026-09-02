@@ -26,6 +26,8 @@ const ACCOUNT_SELF_FK_POLICIES = new Set([
   'source-before-authorization-instance',
   'deferred-constraints-verified'
 ])
+const REDIS_COMPONENTS = Object.freeze(['cache', 'state', 'queue'])
+const REDIS_CREDENTIAL_SOURCES = new Set(['secret-env', 'external-secret', 'mounted-secret'])
 const PERMITTED_ENV_DIFFS = new Set([
   'database endpoint',
   'instance id',
@@ -590,6 +592,23 @@ function validateRedis(evidence, blockers) {
   const redis = evidence.redis
   requireEvidenceRefs(redis, 'redis', blockers)
   requireExactValue(redis, 'status', 'passed', 'redis', blockers)
+  requireString(redis, 'credentialInjectionEvidenceRef', 'redis', blockers, EVIDENCE_REF_PATTERN, '必须引用 Redis 凭据注入来源/进程参数的受控回读证据')
+  requireExactValue(redis, 'inlineCredentialDetected', false, 'redis', blockers)
+  if (requireRecord(redis.credentialSourceByComponent, 'redis.credentialSourceByComponent', blockers)) {
+    for (const component of REDIS_COMPONENTS) {
+      const componentPath = `redis.credentialSourceByComponent.${component}`
+      requireString(redis.credentialSourceByComponent, component, 'redis.credentialSourceByComponent', blockers, null, '必须明确每个 Redis 组件的凭据来源')
+      if (typeof redis.credentialSourceByComponent[component] === 'string'
+        && !REDIS_CREDENTIAL_SOURCES.has(redis.credentialSourceByComponent[component])) {
+        addBlocker(blockers, componentPath, '凭据必须来自 Secret/env、external secret 或 mounted secret，不得来自命令行参数')
+      }
+    }
+    for (const component of Object.keys(redis.credentialSourceByComponent)) {
+      if (!REDIS_COMPONENTS.includes(component)) {
+        addBlocker(blockers, 'redis.credentialSourceByComponent', `存在未批准的 Redis 组件 ${component}`)
+      }
+    }
+  }
   for (const key of [
     'physicalEndpointDistinct',
     'logicalDbDistinct',

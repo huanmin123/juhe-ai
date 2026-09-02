@@ -210,6 +210,13 @@ const validEvidence = {
   redis: {
     evidenceRefs: ['redis/acl-isolation.json'],
     status: 'passed',
+    credentialInjectionEvidenceRef: 'redis/credential-injection.json',
+    inlineCredentialDetected: false,
+    credentialSourceByComponent: {
+      cache: 'secret-env',
+      state: 'secret-env',
+      queue: 'secret-env'
+    },
     physicalEndpointDistinct: true,
     logicalDbDistinct: true,
     namespaceDistinct: true,
@@ -325,6 +332,21 @@ redisUnsafe.redis.forbiddenCommandsDenied = false
 redisUnsafe.redis.sharedDefaultUser = true
 assert.equal(validateTestRehearsalEvidence(redisUnsafe).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(redisUnsafe).blockers.join('\n'), /redis\.aclUserDistinct|FLUSHALL|FLUSHDB|default 用户/)
+
+const redisInlineCredential = structuredClone(validEvidence)
+redisInlineCredential.redis.inlineCredentialDetected = true
+assert.equal(validateTestRehearsalEvidence(redisInlineCredential).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(redisInlineCredential).blockers.join('\n'), /inlineCredentialDetected/)
+
+const redisMissingCredentialEvidence = structuredClone(validEvidence)
+delete redisMissingCredentialEvidence.redis.credentialInjectionEvidenceRef
+assert.equal(validateTestRehearsalEvidence(redisMissingCredentialEvidence).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(redisMissingCredentialEvidence).blockers.join('\n'), /credentialInjectionEvidenceRef/)
+
+const redisInlineQueueSource = structuredClone(validEvidence)
+redisInlineQueueSource.redis.credentialSourceByComponent.queue = 'command-line'
+assert.equal(validateTestRehearsalEvidence(redisInlineQueueSource).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(redisInlineQueueSource).blockers.join('\n'), /credentialSourceByComponent\.queue/)
 
 const missingEvidenceReference = structuredClone(validEvidence)
 delete missingEvidenceReference.release.evidenceRefs
