@@ -10,12 +10,12 @@
 
 ## 当前已落地（2026-09-02）
 
-- Go `gometrics.Collector` 已输出低基数 runtime Prometheus 指标，固定维度为 `service`、`role`、`runtimeKind=go`；当前挂载到 gateway 和 active jobs 的 loopback health listener。除 goroutine、thread、heap 外，还暴露进程 CPU 累计时间、RSS、FD、uptime，以及 scheduler / GC 原始 histogram。
-- 启用 `JUHE_AI_GO_RUNTIME_METRICS_STORE` 后，jobs 以可配置周期记录 Go runtime scalar snapshot，并由独立 Store 幂等写入 `go_runtime_metrics_samples`、`go_runtime_metrics_hourly`、`go_runtime_metrics_trend_windows`；聚合维度仅为 `service + role + runtime_kind=go + 时间窗口`，默认保留 30 天。scalar 采样包含 goroutine runnable/waiting、GOMAXPROCS、CPU、RSS、FD、uptime；CPU/RSS/FD 使用独立有效样本计数，平台不可用时保留 `null`。
+- Go `gometrics.Collector` 已输出低基数、跨平台 runtime Prometheus 指标，固定维度为 `service`、`role`、`runtimeKind=go`；当前挂载到 gateway 和 active jobs 的 loopback health listener。除 goroutine、thread、heap 外，还暴露 Go runtime CPU 累计时间、uptime，以及 scheduler / GC 原始 histogram。RSS/FD 不由该 collector 采集，避免 Windows/Linux 分支造成不同语义；如需主机容量观测，由 host metrics owner 统一提供。
+- 启用 `JUHE_AI_GO_RUNTIME_METRICS_STORE` 后，jobs 以可配置周期记录 Go runtime scalar snapshot，并由独立 Store 幂等写入 `go_runtime_metrics_samples`、`go_runtime_metrics_hourly`、`go_runtime_metrics_trend_windows`；聚合维度仅为 `service + role + runtime_kind=go + 时间窗口`，默认保留 30 天。scalar 采样包含 goroutine runnable/waiting、GOMAXPROCS、Go runtime CPU、uptime；历史 schema 中的 RSS/FD nullable 列仅为兼容旧样本，新的跨平台 collector 不写入。
 - 持久化表位于 PostgreSQL `juhe_stats` schema（SQLite 模式使用独立文件），由 maintenance 显式 `--apply-go-runtime-metrics` 创建；jobs 启动只读校验，不自动 DDL。
 - jobs loopback 管理端点 `GET /__aisys__/api/stats/go-runtime-trend` 只读小时预聚合，并显式返回 `runtimeKind=go`；不查询或写入 Node `system_metrics_*` / `process_event_loop_*`。
 - scheduler latency、GC pause 继续以 Prometheus histogram 暴露，不能从单次 scrape 直接解释为 P95/P99；Go SQL 趋势只做均值/最大值，绝不把每个采样的 P95/P99 再平均。页面只有在外部 Prometheus/实时适配器提供合法分位数时才显示健康视图。
-- 当前 Go 趋势页已接入现有系统指标页：前端通过 Node 同源管理员代理 `/__aisys__/api/stats/system-metrics/go-runtime-trend` 读取独立 Go 预聚合，并与 Node 原有图表并列展示；Go 卡片分为并发、内存和进程摘要（CPU/RSS/FD/uptime），不映射 `eventLoopLagMs` 或 Node RSS。PG/Redis、HTTP RED、业务任务状态仍未接入，缺失字段不以 0 或 Node 字段占位。
+- 当前 Go 趋势页已接入现有系统指标页：前端通过 Node 同源管理员代理 `/__aisys__/api/stats/system-metrics/go-runtime-trend` 读取独立 Go 预聚合，并与 Node 原有图表并列展示；Go 卡片分为并发、内存和 runtime 摘要（Go CPU/uptime），不映射 `eventLoopLagMs` 或 Node RSS。PG/Redis、HTTP RED、业务任务状态仍未接入，缺失字段不以 0 或 Node 字段占位。
 
 ## 2. 迁移原则
 
@@ -59,9 +59,9 @@ Go 系统监控接口建议保留当前路径 `GET /__aisys__/api/stats/system-m
 | --- | --- | --- | --- |
 | `runtimeKind` | `go`、`goVersion`、`schemaVersion` | 已接管完整功能的观测 owner | 前端切换 Go 系统监控视图和类型 |
 | `hostMetrics` | CPU、OS memory、RSS、network in/out、FD / Windows handle、uptime | 功能观测 owner | 主机资源趋势和容量判断 |
-| `runtimeMetrics.latestByRole` | `processRole`、`sampleAvailable`、`processPid`、`sampledAt`、`goroutines`、`goroutinesRunnable`、`schedulerLatencyP95Ms`、`schedulerLatencyP99Ms`、`gcPauseP95Ms`、`gcPauseP99Ms`、`heapAllocBytes`、`heapLiveBytes`、`rssBytes`、`threadsTotal` | 各 Go 功能 role 暴露，功能观测 owner 聚合 | Go runtime 最新状态表 |
-| `runtimeMetrics.peakByRole` | 最近 24 小时 goroutine、scheduler、GC、heap、RSS 峰值 | 功能观测 owner 聚合 | 容量和泄漏排查 |
-| `runtimeMetrics.trend` | 按窗口 bucket 的 goroutine、scheduler、GC、heap、RSS、sampleCount | 功能观测 owner 聚合 | Go runtime 趋势图 |
+| `runtimeMetrics.latestByRole` | `processRole`、`sampleAvailable`、`processPid`、`sampledAt`、`goroutines`、`goroutinesRunnable`、`schedulerLatencyP95Ms`、`schedulerLatencyP99Ms`、`gcPauseP95Ms`、`gcPauseP99Ms`、`heapAllocBytes`、`heapLiveBytes`、`threadsTotal`、`cpuPercent` | 各 Go 功能 role 暴露，功能观测 owner 聚合 | Go runtime 最新状态表 |
+| `runtimeMetrics.peakByRole` | 最近 24 小时 goroutine、scheduler、GC、heap、CPU 峰值 | 功能观测 owner 聚合 | 容量和泄漏排查 |
+| `runtimeMetrics.trend` | 按窗口 bucket 的 goroutine、scheduler、GC、heap、CPU、sampleCount | 功能观测 owner 聚合 | Go runtime 趋势图 |
 | `storageHealth.postgres` | pool acquired / idle / total / max、acquire P95、query P95 / P99、error、timeout、lock timeout、deadlock、table / index / partition size | Go store / 功能观测 owner | 识别 PG 连接池、慢查询和表增长 |
 | `storageHealth.redis` | cache / state role、operation latency、pool、timeout、cache hit / miss | Redis adapter / 功能观测 owner | 识别 Redis 连接异常 |
 | `asyncHealth` | feature、running / completed / failed / cancelled、restartRecovered、duration P95 | Go runtime | 直接异步功能执行与恢复状态 |

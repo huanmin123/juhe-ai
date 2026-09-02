@@ -25,8 +25,16 @@ type RuntimeSnapshot struct {
 	HeapAllocBytes     uint64
 	HeapLiveBytes      uint64
 	HeapObjects        uint64
-	CPUSecondsTotal    float64
+	// CPUSecondsTotal is the portable Go runtime counter
+	// /cpu/classes/total:cpu-seconds. It is intentionally not read from an
+	// operating-system process API, so Windows development and Linux deployment
+	// have the same metric semantics.
+	CPUSecondsTotal float64
 	CPUPercent         *float64
+	// RSSBytes and FDCount are retained as nullable storage compatibility
+	// fields for explicitly supplied legacy samples. Collector.Snapshot never
+	// populates them because host RSS/FD semantics are outside the portable Go
+	// runtime contract.
 	RSSBytes           *uint64
 	FDCount            *uint64
 	UptimeSeconds      float64
@@ -43,19 +51,15 @@ func (c *Collector) Snapshot() RuntimeSnapshot {
 	c.mu.Unlock()
 	metrics.Read(samples)
 	sampledAt := time.Now().UTC()
-	processCPU, processCPUValid := readProcessCPUSeconds()
 	result := RuntimeSnapshot{SampledAt: sampledAt, ProcessPID: os.Getpid(), Service: c.service, Role: c.role, HeapAllocBytes: mem.HeapAlloc, HeapObjects: mem.HeapObjects, UptimeSeconds: sampledAt.Sub(c.started).Seconds()}
-	if rss := readRSSBytes(); rss > 0 {
-		result.RSSBytes = &rss
-	}
-	if fd := readFDCount(); fd > 0 {
-		result.FDCount = &fd
-	}
-	if processCPUValid {
-		result.CPUSecondsTotal = processCPU
-	}
+	cpuSeconds, cpuSecondsValid := 0.0, false
 	for _, sample := range samples {
 		switch sample.Value.Kind() {
+		case metrics.KindFloat64:
+			if sample.Name == cpuTotalMetric {
+				cpuSeconds = sample.Value.Float64()
+				cpuSecondsValid = true
+			}
 		case metrics.KindUint64:
 			value := sample.Value.Uint64()
 			switch sample.Name {
@@ -74,13 +78,16 @@ func (c *Collector) Snapshot() RuntimeSnapshot {
 			}
 		}
 	}
+	if cpuSecondsValid {
+		result.CPUSecondsTotal = cpuSeconds
+	}
 	c.state.mu.Lock()
-	if processCPUValid && c.state.hasLastCPU && sampledAt.After(c.state.lastAt) && result.CPUSecondsTotal >= c.state.lastCPU {
+	if cpuSecondsValid && c.state.hasLastCPU && sampledAt.After(c.state.lastAt) && result.CPUSecondsTotal >= c.state.lastCPU {
 		value := (result.CPUSecondsTotal - c.state.lastCPU) / sampledAt.Sub(c.state.lastAt).Seconds() * 100
 		result.CPUPercent = &value
 	}
 	c.state.lastAt = sampledAt
-	if processCPUValid {
+	if cpuSecondsValid {
 		c.state.lastCPU = result.CPUSecondsTotal
 		c.state.hasLastCPU = true
 	}

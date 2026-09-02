@@ -13,6 +13,9 @@ func TestWriteExposesLowCardinalityRuntimeMetrics(t *testing.T) {
 	if snapshot.Service != "juhe-ai" || snapshot.Role != "jobs" || snapshot.ProcessPID <= 0 || snapshot.SampledAt.IsZero() {
 		t.Fatalf("invalid runtime snapshot identity: %#v", snapshot)
 	}
+	if snapshot.RSSBytes != nil || snapshot.FDCount != nil {
+		t.Fatalf("portable Go runtime snapshot must not depend on host RSS/FD APIs: %#v", snapshot)
+	}
 	var body strings.Builder
 	if err := c.Write(&body); err != nil {
 		t.Fatalf("write metrics: %v", err)
@@ -31,6 +34,9 @@ func TestWriteExposesLowCardinalityRuntimeMetrics(t *testing.T) {
 	}
 	if strings.Contains(text, "eventLoopLagMs") || strings.Contains(text, "accountId") {
 		t.Fatalf("runtime metrics leaked Node or high-cardinality fields: %s", text)
+	}
+	if snapshot.CPUSecondsTotal > 0 && !strings.Contains(text, `juhe_ai_go_runtime_cpu_seconds_total{service="juhe-ai",role="jobs",runtimeKind="go"}`) {
+		t.Fatalf("portable runtime CPU counter missing from scrape: %s", text)
 	}
 }
 

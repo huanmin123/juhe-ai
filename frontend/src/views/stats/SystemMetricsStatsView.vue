@@ -326,8 +326,6 @@ const goRuntimeSummaryItems = computed(() => {
   if (!latest) return []
   const result: Array<{ label: string; value: string }> = []
   if (isFiniteMetric(latest.cpuPercentAvg)) result.push({ label: 'CPU 平均', value: `${latest.cpuPercentAvg!.toFixed(1)}%` })
-  if (isFiniteMetric(latest.rssBytesAvg)) result.push({ label: 'RSS 平均', value: `${(latest.rssBytesAvg! / 1024 / 1024).toFixed(1)} MiB` })
-  if (isFiniteMetric(latest.fdCountAvg)) result.push({ label: '文件描述符', value: Math.round(latest.fdCountAvg!).toLocaleString('zh-CN') })
   if (isFiniteMetric(latest.uptimeSecondsAvg)) result.push({ label: '运行时长', value: formatUptime(latest.uptimeSecondsAvg!) })
   if (isFiniteMetric(latest.gomaxprocsAvg)) result.push({ label: 'GOMAXPROCS', value: Math.round(latest.gomaxprocsAvg!).toLocaleString('zh-CN') })
   return result

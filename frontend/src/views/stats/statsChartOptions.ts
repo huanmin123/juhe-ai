@@ -328,8 +328,6 @@ function goRuntimeSeries(trend: GoRuntimeTrendItem[], view: GoRuntimeChartView):
       { name: 'Heap Alloc 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapAllocBytesMax) },
       { name: 'Heap Live 平均 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapLiveBytesAvg) },
       { name: 'Heap Live 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapLiveBytesMax) },
-      { name: 'RSS 平均 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.rssBytesAvg) },
-      { name: 'RSS 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.rssBytesMax) },
       { name: 'Heap Objects 平均', yAxisIndex: 1, read: (item) => item.heapObjectsAvg },
       { name: 'Heap Objects 峰值', yAxisIndex: 1, read: (item) => item.heapObjectsMax }
     ])

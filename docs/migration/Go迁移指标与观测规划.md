@@ -12,7 +12,7 @@
 
 ## 当前已落地（2026-09-02）
 
-- `backend-go/shared/platform/gometrics` 已提供低基数 Go runtime Prometheus collector，输出 Go version、uptime、heap、GC、goroutine、scheduler latency、GC pause、threads 和 `GOMAXPROCS`。
+- `backend-go/shared/platform/gometrics` 已提供低基数、跨平台 Go runtime Prometheus collector，输出 Go version、uptime、heap、GC、goroutine、scheduler latency、GC pause、threads、`GOMAXPROCS` 和 Go runtime CPU。采集只依赖 Go 标准库，在 Windows 开发与 Linux 部署之间保持同一语义；RSS/FD 等主机指标不属于该 collector。
 - `juhe-ai-jobs` 在显式启用 `JUHE_AI_GO_RUNTIME_METRICS_STORE=sqlite|postgres` 后，以 15 秒（可调）周期将 scalar snapshot 写入独立 `go_runtime_metrics_samples`，并同步更新小时与日趋势预聚合；默认保留 30 天并由 sampler 定期清理；jobs 启动只做 schema 只读检查，DDL 由 maintenance 显式执行。
 - `juhe-ai-gateway` 与 active `juhe-ai-jobs` 的 loopback health listener 已提供 `GET /__aisys__/metrics`；passive/standby 进程不暴露该端点。
 - jobs loopback listener 在启用持久化后提供 `GET /__aisys__/api/stats/go-runtime-trend`，响应显式带 `runtimeKind=go`；不写入 Node `system_metrics_*` / `process_event_loop_*` 表，也不把 Go runtime 指标伪装成 `eventLoopLagMs`。
@@ -39,7 +39,7 @@
 | DB service snapshot | 判断 SQLite 模式 Node DB service 是否 ready、PID 和内部状态 | 继续作为 `runtimeKind=node` 观测；Go runtime 另报自身 store 与直接执行健康，不将 DB service 归入 Go role |
 | SQLite / usage shard / stats DB 大小 | 判断 Node 多 SQLite 文件和 shard 体积 | SQLite profile 继续观测；PostgreSQL/Redis profile 可观测 database / table / index / partition、直接异步积压和保留期 |
 
-Go 迁移期间，Node 和 Go 对照只能比较用户可见 SLI，例如请求成功率、接口 P95 / P99、统计新鲜度、worker lag、CPU、RSS、错误率和网关 SSE 完成率；不能要求 Go 存在与 Node event loop 一一对应的指标。
+Go 迁移期间，Node 和 Go 对照只能比较用户可见 SLI，例如请求成功率、接口 P95 / P99、统计新鲜度、worker lag、CPU、错误率和网关 SSE 完成率；不能要求 Go 存在与 Node event loop 一一对应的指标。主机 RSS、FD、网络和 OS 内存由独立 host metrics owner 负责，不在 Go runtime collector 内按操作系统分支实现。
 
 ## 4. Go 目标观测分层
 
@@ -66,7 +66,7 @@ Go 迁移期间，Node 和 Go 对照只能比较用户可见 SLI，例如请求�
 | goroutine | `goroutines`、`goroutinesCreated`、`goroutinesRunnable`、`goroutinesWaiting`、`goroutinesRunning` | 发现 goroutine 泄漏、阻塞堆积和调度压力 |
 | scheduler | `schedulerLatencyP95Ms`、`schedulerLatencyP99Ms`、`threadsTotal` | 替代 Node event loop 延迟的 Go 调度健康信号，但不得命名为 event loop |
 | GC | `gcCyclesTotal`、`gcPauseP95Ms`、`gcPauseP99Ms`、`gcCpuFraction`、`gcHeapGoalBytes` | 发现 GC 抖动和内存压力 |
-| heap / memory | `heapAllocBytes`、`heapLiveBytes`、`heapObjects`、`memoryClassesTotalBytes`、`gomemlimitBytes`、`rssBytes` | 发现内存爬升、容器内存限制和泄漏风险 |
+| heap / memory | `heapAllocBytes`、`heapLiveBytes`、`heapObjects`、`memoryClassesTotalBytes`、`gomemlimitBytes` | 发现内存爬升、容器内存限制和泄漏风险；RSS 属于独立 host metrics，不进入跨平台 Go runtime collector |
 | blocking | `mutexWaitSecondsTotal`、`blockProfileEnabled` | 发现锁竞争；详细定位用 pprof block / mutex profile |
 
 不建议首批把 runtime histogram 原始 bucket 全量写入 PostgreSQL。当前趋势表只保存低开销 scalar 的均值、最大值和样本数；Prometheus 保留 histogram，由外部查询计算 P95/P99。禁止把不同采样点的 P95/P99 再做平均；管理页没有外部分位数数据时必须显示“不可用”而不是补零。
@@ -150,7 +150,7 @@ interface GoRuntimeStatus {
   gcPauseP99Ms: number | null
   heapAllocBytes: number | null
   heapLiveBytes: number | null
-  rssBytes: number | null
+  // Host RSS is intentionally outside the portable Go runtime status.
   threadsTotal: number | null
 }
 ```
@@ -166,7 +166,7 @@ Go 系统指标迁移时建议拆分：
 | `system_metrics_samples` | 原始系统采样 | 保留 CPU、OS 内存、RSS、网络吞吐、PG/Redis/直接异步执行高层状态和统计滞后；移除 Node event loop 字段 |
 | `system_metrics_hourly` | 小时聚合 | 系统采样平均值、最大值和样本数 |
 | `system_metrics_trend_windows` | 页面窗口 | 系统趋势图直读 |
-| `go_runtime_metrics_samples` | 按 role 原始 Go runtime 采样 | goroutine、scheduler、GC、heap、thread、RSS |
+| `go_runtime_metrics_samples` | 按 role 原始 Go runtime 采样 | goroutine、scheduler、GC、heap、thread、Go runtime CPU |
 | `go_runtime_metrics_hourly` | 按 role 小时聚合 | runtime 趋势和峰值 |
 | `go_runtime_metrics_trend_windows` | 按 role 页面窗口 | 管理页面 Go runtime 趋势直读 |
 | `async_runtime_snapshots` | 直接异步快照 | SQLite profile 记录 file-owner wait / running；PostgreSQL/Redis profile 记录 running、write latency、context cancel、失败和重启重新发现 |

@@ -24,6 +24,7 @@ const (
 	waitingMetric          = "/sched/goroutines/waiting:goroutines"
 	threadsMetric          = "/sched/threads/total:threads"
 	gomaxprocsMetric       = "/sched/gomaxprocs:threads"
+	cpuTotalMetric         = "/cpu/classes/total:cpu-seconds"
 )
 
 // Collector is safe for concurrent scrapes. Labels are fixed at construction
@@ -65,6 +66,7 @@ func New(service, role string) *Collector {
 			{Name: threadsMetric},
 			{Name: gomaxprocsMetric},
 			{Name: heapLiveMetric},
+			{Name: cpuTotalMetric},
 		},
 	}
 }
@@ -114,8 +116,10 @@ func (c *Collector) Windows() []WindowAggregate {
 	return c.windows.Windows()
 }
 
-// Write emits stable, low-cardinality runtime metrics. Histogram quantiles are
-// intentionally left to Prometheus; runtime/metrics exposes cumulative
+// Write emits stable, low-cardinality, cross-platform runtime metrics. Host
+// RSS/FD readings are intentionally owned by host monitoring rather than this
+// collector. Histogram quantiles are intentionally left to Prometheus;
+// runtime/metrics exposes cumulative
 // histograms and a single scrape must not be mistaken for a P95/P99 scalar.
 func (c *Collector) Write(w io.Writer) error {
 	c.mu.Lock()
@@ -153,17 +157,7 @@ func (c *Collector) Write(w io.Writer) error {
 			}
 		}
 		if latest.CPUSecondsTotal > 0 {
-			if err := write("# HELP juhe_ai_go_process_cpu_seconds_total Process CPU time in seconds.\n# TYPE juhe_ai_go_process_cpu_seconds_total counter\njuhe_ai_go_process_cpu_seconds_total{%s} %.6f\n", labels, latest.CPUSecondsTotal); err != nil {
-				return err
-			}
-		}
-		if latest.RSSBytes != nil {
-			if err := write("# HELP juhe_ai_go_process_rss_bytes Resident set size in bytes.\n# TYPE juhe_ai_go_process_rss_bytes gauge\njuhe_ai_go_process_rss_bytes{%s} %d\n", labels, *latest.RSSBytes); err != nil {
-				return err
-			}
-		}
-		if latest.FDCount != nil {
-			if err := write("# HELP juhe_ai_go_process_open_fds Open file descriptor count.\n# TYPE juhe_ai_go_process_open_fds gauge\njuhe_ai_go_process_open_fds{%s} %d\n", labels, *latest.FDCount); err != nil {
+			if err := write("# HELP juhe_ai_go_runtime_cpu_seconds_total Go runtime CPU time in seconds.\n# TYPE juhe_ai_go_runtime_cpu_seconds_total counter\njuhe_ai_go_runtime_cpu_seconds_total{%s} %.6f\n", labels, latest.CPUSecondsTotal); err != nil {
 				return err
 			}
 		}

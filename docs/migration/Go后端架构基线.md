@@ -172,7 +172,7 @@ Go 解决的是 Node 单事件循环问题。迁移默认使用 Go 原生 gorout
 - 管理列表、日志、审计、使用记录和统计页面不得把全量数据读入内存分页。
 - 统计、额度、趋势、TopN 和摘要继续读取 worker 生成的窗口表、summary 表或缓存，不在 API 请求里实时扫描明细。
 - pprof 和运行时指标作为 Go 后端标配入口，但公网部署必须有访问控制。`/__aisys__/metrics` 面向外部采集，pprof 面向受控诊断，内部系统监控页面读取 PostgreSQL 窗口表；三者不能互相替代。
-- Go 系统监控契约必须使用 goroutine、scheduler latency、GC pause、heap、RSS、PG pool、Redis、直接异步运行数、写入延迟和 stats freshness 等字段；不得把这些指标命名为 Node `eventLoopLagMs`，也不得继续把 `db-service` 作为 Go 长期角色。
+- Go 系统监控契约必须使用 goroutine、scheduler latency、GC pause、heap、Go runtime CPU、PG pool、Redis、直接异步运行数、写入延迟和 stats freshness 等字段；不得把这些指标命名为 Node `eventLoopLagMs`，也不得继续把 `db-service` 作为 Go 长期角色。RSS/FD、OS memory 和网络属于独立 host metrics owner，不能要求 Go runtime 在 Windows/Linux 之间维护不同实现。
 
 Go 运行边界矩阵：
 

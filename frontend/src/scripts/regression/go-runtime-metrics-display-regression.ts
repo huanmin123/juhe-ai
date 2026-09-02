@@ -38,10 +38,12 @@ assert.doesNotMatch(goChartSource, /eventLoopLagMs/, 'Go runtime chart must not 
 for (const field of ['goroutinesAvg', 'goroutinesMax', 'heapAllocBytesAvg', 'heapAllocBytesMax', 'heapLiveBytesAvg', 'heapLiveBytesMax', 'heapObjectsAvg', 'heapObjectsMax', 'threadsAvg', 'threadsMax']) {
   assert.match(goMetricSource, new RegExp(`item\\.${field}`), `Go runtime chart must display ${field}`)
 }
-for (const field of ['rssBytesAvg', 'schedulerLatencyP95SecondsAvg', 'schedulerLatencyP99SecondsAvg', 'gcPauseP95SecondsAvg', 'gcPauseP99SecondsAvg']) {
+for (const field of ['schedulerLatencyP95SecondsAvg', 'schedulerLatencyP99SecondsAvg', 'gcPauseP95SecondsAvg', 'gcPauseP99SecondsAvg']) {
   assert.match(goMetricSource, new RegExp(`item\\.${field}`), `Go runtime chart must support optional ${field}`)
 }
-for (const field of ['cpuPercentAvg', 'fdCountAvg', 'uptimeSecondsAvg']) {
+assert.doesNotMatch(goMetricSource, /item\.rssBytesAvg|item\.rssBytesMax/, 'Go runtime chart must not depend on host RSS semantics')
+assert.doesNotMatch(viewSource, /latest\.rssBytesAvg|latest\.fdCountAvg/, 'Go runtime summary must not depend on host RSS/FD semantics')
+for (const field of ['cpuPercentAvg', 'uptimeSecondsAvg']) {
   assert.match(viewSource, new RegExp(`latest\\.${field}`), `Go runtime summary must display optional ${field} when available`)
 }
 assert.match(goMetricSource, /filter\(\(item\) => item\.data\.some\(\(value\) => value !== null\)\)/, 'Go runtime chart must drop unavailable series instead of plotting zeroes')
