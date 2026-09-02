@@ -4,6 +4,7 @@ import { ACCOUNT_SYNC_TABLE_POLICIES } from '../operations/rehearsal-account-syn
 import {
   assertExecuteEnvironment,
   hashStringList,
+  orderAccountRows,
   stableKey,
   validateGeneratedValuesManifest,
   validateScopeManifest
@@ -52,5 +53,15 @@ assert.doesNotThrow(() => validateScopeManifest(scope, plan))
 assert.throws(() => validateScopeManifest({ ...scope, tables: { ...scope.tables, accounts: ['*'] } }, plan), /scope accounts 不允许使用 \*/)
 assert.doesNotThrow(() => validateGeneratedValuesManifest({ schemaVersion: 1, tables: { accounts: { '["account-1"]': { credentials_encrypted: 'test-only' } } } }))
 assert.throws(() => validateGeneratedValuesManifest({ schemaVersion: 2, tables: {} } as never), /schemaVersion=1/)
+const accountRows = [
+  { id: 'child', authorization_instance_source_account_id: 'source' },
+  { id: 'source', authorization_instance_source_account_id: null }
+]
+assert.deepEqual(orderAccountRows(accountRows).map((row) => row.id), ['source', 'child'])
+assert.throws(() => orderAccountRows([{ id: 'child', authorization_instance_source_account_id: 'missing' }]), /缺失 source 或环/)
+assert.throws(() => orderAccountRows([
+  { id: 'a', authorization_instance_source_account_id: 'b' },
+  { id: 'b', authorization_instance_source_account_id: 'a' }
+]), /缺失 source 或环/)
 
 console.log('execute rehearsal account sync regression passed')

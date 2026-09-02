@@ -60,7 +60,7 @@ export interface RehearsalAccountSyncExecutionReport {
   targetNameAccepted: true
   approvedCanaryCount: number
   tableReports: ExecutionTableReport[]
-  runtimeResetTables: Array<{ schema: string; name: string; beforeRows: number; afterRows: number }>
+  runtimeResetTables: Array<{ schema: string; name: string; beforeRows: number; afterRows: number; beforeChecksum: string; afterChecksum: string }>
   status: 'passed'
 }
 
@@ -225,12 +225,7 @@ export async function executeRehearsalAccountSync(
     ...ACCOUNT_SYNC_RUNTIME_RESET_TABLES.map((name) => ({ schema: businessSchema, name })),
     ...AUXILIARY_RUNTIME_RESET_TABLES.map((item) => ({ schema: item.schema, name: item.name }))
   ]
-  const runtimeReports: Array<{ schema: string; name: string; beforeRows: number; afterRows: number }> = []
-  for (const table of runtimeResetTables) {
-    const beforeRows = await countRows(target, table.schema, table.name)
-    if (beforeRows !== 0) throw new Error(`${table.schema}.${table.name} 目标运行态表不是空表，拒绝清空或覆盖`)
-    runtimeReports.push({ schema: table.schema, name: table.name, beforeRows, afterRows: 0 })
-  }
+  const runtimeReports = await clearRuntimeTables(target, runtimeResetTables)
 
   return {
     schemaVersion: 1,
@@ -286,6 +281,10 @@ async function copyTable(
         continue
       }
       if (plan.generatedColumns.includes(column)) {
+        const hasRowSpecificValue = Object.prototype.hasOwnProperty.call(generated, rowKey)
+        if (requiresPerRowGeneratedValue(table, column) && !hasRowSpecificValue) {
+          throw new Error(`${table}.${column} 必须按主键逐行提供 test 专用生成值（禁止使用 * 复用凭据）`)
+        }
         if (sensitive.has(column) && !(column in generatedForRow)) throw new Error(`${table}.${column} 缺少 test 专用生成值（拒绝复制生产密文）`)
         if (column in generatedForRow) {
           columns.push(column)
@@ -333,6 +332,12 @@ async function copyTable(
   }
 }
 
+function requiresPerRowGeneratedValue(table: string, column: string): boolean {
+  if (table === 'accounts' || table === 'proxy_profiles' || table === 'api_keys') return true
+  if (table === 'model_quality_schedules' && ['enabled', 'next_run_at'].includes(column)) return true
+  return false
+}
+
 function buildScopePredicate(primaryKey: readonly PrimaryKeyColumn[], scopeKeys: readonly string[]): { sql: string; parameters: unknown[] } {
   if (scopeKeys.includes('*')) return { sql: '', parameters: [] }
   if (scopeKeys.length === 0) throw new Error('scope 行键不能为空')
@@ -366,6 +371,44 @@ function projectedRowKeys(rows: readonly Row[], columns: readonly string[]): str
   }).sort()
 }
 
+async function clearRuntimeTables(
+  target: QueryClient,
+  tables: readonly { schema: string; name: string }[]
+): Promise<Array<{ schema: string; name: string; beforeRows: number; afterRows: number; beforeChecksum: string; afterChecksum: string }>> {
+  const uniqueTables = [...new Map(tables.map((table) => [`${table.schema}.${table.name}`, table])).values()]
+  const reports = [] as Array<{ schema: string; name: string; beforeRows: number; afterRows: number; beforeChecksum: string; afterChecksum: string }>
+  for (const table of uniqueTables) {
+    const beforeRows = await countRows(target, table.schema, table.name)
+    const beforeChecksum = await tableChecksum(target, table.schema, table.name)
+    reports.push({ schema: table.schema, name: table.name, beforeRows, afterRows: 0, beforeChecksum, afterChecksum: '' })
+  }
+  if (uniqueTables.length > 0) {
+    // Truncate the complete runtime set in one statement so PostgreSQL can
+    // validate any runtime-to-runtime foreign keys as a group. No CASCADE is
+    // used: an unexpected reference outside this explicit set must abort.
+    await target.query(`TRUNCATE TABLE ${uniqueTables.map((table) => `${quoteIdentifier(table.schema)}.${quoteIdentifier(table.name)}`).join(', ')}`)
+  }
+  for (const report of reports) {
+    report.afterRows = await countRows(target, report.schema, report.name)
+    report.afterChecksum = await tableChecksum(target, report.schema, report.name)
+    if (report.afterRows !== 0 || report.afterChecksum !== emptyChecksum()) {
+      throw new Error(`${report.schema}.${report.name} 运行态清空后 readback 非空，事务将回滚`)
+    }
+  }
+  return reports
+}
+
+async function tableChecksum(client: QueryClient, schema: string, table: string): Promise<string> {
+  const result = await client.query<{ row_json: string }>(`SELECT row_to_json(row_data)::text AS row_json FROM ${quoteIdentifier(schema)}.${quoteIdentifier(table)} AS row_data`)
+  const hash = createHash('sha256')
+  for (const row of result.rows.map((item) => item.row_json).sort()) hash.update(row).update('\n')
+  return hash.digest('hex')
+}
+
+function emptyChecksum(): string {
+  return createHash('sha256').digest('hex')
+}
+
 function parseSingleColumnScopeKey(value: string): string {
   let parsed: unknown
   try {
@@ -379,7 +422,7 @@ function parseSingleColumnScopeKey(value: string): string {
   return parsed[0]
 }
 
-function orderAccountRows(rows: Row[]): Row[] {
+export function orderAccountRows(rows: Row[]): Row[] {
   const byId = new Map<string, Row>()
   for (const row of rows) {
     const id = String(row.id)
@@ -508,7 +551,10 @@ async function main(): Promise<void> {
     await Promise.all([source.connect().then(() => { sourceConnected = true }), target.connect().then(() => { targetConnected = true })])
     await source.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
     await target.query('BEGIN')
-    await target.query("SELECT set_config('statement_timeout', '120s', true), set_config('lock_timeout', '10s', true)")
+    await Promise.all([
+      source.query("SELECT set_config('statement_timeout', '120s', true), set_config('lock_timeout', '10s', true)"),
+      target.query("SELECT set_config('statement_timeout', '120s', true), set_config('lock_timeout', '10s', true), pg_advisory_xact_lock(hashtext(current_database()))")
+    ])
     const report = await executeRehearsalAccountSync(source, target, preflight, plan, preflightText, scope, generatedValues)
     await target.query('COMMIT')
     await source.query('COMMIT')
