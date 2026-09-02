@@ -46,12 +46,18 @@ assert.equal(
 const viteConfigSource = readFileSync(new URL('../../../vite.config.ts', import.meta.url), 'utf8')
 const powerShellReleaseSource = readFileSync(new URL('../../../../scripts/package-release.ps1', import.meta.url), 'utf8')
 const shellReleaseSource = readFileSync(new URL('../../../../scripts/package-release.sh', import.meta.url), 'utf8')
+const builderDockerfileSource = readFileSync(new URL('../../../../docker/Dockerfile.builder', import.meta.url), 'utf8')
+const jenkinsSource = readFileSync(new URL('../../../../Jenkinsfile', import.meta.url), 'utf8')
 const serverSource = readFileSync(new URL('../../../../backend/src/server.ts', import.meta.url), 'utf8')
 
 assert.match(viteConfigSource, /__JUHE_AI_FRONTEND_BUILD_ID__/, 'Vite 必须注入当前页面 Build ID')
 assert.match(viteConfigSource, /fileName:\s*['"]build-info\.json['"]/, 'Vite 必须输出静态 Build ID 清单')
 assert.match(powerShellReleaseSource, /VITE_JUHE_AI_BUILD_ID\s*=\s*\$releaseSourceCommit/, 'PowerShell 发布必须注入冻结提交')
 assert.match(shellReleaseSource, /VITE_JUHE_AI_BUILD_ID=["']?\$RELEASE_SOURCE_COMMIT/, 'POSIX 发布必须注入冻结提交')
+assert.match(powerShellReleaseSource, /VITE_JUHE_AI_J3B_ENABLED\s*=\s*'false'/, 'PowerShell 正式包必须显式关闭 J3b UI')
+assert.match(shellReleaseSource, /VITE_JUHE_AI_J3B_ENABLED=["']false["']/, 'POSIX 正式包必须显式关闭 J3b UI')
+assert.match(builderDockerfileSource, /ARG VITE_JUHE_AI_J3B_ENABLED=false[\s\S]*ENV VITE_JUHE_AI_J3B_ENABLED=\$\{VITE_JUHE_AI_J3B_ENABLED\}/, '容器构建器不得继承宿主机的 J3b 环境')
+assert.match(jenkinsSource, /--build-arg VITE_JUHE_AI_J3B_ENABLED=false/, 'Jenkins 正式构建必须显式关闭 J3b UI')
 assert.match(serverSource, /build-info\.json/, '后端静态服务必须显式设置 Build ID 清单缓存规则')
 
 let requestedUrl = ''

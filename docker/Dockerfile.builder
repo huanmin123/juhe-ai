@@ -18,5 +18,10 @@ RUN --mount=type=cache,id=juhe-ai-pnpm-store,target=/pnpm/store \
   pnpm install --frozen-lockfile --store-dir=/pnpm/store
 ARG VITE_JUHE_AI_BUILD_ID
 ENV VITE_JUHE_AI_BUILD_ID=${VITE_JUHE_AI_BUILD_ID}
+# The current production release keeps Go J3b/model-check routes disabled.
+# A future dedicated J3b release must change this explicitly in its reviewed
+# release contract; never inherit a builder host's ambient Vite environment.
+ARG VITE_JUHE_AI_J3B_ENABLED=false
+ENV VITE_JUHE_AI_J3B_ENABLED=${VITE_JUHE_AI_J3B_ENABLED}
 COPY . .
 RUN pnpm build

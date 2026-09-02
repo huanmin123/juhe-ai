@@ -269,6 +269,7 @@ Write-Host '==> Building workspace'
 $env:VITE_JUHE_AI_API_BASE_URL = $FrontendApiBaseUrl
 $env:VITE_JUHE_AI_GATEWAY_BASE_URL = $FrontendGatewayBaseUrl
 $env:VITE_JUHE_AI_BUILD_ID = $releaseSourceCommit
+$env:VITE_JUHE_AI_J3B_ENABLED = 'false'
 Write-Host "==> Frontend API base URL: $FrontendApiBaseUrl"
 if ($FrontendGatewayBaseUrl) {
   Write-Host "==> Frontend gateway base URL: $FrontendGatewayBaseUrl"

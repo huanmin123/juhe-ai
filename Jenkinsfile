@@ -122,6 +122,7 @@ pipeline {
               --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
               --build-arg NODE_BUILDER_PNPM_IMAGE="$NODE_BUILDER_PNPM_IMAGE" \
               --build-arg VITE_JUHE_AI_BUILD_ID="$SOURCE_COMMIT_FULL" \
+              --build-arg VITE_JUHE_AI_J3B_ENABLED=false \
               --tag "$builder_image" --file docker/Dockerfile.builder .
             docker create --name "$builder_container" "$builder_image" >/dev/null
             mkdir -p backend/dist frontend/dist
