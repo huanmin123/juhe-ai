@@ -8,10 +8,14 @@ pipeline {
   }
 
   parameters {
-    booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '通过 Jenkins API 触发：读取当前 test release state 并立即写入 prod。')
-    booleanParam(name: 'REVERSE_DEPLOY_PROD', defaultValue: false, description: '仅手动运行：明确创建 prod-B stable -> prod-A candidate 的反向蓝绿 release intent；只写候选，不切 owner 或 stable Service。')
-    booleanParam(name: 'ROLLBACK_PROD', defaultValue: false, description: '通过 Jenkins API 触发：立即将 prod 写回历史 release state。')
+    booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '通过 Jenkins API 触发：读取 test 的 sourceCommit/digest 并写入同一版本的 prod release state；运行态观察由 Jenkins 外部完成。')
+    booleanParam(name: 'REVERSE_DEPLOY_PROD', defaultValue: false, description: '本次全停机单 active 发布已禁用；传 true 会被硬拒绝，不得创建反向蓝绿 release intent。')
+    booleanParam(name: 'ROLLBACK_PROD', defaultValue: false, description: '通过 Jenkins API 触发：仅写回历史 prod release state，由 Argo 异步同步；不直接操作集群。')
     string(name: 'TARGET_PROD_SOURCE_COMMIT', defaultValue: '', description: '回滚目标 sourceCommit；留空时自动选择历史中最新的上一版本。')
+    string(name: 'ROLLBACK_APPROVAL_TICKET', defaultValue: '', description: '回滚必须填写受控审批单号；普通发布不得使用回滚分支。')
+    string(name: 'ROLLBACK_SCHEMA_COMPATIBILITY_TICKET', defaultValue: '', description: '回滚必须填写已核对数据库 schema 前向兼容性的证据单号；不回退数据库 schema。')
+    string(name: 'PROD_APPROVAL_TICKET', defaultValue: '', description: '生产晋级必须填写本次用户批准的审批单号；为空时禁止写入 prod。')
+    string(name: 'RELEASE_MODE', defaultValue: 'single-active-stop', description: '本次生产发布固定为全停机单 active；其他模式必须先完成独立 GitOps 设计与审批。')
   }
 
   environment {
@@ -61,6 +65,30 @@ pipeline {
         script {
           if ([params.DEPLOY_PROD, reverseDeployRequested(), rollbackRequested()].findAll { it }.size() > 1) {
             error 'DEPLOY_PROD、REVERSE_DEPLOY_PROD 与 ROLLBACK_PROD 只能选择一个。'
+          }
+          if (params.RELEASE_MODE?.trim() != 'single-active-stop') {
+            error '当前生产发布只允许 RELEASE_MODE=single-active-stop；蓝绿/反向切换未完成独立验收。'
+          }
+          if (reverseDeployRequested()) {
+            error 'REVERSE_DEPLOY_PROD 已被本次全停机单 active 发布策略明确禁止；不得写入 reverse-blue-green intent。'
+          }
+          if (rollbackRequested() && !(params.ROLLBACK_APPROVAL_TICKET?.trim())) {
+            error 'ROLLBACK_PROD 必须提供受控 ROLLBACK_APPROVAL_TICKET；缺少审批单不得写 prod。'
+          }
+          if (rollbackRequested() && !validApprovalTicket(params.ROLLBACK_APPROVAL_TICKET)) {
+            error 'ROLLBACK_APPROVAL_TICKET 格式非法，仅允许受控审批单号字符。'
+          }
+          if (rollbackRequested() && !(params.ROLLBACK_SCHEMA_COMPATIBILITY_TICKET?.trim())) {
+            error 'ROLLBACK_PROD 必须提供 ROLLBACK_SCHEMA_COMPATIBILITY_TICKET；未证明 schema 前向兼容不得写 prod。'
+          }
+          if (rollbackRequested() && !validApprovalTicket(params.ROLLBACK_SCHEMA_COMPATIBILITY_TICKET)) {
+            error 'ROLLBACK_SCHEMA_COMPATIBILITY_TICKET 格式非法，仅允许受控证据单号字符。'
+          }
+          if (params.DEPLOY_PROD && !(params.PROD_APPROVAL_TICKET?.trim())) {
+            error 'DEPLOY_PROD 必须提供本次用户批准的 PROD_APPROVAL_TICKET；缺少最终批准不得写 prod。'
+          }
+          if (params.DEPLOY_PROD && !validApprovalTicket(params.PROD_APPROVAL_TICKET)) {
+            error 'PROD_APPROVAL_TICKET 格式非法，仅允许受控审批单号字符。'
           }
         }
       }
@@ -188,7 +216,8 @@ pipeline {
           env.JOBS_DIGEST = release.jobsDigest
           env.GATEWAY_DIGEST = release.gatewayDigest
           env.J3A_MANAGEMENT_ENABLED = release.j3aManagementEnabled
-          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-promotion')
+          env.TEST_RELEASE_STATE_REVISION = release.platformRevision
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-promotion', env.TEST_RELEASE_STATE_REVISION)
         }
       }
     }
@@ -227,7 +256,7 @@ pipeline {
           env.JOBS_DIGEST = selected.jobsDigest
           env.GATEWAY_DIGEST = selected.gatewayDigest
           env.J3A_MANAGEMENT_ENABLED = selected.j3aManagementEnabled
-          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-rollback')
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-rollback', selected.platformRevision)
           currentBuild.description = "prod 已写入回滚 release state，source=${env.SOURCE_COMMIT}"
         }
       }
@@ -245,6 +274,7 @@ def validHarborDigestImage(value) {
     value.indexOf('@sha256:') == separator && validDigest(value.substring(separator + 1))
 }
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
+def validApprovalTicket(value) { return value != null && value.toString() ==~ /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/ }
 def rollbackRequested() { return params.ROLLBACK_PROD }
 def reverseDeployRequested() { return params.REVERSE_DEPLOY_PROD }
 
@@ -290,10 +320,26 @@ def refreshPlatformReleaseWorkspace() {
 }
 
 def metadataValue(environmentName, key) {
-  def file = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}/release-metadata.yaml"
-  def value = sh(script: "sed -n 's/^  ${key}: \"\\(.*\\)\"/\\1/p' '${file}' | head -n1", returnStdout: true).trim()
+  def value = metadataValueOptional(environmentName, key)
   if (!value) error "${environmentName} release state 缺少 ${key}。"
   return value
+}
+
+def metadataValueOptional(environmentName, key) {
+  def file = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}/release-metadata.yaml"
+  def prefix = "  ${key}: \""
+  def lines = sh(script: "grep -F -- '${prefix}' '${file}' || true", returnStdout: true)
+    .readLines()
+    .findAll { line -> line != null && !line.isEmpty() }
+  if (lines.size() > 1) {
+    error "${environmentName} release state 的 ${key} 命中 ${lines.size()} 行，拒绝使用不唯一字段。"
+  }
+  if (lines.isEmpty()) return ''
+  def line = lines[0]
+  if (!line.startsWith(prefix) || !line.endsWith('"')) {
+    error "${environmentName} release state 的 ${key} 格式非法。"
+  }
+  return line.substring(prefix.length(), line.length() - 1)
 }
 
 def readTestRelease() {
@@ -303,10 +349,9 @@ def readTestRelease() {
     nodeDigest: metadataValue('test', 'nodeImageDigest'),
     jobsDigest: metadataValue('test', 'jobsImageDigest'),
     gatewayDigest: metadataValue('test', 'gatewayImageDigest'),
-    j3aManagementEnabled: metadataValue('test', 'j3aManagementEnabled'),
-    status: metadataValue('test', 'verification.status'),
-    verifiedCommit: metadataValue('test', 'verification.sourceCommit')
+    j3aManagementEnabled: metadataValue('test', 'j3aManagementEnabled')
   ]
+  release.platformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
   if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false'])) {
     error 'test release state 未通过完整性检查。'
   }
@@ -314,6 +359,8 @@ def readTestRelease() {
 }
 
 def prodRollbackCandidates() {
+  // 回滚必须从本次构建新鲜读取平台仓库，禁止复用旧 workspace 的 history。
+  refreshPlatformReleaseWorkspace()
   def metadataFile = "${releaseWorkspace()}/apps/juhe-ai/overlays/prod/release-metadata.yaml"
   def historyFile = prodHistoryPath()
   if (!fileExists(historyFile)) {
@@ -354,46 +401,100 @@ def prodRollbackCandidates() {
     def label = "${fields[0]} | ${build} | J3a=${j3aManagementEnabled} | ${sourceCommit} | ${nodeDigest.take(19)} / ${jobsDigest.take(19)} / ${gatewayDigest.take(19)}"
     candidates[label] = [sourceCommit: sourceCommit, nodeDigest: nodeDigest, jobsDigest: jobsDigest, gatewayDigest: gatewayDigest, j3aManagementEnabled: j3aManagementEnabled]
   }
+  candidates.each { key, value -> value.platformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim() }
   return candidates
 }
 
 def replaceDigest(file, imageName, digest) {
-  def expression = 's{(- name: IMAGE\\n\\s+newName: [^\\n]+\\n\\s+digest: )sha256:[a-f0-9]{64}}{$1DIGEST}'
-    .replace('IMAGE', imageName)
-    .replace('DIGEST', digest)
-  sh "perl -0pi -e '${expression}' '${file}'"
+  // Only the first (active) image block is eligible. Fail closed when the
+  // expected block is missing or duplicated, otherwise metadata could advance
+  // while kustomization still points at a different digest.
+  sh """#!/bin/sh
+    set -eu
+    perl -0e '
+      my (\$file, \$name, \$digest) = \@ARGV;
+      open my \$in, "<", \$file or die "无法读取 kustomization: \$!";
+      local \$/; my \$text = <\$in>; close \$in;
+      my \$quoted = quotemeta(\$name);
+      my \$pattern = qr{(- name: \$quoted\\n\\s+newName: [^\\n]+\\n\\s+digest: )sha256:[a-f0-9]{64}};
+      my \$matches = () = \$text =~ /\$pattern/g;
+      die "镜像 \$name digest 替换命中数为 \$matches，期望 1\\n" unless \$matches == 1;
+      \$text =~ s{\$pattern}{\$1 . \$digest}e;
+      open my \$out, ">", \$file or die "无法写入 kustomization: \$!";
+      print \$out \$text; close \$out;
+    ' '${file}' '${imageName}' '${digest}'
+  """
 }
 
 def sourceUsesDirectJ3aManagement() {
-  return fileExists('backend-go/projects/jobs/internal/proxylatency/manual_admin.go') &&
-    !fileExists('backend/src/modules/background/proxy-latency-handover.ts') &&
-    !fileExists('backend/src/modules/proxies/proxy-test.contract.ts') &&
-    !readFile('backend/src/modules/proxies/proxies.routes.ts').contains("proxiesRouter.post('/:id/test'")
+  // J3a 是迁移能力开关，不能由“某个旧实现文件存在”推断为可发布。
+  // 在 migration owner 提供并验收独立 contract、Secret/schema/Ingress 和回滚证据前，
+  // CI 必须保持关闭，避免普通构建静默打开 test/prod 的 J3a 管理路径。
+  return false
 }
 
 def configureJ3aManagementRelease(overlay, enabled) {
   if (!(enabled in ['true', 'false'])) error 'J3a 管理 release 状态必须为 true 或 false。'
   def kustomization = "${overlay}/kustomization.yaml"
-  if (enabled == 'true') {
-    sh "grep -Fqx '  - j3a-management-ingressroute.yaml' '${kustomization}' || sed -i '/^  - ingress.yaml\$/a\\  - j3a-management-ingressroute.yaml' '${kustomization}'"
-  } else {
-    sh "sed -i '/^  - j3a-management-ingressroute.yaml\$/d' '${kustomization}'"
-  }
-  sh "sed -i -e 's|^      - JUHE_AI_PROXY_LATENCY_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}|' -e 's|^      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}|' '${kustomization}'"
+  sh """#!/bin/sh
+    set -eu
+    file='${kustomization}'
+    route='  - j3a-management-ingressroute.yaml'
+    if [ '${enabled}' = 'true' ]; then
+      if ! grep -Fqx "\$route" "\$file"; then
+        sed -i '/^  - ingress.yaml\$/a\\  - j3a-management-ingressroute.yaml' "\$file"
+      fi
+    else
+      sed -i '/^  - j3a-management-ingressroute.yaml\$/d' "\$file"
+    fi
+    sed -i \
+      -e 's|^      - JUHE_AI_PROXY_LATENCY_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}|' \
+      -e 's|^      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}|' \
+      "\$file"
+    route_count=\$(grep -Fxc "\$route" "\$file" || true)
+    enabled_count=\$(grep -Ec '^      - JUHE_AI_PROXY_LATENCY_ENABLED=' "\$file" || true)
+    management_enabled_count=\$(grep -Ec '^      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=' "\$file" || true)
+    [ "\$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
+    [ "\$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
+    grep -Fqx '      - JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}' "\$file"
+    grep -Fqx '      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}' "\$file"
+    if [ '${enabled}' = 'true' ]; then
+      [ "\$route_count" -eq 1 ] || { echo 'J3a IngressRoute resource must appear exactly once when enabled' >&2; exit 1; }
+    else
+      [ "\$route_count" -eq 0 ] || { echo 'J3a IngressRoute resource must be absent when disabled' >&2; exit 1; }
+    fi
+  """
 }
 
-def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest, j3aManagementEnabled, actor) {
+def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest, j3aManagementEnabled, actor, expectedPlatformRevision = null) {
   if (!validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false'])) error '发布状态字段不合法。'
   refreshPlatformReleaseWorkspace()
+  if (environmentName == 'prod' && expectedPlatformRevision) {
+    def currentPlatformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
+    if (currentPlatformRevision != expectedPlatformRevision) {
+      error "平台 release state 在读取后发生变化：expected=${expectedPlatformRevision}, actual=${currentPlatformRevision}；拒绝写入 prod。"
+    }
+    if (actor == 'jenkins-prod-promotion' &&
+        (metadataValue('test', 'sourceCommit') != sourceCommit ||
+         metadataValue('test', 'nodeImageDigest') != nodeDigest ||
+         metadataValue('test', 'jobsImageDigest') != jobsDigest ||
+         metadataValue('test', 'gatewayImageDigest') != gatewayDigest ||
+         metadataValue('test', 'j3aManagementEnabled') != j3aManagementEnabled)) {
+      error 'test release state source/digest 在晋级前未保持原子一致；拒绝写入 prod。'
+    }
+    if (actor in ['jenkins-prod-promotion', 'jenkins-prod-rollback'] && metadataValue('prod', 'releaseMode') != 'single-active-stop') {
+      error 'prod release metadata 尚未声明 releaseMode=single-active-stop；禁止将候选写入旧的双槽/standby 发布语义。'
+    }
+  }
   def overlay = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}"
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai', nodeDigest)
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-jobs', jobsDigest)
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-gateway', gatewayDigest)
   configureJ3aManagementRelease(overlay, j3aManagementEnabled)
-  if (environmentName == 'prod') {
-    sh "sed -i 's/replicas: 0/replicas: 1/' '${overlay}/statefulset-patch.yaml'"
-  }
-    sh """#!/bin/sh
+  // 槽位副本数和维护入口属于独立的 GitOps 发布控制能力。
+  // release state 写入只能更新镜像/功能状态，不能把候选的停机或单 active
+  // 配置静默改回双槽运行；运行态观察与切换由 Jenkins 外部的 AI/Argo 流程处理。
+  sh """#!/bin/sh
     set -eu
     cd '${releaseWorkspace()}'
     sed -i \\
@@ -403,9 +504,23 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       -e 's|^  gatewayImageDigest: ".*"|  gatewayImageDigest: "${gatewayDigest}"|' \\
       -e 's|^  j3aManagementEnabled: ".*"|  j3aManagementEnabled: "${j3aManagementEnabled}"|' \\
       -e 's|^  releaseActor: ".*"|  releaseActor: "${actor}"|' \\
-      -e 's|^  verification.status: ".*"|  verification.status: "pending"|' \\
-      -e 's|^  verification.sourceCommit: ".*"|  verification.sourceCommit: ""|' \\
       '${overlay}/release-metadata.yaml'
+    assert_metadata_value() {
+      key="\$1"
+      expected="\$2"
+      count=\$(awk -v prefix="  \${key}: \"" 'index(\$0, prefix) == 1 { count++ } END { print count + 0 }' '${overlay}/release-metadata.yaml')
+      [ "\$count" -eq 1 ] || { echo "release metadata key \${key} 命中数为 \${count}，期望 1" >&2; exit 1; }
+      grep -Fqx "  \${key}: \"\${expected}\"" '${overlay}/release-metadata.yaml' || {
+        echo "release metadata key \${key} 回读值不匹配" >&2
+        exit 1
+      }
+    }
+    assert_metadata_value sourceCommit '${sourceCommit}'
+    assert_metadata_value nodeImageDigest '${nodeDigest}'
+    assert_metadata_value jobsImageDigest '${jobsDigest}'
+    assert_metadata_value gatewayImageDigest '${gatewayDigest}'
+    assert_metadata_value j3aManagementEnabled '${j3aManagementEnabled}'
+    assert_metadata_value releaseActor '${actor}'
     if [ '${environmentName}' = 'prod' ]; then
       history='apps/juhe-ai/overlays/prod/release-history.tsv'
       if [ ! -f "\$history" ]; then
@@ -439,15 +554,8 @@ def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest
   def activeJobsDigest = metadataValue('prod', 'jobsImageDigest')
   def activeGatewayDigest = metadataValue('prod', 'gatewayImageDigest')
   def activeJ3aManagementEnabled = metadataValue('prod', 'j3aManagementEnabled')
-  def activeVerificationStatus = metadataValue('prod', 'verification.status')
-  def activeVerificationSourceCommit = metadataValue('prod', 'verification.sourceCommit')
   if (!validCommit(activeSourceCommit) || !validDigest(activeNodeDigest) || !validDigest(activeJobsDigest) || !validDigest(activeGatewayDigest) || !(activeJ3aManagementEnabled in ['true', 'false'])) {
     error '当前 prod-B active release state 缺少合法的 source/digest；拒绝创建反向候选。'
-  }
-  if (!(activeVerificationStatus in ['pending', 'passed']) ||
-      (activeVerificationStatus == 'passed' && activeVerificationSourceCommit != activeSourceCommit) ||
-      (activeVerificationStatus == 'pending' && activeVerificationSourceCommit)) {
-    error '当前 prod-B active verification 状态不合法；拒绝创建反向候选。'
   }
   // In the reverse orientation the primary image names are prod-A. The
   // stable prod-B candidate aliases are intentionally left untouched.
@@ -474,8 +582,6 @@ def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest
       -e 's|^  candidateVerification.sourceCommit: ".*"|  candidateVerification.sourceCommit: ""|' \\
       -e 's|^  releaseMode: ".*"|  releaseMode: "reverse-blue-green"|' \\
       -e 's|^  releaseActor: ".*"|  releaseActor: "jenkins-prod-reverse-intent"|' \\
-      -e 's|^  verification.status: ".*"|  verification.status: "${activeVerificationStatus}"|' \\
-      -e 's|^  verification.sourceCommit: ".*"|  verification.sourceCommit: "${activeVerificationSourceCommit}"|' \\
       '${overlay}/release-metadata.yaml'
     git config user.name platform-jenkins
     git config user.email jenkins@jh.huanmin.top
