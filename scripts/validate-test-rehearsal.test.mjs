@@ -500,6 +500,10 @@ delete missingAccountReadbackDigest.accounts.tables.find(table => table.name ===
 assert.equal(validateTestRehearsalEvidence(missingAccountReadbackDigest).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(missingAccountReadbackDigest).blockers.join('\n'), /accounts\.tables.*readbackDigest/)
 
+const runtimeTableWithoutReadbackDigest = structuredClone(validEvidence)
+delete runtimeTableWithoutReadbackDigest.accounts.tables.find(table => table.name === 'account_schedule_status_events').readbackDigest
+assert.deepEqual(validateTestRehearsalEvidence(runtimeTableWithoutReadbackDigest), { status: 'passed', blockers: [] })
+
 const mismatchedAccountTableRows = structuredClone(validEvidence)
 mismatchedAccountTableRows.accounts.tables.find(table => table.name === 'accounts').targetRows += 1
 assert.equal(validateTestRehearsalEvidence(mismatchedAccountTableRows).status, 'blocked')

@@ -405,7 +405,9 @@ function validateAccounts(evidence, blockers) {
       }
       requireString(table, 'sourceChecksum', tablePath, blockers, SHA256_HEX_PATTERN, '必须有源表行摘要 sha256')
       requireString(table, 'targetChecksum', tablePath, blockers, SHA256_HEX_PATTERN, '必须有目标表行摘要 sha256')
-      requireString(table, 'readbackDigest', tablePath, blockers, SHA256_HEX_PATTERN, '必须有目标字段 readback 摘要 sha256')
+      if (typeof table.name !== 'string' || !RUNTIME_RESET_EVIDENCE_TABLE_NAMES.includes(table.name.trim())) {
+        requireString(table, 'readbackDigest', tablePath, blockers, SHA256_HEX_PATTERN, '配置表必须有目标字段 readback 摘要 sha256')
+      }
       if (!Number.isInteger(table.importOrder) || table.importOrder < 1) {
         addBlocker(blockers, `${tablePath}.importOrder`, '必须是正整数')
       }
