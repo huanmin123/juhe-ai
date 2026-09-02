@@ -62,3 +62,16 @@ func TestHandlerRouteAndMethod(t *testing.T) {
 		t.Fatalf("metrics scrape must not record a runtime window: %d", got)
 	}
 }
+
+func TestWritePrimesScalarGaugesWithoutSampler(t *testing.T) {
+	collector := New("juhe-ai", "gateway")
+	var body strings.Builder
+	if err := collector.Write(&body); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"juhe_ai_go_heap_alloc_bytes", "juhe_ai_go_goroutines", "juhe_ai_go_threads"} {
+		if !strings.Contains(body.String(), want) {
+			t.Fatalf("first scrape must expose %s: %s", want, body.String())
+		}
+	}
+}

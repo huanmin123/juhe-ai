@@ -28,16 +28,17 @@ type RuntimeSnapshot struct {
 	// CPUSecondsTotal is the portable Go runtime counter
 	// /cpu/classes/total:cpu-seconds. It is intentionally not read from an
 	// operating-system process API, so Windows development and Linux deployment
-	// have the same metric semantics.
+	// have the same metric semantics. CPUPercent is the rate against one core
+	// (100% = one full core), so a multi-core process may exceed 100%.
 	CPUSecondsTotal float64
-	CPUPercent         *float64
+	CPUPercent      *float64
 	// RSSBytes and FDCount are retained as nullable storage compatibility
 	// fields for explicitly supplied legacy samples. Collector.Snapshot never
 	// populates them because host RSS/FD semantics are outside the portable Go
 	// runtime contract.
-	RSSBytes           *uint64
-	FDCount            *uint64
-	UptimeSeconds      float64
+	RSSBytes      *uint64
+	FDCount       *uint64
+	UptimeSeconds float64
 }
 
 // Snapshot returns a point-in-time runtime sample without adding labels or

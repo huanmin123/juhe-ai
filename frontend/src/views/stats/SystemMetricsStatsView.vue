@@ -325,7 +325,7 @@ const goRuntimeSummaryItems = computed(() => {
   const latest = [...items].reverse().find((item) => item.sampleCount > 0)
   if (!latest) return []
   const result: Array<{ label: string; value: string }> = []
-  if (isFiniteMetric(latest.cpuPercentAvg)) result.push({ label: 'CPU 平均', value: `${latest.cpuPercentAvg!.toFixed(1)}%` })
+  if (isFiniteMetric(latest.cpuPercentAvg)) result.push({ label: 'Go CPU（单核）', value: `${latest.cpuPercentAvg!.toFixed(1)}%` })
   if (isFiniteMetric(latest.uptimeSecondsAvg)) result.push({ label: '运行时长', value: formatUptime(latest.uptimeSecondsAvg!) })
   if (isFiniteMetric(latest.gomaxprocsAvg)) result.push({ label: 'GOMAXPROCS', value: Math.round(latest.gomaxprocsAvg!).toLocaleString('zh-CN') })
   return result
