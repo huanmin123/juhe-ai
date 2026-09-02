@@ -497,12 +497,10 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
     assert_metadata_value() {
       key="\$1"
       expected="\$2"
-      count=\$(awk -v prefix="  \${key}: \"" 'index(\$0, prefix) == 1 { count++ } END { print count + 0 }' '${overlay}/release-metadata.yaml')
-      [ "\$count" -eq 1 ] || { echo "release metadata key \${key} 命中数为 \${count}，期望 1" >&2; exit 1; }
-      grep -Fqx "  \${key}: \"\${expected}\"" '${overlay}/release-metadata.yaml' || {
-        echo "release metadata key \${key} 回读值不匹配" >&2
-        exit 1
-      }
+      key_count=\$(grep -Ec "^  \${key}: " '${overlay}/release-metadata.yaml' || true)
+      value_count=\$(grep -Fxc "  \${key}: \"\${expected}\"" '${overlay}/release-metadata.yaml' || true)
+      [ "\$key_count" -eq 1 ] || { echo "release metadata key \${key} 命中数为 \${key_count}，期望 1" >&2; exit 1; }
+      [ "\$value_count" -eq 1 ] || { echo "release metadata key \${key} 回读值不匹配" >&2; exit 1; }
     }
     assert_metadata_value sourceCommit '${sourceCommit}'
     assert_metadata_value nodeImageDigest '${nodeDigest}'

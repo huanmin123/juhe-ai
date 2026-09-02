@@ -711,6 +711,8 @@
     "test:rehearsal-account-sync-preflight": "tsx src/scripts/regression/rehearsal-account-sync-preflight-regression.ts",
     "ops:validate-rehearsal-account-sync-plan": "tsx src/scripts/operations/validate-rehearsal-account-sync-plan.ts",
     "test:validate-rehearsal-account-sync-plan": "tsx src/scripts/regression/validate-rehearsal-account-sync-plan-regression.ts",
+    "ops:execute-rehearsal-account-sync": "tsx src/scripts/operations/execute-rehearsal-account-sync.ts",
+    "test:execute-rehearsal-account-sync": "tsx src/scripts/regression/execute-rehearsal-account-sync-regression.ts",
     "test:settings-query-boundary": "tsx src/scripts/regression/settings-query-boundary-regression.ts",
     "test:usage-stats-lag-unavailable": "tsx src/scripts/regression/usage-stats-lag-unavailable-regression.ts",
     "test:system-metrics-process-latest": "tsx src/scripts/regression/system-metrics-process-latest-regression.ts",
