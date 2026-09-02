@@ -240,6 +240,35 @@ const validEvidence = {
   }
 }
 
+for (const environment of ['test', 'prod']) {
+  validEvidence.release[environment].imageResolution = {
+    'node-runtime': {
+      requestedDigest: validEvidence.release.nodeDigest,
+      registryManifestDigest: validEvidence.release.nodeDigest,
+      resolvedPlatformManifestDigest: `sha256:${'4'.repeat(64)}`,
+      runtimeImageID: `sha256:${'4'.repeat(64)}`,
+      platform: 'linux/amd64',
+      evidenceRef: `runtime/${environment}-node-image-resolution.json`
+    },
+    'go-jobs': {
+      requestedDigest: validEvidence.release.jobsDigest,
+      registryManifestDigest: validEvidence.release.jobsDigest,
+      resolvedPlatformManifestDigest: `sha256:${'5'.repeat(64)}`,
+      runtimeImageID: `sha256:${'5'.repeat(64)}`,
+      platform: 'linux/amd64',
+      evidenceRef: `runtime/${environment}-jobs-image-resolution.json`
+    },
+    'go-gateway': {
+      requestedDigest: validEvidence.release.gatewayDigest,
+      registryManifestDigest: validEvidence.release.gatewayDigest,
+      resolvedPlatformManifestDigest: `sha256:${'6'.repeat(64)}`,
+      runtimeImageID: `sha256:${'6'.repeat(64)}`,
+      platform: 'linux/amd64',
+      evidenceRef: `runtime/${environment}-gateway-image-resolution.json`
+    }
+  }
+}
+
 // 其余白名单表使用最小的结构化占位，确保验证器测试覆盖完整闭包而非仅六张关键表。
 for (const [index, name] of ACCOUNT_SYNC_EVIDENCE_TABLE_NAMES.entries()) {
   if (!validEvidence.accounts.tables.some(table => table.name === name)) {
@@ -311,6 +340,16 @@ assert.match(validateTestRehearsalEvidence(missingRuntimeEvidenceReference).bloc
 const mismatchedObservedDigest = structuredClone(validEvidence)
 mismatchedObservedDigest.release.prod.gatewayDigest = `sha256:${'4'.repeat(64)}`
 assert.equal(validateTestRehearsalEvidence(mismatchedObservedDigest).status, 'blocked')
+
+const missingImageResolution = structuredClone(validEvidence)
+delete missingImageResolution.release.test.imageResolution
+assert.equal(validateTestRehearsalEvidence(missingImageResolution).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(missingImageResolution).blockers.join('\n'), /imageResolution/)
+
+const unresolvedImageIndex = structuredClone(validEvidence)
+unresolvedImageIndex.release.test.imageResolution['go-jobs'].registryManifestDigest = `sha256:${'7'.repeat(64)}`
+assert.equal(validateTestRehearsalEvidence(unresolvedImageIndex).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(unresolvedImageIndex).blockers.join('\n'), /registryManifestDigest/)
 
 const unapprovedEnvironmentDiff = structuredClone(validEvidence)
 unapprovedEnvironmentDiff.environment.permittedDiffs.push('temporary allowlist')

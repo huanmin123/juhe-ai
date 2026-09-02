@@ -16,6 +16,11 @@ const COMMIT_PATTERN = /^[0-9a-f]{7,64}$/u
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u
 export const EVIDENCE_REF_PATTERN = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._\/-]{1,256}$/u
 const CREDENTIAL_POLICIES = new Set(['test-only-equivalent', 'isolated-reencrypt'])
+const RELEASE_IMAGE_COMPONENTS = Object.freeze([
+  ['nodeDigest', 'node-runtime'],
+  ['jobsDigest', 'go-jobs'],
+  ['gatewayDigest', 'go-gateway']
+])
 const ACCOUNT_SELF_FK_POLICIES = new Set([
   'source-before-authorization-instance',
   'deferred-constraints-verified'
@@ -188,6 +193,33 @@ function validateRelease(evidence, blockers) {
     }
     if (evidence.release[environment].sourceCommit !== evidence.release.sourceCommit) addBlocker(blockers, pathName, 'sourceCommit 必须与候选 release 一致')
     requireEvidenceRefs(evidence.release[environment], pathName, blockers)
+    validateImageResolution(evidence.release[environment], pathName, evidence.release, blockers)
+  }
+}
+
+function validateImageResolution(environmentEvidence, pathName, release, blockers) {
+  const resolutionPath = `${pathName}.imageResolution`
+  if (!requireRecord(environmentEvidence.imageResolution, resolutionPath, blockers)) return
+  for (const [digestKey, component] of RELEASE_IMAGE_COMPONENTS) {
+    const componentPath = `${resolutionPath}.${component}`
+    const resolution = environmentEvidence.imageResolution[component]
+    if (!requireRecord(resolution, componentPath, blockers)) continue
+    requireString(resolution, 'requestedDigest', componentPath, blockers, DIGEST_PATTERN, '必须记录 Pod spec 请求的 OCI index digest')
+    requireString(resolution, 'registryManifestDigest', componentPath, blockers, DIGEST_PATTERN, '必须记录 registry 回读的 OCI index digest')
+    requireString(resolution, 'resolvedPlatformManifestDigest', componentPath, blockers, DIGEST_PATTERN, '必须记录目标节点平台 manifest digest')
+    requireString(resolution, 'runtimeImageID', componentPath, blockers, DIGEST_PATTERN, '必须记录 Pod status.imageID digest')
+    requireExactValue(resolution, 'platform', 'linux/amd64', componentPath, blockers)
+    requireString(resolution, 'evidenceRef', componentPath, blockers, EVIDENCE_REF_PATTERN, '必须引用 registry 与 Pod imageID 的受控回读证据')
+    const expectedDigest = release[digestKey]
+    if (resolution.requestedDigest !== expectedDigest) {
+      addBlocker(blockers, `${componentPath}.requestedDigest`, `必须与候选 ${digestKey} 一致`)
+    }
+    if (resolution.registryManifestDigest !== resolution.requestedDigest) {
+      addBlocker(blockers, `${componentPath}.registryManifestDigest`, '必须与 requestedDigest 一致，禁止 tag 或未核对的 registry 响应')
+    }
+    if (resolution.runtimeImageID !== resolution.resolvedPlatformManifestDigest) {
+      addBlocker(blockers, `${componentPath}.runtimeImageID`, '必须与 resolvedPlatformManifestDigest 一致')
+    }
   }
 }
 
