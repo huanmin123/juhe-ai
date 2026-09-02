@@ -397,7 +397,7 @@ def replaceDigest(file, imageName, digest) {
   sh """#!/bin/sh
     set -eu
     perl -0e '
-      my (\$file, \$name, \$digest) = \@ARGV;
+      my (\$file, \$name, \$digest) = @ARGV;
       open my \$in, "<", \$file or die "无法读取 kustomization: \$!";
       local \$/; my \$text = <\$in>; close \$in;
       my \$quoted = quotemeta(\$name);
