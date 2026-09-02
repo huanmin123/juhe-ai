@@ -50,6 +50,13 @@ interface ExecutionTableReport {
   selectedRows: number
   insertedRows: number
   copiedDigest: string
+  readbackDigest: string
+}
+
+interface ReadbackExpectation {
+  rowKey: string
+  values: Record<string, unknown>
+  requiredNonNullColumns: string[]
 }
 
 export interface RehearsalAccountSyncExecutionReport {
@@ -270,17 +277,22 @@ async function copyTable(
   }
   const targetColumns = await readTargetColumns(target, table)
   const sensitive = new Set(ACCOUNT_SYNC_TABLE_POLICIES.find((item) => item.name === table)?.sensitiveColumns ?? [])
+  const readbackColumns = [...new Set([...copiedColumns, ...plan.generatedColumns, ...plan.clearedColumns])]
+  const readbackExpectations: ReadbackExpectation[] = []
   let insertedRows = 0
   for (const row of selected) {
     const rowKey = stableKey(primaryKey.map((item) => row[item.name]))
     const generatedForRow = generated[rowKey] ?? generated['*'] ?? {}
     const columns: string[] = []
     const values: unknown[] = []
+    const expectedValues: Record<string, unknown> = {}
+    const requiredNonNullColumns: string[] = []
     const sourceColumns = [...plan.copiedColumns, ...plan.clearedColumns, ...plan.generatedColumns]
     for (const column of sourceColumns) {
       if (plan.copiedColumns.includes(column)) {
         columns.push(column)
         values.push(row[column])
+        expectedValues[column] = row[column]
         continue
       }
       if (plan.generatedColumns.includes(column)) {
@@ -292,8 +304,10 @@ async function copyTable(
         if (column in generatedForRow) {
           columns.push(column)
           values.push(generatedForRow[column])
+          expectedValues[column] = generatedForRow[column]
         } else if (targetColumns.get(column)?.defaultExpression) {
           // Let PostgreSQL evaluate the candidate schema default.
+          if (!targetColumns.get(column)?.isNullable) requiredNonNullColumns.push(column)
         } else {
           throw new Error(`${table}.${column} 既未提供生成值，也没有目标默认值`)
         }
@@ -304,36 +318,96 @@ async function copyTable(
         if (metadata?.isNullable) {
           columns.push(column)
           values.push(null)
+          expectedValues[column] = null
         } else if (!metadata?.defaultExpression) {
           throw new Error(`${table}.${column} 是 NOT NULL 且无默认值，不能清空`)
+        } else {
+          requiredNonNullColumns.push(column)
         }
       }
     }
     if (columns.length === 0) throw new Error(`${table} 产生空 INSERT，拒绝继续`)
     const insertSql = `INSERT INTO ${quoteIdentifier(businessSchema)}.${quoteIdentifier(table)} (${columns.map(quoteIdentifier).join(', ')}) VALUES (${columns.map((_, index) => `$${index + 1}`).join(', ')})`
     await target.query(insertSql, values)
+    readbackExpectations.push({ rowKey, values: expectedValues, requiredNonNullColumns })
     insertedRows += 1
   }
   const readbackPredicate = buildScopePredicate(primaryKey, scopeKeys)
   const readback = await target.query<Row>(
-    `SELECT ${sqlColumns} FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier(table)}${readbackPredicate.sql}${primaryKey.length > 0 ? ` ORDER BY ${primaryKey.map((item) => quoteIdentifier(item.name)).join(', ')}` : ''}`,
+    `SELECT ${readbackColumns.map(quoteIdentifier).join(', ')} FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier(table)}${readbackPredicate.sql}${primaryKey.length > 0 ? ` ORDER BY ${primaryKey.map((item) => quoteIdentifier(item.name)).join(', ')}` : ''}`,
     readbackPredicate.parameters
   )
   if (readback.rows.length !== selected.length) throw new Error(`${table} 目标 readback 行数 ${readback.rows.length} 与导入行数 ${selected.length} 不一致`)
+  assertTransformedReadback(table, readback.rows, readbackExpectations, primaryKey)
   const readbackDigest = createHash('sha256')
   for (const value of projectedRowKeys(selected, copiedColumns)) readbackDigest.update(value).update('\n')
   const sourceDigest = readbackDigest.digest('hex')
   const targetDigest = createHash('sha256')
   for (const value of projectedRowKeys(readback.rows, copiedColumns)) targetDigest.update(value).update('\n')
   if (sourceDigest !== targetDigest.digest('hex')) throw new Error(`${table} copied 列 readback digest 不一致，事务将回滚`)
+  const transformedReadbackDigest = createHash('sha256')
+  for (const value of projectedRowKeys(readback.rows, readbackColumns)) transformedReadbackDigest.update(value).update('\n')
   await advanceIdSequence(target, table)
   return {
     name: table,
     sourceRows: result.rowCount ?? result.rows.length,
     selectedRows: selected.length,
     insertedRows,
-    copiedDigest: sourceDigest
+    copiedDigest: sourceDigest,
+    readbackDigest: transformedReadbackDigest.digest('hex')
   }
+}
+
+/**
+ * Compare every explicitly supplied generated/cleared value after the INSERT.
+ * Defaults are not compared byte-for-byte, but NOT NULL defaulted columns must
+ * still be present. Sensitive values are compared in memory only and never
+ * included in the returned digest or error text.
+ */
+export function assertTransformedReadback(
+  table: string,
+  actualRows: readonly Row[],
+  expectations: readonly ReadbackExpectation[],
+  primaryKey: readonly PrimaryKeyColumn[]
+): void {
+  const actualByKey = new Map<string, Row>()
+  if (primaryKey.length > 0) {
+    for (const row of actualRows) {
+      const key = stableKey(primaryKey.map((column) => row[column.name]))
+      if (actualByKey.has(key)) throw new Error(`${table} 目标 readback 主键重复，拒绝继续`)
+      actualByKey.set(key, row)
+    }
+  }
+  for (const [index, expectation] of expectations.entries()) {
+    const actual = primaryKey.length > 0 ? actualByKey.get(expectation.rowKey) : actualRows[index]
+    if (!actual) throw new Error(`${table} 目标 readback 缺少行 ${expectation.rowKey}`)
+    for (const [column, expected] of Object.entries(expectation.values)) {
+      if (!valuesEquivalent(expected, actual[column])) {
+        throw new Error(`${table}.${column} 生成/清空值 readback 不一致，事务将回滚`)
+      }
+    }
+    for (const column of expectation.requiredNonNullColumns) {
+      if (actual[column] === null || actual[column] === undefined) {
+        throw new Error(`${table}.${column} 默认值 readback 为空，事务将回滚`)
+      }
+    }
+  }
+}
+
+function valuesEquivalent(expected: unknown, actual: unknown): boolean {
+  if (expected instanceof Date || actual instanceof Date) {
+    const expectedDate = toDate(expected)
+    const actualDate = toDate(actual)
+    if (expectedDate && actualDate) return expectedDate.toISOString() === actualDate.toISOString()
+  }
+  return stableKey([expected]) === stableKey([actual])
+}
+
+function toDate(value: unknown): Date | undefined {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed
 }
 
 function requiresPerRowGeneratedValue(table: string, column: string): boolean {

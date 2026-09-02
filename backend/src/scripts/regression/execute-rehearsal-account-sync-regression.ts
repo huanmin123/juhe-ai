@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import { ACCOUNT_SYNC_TABLE_POLICIES } from '../operations/rehearsal-account-sync-preflight.js'
 import {
+  assertTransformedReadback,
   assertExecuteEnvironment,
   hashStringList,
   orderAccountRows,
@@ -64,5 +65,28 @@ assert.throws(() => orderAccountRows([
   { id: 'a', authorization_instance_source_account_id: 'b' },
   { id: 'b', authorization_instance_source_account_id: 'a' }
 ]), /缺失 source 或环/)
+
+assert.doesNotThrow(() => assertTransformedReadback(
+  'accounts',
+  [{ id: 'account-1', credentials_encrypted: 'test-secret', cooldown_retest_failure_count: 0, updated_at: new Date('2026-09-03T00:00:00.000Z') }],
+  [{
+    rowKey: '["account-1"]',
+    values: { credentials_encrypted: 'test-secret', cooldown_retest_failure_count: 0, updated_at: '2026-09-03T00:00:00.000Z' },
+    requiredNonNullColumns: []
+  }],
+  [{ name: 'id', ordinal: 1 }]
+))
+assert.throws(() => assertTransformedReadback(
+  'accounts',
+  [{ id: 'account-1', credentials_encrypted: 'wrong-secret' }],
+  [{ rowKey: '["account-1"]', values: { credentials_encrypted: 'test-secret' }, requiredNonNullColumns: [] }],
+  [{ name: 'id', ordinal: 1 }]
+), /生成\/清空值 readback 不一致/)
+assert.throws(() => assertTransformedReadback(
+  'model_quality_schedules',
+  [{ id: 'schedule-1', next_run_at: null }],
+  [{ rowKey: '["schedule-1"]', values: {}, requiredNonNullColumns: ['next_run_at'] }],
+  [{ name: 'id', ordinal: 1 }]
+), /默认值 readback 为空/)
 
 console.log('execute rehearsal account sync regression passed')
