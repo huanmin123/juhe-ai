@@ -486,6 +486,10 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
   sh """#!/bin/sh
     set -eu
     cd '${releaseWorkspace()}'
+    metadata_file='${overlay}/release-metadata.yaml'
+    metadata_tmp="\${metadata_file}.tmp.\$\$"
+    tr -d '\r' < "\${metadata_file}" > "\${metadata_tmp}"
+    mv "\${metadata_tmp}" "\${metadata_file}"
     sed -i \\
       -e 's|^  sourceCommit: ".*"|  sourceCommit: "${sourceCommit}"|' \\
       -e 's|^  nodeImageDigest: ".*"|  nodeImageDigest: "${nodeDigest}"|' \\
@@ -493,12 +497,12 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       -e 's|^  gatewayImageDigest: ".*"|  gatewayImageDigest: "${gatewayDigest}"|' \\
       -e 's|^  j3aManagementEnabled: ".*"|  j3aManagementEnabled: "${j3aManagementEnabled}"|' \\
       -e 's|^  releaseActor: ".*"|  releaseActor: "${actor}"|' \\
-      '${overlay}/release-metadata.yaml'
+      "\${metadata_file}"
     assert_metadata_value() {
       key="\$1"
       expected="\$2"
-      key_count=\$(sed 's/\\r\$//' '${overlay}/release-metadata.yaml' | grep -Ec "^  \${key}: " || true)
-      value_count=\$(sed 's/\\r\$//' '${overlay}/release-metadata.yaml' | grep -Fxc "  \${key}: \"\${expected}\"" || true)
+      key_count=\$(grep -Ec "^  \${key}: " "\${metadata_file}" || true)
+      value_count=\$(grep -Fxc "  \${key}: \"\${expected}\"" "\${metadata_file}" || true)
       [ "\$key_count" -eq 1 ] || { echo "release metadata key \${key} 命中数为 \${key_count}，期望 1" >&2; exit 1; }
       [ "\$value_count" -eq 1 ] || { echo "release metadata key \${key} 回读值不匹配" >&2; exit 1; }
     }
