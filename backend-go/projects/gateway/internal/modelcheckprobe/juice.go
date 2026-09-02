@@ -196,7 +196,7 @@ func EvaluateJuice(model string, results []Result, coverage string) Evaluation {
 	} else if successful < len(results) {
 		status = "skipped"
 	}
-	evidence := map[string]any{"probeVersion": JuiceProbeVersion, "requiredProbeCount": 6, "completedProbeCount": successful, "hardAnomaly": strong || weak || coverageMismatch, "strongAnomaly": strong, "scorePenalty": penalty, "observations": observations}
+	evidence := map[string]any{"probeVersion": JuiceProbeVersion, "requiredProbeCount": 6, "completedProbeCount": successful, "requestFailureCount": len(results) - successful, "scoringProbeCount": successful, "hardAnomaly": strong || weak || coverageMismatch, "strongAnomaly": strong, "scorePenalty": penalty, "observations": observations}
 	if terminalFailure {
 		evidence["requestFailure"] = true
 		evidence["evidenceInsufficient"] = true

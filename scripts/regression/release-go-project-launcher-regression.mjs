@@ -26,6 +26,7 @@ assertLauncherRejectsMissingJ1InputDirectory()
 assertLauncherRejectsSqliteJ2Store()
 assertLauncherForwardsProjectScopedPaths()
 assertLauncherForwardsJ2PathsAndOwner()
+assertLauncherForwardsGoRuntimeMetricsConfig()
 
 console.log('release Go project launcher regression passed')
 
@@ -154,6 +155,36 @@ function assertLauncherForwardsJ2PathsAndOwner() {
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET, 'j2-manual-bridge-secret-0123456789')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE, '3')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET, '40s')
+  } finally {
+    jobs.cleanup()
+  }
+}
+
+function assertLauncherForwardsGoRuntimeMetricsConfig() {
+  const jobs = runLauncher('jobs', {
+    JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
+    JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    JUHE_AI_GO_RUNTIME_METRICS_STORE: 'sqlite',
+    JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH: './data/go-runtime-metrics.sqlite3',
+    JUHE_AI_GO_RUNTIME_METRICS_INTERVAL: '15s',
+    JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS: '30',
+    JUHE_AI_GO_RUNTIME_METRICS_SERVICE: 'juhe-ai',
+    JUHE_AI_GO_RUNTIME_METRICS_ROLE: 'jobs'
+  }, [
+    'JUHE_AI_DATABASE_DRIVER=postgres',
+    'JUHE_AI_RUNTIME_LOG_STORE=postgres',
+    'JUHE_AI_TABLE_MONITOR_STORE=postgres',
+    'JUHE_AI_RUNTIME_LOG_POSTGRES_URL=postgres://runtime-log',
+    'JUHE_AI_TABLE_MONITOR_POSTGRES_URL=postgres://table-monitor'
+  ].join('\n'))
+  try {
+    assert.equal(jobs.status, 0, `Go runtime metrics launcher failed: ${jobs.output}`)
+    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_STORE, 'sqlite')
+    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH, join(jobs.backendRoot, 'data', 'go-runtime-metrics.sqlite3'))
+    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_INTERVAL, '15s')
+    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS, '30')
+    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_SERVICE, 'juhe-ai')
+    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_ROLE, 'jobs')
   } finally {
     jobs.cleanup()
   }

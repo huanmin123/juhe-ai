@@ -55,11 +55,11 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 	}
 	checks = unscopedEvaluations(checks)
 	basic := findEvaluation(checks, "protocol_basic")
-	if basic != nil && (basic.Status == "failed" || !evidenceBool(basic.Evidence, "success")) && coreEvidenceUnavailable(checks) {
-		return SummaryResult{"unavailable", score, 100, "目标模型链路不可检测或上游不可用"}
-	}
+	// Node marks any basic probe without a successful response as unavailable,
+	// even when other core probes still answered; unavailable never authorizes
+	// enforcement and always publishes the health failure.
 	if basic != nil && (basic.Status == "failed" || !evidenceBool(basic.Evidence, "success")) {
-		return SummaryResult{"uncertain", score, 100, "基础协议探针未形成完整证据，但其他核心能力仍有响应"}
+		return SummaryResult{"unavailable", score, 100, "目标模型链路不可检测或上游不可用"}
 	}
 	long := findEvaluation(checks, "long_context")
 	if long != nil && long.Status == "failed" {
@@ -124,16 +124,6 @@ func findEvaluation(items []Evaluation, kind string) *Evaluation {
 		}
 	}
 	return nil
-}
-
-func coreEvidenceUnavailable(items []Evaluation) bool {
-	for _, kind := range []string{"protocol_basic", "structured_output", "tool_calling"} {
-		item := findEvaluation(items, kind)
-		if item != nil && evidenceBool(item.Evidence, "success") {
-			return false
-		}
-	}
-	return true
 }
 
 func unscopedKind(kind string) string {

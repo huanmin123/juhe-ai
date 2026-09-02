@@ -19,11 +19,18 @@ export function formatAccountBalance(
 } {
   if (!snapshot) return pendingBalanceDisplay('pending', false, pendingBalanceTooltip(account))
   if (snapshot.status === 'failed') {
-    return { text: '余额查询失败', tone: 'failed', tooltip: snapshot.errorMessage, refreshing: false, visible: true }
+    const partial = snapshot.keyCount && snapshot.queriedKeyCount !== undefined && snapshot.queriedKeyCount < snapshot.keyCount
+    return {
+      text: partial ? `部分失败（${snapshot.queriedKeyCount}/${snapshot.keyCount}）` : '余额查询失败',
+      tone: 'failed',
+      tooltip: snapshot.errorMessage,
+      refreshing: false,
+      visible: true
+    }
   }
   if (snapshot.status === 'unsupported') {
     return {
-      text: '余额查询失败',
+      text: snapshot.keyCount && snapshot.keyCount > 1 ? '无法安全合计' : '余额查询失败',
       tone: 'failed',
       tooltip: snapshot.errorMessage ?? '当前配置未找到可用余额接口',
       refreshing: false,
@@ -31,19 +38,17 @@ export function formatAccountBalance(
     }
   }
   if (snapshot.status === 'refreshing') {
-    const amount = Number(snapshot.remainingUsd)
-    return snapshot.remainingUsd !== undefined && Number.isFinite(amount)
-      ? { text: formatUsdAmount(amount), tone: 'fresh', tooltip: undefined, refreshing: true, visible: true }
+    return snapshot.remainingUsd !== undefined
+      ? { text: formatUsdAmount(snapshot.remainingUsd), tone: 'fresh', tooltip: undefined, refreshing: true, visible: true }
       : pendingBalanceDisplay('refreshing', true)
   }
   const retryTooltip = transientFailureTooltip(snapshot, true)
   if (snapshot.status === 'unlimited') return { text: '不限额', tone: 'unlimited', tooltip: retryTooltip, refreshing: false, visible: true }
   if (snapshot.status === 'fresh' && snapshot.remainingUsd !== undefined) {
-    const amount = Number(snapshot.remainingUsd)
     return {
-      text: Number.isFinite(amount) ? formatUsdAmount(amount) : '余额查询失败',
-      tone: Number.isFinite(amount) ? 'fresh' : 'failed',
-      tooltip: Number.isFinite(amount) ? retryTooltip : '上游返回的余额金额无效',
+      text: formatUsdAmount(snapshot.remainingUsd),
+      tone: 'fresh',
+      tooltip: retryTooltip,
       refreshing: false,
       visible: true
     }
@@ -60,8 +65,21 @@ export function formatAccountBalance(
   return pendingBalanceDisplay('pending', false, pendingBalanceTooltip(account))
 }
 
-function formatUsdAmount(amount: number): string {
-  return `${amount < 0 ? '-' : ''}$${Math.abs(amount).toFixed(2)}`
+function formatUsdAmount(value: string | number): string {
+  const text = String(value).trim()
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(text)
+  if (!match) return '余额查询失败'
+  const negative = match[1] === '-'
+  const fraction = match[3] ?? ''
+  const padded = `${fraction}00`.slice(0, 3)
+  let cents = BigInt(padded.slice(0, 2))
+  if (padded.length > 2 && Number(padded[2]) >= 5) cents += 1n
+  let integer = BigInt(match[2]!)
+  if (cents >= 100n) {
+    integer += 1n
+    cents -= 100n
+  }
+  return `${negative ? '-' : ''}$${integer.toString()}.${cents.toString().padStart(2, '0')}`
 }
 
 function pendingBalanceDisplay(
@@ -98,22 +116,12 @@ export function buildAccountBalancePayload(form: Pick<AccountFormModel,
 >): { balanceQueryEnabled: boolean; balanceQueryConfig?: Record<string, unknown> } | undefined {
   const apiKeys = effectiveFormApiKeys(form.apiKeys)
   if (form.type !== 'api_key' || apiKeys.length === 0) return undefined
-  if (apiKeys.length > 1) {
-    return {
-      balanceQueryEnabled: false,
-      balanceQueryConfig: validateBalanceQueryConfigForm(form)
-        ? { adapter: 'builtin', intervalMinutes: 5 }
-        : buildBalanceQueryConfig(form)
-    }
-  }
   if (!form.balanceQueryEnabled) return { balanceQueryEnabled: false }
   return { balanceQueryEnabled: true, balanceQueryConfig: buildBalanceQueryConfig(form) }
 }
 
 export function accountBalanceWillAutoDisable(form: Pick<AccountFormModel, 'type' | 'apiKeys' | 'balanceQueryEnabled'>): boolean {
-  return form.type === 'api_key'
-    && form.balanceQueryEnabled
-    && effectiveFormApiKeys(form.apiKeys).length > 1
+  return false
 }
 
 function buildBalanceQueryConfig(form: Pick<AccountFormModel,
@@ -149,8 +157,7 @@ export function validateAccountBalanceForm(form: Pick<AccountFormModel,
   if (!form.balanceQueryEnabled) return undefined
   const apiKeys = effectiveFormApiKeys(form.apiKeys)
   if (form.type !== 'api_key') return '上游余额查询仅支持 API Key 账户'
-  if (apiKeys.length > 1) return undefined
-  if (apiKeys.length !== 1) return '上游余额查询需要一个有效的 API Key'
+  if (apiKeys.length < 1) return '上游余额查询需要至少一个有效的 API Key'
   return validateBalanceQueryConfigForm(form)
 }
 

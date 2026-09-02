@@ -161,7 +161,12 @@ async function autoDetectAccountBalanceCandidateWithLease(
     systemAccountId: candidate.systemAccountId,
     expectedConfigRevision: candidate.configRevision,
     expectedConfig: detected.config,
-    snapshot: { ...detected.snapshot, lastAttemptAt: completedAt, lastSuccessAt: completedAt },
+    snapshot: {
+      ...detected.snapshot,
+      configRevision: candidate.configRevision,
+      lastAttemptAt: completedAt,
+      lastSuccessAt: completedAt
+    },
     nextRefreshAfter: nextRefreshAt
   }
   const written = runtimeConfig.databaseDriver === 'postgres' || !mainDatabaseRuntimeInfo('stats').queryOnly

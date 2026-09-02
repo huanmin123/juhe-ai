@@ -70,7 +70,7 @@ pipeline {
             error '当前生产发布只允许 RELEASE_MODE=single-active-stop；蓝绿/反向切换未完成独立验收。'
           }
           if (reverseDeployRequested()) {
-            error 'REVERSE_DEPLOY_PROD 已被本次全停机单 active 发布策略明确禁止；不得写入 reverse-blue-green intent。'
+            error 'REVERSE_DEPLOY_PROD 已被本次全停机单 active 发布策略明确禁止；不得写入反向发布 intent。'
           }
           if (rollbackRequested() && !(params.ROLLBACK_APPROVAL_TICKET?.trim())) {
             error 'ROLLBACK_PROD 必须提供受控 ROLLBACK_APPROVAL_TICKET；缺少审批单不得写 prod。'
@@ -222,22 +222,6 @@ pipeline {
       }
     }
 
-    stage('写入 prod 反向候选状态') {
-      when { expression { reverseDeployRequested() } }
-      steps {
-        script {
-          def release = readTestRelease()
-          env.SOURCE_COMMIT = release.sourceCommit
-          env.NODE_DIGEST = release.nodeDigest
-          env.JOBS_DIGEST = release.jobsDigest
-          env.GATEWAY_DIGEST = release.gatewayDigest
-          env.J3A_MANAGEMENT_ENABLED = release.j3aManagementEnabled
-          writeReverseReleaseState(env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED)
-          currentBuild.description = "反向 prod candidate 已写入，source=${env.SOURCE_COMMIT}"
-        }
-      }
-    }
-
     stage('选择 prod 回滚版本') {
       when { expression { rollbackRequested() } }
       steps {
@@ -349,10 +333,11 @@ def readTestRelease() {
     nodeDigest: metadataValue('test', 'nodeImageDigest'),
     jobsDigest: metadataValue('test', 'jobsImageDigest'),
     gatewayDigest: metadataValue('test', 'gatewayImageDigest'),
-    j3aManagementEnabled: metadataValue('test', 'j3aManagementEnabled')
+    j3aManagementEnabled: metadataValue('test', 'j3aManagementEnabled'),
+    releaseMode: metadataValue('test', 'releaseMode')
   ]
   release.platformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
-  if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false'])) {
+  if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false']) || release.releaseMode != 'single-active-stop') {
     error 'test release state 未通过完整性检查。'
   }
   return release
@@ -420,6 +405,9 @@ def replaceDigest(file, imageName, digest) {
       my \$matches = () = \$text =~ /\$pattern/g;
       die "镜像 \$name digest 替换命中数为 \$matches，期望 1\\n" unless \$matches == 1;
       \$text =~ s{\$pattern}{\$1 . \$digest}e;
+      my \$expected_pattern = qr{- name: \$quoted\\n\\s+newName: [^\\n]+\\n\\s+digest: \\Q\$digest\\E};
+      my \$after_matches = () = \$text =~ /\$expected_pattern/g;
+      die "镜像 \$name digest 写入后回读命中数为 \$after_matches，期望 1\\n" unless \$after_matches == 1;
       open my \$out, ">", \$file or die "无法写入 kustomization: \$!";
       print \$out \$text; close \$out;
     ' '${file}' '${imageName}' '${digest}'
@@ -479,7 +467,8 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
          metadataValue('test', 'nodeImageDigest') != nodeDigest ||
          metadataValue('test', 'jobsImageDigest') != jobsDigest ||
          metadataValue('test', 'gatewayImageDigest') != gatewayDigest ||
-         metadataValue('test', 'j3aManagementEnabled') != j3aManagementEnabled)) {
+         metadataValue('test', 'j3aManagementEnabled') != j3aManagementEnabled ||
+         metadataValue('test', 'releaseMode') != 'single-active-stop')) {
       error 'test release state source/digest 在晋级前未保持原子一致；拒绝写入 prod。'
     }
     if (actor in ['jenkins-prod-promotion', 'jenkins-prod-rollback'] && metadataValue('prod', 'releaseMode') != 'single-active-stop') {
@@ -521,6 +510,9 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
     assert_metadata_value gatewayImageDigest '${gatewayDigest}'
     assert_metadata_value j3aManagementEnabled '${j3aManagementEnabled}'
     assert_metadata_value releaseActor '${actor}'
+    if [ '${environmentName}' = 'test' ]; then
+      assert_metadata_value releaseMode 'single-active-stop'
+    fi
     if [ '${environmentName}' = 'prod' ]; then
       history='apps/juhe-ai/overlays/prod/release-history.tsv'
       if [ ! -f "\$history" ]; then
@@ -541,56 +533,4 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
     fi
   """
   return sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
-}
-
-def writeReverseReleaseState(sourceCommit, nodeDigest, jobsDigest, gatewayDigest, candidateJ3aManagementEnabled) {
-  if (!validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(candidateJ3aManagementEnabled in ['true', 'false'])) error '反向候选发布状态字段不合法。'
-  refreshPlatformReleaseWorkspace()
-  def overlay = "${releaseWorkspace()}/apps/juhe-ai/overlays/prod"
-  // Top-level fields describe the active slot. In this reverse orientation,
-  // B is active; preserve those fields while replacing candidate A fields.
-  def activeSourceCommit = metadataValue('prod', 'sourceCommit')
-  def activeNodeDigest = metadataValue('prod', 'nodeImageDigest')
-  def activeJobsDigest = metadataValue('prod', 'jobsImageDigest')
-  def activeGatewayDigest = metadataValue('prod', 'gatewayImageDigest')
-  def activeJ3aManagementEnabled = metadataValue('prod', 'j3aManagementEnabled')
-  if (!validCommit(activeSourceCommit) || !validDigest(activeNodeDigest) || !validDigest(activeJobsDigest) || !validDigest(activeGatewayDigest) || !(activeJ3aManagementEnabled in ['true', 'false'])) {
-    error '当前 prod-B active release state 缺少合法的 source/digest；拒绝创建反向候选。'
-  }
-  // In the reverse orientation the primary image names are prod-A. The
-  // stable prod-B candidate aliases are intentionally left untouched.
-  replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai', nodeDigest)
-  replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-jobs', jobsDigest)
-  replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-gateway', gatewayDigest)
-  sh """#!/bin/sh
-    set -eu
-    cd '${releaseWorkspace()}'
-    sed -i \\
-      -e 's|^  sourceCommit: ".*"|  sourceCommit: "${activeSourceCommit}"|' \\
-      -e 's|^  nodeImageDigest: ".*"|  nodeImageDigest: "${activeNodeDigest}"|' \\
-      -e 's|^  jobsImageDigest: ".*"|  jobsImageDigest: "${activeJobsDigest}"|' \\
-      -e 's|^  gatewayImageDigest: ".*"|  gatewayImageDigest: "${activeGatewayDigest}"|' \\
-      -e 's|^  candidateSourceCommit: ".*"|  candidateSourceCommit: "${sourceCommit}"|' \\
-      -e 's|^  candidateNodeImageDigest: ".*"|  candidateNodeImageDigest: "${nodeDigest}"|' \\
-      -e 's|^  candidateJobsImageDigest: ".*"|  candidateJobsImageDigest: "${jobsDigest}"|' \\
-      -e 's|^  candidateGatewayImageDigest: ".*"|  candidateGatewayImageDigest: "${gatewayDigest}"|' \\
-      -e 's|^  candidateJ3aManagementEnabled: ".*"|  candidateJ3aManagementEnabled: "${candidateJ3aManagementEnabled}"|' \\
-      -e 's|^  activeSlot: ".*"|  activeSlot: "prod-b"|' \\
-      -e 's|^  candidateSlot: ".*"|  candidateSlot: "prod-a"|' \\
-      -e 's|^  candidateGate: ".*"|  candidateGate: "blocked"|' \\
-      -e 's|^  candidateVerification.status: ".*"|  candidateVerification.status: "pending"|' \\
-      -e 's|^  candidateVerification.sourceCommit: ".*"|  candidateVerification.sourceCommit: ""|' \\
-      -e 's|^  releaseMode: ".*"|  releaseMode: "reverse-blue-green"|' \\
-      -e 's|^  releaseActor: ".*"|  releaseActor: "jenkins-prod-reverse-intent"|' \\
-      '${overlay}/release-metadata.yaml'
-    git config user.name platform-jenkins
-    git config user.email jenkins@jh.huanmin.top
-    git add '${overlay}/kustomization.yaml' '${overlay}/release-metadata.yaml'
-    if git diff --cached --quiet; then
-      echo '反向 prod candidate release intent 已是目标状态；不重复提交。'
-    else
-      git commit -m '[skip ci] release(juhe-ai-prod): reverse candidate ${sourceCommit}'
-      GIT_SSH_COMMAND="ssh -i '${env.GITEE_WRITE_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/usr/share/jenkins/ref/gitee-known-hosts" git push origin HEAD:'${env.RELEASE_BRANCH}'
-    fi
-  """
 }

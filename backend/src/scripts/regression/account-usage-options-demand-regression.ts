@@ -62,9 +62,14 @@ try {
 
   const selfOptions = serialized(accountUsageRepository.listAccountUsageOptions(
     { systemAccountId: owner.id, role: 'user' },
-    { keyword: '用量候选 A', limit: 10, selectedIds: [selectedId] }
+    { keyword: '候选 A', limit: 10, selectedIds: [selectedId] }
   ))
-  assert.deepEqual(selfOptions.map((item) => item.id), [selectedId, firstId], '一次请求应合并已选回填和关键词候选')
+  assert.deepEqual(selfOptions.map((item) => item.id), [selectedId, firstId], '一次请求应按名称包含匹配并合并已选回填和关键词候选')
+  const suffixOptions = serialized(accountUsageRepository.listAccountUsageOptions(
+    { systemAccountId: owner.id, role: 'user' },
+    { keyword: 'Alpha', limit: 10 }
+  ))
+  assert.deepEqual(suffixOptions.map((item) => item.id), [firstId], '用量候选应支持名称后缀包含搜索')
   assert.deepEqual(Object.keys(selfOptions[0]).sort(), [
     'accessType',
     'id',

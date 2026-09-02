@@ -457,6 +457,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
       roles: managementRoles,
+      keepAlive: true,
       heavy: true
     }
   },

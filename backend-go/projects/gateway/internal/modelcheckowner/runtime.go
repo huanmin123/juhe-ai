@@ -419,19 +419,26 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	aggregate := AggregateEvidence(evidenceItems)
 	trustReport := BuildTrustReport(aggregate, evidenceItems)
+	trustReport.MappingStatus = mappingStatus
+	trustReport.RequestedModel = request.Model
+	trustReport.MappedUpstreamModel = probeModel
+	trustReport.MappingApplied = mappingApplied
+	trustReport.ProbeSetVersion = probeSet
+	if mappingStatus == "configured_mapping" {
+		trustReport.ReasonCodes = appendReason(trustReport.ReasonCodes, "configured_model_mapping")
+	} else if mappingStatus == "undeclared_mismatch" {
+		trustReport.ReasonCodes = appendReason(trustReport.ReasonCodes, "undeclared_response_model_mismatch")
+	}
 	modelCheckUnverified := hasTerminalEvidence(evidenceItems)
-	resultSummary := map[string]any{"evaluations": items, "score": score, "maxScore": 100, "level": level, "modelCheckUnverified": modelCheckUnverified}
+	resultSummary := map[string]any{"evaluations": items, "score": score, "maxScore": 100, "level": level, "trustReport": trustReport, "modelCheckUnverified": modelCheckUnverified}
 	if modelCheckUnverified {
 		resultSummary["qualityDecisionSuppressedReason"] = "未形成质量判定证据"
 	}
 	resultPayload, _ := json.Marshal(resultSummary)
-	protocolStatus := "passed"
-	if status == RunFailed {
-		protocolStatus = "failed"
-	}
-	identityStatus := observationIdentityStatus(evidenceItems)
-	if err := appendEvaluationObservations(ctx, s.Store, runID, request.SystemAccountID, request.TargetID, providerCode, request.Model, probeModel, mappingStatus, protocolStatus, identityStatus, len(aggregate.Families), items, now); err != nil {
-		return s.finishFailure(ctx, runID, input, claim, now, err)
+	if request.Profile != "quick" {
+		if err := appendEvaluationObservations(ctx, s.Store, runID, request.SystemAccountID, request.TargetID, providerCode, request.Model, probeModel, mappingStatus, trustReport.ProtocolStatus, trustReport.IdentityStatus, trustReport.EvidenceCoverage, items, now); err != nil {
+			return s.finishFailure(ctx, runID, input, claim, now, err)
+		}
 	}
 	qualityUnavailable := level == "unavailable"
 	// Node's hard gate is narrower than the run-level suspicious label: a
@@ -444,7 +451,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	// Recovery validates whether an existing isolation can be cleared; it must
 	// not create a second enforcement generation when the recovery probe fails.
 	enforcementAllowed := manualEnforcementEligible && qualityFailed && triggerKind != "quality_recovery"
-	qualityDecisionPayload := map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "hardQualityFailure": hardQualityFailure, "enforcementAllowed": enforcementAllowed, "trust": trustReport, "modelCheckUnverified": modelCheckUnverified}
+	qualityDecisionPayload := map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "hardQualityFailure": hardQualityFailure, "enforcementAllowed": enforcementAllowed, "trustReport": trustReport, "modelCheckUnverified": modelCheckUnverified}
 	if modelCheckUnverified {
 		qualityDecisionPayload["result"] = "not_triggered"
 		qualityDecisionPayload["qualityDecisionSuppressedReason"] = "未形成质量判定证据"
@@ -471,12 +478,17 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if err := s.Store.ProjectOutcome(finalizeCtx, OutcomeProjection{RunID: runID, Status: status, Level: level, Score: score, MaxScore: 100, Message: message, FinishedAt: finishedAt, DurationMS: &durationMS, Items: itemRecords, ResultSummary: resultPayload, QualityDecision: qualityDecision}); err != nil {
 		return RunResult{}, err
 	}
-	// Trust must be receipt-backed before the health/enforcement projector can
-	// observe a formed result. A storage failure is returned to the caller and
-	// deliberately prevents any downstream effect; the durable terminal run
-	// remains available for an idempotent recovery projection.
-	if err := s.Store.ProjectTrust(finalizeCtx, TrustProjection{RunID: runID, SystemAccountID: request.SystemAccountID, AccountID: request.TargetID, RequestedModel: request.Model, Report: trustReport}); err != nil {
-		return RunResult{}, fmt.Errorf("project J3b trust: %w", err)
+	// Quick checks are diagnostic-only. They retain their run-local report but
+	// must not overwrite durable observations, baselines, or the full-profile
+	// latest projection.
+	if request.Profile != "quick" {
+		// Trust must be receipt-backed before the health/enforcement projector can
+		// observe a formed result. A storage failure is returned to the caller and
+		// deliberately prevents any downstream effect; the durable terminal run
+		// remains available for an idempotent recovery projection.
+		if err := s.Store.ProjectTrust(finalizeCtx, TrustProjection{RunID: runID, SystemAccountID: request.SystemAccountID, AccountID: request.TargetID, RequestedModel: request.Model, Report: trustReport}); err != nil {
+			return RunResult{}, fmt.Errorf("project J3b trust: %w", err)
+		}
 	}
 	// Node publishes a health failure only for a completed quality failure or
 	// unavailable result. Publishing successful probes would make the existing
@@ -596,6 +608,10 @@ func hasUndeclaredResponseModelMismatch(items []map[string]any) bool {
 			continue
 		}
 		evidence, _ := item["evidence"].(map[string]any)
+		success, _ := evidence["success"].(bool)
+		if !success {
+			continue
+		}
 		mismatch, _ := evidence["modelMismatch"].(bool)
 		if mismatch {
 			responseModel, _ := evidence["responseModel"].(string)
@@ -614,6 +630,10 @@ func hasResponseModelEvidence(items []map[string]any) bool {
 			continue
 		}
 		evidence, _ := item["evidence"].(map[string]any)
+		success, _ := evidence["success"].(bool)
+		if !success {
+			continue
+		}
 		responseModel, _ := evidence["responseModel"].(string)
 		if strings.TrimSpace(responseModel) != "" {
 			return true
@@ -689,27 +709,6 @@ func evaluationObservationStatus(status string) string {
 		// must never be promoted to a formed quality fact by persistence.
 		return "partial"
 	}
-}
-
-func observationIdentityStatus(items []map[string]any) string {
-	for _, item := range items {
-		kind, _ := item["kind"].(string)
-		if index := strings.LastIndex(kind, "."); index >= 0 {
-			kind = kind[index+1:]
-		}
-		if kind != "identity_observation" {
-			continue
-		}
-		switch status, _ := item["status"].(string); status {
-		case "passed":
-			return "verified"
-		case "failed":
-			return "suspected_downgrade"
-		default:
-			return "unknown"
-		}
-	}
-	return "unknown"
 }
 
 func (s *Runtime) finishFailure(ctx context.Context, runID string, input InputRecord, claim Claim, now time.Time, cause error) (RunResult, error) {

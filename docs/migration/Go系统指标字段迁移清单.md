@@ -8,6 +8,15 @@
 
 本文不描述当前 Node 运行态的正确性。当前 Node 后端在未接管前仍可以继续使用事件循环、DB service 和 SQLite 文件指标；Go owner 接管后，下面列为删除的字段不能再作为正式 API、前端类型、Prometheus 指标、窗口表或告警口径存在。
 
+## 当前已落地（2026-09-02）
+
+- Go `gometrics.Collector` 已输出低基数 runtime Prometheus 指标，固定维度为 `service`、`role`、`runtimeKind=go`；当前挂载到 gateway 和 active jobs 的 loopback health listener。除 goroutine、thread、heap 外，还暴露进程 CPU 累计时间、RSS、FD、uptime，以及 scheduler / GC 原始 histogram。
+- 启用 `JUHE_AI_GO_RUNTIME_METRICS_STORE` 后，jobs 以可配置周期记录 Go runtime scalar snapshot，并由独立 Store 幂等写入 `go_runtime_metrics_samples`、`go_runtime_metrics_hourly`、`go_runtime_metrics_trend_windows`；聚合维度仅为 `service + role + runtime_kind=go + 时间窗口`，默认保留 30 天。scalar 采样包含 goroutine runnable/waiting、GOMAXPROCS、CPU、RSS、FD、uptime；CPU/RSS/FD 使用独立有效样本计数，平台不可用时保留 `null`。
+- 持久化表位于 PostgreSQL `juhe_stats` schema（SQLite 模式使用独立文件），由 maintenance 显式 `--apply-go-runtime-metrics` 创建；jobs 启动只读校验，不自动 DDL。
+- jobs loopback 管理端点 `GET /__aisys__/api/stats/go-runtime-trend` 只读小时预聚合，并显式返回 `runtimeKind=go`；不查询或写入 Node `system_metrics_*` / `process_event_loop_*`。
+- scheduler latency、GC pause 继续以 Prometheus histogram 暴露，不能从单次 scrape 直接解释为 P95/P99；Go SQL 趋势只做均值/最大值，绝不把每个采样的 P95/P99 再平均。页面只有在外部 Prometheus/实时适配器提供合法分位数时才显示健康视图。
+- 当前 Go 趋势页已接入现有系统指标页：前端通过 Node 同源管理员代理 `/__aisys__/api/stats/system-metrics/go-runtime-trend` 读取独立 Go 预聚合，并与 Node 原有图表并列展示；Go 卡片分为并发、内存和进程摘要（CPU/RSS/FD/uptime），不映射 `eventLoopLagMs` 或 Node RSS。PG/Redis、HTTP RED、业务任务状态仍未接入，缺失字段不以 0 或 Node 字段占位。
+
 ## 2. 迁移原则
 
 - `runtimeKind` 必须显式表达运行时，Go 接管后返回 `go` 或等价版本字段；不能让前端通过字段是否存在猜测运行时。

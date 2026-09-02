@@ -38,6 +38,10 @@
         :proxy="proxy"
         :save-priority="savePriority"
         :balance-refreshing="balanceRefreshingIds.has(record.id)"
+        :balance-details="balanceDetails?.get(record.id)"
+        :balance-details-loading="balanceDetailsLoadingIds?.has(record.id)"
+        :balance-details-error="balanceDetailsErrors?.get(record.id)"
+        :load-balance-details="loadBalanceDetails"
         @bind-group="$emit('bind-group', $event)"
         @cancel-priority-edit="$emit('cancel-priority-edit', $event)"
         @clone="$emit('clone', $event)"
@@ -46,6 +50,7 @@
         @menu-click="$emit('menu-click', $event, record)"
         @return-authorization="$emit('return-authorization', $event.id)"
         @refresh-balance="$emit('refresh-balance', $event)"
+        @balance-details-request="$emit('balance-details-request', $event)"
         @start-priority-edit="$emit('start-priority-edit', $event)"
         @test="$emit('test', $event)"
       />
@@ -66,6 +71,10 @@
         :save-priority="savePriority"
         :selected="isSelected(record.id)"
         :balance-refreshing="balanceRefreshingIds.has(record.id)"
+        :balance-details="balanceDetails?.get(record.id)"
+        :balance-details-loading="balanceDetailsLoadingIds?.has(record.id)"
+        :balance-details-error="balanceDetailsErrors?.get(record.id)"
+        :load-balance-details="loadBalanceDetails"
         @cancel-priority-edit="$emit('cancel-priority-edit', $event)"
         @delete="$emit('delete', record.id)"
         @clone="$emit('clone', record)"
@@ -74,6 +83,7 @@
         @menu-click="$emit('menu-click', $event, record)"
         @return-authorization="$emit('return-authorization', record.id)"
         @refresh-balance="$emit('refresh-balance', record.id)"
+        @balance-details-request="$emit('balance-details-request', $event)"
         @start-priority-edit="$emit('start-priority-edit', $event)"
         @test="$emit('test', record)"
         @toggle-selection="$emit('toggle-selection', record)"
@@ -85,7 +95,7 @@
 <script setup lang="ts">
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
-import type { AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountBalanceDetails, AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountMobileCard from './AccountMobileCard.vue'
 import AccountTableCell from './AccountTableCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
@@ -116,6 +126,10 @@ defineProps<{
   tableScrollX: number
   tableScrollY: string
   balanceRefreshingIds: Set<string>
+  balanceDetails?: Map<string, AccountBalanceDetails>
+  balanceDetailsLoadingIds?: Set<string>
+  balanceDetailsErrors?: Map<string, string>
+  loadBalanceDetails?: (accountId: string) => Promise<AccountBalanceDetails>
 }>()
 
 defineEmits<{
@@ -130,6 +144,7 @@ defineEmits<{
   (event: 'mobile-refresh'): void
   (event: 'return-authorization', accountId: string): void
   (event: 'refresh-balance', accountId: string): void
+  (event: 'balance-details-request', accountId: string): void
   (event: 'sort-change', sorts: ResponsiveDataListSort[]): void
   (event: 'start-priority-edit', accountId: string): void
   (event: 'test', account: AccountListItem): void

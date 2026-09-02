@@ -71,7 +71,16 @@
       </div>
       <div class="account-mobile-meta-item">
         <span>用量(日)</span>
-        <AccountUsageCell :account="account" :refreshing="balanceRefreshing" @refresh-balance="$emit('refresh-balance')" />
+        <AccountUsageCell
+          :account="account"
+          :refreshing="balanceRefreshing"
+          :balance-details="balanceDetails"
+          :balance-details-loading="balanceDetailsLoading"
+          :balance-details-error="balanceDetailsError"
+          :load-balance-details="loadBalanceDetails"
+          @refresh-balance="$emit('refresh-balance')"
+          @balance-details-request="$emit('balance-details-request', $event)"
+        />
       </div>
       <div v-if="accountDisplayExpiresAt(account)" class="account-mobile-meta-item account-mobile-meta-wide">
         <span>到期时间</span>
@@ -96,7 +105,7 @@ import { computed } from 'vue'
 
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
-import type { AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountBalanceDetails, AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountPriorityEditor from './AccountPriorityEditor.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
@@ -127,6 +136,10 @@ const props = defineProps<{
   savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   selected: boolean
   balanceRefreshing?: boolean
+  balanceDetails?: AccountBalanceDetails
+  balanceDetailsLoading?: boolean
+  balanceDetailsError?: string
+  loadBalanceDetails?: (accountId: string) => Promise<AccountBalanceDetails>
 }>()
 
 const emit = defineEmits<{
@@ -138,6 +151,7 @@ const emit = defineEmits<{
   (event: 'cancel-priority-edit', accountId: string): void
   (event: 'return-authorization'): void
   (event: 'refresh-balance'): void
+  (event: 'balance-details-request', accountId: string): void
   (event: 'start-priority-edit', accountId: string): void
   (event: 'test'): void
   (event: 'toggle-selection'): void

@@ -27,7 +27,6 @@ import {
   type AccountSavePayload
 } from './accountSavePayload'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
-import { accountBalanceWillAutoDisable } from './accountBalanceQuery'
 import {
   normalizedAccountApiKeys
 } from './accountCredentials'
@@ -127,7 +126,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       : undefined
     if (advancedDetail && configRevision === undefined) return
 
-    const balanceAutoDisabled = accountBalanceWillAutoDisable(options.form)
     const payload = buildAccountSavePayload({
       accounts: options.accounts.value,
       accountDetail: options.editingAccountDetail.value,
@@ -167,7 +165,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         if (lockConfigChanged) {
           await updateAccountLockConfig(options.editingId.value, lockConfigRevision)
         }
-        message.success(balanceAutoDisabled ? '账户已更新，已因多 Key 自动关闭余额查询' : '账户已更新')
+        message.success('账户已更新')
         options.modalOpen.value = false
         return
       } else if (options.form.type === 'oauth' || options.form.type === 'google_oauth') {
@@ -185,9 +183,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         }
       } else {
         const created = await createApiKeyAccount(payload)
-        message.success(balanceAutoDisabled
-          ? '账户已创建，已因多 Key 自动关闭余额查询'
-          : created?.status === 'active' ? '账户已创建并启用' : '账户已创建，等待后台检查')
+        message.success(created?.status === 'active' ? '账户已创建并启用' : '账户已创建，等待后台检查')
       }
       options.modalOpen.value = false
       await options.loadData()

@@ -57,7 +57,7 @@ func runTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol,
 			if len(endpointModes) > 0 {
 				endpointMode = endpointModes[0]
 			}
-			request, err := buildBasicWithEndpointMode(protocol, model, prompt, modelcheckprofile.EndpointModeIsStreaming(endpointMode), endpointMode)
+			request, err := buildBasicWithTunings(protocol, model, prompt, endpointMode, modelcheckprofile.EndpointModeIsStreaming(endpointMode), 8, 0)
 			if err != nil {
 				return Evaluation{}, err
 			}

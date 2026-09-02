@@ -7,6 +7,7 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { getPostgresPool } from './postgres-client.js'
 import { escapeLikePrefix } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 
 export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
 type SnapshotNumberValue = number | string | null
@@ -76,6 +77,35 @@ type TableStorageOverviewInput = {
   pageSize?: number
   keyword?: string
 }
+
+export interface TableStorageOverviewReadOptions {
+  bypassCache?: boolean
+}
+
+interface TableStorageOverviewCacheEntry {
+  value?: TableStorageOverview
+  storedAtMs: number
+  lastRefreshCompletedAtMs?: number
+  refreshPromise?: Promise<TableStorageOverview>
+  refreshFailureAtMs?: number
+  refreshError?: unknown
+}
+
+const tableMonitorOverviewMaxStaleMs = 60 * 60 * 1000
+const tableMonitorOverviewRefreshFailureBackoffMs = 30 * 1000
+const tableMonitorOverviewFreshMs = Math.min(
+  tableMonitorOverviewMaxStaleMs,
+  parsePositiveDurationEnv('JUHE_AI_TABLE_MONITOR_OVERVIEW_FRESH_MS', 10 * 60 * 1000)
+)
+const tableMonitorOverviewStaleMs = Math.max(
+  tableMonitorOverviewFreshMs,
+  Math.min(
+    tableMonitorOverviewMaxStaleMs,
+    parsePositiveDurationEnv('JUHE_AI_TABLE_MONITOR_OVERVIEW_STALE_MS', tableMonitorOverviewMaxStaleMs)
+  )
+)
+const tableMonitorOverviewCache = new Map<string, TableStorageOverviewCacheEntry>()
+const defaultTableMonitorOverviewCacheKey = 'default:1:10'
 
 interface LatestTableSnapshotRow {
   database_role: MonitoredDatabaseRole
@@ -192,7 +222,100 @@ export function getTableStorageOverview(input: TableStorageOverviewInput = {}): 
   }
 }
 
-export async function getTableStorageOverviewAsync(input: TableStorageOverviewInput = {}): Promise<TableStorageOverview> {
+export async function getTableStorageOverviewAsync(
+  input: TableStorageOverviewInput = {},
+  options: TableStorageOverviewReadOptions = {}
+): Promise<TableStorageOverview> {
+  const normalizedInput = normalizeOverviewInput(input)
+  const cacheKey = overviewCacheKey(normalizedInput)
+  if (cacheKey) {
+    if (options.bypassCache) return await refreshTableStorageOverviewCache(cacheKey, normalizedInput)
+    const cached = tableMonitorOverviewCache.get(cacheKey)
+    if (cached) {
+      const nowMs = Date.now()
+      const ageMs = nowMs - cached.storedAtMs
+      if (cached.value && ageMs <= tableMonitorOverviewFreshMs) return cached.value
+      if (cached.value && ageMs <= tableMonitorOverviewStaleMs) {
+        if (!cached.refreshPromise && !isRefreshBackoffActive(cached, nowMs)) {
+          void refreshTableStorageOverviewCache(cacheKey, normalizedInput).catch((error) => {
+            logger.warn(errorLogFields(error, { event: 'table_monitor_overview_refresh_failed' }), '表监控概览后台刷新失败')
+          })
+        }
+        return cached.value
+      }
+      if (isRefreshBackoffActive(cached, nowMs)) {
+        throw cached.refreshError ?? new Error('表监控概览刷新暂不可用，请稍后重试')
+      }
+    }
+    return await refreshTableStorageOverviewCache(cacheKey, normalizedInput)
+  }
+  return await loadTableStorageOverviewAsync(normalizedInput)
+}
+
+export function prewarmTableStorageOverview(): void {
+  void refreshTableStorageOverviewCache(defaultTableMonitorOverviewCacheKey, {}, { rememberFailure: false }).catch((error) => {
+    logger.warn(errorLogFields(error, { event: 'table_monitor_overview_prewarm_failed' }), '表监控概览预热失败')
+  })
+}
+
+async function refreshTableStorageOverviewCache(
+  key: string,
+  input: TableStorageOverviewInput,
+  options: { rememberFailure?: boolean } = {}
+): Promise<TableStorageOverview> {
+  const existing = tableMonitorOverviewCache.get(key)
+  if (existing?.refreshPromise) return await existing.refreshPromise
+  const refreshPromise = loadTableStorageOverviewAsync(input)
+    .then((value) => {
+      tableMonitorOverviewCache.set(key, {
+        value,
+        storedAtMs: cacheStoredAtMs(value),
+        lastRefreshCompletedAtMs: Date.now()
+      })
+      return value
+    })
+    .finally(() => {
+      const current = tableMonitorOverviewCache.get(key)
+      if (current?.refreshPromise === refreshPromise) {
+        current.refreshPromise = undefined
+      }
+    })
+  tableMonitorOverviewCache.set(key, {
+    value: existing?.value,
+    storedAtMs: existing?.storedAtMs ?? 0,
+    lastRefreshCompletedAtMs: existing?.lastRefreshCompletedAtMs,
+    refreshPromise
+  })
+  try {
+    return await refreshPromise
+  } catch (error) {
+    if (options.rememberFailure === false && !existing?.value) {
+      tableMonitorOverviewCache.delete(key)
+      throw error
+    }
+    tableMonitorOverviewCache.set(key, {
+      value: existing?.value,
+      storedAtMs: existing?.storedAtMs ?? 0,
+      lastRefreshCompletedAtMs: Date.now(),
+      refreshFailureAtMs: Date.now(),
+      refreshError: error
+    })
+    throw error
+  }
+}
+
+function isRefreshFailureBackoffActive(entry: TableStorageOverviewCacheEntry, nowMs: number): boolean {
+  return entry.refreshFailureAtMs !== undefined
+    && nowMs - entry.refreshFailureAtMs < tableMonitorOverviewRefreshFailureBackoffMs
+}
+
+function isRefreshBackoffActive(entry: TableStorageOverviewCacheEntry, nowMs: number): boolean {
+  return isRefreshFailureBackoffActive(entry, nowMs)
+    || (entry.lastRefreshCompletedAtMs !== undefined
+      && nowMs - entry.lastRefreshCompletedAtMs < tableMonitorOverviewRefreshFailureBackoffMs)
+}
+
+async function loadTableStorageOverviewAsync(input: TableStorageOverviewInput): Promise<TableStorageOverview> {
   if (sqliteReadWorkerPoolEnabled()) {
     return await requestSqliteReadWorker({
       type: 'get_table_storage_overview_read_only',
@@ -252,6 +375,34 @@ export async function getTableStorageOverviewAsync(input: TableStorageOverviewIn
     total,
     hasMore: pagination.offset + tables.length < total
   }
+}
+
+function normalizeOverviewInput(input: TableStorageOverviewInput): TableStorageOverviewInput {
+  const pagination = normalizeOverviewPagination(input)
+  const keyword = input.keyword?.trim()
+  return {
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    ...(keyword ? { keyword } : {})
+  }
+}
+
+function overviewCacheKey(input: TableStorageOverviewInput): string | undefined {
+  const page = input.page ?? 1
+  const pageSize = input.pageSize ?? 10
+  if (input.keyword || page !== 1 || pageSize !== 10) return undefined
+  return defaultTableMonitorOverviewCacheKey
+}
+
+function parsePositiveDurationEnv(name: string, fallbackMs: number): number {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? Math.max(1, Math.trunc(value)) : fallbackMs
+}
+
+function cacheStoredAtMs(value: TableStorageOverview): number {
+  const sampledAtMs = value.sampledAt ? Date.parse(value.sampledAt) : Number.NaN
+  if (!Number.isFinite(sampledAtMs)) return Date.now()
+  return Math.min(Date.now(), sampledAtMs)
 }
 
 export function listTableStorageHistory(input: {

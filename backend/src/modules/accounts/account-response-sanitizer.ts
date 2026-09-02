@@ -1,6 +1,7 @@
 import type { AccountListItem, AccountSummary, PublicAccountRuntimeAvailability } from '../../domain/types.js'
 import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
 import type { AccountApiKeyRuntimeResponse } from './account-api-key-pool-runtime.js'
+import type { AccountBalanceSnapshot } from './account-balance.types.js'
 
 const publicCredentialKeys = new Set([
   'base_url',
@@ -44,8 +45,15 @@ export function sanitizeAccountResponse<T extends AccountSummary>(account: T): T
   return {
     ...account,
     credentials: sanitizeAccountCredentialsForResponse(account.credentials),
+    balanceSnapshot: accountBalanceSnapshotWithoutKeyDetails(account.balanceSnapshot),
     runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability)
   } as T
+}
+
+function accountBalanceSnapshotWithoutKeyDetails(snapshot: AccountBalanceSnapshot | undefined): AccountBalanceSnapshot | undefined {
+  if (!snapshot?.keyBalances) return snapshot
+  const { keyBalances: _keyBalances, ...summary } = snapshot
+  return summary
 }
 
 export function sanitizeAccountEditBasicDetailResponse<T extends AccountSummary>(account: T): T {

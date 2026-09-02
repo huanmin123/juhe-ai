@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -153,5 +154,15 @@ func TestJobsHTTPHandlerDoesNotExposeRetiredProxyLatencyBridge(t *testing.T) {
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", nil))
 	if record.Code != http.StatusNotFound {
 		t.Fatalf("retired J3a bridge status=%d body=%s", record.Code, record.Body.String())
+	}
+}
+
+func TestJobsHTTPHandlerExposesGoRuntimeMetrics(t *testing.T) {
+	var running atomic.Bool
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "")
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/__aisys__/metrics", nil))
+	if record.Code != http.StatusOK || !strings.Contains(record.Body.String(), `runtimeKind="go"`) {
+		t.Fatalf("metrics status=%d body=%s", record.Code, record.Body.String())
 	}
 }

@@ -9,6 +9,23 @@ export type AccountBalanceStatus =
   | 'unsupported'
   | 'failed'
 
+export type AccountBalanceScope = 'key' | 'account' | 'unknown'
+export type AccountBalanceAggregation = 'sum' | 'shared' | 'unknown'
+
+/** Per-Key balance state. Never contains the raw credential. */
+export interface AccountBalanceKeySnapshot {
+  keyFingerprint: string
+  maskedKey: string
+  status: AccountBalanceStatus
+  remainingUsd?: string
+  rawUnit?: 'usd' | 'cny' | 'quota'
+  scope?: AccountBalanceScope
+  basis?: AccountBalanceSnapshot['basis']
+  errorMessage?: string
+  lastAttemptAt?: string
+  lastSuccessAt?: string
+}
+
 export interface AccountBalanceCustomConfig {
   path: string
   remainingPointer?: string
@@ -26,6 +43,8 @@ export interface AccountBalanceQueryConfig {
 
 export interface AccountBalanceSnapshot {
   status: AccountBalanceStatus
+  /** Account configuration generation that produced this snapshot. */
+  configRevision?: number
   remainingUsd?: string
   rawRemaining?: string
   rawUnit?: 'usd' | 'cny' | 'quota'
@@ -36,4 +55,11 @@ export interface AccountBalanceSnapshot {
   consecutiveTransientFailures?: number
   lastTransientErrorMessage?: string
   lastTransientFailureAt?: string
+  /** Balance ownership semantics used to decide whether an account may sum Keys. */
+  scope?: AccountBalanceScope
+  aggregation?: AccountBalanceAggregation
+  keyCount?: number
+  queriedKeyCount?: number
+  /** Stored for the owner/admin detail endpoint; stripped from list responses. */
+  keyBalances?: AccountBalanceKeySnapshot[]
 }

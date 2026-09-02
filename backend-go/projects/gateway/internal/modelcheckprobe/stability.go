@@ -2,8 +2,6 @@ package modelcheckprobe
 
 import (
 	"strings"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
 // EvaluateStability evaluates the three-round VECTOR contract without
@@ -48,10 +46,5 @@ func EvaluateStability(results []Result, expectedModel string) Evaluation {
 	} else if !modelMismatch && score >= 8 {
 		status = "warning"
 	}
-	return Evaluation{Kind: "stability", Status: status, Score: score, MaxScore: 15, Evidence: map[string]any{"expectedModel": expectedModel, "probeCount": len(results), "requestSuccessCount": successCount, "passedCount": okCount, "okRate": okRate, "modelMatchRate": modelRate, "modelMismatch": modelMismatch, "partial": successCount < len(results), "observations": observations}}
-}
-
-// StabilityRequest returns the frozen protocol-specific VECTOR request.
-func StabilityRequest(protocol modelcheckprofile.Protocol, model string, stream bool) (Request, error) {
-	return BuildBasic(protocol, model, "Reply with exactly one uppercase word: VECTOR", stream)
+	return Evaluation{Kind: "stability", Status: status, Score: score, MaxScore: 15, Evidence: map[string]any{"expectedModel": expectedModel, "probeCount": len(results), "requestSuccessCount": successCount, "passedCount": okCount, "okRate": okRate, "modelMatchRate": modelRate, "modelMismatch": modelMismatch, "requestFailureCount": len(results) - successCount, "scoringProbeCount": successCount, "partial": successCount < len(results), "observations": observations}}
 }

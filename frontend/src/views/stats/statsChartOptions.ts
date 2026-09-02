@@ -2,9 +2,10 @@ import type { EChartsOption } from 'echarts'
 
 import { providerDisplayName } from '@/shared/providerDisplay'
 import { formatDateLabel, formatDateShortLabel } from '@/shared/dateRange'
-import type { SystemMetricsTrendOverview, UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
+import type { GoRuntimeTrendItem, SystemMetricsTrendOverview, UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
 import {
   axisNumberLabel,
+  bytesToMiB,
   formatBytesMiB,
   bytesPerSecondToMbps,
   formatCompactInteger,
@@ -301,6 +302,121 @@ export function buildSystemMetricsOption(trend: SystemMetricsTrendOverview['hour
         data: trend.map((item) => bytesPerSecondToMbps(item.networkTxBytesPerSecondAvg))
       }
     ]
+  }
+}
+
+export type GoRuntimeChartView = 'concurrency' | 'memory' | 'health'
+
+type GoRuntimeSeries = {
+  name: string
+  yAxisIndex?: number
+  data: Array<number | null>
+}
+
+function finiteMetric(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function goRuntimeSeries(trend: GoRuntimeTrendItem[], view: GoRuntimeChartView): GoRuntimeSeries[] {
+  const series = (definitions: Array<{ name: string; yAxisIndex?: number; read: (item: GoRuntimeTrendItem) => number | null | undefined }>) => definitions
+    .map(({ name, yAxisIndex, read }) => ({ name, yAxisIndex, data: trend.map((item) => finiteMetric(read(item))) }))
+    .filter((item) => item.data.some((value) => value !== null))
+
+  if (view === 'memory') {
+    return series([
+      { name: 'Heap Alloc 平均 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapAllocBytesAvg) },
+      { name: 'Heap Alloc 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapAllocBytesMax) },
+      { name: 'Heap Live 平均 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapLiveBytesAvg) },
+      { name: 'Heap Live 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapLiveBytesMax) },
+      { name: 'RSS 平均 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.rssBytesAvg) },
+      { name: 'RSS 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.rssBytesMax) },
+      { name: 'Heap Objects 平均', yAxisIndex: 1, read: (item) => item.heapObjectsAvg },
+      { name: 'Heap Objects 峰值', yAxisIndex: 1, read: (item) => item.heapObjectsMax }
+    ])
+  }
+  if (view === 'health') {
+    return series([
+      { name: 'Scheduler P95 (ms)', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.schedulerLatencyP95SecondsAvg) },
+      { name: 'Scheduler P99 (ms)', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.schedulerLatencyP99SecondsAvg) },
+      { name: 'GC Pause P95 (ms)', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.gcPauseP95SecondsAvg) },
+      { name: 'GC Pause P99 (ms)', yAxisIndex: 0, read: (item) => secondsToMilliseconds(item.gcPauseP99SecondsAvg) }
+    ])
+  }
+  return series([
+    { name: 'Goroutine 平均', read: (item) => item.goroutinesAvg },
+    { name: 'Goroutine 峰值', read: (item) => item.goroutinesMax },
+    { name: 'Runnable 平均', read: (item) => item.goroutinesRunnableAvg },
+    { name: 'Runnable 峰值', read: (item) => item.goroutinesRunnableMax },
+    { name: 'Waiting 平均', read: (item) => item.goroutinesWaitingAvg },
+    { name: 'Waiting 峰值', read: (item) => item.goroutinesWaitingMax },
+    { name: '线程平均', read: (item) => item.threadsAvg },
+    { name: '线程峰值', read: (item) => item.threadsMax },
+    { name: 'GOMAXPROCS', read: (item) => item.gomaxprocsAvg }
+  ])
+}
+
+function secondsToMilliseconds(value: number | null | undefined): number | null {
+  return finiteMetric(value) === null ? null : (value as number) * 1000
+}
+
+export function hasGoRuntimeChartData(trend: GoRuntimeTrendItem[], view: GoRuntimeChartView): boolean {
+  return goRuntimeSeries(trend, view).length > 0
+}
+
+export function buildGoRuntimeOption(trend: GoRuntimeTrendItem[], timezone = 'Asia/Shanghai', view: GoRuntimeChartView = 'concurrency'): EChartsOption {
+  const series = goRuntimeSeries(trend, view)
+  const isMemoryView = view === 'memory'
+  const isHealthView = view === 'health'
+  return {
+    color: isHealthView
+      ? ['#1677ff', '#69b1ff', '#fa8c16', '#ffc069']
+      : isMemoryView
+        ? ['#52c41a', '#95de64', '#13c2c2', '#87e8de', '#1677ff', '#69b1ff', '#fa8c16', '#ffc069']
+        : ['#1677ff', '#69b1ff', '#52c41a', '#95de64', '#fa8c16', '#ffc069', '#722ed1', '#b37feb'],
+    tooltip: { trigger: 'axis', formatter: (params: unknown) => goRuntimeTooltip(params, trend) },
+    legend: { type: 'scroll', bottom: 0, data: series.map((item) => item.name) },
+    grid: { left: 56, right: 64, top: 28, bottom: 72 },
+    xAxis: { type: 'category', data: trend.map((item) => goRuntimeWindowLabel(item.windowStart, timezone)), axisLabel: { color: '#64748b' }, axisLine: { lineStyle: { color: '#d9e2ef' } } },
+    yAxis: isMemoryView
+      ? [
+        { type: 'value', name: 'MiB', axisLabel: { formatter: (value: number) => `${value}`, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
+        { type: 'value', name: '对象数', axisLabel: { formatter: axisNumberLabel, color: '#64748b' }, splitLine: { show: false } }
+      ]
+      : { type: 'value', name: isHealthView ? '毫秒' : '数量', axisLabel: { formatter: isHealthView ? (value: number) => `${value}` : formatInteger, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
+    series: [
+      ...series.map((item) => ({ ...item, type: 'line' as const, smooth: true, symbolSize: 6 }))
+    ]
+  }
+}
+
+function goRuntimeTooltip(params: unknown, trend: GoRuntimeTrendItem[]): string {
+  const rows = Array.isArray(params) ? params as Array<{ axisValue?: unknown; seriesName?: unknown; value?: unknown; dataIndex?: unknown }> : []
+  const axis = rows[0]?.axisValue == null ? '' : String(rows[0].axisValue)
+  const dataIndex = typeof rows[0]?.dataIndex === 'number' ? rows[0].dataIndex : -1
+  const sampleCount = dataIndex >= 0 ? trend[dataIndex]?.sampleCount : undefined
+  const body = rows.map((item) => {
+    const value = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value.toFixed(2) : '暂无'
+    return `${String(item.seriesName ?? '')}: ${value}`
+  }).join('<br/>')
+  const sample = typeof sampleCount === 'number' ? `<br/>采样数: ${formatInteger(sampleCount)}` : ''
+  return axis ? `${axis}${sample}<br/>${body}` : `${sample}${body}`
+}
+
+function goRuntimeWindowLabel(value: string, timezone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(new Date(value))
+    const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? ''
+    return formatHourLabel(`${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`)
+  } catch {
+    return formatHourLabel(value.replace(/\.\d+Z$/, '').replace(/:00Z$/, '').replace(/Z$/, ''))
   }
 }
 

@@ -90,27 +90,18 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 6 {
 		t.Fatalf("item count=%d err=%v", count, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 6 {
-		t.Fatalf("observation count=%d err=%v", count, err)
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("quick observation count=%d err=%v, quick checks must be diagnostic-only", count, err)
 	}
-	var familyCount int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family IN ('protocol_basic','structured_output','tool_calling','token_integrity','usage_shape')`, result.RunID).Scan(&familyCount); err != nil || familyCount != 5 {
-		t.Fatalf("family observation count=%d err=%v", familyCount, err)
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_trust_observation_receipts`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("quick trust receipt count=%d err=%v", count, err)
 	}
-	var observationStatus string
-	if err := store.db.QueryRow(`SELECT observation_status FROM model_check_observations WHERE run_id=? AND probe_family='usage_shape'`, result.RunID).Scan(&observationStatus); err != nil || observationStatus != "complete" {
-		t.Fatalf("usage observation status=%q err=%v", observationStatus, err)
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND aggregation_completed_at IS NOT NULL`, result.RunID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("quick consumed observation count=%d err=%v", count, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_trust_observation_receipts`).Scan(&count); err != nil || count != 6 {
-		t.Fatalf("trust receipt count=%d err=%v", count, err)
-	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND aggregation_completed_at IS NOT NULL`, result.RunID).Scan(&count); err != nil || count != 6 {
-		t.Fatalf("consumed observation count=%d err=%v", count, err)
-	}
-	var evidenceStatus string
 	var observationCount int
-	if err := store.db.QueryRow(`SELECT evidence_status,observation_count FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&evidenceStatus, &observationCount); err != nil || evidenceStatus != "insufficient" || observationCount != 6 {
-		t.Fatalf("trust latest evidence=%q observations=%d err=%v", evidenceStatus, observationCount, err)
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&observationCount); err != nil || observationCount != 0 {
+		t.Fatalf("quick trust latest rows=%d err=%v, quick checks must not update latest", observationCount, err)
 	}
 	var evidenceSummary string
 	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&evidenceSummary); err != nil {
@@ -360,12 +351,9 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 	if err := json.Unmarshal([]byte(requestSummary), &frozen); err != nil || frozen["model"] != "gpt-5.6-sol" || frozen["upstreamModel"] != "gpt-5.6-terra" || frozen["protocol"] != string(modelcheckprofile.ProtocolOpenAIResponses) || frozen["endpointFingerprint"] != endpointFingerprint(server.URL) || strings.Contains(requestSummary, server.URL) {
 		t.Fatalf("frozen request=%s err=%v", requestSummary, err)
 	}
-	var requested, mapped, mappingStatus string
-	if err := store.db.QueryRow(`SELECT requested_model,mapped_upstream_model,mapping_status FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&requested, &mapped, &mappingStatus); err != nil {
-		t.Fatal(err)
-	}
-	if requested != "gpt-5.6-sol" || mapped != "gpt-5.6-terra" || mappingStatus != "configured_mapping" {
-		t.Fatalf("observation requested=%q mapped=%q mappingStatus=%q", requested, mapped, mappingStatus)
+	var observationCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observationCount); err != nil || observationCount != 0 {
+		t.Fatalf("quick mapping observation count=%d err=%v", observationCount, err)
 	}
 }
 
@@ -451,6 +439,29 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='comparison-sys' AND account_id='comparison-acct' AND requested_model='gpt-5.6-sol'`).Scan(&trusted); err != nil || trusted != 0 {
 		t.Fatalf("trusted comparison projection=%d err=%v", trusted, err)
 	}
+	var resultSummary string
+	if err := store.db.QueryRow(`SELECT result_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&resultSummary); err != nil {
+		t.Fatal(err)
+	}
+	var summary map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(resultSummary), &summary); err != nil {
+		t.Fatal(err)
+	}
+	var report TrustReport
+	if err := json.Unmarshal(summary["trustReport"], &report); err != nil {
+		t.Fatalf("full run trustReport missing or invalid: %v summary=%s", err, resultSummary)
+	}
+	if report.ProtocolStatus == "" || report.IdentityStatus == "" || report.EvidenceCoverage < 0 || report.EvidenceCoverage > 100 {
+		t.Fatalf("full run trustReport=%+v", report)
+	}
+	var latestProtocol, latestIdentity string
+	var latestCoverage int
+	if err := store.db.QueryRow(`SELECT protocol_status,identity_status,evidence_coverage FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&latestProtocol, &latestIdentity, &latestCoverage); err != nil {
+		t.Fatal(err)
+	}
+	if latestProtocol != report.ProtocolStatus || latestIdentity != report.IdentityStatus || latestCoverage != report.EvidenceCoverage {
+		t.Fatalf("full run trust/latest drift report=%+v latest=(protocol=%q identity=%q coverage=%d)", report, latestProtocol, latestIdentity, latestCoverage)
+	}
 }
 
 func TestRuntimeAllowsQuickTrustedComparison(t *testing.T) {
@@ -522,9 +533,19 @@ func TestUndeclaredResponseModelMismatchOnlyUsesNonEmptyTargetEvidence(t *testin
 		t.Fatal("missing target model and comparison mismatch must not trigger target hard gate")
 	}
 	if !hasUndeclaredResponseModelMismatch([]map[string]any{
-		{"kind": "protocol_basic", "evidence": map[string]any{"modelMismatch": true, "responseModel": "other-model"}},
+		{"kind": "protocol_basic", "evidence": map[string]any{"success": true, "modelMismatch": true, "responseModel": "other-model"}},
 	}) {
 		t.Fatal("non-empty target response mismatch must trigger target hard gate")
+	}
+	if hasUndeclaredResponseModelMismatch([]map[string]any{
+		{"kind": "protocol_basic", "evidence": map[string]any{"success": false, "modelMismatch": true, "responseModel": "other-model"}},
+	}) {
+		t.Fatal("failed request response model must not trigger target hard gate")
+	}
+	if hasResponseModelEvidence([]map[string]any{
+		{"kind": "protocol_basic", "evidence": map[string]any{"success": false, "responseModel": "gpt-5.6"}},
+	}) {
+		t.Fatal("failed request response model must not count as model evidence")
 	}
 }
 

@@ -10,6 +10,15 @@ const fixtureRoot = mkdtempSync(join(repoRoot, '.dev-go-project-env-regression-'
 const modulePath = join(scriptsRoot, `.dev-go-project-env-regression-${process.pid}-${Date.now()}.mjs`)
 const environmentKeys = [
   'JUHE_AI_DATABASE_DRIVER',
+  'JUHE_AI_POSTGRES_URL',
+  'JUHE_AI_GO_RUNTIME_METRICS_ENABLED',
+  'JUHE_AI_GO_RUNTIME_METRICS_STORE',
+  'JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH',
+  'JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL',
+  'JUHE_AI_GO_RUNTIME_METRICS_INTERVAL',
+  'JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS',
+  'JUHE_AI_GO_RUNTIME_METRICS_SERVICE',
+  'JUHE_AI_GO_RUNTIME_METRICS_ROLE',
   'JUHE_AI_RUNTIME_LOG_STORE',
   'JUHE_AI_TABLE_MONITOR_STORE',
   'JUHE_AI_AUDIT_LOG_STORE',
@@ -42,6 +51,12 @@ try {
   mkdirSync(backendRoot, { recursive: true })
   writeFileSync(join(backendRoot, '.env'), [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
+    'JUHE_AI_GO_RUNTIME_METRICS_STORE=sqlite',
+    'JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH=./data/go-runtime-metrics.sqlite3',
+    'JUHE_AI_GO_RUNTIME_METRICS_INTERVAL=15s',
+    'JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS=30',
+    'JUHE_AI_GO_RUNTIME_METRICS_SERVICE=juhe-ai',
+    'JUHE_AI_GO_RUNTIME_METRICS_ROLE=jobs',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
     'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3',
     'JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3',
@@ -60,6 +75,12 @@ try {
   const sidecarEnv = module.resolveGoProjectEnv()
 
   assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_STORE, 'sqlite')
+  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_STORE, 'sqlite')
+  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH, join(backendRoot, 'data', 'go-runtime-metrics.sqlite3'))
+  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_INTERVAL, '15s')
+  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS, '30')
+  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_SERVICE, 'juhe-ai')
+  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_ROLE, 'jobs')
   assert.equal(sidecarEnv.JUHE_AI_TABLE_MONITOR_STORE, 'sqlite')
   assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_STORE, 'sqlite')
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_STORE, 'sqlite')
@@ -79,6 +100,15 @@ try {
   assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(backendRoot, 'data', 'runtime-log.sqlite3'))
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH, join(backendRoot, 'data', 'juhe-ai-operation-log.sqlite3'))
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, join(backendRoot, 'data', 'juhe-ai.sqlite3'))
+
+  const postgresFixture = readFileSync(join(backendRoot, '.env'), 'utf8')
+    .replace(/^JUHE_AI_GO_RUNTIME_METRICS_STORE=.*(?:\r?\n|$)/mu, 'JUHE_AI_GO_RUNTIME_METRICS_STORE=postgres\n')
+    .replace(/^JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH=.*(?:\r?\n|$)/mu, '')
+    + '\nJUHE_AI_POSTGRES_URL=postgres://dev.example/juhe_ai\n'
+  writeFileSync(join(backendRoot, '.env'), postgresFixture)
+  const postgresEnv = module.resolveGoProjectEnv()
+  assert.equal(postgresEnv.JUHE_AI_GO_RUNTIME_METRICS_STORE, 'postgres')
+  assert.equal(postgresEnv.JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL, 'postgres://dev.example/juhe_ai')
 
   delete process.env.JUHE_AI_AUDIT_LOG_INSTANCE_ID
   delete process.env.JUHE_AI_AUDIT_LOG_INPUT_SECRET

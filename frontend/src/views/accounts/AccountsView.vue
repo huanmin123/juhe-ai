@@ -53,6 +53,7 @@
     </AccountFilterToolbar>
 
     <AccountBatchToolbar
+      :all-loaded-selected="allLoadedAccountsSelected"
       :deletable-count="selectedDeletableAccountCount"
       :edit-disabled="batchEditDisabled"
       :edit-disabled-reason="batchEditDisabledReason"
@@ -132,11 +133,16 @@
       :table-scroll-x="tableScrollX"
       :table-scroll-y="tableScrollY"
       :balance-refreshing-ids="balanceRefreshingIds"
+      :balance-details="balanceDetails"
+      :balance-details-loading-ids="balanceDetailsLoadingIds"
+      :balance-details-errors="balanceDetailsErrors"
+      :load-balance-details="loadBalanceDetails"
       @change="handleAccountTableChange"
       @cancel-priority-edit="closePriorityEditor"
       @clone="openClone"
       @delete="removeAccount"
       @edit="openEdit"
+      @balance-details-request="handleBalanceDetailsRequest"
       @menu-click="handleAccountMenuClick"
       @mobile-load-more="loadMoreMobileAccounts"
       @mobile-refresh="refreshMobileAccounts"
@@ -294,7 +300,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountBatchEditResult, AccountListItem, AccountMutationResult, AccountSummary, AccountTagSummary } from '@/types/domain'
+import type { AccountBalanceDetails, AccountBatchEditResult, AccountListItem, AccountMutationResult, AccountSummary, AccountTagSummary } from '@/types/domain'
 import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -364,6 +370,10 @@ const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./Accoun
 const importModalOpen = ref(false)
 const batchEditOpen = ref(false)
 const balanceRefreshingIds = ref(new Set<string>())
+const balanceDetails = ref(new Map<string, AccountBalanceDetails>())
+const balanceDetailsLoadingIds = ref(new Set<string>())
+const balanceDetailsErrors = ref(new Map<string, string>())
+const balanceDetailsRequests = new Map<string, Promise<AccountBalanceDetails>>()
 const editingPriorityAccountId = ref<string>()
 const prioritySavingIds = ref(new Set<string>())
 const balanceQueryTesting = ref(false)
@@ -403,10 +413,10 @@ const {
   removeLoadedAccount,
   accountUpdateAffectsPageWindow,
   markAccountMutation,
-  reloadAccountPageAfterMutation,
+  reloadAccountPageAfterMutation: reloadAccountPageAfterMutationInList,
   updateLoadedAccount,
   updateLoadedAccountBalance,
-  updateLoadedAccountRevision,
+  updateLoadedAccountRevision: updateLoadedAccountRevisionInList,
   resetFilters: resetAccountListFilters
 } = useAccountListData({
   isManagementView,
@@ -487,7 +497,41 @@ function handleAccountListLoaded(selectableAccountIds: Set<string>) {
 
 async function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean; shouldApply?: () => boolean }) {
   closePriorityEditor()
+  if (!options?.append) {
+    clearBalanceDetailsCache()
+  }
   await loadAccountListData(options)
+}
+
+function clearBalanceDetailsCache(accountId?: string): void {
+  if (accountId) {
+    const nextDetails = new Map(balanceDetails.value)
+    nextDetails.delete(accountId)
+    balanceDetails.value = nextDetails
+    const nextErrors = new Map(balanceDetailsErrors.value)
+    nextErrors.delete(accountId)
+    balanceDetailsErrors.value = nextErrors
+    const nextLoading = new Set(balanceDetailsLoadingIds.value)
+    nextLoading.delete(accountId)
+    balanceDetailsLoadingIds.value = nextLoading
+    balanceDetailsRequests.delete(accountId)
+    return
+  }
+  balanceDetails.value = new Map()
+  balanceDetailsErrors.value = new Map()
+  balanceDetailsLoadingIds.value = new Set()
+  balanceDetailsRequests.clear()
+}
+
+async function reloadAccountPageAfterMutation(): Promise<boolean> {
+  clearBalanceDetailsCache()
+  return await reloadAccountPageAfterMutationInList()
+}
+
+function updateLoadedAccountRevision(accountId: string, configRevision: number): boolean {
+  const changed = updateLoadedAccountRevisionInList(accountId, configRevision)
+  if (changed) clearBalanceDetailsCache(accountId)
+  return changed
 }
 
 async function refreshAccountMutationRows(mutation: AccountMutationResult): Promise<void> {
@@ -505,6 +549,7 @@ async function refreshAccountMutationRows(mutation: AccountMutationResult): Prom
       : await api.myAccounts.list({ ids: chunk, page: 1, pageSize: chunk.length })
     if (result.items.length !== chunk.length) pageReloadRequired = true
     for (const account of result.items) {
+      clearBalanceDetailsCache(account.id)
       pageReloadRequired = accountUpdateAffectsPageWindow(account) || pageReloadRequired
       if (!updateLoadedAccount(account)) pageReloadRequired = true
     }
@@ -547,6 +592,16 @@ async function refreshAccountBalance(accountId: string) {
       ? await api.accounts.refreshBalance(accountId, accountScopeParams.value)
       : await api.myAccounts.refreshBalance(accountId)
     updateLoadedAccountBalance(accountId, snapshot)
+    const nextDetails = new Map(balanceDetails.value)
+    nextDetails.delete(accountId)
+    balanceDetails.value = nextDetails
+    balanceDetailsRequests.delete(accountId)
+    const detailLoading = new Set(balanceDetailsLoadingIds.value)
+    detailLoading.delete(accountId)
+    balanceDetailsLoadingIds.value = detailLoading
+    const detailErrors = new Map(balanceDetailsErrors.value)
+    detailErrors.delete(accountId)
+    balanceDetailsErrors.value = detailErrors
     if (snapshot?.status === 'failed' || snapshot?.status === 'unsupported') {
       if (snapshot.status === 'unsupported') {
         message.warning(snapshot.errorMessage || '当前配置未找到可用余额接口')
@@ -563,6 +618,56 @@ async function refreshAccountBalance(accountId: string) {
     next.delete(accountId)
     balanceRefreshingIds.value = next
   }
+}
+
+async function loadBalanceDetails(accountId: string): Promise<AccountBalanceDetails> {
+  const cached = balanceDetails.value.get(accountId)
+  if (cached) return cached
+  const inFlight = balanceDetailsRequests.get(accountId)
+  if (inFlight) return inFlight
+  balanceDetailsLoadingIds.value = new Set(balanceDetailsLoadingIds.value).add(accountId)
+  const nextErrors = new Map(balanceDetailsErrors.value)
+  nextErrors.delete(accountId)
+  balanceDetailsErrors.value = nextErrors
+  const requestRef: { value?: Promise<AccountBalanceDetails> } = {}
+  const request = (async (): Promise<AccountBalanceDetails> => {
+    const isCurrentRequest = (): boolean => balanceDetailsRequests.get(accountId) === requestRef.value
+    try {
+      const details = isManagementView.value
+        ? await api.accounts.balanceDetails(accountId, accountScopeParams.value)
+        : await api.myAccounts.balanceDetails(accountId)
+      if (isCurrentRequest()) {
+        const nextDetails = new Map(balanceDetails.value)
+        nextDetails.set(accountId, details)
+        balanceDetails.value = nextDetails
+        const errors = new Map(balanceDetailsErrors.value)
+        errors.delete(accountId)
+        balanceDetailsErrors.value = errors
+      }
+      return details
+    } catch (error) {
+      if (isCurrentRequest()) {
+        const errors = new Map(balanceDetailsErrors.value)
+        errors.set(accountId, extractApiErrorMessage(error, '余额明细加载失败'))
+        balanceDetailsErrors.value = errors
+      }
+      throw error
+    } finally {
+      if (isCurrentRequest()) {
+        const loading = new Set(balanceDetailsLoadingIds.value)
+        loading.delete(accountId)
+        balanceDetailsLoadingIds.value = loading
+        balanceDetailsRequests.delete(accountId)
+      }
+    }
+  })()
+  requestRef.value = request
+  balanceDetailsRequests.set(accountId, request)
+  return request
+}
+
+function handleBalanceDetailsRequest(accountId: string): void {
+  void loadBalanceDetails(accountId).catch(() => undefined)
 }
 
 async function saveAccountPriority(account: AccountListItem, priority: number): Promise<boolean> {

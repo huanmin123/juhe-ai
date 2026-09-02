@@ -23,12 +23,14 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/gometricsstore"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/keymodelrecovery"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckruntime"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/tablemonitor"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
@@ -370,6 +372,30 @@ func main() {
 	}
 	defer listener.Close()
 	tableRunner := tablemonitor.NewRunner(cfg, store, logger)
+	goMetricsConfig, err := gometricsstore.LoadConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load Go runtime metrics config: %w", err))
+	}
+	goMetricsCollector := gometrics.New(goMetricsConfig.Service, goMetricsConfig.Role)
+	var goMetricsStore *gometrics.Store
+	var goMetricsDB *sql.DB
+	var goMetricsSampler *gometricsstore.Sampler
+	if goMetricsConfig.Enabled {
+		goMetricsStore, goMetricsDB, err = gometricsstore.OpenStore(goMetricsConfig)
+		if err != nil {
+			fail(fmt.Errorf("open Go runtime metrics store: %w", err))
+		}
+		if err := gometricsstore.EnsureReady(context.Background(), goMetricsStore); err != nil {
+			_ = goMetricsDB.Close()
+			fail(fmt.Errorf("verify Go runtime metrics schema: %w", err))
+		}
+		goMetricsSampler, err = gometricsstore.NewSampler(goMetricsCollector, goMetricsStore, goMetricsConfig.Interval)
+		if err != nil {
+			_ = goMetricsDB.Close()
+			fail(fmt.Errorf("initialize Go runtime metrics sampler: %w", err))
+		}
+		goMetricsSampler.Retention = time.Duration(goMetricsConfig.RetentionDays) * 24 * time.Hour
+	}
 	runtimeIndexer := runtimelog.NewIndexer(runtimeConfig, runtimeStore)
 	var runtimeRunning atomic.Bool
 	components := []supervisor.Component{
@@ -387,6 +413,18 @@ func main() {
 			Run:   tableRunner.Run,
 			Close: store.Close,
 		},
+	}
+	if goMetricsSampler != nil {
+		components = append(components, supervisor.Component{
+			Name: "Go runtime metrics sampler",
+			Run:  goMetricsSampler.Run,
+			Close: func() error {
+				if goMetricsDB == nil {
+					return nil
+				}
+				return goMetricsDB.Close()
+			},
+		})
 	}
 	accountHealthReady := func() bool { return true }
 	if accountHealthRunner != nil {
@@ -495,7 +533,7 @@ func main() {
 				return proxylatency.RunnerStatus{}, true
 			}
 			return j3Runner.Snapshot()
-		}, false, j3bReady),
+		}, false, j3bReady, goMetricsCollector, goMetricsSampler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -606,6 +644,23 @@ func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
 
 func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string, j3 ...any) http.Handler {
 	mux := http.NewServeMux()
+	goCollector := gometrics.New("juhe-ai", "jobs")
+	var goSampler *gometricsstore.Sampler
+	if len(j3) > 6 {
+		if collector, ok := j3[6].(*gometrics.Collector); ok && collector != nil {
+			goCollector = collector
+		}
+		if len(j3) > 7 {
+			if sampler, ok := j3[7].(*gometricsstore.Sampler); ok {
+				goSampler = sampler
+			}
+		}
+	}
+	_ = goSampler
+	mux.Handle("/__aisys__/metrics", goCollector.Handler())
+	if goSampler != nil {
+		mux.Handle("/__aisys__/api/stats/go-runtime-trend", goSampler.TrendHandler())
+	}
 	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3...)
 	mux.Handle("/health", healthHandler(ownerMode, runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
 	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {

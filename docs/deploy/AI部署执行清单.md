@@ -4,7 +4,7 @@
 
 ## 1. 先确认范围
 
-当前发布拓扑是 Node 主服务加两个常驻 Go 项目：`juhe-ai-jobs` 承载 F1/F2，`juhe-ai-gateway` 承载 F3/F4；`juhe-ai-maintenance` 只执行一次性维护命令。F1/F2/F3/F4 分别保留独立 Store、schema 和 owner lease。Node 仍负责网关、账户、主 API、usage、公开接口日志、model-check、stats 和 ops；操作日志只保留直接签名 RPC producer/read adapter。
+当前发布拓扑是 Node 主服务加两个常驻 Go 项目：`juhe-ai-jobs` 承载 F1/F2，`juhe-ai-gateway` 承载 F3/F4；`juhe-ai-maintenance` 只执行一次性维护命令。F1/F2/F3/F4 分别保留独立 Store、schema 和 owner lease。Node 负责网关、账户、主 API、usage、公开接口日志、stats 和 ops；模型检测已进入独立 J3b 迁移边界，Node `tsconfig` 不再编译该模块，当前 K8s/Compose 未启用 J3b 时模型检测 API 不作为可用能力（应按 404 兼容边界验收）。操作日志只保留直接签名 RPC producer/read adapter。
 
 已完成的运行证据包括隔离开发 Linux 的固定 release 直接启动、Docker standalone 与 Docker performance 闭环，以及 2026-08-11 目标 Mac 上隔离 temporary release 的 F1/F2/F3 验证。F4 已完成开发 SQLite/PostgreSQL、Node RPC 和启动路径验证，但尚未执行生产 candidate/cutover。所有这些证据都不等于生产数据、生产 Docker 常驻、`current` 切换、Nginx/Caddy/Edge 或真实流量已经验证。
 

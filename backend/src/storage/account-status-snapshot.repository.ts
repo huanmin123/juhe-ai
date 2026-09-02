@@ -48,6 +48,7 @@ import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-r
 
 export interface AccountStatusProjectionSeed {
   id: string
+  config_revision?: number | string
   system_account_id: string
   status: AccountStatus
   schedulable: number
@@ -105,6 +106,7 @@ export interface AccountStatusProjectionSeed {
 
 export interface AccountManagementStatusSeed {
   id: string
+  config_revision?: number | string
   system_account_id: string
   status: AccountStatus
   schedulable: number
@@ -163,6 +165,7 @@ export interface AccountManagementStatusSeed {
 /** 运行态筛选只保留有效可用性分类所需字段，候选扫描不读取列表展示用量。 */
 export interface AccountStatusProjection extends AccountEffectiveAvailabilityInput {
   id: string
+  configRevision?: number
   runtimeKey: string
   concurrencyAccountId: string
   authorizationLimits?: RequestQuotaLimits
@@ -282,6 +285,7 @@ async function hydrateAccountManagementStatusSeedsDirect(
     if (!row || !filterProjection) return []
     const projection: AccountStatusProjection = {
       ...filterProjection,
+      ...(row.config_revision === undefined ? {} : { configRevision: Number(row.config_revision) }),
       balanceQueryEnabled: filterProjection.accessType === 'authorized' ? undefined : row.balance_query_enabled === 1,
       balanceQueryNextRefreshAt: filterProjection.accessType === 'authorized' ? undefined : row.balance_query_next_refresh_at ?? undefined,
       todayUsage: accountStatusTodayUsage(todayUsage.get(row.id)),
@@ -436,7 +440,7 @@ async function listAccountStatusProjectionsDirect(
   const groupBindingsJoin = accountStatusGroupBindingsJoin(client, groupAccounts)
   const rows = await client.query<AccountStatusProjectionSeed>(`
     SELECT
-      accounts.id, accounts.system_account_id, accounts.status, accounts.schedulable,
+      accounts.id, accounts.config_revision, accounts.system_account_id, accounts.status, accounts.schedulable,
       accounts.balance_query_enabled, accounts.balance_query_next_refresh_at,
       accounts.account_expires_at, accounts.cooldown_until, accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
       accounts.last_health_check_at, accounts.next_health_check_at, accounts.last_health_check_status_code,
@@ -531,6 +535,7 @@ async function hydrateAccountStatusProjectionSeedsDirect(
       : row.status
     const projection: AccountStatusProjection = {
       id: row.id,
+      ...(row.config_revision === undefined ? {} : { configRevision: Number(row.config_revision) }),
       runtimeKey,
       concurrencyAccountId: row.authorization_instance_source_account_id || row.id,
       permissions: accountStatusPermissions(isAuthorized, row.authorization_effective_source_type),

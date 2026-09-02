@@ -256,6 +256,7 @@ try {
     status: 'active',
     mustChangePassword: false
   })
+  assert.throws(() => healthMonitorRepository.getAiHealthHourDetail(access, account.id, '2026-02-31T00'), /统计小时日期不合法/, '非法日历日期必须在仓储层拒绝')
   const selfAccess = { systemAccountId: selfUser.id, role: 'user' as const }
   const selfGroup = repositories.createGroup({ name: 'AI 健康 HTTP 用户分组', providerCode: 'gpt' }, selfAccess)
   const selfAccount = repositories.createAccount({
@@ -289,6 +290,7 @@ try {
   await assertStatus(`${baseUrl}/my-stats/ai-health/hour-detail?accountId=missing&statHour=${detailHour}`, userCookie, 404, '不存在账户必须返回 404')
   await assertStatus(`${baseUrl}/my-stats/ai-health/hour-detail?accountId=${selfAccount.id}&statHour=${detailHour}`, userCookie, 200, '自助详情应允许读取自有账户')
   await assertStatus(`${baseUrl}/stats/ai-health/hour-detail?accountId=${selfAccount.id}&statHour=${detailHour}`, adminCookie, 200, '管理员详情应允许读取管理作用域账户')
+  await assertStatus(`${baseUrl}/stats/ai-health/hour-detail?accountId=${selfAccount.id}&statHour=2026-02-31T00`, adminCookie, 400, '非法日历日期必须返回 400')
   console.log('AI 健康监控回归通过')
 
   function createSortAccount(name: string, keySuffix: string) {

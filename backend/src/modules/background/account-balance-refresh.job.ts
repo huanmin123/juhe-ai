@@ -13,7 +13,6 @@ import {
 } from '../accounts/account-balance-query.service.js'
 import { UpstreamRequestAbortedError } from '../gateway/upstream/request.js'
 import { loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
-import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 
 const refreshBatchSize = runtimeConfig.background.accountBalanceRefreshBatchSize
 const refreshConcurrency = runtimeConfig.concurrency.globalMax

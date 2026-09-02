@@ -104,7 +104,8 @@ import type { AccountStatus, AiHealthAccountRow, AiHealthHourDetail, AiHealthHou
 import AiHealthStatusBar from './AiHealthStatusBar.vue'
 import { createAiHealthRequestCoordinator, isAiHealthCanceledRequest } from './aiHealthRequestCoordinator'
 
-const pageSize = 20
+// Keep the first viewport responsive by limiting the initial account batch.
+const pageSize = 10
 const keyword = ref('')
 const rangeHours = ref(7 * 24)
 const contentRef = ref<HTMLElement>()
@@ -385,7 +386,8 @@ onBeforeUnmount(() => {
 .ai-health-legend .success { background: #10b981; }
 .ai-health-legend .failure { background: #ef4444; }
 .ai-health-legend .unknown { background: #d7dde5; }
-.ai-health-content { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; scrollbar-gutter: stable; }
+.ai-health-content { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; scrollbar-gutter: stable; display: flex; position: relative; flex-direction: column; }
+.ai-health-content :deep(.ant-spin-nested-loading), .ai-health-content :deep(.ant-spin-container) { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; }
 .ai-health-list { display: grid; gap: 12px; }
 .ai-health-account { min-width: 0; padding: 16px; border: 1px solid #e8edf3; border-radius: 8px; background: #fff; }
 .ai-health-account-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }

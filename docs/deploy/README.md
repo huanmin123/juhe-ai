@@ -50,4 +50,4 @@
 - 压测、性能分析和容量结论统一放入 `docs/reports/`，不要混入部署操作手册。
 - 影响本地开发启动或测试验证的内容应优先更新 `docs/develop/`，不要混入部署文档。
 - 影响环境变量、数据目录、加密密钥或发布包结构时，需要同时确认构建指南和部署指南。
-- F1（运行日志索引与保留）与 F2（表监控采样、快照与保留）由 Go `jobs` 唯一写入；F3（原始审计日志持久化、payload/blob、hot-search 与保留）与 F4（操作日志）由 Go `gateway` 唯一写入；`maintenance` 仅执行一次性维护命令。Node 仍拥有网关、账户、主 API、usage、公开接口日志、model-check、stats 和 ops，操作日志仅保留 producer/read adapter。F1-F4 均为直接异步任务，不使用 Node 队列。
+- F1（运行日志索引与保留）与 F2（表监控采样、快照与保留）由 Go `jobs` 唯一写入；F3（原始审计日志持久化、payload/blob、hot-search 与保留）与 F4（操作日志）由 Go `gateway` 唯一写入；`maintenance` 仅执行一次性维护命令。Node 拥有网关、账户、主 API、usage、公开接口日志、stats 和 ops；模型检测属于独立 J3b 迁移边界，当前 J3b 未启用时相关 API 不作为可用能力，需按 404 兼容边界验收。操作日志仅保留 producer/read adapter。F1-F4 均为直接异步任务，不使用 Node 队列。

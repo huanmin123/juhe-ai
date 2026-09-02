@@ -1,6 +1,7 @@
 import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
 import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
 import type { AccountApiKeyRuntimePublicSummary, AccountStatus, AccountStatusSnapshotResult } from '../../domain/types.js'
+import type { AccountBalanceSnapshot } from './account-balance.types.js'
 import type { PublicAccountCircuitSummary } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import type {
@@ -233,7 +234,10 @@ async function getAccountStatusSnapshotFromProjections(
         ...visibleProjection
       } = projection
       const publicRuntimeAvailability = publicAccountRuntimeAvailability(runtime.values[runtimeKey])
-      const balanceConfiguration = { nextRefreshAt: balanceQueryNextRefreshAt }
+      const balanceConfiguration = {
+        nextRefreshAt: balanceQueryNextRefreshAt,
+        ...(visibleProjection.configRevision === undefined ? {} : { configRevision: visibleProjection.configRevision })
+      }
       const balanceSnapshotRecord = balanceSnapshots.get(visibleProjection.id)
       const apiKeyRuntimeAccountId = projection.authorizationInstanceSourceAccountId ?? projection.id
       const apiKeyRuntime = publicAccountApiKeyRuntimeSummary(apiKeyRuntimeByAccountId.get(apiKeyRuntimeAccountId))
@@ -254,7 +258,7 @@ async function getAccountStatusSnapshotFromProjections(
         balanceSnapshot: balanceQueryEnabled
           && !isAccountBalanceSnapshotSuppressed(visibleProjection.id, { configuration: balanceConfiguration, snapshotRecord: balanceSnapshotRecord })
           && accountBalanceSnapshotMatchesConfiguration(balanceConfiguration, balanceSnapshotRecord)
-          ? balanceSnapshotRecord.snapshot
+          ? accountBalanceSnapshotForList(balanceSnapshotRecord.snapshot)
           : undefined,
         currentConcurrency: concurrency.values[concurrencyAccountId] ?? 0,
         runtimeAvailability: publicRuntimeAvailability,
@@ -265,6 +269,13 @@ async function getAccountStatusSnapshotFromProjections(
       }
     })
   }
+}
+
+/** Keep list payloads lightweight; per-Key details are served by the detail endpoint. */
+function accountBalanceSnapshotForList(snapshot: AccountBalanceSnapshot): AccountBalanceSnapshot {
+  if (!snapshot.keyBalances) return snapshot
+  const { keyBalances: _keyBalances, ...summary } = snapshot
+  return summary
 }
 
 function publicAccountApiKeyRuntimeSummary(input: {

@@ -61,11 +61,12 @@ export function normalizeAccountTableSortParams(sorts: AccountListSortParam[]): 
   })
   const prioritySort = inputSorts.find((sort) => sort.field === 'priority') ?? { field: 'priority', order: 'asc' }
   const statusSort = inputSorts.find((sort) => sort.field === 'status')
-  return [
+  const normalizedSorts = [
     prioritySort,
     ...(statusSort ? [statusSort] : []),
     ...inputSorts.filter((sort) => sort.field !== 'priority' && sort.field !== 'status')
   ]
+  return normalizedSorts.map(({ field, order }) => ({ field, order }))
 }
 
 function accountSortFieldFromColumn(columnKey: string): AccountListSortField | undefined {

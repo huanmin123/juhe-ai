@@ -25,7 +25,7 @@ Thumbs.db
 /backend-go/juhe-ai-runtime-log-indexer
 /backend-go/juhe-ai-runtime-log-indexer.exe
 .worktrees/
-/.local/
+**/.local/
 /.tmp/
 
 .codex*

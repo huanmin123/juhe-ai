@@ -63,13 +63,16 @@ func TestSummarizeChecksMarksRequestFailureUncertain(t *testing.T) {
 	}
 }
 
-func TestSummarizeChecksKeepsPartialCoreEvidenceUncertain(t *testing.T) {
+func TestSummarizeChecksMarksFailedBasicUnavailableEvenWhenOtherCoresAnswer(t *testing.T) {
+	// The Node oracle reports unavailable whenever the basic probe has no
+	// successful response, regardless of other core results, so the run can
+	// never authorize enforcement from a partial core family.
 	checks := []Evaluation{
 		{Kind: "protocol_basic", Status: "skipped", Evidence: map[string]any{"success": false, "requestFailure": true}},
 		{Kind: "structured_output", Status: "passed", Score: 15, MaxScore: 15, Evidence: map[string]any{"success": true}},
 		{Kind: "tool_calling", Status: "passed", Score: 15, MaxScore: 15, Evidence: map[string]any{"success": true}},
 	}
-	if got := SummarizeChecks(checks, false, "quick"); got.Level != "uncertain" {
+	if got := SummarizeChecks(checks, false, "quick"); got.Level != "unavailable" {
 		t.Fatalf("summary=%+v", got)
 	}
 }

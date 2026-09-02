@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
 
@@ -49,5 +51,25 @@ func TestLoadSessionRetentionConfigRejectsInvalidValues(t *testing.T) {
 		if err == nil {
 			t.Fatalf("invalid %s must fail", name)
 		}
+	}
+}
+
+func TestListenLoopbackRejectsPublicAddress(t *testing.T) {
+	for _, address := range []string{"0.0.0.0:3306", "192.0.2.10:3306", "invalid"} {
+		if listener, err := listenLoopback(address); err == nil {
+			_ = listener.Close()
+			t.Fatalf("public or invalid address %q must be rejected", address)
+		}
+	}
+}
+
+func TestGatewayGoRuntimeCollectorExposesRuntimeKind(t *testing.T) {
+	collector := gometrics.New("juhe-ai", "gateway")
+	var output strings.Builder
+	if err := collector.Write(&output); err != nil {
+		t.Fatalf("write metrics: %v", err)
+	}
+	if !strings.Contains(output.String(), `runtimeKind="go"`) {
+		t.Fatal("gateway collector missing runtimeKind label")
 	}
 }

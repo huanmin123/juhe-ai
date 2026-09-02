@@ -68,7 +68,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ (event: 'query'): void }>()
 
-const visible = computed(() => props.form.type === 'api_key' && normalizedAccountApiKeys(props.form).length === 1)
+const visible = computed(() => props.form.type === 'api_key' && normalizedAccountApiKeys(props.form).length >= 1)
 const adapterOptions = [
   { label: '内置适配', value: 'builtin' },
   { label: '自定义接口', value: 'custom' }

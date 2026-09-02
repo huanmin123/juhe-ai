@@ -1726,7 +1726,7 @@ export async function listAccountListAvailabilityProjectionPageInClient(
                   true
                 ),
                 '{balanceSnapshot}',
-                balance_snapshot.snapshot_json::jsonb,
+                balance_snapshot.snapshot_json::jsonb - 'keyBalances',
                 true
               )
               ELSE jsonb_set(

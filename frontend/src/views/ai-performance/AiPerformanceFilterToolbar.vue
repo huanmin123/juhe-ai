@@ -173,10 +173,10 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
 }
 
 .ai-performance-account-select {
-  flex: 1 1 320px;
-  width: auto;
-  min-width: 280px;
-  max-width: none;
+  flex: 0 1 380px;
+  width: min(380px, 100%);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .ai-performance-account-list {

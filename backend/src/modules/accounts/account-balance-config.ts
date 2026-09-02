@@ -1,5 +1,7 @@
 import { z } from 'zod'
-import { createHash } from 'node:crypto'
+import { createHmac } from 'node:crypto'
+
+import { runtimeConfig } from '../../config/runtime.js'
 
 import type {
   AccountBalanceCustomConfig,
@@ -10,7 +12,7 @@ const decimalPattern = /^(?:0|[1-9]\d*)(?:\.\d+)?$/
 const jsonPointerPattern = /^(?:\/(?:[^~/]|~[01])*)*$/
 const accountBalanceBuiltinAdapterSchema = z.enum(['sub2api', 'newapi', 'openai_billing', 'litellm', 'user_balance'])
 
-export const MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE = '多 Key 账户不支持余额查询，保存后将自动关闭余额查询'
+export const MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE = '多 Key 账户余额将按 Key 查询并在口径明确时合计'
 
 const accountBalanceCustomConfigSchema = z.object({
   path: z.string().trim().min(1),
@@ -105,14 +107,11 @@ export function validateAccountBalanceCapability(
     throw new Error('上游余额查询仅支持 API Key 账户')
   }
   const apiKeyCount = effectiveAccountApiKeyCount(account.credentials)
-  if (account.type === 'api_key' && apiKeyCount > 1) {
-    return { enabled: false, autoDisabledForMultipleApiKeys: true }
-  }
   if (!enabled) {
     return { enabled: false, autoDisabledForMultipleApiKeys: false }
   }
-  if (apiKeyCount !== 1) {
-    throw new Error('上游余额查询需要一个有效的 API Key')
+  if (apiKeyCount < 1) {
+    throw new Error('上游余额查询需要至少一个有效的 API Key')
   }
   return { enabled: true, autoDisabledForMultipleApiKeys: false }
 }
@@ -136,6 +135,18 @@ export function effectiveAccountApiKeys(credentials: Record<string, unknown> | u
   return legacyKey ? [legacyKey] : []
 }
 
+/** Stable server-side identity for a Key; the raw credential never leaves the backend. */
+export function accountBalanceApiKeyFingerprint(value: string): string {
+  return createHmac('sha256', runtimeConfig.secret).update(value).digest('hex')
+}
+
+/** UI-safe Key representation used by balance details and never by upstream requests. */
+export function maskAccountBalanceApiKey(value: string): string {
+  const key = value.trim()
+  if (key.length <= 8) return `${key.slice(0, 2)}…${key.slice(-2)}`
+  return `${key.slice(0, 4)}…${key.slice(-4)}`
+}
+
 export function accountBalanceQueryIdentity(input: {
   enabled: boolean
   config?: AccountBalanceQueryConfig
@@ -149,7 +160,7 @@ export function accountBalanceQueryIdentity(input: {
     normalizedConfig: input.config ? normalizeAccountBalanceConfig(input.config) : undefined,
     providerCode: input.providerCode,
     accountType: input.accountType,
-    effectiveApiKeyFingerprints: effectiveAccountApiKeys(input.credentials).map(balanceApiKeyFingerprint),
+    effectiveApiKeyFingerprints: effectiveAccountApiKeys(input.credentials).map(accountBalanceApiKeyFingerprint),
     normalizedBaseUrl: normalizedBalanceBaseUrl(input.credentials?.base_url),
     proxyProfileId: input.proxyProfileId?.trim() || undefined
   }
@@ -166,8 +177,4 @@ function normalizedBalanceBaseUrl(value: unknown): string {
   } catch {
     return text.replace(/\/+$/, '')
   }
-}
-
-function balanceApiKeyFingerprint(value: string): string {
-  return createHash('sha256').update(value).digest('hex')
 }

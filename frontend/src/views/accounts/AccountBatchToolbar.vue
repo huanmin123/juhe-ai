@@ -1,7 +1,7 @@
 <template>
   <div v-if="selectedCount" class="batch-toolbar">
     <div class="batch-toolbar-info">
-      <span>已选择 {{ selectedCount }} 个账户</span>
+      <span>{{ allLoadedSelected ? '已全选当前列表' : `已选择 ${selectedCount} 个账户` }}</span>
       <span class="batch-toolbar-hint">批量操作会按当前选择逐个执行</span>
     </div>
     <div class="batch-toolbar-actions">
@@ -29,6 +29,7 @@ defineProps<{
   deletableCount: number
   editDisabled: boolean
   editDisabledReason: string
+  allLoadedSelected?: boolean
   selectedCount: number
 }>()
 

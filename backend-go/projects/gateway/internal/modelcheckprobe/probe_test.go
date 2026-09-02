@@ -43,6 +43,8 @@ func TestBuildStructuredAndToolRequestsPreserveProtocolShapes(t *testing.T) {
 			if _, ok := toolBody["tools"]; !ok {
 				t.Fatalf("tool body missing tools: %#v", toolBody)
 			}
+			assertProbeSamplingTunings(t, protocol, structuredBody, "structured")
+			assertProbeSamplingTunings(t, protocol, toolBody, "tool")
 			switch protocol {
 			case modelcheckprofile.ProtocolOpenAIResponses:
 				if _, ok := structuredBody["text"]; !ok {
@@ -62,6 +64,21 @@ func TestBuildStructuredAndToolRequestsPreserveProtocolShapes(t *testing.T) {
 				t.Fatal("probe body must not contain credentials")
 			}
 		})
+	}
+}
+
+func assertProbeSamplingTunings(t *testing.T, protocol modelcheckprofile.Protocol, payload map[string]any, kind string) {
+	t.Helper()
+	switch protocol {
+	case modelcheckprofile.ProtocolOpenAIResponses, modelcheckprofile.ProtocolOpenAIChat:
+		if got, ok := payload["temperature"].(float64); !ok || got != 0 {
+			t.Fatalf("%s %s temperature=%#v, want 0", protocol, kind, payload["temperature"])
+		}
+	case modelcheckprofile.ProtocolGeminiNative:
+		generation, ok := payload["generationConfig"].(map[string]any)
+		if !ok || generation["temperature"] != float64(0) || generation["maxOutputTokens"] != float64(128) {
+			t.Fatalf("%s %s generationConfig=%#v, want temperature=0 maxOutputTokens=128", protocol, kind, payload["generationConfig"])
+		}
 	}
 }
 

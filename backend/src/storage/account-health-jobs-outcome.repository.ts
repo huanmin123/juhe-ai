@@ -2,6 +2,7 @@ import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import type { PoolClient } from 'pg'
 import { requiredRfc3339Instant } from '../shared/rfc3339.js'
+import { hourKey, nextCalendarDateKey, startOfZonedDateKeyIso } from './usage-stats-helpers.js'
 
 export interface AccountHealthJobsPostgresOutcomePool {
   connect(): Promise<PoolClient>
@@ -126,26 +127,26 @@ export async function listAccountHealthJobsOutcomes(
  */
 export function listAccountHealthJobsOutcomesForAccounts(
   source: AccountHealthJobsStoreSource,
-  options: { accountIds: string[]; observedAfter: string }
+  options: { accountIds: string[]; observedAfter: string; timezone?: string; hourBuckets?: string[] }
 ): AccountHealthJobsOutcome[] {
   const normalized = normalizeAccountOutcomeQuery(options)
   if (!normalized.accountIds.length) return []
   if (source.mode !== 'sqlite') {
     throw new Error('PostgreSQL J1 outcome 查询必须使用异步 reader')
   }
-  return readSqliteOutcomesForAccounts(source.databasePath, normalized.accountIds, normalized.observedAfter)
+  return readSqliteOutcomesForAccounts(source.databasePath, normalized.accountIds, normalized.observedAfter, options.timezone, options.hourBuckets)
 }
 
 export async function listAccountHealthJobsOutcomesForAccountsAsync(
   source: AccountHealthJobsStoreSource,
-  options: { accountIds: string[]; observedAfter: string }
+  options: { accountIds: string[]; observedAfter: string; timezone?: string; hourBuckets?: string[] }
 ): Promise<AccountHealthJobsOutcome[]> {
   const normalized = normalizeAccountOutcomeQuery(options)
   if (!normalized.accountIds.length) return []
   if (source.mode === 'sqlite') {
-    return readSqliteOutcomesForAccounts(source.databasePath, normalized.accountIds, normalized.observedAfter)
+    return readSqliteOutcomesForAccounts(source.databasePath, normalized.accountIds, normalized.observedAfter, options.timezone, options.hourBuckets)
   }
-  return await readPostgresOutcomesForAccounts(source, normalized.accountIds, normalized.observedAfter)
+  return await readPostgresOutcomesForAccounts(source, normalized.accountIds, normalized.observedAfter, options.timezone, options.hourBuckets)
 }
 
 function readSqliteOutcomes(path: string, after: AccountHealthJobsOutcomeCursor | undefined, limit: number): AccountHealthJobsOutcome[] {
@@ -170,7 +171,7 @@ function readSqliteOutcomes(path: string, after: AccountHealthJobsOutcomeCursor 
   }
 }
 
-function readSqliteOutcomesForAccounts(path: string, accountIds: string[], observedAfter: string): AccountHealthJobsOutcome[] {
+function readSqliteOutcomesForAccounts(path: string, accountIds: string[], observedAfter: string, timezone?: string, hourBuckets?: string[]): AccountHealthJobsOutcome[] {
   const require = createRequire(import.meta.url)
   const Constructor = require('node:sqlite').DatabaseSync as new (path: string, options?: { readOnly?: boolean }) => {
     exec(sql: string): void
@@ -182,12 +183,66 @@ function readSqliteOutcomesForAccounts(path: string, accountIds: string[], obser
     database.exec('PRAGMA query_only = ON')
     const state = database.prepare('PRAGMA query_only').all()[0] as Record<string, unknown> | undefined
     if (Number(state?.query_only ?? state?.[0] ?? 0) !== 1) throw new Error('J1 jobs SQLite outcome 读取未进入 query_only')
+    if (timezone && hourBuckets?.length) {
+      const ranges = normalizeAiHealthHourBuckets(hourBuckets).map((statHour) => zonedHourRange(statHour, timezone))
+      const rows: unknown[] = []
+      for (const accountChunk of chunkValues(accountIds, 8)) {
+        const values: unknown[] = []
+        const tuples: string[] = []
+        for (const accountId of accountChunk) {
+          for (const range of ranges) {
+            tuples.push('(?, ?, ?, ?)')
+            values.push(accountId, range.statHour, range.startAt, range.endAt)
+          }
+        }
+        const selected = database.prepare(`WITH requested(account_id, stat_hour, start_at, end_at) AS (VALUES ${tuples.join(', ')}) SELECT chosen.payload, chosen.observed_at AS storage_observed_at FROM requested JOIN account_health_outcomes chosen ON chosen.outcome_id = (SELECT candidate.outcome_id FROM account_health_outcomes candidate WHERE candidate.account_id = requested.account_id AND candidate.observed_at >= requested.start_at AND candidate.observed_at < requested.end_at AND candidate.observed_at >= ? AND COALESCE(json_extract(candidate.payload, '$.outcome'), '') <> 'stale' ORDER BY candidate.observed_at DESC, candidate.outcome_id DESC LIMIT 1)`).all(...values, observedAfter)
+        rows.push(...selected)
+      }
+      return rows.map((row) => decodeOutcomeRow(row))
+    }
     const placeholders = accountIds.map(() => '?').join(', ')
     const rows = database.prepare(`SELECT payload, observed_at AS storage_observed_at FROM account_health_outcomes WHERE account_id IN (${placeholders}) AND observed_at >= ? ORDER BY observed_at ASC, outcome_id ASC`).all(...accountIds, observedAfter)
     return rows.map((row) => decodeOutcomeRow(row))
   } finally {
     database.close()
   }
+}
+
+function zonedHourRange(statHour: string, timezone: string): { statHour: string; startAt: string; endAt: string } {
+  const datePart = statHour.slice(0, 10)
+  const midnight = startOfZonedDateKeyIso(datePart, timezone)
+  const nextMidnight = startOfZonedDateKeyIso(nextCalendarDateKey(datePart), timezone)
+  if (!midnight || !nextMidnight) throw new Error('AI 健康 J1 outcome 小时桶日期无法解析')
+  const lowerBound = Date.parse(midnight)
+  const upperBound = Date.parse(nextMidnight)
+  let low = lowerBound
+  let high = upperBound
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (hourKey(new Date(middle), timezone) >= statHour) high = middle
+    else low = middle + 1
+  }
+  let startMs = low
+  if (hourKey(new Date(startMs), timezone) !== statHour) {
+    return { statHour, startAt: new Date(upperBound).toISOString(), endAt: new Date(upperBound).toISOString() }
+  }
+  let endMs = upperBound
+  low = startMs
+  high = upperBound
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (hourKey(new Date(middle), timezone) === statHour) low = middle + 1
+    else high = middle
+  }
+  endMs = low
+  if (endMs <= startMs) endMs = startMs + 60 * 60 * 1000
+  return { statHour, startAt: new Date(startMs).toISOString(), endAt: new Date(endMs).toISOString() }
+}
+
+function chunkValues<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size))
+  return chunks
 }
 
 function resolveSqliteCursor(
@@ -229,7 +284,7 @@ async function readPostgresOutcomes(source: AccountHealthJobsPostgresStoreSource
   }
 }
 
-async function readPostgresOutcomesForAccounts(source: AccountHealthJobsPostgresStoreSource, accountIds: string[], observedAfter: string): Promise<AccountHealthJobsOutcome[]> {
+async function readPostgresOutcomesForAccounts(source: AccountHealthJobsPostgresStoreSource, accountIds: string[], observedAfter: string, timezone?: string, hourBuckets?: string[]): Promise<AccountHealthJobsOutcome[]> {
   const pool = await postgresOutcomePool(source)
   let connection: PoolClient | undefined
   let inTransaction = false
@@ -239,7 +294,11 @@ async function readPostgresOutcomesForAccounts(source: AccountHealthJobsPostgres
     await connection.query('BEGIN READ ONLY')
     inTransaction = true
     await connection.query('SET LOCAL statement_timeout = 5000')
-    const result = await connection.query(`SELECT payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes WHERE account_id = ANY($1::text[]) AND observed_at >= $2::timestamptz ORDER BY observed_at ASC, outcome_id ASC`, [accountIds, observedAfter])
+    const result = timezone && hourBuckets?.length
+      ? await connection.query(`SELECT selected.payload, to_char(selected.observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM unnest($1::text[]) AS accounts(account_id) CROSS JOIN unnest($4::text[]) AS hours(stat_hour) CROSS JOIN LATERAL (SELECT payload, observed_at FROM juhe_jobs.account_health_outcomes WHERE account_id = accounts.account_id AND observed_at >= $2::timestamptz AND observed_at >= (hours.stat_hour || ':00:00')::timestamp AT TIME ZONE $3 AND observed_at < ((hours.stat_hour || ':00:00')::timestamp + INTERVAL '1 hour') AT TIME ZONE $3 AND outcome <> 'stale' ORDER BY observed_at DESC, outcome_id DESC LIMIT 1) AS selected`, [accountIds, observedAfter, timezone, normalizeAiHealthHourBuckets(hourBuckets)])
+      : timezone
+        ? await connection.query(`SELECT DISTINCT ON (account_id, date_trunc('hour', observed_at AT TIME ZONE $3)) payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes WHERE account_id = ANY($1::text[]) AND observed_at >= $2::timestamptz AND outcome <> 'stale' ORDER BY account_id, date_trunc('hour', observed_at AT TIME ZONE $3), observed_at DESC, outcome_id DESC`, [accountIds, observedAfter, timezone])
+      : await connection.query(`SELECT payload, to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at FROM juhe_jobs.account_health_outcomes WHERE account_id = ANY($1::text[]) AND observed_at >= $2::timestamptz ORDER BY observed_at ASC, outcome_id ASC`, [accountIds, observedAfter])
     await connection.query('COMMIT')
     inTransaction = false
     return result.rows.map((row: Record<string, unknown>) => decodeOutcomeRow(row))
@@ -392,6 +451,15 @@ function normalizeCooldownFence(value: unknown, field: string): NonNullable<Acco
 function normalizedLimit(value: number): number {
   if (!Number.isInteger(value) || value < 1 || value > 1_000) throw new Error('J1 outcome 查询 limit 必须在 1..1000')
   return value
+}
+
+function normalizeAiHealthHourBuckets(value: string[]): string[] {
+  if (value.length > 31 * 24) throw new Error('AI 健康 J1 outcome 查询小时桶超出允许范围')
+  const buckets = [...new Set(value)]
+  if (buckets.some((bucket) => !/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(bucket))) {
+    throw new Error('AI 健康 J1 outcome 查询小时桶无效')
+  }
+  return buckets
 }
 
 function normalizeAccountOutcomeQuery(value: { accountIds: string[]; observedAfter: string }): { accountIds: string[]; observedAfter: string } {

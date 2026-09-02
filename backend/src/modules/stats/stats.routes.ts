@@ -23,7 +23,7 @@ import {
   getSystemMetricsTrendAsync,
   listAiPerformanceAccountOptionsAsync,
 } from '../../storage/usage-stats.repository.js'
-import { dateKey, normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { dateKey, nextCalendarDateKey, normalizeAccountUsageStatsRange, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { DAY_MS, fixedUsageStatsDefaultRange } from '../../storage/usage-stats-window-helpers.js'
 import type { RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
@@ -35,6 +35,7 @@ import type { DbServiceRuntimeQueueSnapshot, DbServiceSystemMetricsRuntimeSnapsh
 import { getUsageRecordRedisStreamRuntime } from '../gateway/usage/record-queue.service.js'
 import { getPublicApiLogRedisStreamRuntime } from '../public-api-logs/public-api-log-queue.service.js'
 import { getRecordMaintenanceRedisStreamRuntime } from '../record-maintenance/record-maintenance-queue.service.js'
+import { runtimeConfig } from '../../config/runtime.js'
 
 export const statsRouter = Router()
 
@@ -44,6 +45,54 @@ const usageOverviewQuerySchema = z.object({
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
   endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
 })
+
+const goRuntimeTrendItemSchema = z.object({
+  windowStart: z.string().min(1),
+  windowEnd: z.string().min(1),
+  service: z.string().trim().min(1),
+  role: z.string().trim().min(1),
+  runtimeKind: z.literal('go'),
+  sampleCount: z.number().finite().int().nonnegative(),
+  goroutinesAvg: z.number().finite().nonnegative(),
+  goroutinesMax: z.number().finite().nonnegative(),
+  heapAllocBytesAvg: z.number().finite().nonnegative(),
+  heapAllocBytesMax: z.number().finite().nonnegative(),
+  heapLiveBytesAvg: z.number().finite().nonnegative(),
+  heapLiveBytesMax: z.number().finite().nonnegative(),
+  heapObjectsAvg: z.number().finite().nonnegative(),
+  heapObjectsMax: z.number().finite().nonnegative(),
+  threadsAvg: z.number().finite().nonnegative(),
+  threadsMax: z.number().finite().nonnegative(),
+  cpuPercentAvg: z.number().finite().nonnegative().nullable().optional(),
+  cpuPercentMax: z.number().finite().nonnegative().nullable().optional(),
+  rssBytesAvg: z.number().finite().nonnegative().nullable().optional(),
+  rssBytesMax: z.number().finite().nonnegative().nullable().optional(),
+  fdCountAvg: z.number().finite().nonnegative().nullable().optional(),
+  fdCountMax: z.number().finite().nonnegative().nullable().optional(),
+  uptimeSecondsAvg: z.number().finite().nonnegative().optional(),
+  uptimeSecondsMax: z.number().finite().nonnegative().optional(),
+  goroutinesRunnableAvg: z.number().finite().nonnegative().nullable().optional(),
+  goroutinesRunnableMax: z.number().finite().nonnegative().nullable().optional(),
+  goroutinesWaitingAvg: z.number().finite().nonnegative().nullable().optional(),
+  goroutinesWaitingMax: z.number().finite().nonnegative().nullable().optional(),
+  gomaxprocsAvg: z.number().finite().nonnegative().nullable().optional(),
+  gomaxprocsMax: z.number().finite().nonnegative().nullable().optional(),
+  gcPauseP95SecondsAvg: z.number().finite().nonnegative().optional(),
+  gcPauseP95SecondsMax: z.number().finite().nonnegative().optional(),
+  gcPauseP99SecondsAvg: z.number().finite().nonnegative().optional(),
+  gcPauseP99SecondsMax: z.number().finite().nonnegative().optional(),
+  schedulerLatencyP95SecondsAvg: z.number().finite().nonnegative().optional(),
+  schedulerLatencyP95SecondsMax: z.number().finite().nonnegative().optional(),
+  schedulerLatencyP99SecondsAvg: z.number().finite().nonnegative().optional(),
+  schedulerLatencyP99SecondsMax: z.number().finite().nonnegative().optional()
+}).strict()
+
+const goRuntimeTrendPayloadSchema = z.object({
+  runtimeKind: z.literal('go'),
+  service: z.string().trim().min(1),
+  role: z.string().trim().min(1),
+  items: z.array(goRuntimeTrendItemSchema).max(24 * 90 + 1)
+}).strict()
 
 const aiPerformanceAccountOptionsQuerySchema = z.object({
   keyword: z.string().trim().optional(),
@@ -59,8 +108,15 @@ const aiHealthQuerySchema = z.object({
 
 const aiHealthHourDetailQuerySchema = z.object({
   accountId: z.string().trim().min(1).max(200),
-  statHour: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$/, '统计小时格式应为 YYYY-MM-DDTHH')
+  statHour: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$/, '统计小时格式应为 YYYY-MM-DDTHH').refine(isValidCalendarStatHour, '统计小时日期不合法')
 })
+
+function isValidCalendarStatHour(value: string): boolean {
+  const [datePart] = value.split('T')
+  const [year, month, day] = datePart.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+}
 
 const systemMetricsRuntimePageQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
@@ -1013,6 +1069,52 @@ statsRouter.get('/system-metrics/trend', requireAdmin, async (req, res, next) =>
     res.json(ok(await getSystemMetricsTrendAsync(await normalizeSystemMetricsDateRangeAsync(parsed.data))))
   } catch (error) {
     next(error)
+  }
+})
+
+statsRouter.get('/system-metrics/go-runtime-trend', requireAdmin, async (req, res, next) => {
+  const parsed = usageOverviewQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'Go 运行时指标日期范围不合法')))
+    return
+  }
+  try {
+    const range = await normalizeSystemMetricsDateRangeAsync(parsed.data)
+    const timezone = await usageStatsTimezoneAsync()
+    const from = startOfZonedDateKeyIso(range.startDate, timezone)
+    const to = startOfZonedDateKeyIso(nextCalendarDateKey(range.endDate), timezone)
+    if (!from || !to) {
+      res.status(400).json(badRequest('Go 运行时指标日期范围无法解析'))
+      return
+    }
+    const endpoint = new URL('/__aisys__/api/stats/go-runtime-trend', `${runtimeConfig.goRuntimeMetricsUrl}/`)
+    endpoint.searchParams.set('from', from)
+    endpoint.searchParams.set('to', to)
+    const response = await fetch(endpoint, { signal: AbortSignal.timeout(2500) })
+    if (!response.ok) {
+      res.status(503).json({ message: 'Go 运行时指标暂不可用' })
+      return
+    }
+    const payload = goRuntimeTrendPayloadSchema.safeParse(await response.json())
+    if (!payload.success) {
+      res.status(503).json({ message: 'Go 运行时指标响应无效' })
+      return
+    }
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(ok({
+      runtimeKind: 'go' as const,
+      service: payload.data.service,
+      role: payload.data.role,
+      timezone,
+      range,
+      items: payload.data.items
+    }))
+  } catch (error) {
+    if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+      res.status(503).json({ message: 'Go 运行时指标请求超时' })
+      return
+    }
+    res.status(503).json({ message: 'Go 运行时指标暂不可用' })
   }
 })
 

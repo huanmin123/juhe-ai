@@ -271,18 +271,18 @@ try {
   assert.equal(multiResponse.status, 200, '单 Key 改为多 Key 必须保存成功')
   assert.equal(multiResponse.body.data?.id, account.id, 'PATCH 响应必须返回目标账户 ID')
   assert(multiResponse.body.data?.configRevision, 'PATCH 响应必须返回最新配置版本')
-  assert(multiResponse.body.data?.changedFields?.includes('balanceQueryEnabled'), '多 Key 自动关闭必须声明余额开关变化')
+  assert.equal(multiResponse.body.data?.changedFields?.includes('balanceQueryEnabled'), false, '只更新凭据不得改变余额开关')
 
   const multiList = await listAccounts(baseUrl, cookie)
   const listedMulti = multiList.find((item) => item.id === account.id)
   assert(listedMulti, '账户列表必须返回刚更新的账户')
-  assert.notEqual(listedMulti.balanceQueryEnabled, true, '轻量列表不得把已关闭余额的账户投影为开启')
+  assert.equal(listedMulti.balanceQueryEnabled, true, '改为多 Key 后余额查询开关必须保持开启')
   assert.equal(Object.hasOwn(listedMulti, 'balanceQueryConfig'), false, '轻量列表不应夹带余额配置详情')
   assert.equal(listedMulti.balanceSnapshot, undefined, '即使跨库快照尚未删除，列表也不得回显旧 Key 金额')
   assert.equal(
     businessDatabase.prepare(`SELECT balance_query_enabled FROM accounts WHERE id = ?`).get(account.id)?.balance_query_enabled,
-    0,
-    '业务库必须真实关闭多 Key 账户的余额查询'
+    1,
+    '业务库必须保留多 Key 账户的余额查询开关'
   )
 
   const singleResponse = await patchAccount(baseUrl, cookie, account.id, {
@@ -299,13 +299,13 @@ try {
   const singleList = await listAccounts(baseUrl, cookie)
   const listedSingle = singleList.find((item) => item.id === account.id)
   assert(listedSingle, '恢复单 Key 后账户仍应存在')
-  assert.notEqual(listedSingle.balanceQueryEnabled, true, '轻量列表不得把恢复单 Key但未重开余额的账户投影为开启')
+  assert.equal(listedSingle.balanceQueryEnabled, true, '恢复单 Key 后余额查询开关应保持开启')
   assert.equal(Object.hasOwn(listedSingle, 'balanceQueryConfig'), false, '轻量列表仍不返回余额配置详情')
   assert.equal(listedSingle.balanceSnapshot, undefined, '恢复单 Key 但未人工开启时仍不得回显旧快照')
   assert.equal(
     businessDatabase.prepare(`SELECT balance_query_enabled FROM accounts WHERE id = ?`).get(account.id)?.balance_query_enabled,
-    0,
-    '恢复单 Key 后不得自动重新开启余额查询'
+    1,
+    '恢复单 Key 后应保持余额查询开启'
   )
 } finally {
   await closeServer(apiServer)
@@ -315,7 +315,7 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-console.log('账户余额 HTTP 契约回归通过：停用/错误自有账户可刷新、授权实例保持 403、多 Key 自动关闭且旧快照隐藏')
+console.log('账户余额 HTTP 契约回归通过：停用/错误自有账户可刷新、授权实例保持 403、多 Key 保留余额查询且旧快照隐藏')
 
 type AccountResponse = {
   id?: string

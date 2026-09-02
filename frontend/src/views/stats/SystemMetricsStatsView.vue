@@ -74,6 +74,43 @@
       </a-col>
     </a-row>
 
+    <a-row :gutter="[16, 16]" class="system-metrics-section">
+      <a-col :xs="24">
+        <StatsChartCard
+          :title="`Go Runtime 指标趋势（${currentWindowLabel}）`"
+          :description="goRuntimeDescription"
+          :loading="goRuntimeLoading && !goRuntimeTrend"
+          :has-data="hasGoRuntimeTrend || Boolean(goRuntimeError)"
+          :empty-description="goRuntimeEmptyDescription"
+        >
+          <a-alert v-if="goRuntimeError" class="go-runtime-error" type="error" show-icon :message="goRuntimeError">
+            <template #action>
+              <a-button type="link" size="small" @click="loadGoRuntimeTrend">重试</a-button>
+            </template>
+          </a-alert>
+          <div v-if="hasGoRuntimeTrend" class="go-runtime-view-toolbar">
+            <a-segmented v-model:value="goRuntimeChartView" size="small" :options="goRuntimeChartViewOptions" />
+            <span v-if="goRuntimeViewUnavailable" class="go-runtime-view-hint">当前 Go 数据未提供该组指标</span>
+          </div>
+          <a-alert
+            v-if="hasGoRuntimeTrend && !hasGoRuntimeHealthData"
+            class="go-runtime-health-hint"
+            type="info"
+            show-icon
+            message="GC Pause / Scheduler P95、P99 由 Prometheus histogram 查询；趋势库不对百分位做平均。"
+          />
+          <div v-if="goRuntimeSummaryItems.length" class="go-runtime-summary" aria-label="Go Runtime 最新摘要">
+            <div v-for="metric in goRuntimeSummaryItems" :key="metric.label" class="go-runtime-summary-item">
+              <span>{{ metric.label }}</span>
+              <strong>{{ metric.value }}</strong>
+            </div>
+          </div>
+          <div v-if="hasGoRuntimeChartDataForView" ref="goRuntimeChartRef" class="chart-panel chart-panel-large" />
+          <a-empty v-else-if="hasGoRuntimeTrend && !goRuntimeError" class="go-runtime-view-empty" description="该组指标暂无可用采样" />
+        </StatsChartCard>
+      </a-col>
+    </a-row>
+
     <div ref="backgroundJobsSectionRef">
       <a-row :gutter="[16, 16]" class="system-metrics-section">
         <a-col :xs="24">
@@ -130,10 +167,11 @@ import type {
   SystemMetricsRuntimeJobsResult,
   SystemMetricsRuntimeQueuesResult,
   SystemMetricsRuntimeSummary,
-  SystemMetricsTrendOverview
+  SystemMetricsTrendOverview,
+  GoRuntimeTrendOverview
 } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
-import { buildProcessEventLoopOption, buildProcessMemoryOption, buildSystemMetricsOption } from './statsChartOptions'
+import { buildGoRuntimeOption, buildProcessEventLoopOption, buildProcessMemoryOption, buildSystemMetricsOption, hasGoRuntimeChartData, type GoRuntimeChartView } from './statsChartOptions'
 import { buildProcessEventLoopRows, hasProcessEventLoopRowSample } from './statsProcessEventLoop'
 
 const MAX_RANGE_DAYS = 31
@@ -177,6 +215,8 @@ const rangeMode = ref<RangeMode>(initialPageState.rangeMode)
 const dateRangeExplicit = ref(rangeMode.value !== 'auto')
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const systemMetrics = ref<SystemMetricsTrendOverview>()
+const goRuntimeTrend = ref<GoRuntimeTrendOverview>()
+const goRuntimeChartView = ref<GoRuntimeChartView>('concurrency')
 const runtimeSummary = ref<SystemMetricsRuntimeSummary>()
 const backgroundJobsResult = ref<SystemMetricsRuntimeJobsResult>()
 const backgroundQueuesResult = ref<SystemMetricsRuntimeQueuesResult>()
@@ -185,9 +225,11 @@ const { usageStatsWindow, usageStatsWindowEndDate, usageStatsWindowMaxDays, load
 const systemMetricsChartRef = ref<HTMLDivElement>()
 const processEventLoopChartRef = ref<HTMLDivElement>()
 const processMemoryChartRef = ref<HTMLDivElement>()
+const goRuntimeChartRef = ref<HTMLDivElement>()
 const systemMetricsChart = shallowRef<ECharts>()
 const processEventLoopChart = shallowRef<ECharts>()
 const processMemoryChart = shallowRef<ECharts>()
+const goRuntimeChart = shallowRef<ECharts>()
 const backgroundJobsSectionRef = ref<HTMLDivElement>()
 const backgroundQueuesSectionRef = ref<HTMLDivElement>()
 const backgroundJobsSectionLoaded = ref(false)
@@ -199,9 +241,11 @@ const backgroundQueuePage = ref(1)
 let requestSeq = 0
 let pageLoadGeneration = 0
 let runtimeSummaryRequestSeq = 0
+let goRuntimeRequestSeq = 0
 let backgroundJobsRequestSeq = 0
 let backgroundQueuesRequestSeq = 0
 let trendAbortController: AbortController | undefined
+let goRuntimeAbortController: AbortController | undefined
 let runtimeSummaryAbortController: AbortController | undefined
 let backgroundJobsAbortController: AbortController | undefined
 let backgroundQueuesAbortController: AbortController | undefined
@@ -217,20 +261,24 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   onMounted: loadPageData,
   onDeactivate: () => {
     trendAbortController?.abort()
+    goRuntimeAbortController?.abort()
     runtimeSummaryAbortController?.abort()
     backgroundJobsAbortController?.abort()
     backgroundQueuesAbortController?.abort()
     trendAbortController = undefined
+    goRuntimeAbortController = undefined
     runtimeSummaryAbortController = undefined
     backgroundJobsAbortController = undefined
     backgroundQueuesAbortController = undefined
     runtimeSummaryPromise = undefined
     pageLoadGeneration += 1
     requestSeq += 1
+    goRuntimeRequestSeq += 1
     runtimeSummaryRequestSeq += 1
     backgroundJobsRequestSeq += 1
     backgroundQueuesRequestSeq += 1
     loading.value = false
+    goRuntimeLoading.value = false
     backgroundJobsLoading.value = false
     backgroundQueuesLoading.value = false
     disconnectRuntimeObservers()
@@ -251,6 +299,8 @@ onActivated(async () => {
 const hasOverview = computed(() => Boolean(systemMetrics.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
 const trendError = ref('')
+const goRuntimeLoading = ref(false)
+const goRuntimeError = ref('')
 const runtimeSummaryError = ref('')
 const backgroundJobsError = ref('')
 const backgroundQueuesError = ref('')
@@ -267,6 +317,45 @@ const quickRangeValue = computed<QuickRange | undefined>(() => {
 })
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?? 0) > 0)
+const hasGoRuntimeTrend = computed(() => (goRuntimeTrend.value?.items.length ?? 0) > 0)
+const hasGoRuntimeChartDataForView = computed(() => hasGoRuntimeChartData(goRuntimeTrend.value?.items ?? [], goRuntimeChartView.value))
+const hasGoRuntimeHealthData = computed(() => hasGoRuntimeChartData(goRuntimeTrend.value?.items ?? [], 'health'))
+const goRuntimeSummaryItems = computed(() => {
+  const items = goRuntimeTrend.value?.items ?? []
+  const latest = [...items].reverse().find((item) => item.sampleCount > 0)
+  if (!latest) return []
+  const result: Array<{ label: string; value: string }> = []
+  if (isFiniteMetric(latest.cpuPercentAvg)) result.push({ label: 'CPU 平均', value: `${latest.cpuPercentAvg!.toFixed(1)}%` })
+  if (isFiniteMetric(latest.rssBytesAvg)) result.push({ label: 'RSS 平均', value: `${(latest.rssBytesAvg! / 1024 / 1024).toFixed(1)} MiB` })
+  if (isFiniteMetric(latest.fdCountAvg)) result.push({ label: '文件描述符', value: Math.round(latest.fdCountAvg!).toLocaleString('zh-CN') })
+  if (isFiniteMetric(latest.uptimeSecondsAvg)) result.push({ label: '运行时长', value: formatUptime(latest.uptimeSecondsAvg!) })
+  if (isFiniteMetric(latest.gomaxprocsAvg)) result.push({ label: 'GOMAXPROCS', value: Math.round(latest.gomaxprocsAvg!).toLocaleString('zh-CN') })
+  return result
+})
+const goRuntimeChartViewOptions = computed(() => [
+  { label: '并发', value: 'concurrency' },
+  { label: '内存', value: 'memory' },
+  { label: '健康', value: 'health', disabled: !hasGoRuntimeChartData(goRuntimeTrend.value?.items ?? [], 'health') }
+])
+const goRuntimeViewUnavailable = computed(() => hasGoRuntimeTrend.value && !hasGoRuntimeChartDataForView.value)
+const goRuntimeDescription = computed(() => {
+  const trend = goRuntimeTrend.value
+  return trend ? `${trend.service} / ${trend.role} · runtimeKind=${trend.runtimeKind}` : undefined
+})
+const goRuntimeEmptyDescription = computed(() => `${currentWindowLabel.value}暂无 Go runtime 采样`)
+
+function isFiniteMetric(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)} 秒`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时`
+  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`
+}
 const hasProcessEventLoopTrend = computed(() => (systemMetrics.value?.processEventLoopTrend ?? []).some((item) => item.eventLoopLagMsAvg !== undefined || item.eventLoopLagMsMax !== undefined))
 const hasProcessMemoryTrend = computed(() => (systemMetrics.value?.processEventLoopTrend ?? []).some((item) => item.processRssBytesAvg !== undefined || item.processRssBytesMax !== undefined))
 const processEventLoopRows = computed(() => buildProcessEventLoopRows(systemMetrics.value))
@@ -353,6 +442,36 @@ async function loadData() {
   }
 }
 
+async function loadGoRuntimeTrend() {
+  goRuntimeAbortController?.abort()
+  const controller = new AbortController()
+  goRuntimeAbortController = controller
+  const currentRequestSeq = ++goRuntimeRequestSeq
+  goRuntimeLoading.value = true
+  goRuntimeError.value = ''
+  try {
+    const result = await api.stats.goRuntimeTrend(selectedRangeParams(), { signal: controller.signal })
+    if (currentRequestSeq !== goRuntimeRequestSeq) return
+    if (result.runtimeKind !== 'go') throw new Error('Go runtime metrics response has an invalid runtimeKind')
+    goRuntimeTrend.value = result
+  } catch (error) {
+    if (controller.signal.aborted || currentRequestSeq !== goRuntimeRequestSeq) return
+    console.error(error)
+    goRuntimeError.value = 'Go runtime 指标加载失败'
+    message.error('Go runtime 指标加载失败')
+  } finally {
+    if (goRuntimeAbortController === controller) goRuntimeAbortController = undefined
+    if (currentRequestSeq === goRuntimeRequestSeq) {
+      goRuntimeLoading.value = false
+      renderCharts()
+    }
+  }
+}
+
+async function loadTrendData() {
+  await Promise.all([loadData(), loadGoRuntimeTrend()])
+}
+
 async function loadPageData(options: { forceUsageWindow?: boolean } = {}) {
   const currentPageLoadGeneration = ++pageLoadGeneration
   const windowLoad = loadUsageStatsWindow({ force: options.forceUsageWindow === true, viewScope: 'admin' })
@@ -364,7 +483,7 @@ async function loadPageData(options: { forceUsageWindow?: boolean } = {}) {
   if (currentPageLoadGeneration !== pageLoadGeneration) return
   if (backgroundJobsSectionLoaded.value) void loadBackgroundJobs()
   if (backgroundQueuesSectionLoaded.value) void loadBackgroundQueues()
-  return loadData()
+  return loadTrendData()
 }
 
 function setupRuntimeObservers(): void {
@@ -502,7 +621,7 @@ function handleDateRangeChange() {
   })
   rangeMode.value = 'custom'
   dateRangeExplicit.value = true
-  void loadData()
+  void loadTrendData()
 }
 
 function handleCalendarChange(value: Array<Dayjs | null> | null) {
@@ -526,7 +645,7 @@ async function handleQuickRangeChange(value: string | number) {
   })
   rangeMode.value = mode
   dateRangeExplicit.value = true
-  void loadData()
+  void loadTrendData()
 }
 
 function resetFilters() {
@@ -536,7 +655,7 @@ function resetFilters() {
   dateRangeExplicit.value = false
   calendarRange.value = [null, null]
   pageStateCache.clear()
-  void loadData()
+  void loadPageData()
 }
 
 function handleBackgroundJobTableChange(paginationInfo: unknown) {
@@ -563,7 +682,8 @@ async function renderSystemCharts() {
   await Promise.all([
     renderSystemMetricsChart(),
     renderProcessEventLoopChart(),
-    renderProcessMemoryChart()
+    renderProcessMemoryChart(),
+    renderGoRuntimeChart()
   ])
 }
 
@@ -597,14 +717,27 @@ async function renderProcessMemoryChart() {
   chart.setOption(buildProcessMemoryOption(systemMetrics.value.processEventLoopTrend), { notMerge: true })
 }
 
-function resizeCharts() {
-  resizeEcharts([systemMetricsChart.value, processEventLoopChart.value, processMemoryChart.value])
+async function renderGoRuntimeChart() {
+  if (!hasGoRuntimeChartDataForView.value) {
+    disposeChart(goRuntimeChart)
+    return
+  }
+  const chart = await ensureChart(goRuntimeChartRef, goRuntimeChart, () => pageActive.value)
+  if (!chart || !goRuntimeTrend.value || !pageActive.value) return
+  chart.setOption(buildGoRuntimeOption(goRuntimeTrend.value.items, goRuntimeTrend.value.timezone, goRuntimeChartView.value), { notMerge: true })
 }
+
+function resizeCharts() {
+  resizeEcharts([systemMetricsChart.value, processEventLoopChart.value, processMemoryChart.value, goRuntimeChart.value])
+}
+
+watch(goRuntimeChartView, () => renderCharts())
 
 function disposeCharts() {
   disposeChart(systemMetricsChart)
   disposeChart(processEventLoopChart)
   disposeChart(processMemoryChart)
+  disposeChart(goRuntimeChart)
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
@@ -666,27 +799,33 @@ function snapshotPageState(): SystemMetricsPageState {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(() => authState.revision.value, () => {
   trendAbortController?.abort()
+  goRuntimeAbortController?.abort()
   runtimeSummaryAbortController?.abort()
   backgroundJobsAbortController?.abort()
   backgroundQueuesAbortController?.abort()
   trendAbortController = undefined
+  goRuntimeAbortController = undefined
   runtimeSummaryAbortController = undefined
   backgroundJobsAbortController = undefined
   backgroundQueuesAbortController = undefined
   runtimeSummaryPromise = undefined
   pageLoadGeneration += 1
   requestSeq += 1
+  goRuntimeRequestSeq += 1
   runtimeSummaryRequestSeq += 1
   backgroundJobsRequestSeq += 1
   backgroundQueuesRequestSeq += 1
   loading.value = false
+  goRuntimeLoading.value = false
   backgroundJobsLoading.value = false
   backgroundQueuesLoading.value = false
   systemMetrics.value = undefined
+  goRuntimeTrend.value = undefined
   runtimeSummary.value = undefined
   backgroundJobsResult.value = undefined
   backgroundQueuesResult.value = undefined
   trendError.value = ''
+  goRuntimeError.value = ''
   runtimeSummaryError.value = ''
   backgroundJobsError.value = ''
   backgroundQueuesError.value = ''
@@ -711,16 +850,19 @@ watch(() => backgroundQueuesResult.value?.total, (total) => {
 onBeforeUnmount(() => {
   disposed = true
   trendAbortController?.abort()
+  goRuntimeAbortController?.abort()
   runtimeSummaryAbortController?.abort()
   backgroundJobsAbortController?.abort()
   backgroundQueuesAbortController?.abort()
   trendAbortController = undefined
+  goRuntimeAbortController = undefined
   runtimeSummaryAbortController = undefined
   backgroundJobsAbortController = undefined
   backgroundQueuesAbortController = undefined
   runtimeSummaryPromise = undefined
   pageLoadGeneration += 1
   requestSeq += 1
+  goRuntimeRequestSeq += 1
   runtimeSummaryRequestSeq += 1
   backgroundJobsRequestSeq += 1
   backgroundQueuesRequestSeq += 1
@@ -779,6 +921,59 @@ onBeforeUnmount(() => {
   min-height: 220px;
 }
 
+.go-runtime-error {
+  margin-bottom: 12px;
+}
+
+.go-runtime-view-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.go-runtime-view-hint {
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+.go-runtime-health-hint {
+  margin-bottom: 8px;
+}
+
+.go-runtime-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.go-runtime-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #edf2f7;
+  border-radius: 6px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.go-runtime-summary-item strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.go-runtime-view-empty {
+  min-height: 220px;
+  padding-top: 56px;
+}
+
 @media (max-width: 768px) {
   .system-metrics-toolbar {
     align-items: stretch;
@@ -799,6 +994,12 @@ onBeforeUnmount(() => {
   .chart-panel,
   .chart-panel-large {
     height: 280px;
+  }
+
+  .go-runtime-view-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
   }
 }
 </style>

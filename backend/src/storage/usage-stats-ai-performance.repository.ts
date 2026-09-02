@@ -660,17 +660,17 @@ function loadAiPerformanceAccountOptionRows(
     return loadDefaultAiPerformanceAccounts(database, scope, options.limit)
   }
 
-  const keywordPrefix = normalizeAccountNamePrefix(keyword)
+  const normalizedKeyword = normalizeAccountNameKeyword(keyword)
   const visibleFilter = aiPerformanceVisibleAccountFilter(scope)
   const accountRows = getBusinessDatabase().prepare(`
     SELECT accounts.id
     FROM accounts
     WHERE accounts.deleted_at IS NULL
-      AND accounts.name >= ? AND accounts.name < ?
+      AND instr(accounts.name, ?) > 0
       ${visibleFilter.sql}
     ORDER BY accounts.name ASC, accounts.id ASC
     LIMIT ?
-  `).all(keywordPrefix.start, keywordPrefix.end, ...visibleFilter.params, options.limit) as unknown as Array<{ id: string }>
+  `).all(normalizedKeyword, ...visibleFilter.params, options.limit) as unknown as Array<{ id: string }>
   const sourceInstanceParams = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]
   const sourceInstanceRows = getBusinessDatabase().prepare(`
     SELECT instance_accounts.id
@@ -679,11 +679,11 @@ function loadAiPerformanceAccountOptionRows(
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
     WHERE source_accounts.deleted_at IS NULL
       AND instance_accounts.deleted_at IS NULL
-      AND source_accounts.name >= ? AND source_accounts.name < ?
+      AND instr(source_accounts.name, ?) > 0
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
     ORDER BY source_accounts.name ASC, instance_accounts.id ASC
     LIMIT ?
-  `).all(keywordPrefix.start, keywordPrefix.end, ...sourceInstanceParams, options.limit) as unknown as Array<{ id: string }>
+  `).all(normalizedKeyword, ...sourceInstanceParams, options.limit) as unknown as Array<{ id: string }>
   const accountIds = uniqueNonEmpty([
     ...accountRows.map((row) => row.id),
     ...sourceInstanceRows.map((row) => row.id)
@@ -708,9 +708,10 @@ async function loadAiPerformanceAccountOptionRowsAsync(
     return loadExplicitAiPerformanceAccountsAsync(client, scope, accountIds)
   }
 
-  const keywordPrefix = normalizeAccountNamePrefix(keyword)
+  const normalizedKeyword = normalizeAccountNameKeyword(keyword)
+  const substringLikePattern = postgresSubstringLikePattern(normalizedKeyword)
   const accountsTable = businessTable(client, 'accounts')
-  const prefixParams = () => [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start]
+  const keywordParams = () => [substringLikePattern]
   const candidateSql: string[] = []
   const candidateParams: unknown[] = []
   if (scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID) {
@@ -718,9 +719,9 @@ async function loadAiPerformanceAccountOptionRowsAsync(
       SELECT accounts.id, accounts.name AS sort_name, 0 AS source_priority
       FROM ${accountsTable} accounts
       WHERE accounts.deleted_at IS NULL
-        AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+        AND accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\'
     `)
-    candidateParams.push(...prefixParams())
+    candidateParams.push(...keywordParams())
   } else {
     candidateSql.push(`
       SELECT accounts.id, accounts.name AS sort_name, 0 AS source_priority
@@ -728,23 +729,23 @@ async function loadAiPerformanceAccountOptionRowsAsync(
       WHERE accounts.system_account_id = ?
         AND accounts.deleted_at IS NULL
         AND accounts.authorization_instance_authorization_id IS NULL
-        AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+        AND accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\'
     `)
-    candidateParams.push(scope.systemAccountId, ...prefixParams())
+    candidateParams.push(scope.systemAccountId, ...keywordParams())
     candidateSql.push(`
       SELECT accounts.id, accounts.name AS sort_name, 1 AS source_priority
       FROM ${accountsTable} accounts
       WHERE accounts.system_account_id = ?
         AND accounts.deleted_at IS NULL
         AND accounts.authorization_instance_authorization_id IS NOT NULL
-        AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+        AND accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\'
     `)
-    candidateParams.push(scope.systemAccountId, ...prefixParams())
+    candidateParams.push(scope.systemAccountId, ...keywordParams())
     candidateSql.push(`
       SELECT accounts.id, accounts.name AS sort_name, 2 AS source_priority
       FROM ${accountsTable} accounts
       WHERE accounts.deleted_at IS NULL
-        AND accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)
+        AND accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\'
         AND EXISTS (
           SELECT 1
           FROM ${businessTable(client, 'group_accounts')} visible_group_accounts
@@ -758,7 +759,7 @@ async function loadAiPerformanceAccountOptionRowsAsync(
             AND visible_group_accounts.enabled = 1
         )
     `)
-    candidateParams.push(...prefixParams(), scope.systemAccountId, nowIso())
+    candidateParams.push(...keywordParams(), scope.systemAccountId, nowIso())
   }
   candidateSql.push(`
     SELECT instance_accounts.id, source_accounts.name AS sort_name, ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? 1 : 3} AS source_priority
@@ -767,10 +768,10 @@ async function loadAiPerformanceAccountOptionRowsAsync(
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
     WHERE source_accounts.deleted_at IS NULL
       AND instance_accounts.deleted_at IS NULL
-      AND source_accounts.name COLLATE "C" >= ? AND source_accounts.name COLLATE "C" < ? AND starts_with(source_accounts.name, ?)
+      AND source_accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\'
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
   `)
-  candidateParams.push(...prefixParams(), ...(scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]))
+  candidateParams.push(...keywordParams(), ...(scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]))
   const candidateRows = await client.query<{ id: string }>(`
     SELECT id
     FROM (
@@ -797,19 +798,15 @@ async function loadAiPerformanceAccountOptionRowsAsync(
     : []
 }
 
-function normalizeAccountNamePrefix(value: string): { start: string; end: string } {
-  const start = value.normalize('NFKC').trim()
-  return { start, end: accountNamePrefixUpperBound(start) }
+function normalizeAccountNameKeyword(value: string): string {
+  return value.normalize('NFKC').trim()
 }
 
-function accountNamePrefixUpperBound(value: string): string {
-  const chars = [...value]
-  for (let index = chars.length - 1; index >= 0; index -= 1) {
-    const codePoint = chars[index].codePointAt(0)
-    if (codePoint === undefined || codePoint >= 0x10ffff) continue
-    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
-  }
-  return `${value}\uffff`
+function postgresSubstringLikePattern(value: string): string {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('%', '\\%')
+    .replaceAll('_', '\\_')
 }
 
 function mergeAiPerformanceStatsWithAccounts(

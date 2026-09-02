@@ -31,13 +31,13 @@ func TestProjectTrustReceiptsCursorAndLatestAreReplaySafe(t *testing.T) {
 	}
 	defer store.Close()
 	const created = "2026-08-31T10:00:00Z"
-	if _, err := store.db.Exec(`INSERT INTO model_check_observations(id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES ('obs-a','run-1','sys','acct','openai','gpt-5.6','gpt-5.6','protocol_basic','complete','verified','unmapped','passed',100,?)`, created); err != nil {
+	if _, err := store.db.Exec(`INSERT INTO model_check_observations(id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES ('obs-a','run-1','sys','acct','openai','gpt-5.6','gpt-5.6','protocol_basic','complete','consistent','unknown','consistent',100,?)`, created); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec(`INSERT INTO model_trust_latest_dirty_accounts(system_account_id,account_id,requested_model,dirty_reason,updated_at) VALUES ('sys','acct','gpt-5.6','baseline_changed',?)`, created); err != nil {
 		t.Fatal(err)
 	}
-	projection := TrustProjection{RunID: "run-1", SystemAccountID: "sys", AccountID: "acct", RequestedModel: "gpt-5.6", Report: TrustReport{IdentityStatus: "verified", EvidenceFormed: true, TrustFormed: true, TrustScore: 1, ReasonCodes: []string{"z", "a", "a"}}}
+	projection := TrustProjection{RunID: "run-1", SystemAccountID: "sys", AccountID: "acct", RequestedModel: "gpt-5.6", Report: TrustReport{IdentityStatus: "consistent", MappingStatus: "direct", UsageIntegrityStatus: "insufficient_evidence", ProtocolStatus: "consistent", EvidenceStatus: "stable", EvidenceFormed: true, TrustFormed: true, TrustScore: 1, EvidenceCoverage: 100, ReasonCodes: []string{"z", "a", "a"}}}
 	if err := store.ProjectTrust(context.Background(), projection); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestProjectTrustReceiptsCursorAndLatestAreReplaySafe(t *testing.T) {
 	if err := store.ProjectTrust(context.Background(), projection); err != nil {
 		t.Fatalf("identical trust projection must replay: %v", err)
 	}
-	if _, err := store.db.Exec(`INSERT INTO model_check_observations(id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES ('obs-z','run-1','sys','acct','openai','gpt-5.6','gpt-5.6','usage_shape','complete','verified','unmapped','passed',100,?)`, created); err != nil {
+	if _, err := store.db.Exec(`INSERT INTO model_check_observations(id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES ('obs-z','run-1','sys','acct','openai','gpt-5.6','gpt-5.6','usage_shape','complete','consistent','unknown','consistent',100,?)`, created); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ProjectTrust(context.Background(), projection); err != nil {
@@ -71,5 +71,66 @@ func TestProjectTrustReceiptsCursorAndLatestAreReplaySafe(t *testing.T) {
 	conflict.Report.IdentityStatus = "suspected_downgrade"
 	if err := store.ProjectTrust(context.Background(), conflict); err == nil || !strings.Contains(err.Error(), "conflicts") {
 		t.Fatalf("same cursor with different trust facts must fail closed, err=%v", err)
+	}
+}
+
+func TestTrustProtocolStatusPreservesWarning(t *testing.T) {
+	if got := trustProtocolStatus([]trustObservation{{protocolStatus: "consistent"}, {protocolStatus: "warning"}}); got != "warning" {
+		t.Fatalf("protocol status=%q, want warning", got)
+	}
+	if got := trustProtocolStatus([]trustObservation{{protocolStatus: "consistent"}, {protocolStatus: "failed"}}); got != "failed" {
+		t.Fatalf("protocol status=%q, want failed", got)
+	}
+}
+
+func TestTrustMappingStatusMixedFailsClosed(t *testing.T) {
+	if got := trustMappingStatus([]trustObservation{{mappingStatus: "direct"}, {mappingStatus: "configured_mapping"}}); got != "mixed" {
+		t.Fatalf("mapping status=%q, want mixed before persistence normalization", got)
+	}
+	path := filepath.Join(t.TempDir(), "mixed-trust.db")
+	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range runtimeTestDDL() {
+		if _, err := seed.Exec(ddl); err != nil {
+			seed.Close()
+			t.Fatal(err)
+		}
+	}
+	created := "2026-08-31T10:00:00Z"
+	if _, err := seed.Exec(`INSERT INTO model_check_observations(id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES ('obs-a','run-1','sys','acct','openai','gpt-5.6','gpt-5.6','protocol_basic','complete','consistent','direct','consistent',100,?),('obs-b','run-1','sys','acct','openai','gpt-5.6','gpt-5.6','usage_shape','complete','consistent','configured_mapping','consistent',100,?)`, created, created); err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(testSQLiteConfig(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	projection := TrustProjection{RunID: "run-1", SystemAccountID: "sys", AccountID: "acct", RequestedModel: "gpt-5.6", Report: TrustReport{IdentityStatus: "consistent", MappingStatus: "unknown", UsageIntegrityStatus: "insufficient_evidence", ProtocolStatus: "consistent", EvidenceStatus: "stable", TrustScore: 1, EvidenceCoverage: 100}}
+	if err := store.ProjectTrust(context.Background(), projection); err != nil {
+		t.Fatal(err)
+	}
+	var mapping, reasons string
+	if err := store.db.QueryRow(`SELECT mapping_status,reason_codes_json FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6'`).Scan(&mapping, &reasons); err != nil {
+		t.Fatal(err)
+	}
+	if mapping != "unknown" || !strings.Contains(reasons, "mapping_status_conflict") {
+		t.Fatalf("mapping=%q reasons=%q, mixed mapping must persist unknown with conflict reason", mapping, reasons)
+	}
+}
+
+func TestTrustMappingStatusInvalidFailsClosed(t *testing.T) {
+	if got := trustMappingStatus([]trustObservation{{mappingStatus: "legacy_unmapped"}}); got != "legacy_unmapped" {
+		t.Fatalf("mapping status=%q, helper should expose invalid source for persistence normalization", got)
+	}
+	// The durable path shares the same fail-closed normalization as mixed data;
+	// validTrustReport does not permit arbitrary historical vocabularies.
+	if validTrustReport(TrustReport{IdentityStatus: "consistent", MappingStatus: "legacy_unmapped", UsageIntegrityStatus: "insufficient_evidence", ProtocolStatus: "consistent", EvidenceStatus: "stable", TrustScore: 1}) {
+		t.Fatal("invalid mapping vocabulary must not be accepted as a trust report")
 	}
 }

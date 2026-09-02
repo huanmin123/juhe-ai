@@ -331,7 +331,7 @@ function accountBalanceFormFields(input: {
 > {
   return {
     balanceQueryEnabled: input.balanceQueryEnabled === true,
-    balanceQueryAdapter: input.balanceQueryConfig?.adapter ?? 'builtin',
+    balanceQueryAdapter: input.balanceQueryConfig?.adapter === 'custom' ? 'custom' : 'builtin',
     balanceQueryPreferredBuiltinAdapter: input.balanceQueryConfig?.preferredBuiltinAdapter,
     balanceQueryIntervalMinutes: input.balanceQueryConfig?.intervalMinutes ?? 5,
     balanceQueryCustomPath: input.balanceQueryConfig?.custom?.path ?? '',

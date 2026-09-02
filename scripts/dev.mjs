@@ -266,6 +266,23 @@ function resolveGoProjectEnv() {
     childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH,
     resolve(backendRoot, 'data', 'juhe-ai-table-monitor.sqlite3')
   )
+  // In the dev profile, an explicitly enabled Go metrics PostgreSQL store may
+  // reuse the already selected dev application connection. The child process
+  // still receives a concrete dedicated variable; release/Compose paths keep
+  // requiring an explicit metrics URL to avoid accidental cross-environment
+  // writes.
+  if (childEnv.JUHE_AI_GO_RUNTIME_METRICS_STORE?.trim().toLowerCase() === 'postgres'
+    && !childEnv.JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL?.trim()
+    && childEnv.JUHE_AI_POSTGRES_URL?.trim()) {
+    childEnv.JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL = childEnv.JUHE_AI_POSTGRES_URL
+  }
+  if (childEnv.JUHE_AI_GO_RUNTIME_METRICS_STORE?.trim().toLowerCase() === 'sqlite'
+    && childEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH?.trim()) {
+    childEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH = resolveBackendPath(
+      childEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH,
+      childEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH
+    )
+  }
   childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = resolveBackendPath(
     childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH,
     resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')

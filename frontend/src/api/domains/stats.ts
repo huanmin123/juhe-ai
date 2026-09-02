@@ -14,6 +14,7 @@ import type {
   SystemMetricsRuntimeQueuesResult,
   SystemMetricsRuntimeSummary,
   SystemMetricsTrendOverview,
+  GoRuntimeTrendOverview,
   TableStorageHistoryPoint,
   TableStorageOverview,
   UsageStatsWindow,
@@ -57,6 +58,7 @@ export const statsApi = {
   aiHealth: (params?: AiHealthParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthListResult>(http.get('/stats/ai-health', { params, signal: options?.signal })),
   aiHealthHourDetail: (params: AiHealthHourDetailParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthHourDetail>(http.get('/stats/ai-health/hour-detail', { params, signal: options?.signal })),
   systemMetricsTrend: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>, options?: { signal?: AbortSignal }) => unwrap<SystemMetricsTrendOverview>(http.get('/stats/system-metrics/trend', { params, signal: options?.signal })),
+  goRuntimeTrend: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>, options?: { signal?: AbortSignal }) => unwrap<GoRuntimeTrendOverview>(http.get('/stats/system-metrics/go-runtime-trend', { params, signal: options?.signal })),
   systemMetricsRuntimeSummary: (options?: { signal?: AbortSignal }) => unwrap<SystemMetricsRuntimeSummary>(http.get('/stats/system-metrics/runtime/summary', { signal: options?.signal })),
   systemMetricsRuntimeJobs: (params: { page: number; pageSize: number }, options?: { signal?: AbortSignal }) => unwrap<SystemMetricsRuntimeJobsResult>(http.get('/stats/system-metrics/runtime/jobs', { params, signal: options?.signal })),
   systemMetricsRuntimeQueues: (params: { page: number; pageSize: number }, options?: { signal?: AbortSignal }) => unwrap<SystemMetricsRuntimeQueuesResult>(http.get('/stats/system-metrics/runtime/queues', { params, signal: options?.signal }))

@@ -132,8 +132,8 @@ rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmok
 
 ## F2：表存储监控采样与保留
 
-高吞吐部署可将 Go worker 并发设为 `1024`、PostgreSQL pool 上限设为 `5096`；这些值必须与 PostgreSQL `max_connections` 和 PgBouncer `MAX_CLIENT_CONN`/`DEFAULT_POOL_SIZE` 一起调整。
-发布前仍须以实时锁等待、长事务和 firing 告警指标作为稳定性门禁。
+F2 默认并发为 `512`，`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 可配置上限为 `5096`；PostgreSQL pool 默认 `16`。实际值必须与 PostgreSQL `max_connections` 和 PgBouncer `MAX_CLIENT_CONN`/`DEFAULT_POOL_SIZE` 一起调整。
+实时锁等待、长事务和 firing 告警仍属于发布稳定性门禁；当前仓库内 Jenkins 仅构建并写入 release state，具体门禁承接方需在外部发布控制面明确。
 J3a 管理入口的 IngressRoute 由 k8s release state 与 Go 镜像 digest 同批提交。
 
 `jobs` 内的 F2 是唯一采样、快照写入和表监控历史保留 owner。它在 SQLite 和 PostgreSQL 两种正式模式下直接异步并发采样；不使用 queue、Redis、Asynq、Node IPC、Node/Go 开关、fallback 或双 writer。
@@ -144,7 +144,7 @@ J3a 管理入口的 IngressRoute 由 k8s release state 与 Go 镜像 digest 同�
 - `JUHE_AI_TABLE_MONITOR_STORE=sqlite` 或 `postgres`；必须显式设置，不再从通用数据库变量回退。
 - SQLite 提供 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 作为 F2 专用输出文件，`JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 用于验证 F1/F2 物理隔离，以及 `JUHE_AI_DATABASE_PATH`、`JUHE_AI_DATASET_DATABASE_PATH`、`JUHE_AI_USAGE_CATALOG_DATABASE_PATH`、`JUHE_AI_STATS_DATABASE_PATH` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 作为只读采样源；输出文件不得与 F1、任何源库或 shard 共用。PostgreSQL 必须提供专用 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`，快照写入 `juhe_stats`。
 - `JUHE_AI_TABLE_MONITOR_OWNER_LEASE` 默认 `5m`；同一事实库同一时间只允许一个 Go owner，第二实例拒绝启动，失去 lease 后采样和保留清理拒写。
-- `JUHE_AI_TABLE_MONITOR_INTERVAL` 默认 `1m`，单轮 `JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT` 默认 `45s`，`JUHE_AI_TABLE_MONITOR_RETENTION_DAYS` 默认 `30`，`JUHE_AI_TABLE_MONITOR_MAX_TABLES` 默认 `256`；`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 默认 `1024`（范围 `1..1024`），`JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE` 默认 `10000`（范围 `1..10000`），`JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES` 默认 `100000`（范围 `1..100000`）。达到 retention 批次数上限后仍有过期数据才显式失败，不静默遗漏。
+- `JUHE_AI_TABLE_MONITOR_INTERVAL` 默认 `1m`，单轮 `JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT` 默认 `45s`，`JUHE_AI_TABLE_MONITOR_RETENTION_DAYS` 默认 `30`，`JUHE_AI_TABLE_MONITOR_MAX_TABLES` 默认 `256`；`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 默认 `512`（范围 `1..5096`），`JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE` 默认 `512`（范围 `1..5096`），`JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES` 默认 `512`（范围 `1..5096`）。达到 retention 批次数上限后仍有过期数据才显式失败，不静默遗漏。
 
 Node 只保留表监控 HTTP 读取，SQLite 读取只打开 F2 专用输出文件；Node scheduler、stats writer 和 Node retention 已退出。配置、连接、schema、owner lease 或采样失败都必须保留原始错误并显式失败，不能伪造空结果或切回旧 Node 路径。
 

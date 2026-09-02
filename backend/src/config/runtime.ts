@@ -60,6 +60,7 @@ export interface RuntimeConfig {
   dbServiceHttpHost: string
   dbServiceHttpPort: number
   accountHealthCheckDispatchUrl?: string
+  goRuntimeMetricsUrl: string
   controlReadReplicaOrigins: string[]
   auditLogInputUrl?: string
   auditLogInputSecret?: string
@@ -590,6 +591,10 @@ export const runtimeConfig: RuntimeConfig = {
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
   accountHealthCheckDispatchUrl: configuredAccountHealthCheckDispatchUrl,
+  goRuntimeMetricsUrl: loopbackHttpOriginConfig(
+    'JUHE_AI_GO_RUNTIME_METRICS_URL',
+    stringConfig('JUHE_AI_GO_RUNTIME_METRICS_URL', 'http://127.0.0.1:3305')
+  ),
   controlReadReplicaOrigins: configuredControlReadReplicaOrigins,
   auditLogInputUrl: configuredAuditLogInputUrl,
   auditLogInputSecret: configuredAuditLogInputSecret,

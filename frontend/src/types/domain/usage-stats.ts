@@ -250,6 +250,58 @@ export interface SystemMetricsTrendOverview {
   }>
 }
 
+export interface GoRuntimeTrendItem {
+  windowStart: string
+  windowEnd: string
+  service: string
+  role: string
+  runtimeKind: 'go'
+  sampleCount: number
+  goroutinesAvg: number
+  goroutinesMax: number
+  heapAllocBytesAvg: number
+  heapAllocBytesMax: number
+  heapLiveBytesAvg: number
+  heapLiveBytesMax: number
+  heapObjectsAvg: number
+  heapObjectsMax: number
+  threadsAvg: number
+  threadsMax: number
+  // Optional fields are present only after the Go metrics schema upgrade.
+  // The UI must render an unavailable state when an older window omits them.
+  cpuPercentAvg?: number | null
+  cpuPercentMax?: number | null
+  rssBytesAvg?: number | null
+  rssBytesMax?: number | null
+  fdCountAvg?: number | null
+  fdCountMax?: number | null
+  uptimeSecondsAvg?: number | null
+  uptimeSecondsMax?: number | null
+  goroutinesRunnableAvg?: number | null
+  goroutinesRunnableMax?: number | null
+  goroutinesWaitingAvg?: number | null
+  goroutinesWaitingMax?: number | null
+  gomaxprocsAvg?: number | null
+  gomaxprocsMax?: number | null
+  gcPauseP95SecondsAvg?: number | null
+  gcPauseP95SecondsMax?: number | null
+  gcPauseP99SecondsAvg?: number | null
+  gcPauseP99SecondsMax?: number | null
+  schedulerLatencyP95SecondsAvg?: number | null
+  schedulerLatencyP95SecondsMax?: number | null
+  schedulerLatencyP99SecondsAvg?: number | null
+  schedulerLatencyP99SecondsMax?: number | null
+}
+
+export interface GoRuntimeTrendOverview {
+  runtimeKind: 'go'
+  service: string
+  role: string
+  timezone: string
+  range: AccountUsageStatsRange
+  items: GoRuntimeTrendItem[]
+}
+
 export interface SystemMetricsRuntimeSummary {
   runtimeSnapshotAvailable: boolean
   runtimeSnapshotStale?: boolean

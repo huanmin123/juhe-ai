@@ -323,6 +323,7 @@ export interface TableMonitorOverviewParams {
   page?: number
   pageSize?: number
   keyword?: string
+  refresh?: boolean
 }
 
 export interface TableMonitorDatabaseHistoryParams {

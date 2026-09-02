@@ -98,21 +98,21 @@ assert.deepEqual(buildAccountBalancePayload(apiKeyForm), {
 })
 assert.equal(buildAccountBalancePayload({ ...apiKeyForm, type: 'oauth' }), undefined)
 assert.deepEqual(buildAccountBalancePayload({ ...apiKeyForm, apiKeys: ['sk-one', 'sk-two'] }), {
-  balanceQueryEnabled: false,
+  balanceQueryEnabled: true,
   balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
 })
-assert.equal(accountBalanceWillAutoDisable({ ...apiKeyForm, apiKeys: ['sk-one', 'sk-two'] }), true)
+assert.equal(accountBalanceWillAutoDisable({ ...apiKeyForm, apiKeys: ['sk-one', 'sk-two'] }), false)
 assert.equal(accountBalanceWillAutoDisable({ ...apiKeyForm, apiKeys: ['sk-one', ' sk-one '] }), false, '重复 Key 不应误判为多 Key')
-assert.equal(validateAccountBalanceForm({ ...apiKeyForm, apiKeys: ['sk-one', 'sk-two'] }), undefined, '多 Key 自动关闭余额查询，不能阻断保存')
+assert.equal(validateAccountBalanceForm({ ...apiKeyForm, apiKeys: ['sk-one', 'sk-two'] }), undefined, '多 Key 余额查询不能阻断保存')
 assert.deepEqual(buildAccountBalancePayload({
   ...apiKeyForm,
   apiKeys: ['sk-one', 'sk-two'],
   balanceQueryAdapter: 'custom',
   balanceQueryCustomPath: ''
 }), {
-  balanceQueryEnabled: false,
-  balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
-}, '多 Key 隐藏余额配置后不能因未完成的自定义草稿阻断保存')
+  balanceQueryEnabled: true,
+  balanceQueryConfig: { adapter: 'custom', intervalMinutes: 5, custom: {} }
+}, '多 Key 自定义配置仍按当前表单提交，由后端校验配置')
 assert.equal(validateAccountBalanceForm(apiKeyForm), undefined)
 assert.match(validateAccountBalanceForm({
   ...apiKeyForm,
@@ -181,17 +181,17 @@ assert.match(usageCellSource, /ReloadOutlined/, '余额刷新必须使用裸刷�
 assert.match(balanceHelperSource, /查询失败/, '失败状态必须统一显示查询失败')
 assert.match(usageCellSource, /balanceDisplay\.tooltip/, '失败原因必须通过 tooltip 展示')
 assert.match(usageCellSource, /v-if="account\.balanceQueryEnabled" class="balance-row"/, '余额开启后必须始终保留人工刷新入口')
-assert.match(usageCellSource, /<a-tooltip v-if="balanceDisplay\.visible"[^>]*>[\s\S]*?<span class="balance-text"/, '只有余额文本按快照可见性控制')
+assert.match(usageCellSource, /balanceDisplay\.visible[\s\S]*?balance-text/, '只有余额文本按快照可见性控制')
 assert.match(balanceHelperSource, /text: tone === 'refreshing' \? '查询中' : '待查询'/, '无余额快照时必须展示明确状态，不能只留下刷新图标')
 assert.doesNotMatch(usageCellSource, /props\.account\.status === 'active'/, '人工刷新不得依赖账户状态')
 assert.match(usageCellSource, /v-if="balanceDisplay\.tone !== 'failed'" class="balance-label"/, '余额查询失败不能带“剩余：”前缀')
 assert.match(editSectionSource, /balance-query-header/, '余额查询开关应放在标题行右侧')
 assert.match(editSectionSource, /QuestionCircleOutlined/, '余额查询应提供帮助说明')
-assert.match(basicInfoSource, /v-if="!editing"[\s\S]*?<a-radio value="active">可调度<\/a-radio>/, '新建账户应允许选择可调度状态')
-assert.match(basicInfoSource, /form\.status === 'active'[\s\S]*跳过首次健康检查/, '可调度状态必须提示会跳过首次健康检查')
-assert.match(apiKeySectionSource, /多 Key 账户不支持余额查询，保存后将自动关闭余额查询/, 'API Key 区域必须明确提示多 Key 自动关闭余额查询')
-assert.match(savePayloadSource, /buildAccountBalancePayload\(input\.form\)/, '统一账户保存 payload 必须明确提交多 Key 余额关闭状态')
-assert.match(saveFlowSource, /已因多 Key 自动关闭余额查询/, '保存成功后应明确提示自动关闭结果')
+assert.match(basicInfoSource, /<a-radio value="active">可调度<\/a-radio>/, '账户表单应允许选择可调度状态')
+assert.match(basicInfoSource, /statusSelectionExplicit/, '账户状态选择必须记录用户显式选择')
+assert.match(apiKeySectionSource, /多 Key 余额会逐 Key 查询/, 'API Key 区域必须明确提示多 Key 查询口径')
+assert.match(savePayloadSource, /buildAccountBalancePayload\(input\.form\)/, '统一账户保存 payload 必须明确提交多 Key 余额配置')
+assert.doesNotMatch(saveFlowSource, /已因多 Key 自动关闭余额查询/, '保存成功后不能提示自动关闭余额查询')
 assert.match(editSectionSource, /测试查询/, '余额配置应提供无副作用测试入口')
 assert.match(editSectionSource, /仅验证当前配置，不会保存/, '余额测试必须明确不会保存表单或快照')
 assert.match(editSectionSource, /class="balance-query-refresh-control"[\s\S]*?<a-input-number[\s\S]*?<a-button/, '测试查询按钮必须放在刷新周期控件右侧')
@@ -206,6 +206,12 @@ assert.match(accountsViewSource, /testBalanceDraft\(/, '编辑页测试必须调
 assert.doesNotMatch(accountsViewSource, /balanceQueryResult/, '编辑页不能保留余额测试结果状态')
 assert.match(accountsApiSource, /testBalanceDraft:/, '账户 API 必须提供无副作用草稿余额测试')
 assert.match(accountsApiSource, /refreshBalance:\s*\(id: string,\s*params\?:/, '正式余额刷新不能再接收未保存配置')
+assert.doesNotMatch(usageCellSource, /props\.loadBalanceDetails\(/, '余额明细只能由父层统一加载，子组件不得重复调用 loader')
+assert.match(usageCellSource, /emit\('balance-details-request', props\.account\.id\)/, 'Popover 打开时应请求父层加载余额明细')
+assert.match(accountsViewSource, /const balanceDetailsRequests = new Map/, '余额明细请求必须维护 in-flight Promise')
+assert.match(accountsViewSource, /const inFlight = balanceDetailsRequests\.get\(accountId\)[\s\S]*?if \(inFlight\) return inFlight/, '同一账户的并发余额明细请求必须复用')
+assert.match(accountsViewSource, /const isCurrentRequest = \(\): boolean => balanceDetailsRequests\.get\(accountId\) === requestRef\.value/, '过期余额明细请求不得更新当前状态')
+assert.match(accountsViewSource, /const errors = new Map\(balanceDetailsErrors\.value\)[\s\S]*?errors\.delete\(accountId\)/, '余额明细成功后必须清除此前错误')
 const listRefreshSource = /async function refreshAccountBalance[\s\S]*?\n}/.exec(accountsViewSource)?.[0] ?? ''
 assert.match(listRefreshSource, /updateLoadedAccountBalance\(accountId, snapshot\)/, '列表刷新应通过 shallowRef 列表入口替换当前账户行')
 assert.ok(

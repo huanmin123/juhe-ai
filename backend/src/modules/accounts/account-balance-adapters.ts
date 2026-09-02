@@ -61,6 +61,7 @@ function freshResult(value: DecimalValue, options: {
   divisor?: DecimalValue
   rawUnit: 'usd' | 'cny' | 'quota'
   basis: 'api_key_quota' | 'budget' | 'subscription' | 'wallet' | 'custom'
+  scope?: AccountBalanceSnapshot['scope']
   rawRemaining?: string
 }): AccountBalanceSnapshot {
   return {
@@ -68,7 +69,8 @@ function freshResult(value: DecimalValue, options: {
     remainingUsd: decimalDivideToSix(value, options.divisor ?? { coefficient: 1n, scale: 0 }),
     rawRemaining: options.rawRemaining ?? decimalText(value),
     rawUnit: options.rawUnit,
-    basis: options.basis
+    basis: options.basis,
+    ...(options.scope ? { scope: options.scope } : {})
   }
 }
 
@@ -94,19 +96,21 @@ export function parseSub2ApiBalance(payload: unknown): AccountBalanceSnapshot {
   return freshResult(remaining, {
     rawUnit: 'usd',
     basis,
+    scope: basis === 'api_key_quota' ? 'key' : 'account',
     rawRemaining: decimalText(remaining)
   })
 }
 
 export function parseNewApiBalance(payload: unknown, options: { quotaPerUnit: unknown }): AccountBalanceSnapshot {
   const data = objectValue(objectValue(payload).data)
-  if (data.unlimited_quota === true) return { status: 'unsupported', basis: 'api_key_quota' }
+  if (data.unlimited_quota === true) return { status: 'unsupported', basis: 'api_key_quota', scope: 'unknown' }
   const remaining = decimalValue(data.total_available, 'total_available')
   const divisor = decimalValue(options.quotaPerUnit, 'quota_per_unit')
   return freshResult(remaining, {
     divisor,
     rawUnit: 'quota',
     basis: 'api_key_quota',
+    scope: 'key',
     rawRemaining: decimalText(remaining)
   })
 }
@@ -125,6 +129,7 @@ export function parseOpenAiCompatibleBillingBalance(
     return {
       status: 'unsupported',
       basis: 'api_key_quota',
+      scope: 'unknown',
       errorMessage: '上游 API Key 为无限额度，无法确认实际可用余额'
     }
   }
@@ -134,7 +139,11 @@ export function parseOpenAiCompatibleBillingBalance(
   return freshResult(remaining, {
     ...(options.divisor === undefined ? {} : { divisor: decimalValue(options.divisor, '金额换算系数') }),
     rawUnit: options.rawUnit,
-    basis: 'api_key_quota'
+    basis: 'api_key_quota',
+    // The OpenAI-compatible billing endpoints expose an account/organization
+    // budget in many deployments; without an explicit upstream key scope it
+    // is unsafe to add one response per API Key.
+    scope: 'unknown'
   })
 }
 
@@ -154,6 +163,7 @@ export function parseOpenAiCompatibleBillingStatus(payload: unknown): OpenAiComp
       snapshot: {
         status: 'unsupported',
         basis: 'api_key_quota',
+        scope: 'unknown',
         errorMessage: `上游余额展示单位为 ${displayType}，无法安全换算为美元`
       }
     }
@@ -167,16 +177,17 @@ export function parseOpenAiCompatibleBillingStatus(payload: unknown): OpenAiComp
 
 export function parseLiteLlmBalance(payload: unknown): AccountBalanceSnapshot {
   const info = objectValue(objectValue(payload).info)
-  if (info.max_budget === undefined || info.max_budget === null) return { status: 'unsupported', basis: 'budget' }
+  if (info.max_budget === undefined || info.max_budget === null) return { status: 'unsupported', basis: 'budget', scope: 'account' }
   const remaining = decimalSubtract(decimalValue(info.max_budget, 'max_budget'), decimalValue(info.spend ?? 0, 'spend'))
-  return freshResult(remaining, { rawUnit: 'usd', basis: 'budget' })
+  return freshResult(remaining, { rawUnit: 'usd', basis: 'budget', scope: 'account' })
 }
 
 export function parseUserBalance(payload: unknown): AccountBalanceSnapshot {
   const response = objectValue(payload)
   return freshResult(decimalValue(response.balance, 'balance'), {
     rawUnit: 'usd',
-    basis: 'wallet'
+    basis: 'wallet',
+    scope: 'account'
   })
 }
 
@@ -200,6 +211,7 @@ export function parseCustomBalance(payload: unknown, config: AccountBalanceCusto
   return freshResult(remaining, {
     divisor: decimalValue(config.divisor ?? '1', 'divisor'),
     rawUnit: 'usd',
-    basis: 'custom'
+    basis: 'custom',
+    scope: 'unknown'
   })
 }

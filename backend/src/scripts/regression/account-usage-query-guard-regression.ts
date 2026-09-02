@@ -218,7 +218,7 @@ try {
       pageSize: 10,
       range
     })
-    assert.deepEqual(keywordResult.rows.map((row) => row.id), [matchedAccount.id], '账号用量关键词应先解析成账号 ID 后再筛统计窗口')
+    assert.deepEqual(keywordResult.rows.map((row) => row.id), [matchedAccount.id, otherAccount.id], '账号用量关键词应按名称包含匹配解析账号 ID 后再筛统计窗口')
     assert.equal(keywordResult.rows[0]?.rangeUsage.requestCount, 7, '账号用量关键词结果应保留范围日聚合用量')
     assert.deepEqual(keywordResult.rows[0]?.dailyUsage, [], '账号用量列表只返回范围摘要，不返回日序列')
     const trendResult = await accountUsageRepository.getAccountUsageStatsTrendAsync(access, range, [matchedAccount.id])
@@ -331,8 +331,8 @@ try {
   )
   assert.match(
     accountUsageAsyncKeywordSnippet,
-    /accounts\.name COLLATE "C" >= \? AND accounts\.name COLLATE "C" < \? AND starts_with\(accounts\.name, \?\)/,
-    'PG 账号用量关键词预解析账号名必须使用大小写敏感 C collation 范围 + starts_with 条件'
+    /accounts\.name COLLATE "C" LIKE '%' \|\| \? \|\| '%' ESCAPE '\\\\'/,
+    'PG 账号用量关键词预解析账号名必须用可索引的转义 LIKE 支持名称前中后包含匹配'
   )
   assert.doesNotMatch(
     accountUsageAsyncKeywordSnippet,
@@ -344,6 +344,16 @@ try {
     /LOWER\([^)]+\)\s+LIKE\s+\?/,
     'PG 账号用量关键词预解析不能使用 LOWER(...) LIKE 前缀扫描'
   )
+  assert.match(
+    accountUsageRepositorySource,
+    /function postgresSubstringLikePattern[\s\S]+replaceAll\('%', '\\\\%'\)[\s\S]+replaceAll\('_', '\\\\_'\)/,
+    'PG 账号用量关键词必须转义用户输入的 LIKE 通配符'
+  )
+  const postgresSchemaSource = readFileSync(resolve('src/storage/postgres-schema.ts'), 'utf8')
+  assert.match(postgresSchemaSource, /idx_accounts_name_c_trgm_lookup/, 'PG 账号名称包含搜索必须有 trigram 索引')
+  assert.match(postgresSchemaSource, /idx_accounts_provider_code_c_trgm_lookup/, 'PG 供应商包含搜索必须有 trigram 索引')
+  assert.match(postgresSchemaSource, /idx_accounts_type_c_trgm_lookup/, 'PG 账户类型包含搜索必须有 trigram 索引')
+  assert.match(postgresSchemaSource, /idx_groups_name_c_trgm_lookup/, 'PG 分组包含搜索必须有 trigram 索引')
   for (const call of businessCalls) {
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账号用量关键词预解析不应通过 COALESCE 做包含扫描')
     assert(!/\baccounts\.id\s*(?:=|LIKE)\s*\?/i.test(call.sql), '账号用量关键词预解析不应按账号 ID 搜索')

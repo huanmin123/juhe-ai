@@ -139,7 +139,8 @@ GET /api/my-stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
 - 单次最多返回 50 个账户、每账户最多 744 个小时点。
 - 查询只读取当前页账户，不加载全部账户后前端分页。
 - 小时结果通过账户 ID 分块批量查询，禁止逐账户查询。
-- 列表小时查询只投影 `account_id / stat_hour / status / source_order`；检查时间、状态码和错误正文只允许单点详情查询读取。
+- 列表小时查询只投影 `account_id / stat_hour / status / last_observed_at / source_order`；状态码和错误正文只允许单点详情查询读取。
+- PostgreSQL J1 列表结果按账户和统计时区小时做索引范围读取，每个小时最多取一条最新的非 `stale` outcome，避免把同一小时的全部探针 payload 读回 Node；详情读取保留单个小时语义。
 - 状态条使用 Canvas；页面不为小时点创建大量组件或监听器。
 - 原始使用记录继续由 stats worker 增量聚合，接口请求不做临时统计。
 

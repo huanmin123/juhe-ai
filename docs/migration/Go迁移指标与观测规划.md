@@ -10,6 +10,14 @@
 
 字段级执行清单见 [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)。本文回答目标观测分层和指标口径，字段清单回答哪些 Node 字段必须删除、哪些 Go 字段接管、前端和测试如何验收。
 
+## 当前已落地（2026-09-02）
+
+- `backend-go/shared/platform/gometrics` 已提供低基数 Go runtime Prometheus collector，输出 Go version、uptime、heap、GC、goroutine、scheduler latency、GC pause、threads 和 `GOMAXPROCS`。
+- `juhe-ai-jobs` 在显式启用 `JUHE_AI_GO_RUNTIME_METRICS_STORE=sqlite|postgres` 后，以 15 秒（可调）周期将 scalar snapshot 写入独立 `go_runtime_metrics_samples`，并同步更新小时与日趋势预聚合；默认保留 30 天并由 sampler 定期清理；jobs 启动只做 schema 只读检查，DDL 由 maintenance 显式执行。
+- `juhe-ai-gateway` 与 active `juhe-ai-jobs` 的 loopback health listener 已提供 `GET /__aisys__/metrics`；passive/standby 进程不暴露该端点。
+- jobs loopback listener 在启用持久化后提供 `GET /__aisys__/api/stats/go-runtime-trend`，响应显式带 `runtimeKind=go`；不写入 Node `system_metrics_*` / `process_event_loop_*` 表，也不把 Go runtime 指标伪装成 `eventLoopLagMs`。
+- `juhe-ai-maintenance --check-go-runtime-metrics` / `--apply-go-runtime-metrics` 负责 `juhe_stats` 下三张独立表的预检与显式加法式创建；apply 要求 Node/Go 停止和备份确认。现有系统指标页已通过 Node 同源管理员代理 `/__aisys__/api/stats/system-metrics/go-runtime-trend` 展示独立 Go runtime 趋势，Node 原有图表仍保留用于迁移对照；这不是 Node 指标存储迁移，也不代表 Go owner 已接管全部系统指标。
+
 ## 2. 核心结论
 
 - Go 目标不再采集或展示 `eventLoopLagMs`。事件循环延迟是 Node 运行时指标，不能在 Go 中用 scheduler latency、goroutine 等待数或 GC pause 伪装。
@@ -61,7 +69,7 @@ Go 迁移期间，Node 和 Go 对照只能比较用户可见 SLI，例如请求�
 | heap / memory | `heapAllocBytes`、`heapLiveBytes`、`heapObjects`、`memoryClassesTotalBytes`、`gomemlimitBytes`、`rssBytes` | 发现内存爬升、容器内存限制和泄漏风险 |
 | blocking | `mutexWaitSecondsTotal`、`blockProfileEnabled` | 发现锁竞争；详细定位用 pprof block / mutex profile |
 
-不建议首批把 runtime histogram 原始 bucket 全量写入 PostgreSQL。内部页面只保存 P95 / P99、最大值和样本数；Prometheus 可以暴露 histogram 给外部系统做分位估算。
+不建议首批把 runtime histogram 原始 bucket 全量写入 PostgreSQL。当前趋势表只保存低开销 scalar 的均值、最大值和样本数；Prometheus 保留 histogram，由外部查询计算 P95/P99。禁止把不同采样点的 P95/P99 再做平均；管理页没有外部分位数数据时必须显示“不可用”而不是补零。
 
 ### 5.2 HTTP 与管理 API
 

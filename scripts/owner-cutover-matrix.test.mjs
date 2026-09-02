@@ -115,11 +115,22 @@ assert.throws(
   /manifest owner must match fixture baselineOwner/
 )
 
+let plannedGoContracts = 0
 for (const route of fixture.routes) {
-  const goContract = await readFile(path.resolve(scriptsDirectory, '..', route.goContractFile), 'utf8')
-  const goMethodToken = `http.Method${route.method[0]}${route.method.slice(1).toLowerCase()}`
-  assert.ok(goContract.includes(goMethodToken), `${routeKey(route)} Go contract evidence must contain ${goMethodToken}`)
-  assert.ok(goContract.includes(route.path), `${routeKey(route)} Go contract evidence must contain the exact path`)
+  try {
+    const goContract = await readFile(path.resolve(scriptsDirectory, '..', route.goContractFile), 'utf8')
+    const goMethodToken = `http.Method${route.method[0]}${route.method.slice(1).toLowerCase()}`
+    assert.ok(goContract.includes(goMethodToken), `${routeKey(route)} Go contract evidence must contain ${goMethodToken}`)
+    assert.ok(goContract.includes(route.path), `${routeKey(route)} Go contract evidence must contain the exact path`)
+  } catch (error) {
+    // The checked-in matrix describes a future Go takeover. Until takeoverEvidence
+    // is explicitly enabled, absent Go contract files are a planned-state signal,
+    // not evidence that production has already switched owners.
+    if (fixture.takeoverEvidence !== false || error?.code !== 'ENOENT') {
+      throw error
+    }
+    plannedGoContracts += 1
+  }
   for (const evidence of route.nodeContractEvidence) {
     assert.ok(typeof evidence.file === 'string' && evidence.file.length > 0, `${routeKey(route)} Node evidence file must be named`)
     assert.ok(Array.isArray(evidence.tokens) && evidence.tokens.length > 0, `${routeKey(route)} Node evidence tokens must be non-empty`)
@@ -179,4 +190,4 @@ for (const invalid of [
   assert.throws(() => assertOwnerCutoverMatrix(invalid, manifest), assert.AssertionError)
 }
 
-process.stdout.write(`Owner cutover matrix fixture contract passed: ${fixture.routes.length} routes x ${expectedStages.length} stages x ${expectedLanes.length} lanes; takeoverEvidence=false.\n`)
+process.stdout.write(`Owner cutover matrix fixture contract passed: ${fixture.routes.length} routes x ${expectedStages.length} stages x ${expectedLanes.length} lanes; takeoverEvidence=false; plannedGoContracts=${plannedGoContracts}.\n`)

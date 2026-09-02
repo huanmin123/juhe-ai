@@ -221,6 +221,19 @@ export function dateKeysInRange(range: Pick<AccountUsageStatsRange, 'startDate' 
   return Array.from({ length: days }, (_, index) => localDateKey(addDays(start, index)))
 }
 
+/**
+ * Advances a YYYY-MM-DD business date by one calendar day without consulting
+ * the host machine timezone. Date keys are calendar values, so this avoids
+ * DST/host-TZ drift when the configured usage timezone differs from local TZ.
+ */
+export function nextCalendarDateKey(value: string): string {
+  const parts = parseDateKeyParts(value)
+  if (!parts) return value
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day))
+  date.setUTCDate(date.getUTCDate() + 1)
+  return `${date.getUTCFullYear()}-${two(date.getUTCMonth() + 1)}-${two(date.getUTCDate())}`
+}
+
 export function hourKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {
   const { year, month, day, hour } = zonedDateParts(date, timezone)
   return `${year}-${two(month)}-${two(day)}T${two(hour)}`

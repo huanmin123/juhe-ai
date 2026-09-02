@@ -138,7 +138,7 @@ func TestRuntimeGetRunMergesLatestTrustProjectionForFullDetails(t *testing.T) {
 	}
 	if _, err := db.Exec(`INSERT INTO model_account_trust_results (
 		system_account_id,account_id,requested_model,identity_status,mapping_status,usage_integrity_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at,updated_at
-	) VALUES ('sys-1','acct-1','gpt-5.6','verified','mapped','passed','passed','stable',92,7,'["latest_trust"]','obs-latest','2026-08-29T13:00:00Z','2026-08-29T13:00:00Z')`); err != nil {
+	) VALUES ('sys-1','acct-1','gpt-5.6','consistent','configured_mapping','insufficient_evidence','consistent','stable',92,7,'["latest_trust"]','obs-latest','2026-08-29T13:00:00Z','2026-08-29T13:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	result, found, err := runtime.GetRun(context.Background(), "run-filter")
@@ -154,7 +154,7 @@ func TestRuntimeGetRunMergesLatestTrustProjectionForFullDetails(t *testing.T) {
 	if err := json.Unmarshal(summary["trustReport"], &trust); err != nil {
 		t.Fatal(err)
 	}
-	if trust["identityStatus"] != "verified" || trust["mappingStatus"] != "mapped" || trust["evidenceStatus"] != "stable" || trust["lastObservedId"] != "obs-latest" {
+	if trust["identityStatus"] != "consistent" || trust["mappingStatus"] != "configured_mapping" || trust["evidenceStatus"] != "stable" || trust["lastObservedId"] != "obs-latest" {
 		t.Fatalf("merged trust=%+v", trust)
 	}
 	if trust["requestedModel"] != "gpt-5.6" {
@@ -175,7 +175,7 @@ func TestRuntimeGetRunKeepsRunTrustWhenNodeRefreshGuardsApply(t *testing.T) {
 	)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_account_trust_results VALUES ('sys-1','acct-1','gpt-5.6','verified','mapped','passed','passed','stable',99,9,'["latest"]','obs-latest','2026-08-29T13:00:00Z','2026-08-29T13:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_account_trust_results VALUES ('sys-1','acct-1','gpt-5.6','consistent','configured_mapping','insufficient_evidence','consistent','stable',99,9,'["latest"]','obs-latest','2026-08-29T13:00:00Z','2026-08-29T13:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE model_check_runs SET result_summary_json='{"trustReport":{"reasonCodes":["model_response_evidence_unavailable"],"identityStatus":"run-local"}}' WHERE id='run-filter'`); err != nil {

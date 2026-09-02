@@ -46,7 +46,7 @@ interface AccountBalanceSnapshotCleanupCoordinatorOptions {
 }
 
 export interface AccountBalanceSnapshotSuppressionRead {
-  configuration: { nextRefreshAt?: string }
+  configuration: { nextRefreshAt?: string; configRevision?: number }
   snapshotRecord?: AccountBalanceSnapshotRecord
 }
 
@@ -283,6 +283,10 @@ function snapshotSupersedesCleanup(
 
 function normalizeSuppressionRead(current: AccountBalanceSnapshotSuppressionRead): AccountBalanceSnapshotSuppressionRead {
   const nextRefreshAt = optionalBalanceTimestamp(current.configuration.nextRefreshAt, '余额快照配置 nextRefreshAt')
+  const configRevision = current.configuration.configRevision
+  if (configRevision !== undefined && (!Number.isInteger(configRevision) || configRevision < 1)) {
+    throw new Error('余额快照配置 configRevision 必须是正整数')
+  }
   const snapshotRecord = current.snapshotRecord
   const snapshotNextRefreshAfter = snapshotRecord === undefined
     ? undefined
@@ -290,6 +294,7 @@ function normalizeSuppressionRead(current: AccountBalanceSnapshotSuppressionRead
   return {
     configuration: {
       ...current.configuration,
+      ...(configRevision === undefined ? {} : { configRevision }),
       ...(nextRefreshAt === undefined ? {} : { nextRefreshAt })
     },
     ...(snapshotRecord === undefined

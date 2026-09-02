@@ -9,7 +9,7 @@
         :refresh-loading="loading"
         @search="handleFilterChange"
         @reset="resetFilters"
-        @refresh="loadData"
+        @refresh="refreshTableMonitor"
       >
         <template #inline-filters>
           <a-range-picker
@@ -45,6 +45,10 @@
         </template>
       </ResponsiveListToolbar>
     </a-card>
+
+    <div v-if="overview?.sampledAt" class="table-monitor-freshness" role="status">
+      数据截至 {{ formatDateTime(overview.sampledAt) }}；概览为监控快照，缓存最多复用 1 小时，实际新鲜度以采样时间为准
+    </div>
 
     <TableMonitorCleanupModal
       v-model:cutoff-at="cleanupCutoffAt"
@@ -300,6 +304,12 @@ const historyChart = shallowRef<ECharts>()
 let historyObserver: IntersectionObserver | undefined
 const historyRequestGate = createTableMonitorHistoryRequestGate()
 const tableHistoryRequestGate = createTableMonitorHistoryRequestGate()
+const forceOverviewRefresh = ref(false)
+const tableMonitorOverviewMaxClientAgeMs = 60 * 60 * 1000
+const overviewLastLoadedAtMs = ref(0)
+let overviewLoadInterrupted = false
+let overviewRefreshInterrupted = false
+let historyLoadInterrupted = false
 const { pageActive } = useEchartsPageLifecycle({
   renderCharts: renderHistoryCharts,
   resizeCharts: resizeHistoryChart,
@@ -329,7 +339,8 @@ const {
     const result = await api.tableMonitor.overview({
       page: pagination.current,
       pageSize: pagination.pageSize,
-      keyword: keyword.value.trim() || undefined
+      keyword: keyword.value.trim() || undefined,
+      refresh: forceOverviewRefresh.value || undefined
     })
     return {
       items: result.tables,
@@ -343,6 +354,7 @@ const {
   },
   onLoaded: (result) => {
     const pageResult = result as TableMonitorPagedResult
+    overviewLastLoadedAtMs.value = Date.now()
     overview.value = {
       sampledAt: pageResult.sampledAt,
       databases: pageResult.databases,
@@ -557,9 +569,18 @@ function resetFilters() {
   void loadData()
 }
 
-async function refreshTableMonitorMobile() {
+async function refreshTableMonitor() {
+  forceOverviewRefresh.value = true
   resetPagination()
-  await loadData()
+  try {
+    await loadData()
+  } finally {
+    forceOverviewRefresh.value = false
+  }
+}
+
+async function refreshTableMonitorMobile() {
+  await refreshTableMonitor()
 }
 
 function historyRangeParams() {
@@ -658,8 +679,23 @@ function resizeHistoryChart() {
   resizeEcharts([historyChart.value])
 }
 
+function overviewNeedsActivationRefresh(): boolean {
+  if (!overview.value) return true
+  const sampledAtMs = overview.value.sampledAt ? Date.parse(overview.value.sampledAt) : Number.NaN
+  if (Number.isFinite(sampledAtMs)) {
+    return Date.now() - sampledAtMs >= tableMonitorOverviewMaxClientAgeMs
+  }
+  return Date.now() - overviewLastLoadedAtMs.value >= tableMonitorOverviewMaxClientAgeMs
+}
+
 function deactivateTableMonitorPage() {
+  if (loading.value) {
+    overviewLoadInterrupted = true
+    overviewRefreshInterrupted = forceOverviewRefresh.value
+  }
+  if (historyLoaded.value && historyLoading.value) historyLoadInterrupted = true
   invalidatePendingLoads()
+  loading.value = false
   historyRequestGate.invalidate()
   tableHistoryRequestGate.invalidate()
   historyLoading.value = false
@@ -672,7 +708,31 @@ function deactivateTableMonitorPage() {
 }
 
 onActivated(() => {
-  void nextTick(ensureHistoryObserver)
+  void nextTick(() => {
+    const activationRefreshNeeded = overviewNeedsActivationRefresh()
+    const retryOverview = overviewLoadInterrupted
+      || (activationRefreshNeeded && (Boolean(overview.value) || !loading.value))
+    const retryHistory = historyLoadInterrupted && historyLoaded.value
+    const forceRetryOverview = overviewRefreshInterrupted || (Boolean(overview.value) && activationRefreshNeeded)
+    overviewLoadInterrupted = false
+    overviewRefreshInterrupted = false
+    historyLoadInterrupted = false
+    const requests: Array<Promise<unknown>> = []
+    if (retryOverview) {
+      if (forceRetryOverview) forceOverviewRefresh.value = true
+      requests.push(loadOverviewData({ shouldApply: () => pageActive.value }).finally(() => {
+        if (forceRetryOverview) forceOverviewRefresh.value = false
+      }))
+    }
+    if (retryHistory) requests.push(loadHistoryData())
+    if (requests.length > 0) {
+      void Promise.all(requests).finally(() => {
+        if (pageActive.value) ensureHistoryObserver()
+      })
+      return
+    }
+    ensureHistoryObserver()
+  })
 })
 
 onBeforeUnmount(() => {
@@ -689,6 +749,12 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.table-monitor-freshness {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .table-monitor-mobile-card-clickable {

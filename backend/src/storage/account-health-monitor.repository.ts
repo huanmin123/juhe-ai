@@ -69,7 +69,7 @@ export function getAiHealthList(access?: AccessScope, options: AiHealthListOptio
   const rows = loadAccountHealthRows(getStatsDatabase(), page.items.map((item) => item.id), hourBuckets)
   const source = accountHealthJobsOutcomeStoreSource()
   const j1Outcomes = source
-    ? listAccountHealthJobsOutcomesForAccounts(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours) })
+    ? listAccountHealthJobsOutcomesForAccounts(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours), timezone, hourBuckets })
     : []
   rows.push(...j1OutcomeHealthRows(j1Outcomes, hourBuckets, timezone))
   return mapAiHealthList(page, rows, hourBuckets, j1Outcomes)
@@ -93,7 +93,7 @@ export async function getAiHealthListAsync(access?: AccessScope, options: AiHeal
   const rows = await loadAccountHealthRowsAsync(client, page.items.map((item) => item.id), hourBuckets)
   const source = accountHealthJobsOutcomeStoreSource()
   const j1Outcomes = source
-    ? await listAccountHealthJobsOutcomesForAccountsAsync(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours) })
+    ? await listAccountHealthJobsOutcomesForAccountsAsync(source, { accountIds: page.items.map((item) => item.id), observedAfter: outcomeObservedAfter(now, normalized.hours), timezone, hourBuckets })
     : []
   rows.push(...j1OutcomeHealthRows(j1Outcomes, hourBuckets, timezone))
   return mapAiHealthList(page, rows, hourBuckets, j1Outcomes)
@@ -139,7 +139,7 @@ export async function getAiHealthHourDetailAsync(
   ])
   const source = accountHealthJobsOutcomeStoreSource()
   const rows = [statsRow]
-  if (source) rows.push(j1OutcomeHealthHourDetail(await listAccountHealthJobsOutcomesForAccountsAsync(source, { accountIds: [normalized.accountId], observedAfter: outcomeObservedAfter(Date.now(), 31 * 24) }), normalized.statHour, timezone))
+  if (source) rows.push(j1OutcomeHealthHourDetail(await listAccountHealthJobsOutcomesForAccountsAsync(source, { accountIds: [normalized.accountId], observedAfter: outcomeObservedAfter(Date.now(), 31 * 24), timezone, hourBuckets: [normalized.statHour] }), normalized.statHour, timezone))
   return mapAiHealthHourDetail(normalized.statHour, newestAccountHealthHourRow(rows))
 }
 
@@ -596,6 +596,12 @@ function normalizeAiHealthHourDetailInput(accountId: string, statHour: string): 
   if (!normalizedAccountId) throw new Error('账户 ID 不能为空')
   if (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$/.test(normalizedStatHour)) {
     throw new Error('统计小时格式不合法')
+  }
+  const [datePart] = normalizedStatHour.split('T')
+  const [year, month, day] = datePart.split('-').map(Number)
+  const calendarDate = new Date(Date.UTC(year, month - 1, day))
+  if (calendarDate.getUTCFullYear() !== year || calendarDate.getUTCMonth() !== month - 1 || calendarDate.getUTCDate() !== day) {
+    throw new Error('统计小时日期不合法')
   }
   return { accountId: normalizedAccountId, statHour: normalizedStatHour }
 }

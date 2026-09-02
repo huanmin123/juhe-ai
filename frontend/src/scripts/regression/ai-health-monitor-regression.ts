@@ -58,7 +58,7 @@ assert.doesNotMatch(viewSource.match(/watch\(\(\) => authState\.revision\.value[
 assert.doesNotMatch(monitorRepositorySource, /\busage_records\b/i, '页面查询不得扫描使用记录明细')
 assert.match(monitorRepositorySource, /31 \* 24/, '服务端必须限制最大 31 天')
 assert.match(monitorRepositorySource, /FROM account_health_hourly/, '页面查询必须读取小时预聚合')
-assert.match(monitorRepositorySource, /SELECT account_id, stat_hour, status, source_order/, '列表 SQL 必须只投影小时槽状态')
+assert.match(monitorRepositorySource, /SELECT\s+account_id,\s*stat_hour,\s*status,\s*last_observed_at,\s*0\s+AS\s+source_order/, '列表 SQL 必须只投影小时槽状态')
 assert.match(monitorRepositorySource, /loadAccountHealthHourDetail/, '错误正文必须移入单点详情查询')
 const aiHealthResultType = statsTypesSource.match(/export interface AiHealthListResult \{[\s\S]*?\n\}/)?.[0] ?? ''
 assert.doesNotMatch(aiHealthResultType, /\btotal\b/, 'AI 健康响应类型不得声明未经 COUNT 证明的 total')

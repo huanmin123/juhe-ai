@@ -256,9 +256,11 @@ export interface AccountTagSummary {
   updatedAt?: string
 }
 
-export type AccountBalanceBuiltinAdapter = 'sub2api' | 'newapi' | 'litellm' | 'user_balance'
+export type AccountBalanceBuiltinAdapter = 'sub2api' | 'newapi' | 'openai_billing' | 'litellm' | 'user_balance'
 export type AccountBalanceAdapter = 'builtin' | 'custom'
 export type AccountBalanceStatus = 'pending' | 'refreshing' | 'fresh' | 'unlimited' | 'unsupported' | 'failed'
+export type AccountBalanceScope = 'key' | 'account' | 'unknown'
+export type AccountBalanceAggregation = 'sum' | 'shared' | 'unknown'
 
 export interface AccountBalanceQueryConfig {
   adapter: AccountBalanceAdapter
@@ -275,13 +277,47 @@ export interface AccountBalanceQueryConfig {
 
 export interface AccountBalanceSnapshot {
   status: AccountBalanceStatus
+  /** 生成该余额快照的账户配置版本。 */
+  configRevision?: number
   remainingUsd?: string
+  rawUnit?: 'usd' | 'cny' | 'quota'
   errorMessage?: string
   lastAttemptAt?: string
   lastSuccessAt?: string
   consecutiveTransientFailures?: number
   lastTransientErrorMessage?: string
   lastTransientFailureAt?: string
+  /** 多 Key 余额的归属口径和聚合方式；列表接口不包含 keyBalances。 */
+  scope?: AccountBalanceScope
+  aggregation?: AccountBalanceAggregation
+  keyCount?: number
+  queriedKeyCount?: number
+  keyBalances?: AccountBalanceKeySnapshot[]
+}
+
+/** 服务端返回的逐 Key 公开余额摘要，Key 本身必须已经掩码。 */
+export interface AccountBalanceKeySnapshot {
+  keyFingerprint: string
+  maskedKey: string
+  status: AccountBalanceStatus
+  remainingUsd?: string
+  rawUnit?: 'usd' | 'cny' | 'quota'
+  scope?: AccountBalanceScope
+  basis?: 'api_key_quota' | 'budget' | 'subscription' | 'wallet' | 'custom' | 'unknown'
+  errorMessage?: string
+  lastAttemptAt?: string
+  lastSuccessAt?: string
+}
+
+export interface AccountBalanceDetails {
+  accountId: string
+  configRevision?: number
+  keyCount: number
+  queriedKeyCount: number
+  scope: AccountBalanceScope
+  aggregation: AccountBalanceAggregation
+  updatedAt?: string
+  keyBalances: AccountBalanceKeySnapshot[]
 }
 
 export interface AccountTagsUpdateResult {

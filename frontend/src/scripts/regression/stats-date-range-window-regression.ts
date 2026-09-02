@@ -67,7 +67,7 @@ for (const [name, source] of [
 
 assert.match(
   systemMetricsViewSource,
-  /async\s+function\s+loadPageData\(options: \{ forceUsageWindow\?: boolean \} = \{\}\)[\s\S]*loadUsageStatsWindow\(\{ force: options\.forceUsageWindow === true, viewScope: 'admin' \}\)[\s\S]*return\s+loadData\(\)/,
+  /async\s+function\s+loadPageData\(options: \{ forceUsageWindow\?: boolean \} = \{\}\)[\s\S]*loadUsageStatsWindow\(\{ force: options\.forceUsageWindow === true, viewScope: 'admin' \}\)[\s\S]*return\s+loadTrendData\(\)/,
   'system metrics must resolve the scoped stats window before recalculating a dynamic range'
 )
 

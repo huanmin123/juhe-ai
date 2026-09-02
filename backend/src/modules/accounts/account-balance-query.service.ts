@@ -3,7 +3,13 @@ import { randomUUID } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
 import { runWithGlobalBackgroundConcurrencySlot } from '../../shared/concurrency-governor.js'
 import { passiveScheduleDelayMs } from '../../shared/passive-schedule-jitter.js'
-import type { AccountBalanceBuiltinAdapter, AccountBalanceQueryConfig, AccountBalanceSnapshot } from './account-balance.types.js'
+import type {
+  AccountBalanceBuiltinAdapter,
+  AccountBalanceKeySnapshot,
+  AccountBalanceQueryConfig,
+  AccountBalanceScope,
+  AccountBalanceSnapshot
+} from './account-balance.types.js'
 import type { AccountBalanceRefreshCandidate } from '../../storage/account-balance.repository.js'
 import {
   accountBalanceSnapshotMatchesConfiguration,
@@ -30,11 +36,18 @@ import {
   parseSub2ApiBalance,
   parseUserBalance
 } from './account-balance-adapters.js'
-import { effectiveAccountApiKeys, MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE } from './account-balance-config.js'
+import {
+  accountBalanceApiKeyFingerprint,
+  effectiveAccountApiKeys,
+  maskAccountBalanceApiKey,
+  MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE
+} from './account-balance-config.js'
 
 const responseMaxBytes = 256 * 1024
 const requestTimeoutMs = 15_000
 const balanceRefreshLeaseMs = 30_000
+const multiKeyBalanceMaxConcurrent = 4
+const multiKeyBalanceDeadlineMs = 25_000
 const builtinAdapterOrder: AccountBalanceBuiltinAdapter[] = ['sub2api', 'newapi', 'openai_billing', 'litellm', 'user_balance']
 
 type AccountBalanceQueryCandidate = Pick<AccountBalanceRefreshCandidate, 'id' | 'credentials' | 'config' | 'proxyProfileId'>
@@ -81,6 +94,7 @@ export type AccountBalanceLeaseResult<T> =
 interface AccountBalanceRefreshExecutionContext {
   signal?: AbortSignal
   deadlineAtMs?: number
+  queryAdapter?: (candidate: AccountBalanceQueryCandidate, adapter: AccountBalanceBuiltinAdapter) => Promise<AccountBalanceSnapshot>
 }
 
 interface AccountBalanceRefreshDependencies extends AccountBalanceRefreshExecutionContext {
@@ -152,15 +166,27 @@ async function resolveAccountBalanceRefreshAttempt(
   try {
     const resolution = dependencies.query
       ? { snapshot: await dependencies.query(candidate, balanceRefreshExecutionContext(dependencies)) }
-      : await queryAccountBalanceResolution(candidate, resolvedProxyUrl, dependencies)
+      : await queryAccountBalanceResolutionWithGlobalSlot(candidate, resolvedProxyUrl, dependencies)
     const completedAt = new Date().toISOString()
     const successful = isSuccessfulBalanceSnapshot(resolution.snapshot)
     const snapshot: AccountBalanceSnapshot = {
       ...resolution.snapshot,
+      configRevision: candidate.configRevision,
       lastAttemptAt: completedAt,
       ...(successful ? { lastSuccessAt: completedAt } : {})
     }
     if (!successful) {
+      // Multi-Key aggregation deliberately keeps its failure/unsupported
+      // status and per-Key counts so the list can distinguish partial
+      // results from an adapter that is not configured. Do not collapse the
+      // aggregate into the legacy single-Key unsupported state.
+      if (snapshot.keyBalances && snapshot.keyCount && snapshot.keyCount > 1) {
+        return {
+          snapshot,
+          nextConfig: candidate.config,
+          nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
+        }
+      }
       return {
         snapshot: {
           ...snapshot,
@@ -183,6 +209,7 @@ async function resolveAccountBalanceRefreshAttempt(
     const errorMessage = accountBalanceErrorMessage(error)
     const failedSnapshot: AccountBalanceSnapshot = {
       status: 'failed',
+      configRevision: candidate.configRevision,
       errorMessage,
       lastAttemptAt: completedAt
     }
@@ -202,14 +229,17 @@ async function resolveAccountBalanceRefreshAttempt(
     }
     if (failureKind !== 'transient') {
       return {
-        snapshot: { status: 'unsupported', errorMessage, lastAttemptAt: completedAt },
+        snapshot: { status: 'unsupported', configRevision: candidate.configRevision, errorMessage, lastAttemptAt: completedAt },
         nextConfig: resolvedBalanceConfig(candidate.config, undefined),
         nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
       }
     }
-    const previousSnapshot = await loadCurrentGenerationBalanceSnapshot(candidate)
+    const previousSnapshot = await loadPreviousTransientFailureSnapshot(candidate)
     return {
-      snapshot: nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt),
+      snapshot: {
+        ...nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt),
+        configRevision: candidate.configRevision
+      },
       nextConfig: candidate.config,
       nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
     }
@@ -225,7 +255,7 @@ export async function queryAccountBalance(
   candidate: AccountBalanceQueryCandidate,
   executionContext: AccountBalanceRefreshExecutionContext = {}
 ): Promise<AccountBalanceSnapshot> {
-  return (await runWithGlobalBackgroundConcurrencySlot(async () => await queryAccountBalanceResolution(candidate, undefined, executionContext))).snapshot
+  return (await queryAccountBalanceResolutionWithGlobalSlot(candidate, undefined, executionContext)).snapshot
 }
 
 export async function testAccountBalanceCandidate(
@@ -259,8 +289,17 @@ async function queryAccountBalanceResolution(
   resolvedProxyUrl?: string | null,
   executionContext: AccountBalanceRefreshExecutionContext = {}
 ): Promise<AccountBalanceQueryResolution> {
+  const apiKeys = effectiveAccountApiKeys(candidate.credentials)
+  if (apiKeys.length > 1) {
+    return await queryMultiKeyAccountBalance(candidate, apiKeys, executionContext, resolvedProxyUrl)
+  }
   if (candidate.config.adapter === 'builtin') {
-    const result = await queryBuiltinAccountBalance(candidate, { resolvedProxyUrl, ...executionContext })
+    const result = await queryBuiltinAccountBalance(candidate, {
+      resolvedProxyUrl,
+      signal: executionContext.signal,
+      deadlineAtMs: executionContext.deadlineAtMs,
+      queryAdapter: executionContext.queryAdapter
+    })
     return {
       snapshot: result.snapshot,
       ...(isSuccessfulBalanceSnapshot(result.snapshot) ? { preferredBuiltinAdapter: result.adapter } : {})
@@ -275,6 +314,187 @@ async function queryAccountBalanceResolution(
   return { snapshot: parseBalanceResponse(() => parseCustomBalance(response, customConfig)) }
 }
 
+/**
+ * Acquire one shared upstream-I/O slot per effective API Key. Multi-Key
+ * queries acquire slots inside their bounded workers; wrapping the whole pool
+ * here would consume one slot while waiting for the child slots and can
+ * deadlock when globalMax is 1.
+ */
+async function queryAccountBalanceResolutionWithGlobalSlot(
+  candidate: AccountBalanceQueryCandidate,
+  resolvedProxyUrl: string | null | undefined,
+  executionContext: AccountBalanceRefreshExecutionContext
+): Promise<AccountBalanceQueryResolution> {
+  if (effectiveAccountApiKeys(candidate.credentials).length > 1) {
+    return await queryAccountBalanceResolution(candidate, resolvedProxyUrl, executionContext)
+  }
+  return await runWithGlobalBackgroundConcurrencySlot(
+    async () => await queryAccountBalanceResolution(candidate, resolvedProxyUrl, executionContext),
+    { signal: executionContext.signal }
+  )
+}
+
+/**
+ * Queries a Key pool with a shared deadline and bounded concurrency. A pool
+ * result is summed only when every successful response explicitly represents
+ * an independent API-Key quota; account/wallet/subscription/unknown balances
+ * remain shared and are never added together.
+ */
+async function queryMultiKeyAccountBalance(
+  candidate: AccountBalanceQueryCandidate,
+  apiKeys: string[],
+  executionContext: AccountBalanceRefreshExecutionContext,
+  resolvedProxyUrl?: string | null
+): Promise<AccountBalanceQueryResolution> {
+  const deadlineAtMs = Math.min(
+    executionContext.deadlineAtMs ?? Number.POSITIVE_INFINITY,
+    Date.now() + multiKeyBalanceDeadlineMs
+  )
+  const keyBalances: AccountBalanceKeySnapshot[] = []
+  let nextIndex = 0
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextIndex++
+      const apiKey = apiKeys[index]
+      if (!apiKey) return
+      const keyCandidate: AccountBalanceQueryCandidate = {
+        ...candidate,
+        credentials: { ...candidate.credentials, api_key: apiKey, api_keys: [apiKey] }
+      }
+      const keyStartedAt = new Date().toISOString()
+      if (Date.now() >= deadlineAtMs) {
+        keyBalances[index] = keySnapshotForFailure(apiKey, '上游余额查询超时', keyStartedAt)
+        continue
+      }
+      try {
+        const resolution = await runWithGlobalBackgroundConcurrencySlot(
+          async () => await queryAccountBalanceResolution(keyCandidate, resolvedProxyUrl, {
+            ...executionContext,
+            deadlineAtMs
+          }),
+          { signal: executionContext.signal }
+        )
+        const completedAt = new Date().toISOString()
+        keyBalances[index] = keySnapshotFromResult(apiKey, resolution.snapshot, completedAt)
+      } catch (error) {
+        // Only classified upstream/transport failures belong to a per-Key
+        // diagnostic. Unexpected errors (storage, programming or contract
+        // failures) must escape the pool so the caller can alert and retry.
+        if (!accountBalanceFailureKind(error)) throw error
+        keyBalances[index] = keySnapshotForFailure(apiKey, accountBalanceErrorMessage(error), new Date().toISOString())
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(multiKeyBalanceMaxConcurrent, apiKeys.length) }, () => worker()))
+  const ordered = keyBalances.filter((value): value is AccountBalanceKeySnapshot => Boolean(value))
+  return {
+    snapshot: aggregateMultiKeyBalance(ordered, apiKeys.length),
+    // A preferred adapter is safe only when all Keys selected the same adapter;
+    // retaining the configured preference avoids persisting a mixed guess.
+    ...(candidate.config.preferredBuiltinAdapter ? { preferredBuiltinAdapter: candidate.config.preferredBuiltinAdapter } : {})
+  }
+}
+
+function keySnapshotFromResult(apiKey: string, snapshot: AccountBalanceSnapshot, completedAt: string): AccountBalanceKeySnapshot {
+  const scope = snapshot.scope ?? balanceScopeFromBasis(snapshot.basis)
+  return {
+    keyFingerprint: accountBalanceApiKeyFingerprint(apiKey),
+    maskedKey: maskAccountBalanceApiKey(apiKey),
+    status: snapshot.status,
+    ...(snapshot.remainingUsd !== undefined ? { remainingUsd: snapshot.remainingUsd } : {}),
+    ...(snapshot.rawUnit ? { rawUnit: snapshot.rawUnit } : {}),
+    ...(scope ? { scope } : {}),
+    ...(snapshot.basis ? { basis: snapshot.basis } : {}),
+    ...(snapshot.errorMessage ? { errorMessage: snapshot.errorMessage } : {}),
+    lastAttemptAt: completedAt,
+    ...(isSuccessfulBalanceSnapshot(snapshot) ? { lastSuccessAt: completedAt } : {})
+  }
+}
+
+function keySnapshotForFailure(apiKey: string, errorMessage: string, attemptedAt: string): AccountBalanceKeySnapshot {
+  return {
+    keyFingerprint: accountBalanceApiKeyFingerprint(apiKey),
+    maskedKey: maskAccountBalanceApiKey(apiKey),
+    status: 'failed',
+    errorMessage,
+    lastAttemptAt: attemptedAt
+  }
+}
+
+function balanceScopeFromBasis(basis: AccountBalanceSnapshot['basis']): AccountBalanceScope {
+  return 'unknown'
+}
+
+function aggregateMultiKeyBalance(keyBalances: AccountBalanceKeySnapshot[], keyCount: number): AccountBalanceSnapshot {
+  const successful = keyBalances.filter((item) => item.status === 'fresh' || item.status === 'unlimited')
+  const allSuccessful = successful.length === keyCount
+  const firstBasis = successful[0]?.basis
+  const firstRawUnit = successful[0]?.rawUnit
+  const allKeyQuota = allSuccessful && successful.every((item) => (
+    item.scope === 'key'
+    && item.status === 'fresh'
+    && item.remainingUsd !== undefined
+    && item.rawUnit !== undefined
+    && item.basis === firstBasis
+    && item.rawUnit === firstRawUnit
+  ))
+  if (allKeyQuota) {
+    return {
+      status: 'fresh',
+      remainingUsd: addDecimalStrings(successful.map((item) => item.remainingUsd!)),
+      scope: 'key',
+      aggregation: 'sum',
+      keyCount,
+      queriedKeyCount: successful.length,
+      keyBalances
+    }
+  }
+  const allShared = allSuccessful && successful.every((item) => (
+    item.scope === 'account'
+    && item.status === 'fresh'
+    && item.rawUnit !== undefined
+    && item.basis === firstBasis
+    && item.rawUnit === firstRawUnit
+  ))
+  const sharedValues = successful.map((item) => item.remainingUsd).filter((value): value is string => Boolean(value))
+  if (allShared && sharedValues.length === keyCount && sharedValues.every((value) => value === sharedValues[0])) {
+    return {
+      status: 'fresh',
+      remainingUsd: sharedValues[0],
+      scope: 'account',
+      aggregation: 'shared',
+      keyCount,
+      queriedKeyCount: successful.length,
+      keyBalances
+    }
+  }
+  return {
+    status: allSuccessful && successful.length > 0 ? 'unsupported' : 'failed',
+    scope: successful.some((item) => item.scope === 'account') ? 'account' : 'unknown',
+    aggregation: successful.some((item) => item.scope === 'account') ? 'shared' : 'unknown',
+    keyCount,
+    queriedKeyCount: successful.length,
+    errorMessage: allSuccessful ? '多 Key 余额口径不一致，无法安全合计' : `多 Key 余额查询部分失败（${successful.length}/${keyCount}）`,
+    keyBalances
+  }
+}
+
+function addDecimalStrings(values: string[]): string {
+  let scale = 0
+  const parts = values.map((value) => {
+    const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(value.trim())
+    if (!match) throw new Error('余额金额格式无效')
+    scale = Math.max(scale, (match[3] ?? '').length)
+    return { sign: match[1] === '-' ? -1n : 1n, digits: match[2]!, fraction: match[3] ?? '' }
+  })
+  const total = parts.reduce((sum, part) => sum + part.sign * BigInt(`${part.digits}${part.fraction}`) * 10n ** BigInt(scale - part.fraction.length), 0n)
+  const negative = total < 0n
+  const digits = (negative ? -total : total).toString().padStart(scale + 1, '0')
+  const integer = scale ? digits.slice(0, -scale) : digits
+  const fraction = scale ? digits.slice(-scale).replace(/0+$/, '') : ''
+  return `${negative ? '-' : ''}${integer}${fraction ? `.${fraction}` : ''}`
+}
+
 export async function queryBuiltinAccountBalance(
   candidate: AccountBalanceQueryCandidate,
   dependencies: {
@@ -285,6 +505,18 @@ export async function queryBuiltinAccountBalance(
   } = {}
 ): Promise<AccountBalanceBuiltinQueryResult> {
   if (candidate.config.adapter !== 'builtin') throw deterministicBalanceError('账户未配置内置余额适配')
+  const apiKeys = effectiveAccountApiKeys(candidate.credentials)
+  if (apiKeys.length > 1) {
+    const resolution = await queryMultiKeyAccountBalance(candidate, apiKeys, {
+      signal: dependencies.signal,
+      deadlineAtMs: dependencies.deadlineAtMs,
+      queryAdapter: dependencies.queryAdapter
+    }, dependencies.resolvedProxyUrl)
+    return {
+      adapter: resolution.preferredBuiltinAdapter ?? candidate.config.preferredBuiltinAdapter ?? 'user_balance',
+      snapshot: resolution.snapshot
+    }
+  }
   const adapters = preferredBuiltinAdapterOrder(candidate.config.preferredBuiltinAdapter)
   const context = dependencies.queryAdapter
     ? undefined
@@ -496,14 +728,36 @@ async function rescheduleBalanceRefreshAfterSnapshotWriteFailure(
 }
 
 async function loadCurrentGenerationBalanceSnapshot(
-  candidate: Pick<AccountBalanceRefreshCandidate, 'id' | 'nextRefreshAt'>
+  candidate: Pick<AccountBalanceRefreshCandidate, 'id' | 'nextRefreshAt' | 'configRevision'>
 ): Promise<AccountBalanceSnapshot | undefined> {
   const record = (await loadAccountBalanceSnapshotRecordsByAccountIdsAsync([candidate.id])).get(candidate.id)
   return accountBalanceSnapshotMatchesConfiguration({
-    nextRefreshAt: candidate.nextRefreshAt ?? undefined
+    nextRefreshAt: candidate.nextRefreshAt ?? undefined,
+    configRevision: candidate.configRevision
   }, record)
     ? record.snapshot
     : undefined
+}
+
+/**
+ * A configuration change must never revive the old amount, but retaining the
+ * bounded transient-failure counter keeps retry diagnostics continuous across
+ * a save that invalidated the previous snapshot generation.
+ */
+async function loadPreviousTransientFailureSnapshot(
+  candidate: Pick<AccountBalanceRefreshCandidate, 'id' | 'nextRefreshAt' | 'configRevision'>
+): Promise<AccountBalanceSnapshot | undefined> {
+  const current = await loadCurrentGenerationBalanceSnapshot(candidate)
+  if (current) return current
+  const record = (await loadAccountBalanceSnapshotRecordsByAccountIdsAsync([candidate.id])).get(candidate.id)
+  const snapshot = record?.snapshot
+  if (!snapshot || snapshot.consecutiveTransientFailures === undefined) return undefined
+  return {
+    status: snapshot.status === 'failed' ? 'failed' : 'pending',
+    consecutiveTransientFailures: snapshot.consecutiveTransientFailures,
+    ...(snapshot.lastTransientErrorMessage ? { lastTransientErrorMessage: snapshot.lastTransientErrorMessage } : {}),
+    ...(snapshot.lastTransientFailureAt ? { lastTransientFailureAt: snapshot.lastTransientFailureAt } : {})
+  }
 }
 
 async function commitBalanceRefresh(input: Parameters<typeof commitAccountBalanceRefreshAsync>[0]): Promise<boolean> {

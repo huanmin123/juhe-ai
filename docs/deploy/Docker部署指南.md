@@ -159,7 +159,7 @@ jobs 与 gateway 在 Node `/__aisys__/api/health` 确认 DB service 就绪后启
 
 ## 5. 持久化
 
-Compose 默认创建五个 Docker volume：
+standalone/performance Compose 合计定义八个 Docker volume（不同服务按只读/读写挂载）：
 
 ```text
 juhe-ai-data -> /app/backend/data
@@ -168,9 +168,11 @@ juhe-ai-runtime-log-data -> /app/backend/runtime-log-data
 juhe-ai-table-monitor-data -> /app/backend/table-monitor-data
 juhe-ai-audit-log-data -> /app/backend/audit-log-data
 juhe-ai-operation-log-data -> /app/backend/operation-log-data
+juhe-ai-account-health-data -> /app/backend/account-health-data
+juhe-ai-account-health-inputs -> /app/backend/account-health-inputs
 ```
 
-业务库、数据集目录库、使用记录目录库、统计库、usage shard、F1/F2/F3/F4 专用事实、自动生成的密钥和日志都会跟随 volume 保留。不要在生产环境执行 `docker compose down -v`，否则会删除这些数据。
+`juhe-ai-data` 在 Node 容器中是业务数据卷（Go sidecar 只读挂载）；runtime-log、table-monitor、audit-log、operation-log、account-health-data 和 account-health-inputs 分别保存对应事实或 input。各服务的只读/读写权限以 `docker/compose.yml` 实际挂载为准。不要在生产环境执行 `docker compose down -v`，否则会删除这些数据。
 
 ## 6. 验证
 

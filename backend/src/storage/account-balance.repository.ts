@@ -512,6 +512,7 @@ export async function enableDetectedAccountBalanceQueryWithSnapshotAsync(input: 
     await replaceAccountBalanceSnapshotAsync({
       accountId: input.accountId,
       systemAccountId: input.systemAccountId,
+      configRevision: input.expectedConfigRevision,
       snapshot: input.snapshot,
       nextRefreshAfter: input.nextRefreshAt
     }, tx)
@@ -618,6 +619,7 @@ export async function persistAccountBalanceRefreshWithSnapshotAsync(input: {
     await replaceAccountBalanceSnapshotAsync({
       accountId: input.accountId,
       systemAccountId: input.systemAccountId,
+      configRevision: input.expectedConfigRevision,
       snapshot: input.snapshot,
       ...(input.nextRefreshAt ? { nextRefreshAfter: input.nextRefreshAt } : {})
     }, tx)
@@ -668,10 +670,12 @@ async function commitAccountBalanceRefreshInClientAsync(
 export function replaceAccountBalanceSnapshot(input: {
   accountId: string
   systemAccountId: string
+  configRevision?: number
   snapshot: AccountBalanceSnapshot
   nextRefreshAfter?: string
 }): void {
   const updatedAt = nowIso()
+  const snapshot = snapshotForPersistence(input.accountId, input.snapshot, input.configRevision)
   getStatsDatabase().prepare(`
     INSERT INTO account_usage_snapshots (
       system_account_id, account_id, kind, source, snapshot_json, refresh_status,
@@ -689,12 +693,12 @@ export function replaceAccountBalanceSnapshot(input: {
   `).run(
     input.systemAccountId,
     input.accountId,
-    JSON.stringify(input.snapshot),
-    input.snapshot.status,
-    input.snapshot.lastAttemptAt ?? updatedAt,
-    input.snapshot.lastSuccessAt ?? null,
+    JSON.stringify(snapshot),
+    snapshot.status,
+    snapshot.lastAttemptAt ?? updatedAt,
+    snapshot.lastSuccessAt ?? null,
     input.nextRefreshAfter ?? null,
-    input.snapshot.errorMessage ?? null,
+    snapshot.errorMessage ?? null,
     updatedAt,
     updatedAt
   )
@@ -703,6 +707,7 @@ export function replaceAccountBalanceSnapshot(input: {
 export async function replaceAccountBalanceSnapshotAsync(input: {
   accountId: string
   systemAccountId: string
+  configRevision?: number
   snapshot: AccountBalanceSnapshot
   nextRefreshAfter?: string
 }, client?: DatabaseClient): Promise<void> {
@@ -712,6 +717,7 @@ export async function replaceAccountBalanceSnapshotAsync(input: {
   }
   const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
   const updatedAt = nowIso()
+  const snapshot = snapshotForPersistence(input.accountId, input.snapshot, input.configRevision)
   await databaseClient.execute(`
     INSERT INTO juhe_stats.account_usage_snapshots (
       system_account_id, account_id, kind, source, snapshot_json, refresh_status,
@@ -727,9 +733,9 @@ export async function replaceAccountBalanceSnapshotAsync(input: {
       last_error_message = EXCLUDED.last_error_message,
       updated_at = EXCLUDED.updated_at
   `, [
-    input.systemAccountId, input.accountId, JSON.stringify(input.snapshot), input.snapshot.status,
-    input.snapshot.lastAttemptAt ?? updatedAt, input.snapshot.lastSuccessAt ?? null,
-    input.nextRefreshAfter ?? null, input.snapshot.errorMessage ?? null, updatedAt, updatedAt
+    input.systemAccountId, input.accountId, JSON.stringify(snapshot), snapshot.status,
+    snapshot.lastAttemptAt ?? updatedAt, snapshot.lastSuccessAt ?? null,
+    input.nextRefreshAfter ?? null, snapshot.errorMessage ?? null, updatedAt, updatedAt
   ])
 }
 
@@ -746,7 +752,10 @@ export async function replaceAccountBalanceSnapshotIfCurrentAsync(input: {
     expectedConfigRevision: input.expectedConfigRevision,
     expectedConfig: input.expectedConfig
   })) return false
-  await replaceAccountBalanceSnapshotAsync(input)
+  await replaceAccountBalanceSnapshotAsync({
+    ...input,
+    configRevision: input.expectedConfigRevision
+  })
   return true
 }
 
@@ -799,7 +808,7 @@ export async function loadAccountBalanceSnapshotRecordsByAccountIdsAsync(account
 }
 
 export function accountBalanceSnapshotMatchesConfiguration(
-  configuration: { nextRefreshAt?: string },
+  configuration: { nextRefreshAt?: string; configRevision?: number },
   record: AccountBalanceSnapshotRecord | undefined
 ): record is AccountBalanceSnapshotRecord {
   const configuredNextRefreshAt = configuration.nextRefreshAt ?? undefined
@@ -807,6 +816,9 @@ export function accountBalanceSnapshotMatchesConfiguration(
     ? undefined
     : requiredAccountBalanceTimestampMilliseconds(configuredNextRefreshAt, '余额快照配置 nextRefreshAt')
   if (!record) return false
+  if (configuration.configRevision !== undefined && record.snapshot.configRevision !== configuration.configRevision) {
+    return false
+  }
   const persistedNextRefreshAfter = record.nextRefreshAfter ?? undefined
   const persistedNextRefreshAfterMs = persistedNextRefreshAfter === undefined
     ? undefined
@@ -932,7 +944,7 @@ function balanceCandidatesFromRows(rows: BalanceCandidateRow[], limit: number): 
     } catch {
       continue
     }
-    if (!hasExactlyOneApiKey(credentials)) continue
+    if (!hasAtLeastOneApiKey(credentials)) continue
     let config: AccountBalanceQueryConfig
     try {
       config = normalizeAccountBalanceConfig(JSON.parse(row.balance_query_config_json))
@@ -997,7 +1009,7 @@ function balanceDetectionCandidateFromRow(row: BalanceDetectionCandidateRow): Ac
   } catch {
     return undefined
   }
-  if (!hasExactlyOneApiKey(credentials)) return undefined
+  if (!hasAtLeastOneApiKey(credentials)) return undefined
   return {
     id: row.id,
     systemAccountId: row.system_account_id,
@@ -1065,8 +1077,8 @@ async function isAccountBalanceConfigurationCurrentAsync(input: {
   }
 }
 
-function hasExactlyOneApiKey(credentials: Record<string, unknown>): boolean {
-  return effectiveAccountApiKeyCount(credentials) === 1
+function hasAtLeastOneApiKey(credentials: Record<string, unknown>): boolean {
+  return effectiveAccountApiKeyCount(credentials) >= 1
 }
 
 function normalizedLimit(value: number | undefined): number {
@@ -1077,6 +1089,42 @@ function normalizedLimit(value: number | undefined): number {
 function parseSnapshot(value: string): AccountBalanceSnapshot {
   const parsed = JSON.parse(value) as AccountBalanceSnapshot
   return parsed
+}
+
+/**
+ * Persist the configuration generation alongside every Node-produced snapshot.
+ * The direct SQLite helper is also used by regression/maintenance callers, so
+ * it resolves the current account revision when the caller did not provide a
+ * fence explicitly. Older snapshots remain readable when no generation was
+ * recorded; all new refresh paths pass the expected revision and are fenced.
+ */
+function snapshotForPersistence(
+  accountId: string,
+  snapshot: AccountBalanceSnapshot,
+  configRevision?: number
+): AccountBalanceSnapshot {
+  const explicitRevision = Number.isInteger(configRevision) && Number(configRevision) >= 1
+    ? Number(configRevision)
+    : undefined
+  const resolvedRevision = explicitRevision
+    ?? (runtimeConfig.databaseDriver === 'postgres' ? undefined : accountConfigRevisionForSnapshot(accountId))
+  if (resolvedRevision === undefined || snapshot.configRevision === resolvedRevision) return snapshot
+  return { ...snapshot, configRevision: resolvedRevision }
+}
+
+function accountConfigRevisionForSnapshot(accountId: string): number | undefined {
+  try {
+    const row = getBusinessDatabase().prepare(`
+      SELECT config_revision
+      FROM accounts
+      WHERE id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `).get(accountId) as unknown as { config_revision?: number | string } | undefined
+    const revision = Number(row?.config_revision)
+    return Number.isInteger(revision) && revision >= 1 ? revision : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function snapshotsFromRecords(records: Map<string, AccountBalanceSnapshotRecord>): Map<string, AccountBalanceSnapshot> {

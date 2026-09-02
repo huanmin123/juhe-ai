@@ -18,6 +18,15 @@ func TestPostgresSchemaDoesNotCreateDatabaseSchema(t *testing.T) {
 	}
 }
 
+func TestPostgresSchemaProvidesAiHealthOutcomeRangeIndex(t *testing.T) {
+	if !strings.Contains(postgresSchema, "idx_account_health_outcomes_account_observed_non_stale") {
+		t.Fatal("PostgreSQL J1 jobs schema must create the non-stale account/time range index for AI health reads")
+	}
+	if !strings.Contains(postgresSchema, "INCLUDE (payload) WHERE outcome <> 'stale'") {
+		t.Fatal("AI health outcome range index must cover payload and exclude stale outcomes")
+	}
+}
+
 func TestPostgresTaskFailureBaselineReusesObservedAtForUpdatedAt(t *testing.T) {
 	source, err := os.ReadFile("store.go")
 	if err != nil {

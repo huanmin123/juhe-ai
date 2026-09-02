@@ -20,6 +20,8 @@ type ModelLimitSnapshot interface {
 type LongContextDefinition struct {
 	Key, Marker       string
 	TargetInputTokens int
+	// MaxOutputTokens mirrors the Node per-window budget.
+	MaxOutputTokens int
 }
 
 func RunLongContext(ctx context.Context, providerCode, model string, protocol modelcheckprofile.Protocol, tokenizer Tokenizer, limits ModelLimitSnapshot, run func(context.Context, Request) (Result, error), endpointModes ...string) (Evaluation, error) {
@@ -37,7 +39,7 @@ func RunLongContext(ctx context.Context, providerCode, model string, protocol mo
 	high := minInt(safeLimit, maxInt(4000, limit/4))
 	medium := minInt(high-1, maxInt(2000, minInt(60000, high*3/5)))
 	low := minInt(medium-1, maxInt(1000, minInt(8000, medium/2)))
-	definitions := []LongContextDefinition{{"context_low", "NEEDLE-LOW", low}, {"context_medium", "NEEDLE-MEDIUM", medium}, {"context_high", "NEEDLE-HIGH", high}}
+	definitions := []LongContextDefinition{{"context_low", "NEEDLE-LOW", low, 40}, {"context_medium", "NEEDLE-MEDIUM", medium, 48}, {"context_high", "NEEDLE-HIGH", high, 48}}
 	observations := make([]LongContextObservation, 0, len(definitions))
 	for _, definition := range definitions {
 		definition.Marker += fmt.Sprintf("-%d", definition.TargetInputTokens)
@@ -49,7 +51,7 @@ func RunLongContext(ctx context.Context, providerCode, model string, protocol mo
 		if len(endpointModes) > 0 {
 			endpointMode = endpointModes[0]
 		}
-		request, buildErr := buildBasicWithEndpointMode(protocol, model, prompt, modelcheckprofile.EndpointModeIsStreaming(endpointMode), endpointMode)
+		request, buildErr := buildBasicWithTunings(protocol, model, prompt, endpointMode, modelcheckprofile.EndpointModeIsStreaming(endpointMode), definition.MaxOutputTokens, 0)
 		if buildErr != nil {
 			return Evaluation{}, buildErr
 		}
@@ -138,7 +140,7 @@ func EvaluateLongContext(observations []LongContextObservation, expectedModel st
 		// evidence, not as a hard mismatch.
 		status = "warning"
 	}
-	return Evaluation{Kind: "long_context", Status: status, Score: score, MaxScore: 15, Evidence: map[string]any{"probeCount": len(observations), "successRate": float64(success) / float64(maxInt(len(observations), 1)), "modelMatchRate": modelRate, "needleRate": needleRate, "modelMismatch": modelMismatch, "partial": success < len(observations)}}
+	return Evaluation{Kind: "long_context", Status: status, Score: score, MaxScore: 15, Evidence: map[string]any{"probeCount": len(observations), "successRate": float64(success) / float64(maxInt(len(observations), 1)), "modelMatchRate": modelRate, "needleRate": needleRate, "modelMismatch": modelMismatch, "requestFailureCount": len(observations) - success, "scoringProbeCount": success, "partial": success < len(observations)}}
 }
 
 func maxInt(left, right int) int {

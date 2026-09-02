@@ -21,10 +21,11 @@ const absoluteDateTimeQuerySchema = z.string()
   .refine((value) => canonicalizeRfc3339Instant(value) !== undefined, '时间必须是带 Z 或数值 offset 的 RFC3339 时间')
   .transform((value) => canonicalizeRfc3339Instant(value)!)
 
-const overviewQuerySchema = z.object({
+export const tableMonitorOverviewQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
-  keyword: z.string().trim().max(200).optional()
+  keyword: z.string().trim().max(200).optional(),
+  refresh: z.preprocess((value) => booleanQueryValue(value), z.boolean().optional())
 })
 
 const historyQuerySchema = z.object({
@@ -54,21 +55,44 @@ interface NonBusinessDataCleanupReceipt {
 }
 
 tableMonitorRouter.get('/overview', async (req, res, next) => {
-  const parsed = overviewQuerySchema.safeParse(req.query)
+  const parsed = tableMonitorOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '表监控参数无效')))
     return
   }
   try {
-    res.json(ok(await getTableStorageOverviewAsync({
+    const startedAt = Date.now()
+    const cacheableOverview = !parsed.data.keyword
+      && (parsed.data.page ?? 1) === 1
+      && (parsed.data.pageSize ?? 10) === 10
+    res.setHeader(
+      'X-Table-Monitor-Cache',
+      cacheableOverview ? (parsed.data.refresh === true ? 'bypass' : 'bounded-swr') : 'none'
+    )
+    const result = await getTableStorageOverviewAsync({
       page: parsed.data.page,
       pageSize: parsed.data.pageSize,
       keyword: parsed.data.keyword
-    })))
+    }, {
+      bypassCache: parsed.data.refresh === true
+    })
+    res.setHeader('X-Table-Monitor-Duration-Ms', String(Date.now() - startedAt))
+    res.json(ok(result))
   } catch (error) {
     next(error)
   }
 })
+
+function booleanQueryValue(value: unknown): unknown {
+  const text = Array.isArray(value) && value.length === 1 ? value[0] : value
+  if (typeof text === 'boolean') return text
+  if (text === undefined) return undefined
+  if (typeof text !== 'string') return value
+  const normalized = text.trim().toLowerCase()
+  if (['1', 'true', 'yes'].includes(normalized)) return true
+  if (['0', 'false', 'no'].includes(normalized)) return false
+  return value
+}
 
 tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
   operationKey: 'table_monitor.cleanup_non_business_data',

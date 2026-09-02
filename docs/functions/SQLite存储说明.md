@@ -989,7 +989,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合配置上限；常驻 stats-worker 在线聚合会再把 usage 单批实际处理量限制为 1000 条，并给每轮调度设置 4.5 秒运行预算。增量聚合在批内先按 scope、时间桶、模型、延迟桶和账号质量分钟桶预聚合，再写入 SQLite，避免高并发下对同一批记录逐条重复 upsert。连续批次之间让出事件循环，并在继续下一批前固定等待 25ms；持续写入时统计游标保留 15 秒安全延迟，用来吸收 usage 队列落库和 IPC / Redis Stream 传递的短暂延迟，不再要求 usage 队列或 Redis Stream backlog 完全为空，避免高吞吐场景因队列短暂非空而长期饥饿；若 pending usage 或 Redis Stream backlog 中存在超过 15 秒仍未落库的记录，本轮统计只会聚合早于该记录的安全窗口，避免游标越过未落库记录。额度小时窗口随本任务刷新；处理到新 usage 或统计时区切日后，会通过 60 秒防抖刷新 `today`、`yesterday`、`last7d`、`last31d` 和 `current_month` 等热用量窗口，并按 `window_key` 小事务删插。排行、长周期概览、按需范围和授权范围窗口快照仍由独立 worker 任务兜底刷新；单阶段的概览窗口和范围窗口会按上次成功水位后的最早变更日期裁剪刷新范围，只重写受影响的热窗口，首次、切日、水位异常或无法定位变更日期时回退完整刷新。更大的批量只适合作为离线重建或人工追赶历史积压时的独立脚本参数，不能让常驻 worker 长时间占用统计库写事务。
 - `groupAccountStatsRefreshIntervalSeconds = 60`：分组账户统计缓存默认刷新间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
-- `tableMonitorMaxTablesPerRun` 已移除，不能再用系统设置控制 Node 表监控。Go F2 使用 `JUHE_AI_TABLE_MONITOR_MAX_TABLES`（默认 `256`）与 `JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES`（默认 `8`）控制单轮预算；SQLite 在预算内执行精确 `COUNT(*)`，不以 Node stats-worker 或系统设置驱动。
+- `tableMonitorMaxTablesPerRun` 已移除，不能再用系统设置控制 Node 表监控。Go F2 使用 `JUHE_AI_TABLE_MONITOR_MAX_TABLES`（默认 `256`）与 `JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES`（默认 `512`，范围 `1..5096`）控制单轮预算；SQLite 在预算内执行精确 `COUNT(*)`，不以 Node stats-worker 或系统设置驱动。
 - `modelCheckRetentionDays = 30`：模型检测历史和诊断明细默认保留 30 天。
 - `runtimeLogIndexRetentionDays = 14`：普通运行日志索引默认保留 14 天，合法范围 `1..90`，用于运行日志页面检索和由 Go F1 indexer 执行的 facet 索引清理。
 - `publicApiLogRetentionDays = 30`：公开接口调用日志默认保留 30 天，合法范围 `1..365`。

@@ -170,7 +170,13 @@ try {
       keyword: 'perfneedle',
       limit: 10
     })
-    assert.deepEqual(nameKeyword.map((account) => account.id), [matchedAccount.id], 'AI 性能账号选项应支持账号名前缀搜索')
+    assert.deepEqual(nameKeyword.map((account) => account.id), [matchedAccount.id], 'AI 性能账号选项应支持账号名前缀包含搜索')
+
+    const suffixKeyword = usageStatsRepository.listAiPerformanceAccountOptions(adminAccess, {
+      keyword: 'needle 主',
+      limit: 10
+    })
+    assert.deepEqual(suffixKeyword.map((account) => account.id).sort(), [matchedAccount.id, otherOwnerAccount.id].sort(), 'AI 性能账号选项应支持账号名中间及后缀包含搜索')
 
     const idPrefix = usageStatsRepository.listAiPerformanceAccountOptions(adminAccess, {
       keyword: uniquePrefix(matchedAccount.id, otherOwnerAccount.id),
@@ -276,7 +282,7 @@ try {
   const aiPerformanceRepositorySource = readFileSync(new URL('../../storage/usage-stats-ai-performance.repository.ts', import.meta.url), 'utf8')
   const asyncAccountOptionSnippet = aiPerformanceRepositorySource.slice(
     aiPerformanceRepositorySource.indexOf('async function loadAiPerformanceAccountOptionRowsAsync'),
-    aiPerformanceRepositorySource.indexOf('function normalizeAccountNamePrefix')
+    aiPerformanceRepositorySource.indexOf('function normalizeAccountNameKeyword')
   )
   assert.match(
     asyncAccountOptionSnippet,
@@ -285,8 +291,8 @@ try {
   )
   assert.match(
     asyncAccountOptionSnippet,
-    /accounts\.name COLLATE "C" >= \? AND accounts\.name COLLATE "C" < \? AND starts_with\(accounts\.name, \?\)/,
-    'PG AI 性能账号选项名称搜索必须使用大小写敏感 C collation 范围 + starts_with 条件'
+    /accounts\.name COLLATE "C" LIKE '%' \|\| \? \|\| '%' ESCAPE '\\\\'/,
+    'PG AI 性能账号选项名称搜索必须用可索引的转义 LIKE 支持前中后包含匹配'
   )
   assert.doesNotMatch(
     asyncAccountOptionSnippet,
@@ -326,6 +332,12 @@ try {
   const postgresSchemaSource = readFileSync(new URL('../../storage/postgres-schema.ts', import.meta.url), 'utf8')
   assert.match(postgresSchemaSource, /idx_accounts_name_c_lookup/, 'PG AI 性能账号选项全局名称前缀查询必须有 C collation 索引')
   assert.match(postgresSchemaSource, /idx_accounts_owner_name_c_lookup/, 'PG AI 性能账号选项租户名称前缀查询必须有 owner + C collation 索引')
+  assert.match(postgresSchemaSource, /idx_accounts_name_c_trgm_lookup/, 'PG AI 性能账号名称包含搜索必须有 trigram 索引')
+  assert.match(
+    aiPerformanceRepositorySource,
+    /function postgresSubstringLikePattern[\s\S]+replaceAll\('%', '\\\\%'\)[\s\S]+replaceAll\('_', '\\\\_'\)/,
+    'PG AI 性能账号名称搜索必须转义用户输入的 LIKE 通配符'
+  )
   const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes.ts', import.meta.url), 'utf8')
   assert.match(statsRoutesSource, /getAiPerformanceBaseAsync/, 'AI 性能 base 路由应使用 async repository')
   assert.match(statsRoutesSource, /getAiPerformanceSeriesAsync/, 'AI 性能 series 路由应使用 async repository')
@@ -334,7 +346,7 @@ try {
   assert.doesNotMatch(statsRoutesSource, /\bgetAiPerformanceSeries\(/, 'AI 性能 series 路由不应直接调用同步 repository')
   assert.doesNotMatch(statsRoutesSource, /\blistAiPerformanceAccountOptions\(/, 'AI 性能账号选项路由不应直接调用同步 repository')
 
-  console.log('AI 性能账号选项查询防护回归通过：关键词仅按账号名称精确/前缀匹配，显式账号 ID 仅用于已选项回填')
+  console.log('AI 性能账号选项查询防护回归通过：关键词按账号名称前中后包含匹配，显式账号 ID 仅用于已选项回填')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

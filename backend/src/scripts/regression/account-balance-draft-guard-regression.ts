@@ -8,7 +8,6 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
-import { MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE } from '../../modules/accounts/account-balance-config.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-balance-draft-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -92,19 +91,24 @@ try {
     api_key_strategy: 'round_robin',
     base_url: upstreamBaseUrl
   }
-  const rejected = await postBalanceDraft(apiBaseUrl, cookie, draftAccount(group.id, multiKeyCredentials))
-  assert.equal(rejected.status, 400, '多 Key 草稿余额测试必须在路由边界拒绝')
-  assert.equal(rejected.body.message, MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE, '多 Key 草稿应返回与自动关闭一致的中文原因')
-  assert.equal(upstreamHits, 0, '路由拒绝多 Key 草稿后绝不能调用余额上游')
+  const multiDraft = await postBalanceDraft(apiBaseUrl, cookie, draftAccount(group.id, multiKeyCredentials))
+  assert.equal(multiDraft.status, 200, '多 Key 草稿余额测试应保持可用')
+  assert.equal(multiDraft.body.data?.status, 'fresh', '独立 Key 额度应生成可合计的余额快照')
+  assert.equal(multiDraft.body.data?.remainingUsd, '24.68', '多 Key 草稿应按 Key 精确合计余额')
+  assert.equal(multiDraft.body.data?.keyCount, 2)
+  assert.equal(multiDraft.body.data?.queriedKeyCount, 2)
+  assert.equal(upstreamHits, 2, '多 Key 草稿应逐 Key 调用余额上游')
 
   const directResult = await testAccountBalanceCandidate({
     id: 'multi-key-direct-balance-test',
     credentials: multiKeyCredentials,
     config: { adapter: 'builtin', intervalMinutes: 5 }
   })
-  assert.equal(directResult.status, 'failed', '绕过路由直接调用查询服务时也必须拒绝多 Key')
-  assert.equal(directResult.errorMessage, MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE)
-  assert.equal(upstreamHits, 0, '查询服务不能从多 Key 凭据回退挑选旧 api_key 请求上游')
+  assert.equal(directResult.status, 'fresh', '直接调用查询服务时也应支持多 Key')
+  assert.equal(directResult.remainingUsd, '24.68')
+  assert.equal(directResult.keyCount, 2)
+  assert.equal(directResult.queriedKeyCount, 2)
+  assert.equal(upstreamHits, 4, '查询服务应为每个 Key 发起独立请求')
 
   const singleKeyResult = await postBalanceDraft(apiBaseUrl, cookie, draftAccount(group.id, {
     api_key: 'sk-balance-draft-single',
@@ -114,7 +118,7 @@ try {
   assert.equal(singleKeyResult.status, 200, '单 Key 草稿余额测试应保持可用')
   assert.equal(singleKeyResult.body.data?.status, 'fresh')
   assert.equal(singleKeyResult.body.data?.remainingUsd, '12.340000')
-  assert.equal(upstreamHits, 1, '单 Key 草稿应只调用一次首选余额上游')
+  assert.equal(upstreamHits, 5, '单 Key 草稿应只调用一次首选余额上游')
 } finally {
   await closeServer(apiServer)
   await closeServer(upstream)
@@ -143,7 +147,10 @@ async function postBalanceDraft(
   baseUrl: string,
   cookie: string,
   account: Record<string, unknown>
-): Promise<{ status: number; body: { data?: { status?: string; remainingUsd?: string }; message?: string } }> {
+): Promise<{
+  status: number
+  body: { data?: { status?: string; remainingUsd?: string; keyCount?: number; queriedKeyCount?: number }; message?: string }
+}> {
   const response = await fetch(`${baseUrl}/__aisys__/api/accounts/balance/test-draft`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
@@ -154,7 +161,10 @@ async function postBalanceDraft(
   })
   return {
     status: response.status,
-    body: await response.json() as { data?: { status?: string; remainingUsd?: string }; message?: string }
+    body: await response.json() as {
+      data?: { status?: string; remainingUsd?: string; keyCount?: number; queriedKeyCount?: number }
+      message?: string
+    }
   }
 }
 

@@ -115,9 +115,9 @@
     <a-alert
       v-if="filledApiKeyCount > 1"
       class="multi-key-balance-notice"
-      message="多 Key 账户不支持余额查询，保存后将自动关闭余额查询。"
+      message="多 Key 余额会逐 Key 查询；仅明确属于各 Key 的独立额度才会合计，账户共享余额不会重复相加。"
       show-icon
-      type="warning"
+      type="info"
     />
     <a-form-item required>
       <template #label>

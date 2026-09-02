@@ -2,6 +2,7 @@ import type { Dayjs } from 'dayjs'
 
 import type {
   AccountClientCompatibility,
+  AccountBalanceBuiltinAdapter,
   AccountHealthCheckEndpointMode,
   AccountGptReasoningEffortOverride,
   AccountGptServiceTierOverride,
@@ -62,7 +63,7 @@ export interface AccountFormModel {
   notes: string
   balanceQueryEnabled: boolean
   balanceQueryAdapter: 'builtin' | 'custom'
-  balanceQueryPreferredBuiltinAdapter?: 'sub2api' | 'newapi' | 'litellm' | 'user_balance'
+  balanceQueryPreferredBuiltinAdapter?: AccountBalanceBuiltinAdapter
   balanceQueryIntervalMinutes: number
   balanceQueryCustomPath: string
   balanceQueryRemainingPointer: string

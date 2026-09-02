@@ -33,7 +33,17 @@
   <a-tooltip v-else-if="columnKey === 'concurrency'" :title="concurrencyTooltip">
     <a-tag color="blue">{{ concurrencyText }}</a-tag>
   </a-tooltip>
-  <AccountUsageCell v-else-if="columnKey === 'usage'" :account="account" :refreshing="balanceRefreshing" @refresh-balance="$emit('refresh-balance', $event)" />
+  <AccountUsageCell
+    v-else-if="columnKey === 'usage'"
+    :account="account"
+    :refreshing="balanceRefreshing"
+    :balance-details="balanceDetails"
+    :balance-details-loading="balanceDetailsLoading"
+    :balance-details-error="balanceDetailsError"
+    :load-balance-details="loadBalanceDetails"
+    @refresh-balance="$emit('refresh-balance', $event)"
+    @balance-details-request="$emit('balance-details-request', $event)"
+  />
   <AccountTagsCell v-else-if="columnKey === 'tags'" :account="account" />
   <AccountPriorityEditor
     v-else-if="columnKey === 'priority'"
@@ -79,7 +89,7 @@
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
-import type { AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountBalanceDetails, AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountPriorityEditor from './AccountPriorityEditor.vue'
 import AccountRowActions from './AccountRowActions.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
@@ -107,6 +117,7 @@ defineEmits<{
   (event: 'cancel-priority-edit', accountId: string): void
   (event: 'return-authorization', account: AccountListItem): void
   (event: 'refresh-balance', accountId: string): void
+  (event: 'balance-details-request', accountId: string): void
   (event: 'start-priority-edit', accountId: string): void
   (event: 'test', account: AccountListItem): void
 }>()
@@ -124,6 +135,10 @@ const props = defineProps<{
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
   savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   balanceRefreshing?: boolean
+  balanceDetails?: AccountBalanceDetails
+  balanceDetailsLoading?: boolean
+  balanceDetailsError?: string
+  loadBalanceDetails?: (accountId: string) => Promise<AccountBalanceDetails>
 }>()
 
 const currentGroupName = computed(() => props.groupName(props.account.id))

@@ -10,6 +10,7 @@ import {
   decodeAccountHealthJobsOutcomePayload,
   listAccountHealthJobsOutcomes,
   listAccountHealthJobsOutcomesForAccounts,
+  listAccountHealthJobsOutcomesForAccountsAsync,
   type AccountHealthJobsPostgresStoreSource
 } from '../../storage/account-health-jobs-outcome.repository.js'
 
@@ -65,6 +66,8 @@ try {
   )
   const source = readFileSync(resolve('src/storage/account-health-jobs-outcome.repository.ts'), 'utf8')
   assert.match(source, /account_id = ANY\(\$1::text\[\]\)[\s\S]*observed_at >= \$2::timestamptz/, 'PostgreSQL 账户范围读取必须按账户与时间窗在 jobs store 内过滤')
+  assert.match(source, /CROSS JOIN LATERAL/, 'AI 健康列表的 PostgreSQL J1 读取必须按账户和统计小时做索引范围查询')
+  assert.match(source, /outcome <> 'stale'/, 'AI 健康列表的 PostgreSQL J1 读取必须先过滤 stale outcome')
   assert.match(source, /BEGIN READ ONLY/, 'J1 账户范围读取必须显式只读')
   const postgresJsonbPayload = decodeAccountHealthJobsOutcomePayload({
     outcome_id: 'outcome-3', request_id: 'request-3', account_id: 'account-1', outcome: 'complete_success', observed_at: '2026-08-16T00:00:00.000Z', input_version: 1, config_revision: 2, dispatch_revision: 3
@@ -104,7 +107,7 @@ try {
       return {
         async query(text: string) {
           queryTexts.push(text)
-          if (text.startsWith('SELECT payload')) {
+          if (text.includes('payload, to_char')) {
             return { rows: [{ payload: postgresPayload, storage_observed_at: '2026-08-16T00:00:00.000000Z' }] }
           }
           return { rows: [] }
@@ -116,10 +119,18 @@ try {
   }
   await listAccountHealthJobsOutcomes(pooledSource, { limit: 1 })
   await listAccountHealthJobsOutcomes(pooledSource, { limit: 1 })
-  assert.equal(connects, 2, '常驻 J1 reader 每轮借用同一个 pool 的连接')
-  assert.equal(releases, 2, '常驻 J1 reader 每轮必须归还连接')
+  const accountPage = await listAccountHealthJobsOutcomesForAccountsAsync(pooledSource, {
+    accountIds: ['account-1'],
+    observedAfter: '2026-08-15T00:00:00.000Z',
+    timezone: 'Asia/Shanghai',
+    hourBuckets: ['2026-08-16T08']
+  })
+  assert.equal(accountPage.length, 1, 'PostgreSQL 健康列表账户范围读取应返回去重后的小时结果')
+  assert.match(queryTexts.find((text) => text.includes('CROSS JOIN LATERAL')) ?? '', /observed_at < \(\(hours\.stat_hour \|\| ':00:00'\)::timestamp \+ INTERVAL '1 hour'\) AT TIME ZONE \$3/, 'PostgreSQL 健康列表必须按统计时区小时做上界范围读取')
+  assert.equal(connects, 3, '常驻 J1 reader 每轮借用同一个 pool 的连接')
+  assert.equal(releases, 3, '常驻 J1 reader 每轮必须归还连接')
   assert.equal(ends, 0, '常驻 J1 reader 在 runtime 退出前不能每轮销毁 pool')
-  assert.equal(queryTexts.filter((text) => text === 'SET LOCAL statement_timeout = 5000').length, 2, 'J1 PostgreSQL 读取必须有语句超时')
+  assert.equal(queryTexts.filter((text) => text === 'SET LOCAL statement_timeout = 5000').length, 3, 'J1 PostgreSQL 读取必须有语句超时')
   await closeAccountHealthJobsStoreSource(pooledSource)
   assert.equal(ends, 1, '常驻 J1 reader runtime 退出时必须关闭 pool')
 
@@ -129,7 +140,7 @@ try {
     async connect() {
       return {
         async query(text: string) {
-          if (text.startsWith('SELECT payload')) {
+          if (text.includes('payload, to_char')) {
             return { rows: [{ payload: postgresPayload, storage_observed_at: '2026-08-16T00:00:00.000000Z' }] }
           }
           return { rows: [] }

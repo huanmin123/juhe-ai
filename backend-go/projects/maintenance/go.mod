@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/huanminabc/juhe-ai/backend-go-contracts v0.0.0
+	github.com/huanminabc/juhe-ai/backend-go-platform v0.0.0
 	github.com/jackc/pgx/v5 v5.10.0
 	modernc.org/sqlite v1.56.0
 )
@@ -26,3 +27,5 @@ require (
 )
 
 replace github.com/huanminabc/juhe-ai/backend-go-contracts => ../../shared/contracts
+
+replace github.com/huanminabc/juhe-ai/backend-go-platform => ../../shared/platform

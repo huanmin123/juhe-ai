@@ -212,9 +212,75 @@ func buildBasicWithEndpointMode(protocol modelcheckprofile.Protocol, model, prom
 	return BuildBasic(protocol, model, prompt, stream)
 }
 
+// buildBasicWithTunings mirrors the Node payload factories that vary per-probe
+// output budgets and sampling temperature. Protocol floors match the Node
+// oracle exactly: chat requests never ask for fewer than 64 completion tokens
+// and Gemini never fewer than 128; Anthropic is sent verbatim without a
+// temperature field.
+func buildBasicWithTunings(protocol modelcheckprofile.Protocol, model, prompt, endpointMode string, stream bool, maxOutputTokens int, temperature float64) (Request, error) {
+	request, err := buildBasicWithEndpointMode(protocol, model, prompt, stream, endpointMode)
+	if err != nil {
+		return Request{}, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(request.Body, &payload); err != nil {
+		return Request{}, err
+	}
+	switch protocol {
+	case modelcheckprofile.ProtocolOpenAIResponses:
+		payload["max_output_tokens"] = maxOutputTokens
+		payload["temperature"] = temperature
+	case modelcheckprofile.ProtocolOpenAIChat:
+		tokens := maxOutputTokens
+		if tokens < 64 {
+			tokens = 64
+		}
+		payload["max_tokens"] = tokens
+		payload["temperature"] = temperature
+	case modelcheckprofile.ProtocolAnthropic:
+		payload["max_tokens"] = maxOutputTokens
+	case modelcheckprofile.ProtocolGeminiNative:
+		generation, _ := payload["generationConfig"].(map[string]any)
+		if generation == nil {
+			generation = map[string]any{}
+		}
+		tokens := maxOutputTokens
+		if tokens < 128 {
+			tokens = 128
+		}
+		generation["maxOutputTokens"] = tokens
+		generation["temperature"] = temperature
+		payload["generationConfig"] = generation
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return Request{}, err
+	}
+	request.Body = body
+	return request, nil
+}
+
 // BuildStructured creates the protocol-native JSON-schema probe. The schema
 // is deliberately small and stable so the result can be evaluated without
 // persisting provider response bytes.
+// applyStructuredToolTunings pins the Node sampling defaults on the generic
+// structured/tool bodies: temperature 0 for responses/chat/gemini (Anthropic
+// is sent verbatim) and the Node 64/128-token budgets.
+func applyStructuredToolTunings(payload map[string]any, protocol modelcheckprofile.Protocol) {
+	switch protocol {
+	case modelcheckprofile.ProtocolOpenAIResponses, modelcheckprofile.ProtocolOpenAIChat:
+		payload["temperature"] = 0
+	case modelcheckprofile.ProtocolGeminiNative:
+		generation, _ := payload["generationConfig"].(map[string]any)
+		if generation == nil {
+			generation = map[string]any{}
+		}
+		generation["temperature"] = 0
+		generation["maxOutputTokens"] = 128
+		payload["generationConfig"] = generation
+	}
+}
+
 func BuildStructured(protocol modelcheckprofile.Protocol, model string, stream bool) (Request, error) {
 	request, err := BuildBasic(protocol, model, `Return {"status":"ok","value":7} as JSON.`, stream)
 	if err != nil {
@@ -224,6 +290,7 @@ func BuildStructured(protocol modelcheckprofile.Protocol, model string, stream b
 	if err := json.Unmarshal(request.Body, &payload); err != nil {
 		return Request{}, err
 	}
+	applyStructuredToolTunings(payload, protocol)
 	schema := map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
@@ -238,7 +305,7 @@ func BuildStructured(protocol modelcheckprofile.Protocol, model string, stream b
 	case modelcheckprofile.ProtocolOpenAIChat:
 		payload["response_format"] = map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "model_check_structured_output", "strict": true, "schema": schema}}
 	case modelcheckprofile.ProtocolGeminiNative:
-		payload["generationConfig"] = map[string]any{"maxOutputTokens": 128, "responseMimeType": "application/json", "responseSchema": map[string]any{
+		payload["generationConfig"] = map[string]any{"maxOutputTokens": 128, "temperature": 0, "responseMimeType": "application/json", "responseSchema": map[string]any{
 			"type": "OBJECT", "properties": map[string]any{
 				"status": map[string]any{"type": "STRING", "enum": []string{"ok"}},
 				"value":  map[string]any{"type": "INTEGER"},
@@ -262,6 +329,7 @@ func BuildStructuredForEndpointMode(protocol modelcheckprofile.Protocol, model, 
 	if err := json.Unmarshal(request.Body, &payload); err != nil {
 		return Request{}, err
 	}
+	applyStructuredToolTunings(payload, protocol)
 	schema := map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
@@ -276,7 +344,7 @@ func BuildStructuredForEndpointMode(protocol modelcheckprofile.Protocol, model, 
 	case modelcheckprofile.ProtocolOpenAIChat:
 		payload["response_format"] = map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "model_check_structured_output", "strict": true, "schema": schema}}
 	case modelcheckprofile.ProtocolGeminiNative:
-		payload["generationConfig"] = map[string]any{"maxOutputTokens": 128, "responseMimeType": "application/json", "responseSchema": map[string]any{
+		payload["generationConfig"] = map[string]any{"maxOutputTokens": 128, "temperature": 0, "responseMimeType": "application/json", "responseSchema": map[string]any{
 			"type": "OBJECT", "properties": map[string]any{
 				"status": map[string]any{"type": "STRING", "enum": []string{"ok"}},
 				"value":  map[string]any{"type": "INTEGER"},
@@ -302,6 +370,7 @@ func BuildTool(protocol modelcheckprofile.Protocol, model string, stream bool) (
 	if err := json.Unmarshal(request.Body, &payload); err != nil {
 		return Request{}, err
 	}
+	applyStructuredToolTunings(payload, protocol)
 	parameters := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"code": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer"},
 	}, "required": []string{"code", "count"}}
@@ -339,6 +408,7 @@ func BuildToolForEndpointMode(protocol modelcheckprofile.Protocol, model, endpoi
 	if err := json.Unmarshal(request.Body, &payload); err != nil {
 		return Request{}, err
 	}
+	applyStructuredToolTunings(payload, protocol)
 	parameters := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"code": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer"},
 	}, "required": []string{"code", "count"}}

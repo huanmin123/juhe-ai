@@ -153,6 +153,76 @@ func TestJ3bPostgresBackfillPreflightRequiresURLAndAllConfirmations(t *testing.T
 	}
 }
 
+func TestGoRuntimeMetricsApplyPreflightRequiresURLAndAllConfirmations(t *testing.T) {
+	validURL := "postgres://metrics@db.example.invalid:5432/juhe"
+	tests := []struct {
+		name                                   string
+		url                                    string
+		nodeStopped, goStopped, backupVerified bool
+		want                                   int
+	}{
+		{name: "missing url", url: "", nodeStopped: true, goStopped: true, backupVerified: true, want: 2},
+		{name: "node running", url: validURL, nodeStopped: false, goStopped: true, backupVerified: true, want: 2},
+		{name: "go running", url: validURL, nodeStopped: true, goStopped: false, backupVerified: true, want: 2},
+		{name: "backup unverified", url: validURL, nodeStopped: true, goStopped: true, backupVerified: false, want: 2},
+		{name: "all confirmed", url: validURL, nodeStopped: true, goStopped: true, backupVerified: true, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := goRuntimeMetricsApplyPreflightExitCode(test.url, test.nodeStopped, test.goStopped, test.backupVerified); got != test.want {
+				t.Fatalf("preflight exit code=%d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestMaintenanceCommandRejectsGoRuntimeMetricsCheckWithoutURL(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build maintenance command: %v\n%s", err, output)
+	}
+	command := exec.Command(binary, "-check-go-runtime-metrics")
+	command.Env = append(os.Environ(), "JUHE_AI_MAINTENANCE_GO_RUNTIME_METRICS_POSTGRES_URL=")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("missing Go runtime metrics URL unexpectedly succeeded")
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 2 {
+		t.Fatalf("missing Go runtime metrics URL error=%v, want exit status 2; output=%s", err, output)
+	}
+	if !strings.Contains(string(output), "requires --go-runtime-metrics-postgres-url") {
+		t.Fatalf("missing Go runtime metrics URL output=%q", output)
+	}
+}
+
+func TestMaintenanceCommandRejectsGoRuntimeMetricsApplyWithoutConfirmations(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build maintenance command: %v\n%s", err, output)
+	}
+	command := exec.Command(binary, "-apply-go-runtime-metrics", "-go-runtime-metrics-postgres-url", "postgres://metrics@db.example.invalid:5432/juhe")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("missing Go runtime metrics confirmations unexpectedly succeeded")
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 2 {
+		t.Fatalf("missing confirmation error=%v, want exit status 2; output=%s", err, output)
+	}
+	if !strings.Contains(string(output), "--node-stopped --go-stopped --backup-confirmed") {
+		t.Fatalf("missing confirmation output=%q", output)
+	}
+}
+
 func TestJ3bBackfillEvidencePreflightUsesCutoverValidatorExitCodes(t *testing.T) {
 	if _, got, err := j3bBackfillEvidencePreflight(""); got != 2 || err == nil {
 		t.Fatalf("missing evidence preflight=(exit %d, err %v), want exit 2 with error", got, err)

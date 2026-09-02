@@ -189,8 +189,8 @@ function queryAccountUsageOptionRows(
     clauses.push(`accounts.id IN (${sqlPlaceholders(ids.length)})`)
     params.push(...ids)
   } else if (keyword) {
-    clauses.push('accounts.name >= ? AND accounts.name < ?')
-    params.push(keyword, accountUsageOptionKeywordUpperBound(keyword))
+    clauses.push('instr(accounts.name, ?) > 0')
+    params.push(keyword)
   }
   return database.prepare(`
     SELECT
@@ -235,8 +235,8 @@ async function queryAccountUsageOptionRowsAsync(
     clauses.push(`accounts.id IN (${client.dialect.bindPlaceholders(ids.length)})`)
     params.push(...ids)
   } else if (keyword) {
-    clauses.push('accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)')
-    params.push(keyword, accountUsageOptionKeywordUpperBound(keyword), keyword)
+    clauses.push(`accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\'`)
+    params.push(postgresSubstringLikePattern(keyword))
   }
   const accountsTable = accountUsageBusinessTable(client, 'accounts')
   const providersTable = accountUsageBusinessTable(client, 'providers')
@@ -289,10 +289,6 @@ function dedupeAccountUsageOptionRows(rows: AccountUsageOptionRow[]): AccountUsa
     seen.add(row.id)
     return true
   })
-}
-
-function accountUsageOptionKeywordUpperBound(value: string): string {
-  return `${value}\uffff`
 }
 
 export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageStatsPageOptions): AccountUsageStatsListResult {
@@ -903,11 +899,10 @@ function loadAccountUsageKeywordAccountIds(input: {
   const clauses: string[] = []
   const params: string[] = []
   const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
-  const keywordUpperBound = accountUsageKeywordUpperBound(keyword)
   clauses.push(`(
-    (accounts.name >= ? AND accounts.name < ?)
-    OR (accounts.provider_code >= ? AND accounts.provider_code < ?)
-    OR (accounts.type >= ? AND accounts.type < ?)
+    (instr(accounts.name, ?) > 0)
+    OR (instr(accounts.provider_code, ?) > 0)
+    OR (instr(accounts.type, ?) > 0)
     OR EXISTS (
       SELECT 1
       FROM group_accounts
@@ -915,19 +910,15 @@ function loadAccountUsageKeywordAccountIds(input: {
       WHERE group_accounts.account_id = accounts.id
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-        AND (groups.name >= ? AND groups.name < ?)
+        AND instr(groups.name, ?) > 0
     )
   )`)
   params.push(
     keyword,
-    keywordUpperBound,
     keyword,
-    keywordUpperBound,
     keyword,
-    keywordUpperBound,
     viewerSystemAccountId,
-    keyword,
-    keywordUpperBound
+    keyword
   )
   if (input.type) {
     clauses.push('accounts.type = ?')
@@ -971,7 +962,6 @@ function loadAccountUsageKeywordAccountIds(input: {
     .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>)
   appendAccountUsageAccountIds(ids, loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(database, {
     keyword,
-    keywordUpperBound,
     scopeType: input.scopeType,
     type: input.type,
     viewerSystemAccountId
@@ -979,7 +969,6 @@ function loadAccountUsageKeywordAccountIds(input: {
   if (input.scopeType === 'caller_account') {
     appendAccountUsageAccountIds(ids, loadAccountUsageGroupAuthorizedAccountIdsForKeyword(database, {
       keyword,
-      keywordUpperBound,
       type: input.type,
       viewerSystemAccountId
     }))
@@ -999,12 +988,12 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
   const clauses: string[] = []
   const params: string[] = []
   const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
-  const keywordPrefix = normalizeAccountUsageKeyword(keyword)
-  const keywordUpperBound = accountUsageKeywordUpperBound(keywordPrefix)
+  const normalizedKeyword = normalizeAccountUsageKeyword(keyword)
+  const substringLikePattern = postgresSubstringLikePattern(normalizedKeyword)
   clauses.push(`(
-    (accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?))
-    OR (accounts.provider_code COLLATE "C" >= ? AND accounts.provider_code COLLATE "C" < ? AND starts_with(accounts.provider_code, ?))
-    OR (accounts.type COLLATE "C" >= ? AND accounts.type COLLATE "C" < ? AND starts_with(accounts.type, ?))
+    (accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\')
+    OR (accounts.provider_code COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\')
+    OR (accounts.type COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\')
     OR EXISTS (
       SELECT 1
       FROM ${accountUsageBusinessTable(client, 'group_accounts')} group_accounts
@@ -1013,23 +1002,15 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
       WHERE group_accounts.account_id = accounts.id
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-        AND groups.name COLLATE "C" >= ? AND groups.name COLLATE "C" < ? AND starts_with(groups.name, ?)
+        AND groups.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\'
     )
   )`)
   params.push(
-    keywordPrefix,
-    keywordUpperBound,
-    keywordPrefix,
-    keywordPrefix,
-    keywordUpperBound,
-    keywordPrefix,
-    keywordPrefix,
-    keywordUpperBound,
-    keywordPrefix,
+    substringLikePattern,
+    substringLikePattern,
+    substringLikePattern,
     viewerSystemAccountId,
-    keywordPrefix,
-    keywordUpperBound,
-    keywordPrefix
+    substringLikePattern
   )
   if (input.type) {
     clauses.push('accounts.type = ?')
@@ -1070,16 +1051,14 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
     LIMIT ?
   `, [...params, accountUsageSelectedAccountLimit]))
   appendAccountUsageAccountIds(ids, await loadAccountUsageAuthorizedInstanceIdsForSourceKeywordAsync(client, {
-    keywordPrefix,
-    keywordUpperBound,
+    substringLikePattern,
     scopeType: input.scopeType,
     type: input.type,
     viewerSystemAccountId
   }))
   if (input.scopeType === 'caller_account') {
     appendAccountUsageAccountIds(ids, await loadAccountUsageGroupAuthorizedAccountIdsForKeywordAsync(client, {
-      keywordPrefix,
-      keywordUpperBound,
+      substringLikePattern,
       type: input.type,
       viewerSystemAccountId
     }))
@@ -1091,14 +1070,13 @@ function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
   database: ReturnType<typeof getBusinessDatabase>,
   input: {
     keyword: string
-    keywordUpperBound: string
     scopeType: AccountUsageScopeType
     type?: string
     viewerSystemAccountId: string
   }
 ): Array<{ id?: string }> {
-  const clauses = ['source_accounts.name >= ? AND source_accounts.name < ?']
-  const params: string[] = [input.keyword, input.keywordUpperBound]
+  const clauses = ['instr(source_accounts.name, ?) > 0']
+  const params: string[] = [input.keyword]
   if (input.scopeType === 'caller_account') {
     clauses.push('instance_accounts.system_account_id = ?')
     params.push(input.viewerSystemAccountId)
@@ -1123,15 +1101,14 @@ function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
 async function loadAccountUsageAuthorizedInstanceIdsForSourceKeywordAsync(
   client: DatabaseClient,
   input: {
-    keywordPrefix: string
-    keywordUpperBound: string
+    substringLikePattern: string
     scopeType: AccountUsageScopeType
     type?: string
     viewerSystemAccountId: string
   }
 ): Promise<Array<{ id?: string }>> {
-  const clauses = ['source_accounts.name COLLATE "C" >= ? AND source_accounts.name COLLATE "C" < ? AND starts_with(source_accounts.name, ?)']
-  const params: string[] = [input.keywordPrefix, input.keywordUpperBound, input.keywordPrefix]
+  const clauses = [`source_accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\'`]
+  const params: string[] = [input.substringLikePattern]
   if (input.scopeType === 'caller_account') {
     clauses.push('instance_accounts.system_account_id = ?')
     params.push(input.viewerSystemAccountId)
@@ -1155,13 +1132,12 @@ function loadAccountUsageGroupAuthorizedAccountIdsForKeyword(
   database: ReturnType<typeof getBusinessDatabase>,
   input: {
     keyword: string
-    keywordUpperBound: string
     type?: string
     viewerSystemAccountId: string
   }
 ): Array<{ id?: string }> {
-  const clauses = ['accounts.name >= ? AND accounts.name < ?']
-  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keyword, input.keywordUpperBound]
+  const clauses = ['instr(accounts.name, ?) > 0']
+  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keyword]
   if (input.type) {
     clauses.push('accounts.type = ?')
     params.push(input.type)
@@ -1189,14 +1165,13 @@ function loadAccountUsageGroupAuthorizedAccountIdsForKeyword(
 async function loadAccountUsageGroupAuthorizedAccountIdsForKeywordAsync(
   client: DatabaseClient,
   input: {
-    keywordPrefix: string
-    keywordUpperBound: string
+    substringLikePattern: string
     type?: string
     viewerSystemAccountId: string
   }
 ): Promise<Array<{ id?: string }>> {
-  const clauses = ['accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)']
-  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keywordPrefix, input.keywordUpperBound, input.keywordPrefix]
+  const clauses = [`accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\\'`]
+  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.substringLikePattern]
   if (input.type) {
     clauses.push('accounts.type = ?')
     params.push(input.type)
@@ -1232,14 +1207,11 @@ function normalizeAccountUsageKeyword(value: string): string {
   return value.normalize('NFKC').trim()
 }
 
-function accountUsageKeywordUpperBound(value: string): string {
-  const chars = [...value]
-  for (let index = chars.length - 1; index >= 0; index -= 1) {
-    const codePoint = chars[index].codePointAt(0)
-    if (codePoint === undefined || codePoint >= 0x10ffff) continue
-    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
-  }
-  return `${value}\uffff`
+function postgresSubstringLikePattern(value: string): string {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('%', '\\%')
+    .replaceAll('_', '\\_')
 }
 
 function buildAccountUsageScopeIdFilter(accountIds: string[]): { sql: string; params: string[] } {

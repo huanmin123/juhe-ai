@@ -72,7 +72,22 @@ func (s *Store) ProjectTrust(ctx context.Context, projection TrustProjection) er
 }
 
 func validTrustReport(report TrustReport) bool {
-	return strings.TrimSpace(report.IdentityStatus) != "" && report.TrustScore >= 0 && report.TrustScore <= 1
+	return oneOf(report.IdentityStatus, "consistent", "suspected_downgrade", "suspected_same_source", "population_outlier", "insufficient_evidence") &&
+		oneOf(report.MappingStatus, "direct", "configured_mapping", "undeclared_mismatch", "unknown") &&
+		oneOf(report.UsageIntegrityStatus, "consistent", "warning", "suspected_padding", "unsupported", "insufficient_evidence") &&
+		oneOf(report.ProtocolStatus, "consistent", "warning", "failed", "insufficient_evidence") &&
+		oneOf(report.EvidenceStatus, "stable", "candidate", "bootstrap", "insufficient") &&
+		report.EvidenceCoverage >= 0 && report.EvidenceCoverage <= 100 &&
+		report.TrustScore >= 0 && report.TrustScore <= 1
+}
+
+func oneOf(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) trustObservations(ctx context.Context, tx *sql.Tx, projection TrustProjection) ([]trustObservation, error) {
@@ -122,25 +137,26 @@ func (s *Store) recordTrustReceipt(ctx context.Context, tx *sql.Tx, observation 
 
 func (s *Store) upsertTrustLatest(ctx context.Context, tx *sql.Tx, projection TrustProjection, observations []trustObservation, last trustObservation, updatedAt string) error {
 	reasons := append([]string(nil), projection.Report.ReasonCodes...)
+	mappingStatus := trustMappingStatus(observations)
+	if mappingStatus == "mixed" {
+		mappingStatus = "unknown"
+		reasons = appendReason(reasons, "mapping_status_conflict")
+	} else if !oneOf(mappingStatus, "direct", "configured_mapping", "undeclared_mismatch", "unknown") {
+		mappingStatus = "unknown"
+		reasons = appendReason(reasons, "mapping_status_invalid")
+	}
+	protocolStatus := trustProtocolStatus(observations)
 	sort.Strings(reasons)
 	reasons = compactTrustReasons(reasons)
 	reasonJSON, err := json.Marshal(reasons)
 	if err != nil {
 		return fmt.Errorf("marshal J3b trust reason codes: %w", err)
 	}
-	mappingStatus := trustMappingStatus(observations)
-	protocolStatus := trustProtocolStatus(observations)
 	evidenceStatus := "insufficient"
 	if projection.Report.TrustFormed {
 		evidenceStatus = "stable"
 	}
-	evidenceCoverage := int(projection.Report.TrustScore * 100)
-	if evidenceCoverage < 0 {
-		evidenceCoverage = 0
-	}
-	if evidenceCoverage > 100 {
-		evidenceCoverage = 100
-	}
+	evidenceCoverage := projection.Report.EvidenceCoverage
 	for attempt := 0; attempt < 2; attempt++ {
 		var currentLast, currentLastID sql.NullString
 		var currentIdentity, currentMapping, currentProtocol, currentEvidence, currentReason string
@@ -279,17 +295,24 @@ func trustProtocolStatus(observations []trustObservation) string {
 	if len(observations) == 0 {
 		return "insufficient_evidence"
 	}
-	allPassed := true
+	allConsistent := true
+	hasWarning := false
 	for _, observation := range observations {
 		if observation.protocolStatus == "failed" {
 			return "failed"
 		}
-		if observation.protocolStatus != "passed" {
-			allPassed = false
+		if observation.protocolStatus == "warning" {
+			hasWarning = true
+		}
+		if observation.protocolStatus != "consistent" {
+			allConsistent = false
 		}
 	}
-	if allPassed {
-		return "passed"
+	if allConsistent {
+		return "consistent"
+	}
+	if hasWarning {
+		return "warning"
 	}
 	return "insufficient_evidence"
 }

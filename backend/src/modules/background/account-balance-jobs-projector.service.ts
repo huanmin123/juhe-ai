@@ -28,7 +28,7 @@ export async function projectAccountBalanceJobsOutcome(outcome: AccountBalanceJo
   if (outcome.expectedInput !== undefined && candidateInputVersion > 0 && candidateInputVersion !== outcome.expectedInput) return { projected: false, reason: 'stale' }
   if (outcome.expectedConfig !== undefined && candidate.configRevision !== outcome.expectedConfig) return { projected: false, reason: 'stale' }
   if (outcome.trigger !== 'manual' && outcome.expectedNextRefreshAt !== undefined && canonical(outcome.expectedNextRefreshAt) !== canonical(candidate.nextRefreshAt)) return { projected: false, reason: 'stale' }
-  const snapshot = normalizeSnapshot(outcome.snapshot)
+  const snapshot = { ...normalizeSnapshot(outcome.snapshot), configRevision: outcome.configRevision }
   const nextRefreshAt = outcome.nextRefreshAt
   const nextConfig = projectedRefreshConfig(candidate.config, outcome.adapter)
   // Legacy Node manual refresh deliberately does not fence the scheduled due
@@ -45,7 +45,7 @@ async function projectFirstProbe(outcome: AccountBalanceJobsOutcome): Promise<Ac
   if (outcome.expectedInput !== undefined && candidateInputVersion > 0 && candidateInputVersion !== outcome.expectedInput) return { projected: false, reason: 'stale' }
   if (outcome.expectedConfig !== undefined && candidate.configRevision !== outcome.expectedConfig) return { projected: false, reason: 'stale' }
   if (outcome.expectedNextRefreshAt !== undefined && canonical(outcome.expectedNextRefreshAt) !== canonical(candidate.nextRefreshAt)) return { projected: false, reason: 'stale' }
-  const snapshot = normalizeSnapshot(outcome.snapshot)
+  const snapshot = { ...normalizeSnapshot(outcome.snapshot), configRevision: outcome.configRevision }
   if (snapshot.status === 'unsupported') {
     const changed = await commitAccountBalanceDetectionDueAsync({ accountId: outcome.accountId, expectedConfigRevision: outcome.configRevision, expectedNextRefreshAt: candidate.nextRefreshAt, nextRefreshAt: null })
     return changed ? { projected: true } : { projected: false, reason: 'stale' }

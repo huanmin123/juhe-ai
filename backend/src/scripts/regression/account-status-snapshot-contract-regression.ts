@@ -27,7 +27,7 @@ import { logger } from '../../shared/logger.js'
 import { todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 
 const balanceGenerationSnapshot: AccountBalanceSnapshotRecord = {
-  snapshot: { status: 'fresh', remainingUsd: '12.34' },
+  snapshot: { status: 'fresh', configRevision: 7, remainingUsd: '12.34' },
   nextRefreshAfter: '2026-08-17T03:00:00.000Z',
   updatedAt: '2026-08-17T03:01:00.000Z'
 }
@@ -40,6 +40,16 @@ assert.equal(
   accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T03:00:00.000Z' }, balanceGenerationSnapshot),
   true,
   '余额快照配置与持久化代次相同 Z 时间必须匹配'
+)
+assert.equal(
+  accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T03:00:00.000Z', configRevision: 7 }, balanceGenerationSnapshot),
+  true,
+  '余额快照必须匹配生成它的账户配置版本'
+)
+assert.equal(
+  accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T03:00:00.000Z', configRevision: 8 }, balanceGenerationSnapshot),
+  false,
+  '账户配置版本变化后不得复用旧余额快照'
 )
 assert.equal(
   accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: '2026-08-17T04:00:00.000Z' }, balanceGenerationSnapshot),
@@ -274,12 +284,15 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, statusSnapshotRepository, sqliteReadWorkerPool] = await Promise.all([
+const [databaseModule, repositories, statusSnapshotRepository, sqliteReadWorkerPool, settingsRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-status-snapshot.repository.js'),
-  import('../../storage/sqlite-read-worker-pool.js')
+  import('../../storage/sqlite-read-worker-pool.js'),
+  import('../../storage/settings.repository.js')
 ])
+
+await settingsRepository.updateSettingsAsync({ userAiAccountLimit: 1_000_000 })
 
 const postgresGroupBindingsJoin = statusSnapshotRepository.accountStatusGroupBindingsJoin(
   { driver: 'postgres' },

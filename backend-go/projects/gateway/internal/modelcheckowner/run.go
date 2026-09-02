@@ -313,7 +313,7 @@ func validateObservation(observation ObservationRecord) error {
 			return fmt.Errorf("J3b observation %s is required", name)
 		}
 	}
-	if observation.EvidenceCoverage < 0 || observation.CreatedAt.IsZero() {
+	if observation.EvidenceCoverage < 0 || observation.EvidenceCoverage > 100 || observation.CreatedAt.IsZero() {
 		return errors.New("J3b observation evidence or time is invalid")
 	}
 	return nil

@@ -72,7 +72,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		upstreamMode = modelcheckprofile.EndpointModeForProtocol(input.UpstreamProtocol, stream)
 	}
 	results := make([]Result, 0, 4)
-	basic, err := input.buildBasic(input.Model, "Reply with exactly: OK-MODEL-CHECK", upstreamMode, stream)
+	basic, err := input.tunedBasic(input.Model, "Reply with exactly: OK-MODEL-CHECK", upstreamMode, stream, 16, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +91,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		return items, nil
 	}
 	if stream {
-		streamRequest, streamErr := input.buildBasic(input.Model, "Reply with exactly: STREAM-OK", upstreamMode, true)
+		streamRequest, streamErr := input.tunedBasic(input.Model, "Reply with exactly: STREAM-OK", upstreamMode, true, 16, 0)
 		if streamErr != nil {
 			return nil, streamErr
 		}
@@ -205,7 +205,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		}
 		stabilityResults := make([]Result, 0, 3)
 		for round := 0; round < 3; round++ {
-			stability, stabilityErr := input.buildStability(input.Model, upstreamMode, stream)
+			stability, stabilityErr := input.tunedBasic(input.Model, "Reply with exactly one uppercase word: VECTOR", upstreamMode, stream, 16, 0)
 			if stabilityErr != nil {
 				return nil, stabilityErr
 			}
@@ -423,7 +423,7 @@ func RunSelfCrossModel(ctx context.Context, input Suite, targetBasic Result, tim
 	if pairedModel == "" {
 		return Evaluation{Kind: "cross_model", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "no_paired_model"}}, nil
 	}
-	request, err := input.buildBasic(pairedModel, "Reply with exactly: CROSS-MODEL-OK", upstreamMode, stream)
+	request, err := input.tunedBasic(pairedModel, "Reply with exactly: CROSS-MODEL-OK", upstreamMode, stream, 16, 0)
 	if err != nil {
 		return Evaluation{}, err
 	}
@@ -585,6 +585,21 @@ func (s Suite) buildBasic(model, prompt, mode string, stream bool) (Request, err
 	return BuildBasic(protocol, model, prompt, stream)
 }
 
+// tunedBasic builds the basic request shape with the Node per-probe output
+// budget and optional sampling temperature.
+func (s Suite) tunedBasic(model, prompt, mode string, stream bool, maxOutputTokens int, temperature float64) (Request, error) {
+	protocol := s.UpstreamProtocol
+	if protocol == "" {
+		protocol = s.Protocol
+	}
+	if s.Adapter == AdapterOpenAIOAuthCodex {
+		// Codex normalization strips tuning fields anyway; keep the bounded
+		// basic shape so the adapter contract stays the single source.
+		return BuildOpenAIOAuthCodexBasic(model, prompt, stream)
+	}
+	return buildBasicWithTunings(protocol, model, prompt, mode, stream, maxOutputTokens, temperature)
+}
+
 func (s Suite) buildStructured(model, mode string, stream bool) (Request, error) {
 	protocol := s.UpstreamProtocol
 	if protocol == "" {
@@ -611,17 +626,6 @@ func (s Suite) buildTool(model, mode string, stream bool) (Request, error) {
 		return BuildToolForEndpointMode(protocol, model, mode)
 	}
 	return BuildTool(protocol, model, stream)
-}
-
-func (s Suite) buildStability(model, mode string, stream bool) (Request, error) {
-	protocol := s.UpstreamProtocol
-	if protocol == "" {
-		protocol = s.Protocol
-	}
-	if mode != "" {
-		return BuildBasicForEndpointMode(protocol, model, "Reply with exactly one uppercase word: VECTOR", mode)
-	}
-	return StabilityRequest(protocol, model, stream)
 }
 
 func (s Suite) options(endpoint string, headers http.Header, timeout time.Duration) Options {
@@ -721,7 +725,7 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	execute := func(owner Suite, request Request) (Result, error) {
 		return owner.execute(ctx, request, timeout)
 	}
-	targetBasic, err := target.buildBasic(targetModel, "Reply with exactly: OK-MODEL-CHECK", targetMode, targetStream)
+	targetBasic, err := target.tunedBasic(targetModel, "Reply with exactly: OK-MODEL-CHECK", targetMode, targetStream, 16, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -729,7 +733,7 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	// comparison suite above already ran its own ordinary basic probe; this
 	// request must use the CROSS-MODEL-OK output contract so the comparison item
 	// does not silently score as a generic basic response.
-	comparisonBasic, err := comparison.buildBasic(comparisonModel, "Reply with exactly: CROSS-MODEL-OK", comparisonMode, comparisonStream)
+	comparisonBasic, err := comparison.tunedBasic(comparisonModel, "Reply with exactly: CROSS-MODEL-OK", comparisonMode, comparisonStream, 16, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -746,11 +750,13 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	}
 	pairs := make([]DistributionPair, 0, len(distributionDefinitions))
 	for _, definition := range distributionDefinitions {
-		targetRequest, err := target.buildBasic(targetModel, definition.Prompt, targetMode, targetStream)
+		// Node distribution probes pin temperature 0.2 and a 96-token budget so
+		// both accounts sample the same mildly-greedy distribution.
+		targetRequest, err := target.tunedBasic(targetModel, definition.Prompt, targetMode, targetStream, 96, 0.2)
 		if err != nil {
 			return nil, err
 		}
-		comparisonRequest, err := comparison.buildBasic(comparisonModel, definition.Prompt, comparisonMode, comparisonStream)
+		comparisonRequest, err := comparison.tunedBasic(comparisonModel, definition.Prompt, comparisonMode, comparisonStream, 96, 0.2)
 		if err != nil {
 			return nil, err
 		}

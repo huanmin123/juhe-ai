@@ -90,13 +90,4 @@ function normalizedIds(value: string | string[] | undefined): string[] {
   flex: 1 1 auto;
   min-width: 80px;
 }
-
-.account-append-select:deep(.ant-select-selection-search) {
-  width: 100% !important;
-  max-width: none;
-}
-
-.account-append-select:deep(.ant-select-selection-search-input) {
-  width: 100% !important;
-}
 </style>

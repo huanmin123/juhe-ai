@@ -25,6 +25,7 @@ import { startAccountHealthJobsInputPublisherRuntime, stopAccountHealthJobsInput
 import { startAccountHealthJobsOutcomeProjectionRuntime, stopAccountHealthJobsOutcomeProjectionRuntime } from './modules/background/account-health-jobs-outcome-projection-runtime.service.js'
 import { startAccountBalanceJobsOutcomeProjectionRuntime, stopAccountBalanceJobsOutcomeProjectionRuntime } from './modules/background/account-balance-jobs-outcome-projection-runtime.service.js'
 import { accountBalanceGoOwnerEnabled, sameAccountBalanceJobsPostgresStore } from './modules/background/account-balance-handover.js'
+import { prewarmTableStorageOverview } from './storage/table-monitor.repository.js'
 
 const systemApiPrefix = '/__aisys__/api'
 const publicApiPrefix = '/__aipublic__'
@@ -97,6 +98,9 @@ async function startDbService(): Promise<void> {
     httpHost: httpEndpoint.host,
     httpPort: httpEndpoint.port
   })
+
+  // 预热不参与 ready 门禁，避免首轮概览查询拖慢 db-service 启动；服务就绪后异步填充进程内缓存。
+  prewarmTableStorageOverview()
 
   logger.info({
     event: 'db_service_started',

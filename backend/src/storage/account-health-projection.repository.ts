@@ -466,7 +466,7 @@ function buildProjectionUpdate(accountsTable: string, versionsTable: string, out
 function shouldScheduleBalanceAutoDetection(account: AccountFenceRow, outcome: ProjectableOutcome): boolean {
   if (outcome.projection.transition_kind !== 'activation_success') return false
   if (account.type !== 'api_key' || Boolean(account.balance_query_enabled) || account.balance_query_config_json !== '{}') return false
-  return effectiveAccountApiKeyCount(decryptJson<Record<string, unknown>>(account.credentials_encrypted)) === 1
+  return effectiveAccountApiKeyCount(decryptJson<Record<string, unknown>>(account.credentials_encrypted)) >= 1
 }
 
 function projectedHealthFailureCount(outcome: ProjectableOutcome): number {

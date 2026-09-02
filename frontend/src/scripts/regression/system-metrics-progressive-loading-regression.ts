@@ -37,7 +37,7 @@ if (/loadPageData|loadUsageStatsWindow|forceUsageWindow/.test(activated)) throw 
 if (!loadPageDataSource.includes('const windowLoad = loadUsageStatsWindow(')) throw new Error('initial page load must start usage-window independently')
 if (!loadPageDataSource.includes('const currentPageLoadGeneration = ++pageLoadGeneration')) throw new Error('page loads must advance an independent generation')
 if (!/await windowLoad\s+if \(currentPageLoadGeneration !== pageLoadGeneration\) return/.test(loadPageDataSource)) throw new Error('usage-window completion must verify the current page-load generation before starting APIs')
-if (loadPageDataSource.indexOf('const windowLoad = loadUsageStatsWindow(') >= loadPageDataSource.indexOf('return loadData()')) throw new Error('usage-window loading must start before the trend request')
+if (loadPageDataSource.indexOf('const windowLoad = loadUsageStatsWindow(') >= loadPageDataSource.indexOf('return loadTrendData()')) throw new Error('usage-window loading must start before the trend request')
 if (loadPageDataSource.includes('force, viewScope') || loadPageDataSource.includes('force: true')) throw new Error('business refresh must reuse cached usage-window metadata')
 if (!view.includes('ref="backgroundJobsSectionRef"') || !view.includes('ref="backgroundQueuesSectionRef"') || !view.includes('new IntersectionObserver(')) throw new Error('runtime sections must load only when their individual section approaches the viewport')
 if (!loadPageDataSource.includes('if (backgroundJobsSectionLoaded.value) void loadBackgroundJobs()')) throw new Error('page mount must not eagerly request background jobs before its section is visible')

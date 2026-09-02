@@ -47,13 +47,33 @@ $$`
   },
   {
     schemaName: 'juhe_business',
+    source: 'accounts-pg-trigram-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_name_c_trgm_lookup ON accounts USING gin ((name COLLATE "C") juhe_business.gin_trgm_ops) WHERE deleted_at IS NULL'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'accounts-pg-trigram-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_provider_code_c_trgm_lookup ON accounts USING gin ((provider_code COLLATE "C") juhe_business.gin_trgm_ops) WHERE deleted_at IS NULL'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'accounts-pg-trigram-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_type_c_trgm_lookup ON accounts USING gin ((type COLLATE "C") juhe_business.gin_trgm_ops) WHERE deleted_at IS NULL'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'groups-pg-trigram-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_groups_name_c_trgm_lookup ON groups USING gin ((name COLLATE "C") juhe_business.gin_trgm_ops)'
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'account-list-projection-pg-trigram-index',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_name_trgm ON account_list_availability_projections USING gin (name_sort_key gin_trgm_ops)'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_name_trgm ON account_list_availability_projections USING gin (name_sort_key juhe_business.gin_trgm_ops)'
   },
   {
     schemaName: 'juhe_business',
     source: 'account-list-projection-index-pg-trigram-index',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_name_trgm ON account_list_availability_projection_index USING gin (name_sort_key gin_trgm_ops)'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_account_list_availability_projection_index_name_trgm ON account_list_availability_projection_index USING gin (name_sort_key juhe_business.gin_trgm_ops)'
   },
   {
     schemaName: 'juhe_business',

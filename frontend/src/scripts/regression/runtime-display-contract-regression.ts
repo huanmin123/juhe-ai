@@ -124,10 +124,10 @@ assert.match(statsApiSource, /systemMetricsTrend:[\s\S]*\/stats\/system-metrics\
 for (const apiName of ['systemMetricsRuntimeSummary', 'systemMetricsRuntimeJobs', 'systemMetricsRuntimeQueues']) {
   assert.match(statsApiSource, new RegExp(`${apiName}:[\\s\\S]*\\/stats\\/system-metrics\\/runtime`), `后台运行态必须暴露 ${apiName} 独立 API`)
 }
-assert.match(systemMetricsViewSource, /if \(backgroundJobsSectionLoaded\.value\) void loadBackgroundJobs\(\)[\s\S]*if \(backgroundQueuesSectionLoaded\.value\) void loadBackgroundQueues\(\)[\s\S]*return loadData\(\)/, '只有运行态区块进入视口后，页面刷新才应并行刷新已加载的分段运行态')
+assert.match(systemMetricsViewSource, /if \(backgroundJobsSectionLoaded\.value\) void loadBackgroundJobs\(\)[\s\S]*if \(backgroundQueuesSectionLoaded\.value\) void loadBackgroundQueues\(\)[\s\S]*return loadTrendData\(\)/, '只有运行态区块进入视口后，页面刷新才应并行刷新已加载的分段运行态')
 assert.match(loadPageDataSource, /const windowLoad = loadUsageStatsWindow\(/, '页面加载必须先启动窗口配置请求')
 assert.match(loadPageDataSource, /if \(isDynamicRangeMode\(rangeMode\.value\)\) \{\s*await windowLoad/, '动态日期范围必须等待窗口配置后再计算合法日期范围')
-assert(loadPageDataSource.indexOf('const windowLoad = loadUsageStatsWindow(') < loadPageDataSource.indexOf('return loadData()'), '趋势请求必须在窗口配置请求启动后立即返回')
+assert(loadPageDataSource.indexOf('const windowLoad = loadUsageStatsWindow(') < loadPageDataSource.indexOf('return loadTrendData()'), '趋势请求必须在窗口配置请求启动后立即返回')
 assert.doesNotMatch(systemMetricsViewSource, /loadUsageStatsWindow\(\{\s*force:\s*true\s*\}\)/, '系统指标页不得每次强制绕过窗口缓存')
 assert.match(systemMetricsViewSource, /if \(!dateRangeExplicit\.value\) return \{\}/, '未显式选日期时不得提交浏览器本地日期')
 assert.match(statsRoutesSource, /systemMetricsRuntimeJobRows\(runtime\)/, 'system-metrics jobs 必须通过页面场景 DTO 显式投影')

@@ -12,6 +12,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/businesshandoff"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/goruntimemetrics"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
@@ -37,6 +38,9 @@ func main() {
 	j3bCutoverEvidence := flag.String("verify-j3b-cutover-evidence", "", "read-only verify J3b cutover evidence JSON; never writes")
 	j3bSQLiteCheck := flag.Bool("check-j3b-model-check-sqlite", false, "read-only verify dedicated J3b SQLite schema")
 	j3bSQLiteApply := flag.Bool("apply-j3b-model-check-sqlite", false, "bootstrap dedicated J3b SQLite schema after stop and backup confirmations")
+	goRuntimeMetricsCheck := flag.Bool("check-go-runtime-metrics", false, "read-only verify independent Go runtime metrics PostgreSQL schema")
+	goRuntimeMetricsApply := flag.Bool("apply-go-runtime-metrics", false, "add missing Go runtime metrics PostgreSQL tables after explicit stop and backup confirmations")
+	goRuntimeMetricsURL := flag.String("go-runtime-metrics-postgres-url", "", "explicit maintenance-scoped PostgreSQL URL for Go runtime metrics (or JUHE_AI_MAINTENANCE_GO_RUNTIME_METRICS_POSTGRES_URL)")
 	nodeStopped := flag.Bool("node-stopped", false, "confirm Node writers are stopped for an offline migration")
 	goStopped := flag.Bool("go-stopped", false, "confirm Go owners are stopped for an offline migration")
 	backupConfirmed := flag.Bool("backup-confirmed", false, "confirm a recoverable backup was verified")
@@ -52,6 +56,18 @@ func main() {
 	nodeActivePathCheck := flag.Bool("scan-node-j3b-active-path", false, "read-only scan Node J3b routes, workers and writers")
 	j3cReadOnlyCheck := flag.Bool("verify-j3c-readonly-boundary", false, "read-only audit the J3b-to-J3c health reader boundary")
 	flag.Parse()
+	if *goRuntimeMetricsCheck || *goRuntimeMetricsApply {
+		if *goRuntimeMetricsCheck && *goRuntimeMetricsApply {
+			fmt.Fprintln(os.Stderr, "Go runtime metrics check and apply flags are mutually exclusive")
+			os.Exit(2)
+		}
+		if *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bCutoverEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "Go runtime metrics flags are mutually exclusive with other maintenance commands")
+			os.Exit(2)
+		}
+		runGoRuntimeMetricsBootstrap(*goRuntimeMetricsApply, *goRuntimeMetricsURL, *nodeStopped, *goStopped, *backupConfirmed)
+		return
+	}
 	if strings.TrimSpace(*j3bCutoverEvidence) != "" {
 		if strings.TrimSpace(*j3bBackfillEvidence) != "" || *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
 			fmt.Fprintln(os.Stderr, "J3b cutover evidence verification is mutually exclusive with other maintenance commands")
@@ -154,6 +170,53 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
 	os.Exit(2)
+}
+
+func runGoRuntimeMetricsBootstrap(apply bool, rawURL string, nodeStopped, goStopped, backupConfirmed bool) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		rawURL = strings.TrimSpace(os.Getenv(goruntimemetrics.BootstrapEnv))
+	}
+	if goRuntimeMetricsURLRequiredExitCode(rawURL) != 0 {
+		fmt.Fprintf(os.Stderr, "Go runtime metrics bootstrap requires --go-runtime-metrics-postgres-url or %s\n", goruntimemetrics.BootstrapEnv)
+		os.Exit(2)
+	}
+	if apply && goRuntimeMetricsApplyPreflightExitCode(rawURL, nodeStopped, goStopped, backupConfirmed) != 0 {
+		fmt.Fprintln(os.Stderr, "Go runtime metrics apply requires --node-stopped --go-stopped --backup-confirmed")
+		os.Exit(2)
+	}
+	db, err := goruntimemetrics.Open(rawURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open Go runtime metrics PostgreSQL connection: %v\n", err)
+		os.Exit(2)
+	}
+	defer db.Close()
+	report, err := goruntimemetrics.Run(context.Background(), db, apply)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Go runtime metrics bootstrap failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode Go runtime metrics bootstrap report: %v\n", err)
+		os.Exit(1)
+	}
+	if !report.Ready() {
+		os.Exit(3)
+	}
+}
+
+func goRuntimeMetricsURLRequiredExitCode(rawURL string) int {
+	if strings.TrimSpace(rawURL) == "" {
+		return 2
+	}
+	return 0
+}
+
+func goRuntimeMetricsApplyPreflightExitCode(rawURL string, nodeStopped, goStopped, backupConfirmed bool) int {
+	if goRuntimeMetricsURLRequiredExitCode(rawURL) != 0 || !nodeStopped || !goStopped || !backupConfirmed {
+		return 2
+	}
+	return 0
 }
 
 func runJ3bModelCheckPostgresBackfill(rawURL string, maxRowsPerTable, maxBytesPerTable int64, nodeStopped, goStopped, backupConfirmed bool, evidencePath string) {

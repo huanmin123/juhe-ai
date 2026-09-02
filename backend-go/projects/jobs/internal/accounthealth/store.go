@@ -1129,5 +1129,6 @@ ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cool
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cooldown_source_config_revision BIGINT;
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_key_cursors (account_id TEXT NOT NULL, purpose TEXT NOT NULL, key_set_fingerprint TEXT NOT NULL, next_index INTEGER NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (account_id, purpose, key_set_fingerprint));
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed ON juhe_jobs.account_health_outcomes(account_id, observed_at DESC, outcome_id DESC);
+CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed_non_stale ON juhe_jobs.account_health_outcomes(account_id, observed_at DESC, outcome_id DESC) INCLUDE (payload) WHERE outcome <> 'stale';
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_observed ON juhe_jobs.account_health_outcomes(observed_at DESC, outcome_id DESC);
 `

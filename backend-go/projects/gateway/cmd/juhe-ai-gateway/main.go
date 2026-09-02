@@ -30,6 +30,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
@@ -366,7 +367,7 @@ func main() {
 		}
 	}
 
-	listener, err := net.Listen("tcp", *healthAddress)
+	listener, err := listenLoopback(*healthAddress)
 	if err != nil {
 		fail(fmt.Errorf("listen gateway health endpoint %q: %w", *healthAddress, err))
 	}
@@ -426,18 +427,26 @@ func main() {
 			Close: operationStore.Close,
 		})
 	}
+	collector := gometrics.New("juhe-ai", "gateway")
+	healthHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/health" {
+			http.NotFound(response, request)
+			return
+		}
+		ready := auditRunning.Load() && (!operationConfig.Enabled || operationRunning.Load()) && (j3bHostComponent.Run == nil || j3bRunning.Load()) && (!retentionEnabled || retentionRunning.Load()) && (!circuitRuntimeEnabled || circuitRuntimeRunning.Load())
+		response.Header().Set("Content-Type", "application/json")
+		if !ready {
+			response.WriteHeader(http.StatusServiceUnavailable)
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load(), "j3bReady": j3bRunning.Load(), "sessionRetentionReady": retentionRunning.Load(), "accountCircuitRuntimeReady": circuitRuntimeRunning.Load()})
+	})
 	healthServer := &http.Server{
 		Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-			if request.Method != http.MethodGet || request.URL.Path != "/health" {
-				http.NotFound(response, request)
+			if request.Method == http.MethodGet && request.URL.Path == "/__aisys__/metrics" {
+				collector.Handler().ServeHTTP(response, request)
 				return
 			}
-			ready := auditRunning.Load() && (!operationConfig.Enabled || operationRunning.Load()) && (j3bHostComponent.Run == nil || j3bRunning.Load()) && (!retentionEnabled || retentionRunning.Load()) && (!circuitRuntimeEnabled || circuitRuntimeRunning.Load())
-			response.Header().Set("Content-Type", "application/json")
-			if !ready {
-				response.WriteHeader(http.StatusServiceUnavailable)
-			}
-			_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load(), "j3bReady": j3bRunning.Load(), "sessionRetentionReady": retentionRunning.Load(), "accountCircuitRuntimeReady": circuitRuntimeRunning.Load()})
+			healthHandler.ServeHTTP(response, request)
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -476,7 +485,7 @@ func main() {
 // runPassiveGateway never initializes F3/F4 stores or input servers. It is a
 // health-only process for a standby/draining blue-green slot.
 func runPassiveGateway(healthAddress string, ownerMode ownermode.Mode, logger *slog.Logger) {
-	listener, err := net.Listen("tcp", healthAddress)
+	listener, err := listenLoopback(healthAddress)
 	if err != nil {
 		fail(fmt.Errorf("listen passive gateway health endpoint %q: %w", healthAddress, err))
 	}
@@ -498,6 +507,24 @@ func runPassiveGateway(healthAddress string, ownerMode ownermode.Mode, logger *s
 	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
 		fail(fmt.Errorf("passive gateway health endpoint stopped: %w", serveResult))
 	}
+}
+
+func listenLoopback(address string) (net.Listener, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("invalid loopback listen address %q: %w", address, err)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return nil, fmt.Errorf("invalid loopback listen address %q: port must be between 1 and 65535", address)
+	}
+	if !strings.EqualFold(host, "localhost") {
+		ip := net.ParseIP(host)
+		if ip == nil || !(ip.IsLoopback()) {
+			return nil, fmt.Errorf("invalid loopback listen address %q: host must be localhost or a loopback IP", address)
+		}
+	}
+	return net.Listen("tcp", address)
 }
 
 func passiveGatewayHealthHandler(ownerMode ownermode.Mode) http.Handler {
