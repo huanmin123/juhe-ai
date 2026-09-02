@@ -199,6 +199,11 @@ const validEvidence = {
     sameProductionSemantics: true,
     secretValuesNotRecorded: true,
     cookieSecureResolvedProduction: true,
+    finalPodEnvEvidenceRef: 'environment/final-pod-env-hash-diff.json',
+    finalPodEnvKeySetCompared: true,
+    finalPodEnvValuesHashedOnly: true,
+    finalPodEnvUnexpectedDiffs: [],
+    finalPodEnvPermittedCategories: ['database endpoint', 'instance id', 'secret material', 'k8s service discovery'],
     unexpectedDiffs: [],
     permittedDiffs: ['database endpoint', 'instance id']
   },
@@ -365,6 +370,18 @@ assert.match(validateTestRehearsalEvidence(mismatchedRuntimeResolution).blockers
 const unapprovedEnvironmentDiff = structuredClone(validEvidence)
 unapprovedEnvironmentDiff.environment.permittedDiffs.push('temporary allowlist')
 assert.equal(validateTestRehearsalEvidence(unapprovedEnvironmentDiff).status, 'blocked')
+
+const missingFinalPodEnvEvidence = structuredClone(validEvidence)
+delete missingFinalPodEnvEvidence.environment.finalPodEnvEvidenceRef
+assert.equal(validateTestRehearsalEvidence(missingFinalPodEnvEvidence).status, 'blocked')
+
+const unexpectedFinalPodEnvDiff = structuredClone(validEvidence)
+unexpectedFinalPodEnvDiff.environment.finalPodEnvUnexpectedDiffs = ['JUHE_AI_UNAPPROVED']
+assert.equal(validateTestRehearsalEvidence(unexpectedFinalPodEnvDiff).status, 'blocked')
+
+const unapprovedFinalPodEnvCategory = structuredClone(validEvidence)
+unapprovedFinalPodEnvCategory.environment.finalPodEnvPermittedCategories.push('temporary allowlist')
+assert.equal(validateTestRehearsalEvidence(unapprovedFinalPodEnvCategory).status, 'blocked')
 
 const unapprovedSchemaDelta = structuredClone(validEvidence)
 unapprovedSchemaDelta.schema.approvedForwardDeltas = [{ id: 'x', approvedBy: 'reviewer' }]

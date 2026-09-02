@@ -31,6 +31,8 @@ const PERMITTED_ENV_DIFFS = new Set([
   'instance id',
   'namespace',
   'public origin',
+  'secret material',
+  'k8s service discovery',
   'test administrator',
   'resource boundary',
   'test notification target',
@@ -541,6 +543,33 @@ function validateEnvironment(evidence, blockers) {
   requireBoolean(environment, 'sameProductionSemantics', 'environment', blockers)
   requireBoolean(environment, 'secretValuesNotRecorded', 'environment', blockers)
   requireBoolean(environment, 'cookieSecureResolvedProduction', 'environment', blockers)
+  requireString(
+    environment,
+    'finalPodEnvEvidenceRef',
+    'environment',
+    blockers,
+    EVIDENCE_REF_PATTERN,
+    '必须引用最终 Pod env 键集合/值哈希对账证据'
+  )
+  requireBoolean(environment, 'finalPodEnvKeySetCompared', 'environment', blockers)
+  requireBoolean(environment, 'finalPodEnvValuesHashedOnly', 'environment', blockers)
+  if (!Array.isArray(environment.finalPodEnvUnexpectedDiffs) || environment.finalPodEnvUnexpectedDiffs.length !== 0) {
+    addBlocker(blockers, 'environment.finalPodEnvUnexpectedDiffs', '必须为空；最终 Pod env 未批准差异必须阻断')
+  }
+  if (!Array.isArray(environment.finalPodEnvPermittedCategories) || environment.finalPodEnvPermittedCategories.length === 0) {
+    addBlocker(blockers, 'environment.finalPodEnvPermittedCategories', '必须列出最终 Pod env 的允许差异类别')
+  } else {
+    const seenFinalCategories = new Set()
+    for (const category of environment.finalPodEnvPermittedCategories) {
+      if (typeof category !== 'string' || !PERMITTED_ENV_DIFFS.has(category)) {
+        addBlocker(blockers, 'environment.finalPodEnvPermittedCategories', `存在未批准的最终 Pod env 差异类别 ${String(category)}`)
+      }
+      if (seenFinalCategories.has(category)) {
+        addBlocker(blockers, 'environment.finalPodEnvPermittedCategories', `最终 Pod env 差异类别不得重复 ${String(category)}`)
+      }
+      seenFinalCategories.add(category)
+    }
+  }
   if (!Array.isArray(environment.unexpectedDiffs) || environment.unexpectedDiffs.length !== 0) {
     addBlocker(blockers, 'environment.unexpectedDiffs', '必须为空')
   }
