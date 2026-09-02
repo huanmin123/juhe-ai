@@ -498,6 +498,7 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       -e 's|^  j3aManagementEnabled: ".*"|  j3aManagementEnabled: "${j3aManagementEnabled}"|' \\
       -e 's|^  releaseActor: ".*"|  releaseActor: "${actor}"|' \\
       "\${metadata_file}"
+    sed -n '1,12l' "\${metadata_file}"
     assert_metadata_value() {
       key="\$1"
       expected="\$2"
