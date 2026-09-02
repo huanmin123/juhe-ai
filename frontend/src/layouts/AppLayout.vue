@@ -139,7 +139,7 @@ import {
   syncMenuModeWithUser,
   type AppMenuMode
 } from '@/composables/useMenuMode'
-import { menuRoutes, recoverRouteAssetLoadError } from '@/router'
+import { isJ3bUiEnabled, menuRoutes, recoverRouteAssetLoadError } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { PublishedAnnouncementListItem } from '@/types/domain'
@@ -316,7 +316,11 @@ function routeToMenuItem(item: typeof menuRoutes[number]): ItemType {
 }
 
 const visibleMenuRoutes = computed(() =>
-  menuRoutes.filter((item) => canAccessRoute(item) && (item.meta?.viewScope ?? 'admin') === appMenuMode.value)
+  menuRoutes.filter((item) => (
+    canAccessRoute(item)
+    && (item.meta?.viewScope ?? 'admin') === appMenuMode.value
+    && (!item.meta?.requiresJ3b || isJ3bUiEnabled)
+  ))
 )
 
 const menuItems = computed<ItemType[]>(() => {
