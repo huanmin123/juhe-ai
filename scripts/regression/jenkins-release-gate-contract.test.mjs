@@ -39,8 +39,22 @@ assert.match(jenkinsfile, /def readTestRelease\(boolean requireVerification = fa
   'Jenkins 必须支持仅生产晋级启用 verifier 硬门的读取模式')
 assert.match(jenkinsfile, /if \(requireVerification\)[\s\S]*?verificationStatus != 'passed'[\s\S]*?verificationSourceCommit != release\.sourceCommit[\s\S]*?validEvidenceRef/,
   'DEPLOY_PROD 必须硬性要求 verifier status/source/evidenceRef')
+assert.match(jenkinsfile, /verificationEvidenceManifestDigest: metadataValueOptional\('test', 'verification\.evidenceManifestDigest'\)/,
+  'DEPLOY_PROD 必须读取 verifier evidence manifest 摘要')
+assert.match(jenkinsfile, /verificationVerifierIdentity: metadataValueOptional\('test', 'verification\.verifierIdentity'\)/,
+  'DEPLOY_PROD 必须读取受控 verifier 身份')
+assert.match(jenkinsfile, /verificationVerifiedAt: metadataValueOptional\('test', 'verification\.verifiedAt'\)/,
+  'DEPLOY_PROD 必须读取 verifier UTC 时间')
+assert.match(jenkinsfile, /validSha256Hex\(release\.verificationEvidenceManifestDigest\)/,
+  'DEPLOY_PROD 必须校验 verifier evidence manifest 摘要格式')
+assert.match(jenkinsfile, /verificationVerifierIdentity ==~ \/\^\[A-Za-z0-9\._:@\\\/-\]\{1,128\}\$\//,
+  'DEPLOY_PROD 必须校验 verifier 身份格式')
+assert.match(jenkinsfile, /verificationVerifiedAt ==~ \/\^\\d\{4\}-\\d\{2\}-\\d\{2\}T/,
+  'DEPLOY_PROD 必须校验 verifier UTC 时间格式')
 assert.match(jenkinsfile, /metadataValue\('test', 'verification\.status'\) != 'passed'[\s\S]*?metadataValue\('test', 'verification\.sourceCommit'\)[\s\S]*?validEvidenceRef\(metadataValue\('test', 'verification\.evidenceRef'\)\)/,
   '写 prod 前必须二次核对 verifier 字段，防止 test release state 竞态')
+assert.match(jenkinsfile, /metadataValue\('test', 'verification\.evidenceManifestDigest'\)[\s\S]*?metadataValue\('test', 'verification\.verifierIdentity'\)[\s\S]*?metadataValue\('test', 'verification\.verifiedAt'\)/,
+  '写 prod 前必须二次核对 verifier manifest/身份/时间，防止伪造 passed')
 assert.doesNotMatch(jenkinsfile, /writeReverseReleaseState|candidateVerification|reverse-blue-green/,
   '当前单 active 发布契约不保留反向蓝绿 release state 写入实现')
 assert.match(jenkinsfile, /def metadataValueOptional\(environmentName, key\)/,

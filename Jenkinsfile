@@ -263,6 +263,7 @@ def validHarborDigestImage(value) {
     value.indexOf('@sha256:') == separator && validDigest(value.substring(separator + 1))
 }
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
+def validSha256Hex(value) { return value ==~ /^[a-f0-9]{64}$/ }
 def validApprovalTicket(value) { return value != null && value.toString() ==~ /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/ }
 def validEvidenceRef(value) { return value != null && value.toString() ==~ /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._\/-]{1,256}$/ }
 def rollbackRequested() { return params.ROLLBACK_PROD }
@@ -343,7 +344,10 @@ def readTestRelease(boolean requireVerification = false) {
     releaseMode: metadataValue('test', 'releaseMode'),
     verificationStatus: metadataValueOptional('test', 'verification.status'),
     verificationSourceCommit: metadataValueOptional('test', 'verification.sourceCommit'),
-    verificationEvidenceRef: metadataValueOptional('test', 'verification.evidenceRef')
+    verificationEvidenceRef: metadataValueOptional('test', 'verification.evidenceRef'),
+    verificationEvidenceManifestDigest: metadataValueOptional('test', 'verification.evidenceManifestDigest'),
+    verificationVerifierIdentity: metadataValueOptional('test', 'verification.verifierIdentity'),
+    verificationVerifiedAt: metadataValueOptional('test', 'verification.verifiedAt')
   ]
   release.platformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
   if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false']) || release.releaseMode != 'single-active-stop') {
@@ -358,6 +362,15 @@ def readTestRelease(boolean requireVerification = false) {
     }
     if (!validEvidenceRef(release.verificationEvidenceRef)) {
       error 'test release state verification.evidenceRef 必须是受控相对证据引用。'
+    }
+    if (!validSha256Hex(release.verificationEvidenceManifestDigest)) {
+      error 'test release state verification.evidenceManifestDigest 必须是 64 位十六进制摘要。'
+    }
+    if (!(release.verificationVerifierIdentity ==~ /^[A-Za-z0-9._:@\/-]{1,128}$/)) {
+      error 'test release state verification.verifierIdentity 必须是受控 verifier 身份。'
+    }
+    if (!(release.verificationVerifiedAt ==~ /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/)) {
+      error 'test release state verification.verifiedAt 必须是 UTC 时间。'
     }
   }
   return release
@@ -504,7 +517,10 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
          metadataValue('test', 'releaseMode') != 'single-active-stop' ||
          metadataValue('test', 'verification.status') != 'passed' ||
          metadataValue('test', 'verification.sourceCommit') != sourceCommit ||
-         !validEvidenceRef(metadataValue('test', 'verification.evidenceRef')))) {
+         !validEvidenceRef(metadataValue('test', 'verification.evidenceRef')) ||
+         !validSha256Hex(metadataValue('test', 'verification.evidenceManifestDigest')) ||
+         !(metadataValue('test', 'verification.verifierIdentity') ==~ /^[A-Za-z0-9._:@\/-]{1,128}$/) ||
+         !(metadataValue('test', 'verification.verifiedAt') ==~ /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/))) {
       error 'test release state source/digest/verification 在晋级前未保持原子一致或 verifier 未通过；拒绝写入 prod。'
     }
     if (actor in ['jenkins-prod-promotion', 'jenkins-prod-rollback'] && metadataValue('prod', 'releaseMode') != 'single-active-stop') {
