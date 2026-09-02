@@ -51,6 +51,7 @@ const scope = {
 }
 assert.doesNotThrow(() => validateScopeManifest(scope, plan))
 assert.throws(() => validateScopeManifest({ ...scope, tables: { ...scope.tables, accounts: ['*'] } }, plan), /scope accounts 不允许使用 \*/)
+assert.throws(() => validateScopeManifest({ ...scope, tables: { ...scope.tables, account_lock_states: ['*'] } }, plan), /未批准的账户同步表/)
 assert.doesNotThrow(() => validateGeneratedValuesManifest({ schemaVersion: 1, tables: { accounts: { '["account-1"]': { credentials_encrypted: 'test-only' } } } }))
 assert.throws(() => validateGeneratedValuesManifest({ schemaVersion: 2, tables: {} } as never), /schemaVersion=1/)
 const accountRows = [

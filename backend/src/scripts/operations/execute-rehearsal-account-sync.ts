@@ -132,6 +132,9 @@ export function validateScopeManifest(
   }
 
   const policyNames = new Set(ACCOUNT_SYNC_TABLE_POLICIES.filter((item) => item.purpose === 'configuration').map((item) => item.name))
+  for (const name of Object.keys(scope.tables)) {
+    if (!policyNames.has(name)) throw new Error(`scope 包含未批准的账户同步表：${name}`)
+  }
   const wildcardAllowed = new Set([
     'providers', 'protocols', 'protocol_endpoint_families', 'provider_protocol_profiles',
     'provider_protocol_profile_families', 'provider_model_catalog', 'custom_provider_models',
