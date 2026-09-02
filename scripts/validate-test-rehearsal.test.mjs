@@ -426,6 +426,11 @@ delete missingEnvironmentDiffDetails.environment.permittedDiffDetails
 assert.equal(validateTestRehearsalEvidence(missingEnvironmentDiffDetails).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(missingEnvironmentDiffDetails).blockers.join('\\n'), /permittedDiffDetails/)
 
+const noEnvironmentDiffs = structuredClone(validEvidence)
+noEnvironmentDiffs.environment.permittedDiffs = []
+noEnvironmentDiffs.environment.permittedDiffDetails = []
+assert.deepEqual(validateTestRehearsalEvidence(noEnvironmentDiffs), { status: 'passed', blockers: [] })
+
 const unboundEnvironmentDiffDetail = structuredClone(validEvidence)
 unboundEnvironmentDiffDetail.environment.permittedDiffDetails[0].testValueHash = unboundEnvironmentDiffDetail.environment.permittedDiffDetails[0].prodValueHash
 assert.equal(validateTestRehearsalEvidence(unboundEnvironmentDiffDetail).status, 'blocked')

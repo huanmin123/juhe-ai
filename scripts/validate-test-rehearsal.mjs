@@ -587,9 +587,14 @@ function validateEnvironment(evidence, blockers) {
       seen.add(diff)
     }
   }
-  if (!Array.isArray(environment.permittedDiffDetails) || environment.permittedDiffDetails.length === 0) {
-    addBlocker(blockers, 'environment.permittedDiffDetails', '必须逐键列出每个允许差异的来源、值哈希、审批和证据')
+  if (!Array.isArray(environment.permittedDiffDetails)) {
+    addBlocker(blockers, 'environment.permittedDiffDetails', '必须逐键列出每个允许差异的来源、值哈希、审批和证据；无差异时使用空数组')
     return
+  }
+  if (environment.permittedDiffDetails.length === 0
+    && Array.isArray(environment.permittedDiffs)
+    && environment.permittedDiffs.length > 0) {
+    addBlocker(blockers, 'environment.permittedDiffDetails', '存在允许差异类别时必须提供逐键详情')
   }
   const detailKeys = new Set()
   const detailCategories = new Set()
