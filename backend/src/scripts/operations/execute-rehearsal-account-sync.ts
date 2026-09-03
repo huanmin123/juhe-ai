@@ -68,6 +68,7 @@ export interface RehearsalAccountSyncExecutionReport {
   targetNameAccepted: true
   approvedCanaryCount: number
   tableReports: ExecutionTableReport[]
+  referenceClosureVerified: true
   runtimeResetTables: Array<{ schema: string; name: string; beforeRows: number; afterRows: number; beforeChecksum: string; afterChecksum: string }>
   status: 'passed'
 }
@@ -122,6 +123,9 @@ export function assertGeneratedApiKeyValues(values: Record<string, unknown>): vo
     : undefined
   if (typeof key !== 'string' || !key.trim()) {
     throw new Error('api_keys.key_secret_encrypted 未包含有效 test key')
+  }
+  if (!/^sk-[0-9a-f]{64}$/u.test(key)) {
+    throw new Error('api_keys.key_secret_encrypted 未包含符合应用格式的 test key')
   }
   if (values.key_hash !== hashSecret(key)) {
     throw new Error('api_keys.key_hash 与 test key 派生值不一致')
@@ -272,6 +276,12 @@ export async function executeRehearsalAccountSync(
     reports.push(await copyTable(source, target, policy.name, tablePlan, scope.tables[policy.name], generatedValues.tables[policy.name] ?? {}))
   }
 
+  // Several authorization/quota columns are intentionally polymorphic and do
+  // not have database FKs. Verify their target-side closure before clearing
+  // runtime state, otherwise a rehearsal could pass INSERT/readback while a
+  // scheduler or gateway later follows an orphaned reference.
+  await assertTargetReferenceClosure(target)
+
   const runtimeResetTables = [
     ...ACCOUNT_SYNC_RUNTIME_RESET_TABLES.map((name) => ({ schema: businessSchema, name })),
     ...AUXILIARY_RUNTIME_RESET_TABLES.map((item) => ({ schema: item.schema, name: item.name }))
@@ -286,8 +296,126 @@ export async function executeRehearsalAccountSync(
     targetNameAccepted: true,
     approvedCanaryCount: scope.approvedCanaryCount,
     tableReports: reports,
+    referenceClosureVerified: true,
     runtimeResetTables: runtimeReports,
     status: 'passed'
+  }
+}
+
+export async function assertTargetReferenceClosure(target: QueryClient): Promise<void> {
+  const checks: Array<{ label: string; sql: string }> = [
+    {
+      label: 'accounts/api_keys.system_account_id',
+      sql: `
+        SELECT count(*)::text AS count
+        FROM (
+          SELECT accounts.system_account_id AS owner_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('accounts')} accounts
+          LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} system_accounts
+            ON system_accounts.id = accounts.system_account_id
+          WHERE system_accounts.id IS NULL
+          UNION ALL
+          SELECT api_keys.system_account_id AS owner_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('api_keys')} api_keys
+          LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} system_accounts
+            ON system_accounts.id = api_keys.system_account_id
+          WHERE system_accounts.id IS NULL
+          UNION ALL
+          SELECT accounts.authorization_instance_owner_system_account_id AS owner_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('accounts')} accounts
+          LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} system_accounts
+            ON system_accounts.id = accounts.authorization_instance_owner_system_account_id
+          WHERE accounts.authorization_instance_owner_system_account_id IS NOT NULL
+            AND system_accounts.id IS NULL
+        ) invalid_references
+      `
+    },
+    {
+      label: 'resource_authorizations.resource_id',
+      sql: `
+        SELECT count(*)::text AS count
+        FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('resource_authorizations')} authorizations
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('accounts')} account_rows
+          ON authorizations.resource_type = 'account' AND account_rows.id = authorizations.resource_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('groups')} group_rows
+          ON authorizations.resource_type = 'group' AND group_rows.id = authorizations.resource_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} owner_accounts
+          ON owner_accounts.id = authorizations.resource_owner_system_account_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} grantee_accounts
+          ON grantee_accounts.id = authorizations.grantee_system_account_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_teams')} source_teams
+          ON authorizations.effective_source_team_id = source_teams.id
+        WHERE authorizations.resource_type NOT IN ('account', 'group')
+           OR account_rows.id IS NULL AND authorizations.resource_type = 'account'
+           OR group_rows.id IS NULL AND authorizations.resource_type = 'group'
+           OR owner_accounts.id IS NULL
+           OR grantee_accounts.id IS NULL
+           OR (authorizations.effective_source_type = 'team' AND source_teams.id IS NULL)
+      `
+    },
+    {
+      label: 'resource_authorization_grants.resource_id',
+      sql: `
+        SELECT count(*)::text AS count
+        FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('resource_authorization_grants')} grant_rows
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('accounts')} account_rows
+          ON grant_rows.resource_type = 'account' AND account_rows.id = grant_rows.resource_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('groups')} group_rows
+          ON grant_rows.resource_type = 'group' AND group_rows.id = grant_rows.resource_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} owner_accounts
+          ON owner_accounts.id = grant_rows.resource_owner_system_account_id
+        WHERE grant_rows.resource_type NOT IN ('account', 'group')
+           OR (grant_rows.resource_type = 'account' AND account_rows.id IS NULL)
+           OR (grant_rows.resource_type = 'group' AND group_rows.id IS NULL)
+           OR owner_accounts.id IS NULL
+      `
+    },
+    {
+      label: 'request_quota_hourly_window_scope_bindings',
+      sql: `
+        SELECT count(*)::text AS count
+        FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('request_quota_hourly_window_scope_bindings')} bindings
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} system_accounts
+          ON system_accounts.id = bindings.system_account_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('api_keys')} source_api_keys
+          ON bindings.source_type = 'api_key' AND source_api_keys.id = bindings.source_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('resource_authorization_grants')} source_grants
+          ON bindings.source_type = 'resource_authorization_grant' AND source_grants.id = bindings.source_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('api_keys')} scope_api_keys
+          ON bindings.scope_type = 'api_key' AND scope_api_keys.id = bindings.scope_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('resource_authorizations')} scope_authorizations
+          ON bindings.scope_type IN ('account_authorization', 'group_authorization')
+         AND scope_authorizations.id = bindings.scope_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('accounts')} account_team_scopes
+          ON bindings.scope_type = 'account_authorization_team'
+         AND account_team_scopes.id = split_part(bindings.scope_id, ':', 1)
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('groups')} group_team_scopes
+          ON bindings.scope_type = 'group_authorization_team'
+         AND group_team_scopes.id = split_part(bindings.scope_id, ':', 1)
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_teams')} scope_teams
+          ON bindings.scope_type IN ('account_authorization_team', 'group_authorization_team')
+         AND scope_teams.id = split_part(bindings.scope_id, ':', 2)
+        WHERE system_accounts.id IS NULL
+           OR bindings.source_type NOT IN ('api_key', 'resource_authorization_grant')
+           OR (bindings.source_type = 'api_key' AND source_api_keys.id IS NULL)
+           OR (bindings.source_type = 'resource_authorization_grant' AND source_grants.id IS NULL)
+           OR (bindings.scope_type = 'api_key' AND (scope_api_keys.id IS NULL OR bindings.source_type <> 'api_key' OR bindings.source_id <> bindings.scope_id))
+           OR (bindings.scope_type IN ('account_authorization', 'group_authorization')
+               AND (scope_authorizations.id IS NULL OR bindings.source_type <> 'resource_authorization_grant'))
+           OR (bindings.scope_type = 'account_authorization_team'
+               AND (account_team_scopes.id IS NULL OR scope_teams.id IS NULL OR bindings.source_type <> 'resource_authorization_grant'))
+           OR (bindings.scope_type = 'group_authorization_team'
+               AND (group_team_scopes.id IS NULL OR scope_teams.id IS NULL OR bindings.source_type <> 'resource_authorization_grant'))
+           OR (bindings.scope_type NOT IN ('api_key', 'account_authorization', 'group_authorization', 'account_authorization_team', 'group_authorization_team'))
+      `
+    }
+  ]
+  for (const check of checks) {
+    const result = await target.query<{ count: string }>(check.sql)
+    const count = Number(result.rows[0]?.count ?? 0)
+    if (!Number.isFinite(count) || count !== 0) {
+      throw new Error(`${check.label} 目标引用闭包校验失败：存在 ${Number.isFinite(count) ? count : '未知数量'} 条无效引用，事务将回滚`)
+    }
   }
 }
 

@@ -4,6 +4,7 @@ import { ACCOUNT_SYNC_TABLE_POLICIES } from '../operations/rehearsal-account-syn
 import {
   assertTransformedReadback,
   assertGeneratedApiKeyValues,
+  assertTargetReferenceClosure,
   assertExecuteEnvironment,
   hashStringList,
   orderAccountRows,
@@ -78,6 +79,18 @@ assert.throws(() => assertGeneratedApiKeyValues({
   key_suffix: rehearsalKey.slice(-8),
   key_secret_encrypted: encryptJson({ key: rehearsalKey })
 }), /key_hash.*派生值不一致/)
+const closureQueries: string[] = []
+await assert.doesNotReject(() => assertTargetReferenceClosure({
+  query: async (sql: string) => {
+    closureQueries.push(sql)
+    return { rows: [{ count: '0' }] }
+  }
+} as never))
+assert.equal(closureQueries.length, 4)
+assert.match(closureQueries[3], /request_quota_hourly_window_scope_bindings/)
+await assert.rejects(() => assertTargetReferenceClosure({
+  query: async () => ({ rows: [{ count: '1' }] })
+} as never), /目标引用闭包校验失败/)
 const accountRows = [
   { id: 'child', authorization_instance_source_account_id: 'source' },
   { id: 'source', authorization_instance_source_account_id: null }

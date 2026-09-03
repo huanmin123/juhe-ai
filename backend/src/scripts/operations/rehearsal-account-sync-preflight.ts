@@ -138,7 +138,7 @@ export const ACCOUNT_SYNC_TABLE_POLICIES: readonly AccountSyncTablePolicy[] = [
       'oauth_access_token_expires_at',
       'oauth_refresh_token_present'
     ],
-    '先导入普通 source accounts，再导入 authorization-instance accounts；凭据密文、指纹、掩码和 OAuth 元数据必须按 test canary/隔离重加密生成，不能复制生产派生值'
+    '先导入普通 source accounts，再导入 authorization-instance accounts；凭据密文、指纹、掩码、OAuth 元数据和健康/冷却/流式失败计数必须按 test canary/隔离重加密或初始值生成，不能复制生产派生值'
   ),
   policy('groups', 'configuration'),
   policy('group_authorization_settings', 'configuration'),

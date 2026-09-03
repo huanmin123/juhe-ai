@@ -630,6 +630,11 @@ unsafeAccountsTable.authorizationInstanceRows = 1
 assert.equal(validateTestRehearsalEvidence(unsafeSourceOrder).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(unsafeSourceOrder).blockers.join('\n'), /selfForeignKeyPolicy|source account/)
 
+const deferredSourceOrder = structuredClone(validEvidence)
+deferredSourceOrder.accounts.tables.find(table => table.name === 'accounts').selfForeignKeyPolicy = 'deferred-constraints-verified'
+assert.equal(validateTestRehearsalEvidence(deferredSourceOrder).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(deferredSourceOrder).blockers.join('\n'), /执行器未实现 deferred/)
+
 const unsafeProviderOrder = structuredClone(validEvidence)
 const unsafeProvidersTable = unsafeProviderOrder.accounts.tables.find(table => table.name === 'providers')
 unsafeProvidersTable.selfForeignKeyPolicy = 'primary-key-order'
