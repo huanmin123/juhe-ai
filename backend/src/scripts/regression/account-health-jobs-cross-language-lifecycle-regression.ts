@@ -192,6 +192,8 @@ function createBusinessProjectionFixture(database: DatabaseSync): void {
       balance_query_enabled INTEGER NOT NULL DEFAULT 0,
       balance_query_config_json TEXT NOT NULL DEFAULT '{}',
       balance_query_next_refresh_at TEXT,
+      availability_schedule_json TEXT,
+      availability_schedule_next_check_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
       last_error_code TEXT,

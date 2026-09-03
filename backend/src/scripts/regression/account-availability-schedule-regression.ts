@@ -68,6 +68,7 @@ try {
     type: 'api_key',
     status: 'active',
     credentials: { api_key: 'sk-account-schedule-allow', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-4o'],
     availabilitySchedule: allDaySchedule,
     groupId: group.id
   }, access)
@@ -78,6 +79,7 @@ try {
     type: 'api_key',
     status: 'active',
     credentials: { api_key: 'sk-account-schedule-deny', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-4o'],
     availabilitySchedule: futureSchedule,
     groupId: group.id
   }, access)
@@ -117,6 +119,7 @@ try {
     type: 'api_key',
     status: 'active',
     credentials: { api_key: 'sk-account-schedule-cross-day-range', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-4o'],
     availabilitySchedule: rangedCrossDaySchedule,
     groupId: group.id
   }, access))
@@ -141,6 +144,7 @@ try {
     type: 'api_key',
     status: 'active',
     credentials: { api_key: 'sk-account-schedule-boundary', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-4o'],
     availabilitySchedule: windowSchedule,
     groupId: group.id
   }, access))
@@ -194,6 +198,7 @@ try {
     type: 'api_key',
     status: 'pending_test',
     credentials: { api_key: 'sk-account-schedule-pending-test', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-4o'],
     availabilitySchedule: windowSchedule,
     groupId: group.id
   }, access))
@@ -225,13 +230,13 @@ try {
 }
 
 function activateAccountForSchedule(accountId: string, checkedAt: string): void {
-  assert.equal(repositories.projectAccountHealthFixtureSuccess(accountId, {
+  assert.equal(withMockedNow(Date.parse(checkedAt), () => repositories.projectAccountHealthFixtureSuccess(accountId, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
     statusCode: 200,
     checkedAt
-  }), true, `账户 ${accountId} 后台激活检查应成功写入计划状态`)
+  })), true, `账户 ${accountId} 后台激活检查应成功写入计划状态`)
 }
 
 function accountNextCheckAt(database: ReturnType<typeof import('../../storage/database.js').getBusinessDatabase>, id: string): string | null {

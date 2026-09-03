@@ -29,6 +29,7 @@ try {
       schedulable INTEGER NOT NULL,
       config_revision INTEGER NOT NULL,
       dispatch_revision INTEGER NOT NULL,
+      circuit_projection_revision INTEGER NOT NULL DEFAULT 0,
       authorization_instance_source_account_id TEXT,
       cooldown_until TEXT,
       cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
@@ -39,6 +40,8 @@ try {
       balance_query_enabled INTEGER NOT NULL DEFAULT 0,
       balance_query_config_json TEXT NOT NULL DEFAULT '{}',
       balance_query_next_refresh_at TEXT,
+      availability_schedule_json TEXT,
+      availability_schedule_next_check_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
       last_error_code TEXT,
@@ -68,6 +71,30 @@ try {
       disposition TEXT NOT NULL,
       reason TEXT,
       applied_at TEXT NOT NULL
+    );
+    CREATE TABLE account_circuit_outbox (
+      event_id TEXT PRIMARY KEY,
+      projection_key TEXT NOT NULL,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      event_type TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      account_runtime_key TEXT NOT NULL,
+      circuit_scope_key TEXT,
+      incident_id TEXT,
+      transition_id TEXT NOT NULL,
+      dispatch_revision INTEGER NOT NULL,
+      generation INTEGER,
+      ledger_revision INTEGER,
+      status TEXT NOT NULL,
+      available_at_ms INTEGER NOT NULL,
+      claim_token TEXT,
+      claimed_by TEXT,
+      claim_until_ms INTEGER,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error_class TEXT,
+      acknowledged_at_ms INTEGER,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
     );
   `)
   database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -179,17 +206,21 @@ try {
     generation: 'generation-2'
   }), database)
   assert.equal(recovered.disposition, 'applied')
-  const recoveredAccount = database.prepare(`SELECT status, cooldown_until, cooldown_retest_generation FROM accounts WHERE id = ?`).get('account-2') as Record<string, unknown>
+  const recoveredAccount = database.prepare(`SELECT status, cooldown_until, cooldown_retest_generation, dispatch_revision FROM accounts WHERE id = ?`).get('account-2') as Record<string, unknown>
   assert.equal(recoveredAccount.status, 'active')
   assert.equal(recoveredAccount.cooldown_until, null)
   assert.equal(recoveredAccount.cooldown_retest_generation, null)
+  assert.equal(recoveredAccount.dispatch_revision, 6, 'cooldown 成功恢复必须推进 dispatch revision')
 
   database.prepare(`UPDATE accounts SET status = ?, schedulable = ?, cooldown_until = ?, cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ? WHERE id = ?`)
     .run('temporary_unavailable', 1, '2026-08-23T00:00:00.000Z', 1, '2026-08-16T00:00:00.000Z', 'terminal-generation', 'account-2')
-  const terminal = projectAccountHealthJobsOutcome(cooldownError('outcome-5-terminal', {
+  const terminalOutcome = cooldownError('outcome-5-terminal', {
     observation_started_at: '2026-08-16T00:00:00.000Z',
     generation: 'terminal-generation'
-  }), database)
+  })
+  terminalOutcome.dispatch_revision = 6
+  terminalOutcome.projection!.dispatch_revision = 6
+  const terminal = projectAccountHealthJobsOutcome(terminalOutcome, database)
   assert.equal(terminal.disposition, 'applied')
   const terminalAccount = database.prepare(`SELECT status, schedulable, cooldown_until, cooldown_retest_failure_count, cooldown_retest_observation_started_at, cooldown_retest_generation, cooldown_retest_last_at, cooldown_retest_last_status_code, last_error_code FROM accounts WHERE id = ?`).get('account-2') as Record<string, unknown>
   assert.equal(terminalAccount.status, 'error')
@@ -208,10 +239,32 @@ try {
     .run('account-3', 1, '2026-08-16T00:00:00.000Z')
   const activation = projectAccountHealthJobsOutcome(activationSuccess('outcome-6'), database)
   assert.equal(activation.disposition, 'applied')
-  const activated = database.prepare(`SELECT status, schedulable, balance_query_next_refresh_at FROM accounts WHERE id = ?`).get('account-3') as Record<string, unknown>
+  const activated = database.prepare(`SELECT status, schedulable, balance_query_next_refresh_at, dispatch_revision FROM accounts WHERE id = ?`).get('account-3') as Record<string, unknown>
   assert.equal(activated.status, 'active')
   assert.equal(activated.schedulable, 1)
   assert.equal(activated.balance_query_next_refresh_at, '2026-08-16T00:15:00.000Z')
+  assert.equal(activated.dispatch_revision, 8, 'activation 成功恢复必须推进 dispatch revision')
+
+  database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, availability_schedule_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run('account-6', 'pending_test', 0, 10, 11, encryptJson({ api_key: 'sk-account-6' }), '{invalid', '2026-08-16T00:00:00.000Z')
+  database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
+    .run('account-6', 1, '2026-08-16T00:00:00.000Z')
+  const malformedScheduleOutcome = activationSuccess('outcome-7')
+  malformedScheduleOutcome.account_id = 'account-6'
+  malformedScheduleOutcome.config_revision = 10
+  malformedScheduleOutcome.dispatch_revision = 11
+  malformedScheduleOutcome.projection = {
+    ...malformedScheduleOutcome.projection!,
+    target_account_id: 'account-6',
+    config_revision: 10,
+    dispatch_revision: 11
+  }
+  const malformedSchedule = projectAccountHealthJobsOutcome(malformedScheduleOutcome, database)
+  assert.equal(malformedSchedule.disposition, 'applied')
+  const malformedScheduleAccount = database.prepare(`SELECT status, dispatch_revision, availability_schedule_next_check_at FROM accounts WHERE id = ?`).get('account-6') as Record<string, unknown>
+  assert.equal(malformedScheduleAccount.status, 'disabled', '损坏时间计划不能在健康成功后绕过停用状态')
+  assert.equal(malformedScheduleAccount.dispatch_revision, 11, '未恢复为 active 时不能发布 dispatch revision')
+  assert.equal(malformedScheduleAccount.availability_schedule_next_check_at, null)
 } finally {
   database.close()
 }

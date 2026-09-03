@@ -1,12 +1,21 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { getBusinessDatabase, nowIso, runInDatabaseTransaction } from './database.js'
+import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import type { AccountHealthJobsOutcome, AccountHealthJobsProjection } from './account-health-jobs-outcome.repository.js'
 import { effectiveAccountApiKeyCount } from '../modules/accounts/account-balance-config.js'
 import { decryptJson } from './crypto.js'
+import {
+  accountAvailabilityScheduleStatus,
+  nextAccountAvailabilityScheduleCheckAt,
+  parseAccountAvailabilityScheduleJson
+} from './account-availability-schedule.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
+import {
+  advanceAccountCircuitDispatchRevisionInSqliteTransaction,
+  advanceAccountCircuitDispatchRevisionInTransaction
+} from './account-circuit-control-plane.repository.js'
 
 export type AccountHealthProjectionDisposition = 'applied' | 'stale' | 'ignored' | 'rejected'
 
@@ -39,6 +48,7 @@ interface AccountFenceRow {
   credentials_encrypted: string
   balance_query_enabled: number | boolean
   balance_query_config_json: string
+  availability_schedule_json: string | null
 }
 
 interface InputVersionRow {
@@ -99,13 +109,27 @@ export function projectAccountHealthJobsOutcome(
       result = { ...base, disposition: 'stale', changed: false, reason: fenceReason }
       return
     }
-    const update = sqliteProjectionUpdate(database, validation.outcome, shouldScheduleBalanceAutoDetection(account!, validation.outcome))
+    const activationPlan = activationPlanForProjection(account!, validation.outcome)
+    const update = sqliteProjectionUpdate(
+      database,
+      validation.outcome,
+      shouldScheduleBalanceAutoDetection(account!, validation.outcome, activationPlan),
+      activationPlan
+    )
     if (!update) {
       insertReceiptSqlite(database, base, 'stale', 'projection_compare_and_set_missed')
       result = { ...base, disposition: 'stale', changed: false, reason: 'projection_compare_and_set_missed' }
       return
     }
     changed = true
+    if (activationPlan.restoresDispatch) {
+      advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+        accountId: outcome.account_id,
+        accountRuntimeKey: outcome.account_id,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
     if (projectionChangesAvailability(validation.outcome.projection.transition_kind)) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [outcome.account_id], reason: 'j1_account_health_projection' })
     }
@@ -139,12 +163,26 @@ export async function projectAccountHealthJobsOutcomeAsync(
       await insertReceiptAsync(tx, base, 'stale', fenceReason)
       return { ...base, disposition: 'stale', changed: false, reason: fenceReason }
     }
-    const update = await asyncProjectionUpdate(tx, validation.outcome, shouldScheduleBalanceAutoDetection(account!, validation.outcome))
+    const activationPlan = activationPlanForProjection(account!, validation.outcome)
+    const update = await asyncProjectionUpdate(
+      tx,
+      validation.outcome,
+      shouldScheduleBalanceAutoDetection(account!, validation.outcome, activationPlan),
+      activationPlan
+    )
     if (!update) {
       await insertReceiptAsync(tx, base, 'stale', 'projection_compare_and_set_missed')
       return { ...base, disposition: 'stale', changed: false, reason: 'projection_compare_and_set_missed' }
     }
     changed = true
+    if (activationPlan.restoresDispatch) {
+      await advanceAccountCircuitDispatchRevisionInTransaction(tx, {
+        accountId: outcome.account_id,
+        accountRuntimeKey: outcome.account_id,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
     if (projectionChangesAvailability(validation.outcome.projection.transition_kind)) {
       await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [outcome.account_id], reason: 'j1_account_health_projection' }, tx)
     }
@@ -262,11 +300,11 @@ async function insertReceiptAsync(
 }
 
 function findAccountFenceSqlite(database: DatabaseSync, accountId: string): AccountFenceRow | undefined {
-  return database.prepare(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, cooldown_retest_observation_started_at, cooldown_retest_generation, type, credentials_encrypted, balance_query_enabled, balance_query_config_json FROM accounts WHERE id = ? AND deleted_at IS NULL`).get(accountId) as AccountFenceRow | undefined
+  return database.prepare(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, cooldown_retest_observation_started_at, cooldown_retest_generation, type, credentials_encrypted, balance_query_enabled, balance_query_config_json, availability_schedule_json FROM accounts WHERE id = ? AND deleted_at IS NULL`).get(accountId) as AccountFenceRow | undefined
 }
 
 async function findAccountFenceAsync(client: DatabaseClient, accountId: string): Promise<AccountFenceRow | undefined> {
-  return await client.one<AccountFenceRow>(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, cooldown_retest_observation_started_at, cooldown_retest_generation, type, credentials_encrypted, balance_query_enabled, balance_query_config_json FROM ${table(client, 'accounts')} WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, [accountId])
+  return await client.one<AccountFenceRow>(`SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, cooldown_retest_observation_started_at, cooldown_retest_generation, type, credentials_encrypted, balance_query_enabled, balance_query_config_json, availability_schedule_json FROM ${table(client, 'accounts')} WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, [accountId])
 }
 
 function sqliteFenceMismatchReason(database: DatabaseSync, account: AccountFenceRow | undefined, outcome: ProjectableOutcome): string | undefined {
@@ -310,19 +348,35 @@ function fenceMismatchReason(account: AccountFenceRow | undefined, version: Inpu
   return undefined
 }
 
-function sqliteProjectionUpdate(database: DatabaseSync, outcome: ProjectableOutcome, scheduleBalanceAutoDetection: boolean): boolean {
-  const statement = buildProjectionUpdate('accounts', 'account_health_jobs_input_versions', outcome, scheduleBalanceAutoDetection)
+function sqliteProjectionUpdate(
+  database: DatabaseSync,
+  outcome: ProjectableOutcome,
+  scheduleBalanceAutoDetection: boolean,
+  activationPlan: ActivationProjectionPlan
+): boolean {
+  const statement = buildProjectionUpdate('accounts', 'account_health_jobs_input_versions', outcome, scheduleBalanceAutoDetection, activationPlan)
   const result = database.prepare(statement.sql).run(...statement.params)
   return Number(result.changes ?? 0) === 1
 }
 
-async function asyncProjectionUpdate(client: DatabaseClient, outcome: ProjectableOutcome, scheduleBalanceAutoDetection: boolean): Promise<boolean> {
-  const statement = buildProjectionUpdate(table(client, 'accounts'), table(client, 'account_health_jobs_input_versions'), outcome, scheduleBalanceAutoDetection)
+async function asyncProjectionUpdate(
+  client: DatabaseClient,
+  outcome: ProjectableOutcome,
+  scheduleBalanceAutoDetection: boolean,
+  activationPlan: ActivationProjectionPlan
+): Promise<boolean> {
+  const statement = buildProjectionUpdate(table(client, 'accounts'), table(client, 'account_health_jobs_input_versions'), outcome, scheduleBalanceAutoDetection, activationPlan)
   const result = await client.execute(statement.sql, statement.params)
   return result.changes === 1
 }
 
-function buildProjectionUpdate(accountsTable: string, versionsTable: string, outcome: ProjectableOutcome, scheduleBalanceAutoDetection: boolean): { sql: string; params: Array<string | number | null> } {
+function buildProjectionUpdate(
+  accountsTable: string,
+  versionsTable: string,
+  outcome: ProjectableOutcome,
+  scheduleBalanceAutoDetection: boolean,
+  activationPlan: ActivationProjectionPlan
+): { sql: string; params: Array<string | number | null> } {
   const projection = outcome.projection
   const transition = projection.transition_kind
   const updates: string[] = ['updated_at = ?']
@@ -381,8 +435,9 @@ function buildProjectionUpdate(accountsTable: string, versionsTable: string, out
 
   switch (transition) {
     case 'activation_success':
-      set('status', 'active')
+      set('status', activationPlan.status)
       set('schedulable', 1)
+      set('availability_schedule_next_check_at', activationPlan.nextCheckAt)
       if (scheduleBalanceAutoDetection) {
         set('balance_query_next_refresh_at', outcome.observed_at)
       }
@@ -411,8 +466,9 @@ function buildProjectionUpdate(accountsTable: string, versionsTable: string, out
       healthFailure()
       break
     case 'cooldown_success':
-      set('status', 'active')
+      set('status', activationPlan.status)
       set('schedulable', 1)
+      set('availability_schedule_next_check_at', activationPlan.nextCheckAt)
       clearCooldown()
       clearLastError()
       healthSuccess()
@@ -463,8 +519,38 @@ function buildProjectionUpdate(accountsTable: string, versionsTable: string, out
   }
 }
 
-function shouldScheduleBalanceAutoDetection(account: AccountFenceRow, outcome: ProjectableOutcome): boolean {
+interface ActivationProjectionPlan {
+  status: 'active' | 'disabled'
+  nextCheckAt: string | null
+  restoresDispatch: boolean
+}
+
+function activationPlanForProjection(account: AccountFenceRow, outcome: ProjectableOutcome): ActivationProjectionPlan {
+  const transition = outcome.projection.transition_kind
+  if (transition !== 'activation_success' && transition !== 'cooldown_success') {
+    return { status: 'active', nextCheckAt: null, restoresDispatch: false }
+  }
+  try {
+    const projectedAt = new Date()
+    const schedule = parseAccountAvailabilityScheduleJson(account.availability_schedule_json)
+    const status = accountAvailabilityScheduleStatus(schedule, projectedAt) ?? 'active'
+    return {
+      status,
+      nextCheckAt: nextAccountAvailabilityScheduleCheckAt(schedule, projectedAt),
+      restoresDispatch: status === 'active'
+    }
+  } catch {
+    return { status: 'disabled', nextCheckAt: null, restoresDispatch: false }
+  }
+}
+
+function shouldScheduleBalanceAutoDetection(
+  account: AccountFenceRow,
+  outcome: ProjectableOutcome,
+  activationPlan: ActivationProjectionPlan
+): boolean {
   if (outcome.projection.transition_kind !== 'activation_success') return false
+  if (activationPlan.status !== 'active') return false
   if (account.type !== 'api_key' || Boolean(account.balance_query_enabled) || account.balance_query_config_json !== '{}') return false
   return effectiveAccountApiKeyCount(decryptJson<Record<string, unknown>>(account.credentials_encrypted)) >= 1
 }
