@@ -64,7 +64,7 @@
           :data-source="runtime.items"
           :pagination="false"
           :scroll="{ x: 1080 }"
-          row-key="accountId"
+          :row-key="speedFirstRuntimeRowKey"
           size="small"
         >
           <template #bodyCell="{ column, record }">
@@ -111,7 +111,7 @@
 import { ReloadOutlined } from '@ant-design/icons-vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { RouteStrategySpeedFirstLatencyRuntime } from '@/types/domain'
+import type { RouteStrategySpeedFirstLatencyRuntime, RouteStrategySpeedFirstLatencyRuntimeItem } from '@/types/domain'
 
 defineProps<{
   open: boolean
@@ -125,6 +125,10 @@ const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
   (event: 'refresh'): void
 }>()
+
+function speedFirstRuntimeRowKey(record: RouteStrategySpeedFirstLatencyRuntimeItem): string {
+  return `${record.accountId}|${record.scope.groupId}|${record.degradedUntil ?? ''}`
+}
 
 const runtimeColumns = [
   { title: 'AI 账户', key: 'account', width: 190, fixed: 'left' },

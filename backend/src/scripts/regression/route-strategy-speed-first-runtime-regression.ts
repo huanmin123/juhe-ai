@@ -26,6 +26,7 @@ const [
   repositories,
   { routeStrategiesRouter },
   { withRequestAuthContext },
+  { forceSelfAccessScope },
   { handleDbServiceParentRuntimeMessage },
   latencyRuntime,
   runtimeFacade
@@ -34,6 +35,7 @@ const [
   import('../../storage/repositories.js'),
   import('../../modules/route-strategies/route-strategies.routes.js'),
   import('../../modules/auth/request-context.js'),
+  import('../../modules/auth/auth.middleware.js'),
   import('../../modules/db-service/db-service-ipc.js'),
   import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js'),
   import('../../modules/route-strategies/route-strategy-speed-first-runtime.facade.js')
@@ -145,6 +147,33 @@ try {
     '查询必须过滤按传入时点已过期的降级态'
   )
 
+  // owner / 授权形态切换的过渡期，同一账号可能同时存在新旧两个运行态键。
+  const accountADualRuntimeKey = {
+    id: accountA.id,
+    name: accountA.name,
+    accountAccessType: 'account_authorized' as const,
+    bindingSystemAccountId: ownerA.id,
+    boundGroupId: groupA.id,
+    accountAuthorizationId: `speed_runtime_auth_${Date.now()}`
+  }
+  await latencyRuntime.recordNormalRouteFirstByteSlowAsync(accountADualRuntimeKey, scopeA, speedConfig)
+  await latencyRuntime.recordNormalRouteFirstByteSlowAsync(accountADualRuntimeKey, scopeA, speedConfig)
+  assert.equal(
+    (await latencyRuntime.listNormalRouteLatencyDegradedRuntimeAsync({
+      routeStrategyIds: [speedStrategyA.id]
+    })).length,
+    2,
+    '原始运行态投影应保留同一账号的新旧运行态键各一条'
+  )
+
+  // 同一账号可同时在多个策略作用域内降级：展示收敛必须按策略隔离，不得跨策略合并。
+  await latencyRuntime.recordNormalRouteFirstByteSlowAsync(accountA, scopeB, speedConfig)
+  await latencyRuntime.recordNormalRouteFirstByteSlowAsync(accountA, scopeB, speedConfig)
+  const rawBatchItems = await latencyRuntime.listNormalRouteLatencyDegradedRuntimeAsync({
+    routeStrategyIds: [speedStrategyA.id, speedStrategyB.id]
+  })
+  assert.equal(rawBatchItems.length, 4, '原始运行态投影应保留跨策略同账号的各自运行态：策略 A 两条双键 + 策略 B 的 accountB 与 accountA 各一条')
+
   const app = express()
   app.use((_req, _res, next) => {
     withRequestAuthContext({
@@ -157,6 +186,16 @@ try {
     }, next)
   })
   app.use('/route-strategies', routeStrategiesRouter)
+  app.use('/my-route-strategies', (_req, _res, next) => {
+    withRequestAuthContext({
+      systemAccountId: ownerA.id,
+      role: 'user',
+      username: ownerA.username,
+      displayName: '速度运行态所有者A',
+      mustChangePassword: false,
+      sessionId: 'route-strategy-speed-first-runtime-regression-self'
+    }, next)
+  }, forceSelfAccessScope, routeStrategiesRouter)
   server = app.listen(0, '127.0.0.1')
   await onceListening(server)
   const baseUrl = `http://127.0.0.1:${serverPort(server)}`
@@ -168,8 +207,8 @@ try {
   const listedB = list.data.items.find((item) => item.id === speedStrategyB.id)
   const listedCost = list.data.items.find((item) => item.id === costStrategy.id)
   assert.equal(listedA?.speedFirstLatencyRuntime?.runtimeAvailable, true, '管理员未筛选 owner 的列表应读取运行态')
-  assert.equal(listedA?.speedFirstLatencyRuntime?.degradedCount, 1, '列表摘要应返回策略 A 的降级数量')
-  assert.equal(listedB?.speedFirstLatencyRuntime?.degradedCount, 1, '列表摘要应返回策略 B 的降级数量')
+  assert.equal(listedA?.speedFirstLatencyRuntime?.degradedCount, 1, '列表摘要应按账号粒度收敛同账号新旧运行态键后返回策略 A 的降级数量')
+  assert.equal(listedB?.speedFirstLatencyRuntime?.degradedCount, 2, '列表摘要必须按策略独立统计，跨策略同账号不得被合并或串扰')
   assert.equal(Object.hasOwn(listedCost ?? {}, 'speedFirstLatencyRuntime'), false, '非 speed_first 路由不得附带速度运行态摘要')
 
   const detail = await getJson<{
@@ -178,14 +217,64 @@ try {
       enabled: boolean
       runtimeAvailable: boolean
       degradedCount: number
-      items: Array<{ accountId: string; scope: { routeStrategyId: string } }>
+      items: Array<{ accountId: string; degradedUntil: string; scope: { routeStrategyId: string } }>
     }
   }>(baseUrl, `/route-strategies/${speedStrategyA.id}/speed-first-runtime?systemAccountId=${ownerA.id}`)
   assert.equal(detail.data.routeStrategyId, speedStrategyA.id, '详情必须回显目标策略 ID')
   assert.equal(detail.data.enabled, true, 'speed_first 策略详情必须启用运行态')
   assert.equal(detail.data.runtimeAvailable, true, '正常读取时详情运行态应可用')
-  assert.equal(detail.data.degradedCount, 1, '详情必须返回策略自身降级数量')
+  assert.equal(detail.data.degradedCount, 1, '详情必须按账号粒度返回策略自身降级数量')
+  assert.equal(detail.data.items.length, 1, '同账号新旧运行态键在详情中必须收敛为一条')
+  assert.equal(detail.data.items[0]?.accountId, accountA.id, '收敛后的详情条目必须保留账号身份')
+  const latestDegradedUntil = rawBatchItems
+    .filter((item) => item.scope.routeStrategyId === speedStrategyA.id)
+    .map((item) => item.degradedUntil)
+    .sort((left, right) => right.localeCompare(left))[0]
+  assert.equal(detail.data.items[0]?.degradedUntil, latestDegradedUntil, '按账号收敛时必须保留降级截止时间最新的一条')
   assert.deepEqual(detail.data.items.map((item) => item.scope.routeStrategyId), [speedStrategyA.id], '详情不得混入其他策略的运行态')
+
+  const detailB = await getJson<{
+    data: { degradedCount: number; items: Array<{ accountId: string }> }
+  }>(baseUrl, `/route-strategies/${speedStrategyB.id}/speed-first-runtime?systemAccountId=${ownerB.id}`)
+  assert.equal(detailB.data.degradedCount, 2, '策略 B 的降级数量必须按策略独立统计')
+  assert.equal(detailB.data.items.length, 2, '策略 B 详情必须包含其各自的降级账号')
+  assert.deepEqual(
+    new Set(detailB.data.items.map((item) => item.accountId)),
+    new Set([accountA.id, accountB.id]),
+    '同一账号在其他策略的降级必须独立返回，不得被策略 A 的收敛波及'
+  )
+
+  const selfDetail = await getJson<{
+    data: { degradedCount: number; items: unknown[] }
+  }>(baseUrl, `/my-route-strategies/${speedStrategyA.id}/speed-first-runtime?systemAccountId=${ownerB.id}`)
+  assert.equal(selfDetail.data.degradedCount, 1, '个人侧必须忽略伪造 systemAccountId 并读取自身策略的速度运行态')
+  const forgedOtherOwner = await fetch(`${baseUrl}/my-route-strategies/${speedStrategyB.id}/speed-first-runtime?systemAccountId=${ownerB.id}`)
+  assert.equal(forgedOtherOwner.status, 404, '个人侧不能借伪造 systemAccountId 借道读取其他 owner 的速度运行态')
+
+  const boundarySpeedFirstItems = Array.from({ length: 51 }, (_, index) => ({
+    id: `speed_runtime_boundary_${index}`,
+    systemAccountId: ownerA.id,
+    mode: 'normal' as const,
+    normalRoutingConfig: {
+      schedulingPreference: 'speed_first' as const,
+      firstByteDeadlineMs: speedConfig.firstByteDeadlineMs,
+      speedFirstConfig: speedConfig
+    }
+  }))
+  const withinCapSummary = await runtimeFacade.summarizeRouteStrategySpeedFirstLatencyRuntimeAsync(boundarySpeedFirstItems.slice(0, 50))
+  assert.equal(withinCapSummary.size, 50, '单批读取上限内的速度优先策略必须逐条返回摘要')
+  assert.equal(
+    [...withinCapSummary.values()].every((summary) => summary.runtimeAvailable),
+    true,
+    '恰好 50 条速度优先策略仍在单批读取上限内，必须正常读取运行态'
+  )
+  const overCapSummary = await runtimeFacade.summarizeRouteStrategySpeedFirstLatencyRuntimeAsync(boundarySpeedFirstItems)
+  assert.equal(overCapSummary.size, 51, '超过单批上限时仍必须为每条策略返回摘要标记')
+  assert.equal(
+    [...overCapSummary.values()].every((summary) => !summary.runtimeAvailable),
+    true,
+    '超过单批 50 条上限时必须整批 fail-open 标记运行态不可用，不得伪装为速度正常'
+  )
 
   const costDetail = await getJson<{
     data: { routeStrategyId: string; generatedAt: string; enabled: boolean; runtimeAvailable: boolean; degradedCount: number; items: unknown[] }

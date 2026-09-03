@@ -42,6 +42,8 @@ for (const text of [
 ]) {
   assert.match(drawerSource, new RegExp(text), `Drawer 必须展示或说明：${text}`)
 }
+assert.match(drawerSource, /:row-key="speedFirstRuntimeRowKey"/, 'Drawer 表格必须使用复合 row-key，避免同账号过渡期新旧运行态键重复')
+assert.match(drawerSource, /function speedFirstRuntimeRowKey\([\s\S]*record\.accountId[\s\S]*record\.degradedUntil/, '复合 row-key 必须由账号身份和降级截止时间组成')
 assert.match(drawerSource, /record\.recoverySuccessCount.*record\.requiredRecoverySuccessCount/, 'Drawer 必须展示真实请求恢复进度')
 assert.match(drawerSource, /record\.recoveryProbeRoundSuccessCount.*record\.recoveryProbeRoundAttemptCount/, 'Drawer 必须展示后台探针窗口进度')
 assert.match(drawerSource, /record\.reason/, 'Drawer 必须展示速度运行态原因')

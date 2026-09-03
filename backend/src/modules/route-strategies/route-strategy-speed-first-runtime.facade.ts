@@ -37,9 +37,11 @@ export async function loadRouteStrategySpeedFirstLatencyRuntimeAsync(input: {
 }): Promise<RouteStrategySpeedFirstLatencyRuntimeSnapshot> {
   const systemAccountId = input.systemAccountId?.trim()
   const routeStrategyId = input.routeStrategyId.trim()
-  if (!systemAccountId || !routeStrategyId) return unavailableRuntimeSnapshot()
+  // systemAccountId 只是可选的 owner 二次收窄：个人侧 summary 与全局策略
+  // （system_account_id 为空）不会携带 owner，此时按唯一策略 ID 查询即可。
+  if (!routeStrategyId) return unavailableRuntimeSnapshot()
   return await loadSpeedFirstLatencyRuntimeForScopeAsync({
-    systemAccountId,
+    ...(systemAccountId ? { systemAccountId } : {}),
     routeStrategyIds: [routeStrategyId]
   })
 }
@@ -94,14 +96,34 @@ async function loadSpeedFirstLatencyRuntimeForScopeAsync(input: {
       ? await requestServerNormalRouteSpeedFirstLatencyRuntimeSnapshot(input, runtimeReadTimeoutMs)
       : await listNormalRouteLatencyDegradedRuntimeAsync(input)
     if (!items) return unavailableRuntimeSnapshot()
+    const dedupedItems = dedupeRuntimeItemsByAccount(items)
     return {
       runtimeAvailable: true,
-      degradedCount: items.length,
-      items
+      degradedCount: dedupedItems.length,
+      items: dedupedItems
     }
   } catch {
     return unavailableRuntimeSnapshot()
   }
+}
+
+/**
+ * 管理端展示按账号收敛：普通路由策略只绑定一个分组，同一账号在策略内出现多条
+ * 只可能来自过渡期残留（owner / 授权形态切换、换绑分组后清理失败），保留降级
+ * 截止时间最新的一条，保证详情行和 degradedCount 都是账号粒度。
+ */
+function dedupeRuntimeItemsByAccount(
+  items: NormalRouteLatencyDegradedRuntimeItem[]
+): NormalRouteLatencyDegradedRuntimeItem[] {
+  const latestByAccount = new Map<string, NormalRouteLatencyDegradedRuntimeItem>()
+  for (const item of items) {
+    const dedupeKey = `${item.scope.routeStrategyId}|${item.accountId}`
+    const current = latestByAccount.get(dedupeKey)
+    if (!current || current.degradedUntil.localeCompare(item.degradedUntil) < 0) {
+      latestByAccount.set(dedupeKey, item)
+    }
+  }
+  return [...latestByAccount.values()]
 }
 
 function unavailableRuntimeSummary(): RouteStrategySpeedFirstLatencyRuntimeSummary {
