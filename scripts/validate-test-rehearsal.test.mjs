@@ -356,6 +356,7 @@ validEvidence.accounts.auxiliaryRuntimeResetTables = AUXILIARY_RUNTIME_RESET_EVI
   checksum: `${String.fromCharCode(97 + (index % 6))}`.repeat(64),
   evidenceRefs: [`accounts/runtime-reset/${name.replace('.', '_')}.json`]
 }))
+validEvidence.controls.evidenceBoundSourceCommit = validEvidence.release.sourceCommit
 
 assert.deepEqual(validateTestRehearsalEvidence(validEvidence), { status: 'passed', blockers: [] })
 
@@ -398,6 +399,16 @@ delete missingVerifierBinding.controls.evidenceManifestDigest
 assert.equal(validateTestRehearsalEvidence(missingVerifierBinding).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(missingVerifierBinding).blockers.join('\n'), /evidenceManifestDigest/)
 
+const missingEvidenceSourceBinding = structuredClone(validEvidence)
+delete missingEvidenceSourceBinding.controls.evidenceBoundSourceCommit
+assert.equal(validateTestRehearsalEvidence(missingEvidenceSourceBinding).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(missingEvidenceSourceBinding).blockers.join('\n'), /evidenceBoundSourceCommit/)
+
+const mismatchedEvidenceSourceBinding = structuredClone(validEvidence)
+mismatchedEvidenceSourceBinding.controls.evidenceBoundSourceCommit = 'deadbeef'
+assert.equal(validateTestRehearsalEvidence(mismatchedEvidenceSourceBinding).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(mismatchedEvidenceSourceBinding).blockers.join('\n'), /禁止复用其他候选/)
+
 const missingRuntimeEvidenceReference = structuredClone(validEvidence)
 delete missingRuntimeEvidenceReference.accounts.runtimeResetTables[0].evidenceRefs
 assert.equal(validateTestRehearsalEvidence(missingRuntimeEvidenceReference).status, 'blocked')
@@ -421,6 +432,12 @@ const mismatchedRuntimeResolution = structuredClone(validEvidence)
 mismatchedRuntimeResolution.release.test.imageResolution['go-gateway'].runtimeImageIDPlatformManifestDigest = `sha256:${'8'.repeat(64)}`
 assert.equal(validateTestRehearsalEvidence(mismatchedRuntimeResolution).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(mismatchedRuntimeResolution).blockers.join('\n'), /runtimeImageIDPlatformManifestDigest/)
+
+const mismatchedManifestRuntimeID = structuredClone(validEvidence)
+mismatchedManifestRuntimeID.release.test.imageResolution['go-gateway'].runtimeImageIDKind = 'manifest'
+mismatchedManifestRuntimeID.release.test.imageResolution['go-gateway'].runtimeImageID = `sha256:${'8'.repeat(64)}`
+assert.equal(validateTestRehearsalEvidence(mismatchedManifestRuntimeID).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(mismatchedManifestRuntimeID).blockers.join('\n'), /runtimeImageID/)
 
 const unapprovedEnvironmentDiff = structuredClone(validEvidence)
 unapprovedEnvironmentDiff.environment.permittedDiffs.push('temporary allowlist')

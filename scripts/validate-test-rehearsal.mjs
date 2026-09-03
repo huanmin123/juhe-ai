@@ -231,6 +231,9 @@ function validateImageResolution(environmentEvidence, pathName, release, blocker
     if (resolution.runtimeImageIDPlatformManifestDigest !== resolution.resolvedPlatformManifestDigest) {
       addBlocker(blockers, `${componentPath}.runtimeImageIDPlatformManifestDigest`, '必须与 resolvedPlatformManifestDigest 一致；index imageID 允许是同一平台 manifest 的已核验别名')
     }
+    if (resolution.runtimeImageIDKind === 'manifest' && resolution.runtimeImageID !== resolution.resolvedPlatformManifestDigest) {
+      addBlocker(blockers, `${componentPath}.runtimeImageID`, 'manifest 类型的 runtimeImageID 必须直接等于 resolvedPlatformManifestDigest')
+    }
   }
 }
 
@@ -735,6 +738,13 @@ function validateControls(evidence, blockers) {
   requireString(controls, 'verifierIdentity', 'controls', blockers, /^[A-Za-z0-9._:@/-]{1,128}$/u, '必须记录受控 verifier 身份')
   requireString(controls, 'verifiedAt', 'controls', blockers, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u, '必须记录 UTC 验证时间')
   requireString(controls, 'evidenceManifestDigest', 'controls', blockers, SHA256_HEX_PATTERN, '必须记录证据清单 SHA-256 摘要')
+  requireString(controls, 'evidenceBoundSourceCommit', 'controls', blockers, COMMIT_PATTERN, '必须记录证据生成时绑定的候选 source commit')
+  if (isRecord(evidence.release)
+    && typeof evidence.release.sourceCommit === 'string'
+    && typeof controls.evidenceBoundSourceCommit === 'string'
+    && controls.evidenceBoundSourceCommit !== evidence.release.sourceCommit) {
+    addBlocker(blockers, 'controls.evidenceBoundSourceCommit', '必须与 release.sourceCommit 一致，禁止复用其他候选的演练证据')
+  }
   for (const key of ['singleActiveGitOpsVerified', 'maintenanceGateVerified', 'independentVerifierVerified']) {
     requireBoolean(controls, key, 'controls', blockers)
   }
