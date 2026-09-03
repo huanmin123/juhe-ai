@@ -14,7 +14,7 @@
 | 波 | 状态 | WP 明细 |
 | --- | --- | --- |
 | W1 | in-progress | K1 K2 K3 K4 K5 K6 K7 S-PG S-SQ + doc |
-| W2 | in-progress | M01 archived；**M03 顺延至 M04 之后**（团队 disable/enable 级联 revokeAllTeamSources→effective source 重算，属 M04 写引擎）；下一片 **M04 authorizations**；M02 顺延 W3 |
+| W2 | in-progress | M01 ✓、M04 ✓（状态机①-④+路由，usage 待 J5）、**M03 ✓**（禁用级联接线 M04 revokeAllTeamSources/ReactivateTeamGrants）；下一片 M05 groups |
 | W3 | pending | M08-M14 |
 | W4 | pending | M15-M17 P01-P03 G01-G03 |
 | W5 | pending | G04-G08 P04 P05 |
@@ -50,4 +50,5 @@
 - 2026-09-04 M01: announcements 双模式 store + 全路由（create/patch/publish/unpublish/delete/public/read-tracking/revision 冲突 409/currentRevision）+ mutation guard + 操作日志挂接。发现并修复 Patch 未递增 updated_at 的移植缺陷（Node 语义 revision=max(now,prev+1ms)）。挂载摘除推迟到 P8：scripts/ 与后续切片仍引用该模块（不变量：剩余 Node 必须可编译）。
 - 2026-09-04 M02 顺延: ui-bootstrap /options 依赖 findUserReferenceData（accounts 域读模型），authorization-options grantee-* 依赖 authorizations 域 repository——按依赖规则移至 W3（M04/M08/M10 之后）。波次内顺延不阻塞其他片。
 - 2026-09-04 M03→M04 顺序调整: G0 发现 system-teams 的 PATCH status=disabled/active 级联调用 resource-authorization-write 域的 revokeAllTeamSourcesAsync/reactivateTeamGrantSourcesAsync（含 refreshResourceAuthorizationEffectiveSource 重算），属 M04 核心写引擎。依赖优先：先 M04 再 M03，M03 状态变更届时接线。M03 其余语义（CRUD/成员/历史/访问域过滤）契约已读取完毕存于会话证据。
+- 2026-09-04 M04+M03: authz 包（grant/source/runtime 状态机、effective source 四分支刷新、乐观并发、到期扫描、团队级联 RevokeAllTeamSources/ReactivateTeamGrants/RevokeTeamSourcesForMember）+ systemteams 包（CRUD/成员 20 上限/历史/访问域过滤/去重守卫）+ 双前缀路由。调试期间发现并修复两个移植缺陷：①手写 sprintf 逐字节 string(byte) 导致中文双重编码（改 fmt.Sprintf）；②authz id 生成用冻结时钟导致唯一冲突（改随机后缀，对齐 Node newId）。-race 全绿。
 - 已知基线问题：`maintenance/internal/ownermanifest/TestVerifyRepositoryBusinessOwnerManifest` 在基线 f9c1fbeac 即失败（`account_api_key_pool_probe_cursor type line 844 is stale`；主目录存在维护者未提交的 route-strategies 改动，Go 校验器与已提交 Node 状态不同步）。本迁移不掩盖：该断言涉及的 Node 文件将在 M08-M10 归档时随迁移消失，届时此失败自然解除；W1-W3 每次全量回归将此失败记为 KNOWN-BASELINE-FAIL，不计入迁移回归门。
