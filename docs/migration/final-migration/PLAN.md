@@ -31,7 +31,7 @@
 | K1 http-kernel | archived | b3115e675 | kernel 9 测试 -race 绿；契约对照 http-security/system-error-message/http-compression/deduplication/system-api-app |
 | K2 session-auth | archived (mount-removed) | da4fd3f37 + c1c96f0a3 | authsys 8 测试绿；6 文件 SHA-256 manifest 于 final-archive/K2-session-auth.manifest.json；物理移动 P8（oidc/scripts 仍 import auth 工具） |
 | K6 legacybridge | archived | 21dc58a01 | bridge 测试绿：代理/翻转摘除/keep-alive 安全 |
-| K3 rate-limit | pending | — | — |
+| K3 rate-limit | archived | 下一个提交 | 7 测试绿（IP 分钟/突发、用户分钟、allowlist/health 旁路、Redis Lua 多桶、429 Retry-After 契约） |
 | K4 oplog-producer | pending | — | — |
 | K5 invalidation-bus | pending | — | — |
 | K6 legacybridge | pending | — | — |
