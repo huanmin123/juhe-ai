@@ -65,6 +65,28 @@ export interface NormalRouteLatencyProbeClaim {
   token: string
 }
 
+/**
+ * 面向管理端的普通路由速度优先降级快照项。
+ *
+ * 这是策略/分组作用域的短期调度运行态，不等同于 AI 账户的健康或可用状态。
+ * 不暴露 stateKey、generation 等内部协调字段。
+ */
+export interface NormalRouteLatencyDegradedRuntimeItem {
+  accountId: string
+  accountName?: string
+  scope: Pick<NormalRouteLatencyDegradationScope, 'routeStrategyId' | 'groupId'>
+  slowCount: number
+  slowTriggerCount: number
+  slowWindowSeconds: number
+  degradedUntil: string
+  nextProbeAt?: string
+  recoverySuccessCount: number
+  requiredRecoverySuccessCount: number
+  recoveryProbeRoundAttemptCount: number
+  recoveryProbeRoundSuccessCount: number
+  reason: string
+}
+
 interface NormalRouteLatencyState {
   generation: string
   accountId: string
@@ -420,6 +442,63 @@ export async function listNormalRouteLatencyProbeCandidatesAsync(
     .map(({ nextProbeAtMs: _nextProbeAtMs, ...candidate }) => candidate)
 }
 
+/**
+ * 查询指定策略路由中的当前速度优先降级态；传入 systemAccountId 时再做 owner 二次收窄。
+ *
+ * 必须从 probe index 读取，避免把观察期或已经过期的普通运行态误展示为降级。
+ */
+export async function listNormalRouteLatencyDegradedRuntimeAsync(input: {
+  systemAccountId?: string
+  routeStrategyIds: string[]
+  now?: number
+}): Promise<NormalRouteLatencyDegradedRuntimeItem[]> {
+  const systemAccountId = input.systemAccountId?.trim()
+  const routeStrategyIds = normalizedRouteStrategyIds(input.routeStrategyIds)
+  if (routeStrategyIds.length === 0) return []
+  if (routeStrategyIds.length > 50) {
+    throw new Error('普通路由速度优先运行态查询最多支持 50 个策略路由')
+  }
+
+  const keys = await loadLatencyStateIndexKeys(latencyStateProbeIndexKey)
+  if (keys.length === 0) return []
+
+  const generation = await loadLatencyStateGeneration()
+  const now = input.now ?? Date.now()
+  const routeStrategyIdSet = new Set(routeStrategyIds)
+  const states = await latencyStateStore.getJsonMany<NormalRouteLatencyState>(keys)
+  const items: NormalRouteLatencyDegradedRuntimeItem[] = []
+  for (const state of states) {
+    if (!isCurrentLatencyState(state, generation)) continue
+    if (!state.degradedUntilMs || state.degradedUntilMs <= now) continue
+    if (systemAccountId && state.scope.systemAccountId !== systemAccountId) continue
+    if (!routeStrategyIdSet.has(state.scope.routeStrategyId)) continue
+    items.push({
+      accountId: state.accountId,
+      ...(state.accountName ? { accountName: state.accountName } : {}),
+      scope: {
+        routeStrategyId: state.scope.routeStrategyId,
+        groupId: state.scope.groupId
+      },
+      slowCount: state.slowCount,
+      slowTriggerCount: state.config.slowTriggerCount,
+      slowWindowSeconds: state.config.slowWindowSeconds,
+      degradedUntil: new Date(state.degradedUntilMs).toISOString(),
+      ...(state.nextProbeAtMs ? { nextProbeAt: new Date(state.nextProbeAtMs).toISOString() } : {}),
+      recoverySuccessCount: state.successCount,
+      requiredRecoverySuccessCount: state.config.recoverySuccessCount,
+      recoveryProbeRoundAttemptCount: recoveryProbeRoundAttempts(state),
+      recoveryProbeRoundSuccessCount: recoveryProbeRoundSuccesses(state),
+      reason: state.reason
+    })
+  }
+  return items.sort((left, right) => (
+    left.degradedUntil.localeCompare(right.degradedUntil)
+    || left.accountId.localeCompare(right.accountId)
+    || left.scope.routeStrategyId.localeCompare(right.scope.routeStrategyId)
+    || left.scope.groupId.localeCompare(right.scope.groupId)
+  ))
+}
+
 // The scheduler only discovers candidates. This claim owns the external
 // probe itself, so independently scheduled replicas cannot probe one state
 // transition concurrently.
@@ -747,24 +826,37 @@ async function loadLatencyState(
   generation: string
 ): Promise<NormalRouteLatencyState | undefined> {
   const state = await loadLatencyStateRaw(key)
-  return state?.generation === generation ? state : undefined
+  return isCurrentLatencyState(state, generation) ? state : undefined
+}
+
+function isCurrentLatencyState(
+  state: unknown,
+  generation: string
+): state is NormalRouteLatencyState {
+  return isNormalRouteLatencyState(state) && state.generation === generation
 }
 
 async function loadLatencyStateRaw(key: string): Promise<NormalRouteLatencyState | undefined> {
-  const state = await latencyStateStore.getJson<NormalRouteLatencyState>(key)
-  if (!state || typeof state !== 'object') return undefined
-  if (typeof state.generation !== 'string' || !state.generation) return undefined
-  if (typeof state.accountId !== 'string') return undefined
-  if (typeof state.runtimeKey !== 'string') return undefined
-  if (!isNormalRouteLatencyDegradationScope(state.scope)) return undefined
-  if (!isRouteStrategySpeedFirstConfig(state.config)) return undefined
-  if (!Number.isFinite(state.firstSlowAtMs) || !Number.isFinite(state.lastSlowAtMs)) return undefined
-  if (!Number.isFinite(state.slowCount) || !Number.isFinite(state.successCount)) return undefined
-  if (state.recoveryProbeRoundAttemptCount !== undefined && !isFiniteNonNegativeInteger(state.recoveryProbeRoundAttemptCount)) return undefined
-  if (state.recoveryProbeRoundSuccessCount !== undefined && !isFiniteNonNegativeInteger(state.recoveryProbeRoundSuccessCount)) return undefined
-  if (state.degradedUntilMs !== undefined && !Number.isFinite(state.degradedUntilMs)) return undefined
-  if (state.nextProbeAtMs !== undefined && !Number.isFinite(state.nextProbeAtMs)) return undefined
+  const state = await latencyStateStore.getJson<unknown>(key)
+  if (!isNormalRouteLatencyState(state)) return undefined
   return state
+}
+
+function isNormalRouteLatencyState(value: unknown): value is NormalRouteLatencyState {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const state = value as NormalRouteLatencyState
+  if (typeof state.generation !== 'string' || !state.generation) return false
+  if (typeof state.accountId !== 'string') return false
+  if (typeof state.runtimeKey !== 'string') return false
+  if (!isNormalRouteLatencyDegradationScope(state.scope)) return false
+  if (!isRouteStrategySpeedFirstConfig(state.config)) return false
+  if (!Number.isFinite(state.firstSlowAtMs) || !Number.isFinite(state.lastSlowAtMs)) return false
+  if (!Number.isFinite(state.slowCount) || !Number.isFinite(state.successCount)) return false
+  if (state.recoveryProbeRoundAttemptCount !== undefined && !isFiniteNonNegativeInteger(state.recoveryProbeRoundAttemptCount)) return false
+  if (state.recoveryProbeRoundSuccessCount !== undefined && !isFiniteNonNegativeInteger(state.recoveryProbeRoundSuccessCount)) return false
+  if (state.degradedUntilMs !== undefined && !Number.isFinite(state.degradedUntilMs)) return false
+  if (state.nextProbeAtMs !== undefined && !Number.isFinite(state.nextProbeAtMs)) return false
+  return true
 }
 
 function accountLatencyStateKey(scope: NormalRouteLatencyDegradationScope, account: SuppressibleGatewayAccount): string {
@@ -1183,6 +1275,19 @@ function normalizePositiveInteger(value: unknown, fallback: number, min: number,
   const numeric = typeof value === 'number' ? value : Number(value)
   if (!Number.isInteger(numeric)) return fallback
   return Math.max(min, Math.min(max, numeric))
+}
+
+function normalizedRouteStrategyIds(values: string[]): string[] {
+  const ids: string[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const id = value.trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    ids.push(id)
+  }
+  return ids
 }
 
 function delay(ms: number): Promise<void> {

@@ -19,7 +19,19 @@ assert.match(jenkinsfile, /string\(name: 'PROD_APPROVAL_TICKET'/,
 assert.match(jenkinsfile, /string\(name: 'PROD_FINAL_APPROVAL'/,
   '生产晋级必须带用户最终确认参数')
 assert.match(jenkinsfile, /string\(name: 'RELEASE_MODE', defaultValue: 'single-active-stop'/,
-  '生产发布模式必须显式固定为全停机单 active')
+  '本次默认生产发布模式必须是全停机单 active')
+assert.match(jenkinsfile, /string\(name: 'SCHEMA_CHANGE_CLASS', defaultValue: 'requires-stop'/,
+  '数据库变更分类必须显式进入发布参数')
+assert.match(jenkinsfile, /stage\('检查 test\/prod GitOps 隔离'\)/,
+  '任何 test/prod release state 写入前必须执行环境隔离检查')
+assert.match(jenkinsfile, /def assertTestProdGitOpsIsolation\(\)/,
+  'Jenkins 必须提供 test/prod GitOps 隔离硬门')
+assert.match(jenkinsfile, /targetRevision ==~ \/\^\[0-9a-f\]\{40\}\$\//,
+  '生产 Argo 必须固定到不可变 commit，禁止跟随 main 或未接入的分支')
+assert.match(jenkinsfile, /生产 Argo targetRevision 未固定到不可变 40 位 commit/,
+  '生产 targetRevision 未固定到不可变 commit 时必须 fail closed')
+assert.match(jenkinsfile, /if \(environmentName in \['test', 'prod'\]\)[\s\S]*?assertTestProdGitOpsIsolation\(\)/,
+  'release state 写入函数必须再次核对 test/prod 隔离，避免刷新竞态绕过硬门')
 
 const prodPromotionStart = jenkinsfile.indexOf("stage('写入 prod 晋级状态')")
 const prodPromotionEnd = jenkinsfile.indexOf("stage('选择 prod 回滚版本')")
@@ -31,8 +43,8 @@ assert.match(prodPromotion, /readTestRelease\(true\)/,
   'DEPLOY_PROD 必须读取并要求 test release state 的 verifier 通过')
 assert.match(jenkinsfile, /releaseMode: metadataValue\('test', 'releaseMode'\)/,
   'Jenkins 必须读取 test releaseMode，防止旧双槽候选进入晋级链')
-assert.match(jenkinsfile, /release\.releaseMode != 'single-active-stop'/,
-  'Jenkins 必须拒绝未声明 single-active-stop 的 test release state')
+assert.match(jenkinsfile, /validateReleaseStrategy\(release\.releaseMode, release\.schemaChangeClass\)/,
+  'Jenkins 必须按数据库变更分类校验 test release state')
 assert.doesNotMatch(prodPromotion, /waitForArgoApplication|waitForIngress|verifyJ3aRelease|markReleaseVerified|assertStandardProdPromotionAllowed/,
   'Jenkins 不负责运行态观察；验证由 Jenkins 外部 AI/观测链路执行')
 assert.match(jenkinsfile, /def readTestRelease\(boolean requireVerification = false\)/,
@@ -45,16 +57,24 @@ assert.match(jenkinsfile, /verificationVerifierIdentity: metadataValueOptional\(
   'DEPLOY_PROD 必须读取受控 verifier 身份')
 assert.match(jenkinsfile, /verificationVerifiedAt: metadataValueOptional\('test', 'verification\.verifiedAt'\)/,
   'DEPLOY_PROD 必须读取 verifier UTC 时间')
+assert.match(jenkinsfile, /verificationReleaseMode: metadataValueOptional\('test', 'verification\.releaseMode'\)/,
+  'DEPLOY_PROD 必须读取 verifier 绑定的发布模式')
+assert.match(jenkinsfile, /verificationSchemaChangeClass: metadataValueOptional\('test', 'verification\.schemaChangeClass'\)/,
+  'DEPLOY_PROD 必须读取 verifier 绑定的数据库变更分类')
 assert.match(jenkinsfile, /validSha256Hex\(release\.verificationEvidenceManifestDigest\)/,
   'DEPLOY_PROD 必须校验 verifier evidence manifest 摘要格式')
 assert.match(jenkinsfile, /verificationVerifierIdentity ==~ \/\^\[A-Za-z0-9\._:@\\\/-\]\{1,128\}\$\//,
   'DEPLOY_PROD 必须校验 verifier 身份格式')
 assert.match(jenkinsfile, /verificationVerifiedAt ==~ \/\^\\d\{4\}-\\d\{2\}-\\d\{2\}T/,
   'DEPLOY_PROD 必须校验 verifier UTC 时间格式')
+assert.match(jenkinsfile, /verificationReleaseMode != release\.releaseMode \|\| release\.verificationSchemaChangeClass != release\.schemaChangeClass/,
+  'verifier 必须绑定与候选一致的发布模式和数据库变更分类')
 assert.match(jenkinsfile, /metadataValue\('test', 'verification\.status'\) != 'passed'[\s\S]*?metadataValue\('test', 'verification\.sourceCommit'\)[\s\S]*?validEvidenceRef\(metadataValue\('test', 'verification\.evidenceRef'\)\)/,
   '写 prod 前必须二次核对 verifier 字段，防止 test release state 竞态')
 assert.match(jenkinsfile, /metadataValue\('test', 'verification\.evidenceManifestDigest'\)[\s\S]*?metadataValue\('test', 'verification\.verifierIdentity'\)[\s\S]*?metadataValue\('test', 'verification\.verifiedAt'\)/,
   '写 prod 前必须二次核对 verifier manifest/身份/时间，防止伪造 passed')
+assert.match(jenkinsfile, /metadataValue\('test', 'verification\.releaseMode'\) != releaseMode[\s\S]*?metadataValue\('test', 'verification\.schemaChangeClass'\) != schemaChangeClass/,
+  '写 prod 前必须二次核对 verifier 绑定的发布模式和数据库变更分类')
 assert.doesNotMatch(jenkinsfile, /writeReverseReleaseState|candidateVerification|reverse-blue-green/,
   '当前单 active 发布契约不保留反向蓝绿 release state 写入实现')
 assert.match(jenkinsfile, /def metadataValueOptional\(environmentName, key\)/,
@@ -77,20 +97,24 @@ assert.match(jenkinsfile, /if \(rollbackRequested\(\) && !\(params\.ROLLBACK_APP
   'prod 回滚缺少审批单号时必须 fail closed')
 assert.match(jenkinsfile, /if \(rollbackRequested\(\) && !\(params\.ROLLBACK_SCHEMA_COMPATIBILITY_TICKET\?\.trim\(\)\)\)/,
   'prod 回滚缺少 schema 兼容证据时必须 fail closed')
-assert.match(jenkinsfile, /if \(params\.DEPLOY_PROD && !\(params\.PROD_APPROVAL_TICKET\?\.trim\(\)\)\)/,
-  'prod 晋级缺少用户最终批准时必须 fail closed')
-assert.match(jenkinsfile, /if \(\(params\.DEPLOY_PROD \|\| rollbackRequested\(\)\) && params\.PROD_FINAL_APPROVAL\?\.trim\(\) != 'I_APPROVE_PROD_SINGLE_ACTIVE_STOP'\)/,
-  'prod 晋级或回滚缺少精确用户确认短语时必须 fail closed')
+assert.match(jenkinsfile, /params\.DEPLOY_PROD && requestedReleaseMode == 'single-active-stop' && !\(params\.PROD_APPROVAL_TICKET\?\.trim\(\)\)/,
+  'single-active-stop prod 晋级缺少用户批准时必须 fail closed')
+assert.match(jenkinsfile, /rollbackRequested\(\) \|\| \(params\.DEPLOY_PROD && requestedReleaseMode == 'single-active-stop'\)/,
+  '停机晋级或回滚缺少精确用户确认短语时必须 fail closed')
 assert.match(jenkinsfile, /def validApprovalTicket\(value\)/,
   '审批单号必须经过受控格式校验，避免参数注入')
 assert.match(jenkinsfile, /def prodRollbackCandidates\(\) \{\s*\/\/ 回滚必须从本次构建新鲜读取平台仓库[\s\S]*?refreshPlatformReleaseWorkspace\(\)/,
   'prod 回滚必须先刷新平台仓库，禁止使用陈旧 workspace')
 assert.match(jenkinsfile, /expectedPlatformRevision = null/,
   'prod 晋级与回滚必须支持校验平台 release revision，避免候选竞态')
-assert.match(jenkinsfile, /selected\.platformRevision\)/,
+assert.match(jenkinsfile, /selected\.platformRevision,/,
   'prod 回滚必须使用读取历史时的 release revision，避免陈旧 history')
-assert.match(jenkinsfile, /if \(reverseDeployRequested\(\)\) \{\s*error 'REVERSE_DEPLOY_PROD 已被本次全停机单 active 发布策略明确禁止/s,
-  '本次全停机单 active 发布必须硬拒绝反向蓝绿参数')
+assert.match(jenkinsfile, /if \(reverseDeployRequested\(\)\) \{\s*error 'REVERSE_DEPLOY_PROD 是历史反向入口，已禁用/s,
+  '历史反向蓝绿参数必须硬拒绝，不能绕过发布状态机')
+assert.match(jenkinsfile, /def blueGreenControlPlaneImplemented\(\) \{[\s\S]*?return false/,
+  '在候选镜像、预览验证、Service 无空 Endpoint 切换和 owner handoff 状态机完成前，蓝绿参数必须 fail closed')
+assert.match(jenkinsfile, /releaseMode == 'blue-green-additive' && !blueGreenControlPlaneImplemented\(\)/,
+  'blue-green-additive 不能仅凭 schema 分类直接放行生产')
 
 assert.doesNotMatch(jenkinsfile, /stage\('验证 test'\)|stage\('验证 prod'\)/,
   '上线流水线不再包含独立验证 stage')
@@ -118,12 +142,18 @@ assert(jenkinsfile.includes('normalize_line_endings')
   'J3a 换行规范化必须读取目标文件内容，不能把空 stdin 写回 release 文件')
 assert.match(jenkinsfile, /def writeReleaseState\([\s\S]*?assert_metadata_value sourceCommit/,
   'release metadata 写入必须对关键字段做唯一命中数与目标值回读，避免静默漂移')
-assert.match(jenkinsfile, /environmentName.*test[\s\S]*?assert_metadata_value releaseMode 'single-active-stop'/,
-  'test release state 写入必须回读 single-active-stop 声明')
+assert.match(jenkinsfile, /assert_metadata_value releaseMode '\$\{releaseMode\}'[\s\S]*?assert_metadata_value schemaChangeClass '\$\{schemaChangeClass\}'/,
+  'test/prod release state 写入必须回读发布模式和数据库变更分类')
 assert.doesNotMatch(jenkinsfile, /assert_metadata_value verification\./,
   'release state 写入不能重置外部 AI 观测字段')
-assert.match(jenkinsfile, /actor in \['jenkins-prod-promotion', 'jenkins-prod-rollback'\][\s\S]*?releaseMode.*single-active-stop/,
-  '生产晋级和回滚必须拒绝旧的双槽/standby releaseMode')
+assert.match(jenkinsfile, /metadataValue\('test', 'releaseMode'\) != releaseMode[\s\S]*?metadataValue\('test', 'schemaChangeClass'\) != schemaChangeClass/,
+  '生产晋级必须二次绑定 test 候选的 releaseMode 与数据库变更分类')
+assert.match(jenkinsfile, /if \(releaseMode == 'single-active-stop'\)[\s\S]*?params\.PROD_FINAL_APPROVAL\?\.trim\(\) != 'I_APPROVE_PROD_SINGLE_ACTIVE_STOP'/,
+  'writeReleaseState 本身必须对停机发布再次要求用户最终确认，避免未来调用点绕过 stage')
+assert.match(jenkinsfile, /actor == 'jenkins-prod-promotion'[\s\S]*?params\.PROD_APPROVAL_TICKET/,
+  'prod 晋级写状态必须在函数内部校验审批单')
+assert.match(jenkinsfile, /actor == 'jenkins-prod-rollback'[\s\S]*?params\.ROLLBACK_SCHEMA_COMPATIBILITY_TICKET/,
+  'prod 回滚写状态必须在函数内部校验回滚审批和 schema 兼容证据')
 assert.match(jenkinsfile, /metadataValue\('test', 'sourceCommit'\)[\s\S]*?metadataValue\('test', 'nodeImageDigest'\)[\s\S]*?metadataValue\('test', 'gatewayImageDigest'\)/,
   '生产晋级二次读取必须继续绑定 test source commit 与全部组件 digest')
 console.log('Jenkins API release flow contract passed')

@@ -21,6 +21,14 @@ const authorizedClearAsyncSource = sourceBetween(
   'export async function clearAuthorizedAccountBindingFailureStateByContextAsync',
   'function accountRuntimeMutationTable'
 )
+const ownerClearSyncSource = sourceBetween(
+  'export function clearAccountFailureStateResult',
+  'export async function clearAccountFailureStateResultAsync'
+)
+const directAuthorizedClearSyncSource = sourceBetween(
+  'export function clearAuthorizedAccountBindingFailureState',
+  'export interface AuthorizedAccountBindingRuntimeTarget'
+)
 
 assert.match(
   cooldownAsyncSource,
@@ -85,6 +93,21 @@ assert.match(
   '账户级通用额度写回必须兼容新旧显式 cooldown provenance'
 )
 assert(repositorySource.includes('LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX'), '账户级通用额度写回必须绑定旧显式 provenance 参数')
+assert.match(
+  ownerClearSyncSource,
+  /const bindingSystemAccountId = current\.bindingSystemAccountId \?\? current\.systemAccountId[\s\S]*systemAccountId: bindingSystemAccountId/,
+  'SQLite/internal clearFailureState 必须使用授权关系的 grantee identity，不能把管理员或请求调用者当作绑定账户'
+)
+assert.match(
+  ownerClearAsyncSource,
+  /const bindingSystemAccountId = current\.bindingSystemAccountId \?\? current\.systemAccountId[\s\S]*systemAccountId: bindingSystemAccountId/,
+  'PostgreSQL/internal clearFailureState 必须使用授权关系的 grantee identity，不能把管理员或请求调用者当作绑定账户'
+)
+assert.match(
+  directAuthorizedClearSyncSource,
+  /const bindingSystemAccountId = current\.bindingSystemAccountId \?\? current\.systemAccountId[\s\S]*systemAccountId: bindingSystemAccountId/,
+  '公开授权恢复入口必须使用授权关系的 grantee identity，不能按调用者 scope 重新推导'
+)
 for (const [name, source] of [
   ['owner', ownerClearAsyncSource],
   ['authorized binding', authorizedClearAsyncSource]

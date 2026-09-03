@@ -29,10 +29,48 @@ export interface ScopeManifest {
   approvedCanaryAccountIds: string[]
   sourceAccountIds: string[]
   selectedAccountIds: string[]
+  systemAccountIds: string[]
+  systemTeamIds: string[]
+  groupIds: string[]
+  routeStrategyIds: string[]
+  resourceAuthorizationIds: string[]
+  resourceAuthorizationGrantIds: string[]
+  apiKeyIds: string[]
+  /**
+   * The executor deliberately keeps API-key row IDs stable.  Secrets are
+   * regenerated in generated-values.json; changing the row ID would require
+   * rewriting quota bindings and every external reference, which is not
+   * implemented by this command.
+   */
+  apiKeyRemap: Array<{ sourceId: string; targetId: string }>
   approvedCanaryAccountIdsHash: string
   approvedCanaryCount: number
   sourceAccountIdsHash: string
   selectedAccountIdsHash: string
+  systemAccountIdsHash: string
+  systemTeamIdsHash: string
+  groupIdsHash: string
+  routeStrategyIdsHash: string
+  resourceAuthorizationIdsHash: string
+  resourceAuthorizationGrantIdsHash: string
+  apiKeyIdsHash: string
+  apiKeyRemapHash: string
+}
+
+export interface AccountClosureManifest {
+  schemaVersion: 1
+  approvedCanaryAccountIds: string[]
+  sourceAccountIds: string[]
+  selectedAccountIds: string[]
+  systemAccountIds: string[]
+  systemTeamIds: string[]
+  groupIds: string[]
+  routeStrategyIds: string[]
+  resourceAuthorizationIds: string[]
+  resourceAuthorizationGrantIds: string[]
+  apiKeyIds: string[]
+  apiKeyRemap: Array<{ sourceId: string; targetId: string }>
+  [key: string]: unknown
 }
 
 export interface GeneratedValuesManifest {
@@ -66,6 +104,9 @@ export interface RehearsalAccountSyncExecutionReport {
   source: AccountSyncDatabaseIdentity
   target: AccountSyncDatabaseIdentity
   targetNameAccepted: true
+  scopeManifestDigest: string
+  closureManifestDigest: string
+  apiKeyRemapHash: string
   approvedCanaryCount: number
   tableReports: ExecutionTableReport[]
   referenceClosureVerified: true
@@ -77,6 +118,15 @@ const businessSchema = 'juhe_business'
 const confirmation = 'I_UNDERSTAND_TEST_TARGET_ONLY'
 const sha256Pattern = /^[0-9a-f]{64}$/u
 const minimumRehearsalSecretLength = 32
+const scopeEntitySpecs = [
+  { table: 'system_accounts', idsField: 'systemAccountIds', hashField: 'systemAccountIdsHash', label: '系统账户' },
+  { table: 'system_teams', idsField: 'systemTeamIds', hashField: 'systemTeamIdsHash', label: '系统团队' },
+  { table: 'groups', idsField: 'groupIds', hashField: 'groupIdsHash', label: '分组' },
+  { table: 'route_strategies', idsField: 'routeStrategyIds', hashField: 'routeStrategyIdsHash', label: '路由策略' },
+  { table: 'resource_authorizations', idsField: 'resourceAuthorizationIds', hashField: 'resourceAuthorizationIdsHash', label: '资源授权' },
+  { table: 'resource_authorization_grants', idsField: 'resourceAuthorizationGrantIds', hashField: 'resourceAuthorizationGrantIdsHash', label: '资源授权 grant' },
+  { table: 'api_keys', idsField: 'apiKeyIds', hashField: 'apiKeyIdsHash', label: 'API Key' }
+] as const
 
 export function stableKey(values: readonly unknown[]): string {
   return JSON.stringify(values.map((value) => normalizeValue(value)))
@@ -86,6 +136,19 @@ export function hashStringList(values: readonly string[]): string {
   const hash = createHash('sha256')
   for (const value of [...values].sort()) hash.update(value).update('\n')
   return hash.digest('hex')
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+    .join(',')}}`
+}
+
+export function manifestDigest(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex')
 }
 
 export function assertExecuteEnvironment(env: NodeJS.ProcessEnv): void {
@@ -168,6 +231,8 @@ export function validateScopeManifest(
   if (hashStringList(scope.approvedCanaryAccountIds) !== scope.approvedCanaryAccountIdsHash) throw new Error('scope approvedCanaryAccountIdsHash 与 ID 列表不一致')
   if (hashStringList(scope.sourceAccountIds) !== scope.sourceAccountIdsHash) throw new Error('scope sourceAccountIdsHash 与 ID 列表不一致')
   if (hashStringList(scope.selectedAccountIds) !== scope.selectedAccountIdsHash) throw new Error('scope selectedAccountIdsHash 与 ID 列表不一致')
+  for (const spec of scopeEntitySpecs) validateApprovedScopeEntityList(scope, spec)
+  validateApiKeyRemap(scope)
   const selectedAccountSet = new Set(scope.selectedAccountIds)
   const expectedAccountSet = new Set([...scope.approvedCanaryAccountIds, ...scope.sourceAccountIds])
   if (expectedAccountSet.size !== selectedAccountSet.size || [...selectedAccountSet].some((id) => !expectedAccountSet.has(id))) {
@@ -201,12 +266,115 @@ export function validateScopeManifest(
   if (accountKeys.includes('*')) {
     throw new Error('scope.accounts 必须列出 canary 与 source 闭包账户，不能使用 *')
   }
-  const accountIdsFromKeys = accountKeys.map(parseSingleColumnScopeKey)
+  const accountIdsFromKeys = accountKeys.map((key) => parseSingleColumnScopeKey(key))
   if (new Set(accountIdsFromKeys).size !== accountIdsFromKeys.length || accountIdsFromKeys.length !== scope.selectedAccountIds.length) {
     throw new Error('scope.accounts 必须逐一列出 selectedAccountIds，且不得重复')
   }
   if (new Set(accountIdsFromKeys).size !== selectedAccountSet.size || accountIdsFromKeys.some((id) => !selectedAccountSet.has(id))) {
     throw new Error('scope.accounts 行键与 selectedAccountIds 不一致')
+  }
+  for (const spec of scopeEntitySpecs) validateScopeEntityTableBinding(scope, spec)
+}
+
+function normalizeApiKeyRemap(value: unknown): Array<{ sourceId: string; targetId: string }> {
+  if (!Array.isArray(value) || value.length === 0) throw new Error('scope.apiKeyRemap 必须是非空数组')
+  const remap = value.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`scope.apiKeyRemap[${index}] 必须是对象`)
+    }
+    const sourceId = (item as Record<string, unknown>).sourceId
+    const targetId = (item as Record<string, unknown>).targetId
+    if (typeof sourceId !== 'string' || !sourceId.trim() || typeof targetId !== 'string' || !targetId.trim()) {
+      throw new Error(`scope.apiKeyRemap[${index}] 必须包含非空 sourceId/targetId`)
+    }
+    return { sourceId, targetId }
+  }).sort((left, right) => left.sourceId.localeCompare(right.sourceId) || left.targetId.localeCompare(right.targetId))
+  if (new Set(remap.map((item) => item.sourceId)).size !== remap.length) throw new Error('scope.apiKeyRemap 的 sourceId 不得重复')
+  if (new Set(remap.map((item) => item.targetId)).size !== remap.length) throw new Error('scope.apiKeyRemap 的 targetId 不得重复')
+  return remap
+}
+
+function validateApiKeyRemap(scope: ScopeManifest): void {
+  const remap = normalizeApiKeyRemap(scope.apiKeyRemap)
+  const expected = [...scope.apiKeyIds].sort()
+  const sources = remap.map((item) => item.sourceId).sort()
+  const targets = remap.map((item) => item.targetId).sort()
+  if (JSON.stringify(sources) !== JSON.stringify(expected) || JSON.stringify(targets) !== JSON.stringify(expected)) {
+    throw new Error('scope.apiKeyRemap 必须覆盖全部 apiKeyIds，且 source/target 集合必须一致')
+  }
+  if (remap.some((item) => item.sourceId !== item.targetId)) {
+    throw new Error('当前执行器不支持 API Key ID remap；必须保留原 ID，仅重建 test 专用 key_secret')
+  }
+  if (scope.apiKeyRemapHash !== manifestDigest(remap)) throw new Error('scope.apiKeyRemapHash 与 apiKeyRemap 不一致')
+}
+
+export function assertClosureMatchesScope(scope: ScopeManifest, closure: AccountClosureManifest): void {
+  if (!closure || closure.schemaVersion !== 1) throw new Error('closure manifest 必须是 schemaVersion=1')
+  const idFields = [
+    'approvedCanaryAccountIds', 'sourceAccountIds', 'selectedAccountIds', 'systemAccountIds',
+    'systemTeamIds', 'groupIds', 'routeStrategyIds', 'resourceAuthorizationIds',
+    'resourceAuthorizationGrantIds', 'apiKeyIds'
+  ] as const
+  for (const field of idFields) {
+    const closureIds = closure[field]
+    const scopeIds = scope[field]
+    if (!Array.isArray(closureIds) || JSON.stringify([...closureIds].sort()) !== JSON.stringify([...scopeIds].sort())) {
+      throw new Error(`closure.${field} 必须与执行 scope 完全一致`)
+    }
+  }
+  const remap = normalizeApiKeyRemap(closure.apiKeyRemap)
+  if (JSON.stringify(remap) !== JSON.stringify(normalizeApiKeyRemap(scope.apiKeyRemap))) {
+    throw new Error('closure.apiKeyRemap 必须与执行 scope 完全一致')
+  }
+  const hashPairs: Array<[keyof ScopeManifest, 'approvedCanaryAccountIds' | 'sourceAccountIds' | 'selectedAccountIds' | 'systemAccountIds' | 'systemTeamIds' | 'groupIds' | 'routeStrategyIds' | 'resourceAuthorizationIds' | 'resourceAuthorizationGrantIds' | 'apiKeyIds']> = [
+    ['approvedCanaryAccountIdsHash', 'approvedCanaryAccountIds'],
+    ['sourceAccountIdsHash', 'sourceAccountIds'],
+    ['selectedAccountIdsHash', 'selectedAccountIds'],
+    ['systemAccountIdsHash', 'systemAccountIds'],
+    ['systemTeamIdsHash', 'systemTeamIds'],
+    ['groupIdsHash', 'groupIds'],
+    ['routeStrategyIdsHash', 'routeStrategyIds'],
+    ['resourceAuthorizationIdsHash', 'resourceAuthorizationIds'],
+    ['resourceAuthorizationGrantIdsHash', 'resourceAuthorizationGrantIds'],
+    ['apiKeyIdsHash', 'apiKeyIds']
+  ]
+  for (const [hashField, idField] of hashPairs) {
+    const closureHash = closure[hashField]
+    if (closureHash !== scope[hashField] || closureHash !== hashStringList(scope[idField])) {
+      throw new Error(`closure.${idField} hash 必须与执行 scope 一致`)
+    }
+  }
+  if (closure.apiKeyRemapHash !== scope.apiKeyRemapHash || closure.apiKeyRemapHash !== manifestDigest(remap)) {
+    throw new Error('closure.apiKeyRemapHash 必须与执行 scope 一致')
+  }
+}
+
+function validateApprovedScopeEntityList(
+  scope: ScopeManifest,
+  spec: (typeof scopeEntitySpecs)[number]
+): void {
+  const ids: unknown = scope[spec.idsField]
+  const hash: unknown = scope[spec.hashField]
+  if (!Array.isArray(ids) || ids.length === 0) throw new Error(`scope.${spec.idsField} 必须是非空数组`)
+  if (ids.some((value) => typeof value !== 'string' || !value.trim())) throw new Error(`scope.${spec.idsField} 含无效 ${spec.label} ID`)
+  if (new Set(ids).size !== ids.length) throw new Error(`scope.${spec.idsField} 不得重复`)
+  if (typeof hash !== 'string' || !sha256Pattern.test(hash)) throw new Error(`scope.${spec.hashField} 无效`)
+  if (hashStringList(ids) !== hash) throw new Error(`scope.${spec.hashField} 与 ID 列表不一致`)
+}
+
+function validateScopeEntityTableBinding(
+  scope: ScopeManifest,
+  spec: (typeof scopeEntitySpecs)[number]
+): void {
+  const tableKeys = scope.tables[spec.table]
+  const approvedIds = scope[spec.idsField]
+  if (!Array.isArray(tableKeys) || tableKeys.includes('*')) {
+    throw new Error(`scope.${spec.table} 必须逐一列出获批 ${spec.label}，不能使用 *`)
+  }
+  const tableIds = tableKeys.map((key) => parseSingleColumnScopeKey(key, spec.table))
+  const approvedIdSet = new Set(approvedIds)
+  if (tableIds.length !== approvedIdSet.size || new Set(tableIds).size !== tableIds.length || tableIds.some((id) => !approvedIdSet.has(id))) {
+    throw new Error(`scope.${spec.table} 行键必须与 scope.${spec.idsField} 精确一致`)
   }
 }
 
@@ -238,11 +406,13 @@ export async function executeRehearsalAccountSync(
   plan: RehearsalAccountSyncPlan,
   preflightText: string,
   scope: ScopeManifest,
+  closure: AccountClosureManifest,
   generatedValues: GeneratedValuesManifest
 ): Promise<RehearsalAccountSyncExecutionReport> {
   const validation = validateRehearsalAccountSyncPlanBinding(preflightText, preflight, plan)
   if (validation.status !== 'passed') throw new Error(`field-level plan 未通过校验：${validation.blockers.join('; ')}`)
   validateScopeManifest(scope, plan)
+  assertClosureMatchesScope(scope, closure)
   validateGeneratedValuesManifest(generatedValues)
   assertTargetDatabaseName(preflight.target.databaseName)
   assertDistinctDatabaseIdentities(preflight.source, preflight.target)
@@ -280,7 +450,7 @@ export async function executeRehearsalAccountSync(
   // not have database FKs. Verify their target-side closure before clearing
   // runtime state, otherwise a rehearsal could pass INSERT/readback while a
   // scheduler or gateway later follows an orphaned reference.
-  await assertTargetReferenceClosure(target)
+  await assertTargetReferenceClosure(target, scope)
 
   const runtimeResetTables = [
     ...ACCOUNT_SYNC_RUNTIME_RESET_TABLES.map((name) => ({ schema: businessSchema, name })),
@@ -294,6 +464,9 @@ export async function executeRehearsalAccountSync(
     source: sourceIdentity,
     target: targetIdentity,
     targetNameAccepted: true,
+    scopeManifestDigest: manifestDigest(scope),
+    closureManifestDigest: manifestDigest(closure),
+    apiKeyRemapHash: scope.apiKeyRemapHash,
     approvedCanaryCount: scope.approvedCanaryCount,
     tableReports: reports,
     referenceClosureVerified: true,
@@ -302,36 +475,58 @@ export async function executeRehearsalAccountSync(
   }
 }
 
-export async function assertTargetReferenceClosure(target: QueryClient): Promise<void> {
-  const checks: Array<{ label: string; sql: string }> = [
+export async function assertTargetReferenceClosure(target: QueryClient, scope: ScopeManifest): Promise<void> {
+  const checks: Array<{ label: string; sql: string; parameters: string[][] }> = [
     {
-      label: 'accounts/api_keys.system_account_id',
+      label: 'accounts/api_keys scope',
       sql: `
         SELECT count(*)::text AS count
         FROM (
-          SELECT accounts.system_account_id AS owner_id
+          SELECT accounts.id AS reference_id
           FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('accounts')} accounts
           LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} system_accounts
             ON system_accounts.id = accounts.system_account_id
+           LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('resource_authorizations')} authorizations
+             ON authorizations.id = accounts.authorization_instance_authorization_id
+           LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('accounts')} source_accounts
+             ON source_accounts.id = accounts.authorization_instance_source_account_id
           WHERE system_accounts.id IS NULL
+             OR accounts.id <> ALL($1::text[])
+             OR accounts.system_account_id <> ALL($2::text[])
+             OR (accounts.authorization_instance_owner_system_account_id IS NOT NULL
+                 AND accounts.authorization_instance_owner_system_account_id <> ALL($2::text[]))
+              OR (accounts.authorization_instance_authorization_id IS NOT NULL
+                  AND (
+                    authorizations.id IS NULL
+                    OR accounts.authorization_instance_authorization_id <> ALL($3::text[])
+                    OR authorizations.resource_type <> 'account'
+                    OR source_accounts.id IS NULL
+                    OR authorizations.resource_id <> source_accounts.id
+                    OR authorizations.resource_owner_system_account_id IS DISTINCT FROM source_accounts.system_account_id
+                    OR authorizations.grantee_system_account_id IS DISTINCT FROM accounts.system_account_id
+                    OR accounts.authorization_instance_owner_system_account_id IS DISTINCT FROM authorizations.resource_owner_system_account_id
+                  ))
+              OR (accounts.authorization_instance_source_account_id IS NOT NULL
+                  AND source_accounts.id IS NULL)
           UNION ALL
-          SELECT api_keys.system_account_id AS owner_id
+          SELECT api_keys.id AS reference_id
           FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('api_keys')} api_keys
           LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} system_accounts
             ON system_accounts.id = api_keys.system_account_id
+          LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('route_strategies')} route_strategies
+            ON route_strategies.id = api_keys.route_strategy_id
           WHERE system_accounts.id IS NULL
-          UNION ALL
-          SELECT accounts.authorization_instance_owner_system_account_id AS owner_id
-          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('accounts')} accounts
-          LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} system_accounts
-            ON system_accounts.id = accounts.authorization_instance_owner_system_account_id
-          WHERE accounts.authorization_instance_owner_system_account_id IS NOT NULL
-            AND system_accounts.id IS NULL
+             OR api_keys.id <> ALL($4::text[])
+             OR api_keys.system_account_id <> ALL($2::text[])
+              OR route_strategies.id IS NULL
+              OR api_keys.route_strategy_id <> ALL($5::text[])
+              OR route_strategies.system_account_id IS DISTINCT FROM api_keys.system_account_id
         ) invalid_references
-      `
+      `,
+      parameters: [scope.selectedAccountIds, scope.systemAccountIds, scope.resourceAuthorizationIds, scope.apiKeyIds, scope.routeStrategyIds]
     },
     {
-      label: 'resource_authorizations.resource_id',
+      label: 'resource_authorizations scope',
       sql: `
         SELECT count(*)::text AS count
         FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('resource_authorizations')} authorizations
@@ -346,15 +541,26 @@ export async function assertTargetReferenceClosure(target: QueryClient): Promise
         LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_teams')} source_teams
           ON authorizations.effective_source_team_id = source_teams.id
         WHERE authorizations.resource_type NOT IN ('account', 'group')
+           OR authorizations.id <> ALL($5::text[])
            OR account_rows.id IS NULL AND authorizations.resource_type = 'account'
            OR group_rows.id IS NULL AND authorizations.resource_type = 'group'
-           OR owner_accounts.id IS NULL
-           OR grantee_accounts.id IS NULL
-           OR (authorizations.effective_source_type = 'team' AND source_teams.id IS NULL)
-      `
+           OR (authorizations.resource_type = 'account' AND authorizations.resource_id <> ALL($1::text[]))
+           OR (authorizations.resource_type = 'account'
+               AND account_rows.system_account_id IS DISTINCT FROM authorizations.resource_owner_system_account_id)
+           OR (authorizations.resource_type = 'group' AND authorizations.resource_id <> ALL($4::text[]))
+           OR (authorizations.resource_type = 'group'
+               AND group_rows.system_account_id IS DISTINCT FROM authorizations.resource_owner_system_account_id)
+           OR owner_accounts.id IS NULL OR authorizations.resource_owner_system_account_id <> ALL($2::text[])
+           OR grantee_accounts.id IS NULL OR authorizations.grantee_system_account_id <> ALL($2::text[])
+           OR (authorizations.effective_source_type = 'team'
+               AND (source_teams.id IS NULL OR authorizations.effective_source_team_id <> ALL($3::text[])))
+           OR authorizations.created_by <> ALL($2::text[])
+           OR (authorizations.revoked_by IS NOT NULL AND authorizations.revoked_by <> ALL($2::text[]))
+      `,
+      parameters: [scope.selectedAccountIds, scope.systemAccountIds, scope.systemTeamIds, scope.groupIds, scope.resourceAuthorizationIds]
     },
     {
-      label: 'resource_authorization_grants.resource_id',
+      label: 'resource_authorization_grants scope',
       sql: `
         SELECT count(*)::text AS count
         FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('resource_authorization_grants')} grant_rows
@@ -364,11 +570,81 @@ export async function assertTargetReferenceClosure(target: QueryClient): Promise
           ON grant_rows.resource_type = 'group' AND group_rows.id = grant_rows.resource_id
         LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} owner_accounts
           ON owner_accounts.id = grant_rows.resource_owner_system_account_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_accounts')} grantee_accounts
+          ON grantee_accounts.id = grant_rows.grantee_system_account_id
+        LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_teams')} grantee_teams
+          ON grantee_teams.id = grant_rows.grantee_team_id
         WHERE grant_rows.resource_type NOT IN ('account', 'group')
+           OR grant_rows.id <> ALL($5::text[])
            OR (grant_rows.resource_type = 'account' AND account_rows.id IS NULL)
            OR (grant_rows.resource_type = 'group' AND group_rows.id IS NULL)
-           OR owner_accounts.id IS NULL
-      `
+           OR (grant_rows.resource_type = 'account' AND grant_rows.resource_id <> ALL($1::text[]))
+           OR (grant_rows.resource_type = 'account'
+               AND account_rows.system_account_id IS DISTINCT FROM grant_rows.resource_owner_system_account_id)
+           OR (grant_rows.resource_type = 'group' AND grant_rows.resource_id <> ALL($4::text[]))
+           OR (grant_rows.resource_type = 'group'
+               AND group_rows.system_account_id IS DISTINCT FROM grant_rows.resource_owner_system_account_id)
+           OR owner_accounts.id IS NULL OR grant_rows.resource_owner_system_account_id <> ALL($2::text[])
+           OR (grant_rows.grantee_type = 'system_account'
+               AND (grantee_accounts.id IS NULL OR grant_rows.grantee_system_account_id <> ALL($2::text[])))
+           OR (grant_rows.grantee_type = 'team'
+               AND (grantee_teams.id IS NULL OR grant_rows.grantee_team_id <> ALL($3::text[])))
+           OR grant_rows.created_by <> ALL($2::text[])
+           OR (grant_rows.revoked_by IS NOT NULL AND grant_rows.revoked_by <> ALL($2::text[]))
+      `,
+      parameters: [scope.selectedAccountIds, scope.systemAccountIds, scope.systemTeamIds, scope.groupIds, scope.resourceAuthorizationGrantIds]
+    },
+    {
+      label: 'teams/groups/routes scope',
+      sql: `
+        SELECT count(*)::text AS count
+        FROM (
+          SELECT teams.id AS reference_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_teams')} teams
+          WHERE teams.id <> ALL($1::text[]) OR teams.created_by <> ALL($2::text[])
+          UNION ALL
+          SELECT members.id AS reference_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_team_members')} members
+          WHERE members.team_id <> ALL($1::text[])
+             OR members.system_account_id <> ALL($2::text[])
+             OR members.created_by <> ALL($2::text[])
+          UNION ALL
+          SELECT sources.id AS reference_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('resource_authorization_sources')} sources
+          WHERE sources.authorization_id <> ALL($3::text[])
+             OR (sources.source_team_id IS NOT NULL AND sources.source_team_id <> ALL($1::text[]))
+             OR sources.created_by <> ALL($2::text[])
+             OR (sources.revoked_by IS NOT NULL AND sources.revoked_by <> ALL($2::text[]))
+          UNION ALL
+          SELECT group_rows.id AS reference_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('groups')} group_rows
+          WHERE group_rows.id <> ALL($4::text[]) OR group_rows.system_account_id <> ALL($2::text[])
+          UNION ALL
+          SELECT settings.authorization_id AS reference_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('group_authorization_settings')} settings
+          WHERE settings.authorization_id <> ALL($3::text[])
+             OR settings.system_account_id <> ALL($2::text[])
+             OR settings.group_id <> ALL($4::text[])
+          UNION ALL
+          SELECT group_accounts.group_id AS reference_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('group_accounts')} group_accounts
+          WHERE group_accounts.system_account_id <> ALL($2::text[])
+             OR group_accounts.group_id <> ALL($4::text[])
+             OR group_accounts.account_id <> ALL($5::text[])
+             OR (group_accounts.account_authorization_id IS NOT NULL AND group_accounts.account_authorization_id <> ALL($3::text[]))
+          UNION ALL
+          SELECT routes.id AS reference_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('route_strategies')} routes
+          WHERE routes.id <> ALL($6::text[]) OR routes.system_account_id <> ALL($2::text[])
+          UNION ALL
+          SELECT route_groups.id AS reference_id
+          FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier('route_strategy_groups')} route_groups
+          WHERE route_groups.route_strategy_id <> ALL($6::text[])
+             OR route_groups.system_account_id <> ALL($2::text[])
+             OR route_groups.group_id <> ALL($4::text[])
+        ) invalid_references
+      `,
+      parameters: [scope.systemTeamIds, scope.systemAccountIds, scope.resourceAuthorizationIds, scope.groupIds, scope.selectedAccountIds, scope.routeStrategyIds]
     },
     {
       label: 'request_quota_hourly_window_scope_bindings',
@@ -395,23 +671,25 @@ export async function assertTargetReferenceClosure(target: QueryClient): Promise
         LEFT JOIN ${quoteIdentifier(businessSchema)}.${quoteIdentifier('system_teams')} scope_teams
           ON bindings.scope_type IN ('account_authorization_team', 'group_authorization_team')
          AND scope_teams.id = split_part(bindings.scope_id, ':', 2)
-        WHERE system_accounts.id IS NULL
+        WHERE bindings.system_account_id <> ALL($1::text[])
+           OR system_accounts.id IS NULL
            OR bindings.source_type NOT IN ('api_key', 'resource_authorization_grant')
-           OR (bindings.source_type = 'api_key' AND source_api_keys.id IS NULL)
-           OR (bindings.source_type = 'resource_authorization_grant' AND source_grants.id IS NULL)
-           OR (bindings.scope_type = 'api_key' AND (scope_api_keys.id IS NULL OR bindings.source_type <> 'api_key' OR bindings.source_id <> bindings.scope_id))
+           OR (bindings.source_type = 'api_key' AND (source_api_keys.id IS NULL OR bindings.source_id <> ALL($2::text[])))
+           OR (bindings.source_type = 'resource_authorization_grant' AND (source_grants.id IS NULL OR bindings.source_id <> ALL($3::text[])))
+           OR (bindings.scope_type = 'api_key' AND (scope_api_keys.id IS NULL OR bindings.scope_id <> ALL($2::text[]) OR bindings.source_type <> 'api_key' OR bindings.source_id <> bindings.scope_id))
            OR (bindings.scope_type IN ('account_authorization', 'group_authorization')
-               AND (scope_authorizations.id IS NULL OR bindings.source_type <> 'resource_authorization_grant'))
+               AND (scope_authorizations.id IS NULL OR bindings.scope_id <> ALL($4::text[]) OR bindings.source_type <> 'resource_authorization_grant'))
            OR (bindings.scope_type = 'account_authorization_team'
-               AND (account_team_scopes.id IS NULL OR scope_teams.id IS NULL OR bindings.source_type <> 'resource_authorization_grant'))
+               AND (account_team_scopes.id IS NULL OR split_part(bindings.scope_id, ':', 1) <> ALL($5::text[]) OR scope_teams.id IS NULL OR split_part(bindings.scope_id, ':', 2) <> ALL($7::text[]) OR bindings.source_type <> 'resource_authorization_grant'))
            OR (bindings.scope_type = 'group_authorization_team'
-               AND (group_team_scopes.id IS NULL OR scope_teams.id IS NULL OR bindings.source_type <> 'resource_authorization_grant'))
+               AND (group_team_scopes.id IS NULL OR split_part(bindings.scope_id, ':', 1) <> ALL($6::text[]) OR scope_teams.id IS NULL OR split_part(bindings.scope_id, ':', 2) <> ALL($7::text[]) OR bindings.source_type <> 'resource_authorization_grant'))
            OR (bindings.scope_type NOT IN ('api_key', 'account_authorization', 'group_authorization', 'account_authorization_team', 'group_authorization_team'))
-      `
+      `,
+      parameters: [scope.systemAccountIds, scope.apiKeyIds, scope.resourceAuthorizationGrantIds, scope.resourceAuthorizationIds, scope.selectedAccountIds, scope.groupIds, scope.systemTeamIds]
     }
   ]
   for (const check of checks) {
-    const result = await target.query<{ count: string }>(check.sql)
+    const result = await target.query<{ count: string }>(check.sql, check.parameters)
     const count = Number(result.rows[0]?.count ?? 0)
     if (!Number.isFinite(count) || count !== 0) {
       throw new Error(`${check.label} 目标引用闭包校验失败：存在 ${Number.isFinite(count) ? count : '未知数量'} 条无效引用，事务将回滚`)
@@ -672,15 +950,15 @@ function emptyChecksum(): string {
   return createHash('sha256').digest('hex')
 }
 
-function parseSingleColumnScopeKey(value: string): string {
+function parseSingleColumnScopeKey(value: string, table = 'accounts'): string {
   let parsed: unknown
   try {
     parsed = JSON.parse(value)
   } catch {
-    throw new Error(`accounts scope 行键不是合法 JSON：${value}`)
+    throw new Error(`${table} scope 行键不是合法 JSON：${value}`)
   }
   if (!Array.isArray(parsed) || parsed.length !== 1 || typeof parsed[0] !== 'string' || !parsed[0].trim()) {
-    throw new Error(`accounts scope 行键必须是单列字符串主键：${value}`)
+    throw new Error(`${table} scope 行键必须是单列字符串主键：${value}`)
   }
   return parsed[0]
 }
@@ -834,16 +1112,17 @@ function quoteIdentifier(value: string): string {
 
 async function main(): Promise<void> {
   assertExecuteEnvironment(process.env)
-  const [preflightPath, planPath, scopePath, generatedPath] = process.argv.slice(2)
-  if (!preflightPath || !planPath || !scopePath || !generatedPath || process.argv.slice(2).length !== 4) {
-    throw new Error('用法：execute-rehearsal-account-sync <preflight.json> <field-level-plan.json> <scope.json> <generated-values.json>')
+  const [preflightPath, planPath, scopePath, closurePath, generatedPath] = process.argv.slice(2)
+  if (!preflightPath || !planPath || !scopePath || !closurePath || !generatedPath || process.argv.slice(2).length !== 5) {
+    throw new Error('用法：execute-rehearsal-account-sync <preflight.json> <field-level-plan.json> <scope.json> <closure.json> <generated-values.json>')
   }
-  const [preflightText, planText, scopeText, generatedText] = await Promise.all([
-    readFile(preflightPath, 'utf8'), readFile(planPath, 'utf8'), readFile(scopePath, 'utf8'), readFile(generatedPath, 'utf8')
+  const [preflightText, planText, scopeText, closureText, generatedText] = await Promise.all([
+    readFile(preflightPath, 'utf8'), readFile(planPath, 'utf8'), readFile(scopePath, 'utf8'), readFile(closurePath, 'utf8'), readFile(generatedPath, 'utf8')
   ])
   const preflight = JSON.parse(preflightText) as AccountSyncPreflightReport
   const plan = JSON.parse(planText) as RehearsalAccountSyncPlan
   const scope = JSON.parse(scopeText) as ScopeManifest
+  const closure = JSON.parse(closureText) as AccountClosureManifest
   const generatedValues = JSON.parse(generatedText) as GeneratedValuesManifest
   const source = new pg.Client({ connectionString: process.env.JUHE_AI_REHEARSAL_SOURCE_POSTGRES_URL, application_name: 'juhe-ai-rehearsal-account-sync-source', connectionTimeoutMillis: 10_000 })
   const target = new pg.Client({ connectionString: process.env.JUHE_AI_REHEARSAL_TARGET_POSTGRES_URL, application_name: 'juhe-ai-rehearsal-account-sync-target', connectionTimeoutMillis: 10_000 })
@@ -857,7 +1136,7 @@ async function main(): Promise<void> {
       source.query("SELECT set_config('statement_timeout', '120s', true), set_config('lock_timeout', '10s', true)"),
       target.query("SELECT set_config('statement_timeout', '120s', true), set_config('lock_timeout', '10s', true), pg_advisory_xact_lock(hashtext(current_database()))")
     ])
-    const report = await executeRehearsalAccountSync(source, target, preflight, plan, preflightText, scope, generatedValues)
+    const report = await executeRehearsalAccountSync(source, target, preflight, plan, preflightText, scope, closure, generatedValues)
     await target.query('COMMIT')
     await source.query('COMMIT')
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)

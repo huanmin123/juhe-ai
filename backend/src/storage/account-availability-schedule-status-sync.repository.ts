@@ -7,6 +7,7 @@ import {
   beginDatabaseTransaction,
   commitDatabaseTransaction,
   getBusinessDatabase,
+  newId,
   nowIso,
   rollbackDatabaseTransaction
 } from './database.js'
@@ -14,6 +15,11 @@ import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
+import {
+  advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction,
+  advanceAccountCircuitDispatchRevisionFamilyInTransaction,
+  lockAccountCircuitDispatchFamilyRootInTransaction
+} from './account-circuit-control-plane.repository.js'
 
 interface ScheduledAccountAvailabilityRow {
   id: string
@@ -145,6 +151,12 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
       }
       result.changedIds.push(update.id)
       if (update.status === 'active') {
+        advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
+          accountId: update.id,
+          accountRuntimeKey: update.id,
+          transitionId: newId('dispatch'),
+          nowMs: Date.now()
+        })
         result.activated += 1
       } else {
         result.disabled += 1
@@ -228,6 +240,7 @@ export async function syncAccountAvailabilityScheduleStatusesAsync(now = new Dat
 
   await client.transaction(async (tx) => {
     for (const update of updates) {
+      await lockAccountCircuitDispatchFamilyRootInTransaction(tx, update.id)
       if (update.eventKey && update.status) {
         const eventChanges = await tx.execute(`
           INSERT INTO ${accountScheduleStatusTable(tx, 'account_schedule_status_events')} (event_key, account_id, status, executed_at)
@@ -266,6 +279,12 @@ export async function syncAccountAvailabilityScheduleStatusesAsync(now = new Dat
       }
       result.changedIds.push(update.id)
       if (update.status === 'active') {
+        await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
+          accountId: update.id,
+          accountRuntimeKey: update.id,
+          transitionId: newId('dispatch'),
+          nowMs: Date.now()
+        })
         result.activated += 1
       } else {
         result.disabled += 1

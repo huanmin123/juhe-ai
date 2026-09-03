@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 
 import {
   drainProcessDiagnosticAsyncForTest,
+  isRecoverableProcessStreamError,
   processDiagnosticAsyncStatsForTest,
   serializeProcessFatalDiagnostic,
   setProcessDiagnosticAsyncWriterForTest,
@@ -39,6 +40,9 @@ const unattributedEpipeDiagnostic = JSON.parse(serializeProcessFatalDiagnostic({
   epipeSource: 'unattributed'
 })) as Record<string, unknown>
 assert.equal(unattributedEpipeDiagnostic.epipeSource, 'unattributed', '未归因 EPIPE 必须在同步致命诊断中明确标注')
+assert.equal(isRecoverableProcessStreamError(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })), true, '输出管道 EPIPE 必须允许进程保留运行')
+assert.equal(isRecoverableProcessStreamError(Object.assign(new Error('connection reset'), { code: 'ECONNRESET' })), false, '只有 EPIPE 可以绕过全局致命退出')
+assert.equal(isRecoverableProcessStreamError(new Error('unknown failure')), false, '无错误码异常仍必须保持致命')
 
 const namedError = new Error('bounded-message') as Error & { code: string }
 namedError.name = `Fatal${secret.repeat(200)}`
@@ -140,14 +144,18 @@ setProcessDiagnosticAsyncWriterForTest()
 
 const loggerSource = readFileSync(new URL('../../shared/logger.ts', import.meta.url), 'utf8')
 const handlerStart = loggerSource.indexOf("process.on('uncaughtException'")
+const recoverableEpipe = loggerSource.indexOf('if (isRecoverableProcessStreamError(error))', handlerStart)
+const recoverableEpipeDiagnostic = loggerSource.indexOf("event: 'process_unattributed_epipe'", handlerStart)
 const outerTry = loggerSource.indexOf('try {', handlerStart)
 const stderrWrite = loggerSource.indexOf('writeProcessFatalDiagnostic({', handlerStart)
 const structuredFatal = loggerSource.indexOf('logger.fatal(', handlerStart)
 const forcedExit = loggerSource.indexOf('setImmediate(() => process.exit(1))', handlerStart)
 assert(handlerStart >= 0 && stderrWrite > handlerStart, 'uncaught handler 必须调用同步 stderr 诊断')
+assert(recoverableEpipe > handlerStart && recoverableEpipeDiagnostic > recoverableEpipe, '未归因 EPIPE 必须单独记录为可恢复进程 I/O 异常')
+assert(recoverableEpipe < outerTry, 'EPIPE 分支必须先于致命退出状态，避免误杀正常服务')
 assert(outerTry > handlerStart && outerTry < stderrWrite, '同步诊断也必须位于保证 exit 的 try/finally 内')
 assert(stderrWrite < structuredFatal, '同步 stderr 诊断必须早于可失败的常规 logger')
 assert(structuredFatal < forcedExit, '常规 fatal 日志后必须保证退出')
-assert.match(loggerSource.slice(handlerStart, forcedExit), /epipeSource: errorCode === 'EPIPE' \? 'unattributed' : undefined/, '无法归因的 EPIPE 必须显式标记，但仍保持全局致命退出')
+assert.match(loggerSource.slice(handlerStart, forcedExit), /event: 'process_unattributed_epipe'/, '无法归因的 EPIPE 必须显式标记并保留运行')
 
-console.log('进程诊断回归通过：fatal 同步保底原文有界，非 fatal stderr 异步队列有界')
+console.log('进程诊断回归通过：EPIPE 保留运行，其他 fatal 同步保底原文有界，非 fatal stderr 异步队列有界')

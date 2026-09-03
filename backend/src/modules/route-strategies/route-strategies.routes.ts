@@ -23,6 +23,11 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { clearNormalRouteLatencyDegradationForRouteStrategyAsync } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import {
+  isNormalSpeedFirstRouteStrategy,
+  loadRouteStrategySpeedFirstLatencyRuntimeAsync,
+  summarizeRouteStrategySpeedFirstLatencyRuntimeAsync
+} from './route-strategy-speed-first-runtime.facade.js'
 
 export const routeStrategiesRouter = Router()
 
@@ -142,7 +147,20 @@ const routeStrategyUpdateSchema = routeStrategyMutationSchema.partial().extend({
 
 routeStrategiesRouter.get('/', async (req, res, next) => {
   try {
-    res.json(ok(await listCompleteRouteStrategyListItemsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseRouteStrategyListOptions(req.query))))
+    const page = await listCompleteRouteStrategyListItemsPageAsync(
+      getRequestAccessScope(req.query.systemAccountId),
+      parseRouteStrategyListOptions(req.query)
+    )
+    const speedFirstRuntimeByRouteStrategyId = await summarizeRouteStrategySpeedFirstLatencyRuntimeAsync(page.items)
+    res.json(ok({
+      ...page,
+      items: page.items.map((item) => {
+        const speedFirstLatencyRuntime = speedFirstRuntimeByRouteStrategyId.get(item.id)
+        return speedFirstLatencyRuntime
+          ? { ...item, speedFirstLatencyRuntime }
+          : item
+      })
+    }))
   } catch (error) {
     next(error)
   }
@@ -177,6 +195,50 @@ routeStrategiesRouter.get('/:id/edit-basic', async (req, res, next) => {
       return
     }
     res.json(ok(routeStrategy))
+  } catch (error) {
+    next(error)
+  }
+})
+
+routeStrategiesRouter.get('/:id/speed-first-runtime', async (req, res, next) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  try {
+    const routeStrategy = await findRouteStrategySummaryAsync(
+      req.params.id,
+      getRequestAccessScope(scopeQuery.data.systemAccountId)
+    )
+    if (!routeStrategy) {
+      res.status(404).json({ message: '策略路由不存在' })
+      return
+    }
+    const generatedAt = new Date().toISOString()
+    if (!isNormalSpeedFirstRouteStrategy(routeStrategy)) {
+      res.json(ok({
+        routeStrategyId: routeStrategy.id,
+        generatedAt,
+        enabled: false,
+        runtimeAvailable: true,
+        degradedCount: 0,
+        items: []
+      }))
+      return
+    }
+    const runtime = await loadRouteStrategySpeedFirstLatencyRuntimeAsync({
+      systemAccountId: routeStrategy.systemAccountId,
+      routeStrategyId: routeStrategy.id
+    })
+    res.json(ok({
+      routeStrategyId: routeStrategy.id,
+      generatedAt,
+      enabled: true,
+      runtimeAvailable: runtime.runtimeAvailable,
+      degradedCount: runtime.degradedCount,
+      items: runtime.items
+    }))
   } catch (error) {
     next(error)
   }

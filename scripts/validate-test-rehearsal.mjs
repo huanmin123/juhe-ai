@@ -16,6 +16,8 @@ const COMMIT_PATTERN = /^[0-9a-f]{7,64}$/u
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u
 export const EVIDENCE_REF_PATTERN = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._\/-]{1,256}$/u
 const CREDENTIAL_POLICIES = new Set(['test-only-equivalent', 'isolated-reencrypt'])
+const RELEASE_MODES = new Set(['single-active-stop', 'blue-green-additive'])
+const SCHEMA_CHANGE_CLASSES = new Set(['requires-stop', 'additive'])
 const RELEASE_IMAGE_COMPONENTS = Object.freeze([
   ['nodeDigest', 'node-runtime'],
   ['jobsDigest', 'go-jobs'],
@@ -170,6 +172,12 @@ function requireBoolean(record, key, pathName, blockers) {
   }
 }
 
+function requireBooleanValue(record, key, expected, pathName, blockers) {
+  if (record[key] !== expected) {
+    addBlocker(blockers, `${pathName}.${key}`, `必须为 ${expected}`)
+  }
+}
+
 function requireString(record, key, pathName, blockers, predicate, expected) {
   const value = record[key]
   if (typeof value !== 'string' || value.trim() === '' || (predicate && !predicate.test(value))) {
@@ -204,11 +212,19 @@ function validateTarget(evidence, blockers) {
 function validateRelease(evidence, blockers) {
   if (!requireRecord(evidence.release, 'release', blockers)) return
   requireString(evidence.release, 'sourceCommit', 'release', blockers, COMMIT_PATTERN, '必须是 source commit')
-  requireExactValue(evidence.release, 'releaseMode', 'single-active-stop', 'release', blockers)
+  if (!RELEASE_MODES.has(evidence.release.releaseMode)) {
+    addBlocker(blockers, 'release.releaseMode', '必须为 single-active-stop 或 blue-green-additive')
+  }
+  if (!SCHEMA_CHANGE_CLASSES.has(evidence.release.schemaChangeClass)) {
+    addBlocker(blockers, 'release.schemaChangeClass', '必须为 requires-stop 或 additive')
+  }
+  if (evidence.release.releaseMode === 'blue-green-additive' && evidence.release.schemaChangeClass !== 'additive') {
+    addBlocker(blockers, 'release.schemaChangeClass', 'blue-green-additive 只能搭配 additive schema 变更')
+  }
   for (const key of ['nodeDigest', 'jobsDigest', 'gatewayDigest']) {
     requireString(evidence.release, key, 'release', blockers, DIGEST_PATTERN, '必须是不可变 sha256 digest')
   }
-  requireBoolean(evidence.release, 'sameDigestInTestAndProd', 'release', blockers)
+  requireExactValue(evidence.release, 'sameDigestInTestAndProd', true, 'release', blockers)
   requireEvidenceRefs(evidence.release, 'release', blockers)
   for (const environment of ['test', 'prod']) {
     const pathName = `release.${environment}`
@@ -274,6 +290,7 @@ function validateImageResolution(environmentEvidence, pathName, release, blocker
 function validateRuntime(evidence, blockers) {
   if (!requireRecord(evidence.runtime, 'runtime', blockers)) return
   const runtime = evidence.runtime
+  const releaseMode = isRecord(evidence.release) ? evidence.release.releaseMode : null
   requireEvidenceRefs(runtime, 'runtime', blockers)
   if (!requireRecord(runtime.argo, 'runtime.argo', blockers)) return
   requireExactValue(runtime.argo, 'syncStatus', 'Synced', 'runtime.argo', blockers)
@@ -286,10 +303,23 @@ function validateRuntime(evidence, blockers) {
   requireExactValue(runtime.active, 'containerCount', 3, 'runtime.active', blockers)
 
   if (!requireRecord(runtime.standby, 'runtime.standby', blockers)) return
-  requireExactValue(runtime.standby, 'replicas', 0, 'runtime.standby', blockers)
-
-  if (!Array.isArray(runtime.stableServiceSlots) || runtime.stableServiceSlots.length !== 1 || runtime.stableServiceSlots[0] !== 'a') {
-    addBlocker(blockers, 'runtime.stableServiceSlots', '必须只包含 active A 槽位')
+  if (releaseMode === 'blue-green-additive') {
+    requireExactValue(runtime.standby, 'slot', 'b', 'runtime.standby', blockers)
+    requireExactValue(runtime.standby, 'replicas', 1, 'runtime.standby', blockers)
+    requireExactValue(runtime.standby, 'readyContainers', 3, 'runtime.standby', blockers)
+    requireExactValue(runtime.standby, 'containerCount', 3, 'runtime.standby', blockers)
+    requireExactValue(runtime.standby, 'ownerMode', 'standby', 'runtime.standby', blockers)
+    if (!Array.isArray(runtime.stableServiceSlots)
+      || runtime.stableServiceSlots.length !== 2
+      || runtime.stableServiceSlots[0] !== 'a'
+      || runtime.stableServiceSlots[1] !== 'b') {
+      addBlocker(blockers, 'runtime.stableServiceSlots', 'blue-green-additive 必须同时包含 A/B 两个 Ready 槽位')
+    }
+  } else {
+    requireExactValue(runtime.standby, 'replicas', 0, 'runtime.standby', blockers)
+    if (!Array.isArray(runtime.stableServiceSlots) || runtime.stableServiceSlots.length !== 1 || runtime.stableServiceSlots[0] !== 'a') {
+      addBlocker(blockers, 'runtime.stableServiceSlots', 'single-active-stop 必须只包含 active A 槽位')
+    }
   }
 
   if (!requireRecord(runtime.owner, 'runtime.owner', blockers)) return
@@ -301,12 +331,49 @@ function validateRuntime(evidence, blockers) {
   for (const key of ['nodeDbReady', 'nodeApi', 'jobs', 'gateway', 'f3', 'f4']) {
     requireBoolean(runtime.health, key, 'runtime.health', blockers)
   }
+
+  if (!requireRecord(runtime.nodeStability, 'runtime.nodeStability', blockers)) return
+  const nodeStability = runtime.nodeStability
+  requireString(nodeStability, 'evidenceRef', 'runtime.nodeStability', blockers, EVIDENCE_REF_PATTERN, '必须引用同 digest Node 稳定性现场证据')
+  if (!Number.isInteger(nodeStability.observationWindowSeconds) || nodeStability.observationWindowSeconds < 86_400) {
+    addBlocker(blockers, 'runtime.nodeStability.observationWindowSeconds', '必须是不少于 86400 秒的同 digest 观察窗口')
+  }
+  for (const key of ['restartCountAtStart', 'restartCountAtEnd', 'fatalUncaughtExceptionCount']) {
+    if (!Number.isInteger(nodeStability[key]) || nodeStability[key] < 0) {
+      addBlocker(blockers, `runtime.nodeStability.${key}`, '必须是非负整数')
+    }
+  }
+  if (Number.isInteger(nodeStability.restartCountAtStart)
+    && Number.isInteger(nodeStability.restartCountAtEnd)
+    && nodeStability.restartCountAtEnd !== nodeStability.restartCountAtStart) {
+    addBlocker(blockers, 'runtime.nodeStability.restartCountAtEnd', '必须与观察开始时相同')
+  }
+  if (nodeStability.fatalUncaughtExceptionCount !== 0) {
+    addBlocker(blockers, 'runtime.nodeStability.fatalUncaughtExceptionCount', '必须为 0')
+  }
+  for (const key of ['logConsoleDisabled', 'jsonlWriteReadback', 'epipeRecoveryRegressionPassed']) {
+    requireBoolean(nodeStability, key, 'runtime.nodeStability', blockers)
+  }
 }
 
 function validateSchema(evidence, blockers) {
   if (!requireRecord(evidence.schema, 'schema', blockers)) return
   const schema = evidence.schema
   requireExactValue(schema, 'threeWayStatus', 'passed', 'schema', blockers)
+  if (!SCHEMA_CHANGE_CLASSES.has(schema.changeClass)) {
+    addBlocker(blockers, 'schema.changeClass', '必须为 requires-stop 或 additive')
+  }
+  if (isRecord(evidence.release)
+    && SCHEMA_CHANGE_CLASSES.has(evidence.release.schemaChangeClass)
+    && schema.changeClass !== evidence.release.schemaChangeClass) {
+    addBlocker(blockers, 'schema.changeClass', '必须与 release.schemaChangeClass 一致')
+  }
+  if (isRecord(evidence.release) && evidence.release.releaseMode === 'blue-green-additive') {
+    requireBooleanValue(schema, 'blueGreenCompatible', true, 'schema', blockers)
+    requireBooleanValue(schema, 'destructiveChangeDetected', false, 'schema', blockers)
+    requireBooleanValue(schema, 'dataMigrationRequired', false, 'schema', blockers)
+    requireBooleanValue(schema, 'backfillRequired', false, 'schema', blockers)
+  }
   if (!Number.isInteger(schema.candidateContractVersion) || schema.candidateContractVersion < 1) {
     addBlocker(blockers, 'schema.candidateContractVersion', '必须是正整数')
   }
@@ -348,6 +415,28 @@ function validateSchema(evidence, blockers) {
       requireString(delta, 'evidenceRef', `schema.approvedForwardDeltas[${index}]`, blockers, EVIDENCE_REF_PATTERN, '必须引用受控变更证据（禁止绝对路径或 .. 路径）')
     }
   }
+  if (schema.changeClass === 'requires-stop') {
+    if (!Array.isArray(schema.approvedStopDeltas) || schema.approvedStopDeltas.length === 0) {
+      addBlocker(blockers, 'schema.approvedStopDeltas', 'requires-stop 必须列出经批准的停机 schema/data 操作')
+    } else {
+      for (const [index, delta] of schema.approvedStopDeltas.entries()) {
+        const pathName = `schema.approvedStopDeltas[${index}]`
+        if (!isRecord(delta)) {
+          addBlocker(blockers, pathName, '必须是对象')
+          continue
+        }
+        requireString(delta, 'id', pathName, blockers, undefined, '必须有差异标识')
+        requireString(delta, 'approvedBy', pathName, blockers, undefined, '必须有审批人')
+        requireExactValue(delta, 'changeType', 'requires-stop', pathName, blockers)
+        requireStringArray(delta, 'objects', pathName, blockers, '必须列出受影响对象')
+        requireString(delta, 'approvedAt', pathName, blockers, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u, '必须有 UTC 审批时间')
+        requireString(delta, 'maintenancePlanRef', pathName, blockers, EVIDENCE_REF_PATTERN, '必须引用受控停机维护计划')
+        requireString(delta, 'evidenceRef', pathName, blockers, EVIDENCE_REF_PATTERN, '必须引用受控变更证据（禁止绝对路径或 .. 路径）')
+      }
+    }
+  } else if (Array.isArray(schema.approvedStopDeltas) && schema.approvedStopDeltas.length > 0) {
+    addBlocker(blockers, 'schema.approvedStopDeltas', 'additive 发布不得混入停机 schema/data 操作')
+  }
   requireEvidenceRefs(schema, 'schema', blockers)
 }
 
@@ -386,9 +475,12 @@ function validateAccounts(evidence, blockers) {
   for (const key of [
     'sourceAccountIdsHash',
     'systemAccountIdsHash',
+    'systemTeamIdsHash',
     'groupIdsHash',
     'routeStrategyIdsHash',
     'resourceAuthorizationIdsHash',
+    'resourceAuthorizationGrantIdsHash',
+    'apiKeyIdsHash',
     'apiKeyRemapHash'
   ]) {
     requireString(accounts, key, 'accounts', blockers, SHA256_HEX_PATTERN, '必须记录同步引用闭包的排序 ID 或映射 sha256 摘要')
@@ -842,9 +934,15 @@ function validateControls(evidence, blockers) {
     && controls.evidenceBoundSourceCommit !== evidence.release.sourceCommit) {
     addBlocker(blockers, 'controls.evidenceBoundSourceCommit', '必须与 release.sourceCommit 一致，禁止复用其他候选的演练证据')
   }
-  for (const key of ['singleActiveGitOpsVerified', 'maintenanceGateVerified', 'independentVerifierVerified']) {
-    requireBoolean(controls, key, 'controls', blockers)
+  const releaseMode = isRecord(evidence.release) ? evidence.release.releaseMode : null
+  if (releaseMode === 'blue-green-additive') {
+    requireBoolean(controls, 'blueGreenOwnerFenceVerified', 'controls', blockers)
+  } else {
+    for (const key of ['singleActiveGitOpsVerified', 'maintenanceGateVerified']) {
+      requireBoolean(controls, key, 'controls', blockers)
+    }
   }
+  requireBoolean(controls, 'independentVerifierVerified', 'controls', blockers)
 }
 
 export function validateTestRehearsalEvidence(evidence) {

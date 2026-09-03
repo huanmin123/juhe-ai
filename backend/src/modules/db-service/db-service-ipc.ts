@@ -19,6 +19,8 @@ import type {
   DbServiceOperation,
   DbServiceOperationResult,
   DbServiceParentMessage,
+  DbServiceNormalRouteSpeedFirstLatencyRuntimeItem,
+  DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest,
   DbServiceRequestPriority,
   DbServiceRuntimeQueueSnapshot,
   DbServiceRuntimeSnapshot,
@@ -356,6 +358,24 @@ export async function requestServerAccountRuntimeSnapshot(timeoutMs = 300): Prom
     : undefined
 }
 
+/**
+ * standalone memory 模式下由 DB service 向 server 读取速度优先降级运行态。
+ * performance Redis 模式不应走此 IPC，调用方会直接读取共享 runtime store。
+ */
+export async function requestServerNormalRouteSpeedFirstLatencyRuntimeSnapshot(
+  input: DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest,
+  timeoutMs = 300
+): Promise<DbServiceNormalRouteSpeedFirstLatencyRuntimeItem[] | undefined> {
+  const normalizedInput = normalizeNormalRouteSpeedFirstLatencyRuntimeRequest(input)
+  if (!normalizedInput) return undefined
+  const snapshot = await requestServerRuntimeSnapshotByScope(
+    'normal_route_speed_first_latency',
+    timeoutMs,
+    normalizedInput
+  )
+  return snapshot?.normalRouteSpeedFirstLatencyRuntime?.items
+}
+
 export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): Promise<ProcessEventLoopSample | undefined> {
   const child = dbServiceProcess
   if (runtimeConfig.processRole !== 'server' || !child || !child.connected || !dbServiceReady) {
@@ -612,13 +632,18 @@ function handleDbServiceMessage(message: unknown): void {
       break
     case 'db_service_server_runtime_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
+        const normalRouteSpeedFirstLatencyInput = record.scope === 'normal_route_speed_first_latency'
+          ? normalizeNormalRouteSpeedFirstLatencyRuntimeRequest(record.input)
+          : undefined
         void respondToServerRuntimeRequest(
           record.requestId,
           record.scope === 'account_concurrency'
           || record.scope === 'account_runtime'
+          || record.scope === 'normal_route_speed_first_latency'
           || record.scope === 'system_metrics'
             ? record.scope
-            : 'full'
+            : 'full',
+          normalRouteSpeedFirstLatencyInput
         )
       }
       break
@@ -855,7 +880,11 @@ async function runLocalDbServiceOperation<T extends DbServiceOperation>(operatio
   return await handleDbServiceOperation(operation)
 }
 
-async function respondToServerRuntimeRequest(requestId: string, scope: DbServiceServerRuntimeSnapshotScope = 'full'): Promise<void> {
+async function respondToServerRuntimeRequest(
+  requestId: string,
+  scope: DbServiceServerRuntimeSnapshotScope = 'full',
+  normalRouteSpeedFirstLatencyInput?: DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest
+): Promise<void> {
   const child = dbServiceProcess
   if (!child) {
     return
@@ -866,6 +895,10 @@ async function respondToServerRuntimeRequest(requestId: string, scope: DbService
       ? await buildServerAccountConcurrencySnapshot()
       : scope === 'account_runtime'
         ? await buildServerAccountRuntimeSnapshot()
+        : scope === 'normal_route_speed_first_latency'
+          ? await buildServerNormalRouteSpeedFirstLatencyRuntimeSnapshot(
+            requiredNormalRouteSpeedFirstLatencyRuntimeRequest(normalRouteSpeedFirstLatencyInput)
+          )
         : scope === 'system_metrics'
           ? await buildServerSystemMetricsRuntimeSnapshot()
           : await buildServerRuntimeSnapshot()
@@ -887,15 +920,18 @@ async function respondToServerRuntimeRequest(requestId: string, scope: DbService
 
 function requestServerRuntimeSnapshotByScope(
   scope: 'system_metrics',
-  timeoutMs: number
+  timeoutMs: number,
+  input?: undefined
 ): Promise<DbServiceSystemMetricsRuntimeSnapshot | undefined>
 function requestServerRuntimeSnapshotByScope(
   scope: Exclude<DbServiceServerRuntimeSnapshotScope, 'system_metrics'>,
-  timeoutMs: number
+  timeoutMs: number,
+  input?: DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest
 ): Promise<DbServiceServerRuntimeSnapshot | undefined>
 async function requestServerRuntimeSnapshotByScope(
   scope: DbServiceServerRuntimeSnapshotScope,
-  timeoutMs: number
+  timeoutMs: number,
+  input?: DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest
 ): Promise<DbServiceServerRuntimeResponseSnapshot | undefined> {
   if (runtimeConfig.processRole !== 'db-service' || !process.send) {
     return undefined
@@ -916,7 +952,8 @@ async function requestServerRuntimeSnapshotByScope(
     sendDbServiceChildMessage({
       type: 'db_service_server_runtime_request',
       requestId,
-      scope
+      scope,
+      ...(input ? { input } : {})
     }, () => {
       failedServerRuntimeRequestCount += 1
       finishServerRuntimeRequest(requestId, undefined)
@@ -1476,6 +1513,37 @@ function normalizeOpenAIAccountTrafficMigrationRuntimeScope(value: unknown, requ
   }
 }
 
+function normalizeNormalRouteSpeedFirstLatencyRuntimeRequest(
+  value: unknown
+): DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const systemAccountId = normalizedString(record.systemAccountId)
+  if (!Array.isArray(record.routeStrategyIds)) return undefined
+  const routeStrategyIds: string[] = []
+  const seen = new Set<string>()
+  for (const value of record.routeStrategyIds) {
+    const id = normalizedString(value)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    routeStrategyIds.push(id)
+  }
+  if (routeStrategyIds.length === 0 || routeStrategyIds.length > 50) return undefined
+  return {
+    ...(systemAccountId ? { systemAccountId } : {}),
+    routeStrategyIds
+  }
+}
+
+function requiredNormalRouteSpeedFirstLatencyRuntimeRequest(
+  input: DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest | undefined
+): DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest {
+  if (!input) {
+    throw new Error('普通路由速度优先运行态 IPC 请求参数无效')
+  }
+  return input
+}
+
 function backgroundPendingQueuesSnapshot(queues: BackgroundWorkerIpcQueuesRuntime): Record<string, DbServiceRuntimeQueueSnapshot> {
   return Object.fromEntries(Object.entries(queues).map(([key, value]) => [key, { ...value }])) as Record<string, DbServiceRuntimeQueueSnapshot>
 }
@@ -1495,6 +1563,17 @@ async function buildServerAccountRuntimeSnapshot(): Promise<DbServiceServerRunti
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
     accountRuntimeAvailability: gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()
+  }
+}
+
+async function buildServerNormalRouteSpeedFirstLatencyRuntimeSnapshot(
+  input: DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest
+): Promise<DbServiceServerRuntimeSnapshot> {
+  const latencyDegradation = await import('../gateway/runtime/normal-route-latency-degradation.service.js')
+  return {
+    normalRouteSpeedFirstLatencyRuntime: {
+      items: await latencyDegradation.listNormalRouteLatencyDegradedRuntimeAsync(input)
+    }
   }
 }
 

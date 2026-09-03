@@ -154,12 +154,12 @@ try {
   }, ownerAccess)
   const granteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(granteeAccount.id, granteeGroup.id, granteeAccess), '授权实例账户绑定到被授权用户分组失败')
-  repositories.projectAccountHealthFixtureSuccess(granteeAccount.id, {
+  assert.equal(repositories.projectAccountHealthFixtureSuccess(granteeAccount.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
     statusCode: 200
-  })
+  }), true, '授权实例首次后台健康检查应携带来源账户 fence 并激活')
   const activeGranteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
   const cooled = repositories.markAccountTestTemporaryUnavailable(activeGranteeAccount, '模拟授权账户测试失败', granteeAccess)
   assert.equal(cooled?.status, 'temporary_unavailable', '授权账户测试失败应写入被授权实例临时不可调用')

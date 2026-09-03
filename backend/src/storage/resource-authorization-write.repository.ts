@@ -49,6 +49,7 @@ import { maxSystemTeamActiveGrantCount, maxSystemTeamMembersPerTeam } from './sy
 import { optionalNullableServerDateTimeIso } from './value-utils.js'
 import { reserveAndEnqueueAccountHealthJobsInputInTransactionAsync } from './account-health-jobs-input-outbox.repository.js'
 import { enqueueAccountHealthJobsInputsForAuthorizationSourceInTransactionAsync } from './account-health-jobs-input-authorization-fanout.repository.js'
+import { advanceAccountCircuitDispatchRevisionInTransaction } from './account-circuit-control-plane.repository.js'
 
 const resourceAuthorizationCreateInputKeys = new Set(['resourceType', 'resourceId', 'granteeType', 'granteeId', 'targetGroupId', 'remark', 'expiresAt', 'limits'])
 const resourceAuthorizationUpdateInputKeys = new Set(['status', 'expiresAt', 'limits'])
@@ -1859,6 +1860,12 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
       return activeAuthorizationInstanceForGrantAsync(client, authorization.id)
     }
     await replaceAccountNameSearchTermsAsync(client, deletedExisting.id, authorization.grantee_system_account_id, restoredName, now)
+    await advanceAccountCircuitDispatchRevisionInTransaction(client, {
+      accountId: deletedExisting.id,
+      accountRuntimeKey: deletedExisting.id,
+      transitionId: newId('dispatch'),
+      nowMs: Date.parse(now)
+    })
     return client.one<AccountRow>(`
       SELECT *
       FROM ${resourceAuthorizationWriteTable(client, 'accounts')}

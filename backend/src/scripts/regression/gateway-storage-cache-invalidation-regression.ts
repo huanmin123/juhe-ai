@@ -7,6 +7,7 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import type { AccountHealthJobsOutcome } from '../../storage/account-health-jobs-outcome.repository.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-storage-cache-invalidation-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'gateway-storage-cache-invalidation.sqlite3')
@@ -19,11 +20,13 @@ runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, gatewayCache, readWorkerPool] = await Promise.all([
+const [databaseModule, repositories, gatewayCache, readWorkerPool, accountHealthProjection, accountCircuitControlPlane] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
-  import('../../storage/sqlite-read-worker-pool.js')
+  import('../../storage/sqlite-read-worker-pool.js'),
+  import('../../storage/account-health-projection.repository.js'),
+  import('../../storage/account-circuit-control-plane.repository.js')
 ])
 
 try {
@@ -152,6 +155,78 @@ try {
   assert.deepEqual(await runtimeAccountIds(apiKey.key), [], '直接停用账户后候选账号缓存应立即移除该账户')
   repositories.updateAccount(account.id, { status: 'active' }, ownerAccess)
   assert.deepEqual(await runtimeAccountIds(apiKey.key), [account.id], '直接恢复账户后候选账号缓存应立即恢复该账户')
+
+  assert(repositories.markAccountTemporaryUnavailable(account.id, '缓存失效 J1 临时不可用'), '缓存回归需要先将账户置为临时不可用')
+  assert.deepEqual(await runtimeAccountIds(apiKey.key), [], 'J1 恢复前临时不可用账户不应继续留在候选账号缓存')
+  const businessDatabase = databaseModule.getBusinessDatabase()
+  const cooldownFence = businessDatabase.prepare(`
+    SELECT config_revision, dispatch_revision, cooldown_retest_observation_started_at, cooldown_retest_generation
+    FROM accounts
+    WHERE id = ?
+  `).get(account.id) as {
+    config_revision?: number | string | bigint
+    dispatch_revision?: number | string | bigint
+    cooldown_retest_observation_started_at?: string | null
+    cooldown_retest_generation?: string | null
+  } | undefined
+  const inputVersion = businessDatabase.prepare(`
+    SELECT current_version
+    FROM account_health_jobs_input_versions
+    WHERE account_id = ?
+  `).get(account.id) as { current_version?: number | string | bigint } | undefined
+  assert(cooldownFence?.cooldown_retest_observation_started_at, 'J1 缓存回归需要当前冷却观测起点')
+  assert(cooldownFence?.cooldown_retest_generation, 'J1 缓存回归需要当前冷却代次')
+  assert(inputVersion?.current_version !== undefined, 'J1 缓存回归需要当前输入版本')
+  const j1RecoveryInputVersion = Number(inputVersion.current_version)
+  const j1RecoveryConfigRevision = Number(cooldownFence.config_revision)
+  const j1RecoveryDispatchRevision = Number(cooldownFence.dispatch_revision)
+  const j1RecoveryOutcome: AccountHealthJobsOutcome = {
+    outcome_id: 'cache-invalidation-j1-recovery-outcome',
+    request_id: 'cache-invalidation-j1-recovery-request',
+    account_id: account.id,
+    outcome: 'complete_success',
+    observed_at: new Date().toISOString(),
+    input_version: j1RecoveryInputVersion,
+    config_revision: j1RecoveryConfigRevision,
+    dispatch_revision: j1RecoveryDispatchRevision,
+    status_code: 200,
+    next_due_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    projection: {
+      target_account_id: account.id,
+      transition_kind: 'cooldown_success',
+      input_version: j1RecoveryInputVersion,
+      config_revision: j1RecoveryConfigRevision,
+      dispatch_revision: j1RecoveryDispatchRevision,
+      expected_account_status: 'temporary_unavailable',
+      expected_cooldown_fence: {
+        observation_started_at: cooldownFence.cooldown_retest_observation_started_at,
+        generation: cooldownFence.cooldown_retest_generation
+      }
+    }
+  }
+  const j1RecoveryResult = accountHealthProjection.projectAccountHealthJobsOutcome(j1RecoveryOutcome, businessDatabase)
+  assert.equal(j1RecoveryResult.disposition, 'applied', 'J1 冷却成功应恢复账户')
+  assert.deepEqual(await runtimeAccountIds(apiKey.key), [account.id], 'J1 恢复后应通过统一 runtime-cache 失效立即重新加载候选账号')
+
+  const runtimeBeforeDirectDispatchRevision = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
+  const directDispatchRevision = await accountCircuitControlPlane.advanceAccountCircuitDispatchRevision({
+    accountId: account.id,
+    accountRuntimeKey: account.id,
+    transitionId: 'cache-invalidation-direct-dispatch-revision',
+    nowMs: Date.now()
+  })
+  assert.equal(directDispatchRevision.status, 'applied', '直接推进 dispatch revision 应成功')
+  const runtimeAfterDirectDispatchRevision = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
+  assert.notEqual(
+    runtimeBeforeDirectDispatchRevision.accounts[0]?.dispatchRevision,
+    runtimeAfterDirectDispatchRevision.accounts[0]?.dispatchRevision,
+    '低层 dispatch revision 写入后不得继续使用旧网关运行态快照'
+  )
+  assert.equal(
+    runtimeAfterDirectDispatchRevision.accounts[0]?.dispatchRevision,
+    directDispatchRevision.dispatchRevision,
+    '低层 dispatch revision 写入后网关运行态必须读取最新 revision'
+  )
 
   repositories.updateApiKey(apiKey.id, { status: 'disabled' }, ownerAccess)
   const afterApiKeyDisabled = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)

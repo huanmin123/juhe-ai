@@ -194,6 +194,10 @@ export interface DbServiceServerRuntimeSnapshot {
   observedAt?: string
   accountConcurrency?: Record<string, number>
   accountRuntimeAvailability?: Record<string, AccountRuntimeAvailability>
+  /** 仅 normal_route_speed_first_latency 窄 scope 使用，不进入 full 快照。 */
+  normalRouteSpeedFirstLatencyRuntime?: {
+    items: DbServiceNormalRouteSpeedFirstLatencyRuntimeItem[]
+  }
   accountBalanceSnapshotCleanup?: {
     name: string
     pendingCount: number
@@ -357,6 +361,34 @@ export interface DbServiceServerRuntimeSnapshot {
   }
 }
 
+export interface DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest {
+  /**
+   * 可选的 owner 二次收窄。列表由 DB service 先按权限筛出 routeStrategyIds；
+   * 未传该字段时不能据此扩大可见策略集合。
+   */
+  systemAccountId?: string
+  routeStrategyIds: string[]
+}
+
+export interface DbServiceNormalRouteSpeedFirstLatencyRuntimeItem {
+  accountId: string
+  accountName?: string
+  scope: {
+    routeStrategyId: string
+    groupId: string
+  }
+  slowCount: number
+  slowTriggerCount: number
+  slowWindowSeconds: number
+  degradedUntil: string
+  nextProbeAt?: string
+  recoverySuccessCount: number
+  requiredRecoverySuccessCount: number
+  recoveryProbeRoundAttemptCount: number
+  recoveryProbeRoundSuccessCount: number
+  reason: string
+}
+
 export interface DbServiceSystemMetricsRuntimeSnapshot {
   observedAt?: DbServiceServerRuntimeSnapshot['observedAt']
   accountBalanceSnapshotCleanup?: DbServiceServerRuntimeSnapshot['accountBalanceSnapshotCleanup']
@@ -423,6 +455,7 @@ export type DbServiceServerRuntimeSnapshotScope =
   | 'full'
   | 'account_concurrency'
   | 'account_runtime'
+  | 'normal_route_speed_first_latency'
   | 'system_metrics'
 
 export interface DbServiceRuntimeQueueSnapshot {
@@ -1294,6 +1327,7 @@ export type DbServiceChildMessage =
     type: 'db_service_server_runtime_request'
     requestId: string
     scope?: DbServiceServerRuntimeSnapshotScope
+    input?: DbServiceNormalRouteSpeedFirstLatencyRuntimeRequest
   }
   | {
     type: 'db_service_process_event_loop_response'

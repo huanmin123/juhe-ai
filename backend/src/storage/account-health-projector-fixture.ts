@@ -1,3 +1,5 @@
+import type { DatabaseSync } from 'node:sqlite'
+
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getBusinessDatabase, nowIso } from './database.js'
@@ -25,14 +27,17 @@ export function projectAccountHealthFixtureSuccess(
   }
   const database = getBusinessDatabase()
   const account = database.prepare(`
-    SELECT id, status, config_revision, dispatch_revision
+    SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id
     FROM accounts
     WHERE id = ? AND deleted_at IS NULL
   `).get(accountId) as FixtureAccountRow | undefined
   if (!account || (account.status !== 'active' && account.status !== 'pending_test')) return false
   const inputVersion = currentAccountHealthJobsInputVersion(account.id, database)
     ?? reserveAccountHealthJobsInputVersion(account.id, database)
-  return projectAccountHealthJobsOutcome(successOutcome(account, inputVersion, input), database).changed
+  return projectAccountHealthJobsOutcome(
+    successOutcome(account, inputVersion, input, sourceConfigRevisionForFixtureAccount(database, account)),
+    database
+  ).changed
 }
 
 export async function projectAccountHealthFixtureSuccessAsync(
@@ -42,14 +47,25 @@ export async function projectAccountHealthFixtureSuccessAsync(
   if (runtimeConfig.databaseDriver !== 'postgres') return projectAccountHealthFixtureSuccess(accountId, input)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const account = await client.one<FixtureAccountRow>(`
-    SELECT id, status, config_revision, dispatch_revision
+    SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id
     FROM juhe_business.accounts
     WHERE id = ? AND deleted_at IS NULL
   `, [accountId])
   if (!account || (account.status !== 'active' && account.status !== 'pending_test')) return false
   const inputVersion = await currentAccountHealthJobsInputVersionAsync(client, account.id)
     ?? await reserveAccountHealthJobsInputVersionAsync(client, account.id)
-  return (await projectAccountHealthJobsOutcomeAsync(client, successOutcome(account, inputVersion, input))).changed
+  const sourceConfigRevision = account.authorization_instance_source_account_id
+    ? (await client.one<{ config_revision: number | string | bigint }>(`
+        SELECT config_revision
+        FROM juhe_business.accounts
+        WHERE id = ? AND deleted_at IS NULL
+        LIMIT 1
+      `, [account.authorization_instance_source_account_id]))?.config_revision
+    : undefined
+  return (await projectAccountHealthJobsOutcomeAsync(
+    client,
+    successOutcome(account, inputVersion, input, sourceConfigRevision === undefined ? undefined : integer(sourceConfigRevision, 'source.config_revision'))
+  )).changed
 }
 
 export function projectAccountHealthFixtureFailure(
@@ -61,7 +77,7 @@ export function projectAccountHealthFixtureFailure(
   }
   const database = getBusinessDatabase()
   const account = database.prepare(`
-    SELECT id, status, config_revision, dispatch_revision, health_check_failure_count
+    SELECT id, status, config_revision, dispatch_revision, authorization_instance_source_account_id, health_check_failure_count
     FROM accounts
     WHERE id = ? AND deleted_at IS NULL
   `).get(accountId) as FixtureFailureAccountRow | undefined
@@ -76,6 +92,7 @@ export function projectAccountHealthFixtureFailure(
   const dispatchRevision = integer(account.dispatch_revision, 'dispatch_revision')
   const intervalHours = Number.isFinite(input.intervalHours) && Number(input.intervalHours) > 0 ? Number(input.intervalHours) : 1
   const transition = account.status === 'pending_test' ? 'activation_error' : 'health_failure'
+  const sourceConfigRevision = sourceConfigRevisionForFixtureAccount(database, account)
   const outcome: AccountHealthJobsOutcome = {
     outcome_id: `fixture-health-failure:${account.id}:${inputVersion}:${checkedAt}:${failureCount}`,
     request_id: `fixture-health-request:${account.id}:${inputVersion}:${checkedAt}:${failureCount}`,
@@ -97,6 +114,7 @@ export function projectAccountHealthFixtureFailure(
       input_version: inputVersion,
       config_revision: configRevision,
       dispatch_revision: dispatchRevision,
+      ...(sourceConfigRevision === undefined ? {} : { source_config_revision: sourceConfigRevision }),
       expected_account_status: account.status as 'active' | 'pending_test'
     }
   }
@@ -114,6 +132,7 @@ interface FixtureAccountRow {
   status: 'active' | 'pending_test' | string
   config_revision: number | string | bigint
   dispatch_revision: number | string | bigint
+  authorization_instance_source_account_id?: string | null
 }
 
 interface FixtureFailureAccountRow extends FixtureAccountRow {
@@ -152,7 +171,8 @@ interface AccountHealthFixtureFailureResult {
 function successOutcome(
   account: FixtureAccountRow,
   inputVersion: number,
-  input: AccountHealthFixtureSuccessInput
+  input: AccountHealthFixtureSuccessInput,
+  sourceConfigRevision?: number
 ): AccountHealthJobsOutcome {
   const observedAt = validIso(input.checkedAt) ?? nowIso()
   const intervalHours = Number.isFinite(input.intervalHours) && Number(input.intervalHours) > 0
@@ -178,9 +198,24 @@ function successOutcome(
       input_version: inputVersion,
       config_revision: configRevision,
       dispatch_revision: dispatchRevision,
+      ...(sourceConfigRevision === undefined ? {} : { source_config_revision: sourceConfigRevision }),
       expected_account_status: account.status as 'active' | 'pending_test'
     }
   }
+}
+
+function sourceConfigRevisionForFixtureAccount(database: DatabaseSync, account: FixtureAccountRow): number | undefined {
+  const sourceId = account.authorization_instance_source_account_id
+  if (!sourceId) return undefined
+  const source = database.prepare(`
+    SELECT config_revision
+    FROM accounts
+    WHERE id = ? AND deleted_at IS NULL
+    LIMIT 1
+  `).get(sourceId) as { config_revision?: number | string | bigint } | undefined
+  return source?.config_revision === undefined
+    ? undefined
+    : integer(source.config_revision, 'source.config_revision')
 }
 
 function validIso(value: string | undefined): string | undefined {

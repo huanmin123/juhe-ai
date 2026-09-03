@@ -77,6 +77,9 @@ const configuredNumber = (name: string, fallback: number): number => {
 }
 const firstByteDeadlineMs = configuredNumber('JUHE_AI_SPEED_FIRST_FIRST_BYTE_DEADLINE_MS', 10_000)
 const slowBodyDelayMs = configuredNumber('JUHE_AI_SPEED_FIRST_SLOW_BODY_DELAY_MS', firstByteDeadlineMs + 2_000)
+const recoveryProbeBaseIntervalMs = 5_000
+const recoveryProbeJitterWindowMs = recoveryProbeBaseIntervalMs / 2
+const recoveryProbeTimingToleranceMs = 100
 const speedFirstConfig: RouteStrategySpeedFirstConfig = {
   slowTriggerCount: configuredNumber('JUHE_AI_SPEED_FIRST_SLOW_TRIGGER_COUNT', 2),
   slowWindowSeconds: configuredNumber('JUHE_AI_SPEED_FIRST_SLOW_WINDOW_SECONDS', 60),
@@ -191,6 +194,7 @@ try {
     await assertSpeedFirstCanCrossPriorityPreference(baseUrl, priorityScenario)
     await assertAllSuperPriorityLatencyRecovery(baseUrl, allSuperPriorityScenario)
     await assertBackgroundProbeRestoresPrimary(baseUrl, speedScenario)
+    await assertHttpRecoveryRestoresPrimary(baseUrl, speedScenario)
     await assertBulkFastTrafficAfterRecovery(baseUrl, speedScenario)
     await assertSpeedFirstCutoverDoesNotPersistSubstituteAffinity(baseUrl, speedScenario)
     await assertResponsesSlowFirstByteUsesObservationAndConfirmedCutover(baseUrl, speedScenario)
@@ -511,8 +515,9 @@ async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: S
       const confirmationCandidate = await requireSpeedProbeCandidate(scenario)
       const confirmationDelayMs = Date.parse(confirmationCandidate.nextProbeAt) - Date.now()
       assert(
-        confirmationDelayMs >= 4_000 && confirmationDelayMs <= 5_500,
-        `两次后台恢复探针的确认间隔必须约 5 秒，实际 ${confirmationDelayMs}ms`
+        confirmationDelayMs >= recoveryProbeBaseIntervalMs - recoveryProbeJitterWindowMs - recoveryProbeTimingToleranceMs
+          && confirmationDelayMs <= recoveryProbeBaseIntervalMs + recoveryProbeJitterWindowMs + recoveryProbeTimingToleranceMs,
+        `两次后台恢复探针的确认间隔必须在 5 秒基础间隔的 ±2.5 秒 jitter 窗口内（允许 ${recoveryProbeTimingToleranceMs}ms 观测误差），实际 ${confirmationDelayMs}ms`
       )
     }
   }
@@ -527,6 +532,74 @@ async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: S
   const hits = upstreamHits.slice(hitStart)
   assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 1, '恢复后应真实命中主号')
   assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '恢复后不应继续绕到副号')
+}
+
+async function assertHttpRecoveryRestoresPrimary(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
+  setAccountPhase('sk-speed-primary', 'fast')
+  setAccountPhase('sk-speed-secondary', 'fast')
+
+  const scope = latencyDegradation.normalRouteLatencyDegradationScope({
+    systemAccountId: access.systemAccountId,
+    routeStrategyId: scenario.routeStrategyId,
+    groupId: scenario.groupId
+  })
+  assert(scope, '真实 HTTP 恢复请求测试需要有效普通路由速度优先 scope')
+
+  const accounts = repositories.listOpenAIAccountsForGroup(scenario.groupId, access.systemAccountId, { requestedModel: model })
+  const primaryAccount = accounts.find((account) => account.id === scenario.primaryAccountId)
+  const secondaryAccount = accounts.find((account) => account.id === scenario.secondaryAccountId)
+  assert(primaryAccount, '真实 HTTP 恢复请求测试需要找到主号')
+  assert(secondaryAccount, '真实 HTTP 恢复请求测试需要找到副号')
+  for (let index = 0; index < speedFirstConfig.slowTriggerCount; index += 1) {
+    await latencyDegradation.recordNormalRouteFirstByteSlowAsync(primaryAccount, scope, speedFirstRuntimeConfig)
+    await latencyDegradation.recordNormalRouteFirstByteSlowAsync(secondaryAccount, scope, speedFirstRuntimeConfig)
+  }
+  assert.equal(
+    await latencyDegradation.isNormalRouteAccountLatencyDegradedAsync(primaryAccount, scope),
+    true,
+    '真实 HTTP 恢复请求测试必须先确认主号处于速度降级'
+  )
+  assert.equal(
+    await latencyDegradation.isNormalRouteAccountLatencyDegradedAsync(secondaryAccount, scope),
+    true,
+    '真实 HTTP 恢复请求测试必须先确认副号处于速度降级，以便网关继续选择原始主号'
+  )
+
+  const sessionId = `speed-first-http-recovery-${Date.now()}`
+  for (let index = 1; index <= speedFirstConfig.recoverySuccessCount; index += 1) {
+    const hitStart = upstreamHits.length
+    const response = await postChat(baseUrl, scenario.apiKey, `http recovery success ${index}`, false, { sessionId })
+    assert.equal(response.status, 200, `第 ${index} 次真实 HTTP 恢复请求应成功，实际 HTTP ${response.status}: ${response.text}`)
+    assert.match(response.text, /mock ai chat sk-speed-primary/, `第 ${index} 次真实 HTTP 恢复请求应命中主号`)
+    const hits = upstreamHits.slice(hitStart)
+    assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 1, `第 ${index} 次真实 HTTP 恢复请求应只命中主号`)
+    assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, `第 ${index} 次真实 HTTP 恢复请求不应切到副号`)
+
+    const primaryStillDegraded = await latencyDegradation.isNormalRouteAccountLatencyDegradedAsync(primaryAccount, scope)
+    assert.equal(
+      primaryStillDegraded,
+      index < speedFirstConfig.recoverySuccessCount,
+      `第 ${index} 次真实 HTTP 恢复请求后的主号降级状态不符合 recoverySuccessCount=${speedFirstConfig.recoverySuccessCount}`
+    )
+    const candidates = await listSpeedProbeCandidates(scenario)
+    assert.equal(
+      candidates.some((candidate) => candidate.accountId === scenario.primaryAccountId),
+      index < speedFirstConfig.recoverySuccessCount,
+      `第 ${index} 次真实 HTTP 恢复请求后的主号探针状态不符合预期`
+    )
+  }
+
+  const recoveredHitStart = upstreamHits.length
+  const recoveredResponse = await postChat(baseUrl, scenario.apiKey, 'http recovery primary remains preferred', false, { sessionId })
+  assert.equal(recoveredResponse.status, 200, `真实 HTTP 恢复后的主号优先请求应成功，实际 HTTP ${recoveredResponse.status}: ${recoveredResponse.text}`)
+  assert.match(recoveredResponse.text, /mock ai chat sk-speed-primary/, '真实 HTTP 恢复完成后应继续优先主号')
+  const recoveredHits = upstreamHits.slice(recoveredHitStart)
+  assert.equal(countHits(recoveredHits, 'sk-speed-primary', '/v1/chat/completions'), 1, '真实 HTTP 恢复完成后应命中主号')
+  assert.equal(countHits(recoveredHits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '真实 HTTP 恢复完成后不应命中副号')
+
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
 }
 
 async function assertBulkFastTrafficAfterRecovery(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {

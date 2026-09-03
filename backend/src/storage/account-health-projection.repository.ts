@@ -12,9 +12,13 @@ import {
 } from './account-availability-schedule.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import {
   advanceAccountCircuitDispatchRevisionInSqliteTransaction,
-  advanceAccountCircuitDispatchRevisionInTransaction
+  advanceAccountCircuitDispatchRevisionInTransaction,
+  advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction,
+  advanceAccountCircuitDispatchRevisionFamilyInTransaction,
+  lockAccountCircuitDispatchFamilyRootInTransaction
 } from './account-circuit-control-plane.repository.js'
 
 export type AccountHealthProjectionDisposition = 'applied' | 'stale' | 'ignored' | 'rejected'
@@ -123,12 +127,19 @@ export function projectAccountHealthJobsOutcome(
     }
     changed = true
     if (activationPlan.restoresDispatch) {
-      advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+      const dispatchInput = {
         accountId: outcome.account_id,
         accountRuntimeKey: outcome.account_id,
         transitionId: newId('dispatch'),
         nowMs: Date.now()
-      })
+      }
+      if (account!.authorization_instance_source_account_id) {
+        // An authorized instance has local health state. Its recovery must
+        // invalidate only itself; the source account owns family-wide fences.
+        advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, dispatchInput)
+      } else {
+        advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, dispatchInput)
+      }
     }
     if (projectionChangesAvailability(validation.outcome.projection.transition_kind)) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [outcome.account_id], reason: 'j1_account_health_projection' })
@@ -136,7 +147,12 @@ export function projectAccountHealthJobsOutcome(
     insertReceiptSqlite(database, base, 'applied', null)
     result = { ...base, disposition: 'applied', changed: true }
   }, database)
-  if (changed) invalidateAccountLookupCache(outcome.account_id)
+  if (changed) {
+    invalidateAccountLookupCache(outcome.account_id)
+    if (outcome.projection && projectionChangesAvailability(outcome.projection.transition_kind)) {
+      notifyGatewayRuntimeCacheInvalidation('account_health_projection')
+    }
+  }
   return result ?? { ...base, disposition: 'rejected', changed: false, reason: 'projection_transaction_completed_without_result' }
 }
 
@@ -157,6 +173,7 @@ export async function projectAccountHealthJobsOutcomeAsync(
       await insertReceiptAsync(tx, base, validation.disposition, validation.reason)
       return { ...base, disposition: validation.disposition, changed: false, reason: validation.reason }
     }
+    await lockAccountCircuitDispatchFamilyRootInTransaction(tx, outcome.account_id)
     const account = await findAccountFenceAsync(tx, outcome.account_id)
     const fenceReason = await asyncFenceMismatchReason(tx, account, validation.outcome)
     if (fenceReason) {
@@ -176,12 +193,19 @@ export async function projectAccountHealthJobsOutcomeAsync(
     }
     changed = true
     if (activationPlan.restoresDispatch) {
-      await advanceAccountCircuitDispatchRevisionInTransaction(tx, {
+      const dispatchInput = {
         accountId: outcome.account_id,
         accountRuntimeKey: outcome.account_id,
         transitionId: newId('dispatch'),
         nowMs: Date.now()
-      })
+      }
+      if (account!.authorization_instance_source_account_id) {
+        // Keep authorized-instance health recovery isolated from its source
+        // and sibling instances; source recovery remains family-wide.
+        await advanceAccountCircuitDispatchRevisionInTransaction(tx, dispatchInput)
+      } else {
+        await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, dispatchInput)
+      }
     }
     if (projectionChangesAvailability(validation.outcome.projection.transition_kind)) {
       await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [outcome.account_id], reason: 'j1_account_health_projection' }, tx)
@@ -189,7 +213,12 @@ export async function projectAccountHealthJobsOutcomeAsync(
     await insertReceiptAsync(tx, base, 'applied', null)
     return { ...base, disposition: 'applied', changed: true }
   })
-  if (changed) invalidateAccountLookupCache(outcome.account_id)
+  if (changed) {
+    invalidateAccountLookupCache(outcome.account_id)
+    if (outcome.projection && projectionChangesAvailability(outcome.projection.transition_kind)) {
+      notifyGatewayRuntimeCacheInvalidation('account_health_projection')
+    }
+  }
   return result
 }
 

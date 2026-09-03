@@ -9,14 +9,15 @@ pipeline {
 
   parameters {
     booleanParam(name: 'DEPLOY_PROD', defaultValue: false, description: '通过 Jenkins API 触发：读取 test 的 sourceCommit/digest 并写入同一版本的 prod release state；运行态观察由 Jenkins 外部完成。')
-    booleanParam(name: 'REVERSE_DEPLOY_PROD', defaultValue: false, description: '本次全停机单 active 发布已禁用；传 true 会被硬拒绝，不得创建反向蓝绿 release intent。')
+    booleanParam(name: 'REVERSE_DEPLOY_PROD', defaultValue: false, description: '历史反向发布入口已禁用；不得作为蓝绿切换的替代入口。')
     booleanParam(name: 'ROLLBACK_PROD', defaultValue: false, description: '通过 Jenkins API 触发：仅写回历史 prod release state，由 Argo 异步同步；不直接操作集群。')
     string(name: 'TARGET_PROD_SOURCE_COMMIT', defaultValue: '', description: '回滚目标 sourceCommit；留空时自动选择历史中最新的上一版本。')
     string(name: 'ROLLBACK_APPROVAL_TICKET', defaultValue: '', description: '回滚必须填写受控审批单号；普通发布不得使用回滚分支。')
     string(name: 'ROLLBACK_SCHEMA_COMPATIBILITY_TICKET', defaultValue: '', description: '回滚必须填写已核对数据库 schema 前向兼容性的证据单号；不回退数据库 schema。')
-    string(name: 'PROD_APPROVAL_TICKET', defaultValue: '', description: '生产晋级必须填写本次用户批准的审批单号；为空时禁止写入 prod。')
-    string(name: 'PROD_FINAL_APPROVAL', defaultValue: '', description: '生产晋级或回滚必须由用户明确输入 I_APPROVE_PROD_SINGLE_ACTIVE_STOP；缺少精确确认时禁止写入 prod。')
-    string(name: 'RELEASE_MODE', defaultValue: 'single-active-stop', description: '本次生产发布固定为全停机单 active；其他模式必须先完成独立 GitOps 设计与审批。')
+    string(name: 'PROD_APPROVAL_TICKET', defaultValue: '', description: 'single-active-stop 生产晋级必须填写本次用户批准的审批单号；未来已验收的 blue-green-additive 不使用此确认。')
+    string(name: 'PROD_FINAL_APPROVAL', defaultValue: '', description: '全停机晋级或任何回滚必须由用户明确输入 I_APPROVE_PROD_SINGLE_ACTIVE_STOP；缺少精确确认时禁止写入 prod。')
+    string(name: 'RELEASE_MODE', defaultValue: 'single-active-stop', description: 'single-active-stop=全停机且必须用户最终批准；blue-green-additive 是未来纯增量蓝绿策略，当前状态机未验收时会被硬阻断。')
+    string(name: 'SCHEMA_CHANGE_CLASS', defaultValue: 'requires-stop', description: '数据库变更分类：additive 仅允许纯增量无迁移蓝绿；requires-stop 强制全停机。')
   }
 
   environment {
@@ -67,11 +68,11 @@ pipeline {
           if ([params.DEPLOY_PROD, reverseDeployRequested(), rollbackRequested()].findAll { it }.size() > 1) {
             error 'DEPLOY_PROD、REVERSE_DEPLOY_PROD 与 ROLLBACK_PROD 只能选择一个。'
           }
-          if (params.RELEASE_MODE?.trim() != 'single-active-stop') {
-            error '当前生产发布只允许 RELEASE_MODE=single-active-stop；蓝绿/反向切换未完成独立验收。'
-          }
+          def requestedReleaseMode = params.RELEASE_MODE?.trim()
+          def requestedSchemaChangeClass = params.SCHEMA_CHANGE_CLASS?.trim()
+          validateReleaseStrategy(requestedReleaseMode, requestedSchemaChangeClass)
           if (reverseDeployRequested()) {
-            error 'REVERSE_DEPLOY_PROD 已被本次全停机单 active 发布策略明确禁止；不得写入反向发布 intent。'
+            error 'REVERSE_DEPLOY_PROD 是历史反向入口，已禁用；不得绕过受控的发布状态机。'
           }
           if (rollbackRequested() && !(params.ROLLBACK_APPROVAL_TICKET?.trim())) {
             error 'ROLLBACK_PROD 必须提供受控 ROLLBACK_APPROVAL_TICKET；缺少审批单不得写 prod。'
@@ -85,15 +86,26 @@ pipeline {
           if (rollbackRequested() && !validApprovalTicket(params.ROLLBACK_SCHEMA_COMPATIBILITY_TICKET)) {
             error 'ROLLBACK_SCHEMA_COMPATIBILITY_TICKET 格式非法，仅允许受控证据单号字符。'
           }
-          if (params.DEPLOY_PROD && !(params.PROD_APPROVAL_TICKET?.trim())) {
+          if (params.DEPLOY_PROD && requestedReleaseMode == 'single-active-stop' && !(params.PROD_APPROVAL_TICKET?.trim())) {
             error 'DEPLOY_PROD 必须提供本次用户批准的 PROD_APPROVAL_TICKET；缺少最终批准不得写 prod。'
           }
-          if (params.DEPLOY_PROD && !validApprovalTicket(params.PROD_APPROVAL_TICKET)) {
+          if (params.DEPLOY_PROD && requestedReleaseMode == 'single-active-stop' && !validApprovalTicket(params.PROD_APPROVAL_TICKET)) {
             error 'PROD_APPROVAL_TICKET 格式非法，仅允许受控审批单号字符。'
           }
-          if ((params.DEPLOY_PROD || rollbackRequested()) && params.PROD_FINAL_APPROVAL?.trim() != 'I_APPROVE_PROD_SINGLE_ACTIVE_STOP') {
+          if ((rollbackRequested() || (params.DEPLOY_PROD && requestedReleaseMode == 'single-active-stop')) && params.PROD_FINAL_APPROVAL?.trim() != 'I_APPROVE_PROD_SINGLE_ACTIVE_STOP') {
             error 'DEPLOY_PROD/ROLLBACK_PROD 必须填写精确的 PROD_FINAL_APPROVAL=I_APPROVE_PROD_SINGLE_ACTIVE_STOP；缺少用户最终确认不得写 prod。'
           }
+        }
+      }
+    }
+
+    stage('检查 test/prod GitOps 隔离') {
+      steps {
+        script {
+          // Both overlays consume the shared platform base. Refuse all
+          // release-state writes while prod still follows mutable main.
+          refreshPlatformReleaseWorkspace()
+          assertTestProdGitOpsIsolation()
         }
       }
     }
@@ -192,7 +204,10 @@ pipeline {
       steps {
         script {
           env.J3A_MANAGEMENT_ENABLED = sourceUsesDirectJ3aManagement() ? 'true' : 'false'
-          env.TEST_RELEASE_STATE_REVISION = writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-ci')
+          env.RELEASE_MODE = params.RELEASE_MODE?.trim()
+          env.SCHEMA_CHANGE_CLASS = params.SCHEMA_CHANGE_CLASS?.trim()
+          validateReleaseStrategy(env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
+          env.TEST_RELEASE_STATE_REVISION = writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-ci', null, env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
         }
       }
     }
@@ -207,6 +222,8 @@ pipeline {
           env.JOBS_DIGEST = release.jobsDigest
           env.GATEWAY_DIGEST = release.gatewayDigest
           env.J3A_MANAGEMENT_ENABLED = release.j3aManagementEnabled
+          env.RELEASE_MODE = release.releaseMode
+          env.SCHEMA_CHANGE_CLASS = release.schemaChangeClass
         }
       }
     }
@@ -221,8 +238,14 @@ pipeline {
           env.JOBS_DIGEST = release.jobsDigest
           env.GATEWAY_DIGEST = release.gatewayDigest
           env.J3A_MANAGEMENT_ENABLED = release.j3aManagementEnabled
+          validateReleaseStrategy(release.releaseMode, release.schemaChangeClass)
+          if (params.RELEASE_MODE?.trim() != release.releaseMode || params.SCHEMA_CHANGE_CLASS?.trim() != release.schemaChangeClass) {
+            error '请求的 RELEASE_MODE/SCHEMA_CHANGE_CLASS 与 test 已验证 release state 不一致；拒绝生产晋级。'
+          }
+          env.RELEASE_MODE = release.releaseMode
+          env.SCHEMA_CHANGE_CLASS = release.schemaChangeClass
           env.TEST_RELEASE_STATE_REVISION = release.platformRevision
-          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-promotion', env.TEST_RELEASE_STATE_REVISION)
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-promotion', env.TEST_RELEASE_STATE_REVISION, env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
         }
       }
     }
@@ -245,7 +268,9 @@ pipeline {
           env.JOBS_DIGEST = selected.jobsDigest
           env.GATEWAY_DIGEST = selected.gatewayDigest
           env.J3A_MANAGEMENT_ENABLED = selected.j3aManagementEnabled
-          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-rollback', selected.platformRevision)
+          env.RELEASE_MODE = 'single-active-stop'
+          env.SCHEMA_CHANGE_CLASS = 'requires-stop'
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-rollback', selected.platformRevision, env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
           currentBuild.description = "prod 已写入回滚 release state，source=${env.SOURCE_COMMIT}"
         }
       }
@@ -266,6 +291,29 @@ def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
 def validSha256Hex(value) { return value ==~ /^[a-f0-9]{64}$/ }
 def validApprovalTicket(value) { return value != null && value.toString() ==~ /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/ }
 def validEvidenceRef(value) { return value != null && value.toString() ==~ /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._\/-]{1,256}$/ }
+def validReleaseMode(value) { return value in ['single-active-stop', 'blue-green-additive'] }
+def validSchemaChangeClass(value) { return value in ['requires-stop', 'additive'] }
+def validateReleaseStrategy(releaseMode, schemaChangeClass) {
+  if (!validReleaseMode(releaseMode)) {
+    error 'RELEASE_MODE 必须为 single-active-stop 或 blue-green-additive。'
+  }
+  if (!validSchemaChangeClass(schemaChangeClass)) {
+    error 'SCHEMA_CHANGE_CLASS 必须为 requires-stop 或 additive。'
+  }
+  if (releaseMode == 'blue-green-additive' && schemaChangeClass != 'additive') {
+    error 'blue-green-additive 只能用于 additive schema；涉及表改造或数据迁移必须改用 single-active-stop。'
+  }
+  if (releaseMode == 'blue-green-additive' && !blueGreenControlPlaneImplemented()) {
+    error 'blue-green-additive 策略已登记，但候选镜像写入、候选运行态验证、稳定 Service 无空 Endpoint 切换以及 owner handoff 状态机尚未完整实现并在 test 验收；当前必须使用 single-active-stop。'
+  }
+}
+def blueGreenControlPlaneImplemented() {
+  // 静态 A/B Pod、candidate image 名称和 owner fence 并不等同于安全的
+  // 蓝绿控制面。当前 Jenkins 只写 active image block，且没有把候选状态、
+  // preview 验证、流量 selector 和 owner handoff 作为一个可审计状态机。
+  // 在这四项实现并完成 test 回归前，保持 fail-closed，禁止仅凭参数放行。
+  return false
+}
 def rollbackRequested() { return params.ROLLBACK_PROD }
 def reverseDeployRequested() { return params.REVERSE_DEPLOY_PROD }
 
@@ -310,6 +358,36 @@ def refreshPlatformReleaseWorkspace() {
   }
 }
 
+def assertTestProdGitOpsIsolation() {
+  def applicationsFile = "${releaseWorkspace()}/platform/argocd/juhe-applications.yaml"
+  if (!fileExists(applicationsFile)) {
+    error '缺少权威 Argo Application 清单，无法证明 test/prod GitOps 隔离。'
+  }
+  def blocks = readFile(applicationsFile).split('(?m)^---\\s*$')
+  def testBlock = blocks.find { block ->
+    (block =~ /(?m)^\s*name:\s*juhe-ai-test\s*$/) &&
+      (block =~ /(?m)^\s*path:\s*apps\/juhe-ai\/overlays\/test\s*$/) &&
+      (block =~ /(?m)^\s*namespace:\s*juhe-ai-test\s*$/)
+  }
+  def prodBlock = blocks.find { block ->
+    (block =~ /(?m)^\s*name:\s*juhe-ai-prod\s*$/) &&
+      (block =~ /(?m)^\s*path:\s*apps\/juhe-ai\/overlays\/prod\s*$/) &&
+      (block =~ /(?m)^\s*namespace:\s*juhe-ai-prod\s*$/)
+  }
+  if (!testBlock || !prodBlock) {
+    error 'Argo Application 的 test/prod path 或 namespace 不符合隔离契约。'
+  }
+  if (prodBlock =~ /(?m)^\s*automated:/) {
+    error '生产 Argo Application 仍配置 automated sync；禁止继续 test/prod 发布。'
+  }
+  def targetMatcher = prodBlock =~ /(?m)^\s*targetRevision:\s*([^\s#]+)\s*$/
+  def targetRevision = targetMatcher ? targetMatcher[0][1] : ''
+  if (!(targetRevision ==~ /^[0-9a-f]{40}$/)) {
+    error '生产 Argo targetRevision 未固定到不可变 40 位 commit；禁止继续 test/prod 发布。'
+  }
+  echo "test/prod GitOps isolation verified: prod targetRevision=${targetRevision}"
+}
+
 def metadataValue(environmentName, key) {
   def value = metadataValueOptional(environmentName, key)
   if (!value) error "${environmentName} release state 缺少 ${key}。"
@@ -342,17 +420,21 @@ def readTestRelease(boolean requireVerification = false) {
     gatewayDigest: metadataValue('test', 'gatewayImageDigest'),
     j3aManagementEnabled: metadataValue('test', 'j3aManagementEnabled'),
     releaseMode: metadataValue('test', 'releaseMode'),
+    schemaChangeClass: metadataValue('test', 'schemaChangeClass'),
     verificationStatus: metadataValueOptional('test', 'verification.status'),
     verificationSourceCommit: metadataValueOptional('test', 'verification.sourceCommit'),
     verificationEvidenceRef: metadataValueOptional('test', 'verification.evidenceRef'),
     verificationEvidenceManifestDigest: metadataValueOptional('test', 'verification.evidenceManifestDigest'),
     verificationVerifierIdentity: metadataValueOptional('test', 'verification.verifierIdentity'),
-    verificationVerifiedAt: metadataValueOptional('test', 'verification.verifiedAt')
+    verificationVerifiedAt: metadataValueOptional('test', 'verification.verifiedAt'),
+    verificationReleaseMode: metadataValueOptional('test', 'verification.releaseMode'),
+    verificationSchemaChangeClass: metadataValueOptional('test', 'verification.schemaChangeClass')
   ]
   release.platformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
-  if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false']) || release.releaseMode != 'single-active-stop') {
+  if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false']) || !validReleaseMode(release.releaseMode) || !validSchemaChangeClass(release.schemaChangeClass)) {
     error 'test release state 未通过完整性检查。'
   }
+  validateReleaseStrategy(release.releaseMode, release.schemaChangeClass)
   if (requireVerification) {
     if (release.verificationStatus != 'passed') {
       error "test release state verification.status 必须为 passed，实际为 ${release.verificationStatus ?: '<missing>'}。"
@@ -372,6 +454,9 @@ def readTestRelease(boolean requireVerification = false) {
     if (!(release.verificationVerifiedAt ==~ /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/)) {
       error 'test release state verification.verifiedAt 必须是 UTC 时间。'
     }
+    if (release.verificationReleaseMode != release.releaseMode || release.verificationSchemaChangeClass != release.schemaChangeClass) {
+      error 'test release state verifier 的发布模式/数据库变更分类必须与候选一致。'
+    }
   }
   return release
 }
@@ -389,7 +474,9 @@ def prodRollbackCandidates() {
     nodeDigest: metadataValue('prod', 'nodeImageDigest'),
     jobsDigest: metadataValue('prod', 'jobsImageDigest'),
     gatewayDigest: metadataValue('prod', 'gatewayImageDigest'),
-    j3aManagementEnabled: metadataValue('prod', 'j3aManagementEnabled')
+    j3aManagementEnabled: metadataValue('prod', 'j3aManagementEnabled'),
+    releaseMode: metadataValueOptional('prod', 'releaseMode') ?: 'single-active-stop',
+    schemaChangeClass: metadataValueOptional('prod', 'schemaChangeClass') ?: 'requires-stop'
   ]
   def candidates = [:]
   readFile(historyFile).readLines().eachWithIndex { line, index ->
@@ -397,7 +484,7 @@ def prodRollbackCandidates() {
       return
     }
     def fields = line.split('\\t', -1)
-    if (!(fields.size() in [7, 8])) {
+    if (!(fields.size() in [7, 8, 9, 10])) {
       error "prod release-history.tsv 第 ${index + 1} 行字段数错误。"
     }
     def sourceCommit = fields[2]
@@ -406,18 +493,20 @@ def prodRollbackCandidates() {
     def gatewayDigest = fields[5]
     // Seven-column records predate J3a direct management and are therefore
     // explicit disabled rollback candidates.
-    def j3aManagementEnabled = fields.size() == 8 ? fields[6] : 'false'
-    def build = fields.size() == 8 ? fields[7] : fields[6]
+    def j3aManagementEnabled = fields.size() >= 8 ? fields[6] : 'false'
+    def build = fields.size() >= 8 ? fields[7] : fields[6]
+    def releaseMode = fields.size() == 10 ? fields[8] : 'single-active-stop'
+    def schemaChangeClass = fields.size() == 10 ? fields[9] : (fields.size() == 9 ? fields[8] : 'requires-stop')
     if (!(fields[0] ==~ /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/) ||
         !(fields[1] in ['legacy-prod-state', 'jenkins-prod-promotion', 'jenkins-prod-rollback']) ||
-        !validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false']) || !build) {
+        !validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false']) || !validReleaseMode(releaseMode) || !validSchemaChangeClass(schemaChangeClass) || !build) {
       error "prod release-history.tsv 第 ${index + 1} 行字段非法。"
     }
-    if (sourceCommit == current.sourceCommit && nodeDigest == current.nodeDigest && jobsDigest == current.jobsDigest && gatewayDigest == current.gatewayDigest && j3aManagementEnabled == current.j3aManagementEnabled) {
+    if (sourceCommit == current.sourceCommit && nodeDigest == current.nodeDigest && jobsDigest == current.jobsDigest && gatewayDigest == current.gatewayDigest && j3aManagementEnabled == current.j3aManagementEnabled && releaseMode == current.releaseMode && schemaChangeClass == current.schemaChangeClass) {
       return
     }
-    def label = "${fields[0]} | ${build} | J3a=${j3aManagementEnabled} | ${sourceCommit} | ${nodeDigest.take(19)} / ${jobsDigest.take(19)} / ${gatewayDigest.take(19)}"
-    candidates[label] = [sourceCommit: sourceCommit, nodeDigest: nodeDigest, jobsDigest: jobsDigest, gatewayDigest: gatewayDigest, j3aManagementEnabled: j3aManagementEnabled]
+    def label = "${fields[0]} | ${build} | mode=${releaseMode} | schema=${schemaChangeClass} | J3a=${j3aManagementEnabled} | ${sourceCommit} | ${nodeDigest.take(19)} / ${jobsDigest.take(19)} / ${gatewayDigest.take(19)}"
+    candidates[label] = [sourceCommit: sourceCommit, nodeDigest: nodeDigest, jobsDigest: jobsDigest, gatewayDigest: gatewayDigest, j3aManagementEnabled: j3aManagementEnabled, releaseMode: releaseMode, schemaChangeClass: schemaChangeClass]
   }
   candidates.each { key, value -> value.platformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim() }
   return candidates
@@ -522,9 +611,31 @@ def configureJ3aManagementRelease(overlay, enabled) {
   """
 }
 
-def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest, j3aManagementEnabled, actor, expectedPlatformRevision = null) {
+def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest, j3aManagementEnabled, actor, expectedPlatformRevision = null, releaseMode = params.RELEASE_MODE?.trim(), schemaChangeClass = params.SCHEMA_CHANGE_CLASS?.trim()) {
   if (!validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false'])) error '发布状态字段不合法。'
+  validateReleaseStrategy(releaseMode, schemaChangeClass)
+  if (environmentName == 'prod' && actor in ['jenkins-prod-promotion', 'jenkins-prod-rollback']) {
+    if (params.RELEASE_MODE?.trim() != releaseMode || params.SCHEMA_CHANGE_CLASS?.trim() != schemaChangeClass) {
+      error 'prod release state 的发布模式/数据库变更分类必须与本次请求和已验证 test state 一致。'
+    }
+    if (releaseMode == 'single-active-stop') {
+      if (params.PROD_FINAL_APPROVAL?.trim() != 'I_APPROVE_PROD_SINGLE_ACTIVE_STOP') {
+        error 'single-active-stop prod release state 写入必须有用户最终确认 I_APPROVE_PROD_SINGLE_ACTIVE_STOP。'
+      }
+      if (actor == 'jenkins-prod-promotion' && !validApprovalTicket(params.PROD_APPROVAL_TICKET)) {
+        error 'single-active-stop prod 晋级 release state 写入必须有有效 PROD_APPROVAL_TICKET。'
+      }
+    }
+    if (actor == 'jenkins-prod-rollback' &&
+        (!validApprovalTicket(params.ROLLBACK_APPROVAL_TICKET) ||
+         !validApprovalTicket(params.ROLLBACK_SCHEMA_COMPATIBILITY_TICKET))) {
+      error 'prod 回滚 release state 写入必须同时有有效回滚审批和 schema 兼容证据。'
+    }
+  }
   refreshPlatformReleaseWorkspace()
+  if (environmentName in ['test', 'prod']) {
+    assertTestProdGitOpsIsolation()
+  }
   if (environmentName == 'prod' && expectedPlatformRevision) {
     def currentPlatformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
     if (currentPlatformRevision != expectedPlatformRevision) {
@@ -536,17 +647,17 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
          metadataValue('test', 'jobsImageDigest') != jobsDigest ||
          metadataValue('test', 'gatewayImageDigest') != gatewayDigest ||
          metadataValue('test', 'j3aManagementEnabled') != j3aManagementEnabled ||
-         metadataValue('test', 'releaseMode') != 'single-active-stop' ||
+         metadataValue('test', 'releaseMode') != releaseMode ||
+         metadataValue('test', 'schemaChangeClass') != schemaChangeClass ||
          metadataValue('test', 'verification.status') != 'passed' ||
          metadataValue('test', 'verification.sourceCommit') != sourceCommit ||
          !validEvidenceRef(metadataValue('test', 'verification.evidenceRef')) ||
          !validSha256Hex(metadataValue('test', 'verification.evidenceManifestDigest')) ||
          !(metadataValue('test', 'verification.verifierIdentity') ==~ /^[A-Za-z0-9._:@\/-]{1,128}$/) ||
-         !(metadataValue('test', 'verification.verifiedAt') ==~ /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/))) {
+         !(metadataValue('test', 'verification.verifiedAt') ==~ /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/) ||
+         metadataValue('test', 'verification.releaseMode') != releaseMode ||
+         metadataValue('test', 'verification.schemaChangeClass') != schemaChangeClass)) {
       error 'test release state source/digest/verification 在晋级前未保持原子一致或 verifier 未通过；拒绝写入 prod。'
-    }
-    if (actor in ['jenkins-prod-promotion', 'jenkins-prod-rollback'] && metadataValue('prod', 'releaseMode') != 'single-active-stop') {
-      error 'prod release metadata 尚未声明 releaseMode=single-active-stop；禁止将候选写入旧的双槽/standby 发布语义。'
     }
   }
   def overlay = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}"
@@ -570,6 +681,8 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
       -e 's|^  jobsImageDigest: ".*"|  jobsImageDigest: "${jobsDigest}"|' \\
       -e 's|^  gatewayImageDigest: ".*"|  gatewayImageDigest: "${gatewayDigest}"|' \\
       -e 's|^  j3aManagementEnabled: ".*"|  j3aManagementEnabled: "${j3aManagementEnabled}"|' \\
+      -e 's|^  releaseMode: ".*"|  releaseMode: "${releaseMode}"|' \\
+      -e 's|^  schemaChangeClass: ".*"|  schemaChangeClass: "${schemaChangeClass}"|' \\
       -e 's|^  releaseActor: ".*"|  releaseActor: "${actor}"|' \\
       "\${metadata_file}"
     assert_metadata_value() {
@@ -586,17 +699,16 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
     assert_metadata_value jobsImageDigest '${jobsDigest}'
     assert_metadata_value gatewayImageDigest '${gatewayDigest}'
     assert_metadata_value j3aManagementEnabled '${j3aManagementEnabled}'
+    assert_metadata_value releaseMode '${releaseMode}'
+    assert_metadata_value schemaChangeClass '${schemaChangeClass}'
     assert_metadata_value releaseActor '${actor}'
-    if [ '${environmentName}' = 'test' ]; then
-      assert_metadata_value releaseMode 'single-active-stop'
-    fi
     if [ '${environmentName}' = 'prod' ]; then
       history='apps/juhe-ai/overlays/prod/release-history.tsv'
       if [ ! -f "\$history" ]; then
-        printf '# recordedAtUtc\\tactor\\tsourceCommit\\tnodeDigest\\tjobsDigest\\tgatewayDigest\\tj3aManagementEnabled\\tjenkinsBuild\\n' > "\$history"
+        printf '# recordedAtUtc\\tactor\\tsourceCommit\\tnodeDigest\\tjobsDigest\\tgatewayDigest\\tj3aManagementEnabled\\tjenkinsBuild\\treleaseMode\\tschemaChangeClass\\n' > "\$history"
       fi
-      if ! awk -F '\\t' -v commit='${sourceCommit}' -v node='${nodeDigest}' -v jobs='${jobsDigest}' -v gateway='${gatewayDigest}' -v j3a='${j3aManagementEnabled}' '\$3 == commit && \$4 == node && \$5 == jobs && \$6 == gateway && (NF == 7 ? j3a == "false" : \$7 == j3a) { found = 1 } END { exit !found }' "\$history"; then
-        printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '${actor}' '${sourceCommit}' '${nodeDigest}' '${jobsDigest}' '${gatewayDigest}' '${j3aManagementEnabled}' "\${BUILD_TAG:-unknown}" >> "\$history"
+      if ! awk -F '\\t' -v commit='${sourceCommit}' -v node='${nodeDigest}' -v jobs='${jobsDigest}' -v gateway='${gatewayDigest}' -v j3a='${j3aManagementEnabled}' -v mode='${releaseMode}' -v schema='${schemaChangeClass}' '\$3 == commit && \$4 == node && \$5 == jobs && \$6 == gateway && (NF == 7 ? j3a == "false" : \$7 == j3a) && (NF < 10 || (\$9 == mode && \$10 == schema)) { found = 1 } END { exit !found }' "\$history"; then
+        printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '${actor}' '${sourceCommit}' '${nodeDigest}' '${jobsDigest}' '${gatewayDigest}' '${j3aManagementEnabled}' "\${BUILD_TAG:-unknown}" '${releaseMode}' '${schemaChangeClass}' >> "\$history"
       fi
     fi
     git config user.name platform-jenkins

@@ -52,6 +52,49 @@ setInterval(() => process.stdout.write(Buffer.alloc(64 * 1024, 120)), 5)
   return { exitCode, signal, stderr: stderr.trim(), stdoutClosed }
 }
 
+async function verifyRealProcessHandlerRecoversFromEpipe(): Promise<void> {
+  const loggerModuleUrl = new URL('../../shared/logger.ts', import.meta.url).href
+  const childSource = `
+import { installProcessLogHandlers } from ${JSON.stringify(loggerModuleUrl)}
+installProcessLogHandlers()
+process.emit('uncaughtException', Object.assign(new Error('write EPIPE'), { code: 'EPIPE', syscall: 'write' }))
+setTimeout(() => {
+  process.stdout.write('PROCESS_HANDLER_RECOVERED\\n')
+  process.exit(0)
+}, 25)
+`
+  const inheritedLoaderArgs = process.execArgv.filter((argument, index, argumentsList) => (
+    argument !== '--eval' && argumentsList[index - 1] !== '--eval'
+  ))
+  const child = spawn(process.execPath, [...inheritedLoaderArgs, '-e', childSource], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      JUHE_AI_SECRET: 'epipe-regression-secret',
+      JUHE_AI_LOG_FILE_ENABLED: 'false',
+      JUHE_AI_LOG_CONSOLE_ENABLED: 'false'
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', (chunk: Buffer) => {
+    stdout += chunk.toString('utf8')
+  })
+  child.stderr.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString('utf8')
+  })
+  const timeout = setTimeout(() => child.kill(), 10_000)
+  const [exitCode, signal] = await once(child, 'exit') as [number | null, NodeJS.Signals | null]
+  clearTimeout(timeout)
+  assert.equal(signal, null, `真实全局处理器不应终止 EPIPE 子进程：${stderr}`)
+  assert.equal(exitCode, 0, `真实全局处理器必须让 EPIPE 子进程继续运行：${stderr}`)
+  assert.match(stdout, /PROCESS_HANDLER_RECOVERED/, 'EPIPE 后进程必须继续执行后续工作')
+  assert.match(stderr, /process_unattributed_epipe/, 'EPIPE 必须留下高优先级进程诊断')
+}
+
 async function verifyObservedLogDestinationEpipe(): Promise<void> {
   const destination = new EpipeWritable()
   const uncaughtErrors: unknown[] = []
@@ -122,6 +165,7 @@ const rawStdoutResult = await reproduceRawStdoutEpipe()
 assert.equal(rawStdoutResult.stdoutClosed, true, '父进程必须关闭子进程 stdout')
 assert.equal(rawStdoutResult.exitCode, 91, '裸 stdout EPIPE 必须进入子进程全局异常退出路径')
 assert.match(rawStdoutResult.stderr, /"code":"EPIPE"/, '裸 stdout 退出诊断必须包含 EPIPE')
+await verifyRealProcessHandlerRecoversFromEpipe()
 await verifyObservedLogDestinationEpipe()
 await verifyHttpClientDisconnect()
 process.stdout.write('EPIPE_PROVENANCE_LOCAL_REPRODUCTION_OK\n')

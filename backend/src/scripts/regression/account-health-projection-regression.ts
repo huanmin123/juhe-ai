@@ -235,6 +235,8 @@ try {
 
   database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run('account-3', 'pending_test', 0, 6, 7, encryptJson({ api_key: 'sk-account-3' }), '2026-08-16T00:00:00.000Z')
+  database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, authorization_instance_source_account_id, credentials_encrypted, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run('account-3-authorized-child', 'active', 1, 1, 1, 'account-3', encryptJson({}), '2026-08-16T00:00:00.000Z')
   database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
     .run('account-3', 1, '2026-08-16T00:00:00.000Z')
   const activation = projectAccountHealthJobsOutcome(activationSuccess('outcome-6'), database)
@@ -244,6 +246,36 @@ try {
   assert.equal(activated.schedulable, 1)
   assert.equal(activated.balance_query_next_refresh_at, '2026-08-16T00:15:00.000Z')
   assert.equal(activated.dispatch_revision, 8, 'activation 成功恢复必须推进 dispatch revision')
+  const activatedChild = database.prepare(`SELECT dispatch_revision FROM accounts WHERE id = ?`).get('account-3-authorized-child') as Record<string, unknown>
+  assert.equal(activatedChild.dispatch_revision, 2, 'owner activation 成功必须同时 fence 授权实例旧运行态')
+
+  database.prepare(`UPDATE accounts SET status = 'pending_test', schedulable = 0, config_revision = 2, dispatch_revision = 2 WHERE id = ?`)
+    .run('account-3-authorized-child')
+  database.prepare(`INSERT INTO account_health_jobs_input_versions(account_id, current_version, reserved_at) VALUES (?, ?, ?)`)
+    .run('account-3-authorized-child', 1, '2026-08-16T00:00:00.000Z')
+  const childActivation = activationSuccess('outcome-6-authorized-child')
+  childActivation.account_id = 'account-3-authorized-child'
+  childActivation.config_revision = 2
+  childActivation.dispatch_revision = 2
+  childActivation.projection = {
+    ...childActivation.projection!,
+    target_account_id: 'account-3-authorized-child',
+    config_revision: 2,
+    dispatch_revision: 2,
+    source_config_revision: 6
+  }
+  const childActivationResult = projectAccountHealthJobsOutcome(childActivation, database)
+  assert.equal(childActivationResult.disposition, 'applied')
+  const childRecoveryRows = database.prepare(`SELECT id, dispatch_revision FROM accounts WHERE id IN (?, ?) ORDER BY id ASC`)
+    .all('account-3', 'account-3-authorized-child')
+    .map((row) => ({
+      id: String((row as Record<string, unknown>).id),
+      dispatch_revision: Number((row as Record<string, unknown>).dispatch_revision)
+    }))
+  assert.deepEqual(childRecoveryRows, [
+    { id: 'account-3', dispatch_revision: 8 },
+    { id: 'account-3-authorized-child', dispatch_revision: 3 }
+  ], '授权子账户健康恢复只能推进自身 revision，不能误伤来源账户')
 
   database.prepare(`INSERT INTO accounts(id, status, schedulable, config_revision, dispatch_revision, credentials_encrypted, availability_schedule_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .run('account-6', 'pending_test', 0, 10, 11, encryptJson({ api_key: 'sk-account-6' }), '{invalid', '2026-08-16T00:00:00.000Z')

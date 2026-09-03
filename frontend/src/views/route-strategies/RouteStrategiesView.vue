@@ -103,7 +103,21 @@
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ routeStrategySystemAccountText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'mode'">
-          <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeDisplayText(record) }}</a-tag>
+          <div class="route-strategy-mode-cell">
+            <a-tag :color="routeStrategyModeColor(record.mode)">{{ routeStrategyModeDisplayText(record) }}</a-tag>
+            <span v-if="speedFirstLatencyStatusText(record)" class="speed-first-latency-status" :class="speedFirstLatencyStatusClass(record)">
+              {{ speedFirstLatencyStatusText(record) }}
+            </span>
+            <a-button
+              v-if="isSpeedFirstRouteStrategy(record)"
+              type="link"
+              size="small"
+              class="speed-first-runtime-link"
+              @click="openSpeedFirstRuntime(record)"
+            >
+              查看速度状态
+            </a-button>
+          </div>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="routeStrategyStatusColor(record.status)">{{ routeStrategyStatusText(record.status) }}</a-tag>
@@ -166,8 +180,20 @@
               <span>说明</span>
               <strong>{{ record.description || '-' }}</strong>
             </div>
+            <div v-if="isSpeedFirstRouteStrategy(record)" class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>速度状态</span>
+              <strong :class="speedFirstLatencyStatusClass(record)">{{ speedFirstLatencyStatusText(record) }}</strong>
+            </div>
           </div>
           <div class="mobile-list-card-actions">
+            <a-button
+              v-if="isSpeedFirstRouteStrategy(record)"
+              size="small"
+              class="speed-first-runtime-mobile-link"
+              @click="openSpeedFirstRuntime(record)"
+            >
+              查看速度状态
+            </a-button>
             <RowActions
               variant="button"
               :actions="routeStrategyActions(record)"
@@ -459,6 +485,15 @@
         </template>
       </a-form>
     </a-modal>
+
+    <SpeedFirstRuntimeDrawer
+      v-model:open="speedFirstRuntimeDrawerOpen"
+      :strategy-name="speedFirstRuntimeTarget?.name || '策略路由'"
+      :loading="speedFirstRuntimeLoading"
+      :runtime="speedFirstRuntime"
+      :error="speedFirstRuntimeError"
+      @refresh="refreshSpeedFirstRuntime"
+    />
   </a-card>
 </template>
 
@@ -491,6 +526,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import SpeedFirstRuntimeDrawer from './SpeedFirstRuntimeDrawer.vue'
 import { buildRouteStrategyMutationPatch, hasRouteStrategyMutationChanges, mergeRouteStrategyMutationResult } from './routeStrategyMutation'
 import type {
   ApiKeyHybridLevelRoute,
@@ -504,6 +540,7 @@ import type {
   RouteStrategyNormalRoutingConfig,
   RouteStrategyNormalSchedulingPreference,
   RouteStrategySpeedFirstConfig,
+  RouteStrategySpeedFirstLatencyRuntime,
   RouteStrategyGroupBindingPreview,
   RouteStrategyGroupBindingSummary,
   RouteStrategyListItem,
@@ -599,6 +636,13 @@ const editingSystemAccountId = ref<string>()
 const editingExpectedUpdatedAt = ref<string>()
 let editingBaseline: RouteStrategyMutationPayload | undefined
 let editDetailRequestToken = 0
+const speedFirstRuntimeDrawerOpen = ref(false)
+const speedFirstRuntimeLoading = ref(false)
+const speedFirstRuntimeTarget = ref<RouteStrategyListItem>()
+const speedFirstRuntime = ref<RouteStrategySpeedFirstLatencyRuntime>()
+const speedFirstRuntimeError = ref('')
+let speedFirstRuntimeRequestToken = 0
+let speedFirstRuntimeAbortController: AbortController | undefined
 const bindingDragSourceIndex = ref<number | null>(null)
 const bindingDragOverIndex = ref<number | null>(null)
 const items = ref<RouteStrategyListItem[]>([])
@@ -848,6 +892,9 @@ watch(modalOpen, (open) => {
   clearModelOptionsSearchTimer()
   resetModelOptions()
 })
+watch(speedFirstRuntimeDrawerOpen, (open) => {
+  if (!open) invalidateSpeedFirstRuntimeRequest()
+})
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
@@ -858,6 +905,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   routeStrategyListRequestGeneration += 1
   invalidateEditDetailRequest()
+  invalidateSpeedFirstRuntimeRequest()
   clearGroupOptionsSearchTimer()
   clearModelOptionsSearchTimer()
   resetModelOptions()
@@ -919,8 +967,17 @@ function refreshRouteStrategies() {
   void loadRouteStrategies()
 }
 
+function resetSpeedFirstRuntimeForScopeChange(): void {
+  invalidateSpeedFirstRuntimeRequest()
+  speedFirstRuntimeDrawerOpen.value = false
+  speedFirstRuntimeTarget.value = undefined
+  speedFirstRuntime.value = undefined
+  speedFirstRuntimeError.value = ''
+}
+
 function resetFilters() {
   invalidateEditDetailRequest()
+  resetSpeedFirstRuntimeForScopeChange()
   const defaults = defaultRouteStrategiesPageState()
   keyword.value = defaults.keyword
   systemAccountFilter.value = defaults.systemAccountFilter
@@ -939,6 +996,7 @@ function resetFilters() {
 
 function handleSystemAccountFilterChange() {
   invalidateEditDetailRequest()
+  resetSpeedFirstRuntimeForScopeChange()
   if (systemAccountFilter.value === allSystemAccountsValue) {
     systemAccountFilterSelection.value = undefined
   }
@@ -953,6 +1011,7 @@ function handleSystemAccountFilterChange() {
 function handleMissingSystemAccountFilter(ids: string[]): void {
   if (systemAccountFilter.value === allSystemAccountsValue || !ids.includes(systemAccountFilter.value)) return
   invalidateEditDetailRequest()
+  resetSpeedFirstRuntimeForScopeChange()
   systemAccountFilter.value = allSystemAccountsValue
   systemAccountFilterSelection.value = undefined
   resetRouteStrategyListForScopeChange()
@@ -1689,6 +1748,90 @@ function routeStrategyModeDisplayText(record: RouteStrategyListItem | RouteStrat
   return `${base} / ${preference === 'speed_first' ? '速度优先' : '成本优先'}`
 }
 
+function isSpeedFirstRouteStrategy(record: Pick<RouteStrategyListItem | RouteStrategySummary, 'mode' | 'normalRoutingConfig'>): boolean {
+  return record.mode === 'normal' && record.normalRoutingConfig?.schedulingPreference === 'speed_first'
+}
+
+function speedFirstLatencyStatusText(record: RouteStrategyListItem): string {
+  if (!isSpeedFirstRouteStrategy(record)) return ''
+  const runtime = record.speedFirstLatencyRuntime
+  if (!runtime || !runtime.runtimeAvailable) return '速度状态暂不可用'
+  return runtime.degradedCount > 0 ? `速度降级 ${runtime.degradedCount} 个账号` : '速度正常'
+}
+
+function speedFirstLatencyStatusClass(record: RouteStrategyListItem): string {
+  if (!isSpeedFirstRouteStrategy(record)) return ''
+  const runtime = record.speedFirstLatencyRuntime
+  if (!runtime || !runtime.runtimeAvailable) return 'speed-first-latency-status-unavailable'
+  return runtime.degradedCount > 0 ? 'speed-first-latency-status-degraded' : 'speed-first-latency-status-ok'
+}
+
+function openSpeedFirstRuntime(record: RouteStrategyListItem): void {
+  if (!isSpeedFirstRouteStrategy(record)) return
+  speedFirstRuntimeTarget.value = record
+  speedFirstRuntime.value = undefined
+  speedFirstRuntimeError.value = ''
+  speedFirstRuntimeDrawerOpen.value = true
+  void loadSpeedFirstRuntime(record)
+}
+
+function refreshSpeedFirstRuntime(): void {
+  const target = speedFirstRuntimeTarget.value
+  if (!target || !speedFirstRuntimeDrawerOpen.value) return
+  void loadSpeedFirstRuntime(target)
+}
+
+async function loadSpeedFirstRuntime(record: RouteStrategyListItem): Promise<void> {
+  const requestToken = ++speedFirstRuntimeRequestToken
+  speedFirstRuntimeAbortController?.abort()
+  const controller = new AbortController()
+  speedFirstRuntimeAbortController = controller
+  const operationScopeParams = routeStrategyOperationScopeParams(record)
+  const requestSignature = speedFirstRuntimeRequestSignature(record.id, operationScopeParams?.systemAccountId)
+  speedFirstRuntimeLoading.value = true
+  try {
+    const result = await routeStrategiesApi.speedFirstRuntime(record.id, operationScopeParams, { signal: controller.signal })
+    if (!isCurrentSpeedFirstRuntimeRequest(requestToken, requestSignature, record.id, operationScopeParams?.systemAccountId)) return
+    speedFirstRuntime.value = result
+    speedFirstRuntimeError.value = ''
+  } catch (error) {
+    if (!isCurrentSpeedFirstRuntimeRequest(requestToken, requestSignature, record.id, operationScopeParams?.systemAccountId)) return
+    speedFirstRuntime.value = undefined
+    speedFirstRuntimeError.value = extractApiErrorMessage(error, '速度状态加载失败')
+  } finally {
+    if (requestToken === speedFirstRuntimeRequestToken) {
+      speedFirstRuntimeLoading.value = false
+      if (speedFirstRuntimeAbortController === controller) speedFirstRuntimeAbortController = undefined
+    }
+  }
+}
+
+function invalidateSpeedFirstRuntimeRequest(): void {
+  speedFirstRuntimeRequestToken += 1
+  speedFirstRuntimeAbortController?.abort()
+  speedFirstRuntimeAbortController = undefined
+  speedFirstRuntimeLoading.value = false
+}
+
+function speedFirstRuntimeRequestSignature(recordId: string, systemAccountId?: string): string {
+  const viewer = authState.currentUser.value
+  return JSON.stringify([
+    authState.revision.value,
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    routeStrategyListScopeKey(),
+    systemAccountId ?? '',
+    recordId
+  ])
+}
+
+function isCurrentSpeedFirstRuntimeRequest(token: number, signature: string, recordId: string, systemAccountId?: string): boolean {
+  return token === speedFirstRuntimeRequestToken
+    && speedFirstRuntimeDrawerOpen.value
+    && speedFirstRuntimeTarget.value?.id === recordId
+    && signature === speedFirstRuntimeRequestSignature(recordId, systemAccountId)
+}
+
 function routeStrategyModeColor(mode: RouteStrategyMode): string {
   if (mode === 'hybrid_smart') return 'cyan'
   if (mode === 'weighted') return 'purple'
@@ -1993,6 +2136,39 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   align-items: center;
   min-width: 0;
   gap: 6px;
+}
+
+.route-strategy-mode-cell {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+}
+
+.route-strategy-mode-cell :deep(.ant-tag) {
+  margin-inline-end: 0;
+}
+
+.speed-first-latency-status {
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.speed-first-latency-status-degraded {
+  color: #d97706;
+}
+
+.speed-first-latency-status-ok {
+  color: #16a34a;
+}
+
+.speed-first-latency-status-unavailable {
+  color: #64748b;
+}
+
+.speed-first-runtime-link,
+.speed-first-runtime-mobile-link {
+  padding: 0;
+  font-size: 12px;
 }
 
 .route-strategy-name-text {

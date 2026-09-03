@@ -780,6 +780,31 @@ try {
   const authorizationInstance = repositories.listAccounts(authorizationGranteeAccess)
     .find((item) => item.authorizationInstanceSourceAccountId === authorizationSourceAccount.id)
   assert(authorizationInstance, '账户授权应创建被授权者本地实例')
+  const siblingGrantee = repositories.createSystemAccount({
+    username: 'patchauthsibling',
+    displayName: '授权PATCH兄弟被授权用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const siblingGranteeAccess = { systemAccountId: siblingGrantee.id, role: 'user' as const }
+  const siblingGroup = repositories.createGroup({
+    providerCode: 'gpt',
+    name: '授权 PATCH 兄弟分组',
+    enabled: true
+  }, siblingGranteeAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: authorizationSourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: siblingGrantee.id,
+    targetGroupId: siblingGroup.id,
+    remark: '授权账户兄弟实例恢复回归'
+  }, authorizationOwnerAccess)
+  const siblingAuthorizationInstance = repositories.listAccounts(siblingGranteeAccess)
+    .find((item) => item.authorizationInstanceSourceAccountId === authorizationSourceAccount.id)
+  assert(siblingAuthorizationInstance, '账户授权应创建兄弟被授权者本地实例')
   const authorizationSourceRename = await patchRepository.patchAccountManagementAsync(
     authorizationSourceAccount.id,
     {
@@ -820,6 +845,82 @@ try {
   assert.equal(accountRow(authorizationInstance.id).priority, 37)
   assert(authorizedLocalPatch.dml.some((sql) => /account_tag_bindings/i.test(sql)), '授权本地标签变化必须只更新标签关系')
   assert.doesNotMatch(authorizedLocalPatch.sql.join('\n'), /credentials_encrypted/i, '授权本地 PATCH 不得读取来源或实例凭据')
+
+  const sourceDispatchBeforeAuthorizedRecovery = accountDispatchRow(authorizationSourceAccount.id)
+  const siblingDispatchBeforeAuthorizedRecovery = accountDispatchRow(siblingAuthorizationInstance.id)
+  const authorizedDispatchBeforeRecovery = accountDispatchRow(authorizationInstance.id)
+  database.prepare(`
+    UPDATE accounts
+    SET status = 'temporary_unavailable',
+        schedulable = 0,
+        last_error_code = 'authorized_recovery_regression',
+        last_error_message = '授权实例恢复回归'
+    WHERE id = ?
+  `).run(authorizationInstance.id)
+  const authorizedRecovery = await patchRepository.patchAccountManagementAsync(
+    authorizationInstance.id,
+    {
+      expectedConfigRevision: accountRow(authorizationInstance.id).config_revision,
+      clearFailureState: true
+    },
+    authorizationGranteeAccess
+  )
+  assert(authorizedRecovery)
+  assert.equal(authorizedRecovery.status, 'active', '授权实例 clearFailureState 应只恢复当前实例')
+  assert.equal(authorizedRecovery.authorizationInstancesAffected, false, '授权实例本地恢复不得宣称来源/兄弟实例受影响')
+  const sourceDispatchAfterAuthorizedRecovery = accountDispatchRow(authorizationSourceAccount.id)
+  const siblingDispatchAfterAuthorizedRecovery = accountDispatchRow(siblingAuthorizationInstance.id)
+  const authorizedDispatchAfterRecovery = accountDispatchRow(authorizationInstance.id)
+  assert.equal(sourceDispatchAfterAuthorizedRecovery.dispatch_revision, sourceDispatchBeforeAuthorizedRecovery.dispatch_revision, '授权实例恢复不得推进来源账户 dispatch_revision')
+  assert.equal(siblingDispatchAfterAuthorizedRecovery.dispatch_revision, siblingDispatchBeforeAuthorizedRecovery.dispatch_revision, '授权实例恢复不得推进兄弟实例 dispatch_revision')
+  assert.equal(authorizedDispatchAfterRecovery.dispatch_revision, authorizedDispatchBeforeRecovery.dispatch_revision + 1, '授权实例恢复应只推进自身 dispatch_revision')
+
+  const sourceBeforeOwnerRecovery = accountDispatchRow(authorizationSourceAccount.id)
+  const authorizedBeforeOwnerRecovery = accountDispatchRow(authorizationInstance.id)
+  const siblingBeforeOwnerRecovery = accountDispatchRow(siblingAuthorizationInstance.id)
+  database.prepare(`
+    UPDATE accounts
+    SET status = 'temporary_unavailable',
+        schedulable = 0,
+        last_error_code = 'source_recovery_regression',
+        last_error_message = '来源账户恢复回归'
+    WHERE id = ?
+  `).run(authorizationSourceAccount.id)
+  const ownerRecovery = await patchRepository.patchAccountManagementAsync(
+    authorizationSourceAccount.id,
+    {
+      expectedConfigRevision: accountRow(authorizationSourceAccount.id).config_revision,
+      clearFailureState: true
+    },
+    authorizationOwnerAccess
+  )
+  assert(ownerRecovery)
+  assert.equal(ownerRecovery.status, 'active', '来源账户 clearFailureState 应恢复调度')
+  assert.equal(ownerRecovery.authorizationInstancesAffected, true, '来源账户恢复应声明授权实例受影响')
+  assert.equal(accountDispatchRow(authorizationSourceAccount.id).dispatch_revision, sourceBeforeOwnerRecovery.dispatch_revision + 1, '来源账户恢复应推进自身 revision')
+  assert.equal(accountDispatchRow(authorizationInstance.id).dispatch_revision, authorizedBeforeOwnerRecovery.dispatch_revision + 1, '来源账户恢复应推进授权实例 revision')
+  assert.equal(accountDispatchRow(siblingAuthorizationInstance.id).dispatch_revision, siblingBeforeOwnerRecovery.dispatch_revision + 1, '来源账户恢复应推进兄弟实例 revision')
+
+  // Internal maintenance jobs may call clearAccountFailureState without a
+  // request access scope.  The write must still use the authorized row's
+  // grantee binding identity rather than the synthetic administrator scope.
+  database.prepare(`
+    UPDATE accounts
+    SET status = 'temporary_unavailable',
+        schedulable = 0,
+        last_error_code = 'authorized_internal_restore_regression',
+        last_error_message = '授权实例内部恢复回归'
+    WHERE id = ?
+  `).run(authorizationInstance.id)
+  const sourceBeforeInternalRecovery = accountDispatchRow(authorizationSourceAccount.id)
+  const siblingBeforeInternalRecovery = accountDispatchRow(siblingAuthorizationInstance.id)
+  const childBeforeInternalRecovery = accountDispatchRow(authorizationInstance.id)
+  const internalRecovery = repositories.clearAccountFailureState(authorizationInstance.id)
+  assert(internalRecovery, '无请求 scope 的内部授权恢复应返回账户摘要')
+  assert.equal(internalRecovery?.status, 'active', '无请求 scope 的内部授权恢复应成功恢复当前实例')
+  assert.equal(accountDispatchRow(authorizationSourceAccount.id).dispatch_revision, sourceBeforeInternalRecovery.dispatch_revision, '内部授权恢复不得推进来源 revision')
+  assert.equal(accountDispatchRow(siblingAuthorizationInstance.id).dispatch_revision, siblingBeforeInternalRecovery.dispatch_revision, '内部授权恢复不得推进兄弟 revision')
+  assert.equal(accountDispatchRow(authorizationInstance.id).dispatch_revision, childBeforeInternalRecovery.dispatch_revision + 1, '内部授权恢复应只推进自身 revision')
 
   const authorizationInstanceRow = database.prepare(`
     SELECT authorization_instance_authorization_id
@@ -917,11 +1018,36 @@ try {
 function assertSourceBoundaries(): void {
   const routeSource = readFileSync(resolve('src', 'modules', 'accounts', 'accounts.routes.ts'), 'utf8')
   const repositorySource = readFileSync(resolve('src', 'storage', 'account-management-patch.repository.ts'), 'utf8')
+  const authorizationWriterSource = readFileSync(resolve('src', 'storage', 'resource-authorization-write.repository.ts'), 'utf8')
   const databaseClientSource = readFileSync(resolve('src', 'storage', 'database-client.ts'), 'utf8')
   assert(!routeSource.includes('findAccountForTestAsync'), 'PATCH 路由不得读取完整测试账户摘要')
   assert(!routeSource.includes('findGroupSummaryAsync'), 'PATCH 路由不得为写入再读取完整分组摘要')
   assert(!routeSource.includes('updateAccountAsync('), 'PATCH 路由必须使用专用 delta writer')
   assert(repositorySource.includes("client.driver === 'postgres' ? ' FOR UPDATE' : ''"), 'PostgreSQL 写入前必须锁定账户')
+  assert.match(
+    repositorySource,
+    /const advanceDispatchRevision = row\.authorization_instance_authorization_id\s*\?\s*advanceAccountCircuitDispatchRevisionInTransaction\s*:\s*advanceAccountCircuitDispatchRevisionFamilyInTransaction/s,
+    '授权实例 clearFailureState 必须只推进自身 dispatch revision，来源账户才推进整个 family'
+  )
+  assert.match(
+    repositorySource,
+    /authorizationInstancesAffected:\s*!row\.authorization_instance_authorization_id/,
+    '授权实例本地恢复不得报告来源/兄弟实例受影响'
+  )
+  const familyLockIndex = repositorySource.indexOf("await lockAccountCircuitDispatchFamilyRootInTransaction(client, id, { lockChild: false })")
+  const authorizationLockIndex = repositorySource.indexOf('await lockAuthorizationBeforeAccountFamily(client, lockedScopedRow)')
+  assert(familyLockIndex >= 0 && authorizationLockIndex > familyLockIndex, '授权账户 PATCH 必须按 parent→authorization→child 顺序加锁，避免跨表反向锁死锁')
+  assert.match(repositorySource, /lockAccountCircuitDispatchFamilyRootInTransaction\(client, id, \{ lockChild: false \}\)/, '授权账户 PATCH 必须先只锁 family root，不能在 authorization 前锁 child')
+  const mutationStart = authorizationWriterSource.indexOf('export async function createResourceAuthorizationMutationAsync')
+  const resourceContextIndex = authorizationWriterSource.indexOf('resourceAuthorizationCreateResourceContextAsync(tx, normalized.resourceType, normalized.resourceId, access)', mutationStart)
+  const grantUpsertIndex = authorizationWriterSource.indexOf('upsertResourceAuthorizationGrantMutationAsync({', resourceContextIndex)
+  const userUpsertIndex = authorizationWriterSource.indexOf('upsertResourceAuthorizationForUserAsync({', grantUpsertIndex)
+  assert(mutationStart >= 0 && resourceContextIndex > mutationStart && grantUpsertIndex > resourceContextIndex && userUpsertIndex > grantUpsertIndex, '资源授权创建必须保持 resource root → grant → authorization → child 顺序')
+  const resourceContextDefinition = authorizationWriterSource.indexOf('async function resourceAuthorizationCreateResourceContextAsync')
+  const resourceContextEnd = authorizationWriterSource.indexOf('function upsertResourceAuthorizationGrantMutation(', resourceContextDefinition)
+  assert(resourceContextDefinition >= 0 && resourceContextEnd > resourceContextDefinition, '资源授权创建必须有独立 resource context 读取函数')
+  assert.match(authorizationWriterSource.slice(resourceContextDefinition, resourceContextEnd), /LIMIT 1 FOR UPDATE/, '资源授权创建的 resource root 必须在进入授权写入前锁定')
+  assert.match(repositorySource, /SELECT id[\s\S]{0,240}resource_authorizations[\s\S]{0,240}FOR UPDATE/, '授权账户 PATCH 的授权关系锁必须使用 PostgreSQL FOR UPDATE')
   assert(repositorySource.includes('config_revision = config_revision + 1'))
   assert(repositorySource.includes('AND config_revision = ?'))
   assert.doesNotMatch(repositorySource, /SELECT\s+\*/i, 'PATCH writer 不得查询宽行')
@@ -978,6 +1104,15 @@ function accountRow(accountId: string): { config_revision: number; notes: string
     FROM accounts
     WHERE id = ?
   `).get(accountId) as unknown as { config_revision: number; notes: string | null; priority: number; status: string; schedulable: number }
+}
+
+function accountDispatchRow(accountId: string): { dispatch_revision: number } {
+  const row = databaseModule.getBusinessDatabase().prepare(`
+    SELECT dispatch_revision
+    FROM accounts
+    WHERE id = ?
+  `).get(accountId) as unknown as { dispatch_revision: number | string | bigint }
+  return { dispatch_revision: Number(row.dispatch_revision) }
 }
 
 function activeGroupId(accountId: string): string | undefined {

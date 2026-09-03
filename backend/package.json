@@ -235,6 +235,7 @@
     "test:gateway-runtime-recovery-probe-mock-ai": "tsx src/scripts/regression/gateway-runtime-recovery-probe-mock-ai-regression.ts",
     "test:gateway-hot-quality-reselection-mock-ai": "tsx src/scripts/regression/gateway-hot-quality-reselection-mock-ai-regression.ts",
     "test:normal-route-speed-first-runtime": "tsx src/scripts/regression/normal-route-speed-first-runtime-regression.ts",
+    "test:route-strategy-speed-first-runtime": "tsx src/scripts/regression/route-strategy-speed-first-runtime-regression.ts",
     "test:normal-route-speed-first-mock-ai": "tsx src/scripts/regression/normal-route-speed-first-mock-ai-regression.ts",
     "test:route-speed-circuit-lifecycle": "tsx src/scripts/regression/route-speed-circuit-lifecycle-regression.ts",
     "test:speed-first-lane": "tsx src/scripts/regression/speed-first-lane-regression.ts",

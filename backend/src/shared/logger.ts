@@ -18,6 +18,7 @@ import { captureUnexpectedFailureContext } from './logging/log-failure-context.j
 import { passiveScheduleDelayMs } from './passive-schedule-jitter.js'
 import {
   drainProcessDiagnosticAsync,
+  isRecoverableProcessStreamError,
   writeProcessDiagnosticAsync,
   writeProcessFatalDiagnostic
 } from './process-fatal-diagnostic.js'
@@ -953,8 +954,27 @@ export function installProcessLogHandlers(): void {
 
   process.on('uncaughtException', (error) => {
     if (fatalProcessExitStarted) return
-    fatalProcessExitStarted = true
     const errorCode = nodeErrorCode(error)
+    if (isRecoverableProcessStreamError(error)) {
+      writeProcessDiagnosticAsync({
+        event: 'process_unattributed_epipe',
+        error,
+        processRole: runtimeConfig.processRole,
+        pid: process.pid,
+        epipeSource: 'unattributed',
+        secrets: [runtimeConfig.secret]
+      }, 'critical')
+      try {
+        logger.error(errorLogFields(error, {
+          event: 'process_unattributed_epipe',
+          epipeSource: 'unattributed'
+        }), '进程输出管道已关闭，保留服务并等待日志目的地降级')
+      } catch {
+        // The asynchronous diagnostic above is the reliable fallback for a broken output stream.
+      }
+      return
+    }
+    fatalProcessExitStarted = true
     try {
       writeProcessFatalDiagnostic({
         event: 'process_uncaught_exception',

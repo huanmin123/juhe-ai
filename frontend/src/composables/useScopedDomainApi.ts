@@ -26,6 +26,8 @@ type RouteStrategyMutationPayload = Parameters<typeof api.routeStrategies.create
 type RouteStrategyPatchPayload = Parameters<typeof api.routeStrategies.update>[1]
 type RouteStrategyMutationScopeParams = Parameters<typeof api.routeStrategies.create>[1]
 type RouteStrategyOptionsParams = Parameters<typeof api.routeStrategies.options>[0]
+type RouteStrategySpeedFirstRuntimeScopeParams = Parameters<typeof api.routeStrategies.speedFirstRuntime>[1]
+type RouteStrategySpeedFirstRuntimeRequestOptions = Parameters<typeof api.routeStrategies.speedFirstRuntime>[2]
 type SystemTeamListParams = Parameters<typeof api.systemTeams.list>[0]
 
 export function useScopedApiKeysApi(isManagementView: Ref<boolean>) {
@@ -129,6 +131,9 @@ export function useScopedRouteStrategiesApi(isManagementView: Ref<boolean>) {
     detail: (id: string, params?: RouteStrategyMutationScopeParams) => isManagementView.value
       ? api.routeStrategies.detail(id, params)
       : api.myRouteStrategies.detail(id),
+    speedFirstRuntime: (id: string, params?: RouteStrategySpeedFirstRuntimeScopeParams, options?: RouteStrategySpeedFirstRuntimeRequestOptions) => isManagementView.value
+      ? api.routeStrategies.speedFirstRuntime(id, params, options)
+      : api.myRouteStrategies.speedFirstRuntime(id, options),
     editBasicDetail: (id: string, params?: RouteStrategyMutationScopeParams) => isManagementView.value
       ? api.routeStrategies.editBasicDetail(id, params)
       : api.myRouteStrategies.editBasicDetail(id),

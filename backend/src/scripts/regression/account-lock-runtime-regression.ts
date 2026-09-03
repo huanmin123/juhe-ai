@@ -60,6 +60,7 @@ assert.match(gatewayRoutes, /releaseAccountLockRetryLeaseAsync\(\{/, '实际派�
 assert.match(gatewayRoutes, /pendingSameAccountRetry[\s\S]*pendingRetryLockedAccount/, '锁死同账号重试仍必须经过锁死租约闸门')
 const repository = readFileSync(resolve('src/storage/account-lock.repository.ts'), 'utf8')
 assert.match(repository, /lease_until_ms > \?/, '消费锁死重试租约时必须拒绝过期持有者')
+assert.match(repository, /notifyGatewayRuntimeCacheInvalidation\('account_lock_deadline'\)/, '锁死超时导致账户不可调度后必须广播网关运行时缓存失效')
 assert.match(repository, /export interface AccountLockObservation/, '锁死结算必须支持 generation/incident 观察围栏')
 assert.match(repository, /leaseId\?: string \| null/, '锁死观察围栏必须可绑定在途 lease')
 assert.match(repository, /lease_id = \? AND lease_until_ms > \?/, '锁死观察事件必须拒绝已过期的在途 lease')

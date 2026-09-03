@@ -1413,6 +1413,27 @@ function accountCircuitOwnerConfigurationChanged(current: AccountSummary, next: 
     || current.clientCompatibility !== next.clientCompatibility
 }
 
+function accountDispatchEligibilityRestored(current: AccountSummary, next: AccountSummary): boolean {
+  if (next.status !== 'active' || !next.schedulable) return false
+  return current.status !== 'active'
+    || !current.schedulable
+    || accountHasDispatchFailureState(current) && !accountHasDispatchFailureState(next)
+}
+
+function accountHasDispatchFailureState(account: AccountSummary): boolean {
+  return Boolean(account.cooldownUntil
+    || account.lastErrorCode
+    || account.lastErrorMessage
+    || account.lastErrorTraceId
+    || (account.cooldownRetestFailureCount ?? 0) > 0
+    || account.cooldownRetestObservationStartedAt
+    || account.cooldownRetestGeneration
+    || account.cooldownRetestLastAt
+    || account.cooldownRetestLastStatusCode !== undefined
+    || (account.streamFailureCount ?? 0) > 0
+    || account.streamFailureWindowStartedAt)
+}
+
 export function updateAccountHealthCheckModel(
   accountId: string,
   model: string,
@@ -2793,6 +2814,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
   const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
   const circuitOwnerConfigurationChanged = accountCircuitOwnerConfigurationChanged(current, next)
+  const dispatchEligibilityRestored = accountDispatchEligibilityRestored(current, next)
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2939,7 +2961,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     if (Number(result.changes ?? 0) > 0 && hasTagsInput) {
       savedTags = replaceAccountTags(id, systemAccountId, nextTagNames, updatedAt, database)
     }
-    if (Number(result.changes ?? 0) > 0 && circuitOwnerConfigurationChanged) {
+    if (Number(result.changes ?? 0) > 0 && (circuitOwnerConfigurationChanged || dispatchEligibilityRestored)) {
       advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
         accountId: id,
         accountRuntimeKey: id,
@@ -3604,6 +3626,7 @@ export async function updateAccountAsync(
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
   const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
   const circuitOwnerConfigurationChanged = accountCircuitOwnerConfigurationChanged(current, next)
+  const dispatchEligibilityRestored = accountDispatchEligibilityRestored(current, next)
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   let renamedAuthorizationInstanceIds: string[] = []
@@ -3763,7 +3786,7 @@ export async function updateAccountAsync(
       if (hasTagsInput) {
         savedTags = await replaceAccountTagsAsync(tx, id, systemAccountId, nextTagNames, updatedAt)
       }
-      if (circuitOwnerConfigurationChanged) {
+      if (circuitOwnerConfigurationChanged || dispatchEligibilityRestored) {
         await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
           accountId: id,
           accountRuntimeKey: id,

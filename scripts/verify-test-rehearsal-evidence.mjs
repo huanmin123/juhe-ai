@@ -13,6 +13,19 @@ import {
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u
 const MANIFEST_SCHEMA_VERSION = 1
 const MAX_EVIDENCE_FILE_BYTES = 16 * 1024 * 1024
+const ACCOUNT_CLOSURE_SCHEMA_VERSION = 1
+const ACCOUNT_CLOSURE_ID_FIELDS = Object.freeze([
+  'approvedCanaryAccountIds',
+  'sourceAccountIds',
+  'selectedAccountIds',
+  'systemAccountIds',
+  'systemTeamIds',
+  'groupIds',
+  'routeStrategyIds',
+  'resourceAuthorizationIds',
+  'resourceAuthorizationGrantIds',
+  'apiKeyIds'
+])
 
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -110,6 +123,146 @@ function resolveEvidencePath(evidenceRoot, reference) {
   return resolved
 }
 
+function hashStringList(values) {
+  const hash = createHash('sha256')
+  for (const value of [...values].sort(compareEvidencePath)) hash.update(value).update('\n')
+  return hash.digest('hex')
+}
+
+function normalizeIdList(value, label, { allowEmpty = true } = {}) {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+    throw new Error(`账户闭包 ${label} 必须是${allowEmpty ? '' : '非空'}字符串数组`)
+  }
+  const ids = value.map((item) => {
+    if (typeof item !== 'string' || item.trim() === '') throw new Error(`账户闭包 ${label} 含空 ID`)
+    return item
+  })
+  if (new Set(ids).size !== ids.length) throw new Error(`账户闭包 ${label} 不得包含重复 ID`)
+  return ids
+}
+
+function normalizeLinks(value, label, fields) {
+  if (!Array.isArray(value)) throw new Error(`账户闭包 ${label} 必须是数组`)
+  const seen = new Set()
+  return value.map((item, index) => {
+    if (!isRecord(item)) throw new Error(`账户闭包 ${label}[${index}] 必须是对象`)
+    const normalized = {}
+    for (const field of fields) {
+      if (typeof item[field] !== 'string' || item[field].trim() === '') {
+        throw new Error(`账户闭包 ${label}[${index}].${field} 必须是非空字符串`)
+      }
+      normalized[field] = item[field]
+    }
+    const key = stableJson(normalized)
+    if (seen.has(key)) throw new Error(`账户闭包 ${label} 不得包含重复关联记录`)
+    seen.add(key)
+    return normalized
+  })
+}
+
+function normalizeApiKeyRemap(value) {
+  const remap = normalizeLinks(value, 'apiKeyRemap', ['sourceId', 'targetId'])
+    .sort((left, right) => compareEvidencePath(left.sourceId, right.sourceId) || compareEvidencePath(left.targetId, right.targetId))
+  if (new Set(remap.map((item) => item.sourceId)).size !== remap.length) {
+    throw new Error('账户闭包 apiKeyRemap 的 sourceId 不得重复')
+  }
+  if (new Set(remap.map((item) => item.targetId)).size !== remap.length) {
+    throw new Error('账户闭包 apiKeyRemap 的 targetId 不得重复')
+  }
+  return remap
+}
+
+function apiKeyRemapHash(remap) {
+  return sha256(stableJson(remap))
+}
+
+async function verifyAccountClosureEvidence(evidence, evidenceRoot) {
+  const accounts = evidence?.accounts
+  if (!isRecord(accounts) || typeof accounts.closureEvidenceRef !== 'string') return
+
+  const closurePath = resolveEvidencePath(evidenceRoot, accounts.closureEvidenceRef)
+  let closure
+  try {
+    closure = JSON.parse(await readFile(closurePath, 'utf8'))
+  } catch (error) {
+    throw new Error(`账户闭包证据无法读取或不是合法 JSON：${accounts.closureEvidenceRef}`)
+  }
+  if (!isRecord(closure) || closure.schemaVersion !== ACCOUNT_CLOSURE_SCHEMA_VERSION) {
+    throw new Error('账户闭包证据必须是 schemaVersion=1 的对象')
+  }
+
+  const lists = {}
+  for (const field of ACCOUNT_CLOSURE_ID_FIELDS) {
+    lists[field] = normalizeIdList(closure[field], field, { allowEmpty: field !== 'approvedCanaryAccountIds' })
+  }
+  if (!Number.isInteger(accounts.approvedCanaryCount)
+    || accounts.approvedCanaryCount !== lists.approvedCanaryAccountIds.length) {
+    throw new Error('账户闭包 approvedCanaryCount 与 approvedCanaryAccountIds 不一致')
+  }
+  const selected = new Set(lists.selectedAccountIds)
+  const expectedSelected = new Set([...lists.approvedCanaryAccountIds, ...lists.sourceAccountIds])
+  if (selected.size !== expectedSelected.size || [...selected].some((id) => !expectedSelected.has(id))) {
+    throw new Error('账户闭包 selectedAccountIds 必须恰好是 canary 与 source 账户并集')
+  }
+  if (closure.selectedAccountIdsHash !== hashStringList(lists.selectedAccountIds)) {
+    throw new Error('账户闭包 selectedAccountIdsHash 与 selectedAccountIds 不一致')
+  }
+
+  const evidenceHashFields = [
+    ['approvedCanaryAccountIdsHash', 'approvedCanaryAccountIds'],
+    ['sourceAccountIdsHash', 'sourceAccountIds'],
+    ['systemAccountIdsHash', 'systemAccountIds'],
+    ['systemTeamIdsHash', 'systemTeamIds'],
+    ['groupIdsHash', 'groupIds'],
+    ['routeStrategyIdsHash', 'routeStrategyIds'],
+    ['resourceAuthorizationIdsHash', 'resourceAuthorizationIds'],
+    ['resourceAuthorizationGrantIdsHash', 'resourceAuthorizationGrantIds'],
+    ['apiKeyIdsHash', 'apiKeyIds']
+  ]
+  for (const [evidenceField, listField] of evidenceHashFields) {
+    if (accounts[evidenceField] !== hashStringList(lists[listField])) {
+      throw new Error(`accounts.${evidenceField} 与账户闭包 ${listField} 不一致`)
+    }
+  }
+
+  const apiKeyRemap = normalizeApiKeyRemap(closure.apiKeyRemap)
+  if (accounts.apiKeyRemapHash !== apiKeyRemapHash(apiKeyRemap)) {
+    throw new Error('accounts.apiKeyRemapHash 与账户闭包 apiKeyRemap 不一致')
+  }
+  const selectedSet = new Set(lists.selectedAccountIds)
+  const systemSet = new Set(lists.systemAccountIds)
+  const groupSet = new Set(lists.groupIds)
+  const routeSet = new Set(lists.routeStrategyIds)
+  const authorizationSet = new Set(lists.resourceAuthorizationIds)
+  for (const link of normalizeLinks(closure.accountSystemAccountLinks, 'accountSystemAccountLinks', ['accountId', 'systemAccountId'])) {
+    if (!selectedSet.has(link.accountId) || !systemSet.has(link.systemAccountId)) {
+      throw new Error('账户闭包 accountSystemAccountLinks 存在越界引用')
+    }
+  }
+  for (const link of normalizeLinks(closure.accountGroupLinks, 'accountGroupLinks', ['accountId', 'groupId'])) {
+    if (!selectedSet.has(link.accountId) || !groupSet.has(link.groupId)) {
+      throw new Error('账户闭包 accountGroupLinks 存在越界引用')
+    }
+  }
+  for (const link of normalizeLinks(closure.accountRouteStrategyLinks, 'accountRouteStrategyLinks', ['accountId', 'routeStrategyId'])) {
+    if (!selectedSet.has(link.accountId) || !routeSet.has(link.routeStrategyId)) {
+      throw new Error('账户闭包 accountRouteStrategyLinks 存在越界引用')
+    }
+  }
+  for (const link of normalizeLinks(closure.authorizationLinks, 'authorizationLinks', [
+    'id', 'resourceType', 'resourceId', 'resourceOwnerSystemAccountId', 'granteeSystemAccountId'
+  ])) {
+    if (!authorizationSet.has(link.id)
+      || !systemSet.has(link.resourceOwnerSystemAccountId)
+      || !systemSet.has(link.granteeSystemAccountId)
+      || !['account', 'group'].includes(link.resourceType)
+      || (link.resourceType === 'account' && !selectedSet.has(link.resourceId))
+      || (link.resourceType === 'group' && !groupSet.has(link.resourceId))) {
+      throw new Error('账户闭包 authorizationLinks 存在越界或类型引用')
+    }
+  }
+}
+
 function normalizeManifest(manifest) {
   if (!isRecord(manifest) || manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION || !Array.isArray(manifest.files)) {
     throw new Error('证据 manifest 必须是 { schemaVersion: 1, files: [...] }')
@@ -159,6 +312,7 @@ export async function verifyEvidenceManifest(evidence, evidenceRoot) {
       throw new Error(`证据文件摘要不匹配：${item.path}`)
     }
   }
+  await verifyAccountClosureEvidence(evidence, root)
   return { status: 'passed', evidenceRefs: manifest.files.length, evidenceManifestDigest: expectedDigest }
 }
 

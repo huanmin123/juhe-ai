@@ -19,6 +19,7 @@ const {
   recordNormalRouteProbeFailureAsync,
   recordNormalRouteFirstByteSlowAsync,
   recordNormalRouteFirstByteSuccessAsync,
+  isNormalRouteAccountLatencyDegradedAsync,
   recordNormalRouteRecoveryProbeSuccessAsync,
   releaseNormalRouteLatencyProbeClaimAsync,
   renewNormalRouteLatencyProbeClaimAsync
@@ -295,9 +296,42 @@ assert(requestRecoveryScope, '真实请求恢复防抖回归需要有效 scope')
 await recordNormalRouteFirstByteSlowAsync(accounts[0]!, requestRecoveryScope, config)
 await recordNormalRouteFirstByteSlowAsync(accounts[0]!, requestRecoveryScope, config)
 for (let index = 1; index <= config.recoverySuccessCount; index += 1) {
-  const recovery = await recordNormalRouteFirstByteSuccessAsync(accounts[0]!, requestRecoveryScope, config, 100)
+  const recovery = await recordNormalRouteFirstByteSuccessAsync(
+    accounts[0]!,
+    requestRecoveryScope,
+    config,
+    index === 1 ? config.firstByteDeadlineMs : 100
+  )
   assert.equal(recovery?.cleared, index === config.recoverySuccessCount, `第 ${index} 次真实请求恢复的清理状态不符合防抖要求`)
+  assert.equal(
+    recovery?.recoverySuccessCount,
+    index,
+    `第 ${index} 次真实请求恢复应累计对应的达标次数`
+  )
+  if (index < config.recoverySuccessCount) {
+    assert.equal(
+      await isNormalRouteAccountLatencyDegradedAsync(accounts[0]!, requestRecoveryScope),
+      true,
+      `第 ${index} 次真实请求达标后仍应保持速度降级`
+    )
+  }
 }
+assert.equal(
+  await isNormalRouteAccountLatencyDegradedAsync(accounts[0]!, requestRecoveryScope),
+  false,
+  '真实请求连续达标达到恢复次数后应清理速度降级'
+)
+const requestRecoveredOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
+  accounts,
+  requestRecoveryScope,
+  config
+)
+assert.equal(requestRecoveredOrder.applied, false, '真实请求恢复后不应继续应用速度降级排序')
+assert.deepEqual(
+  requestRecoveredOrder.accounts.map((account) => account.id),
+  accounts.map((account) => account.id),
+  '真实请求恢复后应回到原候选顺序'
+)
 await clearNormalRouteLatencyDegradationForRouteStrategyAsync(requestRecoveryScope.routeStrategyId)
 
 async function dueRecoveryProbeCandidate(
@@ -428,6 +462,121 @@ assert.deepEqual(concurrentOrder.accounts.map((account) => account.id), [account
 await clearNormalRouteLatencyDegradationForRouteStrategyAsync(scope.routeStrategyId)
 
 const latencyStateStore = createRuntimeStateStore('gateway-normal-route-latency-degradation')
+
+const logicalExpiryScope = normalRouteLatencyDegradationScope({
+  systemAccountId: 'sys_speed_first_runtime',
+  routeStrategyId: `route_strategy_speed_first_logical_expiry_${Date.now()}`,
+  groupId: 'group_speed_first_runtime'
+})
+assert(logicalExpiryScope, '逻辑 TTL 到期回归需要有效 scope')
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, logicalExpiryScope, config)
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, logicalExpiryScope, config)
+const logicalExpiryStateKey = ((await latencyStateStore.getJson<{ keys?: string[] }>('v1:all-index'))?.keys ?? [])
+  .find((key) => key.includes(logicalExpiryScope.routeStrategyId) && key.endsWith(`:${accounts[0]!.id}`))
+assert(logicalExpiryStateKey, '逻辑 TTL 到期回归应找到降级 state key')
+const logicalExpiryState = await latencyStateStore.getJson<Record<string, unknown>>(logicalExpiryStateKey)
+assert(logicalExpiryState, '逻辑 TTL 到期回归应读取降级 state')
+const logicalExpiredAt = Date.now() - 1
+await latencyStateStore.setJson(
+  logicalExpiryStateKey,
+  {
+    ...logicalExpiryState,
+    degradedUntilMs: logicalExpiredAt,
+    nextProbeAtMs: logicalExpiredAt
+  },
+  60_000
+)
+assert.equal(
+  await isNormalRouteAccountLatencyDegradedAsync(accounts[0]!, logicalExpiryScope),
+  false,
+  'degradedUntilMs 到期后账号不应继续被判定为速度降级'
+)
+const logicalExpiredOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
+  accounts,
+  logicalExpiryScope,
+  config
+)
+assert.equal(logicalExpiredOrder.applied, false, 'degradedUntilMs 到期后不应继续应用降级排序')
+assert.equal(
+  logicalExpiredOrder.degradedAccountIds.includes(accounts[0]!.id),
+  false,
+  'degradedUntilMs 到期后账号不应出现在降级账号列表'
+)
+const logicalExpiredProbeCandidates = await listNormalRouteLatencyProbeCandidatesAsync(
+  100,
+  Date.now() + config.probeIntervalSeconds * 2000
+)
+assert.equal(
+  logicalExpiredProbeCandidates.some((candidate) => candidate.stateKey === logicalExpiryStateKey),
+  false,
+  'degradedUntilMs 到期后不应继续产生恢复探针候选'
+)
+const logicalExpiryRecovery = await recordNormalRouteFirstByteSuccessAsync(
+  accounts[0]!,
+  logicalExpiryScope,
+  config,
+  config.firstByteDeadlineMs
+)
+assert.equal(logicalExpiryRecovery?.cleared, true, '到期后下一次达标真实请求应清理过期 state')
+assert.equal(logicalExpiryRecovery?.recoverySuccessCount, 0, '清理过期 state 不应伪造恢复计数')
+assert.equal(
+  ((await latencyStateStore.getJson<{ keys?: string[] }>('v1:all-index'))?.keys ?? []).includes(logicalExpiryStateKey),
+  false,
+  '清理过期 state 后 all-index 不应残留该 key'
+)
+assert.equal(
+  ((await latencyStateStore.getJson<{ keys?: string[] }>('v1:probe-index'))?.keys ?? []).includes(logicalExpiryStateKey),
+  false,
+  '清理过期 state 后 probe-index 不应残留该 key'
+)
+
+const storageTtlScope = normalRouteLatencyDegradationScope({
+  systemAccountId: 'sys_speed_first_runtime',
+  routeStrategyId: `route_strategy_speed_first_storage_ttl_${Date.now()}`,
+  groupId: 'group_speed_first_runtime'
+})
+assert(storageTtlScope, '内存 store TTL 到期回归需要有效 scope')
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, storageTtlScope, config)
+await recordNormalRouteFirstByteSlowAsync(accounts[0]!, storageTtlScope, config)
+const storageTtlStateKey = ((await latencyStateStore.getJson<{ keys?: string[] }>('v1:all-index'))?.keys ?? [])
+  .find((key) => key.includes(storageTtlScope.routeStrategyId) && key.endsWith(`:${accounts[0]!.id}`))
+assert(storageTtlStateKey, '内存 store TTL 到期回归应找到降级 state key')
+const storageTtlState = await latencyStateStore.getJson<Record<string, unknown>>(storageTtlStateKey)
+assert(storageTtlState, '内存 store TTL 到期回归应读取降级 state')
+await latencyStateStore.setJson(
+  storageTtlStateKey,
+  {
+    ...storageTtlState,
+    // Keep the logical degradation deadline in the future so this exercise
+    // proves that the backing runtime-state TTL itself removes the state.
+    degradedUntilMs: Date.now() + 60_000,
+    nextProbeAtMs: Date.now() - 1
+  },
+  5
+)
+await delay(25)
+assert.equal(await latencyStateStore.getJson(storageTtlStateKey), undefined, '内存 store TTL 到期后应删除 state')
+assert.equal(
+  await isNormalRouteAccountLatencyDegradedAsync(accounts[0]!, storageTtlScope),
+  false,
+  '内存 store TTL 到期后账号不应继续被判定为速度降级'
+)
+const storageTtlOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
+  accounts,
+  storageTtlScope,
+  config
+)
+assert.equal(storageTtlOrder.applied, false, '内存 store TTL 到期后不应继续应用降级排序')
+const storageTtlProbeCandidates = await listNormalRouteLatencyProbeCandidatesAsync(
+  100,
+  Date.now() + config.probeIntervalSeconds * 2000
+)
+assert.equal(
+  storageTtlProbeCandidates.some((candidate) => candidate.stateKey === storageTtlStateKey),
+  false,
+  '内存 store TTL 到期后不应继续产生恢复探针候选'
+)
+
 const generationScope = normalRouteLatencyDegradationScope({
   systemAccountId: 'sys_speed_first_generation',
   routeStrategyId: `route_strategy_speed_first_generation_${Date.now()}`,

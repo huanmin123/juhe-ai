@@ -5,7 +5,7 @@
 本文固定 AI 账户在真实网关失败、高并发失败风暴、调度降级、临时不可用和恢复探测之间的状态机。核心目标是：
 
 - 普通用户请求只负责救当前请求、记录诊断事实；只有本地可验证 transport failure 才能建立有界 IP / 传输局部回避，并在不存在同账户后台事件时原子首次投递 `recovery_wait`。opaque HTTP、协议失败和坏会话只扩大本请求排除集合，不能建立、续期、升级或清理账户级运行态。
-- 账号运行态建立、恢复、调度降级确认和持久状态确认统一由独立后台探针或明确人工操作完成；账户所有者显式配置的账户错误策略和响应拦截策略属于主动管理意图，命中后仍可按配置直接执行。
+- 除普通路由速度优先的 `latency_degraded` 外，账号运行态建立、恢复、调度降级确认和持久状态确认统一由独立后台探针或明确人工操作完成；`latency_degraded` 是按路由策略 / 分组 / 账号运行态键隔离的首字慢调度覆盖，可由窗口内慢样本直接建立，但不写入账号状态。账户所有者显式配置的账户错误策略和响应拦截策略属于主动管理意图，命中后仍可按配置直接执行。
 - 高并发或多 IP 同一时间打出的失败不能把账号快速打死。
 - 每个运行态和持久态都必须有自动恢复出口，避免长期挂死。
 - 高性能模式可能存在多个 Web 节点，跨节点运行态、generation 和 due 索引必须进入 Redis runtime state，不能回退到进程内 memory，也不使用 Redis 分布式锁。
@@ -29,7 +29,7 @@
 | `normal` | 无运行态 / `accounts.status = active` | 正常调度 | 运行态 transport 怀疑被清理；持久账户业务状态仅由匹配来源的 `complete_success` 或明确恢复动作激活 | 无需恢复 |
 | `recovery_wait` | memory / Redis 后台任务 | 不影响普通调度，不作为账户状态展示 | 普通请求的本地 transport failure 原子首次投递后台核实 | 后台任务接管后按探针三态删除、退避或推进；普通请求不得续期或改写 |
 | `failure_observed` | memory / Redis 后台观察 | 不影响排序 | 后台核实任务开始处理 transport failure | 后台探针 `framing_complete_neutral` 只清理匹配 transport 怀疑，或观察过期清理 |
-| `latency_degraded` | memory / Redis 短 TTL 运行态 | 速度优先普通路由下未降级硬可承接候选优先，首字慢账号兜底；有效期内可临时覆盖账户偏好 | 后台探针或后台状态评估确认持续首字慢 | 后台探针连续达标、TTL 到期或手动恢复清理 |
+| `latency_degraded` | memory / Redis 短 TTL 运行态 | 速度优先普通路由下未降级硬可承接候选优先，首字慢账号兜底；有效期内可临时覆盖账户偏好 | 同一运行态键在 `slowWindowSeconds` 内累计慢样本达到 `slowTriggerCount`，请求链路直接建立 | 真实请求连续达标达到 `recoverySuccessCount`、后台恢复探针两次窗口均达标、TTL 到期或手动恢复清理 |
 | `local_suppressed` | memory / Redis TTL 运行态 | 暂不选中该账号 | 用户显式响应拦截 `avoid_account_ttl` 等主动策略 | 配置 TTL 到期或人工恢复清理；后台自动成功不能提前解除显式策略 |
 | `runtime_degraded` | memory / Redis 运行态快照 | 普通候选优先，降级账号兜底 | 后台 transport 探针确认近期不稳 | 只有匹配 generation / provenance 的 `complete_success`、观察窗口过期或手动恢复清理；`framing_complete_neutral` 只保留诊断 / 顺延，不恢复该运行态 |
 | `precheck_pending` | memory / Redis 运行态快照 | 软阻断普通候选；后台探针、主动健康检查和 generation 租约半开可访问 | 首次有效独立后台探针形成 `transport_failed` | 只有匹配 generation / provenance 的 `complete_success` 或专属人工出口恢复；`framing_complete_neutral` 只保留 transport 怀疑并顺延，transport failure 释放租约并继续后台确认，unknown 只退避 |
@@ -37,7 +37,7 @@
 | `rate_limited` | `accounts.status` / `cooldown_until` | 不参与调度 | 用户显式账户错误策略或明确后台任务 | 配置 TTL、匹配来源后台任务或人工恢复；无关 transport 成功不得清理 |
 | `error` | `accounts.status = error` | 不参与调度 | 本地可验证硬异常或用户显式策略/人工操作 | 可自动恢复的同来源本地异常由对应任务恢复；远端 OAuth token endpoint 失败只诊断和退避，不写账户 `error`；显式硬异常需要用户修配置或手动恢复 |
 
-`failure_observed` 是内部观察态，不作为前端状态标签展示；`latency_degraded` 只表示当前普通路由速度优先偏好下近期首字慢，不表示账号不可用，也不能升级为持久账号状态。它是路由策略目标对账户偏好的短 TTL 覆盖层，不改写超级优先、账号优先级、备用层、会话亲和或质量排序；恢复清理后，后续请求必须重新回到账户配置排序。账户页只展示会影响调度或需要排障的 `latency_degraded`、`runtime_degraded`、`local_suppressed`、`precheck_pending`、`precheck_failed` 和持久状态。
+`failure_observed` 是内部观察态，不作为前端状态标签展示；`latency_degraded` 只表示当前普通路由速度优先偏好下近期首字慢，不表示账号不可用，也不能升级为持久账号状态。它是路由策略目标对账户偏好的短 TTL 覆盖层，不改写超级优先、账号优先级、备用层、会话亲和或质量排序；恢复清理后，后续请求必须重新回到账户配置排序。`latency_degraded` 必须在策略路由的速度状态中按策略和分组展示，不能混入 AI 账户列表的全局主状态；页面可以展示降级保留时间、下次探针和两类恢复进度，但没有稳定 `probeRunning` 契约时不得宣称“正在恢复中”。
 
 ## 失败采样规则
 
@@ -79,7 +79,7 @@
 
 - 采样来源是已经真实进入上游账号调用链路的首字等待。流式请求按首个可见语义输出计算，SSE comment、空心跳和未完成语义事件不算达标；非流式请求按上游 `2xx` 后首个 body 字节计算。
 - 采样键必须带当前调用方和路由上下文，建议为 `systemAccountId + routeStrategyId + groupId + accountRuntimeKey`。不同路由策略的速度偏好不能互相污染。
-- 窗口内慢样本只投递后台核实；后台探针或后台状态评估确认持续超阈值后才进入 `latency_degraded`。普通快样本只作为诊断事实，不能清理账户级运行态。
+- 慢样本按 `systemAccountId + routeStrategyId + groupId + accountRuntimeKey` 作用域聚合；在 `slowWindowSeconds` 内达到 `slowTriggerCount` 时，请求链路直接进入 `latency_degraded`，不等待后台确认。观察期内的达标快样本会清理当前慢样本窗口；超过窗口的下一次慢样本从 1 次重新开始。进入 `latency_degraded` 后，单次快样本不会立即清理状态，需由真实请求恢复计数、后台恢复探针或 TTL / 手动恢复处理。
 - `latency_degraded` 有效期内，速度优先可以把未降级且硬可承接的同分组账号排到前面，即使被后置账号拥有超级优先、更高账号优先级、主池身份或会话亲和。
 - `latency_degraded` 只覆盖账户偏好，不覆盖硬约束；候选仍必须满足账户状态、授权、时间计划、模型能力、协议能力、额度、账号硬并发、分组队列和本地不可调度过滤。
 - `latency_degraded` 账号仍可兜底调度；所有硬可承接候选都处于 `latency_degraded` 时应旁路该排序，保留原账户顺序，避免保护机制筛空号池。
@@ -150,7 +150,7 @@ generation
 
 performance 模式默认可能有多个 server 节点，同一账号的运行态必须满足跨节点一致性：
 
-- 状态转换、probe intent、probe generation 和 due index 进入 Redis runtime state；失败窗口和 success observation 可以保留进程内短窗口，但账户级结论只能由后台探针、主动健康检查或显式人工操作推进。
+- 状态转换、probe intent、probe generation 和 due index 进入 Redis runtime state；失败窗口和 success observation 可以保留进程内短窗口。`runtime_degraded`、`precheck_pending` 等传输运行态结论只能由后台探针、主动健康检查或显式人工操作推进；速度优先的 `latency_degraded` 是带路由策略 / 分组作用域的首字慢计数结论，达到配置阈值即可由请求链路建立。
 - 请求调度链路允许短暂不一致，优先性能。读取 Redis 探针状态时使用 server 进程内短 TTL 近端缓存；缓存过期前可能继续避让或短暂误选，但不能写坏持久状态。
 - Redis key 必须有 TTL，不能成为持久事实；父子 incident 的持久控制面和冷重建账本才是跨重启权威来源。Redis 丢失时最多回到保守调度并触发重建，不能把活动 incident 视为 `CLOSED`，也不能丢账务、授权、审计或使用记录事实。
 - due index 用 Redis sorted set 或等价 runtime state 索引保存 `runtimeKey -> dueAt`，各 Web 节点都可以 sweep；重复执行由 generation 条件写入和条件删除收敛。
@@ -299,7 +299,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 | --- | --- | --- |
 | `recovery_wait` | 后台任务完成、丢弃未知结论或推进为探针运行态 | 无需展示；人工恢复可精确清理后台事件 |
 | `failure_observed` | 窗口过期；后台探针 `framing_complete_neutral` 清理匹配 transport 怀疑 | 手动恢复正常 |
-| `latency_degraded` | 后台探针连续首字达标；TTL 过期 | 手动恢复正常；关闭对应普通路由速度优先 |
+| `latency_degraded` | 真实请求连续达标达到 `recoverySuccessCount`；后台恢复探针两次窗口均达标；TTL 过期 | 手动恢复正常；关闭对应普通路由速度优先 |
 | `local_suppressed` | 显式策略 TTL 到期 | 手动恢复正常 |
 | `runtime_degraded` | 匹配来源的 `complete_success`；观察窗口过期 | 手动恢复正常 |
 | `precheck_pending` | 后台探针或匹配 generation 的半开形成 `complete_success`；中性 framing 只清理 transport 怀疑 | 手动恢复正常 |
@@ -343,7 +343,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 改动该状态机时至少验证：
 
 - 单账号高并发多 IP 同一波 transport failure 只影响当前请求和来源 transport 局部回避，并原子首次投递 `recovery_wait`，不建立账户级运行态或持久状态；同一坏会话的 opaque HTTP/协议错误甚至不得投递恢复或形成跨请求回避。
-- 普通路由速度优先下，首字慢只记录样本并投递后台核实；只有后台确认后才进入 `latency_degraded`，且不写账号 `temporary_unavailable`、`rate_limited`、`error` 或健康检测失败次数。
+- 普通路由速度优先下，首字慢按作用域在窗口内累计；达到 `slowTriggerCount` 后直接进入 `latency_degraded`，且不写账号 `temporary_unavailable`、`rate_limited`、`error` 或健康检测失败次数。观察期达标快样本会清理慢样本窗口；降级期恢复按真实请求恢复计数或后台探针规则执行。
 - `latency_degraded` 账号在同普通路由分组内后置，未降级硬可承接账号可临时越过账户超级优先、账号优先级、备用层和会话亲和；全部候选都速度降级时旁路排序并保留原候选顺序。
 - 后台探针形成匹配来源的 `complete_success` 并清理 `latency_degraded` 后，后续请求重新按账户配置排序，已恢复的主账号不会因为之前切到替补账号而长期饿死。
 - 仅可重放文本在首字超阈值且下游尚未写出可见内容时，可按策略限制切换同分组后续账号；图像和其他副作用请求永久退出首字慢样本与速度切号，下游已写出可见内容后也不得透明切号。

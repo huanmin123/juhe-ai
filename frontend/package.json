@@ -20,6 +20,7 @@
     "test:group-create-local-reconcile": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/group-create-local-reconcile-regression.ts",
     "test:response-inspection-policy-progressive-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/response-inspection-policy-progressive-loading-regression.ts",
     "test:route-strategy-progressive-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/route-strategy-progressive-loading-regression.ts",
+    "test:route-strategy-speed-first-runtime": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/route-strategy-speed-first-runtime-regression.ts",
     "test:chat-stream": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-stream-regression.ts",
     "test:chat-local-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-local-cache-regression.ts",
     "test:chat-local-cache-indexeddb-browser": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-local-cache-indexeddb-browser-runner.ts",

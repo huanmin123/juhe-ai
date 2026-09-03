@@ -30,6 +30,7 @@ import type {
 } from './repository-row-types.js'
 import { markAllGroupAccountStatsDirty } from './usage-stats.repository.js'
 import { enqueueAccountHealthJobsInputsForAuthorizationSourceInTransaction } from './account-health-jobs-input-authorization-fanout.repository.js'
+import { advanceAccountCircuitDispatchRevisionInSqliteTransaction } from './account-circuit-control-plane.repository.js'
 
 interface RefreshEffectiveSourceOptions {
   noActiveSourceReason?: string
@@ -317,6 +318,12 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
         deletedExisting.id
       )
     replaceAccountNameSearchTerms(database, deletedExisting.id, authorization.grantee_system_account_id, restoredName, now)
+    advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+      accountId: deletedExisting.id,
+      accountRuntimeKey: deletedExisting.id,
+      transitionId: newId('dispatch'),
+      nowMs: Date.parse(now)
+    })
     return database.prepare('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1').get(deletedExisting.id) as unknown as AccountRow | undefined
   }
   const id = newId('acc')

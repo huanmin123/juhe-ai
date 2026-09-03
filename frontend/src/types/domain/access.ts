@@ -87,6 +87,38 @@ export interface RouteStrategySpeedFirstConfig {
   maxFirstByteRetriesPerRequest: number
 }
 
+export interface RouteStrategySpeedFirstLatencyRuntimeSummary {
+  runtimeAvailable: boolean
+  degradedCount: number
+}
+
+export interface RouteStrategySpeedFirstLatencyRuntimeItem {
+  accountId: string
+  accountName?: string
+  scope: {
+    groupId: string
+  }
+  slowCount: number
+  slowTriggerCount: number
+  slowWindowSeconds: number
+  degradedUntil?: string | null
+  nextProbeAt?: string | null
+  recoverySuccessCount: number
+  requiredRecoverySuccessCount: number
+  recoveryProbeRoundAttemptCount: number
+  recoveryProbeRoundSuccessCount: number
+  reason: string
+}
+
+export interface RouteStrategySpeedFirstLatencyRuntime {
+  routeStrategyId: string
+  generatedAt: string
+  enabled: boolean
+  runtimeAvailable: boolean
+  degradedCount: number
+  items: RouteStrategySpeedFirstLatencyRuntimeItem[]
+}
+
 export type RouteStrategyNormalRoutingConfig =
   | {
       schedulingPreference: 'cost_first'
@@ -172,6 +204,7 @@ export interface RouteStrategyListItem {
   status: RouteStrategyStatus
   isDefault: boolean
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
+  speedFirstLatencyRuntime?: RouteStrategySpeedFirstLatencyRuntimeSummary
   bindingCount: number
   apiKeyCount: number
   groupBindingPreview: RouteStrategyGroupBindingPreview[]

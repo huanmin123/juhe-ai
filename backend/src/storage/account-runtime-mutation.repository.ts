@@ -15,9 +15,16 @@ import { findAccountSummary, findAccountSummaryAsync } from './account-summary.r
 import { isCoolingAccountStatus, isHardUnavailableAccountStatus, normalizeAccountStatus } from './account-status.js'
 import { completeAccountTestTask, completeAccountTestTaskAsync, type AccountTestTaskRecord } from './account-test-tasks.repository.js'
 import { normalizedDispatchPriority } from './account-write-input.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
+import {
+  advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction,
+  advanceAccountCircuitDispatchRevisionFamilyInTransaction,
+  advanceAccountCircuitDispatchRevisionInSqliteTransaction,
+  advanceAccountCircuitDispatchRevisionInTransaction,
+  lockAccountCircuitDispatchFamilyRootInTransaction
+} from './account-circuit-control-plane.repository.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
@@ -265,6 +272,14 @@ export function forceActivatePendingAccount(id: string, access?: AccessScope): A
   `).run(nextStatus, 1, checkedAt, id, current.system_account_id, current.config_revision, checkedAt)
     changed = Number(result.changes ?? 0) > 0
     if (changed) {
+      if (nextStatus === 'active') {
+        advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
+          accountId: id,
+          accountRuntimeKey: id,
+          transitionId: newId('dispatch'),
+          nowMs: Date.now()
+        })
+      }
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_pending_force_activated' })
     }
     commitDatabaseTransaction(database, transactionStarted)
@@ -294,6 +309,7 @@ export async function forceActivatePendingAccountAsync(id: string, access?: Acce
     ? 'active'
     : 'disabled'
   const changed = await client.transaction(async (tx) => {
+    await lockAccountCircuitDispatchFamilyRootInTransaction(tx, id)
     const result = await tx.execute(`
       UPDATE ${accountRuntimeMutationTable(tx, 'accounts')}
       SET status = ?,
@@ -324,6 +340,14 @@ export async function forceActivatePendingAccountAsync(id: string, access?: Acce
     `, [nextStatus, checkedAt, id, current.system_account_id, current.config_revision, checkedAt])
     const updated = Number(result.changes ?? 0) > 0
     if (updated) {
+      if (nextStatus === 'active') {
+        await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
+          accountId: id,
+          accountRuntimeKey: id,
+          transitionId: newId('dispatch'),
+          nowMs: Date.now()
+        })
+      }
       await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_pending_force_activated' }, tx)
     }
     return updated
@@ -360,6 +384,24 @@ export function clearAccountFailureStateResult(
   const current = findAccountSummary(id, accountAccess)
   if (!current) {
     return { changed: false }
+  }
+  if (current.accessType === 'authorized') {
+    if (!current.boundGroupId || !current.accountAuthorizationId) {
+      return { account: current, changed: false }
+    }
+    const bindingSystemAccountId = current.bindingSystemAccountId ?? current.systemAccountId
+    if (!bindingSystemAccountId?.trim()) {
+      return { account: current, changed: false }
+    }
+    return clearAuthorizedAccountBindingFailureStateByContext({
+      accountId: id,
+      // The row's binding identity is the grantee, not the administrator (or
+      // request caller) that happened to read it.  This keeps internal
+      // no-request recovery and user-triggered recovery on the same relation.
+      systemAccountId: bindingSystemAccountId,
+      groupId: current.boundGroupId,
+      accountAuthorizationId: current.accountAuthorizationId
+    }, options)
   }
   const ownerSystemAccountId = accountSystemAccountId(id)
   if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId, accountAccess)) {
@@ -457,8 +499,11 @@ export function clearAccountFailureStateResult(
     return { account: findAccountSummary(id, accountAccess), changed }
   }
 
-  const result = getBusinessDatabase()
-    .prepare(`
+  const database = getBusinessDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  let result: { changes?: number | bigint }
+  try {
+    result = database.prepare(`
       UPDATE accounts
       SET status = 'active',
           schedulable = 1,
@@ -508,6 +553,19 @@ export function clearAccountFailureStateResult(
       `${LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX}%`,
       ...(expectedLastErrorCodes ?? [])
     )
+    if (Number(result.changes ?? 0) > 0) {
+      advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
+        accountId: id,
+        accountRuntimeKey: id,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_restored' })
@@ -535,9 +593,13 @@ export async function clearAccountFailureStateResultAsync(
     if (!current.boundGroupId || !current.accountAuthorizationId) {
       return { account: current, changed: false }
     }
+    const bindingSystemAccountId = current.bindingSystemAccountId ?? current.systemAccountId
+    if (!bindingSystemAccountId?.trim()) {
+      return { account: current, changed: false }
+    }
     return clearAuthorizedAccountBindingFailureStateByContextAsync({
       accountId: id,
-      systemAccountId: authorizedBindingSystemAccountId(access),
+      systemAccountId: bindingSystemAccountId,
       groupId: current.boundGroupId,
       accountAuthorizationId: current.accountAuthorizationId
     }, options)
@@ -639,7 +701,9 @@ export async function clearAccountFailureStateResultAsync(
     return { account: await findAccountSummaryAsync(id, accountAccess), changed }
   }
 
-  const result = await client.execute(`
+  const result = await client.transaction(async (tx) => {
+    await lockAccountCircuitDispatchFamilyRootInTransaction(tx, id)
+    const updateResult = await tx.execute(`
     UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
     SET status = 'active',
         schedulable = 1,
@@ -690,6 +754,16 @@ export async function clearAccountFailureStateResultAsync(
     `${LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX}%`,
     ...(expectedLastErrorCodes ?? [])
   ])
+    if (updateResult.changes > 0) {
+      await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
+        accountId: id,
+        accountRuntimeKey: id,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
+    return updateResult
+  })
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_restored' }, client)
@@ -730,7 +804,8 @@ export async function clearAuthorizedAccountBindingFailureStateByContextAsync(
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const now = nowIso()
-  const result = await client.execute(`
+  const result = await client.transaction(async (tx) => {
+    const updateResult = await tx.execute(`
     UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
     SET status = 'active',
         schedulable = 1,
@@ -793,6 +868,16 @@ export async function clearAuthorizedAccountBindingFailureStateByContextAsync(
     target.groupId,
     target.accountAuthorizationId
   ])
+    if (updateResult.changes > 0) {
+      await advanceAccountCircuitDispatchRevisionInTransaction(tx, {
+        accountId: target.accountId,
+        accountRuntimeKey: target.accountId,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
+    return updateResult
+  })
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     await refreshGroupAccountStatsAfterWriteAsync({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_restored' }, client)
@@ -820,6 +905,10 @@ export function clearAuthorizedAccountBindingFailureState(
   if (!current || current.accessType !== 'authorized' || !current.boundGroupId || !current.accountAuthorizationId) {
     return { account: current, changed: false }
   }
+  const bindingSystemAccountId = current.bindingSystemAccountId ?? current.systemAccountId
+  if (!bindingSystemAccountId?.trim()) {
+    return { account: current, changed: false }
+  }
   if (current.status === 'disabled') {
     return { account: current, changed: false }
   }
@@ -836,7 +925,7 @@ export function clearAuthorizedAccountBindingFailureState(
   }
   return clearAuthorizedAccountBindingFailureStateByContext({
     accountId: id,
-    systemAccountId: authorizedBindingSystemAccountId(access),
+    systemAccountId: bindingSystemAccountId,
     groupId: current.boundGroupId,
     accountAuthorizationId: current.accountAuthorizationId
   }, options)
@@ -892,6 +981,20 @@ function normalizedAuthorizedAccountBindingRuntimeTarget(
     return undefined
   }
   return { accountId, systemAccountId, groupId, accountAuthorizationId }
+}
+
+function accountHasDispatchFailureState(account: AccountSummary): boolean {
+  return Boolean(account.cooldownUntil
+    || account.lastErrorCode
+    || account.lastErrorMessage
+    || account.lastErrorTraceId
+    || (account.cooldownRetestFailureCount ?? 0) > 0
+    || account.cooldownRetestObservationStartedAt
+    || account.cooldownRetestGeneration
+    || account.cooldownRetestLastAt
+    || account.cooldownRetestLastStatusCode !== undefined
+    || (account.streamFailureCount ?? 0) > 0
+    || account.streamFailureWindowStartedAt)
 }
 
 function authorizedAccountRuntimeBindingExists(target: Required<AuthorizedAccountBindingRuntimeTarget>): boolean {
@@ -1387,8 +1490,11 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
     return { changed: false }
   }
   const now = nowIso()
-  const result = getBusinessDatabase()
-    .prepare(`
+  const database = getBusinessDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  let result: { changes?: number | bigint }
+  try {
+    result = database.prepare(`
       UPDATE accounts
       SET status = 'active',
           schedulable = 1,
@@ -1452,6 +1558,19 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
       target.groupId,
       target.accountAuthorizationId
     )
+    if (Number(result.changes ?? 0) > 0) {
+      advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+        accountId: target.accountId,
+        accountRuntimeKey: target.accountId,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_restored' })
@@ -1825,8 +1944,9 @@ export function clearAuthorizedAccountBindingStreamFailureState(input: Authorize
   if (!target) {
     return false
   }
-  const result = getBusinessDatabase()
-    .prepare(`
+  const database = getBusinessDatabase()
+  const changed = runInDatabaseTransaction(() => {
+    const result = database.prepare(`
       UPDATE accounts
       SET stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
@@ -1864,9 +1984,18 @@ export function clearAuthorizedAccountBindingStreamFailureState(input: Authorize
             AND group_accounts.enabled = 1
             AND group_accounts.account_authorization_id = ?
         )
-    `)
-    .run(nowIso(), target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
-  const changed = Number(result.changes ?? 0) > 0
+    `).run(nowIso(), target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+    const didChange = Number(result.changes ?? 0) > 0
+    if (didChange) {
+      advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+        accountId: target.accountId,
+        accountRuntimeKey: target.accountId,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
+    return didChange
+  }, database)
   if (changed) {
     invalidateAccountLookupCache(target.accountId)
     invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_stream_failure_cleared')
@@ -1883,7 +2012,8 @@ export async function clearAuthorizedAccountBindingStreamFailureStateAsync(input
     return false
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const result = await client.execute(`
+  const changed = await client.transaction(async (tx) => {
+    const result = await tx.execute(`
     UPDATE ${accountRuntimeMutationTable(client, 'accounts')} AS accounts
     SET stream_failure_count = 0,
         stream_failure_window_started_at = NULL,
@@ -1922,7 +2052,17 @@ export async function clearAuthorizedAccountBindingStreamFailureStateAsync(input
           AND group_accounts.account_authorization_id = ?
       )
   `, [nowIso(), target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId])
-  const changed = Number(result.changes ?? 0) > 0
+    const didChange = Number(result.changes ?? 0) > 0
+    if (didChange) {
+      await advanceAccountCircuitDispatchRevisionInTransaction(tx, {
+        accountId: target.accountId,
+        accountRuntimeKey: target.accountId,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
+    return didChange
+  })
   if (changed) {
     invalidateAccountLookupCache(target.accountId)
     invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_stream_failure_cleared')
@@ -1931,8 +2071,9 @@ export async function clearAuthorizedAccountBindingStreamFailureStateAsync(input
 }
 
 export function clearAccountStreamFailureState(id: string): boolean {
-  const result = getBusinessDatabase()
-    .prepare(`
+  const database = getBusinessDatabase()
+  const changed = runInDatabaseTransaction(() => {
+    const result = database.prepare(`
       UPDATE accounts
       SET stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
@@ -1959,9 +2100,18 @@ export function clearAccountStreamFailureState(id: string): boolean {
           OR (status = 'active' AND last_error_message IS NOT NULL)
           OR (status = 'active' AND last_error_trace_id IS NOT NULL)
         )
-    `)
-    .run(nowIso(), id)
-  const changed = Number(result.changes ?? 0) > 0
+    `).run(nowIso(), id)
+    const didChange = Number(result.changes ?? 0) > 0
+    if (didChange) {
+      advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
+        accountId: id,
+        accountRuntimeKey: id,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
+    return didChange
+  }, database)
   if (changed) {
     invalidateGatewayRuntimeAfterBusinessWrite('account_stream_failure_cleared')
   }
@@ -1973,7 +2123,9 @@ export async function clearAccountStreamFailureStateAsync(id: string): Promise<b
     return clearAccountStreamFailureState(id)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const result = await client.execute(`
+  const changed = await client.transaction(async (tx) => {
+    await lockAccountCircuitDispatchFamilyRootInTransaction(tx, id)
+    const result = await tx.execute(`
     UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
     SET stream_failure_count = 0,
         stream_failure_window_started_at = NULL,
@@ -2001,7 +2153,17 @@ export async function clearAccountStreamFailureStateAsync(id: string): Promise<b
         OR (status = 'active' AND last_error_trace_id IS NOT NULL)
       )
   `, [nowIso(), id])
-  const changed = Number(result.changes ?? 0) > 0
+    const didChange = Number(result.changes ?? 0) > 0
+    if (didChange) {
+      await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
+        accountId: id,
+        accountRuntimeKey: id,
+        transitionId: newId('dispatch'),
+        nowMs: Date.now()
+      })
+    }
+    return didChange
+  })
   if (changed) {
     invalidateGatewayRuntimeAfterBusinessWrite('account_stream_failure_cleared')
   }
@@ -2784,6 +2946,8 @@ export function updateAuthorizedAccountBindingDispatch(
     : input.clearFailureState === true
       ? 1
       : current.schedulable ? 1 : 0
+  const restoresDispatch = nextStatus === 'active'
+    && (current.status !== 'active' || !current.schedulable || (shouldClearFailureState && accountHasDispatchFailureState(current)))
   const now = nowIso()
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2824,6 +2988,14 @@ export function updateAuthorizedAccountBindingDispatch(
       if (accountChanges <= 0) {
         rollbackDatabaseTransaction(database, transactionStarted)
         return undefined
+      }
+      if (restoresDispatch) {
+        advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+          accountId,
+          accountRuntimeKey: accountId,
+          transitionId: newId('dispatch'),
+          nowMs: Date.now()
+        })
       }
     }
     const dispatchResult = database.prepare(`
@@ -2899,6 +3071,8 @@ export async function updateAuthorizedAccountBindingDispatchAsync(
     : input.clearFailureState === true
       ? 1
       : current.schedulable ? 1 : 0
+  const restoresDispatch = nextStatus === 'active'
+    && (current.status !== 'active' || !current.schedulable || (shouldClearFailureState && accountHasDispatchFailureState(current)))
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const now = nowIso()
   const changed = await client.transaction(async (tx) => {
@@ -2946,6 +3120,14 @@ export async function updateAuthorizedAccountBindingDispatchAsync(
       accountChanges = Number(result.changes ?? 0)
       if (accountChanges <= 0) {
         return false
+      }
+      if (restoresDispatch) {
+        await advanceAccountCircuitDispatchRevisionInTransaction(tx, {
+          accountId,
+          accountRuntimeKey: accountId,
+          transitionId: newId('dispatch'),
+          nowMs: Date.now()
+        })
       }
     }
     const dispatchResult = await tx.execute(`

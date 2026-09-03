@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getBusinessDatabase } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -308,7 +309,15 @@ const outboxColumnList = `
 export async function advanceAccountCircuitDispatchRevision(
   input: AdvanceAccountCircuitDispatchRevisionInput
 ): Promise<AdvanceAccountCircuitDispatchRevisionResult> {
-  return advanceAccountCircuitDispatchRevisionInClient(await accountCircuitDatabaseClient(), input)
+  const result = await advanceAccountCircuitDispatchRevisionInClient(await accountCircuitDatabaseClient(), input)
+  if (result.status === 'applied') {
+    // This public DB-service write entry point can be invoked outside the
+    // account recovery writers. Keep the process-local gateway snapshot and
+    // the cross-process runtime-state invalidation in sync with the revision
+    // fence it just persisted.
+    notifyGatewayRuntimeCacheInvalidation('account_dispatch_revision')
+  }
+  return result
 }
 
 export async function advanceAccountCircuitDispatchRevisionInClient(
@@ -367,11 +376,95 @@ export async function advanceAccountCircuitDispatchRevisionInTransaction(
   }
 }
 
+/**
+ * Acquire the family root lock before a caller mutates an account that may be
+ * an authorization instance. Callers that later advance the whole family must
+ * use this at the start of their transaction so every path locks parent before
+ * child; otherwise a parent update and child recovery can deadlock.
+ */
+export async function lockAccountCircuitDispatchFamilyRootInTransaction(
+  client: DatabaseClient,
+  accountId: string,
+  options: { lockChild?: boolean } = {}
+): Promise<string | undefined> {
+  const lockChild = options.lockChild !== false
+  const accounts = businessTable(client, 'accounts')
+  const row = await client.one<{ id: string; authorization_instance_source_account_id: string | null }>(`
+    SELECT id, authorization_instance_source_account_id
+    FROM ${accounts}
+    WHERE id = ?
+  `, [accountId])
+  if (!row) return undefined
+  const rootId = row.authorization_instance_source_account_id ?? row.id
+  const root = await client.one<{ id: string }>(`
+    SELECT id
+    FROM ${accounts}
+    WHERE id = ?${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
+  `, [rootId])
+  if (!root) return undefined
+  if (lockChild && rootId !== row.id) {
+    await client.one<{ id: string }>(`
+      SELECT id
+      FROM ${accounts}
+      WHERE id = ?${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
+    `, [row.id])
+  }
+  const lockedRelationship = await client.one<{
+    id: string
+    authorization_instance_source_account_id: string | null
+  }>(`
+    SELECT id, authorization_instance_source_account_id
+    FROM ${accounts}
+    WHERE id = ?
+  `, [row.id])
+  if (!lockedRelationship) return undefined
+  const lockedRootId = lockedRelationship.authorization_instance_source_account_id ?? lockedRelationship.id
+  if (lockedRootId !== rootId) {
+    throw new Error('账户授权关系在锁定期间发生变化，请重试')
+  }
+  return rootId
+}
+
 export async function advanceAccountCircuitDispatchRevisionFamilyInTransaction(
   client: DatabaseClient,
   rawInput: AdvanceAccountCircuitDispatchRevisionInput
 ): Promise<AdvanceAccountCircuitDispatchRevisionResult[]> {
   const input = normalizeDispatchRevisionInput(rawInput)
+  // Keep the lock order parent -> children. Account update transactions can
+  // already hold either row before they advance the family; locking children
+  // first here would invert that order and allow a parent/authorized-child
+  // deadlock under concurrent recovery or configuration writes.
+  const accountRow = await client.one<{ id: string; authorization_instance_source_account_id: string | null }>(`
+    SELECT id, authorization_instance_source_account_id
+    FROM ${businessTable(client, 'accounts')}
+    WHERE id = ?
+  `, [input.accountId])
+  if (!accountRow) throw new Error(`AI 账户不存在：${input.accountId}`)
+  const familyRootId = accountRow.authorization_instance_source_account_id ?? accountRow.id
+  const parent = await lockAccountDispatchRevision(client, familyRootId)
+  if (!parent) throw new Error(`AI 账户不存在：${input.accountId}`)
+  // The initial source-pointer probe is intentionally non-locking so the
+  // parent row can be acquired first. Once the parent is locked, lock the
+  // requested child (when applicable) and re-read its pointer. This preserves
+  // parent→child ordering while fail-closing if a future writer ever tries to
+  // repoint an authorization instance concurrently.
+  const lockedInput = input.accountId === familyRootId
+    ? parent
+    : await lockAccountDispatchRevision(client, input.accountId)
+  if (!lockedInput) throw new Error(`AI 账户不存在：${input.accountId}`)
+  const lockedRelationship = await client.one<{
+    id: string
+    authorization_instance_source_account_id: string | null
+  }>(`
+    SELECT id, authorization_instance_source_account_id
+    FROM ${businessTable(client, 'accounts')}
+    WHERE id = ?
+  `, [input.accountId])
+  if (!lockedRelationship) throw new Error(`AI 账户不存在：${input.accountId}`)
+  const lockedRootId = lockedRelationship.authorization_instance_source_account_id ?? lockedRelationship.id
+  if (lockedRootId !== familyRootId) {
+    throw new Error('账户授权关系在锁定期间发生变化，请重试')
+  }
   const accounts = businessTable(client, 'accounts')
   const instances = await client.query<{ id: string }>(`
     SELECT id
@@ -379,14 +472,14 @@ export async function advanceAccountCircuitDispatchRevisionFamilyInTransaction(
     WHERE authorization_instance_source_account_id = ?
       AND deleted_at IS NULL
     ORDER BY id ASC${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
-  `, [input.accountId])
-  const accountIds = [input.accountId, ...instances.map((row) => requiredText(row.id, 256, 'authorizedAccountId'))]
+  `, [familyRootId])
+  const accountIds = [familyRootId, ...instances.map((row) => requiredText(row.id, 256, 'authorizedAccountId'))]
   const results: AdvanceAccountCircuitDispatchRevisionResult[] = []
   for (const accountId of accountIds) {
     results.push(await advanceAccountCircuitDispatchRevisionInTransaction(client, {
       accountId,
       accountRuntimeKey: accountId,
-      transitionId: accountId === input.accountId
+      transitionId: accountId === familyRootId
         ? input.transitionId
         : familyDispatchTransitionId(input.transitionId, accountId),
       nowMs: input.nowMs
@@ -457,18 +550,25 @@ export function advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(
   rawInput: AdvanceAccountCircuitDispatchRevisionInput
 ): AdvanceAccountCircuitDispatchRevisionResult[] {
   const input = normalizeDispatchRevisionInput(rawInput)
+  const accountRow = database.prepare(`
+    SELECT id, authorization_instance_source_account_id
+    FROM accounts
+    WHERE id = ?
+  `).get(input.accountId) as unknown as { id: string; authorization_instance_source_account_id: string | null } | undefined
+  if (!accountRow) throw new Error(`AI 账户不存在：${input.accountId}`)
+  const familyRootId = accountRow.authorization_instance_source_account_id ?? accountRow.id
   const instances = database.prepare(`
     SELECT id
     FROM accounts
     WHERE authorization_instance_source_account_id = ?
       AND deleted_at IS NULL
     ORDER BY id ASC
-  `).all(input.accountId) as unknown as Array<{ id: string }>
-  const accountIds = [input.accountId, ...instances.map((row) => requiredText(row.id, 256, 'authorizedAccountId'))]
+  `).all(familyRootId) as unknown as Array<{ id: string }>
+  const accountIds = [familyRootId, ...instances.map((row) => requiredText(row.id, 256, 'authorizedAccountId'))]
   return accountIds.map((accountId) => advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
     accountId,
     accountRuntimeKey: accountId,
-    transitionId: accountId === input.accountId
+    transitionId: accountId === familyRootId
       ? input.transitionId
       : familyDispatchTransitionId(input.transitionId, accountId),
     nowMs: input.nowMs
@@ -749,6 +849,7 @@ export async function listAccountCircuitIncidentsByRuntimeKeysInClient(
         SELECT current_account.dispatch_revision
         FROM ${accounts} current_account
         WHERE current_account.id = circuit_incident.account_id
+          AND current_account.deleted_at IS NULL
       )
     ORDER BY account_runtime_key ASC, updated_at_ms ASC, circuit_scope_key ASC
   `, includeRetainedClosed ? [...keys, nowMs] : keys)
@@ -773,6 +874,7 @@ export async function listAccountCircuitIncidentsForRebuildInClient(
         SELECT current_account.dispatch_revision
         FROM ${accounts} current_account
         WHERE current_account.id = circuit_incident.account_id
+          AND current_account.deleted_at IS NULL
       )
       AND (updated_at_ms > ? OR (updated_at_ms = ? AND circuit_scope_key > ?))
     ORDER BY updated_at_ms ASC, circuit_scope_key ASC
@@ -808,7 +910,8 @@ export async function listAccountCircuitProjectionGapsInClient(
     client.query<AccountDispatchRevisionRow>(`
       SELECT id, dispatch_revision, circuit_projection_revision
       FROM ${accounts}
-      WHERE circuit_projection_revision < dispatch_revision AND id > ?
+      WHERE deleted_at IS NULL
+        AND circuit_projection_revision < dispatch_revision AND id > ?
       ORDER BY id ASC
       LIMIT ?
     `, [afterAccountId, limit]),
@@ -820,6 +923,7 @@ export async function listAccountCircuitProjectionGapsInClient(
           SELECT current_account.dispatch_revision
           FROM ${accounts} current_account
           WHERE current_account.id = circuit_incident.account_id
+            AND current_account.deleted_at IS NULL
         )
         AND (updated_at_ms > ? OR (updated_at_ms = ? AND circuit_scope_key > ?))
       ORDER BY updated_at_ms ASC, circuit_scope_key ASC

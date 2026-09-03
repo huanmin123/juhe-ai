@@ -5,7 +5,8 @@ import type { AccountStatus, RequestQuotaLimits } from '../domain/types.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { rfc3339InstantMilliseconds } from '../shared/rfc3339.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, newId, nowIso } from './database.js'
+import { advanceAccountCircuitDispatchRevisionInTransaction } from './account-circuit-control-plane.repository.js'
 import {
   createPostgresDatabaseClient,
   createSqliteDatabaseClient,
@@ -268,6 +269,7 @@ async function patchAuthorizedAccountDispatchInTransaction(
   const nextSchedulable = hasStatusInput
     ? input.status === 'disabled' ? false : true
     : clearFailureState ? true : currentSchedulable
+  let failureStateChanged = false
   if (hasStatusInput || clearFailureState) {
     setColumn(accountColumns, 'status', row.status, nextStatus)
     setColumn(accountColumns, 'schedulable', currentSchedulable, nextSchedulable, nextSchedulable ? 1 : 0)
@@ -275,7 +277,7 @@ async function patchAuthorizedAccountDispatchInTransaction(
     addChange('schedulable', currentSchedulable, nextSchedulable)
     if (row.status !== nextStatus) patch.status = nextStatus
     if (currentSchedulable !== nextSchedulable) patch.schedulable = nextSchedulable
-    const failureStateChanged = clearAuthorizedFailureStateColumns(accountColumns, row)
+    failureStateChanged = clearAuthorizedFailureStateColumns(accountColumns, row)
     if (failureStateChanged) {
       addChange('failureState', '异常状态', '已清除')
       patch.failureStateCleared = true
@@ -308,6 +310,16 @@ async function patchAuthorizedAccountDispatchInTransaction(
   ])
   if (accountResult.changes !== 1) {
     throw new AuthorizedAccountDispatchRevisionConflictError(row.id, integerValue(row.config_revision))
+  }
+  const restoredForDispatch = nextStatus === 'active'
+    && (!currentSchedulable || row.status !== 'active' || failureStateChanged)
+  if (restoredForDispatch) {
+    await advanceAccountCircuitDispatchRevisionInTransaction(client, {
+      accountId: row.id,
+      accountRuntimeKey: row.id,
+      transitionId: newId('dispatch'),
+      nowMs: Date.now()
+    })
   }
 
   if (bindingColumns.size > 0) {

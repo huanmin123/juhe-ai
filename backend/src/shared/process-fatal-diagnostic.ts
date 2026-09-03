@@ -23,6 +23,14 @@ export interface ProcessFatalDiagnosticInput {
   maxBytes?: number
 }
 
+/**
+ * A broken output pipe does not corrupt process state. It can happen when a
+ * supervisor rotates or closes stdout/stderr while the service remains healthy.
+ */
+export function isRecoverableProcessStreamError(error: unknown): boolean {
+  return normalizeError(error).code === 'EPIPE'
+}
+
 export function serializeProcessFatalDiagnostic(input: ProcessFatalDiagnosticInput): string {
   const maxBytes = Math.max(256, Math.trunc(input.maxBytes ?? defaultMaxBytes))
   const error = normalizeError(input.error)

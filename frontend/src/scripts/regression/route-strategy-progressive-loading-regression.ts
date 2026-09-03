@@ -21,7 +21,7 @@ function sourceBetween(source: string, start: string, end: string): string {
   return source.slice(startIndex, endIndex)
 }
 
-assert.doesNotMatch(viewSource, /listSnapshot|routeStrategyListSnapshot|routeStrategySnapshotStatus|暂不可用|加载中/, '策略路由列表不得保留快照补发和动态占位')
+assert.doesNotMatch(viewSource, /listSnapshot|routeStrategyListSnapshot|routeStrategySnapshotStatus|加载中/, '策略路由列表不得保留快照补发和全局加载占位')
 assert.doesNotMatch(apiSource, /list-snapshot|listSnapshot/, '策略路由前端 API 不得保留独立列表快照入口')
 assert.match(viewSource, /routeStrategiesApi\.list\(listParams\)/, '策略路由列表必须通过列表接口获取当前页完整数据')
 assert.match(viewSource, /record\.bindingCount|record\.groupBindingPreview|record\.apiKeyCount/, '策略路由列表必须消费列表响应中的计数和预览')

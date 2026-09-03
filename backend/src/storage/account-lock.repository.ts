@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../config/runtime.js'
 import type { AccountStatus } from '../domain/types.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
 import { canManageResourceOwner } from './resource-authorization-helpers.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -339,6 +340,7 @@ export async function settleAccountLockDeadlineAsync(accountId: string, nowMs = 
   if (observation && !sameAccountLockObservation(current, observation)) return current
   const leaseFence = accountLockLeaseFence(observation, nowMs)
   const client = await accountLockClient()
+  let accountAvailabilityChanged = false
   const settled = await client.transaction(async (tx) => {
     const row = await tx.one<{ lock_state: AccountLockStateName; generation: number | string; deadline_at: string | null; incident_id: string | null; original_status: AccountStatus | null; lease_id: string | null }>(`
       SELECT lock_state, generation, deadline_at, incident_id, original_status, lease_id
@@ -359,15 +361,19 @@ export async function settleAccountLockDeadlineAsync(accountId: string, nowMs = 
     `, [originalStatus ?? null, nowIso(), accountId, Number(row.generation), row.incident_id, ...leaseFence.params])
     if (transition.changes !== 1) return false
     if (originalStatus === 'active') {
-      await tx.execute(`
+      const accountTransition = await tx.execute(`
         UPDATE ${table(tx, 'accounts')}
         SET status = 'temporary_unavailable', cooldown_until = ?, updated_at = ?
         WHERE id = ? AND status = 'active' AND schedulable = 1
       `, [new Date(nowMs).toISOString(), nowIso(), accountId])
+      accountAvailabilityChanged = accountTransition.changes === 1
     }
     return true
   })
   if (!settled) return findAccountLockStateAsync(accountId)
+  if (accountAvailabilityChanged) {
+    notifyGatewayRuntimeCacheInvalidation('account_lock_deadline')
+  }
   const next: AccountLockState = {
     ...current,
     lockState: 'DEAD_CONFIRMED',

@@ -54,7 +54,9 @@ import {
   parseAccountAvailabilityScheduleJson
 } from './account-availability-schedule.js'
 import {
-  advanceAccountCircuitDispatchRevisionFamilyInTransaction
+  advanceAccountCircuitDispatchRevisionInTransaction,
+  advanceAccountCircuitDispatchRevisionFamilyInTransaction,
+  lockAccountCircuitDispatchFamilyRootInTransaction
 } from './account-circuit-control-plane.repository.js'
 import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
@@ -857,7 +859,11 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
     accountCircuitCredentialOwnerIdentity(currentCredentials),
     accountCircuitCredentialOwnerIdentity(nextCredentials)
   ) || currentProxyProfileId !== nextProxyProfileId || row.client_compatibility !== nextClientCompatibility
-  if (circuitOwnerChanged) {
+  const circuitRecoveryRequired = enablesAccount
+    && nextStatus === 'active'
+    && nextSchedulable
+    && (row.status !== 'active' || !currentSchedulable)
+  if (circuitOwnerChanged || circuitRecoveryRequired) {
     await advanceAccountCircuitDispatchRevisionFamilyInTransaction(client, {
       accountId: row.id,
       accountRuntimeKey: row.id,
@@ -1161,11 +1167,23 @@ async function patchAccountFailureStateInTransaction(context: PatchContext): Pro
   if (updated !== 1) {
     throw new AccountManagementPatchRevisionConflictError(row.id, integerValue(row.config_revision))
   }
+  const restoredForDispatch = nextStatus === 'active' && mainColumns.size > 0
+  if (restoredForDispatch) {
+    const advanceDispatchRevision = row.authorization_instance_authorization_id
+      ? advanceAccountCircuitDispatchRevisionInTransaction
+      : advanceAccountCircuitDispatchRevisionFamilyInTransaction
+    await advanceDispatchRevision(client, {
+      accountId: row.id,
+      accountRuntimeKey: row.id,
+      transitionId: newId('dispatch'),
+      nowMs
+    })
+  }
   return {
     id: row.id,
     configRevision: integerValue(row.config_revision) + 1,
     changedFields: ['clearFailureState'],
-    authorizationInstancesAffected: true,
+    authorizationInstancesAffected: !row.authorization_instance_authorization_id,
     changes: [{ field: 'clearFailureState', before: false, after: true }],
     name: row.name,
     ownerSystemAccountId: row.system_account_id,
@@ -1198,12 +1216,73 @@ async function loadAccountPatchRowForUpdate(
   const ownerScopeClause = scopedOwnerId
     ? ` AND ${client.dialect.quoteIdentifier('system_account_id')} = ?`
     : ''
-  return client.one<AccountPatchRow>(`
+  // Keep the first lookup owner-scoped so a caller can never observe or lock a
+  // cross-owner account before the authorization check.  The family-root lock
+  // follows only after this scoped probe has found the row; the final
+  // owner-scoped FOR UPDATE query then reads the complete projection.
+  const scopedRow = await client.one<{
+    id: string
+    system_account_id: string
+    authorization_instance_source_account_id: string | null
+    authorization_instance_authorization_id: string | null
+  }>(`
+    SELECT id, system_account_id, authorization_instance_source_account_id, authorization_instance_authorization_id
+    FROM ${patchTable(client, 'accounts')}
+    WHERE id = ?
+      AND deleted_at IS NULL${ownerScopeClause}
+  `, scopedOwnerId ? [id, scopedOwnerId] : [id])
+  if (!scopedRow) return undefined
+  // All PostgreSQL paths use the same cross-table order: family root first,
+  // authorization relation second, requested child last.  Lock only the
+  // family root here; the final owner-scoped FOR UPDATE query below acquires
+  // the child after the authorization row.  Locking the child before the
+  // authorization would invert the grant path (authorization -> child).
+  await lockAccountCircuitDispatchFamilyRootInTransaction(client, id, { lockChild: false })
+  const lockedScopedRow = await client.one<typeof scopedRow>(`
+    SELECT id, system_account_id, authorization_instance_source_account_id, authorization_instance_authorization_id
+    FROM ${patchTable(client, 'accounts')}
+    WHERE id = ?
+      AND deleted_at IS NULL${ownerScopeClause}
+  `, scopedOwnerId ? [id, scopedOwnerId] : [id])
+  if (!lockedScopedRow) return undefined
+  await lockAuthorizationBeforeAccountFamily(client, lockedScopedRow)
+  const lockedRow = await client.one<AccountPatchRow>(`
     SELECT ${columns}
     FROM ${patchTable(client, 'accounts')}
     WHERE id = ?
       AND deleted_at IS NULL${ownerScopeClause}${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
   `, scopedOwnerId ? [id, scopedOwnerId] : [id])
+  if (!lockedRow) return undefined
+  if (lockedRow.system_account_id !== lockedScopedRow.system_account_id
+    || lockedRow.authorization_instance_source_account_id !== lockedScopedRow.authorization_instance_source_account_id
+    || lockedRow.authorization_instance_authorization_id !== lockedScopedRow.authorization_instance_authorization_id) {
+    throw new Error('账户授权关系在写入前发生变化，请重试')
+  }
+  return lockedRow
+}
+
+async function lockAuthorizationBeforeAccountFamily(
+  client: DatabaseClient,
+  row: {
+    system_account_id: string
+    authorization_instance_source_account_id: string | null
+    authorization_instance_authorization_id: string | null
+  }
+): Promise<void> {
+  if (!row.authorization_instance_source_account_id || !row.authorization_instance_authorization_id) return
+  await client.one<{ id: string }>(`
+    SELECT id
+    FROM ${patchTable(client, 'resource_authorizations')}
+    WHERE id = ?
+      AND resource_type = 'account'
+      AND resource_id = ?
+      AND grantee_system_account_id = ?
+    LIMIT 1${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
+  `, [
+    row.authorization_instance_authorization_id,
+    row.authorization_instance_source_account_id,
+    row.system_account_id
+  ])
 }
 
 function accountManagementPatchProjection(input: AccountManagementPatchInput): string[] {

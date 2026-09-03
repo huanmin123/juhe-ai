@@ -14,6 +14,7 @@ const validEvidence = {
   release: {
     sourceCommit: 'd45c0c8ef',
     releaseMode: 'single-active-stop',
+    schemaChangeClass: 'requires-stop',
     nodeDigest: `sha256:${'1'.repeat(64)}`,
     jobsDigest: `sha256:${'2'.repeat(64)}`,
     gatewayDigest: `sha256:${'3'.repeat(64)}`,
@@ -41,11 +42,26 @@ const validEvidence = {
     standby: { replicas: 0 },
     stableServiceSlots: ['a'],
     owner: { activeOwnerCount: 1, jobsConsumerCount: 1, leaseVerified: true },
-    health: { nodeDbReady: true, nodeApi: true, jobs: true, gateway: true, f3: true, f4: true }
+    health: { nodeDbReady: true, nodeApi: true, jobs: true, gateway: true, f3: true, f4: true },
+    nodeStability: {
+      evidenceRef: 'runtime/node-stability.json',
+      observationWindowSeconds: 86_400,
+      restartCountAtStart: 0,
+      restartCountAtEnd: 0,
+      fatalUncaughtExceptionCount: 0,
+      logConsoleDisabled: true,
+      jsonlWriteReadback: true,
+      epipeRecoveryRegressionPassed: true
+    }
   },
   schema: {
     evidenceRefs: ['schema/three-way-diff.json'],
     threeWayStatus: 'passed',
+    changeClass: 'requires-stop',
+    blueGreenCompatible: false,
+    destructiveChangeDetected: false,
+    dataMigrationRequired: true,
+    backfillRequired: true,
     candidateContractVersion: 96,
     productionSnapshotReadOnly: true,
     testCloneApplied: true,
@@ -64,6 +80,15 @@ const validEvidence = {
       objects: ['juhe_business.accounts.idx_accounts_name_c_trgm_lookup'],
       approvedAt: '2026-09-02T01:00:00Z',
       evidenceRef: 'schema/approved-delta-accounts-index.json'
+    }],
+    approvedStopDeltas: [{
+      id: 'stop-accounts-contract',
+      approvedBy: 'schema-owner@example',
+      changeType: 'requires-stop',
+      objects: ['juhe_business.accounts'],
+      approvedAt: '2026-09-02T01:00:00Z',
+      maintenancePlanRef: 'schema/maintenance-plan.json',
+      evidenceRef: 'schema/approved-stop-accounts-contract.json'
     }]
   },
   accounts: {
@@ -75,9 +100,12 @@ const validEvidence = {
     closureEvidenceRef: 'accounts/closure.json',
     sourceAccountIdsHash: 'e'.repeat(64),
     systemAccountIdsHash: 'f'.repeat(64),
+    systemTeamIdsHash: '0'.repeat(64),
     groupIdsHash: 'a'.repeat(64),
     routeStrategyIdsHash: 'b'.repeat(64),
     resourceAuthorizationIdsHash: 'c'.repeat(64),
+    resourceAuthorizationGrantIdsHash: '1'.repeat(64),
+    apiKeyIdsHash: '2'.repeat(64),
     apiKeyRemapHash: 'd'.repeat(64),
     approvedCanaryCount: 1,
     productionSecretReused: false,
@@ -390,6 +418,12 @@ validEvidence.controls.evidenceBoundSourceCommit = validEvidence.release.sourceC
 
 assert.deepEqual(validateTestRehearsalEvidence(validEvidence), { status: 'passed', blockers: [] })
 
+const unstableNodeRuntime = structuredClone(validEvidence)
+unstableNodeRuntime.runtime.nodeStability.restartCountAtEnd = 1
+unstableNodeRuntime.runtime.nodeStability.observationWindowSeconds = 60
+assert.equal(validateTestRehearsalEvidence(unstableNodeRuntime).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(unstableNodeRuntime).blockers.join('\n'), /observationWindowSeconds|restartCountAtEnd/)
+
 const redisUnsafe = structuredClone(validEvidence)
 redisUnsafe.redis.aclUserDistinct = false
 redisUnsafe.redis.forbiddenCommandsDenied = false
@@ -415,6 +449,11 @@ assert.match(validateTestRehearsalEvidence(redisInlineQueueSource).blockers.join
 const missingEvidenceReference = structuredClone(validEvidence)
 delete missingEvidenceReference.release.evidenceRefs
 assert.equal(validateTestRehearsalEvidence(missingEvidenceReference).status, 'blocked')
+
+const falseSameDigestAssertion = structuredClone(validEvidence)
+falseSameDigestAssertion.release.sameDigestInTestAndProd = false
+assert.equal(validateTestRehearsalEvidence(falseSameDigestAssertion).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(falseSameDigestAssertion).blockers.join('\n'), /sameDigestInTestAndProd.*必须为 true/)
 
 const unsafeEvidenceReference = structuredClone(validEvidence)
 unsafeEvidenceReference.release.evidenceRefs = ['../outside-controlled-evidence.json']
@@ -660,6 +699,41 @@ assert.equal(validateTestRehearsalEvidence(wrongTarget).status, 'blocked')
 const wrongReleaseMode = structuredClone(validEvidence)
 wrongReleaseMode.release.releaseMode = 'long-running-uat-standby'
 assert.equal(validateTestRehearsalEvidence(wrongReleaseMode).status, 'blocked')
+
+const blueGreenEvidence = structuredClone(validEvidence)
+blueGreenEvidence.release.releaseMode = 'blue-green-additive'
+blueGreenEvidence.release.schemaChangeClass = 'additive'
+blueGreenEvidence.runtime.standby = {
+  slot: 'b',
+  replicas: 1,
+  readyContainers: 3,
+  containerCount: 3,
+  ownerMode: 'standby'
+}
+blueGreenEvidence.runtime.stableServiceSlots = ['a', 'b']
+blueGreenEvidence.schema.changeClass = 'additive'
+blueGreenEvidence.schema.blueGreenCompatible = true
+blueGreenEvidence.schema.destructiveChangeDetected = false
+blueGreenEvidence.schema.dataMigrationRequired = false
+blueGreenEvidence.schema.backfillRequired = false
+blueGreenEvidence.schema.approvedStopDeltas = []
+blueGreenEvidence.controls.blueGreenOwnerFenceVerified = true
+assert.equal(validateTestRehearsalEvidence(blueGreenEvidence).status, 'passed')
+
+const blueGreenWithMigration = structuredClone(blueGreenEvidence)
+blueGreenWithMigration.schema.dataMigrationRequired = true
+assert.equal(validateTestRehearsalEvidence(blueGreenWithMigration).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(blueGreenWithMigration).blockers.join('\n'), /dataMigrationRequired.*必须为 false/)
+
+const blueGreenWithStopClass = structuredClone(blueGreenEvidence)
+blueGreenWithStopClass.release.schemaChangeClass = 'requires-stop'
+assert.equal(validateTestRehearsalEvidence(blueGreenWithStopClass).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(blueGreenWithStopClass).blockers.join('\n'), /blue-green-additive.*additive/)
+
+const missingStopDelta = structuredClone(validEvidence)
+missingStopDelta.schema.approvedStopDeltas = []
+assert.equal(validateTestRehearsalEvidence(missingStopDelta).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(missingStopDelta).blockers.join('\n'), /approvedStopDeltas.*requires-stop/)
 
 assert.throws(() => validateTestRehearsalEvidence(null), TestRehearsalEvidenceError)
 
