@@ -36,8 +36,8 @@
 | K5 invalidation-bus | pending | — | — |
 | K6 legacybridge | pending | — | — |
 | K7 mockupstream+golden | pending | — | — |
-| S-PG ensure-schema PG | pending | — | — |
-| S-SQ ensure-schema SQLite | pending | — | — |
+| S-PG ensure-schema PG | pending | — | postgres-schema.ts + postgres-seed-defaults.ts 移植中 |
+| S-SQ ensure-schema SQLite | archived | schema 提交 | 六库 DDL 逐字节等价、幂等、golden 表集断言绿；business 80 表/stats 62（J3b 注释段不计）；发现 4 组 Node 条件 ALTER 迁移需 P8 人工复核（已在 Go 文件头列明） |
 
 （W2+ 的 M/P/G/C/J/X 各行随波次开启时补入。）
 
