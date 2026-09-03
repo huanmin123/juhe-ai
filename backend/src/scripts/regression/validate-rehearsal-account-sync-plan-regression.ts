@@ -296,6 +296,12 @@ copiedDerivedAccounts.copiedColumns.push('credential_fingerprint')
 assert.equal(validateRehearsalAccountSyncPlan(copiedDerivedCredential.preflight, copiedDerivedCredential.plan).status, 'blocked')
 assert.match(validateRehearsalAccountSyncPlan(copiedDerivedCredential.preflight, copiedDerivedCredential.plan).blockers.join('\n'), /敏感列 credential_fingerprint/)
 
+const staleSensitiveManifest = structuredClone(fixture)
+const staleSensitiveAccounts = staleSensitiveManifest.preflight.tableReports.find((report) => report.name === 'accounts')!
+staleSensitiveAccounts.sensitiveColumns = ['credentials_encrypted', 'credential_mask', 'oauth_access_token_expires_at']
+assert.equal(validateRehearsalAccountSyncPlan(staleSensitiveManifest.preflight, staleSensitiveManifest.plan).status, 'blocked')
+assert.match(validateRehearsalAccountSyncPlan(staleSensitiveManifest.preflight, staleSensitiveManifest.plan).blockers.join('\n'), /preflight\.sensitiveColumns/)
+
 const copiedScheduleCheckpoint = structuredClone(fixture)
 const copiedScheduleAccounts = copiedScheduleCheckpoint.plan.tables.find((table) => table.name === 'accounts')!
 copiedScheduleAccounts.copiedColumns.push('availability_schedule_next_check_at')

@@ -228,6 +228,17 @@ function validateTablePlan(
   blockers: string[]
 ): void {
   const prefix = report.name
+  const reportedSensitiveColumns = new Set(Array.isArray(report.sensitiveColumns) ? report.sensitiveColumns : [])
+  const expectedSensitiveColumns = new Set(sensitiveColumns)
+  if (!Array.isArray(report.sensitiveColumns)) {
+    blockers.push(`${prefix}: preflight.sensitiveColumns 必须是数组`)
+  } else if (
+    reportedSensitiveColumns.size !== expectedSensitiveColumns.size
+    || [...reportedSensitiveColumns].some((column) => !expectedSensitiveColumns.has(column))
+    || [...expectedSensitiveColumns].some((column) => !reportedSensitiveColumns.has(column))
+  ) {
+    blockers.push(`${prefix}: preflight.sensitiveColumns 与当前代码策略不一致，必须重新生成 preflight`)
+  }
   if (!report.sourceExists || !report.targetExists) blockers.push(`${prefix}: preflight 表必须同时存在于源/目标`)
   if (!Array.isArray(report.missingTargetColumns)) blockers.push(`${prefix}: preflight.missingTargetColumns 必须是数组`)
   if (!Array.isArray(report.columnDifferences)) blockers.push(`${prefix}: preflight.columnDifferences 必须是数组`)
