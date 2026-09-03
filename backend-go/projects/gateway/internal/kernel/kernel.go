@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // Kernel assembles the gateway HTTP boundary in the system-api-app.ts
@@ -15,12 +16,13 @@ import (
 // falls through to the API 404 JSON when only the method is unmatched.
 
 type Options struct {
-	SystemAPIPrefix    string // default "/__aisys__/api"
-	PublicAPIPrefix    string // default "/__aipublic__"
-	ManagementPrefix   string // default "/__aisys__"
-	JSONBodyLimitBytes int64  // default 256 KiB (systemApiJsonBodyLimit)
-	TrustProxyCount    int    // X-Forwarded-For entries to trust
-	Readiness          func() (status int, payload any)
+	CompressionDisabled bool
+	SystemAPIPrefix     string // default "/__aisys__/api"
+	PublicAPIPrefix     string // default "/__aipublic__"
+	ManagementPrefix    string // default "/__aisys__"
+	JSONBodyLimitBytes  int64  // default 256 KiB (systemApiJsonBodyLimit)
+	TrustProxyCount     int    // X-Forwarded-For entries to trust
+	Readiness           func() (status int, payload any)
 }
 
 func (o *Options) fill() {
@@ -39,8 +41,9 @@ func (o *Options) fill() {
 }
 
 type Kernel struct {
-	opts Options
-	mux  *http.ServeMux
+	opts     Options
+	mux      *http.ServeMux
+	catchAll sync.Once
 }
 
 func New(options Options) *Kernel {
@@ -69,7 +72,7 @@ func (k *Kernel) Handler() http.Handler {
 	})
 	localized := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lw := newLocalizeWriter(w)
-		fallback.ServeHTTP(lw, r)
+		fallback.ServeHTTP(lw, r.WithContext(WithResponseWriter(r.Context(), lw)))
 		if !lw.wroteHeader {
 			lw.WriteHeader(http.StatusOK)
 		}
@@ -78,14 +81,20 @@ func (k *Kernel) Handler() http.Handler {
 }
 
 func (k *Kernel) rootHandler() http.Handler {
-	// Catch-all: Node's end-of-chain 404 JSON.
-	k.mux.Handle("/{$}", NotFoundHandler())
-	k.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		WriteAPINotFound(w)
+	// Catch-all: Node's end-of-chain 404 JSON. Registered in New() is not
+	// possible (mux not shared); guard with sync.Once for idempotency because
+	// Handler() may be invoked multiple times (tests, health snapshots).
+	k.catchAll.Do(func() {
+		k.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			WriteAPINotFound(w)
+		})
 	})
 	limited := bodyLimitMiddleware(k.opts.SystemAPIPrefix, k.opts.JSONBodyLimitBytes)(k.mux)
 	noStore := prefixMiddleware(k.opts.SystemAPIPrefix, noStoreMiddleware)(limited)
-	compressed := CompressionMiddleware(noStore)
+	compressed := noStore
+	if !k.opts.CompressionDisabled {
+		compressed = CompressionMiddleware(noStore)
+	}
 	return prefixMiddleware(k.opts.ManagementPrefix, ManagementSecurityHeadersMiddleware)(compressed)
 }
 

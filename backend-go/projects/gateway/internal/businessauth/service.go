@@ -45,6 +45,7 @@ type Service struct {
 type Port interface {
 	Login(context.Context, string, string, int) (modelcheckauth.IssuedSession, modelcheckauth.VerifiedCredentials, bool, error)
 	CreateSession(context.Context, string, string, int) (modelcheckauth.IssuedSession, bool, error)
+	CreateTemporaryToken(context.Context, string, string, int) (modelcheckauth.IssuedSession, bool, error)
 	Authenticate(context.Context, string, bool, bool) (modelcheckauth.Actor, error)
 	Touch(context.Context, string) (modelcheckauth.Actor, error)
 	RevokeToken(context.Context, string) error
@@ -97,6 +98,15 @@ func (s *Service) CreateSession(ctx context.Context, systemAccountID, credential
 		return modelcheckauth.IssuedSession{}, false, err
 	}
 	return s.auth.CreateAuthenticatedSession(ctx, systemAccountID, credentialRevision, ttlDays)
+}
+
+// CreateTemporaryToken issues a juhe_tmp_-prefixed short-lived token with the
+// same account/revision fence as login (Node createTemporaryAccessTokenAsync).
+func (s *Service) CreateTemporaryToken(ctx context.Context, systemAccountID, credentialRevision string, ttlSeconds int) (modelcheckauth.IssuedSession, bool, error) {
+	if err := s.requireOwner(); err != nil {
+		return modelcheckauth.IssuedSession{}, false, err
+	}
+	return s.auth.CreateTemporaryAccessToken(ctx, systemAccountID, credentialRevision, ttlSeconds)
 }
 
 // Authenticate validates a token and optionally updates last_seen_at using

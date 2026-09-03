@@ -12,12 +12,11 @@ import (
 const CompressionThresholdBytes = 1024
 
 // CompressionMiddleware mirrors createHttpCompressionMiddleware: gzip when
-// the client accepts it and the response reaches the 1024-byte threshold.
-// The compressibility checks (already encoded / event stream / attachment)
-// run when response headers are final, i.e. at first write, so SSE handlers
-// that set their Content-Type late stay uncompressed. Bodies below the
-// threshold are flushed uncompressed at handler end, mirroring the Node
-// compression buffer.
+// the client accepts it and the body reaches the 1024-byte threshold. The
+// decision runs at first body byte (headers are final then); responses below
+// the threshold flush raw at handler end, mirroring the Node compression
+// buffer. WriteHeader is deferred until the decision so the Content-Encoding
+// mutation lands before net/http snapshots the status.
 func CompressionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !acceptsGzip(r) {
@@ -42,85 +41,92 @@ func acceptsGzip(r *http.Request) bool {
 
 type compressionWriter struct {
 	http.ResponseWriter
-	buffer    *bytes.Buffer
-	gz        *gzip.Writer
-	started   bool
-	forbidden bool
+	buffer        bytes.Buffer
+	gz            *gzip.Writer
+	status        int
+	headerPassed  bool
+	bodyWritten   bool
+	gzipCommitted bool
 }
 
-func (c *compressionWriter) start() {
-	c.started = true
+func (c *compressionWriter) WriteHeader(status int) {
+	if c.headerPassed {
+		return
+	}
+	c.status = status
+	c.headerPassed = true
+	// Deferred: the gzip decision (which mutates headers) must run before
+	// net/http snapshots the status. decide() passes the status through.
+}
+
+func (c *compressionWriter) decide(total int) {
 	header := c.Header()
-	if header.Get("Content-Encoding") != "" ||
-		strings.Contains(strings.ToLower(header.Get("Content-Type")), "text/event-stream") ||
-		strings.Contains(strings.ToLower(header.Get("Content-Disposition")), "attachment") {
-		c.forbidden = true
-		return
-	}
-	declared := -1
-	if lengthHeader := header.Get("Content-Length"); lengthHeader != "" {
-		if length, err := strconv.Atoi(lengthHeader); err == nil {
-			declared = length
+	c.gzipCommitted = false
+	canGzip := header.Get("Content-Encoding") == "" &&
+		!strings.Contains(strings.ToLower(header.Get("Content-Type")), "text/event-stream") &&
+		!strings.Contains(strings.ToLower(header.Get("Content-Disposition")), "attachment")
+	if canGzip {
+		if lengthHeader := header.Get("Content-Length"); lengthHeader != "" {
+			if length, err := strconv.Atoi(lengthHeader); err == nil && length < CompressionThresholdBytes {
+				canGzip = false
+			}
 		}
 	}
-	if declared >= 0 {
-		if declared >= CompressionThresholdBytes {
-			c.beginGzip()
-		} else {
-			c.buffer = &bytes.Buffer{}
-		}
-		return
+	if canGzip && total >= CompressionThresholdBytes {
+		// Mutate headers BEFORE the status snapshot reaches net/http.
+		header.Set("Content-Encoding", "gzip")
+		header.Del("Content-Length")
+		header.Add("Vary", "Accept-Encoding")
+		c.gz = gzip.NewWriter(c.ResponseWriter)
+		c.gzipCommitted = true
 	}
-	// Streaming response: buffer up to the threshold, then decide.
-	c.buffer = &bytes.Buffer{}
-}
-
-func (c *compressionWriter) beginGzip() {
-	c.Header().Set("Content-Encoding", "gzip")
-	c.Header().Del("Content-Length")
-	c.Header().Add("Vary", "Accept-Encoding")
-	c.gz = gzip.NewWriter(c.ResponseWriter)
-	if c.buffer != nil {
-		_, _ = c.gz.Write(c.buffer.Bytes())
-		c.buffer.Reset()
-		c.buffer = nil
-	}
+	c.ResponseWriter.WriteHeader(c.status)
 }
 
 func (c *compressionWriter) Write(body []byte) (int, error) {
-	if !c.started {
-		c.start()
+	if !c.headerPassed {
+		c.WriteHeader(http.StatusOK)
 	}
-	if c.forbidden {
-		return c.ResponseWriter.Write(body)
+	if !c.bodyWritten {
+		c.decide(c.buffer.Len() + len(body))
+		c.bodyWritten = true
 	}
 	if c.gz != nil {
 		return c.gz.Write(body)
 	}
-	c.buffer.Write(body)
-	if c.buffer.Len() >= CompressionThresholdBytes {
-		c.beginGzip()
-	}
-	return len(body), nil
+	return c.ResponseWriter.Write(body)
 }
 
-// finish flushes buffered bytes uncompressed when the handler stayed below
-// the threshold, mirroring the Node compression end-of-response decision.
+// finish flushes buffered bytes (raw or gzipped) after the handler returns.
 func (c *compressionWriter) finish() {
+	if !c.headerPassed {
+		c.WriteHeader(http.StatusOK)
+		c.decide(0)
+		c.bodyWritten = true
+	}
 	if c.gz != nil {
 		_ = c.gz.Close()
+		c.gz = nil
 		return
 	}
-	if c.buffer != nil && c.buffer.Len() > 0 {
+	if c.buffer.Len() > 0 {
 		_, _ = c.ResponseWriter.Write(c.buffer.Bytes())
-		c.buffer.Reset()
 	}
+	c.buffer.Reset()
 }
 
 // Flush drains gzip state so streaming handlers stay live.
 func (c *compressionWriter) Flush() {
+	if !c.headerPassed {
+		c.WriteHeader(http.StatusOK)
+		c.decide(0)
+		c.bodyWritten = true
+	}
 	if c.gz != nil {
 		_ = c.gz.Flush()
+	} else if c.buffer.Len() > 0 {
+		c.buffer.WriteTo(c.ResponseWriter)
+		c.buffer.Reset()
 	}
 	if flusher, ok := c.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()

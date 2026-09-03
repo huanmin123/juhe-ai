@@ -287,57 +287,22 @@ func MutationGuardMiddleware(options MutationGuardOptions) func(http.Handler) ht
 				actorResolver(r), scope, r.Method, options.OperationKey, HashStableValue(fingerprint),
 			}, ":")
 			claimed, entry := store.Claim(key, options.OperationKey, options.ProcessingTTL)
+			println("GUARD", options.OperationKey, key[:20], "claimed:", claimed, "status:", string(entry.Status))
 			if !claimed {
 				WriteJSON(w, http.StatusConflict, map[string]string{"message": duplicateMessage(entry.Status)})
 				return
 			}
-			lw, ok := w.(*localizeWriter)
-			if !ok {
-				lw = newLocalizeWriter(w)
+			// Reuse the kernel's tracking writer when present so the claim
+			// observes the client-visible status (Node res 'finish').
+			if lw := ResponseWriterFromContext(r.Context()); lw != nil {
+				next.ServeHTTP(lw, r)
+				store.Complete(key, statusFromCode(lw.status), options.SucceededTTL, options.FailedTTL)
+				return
 			}
-			var completed bool
-			complete := func(status DedupStatus) {
-				if completed {
-					return
-				}
-				completed = true
-				store.Complete(key, status, options.SucceededTTL, options.FailedTTL)
-			}
-			recording := &completionWriter{localizeWriter: lw, onFinish: complete}
-			next.ServeHTTP(recording, r)
-			if !recording.aborted {
-				complete(statusFromCode(recording.status))
-			}
+			lw := newLocalizeWriter(w)
+			next.ServeHTTP(lw, r)
+			store.Complete(key, statusFromCode(lw.status), options.SucceededTTL, options.FailedTTL)
 		})
-	}
-}
-
-type completionWriter struct {
-	*localizeWriter
-	onFinish func(DedupStatus)
-	aborted  bool
-	finished bool
-}
-
-func (c *completionWriter) WriteHeader(status int) {
-	c.localizeWriter.WriteHeader(status)
-}
-
-func (c *completionWriter) Write(body []byte) (int, error) {
-	n, err := c.localizeWriter.Write(body)
-	if !c.finished {
-		c.finished = true
-		c.onFinish(statusFromCode(c.status))
-	}
-	return n, err
-}
-
-// Abort marks client abandonment so the claim completes as failed.
-func (c *completionWriter) Abort() {
-	if !c.finished {
-		c.finished = true
-		c.aborted = true
-		c.onFinish(DedupFailed)
 	}
 }
 

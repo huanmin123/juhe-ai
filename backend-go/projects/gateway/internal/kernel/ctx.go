@@ -17,6 +17,23 @@ import (
 
 type ctxKey struct{}
 
+type responseWriterKey struct{}
+
+// WithResponseWriter stashes the kernel's tracking writer so nested
+// middlewares (guards) share the same status observation as the outer
+// localizeWriter that serves the request.
+func WithResponseWriter(ctx context.Context, lw *localizeWriter) context.Context {
+	return context.WithValue(ctx, responseWriterKey{}, lw)
+}
+
+// ResponseWriterFromContext returns the shared tracking writer, if present.
+func ResponseWriterFromContext(ctx context.Context) *localizeWriter {
+	if lw, ok := ctx.Value(responseWriterKey{}).(*localizeWriter); ok {
+		return lw
+	}
+	return nil
+}
+
 type RequestContext struct {
 	TraceID   string
 	RequestID string

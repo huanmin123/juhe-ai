@@ -315,13 +315,15 @@ func TestMutationGuardLifecycle(t *testing.T) {
 		},
 	})
 	handlerSucceeds := true
-	k.Register("POST /__aisys__/api/guarded", guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	innerNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		println("INNER NEXT REACHED, succeeds=", handlerSucceeds)
 		if !handlerSucceeds {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		WriteOK(w, nil, "")
-	})))
+	})
+	k.Register("POST /__aisys__/api/guarded", guard(innerNext))
 	server := httptest.NewServer(k.Handler())
 	defer server.Close()
 
@@ -350,7 +352,9 @@ func TestMutationGuardLifecycle(t *testing.T) {
 	clock.advance(61 * time.Second)
 	handlerSucceeds = false
 	third := post()
+	thirdRaw, _ := io.ReadAll(third.Body)
 	third.Body.Close()
+	t.Logf("third: status=%d body=%q headers=%v", third.StatusCode, string(thirdRaw), third.Header)
 	// The claim must pass the guard (not 409); the handler itself fails with
 	// 500, which completes the claim as failed for the next assertion.
 	if third.StatusCode != http.StatusInternalServerError {
