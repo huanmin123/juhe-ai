@@ -707,6 +707,30 @@ export async function clearNormalRouteLatencyDegradationForAccountBindingAsync(i
   )
 }
 
+/**
+ * 清理一个系统账户下该账户所有分组/策略作用域的速度优先降级状态。
+ * 账户级人工清理不能只依赖列表当前展示的单个绑定分组，否则其他分组
+ * 的 latency_degraded 仍会继续阻止调度。
+ */
+export async function clearNormalRouteLatencyDegradationForAccountAsync(input: {
+  systemAccountId: string
+  accountId: string
+}): Promise<number> {
+  const systemAccountId = input.systemAccountId.trim()
+  const accountId = input.accountId.trim()
+  if (!systemAccountId || !accountId) return 0
+  const keys = await loadLatencyStateIndexKeys(latencyStateAllIndexKey)
+  if (keys.length === 0) return 0
+  const generation = await loadLatencyStateGeneration()
+  return clearCurrentGenerationLatencyStateKeysAsync(
+    keys,
+    generation,
+    (state) =>
+      state.scope.systemAccountId === systemAccountId
+      && (state.accountId === accountId || runtimeAccountIdFromKey(state.runtimeKey) === accountId)
+  )
+}
+
 export function normalRouteLatencyDegradationScope(input: {
   systemAccountId: string
   routeStrategyId?: string

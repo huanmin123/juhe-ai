@@ -116,6 +116,7 @@ async function markAccountListRuntimeProjectionDirty(runtimeKey: string): Promis
 export interface GatewayAccountRuntimeClearResult {
   cleared: boolean
   clearedKeys: string[]
+  failedKeys?: string[]
 }
 
 export interface GatewayAccountFailurePrecheckInput {
@@ -2291,31 +2292,39 @@ export function clearGatewayAccountRuntimeAvailability(
   account: GatewayAccountRuntimeClearTarget | SuppressibleGatewayAccount | string
 ): GatewayAccountRuntimeClearResult {
   const clearedKeys: string[] = []
+  const preserveConfiguredPolicyAvoidance = typeof account === 'object'
+    && 'accountId' in account
+    && account.preserveConfiguredPolicyAvoidance === true
   for (const runtimeKey of gatewayAccountRuntimeClearKeys(account)) {
     if (runtimeConfig.runtimeStateDriver === 'redis') {
       void (async () => {
         await markAccountListRuntimeProjectionDirty(runtimeKey)
-        await Promise.all([
-          clearDistributedRecoveryProbeState(runtimeKey, { projectionAlreadyDirty: true }),
-          configuredPolicyAvoidanceStore.delete(runtimeKey)
-        ])
+        const tasks: Promise<unknown>[] = [
+          clearDistributedRecoveryProbeState(runtimeKey, { projectionAlreadyDirty: true })
+        ]
+        if (!preserveConfiguredPolicyAvoidance) tasks.push(configuredPolicyAvoidanceStore.delete(runtimeKey))
+        await Promise.all(tasks)
       })().catch((error) => {
         logger.error(errorLogFields(error, {
           event: 'gateway_account_distributed_runtime_availability_clear_failed',
           runtimeKey
         }), 'Redis 运行态账号恢复状态清理失败')
       })
-      rememberConfiguredPolicyAvoidanceState(runtimeKey, undefined)
+      if (!preserveConfiguredPolicyAvoidance) rememberConfiguredPolicyAvoidanceState(runtimeKey, undefined)
       clearedKeys.push(runtimeKey)
     } else {
-      const configuredPolicyCleared = configuredPolicyAvoidancesMemory.delete(runtimeKey)
-      rememberConfiguredPolicyAvoidanceState(runtimeKey, undefined)
-      void configuredPolicyAvoidanceStore.delete(runtimeKey).catch((error) => {
-        logger.error(errorLogFields(error, {
-          event: 'gateway_account_configured_policy_avoidance_clear_failed',
-          runtimeKey
-        }), '用户显式策略账号运行态避让清理失败')
-      })
+      const configuredPolicyCleared = preserveConfiguredPolicyAvoidance
+        ? false
+        : configuredPolicyAvoidancesMemory.delete(runtimeKey)
+      if (!preserveConfiguredPolicyAvoidance) {
+        rememberConfiguredPolicyAvoidanceState(runtimeKey, undefined)
+        void configuredPolicyAvoidanceStore.delete(runtimeKey).catch((error) => {
+          logger.error(errorLogFields(error, {
+            event: 'gateway_account_configured_policy_avoidance_clear_failed',
+            runtimeKey
+          }), '用户显式策略账号运行态避让清理失败')
+        })
+      }
       if (clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey) || configuredPolicyCleared) {
         clearedKeys.push(runtimeKey)
       }
@@ -2331,6 +2340,79 @@ export function clearGatewayAccountRuntimeAvailability(
   return {
     cleared: clearedKeys.length > 0,
     clearedKeys
+  }
+}
+
+/**
+ * Awaitable variant for user-initiated resets and IPC callers.
+ *
+ * The legacy synchronous entry point intentionally keeps its fire-and-forget
+ * behavior for automatic/background callers. A manual reset must not report a
+ * Redis runtime state as cleared before the delete actually completed.
+ */
+export async function clearGatewayAccountRuntimeAvailabilityAsync(
+  account: GatewayAccountRuntimeClearTarget | SuppressibleGatewayAccount | string
+): Promise<GatewayAccountRuntimeClearResult> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    return clearGatewayAccountRuntimeAvailability(account)
+  }
+
+  const clearedKeys: string[] = []
+  const failedKeySet = new Set<string>()
+  const preserveConfiguredPolicyAvoidance = typeof account === 'object'
+    && 'accountId' in account
+    && account.preserveConfiguredPolicyAvoidance === true
+  for (const runtimeKey of gatewayAccountRuntimeClearKeys(account)) {
+    try {
+      const [recoveryState, configuredPolicyState] = await Promise.all([
+        distributedRecoveryProbeStore.get(runtimeKey),
+        preserveConfiguredPolicyAvoidance
+          ? Promise.resolve(undefined)
+          : configuredPolicyAvoidanceStore.getJson<ConfiguredPolicyAvoidanceState>(runtimeKey)
+      ])
+      if (!recoveryState && !configuredPolicyState) continue
+      await markAccountListRuntimeProjectionDirty(runtimeKey)
+      let cleared = false
+      if (recoveryState) {
+        const recoveryCleared = await clearDistributedRecoveryProbeStateGeneration(runtimeKey, recoveryState.generation)
+        if (recoveryCleared) {
+          cleared = true
+        } else if (await distributedRecoveryProbeStore.get(runtimeKey)) {
+          // A newer generation won the race after the snapshot above. Never
+          // delete that newer state; surface the conflict so the caller can
+          // retry with a fresh runtime snapshot.
+          failedKeySet.add(runtimeKey)
+        }
+      }
+      if (!preserveConfiguredPolicyAvoidance && configuredPolicyState) {
+        const policyCleared = await configuredPolicyAvoidanceStore.compareDeleteJson(runtimeKey, configuredPolicyState)
+        if (policyCleared) {
+          rememberConfiguredPolicyAvoidanceState(runtimeKey, undefined)
+          cleared = true
+        } else if (await configuredPolicyAvoidanceStore.getJson<ConfiguredPolicyAvoidanceState>(runtimeKey)) {
+          failedKeySet.add(runtimeKey)
+        }
+      }
+      if (cleared) clearedKeys.push(runtimeKey)
+    } catch (error) {
+      logger.error(errorLogFields(error, {
+        event: 'gateway_account_distributed_runtime_availability_clear_failed',
+        runtimeKey
+      }), 'Redis 运行态账号恢复状态清理失败')
+      failedKeySet.add(runtimeKey)
+    }
+  }
+  if (clearedKeys.length > 0) {
+    clearGatewayRuntimeCache()
+    logger.info({
+      event: 'gateway_account_runtime_availability_cleared',
+      runtimeKeys: clearedKeys
+    }, '已手动清理账号网关运行态避让')
+  }
+  return {
+    cleared: clearedKeys.length > 0,
+    clearedKeys,
+    ...(failedKeySet.size > 0 ? { failedKeys: [...failedKeySet] } : {})
   }
 }
 

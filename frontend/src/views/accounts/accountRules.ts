@@ -272,6 +272,12 @@ export function canManageOAuthAccount(account: AccountListItem): boolean {
 export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
   pushAccountLockItems(items, account)
+  const canClearRuntimeState = isAuthorizedAccount(account)
+    ? Boolean(account.boundGroupId) && account.permissions?.canUse !== false
+    : canEditAccount(account)
+  if (canClearRuntimeState) {
+    items.push({ key: 'runtime-reset', label: '清理运行状态' })
+  }
   if (isAuthorizedAccount(account)) {
     if (canTestAccount(account)) {
       items.push({ key: 'test', label: '测试' })
@@ -424,6 +430,7 @@ function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
   if (item.key === 'restore-normal') return { ...item, icon: 'restore', tone: 'success' }
   if (item.key === 'recheck-health') return { ...item, icon: 'refresh', tone: 'info' }
   if (item.key === 'revalidate-api-key-runtime') return { ...item, icon: 'refresh', tone: 'info' }
+  if (item.key === 'runtime-reset') return { ...item, icon: 'reset', tone: 'info' }
   if (item.key === 'super-priority-on') return { ...item, icon: 'superPriority', tone: 'warning' }
   if (item.key === 'super-priority-off') return { ...item, icon: 'superPriority', tone: 'default' }
   if (item.key === 'fallback-on') return { ...item, icon: 'fallback', tone: 'purple' }

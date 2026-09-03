@@ -15,11 +15,69 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { loadOwnerAccountApiKeyRuntimeResponse } from './account-api-key-pool-runtime.js'
 import { sanitizeAccountApiKeyRuntimeResponse } from './account-response-sanitizer.js'
-import { accountApiKeyRuntimeRevalidateSchema } from './account-request.schemas.js'
+import { accountApiKeyRuntimeRevalidateSchema, accountRuntimeResetSchema } from './account-request.schemas.js'
 import { operationMode, runLoggedOperationAsync, viewer } from '../operation-logs/operation-log.service.js'
 import { mutationGuard, normalizedText, bodyField } from '../deduplication/mutation-guard.middleware.js'
+import {
+  AccountManagementPatchRevisionConflictError,
+  AuthorizedAccountDispatchRevisionConflictError,
+  resetAccountRuntimeStateAsync
+} from './account-runtime-reset.service.js'
 
 export function registerAccountDetailRoutes(router: Router): void {
+  router.post('/:id/runtime-reset', mutationGuard({
+    operationKey: 'accounts.runtime_reset',
+    // Runtime cleanup is explicitly retryable: a 200 response may still carry
+    // per-store failures (Redis/IPC), so do not retain a succeeded dedup entry.
+    succeededTtlMs: 0,
+    failedTtlMs: 0,
+    scope: (req) => normalizedText(req.query.systemAccountId),
+    fingerprint: (req) => ({ accountId: normalizedText(req.params.id), expectedConfigRevision: bodyField(req, 'expectedConfigRevision') })
+  }), async (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store')
+    const parsed = accountRuntimeResetSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '清理运行状态参数无效'))
+      return
+    }
+    try {
+      const scopeQuery = parseRequestScopeQuery(req.query)
+      if (!scopeQuery.success) {
+        res.status(400).json(badRequest(scopeQuery.message))
+        return
+      }
+      const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+      const result = await runLoggedOperationAsync(async () => {
+        const outcome = await resetAccountRuntimeStateAsync({
+          accountId: req.params.id,
+          expectedConfigRevision: parsed.data.expectedConfigRevision,
+          access: requestAccess
+        })
+        if (!outcome) throw new Error('账户不存在')
+        return outcome
+      }, req)
+      res.json(ok(result))
+    } catch (error) {
+      if (error instanceof AccountManagementPatchRevisionConflictError || error instanceof AuthorizedAccountDispatchRevisionConflictError) {
+        res.status(409).json(badRequest('账户配置已被其他操作更新，请刷新后重试'))
+        return
+      }
+      if (error instanceof AccountDetailBadRequestError) {
+        res.status(400).json(badRequest(error.message))
+        return
+      }
+      if (error instanceof Error && error.message === '账户不存在') {
+        res.status(404).json({ message: error.message })
+        return
+      }
+      if (error instanceof Error) {
+        res.status(400).json(badRequest(error.message))
+        return
+      }
+      next(error)
+    }
+  })
+
   router.get('/:id/oauth-reauthorization-context', async (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store')
     try {

@@ -1,5 +1,7 @@
 # 计划目录
 
+- [计划-20260904T010000000Z](计划-20260904T010000000Z-账户运行态清理契约.md)：冻结账户运行态清理的事实源、白名单、保护边界、Redis/内存一致性和分阶段验收标准；当前仅为设计计划，未改变运行逻辑。
+
 - [PLAN-20260821T004304961Z](计划-20260821T004304961Z-J3a代理延迟检测L2实现.md)：实施 J3a 独立 Go jobs 代理延迟检测契约；当前实现已完成 Go 独占执行/投影，Node J3a 执行路径已删除；2026-08-26 生产只读预检确认尚未启用，需先完成 schema/权限、Secret alias、容量和单 owner handoff。
 
 - [PLAN-20260821T182741627Z](计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md)：2026-08-23 dev scratch 经 PgBouncer `6432` required smoke 与 Go business-result projector applied/stale、receipt、cursor、CAS/replay 已通过并清理；Node 子进程→Go handler manual 互操作已通过，独立 jobs 二进制、active-path-zero、生产与 owner handoff 仍未完成。

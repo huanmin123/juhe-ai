@@ -171,6 +171,40 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
   }
 
   async function handleAccountMenu(key: string, account: AccountListItem) {
+    if (key === 'runtime-reset') {
+      const canReset = isAuthorizedAccount(account)
+        ? Boolean(account.boundGroupId) && account.permissions?.canUse !== false
+        : canEditAccount(account)
+      if (!canReset) {
+        message.warning('当前账户没有清理运行状态的权限')
+        return
+      }
+      const expectedConfigRevision = Number(account.configRevision)
+      if (!Number.isInteger(expectedConfigRevision) || expectedConfigRevision < 1) {
+        message.warning('账户配置版本缺失，请刷新列表后重试')
+        return
+      }
+      try {
+        const payload = { expectedConfigRevision }
+        const result = options.isManagementView.value
+          ? await api.accounts.runtimeReset(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
+          : await api.myAccounts.runtimeReset(account.id, payload)
+        await options.loadData()
+        if (result.failed.length > 0) {
+          message.warning(`${account.name}: 运行状态已部分清理，仍有 ${result.failed.length} 项待重试`)
+        } else if (result.dispatchEligible) {
+          message.success(`${account.name}: 运行状态已清理，已重新参与调度`)
+        } else if (result.skipped.length > 0) {
+          message.warning(`${account.name}: 运行态已清理，${result.skipped.length} 项受保护状态保持不变`)
+        } else {
+          message.warning(`${account.name}: 运行状态已清理，当前仍需按账户状态检查后参与调度`)
+        }
+      } catch (error) {
+        console.error(error)
+        message.error(options.extractApiErrorMessage(error, `${account.name}: 清理运行状态失败`))
+      }
+      return
+    }
     if (key === 'test') {
       await options.openTestModal(account)
       return
@@ -267,11 +301,11 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     if (!canUseAccountActions(account)) {
       if (!isAuthorizedAccount(account)) {
-        if (!['restore-normal', 'recheck-health', 'toggle-status', 'super-priority-off', 'fallback-off', 'unlock'].includes(key)) {
+        if (!['runtime-reset', 'restore-normal', 'recheck-health', 'toggle-status', 'super-priority-off', 'fallback-off', 'unlock'].includes(key)) {
           message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、异常恢复、停用和取消调度标记' : '当前账户不能执行管理操作')
           return
         }
-      } else if (!['restore-normal', 'toggle-status', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic', 'lock', 'unlock'].includes(key)) {
+      } else if (!['runtime-reset', 'restore-normal', 'toggle-status', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic', 'lock', 'unlock'].includes(key)) {
         message.warning('授权账户仅支持使用侧调度操作')
         return
       }

@@ -85,6 +85,23 @@ export interface AccountLockMutationPayload {
   lockRetryIntervalSeconds?: number
 }
 
+export interface AccountRuntimeResetResult {
+  id: string
+  configRevision: number
+  dispatchRevision?: number
+  changed: boolean
+  status: AccountSummary['status']
+  schedulable: boolean
+  dispatchEligible: boolean
+  gatewayRuntime: 'cleared' | 'unchanged' | 'unavailable'
+  latencyDegradationCleared: number
+  apiKeyRuntimeRevalidated: number
+  apiKeyTransientCleared: number
+  cleared: string[]
+  skipped: string[]
+  failed: string[]
+}
+
 export const accountsApi = {
   list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params), signal: options?.signal })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
@@ -96,6 +113,7 @@ export const accountsApi = {
   oauthReauthorizationContext: (id: string, params?: ListParams) => unwrap<AccountOAuthReauthorizationContext>(http.get(`/accounts/${id}/oauth-reauthorization-context`, { params })),
   apiKeyRuntime: (id: string, params?: ListParams) => unwrap<AccountApiKeyRuntimeResponse>(http.get(`/accounts/${id}/api-key-runtime`, { params })),
   revalidateApiKeyRuntime: (id: string, payload: { expectedConfigRevision: number }, params?: ListParams) => unwrap<{ id: string; configRevision: number; changed: number }>(http.post(`/accounts/${id}/api-key-runtime/revalidate`, payload, { params })),
+  runtimeReset: (id: string, payload: { expectedConfigRevision: number }, params?: ListParams) => unwrap<AccountRuntimeResetResult>(http.post(`/accounts/${id}/runtime-reset`, payload, { params })),
   export: (payload: AccountExportPayload, params?: ListParams) => unwrap<AccountExportResult>(http.post('/accounts/export', payload, { params })),
   importPreview: (payload: AccountImportRequestPayload, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/preview', payload, { params })),
   importConfirm: (payload: AccountImportRequestPayload, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
@@ -139,6 +157,7 @@ export const myAccountsApi = {
   oauthReauthorizationContext: (id: string) => unwrap<AccountOAuthReauthorizationContext>(http.get(`/my-accounts/${id}/oauth-reauthorization-context`)),
   apiKeyRuntime: (id: string) => unwrap<AccountApiKeyRuntimeResponse>(http.get(`/my-accounts/${id}/api-key-runtime`)),
   revalidateApiKeyRuntime: (id: string, payload: { expectedConfigRevision: number }) => unwrap<{ id: string; configRevision: number; changed: number }>(http.post(`/my-accounts/${id}/api-key-runtime/revalidate`, payload)),
+  runtimeReset: (id: string, payload: { expectedConfigRevision: number }) => unwrap<AccountRuntimeResetResult>(http.post(`/my-accounts/${id}/runtime-reset`, payload)),
   export: (payload: AccountExportPayload) => unwrap<AccountExportResult>(http.post('/my-accounts/export', payload)),
   importPreview: (payload: AccountImportRequestPayload) => unwrap<AccountImportResult>(http.post('/my-accounts/import/preview', payload)),
   importConfirm: (payload: AccountImportRequestPayload) => unwrap<AccountImportResult>(http.post('/my-accounts/import/confirm', payload)),

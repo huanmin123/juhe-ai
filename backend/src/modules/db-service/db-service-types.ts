@@ -90,11 +90,14 @@ export interface AccountRuntimeAvailabilityClearTarget {
     groupId?: string
     accountAuthorizationId?: string
   }
+  includeBaseAccountKey?: boolean
+  preserveConfiguredPolicyAvoidance?: boolean
 }
 
 export interface AccountRuntimeAvailabilityClearResult {
   cleared: boolean
   clearedKeys: string[]
+  failedKeys?: string[]
 }
 
 export interface OpenAIAccountTrafficMigrationRuntimeScope {

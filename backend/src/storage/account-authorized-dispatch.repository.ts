@@ -127,7 +127,8 @@ interface AuthorizedDispatchTransactionOutcome extends AuthorizedAccountDispatch
 export async function updateAuthorizedAccountBindingDispatchAsync(
   accountId: string,
   input: AuthorizedAccountDispatchInput,
-  access?: AccessScope
+  access?: AccessScope,
+  options?: { runtimeResetRequireUnlocked?: boolean }
 ): Promise<AuthorizedAccountDispatchMutationResult | undefined> {
   assertAuthorizedDispatchInput(input)
   const systemAccountId = authorizedBindingSystemAccountId(access)
@@ -142,6 +143,17 @@ export async function updateAuthorizedAccountBindingDispatchAsync(
     const currentRevision = integerValue(row.config_revision)
     if (currentRevision !== input.expectedConfigRevision) {
       throw new AuthorizedAccountDispatchRevisionConflictError(accountId, input.expectedConfigRevision, currentRevision)
+    }
+    if (options?.runtimeResetRequireUnlocked === true) {
+      const lock = await tx.one<{ enabled: number | boolean | string; lock_state: string }>(`
+        SELECT enabled, lock_state
+        FROM ${authorizedDispatchTable(tx, 'account_lock_states')}
+        WHERE account_id = ?${tx.driver === 'postgres' ? ' FOR UPDATE' : ''}
+      `, [accountId])
+      if (databaseBoolean(lock?.enabled)
+        && (lock?.lock_state === 'ENGAGED' || lock?.lock_state === 'DEAD_CONFIRMED')) {
+        return unchangedOutcome(row, binding)
+      }
     }
     if (row.authorization_status === 'revoked' || row.authorization_status === 'returned') {
       return undefined

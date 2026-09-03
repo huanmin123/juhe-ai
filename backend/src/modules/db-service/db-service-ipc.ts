@@ -431,7 +431,7 @@ export async function clearServerAccountRuntimeAvailability(
   }
   if (runtimeConfig.processRole !== 'db-service') {
     const gatewaySideEffects = await import('../gateway/runtime/account-side-effects.service.js')
-    return gatewaySideEffects.clearGatewayAccountRuntimeAvailability(normalizedTarget)
+    return gatewaySideEffects.clearGatewayAccountRuntimeAvailabilityAsync(normalizedTarget)
   }
   if (!process.send) {
     assertDbServiceParentIpcAvailable('clearServerAccountRuntimeAvailability')
@@ -1354,7 +1354,7 @@ async function respondToServerAccountRuntimeClearRequest(
 
   try {
     const gatewaySideEffects = await import('../gateway/runtime/account-side-effects.service.js')
-    const result = gatewaySideEffects.clearGatewayAccountRuntimeAvailability(target)
+    const result = await gatewaySideEffects.clearGatewayAccountRuntimeAvailabilityAsync(target)
     sendToDbServiceProcess(child, {
       type: 'db_service_server_account_runtime_clear_response',
       requestId,
@@ -1456,7 +1456,9 @@ function normalizeAccountRuntimeClearTarget(value: unknown): AccountRuntimeAvail
     return undefined
   }
   const target: AccountRuntimeAvailabilityClearTarget = {
-    accountId: record.accountId.trim()
+    accountId: record.accountId.trim(),
+    ...(record.includeBaseAccountKey === false ? { includeBaseAccountKey: false } : {}),
+    ...(record.preserveConfiguredPolicyAvoidance === true ? { preserveConfiguredPolicyAvoidance: true } : {})
   }
   if (typeof record.authorizedBinding === 'object' && record.authorizedBinding !== null && !Array.isArray(record.authorizedBinding)) {
     const binding = record.authorizedBinding as Record<string, unknown>

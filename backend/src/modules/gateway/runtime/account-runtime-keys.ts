@@ -16,6 +16,9 @@ export interface GatewayAccountRuntimeClearTarget {
     groupId?: string
     accountAuthorizationId?: string
   }
+  /** Manual authorized-instance resets must not touch the bare account key. */
+  includeBaseAccountKey?: boolean
+  preserveConfiguredPolicyAvoidance?: boolean
 }
 
 export function gatewayAccountRuntimeKey(account: SuppressibleGatewayAccount | string): string {
@@ -51,7 +54,8 @@ export function gatewayAccountRuntimeClearKeys(account: GatewayAccountRuntimeCle
   if (!accountId) {
     return []
   }
-  const keys = new Set<string>([accountId])
+  const includeBaseAccountKey = !isClearTarget || account.includeBaseAccountKey !== false
+  const keys = new Set<string>(includeBaseAccountKey ? [accountId] : [])
   const authorizedBinding = isClearTarget
       ? account.authorizedBinding
       : account.accountAccessType === 'account_authorized' || account.accessType === 'authorized'

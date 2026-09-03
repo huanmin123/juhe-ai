@@ -47,6 +47,24 @@ assertTrue(
   '停用账户必须使用独立停止图标和红色危险态'
 )
 assertTrue(
+  activeAccountMenuItems.some((item) => (
+    item.key === 'runtime-reset'
+    && item.label === '清理运行状态'
+    && item.icon === 'reset'
+    && !item.confirmTitle
+    && !item.confirmOkText
+  )),
+  '可编辑自有账户应显示无需二次确认的清理运行状态操作'
+)
+assertTrue(
+  accountMenuItems(accountFixture({ status: 'quality_isolated' })).some((item) => item.key === 'runtime-reset'),
+  '质量隔离账户仍可清理网关运行态，但后端不得绕过质量隔离硬门禁'
+)
+assertTrue(
+  accountMenuItems(accountFixture({ accessType: 'authorized', boundGroupId: undefined })).every((item) => item.key !== 'runtime-reset'),
+  '未绑定分组的授权账户不应显示清理运行状态操作'
+)
+assertTrue(
   !accountMenuItems(accountFixture({ accessType: 'authorized' })).some((item) => item.key === 'manual-isolate'),
   '授权账户不应显示来源账户级人工隔离操作'
 )

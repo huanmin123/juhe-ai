@@ -126,6 +126,8 @@ const defaultDisabledMultiKeyBalanceConfig = { adapter: 'builtin', intervalMinut
 
 export interface AccountManagementPatchInput extends Record<string, unknown> {
   expectedConfigRevision: number
+  /** Internal runtime-reset fence; never accepted from the public update schema. */
+  runtimeResetRequireUnlocked?: boolean
 }
 
 export interface AccountManagementPatchChange {
@@ -262,6 +264,17 @@ export async function patchAccountManagementAsync(
       if (currentRevision !== expectedConfigRevision) {
         throw new AccountManagementPatchRevisionConflictError(accountId, expectedConfigRevision, currentRevision)
       }
+      if (input.runtimeResetRequireUnlocked === true) {
+        const lock = await tx.one<{ enabled: number | boolean | string; lock_state: string }>(`
+          SELECT enabled, lock_state
+          FROM ${patchTable(tx, 'account_lock_states')}
+          WHERE account_id = ?${tx.driver === 'postgres' ? ' FOR UPDATE' : ''}
+        `, [accountId])
+        if (databaseBoolean(lock?.enabled)
+          && (lock?.lock_state === 'ENGAGED' || lock?.lock_state === 'DEAD_CONFIRMED')) {
+          return unchangedPatchResult(row)
+        }
+      }
       const context: PatchContext = {
         client: tx,
         row,
@@ -302,7 +315,9 @@ async function finalizeAccountManagementPatchOutcome(
 
 async function patchOwnerAccountInTransaction(context: PatchContext): Promise<AccountPatchTransactionResult> {
   const { client, row, input, now, nowMs } = context
-  const requestedKeys = Object.keys(input).filter((key) => key !== 'expectedConfigRevision' && key !== 'clearFailureState')
+  const requestedKeys = Object.keys(input).filter((key) =>
+    !['expectedConfigRevision', 'clearFailureState', 'runtimeResetRequireUnlocked'].includes(key)
+  )
   const authorizationInstance = Boolean(
     row.authorization_instance_source_account_id || row.authorization_instance_authorization_id
   )
@@ -1092,7 +1107,7 @@ async function patchAuthorizedAccountLocalInTransaction(
 
 async function patchAccountFailureStateInTransaction(context: PatchContext): Promise<AccountPatchTransactionResult> {
   const { client, row, input, now, nowMs } = context
-  const mixedFields = Object.keys(input).filter((key) => !['expectedConfigRevision', 'clearFailureState'].includes(key))
+  const mixedFields = Object.keys(input).filter((key) => !['expectedConfigRevision', 'clearFailureState', 'runtimeResetRequireUnlocked'].includes(key))
   if (mixedFields.length > 0) {
     throw new Error('重新检查或异常恢复不能与账户字段修改同时提交')
   }

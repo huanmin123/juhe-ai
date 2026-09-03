@@ -204,6 +204,10 @@ export const accountApiKeyRuntimeRevalidateSchema = z.object({
   expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
+export const accountRuntimeResetSchema = z.object({
+  expectedConfigRevision: z.number().int().min(1)
+}).strict()
+
 export const accountLockSchema = z.object({
   expectedConfigRevision: z.number().int().min(1),
   lockDeathTimeoutSeconds: z.number().int().min(30).max(3600).optional(),
