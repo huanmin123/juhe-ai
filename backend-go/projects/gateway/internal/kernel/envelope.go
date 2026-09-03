@@ -105,7 +105,6 @@ func WriteRawJSON(w http.ResponseWriter, status int, body []byte) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any, preserveUpstream bool) {
-	println("WRITEJSON", status)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		status = http.StatusInternalServerError
