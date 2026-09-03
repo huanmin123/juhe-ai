@@ -448,6 +448,27 @@ function validateAccounts(evidence, blockers) {
         addBlocker(blockers, `accounts.tables[${index}].clearedColumns`, '不得统一清空 authorization_instance_source_account_id；必须按 source account 拓扑保留子账户自引用')
       }
       if (table.name === 'accounts') {
+        const copiedColumns = new Set(Array.isArray(table.copiedColumns) ? table.copiedColumns : [])
+        const generatedColumns = new Set(Array.isArray(table.generatedColumns) ? table.generatedColumns : [])
+        const clearedColumns = new Set(Array.isArray(table.clearedColumns) ? table.clearedColumns : [])
+        for (const derivedCredentialColumn of [
+          'credentials_encrypted',
+          'credential_fingerprint',
+          'credential_mask',
+          'oauth_access_token_expires_at',
+          'oauth_refresh_token_present'
+        ]) {
+          if (!generatedColumns.has(derivedCredentialColumn)) {
+            addBlocker(blockers, `${tablePath}.generatedColumns`, `accounts 的 ${derivedCredentialColumn} 必须使用 test 凭据逐行生成/替换，不能复制生产派生值`)
+          }
+          if (copiedColumns.has(derivedCredentialColumn) || clearedColumns.has(derivedCredentialColumn)) {
+            addBlocker(blockers, `${tablePath}`, `accounts 的 ${derivedCredentialColumn} 不得复制或仅清空生产派生值`)
+          }
+        }
+        if (copiedColumns.has('availability_schedule_next_check_at') || !generatedColumns.has('availability_schedule_next_check_at')) {
+          addBlocker(blockers, `${tablePath}.availability_schedule_next_check_at`, '必须按 test 预演窗口逐行生成/替换，禁止复制生产旧时间戳')
+        }
+        requireBoolean(table, 'availabilityScheduleNextCheckAtControlled', tablePath, blockers)
         if (!ACCOUNT_SELF_FK_POLICIES.has(table.selfForeignKeyPolicy)) {
           addBlocker(blockers, `accounts.tables[${index}].selfForeignKeyPolicy`, '必须明确 source-before-authorization-instance 或已验证的 deferred-constraints-verified')
         }

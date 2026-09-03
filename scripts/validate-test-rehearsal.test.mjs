@@ -139,14 +139,20 @@ const validEvidence = {
         copiedColumns: [
           'id', 'config_revision', 'dispatch_revision', 'circuit_projection_revision', 'system_account_id',
           'provider_code', 'provider_protocol_profile_id', 'protocol_code', 'protocol_version', 'name', 'type',
-          'status', 'credential_mask', 'oauth_refresh_token_present', 'concurrency_limit', 'priority',
+          'status', 'concurrency_limit', 'priority',
           'super_priority_enabled', 'fallback_enabled', 'client_compatibility', 'schedulable',
+          'availability_schedule_json', 'account_expires_at',
           'temporary_unavailable_continuous_probe_enabled', 'health_check_model', 'health_check_endpoint_mode',
           'health_check_failure_count', 'balance_query_enabled', 'balance_query_config_json',
           'authorization_instance_source_account_id', 'authorization_instance_authorization_id',
           'authorization_instance_owner_system_account_id'
         ],
-        generatedColumns: ['credentials_encrypted', 'cooldown_retest_failure_count', 'stream_failure_count', 'created_at', 'updated_at'],
+        generatedColumns: [
+          'credentials_encrypted', 'credential_fingerprint', 'credential_mask',
+          'oauth_access_token_expires_at', 'oauth_refresh_token_present',
+          'availability_schedule_next_check_at', 'cooldown_retest_failure_count', 'stream_failure_count',
+          'created_at', 'updated_at'
+        ],
         clearedColumns: [
           'last_used_at', 'cooldown_until', 'last_error_code', 'last_error_message', 'last_error_trace_id',
           'cooldown_retest_observation_started_at', 'cooldown_retest_generation',
@@ -156,6 +162,7 @@ const validEvidence = {
           'last_health_check_trace_id', 'stream_failure_window_started_at',
           'balance_query_next_refresh_at', 'deleted_at', 'deleted_by'
         ],
+        availabilityScheduleNextCheckAtControlled: true,
         conflictStrategy: 'source-topological-upsert'
       },
       {
@@ -520,6 +527,20 @@ const missingAccountReadbackDigest = structuredClone(validEvidence)
 delete missingAccountReadbackDigest.accounts.tables.find(table => table.name === 'accounts').readbackDigest
 assert.equal(validateTestRehearsalEvidence(missingAccountReadbackDigest).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(missingAccountReadbackDigest).blockers.join('\n'), /accounts\.tables.*readbackDigest/)
+
+const copiedCredentialFingerprint = structuredClone(validEvidence)
+const copiedCredentialAccounts = copiedCredentialFingerprint.accounts.tables.find(table => table.name === 'accounts')
+copiedCredentialAccounts.copiedColumns.push('credential_fingerprint')
+copiedCredentialAccounts.generatedColumns = copiedCredentialAccounts.generatedColumns.filter(column => column !== 'credential_fingerprint')
+assert.equal(validateTestRehearsalEvidence(copiedCredentialFingerprint).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(copiedCredentialFingerprint).blockers.join('\n'), /credential_fingerprint/)
+
+const copiedScheduleCheckpoint = structuredClone(validEvidence)
+const copiedScheduleAccounts = copiedScheduleCheckpoint.accounts.tables.find(table => table.name === 'accounts')
+copiedScheduleAccounts.copiedColumns.push('availability_schedule_next_check_at')
+copiedScheduleAccounts.generatedColumns = copiedScheduleAccounts.generatedColumns.filter(column => column !== 'availability_schedule_next_check_at')
+assert.equal(validateTestRehearsalEvidence(copiedScheduleCheckpoint).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(copiedScheduleCheckpoint).blockers.join('\n'), /availability_schedule_next_check_at/)
 
 const runtimeTableWithoutReadbackDigest = structuredClone(validEvidence)
 delete runtimeTableWithoutReadbackDigest.accounts.tables.find(table => table.name === 'account_schedule_status_events').readbackDigest

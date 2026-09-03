@@ -30,6 +30,7 @@ export interface RehearsalAccountSyncTablePlan {
   canaryOnly?: boolean
   disabledUntilSmoke?: boolean
   nextRunAtControlled?: boolean
+  availabilityScheduleNextCheckAtControlled?: boolean
 }
 
 export interface RehearsalRuntimeResetPlan {
@@ -329,7 +330,19 @@ function validateSpecialTableColumns(
   }
   if (report.name === 'accounts') {
     requireGenerated('credentials_encrypted')
+    requireGenerated('credential_fingerprint')
     requireGenerated('credential_mask')
+    requireGenerated('oauth_access_token_expires_at')
+    requireGenerated('oauth_refresh_token_present')
+    if (columns.has('availability_schedule_next_check_at')) {
+      forbidCopied('availability_schedule_next_check_at')
+      if (!generated.has('availability_schedule_next_check_at') || cleared.has('availability_schedule_next_check_at')) {
+        blockers.push('accounts: availability_schedule_next_check_at 必须按 test 预演窗口逐行生成/替换，禁止复制或仅清空生产时间戳')
+      }
+      if (tablePlan.availabilityScheduleNextCheckAtControlled !== true) {
+        blockers.push('accounts.availabilityScheduleNextCheckAtControlled 必须为 true，并绑定受控预演窗口')
+      }
+    }
     for (const runtimeColumn of [
       'last_used_at', 'cooldown_until', 'last_error_code', 'last_error_message', 'last_error_trace_id',
       'cooldown_retest_observation_started_at', 'cooldown_retest_generation', 'cooldown_retest_last_at',

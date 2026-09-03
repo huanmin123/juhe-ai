@@ -123,7 +123,18 @@ export const ACCOUNT_SYNC_TABLE_POLICIES: readonly AccountSyncTablePolicy[] = [
   policy('resource_authorizations', 'configuration'),
   policy('resource_authorization_sources', 'configuration'),
   policy('resource_authorization_grants', 'configuration'),
-  policy('accounts', 'configuration', ['credentials_encrypted', 'credential_mask', 'oauth_access_token_expires_at'], '先导入普通 source accounts，再导入 authorization-instance accounts；凭据必须重加密或使用 test canary'),
+  policy(
+    'accounts',
+    'configuration',
+    [
+      'credentials_encrypted',
+      'credential_fingerprint',
+      'credential_mask',
+      'oauth_access_token_expires_at',
+      'oauth_refresh_token_present'
+    ],
+    '先导入普通 source accounts，再导入 authorization-instance accounts；凭据密文、指纹、掩码和 OAuth 元数据必须按 test canary/隔离重加密生成，不能复制生产派生值'
+  ),
   policy('groups', 'configuration'),
   policy('group_authorization_settings', 'configuration'),
   policy('group_accounts', 'configuration'),

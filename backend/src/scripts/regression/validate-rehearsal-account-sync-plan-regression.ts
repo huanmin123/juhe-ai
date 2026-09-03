@@ -27,8 +27,9 @@ const systemAccountColumns = [
 const accountColumns = [
   'id', 'config_revision', 'dispatch_revision', 'circuit_projection_revision', 'system_account_id',
   'provider_code', 'provider_protocol_profile_id', 'protocol_code', 'protocol_version', 'name', 'type',
-  'status', 'credentials_encrypted', 'credential_mask', 'oauth_refresh_token_present', 'concurrency_limit',
+  'status', 'credentials_encrypted', 'credential_fingerprint', 'credential_mask', 'oauth_access_token_expires_at', 'oauth_refresh_token_present', 'concurrency_limit',
   'priority', 'super_priority_enabled', 'fallback_enabled', 'client_compatibility', 'schedulable',
+  'availability_schedule_json', 'availability_schedule_next_check_at', 'account_expires_at',
   'cooldown_retest_failure_count', 'temporary_unavailable_continuous_probe_enabled', 'health_check_model',
   'health_check_endpoint_mode', 'health_check_failure_count', 'stream_failure_count', 'balance_query_enabled',
   'balance_query_config_json', 'created_at', 'updated_at', 'proxy_profile_id', 'authorization_instance_source_account_id',
@@ -162,6 +163,7 @@ function buildFixture(): { preflight: AccountSyncPreflightReport; plan: Rehearsa
     }
     if (policy.name === 'accounts') {
       const runtimeColumns = new Set([
+        'availability_schedule_next_check_at',
         'last_used_at', 'cooldown_until', 'last_error_code', 'last_error_message', 'last_error_trace_id',
         'cooldown_retest_observation_started_at', 'cooldown_retest_generation', 'cooldown_retest_last_at',
         'cooldown_retest_last_status_code', 'last_health_check_at', 'next_health_check_at', 'last_health_success_at',
@@ -172,12 +174,21 @@ function buildFixture(): { preflight: AccountSyncPreflightReport; plan: Rehearsa
       return {
         name: policy.name,
         importOrder: index + 1,
-        copiedColumns: sourceColumns.filter((column) => !['credentials_encrypted', 'credential_mask', 'cooldown_retest_failure_count', 'stream_failure_count'].includes(column) && !runtimeColumns.has(column)),
-        generatedColumns: ['credentials_encrypted', 'credential_mask', 'cooldown_retest_failure_count', 'stream_failure_count'],
-        clearedColumns: sourceColumns.filter((column) => runtimeColumns.has(column)),
+        copiedColumns: sourceColumns.filter((column) => ![
+          'credentials_encrypted', 'credential_fingerprint', 'credential_mask',
+          'oauth_access_token_expires_at', 'oauth_refresh_token_present',
+          'availability_schedule_next_check_at', 'cooldown_retest_failure_count', 'stream_failure_count'
+        ].includes(column) && !runtimeColumns.has(column)),
+        generatedColumns: [
+          'credentials_encrypted', 'credential_fingerprint', 'credential_mask',
+          'oauth_access_token_expires_at', 'oauth_refresh_token_present',
+          'availability_schedule_next_check_at', 'cooldown_retest_failure_count', 'stream_failure_count'
+        ],
+        clearedColumns: sourceColumns.filter((column) => runtimeColumns.has(column) && column !== 'availability_schedule_next_check_at'),
         targetExtraColumns: [],
         conflictStrategy: 'source-topological-upsert',
-        selfForeignKeyPolicy: 'source-before-authorization-instance'
+        selfForeignKeyPolicy: 'source-before-authorization-instance',
+        availabilityScheduleNextCheckAtControlled: true
       }
     }
     if (policy.name === 'providers') {
@@ -278,6 +289,18 @@ const copiedAccounts = copiedSensitive.plan.tables.find((table) => table.name ==
 copiedAccounts.copiedColumns.push('credentials_encrypted')
 assert.equal(validateRehearsalAccountSyncPlan(copiedSensitive.preflight, copiedSensitive.plan).status, 'blocked')
 assert.match(validateRehearsalAccountSyncPlan(copiedSensitive.preflight, copiedSensitive.plan).blockers.join('\n'), /敏感列 credentials_encrypted/)
+
+const copiedDerivedCredential = structuredClone(fixture)
+const copiedDerivedAccounts = copiedDerivedCredential.plan.tables.find((table) => table.name === 'accounts')!
+copiedDerivedAccounts.copiedColumns.push('credential_fingerprint')
+assert.equal(validateRehearsalAccountSyncPlan(copiedDerivedCredential.preflight, copiedDerivedCredential.plan).status, 'blocked')
+assert.match(validateRehearsalAccountSyncPlan(copiedDerivedCredential.preflight, copiedDerivedCredential.plan).blockers.join('\n'), /敏感列 credential_fingerprint/)
+
+const copiedScheduleCheckpoint = structuredClone(fixture)
+const copiedScheduleAccounts = copiedScheduleCheckpoint.plan.tables.find((table) => table.name === 'accounts')!
+copiedScheduleAccounts.copiedColumns.push('availability_schedule_next_check_at')
+assert.equal(validateRehearsalAccountSyncPlan(copiedScheduleCheckpoint.preflight, copiedScheduleCheckpoint.plan).status, 'blocked')
+assert.match(validateRehearsalAccountSyncPlan(copiedScheduleCheckpoint.preflight, copiedScheduleCheckpoint.plan).blockers.join('\n'), /availability_schedule_next_check_at/)
 
 const missingProviderSelfForeignKeyPolicy = structuredClone(fixture)
 delete missingProviderSelfForeignKeyPolicy.plan.tables.find((table) => table.name === 'providers')!.selfForeignKeyPolicy
