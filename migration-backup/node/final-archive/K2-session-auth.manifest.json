@@ -1,0 +1,39 @@
+{
+  "slice": "K2-session-auth",
+  "archivedAt": "2026-09-04",
+  "status": "mount-removed-archive-pending",
+  "reason": "路由挂载已从 Node system-api-app.ts 移除（Go authsys 独占 /auth 与 /system-accounts）。物理移动推迟到 P8：oidc-provider 与 regression 脚本仍 import auth.routes 工具函数，剩余 Node 必须保持可编译。",
+  "files": [
+    {
+      "path": "src/modules/auth/auth.routes.ts",
+      "sha256": "775cec41270fea3206244a1946aed9daeb724667611a70390b738ee9e3a2b155",
+      "size": 16917
+    },
+    {
+      "path": "src/modules/auth/captcha.service.ts",
+      "sha256": "fae928f2aa81dd678e71a1c6c0adfb5f8272df7acf68b947b45e51eaf0896efc",
+      "size": 15870
+    },
+    {
+      "path": "src/modules/auth/login-guard.service.ts",
+      "sha256": "5475035925c40b8798d1881da8a9fd7a7a963ebbb601c391b917bd862c9b9536",
+      "size": 8608
+    },
+    {
+      "path": "src/modules/auth/development-auto-login.ts",
+      "sha256": "c175c4f3895aa245093122b5ac700dc65ab132300dca5d98c691c0f6ed4c9592",
+      "size": 842
+    },
+    {
+      "path": "src/modules/auth/temporary-access-token.ts",
+      "sha256": "e4ab8e626f3d76fa39b8d384aac9b74447d8016d5e2930b7d4b09127824c0401",
+      "size": 1204
+    },
+    {
+      "path": "src/modules/system-accounts/system-accounts.routes.ts",
+      "sha256": "eda7fbd8f29d4ea6a4adab12d19a42439bf95f3e99ee11db9b37e7075a8deb74",
+      "size": 9859
+    }
+  ],
+  "enforcement": "system-api-app.ts 无 authRouter/systemAccountsRouter 挂载（grep=0），Node 不再服务这两个前缀。"
+}
