@@ -1,0 +1,35 @@
+# Schema 对象清单（2026-09-04 提取，B2 ensure-schema 的对照源）
+
+来源：`backend/src/storage/schema/*.ts` 的 CREATE TABLE 逐个提取（grep）。PG 与 SQLite 由同一组定义文件分别应用；`seed-defaults.ts` 另有默认数据。验证门禁：Go maintenance ensure-schema 建出的库与 Node 建库逐对象 diff = 0（表/列/索引/视图）。
+
+## business（82 表）
+
+system_accounts, system_sessions, global_settings, request_quota_hourly_window_configs, providers, protocols, protocol_endpoint_families, provider_protocol_profiles, provider_protocol_profile_families, provider_model_catalog, custom_provider_models, provider_default_health_check_models, provider_system_default_health_check_models, proxy_profiles, proxy_latency_projection_receipts, proxy_latency_projection_cursors, response_inspection_policies, external_integration_sources, external_integration_source_tokens, accounts, account_lock_states, model_quality_policies, model_quality_schedules, account_quality_enforcements, account_circuit_incidents, account_circuit_outbox, account_name_search_terms, account_name_search_documents, account_api_key_runtime_states, account_api_key_pool_probe_cursors, account_health_jobs_input_versions, account_health_jobs_input_outbox, account_health_projection_receipts, account_health_projection_cursors, account_balance_projection_cursors, account_supported_models, account_model_mappings, account_tags, account_tag_bindings, account_list_availability_projections, account_list_availability_projection_index, account_list_availability_projection_tags, account_list_availability_projection_search_terms, account_list_availability_projection_viewer_health, account_list_availability_runtime_overlays, account_list_availability_projection_dependency_health, account_list_availability_dirty, account_test_tasks, account_test_sessions, account_test_session_tasks, system_teams, system_team_members, resource_authorizations, resource_authorization_sources, resource_authorization_grants, groups, group_authorization_settings, group_accounts, group_account_stats_dirty, route_strategies, route_strategy_groups, api_keys, request_quota_hourly_window_scope_bindings, api_key_schedule_status_events, openai_compatible_files, openai_compatible_vector_stores, openai_compatible_vector_store_files, openai_compatible_vector_store_chunks, account_schedule_status_events, system_settings, announcements, announcement_reads, oauth_clients, oauth_grants, oauth_authorization_transactions, oauth_authorization_codes, oauth_access_tokens, oauth_authorization_code_oidc_contexts, oauth_signing_keys, oauth_device_authorizations
+
+（注：提取时 business 列表中混入一个 "IF" 行，为 `CREATE TABLE IF NOT EXISTS` 变体的解析残片，实际计数以 82 表口径复核。）
+
+## stats（74 表）
+
+client_ip_range_window_dirty_ips, client_ip_account_range_window_dirty_ips, account_quality_minute_stats, account_health_hourly, group_account_stats, account_quality_scores, account_quality_dirty_accounts, account_usage_snapshots, usage_stats_totals, usage_stats_minute, usage_stats_daily, usage_stats_hourly, usage_stats_weekly, usage_stats_monthly, authorization_team_usage_summary_daily, authorization_team_usage_range_windows, authorization_user_usage_summary_daily, authorization_user_usage_range_windows, usage_model_minute, usage_model_daily, usage_model_hourly, usage_model_weekly, usage_model_monthly, usage_error_minute, usage_error_daily, usage_error_hourly, usage_error_weekly, usage_error_monthly, usage_latency_minute, usage_latency_hourly, usage_latency_daily, usage_latency_weekly, usage_latency_monthly, usage_rank_snapshots, usage_overview_summary_windows, usage_overview_trend_windows, usage_model_rank_windows, usage_error_rank_windows, ai_performance_summary_windows, usage_quota_hourly_windows, usage_quota_hourly_window_dirty_scopes, usage_overview_dirty_scopes, ai_performance_summary_dirty_system_accounts, usage_scope_range_windows, usage_range_window_requests, client_ip_registry, client_ip_stats_daily, client_ip_usage_range_windows, client_ip_account_stats_daily, client_ip_account_usage_range_windows, client_ip_policies, client_ip_policy_hits, stats_job_state, model_token_integrity_windows, model_token_integrity_rounds, model_token_intercept_baseline_versions, model_trust_window_sources, model_identity_source_features, model_identity_baseline_versions, model_paired_similarity_windows, model_account_trust_results, model_trust_latest_dirty_accounts, model_trust_observation_receipts, background_task_runs, background_job_leases, usage_record_cleanup_deductions, system_metrics_samples, system_metrics_hourly, system_metrics_trend_windows, process_event_loop_samples, process_event_loop_hourly, process_event_loop_trend_windows
+
+（注：client_ip 两张 dirty 表在文件中出现两次，去重后计入一次；精确对象集以 diff 门禁为准。）
+
+## chat（10 表）
+
+chat_conversations, chat_messages, chat_message_idempotency, chat_user_storage_windows, chat_user_asset_usage, chat_context_checkpoints, chat_context_entries, chat_assets, chat_asset_references, chat_image_generations
+
+## codex-context（4 表）
+
+codex_context_sessions, codex_context_responses, codex_context_compacts, codex_context_storage_cleanup_queue
+
+## dataset（3 表）
+
+public_api_logs, api_key_record_cleanup_targets, account_record_cleanup_targets
+
+## usage-catalog（4 表）
+
+usage_record_shards, usage_record_shard_entries, usage_record_account_shards, usage_record_api_key_shards
+
+## seeds
+
+`seed-defaults.ts`（741 行）：系统设置 key、内置 provider/protocol/profile 目录（`schema-defaults.ts` 常量）、默认数据。逐 key 清单在 B2.1 实施时从文件提取核对；Go 移植后与 Node seed 输出 diff = 0。
