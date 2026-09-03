@@ -287,7 +287,6 @@ func MutationGuardMiddleware(options MutationGuardOptions) func(http.Handler) ht
 				actorResolver(r), scope, r.Method, options.OperationKey, HashStableValue(fingerprint),
 			}, ":")
 			claimed, entry := store.Claim(key, options.OperationKey, options.ProcessingTTL)
-			println("GUARD", options.OperationKey, key[:20], "claimed:", claimed, "status:", string(entry.Status))
 			if !claimed {
 				WriteJSON(w, http.StatusConflict, map[string]string{"message": duplicateMessage(entry.Status)})
 				return

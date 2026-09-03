@@ -157,7 +157,6 @@ func requireRole(allowedRole, message string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := AuthContextFrom(r)
-			println("ROLE CHECK", allowedRole, "authnil", auth == nil)
 			if auth == nil {
 				kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 				return
