@@ -32,7 +32,8 @@ const [
   { requestContextMiddleware },
   { testOpenAIAccount },
   { orderOpenAIAccountsBySessionAffinity },
-  { flushAllUsageRecordQueue },
+  { clearUsageRecordQueueForTest, flushAllUsageRecordQueue },
+  { closeSqliteReadWorkerPool },
   databaseModule,
   repositories
 ] = await Promise.all([
@@ -42,6 +43,7 @@ const [
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/gateway/runtime/session-affinity.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
@@ -502,6 +504,8 @@ try {
   restoreWorkerParentIpc()
   try {
     flushAllUsageRecordQueue()
+    clearUsageRecordQueueForTest()
+    await closeSqliteReadWorkerPool()
     databaseModule.closeStorageDatabases()
   } catch {
   }

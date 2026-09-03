@@ -75,7 +75,7 @@ assert.equal(rejected, undefined, '查询异常不能自动开启')
 
 const healthProjectionSource = readFileSync(resolve('src/storage/account-health-projection.repository.ts'), 'utf8')
 assert.match(healthProjectionSource, /case 'activation_success':[\s\S]*set\('schedulable', 1\)[\s\S]*balance_query_next_refresh_at/, 'Go J1 activation outcome 必须由 projector 原子写入单 Key 余额自动探测意图')
-assert.match(healthProjectionSource, /shouldScheduleBalanceAutoDetection\(account: AccountFenceRow, outcome: ProjectableOutcome\)[\s\S]*effectiveAccountApiKeyCount/, '余额自动探测意图必须限制为单 API Key 账户')
+assert.match(healthProjectionSource, /function shouldScheduleBalanceAutoDetection\([\s\S]*account: AccountFenceRow[\s\S]*outcome: ProjectableOutcome[\s\S]*effectiveAccountApiKeyCount/, '余额自动探测意图必须限制为单 API Key 账户')
 
 const querySource = readFileSync(resolve('src/modules/accounts/account-balance-query.service.ts'), 'utf8')
 assert.match(querySource, /resolveProxyUrlForProfileAsync\(candidate\.proxyProfileId\)/, '所有余额查询路径必须解析账户绑定代理')
