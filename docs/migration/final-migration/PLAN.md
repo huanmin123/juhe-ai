@@ -14,7 +14,7 @@
 | 波 | 状态 | WP 明细 |
 | --- | --- | --- |
 | W1 | in-progress | K1 K2 K3 K4 K5 K6 K7 S-PG S-SQ + doc |
-| W2 | pending | M01-M07 |
+| W2 | in-progress | M01 archived（实现+测试绿；翻转待 M17 后统一摘挂载——Node announcements 仍被 scripts 引用）；M02-M07 pending |
 | W3 | pending | M08-M14 |
 | W4 | pending | M15-M17 P01-P03 G01-G03 |
 | W5 | pending | G04-G08 P04 P05 |
@@ -47,4 +47,5 @@
 - 2026-09-04 K1：`gateway/internal/kernel` 完成——响应封装（{data,message}/{message}）、CJK 错误本地化（含裸字符串 payload、上游标记保留）、管理安全头（逐字节对照）、压缩（1024B 阈值/事件流跳过/缓冲语义）、no-store、256KiB JSON 限制（413/400 契约）、404/405 JSON 化、mutation 去重守卫（TTL/清理/键序全对照）、trace/client-ip 上下文。`go test -race` 9 项全绿。
 - 2026-09-04 K2: 实现 authsys 包（会话/凭据复用 modelcheckauth+businessauth，captcha/login-guard/token 三态/系统账户 CRUD+乐观并发），翻转摘除 /auth 与 /system-accounts 挂载。调试期发现并修复两个内核缺陷：① compressionWriter 未拦截 WriteHeader 导致 gzip 头在快照后丢失（客户端解压为空）；② guard 自建 localizeWriter 使外层 auto-200 覆写内层 500（改为 context 共享 lw）。Node tsc --noEmit 通过（摘挂载后仍编译）。
 - 2026-09-04 K6: legacybridge 前缀代理 + RegisterFallback 扩展点（sync.Once 幂等）。
+- 2026-09-04 M01: announcements 双模式 store + 全路由（create/patch/publish/unpublish/delete/public/read-tracking/revision 冲突 409/currentRevision）+ mutation guard + 操作日志挂接。发现并修复 Patch 未递增 updated_at 的移植缺陷（Node 语义 revision=max(now,prev+1ms)）。挂载摘除推迟到 P8：scripts/ 与后续切片仍引用该模块（不变量：剩余 Node 必须可编译）。
 - 已知基线问题：`maintenance/internal/ownermanifest/TestVerifyRepositoryBusinessOwnerManifest` 在基线 f9c1fbeac 即失败（`account_api_key_pool_probe_cursor type line 844 is stale`；主目录存在维护者未提交的 route-strategies 改动，Go 校验器与已提交 Node 状态不同步）。本迁移不掩盖：该断言涉及的 Node 文件将在 M08-M10 归档时随迁移消失，届时此失败自然解除；W1-W3 每次全量回归将此失败记为 KNOWN-BASELINE-FAIL，不计入迁移回归门。
