@@ -28,7 +28,7 @@
 
 | WP | 状态 | 提交 | 证据 |
 | --- | --- | --- | --- |
-| K1 http-kernel | in-progress | — | — |
+| K1 http-kernel | archived | 见执行日志 kernel 提交 | `go test -race ./internal/kernel/` 9 项绿；契约对照 shared/http-security.ts、system-error-message.ts、http-compression.ts、deduplication、system-api-app.ts |
 | K2 session-auth | pending | — | — |
 | K3 rate-limit | pending | — | — |
 | K4 oplog-producer | pending | — | — |
@@ -43,3 +43,5 @@
 ## 执行日志
 
 - 2026-09-04 B0.1：基线 M0 记录（如上）；worktree 创建于 `F:\sub2api-lite-migration`；计划文档五件迁入 worktree。B0.2 端点级路由矩阵与逐 job 文件映射在 W1 由主 Agent 生成。
+- 2026-09-04 K1：`gateway/internal/kernel` 完成——响应封装（{data,message}/{message}）、CJK 错误本地化（含裸字符串 payload、上游标记保留）、管理安全头（逐字节对照）、压缩（1024B 阈值/事件流跳过/缓冲语义）、no-store、256KiB JSON 限制（413/400 契约）、404/405 JSON 化、mutation 去重守卫（TTL/清理/键序全对照）、trace/client-ip 上下文。`go test -race` 9 项全绿。
+- 2026-09-04 已知基线问题：`maintenance/internal/ownermanifest/TestVerifyRepositoryBusinessOwnerManifest` 在基线 f9c1fbeac 即失败（`account_api_key_pool_probe_cursor type line 844 is stale`；主目录存在维护者未提交的 route-strategies 改动，Go 校验器与已提交 Node 状态不同步）。本迁移不掩盖：该断言涉及的 Node 文件将在 M08-M10 归档时随迁移消失，届时此失败自然解除；W1-W3 每次全量回归将此失败记为 KNOWN-BASELINE-FAIL，不计入迁移回归门。
