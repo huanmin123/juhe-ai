@@ -8,6 +8,17 @@ import { operationMode, runLoggedOperationAsync, safeChange, viewer } from '../o
 import { setAccountLockAsync, updateAccountLockConfigAsync } from '../../storage/account-lock.repository.js'
 import { accountLockSchema } from './account-request.schemas.js'
 
+const accountLockNotFoundMessage = '账户不存在或无权操作'
+const accountConfigConflictMessage = '账户配置已发生并发变更，请刷新列表后重试'
+const accountLockStateConflictMessage = '账户锁死状态已发生并发变更，请刷新列表后重试'
+
+export function accountLockMutationErrorStatus(error: unknown): 404 | 409 | undefined {
+  if (!(error instanceof Error)) return undefined
+  if (error.message === accountLockNotFoundMessage) return 404
+  if (error.message === accountConfigConflictMessage || error.message === accountLockStateConflictMessage) return 409
+  return undefined
+}
+
 export function registerAccountLockRoutes(router: Router): void {
   router.post('/:id/lock-config', mutationGuard({
     operationKey: 'accounts.lock-config',
@@ -25,7 +36,7 @@ export function registerAccountLockRoutes(router: Router): void {
     try {
       const state = await runLoggedOperationAsync(async () => {
         const result = await updateAccountLockConfigAsync({ accountId: req.params.id, access, ...parsed.data })
-        if (!result) throw new Error('账户不存在或无权操作')
+        if (!result) throw new Error(accountLockNotFoundMessage)
         return {
           result,
           log: {
@@ -42,7 +53,14 @@ export function registerAccountLockRoutes(router: Router): void {
         }
       }, req)
       res.json(ok(state))
-    } catch (error) { next(error) }
+    } catch (error) {
+      const status = accountLockMutationErrorStatus(error)
+      if (status) {
+        res.status(status).json(status === 409 ? badRequest((error as Error).message) : { message: (error as Error).message })
+        return
+      }
+      next(error)
+    }
   })
   for (const [action, enabled] of [['lock', true], ['unlock', false] ] as const) {
     router.post(`/:id/${action}`, mutationGuard({
@@ -58,7 +76,7 @@ export function registerAccountLockRoutes(router: Router): void {
       try {
         const state = await runLoggedOperationAsync(async () => {
           const result = await setAccountLockAsync({ accountId: req.params.id, enabled, access, ...parsed.data })
-          if (!result) throw new Error('账户不存在或无权操作')
+          if (!result) throw new Error(accountLockNotFoundMessage)
           return {
             result,
             log: {
@@ -73,7 +91,11 @@ export function registerAccountLockRoutes(router: Router): void {
         }, req)
         res.json(ok(state))
       } catch (error) {
-        if (error instanceof Error && error.message === '账户不存在或无权操作') { res.status(404).json({ message: error.message }); return }
+        const status = accountLockMutationErrorStatus(error)
+        if (status) {
+          res.status(status).json(status === 409 ? badRequest((error as Error).message) : { message: (error as Error).message })
+          return
+        }
         next(error)
       }
     })

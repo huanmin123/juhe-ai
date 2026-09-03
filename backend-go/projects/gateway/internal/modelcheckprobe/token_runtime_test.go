@@ -34,10 +34,14 @@ func (deterministicLimits) MaxInputTokens(string, string, modelcheckprofile.Prot
 func TestRunTokenIntegrityRequiresUsageAndUsesVersionedSnapshot(t *testing.T) {
 	item, err := RunTokenIntegrity(context.Background(), modelcheckprofile.ProtocolOpenAIResponses, "gpt-5.6-sol", deterministicTokenizer{}, func(_ context.Context, request Request) (Result, error) {
 		var body struct {
-			Input string `json:"input"`
+			Input           string `json:"input"`
+			MaxOutputTokens int    `json:"max_output_tokens"`
 		}
 		if err := json.Unmarshal(request.Body, &body); err != nil {
 			t.Fatal(err)
+		}
+		if body.MaxOutputTokens < 16 {
+			t.Fatalf("Responses token integrity max_output_tokens=%d, want >= 16", body.MaxOutputTokens)
 		}
 		count := 0
 		for index := 0; index+1 < len(body.Input); index++ {

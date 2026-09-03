@@ -143,14 +143,14 @@ const validEvidence = {
           'super_priority_enabled', 'fallback_enabled', 'client_compatibility', 'schedulable',
           'availability_schedule_json', 'account_expires_at',
           'temporary_unavailable_continuous_probe_enabled', 'health_check_model', 'health_check_endpoint_mode',
-          'health_check_failure_count', 'balance_query_enabled', 'balance_query_config_json',
+          'balance_query_enabled', 'balance_query_config_json',
           'authorization_instance_source_account_id', 'authorization_instance_authorization_id',
           'authorization_instance_owner_system_account_id'
         ],
         generatedColumns: [
           'credentials_encrypted', 'credential_fingerprint', 'credential_mask',
           'oauth_access_token_expires_at', 'oauth_refresh_token_present',
-          'availability_schedule_next_check_at', 'cooldown_retest_failure_count', 'stream_failure_count',
+          'availability_schedule_next_check_at', 'cooldown_retest_failure_count', 'health_check_failure_count', 'stream_failure_count',
           'created_at', 'updated_at'
         ],
         clearedColumns: [
@@ -296,6 +296,11 @@ for (const environment of ['test', 'prod']) {
       runtimeImageID: `sha256:${'4'.repeat(64)}`,
       runtimeImageIDKind: 'index',
       runtimeImageIDPlatformManifestDigest: `sha256:${'4'.repeat(64)}`,
+      runtimeImageIDIndexManifestMapping: {
+        indexDigest: `sha256:${'4'.repeat(64)}`,
+        platform: 'linux/amd64',
+        manifestDigest: `sha256:${'4'.repeat(64)}`
+      },
       platform: 'linux/amd64',
       evidenceRef: `runtime/${environment}-node-image-resolution.json`
     },
@@ -306,6 +311,11 @@ for (const environment of ['test', 'prod']) {
       runtimeImageID: `sha256:${'5'.repeat(64)}`,
       runtimeImageIDKind: 'index',
       runtimeImageIDPlatformManifestDigest: `sha256:${'5'.repeat(64)}`,
+      runtimeImageIDIndexManifestMapping: {
+        indexDigest: `sha256:${'5'.repeat(64)}`,
+        platform: 'linux/amd64',
+        manifestDigest: `sha256:${'5'.repeat(64)}`
+      },
       platform: 'linux/amd64',
       evidenceRef: `runtime/${environment}-jobs-image-resolution.json`
     },
@@ -316,6 +326,11 @@ for (const environment of ['test', 'prod']) {
       runtimeImageID: `sha256:${'6'.repeat(64)}`,
       runtimeImageIDKind: 'index',
       runtimeImageIDPlatformManifestDigest: `sha256:${'6'.repeat(64)}`,
+      runtimeImageIDIndexManifestMapping: {
+        indexDigest: `sha256:${'6'.repeat(64)}`,
+        platform: 'linux/amd64',
+        manifestDigest: `sha256:${'6'.repeat(64)}`
+      },
       platform: 'linux/amd64',
       evidenceRef: `runtime/${environment}-gateway-image-resolution.json`
     }
@@ -337,6 +352,14 @@ for (const [index, name] of ACCOUNT_SYNC_EVIDENCE_TABLE_NAMES.entries()) {
     })
   }
 }
+const validProxyTable = validEvidence.accounts.tables.find(table => table.name === 'proxy_profiles')
+validProxyTable.copiedColumns = ['id']
+validProxyTable.generatedColumns = ['password_encrypted']
+validProxyTable.clearedColumns = ['test_status', 'latency_ms', 'outbound_ip', 'outbound_region', 'last_test_message', 'last_tested_at']
+const validApiKeysTable = validEvidence.accounts.tables.find(table => table.name === 'api_keys')
+validApiKeysTable.copiedColumns = ['id']
+validApiKeysTable.generatedColumns = ['key_hash', 'key_prefix', 'key_suffix', 'key_secret_encrypted']
+validApiKeysTable.clearedColumns = ['availability_schedule_next_check_at', 'last_used_at']
 for (const [index, table] of validEvidence.accounts.tables.entries()) {
   table.sourceRows = table.rows
   table.targetRows = table.rows
@@ -446,6 +469,11 @@ mismatchedManifestRuntimeID.release.test.imageResolution['go-gateway'].runtimeIm
 assert.equal(validateTestRehearsalEvidence(mismatchedManifestRuntimeID).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(mismatchedManifestRuntimeID).blockers.join('\n'), /runtimeImageID/)
 
+const mismatchedIndexManifestMapping = structuredClone(validEvidence)
+mismatchedIndexManifestMapping.release.test.imageResolution['go-jobs'].runtimeImageIDIndexManifestMapping.manifestDigest = `sha256:${'8'.repeat(64)}`
+assert.equal(validateTestRehearsalEvidence(mismatchedIndexManifestMapping).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(mismatchedIndexManifestMapping).blockers.join('\n'), /runtimeImageIDIndexManifestMapping\.manifestDigest/)
+
 const unapprovedEnvironmentDiff = structuredClone(validEvidence)
 unapprovedEnvironmentDiff.environment.permittedDiffs.push('temporary allowlist')
 assert.equal(validateTestRehearsalEvidence(unapprovedEnvironmentDiff).status, 'blocked')
@@ -518,6 +546,13 @@ missingRequiredAccountColumn.accounts.tables.find(table => table.name === 'syste
 assert.equal(validateTestRehearsalEvidence(missingRequiredAccountColumn).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(missingRequiredAccountColumn).blockers.join('\n'), /system_accounts.*password_hash/)
 
+const copiedSystemLoginState = structuredClone(validEvidence)
+const copiedSystemAccount = copiedSystemLoginState.accounts.tables.find(table => table.name === 'system_accounts')
+copiedSystemAccount.copiedColumns.push('last_login_at')
+copiedSystemAccount.clearedColumns = copiedSystemAccount.clearedColumns.filter(column => column !== 'last_login_at')
+assert.equal(validateTestRehearsalEvidence(copiedSystemLoginState).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(copiedSystemLoginState).blockers.join('\n'), /system_accounts\.last_login_at/)
+
 const missingAccountTableChecksum = structuredClone(validEvidence)
 delete missingAccountTableChecksum.accounts.tables.find(table => table.name === 'accounts').targetChecksum
 assert.equal(validateTestRehearsalEvidence(missingAccountTableChecksum).status, 'blocked')
@@ -535,12 +570,31 @@ copiedCredentialAccounts.generatedColumns = copiedCredentialAccounts.generatedCo
 assert.equal(validateTestRehearsalEvidence(copiedCredentialFingerprint).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(copiedCredentialFingerprint).blockers.join('\n'), /credential_fingerprint/)
 
+const copiedHealthFailureCount = structuredClone(validEvidence)
+const copiedHealthAccounts = copiedHealthFailureCount.accounts.tables.find(table => table.name === 'accounts')
+copiedHealthAccounts.copiedColumns.push('health_check_failure_count')
+copiedHealthAccounts.generatedColumns = copiedHealthAccounts.generatedColumns.filter(column => column !== 'health_check_failure_count')
+assert.equal(validateTestRehearsalEvidence(copiedHealthFailureCount).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(copiedHealthFailureCount).blockers.join('\n'), /health_check_failure_count/)
+
 const copiedScheduleCheckpoint = structuredClone(validEvidence)
 const copiedScheduleAccounts = copiedScheduleCheckpoint.accounts.tables.find(table => table.name === 'accounts')
 copiedScheduleAccounts.copiedColumns.push('availability_schedule_next_check_at')
 copiedScheduleAccounts.generatedColumns = copiedScheduleAccounts.generatedColumns.filter(column => column !== 'availability_schedule_next_check_at')
 assert.equal(validateTestRehearsalEvidence(copiedScheduleCheckpoint).status, 'blocked')
 assert.match(validateTestRehearsalEvidence(copiedScheduleCheckpoint).blockers.join('\n'), /availability_schedule_next_check_at/)
+
+const copiedProxyObservation = structuredClone(validEvidence)
+const proxyTableWithObservation = copiedProxyObservation.accounts.tables.find(table => table.name === 'proxy_profiles')
+proxyTableWithObservation.copiedColumns.push('last_tested_at')
+assert.equal(validateTestRehearsalEvidence(copiedProxyObservation).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(copiedProxyObservation).blockers.join('\n'), /proxy_profiles\.last_tested_at/)
+
+const copiedApiKeyDerivative = structuredClone(validEvidence)
+const apiKeyWithCopiedHash = copiedApiKeyDerivative.accounts.tables.find(table => table.name === 'api_keys')
+apiKeyWithCopiedHash.copiedColumns.push('key_hash')
+assert.equal(validateTestRehearsalEvidence(copiedApiKeyDerivative).status, 'blocked')
+assert.match(validateTestRehearsalEvidence(copiedApiKeyDerivative).blockers.join('\n'), /api_keys\.key_hash/)
 
 const runtimeTableWithoutReadbackDigest = structuredClone(validEvidence)
 delete runtimeTableWithoutReadbackDigest.accounts.tables.find(table => table.name === 'account_schedule_status_events').readbackDigest

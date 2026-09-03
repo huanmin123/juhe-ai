@@ -371,6 +371,7 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
         dispatchPendingAccountHealthCheck(account)
         return {
           created: true as const,
+          accountId: account.id,
           item: { index }
         }
       } catch (error) {
@@ -391,8 +392,10 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
       }
     }, abortController.signal)
     if (abortController.signal.aborted || res.writableEnded) return
+    const created = results.filter((result): result is { created: true; accountId: string; item: { index: number } } => result.created)
     res.json(ok({
-      createdCount: results.filter((result) => result.created).length,
+      createdCount: created.length,
+      createdIds: created.map((result) => result.accountId),
       failed: results.filter((result) => !result.created).map((result) => result.item)
     }))
   } catch (error) {

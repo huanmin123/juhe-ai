@@ -108,7 +108,12 @@ export const ACCOUNT_SYNC_TABLE_POLICIES: readonly AccountSyncTablePolicy[] = [
   policy('custom_provider_models', 'configuration'),
   policy('provider_default_health_check_models', 'configuration'),
   policy('provider_system_default_health_check_models', 'configuration'),
-  policy('proxy_profiles', 'configuration', ['password_encrypted'], 'proxy 密码必须使用 test canary 或隔离重加密结果'),
+  policy(
+    'proxy_profiles',
+    'configuration',
+    ['password_encrypted'],
+    'proxy 密码必须使用 test canary 或隔离重加密结果；test_status/latency/outbound/last_test* 等生产探测运行态必须清空或按 test 规则生成'
+  ),
   policy('model_quality_policies', 'configuration'),
   policy('model_quality_schedules', 'configuration', [], '只允许 canary；导入时 enabled=false，next_run_at 设为受控时间'),
   policy('account_quality_enforcements', 'runtime-reset', [], '只建结构并清空；由 owner 在 smoke 后重建'),
@@ -146,7 +151,12 @@ export const ACCOUNT_SYNC_TABLE_POLICIES: readonly AccountSyncTablePolicy[] = [
   policy('system_settings', 'configuration'),
   policy('request_quota_hourly_window_configs', 'configuration'),
   policy('request_quota_hourly_window_scope_bindings', 'configuration'),
-  policy('api_keys', 'configuration', ['key_secret_encrypted'], '不得复制生产 key；test 中重新生成并只保存摘要'),
+  policy(
+    'api_keys',
+    'configuration',
+    ['key_hash', 'key_prefix', 'key_suffix', 'key_secret_encrypted'],
+    '不得复制生产 key；test 中重新生成 secret 及 hash/prefix/suffix 派生摘要；availability_schedule_next_check_at/last_used_at 等运行态必须受控重置'
+  ),
   policy('account_schedule_status_events', 'runtime-reset', [], '只建结构并清空，readback 必须为 0'),
   policy('api_key_schedule_status_events', 'runtime-reset', [], '只建结构并清空，readback 必须为 0')
 ]

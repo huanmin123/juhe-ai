@@ -37,3 +37,21 @@ func TestWindowAggregatorSeparatesRoles(t *testing.T) {
 		t.Fatalf("expected separate role windows, got %d", got)
 	}
 }
+
+func TestCPUPercentUsesBusyRuntimeTime(t *testing.T) {
+	start := time.Unix(100, 0)
+	value, used, valid := cpuPercentFromTotals(12, 8, true, 2, start, start.Add(2*time.Second))
+	if !valid || used != 4 || value == nil || *value != 100 {
+		t.Fatalf("expected 2 seconds of busy CPU over 2 seconds, got value=%v used=%v valid=%v", value, used, valid)
+	}
+
+	value, used, valid = cpuPercentFromTotals(12, 8, true, 5, start, start.Add(2*time.Second))
+	if !valid || used != 4 || value != nil {
+		t.Fatalf("expected a non-monotonic busy counter to reset without a negative rate, got value=%v used=%v valid=%v", value, used, valid)
+	}
+
+	value, used, valid = cpuPercentFromTotals(7, 8, true, 1, start, start.Add(time.Second))
+	if valid || value != nil || used != 0 {
+		t.Fatalf("expected total below idle to be rejected, got value=%v used=%v valid=%v", value, used, valid)
+	}
+}

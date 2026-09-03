@@ -23,6 +23,7 @@ import {
   buildAccountSavePayload,
   buildOAuthCreateCommonPayload,
   resolveFormProviderProfile,
+  validateAccountLockConfigForm,
   validateAccountSaveForm,
   type AccountSavePayload
 } from './accountSavePayload'
@@ -56,7 +57,7 @@ interface UseAccountEditSaveFlowOptions {
   createScopeParams: ComputedRef<AccountScopeParams>
   editingAccountDetail: Ref<AccountEditBasicDetail | undefined>
   editingAccountAdvancedDetail: Ref<AccountAdvancedDetail | undefined>
-  editingAdvancedBaseline: ReadonlyValue<AccountSavePayload | undefined>
+  editingAdvancedBaseline: Ref<AccountSavePayload | undefined>
   editingBasicBaseline: ReadonlyValue<AccountBasicEditSnapshot | undefined>
   editingAccountScopeParams: () => AccountScopeParams
   editingAuthorizedAccount: ComputedRef<boolean>
@@ -80,12 +81,21 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   const saving = submittingRef('accounts.save')
   const authLoading = ref(false)
   const authResult = ref<OAuthAuthURLResult>()
+  const pendingCreatedLock = ref<{ accountIds: string[] }>()
+
+  watch(options.modalOpen, (open) => {
+    if (!open) pendingCreatedLock.value = undefined
+  })
 
   watch(() => options.form.oauthType, () => {
     authResult.value = undefined
   })
 
   const saveAccount = submitAction('accounts.save', async () => {
+    if (pendingCreatedLock.value) {
+      await retryPendingCreatedLock()
+      return
+    }
     if (options.editingAuthorizedAccount.value) {
       await saveAuthorizedAccountEdit()
       return
@@ -111,6 +121,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     })
     if (validationMessage) {
       message.warning(validationMessage)
+      return
+    }
+    const lockConfigValidationMessage = validateAccountLockConfigForm(options.form)
+    if (lockConfigValidationMessage) {
+      message.warning(lockConfigValidationMessage)
       return
     }
 
@@ -161,9 +176,13 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
             : await api.myAccounts.update(options.editingId.value, updatePayload)
           await refreshEditedAccountRows(updated)
           lockConfigRevision = updated.configRevision
+          options.editingAdvancedBaseline.value = payload
+          options.form.statusSelectionExplicit = false
+          syncLoadedAccountRevision(updated.configRevision)
         }
         if (lockConfigChanged) {
           await updateAccountLockConfig(options.editingId.value, lockConfigRevision)
+          syncLoadedAccountLockConfig(lockConfigRevision + 1)
         }
         message.success('账户已更新')
         options.modalOpen.value = false
@@ -179,10 +198,12 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
           const created = usesManagedOAuthCreateFlow(options.form, options.providers.value) && options.form.oauthMode !== 'access_token'
             ? await createOAuthAccountFromUnifiedForm()
             : await createApiKeyAccount(payload)
+          await saveCreatedAccountLockConfig(created)
           message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，等待后台检查')
         }
       } else {
         const created = await createApiKeyAccount(payload)
+        await saveCreatedAccountLockConfig(created)
         message.success(created?.status === 'active' ? '账户已创建并启用' : '账户已创建，等待后台检查')
       }
       options.modalOpen.value = false
@@ -260,9 +281,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
           : await api.myAccounts.update(account.id, payload)
         await refreshEditedAccountRows(updated)
         lockConfigRevision = updated.configRevision
+        syncLoadedAccountRevision(updated.configRevision)
       }
       if (lockConfigChanged) {
         await updateAccountLockConfig(account.id, lockConfigRevision)
+        syncLoadedAccountLockConfig(lockConfigRevision + 1)
       }
       message.success('授权账户已更新')
       options.modalOpen.value = false
@@ -361,10 +384,10 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   }
 
   async function updateAccountLockConfig(accountId: string, expectedConfigRevision: number): Promise<void> {
+    const lockConfigValidationMessage = validateAccountLockConfigForm(options.form)
+    if (lockConfigValidationMessage) throw new Error(lockConfigValidationMessage)
     const timeout = Math.trunc(Number(options.form.lockDeathTimeoutSeconds))
     const interval = Math.trunc(Number(options.form.lockRetryIntervalSeconds))
-    if (!Number.isInteger(timeout) || timeout < 30 || timeout > 3600) throw new Error('锁死死期必须是 30..3600 秒的整数')
-    if (!Number.isInteger(interval) || interval < 5 || interval > 30) throw new Error('锁死重试间隔必须是 5..30 秒的整数')
     if (!Number.isInteger(expectedConfigRevision) || Number(expectedConfigRevision) < 1) {
       throw new Error('账户配置版本缺失，请刷新列表后重试')
     }
@@ -377,6 +400,89 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       await api.accounts.updateLockConfig(accountId, payload, options.editingAccountScopeParams())
     } else {
       await api.myAccounts.updateLockConfig(accountId, payload)
+    }
+  }
+
+  async function saveCreatedAccountLockConfig(created: AccountCreateResult): Promise<void> {
+    await saveCreatedAccountLockConfigs(created?.id ? [created.id] : [])
+  }
+
+  async function saveCreatedAccountLockConfigs(accountIds: readonly string[]): Promise<void> {
+    const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
+    if (!ids.length || !accountLockConfigDiffersFromDefaults()) return
+    pendingCreatedLock.value = { accountIds: ids }
+    try {
+      for (const [index, accountId] of ids.entries()) {
+        const configRevision = await loadCreatedAccountConfigRevision(accountId)
+        await updateAccountLockConfig(accountId, configRevision)
+        pendingCreatedLock.value = { accountIds: ids.slice(index + 1) }
+      }
+      pendingCreatedLock.value = undefined
+    } catch (error) {
+      await refreshAfterPartialCreate()
+      throw new Error(`账户已创建，但锁死配置保存失败：${options.extractApiErrorMessage(error, '请点击确定重试')}`)
+    }
+  }
+
+  async function retryPendingCreatedLock(): Promise<void> {
+    const pending = pendingCreatedLock.value
+    if (!pending?.accountIds.length) return
+    try {
+      const ids = [...pending.accountIds]
+      for (const [index, accountId] of ids.entries()) {
+        const configRevision = await loadCreatedAccountConfigRevision(accountId)
+        await updateAccountLockConfig(accountId, configRevision)
+        pendingCreatedLock.value = { accountIds: ids.slice(index + 1) }
+      }
+      pendingCreatedLock.value = undefined
+      message.success('账户锁死配置已保存')
+      options.modalOpen.value = false
+      await options.loadData()
+    } catch (error) {
+      console.error(error)
+      message.error(`账户已创建，但锁死配置仍未保存：${options.extractApiErrorMessage(error, '请重试')}`)
+    }
+  }
+
+  async function loadCreatedAccountConfigRevision(accountId: string): Promise<number> {
+    const detail = options.isManagementView.value
+      ? await api.accounts.editBasicDetail(accountId, options.createScopeParams.value)
+      : await api.myAccounts.editBasicDetail(accountId)
+    const configRevision = requiredAccountConfigRevision(detail)
+    if (configRevision === undefined) throw new Error('账户配置版本缺失，请点击确定重试')
+    return configRevision
+  }
+
+  async function refreshAfterPartialCreate(): Promise<void> {
+    try {
+      await options.loadData()
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  function accountLockConfigDiffersFromDefaults(): boolean {
+    return options.form.lockDeathTimeoutSeconds !== 300 || options.form.lockRetryIntervalSeconds !== 5
+  }
+
+  function syncLoadedAccountRevision(configRevision: number): void {
+    if (!Number.isInteger(configRevision) || configRevision < 1) return
+    if (options.editingAccountDetail.value) {
+      options.editingAccountDetail.value = { ...options.editingAccountDetail.value, configRevision }
+    }
+    if (options.editingAccountAdvancedDetail.value) {
+      options.editingAccountAdvancedDetail.value = { ...options.editingAccountAdvancedDetail.value, configRevision }
+    }
+  }
+
+  function syncLoadedAccountLockConfig(configRevision: number): void {
+    syncLoadedAccountRevision(configRevision)
+    if (options.editingAccountAdvancedDetail.value) {
+      options.editingAccountAdvancedDetail.value = {
+        ...options.editingAccountAdvancedDetail.value,
+        lockDeathTimeoutSeconds: Math.trunc(Number(options.form.lockDeathTimeoutSeconds)),
+        lockRetryIntervalSeconds: Math.trunc(Number(options.form.lockRetryIntervalSeconds))
+      }
     }
   }
 
@@ -446,6 +552,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     const result = options.isManagementView.value
       ? await api.grokOAuth.ssoToOAuth({ ...commonPayload, ssoTokens }, options.createScopeParams.value)
       : await api.myGrokOAuth.ssoToOAuth({ ...commonPayload, ssoTokens })
+    if (accountLockConfigDiffersFromDefaults() && !Array.isArray(result.createdIds)) {
+      message.warning('Grok SSO 批量导入未返回创建账户 ID，锁死配置未应用，请导入后逐个编辑账户')
+      return false
+    }
+    if (Array.isArray(result.createdIds)) await saveCreatedAccountLockConfigs(result.createdIds)
     if (!result.failed.length) {
       message.success(`Grok SSO 导入完成：成功 ${result.createdCount} 个`)
       return true

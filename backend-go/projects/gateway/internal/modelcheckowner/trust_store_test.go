@@ -10,6 +10,24 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestCompareTrustCursorUsesParsedInstants(t *testing.T) {
+	for _, test := range []struct {
+		name, left, right string
+		want              int
+	}{
+		{name: "whole second before fractional", left: "2026-08-31T10:00:00Z", right: "2026-08-31T10:00:00.1Z", want: -1},
+		{name: "shorter fractional before longer", left: "2026-08-31T10:00:00.12345678Z", right: "2026-08-31T10:00:00.123456789Z", want: -1},
+		{name: "offsets compare by instant", left: "2026-08-31T11:00:00+01:00", right: "2026-08-31T10:00:00.1Z", want: -1},
+		{name: "same instant uses ID", left: "2026-08-31T10:00:00Z", right: "2026-08-31T11:00:00+01:00", want: -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := compareTrustCursor(test.left, "id-a", test.right, "id-b"); got != test.want {
+				t.Fatalf("compareTrustCursor(%q,%q)=%d, want %d", test.left, test.right, got, test.want)
+			}
+		})
+	}
+}
+
 func TestProjectTrustReceiptsCursorAndLatestAreReplaySafe(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trust.db")
 	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")

@@ -12,10 +12,7 @@ import {
 
 const sha256Pattern = /^[0-9a-f]{64}$/u
 const canaryCredentialPolicies = new Set(['test-only-equivalent', 'isolated-reencrypt'])
-const accountSelfForeignKeyPolicies = new Set([
-  'source-before-authorization-instance',
-  'deferred-constraints-verified'
-])
+const accountSelfForeignKeyPolicies = new Set(['source-before-authorization-instance'])
 const providerSelfForeignKeyPolicy = 'parent-before-child'
 
 export interface RehearsalAccountSyncTablePlan {
@@ -338,6 +335,10 @@ function validateSpecialTableColumns(
 
   if (report.name === 'system_accounts') {
     requireGenerated('password_hash')
+    forbidCopied('last_login_at')
+    if (columns.has('last_login_at') && !cleared.has('last_login_at') && !generated.has('last_login_at')) {
+      blockers.push('system_accounts: last_login_at 必须清空或按 test 规则生成')
+    }
   }
   if (report.name === 'accounts') {
     requireGenerated('credentials_encrypted')
@@ -367,8 +368,15 @@ function validateSpecialTableColumns(
         blockers.push(`accounts: ${runtimeColumn} 必须清空或按 test 规则生成`)
       }
     }
+    for (const counterColumn of ['cooldown_retest_failure_count', 'health_check_failure_count', 'stream_failure_count']) {
+      forbidCopied(counterColumn)
+      if (columns.has(counterColumn)) {
+        requireGenerated(counterColumn)
+        if (cleared.has(counterColumn)) blockers.push(`accounts: ${counterColumn} 必须生成 test 初始值，不能只清空`)
+      }
+    }
     if (!accountSelfForeignKeyPolicies.has(tablePlan.selfForeignKeyPolicy ?? '')) {
-      blockers.push('accounts.selfForeignKeyPolicy 必须为 source-before-authorization-instance 或 deferred-constraints-verified')
+      blockers.push('accounts.selfForeignKeyPolicy 必须为 source-before-authorization-instance（执行器未实现 deferred 约束）')
     }
     if (cleared.has('authorization_instance_source_account_id')) {
       blockers.push('accounts: 不得统一清空 authorization_instance_source_account_id')
@@ -391,7 +399,26 @@ function validateSpecialTableColumns(
     }
   }
   if (report.name === 'api_keys') {
+    for (const derivedColumn of ['key_hash', 'key_prefix', 'key_suffix', 'key_secret_encrypted']) {
+      requireGenerated(derivedColumn)
+    }
+    for (const runtimeColumn of ['availability_schedule_next_check_at', 'last_used_at']) {
+      forbidCopied(runtimeColumn)
+      if (columns.has(runtimeColumn) && !cleared.has(runtimeColumn) && !generated.has(runtimeColumn)) {
+        blockers.push(`api_keys: ${runtimeColumn} 必须清空或按 test 规则生成`)
+      }
+    }
     requireGenerated('key_secret_encrypted')
+  }
+  if (report.name === 'proxy_profiles') {
+    for (const runtimeColumn of [
+      'test_status', 'latency_ms', 'outbound_ip', 'outbound_region', 'last_test_message', 'last_tested_at'
+    ]) {
+      forbidCopied(runtimeColumn)
+      if (columns.has(runtimeColumn) && !cleared.has(runtimeColumn) && !generated.has(runtimeColumn)) {
+        blockers.push(`proxy_profiles: ${runtimeColumn} 必须清空或按 test 规则生成`)
+      }
+    }
   }
   if (report.name === 'model_quality_schedules') {
     for (const runtimeColumn of ['enabled', 'next_run_at', 'last_run_id', 'last_run_at', 'last_run_status', 'lease_owner', 'lease_until']) {

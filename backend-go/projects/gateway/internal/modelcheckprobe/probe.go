@@ -214,8 +214,9 @@ func buildBasicWithEndpointMode(protocol modelcheckprofile.Protocol, model, prom
 
 // buildBasicWithTunings mirrors the Node payload factories that vary per-probe
 // output budgets and sampling temperature. Protocol floors match the Node
-// oracle exactly: chat requests never ask for fewer than 64 completion tokens
-// and Gemini never fewer than 128; Anthropic is sent verbatim without a
+// oracle exactly: Responses requests never ask for fewer than 16 output
+// tokens, chat requests never ask for fewer than 64 completion tokens and
+// Gemini never fewer than 128; Anthropic is sent verbatim without a
 // temperature field.
 func buildBasicWithTunings(protocol modelcheckprofile.Protocol, model, prompt, endpointMode string, stream bool, maxOutputTokens int, temperature float64) (Request, error) {
 	request, err := buildBasicWithEndpointMode(protocol, model, prompt, stream, endpointMode)
@@ -228,7 +229,11 @@ func buildBasicWithTunings(protocol modelcheckprofile.Protocol, model, prompt, e
 	}
 	switch protocol {
 	case modelcheckprofile.ProtocolOpenAIResponses:
-		payload["max_output_tokens"] = maxOutputTokens
+		tokens := maxOutputTokens
+		if tokens < 16 {
+			tokens = 16
+		}
+		payload["max_output_tokens"] = tokens
 		payload["temperature"] = temperature
 	case modelcheckprofile.ProtocolOpenAIChat:
 		tokens := maxOutputTokens

@@ -108,6 +108,14 @@ assert.match(jenkinsfile, /if \[ '\$\{environmentName\}' = 'prod' \] && \[ -f '.
   'release state 提交不得对可选历史文件执行不存在路径的 git add')
 assert.match(jenkinsfile, /after_matches[\s\S]*?写入后回读命中数/,
   '镜像 digest 写入后必须回读目标块，避免 kustomization 与 metadata 不一致')
+assert(
+  jenkinsfile.includes('my \\$temporary = "\\$file.tmp.$$"')
+    && jenkinsfile.includes('rename \\$temporary, \\$file'),
+  '镜像 digest 写回必须使用临时文件原子替换，避免截断发布文件'
+)
+assert(jenkinsfile.includes('normalize_line_endings')
+  && jenkinsfile.includes('< "\\$target" > "\\$temporary"'),
+  'J3a 换行规范化必须读取目标文件内容，不能把空 stdin 写回 release 文件')
 assert.match(jenkinsfile, /def writeReleaseState\([\s\S]*?assert_metadata_value sourceCommit/,
   'release metadata 写入必须对关键字段做唯一命中数与目标值回读，避免静默漂移')
 assert.match(jenkinsfile, /environmentName.*test[\s\S]*?assert_metadata_value releaseMode 'single-active-stop'/,

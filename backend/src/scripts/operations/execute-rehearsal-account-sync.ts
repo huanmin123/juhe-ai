@@ -18,6 +18,7 @@ import {
   type RehearsalAccountSyncPlan,
   type RehearsalAccountSyncTablePlan
 } from './validate-rehearsal-account-sync-plan.js'
+import { decryptJson, hashSecret } from '../../storage/crypto.js'
 
 type Row = Record<string, unknown>
 type QueryClient = Pick<pg.Client, 'query'>
@@ -74,6 +75,7 @@ export interface RehearsalAccountSyncExecutionReport {
 const businessSchema = 'juhe_business'
 const confirmation = 'I_UNDERSTAND_TEST_TARGET_ONLY'
 const sha256Pattern = /^[0-9a-f]{64}$/u
+const minimumRehearsalSecretLength = 32
 
 export function stableKey(values: readonly unknown[]): string {
   return JSON.stringify(values.map((value) => normalizeValue(value)))
@@ -92,8 +94,44 @@ export function assertExecuteEnvironment(env: NodeJS.ProcessEnv): void {
   if (env.JUHE_AI_REHEARSAL_EXECUTE_CONFIRM !== confirmation) {
     throw new Error(`执行账户同步必须显式设置 JUHE_AI_REHEARSAL_EXECUTE_CONFIRM=${confirmation}`)
   }
+  const rehearsalSecret = env.JUHE_AI_SECRET?.trim()
+  if (!rehearsalSecret || rehearsalSecret.length < minimumRehearsalSecretLength) {
+    throw new Error(`执行账户同步必须显式设置至少 ${minimumRehearsalSecretLength} 位 JUHE_AI_SECRET；禁止使用隐式开发密钥`)
+  }
   if (!env.JUHE_AI_REHEARSAL_SOURCE_POSTGRES_URL?.trim()) throw new Error('JUHE_AI_REHEARSAL_SOURCE_POSTGRES_URL 未配置')
   if (!env.JUHE_AI_REHEARSAL_TARGET_POSTGRES_URL?.trim()) throw new Error('JUHE_AI_REHEARSAL_TARGET_POSTGRES_URL 未配置')
+}
+
+/**
+ * API Key 的 hash/prefix/suffix 必须由同一个 test-only key secret 派生。
+ * 只在内存中解密并比较，错误信息不包含 key 或密文。
+ */
+export function assertGeneratedApiKeyValues(values: Record<string, unknown>): void {
+  const encrypted = values.key_secret_encrypted
+  if (typeof encrypted !== 'string' || !encrypted.trim()) {
+    throw new Error('api_keys.key_secret_encrypted 缺少 test 专用密文')
+  }
+  let decrypted: unknown
+  try {
+    decrypted = decryptJson<unknown>(encrypted)
+  } catch {
+    throw new Error('api_keys.key_secret_encrypted 无法使用当前 JUHE_AI_SECRET 解密')
+  }
+  const key = decrypted && typeof decrypted === 'object' && !Array.isArray(decrypted)
+    ? (decrypted as Record<string, unknown>).key
+    : undefined
+  if (typeof key !== 'string' || !key.trim()) {
+    throw new Error('api_keys.key_secret_encrypted 未包含有效 test key')
+  }
+  if (values.key_hash !== hashSecret(key)) {
+    throw new Error('api_keys.key_hash 与 test key 派生值不一致')
+  }
+  if (values.key_prefix !== key.slice(0, 8)) {
+    throw new Error('api_keys.key_prefix 与 test key 派生值不一致')
+  }
+  if (values.key_suffix !== key.slice(-8)) {
+    throw new Error('api_keys.key_suffix 与 test key 派生值不一致')
+  }
 }
 
 export function validateScopeManifest(
@@ -287,6 +325,7 @@ async function copyTable(
   for (const row of selected) {
     const rowKey = stableKey(primaryKey.map((item) => row[item.name]))
     const generatedForRow = generated[rowKey] ?? generated['*'] ?? {}
+    if (table === 'api_keys') assertGeneratedApiKeyValues(generatedForRow)
     const columns: string[] = []
     const values: unknown[] = []
     const expectedValues: Record<string, unknown> = {}

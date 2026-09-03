@@ -26,10 +26,13 @@ type RuntimeSnapshot struct {
 	HeapLiveBytes      uint64
 	HeapObjects        uint64
 	// CPUSecondsTotal is the portable Go runtime counter
-	// /cpu/classes/total:cpu-seconds. It is intentionally not read from an
-	// operating-system process API, so Windows development and Linux deployment
-	// have the same metric semantics. CPUPercent is the rate against one core
-	// (100% = one full core), so a multi-core process may exceed 100%.
+	// /cpu/classes/total:cpu-seconds. It is the estimated CPU capacity
+	// available to the Go runtime, not process CPU consumption. It is
+	// intentionally not read from an operating-system process API, so Windows
+	// development and Linux deployment have the same metric semantics.
+	// CPUPercent is derived from total-idle and represents CPU consumed by the
+	// Go runtime, normalized against one available core (100% = one full core).
+	// A multi-core process may exceed 100%.
 	CPUSecondsTotal float64
 	CPUPercent      *float64
 	// RSSBytes and FDCount are retained as nullable storage compatibility
@@ -44,6 +47,10 @@ type RuntimeSnapshot struct {
 // Snapshot returns a point-in-time runtime sample without adding labels or
 // business dimensions.
 func (c *Collector) Snapshot() RuntimeSnapshot {
+	return c.snapshot(true)
+}
+
+func (c *Collector) snapshot(updateCPU bool) RuntimeSnapshot {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	samples := make([]metrics.Sample, len(c.samples))
@@ -53,13 +60,17 @@ func (c *Collector) Snapshot() RuntimeSnapshot {
 	metrics.Read(samples)
 	sampledAt := time.Now().UTC()
 	result := RuntimeSnapshot{SampledAt: sampledAt, ProcessPID: os.Getpid(), Service: c.service, Role: c.role, HeapAllocBytes: mem.HeapAlloc, HeapObjects: mem.HeapObjects, UptimeSeconds: sampledAt.Sub(c.started).Seconds()}
-	cpuSeconds, cpuSecondsValid := 0.0, false
+	cpuTotalSeconds, cpuIdleSeconds := 0.0, 0.0
+	cpuTotalValid, cpuIdleValid := false, false
 	for _, sample := range samples {
 		switch sample.Value.Kind() {
 		case metrics.KindFloat64:
 			if sample.Name == cpuTotalMetric {
-				cpuSeconds = sample.Value.Float64()
-				cpuSecondsValid = true
+				cpuTotalSeconds = sample.Value.Float64()
+				cpuTotalValid = true
+			} else if sample.Name == cpuIdleMetric {
+				cpuIdleSeconds = sample.Value.Float64()
+				cpuIdleValid = true
 			}
 		case metrics.KindUint64:
 			value := sample.Value.Uint64()
@@ -79,25 +90,39 @@ func (c *Collector) Snapshot() RuntimeSnapshot {
 			}
 		}
 	}
-	if cpuSecondsValid {
-		result.CPUSecondsTotal = cpuSeconds
+	if cpuTotalValid {
+		result.CPUSecondsTotal = cpuTotalSeconds
 	}
-	c.state.mu.Lock()
-	if cpuSecondsValid && c.state.hasLastCPU && sampledAt.After(c.state.lastAt) && result.CPUSecondsTotal >= c.state.lastCPU {
-		value := (result.CPUSecondsTotal - c.state.lastCPU) / sampledAt.Sub(c.state.lastAt).Seconds() * 100
-		result.CPUPercent = &value
+	if updateCPU && cpuTotalValid && cpuIdleValid {
+		c.state.mu.Lock()
+		value, usedCPUSeconds, valid := cpuPercentFromTotals(cpuTotalSeconds, cpuIdleSeconds, c.state.hasLastCPU, c.state.lastCPU, c.state.lastAt, sampledAt)
+		if valid {
+			result.CPUPercent = value
+			c.state.lastAt = sampledAt
+			c.state.lastCPU = usedCPUSeconds
+			c.state.hasLastCPU = true
+		}
+		c.state.mu.Unlock()
 	}
-	c.state.lastAt = sampledAt
-	if cpuSecondsValid {
-		c.state.lastCPU = result.CPUSecondsTotal
-		c.state.hasLastCPU = true
-	}
-	c.state.mu.Unlock()
 	c.mu.Lock()
 	c.latest = result
-	c.latestValid = true
 	c.mu.Unlock()
 	return result
+}
+
+// cpuPercentFromTotals converts the runtime CPU capacity and idle counters to
+// a busy-CPU rate normalized against one core. A non-monotonic sample is kept
+// out of the rate calculation until the next valid baseline is available.
+func cpuPercentFromTotals(totalSeconds, idleSeconds float64, hasLast bool, lastUsedSeconds float64, lastAt, sampledAt time.Time) (*float64, float64, bool) {
+	if totalSeconds < idleSeconds {
+		return nil, 0, false
+	}
+	usedSeconds := totalSeconds - idleSeconds
+	if !hasLast || !sampledAt.After(lastAt) || usedSeconds < lastUsedSeconds {
+		return nil, usedSeconds, true
+	}
+	value := (usedSeconds - lastUsedSeconds) / sampledAt.Sub(lastAt).Seconds() * 100
+	return &value, usedSeconds, true
 }
 
 type WindowAggregate struct {

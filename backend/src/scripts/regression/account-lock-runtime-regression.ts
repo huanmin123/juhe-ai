@@ -2,14 +2,24 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
+  accountLockRetryReservationDueAtMs,
   accountLockBlocksCrossAccount,
   normalizeAccountLockDeathTimeoutSeconds,
   normalizeAccountLockRetryIntervalSeconds,
   sampleLockDelayMs
 } from '../../storage/account-lock.repository.js'
+import { accountLockMutationErrorStatus } from '../../modules/accounts/account-lock.routes.js'
 
 assert.equal(normalizeAccountLockDeathTimeoutSeconds(undefined), 300)
 assert.equal(normalizeAccountLockRetryIntervalSeconds(undefined), 5)
+const reservationNow = Date.now()
+assert.equal(accountLockRetryReservationDueAtMs(reservationNow - 60_001, reservationNow), reservationNow, '过期超过 reservation TTL 的 due 必须从现在起租约')
+assert.equal(accountLockRetryReservationDueAtMs(reservationNow + 5_000, reservationNow), reservationNow + 5_000, '未到期 due 必须保留共享重试时间')
+assert.equal(accountLockRetryReservationDueAtMs(undefined, reservationNow), undefined, '无 due 时必须允许采样新的重试窗口')
+assert.equal(accountLockMutationErrorStatus(new Error('账户不存在或无权操作')), 404, '锁配置/锁定/解锁的账户缺失必须返回 404')
+assert.equal(accountLockMutationErrorStatus(new Error('账户配置已发生并发变更，请刷新列表后重试')), 409, '账户配置 CAS 冲突必须返回 409')
+assert.equal(accountLockMutationErrorStatus(new Error('账户锁死状态已发生并发变更，请刷新列表后重试')), 409, '账户锁状态 CAS 冲突必须返回 409')
+assert.equal(accountLockMutationErrorStatus(new Error('其他错误')), undefined, '未知账户锁错误必须保留原有错误处理')
 assert.throws(() => normalizeAccountLockDeathTimeoutSeconds(29))
 assert.throws(() => normalizeAccountLockRetryIntervalSeconds(31))
 for (const base of [5, 10, 11, 30]) {

@@ -17,7 +17,12 @@ type HealthFact struct {
 	ObservedAt                                                                            time.Time
 	Score, Threshold, RecoveryIntervalMinutes                                             int
 	Level, ErrorCode, ErrorMessage, PenaltyAction                                         string
-	EnforcementAllowed                                                                    bool
+	// HardQualityFailure carries an explicit quality gate that is independent
+	// of the aggregate score (currently an undeclared response-model mismatch).
+	// It is only supplied by the owning runtime; incomplete evidence without an
+	// explicit hard failure remains fail-closed below.
+	HardQualityFailure bool
+	EnforcementAllowed bool
 }
 
 // HealthReader is the narrow read-only contract that a future J3c consumer
@@ -93,7 +98,7 @@ func (e *HealthSyncRetryExecutor) Execute(ctx context.Context, task ScheduleTask
 		if retry.RunID != payload.RunID {
 			continue
 		}
-		return e.Projector.Project(ctx, retry.RunID, EvidenceAggregate{Formed: retry.EvidenceFormed, TrustFormed: retry.TrustFormed}, HealthFact{AccountID: retry.AccountID, SystemAccountID: retry.SystemAccountID, StatHour: retry.StatHour, RunID: retry.RunID, ProviderCode: retry.ProviderCode, Model: retry.Model, Profile: retry.Profile, ScheduleID: retry.ScheduleID, PolicyRevision: retry.PolicyRevision, AccountConfigRevision: retry.AccountConfigRevision, PenaltyAction: retry.PenaltyAction, RecoveryIntervalMinutes: retry.RecoveryIntervalMinutes, EnforcementAllowed: retry.EnforcementAllowed, ObservedAt: retry.ObservedAt, Score: retry.Score, Threshold: retry.Threshold, Level: retry.Level})
+		return e.Projector.Project(ctx, retry.RunID, EvidenceAggregate{Formed: retry.EvidenceFormed, TrustFormed: retry.TrustFormed}, HealthFact{AccountID: retry.AccountID, SystemAccountID: retry.SystemAccountID, StatHour: retry.StatHour, RunID: retry.RunID, ProviderCode: retry.ProviderCode, Model: retry.Model, Profile: retry.Profile, ScheduleID: retry.ScheduleID, PolicyRevision: retry.PolicyRevision, AccountConfigRevision: retry.AccountConfigRevision, PenaltyAction: retry.PenaltyAction, RecoveryIntervalMinutes: retry.RecoveryIntervalMinutes, EnforcementAllowed: retry.EnforcementAllowed, ObservedAt: retry.ObservedAt, Score: retry.Score, Threshold: retry.Threshold, Level: retry.Level, HardQualityFailure: retry.HardQualityFailure})
 	}
 	return fmt.Errorf("J3b health retry run %s not found", payload.RunID)
 }
@@ -115,7 +120,8 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 	// authorize enforcement. Quick diagnostics intentionally have a smaller
 	// family set than full diagnostics and follow Node's completed quality
 	// decision path without the full formed+trusted gate.
-	quickQualityFailure := fact.Profile == "quick" && fact.Level != "unavailable" && fact.Score < fact.Threshold
+	qualityFailure := fact.Score < fact.Threshold || fact.Level == "suspicious" || fact.HardQualityFailure
+	quickQualityFailure := fact.Profile == "quick" && fact.Level != "unavailable" && qualityFailure
 	if fact.Level != "unavailable" && !quickQualityFailure && (!aggregate.Formed || !aggregate.TrustFormed) {
 		p.markHealthSyncFailure(ctx, runID)
 		return errors.New("J3b evidence is not formed; health projection is denied")
@@ -124,13 +130,13 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 		p.markHealthSyncFailure(ctx, runID)
 		return errors.New("J3b health projection scope is incomplete")
 	}
-	if fact.Score >= fact.Threshold && fact.Level != "unavailable" && fact.Level != "suspicious" {
+	if fact.Score >= fact.Threshold && fact.Level != "unavailable" && fact.Level != "suspicious" && !fact.HardQualityFailure {
 		return errors.New("J3b health projection requires a quality failure or unavailable result")
 	}
 	if fact.Level == "unavailable" {
 		fact.EnforcementAllowed = false
 	}
-	if (fact.Score < fact.Threshold || fact.Level == "suspicious") && fact.EnforcementAllowed {
+	if qualityFailure && fact.EnforcementAllowed {
 		if p.Enforcement == nil {
 			p.markHealthSyncFailure(ctx, runID)
 			return errors.New("J3b quality enforcement owner is not configured")

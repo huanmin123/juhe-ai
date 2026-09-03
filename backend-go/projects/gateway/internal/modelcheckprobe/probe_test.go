@@ -128,6 +128,48 @@ func TestBuildBasicForEndpointModeRejectsUnsupportedCrossProtocolMode(t *testing
 	}
 }
 
+func TestBuildBasicWithTuningsAppliesProtocolOutputTokenFloors(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol modelcheckprofile.Protocol
+		want     float64
+		field    string
+	}{
+		{name: "responses", protocol: modelcheckprofile.ProtocolOpenAIResponses, want: 16, field: "max_output_tokens"},
+		{name: "chat", protocol: modelcheckprofile.ProtocolOpenAIChat, want: 64, field: "max_tokens"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request, err := buildBasicWithTunings(test.protocol, "model", "hello", "", false, 8, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(request.Body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if got := payload[test.field]; got != test.want {
+				t.Fatalf("%s=%#v, want %v", test.field, got, test.want)
+			}
+		})
+	}
+
+	t.Run("gemini", func(t *testing.T) {
+		request, err := buildBasicWithTunings(modelcheckprofile.ProtocolGeminiNative, "model", "hello", "", false, 8, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(request.Body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		generation, ok := payload["generationConfig"].(map[string]any)
+		if !ok || generation["maxOutputTokens"] != float64(128) {
+			t.Fatalf("generationConfig=%#v, want maxOutputTokens=128", payload["generationConfig"])
+		}
+	})
+}
+
 func TestBuildAndExecuteOpenAIProbe(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" || r.Header.Get("Authorization") != "Bearer secret" {

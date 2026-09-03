@@ -46,6 +46,18 @@ import { normalizeGrokSsoTokens } from './grokSsoTokens'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 10
 
+export function validateAccountLockConfigForm(form: AccountFormModel): string | undefined {
+  const timeout = Math.trunc(Number(form.lockDeathTimeoutSeconds))
+  if (!Number.isInteger(timeout) || timeout < 30 || timeout > 3600) {
+    return '锁死死期必须是 30..3600 秒的整数'
+  }
+  const interval = Math.trunc(Number(form.lockRetryIntervalSeconds))
+  if (!Number.isInteger(interval) || interval < 5 || interval > 30) {
+    return '锁死重试间隔必须是 5..30 秒的整数'
+  }
+  return undefined
+}
+
 export type AccountSavePayload = {
   providerCode: AccountFormModel['providerCode']
   providerProtocolProfileId: AccountFormModel['providerProtocolProfileId']

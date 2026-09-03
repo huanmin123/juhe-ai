@@ -432,7 +432,12 @@ def replaceDigest(file, imageName, digest) {
     perl -0e '
       my (\$file, \$name, \$digest) = @ARGV;
       open my \$in, "<", \$file or die "无法读取 kustomization: \$!";
-      local \$/; my \$text = <\$in>; close \$in;
+      binmode \$in;
+      local \$/; my \$text = <\$in>; close \$in or die "无法关闭 kustomization 输入: \$!";
+      # Normalize only for matching so both LF and CRLF platform files are
+      # handled. Restore the original dominant line ending before publishing.
+      my \$newline = (\$text =~ /\r\n/) ? "\\r\\n" : "\\n";
+      \$text =~ s/\r\n?/\\n/g;
       my \$quoted = quotemeta(\$name);
       my \$pattern = qr{(- name: \$quoted\\n\\s+newName: [^\\n]+\\n\\s+digest: )sha256:[a-f0-9]{64}};
       my \$matches = () = \$text =~ /\$pattern/g;
@@ -441,8 +446,16 @@ def replaceDigest(file, imageName, digest) {
       my \$expected_pattern = qr{- name: \$quoted\\n\\s+newName: [^\\n]+\\n\\s+digest: \\Q\$digest\\E};
       my \$after_matches = () = \$text =~ /\$expected_pattern/g;
       die "镜像 \$name digest 写入后回读命中数为 \$after_matches，期望 1\\n" unless \$after_matches == 1;
-      open my \$out, ">", \$file or die "无法写入 kustomization: \$!";
-      print \$out \$text; close \$out;
+      \$text =~ s/\\n/\$newline/g if \$newline eq "\\r\\n";
+      my \$temporary = "\$file.tmp.$$";
+      open my \$out, ">", \$temporary or die "无法写入 kustomization 临时文件: \$!";
+      binmode \$out;
+      print \$out \$text or die "无法写入 kustomization 临时文件: \$!";
+      close \$out or die "无法关闭 kustomization 临时文件: \$!";
+      rename \$temporary, \$file or do {
+        unlink \$temporary;
+        die "无法原子替换 kustomization: \$!";
+      };
     ' '${file}' '${imageName}' '${digest}'
   """
 }
@@ -463,6 +476,15 @@ def configureJ3aManagementRelease(overlay, enabled) {
     file='${kustomization}'
     runtime_config='${runtimeConfig}'
     route='  - j3a-management-ingressroute.yaml'
+    normalize_line_endings() {
+      target="\$1"
+      [ -f "\$target" ] || return 0
+      temporary="\${target}.line-endings.tmp.\$\$"
+      perl -0e 'local \$/; my \$text = <STDIN>; \$text =~ s/\r\n?/\\n/g; print \$text or die "无法规范化文件换行";' < "\$target" > "\$temporary"
+      mv "\$temporary" "\$target"
+    }
+    normalize_line_endings "\$file"
+    normalize_line_endings "\$runtime_config"
     if [ '${enabled}' = 'true' ]; then
       [ -f "\$runtime_config" ] || { echo 'J3a 启用时必须提供环境专属 runtime-config.env，拒绝写 release state' >&2; exit 1; }
       if ! grep -Fqx "\$route" "\$file"; then

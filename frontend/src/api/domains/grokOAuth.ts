@@ -4,6 +4,7 @@ import { http, unwrap } from '../http'
 
 export interface GrokSsoImportResult {
   createdCount: number
+  createdIds?: string[]
   failed: Array<{ index: number; error: string }>
 }
 

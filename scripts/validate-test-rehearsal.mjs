@@ -22,9 +22,29 @@ const RELEASE_IMAGE_COMPONENTS = Object.freeze([
   ['gatewayDigest', 'go-gateway']
 ])
 const RUNTIME_IMAGE_ID_KINDS = new Set(['index', 'manifest'])
-const ACCOUNT_SELF_FK_POLICIES = new Set([
-  'source-before-authorization-instance',
-  'deferred-constraints-verified'
+const ACCOUNT_SELF_FK_POLICIES = new Set(['source-before-authorization-instance'])
+const PROXY_RUNTIME_COLUMNS = Object.freeze([
+  'test_status',
+  'latency_ms',
+  'outbound_ip',
+  'outbound_region',
+  'last_test_message',
+  'last_tested_at'
+])
+const API_KEY_DERIVED_COLUMNS = Object.freeze([
+  'key_hash',
+  'key_prefix',
+  'key_suffix',
+  'key_secret_encrypted'
+])
+const API_KEY_RUNTIME_COLUMNS = Object.freeze([
+  'availability_schedule_next_check_at',
+  'last_used_at'
+])
+const ACCOUNT_RUNTIME_COUNTER_COLUMNS = Object.freeze([
+  'cooldown_retest_failure_count',
+  'health_check_failure_count',
+  'stream_failure_count'
 ])
 const REDIS_COMPONENTS = Object.freeze(['cache', 'state', 'queue'])
 const REDIS_CREDENTIAL_SOURCES = new Set(['secret-env', 'external-secret', 'mounted-secret'])
@@ -233,6 +253,20 @@ function validateImageResolution(environmentEvidence, pathName, release, blocker
     }
     if (resolution.runtimeImageIDKind === 'manifest' && resolution.runtimeImageID !== resolution.resolvedPlatformManifestDigest) {
       addBlocker(blockers, `${componentPath}.runtimeImageID`, 'manifest 类型的 runtimeImageID 必须直接等于 resolvedPlatformManifestDigest')
+    }
+    if (resolution.runtimeImageIDKind === 'index') {
+      const mappingPath = `${componentPath}.runtimeImageIDIndexManifestMapping`
+      if (requireRecord(resolution.runtimeImageIDIndexManifestMapping, mappingPath, blockers)) {
+        requireString(resolution.runtimeImageIDIndexManifestMapping, 'indexDigest', mappingPath, blockers, DIGEST_PATTERN, '必须记录 index imageID 对应的 OCI index digest')
+        requireExactValue(resolution.runtimeImageIDIndexManifestMapping, 'platform', 'linux/amd64', mappingPath, blockers)
+        requireString(resolution.runtimeImageIDIndexManifestMapping, 'manifestDigest', mappingPath, blockers, DIGEST_PATTERN, '必须记录目标平台 manifest digest')
+        if (resolution.runtimeImageIDIndexManifestMapping.indexDigest !== resolution.runtimeImageID) {
+          addBlocker(blockers, `${mappingPath}.indexDigest`, '必须与 runtimeImageID 一致')
+        }
+        if (resolution.runtimeImageIDIndexManifestMapping.manifestDigest !== resolution.resolvedPlatformManifestDigest) {
+          addBlocker(blockers, `${mappingPath}.manifestDigest`, '必须与 resolvedPlatformManifestDigest 一致')
+        }
+      }
     }
   }
 }
@@ -447,6 +481,13 @@ function validateAccounts(evidence, blockers) {
       if (table.name === 'accounts' && Array.isArray(table.clearedColumns) && table.clearedColumns.includes('authorization_instance_source_account_id')) {
         addBlocker(blockers, `accounts.tables[${index}].clearedColumns`, '不得统一清空 authorization_instance_source_account_id；必须按 source account 拓扑保留子账户自引用')
       }
+      if (table.name === 'system_accounts') {
+        const copiedColumns = new Set(Array.isArray(table.copiedColumns) ? table.copiedColumns : [])
+        const generatedColumns = new Set(Array.isArray(table.generatedColumns) ? table.generatedColumns : [])
+        const clearedColumns = new Set(Array.isArray(table.clearedColumns) ? table.clearedColumns : [])
+        if (copiedColumns.has('last_login_at')) addBlocker(blockers, `${tablePath}.copiedColumns`, 'system_accounts.last_login_at 不得复制生产登录运行态')
+        if (!clearedColumns.has('last_login_at') && !generatedColumns.has('last_login_at')) addBlocker(blockers, `${tablePath}`, 'system_accounts.last_login_at 必须清空或按 test 规则生成')
+      }
       if (table.name === 'accounts') {
         const copiedColumns = new Set(Array.isArray(table.copiedColumns) ? table.copiedColumns : [])
         const generatedColumns = new Set(Array.isArray(table.generatedColumns) ? table.generatedColumns : [])
@@ -465,12 +506,17 @@ function validateAccounts(evidence, blockers) {
             addBlocker(blockers, `${tablePath}`, `accounts 的 ${derivedCredentialColumn} 不得复制或仅清空生产派生值`)
           }
         }
+        for (const counterColumn of ACCOUNT_RUNTIME_COUNTER_COLUMNS) {
+          if (copiedColumns.has(counterColumn)) addBlocker(blockers, `${tablePath}.copiedColumns`, `accounts.${counterColumn} 必须使用 test 初始值生成，不能复制生产运行态`)
+          if (!generatedColumns.has(counterColumn)) addBlocker(blockers, `${tablePath}.generatedColumns`, `accounts.${counterColumn} 必须使用 test 初始值逐行生成`)
+          if (clearedColumns.has(counterColumn)) addBlocker(blockers, `${tablePath}.clearedColumns`, `accounts.${counterColumn} 不得只清空，必须生成 test 初始值`)
+        }
         if (copiedColumns.has('availability_schedule_next_check_at') || !generatedColumns.has('availability_schedule_next_check_at')) {
           addBlocker(blockers, `${tablePath}.availability_schedule_next_check_at`, '必须按 test 预演窗口逐行生成/替换，禁止复制生产旧时间戳')
         }
         requireBoolean(table, 'availabilityScheduleNextCheckAtControlled', tablePath, blockers)
         if (!ACCOUNT_SELF_FK_POLICIES.has(table.selfForeignKeyPolicy)) {
-          addBlocker(blockers, `accounts.tables[${index}].selfForeignKeyPolicy`, '必须明确 source-before-authorization-instance 或已验证的 deferred-constraints-verified')
+          addBlocker(blockers, `accounts.tables[${index}].selfForeignKeyPolicy`, '必须明确 source-before-authorization-instance（执行器未实现 deferred 约束）')
         }
         if (!Number.isInteger(table.sourceAccountRows) || table.sourceAccountRows < 0) {
           addBlocker(blockers, `accounts.tables[${index}].sourceAccountRows`, '必须记录 source account 导入行数')
@@ -498,6 +544,36 @@ function validateAccounts(evidence, blockers) {
         requireBoolean(table, 'canaryOnly', `accounts.tables[${index}]`, blockers)
         requireBoolean(table, 'disabledUntilSmoke', `accounts.tables[${index}]`, blockers)
         requireBoolean(table, 'nextRunAtControlled', `accounts.tables[${index}]`, blockers)
+      }
+      if (table.name === 'proxy_profiles') {
+        const copiedColumns = new Set(Array.isArray(table.copiedColumns) ? table.copiedColumns : [])
+        const generatedColumns = new Set(Array.isArray(table.generatedColumns) ? table.generatedColumns : [])
+        const clearedColumns = new Set(Array.isArray(table.clearedColumns) ? table.clearedColumns : [])
+        if (!generatedColumns.has('password_encrypted') || copiedColumns.has('password_encrypted') || clearedColumns.has('password_encrypted')) {
+          addBlocker(blockers, `${tablePath}`, 'proxy_profiles.password_encrypted 必须使用 test 凭据逐行生成/替换，不能复制生产密文或仅清空')
+        }
+        for (const runtimeColumn of PROXY_RUNTIME_COLUMNS) {
+          if (copiedColumns.has(runtimeColumn)) addBlocker(blockers, `${tablePath}.copiedColumns`, `proxy_profiles.${runtimeColumn} 不得复制生产探测运行态`)
+          if (!clearedColumns.has(runtimeColumn) && !generatedColumns.has(runtimeColumn)) {
+            addBlocker(blockers, `${tablePath}`, `proxy_profiles.${runtimeColumn} 必须清空或按 test 规则生成`)
+          }
+        }
+      }
+      if (table.name === 'api_keys') {
+        const copiedColumns = new Set(Array.isArray(table.copiedColumns) ? table.copiedColumns : [])
+        const generatedColumns = new Set(Array.isArray(table.generatedColumns) ? table.generatedColumns : [])
+        const clearedColumns = new Set(Array.isArray(table.clearedColumns) ? table.clearedColumns : [])
+        for (const derivedColumn of API_KEY_DERIVED_COLUMNS) {
+          if (!generatedColumns.has(derivedColumn) || copiedColumns.has(derivedColumn) || clearedColumns.has(derivedColumn)) {
+            addBlocker(blockers, `${tablePath}`, `api_keys.${derivedColumn} 必须使用 test key 逐行生成/替换，不能复制生产派生值或仅清空`)
+          }
+        }
+        for (const runtimeColumn of API_KEY_RUNTIME_COLUMNS) {
+          if (copiedColumns.has(runtimeColumn)) addBlocker(blockers, `${tablePath}.copiedColumns`, `api_keys.${runtimeColumn} 不得复制生产运行态`)
+          if (!clearedColumns.has(runtimeColumn) && !generatedColumns.has(runtimeColumn)) {
+            addBlocker(blockers, `${tablePath}`, `api_keys.${runtimeColumn} 必须清空或按 test 规则生成`)
+          }
+        }
       }
     }
     if (tableNames.size !== accounts.tables.length) addBlocker(blockers, 'accounts.tables', '表名不得重复')

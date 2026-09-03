@@ -22,7 +22,7 @@ const commonColumns = [
 ]
 const systemAccountColumns = [
   'id', 'username', 'display_name', 'role', 'status', 'password_hash',
-  'must_change_password', 'image_generation_enabled', 'created_at', 'updated_at'
+  'must_change_password', 'image_generation_enabled', 'last_login_at', 'created_at', 'updated_at'
 ]
 const accountColumns = [
   'id', 'config_revision', 'dispatch_revision', 'circuit_projection_revision', 'system_account_id',
@@ -101,7 +101,8 @@ function buildFixture(): { preflight: AccountSyncPreflightReport; plan: Rehearsa
     if (policy.name === 'providers') columns = [...commonColumns, 'code', 'parent_code']
     if (policy.name === 'system_accounts') columns = systemAccountColumns
     if (policy.name === 'accounts') columns = accountColumns
-    if (policy.name === 'api_keys') columns = [...commonColumns, 'key_secret_encrypted']
+    if (policy.name === 'api_keys') columns = [...commonColumns, 'key_hash', 'key_prefix', 'key_suffix', 'key_secret_encrypted', 'availability_schedule_next_check_at', 'last_used_at']
+    if (policy.name === 'proxy_profiles') columns = [...commonColumns, 'password_encrypted', 'test_status', 'latency_ms', 'outbound_ip', 'outbound_region', 'last_test_message', 'last_tested_at']
     if (policy.name === 'model_quality_schedules') columns = scheduleColumns
     const foreignKeys = policy.name === 'accounts'
       ? [foreignKey('accounts_provider_fkey', 'providers')]
@@ -154,9 +155,9 @@ function buildFixture(): { preflight: AccountSyncPreflightReport; plan: Rehearsa
       return {
         name: policy.name,
         importOrder: index + 1,
-        copiedColumns: sourceColumns.filter((column) => column !== 'password_hash'),
+        copiedColumns: sourceColumns.filter((column) => !['password_hash', 'last_login_at'].includes(column)),
         generatedColumns: ['password_hash'],
-        clearedColumns: [],
+        clearedColumns: ['last_login_at'],
         targetExtraColumns: [],
         conflictStrategy: 'upsert-by-id'
       }
@@ -167,22 +168,22 @@ function buildFixture(): { preflight: AccountSyncPreflightReport; plan: Rehearsa
         'last_used_at', 'cooldown_until', 'last_error_code', 'last_error_message', 'last_error_trace_id',
         'cooldown_retest_observation_started_at', 'cooldown_retest_generation', 'cooldown_retest_last_at',
         'cooldown_retest_last_status_code', 'last_health_check_at', 'next_health_check_at', 'last_health_success_at',
-        'health_check_failure_started_at', 'last_health_check_status_code', 'last_health_check_error_code',
+          'health_check_failure_started_at', 'last_health_check_status_code', 'last_health_check_error_code',
         'last_health_check_error_message', 'last_health_check_trace_id', 'stream_failure_window_started_at',
-        'balance_query_next_refresh_at', 'deleted_at', 'deleted_by'
-      ])
+          'balance_query_next_refresh_at', 'deleted_at', 'deleted_by'
+        ])
       return {
         name: policy.name,
         importOrder: index + 1,
         copiedColumns: sourceColumns.filter((column) => ![
           'credentials_encrypted', 'credential_fingerprint', 'credential_mask',
           'oauth_access_token_expires_at', 'oauth_refresh_token_present',
-          'availability_schedule_next_check_at', 'cooldown_retest_failure_count', 'stream_failure_count'
+          'availability_schedule_next_check_at', 'cooldown_retest_failure_count', 'health_check_failure_count', 'stream_failure_count'
         ].includes(column) && !runtimeColumns.has(column)),
         generatedColumns: [
           'credentials_encrypted', 'credential_fingerprint', 'credential_mask',
           'oauth_access_token_expires_at', 'oauth_refresh_token_present',
-          'availability_schedule_next_check_at', 'cooldown_retest_failure_count', 'stream_failure_count'
+          'availability_schedule_next_check_at', 'cooldown_retest_failure_count', 'health_check_failure_count', 'stream_failure_count'
         ],
         clearedColumns: sourceColumns.filter((column) => runtimeColumns.has(column) && column !== 'availability_schedule_next_check_at'),
         targetExtraColumns: [],
@@ -207,11 +208,22 @@ function buildFixture(): { preflight: AccountSyncPreflightReport; plan: Rehearsa
       return {
         name: policy.name,
         importOrder: index + 1,
-        copiedColumns: sourceColumns.filter((column) => column !== 'key_secret_encrypted'),
-        generatedColumns: ['key_secret_encrypted'],
-        clearedColumns: [],
+        copiedColumns: sourceColumns.filter((column) => !['key_hash', 'key_prefix', 'key_suffix', 'key_secret_encrypted', 'availability_schedule_next_check_at', 'last_used_at'].includes(column)),
+        generatedColumns: ['key_hash', 'key_prefix', 'key_suffix', 'key_secret_encrypted'],
+        clearedColumns: ['availability_schedule_next_check_at', 'last_used_at'],
         targetExtraColumns: [],
         conflictStrategy: 'regenerate-test-key'
+      }
+    }
+    if (policy.name === 'proxy_profiles') {
+      return {
+        name: policy.name,
+        importOrder: index + 1,
+        copiedColumns: sourceColumns.filter((column) => !['password_encrypted', 'test_status', 'latency_ms', 'outbound_ip', 'outbound_region', 'last_test_message', 'last_tested_at'].includes(column)),
+        generatedColumns: ['password_encrypted'],
+        clearedColumns: ['test_status', 'latency_ms', 'outbound_ip', 'outbound_region', 'last_test_message', 'last_tested_at'],
+        targetExtraColumns: [],
+        conflictStrategy: 're-encrypt-test-proxy-and-clear-observations'
       }
     }
     if (policy.name === 'model_quality_schedules') {
@@ -307,6 +319,18 @@ const copiedScheduleAccounts = copiedScheduleCheckpoint.plan.tables.find((table)
 copiedScheduleAccounts.copiedColumns.push('availability_schedule_next_check_at')
 assert.equal(validateRehearsalAccountSyncPlan(copiedScheduleCheckpoint.preflight, copiedScheduleCheckpoint.plan).status, 'blocked')
 assert.match(validateRehearsalAccountSyncPlan(copiedScheduleCheckpoint.preflight, copiedScheduleCheckpoint.plan).blockers.join('\n'), /availability_schedule_next_check_at/)
+
+const copiedHealthCounter = structuredClone(fixture)
+const copiedHealthAccounts = copiedHealthCounter.plan.tables.find((table) => table.name === 'accounts')!
+copiedHealthAccounts.copiedColumns.push('health_check_failure_count')
+copiedHealthAccounts.generatedColumns = copiedHealthAccounts.generatedColumns.filter((column) => column !== 'health_check_failure_count')
+assert.equal(validateRehearsalAccountSyncPlan(copiedHealthCounter.preflight, copiedHealthCounter.plan).status, 'blocked')
+assert.match(validateRehearsalAccountSyncPlan(copiedHealthCounter.preflight, copiedHealthCounter.plan).blockers.join('\n'), /health_check_failure_count/)
+
+const deferredAccountPolicy = structuredClone(fixture)
+deferredAccountPolicy.plan.tables.find((table) => table.name === 'accounts')!.selfForeignKeyPolicy = 'deferred-constraints-verified'
+assert.equal(validateRehearsalAccountSyncPlan(deferredAccountPolicy.preflight, deferredAccountPolicy.plan).status, 'blocked')
+assert.match(validateRehearsalAccountSyncPlan(deferredAccountPolicy.preflight, deferredAccountPolicy.plan).blockers.join('\n'), /执行器未实现 deferred/)
 
 const missingProviderSelfForeignKeyPolicy = structuredClone(fixture)
 delete missingProviderSelfForeignKeyPolicy.plan.tables.find((table) => table.name === 'providers')!.selfForeignKeyPolicy

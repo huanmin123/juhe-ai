@@ -434,6 +434,7 @@ type HealthSyncRetry struct {
 	Score, Threshold, RecoveryIntervalMinutes                                                    int
 	ObservedAt                                                                                   time.Time
 	EvidenceFormed, TrustFormed                                                                  bool
+	HardQualityFailure                                                                           bool
 	EnforcementAllowed                                                                           bool
 }
 
@@ -472,13 +473,23 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 		var decisionFields struct {
 			EvidenceFormed     bool  `json:"evidenceFormed"`
 			TrustFormed        bool  `json:"trustFormed"`
+			HardQualityFailure bool  `json:"hardQualityFailure"`
 			EnforcementAllowed *bool `json:"enforcementAllowed"`
 		}
-		if err := json.Unmarshal([]byte(decision), &decisionFields); err != nil || !decisionFields.EvidenceFormed || !decisionFields.TrustFormed {
+		if err := json.Unmarshal([]byte(decision), &decisionFields); err != nil {
 			continue
 		}
-		retry.EvidenceFormed, retry.TrustFormed = true, true
+		retry.HardQualityFailure = decisionFields.HardQualityFailure
 		retry.Threshold = int(threshold)
+		qualityFailure := retry.Score < retry.Threshold || retry.Level == "suspicious" || retry.HardQualityFailure
+		// Full diagnostics still require their formed/trusted aggregate. Quick
+		// quality failures are admitted with their explicit quality gate,
+		// matching QualityProjector's direct publication path.
+		quickFailure := retry.Profile == "quick" && retry.Level != "unavailable" && qualityFailure
+		if !quickFailure && (!decisionFields.EvidenceFormed || !decisionFields.TrustFormed) {
+			continue
+		}
+		retry.EvidenceFormed, retry.TrustFormed = decisionFields.EvidenceFormed, decisionFields.TrustFormed
 		var policySnapshot struct {
 			Revision                  string `json:"revision"`
 			Action                    string `json:"action"`
@@ -521,7 +532,7 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 		if err != nil {
 			continue
 		}
-		if retry.Score >= retry.Threshold && retry.Level != "unavailable" {
+		if retry.Score >= retry.Threshold && retry.Level != "unavailable" && !retry.HardQualityFailure {
 			continue
 		}
 		result = append(result, retry)

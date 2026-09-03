@@ -53,6 +53,16 @@ export interface AccountLockObservation {
 export const accountLockDispatchLeaseDurationMs = 300_000
 export const accountLockReservationLeaseDurationMs = 60_000
 
+/**
+ * A due time that is already in the past must not be used as the start of a
+ * newly reserved lease: doing so makes the lease expired before it can be
+ * consumed. Preserve future due times, but claim an overdue retry now.
+ */
+export function accountLockRetryReservationDueAtMs(nextRetryAtMs: number | undefined, nowMs: number): number | undefined {
+  if (nextRetryAtMs === undefined) return undefined
+  return Math.max(nextRetryAtMs, nowMs)
+}
+
 interface AccountLockRow {
   account_id: string
   enabled: number | boolean | string
@@ -385,9 +395,8 @@ export async function acquireAccountLockRetryLeaseAsync(accountId: string, globa
   }
   // Preserve a previously scheduled due time. Once due, claim immediately;
   // only a new retry window samples jitter.
-  const desiredAt = active.nextRetryAtMs && active.nextRetryAtMs <= now
-    ? active.nextRetryAtMs
-    : now + Math.max(Math.max(0, Math.trunc(globalDelayMs)), sampleLockDelayMs(active.lockRetryIntervalSeconds))
+  const desiredAt = accountLockRetryReservationDueAtMs(active.nextRetryAtMs, now)
+    ?? (now + Math.max(Math.max(0, Math.trunc(globalDelayMs)), sampleLockDelayMs(active.lockRetryIntervalSeconds)))
   if (active.nextRetryAtMs && active.nextRetryAtMs > now) return { allowed: false, waitMs: active.nextRetryAtMs - now }
   const leaseId = randomUUID()
   const next: AccountLockState = { ...active, nextRetryAtMs: desiredAt, leaseId, leaseUntilMs: desiredAt + accountLockReservationLeaseDurationMs, updatedAt: new Date(now).toISOString() }

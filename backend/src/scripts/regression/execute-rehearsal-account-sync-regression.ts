@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { ACCOUNT_SYNC_TABLE_POLICIES } from '../operations/rehearsal-account-sync-preflight.js'
 import {
   assertTransformedReadback,
+  assertGeneratedApiKeyValues,
   assertExecuteEnvironment,
   hashStringList,
   orderAccountRows,
@@ -11,6 +12,7 @@ import {
   validateGeneratedValuesManifest,
   validateScopeManifest
 } from '../operations/execute-rehearsal-account-sync.js'
+import { encryptJson, hashSecret } from '../../storage/crypto.js'
 
 assert.equal(stableKey(['account-1']), '["account-1"]')
 assert.equal(hashStringList(['b', 'a']), hashStringList(['a', 'b']))
@@ -22,9 +24,16 @@ assert.throws(() => assertExecuteEnvironment({
 assert.doesNotThrow(() => assertExecuteEnvironment({
   JUHE_AI_REHEARSAL_ACCOUNT_SYNC_MODE: 'execute',
   JUHE_AI_REHEARSAL_EXECUTE_CONFIRM: 'I_UNDERSTAND_TEST_TARGET_ONLY',
+  JUHE_AI_SECRET: 'test-rehearsal-secret-for-regression-20260903',
   JUHE_AI_REHEARSAL_SOURCE_POSTGRES_URL: 'postgres://source',
   JUHE_AI_REHEARSAL_TARGET_POSTGRES_URL: 'postgres://target'
 }))
+assert.throws(() => assertExecuteEnvironment({
+  JUHE_AI_REHEARSAL_ACCOUNT_SYNC_MODE: 'execute',
+  JUHE_AI_REHEARSAL_EXECUTE_CONFIRM: 'I_UNDERSTAND_TEST_TARGET_ONLY',
+  JUHE_AI_REHEARSAL_SOURCE_POSTGRES_URL: 'postgres://source',
+  JUHE_AI_REHEARSAL_TARGET_POSTGRES_URL: 'postgres://target'
+}), /JUHE_AI_SECRET/)
 
 const plan = {
   schemaVersion: 1 as const,
@@ -56,6 +65,19 @@ assert.throws(() => validateScopeManifest({ ...scope, tables: { ...scope.tables,
 assert.throws(() => validateScopeManifest({ ...scope, tables: { ...scope.tables, account_lock_states: ['*'] } }, plan), /未批准的账户同步表/)
 assert.doesNotThrow(() => validateGeneratedValuesManifest({ schemaVersion: 1, tables: { accounts: { '["account-1"]': { credentials_encrypted: 'test-only' } } } }))
 assert.throws(() => validateGeneratedValuesManifest({ schemaVersion: 2, tables: {} } as never), /schemaVersion=1/)
+const rehearsalKey = `sk-${'a'.repeat(64)}`
+assert.doesNotThrow(() => assertGeneratedApiKeyValues({
+  key_hash: hashSecret(rehearsalKey),
+  key_prefix: rehearsalKey.slice(0, 8),
+  key_suffix: rehearsalKey.slice(-8),
+  key_secret_encrypted: encryptJson({ key: rehearsalKey })
+}))
+assert.throws(() => assertGeneratedApiKeyValues({
+  key_hash: '0'.repeat(64),
+  key_prefix: rehearsalKey.slice(0, 8),
+  key_suffix: rehearsalKey.slice(-8),
+  key_secret_encrypted: encryptJson({ key: rehearsalKey })
+}), /key_hash.*派生值不一致/)
 const accountRows = [
   { id: 'child', authorization_instance_source_account_id: 'source' },
   { id: 'source', authorization_instance_source_account_id: null }

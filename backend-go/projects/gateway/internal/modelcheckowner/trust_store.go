@@ -91,7 +91,7 @@ func oneOf(value string, allowed ...string) bool {
 }
 
 func (s *Store) trustObservations(ctx context.Context, tx *sql.Tx, projection TrustProjection) ([]trustObservation, error) {
-	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id,created_at,mapping_status,protocol_status FROM `+s.table("model_check_observations")+` WHERE run_id=? AND system_account_id=? AND account_id=? AND requested_model=? ORDER BY created_at,id`), projection.RunID, projection.SystemAccountID, projection.AccountID, projection.RequestedModel)
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id,created_at,mapping_status,protocol_status FROM `+s.table("model_check_observations")+` WHERE run_id=? AND system_account_id=? AND account_id=? AND requested_model=?`), projection.RunID, projection.SystemAccountID, projection.AccountID, projection.RequestedModel)
 	if err != nil {
 		return nil, fmt.Errorf("read J3b trust observations: %w", err)
 	}
@@ -110,6 +110,12 @@ func (s *Store) trustObservations(ctx context.Context, tx *sql.Tx, projection Tr
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate J3b trust observations: %w", err)
 	}
+	// created_at is currently stored as text for compatibility with the
+	// handoff schema. RFC3339Nano permits variable fractional precision and
+	// offsets, so SQL/text ordering is not a chronological ordering.
+	sort.SliceStable(result, func(i, j int) bool {
+		return compareTrustCursor(result[i].createdAt, result[i].id, result[j].createdAt, result[j].id) < 0
+	})
 	return result, nil
 }
 
@@ -258,7 +264,31 @@ func compareTrustCursor(leftCreated, leftID, rightCreated, rightID string) int {
 		return 1
 	}
 	if leftCreated != rightCreated {
-		return strings.Compare(leftCreated, rightCreated)
+		leftTime, leftErr := time.Parse(time.RFC3339Nano, leftCreated)
+		rightTime, rightErr := time.Parse(time.RFC3339Nano, rightCreated)
+		if leftErr == nil && rightErr == nil {
+			leftTime, rightTime = leftTime.UTC(), rightTime.UTC()
+			if leftTime.Before(rightTime) {
+				return -1
+			}
+			if leftTime.After(rightTime) {
+				return 1
+			}
+			return strings.Compare(leftID, rightID)
+		}
+		// Callers validate persisted timestamps before reaching this helper.
+		// Keep malformed standalone cursor values deterministic without allowing
+		// a valid timestamp to compare equal to an invalid one.
+		if leftErr == nil {
+			return 1
+		}
+		if rightErr == nil {
+			return -1
+		}
+		// Neither value is a valid instant. The timestamp cannot establish a
+		// safe order, so use the stable cursor tie-breaker instead of comparing
+		// malformed timestamp text.
+		return strings.Compare(leftID, rightID)
 	}
 	return strings.Compare(leftID, rightID)
 }

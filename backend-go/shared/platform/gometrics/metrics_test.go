@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWriteExposesLowCardinalityRuntimeMetrics(t *testing.T) {
@@ -73,5 +74,51 @@ func TestWritePrimesScalarGaugesWithoutSampler(t *testing.T) {
 		if !strings.Contains(body.String(), want) {
 			t.Fatalf("first scrape must expose %s: %s", want, body.String())
 		}
+	}
+}
+
+func TestWriteRefreshesScalarsWithoutAdvancingRecordCPUState(t *testing.T) {
+	collector := New("juhe-ai", "gateway")
+	collector.Snapshot()
+	collector.state.mu.Lock()
+	recordAt := collector.state.lastAt
+	recordCPU := collector.state.lastCPU
+	collector.state.mu.Unlock()
+
+	time.Sleep(2 * time.Millisecond)
+	var first strings.Builder
+	if err := collector.Write(&first); err != nil {
+		t.Fatal(err)
+	}
+	firstAt := collector.latest.SampledAt
+	if !firstAt.After(recordAt) {
+		t.Fatalf("first scrape must refresh latest sample: record=%s scrape=%s", recordAt, firstAt)
+	}
+
+	collector.state.mu.Lock()
+	if !collector.state.lastAt.Equal(recordAt) || collector.state.lastCPU != recordCPU {
+		collector.state.mu.Unlock()
+		t.Fatalf("scrape must not advance Record CPU baseline: before=(%s,%v) after=(%s,%v)", recordAt, recordCPU, collector.state.lastAt, collector.state.lastCPU)
+	}
+	collector.state.mu.Unlock()
+
+	time.Sleep(2 * time.Millisecond)
+	var second strings.Builder
+	if err := collector.Write(&second); err != nil {
+		t.Fatal(err)
+	}
+	secondAt := collector.latest.SampledAt
+	if !secondAt.After(firstAt) {
+		t.Fatalf("second scrape must refresh latest sample: first=%s second=%s", firstAt, secondAt)
+	}
+	for _, body := range []string{first.String(), second.String()} {
+		for _, want := range []string{"juhe_ai_go_heap_alloc_bytes", "juhe_ai_go_heap_objects"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("scrape missing %s: %s", want, body)
+			}
+		}
+	}
+	if collector.latest.CPUSecondsTotal > 0 && (!strings.Contains(first.String(), "juhe_ai_go_runtime_cpu_seconds_total") || !strings.Contains(second.String(), "juhe_ai_go_runtime_cpu_seconds_total")) {
+		t.Fatalf("supported runtime CPU counter must be present in every scrape")
 	}
 }

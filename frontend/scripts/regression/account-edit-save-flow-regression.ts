@@ -9,6 +9,7 @@ import { FALLBACK_PROVIDERS } from '../../src/views/accounts/accountOptions'
 import { systemInheritedErrorPolicyRulesPreview } from '../../src/views/accounts/accountErrorPolicyTypes'
 import {
   buildAccountSavePayload,
+  validateAccountLockConfigForm,
   validateAccountSaveForm
 } from '../../src/views/accounts/accountSavePayload'
 import {
@@ -191,6 +192,13 @@ assert.match(
   '基础编辑无变化时必须在 PATCH 前直接返回'
 )
 assert.match(saveFlowSource, /await refreshEditedAccountRows\(updated\)/, '编辑成功必须定点刷新后端确认的账户行')
+assert.match(saveFlowSource, /saveCreatedAccountLockConfig\(created\)/, '账户创建成功后必须补保存账户锁死配置')
+assert.match(saveFlowSource, /loadCreatedAccountConfigRevision\((?:created\.id|accountId)\)/, '账户锁死配置保存必须读取创建账户的配置修订号')
+assert.match(saveFlowSource, /pendingCreatedLock\.value/, '账户锁死配置保存失败必须保留可重试状态，不能再次创建账户')
+assert.match(saveFlowSource, /账户已创建，但锁死配置保存失败/, '账户创建和锁死配置两步保存失败必须向用户显式暴露')
+assert.match(saveFlowSource, /Array\.isArray\(result\.createdIds\)/, 'Grok SSO 批量创建必须检查后端返回的账户 ID')
+assert.match(saveFlowSource, /saveCreatedAccountLockConfigs\(result\.createdIds\)/, 'Grok SSO 批量创建成功后必须逐账户补保存锁死配置')
+assert.match(saveFlowSource, /未返回创建账户 ID，锁死配置未应用/, '旧版 SSO 响应缺少账户 ID 时必须显式提示锁死配置未应用')
 assert.match(
   accountsViewSource,
   /markAccountMutation\(mutation\)[\s\S]*mutation\.authorizationInstancesAffected[\s\S]*await reloadAccountPageAfterMutation\(\)[\s\S]*return/,
@@ -464,6 +472,14 @@ form.apiKey = 'sk-regression-health-check'
 form.apiKeys = [form.apiKey]
 form.supportedModels = ['gpt-5.5', 'gpt-5.4']
 form.healthCheckModel = 'gpt-5.4'
+
+assert.equal(validateAccountLockConfigForm(form), undefined, '默认账户锁死配置应通过保存校验')
+form.lockDeathTimeoutSeconds = 29
+assert.equal(validateAccountLockConfigForm(form), '锁死死期必须是 30..3600 秒的整数', '账户锁死死期越界必须在创建前被拦截')
+form.lockDeathTimeoutSeconds = 300
+form.lockRetryIntervalSeconds = 31
+assert.equal(validateAccountLockConfigForm(form), '锁死重试间隔必须是 5..30 秒的整数', '账户锁死重试间隔越界必须在创建前被拦截')
+form.lockRetryIntervalSeconds = 5
 
 assert.equal(
   validateAccountSaveForm({

@@ -132,6 +132,40 @@ func TestQualityProjectorTreatsSuspiciousAsHardFailureAboveThreshold(t *testing.
 	}
 }
 
+func TestQualityProjectorPublishesQuickHardFailureAboveThresholdWithoutAggregate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quick-hard-failure-health.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,updated_at) VALUES ('run-hard-mismatch','pending','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	enforcement := &countingEnforcement{}
+	store := &Store{db: db, mode: "sqlite"}
+	projector := &QualityProjector{Store: store, Enforcement: enforcement}
+	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-hard-mismatch", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 96, Threshold: 70, Level: "likely", HardQualityFailure: true, PenaltyAction: "quality_isolate", EnforcementAllowed: true}
+	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: false, TrustFormed: false}, fact); err != nil {
+		t.Fatal(err)
+	}
+	if enforcement.calls != 1 {
+		t.Fatalf("quick hard failure must follow the quality failure path, calls=%d", enforcement.calls)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-hard-mismatch'`).Scan(&state); err != nil || state != "applied" {
+		t.Fatalf("health sync state=%q err=%v", state, err)
+	}
+}
+
 func TestQualityProjectorRequiresEnforcementForFormedFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enforcement.db")
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")

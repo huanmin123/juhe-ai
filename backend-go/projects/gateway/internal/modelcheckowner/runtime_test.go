@@ -19,6 +19,21 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
+func TestHasTerminalEvidenceIgnoresTokenIntegrityFailures(t *testing.T) {
+	if hasTerminalEvidence([]map[string]any{{
+		"kind":     "target.token_integrity",
+		"evidence": map[string]any{"terminalFailure": true},
+	}}) {
+		t.Fatal("token integrity terminal failure must not suppress the quality decision")
+	}
+	if !hasTerminalEvidence([]map[string]any{{
+		"kind":     "target.protocol_basic",
+		"evidence": map[string]any{"terminalFailure": true},
+	}}) {
+		t.Fatal("transport probe terminal failure must suppress the quality decision")
+	}
+}
+
 func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.db")
 	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")

@@ -501,7 +501,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 				err = fmt.Errorf("%w; mark J3b health sync failed: %v", err, markErr)
 			}
 			emit(ProgressEvent{Kind: "health_sync_failed", Data: map[string]any{"runId": runID, "message": err.Error()}})
-		} else if err := s.Projector.Project(finalizeCtx, runID, aggregate, HealthFact{AccountID: request.TargetID, SystemAccountID: request.SystemAccountID, StatHour: statHour, RunID: runID, ProviderCode: request.ProviderCode, Model: request.Model, Profile: request.Profile, ScheduleID: request.ScheduleID, PolicyRevision: request.PolicyRevision, AccountConfigRevision: request.ConfigRevision, PenaltyAction: penaltyAction, RecoveryIntervalMinutes: recoveryInterval, EnforcementAllowed: enforcementAllowed, ObservedAt: finishedAt, Score: score, Threshold: request.Threshold, Level: level}); err != nil {
+		} else if err := s.Projector.Project(finalizeCtx, runID, aggregate, HealthFact{AccountID: request.TargetID, SystemAccountID: request.SystemAccountID, StatHour: statHour, RunID: runID, ProviderCode: request.ProviderCode, Model: request.Model, Profile: request.Profile, ScheduleID: request.ScheduleID, PolicyRevision: request.PolicyRevision, AccountConfigRevision: request.ConfigRevision, PenaltyAction: penaltyAction, RecoveryIntervalMinutes: recoveryInterval, EnforcementAllowed: enforcementAllowed, ObservedAt: finishedAt, Score: score, Threshold: request.Threshold, Level: level, HardQualityFailure: hardQualityFailure}); err != nil {
 			// The run/outcome is already durable. Keep the health publication
 			// retryable instead of reporting a false applied state.
 			emit(ProgressEvent{Kind: "health_sync_failed", Data: map[string]any{"runId": runID, "message": err.Error()}})
@@ -644,6 +644,14 @@ func hasResponseModelEvidence(items []map[string]any) bool {
 
 func hasTerminalEvidence(items []map[string]any) bool {
 	for _, item := range items {
+		// Token-integrity probes are diagnostic quality evidence, not transport
+		// evidence. Node's owner deliberately excludes this family from the
+		// terminal non-200 gate so a token probe failure cannot suppress an
+		// otherwise formed quality decision.
+		kind, _ := item["kind"].(string)
+		if modelcheckprobe.UnscopedKindForOwner(kind) == "token_integrity" {
+			continue
+		}
 		evidence, _ := item["evidence"].(map[string]any)
 		if terminal, _ := evidence["terminalFailure"].(bool); terminal {
 			return true

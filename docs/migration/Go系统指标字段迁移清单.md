@@ -10,8 +10,8 @@
 
 ## 当前已落地（2026-09-02）
 
-- Go `gometrics.Collector` 已输出低基数、跨平台 runtime Prometheus 指标，固定维度为 `service`、`role`、`runtimeKind=go`；当前挂载到 gateway 和 active jobs 的 loopback health listener。除 goroutine、thread、heap 外，还暴露 Go runtime CPU 累计时间、uptime，以及 scheduler / GC 原始 histogram。CPU 速率按单核 100% 计算，多核进程可以超过 100%。RSS/FD 不由该 collector 采集，避免 Windows/Linux 分支造成不同语义；如需主机容量观测，由 host metrics owner 统一提供。
-- Collector 在未启用持久化 sampler 的 gateway 等场景中，会在第一次 Prometheus scrape 时主动填充 scalar gauges；该行为不写入趋势窗口，避免首次抓取显示为未采样的零值。
+- Go `gometrics.Collector` 已输出低基数、跨平台 runtime Prometheus 指标，固定维度为 `service`、`role`、`runtimeKind=go`；当前挂载到 gateway 和 active jobs 的 loopback health listener。除 goroutine、thread、heap 外，还暴露 Go runtime CPU 容量累计时间、基于 `total-idle` 的 busy CPU 速率、uptime，以及 scheduler / GC 原始 histogram。CPU 速率按单核 100% 计算，多核进程可以超过 100%。RSS/FD 不由该 collector 采集，避免 Windows/Linux 分支造成不同语义；如需主机容量观测，由 host metrics owner 统一提供。
+- Collector 在未启用持久化 sampler 的 gateway 等场景中，会在每次 Prometheus scrape 时刷新 scalar gauges；该行为不写入趋势窗口，避免首次抓取显示为未采样的零值或后续读到陈旧值。
 - 启用 `JUHE_AI_GO_RUNTIME_METRICS_STORE` 后，jobs 以可配置周期记录 Go runtime scalar snapshot，并由独立 Store 幂等写入 `go_runtime_metrics_samples`、`go_runtime_metrics_hourly`、`go_runtime_metrics_trend_windows`；聚合维度仅为 `service + role + runtime_kind=go + 时间窗口`，默认保留 30 天。scalar 采样包含 goroutine runnable/waiting、GOMAXPROCS、Go runtime CPU、uptime；历史 schema 中的 RSS/FD nullable 列仅为兼容旧样本，新的跨平台 collector 不写入。
 - 持久化表位于 PostgreSQL `juhe_stats` schema（SQLite 模式使用独立文件），由 maintenance 显式 `--apply-go-runtime-metrics` 创建；jobs 启动只读校验，不自动 DDL。
 - jobs loopback 管理端点 `GET /__aisys__/api/stats/go-runtime-trend` 只读小时预聚合，并显式返回 `runtimeKind=go`；不查询或写入 Node `system_metrics_*` / `process_event_loop_*`。

@@ -25,6 +25,7 @@ const (
 	threadsMetric          = "/sched/threads/total:threads"
 	gomaxprocsMetric       = "/sched/gomaxprocs:threads"
 	cpuTotalMetric         = "/cpu/classes/total:cpu-seconds"
+	cpuIdleMetric          = "/cpu/classes/idle:cpu-seconds"
 )
 
 // Collector is safe for concurrent scrapes. Labels are fixed at construction
@@ -39,9 +40,6 @@ type Collector struct {
 	windows *WindowAggregator
 	state   collectorState
 	latest  RuntimeSnapshot
-	// latestValid prevents a scrape before the first sampler tick from
-	// presenting zero-valued process gauges as real data.
-	latestValid bool
 }
 
 type collectorState struct {
@@ -67,6 +65,7 @@ func New(service, role string) *Collector {
 			{Name: gomaxprocsMetric},
 			{Name: heapLiveMetric},
 			{Name: cpuTotalMetric},
+			{Name: cpuIdleMetric},
 		},
 	}
 }
@@ -139,34 +138,27 @@ func (c *Collector) Write(w io.Writer) error {
 	if err := write("# HELP juhe_ai_go_process_uptime_seconds Process uptime in seconds.\n# TYPE juhe_ai_go_process_uptime_seconds gauge\njuhe_ai_go_process_uptime_seconds{%s} %.6f\n", labels, time.Since(c.started).Seconds()); err != nil {
 		return err
 	}
-	c.mu.Lock()
-	latest := c.latest
-	latestValid := c.latestValid
-	c.mu.Unlock()
 	// A collector can be mounted without the optional durable sampler (for
-	// example on gateway). Prime scalar gauges on the first scrape so the
-	// portable runtime surface is useful even when persistence is disabled.
-	if !latestValid {
-		latest = c.Snapshot()
-		latestValid = true
-	}
-	if latestValid {
-		for _, metric := range []struct {
-			name  string
-			help  string
-			value uint64
-		}{
-			{"heap_alloc_bytes", "Current heap bytes allocated.", latest.HeapAllocBytes},
-			{"heap_objects", "Current number of heap objects.", latest.HeapObjects},
-		} {
-			if err := write("# HELP juhe_ai_go_%s %s\n# TYPE juhe_ai_go_%s gauge\njuhe_ai_go_%s{%s} %d\n", metric.name, metric.help, metric.name, metric.name, labels, metric.value); err != nil {
-				return err
-			}
+	// example on gateway). Refresh scalar gauges on every scrape so the
+	// portable runtime surface remains useful even when persistence is
+	// disabled. This path deliberately does not update Snapshot's CPU
+	// baseline, preserving sampler/Record window semantics.
+	latest := c.snapshot(false)
+	for _, metric := range []struct {
+		name  string
+		help  string
+		value uint64
+	}{
+		{"heap_alloc_bytes", "Current heap bytes allocated.", latest.HeapAllocBytes},
+		{"heap_objects", "Current number of heap objects.", latest.HeapObjects},
+	} {
+		if err := write("# HELP juhe_ai_go_%s %s\n# TYPE juhe_ai_go_%s gauge\njuhe_ai_go_%s{%s} %d\n", metric.name, metric.help, metric.name, metric.name, labels, metric.value); err != nil {
+			return err
 		}
-		if latest.CPUSecondsTotal > 0 {
-			if err := write("# HELP juhe_ai_go_runtime_cpu_seconds_total Go runtime CPU time in seconds (rate is normalized to one core).\n# TYPE juhe_ai_go_runtime_cpu_seconds_total counter\njuhe_ai_go_runtime_cpu_seconds_total{%s} %.6f\n", labels, latest.CPUSecondsTotal); err != nil {
-				return err
-			}
+	}
+	if latest.CPUSecondsTotal > 0 {
+		if err := write("# HELP juhe_ai_go_runtime_cpu_seconds_total Estimated total CPU time available to the Go runtime in seconds.\n# TYPE juhe_ai_go_runtime_cpu_seconds_total counter\njuhe_ai_go_runtime_cpu_seconds_total{%s} %.6f\n", labels, latest.CPUSecondsTotal); err != nil {
+			return err
 		}
 	}
 

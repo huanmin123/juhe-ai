@@ -304,6 +304,69 @@ func TestListHealthSyncRetriesSkipsInvalidRowsAndPreservesFailureState(t *testin
 	}
 }
 
+func TestListHealthSyncRetriesKeepsHardQualityFailureAboveThreshold(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "health-hard-retry.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	finished := "2026-08-27T10:15:00Z"
+	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"run-hard", "completed", "acct-hard", "sys-hard", "openai", "gpt-5.6", "full", "failure", 95, nil,
+		`{"revision":"policy-hard","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
+		`{"evidenceFormed":true,"trustFormed":true,"hardQualityFailure":true}`,
+		`{"configRevision":"3"}`, finished, "failed", finished); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
+	if err != nil || len(retries) != 1 {
+		t.Fatalf("retries=%#v err=%v", retries, err)
+	}
+	if retries[0].Score != 95 || retries[0].Threshold != 70 || !retries[0].HardQualityFailure {
+		t.Fatalf("hard quality retry=%+v", retries[0])
+	}
+}
+
+func TestListHealthSyncRetriesAdmitsUnformedQuickQualityFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "health-quick-retry.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	finished := "2026-08-27T10:15:00Z"
+	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"run-quick-hard", "completed", "acct-quick", "sys-quick", "openai", "gpt-5.6", "quick", "failure", 96, nil,
+		`{"revision":"policy-quick","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
+		`{"evidenceFormed":false,"trustFormed":false,"hardQualityFailure":true,"enforcementAllowed":true}`,
+		`{"configRevision":"3"}`, finished, "failed", finished); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
+	if err != nil || len(retries) != 1 {
+		t.Fatalf("retries=%#v err=%v", retries, err)
+	}
+	if retries[0].EvidenceFormed || retries[0].TrustFormed || !retries[0].HardQualityFailure {
+		t.Fatalf("quick retry evidence flags=%+v", retries[0])
+	}
+	if _, err := db.Exec(`UPDATE model_check_runs SET quality_decision_json=? WHERE id='run-quick-hard'`, `{"evidenceFormed":true,"trustFormed":false,"hardQualityFailure":true,"enforcementAllowed":true}`); err != nil {
+		t.Fatal(err)
+	}
+	retries, err = store.ListHealthSyncRetries(context.Background(), 10)
+	if err != nil || len(retries) != 1 || !retries[0].EvidenceFormed || retries[0].TrustFormed {
+		t.Fatalf("quick retry with partial evidence flags=%+v err=%v", retries, err)
+	}
+}
+
 func TestListHealthSyncRetriesSkipsMalformedRowsBeforeLaterValidRow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "health-retry-batch.db")
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
