@@ -101,7 +101,7 @@ var modelChecksGatewayHandlerNeedles = []string{
 	`case r.Method == http.MethodDelete && strings.HasPrefix(path, "/quality-schedules/"):`,
 }
 
-var routeStatuses = map[string]struct{}{"implemented": {}, "partial": {}, "missing": {}, "excluded": {}}
+var routeStatuses = map[string]struct{}{"implemented": {}, "implemented-archive-pending": {}, "partial": {}, "missing": {}, "excluded": {}}
 
 // VerifyGatewayRouteOwnerManifest validates source coverage and ownership
 // metadata. A structurally valid manifest still exits as pending when any
@@ -145,6 +145,21 @@ func VerifyGatewayRouteOwnerManifest(manifestPath, repositoryRoot string) (Gatew
 		if family.Status == "implemented" && len(family.Evidence) == 0 {
 			return GatewayRouteOwnerReport{}, fmt.Errorf("route family %q claims implemented without evidence", family.ID)
 		}
+		if family.Status == "implemented-archive-pending" {
+			if len(family.Evidence) == 0 {
+				return GatewayRouteOwnerReport{}, fmt.Errorf("route family %q claims implemented-archive-pending without evidence", family.ID)
+			}
+			hasArchiveManifest := false
+			for _, evidence := range family.Evidence {
+				if strings.Contains(evidence, "final-archive") {
+					hasArchiveManifest = true
+					break
+				}
+			}
+			if !hasArchiveManifest {
+				return GatewayRouteOwnerReport{}, fmt.Errorf("route family %q archive-pending requires a final-archive manifest reference", family.ID)
+			}
+		}
 		if err := verifyEvidenceFiles(repositoryRoot, family); err != nil {
 			return GatewayRouteOwnerReport{}, err
 		}
@@ -162,7 +177,13 @@ func VerifyGatewayRouteOwnerManifest(manifestPath, repositoryRoot string) (Gatew
 		}
 		mounted := regexp.MustCompile(`(?m)^\s*app\.use\([^\n]*\b` + regexp.QuoteMeta(family.NodeRouterSymbol) + `\b`).Match(appSource)
 		archivedSource := strings.HasPrefix(filepath.ToSlash(family.NodeRouterFile), "migration-backup/node/")
-		if !mounted && !(family.ID == "model-checks" && ((family.Status == "partial") || (family.Status == "implemented" && archivedSource))) {
+		if family.Status == "implemented-archive-pending" {
+			// The slice is Go-owned: the Node mount MUST be gone, while the
+			// physical file move is deferred to the P8 final archive.
+			if mounted {
+				return GatewayRouteOwnerReport{}, fmt.Errorf("route family %q is archive-pending but still mounted by %s", family.ID, family.NodeRouterFile)
+			}
+		} else if !mounted && !(family.ID == "model-checks" && ((family.Status == "partial") || (family.Status == "implemented" && archivedSource))) {
 			return GatewayRouteOwnerReport{}, fmt.Errorf("route family %q router %q is not mounted by %s", family.ID, family.NodeRouterSymbol, manifest.SourceApp)
 		}
 		actual := make([]string, 0)

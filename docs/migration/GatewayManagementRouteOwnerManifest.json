@@ -9,27 +9,407 @@
     "excluded": "明确不属于 Business handoff 的路由；不得借此声称 Go 已实现。"
   },
   "families": [
-    {"id":"auth","node_mount":"/auth","node_router_file":"backend/src/modules/auth/auth.routes.ts","node_router_symbol":"authRouter","mutation_count":6,"gateway_handler":"backend-go/projects/gateway/internal/businessauth","status":"missing","acceptance_gates":["GATE-auth-lifecycle","GATE-active-path-zero","GATE-isolated-sqlite-pg","GATE-rollback"],"rollback":"fence auth/session owner epoch and restore Node only after session and revocation readback"},
-    {"id":"accounts","node_mount":"/accounts and /my-accounts","node_router_file":"backend/src/modules/accounts/accounts.routes.ts","node_router_symbol":"accountsRouter","mutation_count":4,"gateway_handler":"backend-go/projects/gateway/internal/business/accounts","status":"missing","acceptance_gates":["B1-account-runtime","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"drain account mutations, replay committed receipts, then restore one owner at an epoch boundary"},
-    {"id":"groups","node_mount":"/groups and /my-groups","node_router_file":"backend/src/modules/groups/groups.routes.ts","node_router_symbol":"groupsRouter","mutation_count":4,"gateway_handler":"backend-go/projects/gateway/internal/business/groups","status":"missing","acceptance_gates":["B1-management-mutation","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"freeze group writes and restore Node after binding and revision parity"},
-    {"id":"route-strategies","node_mount":"/route-strategies and /my-route-strategies","node_router_file":"backend/src/modules/route-strategies/route-strategies.routes.ts","node_router_symbol":"routeStrategiesRouter","mutation_count":3,"gateway_handler":"backend-go/projects/gateway/internal/business/route_strategies","status":"missing","acceptance_gates":["B1-management-mutation","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"drain strategy revisions and replay only committed owner-epoch receipts"},
-    {"id":"api-keys","node_mount":"/api-keys and /my-api-keys","node_router_file":"backend/src/modules/api-keys/api-keys.routes.ts","node_router_symbol":"apiKeysRouter","mutation_count":4,"gateway_handler":"backend-go/projects/gateway/internal/business/api_keys","status":"missing","acceptance_gates":["B1-account-runtime","GATE-secret-safety","GATE-active-path-zero","GATE-rollback"],"rollback":"fence key revisions and restore owner only after hash/prefix parity"},
-    {"id":"authorizations","node_mount":"/authorizations and /my-authorizations","node_router_file":"backend/src/modules/authorizations/authorizations.routes.ts","node_router_symbol":"authorizationsRouter","mutation_count":5,"gateway_handler":"backend-go/projects/gateway/internal/business/authorizations","status":"missing","acceptance_gates":["B1-availability-authorization","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"fence authorization revisions and restore after dependent binding readback"},
-    {"id":"oauth-anthropic","node_mount":"/anthropic-oauth and /my-anthropic-oauth","node_router_file":"backend/src/modules/anthropic-oauth/anthropic-oauth.routes.ts","node_router_symbol":"anthropicOAuthRouter","mutation_count":6,"gateway_handler":"backend-go/projects/gateway/internal/business/oauth/anthropic","status":"missing","acceptance_gates":["B1-oauth-credentials","GATE-secret-safety","GATE-active-path-zero","GATE-rollback"],"rollback":"never restore secrets from backup; replay encrypted credential receipts only"},
-    {"id":"oauth-gemini","node_mount":"/gemini-oauth and /my-gemini-oauth","node_router_file":"backend/src/modules/gemini-oauth/gemini-oauth.routes.ts","node_router_symbol":"geminiOAuthRouter","mutation_count":6,"gateway_handler":"backend-go/projects/gateway/internal/business/oauth/gemini","status":"missing","acceptance_gates":["B1-oauth-credentials","GATE-secret-safety","GATE-active-path-zero","GATE-rollback"],"rollback":"fence credential revisions and verify revoke semantics before owner return"},
-    {"id":"oauth-grok","node_mount":"/grok-oauth and /my-grok-oauth","node_router_file":"backend/src/modules/grok-oauth/grok-oauth.routes.ts","node_router_symbol":"grokOAuthRouter","mutation_count":7,"gateway_handler":"backend-go/projects/gateway/internal/business/oauth/grok","status":"missing","acceptance_gates":["B1-oauth-credentials","GATE-secret-safety","GATE-active-path-zero","GATE-rollback"],"rollback":"drain OAuth mutations and replay encrypted committed receipts without cross-process calls"},
-    {"id":"oauth-openai","node_mount":"/openai-oauth and /my-openai-oauth","node_router_file":"backend/src/modules/openai-oauth/openai-oauth.routes.ts","node_router_symbol":"openAIOAuthRouter","mutation_count":6,"gateway_handler":"backend-go/projects/gateway/internal/business/oauth/openai","status":"missing","acceptance_gates":["B1-oauth-credentials","GATE-secret-safety","GATE-active-path-zero","GATE-rollback"],"rollback":"fence credential revisions and restore only after encrypted state parity"},
-    {"id":"oauth-management","node_mount":"/oauth","node_router_file":"backend/src/modules/oidc-provider/oidc-provider.routes.ts","node_router_symbol":"oauthManagementRouter","mutation_count":3,"gateway_handler":"backend-go/projects/gateway/internal/business/oauth/management","status":"missing","acceptance_gates":["B1-management-mutation","GATE-auth-lifecycle","GATE-active-path-zero","GATE-rollback"],"rollback":"drain client mutations and restore after client revision readback"},
-    {"id":"providers","node_mount":"/providers","node_router_file":"backend/src/modules/providers/providers.routes.ts","node_router_symbol":"providersRouter","mutation_count":4,"gateway_handler":"backend-go/projects/gateway/internal/business/providers","status":"missing","acceptance_gates":["B1-management-mutation","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"freeze provider catalog revisions and restore after model catalog parity"},
-    {"id":"proxies","node_mount":"/proxies","node_router_file":"backend/src/modules/proxies/proxies.routes.ts","node_router_symbol":"proxiesRouter","mutation_count":3,"gateway_handler":"backend-go/projects/gateway/internal/business/proxies","status":"missing","acceptance_gates":["B1-management-mutation","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"drain proxy writes, replay revisions, and switch owner atomically"},
-    {"id":"response-inspection-policies","node_mount":"/response-inspection-policies","node_router_file":"backend/src/modules/response-inspection-policies/response-inspection-policies.routes.ts","node_router_symbol":"responseInspectionPoliciesRouter","mutation_count":3,"gateway_handler":"backend-go/projects/gateway/internal/business/response_inspection_policies","status":"missing","acceptance_gates":["B1-management-mutation","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"fence policy revisions and restore after cache invalidation parity"},
-    {"id":"external-integration-sources","node_mount":"/external-integration-sources","node_router_file":"backend/src/modules/external-integrations/external-integration-sources.routes.ts","node_router_symbol":"externalIntegrationSourcesRouter","mutation_count":6,"gateway_handler":"backend-go/projects/gateway/internal/business/external_integrations","status":"missing","acceptance_gates":["B1-oauth-credentials","GATE-secret-safety","GATE-active-path-zero","GATE-rollback"],"rollback":"fence integration token revisions and replay encrypted receipts only"},
-    {"id":"ip-stats","node_mount":"/ip-stats","node_router_file":"backend/src/modules/ip-stats/ip-stats.routes.ts","node_router_symbol":"ipStatsRouter","mutation_count":4,"gateway_handler":"backend-go/projects/gateway/internal/business/ip_stats","status":"missing","acceptance_gates":["B1-management-mutation","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"drain blacklist/allowlist mutations and restore after digest parity"},
-    {"id":"settings","node_mount":"/settings","node_router_file":"backend/src/modules/settings/settings.routes.ts","node_router_symbol":"settingsRouter","mutation_count":3,"gateway_handler":"backend-go/projects/gateway/internal/business/settings","status":"missing","acceptance_gates":["B1-management-mutation","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"freeze settings revisions and restore after public snapshot parity"},
-    {"id":"system-accounts","node_mount":"/system-accounts","node_router_file":"backend/src/modules/system-accounts/system-accounts.routes.ts","node_router_symbol":"systemAccountsRouter","mutation_count":2,"gateway_handler":"backend-go/projects/gateway/internal/business/system_accounts","status":"missing","acceptance_gates":["B1-management-mutation","GATE-auth-lifecycle","GATE-active-path-zero","GATE-rollback"],"rollback":"fence super-admin account revisions and restore after auth readback"},
-    {"id":"system-teams","node_mount":"/system-teams","node_router_file":"backend/src/modules/system-teams/system-teams.routes.ts","node_router_symbol":"systemTeamsRouter","mutation_count":4,"gateway_handler":"backend-go/projects/gateway/internal/business/system_teams","status":"missing","acceptance_gates":["B1-management-mutation","GATE-auth-lifecycle","GATE-active-path-zero","GATE-rollback"],"rollback":"drain team membership mutations and restore after member history parity"},
-    {"id":"announcements","node_mount":"/announcements","node_router_file":"backend/src/modules/announcements/announcements.routes.ts","node_router_symbol":"announcementsRouter","mutation_count":6,"gateway_handler":"backend-go/projects/gateway/internal/business/announcements","status":"missing","acceptance_gates":["B1-gateway-artifacts","GATE-api-parity","GATE-active-path-zero","GATE-rollback"],"rollback":"drain announcement revisions and replay committed publication receipts"},
-    {"id":"table-monitor","node_mount":"/table-monitor","node_router_file":"backend/src/modules/table-monitor/table-monitor.routes.ts","node_router_symbol":"tableMonitorRouter","mutation_count":1,"gateway_handler":"backend-go/projects/gateway/internal/business/table_monitor","status":"missing","acceptance_gates":["B1-management-mutation","GATE-active-path-zero","GATE-rollback"],"rollback":"run cleanup only under an offline owner epoch and restore on failure"},
-    {"id":"model-checks","node_mount":"/model-checks and /my-model-checks","node_router_file":"migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks.routes.ts","node_router_symbol":"modelChecksRouter","mutation_count":8,"gateway_handler":"backend-go/projects/gateway/internal/modelcheckowner","status":"implemented","acceptance_gates":["B1-j3b-quality","GATE-runtime-ready","GATE-evidence-trust-complete","GATE-active-path-zero","GATE-isolated-sqlite-pg","GATE-rollback"],"rollback":"stop Gateway claims at owner epoch, preserve durable receipts, and re-enable Node only after duplicate writers are fenced","evidence":["backend-go/projects/gateway/internal/modelcheckowner/http.go","backend-go/projects/gateway/internal/modelcheckowner/runtime.go"],"gateway_proof":{"mounts":[{"path":"/__aisys__/api/model-checks","scope":"admin","evidence_file":"backend-go/projects/gateway/cmd/juhe-ai-gateway/main.go","scope_evidence":"NewAdminAuthorize"},{"path":"/__aisys__/api/my-model-checks","scope":"self","evidence_file":"backend-go/projects/gateway/cmd/juhe-ai-gateway/main.go","scope_evidence":"NewSelfAuthorize"}],"methods":["POST /token-intercept-baselines/activate","GET /options","GET /quality-policy","PATCH /quality-policy","GET /quality-schedules","POST /quality-schedules","PATCH /quality-schedules/:id","DELETE /quality-schedules/:id","GET /account-options","GET /options/accounts","GET /run/active","POST /run/stop","POST /run","POST /run/stream","GET /runs","GET /runs/:id"]}}
+    {
+      "id": "auth",
+      "node_mount": "/auth",
+      "node_router_file": "backend/src/modules/auth/auth.routes.ts",
+      "node_router_symbol": "authRouter",
+      "mutation_count": 6,
+      "gateway_handler": "backend-go/projects/gateway/internal/authsys",
+      "status": "implemented-archive-pending",
+      "acceptance_gates": [
+        "GATE-auth-lifecycle (authsys tests)",
+        "GATE-isolated-sqlite-pg (SQLite in-memory suite)",
+        "GATE-active-path-zero (P8 物理归档)",
+        "GATE-rollback (final-archive manifest)"
+      ],
+      "rollback": "fence auth/session owner epoch and restore Node only after session and revocation readback",
+      "evidence": [
+        "backend-go/projects/gateway/internal/authsys/routes.go",
+        "backend-go/projects/gateway/internal/authsys/middleware.go",
+        "backend-go/projects/gateway/internal/authsys/store_accounts.go",
+        "migration-backup/node/final-archive/K2-session-auth.manifest.json"
+      ]
+    },
+    {
+      "id": "accounts",
+      "node_mount": "/accounts and /my-accounts",
+      "node_router_file": "backend/src/modules/accounts/accounts.routes.ts",
+      "node_router_symbol": "accountsRouter",
+      "mutation_count": 4,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/accounts",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-account-runtime",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "drain account mutations, replay committed receipts, then restore one owner at an epoch boundary"
+    },
+    {
+      "id": "groups",
+      "node_mount": "/groups and /my-groups",
+      "node_router_file": "backend/src/modules/groups/groups.routes.ts",
+      "node_router_symbol": "groupsRouter",
+      "mutation_count": 4,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/groups",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "freeze group writes and restore Node after binding and revision parity"
+    },
+    {
+      "id": "route-strategies",
+      "node_mount": "/route-strategies and /my-route-strategies",
+      "node_router_file": "backend/src/modules/route-strategies/route-strategies.routes.ts",
+      "node_router_symbol": "routeStrategiesRouter",
+      "mutation_count": 3,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/route_strategies",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "drain strategy revisions and replay only committed owner-epoch receipts"
+    },
+    {
+      "id": "api-keys",
+      "node_mount": "/api-keys and /my-api-keys",
+      "node_router_file": "backend/src/modules/api-keys/api-keys.routes.ts",
+      "node_router_symbol": "apiKeysRouter",
+      "mutation_count": 4,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/api_keys",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-account-runtime",
+        "GATE-secret-safety",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "fence key revisions and restore owner only after hash/prefix parity"
+    },
+    {
+      "id": "authorizations",
+      "node_mount": "/authorizations and /my-authorizations",
+      "node_router_file": "backend/src/modules/authorizations/authorizations.routes.ts",
+      "node_router_symbol": "authorizationsRouter",
+      "mutation_count": 5,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/authorizations",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-availability-authorization",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "fence authorization revisions and restore after dependent binding readback"
+    },
+    {
+      "id": "oauth-anthropic",
+      "node_mount": "/anthropic-oauth and /my-anthropic-oauth",
+      "node_router_file": "backend/src/modules/anthropic-oauth/anthropic-oauth.routes.ts",
+      "node_router_symbol": "anthropicOAuthRouter",
+      "mutation_count": 6,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/anthropic",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-oauth-credentials",
+        "GATE-secret-safety",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "never restore secrets from backup; replay encrypted credential receipts only"
+    },
+    {
+      "id": "oauth-gemini",
+      "node_mount": "/gemini-oauth and /my-gemini-oauth",
+      "node_router_file": "backend/src/modules/gemini-oauth/gemini-oauth.routes.ts",
+      "node_router_symbol": "geminiOAuthRouter",
+      "mutation_count": 6,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/gemini",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-oauth-credentials",
+        "GATE-secret-safety",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "fence credential revisions and verify revoke semantics before owner return"
+    },
+    {
+      "id": "oauth-grok",
+      "node_mount": "/grok-oauth and /my-grok-oauth",
+      "node_router_file": "backend/src/modules/grok-oauth/grok-oauth.routes.ts",
+      "node_router_symbol": "grokOAuthRouter",
+      "mutation_count": 7,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/grok",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-oauth-credentials",
+        "GATE-secret-safety",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "drain OAuth mutations and replay encrypted committed receipts without cross-process calls"
+    },
+    {
+      "id": "oauth-openai",
+      "node_mount": "/openai-oauth and /my-openai-oauth",
+      "node_router_file": "backend/src/modules/openai-oauth/openai-oauth.routes.ts",
+      "node_router_symbol": "openAIOAuthRouter",
+      "mutation_count": 6,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/openai",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-oauth-credentials",
+        "GATE-secret-safety",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "fence credential revisions and restore only after encrypted state parity"
+    },
+    {
+      "id": "oauth-management",
+      "node_mount": "/oauth",
+      "node_router_file": "backend/src/modules/oidc-provider/oidc-provider.routes.ts",
+      "node_router_symbol": "oauthManagementRouter",
+      "mutation_count": 3,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/management",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-auth-lifecycle",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "drain client mutations and restore after client revision readback"
+    },
+    {
+      "id": "providers",
+      "node_mount": "/providers",
+      "node_router_file": "backend/src/modules/providers/providers.routes.ts",
+      "node_router_symbol": "providersRouter",
+      "mutation_count": 4,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/providers",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "freeze provider catalog revisions and restore after model catalog parity"
+    },
+    {
+      "id": "proxies",
+      "node_mount": "/proxies",
+      "node_router_file": "backend/src/modules/proxies/proxies.routes.ts",
+      "node_router_symbol": "proxiesRouter",
+      "mutation_count": 3,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/proxies",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "drain proxy writes, replay revisions, and switch owner atomically"
+    },
+    {
+      "id": "response-inspection-policies",
+      "node_mount": "/response-inspection-policies",
+      "node_router_file": "backend/src/modules/response-inspection-policies/response-inspection-policies.routes.ts",
+      "node_router_symbol": "responseInspectionPoliciesRouter",
+      "mutation_count": 3,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/response_inspection_policies",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "fence policy revisions and restore after cache invalidation parity"
+    },
+    {
+      "id": "external-integration-sources",
+      "node_mount": "/external-integration-sources",
+      "node_router_file": "backend/src/modules/external-integrations/external-integration-sources.routes.ts",
+      "node_router_symbol": "externalIntegrationSourcesRouter",
+      "mutation_count": 6,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/external_integrations",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-oauth-credentials",
+        "GATE-secret-safety",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "fence integration token revisions and replay encrypted receipts only"
+    },
+    {
+      "id": "ip-stats",
+      "node_mount": "/ip-stats",
+      "node_router_file": "backend/src/modules/ip-stats/ip-stats.routes.ts",
+      "node_router_symbol": "ipStatsRouter",
+      "mutation_count": 4,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/ip_stats",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "drain blacklist/allowlist mutations and restore after digest parity"
+    },
+    {
+      "id": "settings",
+      "node_mount": "/settings",
+      "node_router_file": "backend/src/modules/settings/settings.routes.ts",
+      "node_router_symbol": "settingsRouter",
+      "mutation_count": 3,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/settings",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "freeze settings revisions and restore after public snapshot parity"
+    },
+    {
+      "id": "system-accounts",
+      "node_mount": "/system-accounts",
+      "node_router_file": "backend/src/modules/system-accounts/system-accounts.routes.ts",
+      "node_router_symbol": "systemAccountsRouter",
+      "mutation_count": 2,
+      "gateway_handler": "backend-go/projects/gateway/internal/authsys",
+      "status": "implemented-archive-pending",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-auth-lifecycle",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "fence super-admin account revisions and restore after auth readback",
+      "evidence": [
+        "backend-go/projects/gateway/internal/authsys/app.go",
+        "backend-go/projects/gateway/internal/authsys/store_accounts.go",
+        "migration-backup/node/final-archive/K2-session-auth.manifest.json"
+      ]
+    },
+    {
+      "id": "system-teams",
+      "node_mount": "/system-teams",
+      "node_router_file": "backend/src/modules/system-teams/system-teams.routes.ts",
+      "node_router_symbol": "systemTeamsRouter",
+      "mutation_count": 4,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/system_teams",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-auth-lifecycle",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "drain team membership mutations and restore after member history parity"
+    },
+    {
+      "id": "announcements",
+      "node_mount": "/announcements",
+      "node_router_file": "backend/src/modules/announcements/announcements.routes.ts",
+      "node_router_symbol": "announcementsRouter",
+      "mutation_count": 6,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/announcements",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-gateway-artifacts",
+        "GATE-api-parity",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "drain announcement revisions and replay committed publication receipts"
+    },
+    {
+      "id": "table-monitor",
+      "node_mount": "/table-monitor",
+      "node_router_file": "backend/src/modules/table-monitor/table-monitor.routes.ts",
+      "node_router_symbol": "tableMonitorRouter",
+      "mutation_count": 1,
+      "gateway_handler": "backend-go/projects/gateway/internal/business/table_monitor",
+      "status": "missing",
+      "acceptance_gates": [
+        "B1-management-mutation",
+        "GATE-active-path-zero",
+        "GATE-rollback"
+      ],
+      "rollback": "run cleanup only under an offline owner epoch and restore on failure"
+    },
+    {
+      "id": "model-checks",
+      "node_mount": "/model-checks and /my-model-checks",
+      "node_router_file": "migration-backup/node/j3b-model-check/backend/src/modules/model-checks/model-checks.routes.ts",
+      "node_router_symbol": "modelChecksRouter",
+      "mutation_count": 8,
+      "gateway_handler": "backend-go/projects/gateway/internal/modelcheckowner",
+      "status": "implemented",
+      "acceptance_gates": [
+        "B1-j3b-quality",
+        "GATE-runtime-ready",
+        "GATE-evidence-trust-complete",
+        "GATE-active-path-zero",
+        "GATE-isolated-sqlite-pg",
+        "GATE-rollback"
+      ],
+      "rollback": "stop Gateway claims at owner epoch, preserve durable receipts, and re-enable Node only after duplicate writers are fenced",
+      "evidence": [
+        "backend-go/projects/gateway/internal/modelcheckowner/http.go",
+        "backend-go/projects/gateway/internal/modelcheckowner/runtime.go"
+      ],
+      "gateway_proof": {
+        "mounts": [
+          {
+            "path": "/__aisys__/api/model-checks",
+            "scope": "admin",
+            "evidence_file": "backend-go/projects/gateway/cmd/juhe-ai-gateway/main.go",
+            "scope_evidence": "NewAdminAuthorize"
+          },
+          {
+            "path": "/__aisys__/api/my-model-checks",
+            "scope": "self",
+            "evidence_file": "backend-go/projects/gateway/cmd/juhe-ai-gateway/main.go",
+            "scope_evidence": "NewSelfAuthorize"
+          }
+        ],
+        "methods": [
+          "POST /token-intercept-baselines/activate",
+          "GET /options",
+          "GET /quality-policy",
+          "PATCH /quality-policy",
+          "GET /quality-schedules",
+          "POST /quality-schedules",
+          "PATCH /quality-schedules/:id",
+          "DELETE /quality-schedules/:id",
+          "GET /account-options",
+          "GET /options/accounts",
+          "GET /run/active",
+          "POST /run/stop",
+          "POST /run",
+          "POST /run/stream",
+          "GET /runs",
+          "GET /runs/:id"
+        ]
+      }
+    }
   ]
 }
