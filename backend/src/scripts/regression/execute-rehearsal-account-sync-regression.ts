@@ -138,6 +138,7 @@ assert.throws(() => validateScopeManifest({ ...scope, tables: { ...scope.tables,
 assert.throws(() => validateScopeManifest({ ...scope, tables: { ...scope.tables, account_lock_states: ['*'] } }, plan), /未批准的账户同步表/)
 assert.throws(() => validateScopeManifest({ ...scope, groupIdsHash: '0'.repeat(64) }, plan), /groupIdsHash 与 ID 列表不一致/)
 assert.throws(() => validateScopeManifest({ ...scope, tables: { ...scope.tables, api_keys: ['["outside-approved-scope"]'] } }, plan), /scope\.api_keys 行键必须与 scope\.apiKeyIds 精确一致/)
+assert.doesNotThrow(() => validateScopeManifest({ ...scope, tables: { ...scope.tables, group_authorization_settings: [] } }, plan), /显式空 scope 允许源表为空的配置表/)
 assert.throws(
   () => validateScopeManifest({ ...scope, apiKeyRemap: [{ sourceId: 'api-key-1', targetId: 'other-key' }] }, plan),
   /scope\.apiKeyRemap 必须覆盖全部 apiKeyIds，且 source\/target 集合必须一致/

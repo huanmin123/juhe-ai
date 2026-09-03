@@ -257,7 +257,10 @@ export function validateScopeManifest(
   ])
   for (const name of policyNames) {
     const keys = scope.tables[name]
-    if (!Array.isArray(keys) || keys.length === 0) throw new Error(`scope 缺少 ${name} 的行范围（使用 ["*"] 表示明确允许该表全部配置）`)
+    if (!Array.isArray(keys)) throw new Error(`scope 缺少 ${name} 的行范围（使用 ["*"] 表示明确允许该表全部配置）`)
+    // An explicit empty list means "this table is legitimately empty in the
+    // source"; copyTable still fails unless the source really has 0 rows.
+    if (keys.length === 0) continue
     if (keys.some((key) => key !== '*' && typeof key !== 'string')) throw new Error(`scope ${name} 含无效行键`)
     if (new Set(keys).size !== keys.length) throw new Error(`scope ${name} 行键重复`)
     if (keys.includes('*') && !wildcardAllowed.has(name)) throw new Error(`scope ${name} 不允许使用 *，必须列出闭包内的行键`)
@@ -443,7 +446,8 @@ export async function executeRehearsalAccountSync(
     if (policy.name === 'providers' && tablePlan.selfForeignKeyPolicy !== 'parent-before-child') {
       throw new Error('当前执行器只支持 providers.selfForeignKeyPolicy=parent-before-child')
     }
-    reports.push(await copyTable(source, target, policy.name, tablePlan, scope.tables[policy.name], generatedValues.tables[policy.name] ?? {}))
+    const canaryOnly = tablePlan.canaryOnly === true
+    reports.push(await copyTable(source, target, policy.name, tablePlan, scope.tables[policy.name], generatedValues.tables[policy.name] ?? {}, canaryOnly ? scope.approvedCanaryAccountIds : null))
   }
 
   // Several authorization/quota columns are intentionally polymorphic and do
@@ -703,7 +707,8 @@ async function copyTable(
   table: string,
   plan: RehearsalAccountSyncTablePlan,
   scopeKeys: string[],
-  generated: Record<string, Record<string, unknown>>
+  generated: Record<string, Record<string, unknown>>,
+  canaryAccountIds: string[] | null = null
 ): Promise<ExecutionTableReport> {
   const primaryKey = await readPrimaryKey(source, table)
   const copiedColumns = [...new Set(plan.copiedColumns)]
@@ -711,7 +716,12 @@ async function copyTable(
     if (!copiedColumns.includes(key)) throw new Error(`${table}: 主键列 ${key} 必须在 copiedColumns 中，才能建立 scope 与回读摘要`)
   }
   const selectedColumns = copiedColumns
-  const scopePredicate = buildScopePredicate(primaryKey, scopeKeys)
+  // canaryOnly tables import only rows whose account_id is an approved
+  // canary; the scope row keys may legitimately be empty because the source
+  // is expected to contain non-canary rows that must NOT be copied.
+  const scopePredicate = canaryAccountIds
+    ? { sql: ` WHERE account_id = ANY($1::text[])`, parameters: [canaryAccountIds] as unknown[] }
+    : buildScopePredicate(primaryKey, scopeKeys)
   const sqlColumns = selectedColumns.map(quoteIdentifier).join(', ')
   const result = await source.query<Row>(
     `SELECT ${sqlColumns} FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier(table)}${scopePredicate.sql}${primaryKey.length > 0 ? ` ORDER BY ${primaryKey.map((item) => quoteIdentifier(item.name)).join(', ')}` : ''}`,
@@ -720,7 +730,7 @@ async function copyTable(
   let selected = result.rows
   if (table === 'accounts' && plan.selfForeignKeyPolicy === 'source-before-authorization-instance') selected = orderAccountRows(selected)
   if (table === 'providers' && plan.selfForeignKeyPolicy === 'parent-before-child') selected = orderProviderRows(selected)
-  if (!scopeKeys.includes('*') && result.rows.length !== scopeKeys.length) {
+  if (!canaryAccountIds && !scopeKeys.includes('*') && result.rows.length !== scopeKeys.length) {
     throw new Error(`${table} scope 指定 ${scopeKeys.length} 行，但源库只找到 ${result.rows.length} 行，拒绝部分导入`)
   }
   const targetColumns = await readTargetColumns(target, table)
@@ -781,7 +791,9 @@ async function copyTable(
     readbackExpectations.push({ rowKey, values: expectedValues, requiredNonNullColumns })
     insertedRows += 1
   }
-  const readbackPredicate = buildScopePredicate(primaryKey, scopeKeys)
+  const readbackPredicate = canaryAccountIds
+    ? { sql: ` WHERE account_id = ANY($1::text[])`, parameters: [canaryAccountIds] as unknown[] }
+    : buildScopePredicate(primaryKey, scopeKeys)
   const readback = await target.query<Row>(
     `SELECT ${readbackColumns.map(quoteIdentifier).join(', ')} FROM ${quoteIdentifier(businessSchema)}.${quoteIdentifier(table)}${readbackPredicate.sql}${primaryKey.length > 0 ? ` ORDER BY ${primaryKey.map((item) => quoteIdentifier(item.name)).join(', ')}` : ''}`,
     readbackPredicate.parameters
@@ -867,6 +879,13 @@ function requiresPerRowGeneratedValue(table: string, column: string): boolean {
 }
 
 async function advanceIdSequence(target: QueryClient, table: string): Promise<void> {
+  // Composite-key tables (e.g. provider_protocol_profile_families) have no id
+  // column and no serial sequence to advance.
+  const idColumn = await target.query<{ has_column: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND column_name = 'id') AS has_column`,
+    [businessSchema, table]
+  )
+  if (!idColumn.rows[0]?.has_column) return
   const sequence = await target.query<{ sequence_name: string | null }>(
     'SELECT pg_get_serial_sequence($1, $2) AS sequence_name',
     [`${businessSchema}.${table}`, 'id']
@@ -881,7 +900,11 @@ async function advanceIdSequence(target: QueryClient, table: string): Promise<vo
 
 function buildScopePredicate(primaryKey: readonly PrimaryKeyColumn[], scopeKeys: readonly string[]): { sql: string; parameters: unknown[] } {
   if (scopeKeys.includes('*')) return { sql: '', parameters: [] }
-  if (scopeKeys.length === 0) throw new Error('scope 行键不能为空')
+  if (scopeKeys.length === 0) {
+    // Explicit empty scope: select everything so the caller's exact-count
+    // check proves the source table really was empty; otherwise it aborts.
+    return { sql: '', parameters: [] }
+  }
   if (primaryKey.length === 0) throw new Error('无主键表不能使用显式 scope 行键；必须使用 *')
   const values = scopeKeys.map((key) => {
     let parsed: unknown
