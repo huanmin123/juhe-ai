@@ -36,7 +36,7 @@
 | K5 invalidation-bus | pending | — | — |
 | K6 legacybridge | pending | — | — |
 | K7 mockupstream+golden | pending | — | — |
-| S-PG ensure-schema PG | pending | — | postgres-schema.ts + postgres-seed-defaults.ts 移植中 |
+| S-PG ensure-schema PG | archived | schema 提交 | 614 语句逐字节等价（tsx 实跑 dump 比对 614/614）；166 表/422 索引/1 DO 块/2 触发器块；种子 164+13 幂等；人工复核 4 项（模型目录 upsert 待定价服务、默认 APIKey/路由策略待 AES 加密切片、外部 token 同、SQLite→PG 转换管线以内嵌终态语句替代）；PG 冒烟 opt-in env 待隔离库实跑 |
 | S-SQ ensure-schema SQLite | archived | schema 提交 | 六库 DDL 逐字节等价、幂等、golden 表集断言绿；business 80 表/stats 62（J3b 注释段不计）；发现 4 组 Node 条件 ALTER 迁移需 P8 人工复核（已在 Go 文件头列明） |
 
 （W2+ 的 M/P/G/C/J/X 各行随波次开启时补入。）
