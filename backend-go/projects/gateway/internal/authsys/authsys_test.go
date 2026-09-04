@@ -54,6 +54,7 @@ func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	deps := &Deps{
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(now),
 		LoginGuard: modelcheckauth.NewLoginGuard(now), Now: now, CaptchaDisabled: true,
+		TemporaryAccessIPAllowlist: []string{"127.0.0.1"},
 	}
 	k := kernel.New(kernel.Options{})
 	deps.MountAuth(k, "lax", false)
@@ -326,6 +327,27 @@ func TestTemporaryAccessTokenLifecycle(t *testing.T) {
 	direct.Body.Close()
 	if revoke.StatusCode != http.StatusOK && direct.StatusCode != http.StatusOK {
 		t.Fatal("temporary token revoke failed")
+	}
+}
+
+func TestTemporaryAccessTokenRequiresAllowlistedSource(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "admin1", "super-secret", "super_admin")
+
+	deps.TemporaryAccessIPAllowlist = nil
+	denied, deniedPayload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens",
+		`{"username":"admin1","password":"super-secret","ttlSeconds":120}`, "")
+	if denied.StatusCode != http.StatusForbidden || deniedPayload["message"] != "当前来源不在临时访问令牌白名单中" {
+		t.Fatalf("empty allowlist must deny: %d %v", denied.StatusCode, deniedPayload)
+	}
+
+	// The Node configuration normalizes IPv4-mapped IPv6 entries to IPv4.
+	// Keep the comparison tolerant of the same listener/proxy representation.
+	deps.TemporaryAccessIPAllowlist = []string{"::ffff:127.0.0.1"}
+	allowed, allowedPayload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens",
+		`{"username":"admin1","password":"super-secret","ttlSeconds":120}`, "")
+	if allowed.StatusCode != http.StatusOK || !strings.HasPrefix(allowedPayload["data"].(map[string]any)["token"].(string), "juhe_tmp_") {
+		t.Fatalf("normalized allowlist must issue: %d %v", allowed.StatusCode, allowedPayload)
 	}
 }
 

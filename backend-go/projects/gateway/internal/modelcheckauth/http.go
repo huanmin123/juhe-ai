@@ -186,12 +186,28 @@ func (h *HTTPHandler) revokeTemporaryAccessToken(w http.ResponseWriter, r *http.
 }
 
 func (h *HTTPHandler) temporaryAccessAllowed(ip string) bool {
-	for _, allowed := range h.TemporaryAccessIPAllowlist {
-		if strings.TrimSpace(allowed) == ip {
+	return TemporaryAccessIPAllowed(ip, h.TemporaryAccessIPAllowlist)
+}
+
+// TemporaryAccessIPAllowed applies the Node temporary-access source policy.
+// The allowlist is an exact IP list; an empty list intentionally denies every
+// source. IPv4-mapped IPv6 notation is normalized at the comparison boundary
+// because both Go listeners and reverse proxies may expose it that way.
+func TemporaryAccessIPAllowed(clientIP string, allowlist []string) bool {
+	clientIP = normalizeTemporaryAccessIP(clientIP)
+	if clientIP == "" {
+		return false
+	}
+	for _, allowed := range allowlist {
+		if normalizeTemporaryAccessIP(allowed) == clientIP {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeTemporaryAccessIP(value string) string {
+	return strings.TrimPrefix(strings.TrimSpace(value), "::ffff:")
 }
 
 func clientIP(r *http.Request) string {

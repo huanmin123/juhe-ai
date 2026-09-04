@@ -19,7 +19,7 @@
 | 波 | 状态 | WP 明细 |
 | --- | --- | --- |
 | W1 | in-progress | K1 K2 K3 K4 K5 K6 K7 S-PG S-SQ + doc |
-| W2 | in-progress | M01 ✓、M03 ✓、M04 ✓（usage 待 J5）、M05 ✓、M06 ✓、M07 ✓、**M08 ✓**（accounts CRUD+锁定族+tags+软删清理，凭据 AES 兼容+掩码加固偏差登记，10 测试 -race 绿）；下一片 M09 批量/导入导出/克隆 |
+| W2 | in-progress | M01/M03/M04/M05/M06/M07/M08 ✓、**M09 ✓**（批量 16 字段覆盖引擎+revision CAS、CCS 五源导入 preview/confirm、导出；14 测试 -race 绿）；下一片 clone-context + tags/编辑明细补全 |
 | W3 | pending | M08-M14 |
 | W4 | pending | M15-M17 P01-P03 G01-G03 |
 | W5 | pending | G04-G08 P04 P05 |
@@ -60,5 +60,7 @@
 - 2026-09-04 M06（子代理交付，主 agent -race 复验通过）: route-strategies 双挂载全 CRUD + 五模式（normal 速度优先六旋钮 10000-60000ms 等阈值 / hybrid_smart 评分配置+levelRoutes ≤5 档约束 / weighted·failover·round_robin 禁 config）+ 绑定 1-20 不重复 active 优先级唯一 + failover 首位主用校验 + 默认策略与 API Key 引用删除保护 + 乐观 409 currentUpdatedAt。顺延：速度优先运行态清理/K5 失效（RuntimeInvalidator 接口已注入）、options/edit-basic/speed-first-runtime 读端点、授权分组绑定分支（M04）。
 - 2026-09-04 M07（子代理交付，主 agent -race 复验通过）: api-keys 双挂载切片，AES-256-GCM v1 信封与 Node crypto.ts 逐字节兼容（存量密文可解，密钥=sha256(runtimeSecret)），明文仅创建/refresh/secret 三处一次性返回，删除原子硬删+cleanup-target 同事务 upsert，可用性排程全量移植（跨午夜/DST）。顺延：PATCH /{id} 乐观锁更新、usage 渲染（J5）、schedule 时区读系统设置（暂进程时区）。
 - 2026-09-04 M08（子代理交付，主 agent -race 复验通过）: accounts CRUD 核心切片（11 文件）：列表分页+八种过滤、详情/edit-basic、options、创建（revision 初始化+凭据封存）、编辑乐观锁（config_revision 递增）、锁定族（generation CAS）、软删+卫星清理、tags 三端点、NFKC 名称搜索。凭据 AES v1 信封与 Node crypto.ts 双向兼容。登记的 Go 加固偏差：编辑详情凭据返回掩码而非 Node 明文。顺延：授权实例视角 UNION 读、批量/导入导出/clone（M09）、runtime-reset（维护者 6f9739e96 新增，需对照）、余额健康探针读、circuit outbox 推进、创建量上限。
+- 2026-09-04 M09（子代理交付，主 agent -race 复验通过）: accounts 批量/导入/导出切片。批量：2-100 账户同 owner 校验、16 字段 enabled-union 覆盖、逐账户 revision CAS 409、batchId+逐账户日志。导入：五 sourceMode（native/sub2api/newapi/cpa/oneapi）preview/confirm 两阶段、账户经 M08 Store.Create 落库（凭据密封/代理密码密封/分组自动创建）。导出：byIds/byFilters（500 上限）。顺延登记：5 个凭据配置字段批量覆盖（待凭据配置切片）、导入侧凭据归一化与 pending 健康投递、CPA YAML、日志 targets 字段（authsys sink 扩展）、导出 filters 严格 400 语义。
+- 已知基线问题：
 - 已知基线问题：
 - 已知基线问题：`maintenance/internal/ownermanifest/TestVerifyRepositoryBusinessOwnerManifest` 在基线 f9c1fbeac 即失败（`account_api_key_pool_probe_cursor type line 844 is stale`；主目录存在维护者未提交的 route-strategies 改动，Go 校验器与已提交 Node 状态不同步）。本迁移不掩盖：该断言涉及的 Node 文件将在 M08-M10 归档时随迁移消失，届时此失败自然解除；W1-W3 每次全量回归将此失败记为 KNOWN-BASELINE-FAIL，不计入迁移回归门。

@@ -286,6 +286,10 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	clientIP := loginClientIP(r)
+	if !modelcheckauth.TemporaryAccessIPAllowed(clientIP, d.TemporaryAccessIPAllowlist) {
+		kernel.WriteError(w, http.StatusForbidden, "当前来源不在临时访问令牌白名单中")
+		return
+	}
 	if blocked, retryAfter, message := d.LoginGuard.Check(clientIP, body.Username); blocked {
 		setRetryAfter(w, retryAfter)
 		kernel.WriteError(w, http.StatusTooManyRequests, message)

@@ -92,14 +92,17 @@ func AuthContextFrom(r *http.Request) *AuthContext {
 
 // Deps bundles the K2 collaborators.
 type Deps struct {
-	Port                 businessauth.Port
-	Accounts             *AccountStore
-	Captcha              *modelcheckauth.CaptchaService
-	LoginGuard           *modelcheckauth.LoginGuard
-	Now                  func() time.Time
-	CaptchaDisabled      bool
-	DevAutoLoginUsername string
-	Sink                 OperationLogSink
+	Port       businessauth.Port
+	Accounts   *AccountStore
+	Captcha    *modelcheckauth.CaptchaService
+	LoginGuard *modelcheckauth.LoginGuard
+	// TemporaryAccessIPAllowlist is the parsed, exact source-IP allowlist for
+	// POST /auth/temporary-access-tokens. An empty list denies every source.
+	TemporaryAccessIPAllowlist []string
+	Now                        func() time.Time
+	CaptchaDisabled            bool
+	DevAutoLoginUsername       string
+	Sink                       OperationLogSink
 }
 
 // RequireSession mirrors requireSessionContext: token resolution, dev auto

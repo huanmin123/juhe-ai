@@ -163,6 +163,21 @@ func TestHTTPHandlerRejectsInvalidTemporaryTokenFieldsBeforeDefaultTTL(t *testin
 	}
 }
 
+func TestTemporaryAccessIPAllowed(t *testing.T) {
+	if TemporaryAccessIPAllowed("127.0.0.1", nil) {
+		t.Fatal("empty allowlist must deny every source")
+	}
+	if !TemporaryAccessIPAllowed("::ffff:127.0.0.1", []string{"127.0.0.1"}) {
+		t.Fatal("IPv4-mapped source must match IPv4 allowlist entry")
+	}
+	if !TemporaryAccessIPAllowed("127.0.0.1", []string{"::ffff:127.0.0.1"}) {
+		t.Fatal("IPv4 entry must match normalized mapped allowlist entry")
+	}
+	if TemporaryAccessIPAllowed("203.0.113.17", []string{"127.0.0.1"}) {
+		t.Fatal("unlisted source must be denied")
+	}
+}
+
 func TestCaptchaLifecycleAndLoginRequirement(t *testing.T) {
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	service := NewCaptchaService(func() time.Time { return now })
