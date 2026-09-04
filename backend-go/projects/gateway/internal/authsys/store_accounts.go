@@ -370,19 +370,35 @@ func (s *AccountStore) ListOptions(ctx context.Context, ids []string, keyword st
 	where := "1=1"
 	args := []any{}
 	if len(ids) > 0 {
-		if len(ids) > 50 {
-			ids = ids[:50]
-		}
-		where = `id IN (` + placeholders(len(ids)) + `)`
+		uniqueIDs := make([]string, 0, minInt(len(ids), 50))
+		seen := map[string]struct{}{}
 		for _, id := range ids {
-			args = append(args, id)
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			uniqueIDs = append(uniqueIDs, id)
+			if len(uniqueIDs) == 50 {
+				break
+			}
 		}
-	} else if keyword != "" {
-		where = `(lower(username) LIKE ? OR lower(display_name) LIKE ?)`
-		pattern := "%" + strings.ToLower(keyword) + "%"
-		args = append(args, pattern, pattern)
+		if len(uniqueIDs) > 0 {
+			where += ` AND id IN (` + placeholders(len(uniqueIDs)) + `)`
+			for _, id := range uniqueIDs {
+				args = append(args, id)
+			}
+		}
 	}
-	query := `SELECT id,username,status FROM ` + s.table("system_accounts") + ` WHERE ` + where + ` ORDER BY status ASC, display_name ASC, username ASC, id ASC LIMIT ?`
+	if keyword = strings.TrimSpace(keyword); keyword != "" {
+		prefix := escapeLikePrefix(keyword) + "%"
+		where += ` AND (lower(username) = lower(?) OR lower(username) LIKE lower(?) ESCAPE '\' OR lower(display_name) = lower(?) OR lower(display_name) LIKE lower(?) ESCAPE '\')`
+		args = append(args, keyword, prefix, keyword, prefix)
+	}
+	query := `SELECT id,display_name,status FROM ` + s.table("system_accounts") + ` WHERE ` + where + ` ORDER BY status ASC, display_name ASC, username ASC, id ASC LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, s.bind(query), append(args, limit)...)
 	if err != nil {
 		return nil, err
@@ -402,6 +418,17 @@ func (s *AccountStore) ListOptions(ctx context.Context, ids []string, keyword st
 		options = append(options, option)
 	}
 	return options, rows.Err()
+}
+
+func escapeLikePrefix(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func placeholders(n int) string {

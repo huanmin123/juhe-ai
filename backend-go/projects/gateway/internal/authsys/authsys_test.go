@@ -325,6 +325,22 @@ func TestSystemAccountsCRUDAndAuthorization(t *testing.T) {
 	if duplicate.StatusCode != http.StatusConflict || duplicatePayload["message"] != "用户账户已存在" {
 		t.Fatalf("duplicate username: %d %v", duplicate.StatusCode, duplicatePayload)
 	}
+	options, optionsPayload := getJSON(t, server, "/__aisys__/api/system-accounts/options?ids="+accountIDByUsername(t, deps, "root")+","+accountIDByUsername(t, deps, "plain")+"&keyword=ROOT", adminCookie)
+	if options.StatusCode != http.StatusOK {
+		t.Fatalf("list account options: %d %v", options.StatusCode, optionsPayload)
+	}
+	optionItems := optionsPayload["data"].([]any)
+	if len(optionItems) != 1 {
+		t.Fatalf("ids and keyword must be combined, got %v", optionItems)
+	}
+	option := optionItems[0].(map[string]any)
+	if option["id"] != accountIDByUsername(t, deps, "root") || option["name"] != "ROOT_Name" {
+		t.Fatalf("options must use displayName and combined filters: %v", option)
+	}
+	substring, substringPayload := getJSON(t, server, "/__aisys__/api/system-accounts/options?keyword=oot", adminCookie)
+	if substring.StatusCode != http.StatusOK || len(substringPayload["data"].([]any)) != 0 {
+		t.Fatalf("options keyword must be exact-or-prefix, got %d %v", substring.StatusCode, substringPayload)
+	}
 
 	list, listPayload := getJSON(t, server, "/__aisys__/api/system-accounts?page=1&pageSize=20", adminCookie)
 	if list.StatusCode != http.StatusOK {
