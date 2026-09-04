@@ -581,6 +581,31 @@ func TestPatchTeamExpiryDoesNotReviveRemovedMember(t *testing.T) {
 	}
 }
 
+func TestPatchActiveRevalidatesExistingExpiry(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_patch_revalidate", "owner")
+	future := f.now.Add(time.Hour).Format(time.RFC3339Nano)
+	created, err := f.store.Create(context.Background(), CreateInput{ResourceType: "group", ResourceID: "grp_patch_revalidate", GranteeType: "system_account", GranteeID: "grantee", ExpiresAt: &future}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused := StatusPaused
+	pausedResult, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused}, created.Item.UpdatedAt, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := f.now.Add(-time.Minute).Format(time.RFC3339Nano)
+	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET expires_at = ? WHERE id = ?`, past, created.Item.ID); err != nil {
+		t.Fatal(err)
+	}
+	active := StatusActive
+	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &active}, pausedResult.Result.UpdatedAt, "owner"); err == nil || !strings.Contains(err.Error(), "授权到期时间不能早于当前时间") {
+		t.Fatalf("active revalidation error = %v", err)
+	}
+}
+
 func TestPatchExpiresAtRespectsAccountExpiry(t *testing.T) {
 	f := newFixture(t)
 	if _, err := f.db.Exec(accountsFixtureDDL); err != nil {

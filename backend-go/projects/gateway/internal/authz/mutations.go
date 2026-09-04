@@ -574,7 +574,8 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 	if grant.Status == StatusExpired && hasExpiresAtInput && !expiryExpired && requestedStatus == "" {
 		nextStatus = StatusActive
 	}
-	if hasExpiresAtInput && nextExpiresAt != nil {
+	validateExpiry := hasExpiresAtInput || (requestedStatus == StatusActive && requestedStatus != grant.Status)
+	if validateExpiry && nextExpiresAt != nil {
 		accountExpiresAt, accountErr := s.patchAccountExpiry(ctx, tx, grant)
 		if accountErr != nil {
 			return nil, accountErr
