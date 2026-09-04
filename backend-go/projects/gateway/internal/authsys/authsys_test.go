@@ -316,6 +316,19 @@ func TestTemporaryAccessTokenLifecycle(t *testing.T) {
 		t.Fatalf("temporary token issue: %d %v", issued.StatusCode, issuedPayload)
 	}
 	token := issuedPayload["data"].(map[string]any)["token"].(string)
+	lowercaseBearerRequest, err := http.NewRequest(http.MethodGet, server.URL+"/__aisys__/api/auth/me", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lowercaseBearerRequest.Header.Set("Authorization", "bearer "+token)
+	lowercaseBearerResponse, err := http.DefaultClient.Do(lowercaseBearerRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lowercaseBearerResponse.Body.Close()
+	if lowercaseBearerResponse.StatusCode != http.StatusOK {
+		t.Fatalf("lowercase bearer scheme must authenticate the temporary token: %d", lowercaseBearerResponse.StatusCode)
+	}
 
 	// Non-admin accounts are rejected.
 	seedAccount(t, deps, "regular", "regular-pass", "user")

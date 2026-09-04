@@ -21,7 +21,7 @@ const (
 )
 
 var temporaryTokenPattern = regexp.MustCompile(`^juhe_tmp_[A-Za-z0-9_-]{43}$`)
-var bearerPattern = regexp.MustCompile(`^Bearer\s+(.+)$`)
+var bearerPattern = regexp.MustCompile(`(?i)^Bearer\s+(.+)$`)
 
 // ResolveSystemAccessToken mirrors temporary-access-token.ts: Authorization
 // takes absolute precedence; absence of both yields none.
