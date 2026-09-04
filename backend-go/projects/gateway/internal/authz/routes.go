@@ -428,7 +428,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		return
 	}
 	var body struct {
-		ExpectedUpdatedAt string          `json:"expectedUpdatedAt"`
+		ExpectedUpdatedAt *string         `json:"expectedUpdatedAt"`
 		Status            *string         `json:"status"`
 		ExpiresAt         json.RawMessage `json:"expiresAt"`
 		Limits            json.RawMessage `json:"limits"`
@@ -436,11 +436,11 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
-		kernel.WriteBadRequest(w, "修改授权参数不合法")
+	if body.ExpectedUpdatedAt == nil {
+		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
 		return
 	}
-	normalizedExpectedUpdatedAt, normalizeErr := normalizeAuthorizationExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	normalizedExpectedUpdatedAt, normalizeErr := normalizeAuthorizationExpectedUpdatedAt(*body.ExpectedUpdatedAt)
 	if normalizeErr != nil {
 		var fail *Fail
 		if errorsAsFail(normalizeErr, &fail) {
@@ -450,7 +450,6 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		kernel.WriteBadRequest(w, "修改授权参数不合法")
 		return
 	}
-	body.ExpectedUpdatedAt = normalizedExpectedUpdatedAt
 	expiresAtSet := body.ExpiresAt != nil
 	var expiresAt *string
 	if expiresAtSet && string(body.ExpiresAt) != "null" {
@@ -477,7 +476,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 	}
 	input := PatchInput{Status: body.Status, ExpiresAt: expiresAt, ExpiresAtSet: expiresAtSet, LimitsJSON: limitsJSON, LimitsSet: limitsSet}
 	access := d.accessFor(r, false)
-	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, body.ExpectedUpdatedAt,
+	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, normalizedExpectedUpdatedAt,
 		auth.SystemAccountID, access.FilterID)
 	if err != nil {
 		var fail *Fail
