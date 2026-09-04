@@ -19,7 +19,7 @@
 | 波 | 状态 | WP 明细 |
 | --- | --- | --- |
 | W1 | in-progress | K1 K2 K3 K4 K5 K6 K7 S-PG S-SQ + doc |
-| W2 | in-progress | M01-M11 ✓ + **M12-M17 ✓ 六包并发归档**（settings 60 key/操作日志读/三日志读/ipstats 读写/policyreads 三域/四供应商 OAuth 管理纵切片；38 测试 -race 绿）；顺延已逐包登记（凭据配置批量覆盖、gemini 富化、日志 hot-search/grep 文件面、providers 写端点待 C03） |
+| W2+W3 | in-progress | M01-M17 ✓（管理域完成）、C03 pricing ✓、G01-G04 网关协议 ✓、P03 delegated + P04 OIDC WIP（编译通过待测试补齐）；46 套件 -race 绿 |
 | W3 | pending | M08-M14 |
 | W4 | pending | M15-M17 P01-P03 G01-G03 |
 | W5 | pending | G04-G08 P04 P05 |
@@ -64,6 +64,8 @@
 - 2026-09-04 检查点: master 直推模式运行正常（合并 29b4b99f7 后 6 个迁移提交）。M09 剩余补挂：clone-context（30+ 列投影，account-interaction-context.repository）与 tags/编辑明细已就绪。下一片 M10（授权实例视角读）→ M11-M17。全量回归 69 套件 ok，唯一失败仍是已知基线问题（BusinessOwnerManifest probe_cursor 断言）。
 - 2026-09-04 M10+M11: M10 授权实例视角——authz.Store.AuthorizedReadableInstanceAccounts（直接授权+团队授权两条路径，active+未过期过滤），accounts 包 AuthorizedAccountReader 窄接口注入，my-accounts 列表对实例账户放行（3 个授权视角测试绿）。M11 providers 管理读（列表分页+keyword、详情 byCode/byID；写端点依赖定价服务顺延 C03）。另加固：临时令牌 ttlSeconds 严格整数校验（NaN/Inf/非整数拒绝）。providers 包为被配额中断的子代理遗留成品，主 agent -race 复验通过后补登记。
 - 2026-09-04 M12-M17 六包并发归档（用户授权不限并发）：六子代理并行、包目录互不重叠、主 agent 统一 -race 复验（44 gateway 套件全绿零失败）后逐包提交。各包顺延项已在包注释与子代理报告登记：M12 settings 实为 60 key（53 为过期口径）、authsys OperationLogEntry 缺 visibilityScope/detailLevel/metadata 字段（K4 sink 扩展）、M14 hot-search/grep 文件面、M15 detail 端点、M16c OIDC 签名、M17 gemini 富化/刷新退避/openai 刷新状态机。W2 管理域主体完成，剩余补挂项与 W3 波次（M09 导入归一化、providers 写、M02 依赖域读模型）待续。
+- 2026-09-04 W3 wave: 四子代理并行交付 C03 pricing（模型定价目录+计算器）、G01 gatewayproto（驱动注册接口）、G02 gatewayopenai（OpenAI 协议+8 测试绿，含 cacheWrite 链/tier 正则/seen map 三 bug 修复）、G03 gatewayanthropic + G04 gatewaygemini（协议本体）、P03 delegated + P04 oidc（半成品待补齐）。中断残留修复：pricing providerCode/IsInf、gemini urlPathUnescape/utf16→utf8、delegated 11 处编译错误（Profile/ApiKey 接口缺失/类型断言/method 调用）。
+- 已知基线问题：
 - 已知基线问题：
 - 已知基线问题：
 - 已知基线问题：
