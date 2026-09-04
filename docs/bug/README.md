@@ -1,5 +1,9 @@
 # Bug 记录目录
 
+- [BUG-0171](问题-0171-K2会话接口与多实例状态契约偏离.md)：K2 profile、资料回执、存储错误、cookie 与多实例 CAPTCHA/登录保护偏离 Node；待修复。
+- [BUG-0170](问题-0170-K2系统账户创建与管理结果不等价.md)：K2 系统账户创建遗漏默认资源，且 null、选项、回执、日志、缓存和校验结果偏离 Node；待修复。
+- [BUG-0169](问题-0169-K2认证高权限令牌与所有权门禁缺失.md)：K2 缺临时令牌白名单、允许普通管理接口创建 `super_admin`，且缺 owner gate 与 PostgreSQL 超级管理员并发不变量；待修复。
+
 - [BUG-0168](问题-0168-S-PGSchema与默认Seed迁移不完整.md)：S-PG 缺少生产初始化入口并遗漏多类 Node 默认 seed，fresh/upgrade 结果不等价；待修复。
 - [BUG-0167](问题-0167-S-SQSQLite初始化与Seed未接入.md)：S-SQ 仅新增 DDL，未接入 SQLite schema/seed 生产入口，无法独立初始化 fresh 库；待修复。
 
