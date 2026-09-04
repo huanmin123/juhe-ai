@@ -19,7 +19,7 @@
 | 波 | 状态 | WP 明细 |
 | --- | --- | --- |
 | W1 | in-progress | K1 K2 K3 K4 K5 K6 K7 S-PG S-SQ + doc |
-| W2 | in-progress | M01 ✓、M03 ✓、M04 ✓（usage 待 J5）、M05 ✓、M06 ✓、**M07 ✓**（AES-256-GCM 与 Node crypto.ts 兼容/明文一次性/refresh 三重失效/cleanup-target/排程移植，7 测试 -race 绿）；下一片 M08 accounts CRUD |
+| W2 | in-progress | M01 ✓、M03 ✓、M04 ✓（usage 待 J5）、M05 ✓、M06 ✓、M07 ✓、**M08 ✓**（accounts CRUD+锁定族+tags+软删清理，凭据 AES 兼容+掩码加固偏差登记，10 测试 -race 绿）；下一片 M09 批量/导入导出/克隆 |
 | W3 | pending | M08-M14 |
 | W4 | pending | M15-M17 P01-P03 G01-G03 |
 | W5 | pending | G04-G08 P04 P05 |
@@ -59,4 +59,6 @@
 - 2026-09-04 M05（子代理交付，主 agent 复验通过）: groups 双挂载 CRUD/乐观锁/默认分组守卫/路由绑定守卫(100 上限)/级联删除+脏标记/去重守卫/操作日志，5 测试 -race 绿。顺延登记：①authorized 视角读分支（access_type=authorized，依赖 M04 runtime 查询，下一轮补挂）②group_account_stats 投影与 todayUsage 水合（J5）③refresh worker（J5）④网关缓存失效已接 inval 接口占位 ⑤options/edit-basic 等低价值面待 M08 后补。子代理报告 Node 函数→Go 方法对照完整（group-read/write/summary/limits 七文件全覆盖）。
 - 2026-09-04 M06（子代理交付，主 agent -race 复验通过）: route-strategies 双挂载全 CRUD + 五模式（normal 速度优先六旋钮 10000-60000ms 等阈值 / hybrid_smart 评分配置+levelRoutes ≤5 档约束 / weighted·failover·round_robin 禁 config）+ 绑定 1-20 不重复 active 优先级唯一 + failover 首位主用校验 + 默认策略与 API Key 引用删除保护 + 乐观 409 currentUpdatedAt。顺延：速度优先运行态清理/K5 失效（RuntimeInvalidator 接口已注入）、options/edit-basic/speed-first-runtime 读端点、授权分组绑定分支（M04）。
 - 2026-09-04 M07（子代理交付，主 agent -race 复验通过）: api-keys 双挂载切片，AES-256-GCM v1 信封与 Node crypto.ts 逐字节兼容（存量密文可解，密钥=sha256(runtimeSecret)），明文仅创建/refresh/secret 三处一次性返回，删除原子硬删+cleanup-target 同事务 upsert，可用性排程全量移植（跨午夜/DST）。顺延：PATCH /{id} 乐观锁更新、usage 渲染（J5）、schedule 时区读系统设置（暂进程时区）。
+- 2026-09-04 M08（子代理交付，主 agent -race 复验通过）: accounts CRUD 核心切片（11 文件）：列表分页+八种过滤、详情/edit-basic、options、创建（revision 初始化+凭据封存）、编辑乐观锁（config_revision 递增）、锁定族（generation CAS）、软删+卫星清理、tags 三端点、NFKC 名称搜索。凭据 AES v1 信封与 Node crypto.ts 双向兼容。登记的 Go 加固偏差：编辑详情凭据返回掩码而非 Node 明文。顺延：授权实例视角 UNION 读、批量/导入导出/clone（M09）、runtime-reset（维护者 6f9739e96 新增，需对照）、余额健康探针读、circuit outbox 推进、创建量上限。
+- 已知基线问题：
 - 已知基线问题：`maintenance/internal/ownermanifest/TestVerifyRepositoryBusinessOwnerManifest` 在基线 f9c1fbeac 即失败（`account_api_key_pool_probe_cursor type line 844 is stale`；主目录存在维护者未提交的 route-strategies 改动，Go 校验器与已提交 Node 状态不同步）。本迁移不掩盖：该断言涉及的 Node 文件将在 M08-M10 归档时随迁移消失，届时此失败自然解除；W1-W3 每次全量回归将此失败记为 KNOWN-BASELINE-FAIL，不计入迁移回归门。
