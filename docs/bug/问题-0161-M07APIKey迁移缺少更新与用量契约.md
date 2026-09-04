@@ -105,6 +105,14 @@
 - 影响：HTTP 响应状态虽然由 Go 路由返回，但审计查询无法区分创建成功、刷新/删除后的 validation cache 失效失败等结果；同一操作在 Node 与 Go 的日志 DTO 不一致，影响审计、告警和后续重放分析。
 - 结论：这是操作日志副作用的功能遗漏；Go 需要把最终 HTTP 状态（尤其是失效失败分支）传入统一日志生产者，而不是仅记录动作和资源字段。
 
+### 12. `32bb54673` 的用量补充仍是可选接线，且错误被过度降级
+
+- Go 证据：`32bb54673` 新增 `backend-go/projects/gateway/internal/apikeys/usage.go`，通过 `Store.SetUsageSource` 注入 stats reader；但在该提交的 gateway 代码中没有任何生产调用 `SetUsageSource` 或 `NewStatsUsageSource`，默认 `Store.usage` 仍为 `nil`，列表继续返回全零 usage。只有 `usage_test.go` 手动 setter 才能看到真实值。
+- Node 证据：`backend/src/storage/api-key-list-mappers.ts` 总是调用 `loadApiKeyListUsageSummariesForScopesAsync`；其 SQLite 路径仅对明确的缺失 stats DB/表降级为空，PostgreSQL 路径及其他查询错误直接抛出并让列表失败。
+- Go 证据：`hydrateListUsage` 对 `UsageSource` 的所有错误统一 `return`，把连接失败、权限错误、SQL 错误等都转成零值成功响应；`StatsUsageSource` 也以宽泛字符串匹配吞掉多类“does not exist”错误。
+- 影响：在 32bb 之后，真实生产列表仍可能显示零用量；stats 服务异常时 Go 返回 200/零值，而 Node 会在非缺失错误上返回失败，既掩盖故障也改变管理端观察结果。
+- 结论：该补充提交没有闭合 BUG-0161 的 usage 契约；需要完成生产接线，并仅保留 Node 明确允许的缺失资源降级。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
