@@ -282,6 +282,27 @@ func TestTeamGrantActiveLimitRejectsTwentyFirstGrant(t *testing.T) {
 	}
 }
 
+func TestTeamGrantRejectsOwnerOnlyTeam(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedTeamWithMember(t, "team_owner_only", "owner")
+	f.seedGroup(t, "grp_owner_only", "owner")
+	_, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_owner_only",
+		GranteeType: "team", GranteeID: "team_owner_only",
+	}, "owner")
+	if err == nil || !strings.Contains(err.Error(), "团队暂无可授权成员") {
+		t.Fatalf("owner-only team error = %v", err)
+	}
+	var grants int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorization_grants WHERE resource_id = 'grp_owner_only'`).Scan(&grants); err != nil {
+		t.Fatal(err)
+	}
+	if grants != 0 {
+		t.Fatalf("owner-only team grants = %d, want 0", grants)
+	}
+}
+
 func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")

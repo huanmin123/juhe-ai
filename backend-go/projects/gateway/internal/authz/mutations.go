@@ -62,6 +62,19 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 	if err := s.checkGrantee(ctx, tx, input); err != nil {
 		return nil, err
 	}
+	if input.GranteeType == "team" {
+		var nonOwnerMembers int
+		if err := tx.QueryRowContext(ctx, s.bind(`SELECT COUNT(*)
+			FROM `+s.table("system_team_members")+` m
+			INNER JOIN `+s.table("system_accounts")+` a ON a.id = m.system_account_id
+			WHERE m.team_id = ? AND m.status = 'active' AND a.status = 'active' AND m.system_account_id <> ?`),
+			input.GranteeID, ownerID).Scan(&nonOwnerMembers); err != nil {
+			return nil, err
+		}
+		if nonOwnerMembers == 0 {
+			return nil, failf("团队暂无可授权成员，请先添加非归属人成员后再授权")
+		}
+	}
 
 	// Active duplicate handling mirrors Node's upsert mutation: an identical
 	// request is idempotent (created=false), while a changed request is
