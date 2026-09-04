@@ -84,6 +84,13 @@
 - 影响：Go 删除成功后不会触发 Node 所要求的关联记录清理，相关 usage/日志/分片数据可能长期残留。另一方面，在 SQLite 目标表缺失或写入失败时，Go 会回滚已经执行的 API Key 删除并返回 500；Node 会保持删除成功（204）并将清理任务留给 worker 重试，删除结果相反。
 - 结论：这是删除副作用与失败语义的确定性偏离；Go 需要接入同等的 after-commit 清理投递，并按 SQLite/PostgreSQL 保持目标登记的事务边界。
 
+### 9. PostgreSQL API Key 写操作缺少 Node 的行锁串行化
+
+- Node 证据：`backend/src/storage/api-key.repository.ts` 的异步 refresh/delete 查询在 PostgreSQL 下追加 `FOR UPDATE`；异步 create 通过 `findPreferredDefaultRouteStrategyReferenceAsync(..., true)` 与 `assertRouteStrategySelectableForApiKeyAsync(..., true)` 锁定策略、绑定和分组相关行。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/store.go` 的 `RefreshSecret`、`Delete`、`findPreferredDefaultRouteStrategy`、`routeStrategyReference` 均为普通 `SELECT ... LIMIT 1`，没有 PostgreSQL 行锁。
+- 影响：并发 refresh 可能让两个请求同时读取同一旧 `updated_at`，Go 其中一个更新成功、另一个返回“已被其他操作修改”；Node 会在行锁后串行读取最新版本并完成两次刷新。创建同时停用/删除默认组或策略路由时，Go 也可能基于过期可用性通过校验并写入 API Key，而 Node 会在锁保护下按串行顺序判定。
+- 结论：这是 PostgreSQL 并发下的成功/冲突及最终绑定结果偏离；Go 需要在同等事务边界补齐方言条件的 `FOR UPDATE` 锁，而不是仅依赖更新行数兜底。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
