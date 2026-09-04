@@ -146,7 +146,7 @@ try {
   )
 
   const adaptiveThinkingBody = JSON.parse((await buildOpenAIToAnthropicBridgeBody(gatewayPostRequest('/v1/responses', {
-    model: 'claude-fable-5',
+    model: 'claude-fable-5-1',
     input: '深入分析',
     reasoning: { effort: 'max' }
   }), {})).toString('utf8')) as Record<string, unknown>

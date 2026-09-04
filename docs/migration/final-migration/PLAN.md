@@ -1,7 +1,12 @@
 # Node 全量清零迁移执行看板（PLAN）
 
 > 唯一进度事实源。每个 WP 状态：pending / in-progress / archived。每片收口（G5）由主 Agent 更新本表并在切片记录目录落证据。
-> 权威迁移 worktree：`F:\sub2api-lite-migration`；分支：`node-to-go-final`（共享主目录固定 master 只读）。
+> **工作方式变更（2026-09-04，用户决策）**：放弃独立分支/worktree，全部迁移代码已合并回 master（merge 29b4b99f7，node-to-go-final 分支与 worktree 已删除），此后直接在主目录 master 上继续实现与提交。每片仍保持"实现→测试→提交→登记"节奏与 -race 门禁；主目录上维护者的未提交改动照旧不触碰。
+
+## 合并记录（2026-09-04）
+
+- merge 29b4b99f7：node-to-go-final（基线 f9c1fbeac 上的全部 W1+W2 迁移提交）并入 master，master 当时已前进至 6f9739e96（维护者：账户运行态重置/速度优先修复/排练修复），零文件交集无冲突。合并后主目录 37 个 Go 测试套件全绿。
+- 被取消的 M08 accounts 子代理残留（backend-go/.../internal/accounts/ 半成品）已随 worktree 删除，M08 将在 master 重新派发。
 
 ## 基线记录（M0，2026-09-04）
 

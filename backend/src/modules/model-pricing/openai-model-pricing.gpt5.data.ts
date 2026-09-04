@@ -1,8 +1,40 @@
 // Curated from official OpenAI model and pricing docs, including the 2026-07-30 pricing changelog.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
-// Current GPT-5 family model prices.
+// Current GPT-6/GPT-5 family model prices.
 
 export const openAIGPT5ModelPricingData = [
+  {
+    model: "gpt-6-astra",
+    litellm_provider: "openai",
+    mode: "chat",
+    catalog_order: -1,
+    release_date: "2026-09-03",
+    context_window_tokens: 1050000,
+    max_input_tokens: 922000,
+    max_output_tokens: 128000,
+    input_cost_per_token: 0.00001,
+    input_cost_per_token_priority: 0.00002,
+    input_cost_per_token_flex: 0.000005,
+    output_cost_per_token: 0.00005,
+    output_cost_per_token_priority: 0.0001,
+    output_cost_per_token_flex: 0.000025,
+    cache_creation_input_token_cost: 0.0000125,
+    cache_creation_input_token_cost_priority: 0.000025,
+    cache_creation_input_token_cost_flex: 0.00000625,
+    cache_read_input_token_cost: 0.000001,
+    cache_read_input_token_cost_priority: 0.000002,
+    cache_read_input_token_cost_flex: 0.0000005,
+    long_context_input_token_threshold: 272000,
+    long_context_input_cost_multiplier: 2,
+    long_context_output_cost_multiplier: 1.5,
+    supports_prompt_caching: true,
+    supported_service_tiers: ["priority", "flex"],
+    supported_reasoning_efforts: ["low", "medium", "high", "xhigh", "max"],
+    supported_api_protocols: ["chat_completions", "responses"],
+    input_modalities: ["text", "image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "computer_use", "mcp", "tool_search"],
+  },
   {
     model: "gpt-5.6-sol",
     litellm_provider: "openai",

@@ -668,7 +668,8 @@ const genericOpenAIModelPricingList = listProviderModelPricing(OPENAI_COMPATIBLE
 assert.equal(genericOpenAIModelPricingList.length, openAIModelPricingList.length, 'openai 通用供应商应继承 OpenAI-compatible 内置模型目录')
 assert.equal(genericOpenAIModelPricingList[0]?.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE, '通用供应商模型目录应保留 openai providerCode')
 assert.equal(openAIModelPricingList[0]?.providerCode, GPT_VENDOR_CODE, 'GPT 子供应商模型目录应保留 gpt providerCode')
-assert.deepEqual(openAIModelPricingList.slice(0, 8).map((item) => item.model), [
+assert.deepEqual(openAIModelPricingList.slice(0, 9).map((item) => item.model), [
+  'gpt-6-astra',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -681,7 +682,7 @@ assert.deepEqual(openAIModelPricingList.slice(0, 8).map((item) => item.model), [
 const anthropicModelPricingList = listProviderModelPricing(ANTHROPIC_PROVIDER_CODE)
 const anthropicOfficialModelIds = [
   'claude-opus-5',
-  'claude-fable-5',
+  'claude-fable-5-1',
   'claude-sonnet-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
@@ -724,8 +725,8 @@ for (const id of [
 ]) {
   assert.equal(anthropicPricingById.has(id), false, `${id} 不应进入 Anthropic 公开目录`)
 }
-assert.equal(anthropicPricingById.get('claude-fable-5')?.inputUsdPer1M, 10)
-assert.equal(anthropicPricingById.get('claude-fable-5')?.outputUsdPer1M, 50)
+assert.equal(anthropicPricingById.get('claude-fable-5-1')?.inputUsdPer1M, 10)
+assert.equal(anthropicPricingById.get('claude-fable-5-1')?.outputUsdPer1M, 50)
 assert.equal(anthropicPricingById.get('claude-opus-5')?.inputUsdPer1M, 5)
 assert.equal(anthropicPricingById.get('claude-opus-5')?.outputUsdPer1M, 25)
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.inputUsdPer1M, 2)
@@ -736,7 +737,7 @@ assert.equal(anthropicPricingById.get('claude-sonnet-4-6')?.inputUsdPer1M, 3)
 assert.equal(anthropicPricingById.get('claude-sonnet-4-6')?.outputUsdPer1M, 15)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.inputUsdPer1M, 1)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.outputUsdPer1M, 5)
-assert.equal(anthropicPricingById.get('claude-fable-5')?.maxOutputTokens, 128_000)
+assert.equal(anthropicPricingById.get('claude-fable-5-1')?.maxOutputTokens, 128_000)
 assert.equal(anthropicPricingById.get('claude-opus-5')?.releaseDate, '2026-07-24')
 assert.equal(anthropicPricingById.get('claude-opus-5')?.contextWindowTokens, 1_000_000)
 assert.equal(anthropicPricingById.get('claude-opus-5')?.maxInputTokens, 1_000_000)
@@ -747,15 +748,15 @@ assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.maxOutputTokens, 64_0
 assert.equal(anthropicPricingById.get('claude-haiku-4-5-20251001')?.releaseDate, '2025-10-01')
 assert.equal(anthropicPricingById.get('claude-sonnet-4-5-20250929')?.releaseDate, '2025-09-29')
 assert.equal(anthropicPricingById.get('claude-opus-4-5-20251101')?.releaseDate, '2025-11-01')
-assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
-assert.equal(anthropicPricingById.get('claude-fable-5')?.defaultReasoningEffort, 'high')
+assert.deepEqual(anthropicPricingById.get('claude-fable-5-1')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
+assert.equal(anthropicPricingById.get('claude-fable-5-1')?.defaultReasoningEffort, 'high')
 assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
 assert.equal(anthropicPricingById.get('claude-opus-5')?.defaultReasoningEffort, 'high')
 assert.deepEqual(anthropicPricingById.get('claude-sonnet-4-6')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'max'])
-assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedApiProtocols, ['messages', 'message_token_counting'])
-assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.inputModalities, ['text', 'image'])
-assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.outputModalities, ['text'])
-assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedTools, ['function_calling', 'code_execution'])
+assert.deepEqual(anthropicPricingById.get('claude-fable-5-1')?.supportedApiProtocols, ['messages', 'message_token_counting'])
+assert.deepEqual(anthropicPricingById.get('claude-fable-5-1')?.inputModalities, ['text', 'image'])
+assert.deepEqual(anthropicPricingById.get('claude-fable-5-1')?.outputModalities, ['text'])
+assert.deepEqual(anthropicPricingById.get('claude-fable-5-1')?.supportedTools, ['function_calling', 'code_execution'])
 assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.supportedApiProtocols, ['messages', 'message_token_counting'])
 assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.inputModalities, ['text', 'image'])
 assert.deepEqual(anthropicPricingById.get('claude-opus-5')?.outputModalities, ['text'])
@@ -824,6 +825,7 @@ for (let index = 1; index < datedOpenAIModelPricingList.length; index += 1) {
   )
 }
 for (const id of [
+  'gpt-6-astra',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -889,6 +891,42 @@ assert.equal(openAIModelPricingById.has('gpt-5.2-codex'), false)
 assert.deepEqual(openAIModelPricingById.get('gpt-image-1')?.supportedApiProtocols, ['images', 'responses'])
 assert.equal(openAIModelPricingById.has('gpt-4o-mini-tts'), false)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.releaseDate, '2026-06-26')
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.releaseDate, '2026-09-03')
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.contextWindowTokens, 1_050_000)
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.maxInputTokens, 922_000)
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.maxOutputTokens, 128_000)
+assert.deepEqual(openAIModelPricingById.get('gpt-6-astra')?.supportedApiProtocols, ['chat_completions', 'responses'])
+assert.deepEqual(openAIModelPricingById.get('gpt-6-astra')?.inputModalities, ['text', 'image'])
+assert.deepEqual(openAIModelPricingById.get('gpt-6-astra')?.outputModalities, ['text'])
+assert.deepEqual(openAIModelPricingById.get('gpt-6-astra')?.supportedTools, ['function_calling', 'web_search', 'file_search', 'image_generation', 'code_interpreter', 'hosted_shell', 'apply_patch', 'skills', 'computer_use', 'mcp', 'tool_search'])
+assert.deepEqual(openAIModelPricingById.get('gpt-6-astra')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
+assert.deepEqual(openAIModelPricingById.get('gpt-6-astra')?.supportedServiceTiers, ['priority', 'flex'])
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.defaultReasoningEffort, undefined)
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.inputUsdPer1M, 10)
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.outputUsdPer1M, 50)
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.cachedInputUsdPer1M, 1)
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.cacheWriteUsdPer1M, 12.5)
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.longContextInputTokenThreshold, 272_000)
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.longContextInputCostMultiplier, 2)
+assert.equal(openAIModelPricingById.get('gpt-6-astra')?.longContextOutputCostMultiplier, 1.5)
+assert.deepEqual(
+  [
+    openAIModelPricingById.get('gpt-6-astra')?.serviceTierPrices?.priority?.inputUsdPer1M,
+    openAIModelPricingById.get('gpt-6-astra')?.serviceTierPrices?.priority?.cachedInputUsdPer1M,
+    openAIModelPricingById.get('gpt-6-astra')?.serviceTierPrices?.priority?.outputUsdPer1M,
+    openAIModelPricingById.get('gpt-6-astra')?.serviceTierPrices?.priority?.cacheWriteUsdPer1M
+  ],
+  [20, 2, 100, 25]
+)
+assert.deepEqual(
+  [
+    openAIModelPricingById.get('gpt-6-astra')?.serviceTierPrices?.flex?.inputUsdPer1M,
+    openAIModelPricingById.get('gpt-6-astra')?.serviceTierPrices?.flex?.cachedInputUsdPer1M,
+    openAIModelPricingById.get('gpt-6-astra')?.serviceTierPrices?.flex?.outputUsdPer1M,
+    openAIModelPricingById.get('gpt-6-astra')?.serviceTierPrices?.flex?.cacheWriteUsdPer1M
+  ],
+  [5, 0.5, 25, 6.25]
+)
 assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.releaseDate, '2026-06-26')
 assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.releaseDate, '2026-06-26')
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.contextWindowTokens, 1_050_000)

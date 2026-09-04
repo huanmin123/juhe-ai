@@ -50,7 +50,7 @@ export const anthropicModelPricingData = [
     supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'], default_reasoning_effort: 'high'
   }),
   model({
-    model: 'claude-fable-5', catalog_order: 10, release_date: '2026-06-09',
+    model: 'claude-fable-5-1', catalog_order: 10, release_date: '2026-09-01',
     input_usd_per_million: 10, output_usd_per_million: 50,
     context_window_tokens: 1_000_000, max_input_tokens: 1_000_000, max_output_tokens: 128_000,
     supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'], default_reasoning_effort: 'high'

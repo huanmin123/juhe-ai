@@ -387,11 +387,11 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 
 模型目录从官方 Models API / 模型文档同步，优先覆盖当前可调用 Claude 文本模型。目录维护应能跟随官方 Models API 返回，不把具体型号写成长期硬编码依赖；列表顺序同时作为账户测试和模型下拉框的默认优先顺序，按官方 Models API“新模型在前”的口径维护。
 
-截至 `2026-08-09`，当前可见官方模型顺序：
+截至 `2026-09-04`，当前可见官方模型顺序：
 
 - `claude-opus-5`（`2026-07-24` 发布）
 - `claude-sonnet-5`
-- `claude-fable-5`
+- `claude-fable-5-1`
 - `claude-opus-4-8`
 - `claude-opus-4-7`
 - `claude-opus-4-6`

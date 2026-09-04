@@ -12,11 +12,13 @@ import {
 const wireReasoning = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
 const codexReasoning = ['low', 'medium', 'high', 'xhigh', 'max']
 const pricing = listProviderModelPricing('gpt')
+const astra = requireModel('gpt-6-astra')
 const sol = requireModel('gpt-5.6-sol')
 const terra = requireModel('gpt-5.6-terra')
 const luna = requireModel('gpt-5.6-luna')
 
 const expectedApiReasoning = new Map<string, string[]>([
+  ['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
   ['gpt-5.5', ['none', 'low', 'medium', 'high', 'xhigh']],
   ['gpt-5.5-2026-04-23', ['none', 'low', 'medium', 'high', 'xhigh']],
   ['gpt-5.5-pro', ['medium', 'high', 'xhigh']],
@@ -54,6 +56,36 @@ for (const model of [sol, terra, luna]) {
   assert.equal(model.supportsServiceTier, model.supportedServiceTiers.length > 0)
   assert.equal(model.supportedReasoningEfforts.some((effort) => effort === ('ultra' as string)), false)
 }
+
+assert.equal(astra.releaseDate, '2026-09-03')
+assert.equal(astra.contextWindowTokens, 1_050_000)
+assert.equal(astra.maxInputTokens, 922_000)
+assert.equal(astra.maxOutputTokens, 128_000)
+assert.deepEqual(astra.supportedServiceTiers, ['priority', 'flex'])
+assert.deepEqual(astra.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
+assert.equal(astra.defaultReasoningEffort, undefined)
+assert.equal(astra.codexSupportedReasoningLevels.length, 0)
+assert.equal(astra.codexDefaultReasoningLevel, undefined)
+assert.equal(astra.codexMultiAgentVersion, undefined)
+assert.deepEqual(astra.supportedApiProtocols, ['chat_completions', 'responses'])
+assert.deepEqual(astra.inputModalities, ['text', 'image'])
+assert.deepEqual(astra.outputModalities, ['text'])
+assert.deepEqual(astra.supportedTools, ['function_calling', 'web_search', 'file_search', 'image_generation', 'code_interpreter', 'hosted_shell', 'apply_patch', 'skills', 'computer_use', 'mcp', 'tool_search'])
+assert.deepEqual(
+  [astra.inputUsdPer1M, astra.cachedInputUsdPer1M, astra.outputUsdPer1M, astra.cacheWriteUsdPer1M],
+  [10, 1, 50, 12.5]
+)
+assert.deepEqual(
+  [astra.serviceTierPrices?.priority?.inputUsdPer1M, astra.serviceTierPrices?.priority?.cachedInputUsdPer1M, astra.serviceTierPrices?.priority?.outputUsdPer1M, astra.serviceTierPrices?.priority?.cacheWriteUsdPer1M],
+  [20, 2, 100, 25]
+)
+assert.deepEqual(
+  [astra.serviceTierPrices?.flex?.inputUsdPer1M, astra.serviceTierPrices?.flex?.cachedInputUsdPer1M, astra.serviceTierPrices?.flex?.outputUsdPer1M, astra.serviceTierPrices?.flex?.cacheWriteUsdPer1M],
+  [5, 0.5, 25, 6.25]
+)
+assert.equal(astra.longContextInputTokenThreshold, 272_000)
+assert.equal(astra.longContextInputCostMultiplier, 2)
+assert.equal(astra.longContextOutputCostMultiplier, 1.5)
 
 assert.deepEqual(sol.codexSupportedReasoningLevels, [...codexReasoning, 'ultra'])
 assert.deepEqual(terra.codexSupportedReasoningLevels, [...codexReasoning, 'ultra'])

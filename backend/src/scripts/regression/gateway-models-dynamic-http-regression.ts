@@ -106,6 +106,7 @@ try {
   assert(authenticatedIds.has('gpt-5.6-sol'), 'API Key 模型目录必须包含其 GPT 分组模型')
   assert(authenticatedIds.has('gemini-3.5-flash'), 'API Key 模型目录必须包含其 Gemini 分组模型')
   assert.equal(authenticatedIds.has('claude-fable-5'), false, 'API Key 模型目录不得泄漏未绑定的 Anthropic 模型')
+  assert.equal(authenticatedIds.has('claude-fable-5-1'), false, 'API Key 模型目录不得泄漏未绑定的 Anthropic 新模型')
 
   const regularRequest = {
     method: 'POST',

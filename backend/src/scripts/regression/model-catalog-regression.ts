@@ -209,7 +209,7 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 105, '截至 2026-08-26，当前 Node 权威模型目录应包含 105 个可用完整模型键')
+  assert.equal(expectedSqliteModelKeys.length, 106, '截至 2026-09-04，当前 Node 权威模型目录应包含 106 个可用完整模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
@@ -471,6 +471,20 @@ try {
   assert.equal(gpt56Sol.codexMultiAgentVersion, 'v2')
   assert.equal(gpt56Terra.codexMultiAgentVersion, 'v2')
   assert.equal(gpt56Luna.codexMultiAgentVersion, undefined)
+
+  const gpt6Astra = publicCatalog.find((item) => item.model === 'gpt-6-astra')
+  assert(gpt6Astra, 'GPT-6 Astra 必须进入模型目录')
+  assert.equal(gpt6Astra.releaseDate, '2026-09-03')
+  assert.equal(gpt6Astra.contextWindowTokens, 1_050_000)
+  assert.equal(gpt6Astra.maxInputTokens, 922_000)
+  assert.equal(gpt6Astra.maxOutputTokens, 128_000)
+  assert.deepEqual(gpt6Astra.supportedServiceTiers, ['priority', 'flex'])
+  assert.deepEqual(gpt6Astra.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
+  assert.equal(gpt6Astra.defaultReasoningEffort, null)
+  assert.deepEqual(gpt6Astra.supportedApiProtocols, ['chat_completions', 'responses'])
+  assert.deepEqual(gpt6Astra.inputModalities, ['text', 'image'])
+  assert.deepEqual(gpt6Astra.outputModalities, ['text'])
+  assert.deepEqual(gpt6Astra.supportedTools, ['function_calling', 'web_search', 'file_search', 'image_generation', 'code_interpreter', 'hosted_shell', 'apply_patch', 'skills', 'computer_use', 'mcp', 'tool_search'])
 
   const ignoredCustomDefaultReasoning = catalogService.saveCustomProviderModel({
     providerCode: 'gpt',
@@ -803,7 +817,7 @@ try {
   }
   for (const id of [
     'claude-opus-5',
-    'claude-fable-5',
+    'claude-fable-5-1',
     'claude-sonnet-5',
     'claude-opus-4-8',
     'claude-opus-4-7',
@@ -851,9 +865,9 @@ try {
   assert.deepEqual(
     anthropicCatalog.map((item) => item.model),
     [
+      'claude-fable-5-1',
       'claude-opus-5',
       'claude-sonnet-5',
-      'claude-fable-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-sonnet-4-6',

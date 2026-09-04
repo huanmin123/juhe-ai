@@ -915,7 +915,7 @@ async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string
       base_url: upstreamBaseUrl,
       supported_endpoint_modes: ['messages_json']
     },
-    supportedModels: ['claude-fable-5', 'claude-haiku-4-5'],
+    supportedModels: ['claude-fable-5-1', 'claude-haiku-4-5'],
     groupId: group.id,
     status: 'active',
     schedulable: true
@@ -935,7 +935,7 @@ async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'claude-fable-5',
+      model: 'claude-fable-5-1',
       messages: [{ role: 'user', content: 'force-model-not-found should not poison account' }],
       max_tokens: 8
     })
