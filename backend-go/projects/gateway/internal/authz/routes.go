@@ -285,8 +285,14 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	if result.Created {
 		status = http.StatusCreated
+	}
+	if result.Created || result.PreviousStatus != nil {
 		if d.Sink != nil {
-			summary := "创建资源授权：" + result.Item.ResourceID
+			actionSummary := "创建资源授权："
+			if result.PreviousStatus != nil {
+				actionSummary = "重新激活资源授权："
+			}
+			summary := actionSummary + result.Item.ResourceID
 			if auth != nil {
 				d.Sink.Record(authsys.OperationLogEntry{
 					ActorSystemAccountID:          auth.SystemAccountID,
@@ -311,9 +317,11 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	kernel.WriteJSON(w, status, map[string]any{"data": map[string]any{
-		"item": result.Item, "created": result.Created,
-	}})
+	data := map[string]any{"item": result.Item, "created": result.Created}
+	if result.PreviousStatus != nil {
+		data["previousStatus"] = *result.PreviousStatus
+	}
+	kernel.WriteJSON(w, status, map[string]any{"data": data})
 }
 
 func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {

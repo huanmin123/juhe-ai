@@ -85,11 +85,12 @@ func TestCreateGroupAuthorizationLifecycle(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_1", "owner")
+	remark := "initial remark"
 
 	// Direct grant of a group to grantee.
 	result, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee",
+		GranteeType: "system_account", GranteeID: "grantee", Remark: &remark,
 	}, "owner")
 	if err != nil {
 		t.Fatal(err)
@@ -120,10 +121,10 @@ func TestCreateGroupAuthorizationLifecycle(t *testing.T) {
 	}
 
 	// A changed active grant remains a conflict.
-	remark := "changed"
+	changedRemark := "changed"
 	_, err = f.store.Create(context.Background(), CreateInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee", Remark: &remark,
+		GranteeType: "system_account", GranteeID: "grantee", Remark: &changedRemark,
 	}, "owner")
 	if err == nil || !strings.Contains(err.Error(), "该资源已授权给该用户") {
 		t.Fatalf("changed duplicate grant error = %v", err)
@@ -154,6 +155,31 @@ func TestCreateGroupAuthorizationLifecycle(t *testing.T) {
 	}
 	if runtimeStatus != StatusReturned || effectiveType != "" {
 		t.Fatalf("runtime after return: status=%s effective=%s", runtimeStatus, effectiveType)
+	}
+
+	// Reviving a terminal grant reuses the same row and reports created=false
+	// with the previous status, matching Node's upsert outcome.
+	revived, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_1",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil || revived.Created || revived.Item.ID != result.Item.ID || revived.PreviousStatus == nil || *revived.PreviousStatus != StatusReturned {
+		t.Fatalf("terminal revival result = %+v err=%v", revived, err)
+	}
+	var grantCount int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorization_grants
+		WHERE resource_type = 'group' AND resource_id = 'grp_1' AND grantee_system_account_id = 'grantee'`).Scan(&grantCount); err != nil {
+		t.Fatal(err)
+	}
+	if grantCount != 1 {
+		t.Fatalf("terminal revival grant count = %d, want 1", grantCount)
+	}
+	var revivedRemark string
+	if err := f.db.QueryRow(`SELECT COALESCE(remark,'') FROM resource_authorization_grants WHERE id = ?`, revived.Item.ID).Scan(&revivedRemark); err != nil {
+		t.Fatal(err)
+	}
+	if revivedRemark != remark {
+		t.Fatalf("terminal revival remark = %q, want %q", revivedRemark, remark)
 	}
 }
 
