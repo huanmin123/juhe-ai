@@ -497,6 +497,17 @@ type PatchOutcome struct {
 }
 
 func (s *Store) Patch(ctx context.Context, id string, input PatchInput, expectedUpdatedAt, actor string) (*PatchOutcome, error) {
+	return s.patchForOwner(ctx, id, input, expectedUpdatedAt, actor, "")
+}
+
+// PatchForOwner applies the same owner filter carried by Node's
+// RequestAccessScope when an administrator selects ?systemAccountId. An empty
+// ownerScope keeps the unscoped administrator contract.
+func (s *Store) PatchForOwner(ctx context.Context, id string, input PatchInput, expectedUpdatedAt, actor, ownerScope string) (*PatchOutcome, error) {
+	return s.patchForOwner(ctx, id, input, expectedUpdatedAt, actor, ownerScope)
+}
+
+func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, expectedUpdatedAt, actor, ownerScope string) (*PatchOutcome, error) {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -508,6 +519,9 @@ func (s *Store) Patch(ctx context.Context, id string, input PatchInput, expected
 		return nil, err
 	}
 	if grant == nil {
+		return &PatchOutcome{Status: "not_found"}, nil
+	}
+	if ownerScope != "" && grant.OwnerID != ownerScope {
 		return &PatchOutcome{Status: "not_found"}, nil
 	}
 	if grant.UpdatedAt != expectedUpdatedAt {

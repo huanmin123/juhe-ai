@@ -318,6 +318,37 @@ func TestCreateRejectsResourceOutsideActorScope(t *testing.T) {
 	}
 }
 
+func TestPatchRejectsResourceOutsideSelectedOwnerScope(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "other_owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_scope_patch", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_scope_patch",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused := StatusPaused
+	outcome, err := f.store.PatchForOwner(context.Background(), created.Item.ID, PatchInput{Status: &paused},
+		created.Item.UpdatedAt, "admin", "other_owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Status != "not_found" {
+		t.Fatalf("cross-scope patch outcome = %+v, want not_found", outcome)
+	}
+	var status string
+	if err := f.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != StatusActive {
+		t.Fatalf("cross-scope patch changed grant status to %q", status)
+	}
+}
+
 func TestCreateNormalizesAndValidatesExpiry(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")

@@ -454,7 +454,9 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 			input.LimitsJSON = &text
 		}
 	}
-	outcome, err := d.Store.Patch(r.Context(), r.PathValue("id"), input, body.ExpectedUpdatedAt, auth.SystemAccountID)
+	access := d.accessFor(r, false)
+	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, body.ExpectedUpdatedAt,
+		auth.SystemAccountID, access.FilterID)
 	if err != nil {
 		kernel.WriteBadRequest(w, "修改授权失败")
 		return
