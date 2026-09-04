@@ -572,6 +572,15 @@ func TestTemporaryAccessTokenTTLMatchesNodeNumberSemantics(t *testing.T) {
 			t.Fatalf("integer JSON number must be accepted: %s -> %d %v", body, response.StatusCode, payload)
 		}
 	}
+	unknown, unknownPayload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens",
+		`{"username":"admin1","password":"super-secret","unexpected":true}`, "")
+	if unknown.StatusCode != http.StatusBadRequest || unknownPayload["message"] != "临时访问令牌参数无效" {
+		t.Fatalf("unknown ttl payload field must be rejected: %d %v", unknown.StatusCode, unknownPayload)
+	}
+	nonObject, nonObjectPayload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens", `[]`, "")
+	if nonObject.StatusCode != http.StatusBadRequest || nonObjectPayload["message"] != "临时访问令牌参数无效" {
+		t.Fatalf("non-object payload must be rejected: %d %v", nonObject.StatusCode, nonObjectPayload)
+	}
 	_ = deps
 }
 

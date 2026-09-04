@@ -300,12 +300,8 @@ func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Username   string `json:"username"`
-		Password   string `json:"password"`
-		TTLSeconds json.RawMessage `json:"ttlSeconds"`
-	}
-	if !kernel.DecodeJSON(w, r, &body) {
+	body, ok := decodeTemporaryAccessTokenBody(w, r)
+	if !ok {
 		return
 	}
 	ttlSeconds := 900
@@ -373,6 +369,49 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 		"tokenType": "Bearer",
 		"expiresAt": temporary.ExpiresAt.UTC().Format(time.RFC3339Nano),
 	}, "")
+}
+
+type temporaryAccessTokenBody struct {
+	Username   string
+	Password   string
+	TTLSeconds json.RawMessage
+}
+
+func decodeTemporaryAccessTokenBody(w http.ResponseWriter, r *http.Request) (temporaryAccessTokenBody, bool) {
+	var encoded json.RawMessage
+	if !kernel.DecodeJSON(w, r, &encoded) {
+		return temporaryAccessTokenBody{}, false
+	}
+	var raw map[string]json.RawMessage
+	if len(encoded) == 0 || json.Unmarshal(encoded, &raw) != nil || raw == nil {
+		kernel.WriteBadRequest(w, "临时访问令牌参数无效")
+		return temporaryAccessTokenBody{}, false
+	}
+	for key := range raw {
+		switch key {
+		case "username", "password", "ttlSeconds":
+		default:
+			kernel.WriteBadRequest(w, "临时访问令牌参数无效")
+			return temporaryAccessTokenBody{}, false
+		}
+	}
+	body := temporaryAccessTokenBody{}
+	if value, exists := raw["username"]; exists {
+		if err := json.Unmarshal(value, &body.Username); err != nil {
+			kernel.WriteBadRequest(w, "临时访问令牌参数无效")
+			return temporaryAccessTokenBody{}, false
+		}
+	}
+	if value, exists := raw["password"]; exists {
+		if err := json.Unmarshal(value, &body.Password); err != nil {
+			kernel.WriteBadRequest(w, "临时访问令牌参数无效")
+			return temporaryAccessTokenBody{}, false
+		}
+	}
+	if value, exists := raw["ttlSeconds"]; exists {
+		body.TTLSeconds = value
+	}
+	return body, true
 }
 
 func (d *Deps) postTemporaryAccessTokenRevoke(w http.ResponseWriter, r *http.Request) {
