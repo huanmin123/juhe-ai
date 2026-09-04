@@ -433,6 +433,7 @@ type runnerSubscription struct {
 type ChatGenerationRunner struct {
 	Identity ChatGenerationIdentity
 
+	ctx          context.Context
 	mu                sync.Mutex
 	cancel            contextCancelFunc
 	cancelled         contextCancelledFunc
@@ -459,13 +460,14 @@ type contextCancelledFunc = func() bool
 
 // NewChatGenerationRunner builds a runner. cancel/cancelled implement the
 // AbortController pair (use context.WithCancel).
-func NewChatGenerationRunner(options ChatGenerationRunnerOptions, cancel contextCancelFunc, cancelled contextCancelledFunc) *ChatGenerationRunner {
+func NewChatGenerationRunner(options ChatGenerationRunnerOptions, ctx context.Context, cancel contextCancelFunc, cancelled contextCancelledFunc) *ChatGenerationRunner {
 	now := options.Now
 	if now == nil {
 		now = func() string { return isoMillis(time.Now()) }
 	}
 	return &ChatGenerationRunner{
 		Identity:               options.Identity,
+		ctx:                    ctx,
 		cancel:                 cancel,
 		cancelled:              cancelled,
 		timeline:               newAssistantTimeline(),
@@ -546,8 +548,8 @@ func (r *ChatGenerationRunner) Start(onSettled func()) bool {
 // Publish mirrors publish.
 func (r *ChatGenerationRunner) Publish(eventType string, data map[string]any, update ChatGenerationProjectionUpdate) bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.currentState != "running" {
-		r.mu.Unlock()
 		return false
 	}
 	if !update.hasUpdate() {
@@ -582,9 +584,14 @@ func (r *ChatGenerationRunner) Subscribe(subscriber ChatGenerationSubscriber) bo
 	return true
 }
 
-// Unsubscribe mirrors unsubscribe.
+// Unsubscribe mirrors unsubscribe. Node detaches from a single-threaded
+// event loop; here a terminal-event dispatch holds r.mu while the detached
+// subscriber's callback re-enters, so contention resolves to a no-op: the
+// in-flight dispatch already prunes failed subscribers.
 func (r *ChatGenerationRunner) Unsubscribe(subscriber ChatGenerationSubscriber) bool {
-	r.mu.Lock()
+	if !r.mu.TryLock() {
+		return true
+	}
 	defer r.mu.Unlock()
 	for index, registration := range r.subscribers {
 		if registration.subscriber == subscriber {
@@ -611,6 +618,7 @@ func (r *ChatGenerationRunner) aborted() bool { return r.cancelled() }
 
 func (r *ChatGenerationRunner) run(onSettled func()) {
 	result, err := r.execute(&ChatGenerationExecutionContext{
+		Context:        r.ctx,
 		Aborted:        r.aborted,
 		Publish:        r.Publish,
 		SnapshotBlocks: r.SnapshotContentBlocks,

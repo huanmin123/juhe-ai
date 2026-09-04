@@ -107,13 +107,6 @@ func (r *PrecheckRunner) wasRecentlyPrechecked(accountID string) bool {
 	return r.clock.Now().Sub(checkedAt) < r.recentRetention
 }
 
-// wasRecentlyPrecheckedAt 供时钟注入路径复用。
-func (r *PrecheckRunner) wasRecentlyPrecheckedAt(accountID string, now time.Time) bool {
-	r.recentMu.Lock()
-	defer r.recentMu.Unlock()
-	checkedAt, ok := r.recent[accountID]
-	return ok && now.Sub(checkedAt) < r.recentRetention
-}
 
 func (r *PrecheckRunner) rememberPrechecked(accountID string) {
 	r.recentMu.Lock()

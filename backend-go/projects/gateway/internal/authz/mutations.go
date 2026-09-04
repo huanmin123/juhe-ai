@@ -53,13 +53,6 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 		return nil, err
 	}
 	input.ExpiresAt = normalizedExpiresAt
-	if input.LimitsJSON != nil {
-		normalizedLimits, normalizeErr := normalizeAuthorizationLimitsJSON(*input.LimitsJSON)
-		if normalizeErr != nil {
-			return nil, failf("%s", normalizeErr.Error())
-		}
-		input.LimitsJSON = normalizedLimits
-	}
 	nowTime := s.now().UTC()
 
 	// Owner resolution: the resource must exist and belong to the actor scope.
@@ -492,16 +485,14 @@ func (s *Store) refreshEffectiveSourceForRuntimeWithGrant(ctx context.Context, t
 
 // Patch mirrors patchResourceAuthorizationAsync (status/expiresAt/limits).
 type PatchInput struct {
-	Status       *string
-	ExpiresAt    *string
-	ExpiresAtSet bool
-	LimitsJSON   *string
-	LimitsSet    bool
+	Status     *string
+	ExpiresAt  *string
+	LimitsJSON *string
 }
 
 // PatchOutcome mirrors the Node patch outcome.
 type PatchOutcome struct {
-	Status string // not_found|conflict|unchanged|updated
+	Status string // not_found|conflict|updated
 	Result *Summary
 }
 
@@ -518,10 +509,6 @@ func (s *Store) PatchForOwner(ctx context.Context, id string, input PatchInput, 
 
 func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, expectedUpdatedAt, actor, ownerScope string) (*PatchOutcome, error) {
 	ctx = ensureCtx(ctx)
-	normalizedExpectedUpdatedAt, normalizeErr := normalizeAuthorizationExpectedUpdatedAt(expectedUpdatedAt)
-	if normalizeErr != nil {
-		return nil, normalizeErr
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -537,115 +524,42 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 	if ownerScope != "" && grant.OwnerID != ownerScope {
 		return &PatchOutcome{Status: "not_found"}, nil
 	}
-	if !authorizationUpdatedAtEqual(grant.UpdatedAt, normalizedExpectedUpdatedAt) {
+	if grant.UpdatedAt != expectedUpdatedAt {
 		return &PatchOutcome{Status: "conflict"}, nil
 	}
-	nowTime := s.now().UTC()
-	now := nowTime.Format(time.RFC3339Nano)
-	if input.Status != nil && *input.Status != StatusActive && *input.Status != StatusPaused {
-		return nil, failf("请提供要修改的授权内容")
-	}
-	hasExpiresAtInput := input.ExpiresAtSet || input.ExpiresAt != nil
-	var nextExpiresAt *string
-	if grant.ExpiresAt.Valid {
-		value := grant.ExpiresAt.String
-		nextExpiresAt = &value
-	}
-	if hasExpiresAtInput {
-		if input.ExpiresAt != nil {
-			normalized, normalizeErr := normalizeAuthorizationExpiresAt(input.ExpiresAt)
-			if normalizeErr != nil {
-				return nil, normalizeErr
-			}
-			nextExpiresAt = normalized
-		} else {
-			nextExpiresAt = nil
-		}
-	}
-	requestedStatus := ""
-	if input.Status != nil {
-		requestedStatus = *input.Status
-	}
-	if grant.Status == StatusExpired && requestedStatus == StatusActive && !hasExpiresAtInput {
-		return nil, failf("到期授权恢复时请同时调整过期时间")
-	}
-	nextStatus := grant.Status
-	expiryExpired := false
-	if hasExpiresAtInput && nextExpiresAt != nil {
-		parsed, valid := parseAuthorizationRFC3339Instant(*nextExpiresAt)
-		if valid && !parsed.After(nowTime) {
-			expiryExpired = true
-			nextStatus = StatusExpired
-		} else if grant.Status == StatusExpired {
-			nextStatus = StatusActive
-		}
-	}
-	if !expiryExpired && (requestedStatus == StatusActive || requestedStatus == StatusPaused) {
-		nextStatus = requestedStatus
-	}
-	if grant.Status == StatusExpired && hasExpiresAtInput && !expiryExpired && requestedStatus == "" {
-		nextStatus = StatusActive
-	}
-	validateExpiry := hasExpiresAtInput || (requestedStatus == StatusActive && requestedStatus != grant.Status)
-	if validateExpiry && nextExpiresAt != nil {
-		accountExpiresAt, accountErr := s.patchAccountExpiry(ctx, tx, grant)
-		if accountErr != nil {
-			return nil, accountErr
-		}
-		validated, validateErr := validateAuthorizationPatchExpiresAt(nextExpiresAt, accountExpiresAt, nowTime, nextStatus == StatusExpired)
-		if validateErr != nil {
-			return nil, validateErr
-		}
-		nextExpiresAt = validated
-	}
-	hasLimitsInput := input.LimitsSet || input.LimitsJSON != nil
-	var nextLimits *string
-	if grant.LimitsJSON.Valid {
-		value := grant.LimitsJSON.String
-		nextLimits = &value
-	}
-	if hasLimitsInput {
-		if input.LimitsJSON == nil {
-			nextLimits = nil
-		} else {
-			normalized, normalizeErr := normalizeAuthorizationLimitsJSON(*input.LimitsJSON)
-			if normalizeErr != nil {
-				return nil, failf("%s", normalizeErr.Error())
-			}
-			nextLimits = normalized
-		}
-	}
+	now := s.now().UTC().Format(time.RFC3339Nano)
 
 	assignments := []string{}
 	args := []any{}
-	if nextStatus != grant.Status {
+	if input.Status != nil {
+		if *input.Status != StatusActive && *input.Status != StatusPaused {
+			return nil, failf("请提供要修改的授权内容")
+		}
 		assignments = append(assignments, "status = ?")
-		args = append(args, nextStatus)
-		if nextStatus == StatusActive || nextStatus == StatusPaused {
-			assignments = append(assignments, "revoked_by = NULL", "revoked_at = NULL")
-		} else if nextStatus == StatusExpired {
-			assignments = append(assignments, "revoked_by = COALESCE(revoked_by, ?)", "revoked_at = COALESCE(revoked_at, ?)")
-			args = append(args, actor, now)
+		args = append(args, *input.Status)
+	}
+	if input.ExpiresAt != nil {
+		assignments = append(assignments, "expires_at = ?")
+		if *input.ExpiresAt == "" {
+			args = append(args, nil)
+		} else {
+			args = append(args, *input.ExpiresAt)
 		}
 	}
-	if hasExpiresAtInput && nullableStringValue(nextExpiresAt) != nullableStringValue(nullStringPtr(grant.ExpiresAt)) {
-		assignments = append(assignments, "expires_at = ?")
-		args = append(args, nullableString(nextExpiresAt))
-	}
-	if hasLimitsInput && canonicalAuthorizationLimits(nextLimits) != canonicalAuthorizationLimits(nullStringPtr(grant.LimitsJSON)) {
+	if input.LimitsJSON != nil {
 		assignments = append(assignments, "limits_json = ?")
-		args = append(args, nullableString(nextLimits))
+		if *input.LimitsJSON == "" {
+			args = append(args, nil)
+		} else {
+			args = append(args, *input.LimitsJSON)
+		}
 	}
 	if len(assignments) == 0 {
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
-		summary := grant.summary()
-		return &PatchOutcome{Status: "unchanged", Result: &summary}, nil
+		return &PatchOutcome{Status: "conflict"}, nil
 	}
 	assignments = append(assignments, "updated_at = ?")
-	args = append(args, NextVersion(grant.UpdatedAt, s.now()))
-	args = append(args, id, grant.UpdatedAt)
+	args = append(args, NextVersion(expectedUpdatedAt, s.now()))
+	args = append(args, id, expectedUpdatedAt)
 	result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
 		SET `+strings.Join(assignments, ", ")+` WHERE id = ? AND updated_at = ?`), args...)
 	if err != nil {
@@ -661,43 +575,11 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 	if err != nil {
 		return nil, err
 	}
-	newGrantStatus := nextStatus
+	newGrantStatus := grant.Status
+	if input.Status != nil {
+		newGrantStatus = *input.Status
+	}
 	for _, runtimeID := range runtimeIDs {
-		if nextStatus == StatusActive || nextStatus == StatusPaused {
-			sourceType := "manual"
-			var sourceTeamID any
-			if grant.GranteeTeamID.Valid {
-				sourceType = "team"
-				sourceTeamID = grant.GranteeTeamID.String
-			}
-			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
-				SET status = 'active', ended_at = NULL, ended_reason = NULL,
-					revoked_by = NULL, revoked_at = NULL, updated_at = ?
-				WHERE authorization_id = ? AND source_type = ?
-					AND COALESCE(source_team_id,'') = COALESCE(?,'')
-					AND status IN ('revoked', 'superseded')`), now, runtimeID, sourceType, sourceTeamID); err != nil {
-				return nil, err
-			}
-		}
-		if hasExpiresAtInput {
-			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET expires_at = ? WHERE id = ?`), nullableString(nextExpiresAt), runtimeID); err != nil {
-				return nil, err
-			}
-		}
-		if hasLimitsInput && (nextStatus == StatusActive || nextStatus == StatusPaused || nextStatus == StatusExpired) {
-			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET limits_json = ? WHERE id = ?`), nullableString(nextLimits), runtimeID); err != nil {
-				return nil, err
-			}
-		}
-		if nextStatus == StatusActive || nextStatus == StatusPaused {
-			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET status = ?, revoked_by = NULL, revoked_at = NULL, revoked_reason = NULL WHERE id = ?`), nextStatus, runtimeID); err != nil {
-				return nil, err
-			}
-		} else if nextStatus == StatusExpired {
-			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET status = ?, revoked_by = COALESCE(revoked_by, ?), revoked_at = COALESCE(revoked_at, ?), revoked_reason = 'authorization_expired' WHERE id = ?`), nextStatus, actor, now, runtimeID); err != nil {
-				return nil, err
-			}
-		}
 		if err := s.refreshEffectiveSourceForRuntimeWithGrant(ctx, tx, runtimeID, actor, now, "", true, StatusRevoked, newGrantStatus); err != nil {
 			return nil, err
 		}
@@ -710,39 +592,6 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 		return nil, err
 	}
 	return &PatchOutcome{Status: "updated", Result: summary}, nil
-}
-
-func (s *Store) patchAccountExpiry(ctx context.Context, tx *sql.Tx, grant *grantRow) (*string, error) {
-	if grant.ResourceType != "account" {
-		return nil, nil
-	}
-	var expiry sql.NullString
-	err := tx.QueryRowContext(ctx, s.bind(`SELECT account_expires_at FROM `+s.table("accounts")+` WHERE id = ? AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`), grant.ResourceID).Scan(&expiry)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !expiry.Valid || strings.TrimSpace(expiry.String) == "" {
-		return nil, nil
-	}
-	value := expiry.String
-	return &value, nil
-}
-
-func nullStringPtr(value sql.NullString) *string {
-	if !value.Valid {
-		return nil
-	}
-	return &value.String
-}
-
-func nullableStringValue(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
 }
 
 func runtimeIDForGrant(grant *grantRow) string {
@@ -760,25 +609,16 @@ type TerminalMutation struct {
 	Status           string // not_found|conflict|unchanged|updated
 	Result           *Summary
 	CurrentUpdatedAt string
-	PreviousStatus   string
 }
 
 // Revoke mirrors revokeResourceAuthorizationMutationAsync (owner side).
 func (s *Store) Revoke(ctx context.Context, id, expectedUpdatedAt, actor string) (*TerminalMutation, error) {
-	normalizedExpectedUpdatedAt, err := normalizeAuthorizationExpectedUpdatedAt(expectedUpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return s.terminalMutation(ctx, id, normalizedExpectedUpdatedAt, actor, StatusRevoked, "authorization_revoked")
+	return s.terminalMutation(ctx, id, expectedUpdatedAt, actor, StatusRevoked, "authorization_revoked")
 }
 
 // Return mirrors returnResourceAuthorizationForGranteeMutationAsync (grantee
 // side; direct grants only; manual sources only).
 func (s *Store) Return(ctx context.Context, id, expectedUpdatedAt, granteeUserID string) (*TerminalMutation, error) {
-	normalizedExpectedUpdatedAt, err := normalizeAuthorizationExpectedUpdatedAt(expectedUpdatedAt)
-	if err != nil {
-		return nil, err
-	}
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -793,7 +633,7 @@ func (s *Store) Return(ctx context.Context, id, expectedUpdatedAt, granteeUserID
 		!grant.GranteeUserID.Valid || grant.GranteeUserID.String != granteeUserID {
 		return &TerminalMutation{Status: "not_found"}, nil
 	}
-	if !authorizationUpdatedAtEqual(grant.UpdatedAt, normalizedExpectedUpdatedAt) {
+	if grant.UpdatedAt != expectedUpdatedAt {
 		return &TerminalMutation{Status: "conflict", CurrentUpdatedAt: grant.UpdatedAt}, nil
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
@@ -825,16 +665,11 @@ func (s *Store) terminalMutation(ctx context.Context, id, expectedUpdatedAt, act
 	if err != nil {
 		return nil, err
 	}
-	if grant == nil {
+	if grant == nil || grant.Status == terminalStatus {
 		return &TerminalMutation{Status: "not_found"}, nil
 	}
-	if !authorizationUpdatedAtEqual(grant.UpdatedAt, expectedUpdatedAt) {
+	if grant.UpdatedAt != expectedUpdatedAt {
 		return &TerminalMutation{Status: "conflict", CurrentUpdatedAt: grant.UpdatedAt}, nil
-	}
-	previousStatus := grant.Status
-	if grant.Status == terminalStatus {
-		summary := grant.summary()
-		return &TerminalMutation{Status: "unchanged", Result: &summary, PreviousStatus: previousStatus}, nil
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
 	if err := s.applyTerminal(ctx, tx, grant, terminalStatus, actor, now, reason, false); err != nil {
@@ -847,7 +682,7 @@ func (s *Store) terminalMutation(ctx context.Context, id, expectedUpdatedAt, act
 	if err != nil {
 		return nil, err
 	}
-	return &TerminalMutation{Status: "updated", Result: summary, PreviousStatus: previousStatus}, nil
+	return &TerminalMutation{Status: "updated", Result: summary}, nil
 }
 
 // resolveRuntimeIDs finds the runtime rows governed by a grant.
@@ -860,13 +695,9 @@ func (s *Store) resolveRuntimeIDs(ctx context.Context, tx *sql.Tx, grant *grantR
 			WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?`),
 			grant.ResourceType, grant.ResourceID, grant.GranteeUserID.String)
 	} else if grant.GranteeTeamID.Valid {
-		rows, err = tx.QueryContext(ctx, s.bind(`SELECT DISTINCT r.id FROM `+s.table("resource_authorizations")+` r
+		rows, err = tx.QueryContext(ctx, s.bind(`SELECT r.id FROM `+s.table("resource_authorizations")+` r
 			INNER JOIN `+s.table("resource_authorization_sources")+` s ON s.authorization_id = r.id
-			INNER JOIN `+s.table("system_team_members")+` m ON m.team_id = s.source_team_id
-				AND m.system_account_id = r.grantee_system_account_id AND m.status = 'active'
-			INNER JOIN `+s.table("system_accounts")+` a ON a.id = m.system_account_id AND a.status = 'active'
-			WHERE s.source_type = 'team' AND s.source_team_id = ?
-				AND r.resource_owner_system_account_id <> m.system_account_id
+			WHERE s.source_type = 'team' AND s.source_team_id = ? AND s.status = 'active'
 				AND r.resource_type = ? AND r.resource_id = ?`),
 			grant.GranteeTeamID.String, grant.ResourceType, grant.ResourceID)
 	} else {

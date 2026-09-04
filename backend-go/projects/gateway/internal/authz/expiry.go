@@ -47,20 +47,6 @@ func parseAuthorizationRFC3339Instant(value string) (time.Time, bool) {
 	return parsed, true
 }
 
-func normalizeAuthorizationExpectedUpdatedAt(value string) (string, error) {
-	parsed, valid := parseAuthorizationRFC3339Instant(value)
-	if !valid {
-		return "", failf("授权配置版本格式不正确")
-	}
-	return parsed.UTC().Format("2006-01-02T15:04:05.000Z"), nil
-}
-
-func authorizationUpdatedAtEqual(left, right string) bool {
-	leftTime, leftValid := parseAuthorizationRFC3339Instant(left)
-	rightTime, rightValid := parseAuthorizationRFC3339Instant(right)
-	return leftValid && rightValid && leftTime.Equal(rightTime)
-}
-
 func validateAuthorizationCreateExpiresAt(value, accountExpiresAt *string, now time.Time) (*string, error) {
 	normalized, err := normalizeAuthorizationExpiresAt(value)
 	if err != nil || normalized == nil {
@@ -71,30 +57,6 @@ func validateAuthorizationCreateExpiresAt(value, accountExpiresAt *string, now t
 		return nil, failf("过期时间格式不正确")
 	}
 	if !expiresAt.After(now.UTC()) {
-		return nil, failf("授权到期时间不能早于当前时间")
-	}
-	if accountExpiresAt != nil {
-		accountExpiry, valid := parseAuthorizationRFC3339Instant(*accountExpiresAt)
-		if !valid {
-			return nil, failf("账户到期时间必须是带 Z 或数值 offset 的 RFC3339 时间")
-		}
-		if expiresAt.After(accountExpiry) {
-			return nil, failf("授权到期时间不能晚于账户到期时间")
-		}
-	}
-	return normalized, nil
-}
-
-func validateAuthorizationPatchExpiresAt(value, accountExpiresAt *string, now time.Time, allowExpired bool) (*string, error) {
-	normalized, err := normalizeAuthorizationExpiresAt(value)
-	if err != nil || normalized == nil {
-		return normalized, err
-	}
-	expiresAt, valid := parseAuthorizationRFC3339Instant(*normalized)
-	if !valid {
-		return nil, failf("过期时间格式不正确")
-	}
-	if !allowExpired && !expiresAt.After(now.UTC()) {
 		return nil, failf("授权到期时间不能早于当前时间")
 	}
 	if accountExpiresAt != nil {

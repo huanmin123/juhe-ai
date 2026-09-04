@@ -155,8 +155,9 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 		t.Fatalf("paused grant must hide the instance: %v", ids)
 	}
 
-	// Patching the grant back to active restores the runtime/source, matching
-	// Node's grant-runtime synchronization contract.
+	// Patching the grant back to active keeps the runtime paused (the Node
+	// refresh CASE pins a paused runtime until another source transition), so
+	// the instance stays hidden.
 	active := StatusActive
 	reactivated, err := f.store.Patch(context.Background(), result.Item.ID, PatchInput{Status: &active},
 		outcomeUpdatedAt(t, f, result.Item.ID), "owner")
@@ -166,8 +167,8 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 	if reactivated.Status != "updated" {
 		t.Fatalf("reactivate patch: %+v", reactivated)
 	}
-	if ids := readableKeys(t, f, "member1"); !ids["acc-inst"] {
-		t.Fatalf("reactivated grant must expose the instance: %v", ids)
+	if ids := readableKeys(t, f, "member1"); len(ids) != 0 {
+		t.Fatalf("paused runtime must stay hidden after grant reactivate: %v", ids)
 	}
 
 	// A fresh manual grant revives the runtime row to active (manual source)

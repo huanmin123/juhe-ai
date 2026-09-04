@@ -755,6 +755,7 @@ func (s *Store) CompleteChatTurn(input CompleteTurnInput) (*Message, error) {
 		FinishReason:     stringPtr(input.FinishReason),
 		TraceID:          stringPtr(input.TraceID),
 		ContentBlocks:    input.ContentBlocks,
+		ContentBlocksRaw: input.ContentBlocksRaw,
 		Now:              input.Now,
 	})
 }

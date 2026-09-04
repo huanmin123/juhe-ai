@@ -154,20 +154,19 @@ type grantRow struct {
 	Status        string
 	Remark        sql.NullString
 	ExpiresAt     sql.NullString
-	LimitsJSON    sql.NullString
 	CreatedAt     string
 	UpdatedAt     string
 }
 
 const grantColumns = `g.id, g.resource_type, g.resource_id, g.resource_owner_system_account_id,
 	g.grantee_type, g.grantee_system_account_id, g.grantee_team_id, g.status,
-	g.remark, g.expires_at, g.limits_json, g.created_at, g.updated_at`
+	g.remark, g.expires_at, g.created_at, g.updated_at`
 
 func (s *Store) scanGrant(scanner interface{ Scan(...any) error }) (grantRow, error) {
 	var row grantRow
 	err := scanner.Scan(&row.ID, &row.ResourceType, &row.ResourceID, &row.OwnerID,
 		&row.GranteeType, &row.GranteeUserID, &row.GranteeTeamID, &row.Status,
-		&row.Remark, &row.ExpiresAt, &row.LimitsJSON, &row.CreatedAt, &row.UpdatedAt)
+		&row.Remark, &row.ExpiresAt, &row.CreatedAt, &row.UpdatedAt)
 	return row, err
 }
 
@@ -257,19 +256,18 @@ func keywordUpperBound(prefix string) string {
 
 // Summary is the list/detail item shape (usage included by J5 later).
 type Summary struct {
-	ID            string         `json:"id"`
-	ResourceType  string         `json:"resourceType"`
-	ResourceID    string         `json:"resourceId"`
-	OwnerID       string         `json:"resourceOwnerSystemAccountId"`
-	GranteeType   string         `json:"granteeType"`
-	GranteeUserID *string        `json:"granteeSystemAccountId,omitempty"`
-	GranteeTeamID *string        `json:"granteeTeamId,omitempty"`
-	Status        string         `json:"status"`
-	Remark        *string        `json:"remark,omitempty"`
-	ExpiresAt     *string        `json:"expiresAt,omitempty"`
-	Limits        map[string]any `json:"limits,omitempty"`
-	CreatedAt     string         `json:"createdAt"`
-	UpdatedAt     string         `json:"updatedAt"`
+	ID            string  `json:"id"`
+	ResourceType  string  `json:"resourceType"`
+	ResourceID    string  `json:"resourceId"`
+	OwnerID       string  `json:"resourceOwnerSystemAccountId"`
+	GranteeType   string  `json:"granteeType"`
+	GranteeUserID *string `json:"granteeSystemAccountId,omitempty"`
+	GranteeTeamID *string `json:"granteeTeamId,omitempty"`
+	Status        string  `json:"status"`
+	Remark        *string `json:"remark,omitempty"`
+	ExpiresAt     *string `json:"expiresAt,omitempty"`
+	CreatedAt     string  `json:"createdAt"`
+	UpdatedAt     string  `json:"updatedAt"`
 }
 
 func (g grantRow) summary() Summary {
@@ -293,9 +291,6 @@ func (g grantRow) summary() Summary {
 	if g.ExpiresAt.Valid {
 		v := g.ExpiresAt.String
 		summary.ExpiresAt = &v
-	}
-	if g.LimitsJSON.Valid {
-		summary.Limits = decodeAuthorizationLimits(g.LimitsJSON.String)
 	}
 	return summary
 }

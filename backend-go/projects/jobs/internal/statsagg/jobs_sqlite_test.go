@@ -585,16 +585,18 @@ func TestWindowStagesGolden(t *testing.T) {
 	if _, err := refresher.RunStages(context.Background(), []WindowStageName{StageAiPerformanceSummaryWindows}, RefreshOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	// alice account scope 04-18 一行：request 4、duration 400/4、first_token 200/4。
+	// alice account scope 04-18 一行（insertDaily 规则：duration
+	// sum=100×request、count=1；first_token sum=50、count=1）→ 4、400、1、50。
 	env.assertFloats("ai performance alice 7d",
 		env.queryRowFloats(`SELECT request_count, duration_ms_sum, duration_ms_count, first_token_ms_sum FROM ai_performance_summary_windows
 			WHERE system_account_id='alice' AND window_key='2026-04-12:2026-04-18'`),
-		4, 400, 4, 200)
-	// global 只聚合 scope_type='account' 的行（Node 源查询 WHERE scope_type='account'）。
-	env.assertFloats("ai performance global 7d",
+		4, 400, 1, 50)
+	// global 行也存在（Node SQLite 全量重建对 uniqueSystemAccountIds + global
+	// 逐个执行，global 无 scope_type='account' 源行 → 0 值行）。
+	env.assertFloats("ai performance global 7d zero row",
 		env.queryRowFloats(`SELECT request_count FROM ai_performance_summary_windows
 			WHERE system_account_id='global' AND window_key='2026-04-12:2026-04-18'`),
-		4)
+		0)
 }
 
 // TestSystemMetricsJobsGolden：system-metrics-sample 写入与

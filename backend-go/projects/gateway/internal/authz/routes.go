@@ -1,7 +1,6 @@
 package authz
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -219,14 +218,14 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		actor = auth.SystemAccountID
 	}
 	var body struct {
-		ResourceType  *string         `json:"resourceType"`
-		ResourceID    *string         `json:"resourceId"`
-		GranteeType   *string         `json:"granteeType"`
-		GranteeID     *string         `json:"granteeId"`
-		TargetGroupID *string         `json:"targetGroupId"`
-		Remark        *string         `json:"remark"`
-		ExpiresAt     *string         `json:"expiresAt"`
-		Limits        json.RawMessage `json:"limits"`
+		ResourceType  *string        `json:"resourceType"`
+		ResourceID    *string        `json:"resourceId"`
+		GranteeType   *string        `json:"granteeType"`
+		GranteeID     *string        `json:"granteeId"`
+		TargetGroupID *string        `json:"targetGroupId"`
+		Remark        *string        `json:"remark"`
+		ExpiresAt     *string        `json:"expiresAt"`
+		Limits        map[string]any `json:"limits"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
@@ -262,12 +261,11 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		input.TargetGroupID = body.TargetGroupID
 	}
 	if body.Limits != nil {
-		if strings.TrimSpace(string(body.Limits)) == "null" {
-			kernel.WriteBadRequest(w, "授权参数不合法")
-			return
+		encoded, err := jsonMarshal(body.Limits)
+		if err == nil {
+			text := string(encoded)
+			input.LimitsJSON = &text
 		}
-		text := string(body.Limits)
-		input.LimitsJSON = &text
 	}
 	result, err := d.Store.Create(r.Context(), input, actor)
 	if err != nil {
@@ -333,22 +331,16 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ExpectedUpdatedAt *string `json:"expectedUpdatedAt"`
+		ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	expectedUpdatedAt, err := parseAuthorizationMutationExpectedUpdatedAt(body.ExpectedUpdatedAt)
-	if err != nil {
-		var fail *Fail
-		if errorsAsFail(err, &fail) {
-			kernel.WriteBadRequest(w, fail.Message)
-		} else {
-			kernel.WriteBadRequest(w, "回收授权参数不合法")
-		}
+	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
+		kernel.WriteBadRequest(w, "回收授权参数不合法")
 		return
 	}
-	mutation, err := d.Store.Revoke(r.Context(), r.PathValue("id"), expectedUpdatedAt, auth.SystemAccountID)
+	mutation, err := d.Store.Revoke(r.Context(), r.PathValue("id"), body.ExpectedUpdatedAt, auth.SystemAccountID)
 	if err != nil {
 		kernel.WriteBadRequest(w, "回收授权失败")
 		return
@@ -363,7 +355,7 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if mutation.Status == "updated" && d.Sink != nil {
+	if d.Sink != nil {
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
 			Mode: "admin", Module: "authorizations", Action: "revoke",
@@ -371,7 +363,7 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 			ResourceID: mutation.Result.ID,
 			Summary:    "回收资源授权：" + mutation.Result.ResourceID,
 			Changes: []authsys.OperationLogChange{
-				{Field: "status", Label: "状态", Before: mutation.PreviousStatus, After: StatusRevoked},
+				{Field: "status", Label: "状态", Before: StatusActive, After: StatusRevoked},
 			},
 		}, r)
 	}
@@ -387,22 +379,16 @@ func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ExpectedUpdatedAt *string `json:"expectedUpdatedAt"`
+		ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	expectedUpdatedAt, err := parseAuthorizationMutationExpectedUpdatedAt(body.ExpectedUpdatedAt)
-	if err != nil {
-		var fail *Fail
-		if errorsAsFail(err, &fail) {
-			kernel.WriteBadRequest(w, fail.Message)
-		} else {
-			kernel.WriteBadRequest(w, "归还授权参数不合法")
-		}
+	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
+		kernel.WriteBadRequest(w, "归还授权参数不合法")
 		return
 	}
-	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), expectedUpdatedAt, auth.SystemAccountID)
+	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), body.ExpectedUpdatedAt, auth.SystemAccountID)
 	if err != nil {
 		kernel.WriteBadRequest(w, "归还授权使用权失败")
 		return
@@ -440,45 +426,19 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		return
 	}
 	var body struct {
-		ExpectedUpdatedAt *string         `json:"expectedUpdatedAt"`
-		Status            *string         `json:"status"`
-		ExpiresAt         json.RawMessage `json:"expiresAt"`
-		Limits            json.RawMessage `json:"limits"`
+		ExpectedUpdatedAt string         `json:"expectedUpdatedAt"`
+		Status            *string        `json:"status"`
+		ExpiresAt         *string        `json:"expiresAt"`
+		Limits            map[string]any `json:"limits"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if body.ExpectedUpdatedAt == nil {
-		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
-		return
-	}
-	normalizedExpectedUpdatedAt, normalizeErr := normalizeAuthorizationExpectedUpdatedAt(*body.ExpectedUpdatedAt)
-	if normalizeErr != nil {
-		var fail *Fail
-		if errorsAsFail(normalizeErr, &fail) {
-			kernel.WriteBadRequest(w, fail.Message)
-			return
-		}
+	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
 		kernel.WriteBadRequest(w, "修改授权参数不合法")
 		return
 	}
-	expiresAtSet := body.ExpiresAt != nil
-	var expiresAt *string
-	if expiresAtSet && string(body.ExpiresAt) != "null" {
-		var value string
-		if err := json.Unmarshal(body.ExpiresAt, &value); err != nil {
-			kernel.WriteBadRequest(w, "修改授权参数不合法")
-			return
-		}
-		expiresAt = &value
-	}
-	limitsSet := body.Limits != nil
-	var limitsJSON *string
-	if limitsSet && string(body.Limits) != "null" {
-		value := string(body.Limits)
-		limitsJSON = &value
-	}
-	if body.Status == nil && !expiresAtSet && !limitsSet {
+	if body.Status == nil && body.ExpiresAt == nil && body.Limits == nil {
 		kernel.WriteBadRequest(w, "请提供要修改的授权内容")
 		return
 	}
@@ -486,16 +446,18 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		kernel.WriteBadRequest(w, "修改授权参数不合法")
 		return
 	}
-	input := PatchInput{Status: body.Status, ExpiresAt: expiresAt, ExpiresAtSet: expiresAtSet, LimitsJSON: limitsJSON, LimitsSet: limitsSet}
+	input := PatchInput{Status: body.Status, ExpiresAt: body.ExpiresAt}
+	if body.Limits != nil {
+		encoded, err := jsonMarshal(body.Limits)
+		if err == nil {
+			text := string(encoded)
+			input.LimitsJSON = &text
+		}
+	}
 	access := d.accessFor(r, false)
-	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, normalizedExpectedUpdatedAt,
+	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, body.ExpectedUpdatedAt,
 		auth.SystemAccountID, access.FilterID)
 	if err != nil {
-		var fail *Fail
-		if errorsAsFail(err, &fail) {
-			kernel.WriteBadRequest(w, fail.Message)
-			return
-		}
 		kernel.WriteBadRequest(w, "修改授权失败")
 		return
 	}
@@ -515,7 +477,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		action = "update_expire"
 		summary = "更新授权有效期"
 	}
-	if outcome.Status == "updated" && d.Sink != nil {
+	if d.Sink != nil {
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
 			Mode: "admin", Module: "authorizations", Action: action,
@@ -526,7 +488,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 	}
 	kernel.WriteOK(w, map[string]any{
 		"id": outcome.Result.ID, "status": outcome.Result.Status,
-		"expiresAt": outcome.Result.ExpiresAt, "limits": outcome.Result.Limits,
+		"expiresAt": outcome.Result.ExpiresAt, "limits": body.Limits,
 		"updatedAt": outcome.Result.UpdatedAt,
 	}, "")
 }
@@ -566,13 +528,6 @@ func errorsAsFail(err error, target **Fail) bool {
 		return true
 	}
 	return false
-}
-
-func parseAuthorizationMutationExpectedUpdatedAt(value *string) (string, error) {
-	if value == nil {
-		return "", failf("授权配置版本格式不正确")
-	}
-	return normalizeAuthorizationExpectedUpdatedAt(*value)
 }
 
 func errorsAsConflict(err error, target **Conflict) bool {

@@ -1,7 +1,6 @@
 package accountquality
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -72,12 +71,3 @@ func SuccessRateAfterWindow(recentRequestCount, recentSuccessCount int64, previo
 	return previousRate
 }
 
-// IntegerOrNull 与 Node integerOrNull 一致（仅接受非负有限数值的 round），
-// 由调用方直接传数值，故此处在 SQL 扫描侧完成（见 store.go）。
-func parseInstantOrError(value, field string) (time.Time, error) {
-	t, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%s 必须是带 Z 或数值 offset 的 RFC3339 时间：%s", field, value)
-	}
-	return t, nil
-}

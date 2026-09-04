@@ -90,6 +90,14 @@ type mockPrecheckMutation struct {
 	inputs []PrecheckMutationInput
 }
 
+func (m *mockPrecheckMutation) snapshot() []PrecheckMutationInput {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]PrecheckMutationInput, len(m.inputs))
+	copy(out, m.inputs)
+	return out
+}
+
 func (m *mockPrecheckMutation) MarkPrecheckTemporaryUnavailable(ctx context.Context, input PrecheckMutationInput) (PrecheckMutationResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -135,6 +143,26 @@ func (m *mockCooldownMutation) DeferKeyProbe(ctx context.Context, input KeyDefer
 	return KeyMutationResult{Changed: true}, nil
 }
 
+func (m *mockCooldownMutation) failSnapshot() *KeyFailureInput {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastFail == nil {
+		return nil
+	}
+	copied := *m.lastFail
+	return &copied
+}
+
+func (m *mockCooldownMutation) deferSnapshot() *KeyDeferInput {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastDefer == nil {
+		return nil
+	}
+	copied := *m.lastDefer
+	return &copied
+}
+
 func baseAccount(id string) *AccountForTest {
 	return &AccountForTest{
 		ID: id, Name: "账户-" + id, Type: "api_key", Status: AccountStatusActive, Schedulable: true,
@@ -164,11 +192,6 @@ func dispatchCandidate(accountID string) *OpenAIAccountCandidate {
 	return &OpenAIAccountCandidate{ID: accountID, Name: "账户-" + accountID, Type: "api_key", Status: AccountStatusActive, DispatchRevision: 7, HasDispatchRevision: true}
 }
 
-func newDrainedRunner(t *testing.T, runner *PrecheckRunner) *PrecheckRunner {
-	t.Cleanup(func() { runner.StopAndDrain(time.Second) })
-	return runner
-}
-
 // drainWait drains a queue with timeout.
 func drainWait(t *testing.T, runner *PrecheckRunner) {
 	t.Helper()
@@ -193,7 +216,7 @@ func TestPrecheckRecoversOnSuccess(t *testing.T) {
 	reader := &mockReader{accounts: map[string]*AccountForTest{"acc-1": baseAccount("acc-1")}, group: map[string]*OpenAIAccountCandidate{"acc-1": dispatchCandidate("acc-1")}}
 	mutation := &mockPrecheckMutation{result: PrecheckMutationResult{Updated: true}}
 	runner := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: reader, Prober: prober, Mutation: mutation, Concurrency: 1})
-	drainWait(t, runner)
+	cleanupRunner(t, runner)
 
 	if !runner.Enqueue(precheckCandidate("acc-1")) {
 		t.Fatal("首队应入队成功")
@@ -217,11 +240,11 @@ func TestPrecheckMarksTemporaryUnavailableWithExactReason(t *testing.T) {
 	reader := &mockReader{accounts: map[string]*AccountForTest{"acc-1": baseAccount("acc-1")}, group: map[string]*OpenAIAccountCandidate{"acc-1": dispatchCandidate("acc-1")}}
 	mutation := &mockPrecheckMutation{result: PrecheckMutationResult{Updated: true, SkippedReason: ""}}
 	runner := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: reader, Prober: prober, Mutation: mutation, Concurrency: 1})
-	drainWait(t, runner)
+	cleanupRunner(t, runner)
 
 	runner.Enqueue(precheckCandidate("acc-1"))
-	waitFor(t, func() bool { return len(mutation.inputs) == 1 })
-	input := mutation.inputs[0]
+	waitFor(t, func() bool { return len(mutation.snapshot()) == 1 })
+	input := mutation.snapshot()[0]
 	wantReason := "近期质量频繁失败，后台确认失败后标记为临时不可调用；近窗口 10 次请求失败 8 次；成功率 25%；最后业务失败 2026-09-04T07:58:00.000Z；确认 HTTP 502；upstream_502；Bad Gateway"
 	if input.Reason != wantReason {
 		t.Fatalf("reason 逐字节不符:\n got %q\nwant %q", input.Reason, wantReason)
@@ -252,10 +275,10 @@ func TestPrecheckIneligiblePaths(t *testing.T) {
 			mutation := &mockPrecheckMutation{}
 			prober := &mockProber{observation: tc.observation}
 			runner := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: reader, Prober: prober, Mutation: mutation, Concurrency: 1})
-			drainWait(t, runner)
+			cleanupRunner(t, runner)
 			runner.Enqueue(precheckCandidate("acc-1"))
 			waitFor(t, func() bool { return logger.findByEvent(tc.wantEvent) != nil })
-			if len(mutation.inputs) != 0 {
+			if len(mutation.snapshot()) != 0 {
 				t.Fatal("不应写状态")
 			}
 		})
@@ -267,7 +290,7 @@ func TestPrecheckExhaustedOnProbeError(t *testing.T) {
 	prober := &mockProber{err: errors.New("dial tcp: i/o timeout")}
 	reader := &mockReader{accounts: map[string]*AccountForTest{"acc-1": baseAccount("acc-1")}, group: map[string]*OpenAIAccountCandidate{"acc-1": dispatchCandidate("acc-1")}}
 	runner := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: reader, Prober: prober, Mutation: &mockPrecheckMutation{}, Concurrency: 1})
-	drainWait(t, runner)
+	cleanupRunner(t, runner)
 	runner.Enqueue(precheckCandidate("acc-1"))
 	waitFor(t, func() bool { return logger.findByEvent("background_account_quality_failure_precheck_exhausted") != nil })
 	if logger.findByEvent("background_account_quality_failure_precheck_exhausted").message != "账户质量失败确认任务已用尽，本轮跳过" {
@@ -280,7 +303,7 @@ func TestPrecheckRecentDedup(t *testing.T) {
 	runner := NewPrecheckRunner(PrecheckDeps{
 		Logger: logger, Reader: &mockReader{}, Prober: &mockProber{}, Mutation: &mockPrecheckMutation{}, Concurrency: 1,
 	})
-	drainWait(t, runner)
+	cleanupRunner(t, runner)
 	// 首次入队并完成 discard（记住已确认）。
 	reader := &mockReader{accounts: map[string]*AccountForTest{}} // 账户缺失 → discard + remember
 	runner.reader = reader
@@ -344,12 +367,8 @@ func TestCooldownQuotaExplicitReset(t *testing.T) {
 		Settings: func(string, int, int) int { return 24 }, Concurrency: func() int { return 4 }, QueueWorkers: 1,
 	})
 	runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-	waitFor(t, func() bool {
-		mutation.mu.Lock()
-		defer mutation.mu.Unlock()
-		return mutation.lastFail != nil
-	})
-	last := mutation.lastFail
+	waitFor(t, func() bool { return mutation.failSnapshot() != nil })
+	last := mutation.failSnapshot()
 	if last.Status != AccountStatusRateLimited || last.ErrorCode != QuotaRecoveryExplicitErrorCode {
 		t.Fatalf("explicit_reset 状态/错误码不符: %+v", last)
 	}
@@ -379,12 +398,8 @@ func TestCooldownQuotaRecoveryTimeout(t *testing.T) {
 	candidate.LastErrorCode = QuotaRecoveryGenericErrorCode
 	candidate.RecoveryStartedAt = "2026-07-01T00:00:00.000Z"
 	runner.Enqueue(candidate, 24)
-	waitFor(t, func() bool {
-		mutation.mu.Lock()
-		defer mutation.mu.Unlock()
-		return mutation.lastFail != nil
-	})
-	last := mutation.lastFail
+	waitFor(t, func() bool { return mutation.failSnapshot() != nil })
+	last := mutation.failSnapshot()
 	if last.Status != AccountStatusError || last.ErrorCode != QuotaRecoveryTimeoutErrorCode || last.CooldownUntil != "" {
 		t.Fatalf("30 天超时收口不符: %+v", last)
 	}
@@ -396,10 +411,10 @@ func TestCooldownQuotaRecoveryTimeout(t *testing.T) {
 
 func TestCooldownTransportFailureRecords(t *testing.T) {
 	logger := &fakeLogger{}
-	status := 500
+	// 传输不完整（连接失败，无完整 framing）→ upstream_failure → 记失败。
 	prober := &mockProber{observation: &ProbeObservation{
-		Result:   ProbeResult{Success: false, StatusCode: &status, ErrorCode: "upstream_500", Message: "Internal Server Error", TraceID: "trace-1"},
-		Evidence: ProbeEvidence{HasRealUpstreamAttempt: true, UpstreamCompleted: true, UpstreamStatus: 500},
+		Result:   ProbeResult{Success: false, ErrorCode: "upstream_500", Message: "Internal Server Error", TraceID: "trace-1"},
+		Evidence: ProbeEvidence{HasRealUpstreamAttempt: true, TransportFailureKind: TransportFailureConnection},
 	}}
 	mutation := &mockCooldownMutation{}
 	runner := NewCooldownRetestRunner(CooldownDeps{
@@ -407,14 +422,14 @@ func TestCooldownTransportFailureRecords(t *testing.T) {
 		Settings: func(string, int, int) int { return 24 }, Concurrency: func() int { return 4 }, QueueWorkers: 1,
 	})
 	runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-	waitFor(t, func() bool {
-		mutation.mu.Lock()
-		defer mutation.mu.Unlock()
-		return mutation.lastFail != nil
-	})
-	last := mutation.lastFail
-	if last.Status != AccountStatusTemporaryUnavail || last.ErrorCode != "upstream_500" || !last.BreakQuotaRecoveryWindow {
+	waitFor(t, func() bool { return mutation.failSnapshot() != nil })
+	last := mutation.failSnapshot()
+	// 无前次额度错误码 → breakQuotaRecoveryWindow=false（与 Node 一致）。
+	if last.Status != AccountStatusTemporaryUnavail || last.ErrorCode != "upstream_500" || last.BreakQuotaRecoveryWindow {
 		t.Fatalf("upstream_failure 记录不符: %+v", last)
+	}
+	if last.ProbeOutcome != "upstream_failure" {
+		t.Fatalf("probeOutcome 不符: %s", last.ProbeOutcome)
 	}
 }
 
@@ -428,13 +443,9 @@ func TestCooldownNeutralDefers(t *testing.T) {
 		Settings: func(string, int, int) int { return 24 }, Concurrency: func() int { return 4 }, QueueWorkers: 1,
 	})
 	runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-	waitFor(t, func() bool {
-		mutation.mu.Lock()
-		defer mutation.mu.Unlock()
-		return mutation.lastDefer != nil
-	})
-	if mutation.lastDefer.DelaySeconds != CooldownDefaultDeferSeconds {
-		t.Fatalf("中性结果默认顺延 60s: %d", mutation.lastDefer.DelaySeconds)
+	waitFor(t, func() bool { return mutation.deferSnapshot() != nil })
+	if mutation.deferSnapshot().DelaySeconds != CooldownDefaultDeferSeconds {
+		t.Fatalf("中性结果默认顺延 60s: %d", mutation.deferSnapshot().DelaySeconds)
 	}
 	if logger.findByEvent("background_account_api_key_cooldown_retest_task_failed") == nil {
 		t.Fatal("应有 task_failed 事件")
@@ -610,6 +621,12 @@ func (b *blockingReader) FindAccountForGroup(ctx context.Context, groupID, accou
 }
 func (b *blockingReader) HasAPIKeyEntry(ctx context.Context, candidate *OpenAIAccountCandidate, fingerprint, apiKey string) (bool, error) {
 	return false, nil
+}
+
+// cleanupRunner 在测试结束时排空队列（不阻断用例执行）。
+func cleanupRunner(t *testing.T, runner *PrecheckRunner) {
+	t.Helper()
+	t.Cleanup(func() { runner.StopAndDrain(2 * time.Second) })
 }
 
 // waitFor 轮询等待条件成立（mock 闭环的可回放等待）。

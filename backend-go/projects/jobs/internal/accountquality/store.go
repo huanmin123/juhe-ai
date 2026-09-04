@@ -3,7 +3,6 @@ package accountquality
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -1196,17 +1195,6 @@ func parseMillis(value string) time.Time {
 	return t
 }
 
-// marshalJSONObject 与 Node safeJson 一致：失败回落 '{}'。
-func marshalJSONObject(value map[string]any) string {
-	if len(value) == 0 {
-		return "{}"
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "{}"
-	}
-	return string(encoded)
-}
 
 // 质量统计 schema（与 Node stats-schema.ts 一致；PG 版对应 maintenance 冻结 DDL）。
 const sqliteQualitySchema = `

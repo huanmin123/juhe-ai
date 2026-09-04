@@ -697,7 +697,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	if rt.deps.Now != nil {
 		options.Now = func() string { return isoMillis(rt.deps.Now()) }
 	}
-	runner = NewChatGenerationRunner(options, runnerCancel, func() bool {
+	runner = NewChatGenerationRunner(options, runnerContext, runnerCancel, func() bool {
 		return runnerContext.Err() != nil
 	})
 	if rt.deps.Hub == nil || !rt.deps.Hub.Start(runner) {

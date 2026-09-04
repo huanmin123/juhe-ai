@@ -250,15 +250,31 @@ func (s *Store) getClaimedAsset(assetID, claimID string) (*Asset, error) {
 	return assets[0], nil
 }
 
+// getClaimedAssetTx reads the claimed row inside an open transaction.
+func (s *Store) getClaimedAssetTx(tx queryer, assetID, claimID string) (*Asset, error) {
+	assets, err := s.queryAssets(tx, s.bind(`SELECT `+assetColumns+` FROM `+s.table("chat_assets")+`
+		WHERE id = ? AND cleanup_status = 'claimed' AND cleanup_claim_id = ?
+		LIMIT 1`), assetID, claimID)
+	if err != nil {
+		return nil, err
+	}
+	if len(assets) == 0 {
+		return nil, nil
+	}
+	return assets[0], nil
+}
+
 // CompleteAssetDeletion mirrors completeChatAssetDeletion: claimed-row delete
-// plus chat_user_asset_usage decrement (lock via transaction).
+// plus chat_user_asset_usage decrement (lock via transaction). The claimed
+// row must be read inside the transaction: with MaxOpenConns(1) a second
+// s.db query while the tx holds the only connection self-deadlocks.
 func (s *Store) CompleteAssetDeletion(assetID, claimID string) (bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	asset, err := s.getClaimedAsset(assetID, claimID)
+	asset, err := s.getClaimedAssetTx(tx, assetID, claimID)
 	if err != nil || asset == nil {
 		return false, err
 	}
