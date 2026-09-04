@@ -49,6 +49,13 @@
 - 影响：非法额度请求在 Go 中可能成功创建或更新，并把原有额度静默清除（尤其是 PATCH 传入 `{quotaLimits:{"daily":null}}` 时），而 Node 会拒绝请求且保留原值。
 - 结论：这是可观察的输入校验和数据结果偏离；Go 需要区分字段缺失与显式 `null`，仅对顶层 `quotaLimits:null` 执行清空语义。
 
+### 4. 列表分页数字查询的合法输入集合变窄
+
+- Node 证据：`backend/src/shared/query-values.ts` 的 `integerQueryValue` 对字符串执行 `Number(trimmed)`，只要结果是整数就返回；因此 `page=1e2`、`pageSize=1.0` 等十进制/科学计数法字符串会参与后续 1–窗口范围归一化。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/routes.go` 的 `queryHasInteger`、`queryInteger` 使用 `strconv.Atoi`，仅接受十进制整数文本；同样的 `1e2`/`1.0` 被当成“未提供”，`ListPage` 回落到默认页或默认 `pageSize=50`。
+- 影响：相同 HTTP 查询在两套实现中返回不同的 `page`、`pageSize`、`items` 和 `hasMore`。例如 `pageSize=1e2` 时 Node 采用 100（再按上限裁剪），Go 采用默认 50，管理端分页位置和列表内容直接偏离。
+- 结论：这是可观察的列表结果差异；Go 应复用 Node 的数字强制转换语义，而不是仅放宽或收紧任意格式。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
