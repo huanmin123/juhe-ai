@@ -22,7 +22,7 @@
 - [BUG-0157](问题-0157-K4操作日志清洗结果偏离Node.md)：K4 敏感字段和长结构化 changes 的清洗结果偏离 Node；待修复。
 - [BUG-0156](问题-0156-K3内存限流双桶键冲突.md)：K3 内存限流未区分分钟与突发桶，两个窗口相互覆盖；待修复。
 
-- [BUG-0155](问题-0155-M04授权去重ProcessingTTL单位错误.md)：M04 Go 授权去重 `ProcessingTTL` 使用纳秒常量，实际为 120ms，而 Node 默认是 120s；待修复。
+- [BUG-0155](问题-0155-M04授权去重ProcessingTTL单位错误.md)：M04 Go 授权去重 `ProcessingTTL` 曾将纳秒常量误作 120ms，现已修正为与 Node 等价的 120s；M04 其他迁移缺口仍待修复。
 
 - [BUG-0154](问题-0154-K1-GoHTTP内核横切契约偏离.md)：K1 Go HTTP 内核在压缩协商/缓冲、trace、安全头、body parser 与 mutation 去重时序上偏离 Node 契约；待修复。
 

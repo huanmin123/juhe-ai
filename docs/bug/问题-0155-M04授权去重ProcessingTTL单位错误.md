@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0155
-- 状态：待修复
+- 状态：已修复（仍非完整迁移验收）
 - 严重程度：P1
 - 发现时间：2026-09-04
 - 发现方式：自查（已提交 Git 历史审计）
@@ -16,7 +16,7 @@
 
 - 现象：M04 `authorizations` 路由在 `backend-go/projects/gateway/internal/authz/routes.go:81-87` 配置 `ProcessingTTL: 120_000_000`。
 - 期望：同一授权 mutation 在处理期间保持 Node 的 processing 去重窗口，避免并发或重试重复写入。
-- 实际：Go 的 `time.Duration` 单位为纳秒，`120_000_000` 仅为 120ms；Node `deduplication.service.ts` 的默认 processing TTL 为 `120_000ms`（120 秒），且 M04 Node 路由未覆盖该默认值。请求在 120ms 后即可重新 claim，远早于 Node。
+- 实际：历史 Go 的 `time.Duration` 单位为纳秒，`120_000_000` 仅为 120ms；Node `deduplication.service.ts` 的默认 processing TTL 为 `120_000ms`（120 秒），且 M04 Node 路由未覆盖该默认值。请求在 120ms 后即可重新 claim，远早于 Node。该差异已确认并修复。
 - 影响范围：授权创建等写操作遇到慢数据库、网络重试或客户端超时后，可能在前一请求仍处理时被第二次执行，产生重复授权或并发状态竞争。当前 M04 Go 路由尚未接入生产 gateway，影响会在切换后出现。
 
 ## 复现步骤
@@ -40,7 +40,7 @@
 
 ## 修复方案
 
-- 修改点：将 Go processing TTL 与 Node 默认 120 秒建立显式常量和单位转换，补充 120ms、120s 边界及并发重试回归；确认迁移后所有授权 mutation 使用同一配置。
+- 修改点：将 Go processing TTL 收敛为 `const authorizationsProcessingTTL = 120 * time.Second`，避免把 Node 毫秒字面量直接当作 Go `time.Duration`；加入常量回归断言。授权完整接管、其他 mutation 的去重窗口和生产入口仍需后续审计。
 - 行为影响：恢复 Node 的 processing 防重复窗口，不增加用户可见 API 字段。
 - 发布异常处理：修复和回归通过前不得切换 M04 owner；不通过跨进程调用 Node 维持去重状态。
 
@@ -48,9 +48,10 @@
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| 静态单位检查 | Go/Node TTL 对照 | 查看上述两个提交对象 | 数值和单位等价 | 120ms vs 120s | 未通过 |
-| 定向测试 | processing 窗口内重复 claim | 授权请求延迟后重试 | 120s 内保持 processing | 现有测试未覆盖 | 未执行 |
-| 并发回归 | 慢事务 + 客户端重试 | mock 慢存储并发请求 | 只产生一次授权写入 | 未执行 | 未执行 |
+| 静态单位检查 | Go/Node TTL 对照 | `authorizationsProcessingTTL` 与 Node `defaultProcessingTtlMs` | 实际时长均为 120s | `120s` vs `120s` | 通过 |
+| 定向测试 | TTL 常量回归 | `go test ./projects/gateway/internal/authz -run TestAuthorizationsProcessingTTLMatchesNode` | 断言为 120s | 通过 | 通过 |
+| 竞态测试 | 授权包现有状态机 | `go test -race ./projects/gateway/internal/authz -run TestAuthorizationsProcessingTTLMatchesNode` | 无竞态 | 通过 | 通过 |
+| 静态检查 | Go 代码质量 | `go vet ./projects/gateway/internal/authz`、`git diff --check` | 无诊断 | 通过 | 通过 |
 
 ## 复发记录
 
@@ -67,6 +68,12 @@
 
 ## 完成总结
 
-- 完成时间：待修复
-- 结论：M04 Go 授权去重 processing 窗口比 Node 短 1000 倍，存在重复写入风险。
-- 后续建议：修正单位并补慢处理回归后，再进行 M04 完整 owner 和归档审计。
+- 完成时间：2026-09-04
+- 修复提交：待提交（代码与文档分离提交）
+- 结论：历史单位错误已修正，Go 授权创建的 processing 窗口与 Node 均为 120 秒；M04 仍存在端点、作用域、DTO、事务和副作用等独立未完成项，不能据此宣称完整接管。
+- 后续建议：继续按计划逐项审计 M04 的权限、幂等、来源状态和缓存/统计副作用。
+
+## 进度记录
+
+- 2026-09-04：确认 `f953d071b` 将 Node 的毫秒数值误作为 Go `time.Duration` 纳秒值，实际窗口为 120ms。
+- 2026-09-04：修复为 `120 * time.Second` 并加入常量回归；定向测试、`-race`、`go vet` 和 `git diff --check` 通过。
