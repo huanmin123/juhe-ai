@@ -8,7 +8,7 @@
 - [BUG-0167](问题-0167-S-SQSQLite初始化与Seed未接入.md)：S-SQ 仅新增 DDL，未接入 SQLite schema/seed 生产入口，无法独立初始化 fresh 库；待修复。
 
 - [BUG-0166](问题-0166-M03系统团队迁移权限状态与副作用偏离.md)：M03 系统团队遗漏 DTO/排序/历史/scope、授权 fanout、级联来源与缓存副作用；待修复。
-- [BUG-0165](问题-0165-M04授权迁移权限与数据副作用偏离.md)：M04 授权存在越权 scope、账号资源写入失败、端点/校验/DTO/幂等及副作用遗漏；待修复。
+- [BUG-0165](问题-0165-M04授权迁移权限与数据副作用偏离.md)：M04 授权存在越权 scope、账号资源写入失败、端点/校验/DTO/幂等及副作用遗漏；相同 active 授权幂等创建子项已修复，其余仍待修复。
 
 - [BUG-0164](问题-0164-M06路由策略迁移遗漏端点与失效副作用.md)：M06 路由策略遗漏 options/edit/runtime/authorized 端点，并缺少 speed-first 与 API Key validation 失效；待修复。
 - [BUG-0163](问题-0163-M05分组迁移遗漏端点统计与约束.md)：M05 分组遗漏多个前端端点、authorized/统计投影，且分页和 null 校验偏离 Node；待修复。
