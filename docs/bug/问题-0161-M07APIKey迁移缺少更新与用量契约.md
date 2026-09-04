@@ -113,6 +113,13 @@
 - 影响：在 32bb 之后，真实生产列表仍可能显示零用量；stats 服务异常时 Go 返回 200/零值，而 Node 会在非缺失错误上返回失败，既掩盖故障也改变管理端观察结果。
 - 结论：该补充提交没有闭合 BUG-0161 的 usage 契约；需要完成生产接线，并仅保留 Node 明确允许的缺失资源降级。
 
+### 13. API Key 排程状态切换后缺少网关缓存失效
+
+- Node 证据：`backend/src/storage/api-key-schedule-status-sync.repository.ts` 在同步提交后调用 `invalidateChangedApiKeyCaches`；SQLite 路径逐个清理 lookup cache，PostgreSQL 路径还通过 validation invalidation 通知网关。排程切换后的数据库状态与运行时缓存因此保持一致。
+- Go 证据：`32bb54673` 的 `backend-go/projects/jobs/internal/oauthrefresh/availability.go` 中 `SyncApiKeyScheduleStatuses` 仅执行 `applyScheduleUpdates` 并返回 `ChangedIDs`；`oauthrefresh.Store` 没有 cache invalidator 依赖，文件内也没有任何失效调用。
+- 影响：排程边界到达时 Go 数据库会从 active/disabled 切换，但网关 validation/lookup cache 仍可能保留旧结果，直到其他刷新或缓存过期才改变实际放行行为；Node 与 Go 的最终可用性结果不一致。
+- 结论：这是排程运行态副作用的遗漏；需要为 Go worker 注入等价的 lookup/validation 失效端口，并在提交成功后只对真正改变的 API Key 执行失效。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
