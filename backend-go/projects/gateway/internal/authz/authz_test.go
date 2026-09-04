@@ -109,15 +109,24 @@ func TestCreateGroupAuthorizationLifecycle(t *testing.T) {
 		t.Fatalf("runtime after create: status=%s effective=%s", runtimeStatus, effectiveType)
 	}
 
-	// Duplicate active grant rejected.
-	_, err = f.store.Create(context.Background(), CreateInput{
+	// Identical active grant is idempotent, matching Node's created=false/200
+	// response rather than treating a retry as a conflict.
+	retry, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "group", ResourceID: "grp_1",
 		GranteeType: "system_account", GranteeID: "grantee",
 	}, "owner")
+	if err != nil || retry.Created || retry.Item.ID != result.Item.ID {
+		t.Fatalf("idempotent duplicate result = %+v err=%v", retry, err)
+	}
+
+	// A changed active grant remains a conflict.
+	remark := "changed"
+	_, err = f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_1",
+		GranteeType: "system_account", GranteeID: "grantee", Remark: &remark,
+	}, "owner")
 	if err == nil || !strings.Contains(err.Error(), "该资源已授权给该用户") {
-		t.Logf("err hex: %x", []byte(err.Error()))
-		t.Logf("expected hex: %x", []byte("该资源已授权给该用户"))
-		t.Fatalf("duplicate grant error = %v", err)
+		t.Fatalf("changed duplicate grant error = %v", err)
 	}
 
 	// Owner cannot be grantee of their own resource.

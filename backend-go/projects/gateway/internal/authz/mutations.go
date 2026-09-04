@@ -8,6 +8,7 @@ import (
 	crand "crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -45,35 +46,6 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 
 	now := s.now().UTC().Format(time.RFC3339Nano)
 
-	// Active duplicate rejection (contract #8).
-	var existingID, existingStatus, existingUpdatedAt, existingRemark, existingExpires, existingLimits sql.NullString
-	dupQuery := `SELECT id, status, updated_at, COALESCE(remark,''), COALESCE(expires_at,''), COALESCE(limits_json,'')
-		FROM ` + s.table("resource_authorization_grants") + `
-		WHERE resource_type = ? AND resource_id = ? AND status = 'active'`
-	granteeColumn := "grantee_system_account_id"
-	if input.GranteeType == "team" {
-		granteeColumn = "grantee_team_id"
-	}
-	dupQuery += " AND " + granteeColumn + " = ?"
-	err = tx.QueryRowContext(ctx, s.bind(dupQuery), input.ResourceType, input.ResourceID, input.GranteeID).
-		Scan(&existingID, &existingStatus, &existingUpdatedAt, &existingRemark, &existingExpires, &existingLimits)
-	if err == nil {
-		// Idempotent identical re-create: remark/expires/limits all equal.
-		sameRemark := input.Remark == nil || *input.Remark == existingRemark.String
-		sameExpires := input.ExpiresAt == nil || *input.ExpiresAt == existingExpires.String
-		sameLimits := input.LimitsJSON == nil || *input.LimitsJSON == existingLimits.String
-		_ = sameRemark
-		_ = sameExpires
-		_ = sameLimits
-		kind := "用户"
-		if input.GranteeType == "team" {
-			kind = "团队"
-		}
-		return nil, failf("该资源已授权给该%s，请勿重复授权", kind)
-	} else if !strings.Contains(err.Error(), "no rows") {
-		return nil, err
-	}
-
 	// Owner resolution: the resource must exist and belong to the actor scope.
 	ownerID, err := s.resolveResourceOwner(ctx, tx, input.ResourceType, input.ResourceID)
 	if err != nil {
@@ -88,6 +60,56 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 
 	// Grantee existence checks.
 	if err := s.checkGrantee(ctx, tx, input); err != nil {
+		return nil, err
+	}
+
+	// Active duplicate handling mirrors Node's upsert mutation: an identical
+	// request is idempotent (created=false), while a changed request is
+	// rejected. Omitted remark preserves an existing remark; omitted expiry or
+	// limits mean an unset value, matching Node normalization.
+	var existingID, existingRemark, existingExpires, existingLimits sql.NullString
+	granteeColumn := "grantee_system_account_id"
+	if input.GranteeType == "team" {
+		granteeColumn = "grantee_team_id"
+	}
+	dupQuery := `SELECT id, COALESCE(remark,''), COALESCE(expires_at,''), COALESCE(limits_json,'')
+		FROM ` + s.table("resource_authorization_grants") + `
+		WHERE resource_type = ? AND resource_id = ? AND status = 'active' AND ` + granteeColumn + ` = ?`
+	err = tx.QueryRowContext(ctx, s.bind(dupQuery), input.ResourceType, input.ResourceID, input.GranteeID).
+		Scan(&existingID, &existingRemark, &existingExpires, &existingLimits)
+	if err == nil {
+		nextRemark := existingRemark.String
+		if input.Remark != nil {
+			if value := strings.TrimSpace(*input.Remark); value != "" {
+				nextRemark = value
+			}
+		}
+		nextExpires := ""
+		if input.ExpiresAt != nil {
+			nextExpires = strings.TrimSpace(*input.ExpiresAt)
+		}
+		sameRemark := nextRemark == existingRemark.String
+		sameExpires := nextExpires == existingExpires.String
+		sameLimits := nullableJSONEqual(input.LimitsJSON, existingLimits.String)
+		if sameRemark && sameExpires && sameLimits {
+			if err := tx.Commit(); err != nil {
+				return nil, err
+			}
+			summary, err := s.Find(ctx, existingID.String)
+			if err != nil {
+				return nil, err
+			}
+			if summary == nil {
+				return nil, failf("创建授权失败")
+			}
+			return &CreateResult{Item: *summary, Created: false}, nil
+		}
+		kind := "用户"
+		if input.GranteeType == "team" {
+			kind = "团队"
+		}
+		return nil, failf("该资源已授权给该%s，请勿重复授权", kind)
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 
@@ -738,4 +760,24 @@ func nullableString(value *string) any {
 		return nil
 	}
 	return *value
+}
+
+func nullableJSONEqual(next *string, current string) bool {
+	if next == nil {
+		return current == ""
+	}
+	var nextValue any
+	if err := json.Unmarshal([]byte(*next), &nextValue); err != nil {
+		return *next == current
+	}
+	if current == "" {
+		return nextValue == nil
+	}
+	var currentValue any
+	if err := json.Unmarshal([]byte(current), &currentValue); err != nil {
+		return *next == current
+	}
+	normalizedNext, errNext := json.Marshal(nextValue)
+	normalizedCurrent, errCurrent := json.Marshal(currentValue)
+	return errNext == nil && errCurrent == nil && string(normalizedNext) == string(normalizedCurrent)
 }
