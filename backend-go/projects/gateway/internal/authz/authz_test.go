@@ -494,4 +494,73 @@ func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 	}
 }
 
+func TestPatchExpiresAtContractAndRuntimeProjection(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_patch_expiry", "owner")
+	future := f.now.Add(2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	created, err := f.store.Create(context.Background(), CreateInput{ResourceType: "group", ResourceID: "grp_patch_expiry", GranteeType: "system_account", GranteeID: "grantee", ExpiresAt: &future}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset := "2027-01-01T09:00:00+09:00"
+	updated, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{ExpiresAt: &offset}, created.Item.UpdatedAt, "owner")
+	if err != nil || updated.Status != "updated" || updated.Result.ExpiresAt == nil || *updated.Result.ExpiresAt != "2027-01-01T00:00:00.000Z" {
+		t.Fatalf("canonical patch = %+v err=%v", updated, err)
+	}
+	var runtimeExpiry sql.NullString
+	if err := f.db.QueryRow(`SELECT expires_at FROM resource_authorizations WHERE resource_id = 'grp_patch_expiry'`).Scan(&runtimeExpiry); err != nil {
+		t.Fatal(err)
+	}
+	if !runtimeExpiry.Valid || runtimeExpiry.String != "2027-01-01T00:00:00.000Z" {
+		t.Fatalf("runtime expiry = %+v", runtimeExpiry)
+	}
+	unchanged, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{ExpiresAt: &offset}, updated.Result.UpdatedAt, "owner")
+	if err != nil || unchanged.Status != "unchanged" || unchanged.Result.UpdatedAt != updated.Result.UpdatedAt {
+		t.Fatalf("same expiry patch = %+v err=%v", unchanged, err)
+	}
+	bad := "2027-01-01T00:00:00"
+	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{ExpiresAt: &bad}, updated.Result.UpdatedAt, "owner"); err == nil || !strings.Contains(err.Error(), "过期时间格式不正确") {
+		t.Fatalf("bare expiry error = %v", err)
+	}
+	past := f.now.Add(-time.Second).Format(time.RFC3339Nano)
+	pastResult, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{ExpiresAt: &past}, updated.Result.UpdatedAt, "owner")
+	if err != nil || pastResult.Result.Status != StatusExpired {
+		t.Fatalf("past expiry state = %+v err=%v", pastResult, err)
+	}
+	cleared, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{ExpiresAtSet: true}, pastResult.Result.UpdatedAt, "owner")
+	if err != nil || cleared.Status != "updated" || cleared.Result.ExpiresAt != nil {
+		t.Fatalf("explicit null clear = %+v err=%v", cleared, err)
+	}
+	if err := f.db.QueryRow(`SELECT expires_at FROM resource_authorizations WHERE resource_id = 'grp_patch_expiry'`).Scan(&runtimeExpiry); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeExpiry.Valid {
+		t.Fatalf("runtime expiry after clear = %+v", runtimeExpiry)
+	}
+}
+
+func TestPatchExpiresAtRespectsAccountExpiry(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.db.Exec(accountsFixtureDDL); err != nil {
+		t.Fatal(err)
+	}
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedSourceAccount(t, "acc_patch_expiry", "owner")
+	accountExpiry := f.now.Add(2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := f.db.Exec(`UPDATE accounts SET account_expires_at = ? WHERE id = 'acc_patch_expiry'`, accountExpiry); err != nil {
+		t.Fatal(err)
+	}
+	created, err := f.store.Create(context.Background(), CreateInput{ResourceType: "account", ResourceID: "acc_patch_expiry", GranteeType: "system_account", GranteeID: "grantee"}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tooLate := f.now.Add(3 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{ExpiresAt: &tooLate}, created.Item.UpdatedAt, "owner"); err == nil || !strings.Contains(err.Error(), "授权到期时间不能晚于账户到期时间") {
+		t.Fatalf("account upper-bound patch error = %v", err)
+	}
+}
+
 var _ = modelcheckauth.SQLite

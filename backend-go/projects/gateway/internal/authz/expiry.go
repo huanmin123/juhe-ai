@@ -70,3 +70,27 @@ func validateAuthorizationCreateExpiresAt(value, accountExpiresAt *string, now t
 	}
 	return normalized, nil
 }
+
+func validateAuthorizationPatchExpiresAt(value, accountExpiresAt *string, now time.Time, allowExpired bool) (*string, error) {
+	normalized, err := normalizeAuthorizationExpiresAt(value)
+	if err != nil || normalized == nil {
+		return normalized, err
+	}
+	expiresAt, valid := parseAuthorizationRFC3339Instant(*normalized)
+	if !valid {
+		return nil, failf("过期时间格式不正确")
+	}
+	if !allowExpired && !expiresAt.After(now.UTC()) {
+		return nil, failf("授权到期时间不能早于当前时间")
+	}
+	if accountExpiresAt != nil {
+		accountExpiry, valid := parseAuthorizationRFC3339Instant(*accountExpiresAt)
+		if !valid {
+			return nil, failf("账户到期时间必须是带 Z 或数值 offset 的 RFC3339 时间")
+		}
+		if expiresAt.After(accountExpiry) {
+			return nil, failf("授权到期时间不能晚于账户到期时间")
+		}
+	}
+	return normalized, nil
+}

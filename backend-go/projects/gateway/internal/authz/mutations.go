@@ -485,14 +485,15 @@ func (s *Store) refreshEffectiveSourceForRuntimeWithGrant(ctx context.Context, t
 
 // Patch mirrors patchResourceAuthorizationAsync (status/expiresAt/limits).
 type PatchInput struct {
-	Status     *string
-	ExpiresAt  *string
-	LimitsJSON *string
+	Status       *string
+	ExpiresAt    *string
+	ExpiresAtSet bool
+	LimitsJSON   *string
 }
 
 // PatchOutcome mirrors the Node patch outcome.
 type PatchOutcome struct {
-	Status string // not_found|conflict|updated
+	Status string // not_found|conflict|unchanged|updated
 	Result *Summary
 }
 
@@ -527,24 +528,77 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 	if grant.UpdatedAt != expectedUpdatedAt {
 		return &PatchOutcome{Status: "conflict"}, nil
 	}
-	now := s.now().UTC().Format(time.RFC3339Nano)
+	nowTime := s.now().UTC()
+	now := nowTime.Format(time.RFC3339Nano)
+	if input.Status != nil && *input.Status != StatusActive && *input.Status != StatusPaused {
+		return nil, failf("请提供要修改的授权内容")
+	}
+	hasExpiresAtInput := input.ExpiresAtSet || input.ExpiresAt != nil
+	var nextExpiresAt *string
+	if grant.ExpiresAt.Valid {
+		value := grant.ExpiresAt.String
+		nextExpiresAt = &value
+	}
+	if hasExpiresAtInput {
+		if input.ExpiresAt != nil {
+			normalized, normalizeErr := normalizeAuthorizationExpiresAt(input.ExpiresAt)
+			if normalizeErr != nil {
+				return nil, normalizeErr
+			}
+			nextExpiresAt = normalized
+		} else {
+			nextExpiresAt = nil
+		}
+	}
+	requestedStatus := ""
+	if input.Status != nil {
+		requestedStatus = *input.Status
+	}
+	if grant.Status == StatusExpired && requestedStatus == StatusActive && !hasExpiresAtInput {
+		return nil, failf("到期授权恢复时请同时调整过期时间")
+	}
+	nextStatus := grant.Status
+	if hasExpiresAtInput && nextExpiresAt != nil {
+		parsed, valid := parseAuthorizationRFC3339Instant(*nextExpiresAt)
+		if valid && !parsed.After(nowTime) {
+			nextStatus = StatusExpired
+		} else if grant.Status == StatusExpired {
+			nextStatus = StatusActive
+		}
+	}
+	if nextStatus != StatusExpired && (requestedStatus == StatusActive || requestedStatus == StatusPaused) {
+		nextStatus = requestedStatus
+	}
+	if grant.Status == StatusExpired && hasExpiresAtInput && nextStatus != StatusExpired && requestedStatus == "" {
+		nextStatus = StatusActive
+	}
+	if hasExpiresAtInput && nextExpiresAt != nil {
+		accountExpiresAt, accountErr := s.patchAccountExpiry(ctx, tx, grant)
+		if accountErr != nil {
+			return nil, accountErr
+		}
+		validated, validateErr := validateAuthorizationPatchExpiresAt(nextExpiresAt, accountExpiresAt, nowTime, nextStatus == StatusExpired)
+		if validateErr != nil {
+			return nil, validateErr
+		}
+		nextExpiresAt = validated
+	}
 
 	assignments := []string{}
 	args := []any{}
-	if input.Status != nil {
-		if *input.Status != StatusActive && *input.Status != StatusPaused {
-			return nil, failf("请提供要修改的授权内容")
-		}
+	if nextStatus != grant.Status {
 		assignments = append(assignments, "status = ?")
-		args = append(args, *input.Status)
-	}
-	if input.ExpiresAt != nil {
-		assignments = append(assignments, "expires_at = ?")
-		if *input.ExpiresAt == "" {
-			args = append(args, nil)
-		} else {
-			args = append(args, *input.ExpiresAt)
+		args = append(args, nextStatus)
+		if nextStatus == StatusActive || nextStatus == StatusPaused {
+			assignments = append(assignments, "revoked_by = NULL", "revoked_at = NULL")
+		} else if nextStatus == StatusExpired {
+			assignments = append(assignments, "revoked_by = COALESCE(revoked_by, ?)", "revoked_at = COALESCE(revoked_at, ?)")
+			args = append(args, actor, now)
 		}
+	}
+	if hasExpiresAtInput && nullableStringValue(nextExpiresAt) != nullableStringValue(nullStringPtr(grant.ExpiresAt)) {
+		assignments = append(assignments, "expires_at = ?")
+		args = append(args, nullableString(nextExpiresAt))
 	}
 	if input.LimitsJSON != nil {
 		assignments = append(assignments, "limits_json = ?")
@@ -555,7 +609,11 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 		}
 	}
 	if len(assignments) == 0 {
-		return &PatchOutcome{Status: "conflict"}, nil
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		summary := grant.summary()
+		return &PatchOutcome{Status: "unchanged", Result: &summary}, nil
 	}
 	assignments = append(assignments, "updated_at = ?")
 	args = append(args, NextVersion(expectedUpdatedAt, s.now()))
@@ -575,11 +633,38 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 	if err != nil {
 		return nil, err
 	}
-	newGrantStatus := grant.Status
-	if input.Status != nil {
-		newGrantStatus = *input.Status
-	}
+	newGrantStatus := nextStatus
 	for _, runtimeID := range runtimeIDs {
+		if nextStatus == StatusActive || nextStatus == StatusPaused {
+			sourceType := "manual"
+			var sourceTeamID any
+			if grant.GranteeTeamID.Valid {
+				sourceType = "team"
+				sourceTeamID = grant.GranteeTeamID.String
+			}
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
+				SET status = 'active', ended_at = NULL, ended_reason = NULL,
+					revoked_by = NULL, revoked_at = NULL, updated_at = ?
+				WHERE authorization_id = ? AND source_type = ?
+					AND COALESCE(source_team_id,'') = COALESCE(?,'')
+					AND status IN ('revoked', 'superseded')`), now, runtimeID, sourceType, sourceTeamID); err != nil {
+				return nil, err
+			}
+		}
+		if hasExpiresAtInput {
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET expires_at = ? WHERE id = ?`), nullableString(nextExpiresAt), runtimeID); err != nil {
+				return nil, err
+			}
+		}
+		if nextStatus == StatusActive || nextStatus == StatusPaused {
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET status = ?, revoked_by = NULL, revoked_at = NULL, revoked_reason = NULL WHERE id = ?`), nextStatus, runtimeID); err != nil {
+				return nil, err
+			}
+		} else if nextStatus == StatusExpired {
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET status = ?, revoked_by = COALESCE(revoked_by, ?), revoked_at = COALESCE(revoked_at, ?), revoked_reason = 'authorization_expired' WHERE id = ?`), nextStatus, actor, now, runtimeID); err != nil {
+				return nil, err
+			}
+		}
 		if err := s.refreshEffectiveSourceForRuntimeWithGrant(ctx, tx, runtimeID, actor, now, "", true, StatusRevoked, newGrantStatus); err != nil {
 			return nil, err
 		}
@@ -592,6 +677,39 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 		return nil, err
 	}
 	return &PatchOutcome{Status: "updated", Result: summary}, nil
+}
+
+func (s *Store) patchAccountExpiry(ctx context.Context, tx *sql.Tx, grant *grantRow) (*string, error) {
+	if grant.ResourceType != "account" {
+		return nil, nil
+	}
+	var expiry sql.NullString
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT account_expires_at FROM `+s.table("accounts")+` WHERE id = ? AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`), grant.ResourceID).Scan(&expiry)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !expiry.Valid || strings.TrimSpace(expiry.String) == "" {
+		return nil, nil
+	}
+	value := expiry.String
+	return &value, nil
+}
+
+func nullStringPtr(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+
+func nullableStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func runtimeIDForGrant(grant *grantRow) string {
@@ -695,9 +813,9 @@ func (s *Store) resolveRuntimeIDs(ctx context.Context, tx *sql.Tx, grant *grantR
 			WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?`),
 			grant.ResourceType, grant.ResourceID, grant.GranteeUserID.String)
 	} else if grant.GranteeTeamID.Valid {
-		rows, err = tx.QueryContext(ctx, s.bind(`SELECT r.id FROM `+s.table("resource_authorizations")+` r
+		rows, err = tx.QueryContext(ctx, s.bind(`SELECT DISTINCT r.id FROM `+s.table("resource_authorizations")+` r
 			INNER JOIN `+s.table("resource_authorization_sources")+` s ON s.authorization_id = r.id
-			WHERE s.source_type = 'team' AND s.source_team_id = ? AND s.status = 'active'
+			WHERE s.source_type = 'team' AND s.source_team_id = ?
 				AND r.resource_type = ? AND r.resource_id = ?`),
 			grant.GranteeTeamID.String, grant.ResourceType, grant.ResourceID)
 	} else {

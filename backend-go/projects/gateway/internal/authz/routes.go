@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -426,10 +427,10 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		return
 	}
 	var body struct {
-		ExpectedUpdatedAt string         `json:"expectedUpdatedAt"`
-		Status            *string        `json:"status"`
-		ExpiresAt         *string        `json:"expiresAt"`
-		Limits            map[string]any `json:"limits"`
+		ExpectedUpdatedAt string          `json:"expectedUpdatedAt"`
+		Status            *string         `json:"status"`
+		ExpiresAt         json.RawMessage `json:"expiresAt"`
+		Limits            map[string]any  `json:"limits"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
@@ -438,7 +439,17 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		kernel.WriteBadRequest(w, "修改授权参数不合法")
 		return
 	}
-	if body.Status == nil && body.ExpiresAt == nil && body.Limits == nil {
+	expiresAtSet := body.ExpiresAt != nil
+	var expiresAt *string
+	if expiresAtSet && string(body.ExpiresAt) != "null" {
+		var value string
+		if err := json.Unmarshal(body.ExpiresAt, &value); err != nil {
+			kernel.WriteBadRequest(w, "修改授权参数不合法")
+			return
+		}
+		expiresAt = &value
+	}
+	if body.Status == nil && !expiresAtSet && body.Limits == nil {
 		kernel.WriteBadRequest(w, "请提供要修改的授权内容")
 		return
 	}
@@ -446,7 +457,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		kernel.WriteBadRequest(w, "修改授权参数不合法")
 		return
 	}
-	input := PatchInput{Status: body.Status, ExpiresAt: body.ExpiresAt}
+	input := PatchInput{Status: body.Status, ExpiresAt: expiresAt, ExpiresAtSet: expiresAtSet}
 	if body.Limits != nil {
 		encoded, err := jsonMarshal(body.Limits)
 		if err == nil {
