@@ -1233,3 +1233,36 @@ func containsTerm(terms []string, target string) bool {
 	}
 	return false
 }
+
+func TestAccountCloneContext(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", createPayload("clone-src"))
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, payload)
+	}
+	accountID := dataMap(t, payload)["id"].(string)
+
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/accounts/"+accountID+"/clone-context", "")
+	if code != 200 {
+		t.Fatalf("clone-context: %d %v", code, payload)
+	}
+	data := dataMap(t, payload)
+	if data["name"] != "clone-src" {
+		t.Fatalf("clone name = %v", data["name"])
+	}
+	if data["configRevision"] == nil {
+		t.Fatal("configRevision missing")
+	}
+	raw, _ := json.Marshal(payload)
+	if strings.Contains(string(raw), "sk-live-secret-1234567890") {
+		t.Fatal("clone context leaked raw credential material")
+	}
+
+	missingCode, _ := env.do(t, http.MethodGet, "/__aisys__/api/accounts/acc_nope/clone-context", "")
+	if missingCode != http.StatusNotFound {
+		t.Fatalf("missing clone-context: %d", missingCode)
+	}
+}

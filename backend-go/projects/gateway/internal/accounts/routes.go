@@ -34,6 +34,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("DELETE "+prefix+"/accounts/tags/{tagId}", admin(d.scoped(d.deleteTag)))
 	k.Register("GET "+prefix+"/accounts/{id}", admin(d.scoped(d.detail)))
 	k.Register("GET "+prefix+"/accounts/{id}/edit-basic", admin(d.scoped(d.detail)))
+	k.Register("GET "+prefix+"/accounts/{id}/clone-context", admin(d.scoped(d.cloneContext)))
 	k.Register("POST "+prefix+"/accounts", d.mountGuarded(d.create, "accounts.create", false))
 	k.Register("PATCH "+prefix+"/accounts/{id}", admin(d.scoped(d.patchBasic)))
 	k.Register("PATCH "+prefix+"/accounts/{id}/tags", admin(d.scoped(d.patchTags)))
@@ -57,6 +58,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("DELETE "+prefix+"/my-accounts/tags/{tagId}", self(d.scoped(d.deleteTag)))
 	k.Register("GET "+prefix+"/my-accounts/{id}", self(d.scoped(d.detail)))
 	k.Register("GET "+prefix+"/my-accounts/{id}/edit-basic", self(d.scoped(d.detail)))
+	k.Register("GET "+prefix+"/my-accounts/{id}/clone-context", self(d.scoped(d.cloneContext)))
 	k.Register("POST "+prefix+"/my-accounts", d.mountGuarded(d.create, "accounts.create", true))
 	k.Register("PATCH "+prefix+"/my-accounts/{id}", self(d.scoped(d.patchBasic)))
 	k.Register("PATCH "+prefix+"/my-accounts/{id}/tags", self(d.scoped(d.patchTags)))
@@ -73,6 +75,30 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 
 // scoped wraps a handler with the parseRequestScopeQuery contract: an explicit
 // blank systemAccountId query value is rejected with 400 系统账号 ID 不能为空.
+func (d *Deps) cloneContext(w http.ResponseWriter, r *http.Request) {
+	context, err := d.Store.FindCloneContext(r.Context(), r.PathValue("id"), requestScope(r))
+	if err != nil {
+		var forbidden *cloneInteractionForbiddenError
+		var conflict *cloneInteractionConflictError
+		if errors.As(err, &forbidden) {
+			kernel.WriteError(w, http.StatusForbidden, forbidden.Message)
+			return
+		}
+		if errors.As(err, &conflict) {
+			kernel.WriteError(w, http.StatusConflict, conflict.Error())
+			return
+		}
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if context == nil {
+		kernel.WriteError(w, http.StatusNotFound, "账户不存在")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	kernel.WriteOK(w, context, "")
+}
+
 func (d *Deps) scoped(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !scopeQueryOK(r) {
