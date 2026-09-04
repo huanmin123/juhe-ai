@@ -145,6 +145,15 @@ func TestLoginMeChangePasswordFlow(t *testing.T) {
 		t.Fatalf("me: %d %v", meResponse.StatusCode, mePayload)
 	}
 
+	updatedProfile, updatedProfilePayload := patchJSON(t, server, "/__aisys__/api/auth/me", `{"displayName":"AdminRenamed"}`, cookie)
+	if updatedProfile.StatusCode != http.StatusOK {
+		t.Fatalf("update profile: %d %v", updatedProfile.StatusCode, updatedProfilePayload)
+	}
+	updatedProfileData, ok := updatedProfilePayload["data"].(map[string]any)
+	if !ok || updatedProfileData["displayName"] != "AdminRenamed" {
+		t.Fatalf("update profile response must contain the persisted display name: %v", updatedProfilePayload)
+	}
+
 	// Anonymous request is rejected with the exact Node message.
 	anonymous, anonymousPayload := getJSON(t, server, "/__aisys__/api/auth/me", "")
 	if anonymous.StatusCode != http.StatusUnauthorized || anonymousPayload["message"] != "请先登录" {

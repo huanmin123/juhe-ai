@@ -213,7 +213,13 @@ func (d *Deps) patchMe(w http.ResponseWriter, r *http.Request) {
 		Summary: "修改显示名称：" + updated.DisplayName,
 		Changes: []OperationLogChange{{Field: "displayName", Label: "显示名称", Before: before.DisplayName, After: updated.DisplayName}},
 	})
-	kernel.WriteOK(w, currentUserSummary(auth), "")
+	kernel.WriteOK(w, CurrentUserSummary{
+		ID:                 updated.ID,
+		Username:           updated.Username,
+		DisplayName:        updated.DisplayName,
+		Role:               updated.Role,
+		MustChangePassword: updated.MustChangePassword,
+	}, "")
 }
 
 func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
