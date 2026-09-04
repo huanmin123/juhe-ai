@@ -19,7 +19,7 @@
 | 波 | 状态 | WP 明细 |
 | --- | --- | --- |
 | W1 | in-progress | K1 K2 K3 K4 K5 K6 K7 S-PG S-SQ + doc |
-| W2 | in-progress | M01/M03/M04/M05/M06/M07/M08 ✓、**M09 ✓**（批量 16 字段覆盖引擎+revision CAS、CCS 五源导入 preview/confirm、导出；14 测试 -race 绿）；下一片 clone-context + tags/编辑明细补全 |
+| W2 | in-progress | M01/M03/M04/M05/M06/M07/M08/M09 ✓ 全部归档（M09b clone-context 补挂完成，15 测试 -race 绿）；下一片 M10 授权实例视角读 → M11 providers → M12-M17 |
 | W3 | pending | M08-M14 |
 | W4 | pending | M15-M17 P01-P03 G01-G03 |
 | W5 | pending | G04-G08 P04 P05 |
