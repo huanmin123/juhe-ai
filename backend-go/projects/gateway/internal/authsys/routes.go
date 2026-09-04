@@ -116,7 +116,10 @@ func (d *Deps) postLogout(cookieSameSite string, cookieSecure bool) http.Handler
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookies := ParseCookie(r.Header.Get("Cookie"))
 		if token := cookies[SessionCookieName]; token != "" {
-			_ = d.Port.RevokeToken(r.Context(), token)
+			if err := d.Port.RevokeToken(r.Context(), token); err != nil {
+				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
 		}
 		ClearSessionCookie(w)
 		kernel.WriteOK(w, map[string]any{"loggedOut": true}, "")

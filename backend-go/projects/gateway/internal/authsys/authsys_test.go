@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,15 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+type revokeFailingPort struct {
+	businessauth.Port
+	err error
+}
+
+func (p revokeFailingPort) RevokeToken(context.Context, string) error {
+	return p.err
+}
 
 func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	t.Helper()
@@ -370,6 +380,28 @@ func TestTemporaryAccessTokenRequiresAllowlistedSource(t *testing.T) {
 		`{"username":"admin1","password":"super-secret","ttlSeconds":120}`, "")
 	if allowed.StatusCode != http.StatusOK || !strings.HasPrefix(allowedPayload["data"].(map[string]any)["token"].(string), "juhe_tmp_") {
 		t.Fatalf("normalized allowlist must issue: %d %v", allowed.StatusCode, allowedPayload)
+	}
+}
+
+func TestLogoutRevokeFailureDoesNotReportSuccess(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "admin1", "super-secret", "super_admin")
+	cookie := login(t, server, "admin1", "super-secret")
+
+	originalPort := deps.Port
+	deps.Port = revokeFailingPort{Port: originalPort, err: errors.New("revoke storage failed")}
+	logout, logoutPayload := postJSON(t, server, "/__aisys__/api/auth/logout", `{}`, cookie)
+	if logout.StatusCode != http.StatusInternalServerError || logoutPayload["message"] != "服务器内部错误" {
+		t.Fatalf("logout revoke failure must surface as server failure: %d %v", logout.StatusCode, logoutPayload)
+	}
+	if cookies := logout.Header.Values("Set-Cookie"); len(cookies) != 0 {
+		t.Fatalf("failed logout must not clear a still-valid session cookie: %v", cookies)
+	}
+
+	deps.Port = originalPort
+	stillAuthenticated, stillAuthenticatedPayload := getJSON(t, server, "/__aisys__/api/auth/me", cookie)
+	if stillAuthenticated.StatusCode != http.StatusOK {
+		t.Fatalf("failed revoke must leave the existing session valid: %d %v", stillAuthenticated.StatusCode, stillAuthenticatedPayload)
 	}
 }
 
