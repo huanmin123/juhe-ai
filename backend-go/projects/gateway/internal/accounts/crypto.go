@@ -5,10 +5,11 @@
 // management list, the options dropdown, the owner-scoped edit-basic detail,
 // guarded create with AES-GCM sealed credentials, the basic-config patch with
 // config_revision optimistic locking, the lock/unlock/lock-config family, the
-// soft delete with related cleanup and the account tag endpoints. Authorized
-// instances (resource_authorizations), batch edit, import/export, clone
+// soft delete with related cleanup and the account tag endpoints. The M09
+// companion files add the batch-edit context/update, the CCS import
+// preview/confirm pipeline and the native export document. The clone
 // context, upstream model catalog sync, credential normalization services and
-// the balance health probes are companion slices.
+// the balance health probes remain companion slices.
 package accounts
 
 import (

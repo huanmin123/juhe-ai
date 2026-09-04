@@ -42,6 +42,14 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("POST "+prefix+"/accounts/{id}/lock-config", d.mountGuarded(d.lockConfig, "accounts.lock-config", false))
 	k.Register("DELETE "+prefix+"/accounts/{id}", admin(d.scoped(d.remove)))
 
+	// M09 batch/import/export family (registered on the shared Node router,
+	// so both surfaces expose it).
+	k.Register("POST "+prefix+"/accounts/batch-edit-context", admin(d.batchEditContextHandler(false)))
+	k.Register("POST "+prefix+"/accounts/batch-update", admin(d.batchUpdateHandler(false)))
+	k.Register("POST "+prefix+"/accounts/import/preview", admin(d.importPreviewHandler(false)))
+	k.Register("POST "+prefix+"/accounts/import/confirm", d.mountGuarded(d.importConfirmHandler(false), "accounts.import", false))
+	k.Register("POST "+prefix+"/accounts/export", admin(d.exportHandler(false)))
+
 	// Self surface (forceSelfAccessScope).
 	k.Register("GET "+prefix+"/my-accounts", self(d.listHandler(true)))
 	k.Register("GET "+prefix+"/my-accounts/options", self(d.optionsHandler(true)))
@@ -56,6 +64,11 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("POST "+prefix+"/my-accounts/{id}/unlock", d.mountGuarded(d.lock(false), "accounts.unlock", true))
 	k.Register("POST "+prefix+"/my-accounts/{id}/lock-config", d.mountGuarded(d.lockConfig, "accounts.lock-config", true))
 	k.Register("DELETE "+prefix+"/my-accounts/{id}", self(d.scoped(d.remove)))
+	k.Register("POST "+prefix+"/my-accounts/batch-edit-context", self(d.batchEditContextHandler(true)))
+	k.Register("POST "+prefix+"/my-accounts/batch-update", self(d.batchUpdateHandler(true)))
+	k.Register("POST "+prefix+"/my-accounts/import/preview", self(d.importPreviewHandler(true)))
+	k.Register("POST "+prefix+"/my-accounts/import/confirm", d.mountGuarded(d.importConfirmHandler(true), "accounts.import", true))
+	k.Register("POST "+prefix+"/my-accounts/export", self(d.exportHandler(true)))
 }
 
 // scoped wraps a handler with the parseRequestScopeQuery contract: an explicit
@@ -585,6 +598,14 @@ func guardFingerprint(r *http.Request, operationKey string) map[string]any {
 			"status":                    AccountCreationStatusInput(kernel.BodyField(r, "status")).Status,
 		}
 	}
+	if operationKey == "accounts.import" {
+		return map[string]any{
+			"owner":      strings.TrimSpace(r.URL.Query().Get("systemAccountId")),
+			"data":       kernel.BodyField(r, "data"),
+			"sourceMode": kernel.BodyField(r, "sourceMode"),
+			"options":    kernel.BodyField(r, "options"),
+		}
+	}
 	return map[string]any{
 		"accountId": strings.TrimSpace(r.PathValue("id")),
 		"timeout":   kernel.BodyField(r, "lockDeathTimeoutSeconds"),
@@ -644,7 +665,17 @@ func (d *Deps) writeError(w http.ResponseWriter, err error) {
 	var validation *ValidationError
 	var forbidden *editBasicForbiddenError
 	var tagInUse *TagInUseError
+	var batchAccess *batchAccessError
+	var batchConflict *batchVersionConflictError
 	switch {
+	case errors.As(err, &batchConflict):
+		kernel.WriteJSON(w, http.StatusConflict, map[string]string{"message": batchConflict.Error()})
+	case errors.As(err, &batchAccess):
+		status := http.StatusNotFound
+		if batchAccess.sameScope() {
+			status = http.StatusBadRequest
+		}
+		kernel.WriteError(w, status, batchAccess.Message)
 	case errors.As(err, &conflict):
 		kernel.WriteError(w, http.StatusConflict, conflict.Message)
 	case errors.As(err, &revision):
@@ -667,6 +698,18 @@ func (d *Deps) writeError(w http.ResponseWriter, err error) {
 		println("accounts slice internal error: " + err.Error())
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 	}
+}
+
+// scopeOwnerID mirrors resolveOperationOwner(undefined, access) for handlers
+// without a resource row: admins with an explicit filter resolve to the
+// filter, everything else to the caller.
+func scopeOwnerID(access AccessScope) string {
+	if access.IsAdmin {
+		if filter := strings.TrimSpace(access.FilterID); filter != "" && filter != "all" {
+			return filter
+		}
+	}
+	return access.ViewerID
 }
 
 // safeChange mirrors operation-log.service safeChange: sensitive containers
