@@ -1,6 +1,6 @@
 # Bug 记录目录
 
-- [BUG-0171](问题-0171-K2会话接口与多实例状态契约偏离.md)：K2 profile settings、多实例 CAPTCHA/登录防护及登录保护维度仍偏离 Node；其余已证实会话回执、错误映射、cookie 与 Bearer 差异已修复；总体待修复。
+- [BUG-0171](问题-0171-K2会话接口与多实例状态契约偏离.md)：K2 多实例 CAPTCHA/登录防护仍偏离 Node；profile settings、会话回执、错误映射、cookie、Bearer 与登录保护维度已修复；总体待修复。
 - [BUG-0170](问题-0170-K2系统账户创建与管理结果不等价.md)：K2 系统账户创建遗漏默认资源，且 null、选项、回执、日志、缓存和校验结果偏离 Node；待修复。
 - [BUG-0169](问题-0169-K2认证高权限令牌与所有权门禁缺失.md)：K2 缺临时令牌白名单、允许普通管理接口创建 `super_admin`，且缺 owner gate 与 PostgreSQL 超级管理员并发不变量；待修复。
 
