@@ -84,6 +84,13 @@
 - 影响：Go 删除成功后不会触发 Node 所要求的关联记录清理，相关 usage/日志/分片数据可能长期残留。另一方面，在 SQLite 目标表缺失或写入失败时，Go 会回滚已经执行的 API Key 删除并返回 500；Node 会保持删除成功（204）并将清理任务留给 worker 重试，删除结果相反。
 - 结论：这是删除副作用与失败语义的确定性偏离；Go 需要接入同等的 after-commit 清理投递，并按 SQLite/PostgreSQL 保持目标登记的事务边界。
 
+### 11. SQLite 清理目标写入了错误的数据库
+
+- Node 证据：`backend/src/storage/api-key-record-cleanup.ts` 的 SQLite 登记函数使用 `getDatasetDatabase()`；业务库与 dataset 库是独立 SQLite 文件，后台清理从 dataset 库读取 `api_key_record_cleanup_targets`。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/store.go` 的 `Store` 只持有一个 `*sql.DB`（用于 `api_keys` 等业务表），`datasetTable` 在 `pg == false` 时仅返回无前缀表名，`Delete` 因而把清理目标写入业务库连接。M07 测试在同一内存库创建该表，未覆盖生产的双 SQLite 文件边界。
+- 影响：SQLite 生产环境即使删除事务成功，目标也不会出现在 Node/维护侧实际读取的 dataset 数据库；关联 usage/日志/分片记录无法被清理，或因业务库没有该表而直接回滚删除并返回 500。
+- 结论：这是存储边界的确定性偏离；Go 需要为 dataset 目标注入独立数据库句柄（或等价的受控写入端口），不能用业务库的同名表替代。
+
 ### 9. PostgreSQL API Key 写操作缺少 Node 的行锁串行化
 
 - Node 证据：`backend/src/storage/api-key.repository.ts` 的异步 refresh/delete 查询在 PostgreSQL 下追加 `FOR UPDATE`；异步 create 通过 `findPreferredDefaultRouteStrategyReferenceAsync(..., true)` 与 `assertRouteStrategySelectableForApiKeyAsync(..., true)` 锁定策略、绑定和分组相关行。
