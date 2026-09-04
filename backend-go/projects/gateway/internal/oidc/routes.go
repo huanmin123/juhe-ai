@@ -437,7 +437,11 @@ func (d *Deps) postAuthorizeDecision(w http.ResponseWriter, r *http.Request) {
 		d.oidcUnavailable(w)
 		return
 	}
-	body := formBody(r)
+	body, err := formBody(r)
+	if err != nil {
+		d.writeRouteError(w, err)
+		return
+	}
 	transactionID := body.Get("transaction_id")
 	csrfToken := body.Get("csrf_token")
 	decision := body.Get("decision")
@@ -466,6 +470,17 @@ func (d *Deps) postAuthorizeDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	if decision == "deny" {
 		d.redirectWithError(w, r, transaction.RedirectURI, transaction.State, "access_denied")
+		return
+	}
+	// Node re-reads the browser session after consuming the transaction and
+	// answers 401 login_required when the session disappeared in between.
+	session, err = d.browserSession(r)
+	if err != nil {
+		d.writeRouteError(w, err)
+		return
+	}
+	if session == nil {
+		kernel.WriteJSON(w, http.StatusUnauthorized, oauthError("login_required", "请先登录"))
 		return
 	}
 	code, err := d.Store.CreateAuthorizationCode(r.Context(), struct {
@@ -550,7 +565,11 @@ func (d *Deps) postDeviceAuthorization(w http.ResponseWriter, r *http.Request) {
 		d.oidcUnavailable(w)
 		return
 	}
-	body := formBody(r)
+	body, err := formBody(r)
+	if err != nil {
+		d.writeRouteError(w, err)
+		return
+	}
 	clientID := clientIDFromTokenRequest(r, body)
 	var client *Client
 	if clientID != "" {
@@ -667,7 +686,11 @@ func (d *Deps) postDeviceDecision(w http.ResponseWriter, r *http.Request) {
 		d.oidcUnavailable(w)
 		return
 	}
-	body := formBody(r)
+	body, err := formBody(r)
+	if err != nil {
+		d.writeRouteError(w, err)
+		return
+	}
 	userCode := strings.TrimSpace(body.Get("user_code"))
 	csrfToken := body.Get("csrf_token")
 	decision := body.Get("decision")
@@ -712,7 +735,11 @@ func (d *Deps) postToken(w http.ResponseWriter, r *http.Request) {
 		d.oidcUnavailable(w)
 		return
 	}
-	body := formBody(r)
+	body, err := formBody(r)
+	if err != nil {
+		d.writeRouteError(w, err)
+		return
+	}
 	clientID := clientIDFromTokenRequest(r, body)
 	var client *Client
 	if clientID != "" {
@@ -728,11 +755,14 @@ func (d *Deps) postToken(w http.ResponseWriter, r *http.Request) {
 	}
 	grantType := body.Get("grant_type")
 	if grantType == deviceCodeGrantType {
-		deviceCode := body.Get("device_code")
-		if deviceCode == "" {
+		// Node: `typeof body.device_code !== 'string'` — only an absent (or
+		// non-string) device_code is invalid_request; an empty string goes to
+		// the poll path and surfaces as invalid_grant.
+		if !body.Has("device_code") {
 			kernel.WriteJSON(w, http.StatusBadRequest, oauthError("invalid_request", "device_code 参数无效"))
 			return
 		}
+		deviceCode := body.Get("device_code")
 		requestsIDToken, err := d.Store.DeviceAuthorizationRequestsIdToken(r.Context(), client.ClientID, deviceCode)
 		if err != nil {
 			d.writeRouteError(w, err)
@@ -879,7 +909,11 @@ func (d *Deps) postTokenRenew(w http.ResponseWriter, r *http.Request) {
 		d.oidcUnavailable(w)
 		return
 	}
-	body := formBody(r)
+	body, err := formBody(r)
+	if err != nil {
+		d.writeRouteError(w, err)
+		return
+	}
 	currentAccessToken := body.Get("current_access_token")
 	clientID := clientIDFromTokenRequest(r, body)
 	var client *Client
@@ -931,7 +965,11 @@ func (d *Deps) postRevoke(w http.ResponseWriter, r *http.Request) {
 		d.oidcUnavailable(w)
 		return
 	}
-	body := formBody(r)
+	body, err := formBody(r)
+	if err != nil {
+		d.writeRouteError(w, err)
+		return
+	}
 	token := body.Get("token")
 	clientID := clientIDFromTokenRequest(r, body)
 	var client *Client
@@ -1015,21 +1053,33 @@ func (d *Deps) getUserinfo(w http.ResponseWriter, r *http.Request) {
 // Form parsing (express.urlencoded extended:false, limit 32kb).
 // ---------------------------------------------------------------------------
 
-func formBody(r *http.Request) url.Values {
+// formBody parses the x-www-form-urlencoded body with the express.urlencoded
+// `limit: '32kb'` semantics: an oversized body is NOT treated as empty —
+// Node's body-parser fails the request with a 413 error which the router
+// error middleware maps to 500 server_error (see writeRouteError).
+func formBody(r *http.Request) (url.Values, error) {
 	contentType := strings.ToLower(r.Header.Get("Content-Type"))
 	if !strings.Contains(contentType, "application/x-www-form-urlencoded") {
-		return url.Values{}
+		return url.Values{}, nil
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024+1))
-	if err != nil || len(body) > 32*1024 {
-		return url.Values{}
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > 32*1024 {
+		return nil, errFormBodyTooLarge
 	}
 	values, err := url.ParseQuery(string(body))
 	if err != nil {
-		return url.Values{}
+		return url.Values{}, nil
 	}
-	return values
+	return values, nil
 }
+
+// errFormBodyTooLarge mirrors body-parser's entity.too.large: it flows through
+// the generic branch of the route error mapping (500 server_error), exactly
+// like the Node express error middleware.
+var errFormBodyTooLarge = errors.New("request entity too large")
 
 // isValidURLString mirrors z.string().url() for the authorize redirect_uri.
 func isValidURLString(value string) bool {

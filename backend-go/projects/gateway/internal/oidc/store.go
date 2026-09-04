@@ -205,13 +205,22 @@ func requiredTimestampMS(value string) (int64, error) {
 	return parsed.UnixMilli(), nil
 }
 
+// requiredTimestamp mirrors requiredRfc3339Instant: the canonical form is
+// Node's Date.prototype.toISOString(), which always keeps millisecond
+// precision ("2026-01-02T03:04:05.000Z") — RFC3339Nano would drop the
+// trailing ".000" and desynchronize the lexicographic expires_at comparisons.
 func requiredTimestamp(value string) (string, error) {
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
 		return "", errors.New(value + " 必须是带 Z 或数值 offset 的 RFC3339 时间")
 	}
-	return parsed.UTC().Format(time.RFC3339Nano), nil
+	return isoMillis(parsed), nil
 }
+
+// milliDuration converts the Node-style millisecond lifetime constants into a
+// time.Duration. Passing the raw int to time.Add would read it as
+// nanoseconds (120_000ns = 120µs), minting born-expired codes.
+func milliDuration(ms int64) time.Duration { return time.Duration(ms) * time.Millisecond }
 
 func parseStringArray(value string) []string {
 	parsed := []string{}
@@ -353,14 +362,20 @@ func signingKeyFromRow(scan func(...any) error) (*SigningKey, error) {
 
 const signingKeyColumns = `id, kid, private_key_ciphertext, public_jwk_json, status, created_at, retired_at`
 
-// FindActiveSigningKey mirrors findActiveOidcSigningKey.
+// FindActiveSigningKey mirrors findActiveOidcSigningKey: nil (not an error)
+// when no active key exists, so EnsureSigningKey can bootstrap the first key
+// of a fresh deployment.
 func (s *Store) FindActiveSigningKey(ctx context.Context) (*SigningKey, error) {
 	ctx = ensureCtx(ctx)
-	return signingKeyFromRow(func(targets ...any) error {
+	key, err := signingKeyFromRow(func(targets ...any) error {
 		return s.db.QueryRowContext(ctx, s.bind(`SELECT `+signingKeyColumns+`
 			FROM `+s.table("oauth_signing_keys")+` WHERE status = 'active'
 			ORDER BY created_at DESC, id DESC LIMIT 1`)).Scan(targets...)
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return key, err
 }
 
 func signingKeyRotationDue(createdAt string, now time.Time) bool {
@@ -373,6 +388,8 @@ func signingKeyRotationDue(createdAt string, now time.Time) bool {
 
 // EnsureSigningKey mirrors ensureOidcSigningKey: no-op while the active key is
 // young; otherwise retire and insert a fresh RS256 key inside one transaction.
+// An empty key table (FindActiveSigningKey → nil) takes the insert path, which
+// bootstraps the first key of a fresh deployment exactly like Node.
 // The mutex serializes the in-process lazy rotation.
 func (s *Store) EnsureSigningKey(ctx context.Context) (*SigningKey, error) {
 	ctx = ensureCtx(ctx)
@@ -560,14 +577,20 @@ func transactionFromRow(scan func(...any) error, secret string) (*AuthorizationT
 }
 
 // FindAuthorizationTransaction mirrors findAuthorizationTransaction (only
-// uncompleted, unexpired transactions are visible).
+// uncompleted, unexpired transactions are visible). Unknown, completed and
+// expired ids return nil — the authorize route maps that to 400
+// invalid_request "授权请求不存在或已过期".
 func (s *Store) FindAuthorizationTransaction(ctx context.Context, id string) (*AuthorizationTransaction, error) {
 	ctx = ensureCtx(ctx)
-	return transactionFromRow(func(targets ...any) error {
+	transaction, err := transactionFromRow(func(targets ...any) error {
 		return s.db.QueryRowContext(ctx, s.bind(`SELECT id, client_id, redirect_uri, scopes_json, state_ciphertext,
 			code_challenge, expires_at FROM `+s.table("oauth_authorization_transactions")+`
 			WHERE id = ? AND completed_at IS NULL AND expires_at > ?`), id, s.nowISO()).Scan(targets...)
 	}, s.KeyEncryptionSecret)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return transaction, err
 }
 
 // ConsumeAuthorizationTransaction mirrors consumeAuthorizationTransaction:
@@ -625,7 +648,7 @@ func (s *Store) CreateAuthorizationCode(ctx context.Context, input struct {
 }) (string, error) {
 	ctx = ensureCtx(ctx)
 	now := s.nowISO()
-	expiresAt := isoMillis(s.now().Add(grantLifetimeMs))
+	expiresAt := isoMillis(s.now().Add(milliDuration(grantLifetimeMs)))
 	grantID := newUUIDv4()
 	code := randomBase64URLBytes(32)
 	codeID := newUUIDv4()
@@ -648,7 +671,7 @@ func (s *Store) CreateAuthorizationCode(ctx context.Context, input struct {
 		(id, code_hash, client_id, grant_id, redirect_uri, code_challenge, expires_at, consumed_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`),
 		codeID, hashSecret(code), input.ClientID, grantID, input.RedirectURI, input.CodeChallenge,
-		isoMillis(s.now().Add(authorizationCodeLifetimeMs)), now); err != nil {
+		isoMillis(s.now().Add(milliDuration(authorizationCodeLifetimeMs))), now); err != nil {
 		return "", err
 	}
 	if input.Nonce != "" {
@@ -1062,6 +1085,16 @@ type DevicePoll struct {
 	Nonce       string
 }
 
+// intervalEscalationExpr returns the poll slow-down escalation expression.
+// SQLite (Node source) uses the scalar MIN(a, b); PostgreSQL has no two-arg
+// min and needs LEAST.
+func (s *Store) intervalEscalationExpr() string {
+	if s.pg {
+		return "LEAST(interval_seconds + 5, 60)"
+	}
+	return "MIN(interval_seconds + 5, 60)"
+}
+
 // PollDeviceAuthorization mirrors pollDeviceAuthorization (slow-down
 // escalation, expiry transition, one-time consumption).
 func (s *Store) PollDeviceAuthorization(ctx context.Context, clientID, deviceCode string) (*DevicePoll, error) {
@@ -1122,7 +1155,7 @@ func (s *Store) PollDeviceAuthorization(ctx context.Context, clientID, deviceCod
 		lastPolledMs, err := requiredTimestampMS(row.lastPolledAt.String)
 		if err == nil && lastPolledMs+int64(intervalSeconds)*1_000 > nowMs {
 			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("oauth_device_authorizations")+`
-				SET interval_seconds = MIN(interval_seconds + 5, 60), last_polled_at = ?
+				SET interval_seconds = `+s.intervalEscalationExpr()+`, last_polled_at = ?
 				WHERE id = ? AND status IN ('pending', 'approved')`), now, row.id); err != nil {
 				return nil, err
 			}
@@ -1169,7 +1202,7 @@ func (s *Store) PollDeviceAuthorization(ctx context.Context, clientID, deviceCod
 		}
 	}
 	grantID := newUUIDv4()
-	grantExpiresAt := isoMillis(s.now().Add(grantLifetimeMs))
+	grantExpiresAt := isoMillis(s.now().Add(milliDuration(grantLifetimeMs)))
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("oauth_grants")+`
 		(id, client_id, system_account_id, scopes_json, expires_at, revoked_at, created_at)
 		VALUES (?, ?, ?, ?, ?, NULL, ?)`),

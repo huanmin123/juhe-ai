@@ -11,6 +11,7 @@ package delegated
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -34,83 +35,40 @@ const delegatedPrefix = "juhe:"
 // Prefix is the mounted route prefix.
 const Prefix = "/__aidelegated__/v1"
 
-// ProfileStore reads group binding profiles for delegated dispatch.
-type ProfileStore interface {
-	GroupBindingPreview(groupID string) (priority int, weight int, err error)
-}
-
-// ApiKeyPatchStore updates an API key record.
-type ApiKeyPatchStore interface {
-	PatchKey(apiKeyID string, fields map[string]any) error
-}
-
-// SettingReader reads a system setting by key.
+// SettingReader reads a raw system setting value_json by key ("" = missing).
 type SettingReader interface {
 	SettingValue(key string) (string, error)
 }
 
-// UsageReader reads delegated usage aggregates.
+// UsageReader reads runtime-state values for the request-limit snapshot
+// (Node: redis pipeline HGET <bucket.redisKey> __total under a 750ms
+// deadline; any failure degrades the snapshot to usageStatus "unavailable").
 type UsageReader interface {
-	DelegatedUsage(authorizationID string, start, end string) (map[string]any, error)
+	RequestLimitTotal(ctx context.Context, key string) (value string, err error)
 }
 
-// Deps bundles the P03 collaborators. Every resource store is optional at
-// wiring time only in the sense that the corresponding routes report the
-// Node contract against whatever is mounted; the full-flow tests wire all of
-// them over one SQLite database.
-func (d *Deps) getRequestLimits(r *http.Request) (int, int) {
-	return parseIntDefault(r.URL.Query().Get("page"), 1), parseIntDefault(r.URL.Query().Get("pageSize"), 50)
-}
-
-func parseIntDefault(raw string, fallback int) int {
-	if raw == "" {
-		return fallback
-	}
-	v, err := strconv.Atoi(raw)
-	if err != nil || v < 1 {
-		return fallback
-	}
-	return v
-}
-
-func accountStringValue(m map[string]any, key string) string {
-	if v, ok := m[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
-func (d *Deps) findProfileByID(ctx context.Context, id string) (map[string]any, error) {
-	if d.Profile == nil {
-		return nil, nil
-	}
-	return nil, nil // delegated profile reads require the profiles store
-}
-
-func (d *Deps) updateProfileDisplayName(ctx context.Context, id, name string) (map[string]any, error) {
-	if d.Profile == nil {
-		return nil, nil
-	}
-	return nil, nil // delegated profile updates require the profiles store
-}
-
-func (d *Deps) delegatedRequestLimits(r *http.Request) (int, int) {
-	return 1, 50
-}
-
+// Deps bundles the P03 collaborators. DB backs the delegated-local reads and
+// writes (profile, api-key patch, providers precheck, inherited-account
+// filter); Settings feeds the request-limits snapshot; Usage is the runtime
+// state reader. Every resource store is optional at wiring time only in the
+// sense that the corresponding routes report the Node contract against
+// whatever is mounted; the full-flow tests wire all of them over one SQLite
+// database.
 type Deps struct {
 	Tokens     *oidc.Store
 	Limiter    *oidc.ProtocolRateLimiter
-	Profile    *ProfileStore
 	Groups     *groups.Store
 	Strategies *routestrategies.Store
 	ApiKeys    *apikeys.Store
-	// PatchApiKeys adapts patchApiKeyAsync for the delegated subset
-	// (name/status/routeStrategyId); nil keeps PATCH /api-keys/{id} unwired.
 	AiAccounts *accounts.Store
+	DB         *sql.DB
+	PGDialect  bool
 	Settings   SettingReader
 	Usage      UsageReader
-	Now        func() time.Time
+	// RedisNamespace mirrors runtimeConfig.redis.namespace for the
+	// request-limit bucket keys (empty keeps the "juhe" default).
+	RedisNamespace string
+	Now            func() time.Time
 }
 
 // Mount wires the delegated route family (Node app.use('/__aidelegated__/v1',
@@ -137,12 +95,10 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("PATCH "+Prefix+"/route-strategies/{id}", wrap("route_strategies.write", d.patchRouteStrategy))
 	k.Register("DELETE "+Prefix+"/route-strategies/{id}", wrap("route_strategies.write", d.deleteRouteStrategy))
 	k.Register("GET "+Prefix+"/api-keys", wrap("api_keys.read", d.listApiKeys))
+	k.Register("PATCH "+Prefix+"/api-keys/{id}", wrap("api_keys.write", d.patchApiKey))
 	k.Register("GET "+Prefix+"/ai-accounts", wrap("ai_accounts.read", d.listAiAccounts))
 	k.Register("PATCH "+Prefix+"/ai-accounts/{id}", wrap("ai_accounts.write", d.patchAiAccount))
-	k.Register("GET "+Prefix+"/request-limits", wrap("request_limits.read", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		page, pageSize := d.getRequestLimits(r)
-		kernel.WriteOK(w, map[string]any{"page": page, "pageSize": pageSize}, "")
-	})))
+	k.Register("GET "+Prefix+"/request-limits", wrap("request_limits.read", d.getRequestLimitsSnapshot))
 }
 
 // NewDelegatedRateLimiter builds the shared protocol limiter for tests and
@@ -274,9 +230,12 @@ func oauthError(errorCode, description string) map[string]any {
 // Positive query integer (positiveQueryInteger).
 // ---------------------------------------------------------------------------
 
+// digitsOnly compiles once for every query parse (Node inline /@^\d+$@/).
+var digitsOnly = regexp.MustCompile(`^\d+$`)
+
 func positiveQueryInteger(values url.Values, name string) (int, bool) {
 	text := strings.TrimSpace(values.Get(name))
-	if text == "" || !regexp.MustCompile(`^\d+$`).MatchString(text) {
+	if text == "" || !digitsOnly.MatchString(text) {
 		return 0, false
 	}
 	parsed, err := strconv.Atoi(text)
@@ -305,9 +264,14 @@ func (d *Deps) getProfile(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusNotFound, "用户不存在")
 		return
 	}
-	kernel.WriteOK(w, profileDTO(accountStringValue(account, "username"), accountStringValue(account, "displayName")), "")
+	kernel.WriteOK(w, profileDTO(account.Username, account.DisplayName), "")
 }
 
+// patchProfile mirrors PATCH /profile: the zod profilePatchSchema layer
+// (strict, displayName string trim→min(1), then the .trim() transform feeds
+// the trimmed value to updateSystemAccountAsync). Blank input fails the
+// schema with the zod copy; padded input trims to success; interior
+// whitespace is rejected by the store's normalizeRequiredText (409).
 func (d *Deps) patchProfile(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	if !kernel.DecodeJSON(w, r, &body) {
@@ -315,28 +279,31 @@ func (d *Deps) patchProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, has := body["displayName"]
 	if !has {
-		kernel.WriteBadRequest(w, "用户资料参数无效")
+		kernel.WriteBadRequest(w, zodRequired)
 		return
 	}
 	text, isString := raw.(string)
 	if !isString {
-		kernel.WriteBadRequest(w, "用户资料参数无效")
+		kernel.WriteBadRequest(w, zodTypeError(raw))
 		return
 	}
-	for key := range body {
-		if key != "displayName" {
-			kernel.WriteBadRequest(w, "用户资料参数无效")
-			return
+	if len(body) > 1 {
+		var unknown []string
+		for key := range body {
+			if key != "displayName" {
+				unknown = append(unknown, key)
+			}
 		}
+		kernel.WriteBadRequest(w, zodUnrecognizedKeys(unknown...))
+		return
 	}
 	trimmed := strings.TrimSpace(text)
-	systemAccountID, _ := access(r)
-	displayName, err := normalizeDisplayName(text, trimmed)
-	if err != nil {
-		kernel.WriteError(w, http.StatusConflict, err.Error())
+	if trimmed == "" {
+		kernel.WriteBadRequest(w, zodBlank)
 		return
 	}
-	account, err := d.updateProfileDisplayName(r.Context(), systemAccountID, displayName)
+	systemAccountID, _ := access(r)
+	account, err := d.updateProfileDisplayName(r.Context(), systemAccountID, trimmed)
 	if err != nil {
 		kernel.WriteError(w, http.StatusConflict, errorText(err, "修改显示名称失败"))
 		return
@@ -345,18 +312,7 @@ func (d *Deps) patchProfile(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusNotFound, "用户不存在")
 		return
 	}
-	kernel.WriteOK(w, profileDTO(accountStringValue(account, "username"), accountStringValue(account, "displayName")), "")
-}
-
-// normalizeDisplayName mirrors normalizeRequiredText(value, '用户名称').
-func normalizeDisplayName(raw, trimmed string) (string, error) {
-	if trimmed == "" {
-		return "", errors.New("用户名称不能为空")
-	}
-	if raw != trimmed || hasWhitespace(trimmed) {
-		return "", errors.New("用户名称不能包含空格")
-	}
-	return trimmed, nil
+	kernel.WriteOK(w, profileDTO(account.Username, account.DisplayName), "")
 }
 
 var whitespacePattern = regexp.MustCompile(`\s`)
@@ -561,6 +517,17 @@ func (d *Deps) createGroup(w http.ResponseWriter, r *http.Request) {
 	input, ok := parseGroupMutation(body)
 	if !ok {
 		kernel.WriteBadRequest(w, "分组参数无效")
+		return
+	}
+	// Node routes precheck the provider before the store call and render the
+	// merged copy for both unknown and disabled codes.
+	enabled, err := d.providerEnabled(r.Context(), input.ProviderCode)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if !enabled {
+		kernel.WriteBadRequest(w, "供应商不存在或已停用")
 		return
 	}
 	created, err := d.Groups.Create(r.Context(), groups.MutationInput{
@@ -816,21 +783,21 @@ func routeStrategyListDTO(item routestrategies.ListItem) map[string]any {
 	return dto
 }
 
+// groupBindingPreview mirrors routeStrategyGroupBindingPreview
+// (route-strategy.repository.ts): id/groupId/groupName/providerCode/status/
+// groupEnabled only — the Node preview Pick carries no priority/weight.
 func groupBindingPreview(previews []routestrategies.GroupBindingPreview) []map[string]any {
 	out := make([]map[string]any, 0, len(previews))
 	for _, preview := range previews {
 		entry := map[string]any{
-			"id": preview.ID, "groupId": preview.GroupID, "priority": 0,
-			"weight": 0, "status": preview.Status,
+			"id": preview.ID, "groupId": preview.GroupID,
+			"status": preview.Status, "groupEnabled": preview.GroupEnabled,
 		}
 		if preview.GroupName != nil {
 			entry["groupName"] = *preview.GroupName
 		}
 		if preview.ProviderCode != nil {
 			entry["providerCode"] = *preview.ProviderCode
-		}
-		if true {
-			entry["groupEnabled"] = preview.GroupEnabled
 		}
 		out = append(out, entry)
 	}
@@ -949,6 +916,7 @@ type strategyMutationInput struct {
 	Bindings     []strategyBindingInput
 	NormalConfig map[string]any
 	HybridConfig map[string]any
+	HasName      bool
 	HasBindings  bool
 	HasNormal    bool
 	HasHybrid    bool
@@ -956,24 +924,36 @@ type strategyMutationInput struct {
 
 var strategyModes = map[string]bool{"normal": true, "hybrid_smart": true, "weighted": true, "failover": true, "round_robin": true}
 
-// parseStrategyMutation mirrors routeStrategyMutationSchema (strict, plus the
-// create refine requiring at least one binding).
+// parseStrategyMutation mirrors routeStrategyMutationSchema (strict) with the
+// two create refinements: POST requires name (min 1 after trim) and at least
+// one binding (策略路由至少需要绑定一个分组); PATCH uses the partial schema
+// where every field — including name — is optional.
 func parseStrategyMutation(body map[string]any, create bool) (*strategyMutationInput, bool, string) {
-	if !strictBody(body, "name", "description", "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig", "expectedUpdatedAt") {
+	allowed := []string{"name", "description", "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig"}
+	if !create {
+		allowed = append(allowed, "expectedUpdatedAt")
+	}
+	if !strictBody(body, allowed...) {
 		return nil, false, "策略路由参数无效"
 	}
 	input := &strategyMutationInput{}
-	name, ok := bodyStringField(body, "name")
-	if !ok || strings.TrimSpace(name) == "" {
+	if value, exists := body["name"]; exists {
+		text, isString := value.(string)
+		if !isString || strings.TrimSpace(text) == "" {
+			return nil, false, "策略路由参数无效"
+		}
+		input.HasName = true
+		input.Name = strings.TrimSpace(text)
+	} else if create {
 		return nil, false, "策略路由参数无效"
 	}
-	input.Name = strings.TrimSpace(name)
 	description, present, ok := bodyOptionalString(body, "description")
 	if !ok || (present && len([]rune(description)) > 200) {
 		return nil, false, "策略路由参数无效"
 	}
 	if present {
-		input.Description = &description
+		trimmed := strings.TrimSpace(description)
+		input.Description = &trimmed
 	}
 	if value, exists := body["mode"]; exists && value != nil {
 		text, isString := value.(string)
@@ -1077,8 +1057,14 @@ func (d *Deps) ownStrategyGroups(r *http.Request, bindings []strategyBindingInpu
 }
 
 // strategyMutation converts the parsed payload to the routestrategies input.
-func strategyMutation(input *strategyMutationInput) (routestrategies.MutationInput, bool) {
-	mutation := routestrategies.MutationInput{Name: &input.Name}
+// The projection is faithful: every present field reaches the store (Node
+// patchRouteStrategyAsync validates empty patches at the schema layer, which
+// the routes already enforce via the 请提供要修改的 refine).
+func strategyMutation(input *strategyMutationInput) routestrategies.MutationInput {
+	mutation := routestrategies.MutationInput{}
+	if input.HasName {
+		mutation.Name = &input.Name
+	}
 	if input.Description != nil {
 		mutation.Description = input.Description
 		mutation.HasDescription = true
@@ -1086,18 +1072,48 @@ func strategyMutation(input *strategyMutationInput) (routestrategies.MutationInp
 	mutation.Mode = input.Mode
 	mutation.Status = input.Status
 	if input.HasBindings {
-		for _, binding := range input.Bindings {
+		mutation.HasBindings = true
+		for index, binding := range input.Bindings {
 			status := binding.Status
 			if status == "" {
 				status = "active"
 			}
+			priority := binding.Priority
+			if priority == nil {
+				// Node store default: the binding's 1-based list position
+				// (M06 parseBindingItem fallback index+1; the store treats a
+				// nil priority as 0, which fails the binding integrity guard).
+				fallback := index + 1
+				priority = &fallback
+			}
 			mutation.Bindings = append(mutation.Bindings, routestrategies.BindingInput{
-				GroupID: binding.GroupID, Priority: binding.Priority, Weight: binding.Weight, Status: status,
+				GroupID: binding.GroupID, Priority: priority, Weight: binding.Weight, Status: status,
 			})
 		}
 	}
-	// Routing-config projection is owned by the M06 slice inputs.
-	return mutation, len(mutation.Bindings) > 0 || mutation.HasNormalConfig || mutation.HasHybridConfig
+	if input.HasNormal {
+		mutation.HasNormalConfig = true
+		mutation.NormalConfigRaw = normalConfigRaw(input)
+	}
+	if input.HasHybrid {
+		mutation.HasHybridConfig = true
+		mutation.HybridConfigRaw = hybridConfigRaw(input)
+	}
+	return mutation
+}
+
+func normalConfigRaw(input *strategyMutationInput) any {
+	if input.NormalConfig == nil {
+		return nil
+	}
+	return input.NormalConfig
+}
+
+func hybridConfigRaw(input *strategyMutationInput) any {
+	if input.HybridConfig == nil {
+		return nil
+	}
+	return input.HybridConfig
 }
 
 func (d *Deps) createRouteStrategy(w http.ResponseWriter, r *http.Request) {
@@ -1114,12 +1130,7 @@ func (d *Deps) createRouteStrategy(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "策略路由只能绑定自己的分组")
 		return
 	}
-	mutation, ok := strategyMutation(input)
-	if !ok {
-		kernel.WriteBadRequest(w, "策略路由参数无效")
-		return
-	}
-	created, err := d.Strategies.Create(r.Context(), mutation, strategyAccess(r))
+	created, err := d.Strategies.Create(r.Context(), strategyMutation(input), strategyAccess(r))
 	if err != nil {
 		d.writeStrategyMutationError(w, err, "创建策略路由失败")
 		return
@@ -1129,8 +1140,17 @@ func (d *Deps) createRouteStrategy(w http.ResponseWriter, r *http.Request) {
 
 func (d *Deps) writeStrategyMutationError(w http.ResponseWriter, err error, fallback string) {
 	var conflict *routestrategies.ConflictError
+	var versionConflict *routestrategies.VersionConflictError
 	var validation *routestrategies.ValidationError
 	message := errorText(err, fallback)
+	if errors.As(err, &versionConflict) {
+		// Node: 409 {message, currentUpdatedAt} (RouteStrategyVersionConflictError).
+		kernel.WriteJSON(w, http.StatusConflict, struct {
+			Message          string `json:"message"`
+			CurrentUpdatedAt string `json:"currentUpdatedAt"`
+		}{versionConflict.Message, versionConflict.CurrentUpdatedAt})
+		return
+	}
 	if errors.As(err, &conflict) {
 		kernel.WriteError(w, http.StatusConflict, conflict.Message)
 		return
@@ -1194,12 +1214,7 @@ func (d *Deps) patchRouteStrategy(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "策略路由只能绑定自己的分组")
 		return
 	}
-	mutation, ok := strategyMutation(input)
-	if !ok {
-		kernel.WriteBadRequest(w, "策略路由参数无效")
-		return
-	}
-	outcome, err := d.Strategies.Patch(r.Context(), id, mutation, expectedUpdatedAt, strategyAccess)
+	outcome, err := d.Strategies.Patch(r.Context(), id, strategyMutation(input), expectedUpdatedAt, strategyAccess)
 	if err != nil {
 		d.writeStrategyMutationError(w, err, "更新策略路由失败")
 		return
@@ -1287,8 +1302,12 @@ func (d *Deps) listApiKeys(w http.ResponseWriter, r *http.Request) {
 // AI accounts (accounts.Store reuse, owner scope).
 // ---------------------------------------------------------------------------
 
-func isOwnedPhysicalAccount(item accounts.ListItem) bool {
-	return item.AccessType == "owner"
+// isOwnedPhysicalAccount mirrors isOwnedPhysicalAccount: owner access and
+// not an authorization instance inherited from another physical account
+// (authorizationInstanceSourceAccountId absent). inherited is the delegated
+// probe of the accounts.authorization_instance_source_account_id column.
+func isOwnedPhysicalAccount(item accounts.ListItem, inherited bool) bool {
+	return item.AccessType == "owner" && !inherited
 }
 
 func aiAccountDTO(item accounts.ListItem) map[string]any {
@@ -1333,9 +1352,18 @@ func (d *Deps) listAiAccounts(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
+	ids := make([]string, 0, len(result.Items))
+	for _, item := range result.Items {
+		ids = append(ids, item.ID)
+	}
+	inherited, err := d.inheritedSourceAccountIDs(r.Context(), ids)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
 	items := []map[string]any{}
 	for _, item := range result.Items {
-		if !isOwnedPhysicalAccount(item) {
+		if !isOwnedPhysicalAccount(item, inherited[item.ID]) {
 			continue
 		}
 		items = append(items, aiAccountDTO(item))
@@ -1398,9 +1426,14 @@ func (d *Deps) patchAiAccount(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
+	inherited, err := d.inheritedSourceAccountIDs(r.Context(), []string{id})
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
 	owned := false
 	for _, item := range page.Items {
-		if item.ID == id && isOwnedPhysicalAccount(item) {
+		if item.ID == id && isOwnedPhysicalAccount(item, inherited[item.ID]) {
 			owned = true
 			break
 		}
@@ -1411,9 +1444,15 @@ func (d *Deps) patchAiAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	changed, err := d.AiAccounts.Patch(r.Context(), id, input, scope)
 	if err != nil {
+		var revision *accounts.RevisionConflictError
+		if errors.As(err, &revision) {
+			// Node: AccountManagementPatchRevisionConflictError → 409.
+			kernel.WriteError(w, http.StatusConflict, revision.Message)
+			return
+		}
 		var conflict *accounts.ConflictError
 		if errors.As(err, &conflict) {
-			kernel.WriteError(w, http.StatusConflict, "账户配置已被其他操作更新，请刷新后重试")
+			kernel.WriteError(w, http.StatusConflict, conflict.Message)
 			return
 		}
 		message := errorText(err, "更新 AI 账户失败")
@@ -1434,7 +1473,7 @@ func (d *Deps) patchAiAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, item := range after.Items {
-		if item.ID == id && isOwnedPhysicalAccount(item) {
+		if item.ID == id && isOwnedPhysicalAccount(item, inherited[item.ID]) {
 			kernel.WriteOK(w, aiAccountDTO(item), "")
 			return
 		}
