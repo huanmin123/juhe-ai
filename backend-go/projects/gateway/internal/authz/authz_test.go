@@ -530,7 +530,7 @@ func TestPatchExpiresAtContractAndRuntimeProjection(t *testing.T) {
 		t.Fatalf("past expiry state = %+v err=%v", pastResult, err)
 	}
 	cleared, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{ExpiresAtSet: true}, pastResult.Result.UpdatedAt, "owner")
-	if err != nil || cleared.Status != "updated" || cleared.Result.ExpiresAt != nil {
+	if err != nil || cleared.Status != "updated" || cleared.Result.ExpiresAt != nil || cleared.Result.Status != StatusActive {
 		t.Fatalf("explicit null clear = %+v err=%v", cleared, err)
 	}
 	if err := f.db.QueryRow(`SELECT expires_at FROM resource_authorizations WHERE resource_id = 'grp_patch_expiry'`).Scan(&runtimeExpiry); err != nil {
@@ -538,6 +538,46 @@ func TestPatchExpiresAtContractAndRuntimeProjection(t *testing.T) {
 	}
 	if runtimeExpiry.Valid {
 		t.Fatalf("runtime expiry after clear = %+v", runtimeExpiry)
+	}
+}
+
+func TestPatchTeamExpiryDoesNotReviveRemovedMember(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "member1", "active")
+	f.seedTeamWithMember(t, "team_patch", "member1")
+	f.seedGroup(t, "grp_team_patch", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{ResourceType: "group", ResourceID: "grp_team_patch", GranteeType: "team", GranteeID: "team_patch"}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runtimeID string
+	if err := f.db.QueryRow(`SELECT id FROM resource_authorizations WHERE resource_id = 'grp_team_patch' AND grantee_system_account_id = 'member1'`).Scan(&runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE system_team_members SET status = 'removed' WHERE team_id = 'team_patch' AND system_account_id = 'member1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE resource_authorization_sources SET status = 'revoked' WHERE authorization_id = ? AND source_type = 'team'`, runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE resource_authorizations SET status = 'revoked' WHERE id = ?`, runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	future := f.now.Add(time.Hour).Format(time.RFC3339Nano)
+	updated, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{ExpiresAt: &future}, created.Item.UpdatedAt, "owner")
+	if err != nil || updated.Status != "updated" {
+		t.Fatalf("team expiry patch = %+v err=%v", updated, err)
+	}
+	var sourceStatus, runtimeStatus string
+	if err := f.db.QueryRow(`SELECT status FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = 'team'`, runtimeID).Scan(&sourceStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations WHERE id = ?`, runtimeID).Scan(&runtimeStatus); err != nil {
+		t.Fatal(err)
+	}
+	if sourceStatus != "revoked" || runtimeStatus != StatusRevoked {
+		t.Fatalf("removed member revived: source=%s runtime=%s", sourceStatus, runtimeStatus)
 	}
 }
 

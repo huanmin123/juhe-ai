@@ -558,18 +558,20 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 		return nil, failf("到期授权恢复时请同时调整过期时间")
 	}
 	nextStatus := grant.Status
+	expiryExpired := false
 	if hasExpiresAtInput && nextExpiresAt != nil {
 		parsed, valid := parseAuthorizationRFC3339Instant(*nextExpiresAt)
 		if valid && !parsed.After(nowTime) {
+			expiryExpired = true
 			nextStatus = StatusExpired
 		} else if grant.Status == StatusExpired {
 			nextStatus = StatusActive
 		}
 	}
-	if nextStatus != StatusExpired && (requestedStatus == StatusActive || requestedStatus == StatusPaused) {
+	if !expiryExpired && (requestedStatus == StatusActive || requestedStatus == StatusPaused) {
 		nextStatus = requestedStatus
 	}
-	if grant.Status == StatusExpired && hasExpiresAtInput && nextStatus != StatusExpired && requestedStatus == "" {
+	if grant.Status == StatusExpired && hasExpiresAtInput && !expiryExpired && requestedStatus == "" {
 		nextStatus = StatusActive
 	}
 	if hasExpiresAtInput && nextExpiresAt != nil {
@@ -815,7 +817,11 @@ func (s *Store) resolveRuntimeIDs(ctx context.Context, tx *sql.Tx, grant *grantR
 	} else if grant.GranteeTeamID.Valid {
 		rows, err = tx.QueryContext(ctx, s.bind(`SELECT DISTINCT r.id FROM `+s.table("resource_authorizations")+` r
 			INNER JOIN `+s.table("resource_authorization_sources")+` s ON s.authorization_id = r.id
+			INNER JOIN `+s.table("system_team_members")+` m ON m.team_id = s.source_team_id
+				AND m.system_account_id = r.grantee_system_account_id AND m.status = 'active'
+			INNER JOIN `+s.table("system_accounts")+` a ON a.id = m.system_account_id AND a.status = 'active'
 			WHERE s.source_type = 'team' AND s.source_team_id = ?
+				AND r.resource_owner_system_account_id <> m.system_account_id
 				AND r.resource_type = ? AND r.resource_id = ?`),
 			grant.GranteeTeamID.String, grant.ResourceType, grant.ResourceID)
 	} else {

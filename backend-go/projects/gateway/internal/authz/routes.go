@@ -488,7 +488,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		action = "update_expire"
 		summary = "更新授权有效期"
 	}
-	if d.Sink != nil {
+	if outcome.Status == "updated" && d.Sink != nil {
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
 			Mode: "admin", Module: "authorizations", Action: action,
