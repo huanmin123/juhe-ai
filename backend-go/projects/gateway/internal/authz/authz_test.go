@@ -183,6 +183,35 @@ func TestCreateGroupAuthorizationLifecycle(t *testing.T) {
 	}
 }
 
+func TestCreateLimitsNormalizeAndValidate(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_create_limits", "owner")
+	limits := `{"hourly":{"enabled":true,"hours":24.0,"limit":2},"daily":{"enabled":true,"limit":1.2345670}}`
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_create_limits",
+		GranteeType: "system_account", GranteeID: "grantee", LimitsJSON: &limits,
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := f.db.QueryRow(`SELECT limits_json FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != `{"hourly":{"enabled":true,"hours":24,"limit":2},"daily":{"enabled":true,"limit":1.234567}}` {
+		t.Fatalf("stored limits = %s", stored)
+	}
+	invalid := `{"daily":{"enabled":true,"limit":0.0000001}}`
+	if _, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_create_limits",
+		GranteeType: "system_account", GranteeID: "another", LimitsJSON: &invalid,
+	}, "owner"); err == nil || !strings.Contains(err.Error(), "最多支持 6 位小数") {
+		t.Fatalf("invalid create limits error = %v", err)
+	}
+}
+
 func TestAuthorizationsProcessingTTLMatchesNode(t *testing.T) {
 	if authorizationsProcessingTTL != 120*time.Second {
 		t.Fatalf("authorizations processing TTL = %s, want 120s", authorizationsProcessingTTL)
@@ -603,6 +632,51 @@ func TestPatchActiveRevalidatesExistingExpiry(t *testing.T) {
 	active := StatusActive
 	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &active}, pausedResult.Result.UpdatedAt, "owner"); err == nil || !strings.Contains(err.Error(), "授权到期时间不能早于当前时间") {
 		t.Fatalf("active revalidation error = %v", err)
+	}
+}
+
+func TestPatchLimitsNormalizesAndProjectsRuntime(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_patch_limits", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{ResourceType: "group", ResourceID: "grp_patch_limits", GranteeType: "system_account", GranteeID: "grantee"}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := `{"daily":{"enabled":true,"limit":1.2345670},"hourly":{"enabled":true,"hours":24.0,"limit":2}}`
+	updated, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{LimitsJSON: &limits, LimitsSet: true}, created.Item.UpdatedAt, "owner")
+	if err != nil || updated.Status != "updated" || updated.Result.Limits["daily"] == nil {
+		t.Fatalf("limits patch = %+v err=%v", updated, err)
+	}
+	var grantLimits, runtimeLimits sql.NullString
+	if err := f.db.QueryRow(`SELECT limits_json FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&grantLimits); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.QueryRow(`SELECT limits_json FROM resource_authorizations WHERE resource_id = 'grp_patch_limits'`).Scan(&runtimeLimits); err != nil {
+		t.Fatal(err)
+	}
+	if !grantLimits.Valid || grantLimits.String != runtimeLimits.String || !strings.Contains(grantLimits.String, `"daily":{"enabled":true,"limit":1.234567}`) {
+		t.Fatalf("limits projection grant=%+v runtime=%+v", grantLimits, runtimeLimits)
+	}
+	unchanged, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{LimitsJSON: &limits, LimitsSet: true}, updated.Result.UpdatedAt, "owner")
+	if err != nil || unchanged.Status != "unchanged" {
+		t.Fatalf("same limits patch = %+v err=%v", unchanged, err)
+	}
+	invalid := `{"daily":{"enabled":false,"limit":1}}`
+	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{LimitsJSON: &invalid, LimitsSet: true}, updated.Result.UpdatedAt, "owner"); err == nil {
+		t.Fatal("disabled quota limit unexpectedly accepted")
+	}
+	empty := `{}`
+	cleared, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{LimitsJSON: &empty, LimitsSet: true}, updated.Result.UpdatedAt, "owner")
+	if err != nil || cleared.Status != "updated" {
+		t.Fatalf("empty limits clear = %+v err=%v", cleared, err)
+	}
+	if err := f.db.QueryRow(`SELECT limits_json FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&grantLimits); err != nil {
+		t.Fatal(err)
+	}
+	if grantLimits.Valid {
+		t.Fatalf("empty limits stored as non-null: %+v", grantLimits)
 	}
 }
 

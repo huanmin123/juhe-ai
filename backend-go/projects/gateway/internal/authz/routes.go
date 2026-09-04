@@ -219,14 +219,14 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		actor = auth.SystemAccountID
 	}
 	var body struct {
-		ResourceType  *string        `json:"resourceType"`
-		ResourceID    *string        `json:"resourceId"`
-		GranteeType   *string        `json:"granteeType"`
-		GranteeID     *string        `json:"granteeId"`
-		TargetGroupID *string        `json:"targetGroupId"`
-		Remark        *string        `json:"remark"`
-		ExpiresAt     *string        `json:"expiresAt"`
-		Limits        map[string]any `json:"limits"`
+		ResourceType  *string         `json:"resourceType"`
+		ResourceID    *string         `json:"resourceId"`
+		GranteeType   *string         `json:"granteeType"`
+		GranteeID     *string         `json:"granteeId"`
+		TargetGroupID *string         `json:"targetGroupId"`
+		Remark        *string         `json:"remark"`
+		ExpiresAt     *string         `json:"expiresAt"`
+		Limits        json.RawMessage `json:"limits"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
@@ -262,11 +262,12 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		input.TargetGroupID = body.TargetGroupID
 	}
 	if body.Limits != nil {
-		encoded, err := jsonMarshal(body.Limits)
-		if err == nil {
-			text := string(encoded)
-			input.LimitsJSON = &text
+		if strings.TrimSpace(string(body.Limits)) == "null" {
+			kernel.WriteBadRequest(w, "授权参数不合法")
+			return
 		}
+		text := string(body.Limits)
+		input.LimitsJSON = &text
 	}
 	result, err := d.Store.Create(r.Context(), input, actor)
 	if err != nil {
@@ -430,7 +431,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		ExpectedUpdatedAt string          `json:"expectedUpdatedAt"`
 		Status            *string         `json:"status"`
 		ExpiresAt         json.RawMessage `json:"expiresAt"`
-		Limits            map[string]any  `json:"limits"`
+		Limits            json.RawMessage `json:"limits"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
@@ -449,7 +450,13 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		}
 		expiresAt = &value
 	}
-	if body.Status == nil && !expiresAtSet && body.Limits == nil {
+	limitsSet := body.Limits != nil
+	var limitsJSON *string
+	if limitsSet && string(body.Limits) != "null" {
+		value := string(body.Limits)
+		limitsJSON = &value
+	}
+	if body.Status == nil && !expiresAtSet && !limitsSet {
 		kernel.WriteBadRequest(w, "请提供要修改的授权内容")
 		return
 	}
@@ -457,18 +464,16 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		kernel.WriteBadRequest(w, "修改授权参数不合法")
 		return
 	}
-	input := PatchInput{Status: body.Status, ExpiresAt: expiresAt, ExpiresAtSet: expiresAtSet}
-	if body.Limits != nil {
-		encoded, err := jsonMarshal(body.Limits)
-		if err == nil {
-			text := string(encoded)
-			input.LimitsJSON = &text
-		}
-	}
+	input := PatchInput{Status: body.Status, ExpiresAt: expiresAt, ExpiresAtSet: expiresAtSet, LimitsJSON: limitsJSON, LimitsSet: limitsSet}
 	access := d.accessFor(r, false)
 	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, body.ExpectedUpdatedAt,
 		auth.SystemAccountID, access.FilterID)
 	if err != nil {
+		var fail *Fail
+		if errorsAsFail(err, &fail) {
+			kernel.WriteBadRequest(w, fail.Message)
+			return
+		}
 		kernel.WriteBadRequest(w, "修改授权失败")
 		return
 	}
@@ -499,7 +504,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 	}
 	kernel.WriteOK(w, map[string]any{
 		"id": outcome.Result.ID, "status": outcome.Result.Status,
-		"expiresAt": outcome.Result.ExpiresAt, "limits": body.Limits,
+		"expiresAt": outcome.Result.ExpiresAt, "limits": outcome.Result.Limits,
 		"updatedAt": outcome.Result.UpdatedAt,
 	}, "")
 }

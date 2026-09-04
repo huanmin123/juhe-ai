@@ -164,6 +164,32 @@ func HasEnabledRequestQuotaLimit(limits RequestQuotaLimits) bool {
 		(limits.Total != nil && limits.Total.Enabled)
 }
 
+// RequestQuotaLimitsJSON mirrors requestQuotaLimitsJson. It emits the
+// canonical Node property order and represents an empty limits object as SQL
+// NULL (ok=false).
+func RequestQuotaLimitsJSON(limits RequestQuotaLimits) (value string, ok bool) {
+	if !HasEnabledRequestQuotaLimit(limits) {
+		return "", false
+	}
+	encoded, err := json.Marshal(struct {
+		Hourly  *HourlyQuotaLimit `json:"hourly,omitempty"`
+		Daily   *QuotaLimit       `json:"daily,omitempty"`
+		Weekly  *QuotaLimit       `json:"weekly,omitempty"`
+		Monthly *QuotaLimit       `json:"monthly,omitempty"`
+		Total   *QuotaLimit       `json:"total,omitempty"`
+	}{
+		Hourly:  limits.Hourly,
+		Daily:   limits.Daily,
+		Weekly:  limits.Weekly,
+		Monthly: limits.Monthly,
+		Total:   limits.Total,
+	})
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
 func normalizeQuotaLimit(value any, label string) (*QuotaLimit, error) {
 	if value == nil {
 		return nil, nil

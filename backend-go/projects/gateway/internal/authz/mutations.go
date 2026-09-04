@@ -53,6 +53,13 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 		return nil, err
 	}
 	input.ExpiresAt = normalizedExpiresAt
+	if input.LimitsJSON != nil {
+		normalizedLimits, normalizeErr := normalizeAuthorizationLimitsJSON(*input.LimitsJSON)
+		if normalizeErr != nil {
+			return nil, failf("%s", normalizeErr.Error())
+		}
+		input.LimitsJSON = normalizedLimits
+	}
 	nowTime := s.now().UTC()
 
 	// Owner resolution: the resource must exist and belong to the actor scope.
@@ -489,6 +496,7 @@ type PatchInput struct {
 	ExpiresAt    *string
 	ExpiresAtSet bool
 	LimitsJSON   *string
+	LimitsSet    bool
 }
 
 // PatchOutcome mirrors the Node patch outcome.
@@ -586,6 +594,23 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 		}
 		nextExpiresAt = validated
 	}
+	hasLimitsInput := input.LimitsSet || input.LimitsJSON != nil
+	var nextLimits *string
+	if grant.LimitsJSON.Valid {
+		value := grant.LimitsJSON.String
+		nextLimits = &value
+	}
+	if hasLimitsInput {
+		if input.LimitsJSON == nil {
+			nextLimits = nil
+		} else {
+			normalized, normalizeErr := normalizeAuthorizationLimitsJSON(*input.LimitsJSON)
+			if normalizeErr != nil {
+				return nil, failf("%s", normalizeErr.Error())
+			}
+			nextLimits = normalized
+		}
+	}
 
 	assignments := []string{}
 	args := []any{}
@@ -603,13 +628,9 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 		assignments = append(assignments, "expires_at = ?")
 		args = append(args, nullableString(nextExpiresAt))
 	}
-	if input.LimitsJSON != nil {
+	if hasLimitsInput && canonicalAuthorizationLimits(nextLimits) != canonicalAuthorizationLimits(nullStringPtr(grant.LimitsJSON)) {
 		assignments = append(assignments, "limits_json = ?")
-		if *input.LimitsJSON == "" {
-			args = append(args, nil)
-		} else {
-			args = append(args, *input.LimitsJSON)
-		}
+		args = append(args, nullableString(nextLimits))
 	}
 	if len(assignments) == 0 {
 		if err := tx.Commit(); err != nil {
@@ -656,6 +677,11 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 		}
 		if hasExpiresAtInput {
 			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET expires_at = ? WHERE id = ?`), nullableString(nextExpiresAt), runtimeID); err != nil {
+				return nil, err
+			}
+		}
+		if hasLimitsInput {
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET limits_json = ? WHERE id = ?`), nullableString(nextLimits), runtimeID); err != nil {
 				return nil, err
 			}
 		}
