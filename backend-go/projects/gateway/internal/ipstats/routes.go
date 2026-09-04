@@ -7,6 +7,7 @@
 package ipstats
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
@@ -30,6 +31,7 @@ type Deps struct {
 func (d *Deps) Mount(k *kernel.Kernel) {
 	prefix := "/__aisys__/api/ip-stats"
 	k.Register("GET "+prefix, d.Auth.RequireAdmin(http.HandlerFunc(d.handleList)))
+	k.Register("GET "+prefix+"/{ipHash}/detail", d.Auth.RequireAdmin(http.HandlerFunc(d.handleDetail)))
 	k.Register("POST "+prefix+"/{ipHash}/allowlist", d.guardedWrite("client_ip_stats.allowlist", simplePolicyFingerprint, d.handleAllowlist))
 	k.Register("POST "+prefix+"/{ipHash}/unallowlist", d.guardedWrite("client_ip_stats.unallowlist", simplePolicyFingerprint, d.handleUnallowlist))
 	k.Register("POST "+prefix+"/{ipHash}/blacklist", d.guardedWrite("client_ip_stats.blacklist", blacklistFingerprint, d.handleBlacklist))
@@ -151,6 +153,87 @@ func querySingle(query map[string][]string, name string) (string, bool) {
 		return "", false
 	}
 	return values[0], true
+}
+
+// detailQuerySchema mirrors the zod detail query (subset of the list schema:
+// no keyword/status/lastUsed filters). Duplicated parameters and invalid
+// values reject with IP 详情参数无效.
+func (d *Deps) handleDetail(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	for _, name := range []string{"page", "pageSize", "startDate", "endDate", "sortField", "sortOrder"} {
+		if len(query[name]) > 1 {
+			kernel.WriteBadRequest(w, "IP 详情参数无效")
+			return
+		}
+	}
+	rawHash := strings.TrimSpace(r.PathValue("ipHash"))
+	if !clientIPHashPattern.MatchString(rawHash) {
+		kernel.WriteBadRequest(w, "IP 标识无效")
+		return
+	}
+	options := DetailOptions{IPHash: rawHash}
+	options.PageSize = boundedDetailPageSizeFromQuery(query)
+	if options.PageSize == 0 {
+		kernel.WriteBadRequest(w, "IP 详情参数无效")
+		return
+	}
+	options.Page = boundedDetailPage(1, options.PageSize)
+	if raw, present := querySingle(query, "page"); present {
+		value, ok := parseNodeNumber(raw)
+		if !ok || value != math.Trunc(value) || value < 1 {
+			kernel.WriteBadRequest(w, "IP 详情参数无效")
+			return
+		}
+		options.Page = boundedDetailPage(int(value), options.PageSize)
+	}
+	options.StartDate = strings.TrimSpace(query.Get("startDate"))
+	options.EndDate = strings.TrimSpace(query.Get("endDate"))
+	if raw, present := querySingle(query, "sortField"); present {
+		switch raw {
+		case "requestCount", "successCount", "errorCount", "errorRate", "totalTokens", "totalCost", "activeDays", "lastUsedAt":
+			options.SortField = raw
+		default:
+			kernel.WriteBadRequest(w, "IP 详情参数无效")
+			return
+		}
+	}
+	if raw, present := querySingle(query, "sortOrder"); present {
+		switch raw {
+		case "asc", "desc":
+			options.SortOrder = raw
+		default:
+			kernel.WriteBadRequest(w, "IP 详情参数无效")
+			return
+		}
+	}
+	detail, err := d.Store.Detail(r.Context(), options)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if detail == nil {
+		// Node renders a plain { message } body for this 404.
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": "IP 不存在"})
+		return
+	}
+	kernel.WriteOK(w, detail, "")
+}
+
+// boundedDetailPageSizeFromQuery validates pageSize (1..100 after Node Number
+// coercion; default 20 when absent) and reports invalid values by returning
+// the sentinel that fails the 400 check in handleDetail.
+func boundedDetailPageSizeFromQuery(query map[string][]string) int {
+	raw, present := querySingle(query, "pageSize")
+	if !present {
+		return 20
+	}
+	value, ok := parseNodeNumber(raw)
+	if !ok || value != math.Trunc(value) || value < 1 || value > 100 {
+		return 0
+	}
+	return int(value)
 }
 
 // boundedPageSizeFromQuery validates pageSize (1..100 after Node Number

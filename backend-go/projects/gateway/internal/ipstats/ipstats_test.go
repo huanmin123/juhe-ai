@@ -69,6 +69,7 @@ type testEnv struct {
 	sink   *recordingSink
 	inval  *recordingInvalidator
 	db     *sql.DB
+	store  *Store
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -120,7 +121,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	(&Deps{Store: store, Auth: deps, Sink: sink}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, inval: invalidator, db: db}
+	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, inval: invalidator, db: db, store: store}
 }
 
 func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]any) {

@@ -86,6 +86,9 @@ type Store struct {
 	newID func(prefix string) string
 	inval PolicyInvalidator
 	tz    TimezoneSource
+	// detailAccounts backs the M15 detail endpoint's account/owner name
+	// hydration (business database tables). nil degrades to nameless rows.
+	detailAccounts DetailAccountLookup
 }
 
 // NewStore builds the store; inval and tz may be nil (tz falls back to the

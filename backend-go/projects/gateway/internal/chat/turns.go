@@ -2,6 +2,7 @@ package chat
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"unicode/utf8"
 )
@@ -12,21 +13,21 @@ import (
 
 // TurnSubmissionFact mirrors ChatTurnSubmissionFact.
 type TurnSubmissionFact struct {
-	TurnID            string
+	TurnID             string
 	AssistantMessageID string
-	AssistantStatus   ChatMessageStatus
-	ErrorCode         *string
-	ErrorMessage      *string
-	CompletedAt       *string
-	TraceID           *string
+	AssistantStatus    ChatMessageStatus
+	ErrorCode          *string
+	ErrorMessage       *string
+	CompletedAt        *string
+	TraceID            *string
 }
 
 // AcceptTurnResult mirrors the acceptChatTurn return shape.
 type AcceptTurnResult struct {
-	TurnID          string
-	UserMessage     *Message
+	TurnID           string
+	UserMessage      *Message
 	AssistantMessage *Message
-	Duplicate       bool
+	Duplicate        bool
 }
 
 type AcceptTurnInput struct {
@@ -174,11 +175,11 @@ func (s *Store) AcceptTurn(input AcceptTurnInput) (*AcceptTurnResult, error) {
 			return nil, &ConflictError{Code: ConflictReplaceConflict}
 		}
 		replacement, err := s.requireReplaceableTurn(tx, replaceableTurnQuery{
-			Conversation:   conversation,
-			ConversationID: input.ConversationID,
+			Conversation:    conversation,
+			ConversationID:  input.ConversationID,
 			SystemAccountID: input.SystemAccountID,
-			ReplaceTurnID:  input.ReplaceTurnID,
-			Now:            now,
+			ReplaceTurnID:   input.ReplaceTurnID,
+			Now:             now,
 		})
 		if err != nil {
 			return nil, err
@@ -424,8 +425,8 @@ func inputImageAssetIDs(blocks []InputContentBlock) []string {
 }
 
 type idempotencyFact struct {
-	TurnID            string
-	UserMessageID     string
+	TurnID             string
+	UserMessageID      string
 	AssistantMessageID string
 }
 
@@ -521,18 +522,18 @@ func (s *Store) loadMessagePairTx(tx queryer, conversationID, ownerID, turnID st
 }
 
 type replaceableTurnQuery struct {
-	Conversation   conversationRow
-	ConversationID string
+	Conversation    conversationRow
+	ConversationID  string
 	SystemAccountID string
-	ReplaceTurnID  string
-	Now            string
+	ReplaceTurnID   string
+	Now             string
 }
 
 type replaceableTurn struct {
-	userMessage     messageRow
+	userMessage      messageRow
 	assistantMessage messageRow
-	bytesByBucket   map[string]int64
-	totalBytes      int64
+	bytesByBucket    map[string]int64
+	totalBytes       int64
 }
 
 // requireReplaceableTurn mirrors requireReplaceableTurn.
@@ -628,18 +629,18 @@ func (s *Store) requireReplaceableTurn(tx queryer, input replaceableTurnQuery) (
 		totalBytes += bytes
 	}
 	return &replaceableTurn{
-		userMessage:     userMessage,
+		userMessage:      userMessage,
 		assistantMessage: assistantMessage,
-		bytesByBucket:   bytesByBucket,
-		totalBytes:      totalBytes,
+		bytesByBucket:    bytesByBucket,
+		totalBytes:       totalBytes,
 	}, nil
 }
 
 type turnIdempotencyRow struct {
-	TurnID            string
-	ClientMessageID   string
-	SystemAccountID   string
-	UserMessageID     string
+	TurnID             string
+	ClientMessageID    string
+	SystemAccountID    string
+	UserMessageID      string
 	AssistantMessageID string
 }
 
@@ -710,11 +711,11 @@ func (s *Store) AssertTurnReplaceable(input AssertReplaceableInput) error {
 		return &ConflictError{Code: ConflictReplaceConflict}
 	}
 	if _, err := s.requireReplaceableTurn(tx, replaceableTurnQuery{
-		Conversation:   conversation,
-		ConversationID: input.ConversationID,
+		Conversation:    conversation,
+		ConversationID:  input.ConversationID,
 		SystemAccountID: input.SystemAccountID,
-		ReplaceTurnID:  input.ReplaceTurnID,
-		Now:            now,
+		ReplaceTurnID:   input.ReplaceTurnID,
+		Now:             now,
 	}); err != nil {
 		return err
 	}
@@ -729,44 +730,46 @@ type AssertReplaceableInput struct {
 }
 
 type finalizeTurnInput struct {
-	ConversationID string
-	SystemAccountID string
-	TurnID         string
+	ConversationID   string
+	SystemAccountID  string
+	TurnID           string
 	AssistantContent string
-	Status         ChatMessageStatus
-	FinishReason   *string
-	ErrorCode      *string
-	ErrorMessage   *string
-	TraceID        *string
-	ContentBlocks  []ContentBlock
-	Now            string
+	Status           ChatMessageStatus
+	FinishReason     *string
+	ErrorCode        *string
+	ErrorMessage     *string
+	TraceID          *string
+	ContentBlocks    []ContentBlock
+	ContentBlocksRaw json.RawMessage
+	Now              string
 }
 
 // CompleteChatTurn mirrors completeChatTurn.
 func (s *Store) CompleteChatTurn(input CompleteTurnInput) (*Message, error) {
 	return s.finalizeTurn(finalizeTurnInput{
-		ConversationID:  input.ConversationID,
-		SystemAccountID: input.SystemAccountID,
-		TurnID:          input.TurnID,
+		ConversationID:   input.ConversationID,
+		SystemAccountID:  input.SystemAccountID,
+		TurnID:           input.TurnID,
 		AssistantContent: input.AssistantContent,
-		Status:          StatusCompleted,
-		FinishReason:    stringPtr(input.FinishReason),
-		TraceID:         stringPtr(input.TraceID),
-		ContentBlocks:   input.ContentBlocks,
-		Now:             input.Now,
+		Status:           StatusCompleted,
+		FinishReason:     stringPtr(input.FinishReason),
+		TraceID:          stringPtr(input.TraceID),
+		ContentBlocks:    input.ContentBlocks,
+		Now:              input.Now,
 	})
 }
 
 // CompleteTurnInput mirrors the completeChatTurn input object.
 type CompleteTurnInput struct {
-	ConversationID  string
-	SystemAccountID string
-	TurnID          string
+	ConversationID   string
+	SystemAccountID  string
+	TurnID           string
 	AssistantContent string
-	FinishReason    string
-	TraceID         string
-	ContentBlocks   []ContentBlock
-	Now             string
+	FinishReason     string
+	TraceID          string
+	ContentBlocks    []ContentBlock
+	ContentBlocksRaw json.RawMessage
+	Now              string
 }
 
 // FailChatTurn mirrors failChatTurn.
@@ -774,55 +777,57 @@ func (s *Store) FailChatTurn(input FailTurnInput) (*Message, error) {
 	errorCode := input.ErrorCode
 	errorMessage := input.ErrorMessage
 	return s.finalizeTurn(finalizeTurnInput{
-		ConversationID:  input.ConversationID,
-		SystemAccountID: input.SystemAccountID,
-		TurnID:          input.TurnID,
+		ConversationID:   input.ConversationID,
+		SystemAccountID:  input.SystemAccountID,
+		TurnID:           input.TurnID,
 		AssistantContent: input.AssistantContent,
-		Status:          StatusFailed,
-		ErrorCode:       &errorCode,
-		ErrorMessage:    &errorMessage,
-		TraceID:         input.TraceID,
-		ContentBlocks:   input.ContentBlocks,
-		Now:             input.Now,
+		Status:           StatusFailed,
+		ErrorCode:        &errorCode,
+		ErrorMessage:     &errorMessage,
+		TraceID:          input.TraceID,
+		ContentBlocks:    input.ContentBlocks,
+		Now:              input.Now,
 	})
 }
 
 // FailTurnInput mirrors the failChatTurn input object.
 type FailTurnInput struct {
-	ConversationID  string
-	SystemAccountID string
-	TurnID          string
+	ConversationID   string
+	SystemAccountID  string
+	TurnID           string
 	AssistantContent string
-	ErrorCode       string
-	ErrorMessage    string
-	TraceID         *string
-	ContentBlocks   []ContentBlock
-	Now             string
+	ErrorCode        string
+	ErrorMessage     string
+	TraceID          *string
+	ContentBlocks    []ContentBlock
+	ContentBlocksRaw json.RawMessage
+	Now              string
 }
 
 // CancelChatTurn mirrors cancelChatTurn.
 func (s *Store) CancelChatTurn(input CancelTurnInput) (*Message, error) {
 	return s.finalizeTurn(finalizeTurnInput{
-		ConversationID:  input.ConversationID,
-		SystemAccountID: input.SystemAccountID,
-		TurnID:          input.TurnID,
+		ConversationID:   input.ConversationID,
+		SystemAccountID:  input.SystemAccountID,
+		TurnID:           input.TurnID,
 		AssistantContent: input.AssistantContent,
-		Status:          StatusCanceled,
-		TraceID:         input.TraceID,
-		ContentBlocks:   input.ContentBlocks,
-		Now:             input.Now,
+		Status:           StatusCanceled,
+		TraceID:          input.TraceID,
+		ContentBlocks:    input.ContentBlocks,
+		Now:              input.Now,
 	})
 }
 
 // CancelTurnInput mirrors the cancelChatTurn input object.
 type CancelTurnInput struct {
-	ConversationID  string
-	SystemAccountID string
-	TurnID          string
+	ConversationID   string
+	SystemAccountID  string
+	TurnID           string
 	AssistantContent string
-	TraceID         *string
-	ContentBlocks   []ContentBlock
-	Now             string
+	TraceID          *string
+	ContentBlocks    []ContentBlock
+	ContentBlocksRaw json.RawMessage
+	Now              string
 }
 
 // finalizeTurn mirrors finalizeChatTurn including the storage-limit downgrade
@@ -835,16 +840,27 @@ func (s *Store) finalizeTurn(input finalizeTurnInput) (*Message, error) {
 	requestedContentBlocksJSON := "[]"
 	requestedBytes := int64(AssistantStorageReservationBytes + 1)
 	serializationExceeded := false
-	// Node passes `contentBlocks ?? []` so nil marshals as [] rather than null.
-	requestedBlocks := input.ContentBlocks
-	if requestedBlocks == nil {
-		requestedBlocks = []ContentBlock{}
-	}
-	if serialized, err := serializeContentBlocks(requestedBlocks); err == nil {
-		requestedContentBlocksJSON = serialized
-		requestedBytes = int64(utf8Bytes(input.AssistantContent) + utf8Bytes(requestedContentBlocksJSON))
+	// ContentBlocksRaw carries the runner timeline JSON (Node passes the
+	// timeline blocks verbatim); the typed fallback keeps older callers.
+	if len(input.ContentBlocksRaw) > 0 {
+		if len(input.ContentBlocksRaw) <= maxContentBlocksBytes {
+			requestedContentBlocksJSON = string(input.ContentBlocksRaw)
+			requestedBytes = int64(utf8Bytes(input.AssistantContent) + utf8Bytes(requestedContentBlocksJSON))
+		} else {
+			serializationExceeded = true
+		}
 	} else {
-		serializationExceeded = true
+		// Node passes `contentBlocks ?? []` so nil marshals as [] rather than null.
+		requestedBlocks := input.ContentBlocks
+		if requestedBlocks == nil {
+			requestedBlocks = []ContentBlock{}
+		}
+		if serialized, err := serializeContentBlocks(requestedBlocks); err == nil {
+			requestedContentBlocksJSON = serialized
+			requestedBytes = int64(utf8Bytes(input.AssistantContent) + utf8Bytes(requestedContentBlocksJSON))
+		} else {
+			serializationExceeded = true
+		}
 	}
 	release := s.lockUserPolicy(input.SystemAccountID)
 	defer release()
@@ -948,15 +964,15 @@ func (s *Store) lockedStreamingAssistant(tx queryer, conversationID, ownerID, tu
 type CancelActiveTurnState string
 
 const (
-	CancelStateCanceled       CancelActiveTurnState = "canceled"
+	CancelStateCanceled        CancelActiveTurnState = "canceled"
 	CancelStateAlreadyTerminal CancelActiveTurnState = "already_terminal"
-	CancelStateTurnMismatch   CancelActiveTurnState = "turn_mismatch"
-	CancelStateNotFound       CancelActiveTurnState = "not_found"
+	CancelStateTurnMismatch    CancelActiveTurnState = "turn_mismatch"
+	CancelStateNotFound        CancelActiveTurnState = "not_found"
 )
 
 // CancelActiveTurnResult mirrors CancelActiveChatTurnResult.
 type CancelActiveTurnResult struct {
-	State          CancelActiveTurnState
+	State           CancelActiveTurnState
 	AssistantStatus ChatMessageStatus
 }
 
@@ -1244,29 +1260,29 @@ type syncHeadMessage struct {
 
 // ConversationSyncHead mirrors ChatConversationSyncHead.
 type ConversationSyncHead struct {
-	ConversationID   string
-	MessageRevision  int64
-	LastSequenceNo   int64
-	ActiveTurnID     *string
+	ConversationID           string
+	MessageRevision          int64
+	LastSequenceNo           int64
+	ActiveTurnID             *string
 	ActiveAssistantMessageID *string
-	ActiveStartedAt  *string
-	Tail             []syncHeadMessage
+	ActiveStartedAt          *string
+	Tail                     []syncHeadMessage
 }
 
 type syncRow struct {
-	conversationID          string
-	messageRevision         int64
-	lastSequenceNo          int64
+	conversationID           string
+	messageRevision          int64
+	lastSequenceNo           int64
 	activeAssistantMessageID sql.NullString
-	activeTurnID            sql.NullString
-	activeStartedAt         sql.NullString
-	tailID                  sql.NullString
-	tailTurnID              sql.NullString
-	tailSequenceNo          sql.NullInt64
-	tailRole                sql.NullString
-	tailStatus              sql.NullString
-	tailCompletedAt         sql.NullString
-	tailExpiresAt           sql.NullString
+	activeTurnID             sql.NullString
+	activeStartedAt          sql.NullString
+	tailID                   sql.NullString
+	tailTurnID               sql.NullString
+	tailSequenceNo           sql.NullInt64
+	tailRole                 sql.NullString
+	tailStatus               sql.NullString
+	tailCompletedAt          sql.NullString
+	tailExpiresAt            sql.NullString
 }
 
 // GetConversationSyncHead mirrors getChatConversationSyncHead (CTE port).
@@ -1397,23 +1413,23 @@ func (s *Store) GetConversationSyncHead(conversationID, ownerID, nowValue string
 			completedAt = &normalized
 		}
 		tail = append(tail, syncHeadMessage{
-			ID:         *id,
-			TurnID:     *turnID,
-			SequenceNo: row.tailSequenceNo.Int64,
-			Role:       ChatMessageRole(row.tailRole.String),
-			Status:     ChatMessageStatus(row.tailStatus.String),
+			ID:          *id,
+			TurnID:      *turnID,
+			SequenceNo:  row.tailSequenceNo.Int64,
+			Role:        ChatMessageRole(row.tailRole.String),
+			Status:      ChatMessageStatus(row.tailStatus.String),
 			CompletedAt: completedAt,
-			ExpiresAt:  expiresAt,
+			ExpiresAt:   expiresAt,
 		})
 	}
 	return &ConversationSyncHead{
-		ConversationID:   first.conversationID,
-		MessageRevision:  first.messageRevision,
-		LastSequenceNo:   first.lastSequenceNo,
-		ActiveTurnID:     activeTurnID,
+		ConversationID:           first.conversationID,
+		MessageRevision:          first.messageRevision,
+		LastSequenceNo:           first.lastSequenceNo,
+		ActiveTurnID:             activeTurnID,
 		ActiveAssistantMessageID: activeAssistantMessageID,
-		ActiveStartedAt:  activeStartedAt,
-		Tail:             tail,
+		ActiveStartedAt:          activeStartedAt,
+		Tail:                     tail,
 	}, nil
 }
 

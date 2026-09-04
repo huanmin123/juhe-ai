@@ -124,6 +124,7 @@ type Store struct {
 	now    func() time.Time
 	newI   func(prefix string) string
 	inval  CacheInvalidator
+	usage  UsageSource
 }
 
 // NewStore builds the store; inval may be nil (no-op invalidation until the
@@ -646,6 +647,9 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		}
 		items = append(items, item)
 	}
+	// M07 deferral closure: hydrate the per-key usage summary from the stats
+	// database (nil source degrades to the zero summary).
+	s.hydrateListUsage(ctx, items, records)
 	total := (normalized.Page-1)*normalized.PageSize + len(items)
 	if hasMore {
 		total++

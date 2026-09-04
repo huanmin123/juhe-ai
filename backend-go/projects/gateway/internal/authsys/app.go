@@ -24,6 +24,14 @@ type OperationLogChange struct {
 
 // OperationLogEntry mirrors the subset of OperationLogRecordInput the auth
 // slice emits. K4's producer sink consumes these.
+//
+// DetailLevel / VisibilityScope / Metadata (M12 deferral, K4 sink extension)
+// mirror OperationLogInput.detailLevel ('full' | 'summary'),
+// .visibilityScope ('targeted' | 'all_users' | 'admin_only') and .metadata
+// (storage/operation-log-types.ts). Empty strings keep the pre-extension
+// producer contract: the F4 store normalizes the same defaults as Node
+// (detailLevel→'full', visibilityScope→'targeted'), and nil Metadata stores
+// as SQL NULL.
 type OperationLogEntry struct {
 	ActorSystemAccountID          string
 	ActorUsername                 string
@@ -38,6 +46,9 @@ type OperationLogEntry struct {
 	ResourceID                    string
 	ResourceName                  string
 	Summary                       string
+	DetailLevel                   string
+	VisibilityScope               string
+	Metadata                      json.RawMessage
 	Changes                       []OperationLogChange
 	Viewers                       []OperationLogViewer
 }

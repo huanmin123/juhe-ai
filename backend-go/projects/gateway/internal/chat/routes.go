@@ -52,7 +52,7 @@ type GenerationSnapshot struct {
 
 // GenerationRunner is the abort handle exposed by an active generation.
 type GenerationRunner interface {
-	Abort()
+	Abort() bool
 }
 
 // GenerationIdentity mirrors the registry identity triple.
@@ -95,6 +95,39 @@ type Deps struct {
 	Generations   GenerationRegistry
 	AttachStream  AttachStreamHandler
 	ToolCapabilit ToolCapabilitiesResolver
+
+	// --- generation-wave ports (frozen for the G20 composition root) ---
+	// Hub is the in-process generation registry (NewGenerationHub).
+	Hub *GenerationHub
+	// Executor dispatches model/image/compaction requests to the internal
+	// gateway (Node dispatchChatGatewayRequest).
+	Executor GenerationExecutor
+	// ModelCatalog lists group accounts and provider model catalogs.
+	ModelCatalog ModelCatalog
+	// ChatKeys provisions and resolves the chat-scoped API key.
+	ChatKeys ChatAPIKeyProvider
+	// GatewayKeys validates gateway API keys (group bindings + image flag).
+	GatewayKeys GatewayKeyValidator
+	// ObjectStore persists chat asset objects (local chat assets root).
+	ObjectStore ObjectStore
+	// ImageProcessor decodes/encodes uploads and previews (sharp port).
+	ImageProcessor ImageProcessor
+	// ImageObservation schedules and awaits image semantic observations.
+	ImageObservation ImageObservations
+	// Compactions runs the context compaction service loop.
+	Compactions *CompactionService
+	// TokenCount counts text tokens (gpt-tokenizer port).
+	TokenCount TokenCountFunc
+	// TraceID extracts the request trace id (Node getTraceId()).
+	TraceID func(r *http.Request) string
+	// RetentionDays mirrors runtimeConfig.chat.retentionDays.
+	RetentionDays int
+	// MaxConversationsPerUserInt mirrors runtimeConfig.chat.maxConversationsPerUser.
+	MaxConversationsPerUserInt func() int
+	// DiagnosticToolEnabled mirrors runtimeConfig.chat.diagnosticToolEnabled.
+	DiagnosticToolEnabled bool
+	// ToolEnvironment mirrors chatToolRuntimeEnvironment().
+	ToolEnvironment string
 }
 
 // chatSystemAPIJSONBodyLimit mirrors chatSystemApiJsonBodyLimit ('24mb').
@@ -266,6 +299,7 @@ func (d *Deps) Register(k *kernel.Kernel, prefix string) {
 	}
 	mount("GET", "/image-policy", rt.imagePolicy)
 	mount("GET", "/conversations", rt.listConversations)
+	mount("POST", "/conversations", rt.createConversationHandler)
 	mount("GET", "/conversations/{conversationId}", rt.getConversation)
 	mount("PATCH", "/conversations/{conversationId}", rt.patchConversation)
 	mount("DELETE", "/conversations/{conversationId}", rt.deleteConversation)
@@ -273,8 +307,15 @@ func (d *Deps) Register(k *kernel.Kernel, prefix string) {
 	mount("GET", "/conversations/{conversationId}/messages", rt.listMessages)
 	mount("GET", "/conversations/{conversationId}/sync", rt.syncHead)
 	mount("GET", "/conversations/{conversationId}/submissions/{clientMessageId}", rt.submissionStatus)
+	mount("POST", "/conversations/{conversationId}/context/compactions", rt.compactionTrigger)
 	mount("GET", "/conversations/{conversationId}/context-status", rt.contextStatus)
 	mount("POST", "/conversations/{conversationId}/stop", rt.stopTurn)
+	mount("POST", "/conversations/{conversationId}/assets", rt.uploadAsset)
+	mount("GET", "/conversations/{conversationId}/assets/{assetId}/content", rt.assetContent)
+	mount("DELETE", "/conversations/{conversationId}/assets/{assetId}", rt.deleteAsset)
+	mount("GET", "/conversations/{conversationId}/models", rt.listConversationModels)
+	mount("GET", "/conversations/{conversationId}/models/{modelId}", rt.getConversationModel)
+	mount("POST", "/conversations/{conversationId}/stream", rt.streamTurn)
 	mount("GET", "/conversations/{conversationId}/streams/{turnId}", rt.attachStream)
 }
 

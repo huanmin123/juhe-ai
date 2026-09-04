@@ -29,8 +29,14 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/groups", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.list(w, r, adminScope(r))
 	})))
+	k.Register("GET "+prefix+"/groups/options", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.options(w, r, adminScope(r))
+	})))
 	k.Register("GET "+prefix+"/groups/{id}", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.find(w, r, adminScope(r))
+	})))
+	k.Register("GET "+prefix+"/groups/{id}/edit-basic", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.editBasic(w, r, adminScope(r))
 	})))
 	k.Register("POST "+prefix+"/groups", d.mountGuardedCreate(false))
 	k.Register("PATCH "+prefix+"/groups/{id}", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,8 +50,14 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/my-groups", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.list(w, r, selfScope(r))
 	})))
+	k.Register("GET "+prefix+"/my-groups/options", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.options(w, r, selfScope(r))
+	})))
 	k.Register("GET "+prefix+"/my-groups/{id}", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.find(w, r, selfScope(r))
+	})))
+	k.Register("GET "+prefix+"/my-groups/{id}/edit-basic", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.editBasic(w, r, selfScope(r))
 	})))
 	k.Register("POST "+prefix+"/my-groups", d.mountGuardedCreate(true))
 	k.Register("PATCH "+prefix+"/my-groups/{id}", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

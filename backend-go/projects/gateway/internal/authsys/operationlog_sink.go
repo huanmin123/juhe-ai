@@ -2,6 +2,7 @@ package authsys
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -35,12 +36,25 @@ func (s *OperationLogProducerSink) Record(entry OperationLogEntry, r *http.Reque
 		ResourceID:                    entry.ResourceID,
 		ResourceName:                  entry.ResourceName,
 		Summary:                       entry.Summary,
-		DetailLevel:                   "summary",
-		VisibilityScope:               "targeted",
-		ClientIP:                      kernel.Context(r).ClientIP,
-		Method:                        r.Method,
-		Path:                          r.URL.Path,
-		CreatedAt:                     now,
+		// M12 deferral (K4 sink extension): entries may now carry the Node
+		// OperationLogInput detailLevel/visibilityScope/metadata. Empty
+		// strings keep the historical slice contract ("summary"/"targeted")
+		// so pre-extension producers are byte-identical.
+		DetailLevel:     "summary",
+		VisibilityScope: "targeted",
+		ClientIP:        kernel.Context(r).ClientIP,
+		Method:          r.Method,
+		Path:            r.URL.Path,
+		CreatedAt:       now,
+	}
+	if entry.DetailLevel != "" {
+		input.DetailLevel = entry.DetailLevel
+	}
+	if entry.VisibilityScope != "" {
+		input.VisibilityScope = entry.VisibilityScope
+	}
+	if len(entry.Metadata) > 0 {
+		input.Metadata = append(json.RawMessage(nil), entry.Metadata...)
 	}
 	if trace := kernel.Context(r).TraceID; trace != "" {
 		input.TraceID = trace
