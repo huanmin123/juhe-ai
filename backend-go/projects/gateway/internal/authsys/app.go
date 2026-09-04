@@ -140,7 +140,7 @@ func (d *Deps) createAccount(w http.ResponseWriter, r *http.Request) {
 		DisplayName            *string            `json:"displayName"`
 		Description            *string            `json:"description"`
 		Password               *string            `json:"password"`
-		Role                   *string            `json:"role"`
+		Role                   json.RawMessage    `json:"role"`
 		Status                 *string            `json:"status"`
 		MustChangePassword     *bool              `json:"mustChangePassword"`
 		ImageGenerationEnabled *bool              `json:"imageGenerationEnabled"`
@@ -155,9 +155,16 @@ func (d *Deps) createAccount(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "系统账户参数无效")
 		return
 	}
+	role := ""
+	if len(body.Role) > 0 {
+		if string(body.Role) == "null" || json.Unmarshal(body.Role, &role) != nil || (role != "admin" && role != "user") {
+			kernel.WriteBadRequest(w, "系统账户参数无效")
+			return
+		}
+	}
 	item, err := d.Accounts.Create(r.Context(), CreateInput{
 		Username: *body.Username, DisplayName: *body.DisplayName, Description: body.Description,
-		Password: *body.Password, Role: valueOr(body.Role, ""), Status: valueOr(body.Status, ""),
+		Password: *body.Password, Role: role, Status: valueOr(body.Status, ""),
 		MustChangePassword: body.MustChangePassword, ImageGenerationEnabled: body.ImageGenerationEnabled,
 		AIAccountLimit: body.AIAccountLimit, RequestLimits: body.RequestLimits,
 	})
@@ -382,7 +389,7 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 	}
 	if value, exists := body["role"]; exists {
 		text, isString := value.(string)
-		if !isString {
+		if !isString || (text != "admin" && text != "user") {
 			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
 		}
 		input.Role = &text

@@ -312,6 +312,13 @@ func TestSystemAccountsCRUDAndAuthorization(t *testing.T) {
 	if created.StatusCode != http.StatusCreated {
 		t.Fatalf("create account: %d %v", created.StatusCode, createdPayload)
 	}
+	for _, role := range []string{"super_admin", "operator"} {
+		invalidRole, invalidRolePayload := postJSON(t, server, "/__aisys__/api/system-accounts",
+			`{"username":"role-`+role+`","displayName":"Role_`+role+`","password":"role-pass","role":"`+role+`"}`, adminCookie)
+		if invalidRole.StatusCode != http.StatusBadRequest || invalidRolePayload["message"] != "系统账户参数无效" {
+			t.Fatalf("management create role %q must match Node allowlist: %d %v", role, invalidRole.StatusCode, invalidRolePayload)
+		}
+	}
 
 	duplicate, duplicatePayload := postJSON(t, server, "/__aisys__/api/system-accounts",
 		`{"username":"SECOND","displayName":"Other_Name","password":"second-pass"}`, adminCookie)
@@ -343,6 +350,12 @@ func TestSystemAccountsCRUDAndAuthorization(t *testing.T) {
 	if patch.StatusCode != http.StatusConflict || patchPayload["message"] != "至少保留一个启用的超级管理员" {
 		t.Fatalf("super admin invariant: %d %v", patch.StatusCode, patchPayload)
 	}
+	plainItem := findItemByUsername(t, listPayload, "plain")
+	rolePatch, rolePatchPayload := patchJSON(t, server, "/__aisys__/api/system-accounts/"+accountIDByUsername(t, deps, "plain"),
+		`{"expectedUpdatedAt":"`+plainItem["editVersion"].(string)+`","role":"super_admin"}`, adminCookie)
+	if rolePatch.StatusCode != http.StatusBadRequest || rolePatchPayload["message"] != "系统账户参数无效" {
+		t.Fatalf("management patch must reject super_admin role: %d %v", rolePatch.StatusCode, rolePatchPayload)
+	}
 
 	// Optimistic concurrency: stale expectedUpdatedAt conflicts.
 	stale, stalePayload := patchJSON(t, server, "/__aisys__/api/system-accounts/"+accountIDByUsername(t, deps, "plain"),
@@ -359,7 +372,6 @@ func TestSystemAccountsCRUDAndAuthorization(t *testing.T) {
 	}
 
 	// Password reset via management PATCH forces logout of that account.
-	plainItem := findItemByUsername(t, listPayload, "plain")
 	plainPatch, _ := patchJSON(t, server, "/__aisys__/api/system-accounts/"+accountIDByUsername(t, deps, "plain"),
 		`{"expectedUpdatedAt":"`+plainItem["editVersion"].(string)+`","password":"rotated-pass"}`, adminCookie)
 	if plainPatch.StatusCode != http.StatusOK {
