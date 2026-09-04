@@ -1,5 +1,31 @@
 # Bug 记录目录
 
+- [BUG-0168](问题-0168-S-PGSchema与默认Seed迁移不完整.md)：S-PG 缺少生产初始化入口并遗漏多类 Node 默认 seed，fresh/upgrade 结果不等价；待修复。
+- [BUG-0167](问题-0167-S-SQSQLite初始化与Seed未接入.md)：S-SQ 仅新增 DDL，未接入 SQLite schema/seed 生产入口，无法独立初始化 fresh 库；待修复。
+
+- [BUG-0166](问题-0166-M03系统团队迁移权限状态与副作用偏离.md)：M03 系统团队遗漏 DTO/排序/历史/scope、授权 fanout、级联来源与缓存副作用；待修复。
+- [BUG-0165](问题-0165-M04授权迁移权限与数据副作用偏离.md)：M04 授权存在越权 scope、账号资源写入失败、端点/校验/DTO/幂等及副作用遗漏；待修复。
+
+- [BUG-0164](问题-0164-M06路由策略迁移遗漏端点与失效副作用.md)：M06 路由策略遗漏 options/edit/runtime/authorized 端点，并缺少 speed-first 与 API Key validation 失效；待修复。
+- [BUG-0163](问题-0163-M05分组迁移遗漏端点统计与约束.md)：M05 分组遗漏多个前端端点、authorized/统计投影，且分页和 null 校验偏离 Node；待修复。
+
+- [BUG-0162](问题-0162-M08账户迁移遗漏端点与运行态副作用.md)：M08 账户迁移仅覆盖核心 CRUD，遗漏大量 Node/前端端点及删除、锁定、凭据和运行态副作用；待修复。
+- [BUG-0161](问题-0161-M07APIKey迁移缺少更新与用量契约.md)：M07 API Key 缺少 PATCH、真实 usage 与必需 validation cache 失效；待修复。
+
+- [BUG-0160](问题-0160-K7Mock上游未记录模型与流式字段.md)：K7 mock upstream 未记录 `Model`/`StreamField`，16 场景无法验证关键请求契约；待修复。
+- [BUG-0159](问题-0159-K6Legacybridge前缀翻转缺少并发保护.md)：K6 legacybridge 前缀注册/删除与请求遍历共享 slice 无并发保护；待修复。
+- [BUG-0158](问题-0158-K5缓存失效总线丢通知且注销失效.md)：K5 订阅注销无效且同 topic 1 秒内的本地失效通知被丢弃；待修复。
+- [BUG-0157](问题-0157-K4操作日志清洗结果偏离Node.md)：K4 敏感字段和长结构化 changes 的清洗结果偏离 Node；待修复。
+- [BUG-0156](问题-0156-K3内存限流双桶键冲突.md)：K3 内存限流未区分分钟与突发桶，两个窗口相互覆盖；待修复。
+
+- [BUG-0155](问题-0155-M04授权去重ProcessingTTL单位错误.md)：M04 Go 授权去重 `ProcessingTTL` 使用纳秒常量，实际为 120ms，而 Node 默认是 120s；待修复。
+
+- [BUG-0154](问题-0154-K1-GoHTTP内核横切契约偏离.md)：K1 Go HTTP 内核在压缩协商/缓冲、trace、安全头、body parser 与 mutation 去重时序上偏离 Node 契约；待修复。
+
+- [BUG-0153](问题-0153-M01公告迁移端点与数据契约偏离.md)：M01 公告 Go 实现未接入 gateway，并遗漏公开端点、管理投影、严格校验、时间字段、revision、副作用等 Node/前端契约；待修复。
+
+- [BUG-0152](问题-0152-Go管理迁移未接入唯一入口导致K2路由失效.md)：K2 摘除 Node `/auth` 与 `/system-accounts` 挂载后，Go `authsys` 未接入唯一 gateway 入口，导致正式系统 API 没有生产 owner；待修复。
+
 - [BUG-0151](问题-0151-Go健康探活关闭HTTP2导致代理链误报上游连接失败.md)：Go J1 在自定义 SOCKS5H 拨号器上关闭 HTTP/2，导致代理链返回的 HTTP/2 SETTINGS 被误判为上游连接失败；现已将 J1/J2/J3a 上游 transport 与 SOCKS5 握手收口到 `shared/platform/upstreamhttp`，完成隔离生产凭据和 Go 全项目复查，待生产发布。
 
 - [BUG-0150](问题-0150-管理API时区改写导致跨时区超时.md)：管理 API 曾将绝对时间改写为 `Asia/Shanghai` 无 offset 字符串，导致跨时区客户端出现超时、到期或排序偏移；现已改为严格 RFC3339 `Z` / 显式 offset 契约，后端和账户测试定向回归通过，前端显示时区回归仍受无关断言阻断，真实浏览器和生产验证待完成。
