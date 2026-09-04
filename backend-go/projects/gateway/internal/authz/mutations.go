@@ -178,7 +178,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 
 	// Runtime upsert per grantee user (direct grant: one row; team grant:
 	// one per active member, excluding the owner).
-	granteeUsers, err := s.resolveGranteeUsers(ctx, tx, input)
+	granteeUsers, err := s.resolveGranteeUsers(ctx, tx, input, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +260,7 @@ func (s *Store) checkGrantee(ctx context.Context, tx *sql.Tx, input CreateInput)
 
 // resolveGranteeUsers expands the grantee to runtime user ids: direct grant
 // → the grantee; team grant → active members excluding the resource owner.
-func (s *Store) resolveGranteeUsers(ctx context.Context, tx *sql.Tx, input CreateInput) ([]string, error) {
+func (s *Store) resolveGranteeUsers(ctx context.Context, tx *sql.Tx, input CreateInput, ownerID string) ([]string, error) {
 	if input.GranteeType == "system_account" {
 		return []string{input.GranteeID}, nil
 	}
@@ -278,7 +278,9 @@ func (s *Store) resolveGranteeUsers(ctx context.Context, tx *sql.Tx, input Creat
 		if err := rows.Scan(&userID); err != nil {
 			return nil, err
 		}
-		users = append(users, userID)
+		if userID != ownerID {
+			users = append(users, userID)
+		}
 	}
 	return users, rows.Err()
 }

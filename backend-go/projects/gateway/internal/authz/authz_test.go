@@ -196,6 +196,7 @@ func TestTeamGrantEffectiveSourceAndRevoke(t *testing.T) {
 	f.seedAccount(t, "member2", "active")
 	f.seedTeamWithMember(t, "team_1", "member1")
 	f.seedTeamWithMember(t, "team_1", "member2")
+	f.seedTeamWithMember(t, "team_1", "owner")
 	f.seedGroup(t, "grp_1", "owner")
 
 	result, err := f.store.Create(context.Background(), CreateInput{
@@ -216,6 +217,14 @@ func TestTeamGrantEffectiveSourceAndRevoke(t *testing.T) {
 		if status != StatusActive || effective != "team" {
 			t.Fatalf("member %s runtime: status=%s effective=%s", member, status, effective)
 		}
+	}
+	var ownerRuntimeCount int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorizations
+		WHERE grantee_system_account_id = 'owner' AND resource_id = 'grp_1'`).Scan(&ownerRuntimeCount); err != nil {
+		t.Fatal(err)
+	}
+	if ownerRuntimeCount != 0 {
+		t.Fatalf("owner runtime rows after team grant = %d, want 0", ownerRuntimeCount)
 	}
 
 	// Owner-side revoke marks the grant and all member runtimes revoked.
@@ -244,7 +253,7 @@ func TestTeamGrantActiveLimitRejectsTwentyFirstGrant(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "member", "active")
 	f.seedTeamWithMember(t, "team_1", "member")
-	for i := 0; i < MaxTeamActiveGrantCount; i++ {
+	for i := 0; i < MaxTeamActiveGrantCount-1; i++ {
 		resourceID := "grp_limit_" + itoa(i)
 		f.seedGroup(t, resourceID, "owner")
 		if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants
@@ -255,8 +264,16 @@ func TestTeamGrantActiveLimitRejectsTwentyFirstGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	f.seedGroup(t, "grp_limit_twentieth", "owner")
+	twentieth, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_limit_twentieth",
+		GranteeType: "team", GranteeID: "team_1",
+	}, "owner")
+	if err != nil || !twentieth.Created {
+		t.Fatalf("20th team grant result = %+v err=%v", twentieth, err)
+	}
 	f.seedGroup(t, "grp_limit_new", "owner")
-	_, err := f.store.Create(context.Background(), CreateInput{
+	_, err = f.store.Create(context.Background(), CreateInput{
 		ResourceType: "group", ResourceID: "grp_limit_new",
 		GranteeType: "team", GranteeID: "team_1",
 	}, "owner")
