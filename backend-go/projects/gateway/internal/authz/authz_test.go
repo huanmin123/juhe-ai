@@ -148,6 +148,12 @@ func TestCreateGroupAuthorizationLifecycle(t *testing.T) {
 	}
 }
 
+func TestAuthorizationsProcessingTTLMatchesNode(t *testing.T) {
+	if authorizationsProcessingTTL != 120*time.Second {
+		t.Fatalf("authorizations processing TTL = %s, want 120s", authorizationsProcessingTTL)
+	}
+}
+
 func TestTeamGrantEffectiveSourceAndRevoke(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")

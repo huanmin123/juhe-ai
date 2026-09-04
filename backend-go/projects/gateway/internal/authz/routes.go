@@ -4,10 +4,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
+
+const authorizationsProcessingTTL = 120 * time.Second
 
 // Deps bundles the authz slice collaborators.
 type Deps struct {
@@ -83,7 +86,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 			OperationKey:  "authorizations.create",
 			SucceededTTL:  0,
 			FailedTTL:     0,
-			ProcessingTTL: 120_000_000,
+			ProcessingTTL: authorizationsProcessingTTL,
 			Scope: func(r *http.Request) (any, error) {
 				return strings.TrimSpace(r.URL.Query().Get("systemAccountId")), nil
 			},
