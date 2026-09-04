@@ -252,7 +252,11 @@ func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		verified, ok, err := d.Port.VerifyCredentials(r.Context(), auth.Username, *body.OldPassword)
-		if err != nil || !ok || verified.SystemAccountID != auth.SystemAccountID {
+		if err != nil {
+			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !ok || verified.SystemAccountID != auth.SystemAccountID {
 			kernel.WriteBadRequest(w, "当前密码不正确")
 			return
 		}

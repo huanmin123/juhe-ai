@@ -37,6 +37,15 @@ func (p authenticateFailingPort) Authenticate(context.Context, string, bool, boo
 	return modelcheckauth.Actor{}, p.err
 }
 
+type verifyCredentialsFailingPort struct {
+	businessauth.Port
+	err error
+}
+
+func (p verifyCredentialsFailingPort) VerifyCredentials(context.Context, string, string) (modelcheckauth.VerifiedCredentials, bool, error) {
+	return modelcheckauth.VerifiedCredentials{}, false, p.err
+}
+
 func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:authsys-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
@@ -441,6 +450,18 @@ func TestSessionStorageFailureIsNotReportedAsInvalidToken(t *testing.T) {
 	response, payload := getJSON(t, server, "/__aisys__/api/auth/me", cookie)
 	if response.StatusCode != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("session storage failure must remain a server failure: %d %v", response.StatusCode, payload)
+	}
+}
+
+func TestChangePasswordCredentialStorageFailureIsNotReportedAsInvalidPassword(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "admin1", "super-secret", "super_admin")
+	cookie := login(t, server, "admin1", "super-secret")
+
+	deps.Port = verifyCredentialsFailingPort{Port: deps.Port, err: errors.New("credential storage unavailable")}
+	response, payload := postJSON(t, server, "/__aisys__/api/auth/change-password", `{"oldPassword":"super-secret","newPassword":"new-pass-123"}`, cookie)
+	if response.StatusCode != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
+		t.Fatalf("credential storage failure must remain a server failure: %d %v", response.StatusCode, payload)
 	}
 }
 
