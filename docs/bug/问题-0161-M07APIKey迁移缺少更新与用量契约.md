@@ -56,6 +56,13 @@
 - 影响：相同 HTTP 查询在两套实现中返回不同的 `page`、`pageSize`、`items` 和 `hasMore`。例如 `pageSize=1e2` 时 Node 采用 100（再按上限裁剪），Go 采用默认 50，管理端分页位置和列表内容直接偏离。
 - 结论：这是可观察的列表结果差异；Go 应复用 Node 的数字强制转换语义，而不是仅放宽或收紧任意格式。
 
+### 5. PostgreSQL 关键字筛选缺少 C 排序与精确前缀守卫
+
+- Node 证据：`backend/src/storage/api-key.repository.ts` 的 PostgreSQL `buildApiKeyFiltersForClient` 对名称使用 `COLLATE "C" >= ? AND COLLATE "C" < ?`，并额外要求 `starts_with(api_keys.name, ?)`；SQLite 才使用不带该守卫的范围查询。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/store.go` 的 `ListPage` 在 SQLite、PostgreSQL 两种模式都只拼接 `(api_keys.name >= ? AND api_keys.name < ?)`，没有 `COLLATE "C"` 与 `starts_with`。
+- 影响：在 PostgreSQL 数据库默认排序规则不是 C，或存在边界字符/大小写排序差异时，Go 的范围条件可能包含并非以关键字开头的名称；Node 会通过 C 排序和 `starts_with` 排除这些行。管理端同一 `keyword` 的 `items`、`total`、`hasMore` 因此可能不一致。
+- 结论：这是 PostgreSQL 列表过滤条件的功能偏离，不是 SQL 写法替换；Go 需要保留 Node 的精确前缀语义并按数据库方言构造查询。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
