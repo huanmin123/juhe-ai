@@ -61,6 +61,8 @@
 - 2026-09-04 M07（子代理交付，主 agent -race 复验通过）: api-keys 双挂载切片，AES-256-GCM v1 信封与 Node crypto.ts 逐字节兼容（存量密文可解，密钥=sha256(runtimeSecret)），明文仅创建/refresh/secret 三处一次性返回，删除原子硬删+cleanup-target 同事务 upsert，可用性排程全量移植（跨午夜/DST）。顺延：PATCH /{id} 乐观锁更新、usage 渲染（J5）、schedule 时区读系统设置（暂进程时区）。
 - 2026-09-04 M08（子代理交付，主 agent -race 复验通过）: accounts CRUD 核心切片（11 文件）：列表分页+八种过滤、详情/edit-basic、options、创建（revision 初始化+凭据封存）、编辑乐观锁（config_revision 递增）、锁定族（generation CAS）、软删+卫星清理、tags 三端点、NFKC 名称搜索。凭据 AES v1 信封与 Node crypto.ts 双向兼容。登记的 Go 加固偏差：编辑详情凭据返回掩码而非 Node 明文。顺延：授权实例视角 UNION 读、批量/导入导出/clone（M09）、runtime-reset（维护者 6f9739e96 新增，需对照）、余额健康探针读、circuit outbox 推进、创建量上限。
 - 2026-09-04 M09（子代理交付，主 agent -race 复验通过）: accounts 批量/导入/导出切片。批量：2-100 账户同 owner 校验、16 字段 enabled-union 覆盖、逐账户 revision CAS 409、batchId+逐账户日志。导入：五 sourceMode（native/sub2api/newapi/cpa/oneapi）preview/confirm 两阶段、账户经 M08 Store.Create 落库（凭据密封/代理密码密封/分组自动创建）。导出：byIds/byFilters（500 上限）。顺延登记：5 个凭据配置字段批量覆盖（待凭据配置切片）、导入侧凭据归一化与 pending 健康投递、CPA YAML、日志 targets 字段（authsys sink 扩展）、导出 filters 严格 400 语义。
+- 2026-09-04 检查点: master 直推模式运行正常（合并 29b4b99f7 后 6 个迁移提交）。M09 剩余补挂：clone-context（30+ 列投影，account-interaction-context.repository）与 tags/编辑明细已就绪。下一片 M10（授权实例视角读）→ M11-M17。全量回归 69 套件 ok，唯一失败仍是已知基线问题（BusinessOwnerManifest probe_cursor 断言）。
+- 已知基线问题：
 - 已知基线问题：
 - 已知基线问题：
 - 已知基线问题：`maintenance/internal/ownermanifest/TestVerifyRepositoryBusinessOwnerManifest` 在基线 f9c1fbeac 即失败（`account_api_key_pool_probe_cursor type line 844 is stale`；主目录存在维护者未提交的 route-strategies 改动，Go 校验器与已提交 Node 状态不同步）。本迁移不掩盖：该断言涉及的 Node 文件将在 M08-M10 归档时随迁移消失，届时此失败自然解除；W1-W3 每次全量回归将此失败记为 KNOWN-BASELINE-FAIL，不计入迁移回归门。

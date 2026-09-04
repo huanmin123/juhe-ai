@@ -207,7 +207,11 @@ func TemporaryAccessIPAllowed(clientIP string, allowlist []string) bool {
 }
 
 func normalizeTemporaryAccessIP(value string) string {
-	return strings.TrimPrefix(strings.TrimSpace(value), "::ffff:")
+	normalized := strings.TrimSpace(value)
+	if len(normalized) >= len("::ffff:") && strings.EqualFold(normalized[:len("::ffff:")], "::ffff:") {
+		return normalized[len("::ffff:"):]
+	}
+	return normalized
 }
 
 func clientIP(r *http.Request) string {

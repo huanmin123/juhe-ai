@@ -173,6 +173,9 @@ func TestTemporaryAccessIPAllowed(t *testing.T) {
 	if !TemporaryAccessIPAllowed("127.0.0.1", []string{"::ffff:127.0.0.1"}) {
 		t.Fatal("IPv4 entry must match normalized mapped allowlist entry")
 	}
+	if !TemporaryAccessIPAllowed("::FFFF:127.0.0.1", []string{"127.0.0.1"}) {
+		t.Fatal("mapped IPv6 prefix must match case-insensitively")
+	}
 	if TemporaryAccessIPAllowed("203.0.113.17", []string{"127.0.0.1"}) {
 		t.Fatal("unlisted source must be denied")
 	}
