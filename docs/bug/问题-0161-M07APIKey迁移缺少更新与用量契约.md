@@ -70,6 +70,13 @@
 - 影响：数据库排程字段出现仅空白字符时，Go 隐藏了数据损坏并继续提供可用 DTO；Node 会显式失败。排查、告警和上层可用性结果因此偏离，且错误数据可能长期留存。
 - 结论：这是读路径错误处理的可观察差异；Go 应区分 NULL/空字符串与非空白但无 JSON 内容的脏值，保持 Node 的失败语义。
 
+### 7. API Key 说明长度将 UTF-16 单元错误地按 Unicode code point 计算
+
+- Node 证据：`backend/src/modules/api-keys/api-keys.routes.ts` 的 mutation schema 使用 `z.string().trim().max(200)`；JavaScript 字符串 `.length` 按 UTF-16 code units 计数。101 个 emoji（每个占两个 code units）已经超过 200，应返回 400。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/routes.go` 的 `createBody` 和 `backend-go/projects/gateway/internal/apikeys/store.go` 的 `normalizeOptionalDescription` 都用 `len([]rune(...)) > 200`，按 code point 计数；同样 101–200 个 emoji 会被接受并写入。
+- 影响：相同说明文本在 Node 与 Go 的校验结果不同，Go 可存入 Node 会拒绝的超长值，管理端创建接口的成功/失败及后续 DTO 内容发生偏离。
+- 结论：这是输入契约的确定性偏差；Go 需要按 Node 的 UTF-16 code-unit 长度检查，而不是按 rune 数量检查。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
