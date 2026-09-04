@@ -47,6 +47,20 @@ func parseAuthorizationRFC3339Instant(value string) (time.Time, bool) {
 	return parsed, true
 }
 
+func normalizeAuthorizationExpectedUpdatedAt(value string) (string, error) {
+	parsed, valid := parseAuthorizationRFC3339Instant(value)
+	if !valid {
+		return "", failf("授权配置版本格式不正确")
+	}
+	return parsed.UTC().Format("2006-01-02T15:04:05.000Z"), nil
+}
+
+func authorizationUpdatedAtEqual(left, right string) bool {
+	leftTime, leftValid := parseAuthorizationRFC3339Instant(left)
+	rightTime, rightValid := parseAuthorizationRFC3339Instant(right)
+	return leftValid && rightValid && leftTime.Equal(rightTime)
+}
+
 func validateAuthorizationCreateExpiresAt(value, accountExpiresAt *string, now time.Time) (*string, error) {
 	normalized, err := normalizeAuthorizationExpiresAt(value)
 	if err != nil || normalized == nil {

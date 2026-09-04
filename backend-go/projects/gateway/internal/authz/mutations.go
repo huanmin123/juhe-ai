@@ -518,6 +518,10 @@ func (s *Store) PatchForOwner(ctx context.Context, id string, input PatchInput, 
 
 func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, expectedUpdatedAt, actor, ownerScope string) (*PatchOutcome, error) {
 	ctx = ensureCtx(ctx)
+	normalizedExpectedUpdatedAt, normalizeErr := normalizeAuthorizationExpectedUpdatedAt(expectedUpdatedAt)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -533,7 +537,7 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 	if ownerScope != "" && grant.OwnerID != ownerScope {
 		return &PatchOutcome{Status: "not_found"}, nil
 	}
-	if grant.UpdatedAt != expectedUpdatedAt {
+	if !authorizationUpdatedAtEqual(grant.UpdatedAt, normalizedExpectedUpdatedAt) {
 		return &PatchOutcome{Status: "conflict"}, nil
 	}
 	nowTime := s.now().UTC()
@@ -640,8 +644,8 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 		return &PatchOutcome{Status: "unchanged", Result: &summary}, nil
 	}
 	assignments = append(assignments, "updated_at = ?")
-	args = append(args, NextVersion(expectedUpdatedAt, s.now()))
-	args = append(args, id, expectedUpdatedAt)
+	args = append(args, NextVersion(grant.UpdatedAt, s.now()))
+	args = append(args, id, grant.UpdatedAt)
 	result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
 		SET `+strings.Join(assignments, ", ")+` WHERE id = ? AND updated_at = ?`), args...)
 	if err != nil {

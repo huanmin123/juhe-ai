@@ -711,6 +711,38 @@ func TestPatchLimitsDoesNotRewriteTerminalRuntime(t *testing.T) {
 	}
 }
 
+func TestPatchExpectedUpdatedAtValidatesAndCanonicalizes(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_expected_version", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_expected_version",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, created.Item.UpdatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset := parsed.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02T15:04:05.000-07:00")
+	paused := StatusPaused
+	updated, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused}, offset, "owner")
+	if err != nil || updated.Status != "updated" || updated.Result.Status != StatusPaused {
+		t.Fatalf("offset expectedUpdatedAt patch = %+v err=%v", updated, err)
+	}
+	for _, invalid := range []string{"2026-01-01T00:00:00", "not-a-timestamp"} {
+		if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused}, updated.Result.UpdatedAt, "owner"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused}, invalid, "owner"); err == nil || !strings.Contains(err.Error(), "授权配置版本格式不正确") {
+			t.Fatalf("invalid expectedUpdatedAt %q error = %v", invalid, err)
+		}
+	}
+}
+
 func TestPatchExpiresAtRespectsAccountExpiry(t *testing.T) {
 	f := newFixture(t)
 	if _, err := f.db.Exec(accountsFixtureDDL); err != nil {

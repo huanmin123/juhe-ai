@@ -440,6 +440,17 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		kernel.WriteBadRequest(w, "修改授权参数不合法")
 		return
 	}
+	normalizedExpectedUpdatedAt, normalizeErr := normalizeAuthorizationExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if normalizeErr != nil {
+		var fail *Fail
+		if errorsAsFail(normalizeErr, &fail) {
+			kernel.WriteBadRequest(w, fail.Message)
+			return
+		}
+		kernel.WriteBadRequest(w, "修改授权参数不合法")
+		return
+	}
+	body.ExpectedUpdatedAt = normalizedExpectedUpdatedAt
 	expiresAtSet := body.ExpiresAt != nil
 	var expiresAt *string
 	if expiresAtSet && string(body.ExpiresAt) != "null" {
