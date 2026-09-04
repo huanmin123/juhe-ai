@@ -35,6 +35,13 @@
 - 影响：请求未传 `availabilitySchedule.timezone` 时，Node 与 Go 可能按不同本地日期/星期/分钟计算排程。这样会改变创建或更新时的 API Key `status`（`active`/`disabled`）以及 `availability_schedule_next_check_at`，并进一步影响网关是否认为该 Key 当前可用。只要部署主机时区与 `usageStatsTimezone` 不一致即可复现。
 - 结论：这是可观察的功能结果偏离，不是实现风格差异；需要让 Go 使用与 Node 相同的业务时区来源，并在设置缺失/无效时保持同等失败语义。
 
+### 2. 排程子字段显式 `null` 被错误当成缺失
+
+- Node 证据：`backend/src/modules/api-keys/api-key-availability-schedule.schema.ts` 将 `dateRange`、`exceptions`、例外项 `windows` 定义为 `.optional()`，没有 `.nullable()`；`apiKeyMutationSchema` 只对整个 `availabilitySchedule` 做 `.nullable()`。因此例如 `{"dateRange":null}`、`{"exceptions":null}`，以及拒绝例外 `{"action":"deny","windows":null}` 都应在路由层返回 400。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/schedule.go` 的 `normalizeScheduleDateRange`、`normalizeScheduleExceptions` 以及拒绝例外分支以 `input == nil` / `object["windows"] != nil` 判断，无法区分 JSON 缺失与显式 `null`；这些输入会被接受并归一化为无日期范围、无例外或无 `windows` 的合法排程。
+- 影响：客户端传入的非法 JSON 不再得到 Node 的 400，而会创建/更新 API Key 并改变排程存储结果。该偏差不依赖数据库脏数据，直接通过管理 API 可复现。
+- 结论：这是输入校验与最终写入结果的功能偏离，需在 Go 解析层保留字段 presence，并对非 nullable 子字段拒绝显式 `null`。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
