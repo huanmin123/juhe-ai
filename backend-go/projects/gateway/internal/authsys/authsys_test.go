@@ -28,6 +28,15 @@ func (p revokeFailingPort) RevokeToken(context.Context, string) error {
 	return p.err
 }
 
+type authenticateFailingPort struct {
+	businessauth.Port
+	err error
+}
+
+func (p authenticateFailingPort) Authenticate(context.Context, string, bool, bool) (modelcheckauth.Actor, error) {
+	return modelcheckauth.Actor{}, p.err
+}
+
 func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:authsys-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
@@ -402,6 +411,18 @@ func TestLogoutRevokeFailureDoesNotReportSuccess(t *testing.T) {
 	stillAuthenticated, stillAuthenticatedPayload := getJSON(t, server, "/__aisys__/api/auth/me", cookie)
 	if stillAuthenticated.StatusCode != http.StatusOK {
 		t.Fatalf("failed revoke must leave the existing session valid: %d %v", stillAuthenticated.StatusCode, stillAuthenticatedPayload)
+	}
+}
+
+func TestSessionStorageFailureIsNotReportedAsInvalidToken(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "admin1", "super-secret", "super_admin")
+	cookie := login(t, server, "admin1", "super-secret")
+
+	deps.Port = authenticateFailingPort{Port: deps.Port, err: errors.New("session storage unavailable")}
+	response, payload := getJSON(t, server, "/__aisys__/api/auth/me", cookie)
+	if response.StatusCode != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
+		t.Fatalf("session storage failure must remain a server failure: %d %v", response.StatusCode, payload)
 	}
 }
 

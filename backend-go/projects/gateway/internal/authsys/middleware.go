@@ -130,7 +130,7 @@ func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
 					kernel.WriteError(w, http.StatusUnauthorized, "登录会话已过期")
 					return
 				}
-				kernel.WriteError(w, http.StatusUnauthorized, "访问令牌无效或已过期")
+				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 				return
 			}
 			auth := &AuthContext{
