@@ -680,7 +680,7 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 				return nil, err
 			}
 		}
-		if hasLimitsInput {
+		if hasLimitsInput && (nextStatus == StatusActive || nextStatus == StatusPaused || nextStatus == StatusExpired) {
 			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+` SET limits_json = ? WHERE id = ?`), nullableString(nextLimits), runtimeID); err != nil {
 				return nil, err
 			}
