@@ -333,16 +333,22 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
+		ExpectedUpdatedAt *string `json:"expectedUpdatedAt"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
-		kernel.WriteBadRequest(w, "回收授权参数不合法")
+	expectedUpdatedAt, err := parseAuthorizationMutationExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if err != nil {
+		var fail *Fail
+		if errorsAsFail(err, &fail) {
+			kernel.WriteBadRequest(w, fail.Message)
+		} else {
+			kernel.WriteBadRequest(w, "回收授权参数不合法")
+		}
 		return
 	}
-	mutation, err := d.Store.Revoke(r.Context(), r.PathValue("id"), body.ExpectedUpdatedAt, auth.SystemAccountID)
+	mutation, err := d.Store.Revoke(r.Context(), r.PathValue("id"), expectedUpdatedAt, auth.SystemAccountID)
 	if err != nil {
 		kernel.WriteBadRequest(w, "回收授权失败")
 		return
@@ -381,16 +387,22 @@ func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
+		ExpectedUpdatedAt *string `json:"expectedUpdatedAt"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
-		kernel.WriteBadRequest(w, "归还授权参数不合法")
+	expectedUpdatedAt, err := parseAuthorizationMutationExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if err != nil {
+		var fail *Fail
+		if errorsAsFail(err, &fail) {
+			kernel.WriteBadRequest(w, fail.Message)
+		} else {
+			kernel.WriteBadRequest(w, "归还授权参数不合法")
+		}
 		return
 	}
-	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), body.ExpectedUpdatedAt, auth.SystemAccountID)
+	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), expectedUpdatedAt, auth.SystemAccountID)
 	if err != nil {
 		kernel.WriteBadRequest(w, "归还授权使用权失败")
 		return
@@ -554,6 +566,13 @@ func errorsAsFail(err error, target **Fail) bool {
 		return true
 	}
 	return false
+}
+
+func parseAuthorizationMutationExpectedUpdatedAt(value *string) (string, error) {
+	if value == nil {
+		return "", failf("授权配置版本格式不正确")
+	}
+	return normalizeAuthorizationExpectedUpdatedAt(*value)
 }
 
 func errorsAsConflict(err error, target **Conflict) bool {

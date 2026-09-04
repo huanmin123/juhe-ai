@@ -764,12 +764,20 @@ type TerminalMutation struct {
 
 // Revoke mirrors revokeResourceAuthorizationMutationAsync (owner side).
 func (s *Store) Revoke(ctx context.Context, id, expectedUpdatedAt, actor string) (*TerminalMutation, error) {
-	return s.terminalMutation(ctx, id, expectedUpdatedAt, actor, StatusRevoked, "authorization_revoked")
+	normalizedExpectedUpdatedAt, err := normalizeAuthorizationExpectedUpdatedAt(expectedUpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return s.terminalMutation(ctx, id, normalizedExpectedUpdatedAt, actor, StatusRevoked, "authorization_revoked")
 }
 
 // Return mirrors returnResourceAuthorizationForGranteeMutationAsync (grantee
 // side; direct grants only; manual sources only).
 func (s *Store) Return(ctx context.Context, id, expectedUpdatedAt, granteeUserID string) (*TerminalMutation, error) {
+	normalizedExpectedUpdatedAt, err := normalizeAuthorizationExpectedUpdatedAt(expectedUpdatedAt)
+	if err != nil {
+		return nil, err
+	}
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -784,7 +792,7 @@ func (s *Store) Return(ctx context.Context, id, expectedUpdatedAt, granteeUserID
 		!grant.GranteeUserID.Valid || grant.GranteeUserID.String != granteeUserID {
 		return &TerminalMutation{Status: "not_found"}, nil
 	}
-	if grant.UpdatedAt != expectedUpdatedAt {
+	if !authorizationUpdatedAtEqual(grant.UpdatedAt, normalizedExpectedUpdatedAt) {
 		return &TerminalMutation{Status: "conflict", CurrentUpdatedAt: grant.UpdatedAt}, nil
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
@@ -819,7 +827,7 @@ func (s *Store) terminalMutation(ctx context.Context, id, expectedUpdatedAt, act
 	if grant == nil || grant.Status == terminalStatus {
 		return &TerminalMutation{Status: "not_found"}, nil
 	}
-	if grant.UpdatedAt != expectedUpdatedAt {
+	if !authorizationUpdatedAtEqual(grant.UpdatedAt, expectedUpdatedAt) {
 		return &TerminalMutation{Status: "conflict", CurrentUpdatedAt: grant.UpdatedAt}, nil
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
