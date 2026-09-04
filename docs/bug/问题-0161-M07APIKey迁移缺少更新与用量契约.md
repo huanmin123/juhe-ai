@@ -91,6 +91,13 @@
 - 影响：并发 refresh 可能让两个请求同时读取同一旧 `updated_at`，Go 其中一个更新成功、另一个返回“已被其他操作修改”；Node 会在行锁后串行读取最新版本并完成两次刷新。创建同时停用/删除默认组或策略路由时，Go 也可能基于过期可用性通过校验并写入 API Key，而 Node 会在锁保护下按串行顺序判定。
 - 结论：这是 PostgreSQL 并发下的成功/冲突及最终绑定结果偏离；Go 需要在同等事务边界补齐方言条件的 `FOR UPDATE` 锁，而不是仅依赖更新行数兜底。
 
+### 10. 创建/刷新/删除操作日志丢失 Node 的 HTTP `statusCode`
+
+- Node 证据：`backend/src/modules/api-keys/api-keys.routes.ts` 通过 `runLoggedOperationAsync` 写入日志：create 固定 `statusCode: 201`；refresh 为 validation cache 失败时 500、否则 200；delete 为失效失败时 500、否则 204。上述状态码也会写入 operation log 记录。
+- Go 证据：历史 `backend-go/projects/gateway/internal/apikeys/routes.go` 构造的 `authsys.OperationLogEntry` 未携带状态码；`backend-go/projects/gateway/internal/authsys/app.go` 的 `OperationLogEntry` 结构本身没有 `StatusCode` 字段，`OperationLogProducerSink` 因而只能落空值。
+- 影响：HTTP 响应状态虽然由 Go 路由返回，但审计查询无法区分创建成功、刷新/删除后的 validation cache 失效失败等结果；同一操作在 Node 与 Go 的日志 DTO 不一致，影响审计、告警和后续重放分析。
+- 结论：这是操作日志副作用的功能遗漏；Go 需要把最终 HTTP 状态（尤其是失效失败分支）传入统一日志生产者，而不是仅记录动作和资源字段。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
