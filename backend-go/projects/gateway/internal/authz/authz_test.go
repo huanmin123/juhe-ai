@@ -318,6 +318,78 @@ func TestCreateRejectsResourceOutsideActorScope(t *testing.T) {
 	}
 }
 
+func TestCreateNormalizesAndValidatesExpiry(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_expiry", "owner")
+	invalid := "2027-01-01T00:00:00"
+	_, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_expiry",
+		GranteeType: "system_account", GranteeID: "grantee", ExpiresAt: &invalid,
+	}, "owner")
+	if err == nil || !strings.Contains(err.Error(), "过期时间格式不正确") {
+		t.Fatalf("naive expiry error = %v", err)
+	}
+	past := f.now.Add(-time.Second).Format(time.RFC3339Nano)
+	_, err = f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_expiry",
+		GranteeType: "system_account", GranteeID: "grantee", ExpiresAt: &past,
+	}, "owner")
+	if err == nil || !strings.Contains(err.Error(), "授权到期时间不能早于当前时间") {
+		t.Fatalf("past expiry error = %v", err)
+	}
+	offsetFuture := "2027-01-01T09:00:00+09:00"
+	result, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_expiry",
+		GranteeType: "system_account", GranteeID: "grantee", ExpiresAt: &offsetFuture,
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Item.ExpiresAt == nil || *result.Item.ExpiresAt != "2027-01-01T00:00:00.000Z" {
+		t.Fatalf("canonical expiry = %v", result.Item.ExpiresAt)
+	}
+
+	// Node validates a source account's own expiry after finding the resource,
+	// before it writes any grant or runtime projection.
+	if _, err := f.db.Exec(accountsFixtureDDL); err != nil {
+		t.Fatal(err)
+	}
+	f.seedSourceAccount(t, "acc_expiry", "owner")
+	accountExpiry := f.now.Add(2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := f.db.Exec(`UPDATE accounts SET account_expires_at = ? WHERE id = 'acc_expiry'`, accountExpiry); err != nil {
+		t.Fatal(err)
+	}
+	tooLate := f.now.Add(3 * time.Hour).UTC().Format(time.RFC3339Nano)
+	targetGroupID := "target_group"
+	_, err = f.store.Create(context.Background(), CreateInput{
+		ResourceType: "account", ResourceID: "acc_expiry",
+		GranteeType: "system_account", GranteeID: "grantee",
+		TargetGroupID: &targetGroupID, ExpiresAt: &tooLate,
+	}, "owner")
+	if err == nil || !strings.Contains(err.Error(), "授权到期时间不能晚于账户到期时间") {
+		t.Fatalf("account upper-bound expiry error = %v", err)
+	}
+	var accountGrants int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorization_grants WHERE resource_id = 'acc_expiry'`).Scan(&accountGrants); err != nil {
+		t.Fatal(err)
+	}
+	if accountGrants != 0 {
+		t.Fatalf("overlong account-expiry grants = %d, want 0", accountGrants)
+	}
+
+	// Node looks up a well-formed input's resource before it checks whether the
+	// requested expiry is already past. Keep that externally visible priority.
+	_, err = f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "missing_group",
+		GranteeType: "system_account", GranteeID: "grantee", ExpiresAt: &past,
+	}, "owner")
+	if err == nil || !strings.Contains(err.Error(), "授权资源不存在") {
+		t.Fatalf("missing resource expiry priority error = %v", err)
+	}
+}
+
 func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")

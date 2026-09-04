@@ -45,10 +45,18 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 	}
 	defer tx.Rollback()
 
-	now := s.now().UTC().Format(time.RFC3339Nano)
+	// Node normalizes the input before looking up the resource, so a malformed
+	// expiry always remains an input error. The time- and account-bound checks
+	// deliberately happen after resource resolution below.
+	normalizedExpiresAt, err := normalizeAuthorizationExpiresAt(input.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	input.ExpiresAt = normalizedExpiresAt
+	nowTime := s.now().UTC()
 
 	// Owner resolution: the resource must exist and belong to the actor scope.
-	ownerID, err := s.resolveResourceOwner(ctx, tx, input.ResourceType, input.ResourceID)
+	ownerID, accountExpiresAt, err := s.resolveResourceOwner(ctx, tx, input.ResourceType, input.ResourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +66,12 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 	if actorSystemAccountID == "" || ownerID != actorSystemAccountID {
 		return nil, failf("授权资源不存在")
 	}
+	normalizedExpiresAt, err = validateAuthorizationCreateExpiresAt(input.ExpiresAt, accountExpiresAt, nowTime)
+	if err != nil {
+		return nil, err
+	}
+	input.ExpiresAt = normalizedExpiresAt
+	now := nowTime.Format(time.RFC3339Nano)
 	if input.GranteeType == "system_account" && input.GranteeID == ownerID {
 		return nil, failf("不能授权给资源所有者自己")
 	}
@@ -215,28 +229,33 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 	return &CreateResult{Item: *summary, Created: created, PreviousStatus: previousStatus}, nil
 }
 
-func (s *Store) resolveResourceOwner(ctx context.Context, tx *sql.Tx, resourceType, resourceID string) (string, error) {
+func (s *Store) resolveResourceOwner(ctx context.Context, tx *sql.Tx, resourceType, resourceID string) (string, *string, error) {
 	var ownerID string
+	var accountExpiresAt sql.NullString
 	var err error
 	switch resourceType {
 	case "account":
 		// Mirrors Node resourceOwnerSystemAccountId: the owning namespace
 		// column is system_account_id; instance rows (already authorized
 		// clones) are never grantable resources.
-		err = tx.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("accounts")+`
-			WHERE id = ? AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`), resourceID).Scan(&ownerID)
+		err = tx.QueryRowContext(ctx, s.bind(`SELECT system_account_id, account_expires_at FROM `+s.table("accounts")+`
+			WHERE id = ? AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`), resourceID).Scan(&ownerID, &accountExpiresAt)
 	case "group":
 		err = tx.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("groups")+` WHERE id = ?`), resourceID).Scan(&ownerID)
 	default:
-		return "", failf("请选择授权资源")
+		return "", nil, failf("请选择授权资源")
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return "", nil, nil
 	}
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return ownerID, nil
+	if accountExpiresAt.Valid {
+		value := accountExpiresAt.String
+		return ownerID, &value, nil
+	}
+	return ownerID, nil, nil
 }
 
 func (s *Store) checkGrantee(ctx context.Context, tx *sql.Tx, input CreateInput) error {

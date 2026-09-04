@@ -18,6 +18,7 @@ const accountsFixtureDDL = `CREATE TABLE IF NOT EXISTS accounts (
 	status TEXT NOT NULL DEFAULT 'active',
 	resource_owner_system_account_id TEXT NOT NULL DEFAULT '',
 	deleted_at TEXT,
+	account_expires_at TEXT,
 	authorization_instance_authorization_id TEXT,
 	authorization_instance_source_account_id TEXT)`
 
@@ -192,13 +193,25 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 		t.Fatalf("revoked grant must hide the instance: %v", ids)
 	}
 
-	// Expired grant (expires_at in the past) never becomes readable.
-	expiredAt := f.now.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
-	if _, err := f.store.Create(context.Background(), CreateInput{
+	// Model an existing expired row directly: Node rejects an attempt to create
+	// a newly expired authorization, while the read path must still hide rows
+	// that have become expired after a valid creation.
+	futureExpiry := f.now.Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	created, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "acc-src",
 		GranteeType: "system_account", GranteeID: "member1",
-		ExpiresAt: &expiredAt,
-	}, "owner"); err != nil {
+		ExpiresAt: &futureExpiry,
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredAt := f.now.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET status = ?, expires_at = ? WHERE id = ?`,
+		StatusExpired, expiredAt, created.Item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE resource_authorizations SET status = ?, expires_at = ? WHERE resource_type = 'account' AND resource_id = 'acc-src' AND grantee_system_account_id = 'member1'`,
+		StatusExpired, expiredAt); err != nil {
 		t.Fatal(err)
 	}
 	if ids := readableKeys(t, f, "member1"); len(ids) != 0 {
