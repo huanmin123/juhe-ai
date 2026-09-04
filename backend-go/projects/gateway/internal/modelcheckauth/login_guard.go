@@ -60,12 +60,12 @@ func (g *LoginGuard) Failed(ip, username string) (bool, int, string) {
 	now := g.now().UTC()
 	ipRecord := recordFailure(g.byIP[ip], now)
 	g.byIP[ip] = ipRecord
-	if blocked, retry := activeLock(ipRecord, now); blocked {
-		return true, retry, "尝试过于频繁，请稍后再试"
-	}
 	key := strings.ToLower(strings.TrimSpace(username))
 	userRecord := recordFailure(g.byUser[key], now)
 	g.byUser[key] = userRecord
+	if blocked, retry := activeLock(ipRecord, now); blocked {
+		return true, retry, "尝试过于频繁，请稍后再试"
+	}
 	if blocked, retry := activeLock(userRecord, now); blocked {
 		return true, retry, "账号暂时锁定，请稍后再试"
 	}
