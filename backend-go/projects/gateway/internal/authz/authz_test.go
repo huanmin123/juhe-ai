@@ -791,6 +791,37 @@ func TestTerminalExpectedUpdatedAtValidatesAndCanonicalizes(t *testing.T) {
 	}
 }
 
+func TestRevokeAlreadyRevokedIsUnchanged(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_revoke_idempotent", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_revoke_idempotent",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused := StatusPaused
+	pausedResult, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused}, created.Item.UpdatedAt, "owner")
+	if err != nil || pausedResult.Status != "updated" {
+		t.Fatalf("pause before revoke = %+v err=%v", pausedResult, err)
+	}
+	revoked, err := f.store.Revoke(context.Background(), created.Item.ID, pausedResult.Result.UpdatedAt, "owner")
+	if err != nil || revoked.Status != "updated" || revoked.PreviousStatus != StatusPaused {
+		t.Fatalf("revoke paused grant = %+v err=%v", revoked, err)
+	}
+	unchanged, err := f.store.Revoke(context.Background(), created.Item.ID, revoked.Result.UpdatedAt, "owner")
+	if err != nil || unchanged.Status != "unchanged" || unchanged.Result == nil || unchanged.Result.Status != StatusRevoked || unchanged.Result.UpdatedAt != revoked.Result.UpdatedAt {
+		t.Fatalf("revoke already revoked = %+v err=%v", unchanged, err)
+	}
+	stale, err := f.store.Revoke(context.Background(), created.Item.ID, created.Item.UpdatedAt, "owner")
+	if err != nil || stale.Status != "conflict" {
+		t.Fatalf("stale revoke after terminal = %+v err=%v", stale, err)
+	}
+}
+
 func TestPatchExpiresAtRespectsAccountExpiry(t *testing.T) {
 	f := newFixture(t)
 	if _, err := f.db.Exec(accountsFixtureDDL); err != nil {

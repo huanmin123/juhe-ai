@@ -760,6 +760,7 @@ type TerminalMutation struct {
 	Status           string // not_found|conflict|unchanged|updated
 	Result           *Summary
 	CurrentUpdatedAt string
+	PreviousStatus   string
 }
 
 // Revoke mirrors revokeResourceAuthorizationMutationAsync (owner side).
@@ -824,11 +825,16 @@ func (s *Store) terminalMutation(ctx context.Context, id, expectedUpdatedAt, act
 	if err != nil {
 		return nil, err
 	}
-	if grant == nil || grant.Status == terminalStatus {
+	if grant == nil {
 		return &TerminalMutation{Status: "not_found"}, nil
 	}
 	if !authorizationUpdatedAtEqual(grant.UpdatedAt, expectedUpdatedAt) {
 		return &TerminalMutation{Status: "conflict", CurrentUpdatedAt: grant.UpdatedAt}, nil
+	}
+	previousStatus := grant.Status
+	if grant.Status == terminalStatus {
+		summary := grant.summary()
+		return &TerminalMutation{Status: "unchanged", Result: &summary, PreviousStatus: previousStatus}, nil
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
 	if err := s.applyTerminal(ctx, tx, grant, terminalStatus, actor, now, reason, false); err != nil {
@@ -841,7 +847,7 @@ func (s *Store) terminalMutation(ctx context.Context, id, expectedUpdatedAt, act
 	if err != nil {
 		return nil, err
 	}
-	return &TerminalMutation{Status: "updated", Result: summary}, nil
+	return &TerminalMutation{Status: "updated", Result: summary, PreviousStatus: previousStatus}, nil
 }
 
 // resolveRuntimeIDs finds the runtime rows governed by a grant.

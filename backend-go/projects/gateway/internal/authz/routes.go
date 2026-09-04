@@ -363,7 +363,7 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if d.Sink != nil {
+	if mutation.Status == "updated" && d.Sink != nil {
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
 			Mode: "admin", Module: "authorizations", Action: "revoke",
@@ -371,7 +371,7 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 			ResourceID: mutation.Result.ID,
 			Summary:    "回收资源授权：" + mutation.Result.ResourceID,
 			Changes: []authsys.OperationLogChange{
-				{Field: "status", Label: "状态", Before: StatusActive, After: StatusRevoked},
+				{Field: "status", Label: "状态", Before: mutation.PreviousStatus, After: StatusRevoked},
 			},
 		}, r)
 	}
