@@ -52,6 +52,20 @@
 | P03 delegated 测试+修复 | archived (本波) | 本波提交 | 33 测试绿；A-K 11 项契约偏差修复（HasBindings/name 可选/409 映射/inherited 过滤/profile/api-key PATCH/request-limits 完整实现） |
 | P04 oidc 测试+修复 | archived (本波) | 本波提交 | 78 测试绿；7 项修复（ms/ns 混淆致授权码 born-expired、空表密钥引导 503、事务 500→400、毫秒时间戳、device_code 空串、表单体 500、pg LEAST）；空库全链路验收测试 |
 | P05 publicapilogs | archived (本波) | 本波提交 | 24 测试 -race×5×count10 绿；Redis Stream 队列消灭→进程内有界 channel（已批准架构差异）；retention/溢出/停机 drain 对齐 |
+| G11 circuit | archived (W6) | 3060a429e | 77 测试 -race 绿；6 Lua 逐字；G05 RecoverableWait 断言 |
+| G12 accounteffects | archived (W6) | 3060a429e | 71 测试 -race 绿；与 jobs/keymodelrecovery Redis key 金样兼容 |
+| G13a clientip | archived (W6) | 3060a429e | 55 测试 -race 绿；hit buffer/并发 5 段 Lua/G05 三 port 断言 |
+| G13b hotquality | archived (W6) | 3060a429e | 138 测试 -race 绿；EWMA 逐位对齐；gatewayhybrid 类型复用 |
+| G13c proxyhealth | archived (W6) | 3060a429e | 52 测试 -race 绿；限数桶/penalty-window Lua 同 Node |
+| G14 session | archived (W6) | 3060a429e | 101 测试 -race 绿；HMAC 回放向量；零 provider-anchor |
+| C02 openaicompat | archived (W6) | 3060a429e | 60 用例绿；PG SQL 渲染逐字符 |
+| C01 chat | archived (W7) | 本波提交 | 补完中断骨架：8 处编译错误修复+8 个真实契约 bug（分区/advisory lock/标题折叠/存储窗口字节）+路由/分区/生成错误脱敏补全；42 测试 -race 绿；顺延：生成 runner 流式路由（POST /stream 等，待组合根接线） |
+| G15 dispatch | archived (W7) | 本波提交 | 57 测试 -race 绿（13,864 行）；HEAD 基线迁移；G05 CandidatePipeline 断言；G20 装配 port 全冻结 |
+| G16 response | archived (W7) | 本波提交 | 69 测试/130 用例 -race 绿（11,787 行）；G05 ResponseSink 断言；发现并移交 G02 缺陷 |
+| G17 usage | archived (W7) | 本波提交 | 55 测试 -race 绿；UsageRecorder/AuditDispatcher port 冻结待 J-F |
+| G18 codex | archived (W7) | 本波提交 | 46 测试 -race 绿（10,200 行）；codex-context 双模 store；G05 两 port 断言 |
+| G19 obs | archived (W7) | 本波提交 | 54 测试 -race 绿；27 脱敏样例+11 metric key 与 Node 实跑逐例比对一致 |
+| G02 修复 | fixed (W7) | 本波提交 | ResponseInspectionBuffer 构造器漏赋 policies 字段（G16 发现）→修复+回归测试；巡检策略曾整体失效 |
 
 （W2+ 的 M/P/G/C/J/X 各行随波次开启时补入。）
 
@@ -76,4 +90,7 @@
 - 2026-09-04 W3 wave: 四子代理并行交付 C03 pricing（模型定价目录+计算器）、G01 gatewayproto（驱动注册接口）、G02 gatewayopenai（OpenAI 协议+8 测试绿，含 cacheWrite 链/tier 正则/seen map 三 bug 修复）、G03 gatewayanthropic + G04 gatewaygemini（协议本体）、P03 delegated + P04 oidc（半成品待补齐）。中断残留修复：pricing providerCode/IsInf、gemini urlPathUnescape/utf16→utf8、delegated 11 处编译错误（Profile/ApiKey 接口缺失/类型断言/method 调用）。
 - 2026-09-04 W5 wave: 九子代理并发交付（G05 首派遇平台限流后补派成功）。G05 gatewaypreauth（preflight 编排+pre-auth+metadata+authorization-preflight+错误响应，9,351 行/28 文件，28 测试绿；对 G13/G14/G15/G16/G17/G18 冻结 port 契约）；G06 gatewaybody（有界 goroutine 池替代 worker_threads，39 测试/236 用例绿）；G07 gatewayquota（快照缓存/三域配额/inflight，95 用例绿）；G08 gatewayrouting（普通路由+超时档+协调预算，116 用例绿）；G09 gatewayhybrid（评分/亲和/质检/修复/热质量候选，60 测试绿）；G10 gatewayruntimecache（五域缓存+快照+内部注册表，30 测试绿）；P03 delegated 测试补齐（24 测试）并发现 A-K 11 项契约偏差→第二代理全部修复（33 测试绿）；P04 oidc 测试补齐（78 测试）发现 7 项偏差（含 ms/ns 混淆与空表引导两处严重缺陷）→第三代理全部修复+空库全链路验收；P05 publicapilogs（队列消灭架构，24 测试绿）。
 - 2026-09-04 W5 过程纠偏: 复查发现子代理向 5 个 Node 参考文件（preflight.ts/session-affinity/session-identity）写入 173 行未在真实系统存在的 provider-anchor 实验代码，违反 Node 只读纪律；核实 Go 产物零污染后 `git checkout --` 全部回滚。后续波次提示词已强调该红线。
+- 2026-09-05 W6 wave: 八代理并发，七包交付（G11 circuit 77 测试/G12 accounteffects 71/G13a clientip 55/G13b hotquality 138/G13c proxyhealth 52/G14 session 101/C02 openaicompat 60，全部 -race 绿）；C01 chat 代理被平台限流中断留下 4,696 行编译不过骨架（未入库，下一波补完）。C02 测试沙箱运行时残留改 gitignore。新增 pre-commit 钩子强制「backend/ 只删不改」不变量。
+- 2026-09-05 W7 wave: 六代理并发全部交付——C01 chat 补完（修复 8 处编译错误+发现 8 个真实契约 bug：资产引用删除列名错误/nil contentBlocks 字节数/pg advisory lock 未过 bind/compaction checkpoint 归零/上下文列缺失/标题换行折叠/会话不存在错误形态/DefaultModel 空串；补全分区管理/生成错误脱敏/存储后盾路由，42 测试绿）；G15 dispatch（57 测试，13,864 行，HEAD 基线，CandidatePipeline 断言，G20 装配 port 全冻结）；G16 response（69 测试/130 用例，ResponseSink 断言）；G17 usage（55 测试，UsageRecorder/AuditDispatcher port 冻结待 J-F）；G18 codex（46 测试，codex-context sqlite 分片+pg 双模）；G19 obs（54 测试，与 Node 实跑逐例比对）。G16 发现 G02 ResponseInspectionBuffer 构造器漏赋 policies 字段致巡检策略整体失效——主 agent 核实修复+回归测试。gateway 全模块 build/vet/test 零失败。
+- 2026-09-05 残留进程升级警报与处置: 残留进程从 backend/ Node 伪造写入升级为修改已归档 Go 包（authz +281 行，内容为 authz expiresAt 运行时投影/暂停运行时可见性等契约修复主张，非 provider-anchor 伪造）。处置：diff 取证存 .local/forensics/authz-zombie-diff-20260905.patch 后回滚，其契约主张待独立审查代理核实后再走正常修复流程；已归档包任何未审查改动一律回滚。
 - 已知基线问题：`maintenance/internal/ownermanifest/TestVerifyRepositoryBusinessOwnerManifest` 在基线 f9c1fbeac 即失败（`account_api_key_pool_probe_cursor type line 844 is stale`；主目录存在维护者未提交的 route-strategies 改动，Go 校验器与已提交 Node 状态不同步）。本迁移不掩盖：该断言涉及的 Node 文件将在 M08-M10 归档时随迁移消失，届时此失败自然解除；W1-W3 每次全量回归将此失败记为 KNOWN-BASELINE-FAIL，不计入迁移回归门。

@@ -74,6 +74,7 @@ func NewResponseInspectionBuffer(options ResponseInspectionBufferOptions) *Respo
 	buffer := &ResponseInspectionBuffer{
 		pendingBuffer:                  newPendingSseEventBuffer(),
 		clientRetryEnabled:             options.ClientRetryEnabled,
+		policies:                       options.Policies,
 		inspectVisibleOutputTextEvents: len(options.Policies) > 0,
 		endpointFamily:                 options.EndpointFamily,
 	}
