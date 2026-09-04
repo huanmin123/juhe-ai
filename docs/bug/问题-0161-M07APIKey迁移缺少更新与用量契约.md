@@ -26,6 +26,15 @@
 - usage：`backend-go/projects/gateway/internal/apikeys/store.go` 返回零值；Node `api-key-list-mappers.ts` 会加载真实 usage summaries。
 - invalidation：Go `NewStore` 接受 nil invalidator；Node repository 在 refresh/delete 后始终执行 validation cache invalidation。
 
+## 已确认的功能偏差（本轮审计）
+
+### 1. 未指定排程时区时使用了错误的时区来源
+
+- Node 证据：`backend/src/storage/api-key-availability-schedule.ts` 的 `defaultScheduleTimezone()` 调用 `usageStatsTimezone()`；该函数从 `system_settings` 中 `system_account_id = 'sys_admin'`、`key = 'usageStatsTimezone'` 的 JSON 设置读取业务时区，缺失或无效时抛错。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/schedule.go` 的 `defaultScheduleTimezone()` 直接返回 `time.Local`，只有本地时区名不可解析时才回退 `UTC`，没有读取业务设置。
+- 影响：请求未传 `availabilitySchedule.timezone` 时，Node 与 Go 可能按不同本地日期/星期/分钟计算排程。这样会改变创建或更新时的 API Key `status`（`active`/`disabled`）以及 `availability_schedule_next_check_at`，并进一步影响网关是否认为该 Key 当前可用。只要部署主机时区与 `usageStatsTimezone` 不一致即可复现。
+- 结论：这是可观察的功能结果偏离，不是实现风格差异；需要让 Go 使用与 Node 相同的业务时区来源，并在设置缺失/无效时保持同等失败语义。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
