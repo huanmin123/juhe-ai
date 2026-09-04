@@ -42,6 +42,13 @@
 - 影响：客户端传入的非法 JSON 不再得到 Node 的 400，而会创建/更新 API Key 并改变排程存储结果。该偏差不依赖数据库脏数据，直接通过管理 API 可复现。
 - 结论：这是输入校验与最终写入结果的功能偏离，需在 Go 解析层保留字段 presence，并对非 nullable 子字段拒绝显式 `null`。
 
+### 3. 额度子项显式 `null` 被错误接受
+
+- Node 证据：`backend/src/modules/request-quota-limit.schema.ts` 中 `hourly`、`daily`、`weekly`、`monthly`、`total` 均为 `.optional()` 的对象 schema，未声明 `.nullable()`；只有 API Key mutation 的顶层 `quotaLimits` 使用 `.nullable()`。因此 `quotaLimits: {"daily":null}` 等请求应返回 400，`quotaLimits:null` 才表示清空全部额度。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/store.go` 的 `normalizeQuotaLimit` / `normalizeHourlyQuotaLimit` 以 `value == nil` 直接返回 nil，把 JSON 显式 `null` 与字段缺失合并；`normalizeQuotaLimits` 随后将其当作空配置写入。
+- 影响：非法额度请求在 Go 中可能成功创建或更新，并把原有额度静默清除（尤其是 PATCH 传入 `{quotaLimits:{"daily":null}}` 时），而 Node 会拒绝请求且保留原值。
+- 结论：这是可观察的输入校验和数据结果偏离；Go 需要区分字段缺失与显式 `null`，仅对顶层 `quotaLimits:null` 执行清空语义。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
