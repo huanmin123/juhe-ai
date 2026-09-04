@@ -19,7 +19,7 @@
 | 波 | 状态 | WP 明细 |
 | --- | --- | --- |
 | W1 | in-progress | K1 K2 K3 K4 K5 K6 K7 S-PG S-SQ + doc |
-| W2 | in-progress | M01/M03/M04/M05/M06/M07/M08/M09 ✓ 全部归档（M09b clone-context 补挂完成，15 测试 -race 绿）；下一片 M10 授权实例视角读 → M11 providers → M12-M17 |
+| W2 | in-progress | M01 ✓、M03 ✓、M04 ✓（usage 待 J5）、M05 ✓、M06 ✓、M07 ✓、M08 ✓、M09(+M09b) ✓、**M10 ✓**（授权实例视角读接线+3 测试）、**M11 ✓**（providers 管理读，3 测试 -race 绿；写端点待定价服务 C03）；下一片 M12 settings + M13-M17 |
 | W3 | pending | M08-M14 |
 | W4 | pending | M15-M17 P01-P03 G01-G03 |
 | W5 | pending | G04-G08 P04 P05 |
@@ -62,6 +62,8 @@
 - 2026-09-04 M08（子代理交付，主 agent -race 复验通过）: accounts CRUD 核心切片（11 文件）：列表分页+八种过滤、详情/edit-basic、options、创建（revision 初始化+凭据封存）、编辑乐观锁（config_revision 递增）、锁定族（generation CAS）、软删+卫星清理、tags 三端点、NFKC 名称搜索。凭据 AES v1 信封与 Node crypto.ts 双向兼容。登记的 Go 加固偏差：编辑详情凭据返回掩码而非 Node 明文。顺延：授权实例视角 UNION 读、批量/导入导出/clone（M09）、runtime-reset（维护者 6f9739e96 新增，需对照）、余额健康探针读、circuit outbox 推进、创建量上限。
 - 2026-09-04 M09（子代理交付，主 agent -race 复验通过）: accounts 批量/导入/导出切片。批量：2-100 账户同 owner 校验、16 字段 enabled-union 覆盖、逐账户 revision CAS 409、batchId+逐账户日志。导入：五 sourceMode（native/sub2api/newapi/cpa/oneapi）preview/confirm 两阶段、账户经 M08 Store.Create 落库（凭据密封/代理密码密封/分组自动创建）。导出：byIds/byFilters（500 上限）。顺延登记：5 个凭据配置字段批量覆盖（待凭据配置切片）、导入侧凭据归一化与 pending 健康投递、CPA YAML、日志 targets 字段（authsys sink 扩展）、导出 filters 严格 400 语义。
 - 2026-09-04 检查点: master 直推模式运行正常（合并 29b4b99f7 后 6 个迁移提交）。M09 剩余补挂：clone-context（30+ 列投影，account-interaction-context.repository）与 tags/编辑明细已就绪。下一片 M10（授权实例视角读）→ M11-M17。全量回归 69 套件 ok，唯一失败仍是已知基线问题（BusinessOwnerManifest probe_cursor 断言）。
+- 2026-09-04 M10+M11: M10 授权实例视角——authz.Store.AuthorizedReadableInstanceAccounts（直接授权+团队授权两条路径，active+未过期过滤），accounts 包 AuthorizedAccountReader 窄接口注入，my-accounts 列表对实例账户放行（3 个授权视角测试绿）。M11 providers 管理读（列表分页+keyword、详情 byCode/byID；写端点依赖定价服务顺延 C03）。另加固：临时令牌 ttlSeconds 严格整数校验（NaN/Inf/非整数拒绝）。providers 包为被配额中断的子代理遗留成品，主 agent -race 复验通过后补登记。
+- 已知基线问题：
 - 已知基线问题：
 - 已知基线问题：
 - 已知基线问题：
