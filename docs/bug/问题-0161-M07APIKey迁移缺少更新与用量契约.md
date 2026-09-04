@@ -63,6 +63,13 @@
 - 影响：在 PostgreSQL 数据库默认排序规则不是 C，或存在边界字符/大小写排序差异时，Go 的范围条件可能包含并非以关键字开头的名称；Node 会通过 C 排序和 `starts_with` 排除这些行。管理端同一 `keyword` 的 `items`、`total`、`hasMore` 因此可能不一致。
 - 结论：这是 PostgreSQL 列表过滤条件的功能偏离，不是 SQL 写法替换；Go 需要保留 Node 的精确前缀语义并按数据库方言构造查询。
 
+### 6. 存储排程的空白脏值被静默当成无排程
+
+- Node 证据：`backend/src/storage/api-key-availability-schedule.ts` 的 `parseApiKeyAvailabilityScheduleJson` 仅对 falsy 值（`null`、`undefined`、空字符串）返回 `undefined`；字符串包含空格时仍执行 `JSON.parse(value)`，因此 `"   "` 等损坏存储会抛错，列表/详情路由进入 500 错误路径。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/schedule.go` 的 `ParseScheduleJSON` 先 `strings.TrimSpace(raw)`，Trim 后为空就直接返回 `nil`，同样的数据库值会被当作没有排程并正常返回 200。
+- 影响：数据库排程字段出现仅空白字符时，Go 隐藏了数据损坏并继续提供可用 DTO；Node 会显式失败。排查、告警和上层可用性结果因此偏离，且错误数据可能长期留存。
+- 结论：这是读路径错误处理的可观察差异；Go 应区分 NULL/空字符串与非空白但无 JSON 内容的脏值，保持 Node 的失败语义。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
