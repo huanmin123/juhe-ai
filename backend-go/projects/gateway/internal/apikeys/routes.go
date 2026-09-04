@@ -3,6 +3,7 @@ package apikeys
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,6 +37,9 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	})))
 	k.Register("POST "+prefix+"/api-keys", d.mountGuardedCreate(false))
 	k.Register("POST "+prefix+"/api-keys/{id}/refresh-key", d.mountGuardedRefresh(false))
+	k.Register("PATCH "+prefix+"/api-keys/{id}", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.patch(w, r, adminScope(r))
+	})))
 	k.Register("DELETE "+prefix+"/api-keys/{id}", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.remove(w, r, adminScope(r))
 	})))
@@ -52,6 +56,9 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	})))
 	k.Register("POST "+prefix+"/my-api-keys", d.mountGuardedCreate(true))
 	k.Register("POST "+prefix+"/my-api-keys/{id}/refresh-key", d.mountGuardedRefresh(true))
+	k.Register("PATCH "+prefix+"/my-api-keys/{id}", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.patch(w, r, selfScope(r))
+	})))
 	k.Register("DELETE "+prefix+"/my-api-keys/{id}", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.remove(w, r, selfScope(r))
 	})))
@@ -350,6 +357,145 @@ func (d *Deps) mountGuardedRefresh(selfOnly bool) http.Handler {
 		return d.Auth.RequireSession(true)(handler)
 	}
 	return d.Auth.RequireAdmin(handler)
+}
+
+// patchChangeLabels mirrors the diffSafeFields label map of the Node PATCH
+// route; the slice pins the JSON key order of the labels object.
+var patchChangeLabels = []struct{ Field, Label string }{
+	{"name", "名称"},
+	{"description", "说明"},
+	{"status", "状态"},
+	{"routeStrategyId", "策略路由"},
+	{"expiresAt", "过期时间"},
+	{"quotaLimits", "额度限制"},
+	{"availabilitySchedule", "时间计划"},
+}
+
+// diffSafePatchChanges mirrors diffSafeFields + safeChange for the patch
+// label set (none of the fields is sensitive): an entry is emitted when the
+// JSON renderings of before/after differ, with strings verbatim (200-char
+// cap) and objects rendered as JSON (500-char cap). Absent/null collapses to
+// null for the comparison and drops the property for the rendered change,
+// matching normalizeSafeValue(undefined) → omitted.
+func diffSafePatchChanges(before, after map[string]any) []authsys.OperationLogChange {
+	changes := []authsys.OperationLogChange{}
+	for _, label := range patchChangeLabels {
+		beforeValue, hasBefore := before[label.Field]
+		afterValue, hasAfter := after[label.Field]
+		if patchComparableValue(beforeValue, hasBefore) == patchComparableValue(afterValue, hasAfter) {
+			continue
+		}
+		changes = append(changes, authsys.OperationLogChange{
+			Field:  label.Field,
+			Label:  label.Label,
+			Before: patchSafeValue(beforeValue, hasBefore),
+			After:  patchSafeValue(afterValue, hasAfter),
+		})
+	}
+	return changes
+}
+
+func patchComparableValue(value any, present bool) string {
+	if !present || value == nil {
+		return "null"
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%v", value)
+	}
+	return string(encoded)
+}
+
+func patchSafeValue(value any, present bool) string {
+	if !present || value == nil {
+		return ""
+	}
+	if text, isString := value.(string); isString {
+		runes := []rune(text)
+		if len(runes) > 200 {
+			return string(runes[:200]) + "..."
+		}
+		return text
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		encoded = []byte(fmt.Sprintf("%v", value))
+	}
+	runes := []rune(string(encoded))
+	if len(runes) > 500 {
+		return string(runes[:500])
+	}
+	return string(encoded)
+}
+
+// patch mirrors the Node PATCH /:id route: scope-query gate,
+// apiKeyUpdateSchema parse (first issue message → 400), the store patch, the
+// api_keys.update operation log (diffSafeFields over before/after, recorded
+// only when changedFields is non-empty) and the error contract: revision
+// conflict → 409 + currentRevision, missing key → 404, duplicate name → 409,
+// known validation messages → 400, validation-cache flush failure → 500.
+func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope) {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	if !scopeQueryOK(r) {
+		kernel.WriteBadRequest(w, "系统账号 ID 不能为空")
+		return
+	}
+	var body map[string]any
+	if !kernel.DecodeJSON(w, r, &body) {
+		return
+	}
+	input, message := parsePatchBody(body)
+	if message != "" {
+		kernel.WriteBadRequest(w, message)
+		return
+	}
+	outcome, err := d.Store.Patch(r.Context(), r.PathValue("id"), input, access)
+	if err != nil {
+		var revisionConflict *RevisionConflictError
+		if errors.As(err, &revisionConflict) {
+			kernel.WriteJSON(w, http.StatusConflict, struct {
+				Message         string `json:"message"`
+				CurrentRevision string `json:"currentRevision"`
+			}{Message: revisionConflict.Error(), CurrentRevision: revisionConflict.CurrentRevision})
+			return
+		}
+		d.writeMutationError(w, err)
+		return
+	}
+	if outcome == nil {
+		kernel.WriteError(w, http.StatusNotFound, "API Key 不存在")
+		return
+	}
+	if d.Sink != nil && len(outcome.Result.ChangedFields) > 0 {
+		d.Sink.Record(authsys.OperationLogEntry{
+			ActorSystemAccountID:          auth.SystemAccountID,
+			ActorUsername:                 auth.Username,
+			ActorDisplayName:              auth.DisplayName,
+			ActorRole:                     auth.Role,
+			OperationScopeSystemAccountID: outcome.OwnerSystemAccountID,
+			Mode:                          operationMode(access),
+			Module:                        "api_keys",
+			Action:                        "update",
+			OperationKey:                  "api_keys.update",
+			ResourceType:                  "api_key",
+			ResourceID:                    outcome.Result.ID,
+			ResourceName:                  outcome.ResourceName,
+			Summary:                       "更新 API Key：" + outcome.ResourceName,
+			Changes:                       diffSafePatchChanges(outcome.Before, outcome.After),
+			Viewers: []authsys.OperationLogViewer{
+				{SystemAccountID: outcome.OwnerSystemAccountID, Reason: "resource_owner"},
+			},
+		}, r)
+	}
+	if outcome.ValidationCacheError != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "API Key validation cache 失效失败")
+		return
+	}
+	kernel.WriteOK(w, outcome.Result, "")
 }
 
 func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope) {
