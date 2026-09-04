@@ -408,6 +408,48 @@ func TestSystemAccountsCRUDAndAuthorization(t *testing.T) {
 	}
 }
 
+func TestSystemAccountNullablePatchSemantics(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "root", "root-password", "super_admin")
+	seedAccount(t, deps, "plain", "plain-password", "user")
+	adminCookie := login(t, server, "root", "root-password")
+	plainID := accountIDByUsername(t, deps, "plain")
+	list, payload := getJSON(t, server, "/__aisys__/api/system-accounts?page=1&pageSize=20", adminCookie)
+	if list.StatusCode != http.StatusOK {
+		t.Fatalf("list accounts: %d %v", list.StatusCode, payload)
+	}
+	item := findItemByUsername(t, payload, "plain")
+	patch, patchPayload := patchJSON(t, server, "/__aisys__/api/system-accounts/"+plainID,
+		`{"expectedUpdatedAt":"`+item["editVersion"].(string)+`","description":"kept","aiAccountLimit":42,"requestLimits":{"perMinute":7}}`, adminCookie)
+	if patch.StatusCode != http.StatusOK {
+		t.Fatalf("set nullable fields: %d %v", patch.StatusCode, patchPayload)
+	}
+	_, payload = getJSON(t, server, "/__aisys__/api/system-accounts?page=1&pageSize=20", adminCookie)
+	item = findItemByUsername(t, payload, "plain")
+	cleared, clearedPayload := patchJSON(t, server, "/__aisys__/api/system-accounts/"+plainID,
+		`{"expectedUpdatedAt":"`+item["editVersion"].(string)+`","description":null,"aiAccountLimit":null,"requestLimits":null}`, adminCookie)
+	if cleared.StatusCode != http.StatusOK {
+		t.Fatalf("clear nullable fields: %d %v", cleared.StatusCode, clearedPayload)
+	}
+	data := clearedPayload["data"].(map[string]any)
+	if value, ok := data["description"]; !ok || value != nil {
+		t.Fatalf("description null must be returned explicitly: %v", data)
+	}
+	if value, ok := data["aiAccountLimit"]; !ok || value != nil {
+		t.Fatalf("aiAccountLimit null must be returned explicitly: %v", data)
+	}
+	if value, ok := data["requestLimits"]; !ok || value != nil {
+		t.Fatalf("requestLimits null must be returned explicitly: %v", data)
+	}
+	stored, err := deps.Accounts.FindByID(nil, plainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Description != nil || stored.AIAccountLimit != nil || stored.RequestLimits != nil {
+		t.Fatalf("nullable fields must be cleared in storage: %+v", stored)
+	}
+}
+
 func TestTemporaryAccessTokenLifecycle(t *testing.T) {
 	deps, _, server := newTestEnv(t)
 	seedAccount(t, deps, "admin1", "super-secret", "super_admin")

@@ -303,12 +303,17 @@ func buildChanges(before AccountSummary, input PatchInput, result AccountMutatio
 	if result.DisplayName != nil {
 		appendChange("displayName", before.DisplayName, *result.DisplayName)
 	}
-	if result.Description != nil {
+	if len(result.Description) > 0 {
 		beforeDescription := ""
 		if before.Description != nil {
 			beforeDescription = *before.Description
 		}
-		appendChange("description", beforeDescription, *result.Description)
+		afterDescription := ""
+		var description *string
+		if json.Unmarshal(result.Description, &description) == nil && description != nil {
+			afterDescription = *description
+		}
+		appendChange("description", beforeDescription, afterDescription)
 	}
 	if result.Role != nil {
 		appendChange("role", before.Role, *result.Role)
@@ -322,10 +327,15 @@ func buildChanges(before AccountSummary, input PatchInput, result AccountMutatio
 	if result.ImageGenerationEnabled != nil {
 		appendChange("imageGenerationEnabled", boolText(before.ImageGenerationEnabled), boolText(*result.ImageGenerationEnabled))
 	}
-	if result.AIAccountLimit != nil {
-		appendChange("aiAccountLimit", intPtrText(before.AIAccountLimit), strconv.Itoa(*result.AIAccountLimit))
+	if len(result.AIAccountLimit) > 0 {
+		afterLimit := ""
+		var limit *int
+		if json.Unmarshal(result.AIAccountLimit, &limit) == nil && limit != nil {
+			afterLimit = strconv.Itoa(*limit)
+		}
+		appendChange("aiAccountLimit", intPtrText(before.AIAccountLimit), afterLimit)
 	}
-	if result.RequestLimits != nil {
+	if len(result.RequestLimits) > 0 {
 		appendChange("requestLimits", "已设置", "已设置")
 	}
 	if input.Password != nil {
@@ -369,11 +379,12 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 		mutating++
 	}
 	if value, exists := body["description"]; exists {
+		input.DescriptionPresent = true
 		if value == nil {
-			empty := ""
-			input.Description = &empty
+			input.Description = nil
 		} else if text, isString := value.(string); isString {
-			input.Description = &text
+			trimmed := strings.TrimSpace(text)
+			input.Description = &trimmed
 		} else {
 			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
 		}
@@ -420,9 +431,9 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 		mutating++
 	}
 	if value, exists := body["aiAccountLimit"]; exists {
+		input.AIAccountLimitPresent = true
 		if value == nil {
-			zero := 0
-			input.AIAccountLimit = &zero
+			input.AIAccountLimit = nil
 		} else if number, isFloat := value.(float64); isFloat && number == float64(int(number)) {
 			limit := int(number)
 			input.AIAccountLimit = &limit
@@ -432,15 +443,21 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 		mutating++
 	}
 	if value, exists := body["requestLimits"]; exists {
-		encoded, marshalErr := json.Marshal(value)
-		if marshalErr != nil {
-			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
+		input.RequestLimitsPresent = true
+		if value == nil {
+			input.RequestLimits = nil
+			mutating++
+		} else {
+			encoded, marshalErr := json.Marshal(value)
+			if marshalErr != nil {
+				return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
+			}
+			var limits UserRequestLimits
+			if unmarshalErr := json.Unmarshal(encoded, &limits); unmarshalErr != nil {
+				return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
+			}
+			input.RequestLimits = &limits
 		}
-		var limits UserRequestLimits
-		if unmarshalErr := json.Unmarshal(encoded, &limits); unmarshalErr != nil {
-			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
-		}
-		input.RequestLimits = &limits
 		mutating++
 	}
 	if mutating == 0 {

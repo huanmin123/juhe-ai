@@ -68,17 +68,17 @@ type AccountListItem struct {
 
 // AccountMutationResult mirrors SystemAccountMutationResult.
 type AccountMutationResult struct {
-	ID                                      string             `json:"id"`
-	UpdatedAt                               string             `json:"updatedAt"`
-	DisplayName                             *string            `json:"displayName,omitempty"`
-	Description                             *string            `json:"description,omitempty"`
-	Role                                    *string            `json:"role,omitempty"`
-	Status                                  *string            `json:"status,omitempty"`
-	MustChangePassword                      *bool              `json:"mustChangePassword,omitempty"`
-	ImageGenerationEnabled                  *bool              `json:"imageGenerationEnabled,omitempty"`
-	AIAccountLimit                          *int               `json:"aiAccountLimit,omitempty"`
-	RequestLimits                           *UserRequestLimits `json:"requestLimits,omitempty"`
-	APIKeyValidationCacheInvalidationFailed bool               `json:"apiKeyValidationCacheInvalidationFailed,omitempty"`
+	ID                                      string          `json:"id"`
+	UpdatedAt                               string          `json:"updatedAt"`
+	DisplayName                             *string         `json:"displayName,omitempty"`
+	Description                             json.RawMessage `json:"description,omitempty"`
+	Role                                    *string         `json:"role,omitempty"`
+	Status                                  *string         `json:"status,omitempty"`
+	MustChangePassword                      *bool           `json:"mustChangePassword,omitempty"`
+	ImageGenerationEnabled                  *bool           `json:"imageGenerationEnabled,omitempty"`
+	AIAccountLimit                          json.RawMessage `json:"aiAccountLimit,omitempty"`
+	RequestLimits                           json.RawMessage `json:"requestLimits,omitempty"`
+	APIKeyValidationCacheInvalidationFailed bool            `json:"apiKeyValidationCacheInvalidationFailed,omitempty"`
 }
 
 // AccountStore owns dual-mode system_accounts persistence beyond the session
@@ -431,6 +431,42 @@ func minInt(a, b int) int {
 	return b
 }
 
+func sameOptionalString(current, next *string) bool {
+	if current == nil || next == nil {
+		return current == nil && next == nil
+	}
+	return *current == *next
+}
+
+func sameOptionalInt(current, next *int) bool {
+	if current == nil || next == nil {
+		return current == nil && next == nil
+	}
+	return *current == *next
+}
+
+func nullableStringValue(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableIntValue(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func mustMarshalJSON(value any) []byte {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return []byte("null")
+	}
+	return encoded
+}
+
 func placeholders(n int) string {
 	parts := make([]string, n)
 	for i := range parts {
@@ -609,6 +645,9 @@ type PatchInput struct {
 	ImageGenerationEnabled *bool
 	AIAccountLimit         *int
 	RequestLimits          *UserRequestLimits
+	DescriptionPresent     bool
+	AIAccountLimitPresent  bool
+	RequestLimitsPresent   bool
 }
 
 // normalizeRFC3339 mirrors the Node rfc3339 normalization used for the
@@ -664,14 +703,15 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		value := *input.DisplayName
 		mutationResult.DisplayName = &value
 	}
-	if input.Description != nil {
-		description := *input.Description
-		if (current.Description == nil && description != "") || (current.Description != nil && *current.Description != description) {
-			changes["description"] = description
-			if description != "" {
-				value := description
-				mutationResult.Description = &value
-			}
+	if input.DescriptionPresent {
+		var description *string
+		if input.Description != nil && strings.TrimSpace(*input.Description) != "" {
+			value := strings.TrimSpace(*input.Description)
+			description = &value
+		}
+		if !sameOptionalString(current.Description, description) {
+			changes["description"] = nullableStringValue(description)
+			mutationResult.Description = json.RawMessage(mustMarshalJSON(description))
 		}
 	}
 
@@ -714,15 +754,23 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		}
 	}
 	requestLimitsJSON := ""
-	if input.RequestLimits != nil {
+	if input.RequestLimitsPresent {
 		encoded, err := marshalRequestLimits(input.RequestLimits)
 		if err != nil {
 			return AccountMutationResult{}, &ValidationError{Message: err.Error()}
 		}
 		if encoded != nil {
 			requestLimitsJSON = *encoded
-			changes["request_limits_json"] = requestLimitsJSON
-			mutationResult.RequestLimits = parseUserRequestLimits(requestLimitsJSON)
+		}
+		currentJSON := ""
+		if current.RequestLimits != nil {
+			if encodedCurrent, marshalErr := marshalRequestLimits(current.RequestLimits); marshalErr == nil && encodedCurrent != nil {
+				currentJSON = *encodedCurrent
+			}
+		}
+		if currentJSON != requestLimitsJSON {
+			changes["request_limits_json"] = nullableStringValue(encoded)
+			mutationResult.RequestLimits = json.RawMessage(mustMarshalJSON(parseUserRequestLimits(requestLimitsJSON)))
 		}
 	}
 
@@ -780,16 +828,17 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		value := *input.ImageGenerationEnabled
 		mutationResult.ImageGenerationEnabled = &value
 	}
-	if value, ok := changes["ai_account_limit"]; ok {
-		setIf("ai_account_limit", value)
-	}
-	if input.AIAccountLimit != nil && (current.AIAccountLimit == nil || *current.AIAccountLimit != *input.AIAccountLimit) {
-		if *input.AIAccountLimit < 0 || *input.AIAccountLimit > 1_000_000 {
+	if input.AIAccountLimitPresent {
+		if input.AIAccountLimit != nil && (*input.AIAccountLimit < 0 || *input.AIAccountLimit > 1_000_000) {
 			return AccountMutationResult{}, &ValidationError{Message: "AI 账户上限必须是 0 到 1000000 之间的整数"}
 		}
-		setIf("ai_account_limit", *input.AIAccountLimit)
-		value := *input.AIAccountLimit
-		mutationResult.AIAccountLimit = &value
+		if !sameOptionalInt(current.AIAccountLimit, input.AIAccountLimit) {
+			changes["ai_account_limit"] = nullableIntValue(input.AIAccountLimit)
+			mutationResult.AIAccountLimit = json.RawMessage(mustMarshalJSON(input.AIAccountLimit))
+		}
+	}
+	if value, ok := changes["ai_account_limit"]; ok {
+		setIf("ai_account_limit", value)
 	}
 	if value, ok := changes["request_limits_json"]; ok {
 		setIf("request_limits_json", value)
@@ -836,6 +885,14 @@ func (s *AccountStore) findRowForUpdate(ctx context.Context, tx *sql.Tx, where s
 	}
 	a.MustChangePassword = mustChange == 1 && !IsAdminRole(a.Role)
 	a.ImageGenerationEnabled = imageEnabled == 1
+	if description != "" {
+		a.Description = &description
+	}
+	if requestLimitsJSON != "" {
+		if limits := parseUserRequestLimits(requestLimitsJSON); limits != nil {
+			a.RequestLimits = limits
+		}
+	}
 	if aiLimit.Valid {
 		limit := int(aiLimit.Int64)
 		a.AIAccountLimit = &limit
