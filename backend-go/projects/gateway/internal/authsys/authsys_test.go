@@ -414,6 +414,24 @@ func TestLogoutRevokeFailureDoesNotReportSuccess(t *testing.T) {
 	}
 }
 
+func TestLogoutCookieUsesConfiguredSecurityAttributes(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "admin1", "super-secret", "super_admin")
+	cookie := login(t, server, "admin1", "super-secret")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/logout", nil)
+	request.Header.Set("Cookie", cookie)
+	deps.postLogout("none", true)(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("configured logout should succeed: %d %s", recorder.Code, recorder.Body.String())
+	}
+	setCookie := recorder.Header().Get("Set-Cookie")
+	if !strings.Contains(setCookie, "SameSite=None") || !strings.Contains(setCookie, "Secure") {
+		t.Fatalf("logout cookie must preserve configured SameSite/Secure attributes: %q", setCookie)
+	}
+}
+
 func TestSessionStorageFailureIsNotReportedAsInvalidToken(t *testing.T) {
 	deps, _, server := newTestEnv(t)
 	seedAccount(t, deps, "admin1", "super-secret", "super_admin")

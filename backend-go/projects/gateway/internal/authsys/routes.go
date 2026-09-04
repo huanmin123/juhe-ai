@@ -121,7 +121,7 @@ func (d *Deps) postLogout(cookieSameSite string, cookieSecure bool) http.Handler
 				return
 			}
 		}
-		ClearSessionCookie(w)
+		ClearSessionCookie(w, cookieSameSite, cookieSecure)
 		kernel.WriteOK(w, map[string]any{"loggedOut": true}, "")
 	}
 }

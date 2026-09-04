@@ -219,10 +219,10 @@ func SetSessionCookie(w http.ResponseWriter, token string, sameSite string, secu
 	})
 }
 
-func ClearSessionCookie(w http.ResponseWriter) {
+func ClearSessionCookie(w http.ResponseWriter, sameSite string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name: SessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: sameSiteMode(sameSite), Secure: secure,
 	})
 }
 
