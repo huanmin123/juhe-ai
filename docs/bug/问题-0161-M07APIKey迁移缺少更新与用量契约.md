@@ -77,6 +77,13 @@
 - 影响：相同说明文本在 Node 与 Go 的校验结果不同，Go 可存入 Node 会拒绝的超长值，管理端创建接口的成功/失败及后续 DTO 内容发生偏离。
 - 结论：这是输入契约的确定性偏差；Go 需要按 Node 的 UTF-16 code-unit 长度检查，而不是按 rune 数量检查。
 
+### 8. 删除后的关联清理没有投递 worker，且 SQLite 目标登记失败会回滚删除
+
+- Node 证据：`backend/src/modules/api-keys/api-key-cleanup.service.ts` 的 `submitApiKeyRelatedCleanupAsync` 在事务提交后构造 `api_key_related_cleanup` maintenance job；SQLite 先尝试登记目标但捕获登记异常，随后仍继续投递 worker。`api-key.repository.ts` 的 PostgreSQL 删除事务只登记 dataset cleanup target，路由的 `afterCommit` 再负责投递。
+- Go 证据：`backend-go/projects/gateway/internal/apikeys/store.go` 的 `Delete` 在删除 API Key 的同一事务内无条件 `INSERT ... api_key_record_cleanup_targets`，提交后只返回 `CleanupTargetAPIKeyID/OwnerID`；`backend-go/projects/gateway/internal/apikeys/routes.go` 的 `remove` 没有调用任何 cleanup queue/worker。历史 M07 Go 包内也没有 `api_key_related_cleanup` 或 maintenance enqueue 实现。
+- 影响：Go 删除成功后不会触发 Node 所要求的关联记录清理，相关 usage/日志/分片数据可能长期残留。另一方面，在 SQLite 目标表缺失或写入失败时，Go 会回滚已经执行的 API Key 删除并返回 500；Node 会保持删除成功（204）并将清理任务留给 worker 重试，删除结果相反。
+- 结论：这是删除副作用与失败语义的确定性偏离；Go 需要接入同等的 after-commit 清理投递，并按 SQLite/PostgreSQL 保持目标登记的事务边界。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
