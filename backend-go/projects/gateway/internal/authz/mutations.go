@@ -54,6 +54,9 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 	if ownerID == "" {
 		return nil, failf("授权资源不存在")
 	}
+	if actorSystemAccountID == "" || ownerID != actorSystemAccountID {
+		return nil, failf("授权资源不存在")
+	}
 	if input.GranteeType == "system_account" && input.GranteeID == ownerID {
 		return nil, failf("不能授权给资源所有者自己")
 	}

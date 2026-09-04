@@ -303,6 +303,21 @@ func TestTeamGrantRejectsOwnerOnlyTeam(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsResourceOutsideActorScope(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "other", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_scoped", "owner")
+	_, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_scoped",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "other")
+	if err == nil || !strings.Contains(err.Error(), "授权资源不存在") {
+		t.Fatalf("cross-scope create error = %v", err)
+	}
+}
+
 func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
