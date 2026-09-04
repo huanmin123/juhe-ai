@@ -67,10 +67,15 @@ func (d *Deps) recordOperationLog(r *http.Request, entry OperationLogEntry) {
 }
 
 // NewDeps wires the auth slice collaborators. Profile needs the canonical
-// system-settings reader to preserve its Node response contract.
-func NewDeps(port businessauth.Port, accounts *AccountStore, settings SystemSettingReader, captcha *modelcheckauth.CaptchaService, guard *modelcheckauth.LoginGuard, now func() time.Time) *Deps {
+// system-settings reader to preserve its Node response contract. The reader
+// is appended as an optional argument to keep existing callers compatible.
+func NewDeps(port businessauth.Port, accounts *AccountStore, captcha *modelcheckauth.CaptchaService, guard *modelcheckauth.LoginGuard, now func() time.Time, settings ...SystemSettingReader) *Deps {
+	var systemSettings SystemSettingReader
+	if len(settings) > 0 {
+		systemSettings = settings[0]
+	}
 	return &Deps{
-		Port: port, Accounts: accounts, Settings: settings, Captcha: captcha, LoginGuard: guard, Now: now,
+		Port: port, Accounts: accounts, Settings: systemSettings, Captcha: captcha, LoginGuard: guard, Now: now,
 	}
 }
 
