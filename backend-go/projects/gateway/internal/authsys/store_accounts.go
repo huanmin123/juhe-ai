@@ -184,9 +184,44 @@ func (s *AccountStore) scanSummary(scanner interface{ Scan(...any) error }) (Acc
 }
 
 func parseUserRequestLimits(raw string) *UserRequestLimits {
-	var limits UserRequestLimits
-	if err := json.Unmarshal([]byte(raw), &limits); err != nil {
+	var source map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &source); err != nil || source == nil {
 		return nil
+	}
+	limits := UserRequestLimits{}
+	for _, window := range []struct {
+		key string
+		set func(*int)
+	}{
+		{key: "perMinute", set: func(value *int) { limits.PerMinute = value }},
+		{key: "perDay", set: func(value *int) { limits.PerDay = value }},
+		{key: "perWeek", set: func(value *int) { limits.PerWeek = value }},
+		{key: "perMonth", set: func(value *int) { limits.PerMonth = value }},
+	} {
+		value, exists := source[window.key]
+		if !exists {
+			continue
+		}
+		limit, err := parseLimitSetting(string(value))
+		if err != nil {
+			return nil
+		}
+		window.set(&limit)
+	}
+	if limits.PerMinute == nil && limits.PerDay == nil && limits.PerWeek == nil && limits.PerMonth == nil {
+		return nil
+	}
+	if value, exists := source["expiresOn"]; exists {
+		var expiresOn string
+		if err := json.Unmarshal(value, &expiresOn); err != nil {
+			return nil
+		}
+		if expiresOn != "" {
+			if !validUserRequestLimitExpiresOn(expiresOn) {
+				return nil
+			}
+			limits.ExpiresOn = &expiresOn
+		}
 	}
 	return &limits
 }
@@ -510,18 +545,23 @@ func marshalRequestLimits(limits *UserRequestLimits) (*string, error) {
 	if limits == nil {
 		return nil, nil
 	}
-	for _, window := range []*int{limits.PerMinute, limits.PerDay, limits.PerWeek, limits.PerMonth} {
+	normalized := *limits
+	for _, window := range []*int{normalized.PerMinute, normalized.PerDay, normalized.PerWeek, normalized.PerMonth} {
 		if window != nil && (*window < 0 || *window > 1_000_000_000) {
 			return nil, errors.New("用户限制窗口必须是 0 到 1000000000 之间的整数")
 		}
 	}
-	if limits.ExpiresOn != nil {
-		matched, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2}$`, *limits.ExpiresOn)
-		if !matched {
+	if normalized.PerMinute == nil && normalized.PerDay == nil && normalized.PerWeek == nil && normalized.PerMonth == nil {
+		return nil, nil
+	}
+	if normalized.ExpiresOn != nil {
+		if *normalized.ExpiresOn == "" {
+			normalized.ExpiresOn = nil
+		} else if !validUserRequestLimitExpiresOn(*normalized.ExpiresOn) {
 			return nil, errors.New("expiresOn 必须是 YYYY-MM-DD 格式的有效日期")
 		}
 	}
-	encoded, err := json.Marshal(limits)
+	encoded, err := json.Marshal(&normalized)
 	if err != nil {
 		return nil, err
 	}

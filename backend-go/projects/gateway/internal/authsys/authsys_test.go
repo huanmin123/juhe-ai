@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	businesssettings "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
@@ -79,6 +80,7 @@ func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	for i, statement := range []string{
 		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER CHECK (ai_account_limit BETWEEN 0 AND 1000000), request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE)`,
+		`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username))`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
@@ -96,9 +98,27 @@ func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	settings, err := businesssettings.New(db, businesssettings.SQLite, "", businesssettings.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, setting := range []struct {
+		key   string
+		value string
+	}{
+		{key: "gatewayUserRequestLimitPerMinute", value: "0"},
+		{key: "gatewayUserRequestLimitPerDay", value: "0"},
+		{key: "gatewayUserRequestLimitPerWeek", value: "0"},
+		{key: "gatewayUserRequestLimitPerMonth", value: "0"},
+		{key: "usageStatsTimezone", value: `"Asia/Shanghai"`},
+	} {
+		if _, err := db.Exec(`INSERT INTO system_settings(system_account_id,key,value_json,updated_at) VALUES ('sys_admin',?,?,?)`, setting.key, setting.value, now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	deps := &Deps{
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(now),
-		LoginGuard: modelcheckauth.NewLoginGuard(now), Now: now, CaptchaDisabled: true,
+		LoginGuard: modelcheckauth.NewLoginGuard(now), Settings: settings, Now: now, CaptchaDisabled: true,
 		TemporaryAccessIPAllowlist: []string{"127.0.0.1"},
 	}
 	k := kernel.New(kernel.Options{})

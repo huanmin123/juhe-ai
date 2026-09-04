@@ -66,11 +66,11 @@ func (d *Deps) recordOperationLog(r *http.Request, entry OperationLogEntry) {
 	d.Sink.Record(entry, r)
 }
 
-// NewDeps wires the auth slice collaborators. The OwnerGate evidence on the
-// businessauth.Service is owned by the caller (gateway main wiring).
-func NewDeps(port businessauth.Port, accounts *AccountStore, captcha *modelcheckauth.CaptchaService, guard *modelcheckauth.LoginGuard, now func() time.Time) *Deps {
+// NewDeps wires the auth slice collaborators. Profile needs the canonical
+// system-settings reader to preserve its Node response contract.
+func NewDeps(port businessauth.Port, accounts *AccountStore, settings SystemSettingReader, captcha *modelcheckauth.CaptchaService, guard *modelcheckauth.LoginGuard, now func() time.Time) *Deps {
 	return &Deps{
-		Port: port, Accounts: accounts, Captcha: captcha, LoginGuard: guard, Now: now,
+		Port: port, Accounts: accounts, Settings: settings, Captcha: captcha, LoginGuard: guard, Now: now,
 	}
 }
 

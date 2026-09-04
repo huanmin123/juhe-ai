@@ -160,11 +160,17 @@ func (d *Deps) getProfile(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
+	summary.RequestLimits = normalizedProfileRequestLimitOverrides(summary.RequestLimits)
+	effective, err := d.effectiveUserRequestLimits(r.Context(), summary.RequestLimits)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
 	if summary.ID == "" {
 		kernel.WriteError(w, http.StatusNotFound, "系统账户不存在")
 		return
 	}
-	kernel.WriteOK(w, summary, "")
+	kernel.WriteOK(w, ProfileResponse{AccountSummary: summary, EffectiveRequestLimits: effective}, "")
 }
 
 func (d *Deps) patchMe(w http.ResponseWriter, r *http.Request) {

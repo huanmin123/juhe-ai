@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	businesssettings "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
@@ -68,6 +69,12 @@ func secretHash(token string) string {
 
 type authContextKey struct{}
 
+// SystemSettingReader is the narrow settings boundary needed by profile. It
+// keeps auth HTTP tests independent from a concrete settings store.
+type SystemSettingReader interface {
+	GetSystem(context.Context, string, string) (businesssettings.Setting, bool, error)
+}
+
 // AuthContext mirrors RequestAuthContext.
 type AuthContext struct {
 	SystemAccountID    string
@@ -94,6 +101,7 @@ func AuthContextFrom(r *http.Request) *AuthContext {
 type Deps struct {
 	Port       businessauth.Port
 	Accounts   *AccountStore
+	Settings   SystemSettingReader
 	Captcha    *modelcheckauth.CaptchaService
 	LoginGuard *modelcheckauth.LoginGuard
 	// TemporaryAccessIPAllowlist is the parsed, exact source-IP allowlist for
