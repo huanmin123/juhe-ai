@@ -89,7 +89,7 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 			kernel.WriteError(w, http.StatusTooManyRequests, message)
 			return
 		}
-		issued, verified, ok, err := d.Port.Login(r.Context(), body.Username, body.Password, 14)
+		verified, ok, err := d.Port.VerifyCredentials(r.Context(), body.Username, body.Password)
 		if err != nil {
 			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
@@ -101,6 +101,20 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 				return
 			}
 			kernel.WriteError(w, http.StatusUnauthorized, "账号或密码错误")
+			return
+		}
+		issued, issuedOK, err := d.Port.CreateSession(r.Context(), verified.SystemAccountID, verified.CredentialRevision, 14)
+		if err != nil {
+			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !issuedOK {
+			if blocked, retryAfter, message := d.LoginGuard.Failed(clientIP, body.Username); blocked {
+				setRetryAfter(w, retryAfter)
+				kernel.WriteError(w, http.StatusTooManyRequests, message)
+				return
+			}
+			kernel.WriteError(w, http.StatusUnauthorized, "账号或密码已变更，请重新登录")
 			return
 		}
 		d.LoginGuard.Success(clientIP, verified.Username)

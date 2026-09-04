@@ -46,6 +46,14 @@ func (p verifyCredentialsFailingPort) VerifyCredentials(context.Context, string,
 	return modelcheckauth.VerifiedCredentials{}, false, p.err
 }
 
+type sessionCreationRejectedPort struct {
+	businessauth.Port
+}
+
+func (sessionCreationRejectedPort) CreateSession(context.Context, string, string, int) (modelcheckauth.IssuedSession, bool, error) {
+	return modelcheckauth.IssuedSession{}, false, nil
+}
+
 func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:authsys-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
@@ -462,6 +470,20 @@ func TestChangePasswordCredentialStorageFailureIsNotReportedAsInvalidPassword(t 
 	response, payload := postJSON(t, server, "/__aisys__/api/auth/change-password", `{"oldPassword":"super-secret","newPassword":"new-pass-123"}`, cookie)
 	if response.StatusCode != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("credential storage failure must remain a server failure: %d %v", response.StatusCode, payload)
+	}
+}
+
+func TestLoginSessionCreationRejectionReportsCredentialRevisionChanged(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "admin1", "super-secret", "super_admin")
+	deps.Port = sessionCreationRejectedPort{Port: deps.Port}
+
+	response, payload := postJSON(t, server, "/__aisys__/api/auth/login", `{"username":"admin1","password":"super-secret"}`, "")
+	if response.StatusCode != http.StatusUnauthorized || payload["message"] != "账号或密码已变更，请重新登录" {
+		t.Fatalf("session creation rejection must report a credential revision change: %d %v", response.StatusCode, payload)
+	}
+	if cookies := response.Header.Values("Set-Cookie"); len(cookies) != 0 {
+		t.Fatalf("session creation rejection must not issue a cookie: %v", cookies)
 	}
 }
 
