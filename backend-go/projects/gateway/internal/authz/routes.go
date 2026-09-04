@@ -1,6 +1,8 @@
 package authz
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,6 +36,74 @@ func parseIntOr(raw string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+// normalizeMutationVersion mirrors rfc3339InstantSchema('授权配置版本格式不正确')
+// (authorizations.routes.ts:33-35, :123-124, :136): the optimistic-lock version
+// must be an absolute RFC3339 instant and is canonicalized to UTC milliseconds
+// before the store-level comparison.
+func normalizeMutationVersion(raw string) (string, bool) {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return "", false
+	}
+	canonical := canonicalizeAuthorizationInstant(text)
+	if canonical == "" {
+		return "", false
+	}
+	return canonical, true
+}
+
+func rawJSONPresent(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
+}
+
+func rawJSONNull(raw json.RawMessage) bool {
+	return len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// parseStatusInput mirrors the update schema status enum
+// (authorizations.routes.ts:125): only 'active'|'paused'; JSON null and other
+// values are rejected by the contract layer.
+func parseStatusInput(raw json.RawMessage) (*string, bool) {
+	if !rawJSONPresent(raw) {
+		return nil, rawJSONNull(raw)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, false
+	}
+	if value != StatusActive && value != StatusPaused {
+		return nil, false
+	}
+	return &value, true
+}
+
+// parseExpiresAtInput mirrors the update schema expiresAt union
+// (authorizations.routes.ts:126-129): absent keeps the stored value, JSON null
+// clears it, and strings must be canonicalizable RFC3339 instants
+// ('过期时间格式不正确').
+func parseExpiresAtInput(raw json.RawMessage) (*string, bool, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, false, true
+	}
+	if rawJSONNull(raw) {
+		return nil, true, true
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, false, false
+	}
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return nil, false, false
+	}
+	canonical := canonicalizeAuthorizationInstant(text)
+	if canonical == "" {
+		return nil, false, false
+	}
+	return &canonical, true, true
 }
 
 // accessFor resolves the request access scope: admin with an explicit
@@ -137,10 +207,15 @@ func (d *Deps) RequireSelf(next http.Handler) http.Handler {
 }
 
 func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
-	access := d.accessFor(r, selfOnly)
-	if !selfOnly && access.FilterID != "" {
-		// Admin narrowing by ?systemAccountId: rows touching that account.
+	// Claim #12: the query schema validates direction for both surfaces
+	// (authorizations.routes.ts:45), but only the self list forwards it to the
+	// read filters (:153-159); the admin list silently ignores it.
+	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
+	if direction != "" && direction != "all" && direction != "outbound" && direction != "inbound" {
+		kernel.WriteBadRequest(w, "查询参数不合法")
+		return
 	}
+	access := d.accessFor(r, selfOnly)
 	filters := Filters{
 		ResourceType:                 r.URL.Query().Get("resourceType"),
 		ResourceID:                   r.URL.Query().Get("resourceId"),
@@ -151,6 +226,9 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 		SourceType:                   orDefault(r.URL.Query().Get("sourceType"), "all"),
 		Keyword:                      r.URL.Query().Get("keyword"),
 		IsAdmin:                      access.IsAdmin,
+	}
+	if selfOnly && (direction == "outbound" || direction == "inbound") {
+		filters.Direction = direction
 	}
 	if selfOnly {
 		filters.ViewerSystemAccountID = access.ViewerID
@@ -218,14 +296,14 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		actor = auth.SystemAccountID
 	}
 	var body struct {
-		ResourceType  *string        `json:"resourceType"`
-		ResourceID    *string        `json:"resourceId"`
-		GranteeType   *string        `json:"granteeType"`
-		GranteeID     *string        `json:"granteeId"`
-		TargetGroupID *string        `json:"targetGroupId"`
-		Remark        *string        `json:"remark"`
-		ExpiresAt     *string        `json:"expiresAt"`
-		Limits        map[string]any `json:"limits"`
+		ResourceType  *string         `json:"resourceType"`
+		ResourceID    *string         `json:"resourceId"`
+		GranteeType   *string         `json:"granteeType"`
+		GranteeID     *string         `json:"granteeId"`
+		TargetGroupID *string         `json:"targetGroupId"`
+		Remark        *string         `json:"remark"`
+		ExpiresAt     *string         `json:"expiresAt"`
+		Limits        json.RawMessage `json:"limits"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
@@ -248,6 +326,12 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "只有授权 AI 账户给个人时可以指定目标分组")
 		return
 	}
+	// Claim #8: the create schema is requestQuotaLimitsSchema.optional()
+	// (authorizations.routes.ts:105) — JSON null is not accepted.
+	if rawJSONNull(body.Limits) && len(bytes.TrimSpace(body.Limits)) > 0 {
+		kernel.WriteBadRequest(w, "授权参数不合法")
+		return
+	}
 	// Admin creating on behalf: the resource must belong to the scope account.
 	input := CreateInput{
 		ResourceType: strings.TrimSpace(*body.ResourceType),
@@ -260,12 +344,9 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 	if body.TargetGroupID != nil && strings.TrimSpace(*body.TargetGroupID) != "" {
 		input.TargetGroupID = body.TargetGroupID
 	}
-	if body.Limits != nil {
-		encoded, err := jsonMarshal(body.Limits)
-		if err == nil {
-			text := string(encoded)
-			input.LimitsJSON = &text
-		}
+	if rawJSONPresent(body.Limits) {
+		text := string(bytes.TrimSpace(body.Limits))
+		input.LimitsJSON = &text
 	}
 	result, err := d.Store.Create(r.Context(), input, actor)
 	if err != nil {
@@ -336,11 +417,14 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
-		kernel.WriteBadRequest(w, "回收授权参数不合法")
+	// Claim #5: the shared mutation version schema validates and canonicalizes
+	// the version at the route (authorizations.routes.ts:33-35, :395-399).
+	version, ok := normalizeMutationVersion(body.ExpectedUpdatedAt)
+	if !ok {
+		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
 		return
 	}
-	mutation, err := d.Store.Revoke(r.Context(), r.PathValue("id"), body.ExpectedUpdatedAt, auth.SystemAccountID)
+	mutation, err := d.Store.Revoke(r.Context(), r.PathValue("id"), version, auth.SystemAccountID)
 	if err != nil {
 		kernel.WriteBadRequest(w, "回收授权失败")
 		return
@@ -355,7 +439,9 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if d.Sink != nil {
+	// Claim #11: only the updated outcome writes an operation log and it
+	// carries the real previous status (authorizations.routes.ts:410-424).
+	if mutation.Status == "updated" && d.Sink != nil {
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
 			Mode: "admin", Module: "authorizations", Action: "revoke",
@@ -363,7 +449,7 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 			ResourceID: mutation.Result.ID,
 			Summary:    "回收资源授权：" + mutation.Result.ResourceID,
 			Changes: []authsys.OperationLogChange{
-				{Field: "status", Label: "状态", Before: StatusActive, After: StatusRevoked},
+				{Field: "status", Label: "状态", Before: orText(mutation.PreviousStatus, ""), After: StatusRevoked},
 			},
 		}, r)
 	}
@@ -384,11 +470,12 @@ func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request) {
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
-		kernel.WriteBadRequest(w, "归还授权参数不合法")
+	version, ok := normalizeMutationVersion(body.ExpectedUpdatedAt)
+	if !ok {
+		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
 		return
 	}
-	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), body.ExpectedUpdatedAt, auth.SystemAccountID)
+	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), version, auth.SystemAccountID)
 	if err != nil {
 		kernel.WriteBadRequest(w, "归还授权使用权失败")
 		return
@@ -426,38 +513,69 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		return
 	}
 	var body struct {
-		ExpectedUpdatedAt string         `json:"expectedUpdatedAt"`
-		Status            *string        `json:"status"`
-		ExpiresAt         *string        `json:"expiresAt"`
-		Limits            map[string]any `json:"limits"`
+		ExpectedUpdatedAt string          `json:"expectedUpdatedAt"`
+		Status            json.RawMessage `json:"status"`
+		ExpiresAt         json.RawMessage `json:"expiresAt"`
+		Limits            json.RawMessage `json:"limits"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
+	// Claim #5: PATCH/expire share the version schema
+	// (authorizations.routes.ts:124/:136).
+	version, ok := normalizeMutationVersion(body.ExpectedUpdatedAt)
+	if !ok {
+		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
+		return
+	}
+	hasStatus := rawJSONPresent(body.Status)
+	hasExpiresAt := len(bytes.TrimSpace(body.ExpiresAt)) > 0
+	hasLimits := len(bytes.TrimSpace(body.Limits)) > 0
+	// The expire schema is strict (authorizations.routes.ts:135-144): a status
+	// key is rejected on the /expire surface before the presence refine, like
+	// the Node strict-object parse failure.
+	if expireOnly && hasStatus {
 		kernel.WriteBadRequest(w, "修改授权参数不合法")
 		return
 	}
-	if body.Status == nil && body.ExpiresAt == nil && body.Limits == nil {
+	// Presence refine (authorizations.routes.ts:131-133 / :142-144).
+	contentPresent := hasExpiresAt || hasLimits
+	if !expireOnly {
+		contentPresent = contentPresent || hasStatus
+	}
+	if !contentPresent {
 		kernel.WriteBadRequest(w, "请提供要修改的授权内容")
 		return
 	}
-	if expireOnly && body.Status != nil {
+	status, statusOK := parseStatusInput(body.Status)
+	if hasStatus && !statusOK {
 		kernel.WriteBadRequest(w, "修改授权参数不合法")
 		return
 	}
-	input := PatchInput{Status: body.Status, ExpiresAt: body.ExpiresAt}
-	if body.Limits != nil {
-		encoded, err := jsonMarshal(body.Limits)
-		if err == nil {
-			text := string(encoded)
+	expiresAt, expiresSet, expiresOK := parseExpiresAtInput(body.ExpiresAt)
+	if !expiresOK {
+		kernel.WriteBadRequest(w, "过期时间格式不正确")
+		return
+	}
+	input := PatchInput{Status: status, ExpiresAt: expiresAt, ExpiresAtSet: expiresSet}
+	if hasLimits {
+		input.LimitsSet = true
+		if !rawJSONNull(body.Limits) {
+			text := string(bytes.TrimSpace(body.Limits))
 			input.LimitsJSON = &text
 		}
 	}
 	access := d.accessFor(r, false)
-	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, body.ExpectedUpdatedAt,
+	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, version,
 		auth.SystemAccountID, access.FilterID)
 	if err != nil {
+		// Node surfaces the domain error message verbatim
+		// (authorizations.routes.ts:492/:548).
+		var fail *Fail
+		if errorsAsFail(err, &fail) {
+			kernel.WriteBadRequest(w, fail.Message)
+			return
+		}
 		kernel.WriteBadRequest(w, "修改授权失败")
 		return
 	}
@@ -468,6 +586,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 	case "conflict":
 		kernel.WriteJSON(w, http.StatusConflict, map[string]any{
 			"message": "授权配置已被其他操作更新，请刷新后重试",
+			"currentUpdatedAt": outcome.CurrentUpdatedAt,
 		})
 		return
 	}
@@ -477,7 +596,8 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		action = "update_expire"
 		summary = "更新授权有效期"
 	}
-	if d.Sink != nil {
+	// Node logs only the updated outcome (authorizations.routes.ts:462/:518).
+	if outcome.Status == "updated" && d.Sink != nil {
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
 			Mode: "admin", Module: "authorizations", Action: action,
@@ -486,9 +606,11 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 			Summary:    summary + "：" + outcome.Result.ResourceID,
 		}, r)
 	}
+	// Node responds with the mutation result shape
+	// (resourceAuthorizationMutationResult :900-910): normalized limits echo.
 	kernel.WriteOK(w, map[string]any{
 		"id": outcome.Result.ID, "status": outcome.Result.Status,
-		"expiresAt": outcome.Result.ExpiresAt, "limits": body.Limits,
+		"expiresAt": outcome.Result.ExpiresAt, "limits": outcome.Limits,
 		"updatedAt": outcome.Result.UpdatedAt,
 	}, "")
 }

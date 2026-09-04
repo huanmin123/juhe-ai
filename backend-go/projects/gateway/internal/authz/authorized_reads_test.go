@@ -155,9 +155,10 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 		t.Fatalf("paused grant must hide the instance: %v", ids)
 	}
 
-	// Patching the grant back to active keeps the runtime paused (the Node
-	// refresh CASE pins a paused runtime until another source transition), so
-	// the instance stays hidden.
+	// Patching the team grant back to active runs the Node grant→runtime sync
+	// (patchResourceAuthorizationAsync :809 → syncTeamGrantMemberAuthorizations
+	// → upsertResourceAuthorizationForUser :863-867), so the runtime row
+	// returns to active and the correlated instance becomes visible again.
 	active := StatusActive
 	reactivated, err := f.store.Patch(context.Background(), result.Item.ID, PatchInput{Status: &active},
 		outcomeUpdatedAt(t, f, result.Item.ID), "owner")
@@ -167,12 +168,21 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 	if reactivated.Status != "updated" {
 		t.Fatalf("reactivate patch: %+v", reactivated)
 	}
-	if ids := readableKeys(t, f, "member1"); len(ids) != 0 {
-		t.Fatalf("paused runtime must stay hidden after grant reactivate: %v", ids)
+	var runtimeStatus string
+	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations
+		WHERE grantee_system_account_id = 'member1' AND resource_id = 'acc-src'`).Scan(&runtimeStatus); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeStatus != StatusActive {
+		t.Fatalf("runtime after grant reactivate = %s, want active (Node sync write-back)", runtimeStatus)
+	}
+	if ids := readableKeys(t, f, "member1"); !ids["acc-inst"] {
+		t.Fatalf("resumed grant must expose the instance again: %v", ids)
 	}
 
-	// A fresh manual grant revives the runtime row to active (manual source)
-	// and the same correlated instance becomes readable again.
+	// A fresh manual grant on the same resource records a superseded manual
+	// source while the live team source keeps the runtime active; visibility is
+	// unchanged.
 	if _, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "acc-src",
 		GranteeType: "system_account", GranteeID: "member1",
@@ -180,17 +190,32 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ids := readableKeys(t, f, "member1"); !ids["acc-inst"] {
-		t.Fatalf("manual grant must expose the instance: %v", ids)
+		t.Fatalf("manual grant over active team source must stay visible: %v", ids)
 	}
 
-	// Owner-side revoke of the manual grant revokes its source: hidden again.
+	// Owner-side revoke of the manual grant only revokes its manual sources
+	// (syncUserGrantRuntime :1315-1326 filters source_type='manual'); the
+	// active team source keeps the runtime authorization alive, so the instance
+	// stays readable.
 	revoked, err := f.store.Revoke(context.Background(), outcomeUpdatedAtGrantID(t, f, "acc-src", "system_account", "member1"),
 		outcomeUpdatedAt(t, f, outcomeUpdatedAtGrantID(t, f, "acc-src", "system_account", "member1")), "owner")
 	if err != nil || revoked.Status != "updated" {
 		t.Fatalf("revoke: %+v err=%v", revoked, err)
 	}
+	if ids := readableKeys(t, f, "member1"); !ids["acc-inst"] {
+		t.Fatalf("revoked manual grant must not hide the team-carried runtime: %v", ids)
+	}
+
+	// Revoking the team grant revokes the team sources of the resource
+	// (syncTeamGrantMemberAuthorizations → revokeTeamGrantSources) and the
+	// instance becomes invisible.
+	teamGrantID := outcomeUpdatedAtGrantID(t, f, "acc-src", "team", "team_1")
+	teamRevoked, err := f.store.Revoke(context.Background(), teamGrantID, outcomeUpdatedAt(t, f, teamGrantID), "owner")
+	if err != nil || teamRevoked.Status != "updated" {
+		t.Fatalf("team revoke: %+v err=%v", teamRevoked, err)
+	}
 	if ids := readableKeys(t, f, "member1"); len(ids) != 0 {
-		t.Fatalf("revoked grant must hide the instance: %v", ids)
+		t.Fatalf("revoked team grant must hide the instance: %v", ids)
 	}
 
 	// Model an existing expired row directly: Node rejects an attempt to create

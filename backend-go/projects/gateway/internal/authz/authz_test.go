@@ -3,12 +3,16 @@ package authz
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
@@ -43,11 +47,15 @@ func newFixture(t *testing.T) *fixture {
 		}
 	}
 	now := time.Unix(1_750_000_000, 0).UTC()
-	store, err := NewStore(db, false, func() time.Time { return now })
+	f := &fixture{db: db, now: now}
+	// The clock reads through the fixture pointer so tests can advance time
+	// for expiry state-machine coverage.
+	store, err := NewStore(db, false, func() time.Time { return f.now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{store: store, db: db, now: now}
+	f.store = store
+	return f
 }
 
 func (f *fixture) seedAccount(t *testing.T, id, status string) {
@@ -495,3 +503,671 @@ func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 }
 
 var _ = modelcheckauth.SQLite
+
+// ---------------------------------------------------------------------------
+// Contract alignment tests for the 2026-09-04 independent review verdicts.
+// Each test cites the Node evidence lines it pins.
+// ---------------------------------------------------------------------------
+
+// ptrString is a small helper for presence-bearing inputs.
+func ptrString(value string) *string { return &value }
+
+// Claim #1: patching a paused direct grant back to active must run the full
+// grant→runtime sync (patchResourceAuthorizationAsync :809 →
+// syncUserGrantRuntimeAsync :1249-1297 → upsertResourceAuthorizationForUser),
+// rewriting runtime status, revoked_* and the manual source, instead of relying
+// on the standalone refresh CASE that only pins the current status.
+func TestPatchResumeSyncsDirectGrantRuntime(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_resume", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_resume",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused := StatusPaused
+	if outcome, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused},
+		created.Item.UpdatedAt, "owner"); err != nil || outcome.Status != "updated" {
+		t.Fatalf("pause patch: %+v err=%v", outcome, err)
+	}
+	// The sync writes authorization_paused, then the standalone refresh's
+	// manual branch resets revoked_reason to NULL when not expired — the Node
+	// end state of a pause (:1300-1313 → manual refresh branch :2101-2128).
+	assertRuntime(t, f, "grantee", "grp_resume", StatusPaused, "manual", "")
+
+	active := StatusActive
+	outcome, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &active},
+		runtimeVersion(t, f, created.Item.ID), "owner")
+	if err != nil || outcome.Status != "updated" {
+		t.Fatalf("resume patch: %+v err=%v", outcome, err)
+	}
+	// Node upsert (:1256-1270): status active, revoked_* cleared, manual
+	// source reactivated.
+	assertRuntime(t, f, "grantee", "grp_resume", StatusActive, "manual", "")
+	var revokedBy, revokedAt, revokedReason sql.NullString
+	if err := f.db.QueryRow(`SELECT revoked_by, revoked_at, revoked_reason FROM resource_authorizations
+		WHERE grantee_system_account_id = 'grantee' AND resource_id = 'grp_resume'`).
+		Scan(&revokedBy, &revokedAt, &revokedReason); err != nil {
+		t.Fatal(err)
+	}
+	if revokedBy.Valid || revokedAt.Valid || revokedReason.Valid {
+		t.Fatalf("resume must clear runtime revoked_*: %v %v %v", revokedBy, revokedAt, revokedReason)
+	}
+	var sourceStatus string
+	if err := f.db.QueryRow(`SELECT s.status FROM resource_authorization_sources s
+		INNER JOIN resource_authorizations r ON r.id = s.authorization_id
+		WHERE r.grantee_system_account_id = 'grantee' AND s.source_type = 'manual'`).Scan(&sourceStatus); err != nil {
+		t.Fatal(err)
+	}
+	if sourceStatus != "active" {
+		t.Fatalf("manual source after resume = %s, want active", sourceStatus)
+	}
+}
+
+// Claims #1/#2: PATCH expiresAt canonicalizes to UTC milliseconds and the sync
+// projects the canonical value onto the runtime row (:1256-1270/:1380-1387).
+func TestPatchExpiresAtCanonicalizesAndProjectsRuntime(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_expiry_sync", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_expiry_sync",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	offsetFuture := "2027-01-01T09:00:00+09:00"
+	outcome, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		ExpiresAt: &offsetFuture, ExpiresAtSet: true,
+	}, created.Item.UpdatedAt, "owner")
+	if err != nil || outcome.Status != "updated" {
+		t.Fatalf("expiry patch: %+v err=%v", outcome, err)
+	}
+	canonical := "2027-01-01T00:00:00.000Z"
+	if outcome.Result.ExpiresAt == nil || *outcome.Result.ExpiresAt != canonical {
+		t.Fatalf("grant canonical expiry = %v", outcome.Result.ExpiresAt)
+	}
+	var grantExpires, runtimeExpires string
+	if err := f.db.QueryRow(`SELECT g.expires_at, r.expires_at FROM resource_authorization_grants g
+		INNER JOIN resource_authorizations r ON r.resource_id = g.resource_id
+		WHERE g.id = ? AND r.grantee_system_account_id = 'grantee'`, created.Item.ID).Scan(&grantExpires, &runtimeExpires); err != nil {
+		t.Fatal(err)
+	}
+	if grantExpires != canonical || runtimeExpires != canonical {
+		t.Fatalf("canonical expiry projection: grant=%s runtime=%s", grantExpires, runtimeExpires)
+	}
+}
+
+// Claim #3: expiresAt presence semantics — explicit null clears grant and
+// runtime columns, empty string is a format error, absent keeps the value, and
+// a same-value patch is unchanged without a version bump (:824-827/:801,
+// normalizeResourceAuthorizationExpiresAtInput :2597-2613).
+func TestPatchExpiresAtPresenceNullClearAndUnchanged(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_presence", "owner")
+	future := "2027-06-01T00:00:00.000Z"
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_presence",
+		GranteeType: "system_account", GranteeID: "grantee", ExpiresAt: &future,
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Absent expiresAt (status-only patch) keeps the stored value.
+	paused := StatusPaused
+	outcome, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused},
+		created.Item.UpdatedAt, "owner")
+	if err != nil || outcome.Status != "updated" || outcome.Result.ExpiresAt == nil || *outcome.Result.ExpiresAt != future {
+		t.Fatalf("status-only patch must keep expiry: %+v err=%v", outcome, err)
+	}
+	// Empty string → format error (Node normalize throws 过期时间格式不正确).
+	empty := ""
+	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		ExpiresAt: &empty, ExpiresAtSet: true,
+	}, runtimeVersion(t, f, created.Item.ID), "owner"); err == nil || !strings.Contains(err.Error(), "过期时间格式不正确") {
+		t.Fatalf("empty expiry error = %v", err)
+	}
+	// Same-value patch → unchanged, version untouched.
+	outcome, err = f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		ExpiresAt: &future, ExpiresAtSet: true,
+	}, runtimeVersion(t, f, created.Item.ID), "owner")
+	if err != nil || outcome.Status != "unchanged" {
+		t.Fatalf("same-value patch: %+v err=%v", outcome, err)
+	}
+	if runtimeVersion(t, f, created.Item.ID) != outcome.Result.UpdatedAt {
+		t.Fatalf("unchanged patch bumped the version")
+	}
+	// Explicit null clears grant and runtime columns.
+	outcome, err = f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		ExpiresAtSet: true,
+	}, runtimeVersion(t, f, created.Item.ID), "owner")
+	if err != nil || outcome.Status != "updated" {
+		t.Fatalf("null-clear patch: %+v err=%v", outcome, err)
+	}
+	if outcome.Result.ExpiresAt != nil {
+		t.Fatalf("null patch must clear the grant expiry: %v", outcome.Result.ExpiresAt)
+	}
+	var runtimeExpires sql.NullString
+	if err := f.db.QueryRow(`SELECT expires_at FROM resource_authorizations
+		WHERE grantee_system_account_id = 'grantee' AND resource_id = 'grp_presence'`).Scan(&runtimeExpires); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeExpires.Valid {
+		t.Fatalf("null patch must clear the runtime expiry: %v", runtimeExpires)
+	}
+}
+
+// Claims #4/#10: patch expiry state machine — past expiry forces expired,
+// expired→active requires an accompanying expiry, activation revalidates the
+// stored expiry, and the account bound caps the patch (:829-838, :867,
+// validateResourceAuthorizationExpiresAtAsync :2654-2679).
+func TestPatchExpiryStateMachineAndRestoreRules(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_state", "owner")
+	hour := time.Hour
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_state",
+		GranteeType: "system_account", GranteeID: "grantee",
+		ExpiresAt: ptrString(f.now.Add(hour).UTC().Format(time.RFC3339Nano)),
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Explicit past expiry flips the grant and runtime to expired
+	// (Node :832-833 + paused/expired sync :1300-1313).
+	past := f.now.Add(-hour).UTC().Format(time.RFC3339Nano)
+	outcome, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		ExpiresAt: &past, ExpiresAtSet: true,
+	}, created.Item.UpdatedAt, "owner")
+	if err != nil || outcome.Status != "updated" || outcome.Result.Status != StatusExpired {
+		t.Fatalf("past expiry patch: %+v err=%v", outcome, err)
+	}
+	assertRuntime(t, f, "grantee", "grp_state", StatusExpired, "manual", "authorization_expired")
+	// Expired → active without a new expiry is rejected (Node :829-831).
+	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		Status: ptrString(StatusActive),
+	}, runtimeVersion(t, f, created.Item.ID), "owner"); err == nil || !strings.Contains(err.Error(), "到期授权恢复时请同时调整过期时间") {
+		t.Fatalf("restore without expiry error = %v", err)
+	}
+	// Expired + future expiry restores active on grant and runtime (Node
+	// :836-837 hasExpiresAtInput → 'active').
+	future := f.now.Add(3 * hour).UTC().Format(time.RFC3339Nano)
+	outcome, err = f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		ExpiresAt: &future, ExpiresAtSet: true,
+	}, runtimeVersion(t, f, created.Item.ID), "owner")
+	if err != nil || outcome.Status != "updated" || outcome.Result.Status != StatusActive {
+		t.Fatalf("restore patch: %+v err=%v", outcome, err)
+	}
+	assertRuntime(t, f, "grantee", "grp_state", StatusActive, "manual", "")
+	// Claim #10: activation revalidates the stored expiry against the current
+	// instant (Node :867 validateExpiresAt on activation transitions).
+	f.now = f.now.Add(4 * hour)
+	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		Status: ptrString(StatusPaused),
+	}, runtimeVersion(t, f, created.Item.ID), "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		Status: ptrString(StatusActive),
+	}, runtimeVersion(t, f, created.Item.ID), "owner"); err == nil || !strings.Contains(err.Error(), "授权到期时间不能早于当前时间") {
+		t.Fatalf("stale-expiry activation error = %v", err)
+	}
+	// Extending with a fresh future expiry recovers.
+	extended := f.now.Add(3 * hour).UTC().Format(time.RFC3339Nano)
+	if outcome, err = f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		Status: ptrString(StatusActive), ExpiresAt: &extended, ExpiresAtSet: true,
+	}, runtimeVersion(t, f, created.Item.ID), "owner"); err != nil || outcome.Status != "updated" {
+		t.Fatalf("extend+activate patch: %+v err=%v", outcome, err)
+	}
+	// Account bound: a patch beyond the source account expiry is rejected
+	// (validateResourceAuthorizationExpiresAtAsync :2665-2678).
+	if _, err := f.db.Exec(accountsFixtureDDL); err != nil {
+		t.Fatal(err)
+	}
+	f.seedSourceAccount(t, "acc_state", "owner")
+	accountExpiry := f.now.Add(2 * hour).UTC().Format(time.RFC3339Nano)
+	if _, err := f.db.Exec(`UPDATE accounts SET account_expires_at = ? WHERE id = 'acc_state'`, accountExpiry); err != nil {
+		t.Fatal(err)
+	}
+	targetGroupID := "target_group_state"
+	accountGrant, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "account", ResourceID: "acc_state",
+		GranteeType: "system_account", GranteeID: "grantee",
+		TargetGroupID: &targetGroupID,
+		ExpiresAt:     ptrString(f.now.Add(hour).UTC().Format(time.RFC3339Nano)),
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Patch(context.Background(), accountGrant.Item.ID, PatchInput{
+		ExpiresAt: ptrString(f.now.Add(3 * hour).UTC().Format(time.RFC3339Nano)), ExpiresAtSet: true,
+	}, accountGrant.Item.UpdatedAt, "owner"); err == nil || !strings.Contains(err.Error(), "授权到期时间不能晚于账户到期时间") {
+		t.Fatalf("account bound error = %v", err)
+	}
+}
+
+// Claim #5: versions are validated and canonicalized at the route, and the
+// store CAS compares instants so an equivalent offset of the same instant is
+// accepted (rfc3339InstantSchema '授权配置版本格式不正确', routes :33-35).
+func TestPatchVersionInstantCASAndRouteNormalization(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_version", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_version",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := normalizeMutationVersion("not-a-time"); ok {
+		t.Fatalf("invalid version accepted")
+	}
+	if _, ok := normalizeMutationVersion("   "); ok {
+		t.Fatalf("blank version accepted")
+	}
+	if canonical, ok := normalizeMutationVersion(" 2027-01-01T09:00:00+09:00 "); !ok || canonical != "2027-01-01T00:00:00.000Z" {
+		t.Fatalf("canonical version = %q ok=%v", canonical, ok)
+	}
+	// The stored version expressed with an equivalent offset must pass the CAS.
+	version := created.Item.UpdatedAt
+	parsed, err := time.Parse(time.RFC3339Nano, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offsetVersion := parsed.In(time.FixedZone("UTC+8", 8*3600)).Format("2006-01-02T15:04:05.000Z07:00")
+	paused := StatusPaused
+	outcome, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused},
+		canonicalizeAuthorizationInstant(offsetVersion), "owner")
+	if err != nil || outcome.Status != "updated" {
+		t.Fatalf("equivalent-offset CAS patch: %+v err=%v", outcome, err)
+	}
+	// A genuinely stale version conflicts.
+	if outcome, err = f.store.Patch(context.Background(), created.Item.ID, PatchInput{Status: &paused},
+		created.Item.UpdatedAt, "owner"); err != nil || outcome.Status != "conflict" {
+		t.Fatalf("stale version patch: %+v err=%v", outcome, err)
+	}
+}
+
+// Claim #8: create/patch limits normalize through the shared quota schema and
+// the canonical value lands on grant, runtime and the response echo
+// (requestQuotaLimitsSchema; write.repository.ts :839-844/:900-910).
+func TestCreateAndPatchLimitsNormalizationAndProjection(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_limits", "owner")
+	// Unknown field → verbatim normalize message.
+	if _, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_limits",
+		GranteeType: "system_account", GranteeID: "grantee",
+		LimitsJSON: ptrString(`{"foo":{"enabled":true,"limit":1}}`),
+	}, "owner"); err == nil || !strings.Contains(err.Error(), "请求额度限制包含不支持字段：foo") {
+		t.Fatalf("unknown limits field error = %v", err)
+	}
+	// Precision beyond 6 decimals is rejected by the schema boundary.
+	if _, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_limits",
+		GranteeType: "system_account", GranteeID: "grantee",
+		LimitsJSON: ptrString(`{"daily":{"enabled":true,"limit":1.23456789}}`),
+	}, "owner"); err == nil || !strings.Contains(err.Error(), "日额度金额最多支持 6 位小数") {
+		t.Fatalf("limits precision error = %v", err)
+	}
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_limits",
+		GranteeType: "system_account", GranteeID: "grantee",
+		LimitsJSON: ptrString(`{"daily":{"enabled":true,"limit":10.123456}}`),
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 10.123456 keeps its 6-decimal canonical form end to end.
+	canonical := `{"daily":{"enabled":true,"limit":10.123456}}`
+	var grantLimits, runtimeLimits sql.NullString
+	if err := f.db.QueryRow(`SELECT limits_json FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&grantLimits); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.QueryRow(`SELECT limits_json FROM resource_authorizations
+		WHERE grantee_system_account_id = 'grantee' AND resource_id = 'grp_limits'`).Scan(&runtimeLimits); err != nil {
+		t.Fatal(err)
+	}
+	if !grantLimits.Valid || grantLimits.String != canonical {
+		t.Fatalf("grant canonical limits = %v", grantLimits)
+	}
+	if !runtimeLimits.Valid || runtimeLimits.String != canonical {
+		t.Fatalf("runtime canonical limits = %v", runtimeLimits)
+	}
+	if created.Item.Limits == nil {
+		t.Fatalf("create response must echo the normalized limits")
+	}
+	// Empty limits object and null both normalize to NULL.
+	patchOutcome, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		LimitsJSON: ptrString(`{}`), LimitsSet: true,
+	}, created.Item.UpdatedAt, "owner")
+	if err != nil || patchOutcome.Status != "updated" {
+		t.Fatalf("empty limits patch: %+v err=%v", patchOutcome, err)
+	}
+	if patchOutcome.Limits != nil {
+		t.Fatalf("empty limits echo must be null: %v", patchOutcome.Limits)
+	}
+	if err := f.db.QueryRow(`SELECT limits_json FROM resource_authorizations
+		WHERE grantee_system_account_id = 'grantee' AND resource_id = 'grp_limits'`).Scan(&runtimeLimits); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeLimits.Valid {
+		t.Fatalf("runtime limits must be cleared to NULL: %v", runtimeLimits)
+	}
+}
+
+// Claim #7 baseline: a limits-only patch on a terminal (revoked) grant must
+// not rewrite the terminal runtime row (:1315-1331 writes no limits there).
+func TestPatchLimitsKeepsTerminalRuntimeImmutable(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_terminal", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_terminal",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation, err := f.store.Revoke(context.Background(), created.Item.ID, created.Item.UpdatedAt, "owner")
+	if err != nil || mutation.Status != "updated" {
+		t.Fatalf("revoke: %+v err=%v", mutation, err)
+	}
+	var before string
+	if err := f.db.QueryRow(`SELECT COALESCE(limits_json,'') FROM resource_authorizations
+		WHERE grantee_system_account_id = 'grantee' AND resource_id = 'grp_terminal'`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		LimitsJSON: ptrString(`{"daily":{"enabled":true,"limit":5}}`), LimitsSet: true,
+	}, runtimeVersion(t, f, created.Item.ID), "owner"); err != nil {
+		t.Fatal(err)
+	}
+	var after string
+	if err := f.db.QueryRow(`SELECT COALESCE(limits_json,'') FROM resource_authorizations
+		WHERE grantee_system_account_id = 'grantee' AND resource_id = 'grp_terminal'`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("terminal runtime limits changed: %q → %q", before, after)
+	}
+}
+
+// Claim #11: revoke idempotency — the CAS conflict decision precedes the
+// terminal short-circuit (:527-534/565-568), a version-matched revoke of an
+// already-revoked grant returns unchanged with the previous status and no
+// version bump.
+func TestRevokeIdempotencyAndConflictOrdering(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_revoke", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_revoke",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation, err := f.store.Revoke(context.Background(), created.Item.ID, created.Item.UpdatedAt, "owner")
+	if err != nil || mutation.Status != "updated" || mutation.PreviousStatus == nil || *mutation.PreviousStatus != StatusActive {
+		t.Fatalf("first revoke: %+v err=%v", mutation, err)
+	}
+	revokedVersion := mutation.Result.UpdatedAt
+	// Version-matched revoke of the revoked grant → unchanged.
+	repeat, err := f.store.Revoke(context.Background(), created.Item.ID, revokedVersion, "owner")
+	if err != nil || repeat.Status != "unchanged" || repeat.PreviousStatus == nil || *repeat.PreviousStatus != StatusRevoked {
+		t.Fatalf("idempotent revoke: %+v err=%v", repeat, err)
+	}
+	if runtimeVersion(t, f, created.Item.ID) != revokedVersion {
+		t.Fatalf("unchanged revoke bumped the version")
+	}
+	// Stale version → conflict, not not_found (conflict decided first).
+	stale, err := f.store.Revoke(context.Background(), created.Item.ID, created.Item.UpdatedAt, "owner")
+	if err != nil || stale.Status != "conflict" || stale.CurrentUpdatedAt != revokedVersion {
+		t.Fatalf("stale revoke: %+v err=%v", stale, err)
+	}
+}
+
+// Claim #11: return ordering — conflict before the returned/revoked checks,
+// returned + matched version → unchanged, revoked + matched version →
+// not_found (return.repository.ts:170-177).
+func TestReturnMutationOrderingContract(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_return", "owner")
+	f.seedGroup(t, "grp_return_2", "owner")
+	f.seedGroup(t, "grp_return_3", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_return",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stale version on an active grant → conflict.
+	stale, err := f.store.Return(context.Background(), created.Item.ID, "2001-01-01T00:00:00Z", "grantee")
+	if err != nil || stale.Status != "conflict" {
+		t.Fatalf("stale return: %+v err=%v", stale, err)
+	}
+	returned, err := f.store.Return(context.Background(), created.Item.ID, created.Item.UpdatedAt, "grantee")
+	if err != nil || returned.Status != "updated" || returned.PreviousStatus == nil || *returned.PreviousStatus != StatusActive {
+		t.Fatalf("return: %+v err=%v", returned, err)
+	}
+	returnedVersion := returned.Result.UpdatedAt
+	// Stale version on the returned grant → conflict (before the unchanged
+	// short-circuit).
+	stale, err = f.store.Return(context.Background(), created.Item.ID, created.Item.UpdatedAt, "grantee")
+	if err != nil || stale.Status != "conflict" {
+		t.Fatalf("stale return on returned grant: %+v err=%v", stale, err)
+	}
+	repeat, err := f.store.Return(context.Background(), created.Item.ID, returnedVersion, "grantee")
+	if err != nil || repeat.Status != "unchanged" || repeat.PreviousStatus == nil || *repeat.PreviousStatus != StatusReturned {
+		t.Fatalf("idempotent return: %+v err=%v", repeat, err)
+	}
+	// Revoked grant → not_found.
+	second, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_return_2",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := f.store.Revoke(context.Background(), second.Item.ID, second.Item.UpdatedAt, "owner")
+	if err != nil || revoked.Status != "updated" {
+		t.Fatalf("revoke: %+v err=%v", revoked, err)
+	}
+	missing, err := f.store.Return(context.Background(), second.Item.ID, revoked.Result.UpdatedAt, "grantee")
+	if err != nil || missing.Status != "not_found" {
+		t.Fatalf("return on revoked grant: %+v err=%v", missing, err)
+	}
+	// A grant whose runtime lost its manual source is not returnable
+	// (return.repository.ts :144-148).
+	third, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_return_3",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`DELETE FROM resource_authorization_sources WHERE authorization_id IN (
+		SELECT id FROM resource_authorizations WHERE resource_id = 'grp_return_3')`); err != nil {
+		t.Fatal(err)
+	}
+	noSource, err := f.store.Return(context.Background(), third.Item.ID, third.Item.UpdatedAt, "grantee")
+	if err != nil || noSource.Status != "not_found" {
+		t.Fatalf("return without manual source: %+v err=%v", noSource, err)
+	}
+}
+
+// Claim #12: /my-authorizations resolves direction — invalid values are
+// rejected (query enum, routes :45), outbound/inbound refine the self scope
+// (routes :157-159 → read.repository.ts :285-299), and the admin list still
+// ignores the parameter.
+func TestMyAuthorizationsDirectionRouteContract(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_dir", "owner")
+	if _, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_dir",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	deps := &Deps{Store: f.store}
+	request := func(url string, accountID, role string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, url, nil)
+		req = req.WithContext(authsys.WithAuthContext(req.Context(), &authsys.AuthContext{SystemAccountID: accountID, Role: role}))
+		rec := httptest.NewRecorder()
+		deps.list(rec, req, !strings.Contains(url, "/authorizations?") && strings.Contains(url, "my-authorizations"))
+		return rec
+	}
+	if rec := request("/my-authorizations?direction=sideways", "grantee", "user"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid direction status = %d", rec.Code)
+	}
+	inbound := request("/my-authorizations?direction=inbound", "grantee", "user")
+	if inbound.Code != http.StatusOK {
+		t.Fatalf("inbound status = %d body=%s", inbound.Code, inbound.Body.String())
+	}
+	if items := decodeListItems(t, inbound); len(items) != 1 {
+		t.Fatalf("grantee inbound items = %d, want 1", len(items))
+	}
+	outbound := request("/my-authorizations?direction=outbound", "grantee", "user")
+	if items := decodeListItems(t, outbound); len(items) != 0 {
+		t.Fatalf("grantee outbound items = %d, want 0", len(items))
+	}
+	ownerOutbound := request("/my-authorizations?direction=outbound", "owner", "user")
+	if items := decodeListItems(t, ownerOutbound); len(items) != 1 {
+		t.Fatalf("owner outbound items = %d, want 1", len(items))
+	}
+	// The admin surface validates the enum but does not apply the filter.
+	adminFiltered := request("/authorizations?direction=inbound", "owner", "admin")
+	if adminFiltered.Code != http.StatusOK {
+		t.Fatalf("admin filtered status = %d", adminFiltered.Code)
+	}
+	if items := decodeListItems(t, adminFiltered); len(items) != 1 {
+		t.Fatalf("admin list must ignore direction: items = %d", len(items))
+	}
+}
+
+// Claims #5/#3/#4 route layer: version normalization, presence refine and the
+// strict expire schema are enforced before the store runs.
+func TestAuthorizationRouteInputContract(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "grantee", "active")
+	f.seedGroup(t, "grp_route", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_route",
+		GranteeType: "system_account", GranteeID: "grantee",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := &Deps{Store: f.store}
+	adminContext := authsys.WithAuthContext(context.Background(), &authsys.AuthContext{SystemAccountID: "owner", Role: "admin"})
+	patchRequest := func(expireOnly bool, body string) *httptest.ResponseRecorder {
+		url := "/authorizations/" + created.Item.ID
+		if expireOnly {
+			url += "/expire"
+		}
+		req := httptest.NewRequest(http.MethodPatch, url, strings.NewReader(body))
+		req.SetPathValue("id", created.Item.ID)
+		req = req.WithContext(adminContext)
+		rec := httptest.NewRecorder()
+		deps.patch(rec, req, expireOnly)
+		return rec
+	}
+	if rec := patchRequest(false, `{"expectedUpdatedAt":"nope","status":"paused"}`); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "授权配置版本格式不正确") {
+		t.Fatalf("invalid version response = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := patchRequest(false, `{"status":"paused"}`); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "授权配置版本格式不正确") {
+		t.Fatalf("missing version response = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := patchRequest(false, `{"expectedUpdatedAt":"2027-01-01T00:00:00Z"}`); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "请提供要修改的授权内容") {
+		t.Fatalf("no-content response = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := patchRequest(true, `{"expectedUpdatedAt":"2027-01-01T00:00:00Z","status":"paused"}`); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "修改授权参数不合法") {
+		t.Fatalf("expire-with-status response = %d %s", rec.Code, rec.Body.String())
+	}
+	// Valid version + explicit null expiry clears through the route.
+	body := `{"expectedUpdatedAt":"` + created.Item.UpdatedAt + `","expiresAt":null}`
+	if rec := patchRequest(false, body); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"expiresAt":null`) {
+		t.Fatalf("null-expiry patch response = %d %s", rec.Code, rec.Body.String())
+	}
+	// Revoke version validation.
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/authorizations/"+created.Item.ID, strings.NewReader(`{"expectedUpdatedAt":"bad"}`))
+	revokeReq.SetPathValue("id", created.Item.ID)
+	revokeReq = revokeReq.WithContext(adminContext)
+	revokeRec := httptest.NewRecorder()
+	deps.revoke(revokeRec, revokeReq)
+	if revokeRec.Code != http.StatusBadRequest || !strings.Contains(revokeRec.Body.String(), "授权配置版本格式不正确") {
+		t.Fatalf("revoke invalid version response = %d %s", revokeRec.Code, revokeRec.Body.String())
+	}
+}
+
+func assertRuntime(t *testing.T, f *fixture, grantee, resourceID, status, effectiveType, revokedReason string) {
+	t.Helper()
+	var runtimeStatus, effective string
+	var reason sql.NullString
+	if err := f.db.QueryRow(`SELECT status, COALESCE(effective_source_type,''), revoked_reason
+		FROM resource_authorizations
+		WHERE grantee_system_account_id = ? AND resource_id = ?`, grantee, resourceID).
+		Scan(&runtimeStatus, &effective, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeStatus != status || effective != effectiveType {
+		t.Fatalf("runtime = status %s effective %s, want %s/%s", runtimeStatus, effective, status, effectiveType)
+	}
+	if revokedReason == "" {
+		if reason.Valid {
+			t.Fatalf("runtime revoked_reason = %v, want NULL", reason)
+		}
+	} else if !reason.Valid || reason.String != revokedReason {
+		t.Fatalf("runtime revoked_reason = %v, want %s", reason, revokedReason)
+	}
+}
+
+func runtimeVersion(t *testing.T, f *fixture, grantID string) string {
+	t.Helper()
+	var updatedAt string
+	if err := f.db.QueryRow(`SELECT updated_at FROM resource_authorization_grants WHERE id = ?`, grantID).Scan(&updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	return updatedAt
+}
+
+func decodeListItems(t *testing.T, rec *httptest.ResponseRecorder) []map[string]any {
+	t.Helper()
+	var payload struct {
+		Data struct {
+			Items []map[string]any `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.Data.Items
+}

@@ -1,18 +1,18 @@
 // Team-status cascade into the authorization domain: mirrors Node
-// revokeAllTeamSourcesAsync / reactivateTeamGrantSourcesAsync /
-// revokeTeamSourcesForMemberAsync.
+// revokeAllTeamSourcesAsync (:1631-1660) /
+// applyActiveTeamGrantsToMembersAsync (:1574-1596) /
+// revokeTeamSourcesForMemberAsync (:1598-1629).
 package authz
 
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"time"
 )
 
 // RevokeAllTeamSources revokes every active team source of a team (reason
-// e.g. team_disabled) and refreshes each affected runtime row. Mirrors
-// revokeAllTeamSourcesAsync.
+// e.g. team_disabled) and refreshes each affected runtime row with the default
+// (preserve-expired) refresh options, matching the Node cascade.
 func (s *Store) RevokeAllTeamSources(ctx context.Context, teamID, reason string) error {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -62,15 +62,18 @@ func (s *Store) revokeAllTeamSourcesTx(ctx context.Context, tx *sql.Tx, teamID, 
 			now, reason, now, authorizationID, teamID); err != nil {
 			return err
 		}
-		if err := s.refreshEffectiveSourceForRuntime(ctx, tx, authorizationID, "system", now, reason, true, StatusRevoked); err != nil {
+		// Node :1658 refreshes with default options (no terminal reason).
+		if err := s.refreshEffectiveSource(ctx, tx, authorizationID, "system", now, refreshOptions{}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// ReactivateTeamGrants re-applies active team grants to their members after
-// a team is re-enabled (mirrors reactivateTeamGrantSourcesAsync).
+// ReactivateTeamGrants re-applies active team grants to their members after a
+// team is re-enabled (mirrors reactivateTeamGrantSourcesAsync →
+// applyActiveTeamGrantsToMembersAsync :1574-1596: the grant's remark, expiry
+// and limits drive the per-member team-source upsert).
 func (s *Store) ReactivateTeamGrants(ctx context.Context, teamID string) error {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -88,14 +91,22 @@ func (s *Store) ReactivateTeamGrants(ctx context.Context, teamID string) error {
 		if err != nil {
 			return err
 		}
+		limits, err := normalizeAuthorizationLimitsJSON(grant.LimitsJSON.String)
+		if err != nil {
+			return err
+		}
+		projection := runtimeProjection{
+			Remark:     nullStringPointer(grant.Remark),
+			ExpiresAt:  nullStringPointer(grant.ExpiresAt),
+			LimitsJSON: limits,
+		}
+		teamIDCopy := grant.GranteeTeamID.String
 		for _, memberID := range members {
-			memberInput := CreateInput{
-				ResourceType: grant.ResourceType,
-				ResourceID:   grant.ResourceID,
-				GranteeType:  "system_account",
-				GranteeID:    memberID,
+			if memberID == grant.OwnerID {
+				continue
 			}
-			if err := s.upsertRuntimeForUser(ctx, tx, memberInput, grant.OwnerID, memberID, "system", now); err != nil {
+			if err := s.upsertRuntimeForUser(ctx, tx, grant.ResourceType, grant.ResourceID, grant.OwnerID,
+				memberID, &teamIDCopy, projection, "system", now); err != nil {
 				return err
 			}
 		}
@@ -104,7 +115,8 @@ func (s *Store) ReactivateTeamGrants(ctx context.Context, teamID string) error {
 }
 
 // RevokeTeamSourcesForMember revokes the team sources of one removed member
-// (mirrors revokeTeamSourcesForMemberAsync).
+// (mirrors revokeTeamSourcesForMemberAsync: the runtime rows keep the default
+// refresh options).
 func (s *Store) RevokeTeamSourcesForMember(ctx context.Context, teamID, memberAccountID string) error {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -142,7 +154,7 @@ func (s *Store) RevokeTeamSourcesForMember(ctx context.Context, teamID, memberAc
 			now, now, now, authorizationID, teamID); err != nil {
 			return err
 		}
-		if err := s.refreshEffectiveSourceForRuntime(ctx, tx, authorizationID, "system", now, "member_removed", true, StatusRevoked); err != nil {
+		if err := s.refreshEffectiveSource(ctx, tx, authorizationID, "system", now, refreshOptions{}); err != nil {
 			return err
 		}
 	}
@@ -186,6 +198,3 @@ func (s *Store) activeTeamMemberIDs(ctx context.Context, tx *sql.Tx, teamID stri
 	}
 	return ids, rows.Err()
 }
-
-var _ = strings.TrimSpace
-var _ = time.Now

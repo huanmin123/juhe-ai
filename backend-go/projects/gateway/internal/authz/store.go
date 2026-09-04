@@ -154,19 +154,24 @@ type grantRow struct {
 	Status        string
 	Remark        sql.NullString
 	ExpiresAt     sql.NullString
+	LimitsJSON    sql.NullString
+	CreatedBy     sql.NullString
+	RevokedBy     sql.NullString
+	RevokedAt     sql.NullString
 	CreatedAt     string
 	UpdatedAt     string
 }
 
 const grantColumns = `g.id, g.resource_type, g.resource_id, g.resource_owner_system_account_id,
 	g.grantee_type, g.grantee_system_account_id, g.grantee_team_id, g.status,
-	g.remark, g.expires_at, g.created_at, g.updated_at`
+	g.remark, g.expires_at, g.limits_json, g.created_by, g.revoked_by, g.revoked_at, g.created_at, g.updated_at`
 
 func (s *Store) scanGrant(scanner interface{ Scan(...any) error }) (grantRow, error) {
 	var row grantRow
 	err := scanner.Scan(&row.ID, &row.ResourceType, &row.ResourceID, &row.OwnerID,
 		&row.GranteeType, &row.GranteeUserID, &row.GranteeTeamID, &row.Status,
-		&row.Remark, &row.ExpiresAt, &row.CreatedAt, &row.UpdatedAt)
+		&row.Remark, &row.ExpiresAt, &row.LimitsJSON, &row.CreatedBy, &row.RevokedBy, &row.RevokedAt,
+		&row.CreatedAt, &row.UpdatedAt)
 	return row, err
 }
 
@@ -254,7 +259,10 @@ func keywordUpperBound(prefix string) string {
 	return string(runes)
 }
 
-// Summary is the list/detail item shape (usage included by J5 later).
+// Summary is the list/detail item shape (usage included by J5 later). Limits
+// is only populated on the create outcome today (Node echoes the normalized
+// limits on create :2448 and patch :900-910); list/detail DTO parity is a
+// separate pending slice.
 type Summary struct {
 	ID            string  `json:"id"`
 	ResourceType  string  `json:"resourceType"`
@@ -266,6 +274,7 @@ type Summary struct {
 	Status        string  `json:"status"`
 	Remark        *string `json:"remark,omitempty"`
 	ExpiresAt     *string `json:"expiresAt,omitempty"`
+	Limits        any     `json:"limits,omitempty"`
 	CreatedAt     string  `json:"createdAt"`
 	UpdatedAt     string  `json:"updatedAt"`
 }
@@ -350,6 +359,24 @@ func (s *Store) Find(ctx context.Context, id string) (*Summary, error) {
 	}
 	summary := grant.summary()
 	return &summary, nil
+}
+
+// findSummaryWithLimits resolves a grant summary plus its normalized limits
+// echo (Node resourceAuthorizationMutationResult :900-910: empty limits render
+// as null). Only create uses it today; the list/detail DTO parity slice will
+// decide the read surfaces.
+func (s *Store) findSummaryWithLimits(ctx context.Context, id string) (*Summary, any, error) {
+	ctx = ensureCtx(ctx)
+	row := s.db.QueryRowContext(ctx, s.bind(`SELECT `+grantColumns+` FROM `+s.table("resource_authorization_grants")+` g WHERE g.id = ?`), id)
+	grant, err := s.scanGrant(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	summary := grant.summary()
+	return &summary, decodeAuthorizationLimits(grantLimitsText(grant.LimitsJSON)), nil
 }
 
 // GetGrantForMutation loads a grant with the version for mutation checks.
