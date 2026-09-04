@@ -250,3 +250,7 @@ func maxInt(value, minimum int) int {
 	}
 	return value
 }
+
+// HashNodePassword exposes the Node-compatible pbkdf2$sha512$120000$ hash so
+// management slices (authsys) create accounts with identical credentials.
+func HashNodePassword(password string) (string, error) { return newNodePasswordHash(password) }

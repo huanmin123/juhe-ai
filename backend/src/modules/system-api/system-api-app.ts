@@ -8,7 +8,6 @@ import { auditLogsRouter } from '../audit-logs/audit-logs.routes.js'
 import { authorizationOptionsRouter } from '../authorization-options/authorization-options.routes.js'
 import { authorizationsRouter } from '../authorizations/authorizations.routes.js'
 import { forceSelfAccessScope, requireAdmin, requireAuth } from '../auth/auth.middleware.js'
-import { authRouter } from '../auth/auth.routes.js'
 import { externalIntegrationsRouter } from '../external-integrations/external-integrations.routes.js'
 import { externalIntegrationSourcesRouter } from '../external-integrations/external-integration-sources.routes.js'
 import { delegatedApiRouter } from '../delegated-api/delegated-api.routes.js'
@@ -30,7 +29,6 @@ import { routeStrategiesRouter } from '../route-strategies/route-strategies.rout
 import { settingsRouter } from '../settings/settings.routes.js'
 import { statsRouter } from '../stats/stats.routes.js'
 import { responseInspectionPoliciesRouter } from '../response-inspection-policies/response-inspection-policies.routes.js'
-import { systemAccountsRouter } from '../system-accounts/system-accounts.routes.js'
 import { myTeamsRouter, systemTeamsRouter } from '../system-teams/system-teams.routes.js'
 import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from '../usage-records/usage-records.routes.js'
@@ -145,7 +143,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use('/oauth', controlReadReplicaPrimaryOnlyRequestGuard)
   app.use(systemApiDbServiceAdmissionControl, oauthPublicRouter)
 
-  app.use(`${systemApiPrefix}/auth`, systemApiDbServiceAdmissionControl, authRouter)
   app.get(`${systemApiPrefix}/settings/public`, async (_req, res, next) => {
     try {
       res.json(ok(await listPublicGlobalSettingsAsync()))
@@ -201,7 +198,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/oauth`, requireAdmin, oauthManagementRouter)
   app.use(`${systemApiPrefix}/table-monitor`, requireAdmin, tableMonitorRouter)
   app.use(`${systemApiPrefix}/settings`, settingsRouter)
-  app.use(`${systemApiPrefix}/system-accounts`, systemAccountsRouter)
   app.use(`${systemApiPrefix}/my-teams`, forceSelfAccessScope, myTeamsRouter)
   app.use(`${systemApiPrefix}/system-teams`, systemTeamsRouter)
 
