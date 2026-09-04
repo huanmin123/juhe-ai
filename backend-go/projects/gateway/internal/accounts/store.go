@@ -98,6 +98,9 @@ type Store struct {
 	secret string
 	now    func() time.Time
 	newI   func(prefix string) string
+	// authorized is the M10 authorized-instance reader (authz slice, narrow
+	// interface). Nil until SetAuthorizedReader / Deps.Mount wires it.
+	authorized AuthorizedAccountReader
 }
 
 // NewStore builds the store.

@@ -554,6 +554,27 @@ func TestTemporaryTokenNonAdminFailuresTriggerLoginGuard(t *testing.T) {
 	}
 }
 
+func TestTemporaryAccessTokenTTLMatchesNodeNumberSemantics(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "admin1", "super-secret", "super_admin")
+
+	invalid, invalidPayload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens",
+		`{"username":"admin1","password":"super-secret","ttlSeconds":null}`, "")
+	if invalid.StatusCode != http.StatusBadRequest || invalidPayload["message"] != "临时访问令牌参数无效" {
+		t.Fatalf("explicit null ttl must be rejected: %d %v", invalid.StatusCode, invalidPayload)
+	}
+	for _, body := range []string{
+		`{"username":"admin1","password":"super-secret","ttlSeconds":900.0}`,
+		`{"username":"admin1","password":"super-secret","ttlSeconds":9e2}`,
+	} {
+		response, payload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens", body, "")
+		if response.StatusCode != http.StatusOK || !strings.HasPrefix(payload["data"].(map[string]any)["token"].(string), "juhe_tmp_") {
+			t.Fatalf("integer JSON number must be accepted: %s -> %d %v", body, response.StatusCode, payload)
+		}
+	}
+	_ = deps
+}
+
 func TestDevelopmentAutoLogin(t *testing.T) {
 	deps, _, server := newTestEnv(t)
 	seedAccount(t, deps, "devadmin", "dev-password", "super_admin")

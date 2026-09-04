@@ -1,7 +1,9 @@
 package authsys
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -301,14 +303,19 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		Username   string `json:"username"`
 		Password   string `json:"password"`
-		TTLSeconds *int   `json:"ttlSeconds"`
+		TTLSeconds json.RawMessage `json:"ttlSeconds"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
 	ttlSeconds := 900
-	if body.TTLSeconds != nil {
-		ttlSeconds = *body.TTLSeconds
+	if len(body.TTLSeconds) > 0 {
+		var value float64
+		if string(body.TTLSeconds) == "null" || json.Unmarshal(body.TTLSeconds, &value) != nil || math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value {
+			kernel.WriteBadRequest(w, "临时访问令牌参数无效")
+			return
+		}
+		ttlSeconds = int(value)
 	}
 	if body.Username == "" || body.Password == "" || ttlSeconds < 60 || ttlSeconds > 3600 {
 		kernel.WriteBadRequest(w, "临时访问令牌参数无效")

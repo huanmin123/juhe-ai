@@ -11,11 +11,14 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
-// Deps bundles the M08 slice collaborators.
+// Deps bundles the M08 slice collaborators. Authorized carries the M10
+// authorized-instance reader (authz slice via AuthorizedAccountReader);
+// Mount injects it into the store, so composition roots only set the field.
 type Deps struct {
-	Store *Store
-	Auth  *authsys.Deps
-	Sink  authsys.OperationLogSink
+	Store      *Store
+	Auth       *authsys.Deps
+	Sink       authsys.OperationLogSink
+	Authorized AuthorizedAccountReader
 }
 
 // Mount wires the accounts route family: admin surface on /accounts
@@ -23,6 +26,8 @@ type Deps struct {
 // mounts the same router at both prefixes; my-* pins the scope to the caller
 // and drops any systemAccountId query).
 func (d *Deps) Mount(k *kernel.Kernel) {
+	d.Store.SetAuthorizedReader(d.Authorized)
+
 	prefix := "/__aisys__/api"
 	admin := d.Auth.RequireAdmin
 	self := d.Auth.RequireSession(true)

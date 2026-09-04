@@ -389,12 +389,20 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 }
 
 // listFilters mirrors accountManagementListFilters (owner mode: the source
-// account COALESCE pair collapses to the plain column).
-func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, args *[]any) string {
+// account COALESCE pair collapses to the plain column). authorized carries
+// the M10 authorized instance account ids: they pass the owner scope filter
+// through an id IN clause (access_type='authorized' rows).
+func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, authorized map[string]bool, args *[]any) string {
 	clauses := []string{"accounts.deleted_at IS NULL"}
 	if scoped != "" {
-		clauses = append(clauses, "accounts.system_account_id = ?")
-		*args = append(*args, scoped)
+		if ids := authorizedIDList(authorized); len(ids) > 0 {
+			clauses = append(clauses, "(accounts.system_account_id = ? OR accounts.id IN ("+placeholders(len(ids))+"))")
+			*args = append(*args, scoped)
+			*args = append(*args, anySlice(ids)...)
+		} else {
+			clauses = append(clauses, "accounts.system_account_id = ?")
+			*args = append(*args, scoped)
+		}
 	}
 	if len(options.IDs) > 0 {
 		clauses = append(clauses, "accounts.id IN ("+placeholders(len(options.IDs))+")")
@@ -519,9 +527,10 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	normalized := normalizeListOptions(options)
 	scoped := access.manageableID()
 	now := isoMillis(s.now())
+	authorized := s.authorizedReadableIDs(ctx, access)
 	cte, joins := s.listJoins()
 	args := []any{}
-	where := s.listFilters(normalized, scoped, now, &args)
+	where := s.listFilters(normalized, scoped, now, authorized, &args)
 	order := s.listOrderClause(normalized)
 	args = append(args, normalized.PageSize+1, (normalized.Page-1)*normalized.PageSize)
 	rows, err := s.db.QueryContext(ctx, s.bind(cte+`SELECT `+strings.Join(listItemColumns("accounts"), ", ")+`
@@ -549,7 +558,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	items := make([]ListItem, 0, len(records))
 	ids := make([]string, 0, len(records))
 	for _, row := range records {
-		items = append(items, s.newListItem(row, access))
+		items = append(items, s.newListItem(row, access, authorized[row.id]))
 		ids = append(ids, row.id)
 	}
 	if err := s.hydrateTags(ctx, items, ids); err != nil {
@@ -589,8 +598,10 @@ func anySlice(values []string) []any {
 }
 
 // newListItem mirrors accountManagementListItemFromRow plus the hydrate
-// status/schedulable/availability fields (owner mode).
-func (s *Store) newListItem(row listRow, access AccessScope) ListItem {
+// status/schedulable/availability fields. authorized marks the M10
+// authorized-instance rows: accessType flips to 'authorized' with the
+// authorized permission set (use/lock only).
+func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) ListItem {
 	now := s.now()
 	item := ListItem{
 		ID:                        row.id,
@@ -625,6 +636,10 @@ func (s *Store) newListItem(row listRow, access AccessScope) ListItem {
 		Permissions:               ownerPermissions(),
 		TodayUsage:                emptyUsageSummary(),
 		Usage:                     emptyUsageSummary(),
+	}
+	if authorized {
+		item.AccessType = "authorized"
+		item.Permissions = authorizedPermissions()
 	}
 	if access.canAccessAll() {
 		id := row.systemAccountID
@@ -1046,9 +1061,13 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	if id == "" {
 		return nil, nil
 	}
+	// M10 authorized-instance pass-through: an authorized instance account is
+	// found outside the owner scope; the reserved instance branch below still
+	// denies the credential surface (Node access_type='authorized').
+	authorized := s.authorizedReadableIDs(ctx, access)[id]
 	scopeClause := ""
 	args := []any{id}
-	if scoped := access.manageableID(); scoped != "" {
+	if scoped := access.manageableID(); scoped != "" && !authorized {
 		scopeClause = " AND accounts.system_account_id = ?"
 		args = append(args, scoped)
 	}
@@ -1121,8 +1140,10 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	if err != nil {
 		return nil, err
 	}
-	// canManageResourceOwner: users may only manage their own rows.
-	if !access.canAccessAll() && row.systemAccountID != access.ViewerID {
+	// canManageResourceOwner: users may only manage their own rows; M10
+	// authorized instance accounts stay visible (the instance branch below
+	// renders the reserved 403) but never manageable.
+	if !access.canAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
 		return nil, nil
 	}
 	if row.authorizationID.Valid && row.authorizationID.String != "" ||

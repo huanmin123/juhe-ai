@@ -164,7 +164,10 @@ func (s *Store) resolveResourceOwner(ctx context.Context, tx *sql.Tx, resourceTy
 	var err error
 	switch resourceType {
 	case "account":
-		err = tx.QueryRowContext(ctx, s.bind(`SELECT resource_owner_system_account_id FROM `+s.table("accounts")+`
+		// Mirrors Node resourceOwnerSystemAccountId: the owning namespace
+		// column is system_account_id; instance rows (already authorized
+		// clones) are never grantable resources.
+		err = tx.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("accounts")+`
 			WHERE id = ? AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`), resourceID).Scan(&ownerID)
 	case "group":
 		err = tx.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("groups")+` WHERE id = ?`), resourceID).Scan(&ownerID)

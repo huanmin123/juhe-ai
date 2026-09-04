@@ -326,7 +326,7 @@ func (e *testEnv) seedAccount(t *testing.T, id, ownerID, name, status string) {
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
 		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', ?, ?, 'sk-see***'+?, 'gpt-4o-mini', ?, ?)`,
-		id, ownerID, name, status, sealed, now, now)
+		id, ownerID, name, status, sealed, id, now, now)
 }
 
 func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
