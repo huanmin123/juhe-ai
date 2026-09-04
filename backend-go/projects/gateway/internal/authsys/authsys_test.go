@@ -54,6 +54,15 @@ func (sessionCreationRejectedPort) CreateSession(context.Context, string, string
 	return modelcheckauth.IssuedSession{}, false, nil
 }
 
+type temporaryTokenCreationFailingPort struct {
+	businessauth.Port
+	err error
+}
+
+func (p temporaryTokenCreationFailingPort) CreateTemporaryToken(context.Context, string, string, int) (modelcheckauth.IssuedSession, bool, error) {
+	return modelcheckauth.IssuedSession{}, false, p.err
+}
+
 func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:authsys-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
@@ -484,6 +493,44 @@ func TestLoginSessionCreationRejectionReportsCredentialRevisionChanged(t *testin
 	}
 	if cookies := response.Header.Values("Set-Cookie"); len(cookies) != 0 {
 		t.Fatalf("session creation rejection must not issue a cookie: %v", cookies)
+	}
+}
+
+func TestTemporaryTokenCredentialStorageFailureIsNotReportedAsInvalidCredentials(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "admin1", "super-secret", "super_admin")
+	deps.Port = verifyCredentialsFailingPort{Port: deps.Port, err: errors.New("credential storage unavailable")}
+
+	response, payload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens", `{"username":"admin1","password":"super-secret","ttlSeconds":120}`, "")
+	if response.StatusCode != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
+		t.Fatalf("temporary token credential storage failure must remain a server failure: %d %v", response.StatusCode, payload)
+	}
+}
+
+func TestTemporaryTokenCreationStorageFailureIsNotReportedAsCredentialRevisionChanged(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "admin1", "super-secret", "super_admin")
+	deps.Port = temporaryTokenCreationFailingPort{Port: deps.Port, err: errors.New("temporary token storage unavailable")}
+
+	response, payload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens", `{"username":"admin1","password":"super-secret","ttlSeconds":120}`, "")
+	if response.StatusCode != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
+		t.Fatalf("temporary token storage failure must remain a server failure: %d %v", response.StatusCode, payload)
+	}
+}
+
+func TestTemporaryTokenNonAdminFailuresTriggerLoginGuard(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	seedAccount(t, deps, "regular", "regular-pass", "user")
+
+	for attempt := 0; attempt < 10; attempt++ {
+		response, payload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens", `{"username":"regular","password":"regular-pass","ttlSeconds":120}`, "")
+		if response.StatusCode != http.StatusUnauthorized || payload["message"] != "账号或密码错误" {
+			t.Fatalf("non-admin attempt %d must retain the 401 response: %d %v", attempt+1, response.StatusCode, payload)
+		}
+	}
+	blocked, blockedPayload := postJSON(t, server, "/__aisys__/api/auth/temporary-access-tokens", `{"username":"regular","password":"regular-pass","ttlSeconds":120}`, "")
+	if blocked.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("the request after ten non-admin failures must be rate limited: %d %v", blocked.StatusCode, blockedPayload)
 	}
 }
 

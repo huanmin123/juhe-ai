@@ -323,10 +323,12 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	verified, ok, err := d.Port.VerifyCredentials(r.Context(), body.Username, body.Password)
-	if err != nil || !ok || !IsAdminRole(verified.Role) {
-		if !ok {
-			d.LoginGuard.Failed(clientIP, body.Username)
-		}
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if !ok || !IsAdminRole(verified.Role) {
+		d.LoginGuard.Failed(clientIP, body.Username)
 		kernel.WriteError(w, http.StatusUnauthorized, "账号或密码错误")
 		return
 	}
@@ -335,7 +337,11 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	temporary, temporaryOK, err := d.Port.CreateTemporaryToken(r.Context(), verified.SystemAccountID, verified.CredentialRevision, ttlSeconds)
-	if err != nil || !temporaryOK {
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if !temporaryOK {
 		kernel.WriteError(w, http.StatusUnauthorized, "账号或密码已变更，请重新申请")
 		return
 	}
