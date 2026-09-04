@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -798,21 +799,26 @@ func nullableString(value *string) any {
 }
 
 func nullableJSONEqual(next *string, current string) bool {
-	if next == nil {
-		return current == ""
-	}
 	var nextValue any
-	if err := json.Unmarshal([]byte(*next), &nextValue); err != nil {
-		return *next == current
-	}
-	if current == "" {
-		return nextValue == nil
+	if next == nil || strings.TrimSpace(*next) == "" {
+		nextValue = map[string]any{}
+	} else if err := json.Unmarshal([]byte(*next), &nextValue); err != nil {
+		return current == *next
 	}
 	var currentValue any
-	if err := json.Unmarshal([]byte(current), &currentValue); err != nil {
-		return *next == current
+	if strings.TrimSpace(current) == "" {
+		currentValue = map[string]any{}
+	} else if err := json.Unmarshal([]byte(current), &currentValue); err != nil {
+		return next != nil && *next == current
 	}
-	normalizedNext, errNext := json.Marshal(nextValue)
-	normalizedCurrent, errCurrent := json.Marshal(currentValue)
-	return errNext == nil && errCurrent == nil && string(normalizedNext) == string(normalizedCurrent)
+	// Node's requestQuotaLimitsJson(normalizeRequestQuotaLimits(...)) stores
+	// an empty limits object as NULL. Compare decoded values so JSON key order
+	// and the NULL/{} representation do not create a false conflict.
+	if object, ok := nextValue.(map[string]any); ok && len(object) == 0 {
+		nextValue = map[string]any{}
+	}
+	if object, ok := currentValue.(map[string]any); ok && len(object) == 0 {
+		currentValue = map[string]any{}
+	}
+	return reflect.DeepEqual(nextValue, currentValue)
 }

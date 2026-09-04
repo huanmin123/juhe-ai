@@ -114,7 +114,7 @@ func TestCreateGroupAuthorizationLifecycle(t *testing.T) {
 	// response rather than treating a retry as a conflict.
 	retry, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "system_account", GranteeID: "grantee",
+		GranteeType: "system_account", GranteeID: "grantee", LimitsJSON: func() *string { v := "{}"; return &v }(),
 	}, "owner")
 	if err != nil || retry.Created || retry.Item.ID != result.Item.ID {
 		t.Fatalf("idempotent duplicate result = %+v err=%v", retry, err)
