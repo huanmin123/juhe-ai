@@ -128,7 +128,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 			WHERE grantee_team_id = ? AND status = 'active'`), input.GranteeID).Scan(&activeGrants); err != nil {
 			return nil, err
 		}
-		if activeGrants > MaxTeamActiveGrantCount {
+		if activeGrants+1 > MaxTeamActiveGrantCount {
 			return nil, failf("单个授权团队最多支持 20 条有效授权，请先回收或停用部分授权")
 		}
 	}

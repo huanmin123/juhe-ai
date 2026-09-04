@@ -239,6 +239,32 @@ func TestTeamGrantEffectiveSourceAndRevoke(t *testing.T) {
 	}
 }
 
+func TestTeamGrantActiveLimitRejectsTwentyFirstGrant(t *testing.T) {
+	f := newFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "member", "active")
+	f.seedTeamWithMember(t, "team_1", "member")
+	for i := 0; i < MaxTeamActiveGrantCount; i++ {
+		resourceID := "grp_limit_" + itoa(i)
+		f.seedGroup(t, resourceID, "owner")
+		if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants
+			(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_team_id,
+			 scope, status, created_by, created_at, updated_at)
+			VALUES (?, 'group', ?, 'owner', 'team', 'team_1', 'use', 'active', 'owner', ?, ?)`,
+			"grant_limit_"+itoa(i), resourceID, f.now.UTC().Format(time.RFC3339Nano), f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.seedGroup(t, "grp_limit_new", "owner")
+	_, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_limit_new",
+		GranteeType: "team", GranteeID: "team_1",
+	}, "owner")
+	if err == nil || !strings.Contains(err.Error(), "最多支持 20 条有效授权") {
+		t.Fatalf("21st team grant error = %v", err)
+	}
+}
+
 func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
