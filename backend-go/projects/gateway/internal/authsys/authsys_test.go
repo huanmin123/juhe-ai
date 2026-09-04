@@ -341,7 +341,6 @@ func TestSystemAccountsCRUDAndAuthorization(t *testing.T) {
 	if substring.StatusCode != http.StatusOK || len(substringPayload["data"].([]any)) != 0 {
 		t.Fatalf("options keyword must be exact-or-prefix, got %d %v", substring.StatusCode, substringPayload)
 	}
-
 	list, listPayload := getJSON(t, server, "/__aisys__/api/system-accounts?page=1&pageSize=20", adminCookie)
 	if list.StatusCode != http.StatusOK {
 		t.Fatalf("list accounts: %d %v", list.StatusCode, listPayload)
@@ -353,6 +352,16 @@ func TestSystemAccountsCRUDAndAuthorization(t *testing.T) {
 	items := rawItems.([]any)
 	if list.StatusCode != http.StatusOK || len(items) != 3 {
 		t.Fatalf("list accounts: %d %d items", list.StatusCode, len(items))
+	}
+	secondItem := findItemByUsername(t, listPayload, "second")
+	delta, deltaPayload := patchJSON(t, server, "/__aisys__/api/system-accounts/"+accountIDByUsername(t, deps, "second"),
+		`{"expectedUpdatedAt":"`+secondItem["editVersion"].(string)+`","displayName":"Second_Renamed","imageGenerationEnabled":true}`, adminCookie)
+	if delta.StatusCode != http.StatusOK {
+		t.Fatalf("patch delta: %d %v", delta.StatusCode, deltaPayload)
+	}
+	deltaData := deltaPayload["data"].(map[string]any)
+	if deltaData["displayName"] != "Second_Renamed" || deltaData["imageGenerationEnabled"] != true || deltaData["id"] != accountIDByUsername(t, deps, "second") {
+		t.Fatalf("patch must return changed fields: %v", deltaData)
 	}
 
 	// Super-admin invariant: disabling the only active super admin is 409.

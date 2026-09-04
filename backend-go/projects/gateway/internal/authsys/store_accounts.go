@@ -651,6 +651,7 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		return AccountMutationResult{}, &ConflictError{Message: "系统账户已被其他操作修改，请刷新后重试"}
 	}
 
+	mutationResult := AccountMutationResult{ID: current.ID, UpdatedAt: current.UpdatedAt}
 	changes := map[string]any{}
 	if input.DisplayName != nil && *input.DisplayName != current.DisplayName {
 		if *input.DisplayName == "" {
@@ -660,11 +661,17 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 			return AccountMutationResult{}, &ValidationError{Message: "用户名称不能包含空格"}
 		}
 		changes["display_name"] = *input.DisplayName
+		value := *input.DisplayName
+		mutationResult.DisplayName = &value
 	}
 	if input.Description != nil {
 		description := *input.Description
 		if (current.Description == nil && description != "") || (current.Description != nil && *current.Description != description) {
 			changes["description"] = description
+			if description != "" {
+				value := description
+				mutationResult.Description = &value
+			}
 		}
 	}
 
@@ -690,6 +697,8 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		if *input.Role != current.Role {
 			role = *input.Role
 			changes["role"] = *input.Role
+			value := *input.Role
+			mutationResult.Role = &value
 		}
 	}
 	status := current.Status
@@ -700,6 +709,8 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		if *input.Status != current.Status {
 			status = *input.Status
 			changes["status"] = *input.Status
+			value := *input.Status
+			mutationResult.Status = &value
 		}
 	}
 	requestLimitsJSON := ""
@@ -711,6 +722,7 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		if encoded != nil {
 			requestLimitsJSON = *encoded
 			changes["request_limits_json"] = requestLimitsJSON
+			mutationResult.RequestLimits = parseUserRequestLimits(requestLimitsJSON)
 		}
 	}
 
@@ -726,8 +738,7 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 	}
 
 	if len(changes) == 0 && !passwordChanged {
-		result := AccountMutationResult{ID: current.ID, UpdatedAt: current.UpdatedAt}
-		return result, nil
+		return mutationResult, nil
 	}
 
 	assignments := []string{"updated_at = ?"}
@@ -758,6 +769,7 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 			mustChange = boolInt(effective)
 			setIf("must_change_password", mustChange)
 			changes["must_change_password"] = mustChange
+			mutationResult.MustChangePassword = &effective
 		}
 	}
 	imageEnabled := boolInt(current.ImageGenerationEnabled)
@@ -765,6 +777,8 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		imageEnabled = boolInt(*input.ImageGenerationEnabled)
 		setIf("image_generation_enabled", imageEnabled)
 		changes["image_generation_enabled"] = imageEnabled
+		value := *input.ImageGenerationEnabled
+		mutationResult.ImageGenerationEnabled = &value
 	}
 	if value, ok := changes["ai_account_limit"]; ok {
 		setIf("ai_account_limit", value)
@@ -774,6 +788,8 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 			return AccountMutationResult{}, &ValidationError{Message: "AI 账户上限必须是 0 到 1000000 之间的整数"}
 		}
 		setIf("ai_account_limit", *input.AIAccountLimit)
+		value := *input.AIAccountLimit
+		mutationResult.AIAccountLimit = &value
 	}
 	if value, ok := changes["request_limits_json"]; ok {
 		setIf("request_limits_json", value)
@@ -801,7 +817,8 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 	if err := tx.Commit(); err != nil {
 		return AccountMutationResult{}, err
 	}
-	return AccountMutationResult{ID: id, UpdatedAt: newUpdatedAt}, nil
+	mutationResult.UpdatedAt = newUpdatedAt
+	return mutationResult, nil
 }
 
 func (s *AccountStore) findRowForUpdate(ctx context.Context, tx *sql.Tx, where string, args ...any) (AccountSummary, string, error) {
