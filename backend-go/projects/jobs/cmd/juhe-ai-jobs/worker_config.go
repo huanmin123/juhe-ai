@@ -60,6 +60,13 @@ type workerConfig struct {
 	RecordMaintenanceQueueMaxItems int
 	RecordMaintenanceQueueMaxMb    int
 
+	// RecordMaintenanceBatchSize / RecordMaintenanceShutdownFlushMaxBatches
+	// 是 record_maintenance_jobs 交接表 drain 的批次与停机排空批数
+	// （Node background.recordMaintenanceBatchSize / recordMaintenanceShutdownFlushMaxBatches
+	// 同名 env 与默认值）。
+	RecordMaintenanceBatchSize               int
+	RecordMaintenanceShutdownFlushMaxBatches int
+
 	StatsEnabled         bool
 	OAuthEnabled         bool
 	TaskRunsEnabled      bool
@@ -119,26 +126,28 @@ func (c workerConfig) CircuitCapacity() int64 {
 
 func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	config := workerConfig{
-		Driver:                         "sqlite",
-		InstanceID:                     "juhe-ai-jobs",
-		WorkerRole:                     "worker",
-		WorkerReplicaIdx:               0,
-		PostgresMaxOpenConns:           8,
-		PostgresMaxIdleConns:           8,
-		UsageShardCount:                16,
-		CodexContextStateShardCount:    4,
-		ChatRetentionDays:              3,
-		RecordMaintenanceQueueMaxItems: 5000,
-		RecordMaintenanceQueueMaxMb:    32,
-		StatsEnabled:                   true,
-		OAuthEnabled:                   true,
-		TaskRunsEnabled:                true,
-		UsageWriterEnabled:             true,
-		InternalAPIEnabled:             true,
-		BalanceDetectEnabled:           true,
-		ProbeEnabled:                   true,
-		ProbeConcurrency:               8,
-		DrainTimeout:                   10 * time.Second,
+		Driver:                                   "sqlite",
+		InstanceID:                               "juhe-ai-jobs",
+		WorkerRole:                               "worker",
+		WorkerReplicaIdx:                         0,
+		PostgresMaxOpenConns:                     8,
+		PostgresMaxIdleConns:                     8,
+		UsageShardCount:                          16,
+		CodexContextStateShardCount:              4,
+		ChatRetentionDays:                        3,
+		RecordMaintenanceQueueMaxItems:           5000,
+		RecordMaintenanceQueueMaxMb:              32,
+		RecordMaintenanceBatchSize:               10,
+		RecordMaintenanceShutdownFlushMaxBatches: 1,
+		StatsEnabled:                             true,
+		OAuthEnabled:                             true,
+		TaskRunsEnabled:                          true,
+		UsageWriterEnabled:                       true,
+		InternalAPIEnabled:                       true,
+		BalanceDetectEnabled:                     true,
+		ProbeEnabled:                             true,
+		ProbeConcurrency:                         8,
+		DrainTimeout:                             10 * time.Second,
 	}
 	enabled, err := workerEnvBool(getenv, "JUHE_AI_JOBS_WORKER_ENABLED", false)
 	if err != nil {
@@ -206,6 +215,20 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	config.RecordMaintenanceQueueMaxMb, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_MB", config.RecordMaintenanceQueueMaxMb)
 	if err != nil {
 		return config, err
+	}
+	config.RecordMaintenanceBatchSize, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE", config.RecordMaintenanceBatchSize)
+	if err != nil {
+		return config, err
+	}
+	if config.RecordMaintenanceBatchSize < 1 || config.RecordMaintenanceBatchSize > 10_000 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE 必须介于 1 和 10000 之间")
+	}
+	config.RecordMaintenanceShutdownFlushMaxBatches, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES", config.RecordMaintenanceShutdownFlushMaxBatches)
+	if err != nil {
+		return config, err
+	}
+	if config.RecordMaintenanceShutdownFlushMaxBatches < 1 || config.RecordMaintenanceShutdownFlushMaxBatches > 10_000 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES 必须介于 1 和 10000 之间")
 	}
 	for _, toggle := range []struct {
 		name     string

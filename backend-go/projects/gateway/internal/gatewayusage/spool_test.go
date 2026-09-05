@@ -25,6 +25,28 @@ func newTestSpool(t *testing.T, enabled bool) (*UsageRecordSpool, string) {
 	return spool, directory
 }
 
+// waitForSpoolSettled waits until the spool has persisted exactly want
+// records. PersistedCount/PendingItems are updated only after the final
+// rename — Persist's last filesystem operation — so once the condition holds
+// no spool writer can still create, rename or remove files under the
+// directory. Tests that hand a spool directory to t.TempDir must settle it
+// before returning, or the deferred RemoveAll can race a background writer
+// and fail with "directory is not empty" under load.
+func waitForSpoolSettled(t *testing.T, spool *UsageRecordSpool, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runtime := spool.Runtime()
+		if runtime.PersistedCount == want && runtime.PendingItems == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("spool writer 未结算：runtime %+v", runtime)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func TestSpoolPersistDisabledFails(t *testing.T) {
 	spool, _ := newTestSpool(t, false)
 	err := spool.Persist(context.Background(), UsageRecordInput{TraceID: "t", TrafficSource: "gateway", Success: true})

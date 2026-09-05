@@ -266,13 +266,18 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	family.flushStop = stopFlush
 	a.addCloser(func() error {
 		close(stopFlush)
-		queue.drainShutdown(runner)
+		queue.drainShutdown(family.runMaintenanceOnce)
 		if err := codexStore.Close(); err != nil {
 			return err
 		}
 		return shards.Close()
 	})
-	go family.flushLoop(stopFlush, queue, runner)
+	go family.flushLoop(stopFlush, queue)
+
+	// ---- record_maintenance_jobs 交接表 drain（gateway cleanup POST 持久通道） ----
+	if err := a.wireRecordMaintenanceTableDrain(family, business, dataset); err != nil {
+		return err
+	}
 
 	family.closeHandles = closeHandles
 	a.retention = family
@@ -300,11 +305,24 @@ type retentionFamily struct {
 	dbService     *familyDbService
 	queue         *recordMaintenanceQueue
 	runner        *retention.RecordMaintenanceRunner
-	flushStop     chan struct{}
-	closeHandles  []func() error
+	// runMu 串行化 record-maintenance 执行面：本地队列 flushLoop 与
+	// record_maintenance_jobs 表 drain 各自是单 goroutine，但共享同一
+	// runner；Node flushing 标志保证同一时刻只有一轮 flush，这里以互斥
+	// 保持同语义。
+	runMu        sync.Mutex
+	flushStop    chan struct{}
+	closeHandles []func() error
 }
 
 func (f *retentionFamily) now() time.Time { return time.Now() }
+
+// runMaintenanceOnce 是 record-maintenance 执行面的唯一入口：本地队列与
+// record_maintenance_jobs 表 drain 共用，互斥保持 Node flushing 单飞语义。
+func (f *retentionFamily) runMaintenanceOnce(ctx context.Context, job retention.RecordMaintenanceJob) (map[string]any, error) {
+	f.runMu.Lock()
+	defer f.runMu.Unlock()
+	return f.runner.RunOnce(ctx, job)
+}
 
 func (f *retentionFamily) retentionStats() *cleanuprepo.StatsRetentionStore {
 	return f.retentionStatsStore
@@ -618,7 +636,7 @@ func (q *recordMaintenanceQueue) size() int {
 }
 
 // drainShutdown 停机排空：尽力执行完剩余任务（Node flushRecordMaintenanceQueueForShutdown）。
-func (q *recordMaintenanceQueue) drainShutdown(runner *retention.RecordMaintenanceRunner) {
+func (q *recordMaintenanceQueue) drainShutdown(run func(context.Context, retention.RecordMaintenanceJob) (map[string]any, error)) {
 	for {
 		batch := q.takeBatch(100)
 		if len(batch) == 0 {
@@ -626,7 +644,7 @@ func (q *recordMaintenanceQueue) drainShutdown(runner *retention.RecordMaintenan
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		for _, job := range batch {
-			if _, err := runner.RunOnce(ctx, job); err != nil {
+			if _, err := run(ctx, job); err != nil {
 				cancel()
 				return
 			}
@@ -654,7 +672,7 @@ func (e *queueEnqueuer) EnqueueAsync(ctx context.Context, job retention.RecordMa
 }
 
 // flushLoop 照 flushRecordMaintenanceQueue 的定时循环（100ms 节拍）。
-func (f *retentionFamily) flushLoop(stop <-chan struct{}, queue *recordMaintenanceQueue, runner *retention.RecordMaintenanceRunner) {
+func (f *retentionFamily) flushLoop(stop <-chan struct{}, queue *recordMaintenanceQueue) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -669,7 +687,7 @@ func (f *retentionFamily) flushLoop(stop <-chan struct{}, queue *recordMaintenan
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				for _, job := range batch {
-					if _, err := runner.RunOnce(ctx, job); err != nil {
+					if _, err := f.runMaintenanceOnce(ctx, job); err != nil {
 						f.assembly.logger.Error("数据维护队列执行失败，已保留任务等待重试",
 							"event", "record_maintenance_queue_flush_failed",
 							"jobType", job.Type, "jobId", job.ID, "error", err)

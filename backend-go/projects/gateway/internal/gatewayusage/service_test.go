@@ -641,13 +641,14 @@ func TestDispatchOverflowSpoolsInsteadOfBlocking(t *testing.T) {
 	// The gated recorder keeps the first task active so queue occupancy is
 	// deterministic (Node capacity counts queued entries only).
 	gate := &gatedRecorder{entered: make(chan struct{}, 8), release: make(chan struct{})}
-	overflow := &memoryOverflow{spool: NewUsageRecordSpool(SpoolConfig{
+	spool := NewUsageRecordSpool(SpoolConfig{
 		Directory:  t.TempDir(),
 		InstanceID: "inst-1",
 		MaxItems:   100,
 		MaxBytes:   1024 * 1024,
 		Enabled:    true,
-	}, fixedClock{ms: 1700000000000}, nil)}
+	}, fixedClock{ms: 1700000000000}, nil)
+	overflow := &memoryOverflow{spool: spool}
 	dispatch := NewFinalizationDispatch(gate, overflow, 1, 1)
 	dispatch.OverflowEnabled = true
 	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-a"), 100); err != nil {
@@ -669,8 +670,13 @@ func TestDispatchOverflowSpoolsInsteadOfBlocking(t *testing.T) {
 	if !dispatch.WaitForIdle(2000) {
 		t.Fatal("not idle")
 	}
-	// The overflow factory runs asynchronously; it is tracked by the same
-	// wait group so it has settled by now.
+	// WaitForIdle only accounts queued/active/waiters; the overflow factory
+	// goroutine (queue-tracked only) can still be inside spool.Persist. Wait
+	// for the persist counter to settle — observable only after the final
+	// rename, which is Persist's last filesystem operation — so returning
+	// here can never race t.TempDir's RemoveAll with a straggler writer
+	// (full-suite concurrency, -race).
+	waitForSpoolSettled(t, spool, 1)
 	spooled := overflow.snapshot()
 	if len(spooled) != 1 || spooled[0].TraceID != "trace-c" {
 		t.Fatalf("spooled = %+v", spooled)
