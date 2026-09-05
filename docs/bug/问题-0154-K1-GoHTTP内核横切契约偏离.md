@@ -73,6 +73,14 @@
 - 证据范围：Node 依赖 `backend/node_modules/compression/index.js` 的 `shouldTransform`（`no-transform` 分支）；Go 证据为提交 `b3115e675` 的 `compressionWriter.start`。示例头部使用规范小写指令 `Cache-Control: no-transform`，不依赖当前未提交工作区。
 - 修复门槛：在压缩决策前实现与 Node 一致的 `no-transform` 检查，并补充大小超过阈值、大小低于阈值和多指令 `Cache-Control` 的 golden；确认头部与正文均一致后再关闭该子项。
 
+## 已确认子项：Go 未短路 HEAD 响应的压缩
+
+- 对照事实：Node `compression` 在响应头阶段先完成过滤、变换许可和阈值判断，随后明确检查 `req.method === 'HEAD'` 并执行 `nocompress`；即使 handler 写入了足够大的正文或声明了大 `Content-Length`，HEAD 响应也不会设置 `Content-Encoding`。
+- 历史 Go：`CompressionMiddleware` 只按 `Accept-Encoding` 决定是否包装 writer，`compressionWriter.start` 没有读取 `r.Method`。HEAD 请求的 handler 一旦写入达到阈值，或先声明 `Content-Length >= 1024`，就会调用 `beginGzip` 设置 `Content-Encoding: gzip`。
+- 可观察结果：同一 HEAD 请求 Node 返回未压缩的头部语义，Go 可能返回 gzip 编码头（正文即使被 net/http 丢弃也不改变该头部差异）。客户端按 HEAD 语义复用响应头、代理缓存或后续 GET 校验时会得到不同的编码协商结果。
+- 证据范围：Node 依赖 `backend/node_modules/compression/index.js` 的 HEAD 分支；Go 证据为提交 `b3115e675` 的 `CompressionMiddleware` 与 `compressionWriter.start`，其中没有方法门禁。该结论不依赖当前未提交工作区。
+- 修复门槛：在 Go 压缩包装入口或响应头决策处实现与 Node 一致的 HEAD 短路，并补充“HEAD + 大声明长度”“HEAD + 大写入量”以及对应 GET 对照 golden。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
