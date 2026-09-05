@@ -127,9 +127,17 @@
 - 结果偏差：同一成功查看操作在 operation log 中无法像 Node 一样通过前后缀确认实际密钥版本，审计变更字段也从“无 before + 脱敏标识”变成“未设置→已变更”；依赖日志追溯密钥轮换/泄露调查时，Go 结果信息不足且 DTO 不一致。该差异不影响明文密钥 HTTP 响应，但属于已迁移管理副作用的功能遗漏。
 - 结论：这是 M07 `reveal_secret` 操作日志投影的确定性偏差，当前仅记录，未修改 Go 代码。
 
+### 15. 列表/详情对关联策略路由 `mode` 的默认值与脏值语义不一致
+
+- Node 证据：历史 `api-key-list-mappers.ts` 与 `api-key-mappers.ts` 在读取 `route_strategy_mode` 时调用 `normalizeRouteStrategyMode`；该函数对 `null`/空字符串补默认 `normal`，对 `normal`、`hybrid_smart`、`weighted`、`failover`、`round_robin` 以外的值直接抛出“路由策略模式无效”。路由策略表的 `mode` 仅有 `NOT NULL DEFAULT`，没有枚举 `CHECK`，因此空字符串或未知脏值仍可能被读到。
+- Go 证据：历史 `backend-go/projects/gateway/internal/apikeys/store.go` 的 `normalizedRouteStrategyMode` 对 `NULL`/空字符串返回 `nil`，对未知值也静默返回 `nil`；`newListItem` 同时用于 `GET /api-keys` 列表和 `GET /api-keys/:id` 详情。
+- 结果偏差：关联策略 `mode=''` 时 Node 返回 `routeStrategyMode: "normal"`，Go 省略字段；关联策略 `mode='bogus'` 时 Node 让列表/详情进入错误处理，Go 却以 200 成功并省略该字段。这样 API Key 的路由能力展示与损坏数据可见性均不一致，前端可能把未知策略误当成无模式而继续编辑或放行。
+- 结论：这是 M07 列表/详情读模型的确定性状态规范化缺口，当前仅记录，未修改 Go 代码。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
 - 当前验证：Go 包内测试通过不代表 PATCH/usage/失效契约；未执行真实 gateway listener 验证。
 - 新增未修复子项：`reveal_secret` 日志应与 Node 一样保留 `keyPrefix...keySuffix` 脱敏 after、不要伪造 `before: "未设置"`，并补充 operation-log JSON 回放，确认完整密钥不会进入日志。
+- 新增未修复子项：API Key 列表/详情读取关联策略时应复用 Node 的 `mode` 规范化：空值补 `normal`，未知值显式失败；补充空字符串、未知 mode 和正常五种 mode 的 Node/Go DTO 与错误回放。
 - 结论：M07 不能视为完整 API Key 功能迁移或 Node 可归档。
