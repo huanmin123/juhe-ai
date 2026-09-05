@@ -1,15 +1,8 @@
 // X05 场景 7：jobs 冒烟。worker_enabled=true 启动 juhe-ai-jobs（复用同一
-// 隔离 SQLite 存储布局）→ 至少一个后台任务轮次落库成功（外部可观测证据：
-// task-runs 专库 background_task_runs 出现 succeeded 轮次）→ 优雅信号停机
-// （Windows CTRL_BREAK / POSIX SIGTERM → supervisor signal.NotifyContext
-// 干净退出，进程退出码 0）。
-//
-// 已知产品缺陷（不修，单列报告）：jobs /health 的 worker 字段从未正确
-// 接线——main.go 向 jobsHTTPHandler 的变参里依次传了 goMetricsCollector、
-// goMetricsSampler（main.go:559-560），而 healthHandler 的变参布局没有
-// goMetrics 槽位，导致 workerCfg.Enabled/workerReady/workerStatus 落在
-// 错误的槽位上被丢弃：/health 永远报 workerEnabled=false 且不携带
-// worker 快照。因此本场景的任务轮次观测走 task-runs 专库而非 /health。
+// 隔离 SQLite 存储布局）→ /health worker 字段正确接线（workerEnabled=true
+// + worker 快照）→ 至少一个后台任务轮次成功（外部可观测证据：JSON 日志
+// outcome=success 完成事件）→ 优雅信号停机（Windows CTRL_BREAK / POSIX
+// SIGTERM → supervisor signal.NotifyContext 干净退出，进程退出码 0）。
 package acceptance
 
 import (
@@ -45,7 +38,11 @@ func TestAcceptanceJobsWorkerSmoke(t *testing.T) {
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":       fixture.storage["runtime-log"],
 		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":     filepath.Join(root, "storage", "table-monitor.sqlite3"),
 		"JUHE_AI_TASK_RUNS_DATABASE_PATH":         filepath.Join(root, "storage", "task-runs.sqlite3"),
+		"JUHE_AI_CHAT_DATABASE_PATH":              fixture.storage["chat"],
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":  codexRoot,
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "4",
+		"JUHE_AI_CHAT_ASSETS_ROOT":                filepath.Join(root, "storage", "chat-assets"),
+		"JUHE_AI_CODEX_CONTEXT_ROOT":              filepath.Join(root, "storage", "codex-context-root"),
 		"JUHE_AI_USAGE_SHARD_ROOT":                usageShards,
 		"JUHE_AI_INSTANCE_ID":                     "acceptance-jobs",
 		"JUHE_AI_WORKER_ROLE":                     "worker",
@@ -62,8 +59,8 @@ func TestAcceptanceJobsWorkerSmoke(t *testing.T) {
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d", jobsHealthPort)
 	jobsProcess := startProcess(t, "jobs", jobsBinary, envMapToSlice(env))
 
-	// /health 就绪门：ready=true（owner 面）。worker 字段因上述缺陷不作为
-	// 观测面。
+	// /health 就绪门：ready=true（owner + worker 面）；workerEnabled 与
+	// worker 快照必须真实接线（X05 缺陷 4 回归断言）。
 	readyDeadline := time.Now().Add(60 * time.Second)
 	var health map[string]any
 	for time.Now().Before(readyDeadline) {
@@ -84,6 +81,14 @@ func TestAcceptanceJobsWorkerSmoke(t *testing.T) {
 	}
 	if health == nil {
 		t.Fatalf("jobs /health never became ready:\n%s", logTail(jobsProcess.logPath, 4096))
+	}
+	// worker 字段契约：workerEnabled=true 且携带 worker 快照（healthHandler
+	// 槽位错位缺陷修复后的直接观测面）。
+	if health["workerEnabled"] != true {
+		t.Fatalf("jobs /health workerEnabled wrong: %#v", health)
+	}
+	if _, hasWorker := health["worker"]; !hasWorker {
+		t.Fatalf("jobs /health missing worker snapshot: %#v", health)
 	}
 
 	// 任务轮次观测：worker 轮次的外部证据取自 jobs 的 JSON 日志——已接线

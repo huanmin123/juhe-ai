@@ -443,11 +443,13 @@ func (r *CooldownRetestRunner) runQueueItem(ctx context.Context, runCtx QueueRun
 
 	if probeOutcome == OutcomeCompleteSuccess {
 		restored, err := r.mutation.RecordKeySuccess(ctx, KeySuccessInput{
-			AccountID:     account.ID,
-			TrafficSource: "cooldown_retest",
-			ProbeOutcome:  "complete_success",
-			ObservedAt:    responseObservedAtIso,
-			Expected:      expected,
+			AccountID:      account.ID,
+			KeyFingerprint: candidate.KeyFingerprint,
+			KeyIndex:       candidate.KeyIndex,
+			TrafficSource:  "cooldown_retest",
+			ProbeOutcome:   "complete_success",
+			ObservedAt:     responseObservedAtIso,
+			Expected:       expected,
 		})
 		if err != nil {
 			return false, err
@@ -477,6 +479,8 @@ func (r *CooldownRetestRunner) runQueueItem(ctx context.Context, runCtx QueueRun
 		}
 		failure, err := r.mutation.RecordKeyFailure(ctx, KeyFailureInput{
 			AccountID:         account.ID,
+			KeyFingerprint:    candidate.KeyFingerprint,
+			KeyIndex:          candidate.KeyIndex,
 			TrafficSource:     "cooldown_retest",
 			ProbeOutcome:      string(probeOutcome),
 			QuotaRecoveryMode: string(quotaRecoveryMode),
@@ -524,6 +528,8 @@ func (r *CooldownRetestRunner) runQueueItem(ctx context.Context, runCtx QueueRun
 		}
 		deferred, err := r.mutation.DeferKeyProbe(ctx, KeyDeferInput{
 			AccountID:                account.ID,
+			KeyFingerprint:           candidate.KeyFingerprint,
+			KeyIndex:                 candidate.KeyIndex,
 			TrafficSource:            "cooldown_retest",
 			ProbeOutcome:             string(probeOutcome),
 			QuotaRecoveryMode:        optionalMode(decision.RecoveryMode, decision.HasRecoveryMode),
@@ -552,6 +558,8 @@ func (r *CooldownRetestRunner) runQueueItem(ctx context.Context, runCtx QueueRun
 	if decision.HasRecoveryMode {
 		deferred, err := r.mutation.DeferKeyProbe(ctx, KeyDeferInput{
 			AccountID:                account.ID,
+			KeyFingerprint:           candidate.KeyFingerprint,
+			KeyIndex:                 candidate.KeyIndex,
 			TrafficSource:            "cooldown_retest",
 			ProbeOutcome:             string(probeOutcome),
 			QuotaRecoveryMode:        string(quotaRecoveryMode),

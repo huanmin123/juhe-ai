@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/gometricsstore"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/internalapi"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
 
@@ -164,5 +167,59 @@ func TestJobsHTTPHandlerExposesGoRuntimeMetrics(t *testing.T) {
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/__aisys__/metrics", nil))
 	if record.Code != http.StatusOK || !strings.Contains(record.Body.String(), `runtimeKind="go"`) {
 		t.Fatalf("metrics status=%d body=%s", record.Code, record.Body.String())
+	}
+}
+
+// TestJobsHTTPHandlerForwardsWorkerFieldsToHealth is the X05 defect-4
+// regression: the goMetrics slots must not shift the worker fields inside the
+// healthHandler variadic layout — /health must report workerEnabled=true, the
+// worker readiness gate and the worker snapshot, while the internal dispatch
+// handler still mounts.
+func TestJobsHTTPHandlerForwardsWorkerFieldsToHealth(t *testing.T) {
+	var running atomic.Bool
+	running.Store(true)
+	dispatch := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	})
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true },
+		false, func() bool { return true },
+		false, func() bool { return true }, nil, "",
+		false, func() bool { return true },
+		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
+		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
+		false, func() bool { return true },
+		gometrics.New("juhe-ai", "jobs"), (*gometricsstore.Sampler)(nil),
+		true, func() bool { return false },
+		func() map[string]any { return map[string]any{"wiredJobs": []string{"account-balance-refresh"}} },
+		dispatch)
+
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if record.Code != http.StatusOK {
+		t.Fatalf("health status=%d body=%s", record.Code, record.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(record.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["workerEnabled"] != true {
+		t.Fatalf("workerEnabled must reach /health: %#v", payload)
+	}
+	if payload["workerReady"] != false {
+		t.Fatalf("worker readiness gate must reach /health (workerReady=false wired): %#v", payload)
+	}
+	if payload["ready"] != false {
+		t.Fatalf("a not-ready wired worker must block overall readiness: %#v", payload)
+	}
+	worker, ok := payload["worker"].(map[string]any)
+	if !ok || len(worker["wiredJobs"].([]any)) != 1 {
+		t.Fatalf("worker snapshot must reach /health: %#v", payload["worker"])
+	}
+
+	// The internalapi dispatch handler still mounts from slot 11.
+	dispatchRecord := httptest.NewRecorder()
+	handler.ServeHTTP(dispatchRecord, httptest.NewRequest(http.MethodPost, internalapi.AccountTestDispatchInternalPrefix+"/v1/account-test/dispatch", nil))
+	if dispatchRecord.Code == http.StatusNotFound {
+		t.Fatalf("worker dispatch handler missing from the health mux: %d", dispatchRecord.Code)
 	}
 }

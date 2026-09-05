@@ -73,6 +73,18 @@ func NewSQLReadModels(db *sql.DB, postgres bool, now func() time.Time, accounts 
 // SetAccountsSelector wires the account selector seam.
 func (m *SQLReadModels) SetAccountsSelector(selector AccountsSelector) { m.accounts = selector }
 
+// SetSettingsStore shares the composition settings repository with the read
+// models. Node keeps ONE process-local system settings cache that
+// updateSettingsAsync clears on every write; two stores over the same
+// database leave the gateway runtime snapshot reading a stale 60s-cached
+// snapshot after a management settings PATCH. Without an injected store the
+// internally-created one stays in place (standalone test usage).
+func (m *SQLReadModels) SetSettingsStore(store *settings.Store) {
+	if store != nil {
+		m.settings = store
+	}
+}
+
 // SetCatalogSource wires the model catalog seam.
 func (m *SQLReadModels) SetCatalogSource(source CatalogSource) { m.catalog = source }
 

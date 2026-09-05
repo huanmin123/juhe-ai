@@ -84,9 +84,25 @@ func openComposeOperationStore(t *testing.T) operationlog.Store {
 	return store
 }
 
+// openComposeOperationLease acquires the process-shared F4 lease keeper over
+// the compose test store (the same wiring main performs before composing).
+func openComposeOperationLease(t *testing.T, store operationlog.Store) *operationlog.LeaseKeeper {
+	t.Helper()
+	keeper, ok, err := operationlog.StartLeaseKeeper(context.Background(), store, "compose-test", 30*time.Second, nil)
+	if err != nil {
+		t.Fatalf("start F4 lease keeper: %v", err)
+	}
+	if !ok {
+		t.Fatal("F4 lease keeper refused the unclaimed compose lease")
+	}
+	t.Cleanup(keeper.Close)
+	return keeper
+}
+
 func TestComposeSystemAPIMountsKernelContract(t *testing.T) {
 	cfg := composeTestConfig(t)
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), openComposeOperationStore(t))
+	store := openComposeOperationStore(t)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store))
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -161,9 +177,10 @@ func TestComposeSystemAPIMountsKernelContract(t *testing.T) {
 		t.Fatalf("unmatched api payload=%#v", payload)
 	}
 
-	// Shutdown must release the F4 lease so a successor can take over.
-	if !composed.operationLeaseHeld {
-		t.Fatal("composition shutdown state invalid before Shutdown")
+	// The F4 producer sink must be wired with the shared lease (management
+	// mutations persist through it after cutover).
+	if composed.producer == nil {
+		t.Fatal("composition F4 producer missing")
 	}
 }
 
@@ -177,7 +194,8 @@ func TestComposeSystemAPIBridgesUnflippedPrefixes(t *testing.T) {
 
 	cfg := composeTestConfig(t)
 	cfg.LegacyBridgeTarget = origin.URL
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), openComposeOperationStore(t))
+	store := openComposeOperationStore(t)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store))
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -218,7 +236,8 @@ func TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers(t *testing.T) {
 	cfg.RedisNamespace = "dev"
 	cfg.CaptchaDisabled = false
 
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), openComposeOperationStore(t))
+	store := openComposeOperationStore(t)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store))
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}

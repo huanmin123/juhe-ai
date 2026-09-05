@@ -48,12 +48,19 @@ func (p *Producer) Record(entry Input) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer renewCancel()
-		renewed, err := p.store.RenewOwnerLease(renewCtx, p.lease, p.cfg.OwnerLease)
-		if err != nil || !renewed {
-			p.warn("F4 owner lease renewal failed; dropping operation log", "error", err)
-			return
+		// Extending the lease per record keeps it alive under write activity
+		// (the LeaseKeeper ticker covers the idle case). A non-positive TTL
+		// would set lease_until to the current instant and self-destruct the
+		// fence, so the renewal is skipped instead — the configured
+		// composition always passes the real owner-lease TTL.
+		if p.cfg.OwnerLease > 0 {
+			renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer renewCancel()
+			renewed, err := p.store.RenewOwnerLease(renewCtx, p.lease, p.cfg.OwnerLease)
+			if err != nil || !renewed {
+				p.warn("F4 owner lease renewal failed; dropping operation log", "error", err)
+				return
+			}
 		}
 		if _, err := p.store.Persist(ctx, p.lease, entry); err != nil {
 			p.warn("F4 Go 操作日志提交失败", "error", err)

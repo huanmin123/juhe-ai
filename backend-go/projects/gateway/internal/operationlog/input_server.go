@@ -64,12 +64,17 @@ func validSignature(secret, timestamp, nonce string, body []byte, supplied strin
 	return err == nil && hmac.Equal(expected, actual)
 }
 
+// RunInputServer owns the lease lifecycle for a standalone sidecar: acquire
+// via a process-private LeaseKeeper, serve, release on exit. When the system
+// api composition runs in the same process, main shares one LeaseKeeper with
+// the producer through RunInputServerSharedLease so both writers fence as a
+// single owner.
 func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg InputServerConfig, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	acquireCtx, cancelAcquire := storeContext(ctx)
-	lease, ok, err := store.AcquireOwnerLease(acquireCtx, cfg.InstanceID, cfg.OwnerLease)
+	keeper, ok, err := StartLeaseKeeper(acquireCtx, store, cfg.InstanceID, cfg.OwnerLease, logger)
 	cancelAcquire()
 	if err != nil {
 		return fmt.Errorf("F4 acquire owner lease: %w", err)
@@ -77,11 +82,22 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 	if !ok {
 		return fmt.Errorf("F4 operation log owner lease held by another sidecar")
 	}
-	defer func() {
-		releaseCtx, cancelRelease := storeContext(context.Background())
-		defer cancelRelease()
-		_ = store.ReleaseOwnerLease(releaseCtx, lease)
-	}()
+	defer keeper.Close()
+	return RunInputServerSharedLease(ctx, store, cfg, inputCfg, logger, keeper)
+}
+
+// RunInputServerSharedLease serves the F4 input server over a caller-owned
+// LeaseKeeper. Lease renewal stays with the keeper (ttl/3 ticker); the server
+// loop exits when the shared lease is lost so the supervisor boundary and the
+// process /health reflect the lost fence instead of serving fenced writes.
+func RunInputServerSharedLease(ctx context.Context, store Store, cfg Config, inputCfg InputServerConfig, logger *slog.Logger, keeper *LeaseKeeper) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if keeper == nil {
+		return fmt.Errorf("F4 input server requires a shared lease keeper")
+	}
+	lease := keeper.Lease()
 	listener, err := net.Listen("tcp", inputCfg.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("listen F4 operation log: %w", err)
@@ -96,8 +112,6 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 	go func() { result <- server.Serve(listener) }()
 	retention := time.NewTimer(schedulejitter.Delay(cfg.RetentionInterval))
 	defer retention.Stop()
-	renew := time.NewTicker(cfg.OwnerLease / 3)
-	defer renew.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -111,16 +125,16 @@ func RunInputServer(ctx context.Context, store Store, cfg Config, inputCfg Input
 			return err
 		case err := <-fatal:
 			return err
-		case <-renew.C:
-			renewCtx, cancelRenew := storeContext(ctx)
-			ok, err := store.RenewOwnerLease(renewCtx, lease, cfg.OwnerLease)
-			cancelRenew()
-			if err != nil {
-				return err
+		case <-keeper.Lost():
+			// The shared lease is gone (expired or taken over): shut the
+			// listener down and surface the terminal fence error.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = server.Shutdown(shutdownCtx)
+			if lostErr := keeper.LostError(); lostErr != nil {
+				return lostErr
 			}
-			if !ok {
-				return ErrOwnerLeaseLost
-			}
+			return ErrOwnerLeaseLost
 		case <-retention.C:
 			retentionCtx, cancelRetention := storeContext(ctx)
 			days, err := store.RetentionDays(retentionCtx, cfg.RetentionDays)

@@ -559,3 +559,57 @@ func TestSettingsSnapshotProviderFillsCompatibleDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestSettingsPatchUsageStatsTimezoneSixDatabaseSplit is the X05 regression
+// for the six-database SQLite split: the usage_stats_* projection tables live
+// in the dedicated stats database, so the usageStatsDataExists probe must run
+// against the stats handle — probing the business handle 500s every online
+// timezone change ("no such table").
+func TestSettingsPatchUsageStatsTimezoneSixDatabaseSplit(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t, "root", "root-pass", "super_admin")
+
+	// Dedicated stats database: same tables the Node getStatsDatabase()
+	// carries, empty (fresh stats store). The business database keeps none of
+	// them — the exact fresh six-database shape.
+	statsDB, err := sql.Open("sqlite", "file:settings-stats-split-"+t.Name()+"?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	statsDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { statsDB.Close() })
+	for _, table := range usageStatsDataTables {
+		if _, err := statsDB.Exec("CREATE TABLE " + table + " (probe TEXT)"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store, err := NewStore(env.db, false, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetStatsDatabase(statsDB)
+
+	// Empty stats database: the online timezone change must succeed and
+	// persist through the business handle.
+	updated, err := store.Update(context.Background(), map[string]any{"usageStatsTimezone": "Asia/Shanghai"})
+	if err != nil {
+		t.Fatalf("timezone change over six-database split: %v", err)
+	}
+	if updated["usageStatsTimezone"] != "Asia/Shanghai" {
+		t.Fatalf("updated timezone: %v", updated["usageStatsTimezone"])
+	}
+
+	// Stats data present in the stats database: the guard must refuse.
+	if _, err := statsDB.Exec(`INSERT INTO usage_stats_totals (probe) VALUES ('x')`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Update(context.Background(), map[string]any{"usageStatsTimezone": "Europe/Paris"})
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("expected ValidationError, got %v", err)
+	}
+	if validation.Message != "已有统计数据后不能直接修改统计时区，请先备份并重建统计缓存" {
+		t.Fatalf("guard message: %q", validation.Message)
+	}
+}

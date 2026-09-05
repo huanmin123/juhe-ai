@@ -217,11 +217,11 @@ func TestSchedulerResourceLaneSerializesAndSkips(t *testing.T) {
 	firstStarted := make(chan struct{})
 	secondSkipped := make(chan struct{}, 1)
 	var once sync.Once
-	scheduleLong := func(name string, block bool) {
+	scheduleLong := func(name string, block bool, initialDelay time.Duration) {
 		scheduler.Schedule(Spec{
 			Name:         name,
 			Interval:     time.Hour,
-			InitialDelay: time.Millisecond,
+			InitialDelay: initialDelay,
 			Lane:         "stats-heavy",
 			Task: func(ctx context.Context, taskCtx TaskContext) (TaskResult, error) {
 				if block {
@@ -232,11 +232,14 @@ func TestSchedulerResourceLaneSerializesAndSkips(t *testing.T) {
 			},
 		})
 	}
-	scheduleLong("first", true)
+	// first 先于 second 到期（1ms vs 2ms）：fakeClock.Advance 对同 deadline timer
+	// 的触发顺序是 map 随机序，若 second 先执行则 lane 空闲直接跑完、skip 永不发生，
+	// 测试确定性死锁（历史 flake）。错开 deadline 消除竞争。
+	scheduleLong("first", true, time.Millisecond)
 	scheduler.Schedule(Spec{
 		Name:          "second",
 		Interval:      time.Hour,
-		InitialDelay:  time.Millisecond,
+		InitialDelay:  2 * time.Millisecond,
 		OverlapPolicy: OverlapSkip,
 		Lane:          "stats-heavy",
 		Task: func(ctx context.Context, taskCtx TaskContext) (TaskResult, error) {
@@ -258,6 +261,7 @@ func TestSchedulerResourceLaneSerializesAndSkips(t *testing.T) {
 	settle()
 	clock.Advance(time.Millisecond)
 	<-firstStarted
+	clock.Advance(time.Millisecond)
 	<-secondSkipped
 	close(release)
 	drained, _ := scheduler.StopAndDrain(time.Second)

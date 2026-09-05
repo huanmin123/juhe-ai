@@ -14,22 +14,13 @@ type disabledJob struct {
 	Reason  string `json:"reason"`
 }
 
-// workerPartialJobGaps 是 11 项 go-partial 中尚未接线的 scheduled job 缺口
-// 清单。文本必须与 jobregistry GoBinding 一致：命名缺失的适配器与 Node 侧
+// workerPartialJobGaps 是 go-partial 中尚未接线的 scheduled job 缺口清单。
+// 文本必须与 jobregistry GoBinding 一致：命名缺失的适配器与 Node 侧
 // 权威来源，禁止使用“暂不支持”一类无信息量措辞。
+// account-quality-refresh / account-api-key-cooldown-retest /
+// normal-route-speed-first-recovery-probe 已由 wireProbeFamily 接管
+// （worker_probe_jobs.go），从本清单移除。
 var workerPartialJobGaps = []disabledJob{
-	{
-		JobName: "account-quality-refresh",
-		Reason:  "缺 AccountReader/Prober/PrecheckMutation 探针链适配器：find_account_for_test 的 effectiveAvailability 派生与 testOpenAIAccountDiagnosticAttempt 协议诊断栈（backend/src/modules/accounts/account-test.service.ts）尚无 jobs 侧等价实现；gateway-jobs 两 module 不可互 import",
-	},
-	{
-		JobName: "account-api-key-cooldown-retest",
-		Reason:  "缺 Prober/CooldownCandidateSource/CooldownMutation 探针链适配器：探针传输（协议诊断）与 record/defer 运行态 CAS 仓储（account-api-key-runtime-state.repository.ts）尚无 jobs 侧等价实现",
-	},
-	{
-		JobName: "normal-route-speed-first-recovery-probe",
-		Reason:  "缺 SpeedFirstClaimStore（Redis 降级运行态 normal-route-latency-degradation.service.ts 为 gateway runtime 单实现，jobs 复制 Lua/键契约会引入第二 writer）与首字探针传输",
-	},
 	{
 		JobName: "account-circuit-control-plane-maintenance",
 		Reason:  "缺 Redis CircuitStore（gatewaycircuit/store_redis.go + lua.go，Lua 状态机单实现）与 ControlPlaneLedger/Outbox 适配器；跨模块不可 import，复制实现有状态分歧风险",
@@ -41,26 +32,6 @@ var workerPartialJobGaps = []disabledJob{
 	{
 		JobName: "account-circuit-recovery",
 		Reason:  "缺 Redis CircuitStore（同 control-plane：gatewaycircuit 单实现）与恢复探针目标解析（账户域读取链）",
-	},
-	{
-		JobName: "data-retention-cleanup",
-		Reason:  "缺 StatsWriter/PublicApiLogsCleaner/UsageRecordsCleaner/DbService 适配器：data-retention.repository.ts（1074 行）与 codex-context-state.repository.ts（1753 行）尚无 jobs 侧等价迁移",
-	},
-	{
-		JobName: "chat-retention-cleanup",
-		Reason:  "缺 DbService.CleanupChatRetention 适配器：chat.repository.ts cleanupChatRetention（chat 库分区/资产/检查点链）尚无 jobs 侧等价迁移",
-	},
-	{
-		JobName: "expired-deleted-account-cleanup",
-		Reason:  "缺 DbService.CleanupExpiredDeletedAccounts/RecordMaintenanceEnqueuer 适配器：逻辑删除物理清理仓储尚无 jobs 侧等价迁移",
-	},
-	{
-		JobName: "api-key-record-cleanup-retry",
-		Reason:  "缺 APIKeyRecordCleanupRetryer 适配器：api-key-record-cleanup.ts（1188 行 dataset targets/关联行清理/统计扣减）尚无 jobs 侧等价迁移",
-	},
-	{
-		JobName: "account-record-cleanup-retry",
-		Reason:  "缺 AccountRecordCleanupRetryer 适配器：account-record-cleanup.ts（1383 行 dataset targets/关联行清理/统计扣减）尚无 jobs 侧等价迁移",
 	},
 }
 

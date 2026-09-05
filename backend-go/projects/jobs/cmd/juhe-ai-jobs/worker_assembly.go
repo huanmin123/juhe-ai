@@ -48,6 +48,8 @@ type workerAssembly struct {
 	closers   []func() error
 
 	wiredJobs []string
+	// retention 是 J6 保留清理家族（worker_retention.go 装配）。
+	retention *retentionFamily
 	// wiredTasks 记录已注册（含租约包裹）的任务闭包，供测试/运维入口
 	// 单轮执行；生产调度仍只经 scheduler。
 	wiredTasks map[string]jobsched.Task
@@ -187,6 +189,12 @@ func (a *workerAssembly) wireFamilies(ctx context.Context) error {
 		return err
 	}
 	if err := a.wireBalanceDetectFamily(ctx); err != nil {
+		return err
+	}
+	if err := a.wireRetentionFamily(ctx); err != nil {
+		return err
+	}
+	if err := a.wireProbeFamily(ctx); err != nil {
 		return err
 	}
 	registerDisabledJobsStartup(a, a.logger)

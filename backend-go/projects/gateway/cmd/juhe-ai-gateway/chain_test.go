@@ -32,6 +32,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 )
 
 // ---------------------------------------------------------------------------
@@ -148,30 +149,64 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			id TEXT PRIMARY KEY, name TEXT, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL,
 			username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		// Real-DDL shape (Node business-schema.ts + maintenance
+		// sqlite_schema.go): composite primary key, NO id column. The drifted
+		// hand-built `id` column masked the account_model_mappings ORDER BY
+		// defect on fresh databases.
 		`CREATE TABLE account_model_mappings (
-			id TEXT PRIMARY KEY, account_id TEXT NOT NULL, provider_code TEXT,
-			source_model TEXT NOT NULL, source_endpoint_family TEXT, upstream_model TEXT NOT NULL,
-			upstream_endpoint_family TEXT, enabled INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+			account_id TEXT NOT NULL, provider_code TEXT NOT NULL,
+			source_model TEXT NOT NULL, source_endpoint_family TEXT NOT NULL,
+			upstream_model TEXT NOT NULL, upstream_endpoint_family TEXT NOT NULL,
+			enabled INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			PRIMARY KEY (account_id, source_model, source_endpoint_family))`,
 		`CREATE TABLE response_inspection_policies (
 			id TEXT PRIMARY KEY, name TEXT, enabled INTEGER NOT NULL, priority INTEGER NOT NULL,
 			scope_type TEXT NOT NULL, protocol_code TEXT, provider_code TEXT, match_json TEXT,
 			action TEXT, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		// Real-DDL shape (Node provider-model-catalog.repository.ts columns()
+		// + maintenance sqlite_schema.go): built-in catalog rows only. The
+		// drifted hand-built columns (scope/input_modalities/...) masked the
+		// catalog 500 on fresh databases. Per-account rows live in
+		// custom_provider_models below.
 		`CREATE TABLE provider_model_catalog (
-			id TEXT PRIMARY KEY, scope TEXT NOT NULL, status TEXT NOT NULL, provider_code TEXT NOT NULL,
-			model TEXT NOT NULL, mode TEXT, catalog_order INTEGER, release_date TEXT, shutdown_date TEXT,
-			supported_api_protocols TEXT, input_modalities TEXT, output_modalities TEXT, supported_tools TEXT,
-			input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL,
-			cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL,
-			service_tier_prices TEXT, image_input_usd_per_1m REAL, image_output_usd_per_1m REAL,
-			output_usd_per_image REAL, context_window_tokens INTEGER, max_input_tokens INTEGER, max_output_tokens INTEGER,
-			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive INTEGER,
+			id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, model TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active', mode TEXT, catalog_order INTEGER,
+			release_date TEXT, shutdown_date TEXT,
+			supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
+			supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
+			supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+			default_reasoning_effort TEXT, codex_supported_reasoning_levels_json TEXT NOT NULL DEFAULT '[]',
+			codex_default_reasoning_level TEXT, codex_multi_agent_version TEXT,
+			context_window_tokens INTEGER, max_input_tokens INTEGER, max_output_tokens INTEGER,
+			max_tokens INTEGER, input_usd_per_1m REAL, output_usd_per_1m REAL,
+			cached_input_usd_per_1m REAL, cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL,
+			cache_storage_usd_per_1m_per_hour REAL, service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
+			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
 			long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL,
-			default_reasoning_effort TEXT,
-			supports_prompt_caching INTEGER NOT NULL DEFAULT 0,
-			supported_service_tiers TEXT, supported_reasoning_efforts TEXT, supports_service_tier INTEGER NOT NULL DEFAULT 0,
-			catalog_visible INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL, system_account_id TEXT,
-			notes TEXT,
-			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+			image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL,
+			audio_output_usd_per_1m REAL, output_usd_per_image REAL,
+			supports_prompt_caching INTEGER NOT NULL DEFAULT 0, catalog_visible INTEGER NOT NULL DEFAULT 1,
+			source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		// Real-DDL shape (Node custom-provider-models.repository.ts
+		// customProviderModelColumns()): the per-account catalog rows.
+		`CREATE TABLE custom_provider_models (
+			id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, model TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT 'personal', system_account_id TEXT,
+			status TEXT NOT NULL DEFAULT 'active', catalog_visible INTEGER NOT NULL DEFAULT 1,
+			mode TEXT, supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
+			supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
+			supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+			default_reasoning_effort TEXT, release_date TEXT, shutdown_date TEXT,
+			context_window_tokens INTEGER, max_input_tokens INTEGER, max_output_tokens INTEGER,
+			input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL,
+			cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL,
+			cache_storage_usd_per_1m_per_hour REAL, service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
+			image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL,
+			audio_output_usd_per_1m REAL, output_usd_per_image REAL, currency TEXT,
+			pricing_notes TEXT, capability_notes TEXT, notes TEXT,
+			created_by TEXT, updated_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			CHECK (scope IN ('personal', 'global')),
+			CHECK ((scope = 'personal' AND system_account_id IS NOT NULL) OR (scope = 'global' AND system_account_id IS NULL)))`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -234,11 +269,9 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 		VALUES ('key_1', ?, 'rs_1', '链路测试', ?, 'active', ?)`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(secret), now)
 	seed(`INSERT INTO provider_model_catalog (
-			id, scope, status, provider_code, model, catalog_order, supported_api_protocols, input_modalities,
-			output_modalities, supported_tools, source, catalog_visible, supports_prompt_caching, supports_service_tier,
-			created_at, updated_at)
-		VALUES ('cat_1', 'builtin', 'active', 'openai', 'gpt-test', 0, '["chat_completions"]', '["text"]',
-			'["text"]', '[]', 'builtin', 1, 0, 0, ?, ?)`, now, now)
+			id, status, provider_code, model, catalog_order, supported_api_protocols_json, source,
+			catalog_visible, supports_prompt_caching, created_at, updated_at)
+		VALUES ('cat_1', 'active', 'openai', 'gpt-test', 0, '["chat_completions"]', 'builtin', 1, 0, ?, ?)`, now, now)
 	seedSettingsDefaults(t, db)
 	return secret
 }
@@ -288,7 +321,8 @@ func seedSettingsDefaults(t *testing.T, db *sql.DB) {
 func TestComposeSystemAPIServesGatewayChain(t *testing.T) {
 	cfg := composeTestConfig(t)
 	cfg.ChainEnabled = true
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), openComposeOperationStore(t))
+	store := openComposeOperationStore(t)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store))
 	if err != nil {
 		t.Fatalf("compose system api with chain: %v", err)
 	}
@@ -774,4 +808,105 @@ func mustEncryptCredentials(t *testing.T, credentials map[string]any) string {
 		t.Fatalf("encrypt credentials: %v", err)
 	}
 	return sealed
+}
+
+// TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL is the
+// account_model_mappings schema-drift regression (X05 defect: the runtime
+// read ordered by a nonexistent `id` column and every runtime-resolution
+// request 500'd on fresh databases). It applies the REAL maintenance business
+// DDL (the same statements maintenance ensure and the gateway SQLite
+// preflight apply), asserts the real composite-primary-key shape, and proves
+// loadModelMappingsByAccountIds reads it with the Node ordering.
+func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "business.sqlite3"))
+	if err != nil {
+		t.Fatalf("open business db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
+		t.Fatalf("apply real maintenance business DDL: %v", err)
+	}
+	// Seed the parent rows (providers / profiles / sys_admin) the real DDL
+	// foreign keys point at, then add one account to map models for.
+	if _, err := bootstrap.SeedSQLiteBusiness(context.Background(), db, bootstrap.SeedOptions{Now: func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) }, Secret: "chain-test-secret"}); err != nil {
+		t.Fatalf("seed real maintenance business data: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO accounts (
+			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			name, type, status, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at
+		) VALUES ('acc_real_ddl', 'sys_admin', 'openai', 'profile_gpt_openai_v1', 'openai', 'v1',
+			'真实 DDL 账户', 'api_key', 'active', 'envelope', 'gpt-test', 'chat_json', '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	// Schema-drift guard: the real table has NO id column and keeps the
+	// Node composite primary key.
+	columns := map[string]bool{}
+	rows, err := db.Query(`PRAGMA table_info(account_model_mappings)`)
+	if err != nil {
+		t.Fatalf("pragma table_info: %v", err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			t.Fatalf("scan table_info: %v", err)
+		}
+		columns[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate table_info: %v", err)
+	}
+	if columns["id"] {
+		t.Fatal("real account_model_mappings DDL drifted: id column reappeared")
+	}
+	for _, required := range []string{"account_id", "source_model", "source_endpoint_family", "upstream_model", "upstream_endpoint_family", "enabled"} {
+		if !columns[required] {
+			t.Fatalf("real account_model_mappings DDL missing column %s", required)
+		}
+	}
+	var pkColumns string
+	if err := db.QueryRow(`SELECT group_concat(name, ',') FROM (SELECT name FROM pragma_table_info('account_model_mappings') WHERE pk > 0 ORDER BY pk)`).Scan(&pkColumns); err != nil {
+		t.Fatalf("read primary key: %v", err)
+	}
+	if pkColumns != "account_id,source_model,source_endpoint_family" {
+		t.Fatalf("primary key = %q, want account_id,source_model,source_endpoint_family", pkColumns)
+	}
+
+	// Two mapping rows inserted deliberately out of source_model order: the
+	// read must return them in the Node ORDER BY (account_id, source_model,
+	// source_endpoint_family) and must not error on the real DDL.
+	now := "2026-09-04T00:00:00.000Z"
+	for _, row := range []struct{ source, family, upstream string }{
+		{"gpt-pro", "chat_completions", "gpt-real-1"},
+		{"gpt-5", "responses", "gpt-real-2"},
+	} {
+		if _, err := db.Exec(`INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
+			VALUES ('acc_real_ddl', 'openai', ?, ?, ?, ?, 1, ?, ?)`, row.source, row.family, row.upstream, row.family, now, now); err != nil {
+			t.Fatalf("seed mapping: %v", err)
+		}
+	}
+
+	selector, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now)
+	if err != nil {
+		t.Fatalf("create selector: %v", err)
+	}
+	mappings, err := selector.loadModelMappingsByAccountIds(context.Background(), []string{"acc_real_ddl", "acc_missing"})
+	if err != nil {
+		t.Fatalf("real-DDL mapping read failed: %v", err)
+	}
+	if len(mappings["acc_real_ddl"]) != 2 {
+		t.Fatalf("mappings = %d, want 2: %+v", len(mappings["acc_real_ddl"]), mappings)
+	}
+	first, second := mappings["acc_real_ddl"][0], mappings["acc_real_ddl"][1]
+	if first.SourceModel != "gpt-5" || second.SourceModel != "gpt-pro" {
+		t.Fatalf("mapping order wrong: %s before %s", first.SourceModel, second.SourceModel)
+	}
+	if _, exists := mappings["acc_missing"]; exists {
+		t.Fatalf("unknown account must not map: %+v", mappings)
+	}
 }

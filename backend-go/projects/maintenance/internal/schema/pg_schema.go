@@ -7872,13 +7872,18 @@ func EnsurePostgresSeeds(ctx context.Context, db *sql.DB) (PGSeedResult, error) 
 }
 
 // hashSeedPassword mirrors hashPassword in Node src/storage/crypto.ts
-// (pbkdf2-sha512, 120000 iterations, base64url salt and digest).
+// (pbkdf2-sha512, 120000 iterations, base64url salt and digest). Node passes
+// the base64url salt TEXT itself to pbkdf2Sync, so the derivation input is
+// the UTF-8 bytes of the encoded salt — never the decoded raw bytes. The
+// Go gateway verify path (modelcheckauth verifyNodePBKDF2Password) mirrors
+// the same semantics.
 func hashSeedPassword(password string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	derived, err := pbkdf2.Key(sha512.New, password, salt, pgSeedPasswordIterations, 32)
+	saltText := base64.RawURLEncoding.EncodeToString(salt)
+	derived, err := pbkdf2.Key(sha512.New, password, []byte(saltText), pgSeedPasswordIterations, 32)
 	if err != nil {
 		return "", err
 	}
@@ -7886,7 +7891,7 @@ func hashSeedPassword(password string) (string, error) {
 		"pbkdf2",
 		"sha512",
 		strconv.Itoa(pgSeedPasswordIterations),
-		base64.RawURLEncoding.EncodeToString(salt),
+		saltText,
 		base64.RawURLEncoding.EncodeToString(derived),
 	}, "$"), nil
 }

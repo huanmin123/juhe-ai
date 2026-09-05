@@ -4,13 +4,9 @@ package acceptance
 
 import (
 	"bytes"
-	"context"
-	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/sha512"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -22,7 +18,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -74,58 +69,63 @@ func mustTouchFile(t *testing.T, path string) {
 	}
 }
 
-// acceptanceAdminPassword 是验收环境重置后的 seed 管理员密码。
-//
-// 已知产品缺陷（不在此修复，单列报告）：maintenance seed 的
-// hashSeedPassword（pg_schema.go）用「原始 salt 字节」做 PBKDF2 派生，而
-// Node crypto.ts hashPassword/verifyPassword 与 Go gateway
-// verifyNodePBKDF2Password（credentials.go）都用「base64url salt 文本字
-// 节」派生。seed 产出的 admin/admin 哈希在两侧运行时均无法验证，fresh 库
-// 管理员永远无法登录。验收夹具在 seed 后直接把 seed 管理员的
-// password_hash 重置为 Node 兼容封套（与 Node verifyPassword 逐字节互操
-// 作的格式），其余流程全部走真实二进制。
-const acceptanceAdminPassword = "acceptance-admin-pass-9527"
+// acceptanceAdminPassword 是 seed 管理员密码（Node seedDefaults 与 Go
+// maintenance seed 一致：admin/admin，pbkdf2 封套按 Node crypto.ts 的
+// base64url salt 文本语义派生，Node 与 Go 双侧均可验证）。
+const acceptanceAdminPassword = "admin"
 
-// resetSeedAdminPassword 以 Node 兼容 pbkdf2$sha512 封套重置 seed 管理员
-// 密码（salt 以 base64url 文本参与派生，与 Node crypto.ts hashPassword
-// 一致）。
-func resetSeedAdminPassword(t *testing.T, driver, target string) {
+// provisionOperationLogBusinessSettingsMirror 按 F4 读模型约定播种业务设置
+// 镜像：actor 显示名与 operationLogRetentionDays 都从该只读镜像解析。空
+// 镜像文件会让带条目的 operation-logs 列表 500（system_accounts 表不存在）。
+func provisionOperationLogBusinessSettingsMirror(t *testing.T, mirrorPath, businessPath string) {
 	t.Helper()
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		t.Fatalf("generate password salt: %v", err)
-	}
-	saltText := base64.RawURLEncoding.EncodeToString(salt)
-	derived, err := pbkdf2.Key(sha512.New, acceptanceAdminPassword, []byte(saltText), 120000, 32)
+	business, err := sql.Open("sqlite", "file:"+businessPath+"?mode=ro")
 	if err != nil {
-		t.Fatalf("derive password hash: %v", err)
+		t.Fatalf("open business db for F4 mirror: %v", err)
 	}
-	envelope := strings.Join([]string{
-		"pbkdf2", "sha512", "120000", saltText, base64.RawURLEncoding.EncodeToString(derived),
-	}, "$")
+	rows, err := business.Query(`SELECT id, username, COALESCE(display_name, '') FROM system_accounts`)
+	if err != nil {
+		business.Close()
+		t.Fatalf("read business system_accounts for F4 mirror: %v", err)
+	}
+	type accountRow struct{ id, username, displayName string }
+	accounts := []accountRow{}
+	for rows.Next() {
+		var row accountRow
+		if err := rows.Scan(&row.id, &row.username, &row.displayName); err != nil {
+			rows.Close()
+			business.Close()
+			t.Fatalf("scan system_accounts: %v", err)
+		}
+		accounts = append(accounts, row)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		business.Close()
+		t.Fatalf("iterate system_accounts: %v", err)
+	}
+	if err := business.Close(); err != nil {
+		t.Fatalf("close business db: %v", err)
+	}
 
-	var db *sql.DB
-	if driver == "sqlite" {
-		db, err = sql.Open("sqlite", "file:"+target+"?_pragma=busy_timeout(5000)")
-	} else {
-		db, err = sql.Open("pgx", target)
-	}
+	mirror, err := sql.Open("sqlite", "file:"+mirrorPath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
-		t.Fatalf("open seed database for password reset: %v", err)
+		t.Fatalf("open F4 business settings mirror: %v", err)
 	}
-	defer db.Close()
-	query := "UPDATE system_accounts SET password_hash = ? WHERE username = 'admin'"
-	if driver != "sqlite" {
-		query = "UPDATE juhe_business.system_accounts SET password_hash = ? WHERE username = 'admin'"
+	defer mirror.Close()
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
+		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL)`,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	result, err := db.ExecContext(ctx, query, envelope)
-	if err != nil {
-		t.Fatalf("reset seed admin password: %v", err)
+	for _, statement := range statements {
+		if _, err := mirror.Exec(statement); err != nil {
+			t.Fatalf("provision F4 mirror schema: %v: %v", statement, err)
+		}
 	}
-	if affected, _ := result.RowsAffected(); affected != 1 {
-		t.Fatalf("reset seed admin password affected %d rows", affected)
+	for _, row := range accounts {
+		if _, err := mirror.Exec(`INSERT OR IGNORE INTO system_accounts (id, username, display_name) VALUES (?, ?, ?)`, row.id, row.username, row.displayName); err != nil {
+			t.Fatalf("seed F4 mirror account %s: %v", row.id, err)
+		}
 	}
 }
 
@@ -471,7 +471,6 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		env["JUHE_AI_OPERATION_LOG_POSTGRES_URL"] = opts.PGDSN
 		// PG 模式没有启动期 ensure：schema/seed 由外部 maintenance 执行。
 		runMaintenanceEnsureSeed(t, "postgres", "", opts.PGDSN, secret)
-		resetSeedAdminPassword(t, "postgres", opts.PGDSN)
 	} else {
 		env["JUHE_AI_DATABASE_DRIVER"] = "sqlite"
 		pathsValue := fmt.Sprintf(
@@ -480,7 +479,9 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 			sixPaths["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"], sixPaths["JUHE_AI_STATS_DATABASE_PATH"], codexRoot,
 		)
 		runMaintenanceEnsureSeed(t, "sqlite", pathsValue, "", secret)
-		resetSeedAdminPassword(t, "sqlite", sixPaths["JUHE_AI_DATABASE_PATH"])
+		provisionOperationLogBusinessSettingsMirror(t,
+			filepath.Join(root, "storage", "oplog-business-settings.sqlite3"),
+			sixPaths["JUHE_AI_DATABASE_PATH"])
 	}
 
 	fixture.process = startProcess(t, "gateway", gatewayBinary, envMapToSlice(env))
@@ -490,16 +491,9 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 }
 
 // waitForSystemAPIReady 等待业务系统 API 面（/__aisys__/api/health 200 +
-// Node db-service 契约字段）。所有场景的公共就绪门。
-//
-// 已知产品缺陷（不在此修复，单列报告）：gateway 单进程同启 System API 与
-// F4 input server 时，F4 producer（compose.go 硬编码租约
-// "gateway-system-api-operation-log"，且以 operationlog.Config{} 零值
-// OwnerLease 续租）与 F4 sidecar（INSTANCE_ID 租约）争用同一
-// f4-operation-log-persistence 单行租约：producer 首次 Record 续租即把
-// lease_until 续到当前时刻（自毁），管理面操作日志自此全部被
-// ErrOwnerLeaseLost 丢弃；sidecar 在租约过期后接管，operationLogReady
-// 才转 true。因此进程级 /health 的 ready 可能滞后约 30-60s。
+// Node db-service 契约字段）。所有场景的公共就绪门。F4 producer 与
+// input server 共享同一进程级 owner lease（LeaseKeeper），无租约争用，
+// 就绪不应滞后。
 func waitForSystemAPIReady(t *testing.T, fixture *gatewayFixture) {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
@@ -522,10 +516,10 @@ func waitForSystemAPIReady(t *testing.T, fixture *gatewayFixture) {
 }
 
 // waitForProcessHealthReady 等待进程级 /health ready==true（owner/worker
-// 契约面）。受上述 F4 租约缺陷影响可能滞后，预算给足 150s。
+// 契约面）。
 func waitForProcessHealthReady(t *testing.T, fixture *gatewayFixture) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(150 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		response, err := http.Get(fixture.healthURL + "/health")
 		if err == nil {

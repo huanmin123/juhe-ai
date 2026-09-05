@@ -34,29 +34,8 @@ type chainFixture struct {
 
 // startChainFixture 组装链路验收公共环境：mock 上游 + chain 网关 + 通过管理
 // 面创建指向 mock 上游的 AI 账户 + 读取 seed 默认 key / seed chat key 明文。
-// skipOnKnownChainDispatchDefect：X05 验收发现的产品缺陷（不修，单列报告）。
-// 链路读模型 chain_accounts.go 对 account_model_mappings 的查询
-// `ORDER BY created_at ASC, id ASC` 引用了 Node business-schema.ts 真实
-// schema 中不存在的 id 列（复合主键），导致 fresh 种子库上所有需要
-// runtime resolution 的 /v1 请求 500（"网关内部错误，请稍后重试"）。
-// 单测（chain_test.go）手搭的同名表带 id 列，掩盖了该缺陷。
-// 命中该特征时 skip 并留痕；缺陷修复后本函数不再触发，完整契约断言恢复生效。
-func skipOnKnownChainDispatchDefect(t *testing.T, status int, raw string) {
-	t.Helper()
-	if status == http.StatusInternalServerError && strings.Contains(raw, "网关内部错误") {
-		t.Skip("X05-DEFECT(account_model_mappings id 列 schema 漂移)：fresh 库 runtime resolution 500，见 chain_accounts.go:1329")
-	}
-}
-
-// skipOnKnownChainDispatchDefectRaw 是 skipOnKnownChainDispatchDefect 的
-// 原始文本变体（响应信封非 OpenAI 错误结构时使用）。
-func skipOnKnownChainDispatchDefectRaw(t *testing.T, raw string) {
-	t.Helper()
-	if strings.Contains(raw, "no such column: id") || strings.Contains(raw, "网关内部错误") {
-		t.Skip("X05-DEFECT(account_model_mappings id 列 schema 漂移)：fresh 库 runtime resolution 500，见 chain_accounts.go:1329")
-	}
-}
-
+// account_model_mappings 读取按真实 DDL（复合主键，无 id 列）的 Node 排序
+// 查询；fresh 种子库上 runtime resolution 必须直接可用。
 func startChainFixture(t *testing.T) *chainFixture {
 	t.Helper()
 
@@ -207,7 +186,6 @@ func TestAcceptanceGatewayChain(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			skipOnKnownChainDispatchDefect(t, status, raw)
 			t.Fatalf("chain completion not 200 in time: status=%d body=%s", status, raw)
 		}
 		time.Sleep(300 * time.Millisecond)

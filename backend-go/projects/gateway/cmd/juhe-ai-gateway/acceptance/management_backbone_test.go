@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAcceptanceManagementBackbone(t *testing.T) {
@@ -246,9 +247,7 @@ func TestAcceptanceManagementBackbone(t *testing.T) {
 		if data(before)["gatewayUserRequestLimitPerMinute"] == nil {
 			t.Fatalf("settings payload wrong: %#v", before)
 		}
-		// 整数设置读写主干（usageStatsTimezone 的在线修改在六库拆分形态下
-		// 当前返回 500，疑似 usageStatsDataExists 探针落在业务库句柄上的
-		// 缺陷，单独报告，不纳入门禁断言）。
+		// 整数设置读写主干。
 		_, updated := client.do(http.MethodPatch, "/__aisys__/api/settings", map[string]any{
 			"gatewayUserRequestLimitPerMinute": 5,
 		}, wantStatus(http.StatusOK))
@@ -261,6 +260,18 @@ func TestAcceptanceManagementBackbone(t *testing.T) {
 		}
 		client.do(http.MethodPatch, "/__aisys__/api/settings", map[string]any{
 			"gatewayUserRequestLimitPerMinute": 0,
+		}, wantStatus(http.StatusOK))
+
+		// usageStatsTimezone 在线修改（六库拆分形态：guard 探针必须落在
+		// 专库 stats 句柄上；fresh 统计库无数据 → 允许修改并持久化）。
+		_, timezonePatched := client.do(http.MethodPatch, "/__aisys__/api/settings", map[string]any{
+			"usageStatsTimezone": "Asia/Shanghai",
+		}, wantStatus(http.StatusOK))
+		if data(timezonePatched)["usageStatsTimezone"] != "Asia/Shanghai" {
+			t.Fatalf("timezone patch payload wrong: %#v", timezonePatched)
+		}
+		client.do(http.MethodPatch, "/__aisys__/api/settings", map[string]any{
+			"usageStatsTimezone": "UTC",
 		}, wantStatus(http.StatusOK))
 	})
 
@@ -373,17 +384,31 @@ func TestAcceptanceManagementBackbone(t *testing.T) {
 	})
 
 	t.Run("operation_logs", func(t *testing.T) {
-		// 已知产品缺陷（F4 producer 租约自毁 + sidecar 争用，见 harness
-		// waitForSystemAPIReady 注释）：单进程同启 System API 时管理面操作
-		// 日志会被 ErrOwnerLeaseLost 持续丢弃，因此这里只做渲染级断言
-		// （端点可查询、信封结构正确），不断言条目覆盖。
-		_, listed := client.do(http.MethodGet, "/__aisys__/api/operation-logs", nil, wantStatus(http.StatusOK))
-		if listed == nil {
-			t.Fatalf("operation logs payload nil")
+		// F4 producer 与 input server 共享同一进程级 owner lease（无租约
+		// 自毁/争用），上述管理面写操作的操作日志必须异步落库且可查询。
+		logDeadline := time.Now().Add(15 * time.Second)
+		logged := false
+		for time.Now().Before(logDeadline) {
+			_, listed := client.do(http.MethodGet, "/__aisys__/api/operation-logs", nil, wantStatus(http.StatusOK))
+			for _, raw := range anySlice(data(listed), "items") {
+				entry, _ := raw.(map[string]any)
+				if entry == nil {
+					continue
+				}
+				if str(entry["module"]) == "announcements" && str(entry["action"]) == "create" {
+					logged = true
+					break
+				}
+			}
+			if logged {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
 		}
-		if _, ok := listed["data"]; !ok {
-			t.Fatalf("operation logs envelope wrong: %#v", listed)
+		if !logged {
+			t.Fatalf("management operation logs never persisted the announcements.create entry")
 		}
+		// 个人可见面（actor_self targeted）也能看到自己的操作记录。
 		_, mine := client.do(http.MethodGet, "/__aisys__/api/my-operation-logs", nil, wantStatus(http.StatusOK))
 		if _, ok := mine["data"]; !ok {
 			t.Fatalf("my-operation-logs envelope wrong: %#v", mine)

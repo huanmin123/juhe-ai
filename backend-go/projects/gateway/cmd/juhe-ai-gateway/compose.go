@@ -123,14 +123,17 @@ type composition struct {
 	// with the session middleware.
 	kernel   *kernel.Kernel
 	authDeps *authsys.Deps
+	// settingsStore is the single process settings repository: the management
+	// route family writes through it and the chain runtime read models read
+	// through the same instance so a PATCH is immediately visible (Node
+	// clears the one systemSettingsCache on write).
+	settingsStore *settings.Store
 	// chainServices retains the concrete chain runtime services (the chat
 	// family reads the runtime cache through them).
 	chainServices *chainRuntimeServices
 
-	producer           *operationlog.Producer
-	operationStore     operationlog.Store
-	operationLease     operationlog.OwnerLease
-	operationLeaseHeld bool
+	producer       *operationlog.Producer
+	operationStore operationlog.Store
 
 	shutdowns []func()
 }
@@ -200,9 +203,12 @@ func settingsString(value any) string {
 // Callers must prove the business owner gates first (businessOwnerGate plus
 // cutover evidence verification); this function fails fast on any incomplete
 // wiring instead of serving a partial surface.
-func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operationStore operationlog.Store) (*composition, error) {
+func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operationStore operationlog.Store, operationLease *operationlog.LeaseKeeper) (*composition, error) {
 	if operationStore == nil {
 		return nil, errors.New("系统 API 组合根要求 F4 操作日志 store 已启用（JUHE_AI_OPERATION_LOG_* 配置）")
+	}
+	if operationLease == nil {
+		return nil, errors.New("系统 API 组合根要求 F4 共享租约持有者（main 已与 F4 input server 共享同一 owner lease）")
 	}
 
 	composed := &composition{pgDialect: cfg.DatabaseDriver == "postgres"}
@@ -288,6 +294,14 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create settings store: %w", err)
 	}
+	// The usageStatsTimezone guard probes the dedicated stats database (Node
+	// getStatsDatabase()); probing the business handle 500s every online
+	// timezone change in the six-database SQLite split. PostgreSQL mode never
+	// probes (the guard rejects the online change first).
+	if !composed.pgDialect {
+		settingsStore.SetStatsDatabase(composed.statsDB)
+	}
+	composed.settingsStore = settingsStore
 	settingValue := settingsValueReader(settingsStore)
 
 	authzStore, err := authz.NewStore(composed.db, composed.pgDialect, time.Now)
@@ -353,19 +367,14 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	}
 
 	// F4 producer sink: every management mutation lands in the operation log
-	// through the in-process producer holding its own owner lease.
-	lease, ok, err := operationStore.AcquireOwnerLease(context.Background(), "gateway-system-api-operation-log", 30*time.Second)
-	if err != nil {
-		return nil, fmt.Errorf("acquire operation-log producer lease: %w", err)
-	}
-	if !ok {
-		return nil, errors.New("operation-log producer lease is held elsewhere; system api composition refuses to start")
-	}
-	producer := operationlog.NewProducer(operationStore, lease, operationlog.Config{}, producerLogger{})
+	// through the in-process producer. The producer shares the process-wide
+	// LeaseKeeper with the F4 input server (single owner_id/fence_token for
+	// both writers of this process); the renewal lifecycle is owned by the
+	// keeper, while the producer only extends the same lease per record with
+	// the configured owner-lease TTL.
+	producer := operationlog.NewProducer(operationStore, operationLease.Lease(), operationlog.Config{OwnerLease: operationLease.TTL()}, producerLogger{})
 	composed.producer = producer
 	composed.operationStore = operationStore
-	composed.operationLease = lease
-	composed.operationLeaseHeld = true
 	sink := &authsys.OperationLogProducerSink{Producer: producer, MaxChanges: 100}
 
 	// Auth captcha / login-guard drivers switch on the runtime-state driver
@@ -608,19 +617,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		kern.RegisterFallback(bridge)
 	}
 
-	// Composition shutdown order (Node shutdownDbService mirror): release the
-	// F4 producer lease so a successor process can take over immediately. The
-	// HTTP servers and shared pools are closed by main around this call.
-	composed.shutdowns = append(composed.shutdowns, func() {
-		if !composed.operationLeaseHeld {
-			return
-		}
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = composed.operationStore.ReleaseOwnerLease(releaseCtx, composed.operationLease)
-		composed.operationLeaseHeld = false
-	})
-
+	// Composition shutdown order (Node shutdownDbService mirror): the F4
+	// producer is drained by the composed shutdown before main closes the
+	// shared LeaseKeeper, which then releases the F4 persistence lease so a
+	// successor process can take over immediately. The HTTP servers and
+	// shared pools are closed by main around this call.
 	composed.Kernel = kern.Handler()
 	composed.DB = composed.db
 	return composed, nil

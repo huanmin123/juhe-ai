@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 )
 
@@ -115,5 +117,39 @@ func assertPreflightTables(t *testing.T, path string) {
 	}
 	if tables == 0 {
 		t.Fatalf("%s has no tables after the preflight", path)
+	}
+}
+
+// TestSeedAdminPasswordVerifiesThroughModelcheckauth is the seed-interop
+// regression (X05 defect: hashSeedPassword derived PBKDF2 from the raw salt
+// bytes while Node crypto.ts and the Go gateway verifyNodePBKDF2Password both
+// derive from the base64url salt TEXT bytes, so fresh-seed admins could not
+// log in on either runtime). The seed here runs through the real maintenance
+// bootstrap surface and the verification through the exact gateway login
+// path (modelcheckauth.Authenticator.Login).
+func TestSeedAdminPasswordVerifiesThroughModelcheckauth(t *testing.T) {
+	cfg, _ := gatewayPreflightTestConfig(t)
+	businessDB, err := bootstrap.OpenSQLiteFile(cfg.BusinessDatabasePath)
+	if err != nil {
+		t.Fatalf("open business db: %v", err)
+	}
+	defer businessDB.Close()
+	if err := ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, businessDB); err != nil {
+		t.Fatalf("ensure+seed business db: %v", err)
+	}
+
+	authenticator, err := modelcheckauth.New(businessDB, modelcheckauth.SQLite, time.Now)
+	if err != nil {
+		t.Fatalf("create authenticator: %v", err)
+	}
+	_, verified, ok, err := authenticator.Login(context.Background(), "admin", "admin", 1)
+	if err != nil {
+		t.Fatalf("seed admin login: %v", err)
+	}
+	if !ok {
+		t.Fatal("seed admin login rejected: seed hash does not verify under the gateway Node-compatible PBKDF2 semantics")
+	}
+	if verified.SystemAccountID != "sys_admin" || verified.Role != "super_admin" {
+		t.Fatalf("seed admin identity wrong: %#v", verified)
 	}
 }

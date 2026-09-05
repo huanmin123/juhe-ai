@@ -699,7 +699,19 @@ func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tabl
 			mux.Handle(internalapi.AccountTestDispatchInternalPrefix+"/", dispatch)
 		}
 	}
-	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3...)
+	// readinessArgs mirrors the healthHandler j2 layout:
+	// [accountBalanceEnabled, accountBalanceReady, proxyLatencyEnabled,
+	// proxyLatencyReady, proxyLatencyStatus, proxyLatencySnapshot,
+	// modelCheckEnabled, modelCheckReady, workerEnabled, workerReady,
+	// workerStatus]. The goMetrics slots (j3[6]/j3[7]) and the worker dispatch
+	// handler (j3[11]) are jobsHTTPHandler-only surface and must NOT leak into
+	// the readiness args — a leaked *gometrics.Collector would shift the
+	// worker fields into the wrong slots and /health would always report
+	// workerEnabled=false with no worker snapshot (X05 defect).
+	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3[:min(len(j3), 6)]...)
+	if len(j3) > 8 {
+		readinessArgs = append(readinessArgs, j3[8:min(len(j3), 11)]...)
+	}
 	mux.Handle("/health", healthHandler(ownerMode, runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
 	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || accountBalanceService == nil {

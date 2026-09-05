@@ -163,17 +163,23 @@ type KeyMutationExpected struct {
 }
 
 // KeySuccessInput 对应 type: 'record_account_api_key_success'。
+// KeyFingerprint/KeyIndex 锚定被复测的 Key（Node 侧经 account.selectedApiKey*
+// 传入；Go 侧显式字段，仓储用它定位 account_api_key_runtime_states 行）。
 type KeySuccessInput struct {
-	AccountID     string
-	TrafficSource string
-	ProbeOutcome  string
-	ObservedAt    string
-	Expected      KeyMutationExpected
+	AccountID      string
+	KeyFingerprint string
+	KeyIndex       int
+	TrafficSource  string
+	ProbeOutcome   string
+	ObservedAt     string
+	Expected       KeyMutationExpected
 }
 
 // KeyFailureInput 对应 type: 'record_account_api_key_failure'。
 type KeyFailureInput struct {
 	AccountID                string
+	KeyFingerprint           string
+	KeyIndex                 int
 	TrafficSource            string
 	ProbeOutcome             string
 	QuotaRecoveryMode        string
@@ -191,6 +197,8 @@ type KeyFailureInput struct {
 // KeyDeferInput 对应 type: 'defer_account_api_key_probe'。
 type KeyDeferInput struct {
 	AccountID                string
+	KeyFingerprint           string
+	KeyIndex                 int
 	TrafficSource            string
 	ProbeOutcome             string
 	QuotaRecoveryMode        string

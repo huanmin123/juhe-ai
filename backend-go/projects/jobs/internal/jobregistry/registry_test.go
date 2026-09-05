@@ -76,8 +76,14 @@ func TestEveryScheduledEntryHasScheduleAndBinding(t *testing.T) {
 func usesOwnLeaseOrLeaseFree(jobName string) bool {
 	// usage-hot-window-refresh 在 Node 也不包租约（runScheduledUsageHotWindowRefresh）；
 	// account-balance-refresh/key-model-memory-recovery 由等价组件自有语义接管。
+	// account-balance-auto-detect-recovery 在 Node 调度时不包 runWithPostgresScheduledLease，
+	// 逐候选使用自有 runWithAccountBalanceLease（background-jobs.ts:327 + account-balance-auto-detect.service.ts:118）。
+	// account-api-key-cooldown-retest / normal-route-speed-first-recovery-probe 同样不包
+	// （background-jobs.ts:331-332），前者内部为 claim CAS（10min lease），后者为 Redis mutation/probe-claim 锁。
 	switch jobName {
-	case "usage-hot-window-refresh", "account-balance-refresh", "key-model-memory-recovery":
+	case "usage-hot-window-refresh", "account-balance-refresh", "key-model-memory-recovery",
+		"account-balance-auto-detect-recovery", "account-api-key-cooldown-retest",
+		"normal-route-speed-first-recovery-probe":
 		return true
 	}
 	return false

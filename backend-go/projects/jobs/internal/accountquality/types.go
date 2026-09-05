@@ -139,6 +139,8 @@ type ProbeResult struct {
 	Message    string
 	DurationMs int64
 	TraceID    string
+	// FirstTokenMS 为上游首字耗时（speed-first 探针消费；0 表示未观测到）。
+	FirstTokenMS int64
 	// ProtocolCode 决定配额决策的报文协议："openai" | "anthropic" | "gemini"。
 	ProtocolCode string
 	// ResponseBodyText / ResponseHeaders 提供额度恢复 hint 解析输入。

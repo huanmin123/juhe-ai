@@ -215,8 +215,8 @@ func TestChainAccountsSelectorModelRankWindow(t *testing.T) {
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES (?, ?, 'acc_mapped', 1, ?)`, fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_model_mappings (id, account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES ('map_1', 'acc_mapped', 'openai', 'gpt-pro', 'chat_completions', 'gpt-test', 'chat_completions', 1, ?, ?)`, now, now)
+	seed(`INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('acc_mapped', 'openai', 'gpt-pro', 'chat_completions', 'gpt-test', 'chat_completions', 1, ?, ?)`, now, now)
 
 	result, err := fixture.selector.ListOpenAIAccountsForGroupResult(context.Background(), fixture.groupID, fixture.systemAccount,
 		gatewayruntimecache.OpenAIAccountsForGroupOptions{RequestedModel: "gpt-pro", RequestedEndpointFamily: "chat_completions"})

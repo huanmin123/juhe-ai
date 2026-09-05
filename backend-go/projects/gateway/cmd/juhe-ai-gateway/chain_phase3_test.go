@@ -147,17 +147,17 @@ func TestChainCostEstimatorEstimateVectors(t *testing.T) {
 		"priority": map[string]any{"inputUsdPer1M": 4.0, "outputUsdPer1M": 16.0},
 	})
 	seed(`INSERT INTO provider_model_catalog (
-			id, scope, status, provider_code, model, mode, source, catalog_visible,
+			id, status, provider_code, model, mode, source, catalog_visible,
 			input_usd_per_1m, output_usd_per_1m,
 			long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
 			long_context_input_cost_multiplier, long_context_output_cost_multiplier,
-			supported_service_tiers, service_tier_prices, supports_service_tier,
+			supported_service_tiers_json, service_tier_prices_json,
 			created_at, updated_at)
-		VALUES ('cat_est', 'builtin', 'active', 'openai', 'gpt-est', 'chat', 'builtin', 1,
+		VALUES ('cat_est', 'active', 'openai', 'gpt-est', 'chat', 'builtin', 1,
 			2.5, 10.0,
 			100000, 0,
 			2.0, 1.5,
-			?, ?, 1, ?, ?)`, `["priority"]`, string(tiers), now, now)
+			?, ?, ?, ?)`, `["priority"]`, string(tiers), now, now)
 	// The cache catalog cache must pick the new row up: build a fresh cache.
 	cache := fixture.cache
 
@@ -217,7 +217,8 @@ func absFloat64(value float64) float64 {
 func TestComposeSystemAPIServesOpenAICompatFamilies(t *testing.T) {
 	cfg := composeTestConfig(t)
 	cfg.ChainEnabled = true
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), openComposeOperationStore(t))
+	store := openComposeOperationStore(t)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store))
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}

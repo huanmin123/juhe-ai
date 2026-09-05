@@ -393,6 +393,24 @@ func main() {
 	var auditRunning atomic.Bool
 	var operationRunning atomic.Bool
 	var j3bRunning atomic.Bool
+	// The F4 persistence lease is acquired once per process and shared by the
+	// input-server sidecar and the system-api producer: both writers must
+	// fence under the same owner_id/fence_token, otherwise the second holder
+	// (sidecar or producer) would permanently fence the first one out.
+	var operationLease *operationlog.LeaseKeeper
+	if runtimeCfg.SystemAPIEnabled && operationConfig.Enabled {
+		keeper, ok, keeperErr := operationlog.StartLeaseKeeper(context.Background(), operationStore, operationConfig.InstanceID, operationConfig.OwnerLease, logger)
+		if keeperErr != nil {
+			fail(fmt.Errorf("acquire F4 operation-log owner lease: %w", keeperErr))
+		}
+		if !ok {
+			fail(errors.New("F4 operation log owner lease held by another owner process"))
+		}
+		operationLease = keeper
+		// Registered ahead of composed.Shutdown so the LIFO defer order
+		// drains the producer first and releases the lease last.
+		defer operationLease.Close()
+	}
 	if j3bHostComponent.Run != nil {
 		baseJ3bComponent := j3bHostComponent
 		j3bHostComponent = supervisor.Component{
@@ -440,9 +458,21 @@ func main() {
 			Run: func(runCtx context.Context) error {
 				operationRunning.Store(true)
 				defer operationRunning.Store(false)
+				if operationLease != nil {
+					// System api composition is active: share the process-wide
+					// lease keeper (single fence for sidecar + producer).
+					return operationlog.RunInputServerSharedLease(runCtx, operationStore, operationConfig, operationInputConfig, logger, operationLease)
+				}
 				return operationlog.RunInputServer(runCtx, operationStore, operationConfig, operationInputConfig, logger)
 			},
-			Close: operationStore.Close,
+			Close: func() error {
+				// Release the shared lease while the store handle is still
+				// open so a successor process can take over immediately.
+				if operationLease != nil {
+					operationLease.Close()
+				}
+				return operationStore.Close()
+			},
 		})
 	}
 
@@ -461,7 +491,7 @@ func main() {
 	var mainServer *http.Server
 	var mainServeErr chan error
 	if runtimeCfg.SystemAPIEnabled {
-		composed, err = composeSystemAPI(runtimeCfg, postgresPools, operationStore)
+		composed, err = composeSystemAPI(runtimeCfg, postgresPools, operationStore, operationLease)
 		if err != nil {
 			fail(fmt.Errorf("compose gateway system api: %w", err))
 		}

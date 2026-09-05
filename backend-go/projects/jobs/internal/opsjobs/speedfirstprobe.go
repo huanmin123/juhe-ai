@@ -28,13 +28,22 @@ type ProbeConfig struct {
 }
 
 // ProbeCandidate 对齐 NormalRouteLatencyProbeCandidate 窄投影。
+// Generation/RuntimeKey/DegradationEventID/DegradedUntil/NextProbeAt 与轮次
+// 计数参与 Redis 降级运行态的 candidate-match 围栏（Node
+// latencyProbeCandidateMatchesState 的字段集），不得缺省。
 type ProbeCandidate struct {
 	StateKey             string      `json:"state_key"`
 	AccountID            string      `json:"account_id"`
-	AccountName          string      `json:"account_name"`
+	AccountName          string      `json:"account_name,omitempty"`
+	RuntimeKey           string      `json:"runtime_key"`
 	Scope                ProbeScope  `json:"scope"`
-	Generation           int64       `json:"generation"`
+	Generation           string      `json:"generation"`
+	DegradationEventID   string      `json:"degradation_event_id,omitempty"`
+	DegradedUntil        string      `json:"degraded_until,omitempty"`
+	NextProbeAt          string      `json:"next_probe_at,omitempty"`
 	RecoverySuccessCount int         `json:"recovery_success_count"`
+	RoundAttemptCount    int         `json:"recovery_probe_round_attempt_count"`
+	RoundSuccessCount    int         `json:"recovery_probe_round_success_count"`
 	Config               ProbeConfig `json:"config"`
 }
 

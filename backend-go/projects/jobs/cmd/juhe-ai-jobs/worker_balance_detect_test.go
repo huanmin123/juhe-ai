@@ -118,6 +118,10 @@ func balanceDetectAssemblyEnv(t *testing.T, businessPath, statsPath string) map[
 		"JUHE_AI_WORKER_REPLICA_INDEX":         "0",
 		"JUHE_AI_SECRET":                       "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":        "2000",
+		"JUHE_AI_DATASET_DATABASE_PATH":        filepath.Join(filepath.Dir(businessPath), "dataset.sqlite3"),
+		"JUHE_AI_CHAT_DATABASE_PATH":           filepath.Join(filepath.Dir(businessPath), "chat.sqlite3"),
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": filepath.Join(filepath.Dir(businessPath), "codex-state"),
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "1",
 		"JUHE_AI_JOBS_STATS_ENABLED":           "false",
 		"JUHE_AI_JOBS_OAUTH_ENABLED":           "false",
 		"JUHE_AI_JOBS_USAGE_WRITER_ENABLED":    "false",
@@ -344,11 +348,19 @@ func TestWorkerBalanceDetectDisabledOnMissingContract(t *testing.T) {
 	}
 }
 
-// TestWorkerPartialJobsStartupLogExhaustive：11 项 go-partial（翻转后的
-// balance 除外）必须全部出现在缺口清单中，且每条给出命名缺口。
+// TestWorkerPartialJobsStartupLogExhaustive：所有尚未翻转 Wired 的 scheduled
+// job 必须全部出现在缺口清单中（以 jobregistry 为准动态计数），且每条给出
+// 命名缺口。
 func TestWorkerPartialJobsStartupLogExhaustive(t *testing.T) {
-	if len(workerPartialJobGaps) != 11 {
-		t.Fatalf("缺口清单必须覆盖剩余 11 个 scheduled job，得到 %d", len(workerPartialJobGaps))
+	remaining := 0
+	for _, entry := range jobregistry.ScheduledEntries() {
+		// go-equivalent 任务由自有组件（J1/J2 等）接管，不属于本缺口清单。
+		if entry.GoStatus == jobregistry.GoPartial {
+			remaining++
+		}
+	}
+	if len(workerPartialJobGaps) != remaining {
+		t.Fatalf("缺口清单必须覆盖剩余 %d 个 scheduled job，得到 %d", remaining, len(workerPartialJobGaps))
 	}
 	for _, gap := range workerPartialJobGaps {
 		entry, ok := jobregistry.Find(gap.JobName)

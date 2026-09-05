@@ -238,6 +238,12 @@ type Store struct {
 	pg    bool
 	now   func() time.Time
 	inval RuntimeInvalidator
+	// statsDB backs the usageStatsTimezone guard probe. Node runs
+	// usageStatsDataExists against getStatsDatabase(); in the six-database
+	// split the usage_stats_* tables live in the dedicated stats database,
+	// never the business file. Optional: nil keeps the single-handle legacy
+	// behavior.
+	statsDB *sql.DB
 
 	mu       sync.Mutex
 	cached   map[string]any
@@ -254,6 +260,15 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, inval RuntimeInva
 		now = time.Now
 	}
 	return &Store{db: db, pg: postgres, now: now, inval: inval}, nil
+}
+
+// SetStatsDatabase points the usageStatsDataExists probe at the dedicated
+// stats database (Node getStatsDatabase(), SQLite six-database split). The
+// composition wires the same stats handle ipstats reads; PostgreSQL mode never
+// probes (the guard rejects online timezone changes first), so callers there
+// can leave it unset.
+func (s *Store) SetStatsDatabase(db *sql.DB) {
+	s.statsDB = db
 }
 
 func (s *Store) table(name string) string {
@@ -593,13 +608,19 @@ func (s *Store) assertUsageStatsTimezoneUpdateAllowed(ctx context.Context, norma
 }
 
 // usageStatsDataExists mirrors usageStatsDataExists: any row in any usage
-// stats projection table blocks the timezone change. The probe runs on the
-// store handle; the stats-database split is re-pointed when the J5 stats
-// slice lands its own store.
+// stats projection table blocks the timezone change. The probe runs against
+// the dedicated stats database when wired (SetStatsDatabase) — the historical
+// defect probed the business handle, where the usage_stats_* tables do not
+// exist in the six-database split, turning every online timezone change into
+// a 500.
 func (s *Store) usageStatsDataExists(ctx context.Context) (bool, error) {
+	probeDB := s.db
+	if s.statsDB != nil {
+		probeDB = s.statsDB
+	}
 	for _, tableName := range usageStatsDataTables {
 		var probe int
-		err := s.db.QueryRowContext(ctx, s.bind(`SELECT 1 FROM `+s.table(tableName)+` LIMIT 1`)).Scan(&probe)
+		err := probeDB.QueryRowContext(ctx, s.bind(`SELECT 1 FROM `+s.table(tableName)+` LIMIT 1`)).Scan(&probe)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}

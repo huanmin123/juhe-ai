@@ -3,7 +3,9 @@ package authsys
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -132,5 +134,52 @@ func TestOperationLogProducerSinkDeferredFieldsLockedIn(t *testing.T) {
 	}
 	if string(inputs[2].Metadata) != `{"k":1}` {
 		t.Fatalf("metadata snapshot semantics broken: %s", string(inputs[2].Metadata))
+	}
+}
+
+// TestProducerSinkGeneratesOperationLogIDs is the X05 regression for the
+// management-plane operation log path: Node recordOperationLog defaults the
+// entry id (newId('oplog')) before dispatch; the Go sink must do the same or
+// every record fails F4 input normalization ("operation log input missing
+// id") and the operation-logs surface stays empty.
+func TestProducerSinkGeneratesOperationLogIDs(t *testing.T) {
+	store := &sinkFakeStore{}
+	producer := operationlog.NewProducer(store, operationlog.OwnerLease{}, operationlog.Config{}, nil)
+	sink := &OperationLogProducerSink{Producer: producer, MaxChanges: 100}
+	request := httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", nil)
+	sink.Record(OperationLogEntry{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "super_admin",
+		Module:               "announcements",
+		Action:               "create",
+		OperationKey:         "announcements.create",
+		ResourceType:         "announcement",
+		Summary:              "发布公告",
+	}, request)
+	sink.Record(OperationLogEntry{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "super_admin",
+		Module:               "groups",
+		Action:               "update",
+		OperationKey:         "groups.update",
+		ResourceType:         "group",
+		Summary:              "编辑分组",
+	}, request)
+	inputs := waitForSinkInputs(t, store, 2)
+	seen := map[string]bool{}
+	for _, input := range inputs {
+		if input.ID == "" {
+			t.Fatal("sink must default the operation log id (Node newId('oplog') mirror)")
+		}
+		if !strings.HasPrefix(input.ID, "oplog_") {
+			t.Fatalf("operation log id prefix wrong: %q", input.ID)
+		}
+		if input.CreatedAt == "" {
+			t.Fatal("sink must default createdAt")
+		}
+		if seen[input.ID] {
+			t.Fatalf("operation log ids must be unique, got duplicate %q", input.ID)
+		}
+		seen[input.ID] = true
 	}
 }

@@ -28,7 +28,8 @@ func composeChatTestSystemAPI(t *testing.T, devAutoLogin bool) (*composition, *h
 	if devAutoLogin {
 		cfg.DevAutoLoginUsername = "admin"
 	}
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), openComposeOperationStore(t))
+	store := openComposeOperationStore(t)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store))
 	if err != nil {
 		t.Fatalf("compose system api with chat family: %v", err)
 	}

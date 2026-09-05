@@ -33,6 +33,12 @@ func workerSmokeTestEnv(t *testing.T) map[string]string {
 		"JUHE_AI_WORKER_REPLICA_INDEX":        "0",
 		"JUHE_AI_SECRET":                      "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":       "5000",
+		"JUHE_AI_DATASET_DATABASE_PATH":       filepath.Join(root, "dataset.sqlite3"),
+		"JUHE_AI_CHAT_DATABASE_PATH":          filepath.Join(root, "chat.sqlite3"),
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": filepath.Join(root, "codex-state"),
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "1",
+		"JUHE_AI_CHAT_ASSETS_ROOT":            filepath.Join(root, "chat-assets"),
+		"JUHE_AI_CODEX_CONTEXT_ROOT":          filepath.Join(root, "codex-context"),
 	}
 }
 

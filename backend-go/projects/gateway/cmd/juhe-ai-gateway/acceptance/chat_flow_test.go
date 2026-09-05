@@ -22,9 +22,6 @@ func TestAcceptanceChatFlow(t *testing.T) {
 	// apiKeyId 绑定 seed chat key）。
 	_, created := admin.do(http.MethodPost, "/__aisys__/api/my-chat/conversations",
 		map[string]any{"apiKeyId": chatKeyIDOf(t, chain)}, 0)
-	if createdCode, _ := created["code"].(string); createdCode == "internal_generation_failed" {
-		skipOnKnownChainDispatchDefectRaw(t, fmt.Sprintf("%v", created))
-	}
 	conversation := data(created)
 	conversationID := str(conversation["id"])
 	if conversationID == "" {
@@ -60,9 +57,6 @@ func TestAcceptanceChatFlow(t *testing.T) {
 		t.Fatalf("POST stream: %v", err)
 	}
 	defer streamResponse.Body.Close()
-	if streamResponse.StatusCode >= 500 {
-		skipOnKnownChainDispatchDefect(t, streamResponse.StatusCode, readAllBody(t, streamResponse))
-	}
 	if streamResponse.StatusCode != http.StatusOK {
 		t.Fatalf("stream status=%d body=%s", streamResponse.StatusCode, readAllBody(t, streamResponse))
 	}

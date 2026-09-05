@@ -205,21 +205,22 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	verifySeedTestExternalToken(t, db)
 }
 
-// verifySeedTestPassword mirrors Node verifyPassword for the pbkdf2 envelope.
+// verifySeedTestPassword mirrors Node verifyPassword for the pbkdf2 envelope
+// (and the Go gateway verifyNodePBKDF2Password): the base64url salt TEXT
+// itself is the PBKDF2 key material, never the decoded raw salt bytes.
 func verifySeedTestPassword(password, envelope string) error {
 	parts := strings.Split(envelope, "$")
 	if len(parts) != 5 || parts[0] != "pbkdf2" || parts[1] != "sha512" || parts[2] != "120000" {
 		return fmt.Errorf("unexpected password envelope %q", envelope)
 	}
-	salt, err := base64.RawURLEncoding.DecodeString(parts[3])
-	if err != nil {
+	if _, err := base64.RawURLEncoding.DecodeString(parts[3]); err != nil {
 		return fmt.Errorf("decode salt: %w", err)
 	}
 	expected, err := base64.RawURLEncoding.DecodeString(parts[4])
 	if err != nil {
 		return fmt.Errorf("decode digest: %w", err)
 	}
-	derived, err := pbkdf2.Key(sha512.New, password, salt, 120000, len(expected))
+	derived, err := pbkdf2.Key(sha512.New, password, []byte(parts[3]), 120000, len(expected))
 	if err != nil {
 		return err
 	}

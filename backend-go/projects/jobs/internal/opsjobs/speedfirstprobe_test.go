@@ -172,7 +172,7 @@ func testCandidate() ProbeCandidate {
 		AccountID:   "acc-1",
 		AccountName: "账户一",
 		Scope:       ProbeScope{RouteStrategyID: "strategy-1", GroupID: "group-1", SystemAccountID: "sys-1"},
-		Generation:  3,
+		Generation:  "3",
 		Config:      ProbeConfig{FirstByteDeadlineMS: 2_000, RecoverySuccessCount: 2},
 	}
 }

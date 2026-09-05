@@ -355,6 +355,10 @@ func mountGuardedCreate(d *authsys.Deps, store *Store, sink authsys.OperationLog
 				visibilityScope, detailLevel = "all_users", "summary"
 			}
 			sink.Record(authsys.OperationLogEntry{
+				ActorSystemAccountID:          auth.SystemAccountID,
+				ActorUsername:                 auth.Username,
+				ActorDisplayName:              auth.DisplayName,
+				ActorRole:                     auth.Role,
 				OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "admin",
 				Module: "announcements", Action: "create", OperationKey: "announcements.create",
 				ResourceType: "announcement", ResourceID: receipt.ID,

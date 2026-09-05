@@ -174,12 +174,60 @@ func TestPostgresSeedPasswordHashFormat(t *testing.T) {
 	if len(derived) != 32 {
 		t.Fatalf("digest length = %d, want 32", len(derived))
 	}
-	recomputed, err := pbkdf2.Key(sha512.New, "admin", salt, pgSeedPasswordIterations, 32)
+	// Node hashPassword / Go gateway verifyNodePBKDF2Password both derive from
+	// the base64url salt TEXT bytes — the historical defect derived from the
+	// raw decoded salt bytes, producing hashes neither runtime could verify.
+	recomputed, err := pbkdf2.Key(sha512.New, "admin", []byte(parts[3]), pgSeedPasswordIterations, 32)
 	if err != nil {
 		t.Fatalf("recompute pbkdf2: %v", err)
 	}
 	if !bytes.Equal(recomputed, derived) {
 		t.Fatal("recomputed digest does not match the stored digest")
+	}
+}
+
+// TestSeedPasswordHashMatchesNodeVerifySemantics is the seed-interop
+// regression: a Go seed hash must verify under the exact byte semantics of
+// Node verifyPassword, mirrored byte-for-byte here from backend
+// src/storage/crypto.ts (pbkdf2Sync(password, saltText, ...)) and the Go
+// gateway modelcheckauth.verifyNodePBKDF2Password (pbkdf2 over []byte(salt
+// text)). The seed self-test previously replayed the same raw-salt mistake as
+// hashSeedPassword, so the incompatible hash went unnoticed.
+func TestSeedPasswordHashMatchesNodeVerifySemantics(t *testing.T) {
+	const password = "admin"
+	hash, err := hashSeedPassword(password)
+	if err != nil {
+		t.Fatalf("hashSeedPassword: %v", err)
+	}
+	parts := strings.Split(hash, "$")
+	if len(parts) != 5 {
+		t.Fatalf("hash parts = %d, want 5: %q", len(parts), hash)
+	}
+	iterations, err := strconv.Atoi(parts[2])
+	if err != nil {
+		t.Fatalf("parse iterations: %v", err)
+	}
+	expected, err := base64.RawURLEncoding.DecodeString(parts[4])
+	if err != nil {
+		t.Fatalf("decode digest: %v", err)
+	}
+	// Node verifyPassword: pbkdf2Sync(password, salt, iterations, len, sha512)
+	// where salt is the base64url TEXT (parts[3]).
+	derived, err := pbkdf2.Key(sha512.New, password, []byte(parts[3]), iterations, len(expected))
+	if err != nil {
+		t.Fatalf("derive with node semantics: %v", err)
+	}
+	if !bytes.Equal(derived, expected) {
+		t.Fatal("seed hash must verify under the Node base64url-salt-text semantics")
+	}
+	// The raw-salt-bytes interpretation must NOT verify: if it does, the seed
+	// has regressed to the incompatible derivation.
+	rawSalt, err := base64.RawURLEncoding.DecodeString(parts[3])
+	if err != nil {
+		t.Fatalf("decode salt: %v", err)
+	}
+	if legacy, err := pbkdf2.Key(sha512.New, password, rawSalt, iterations, len(expected)); err == nil && bytes.Equal(legacy, expected) {
+		t.Fatal("seed hash unexpectedly verifies under raw-salt-byte derivation; base64url text semantics regressed")
 	}
 }
 

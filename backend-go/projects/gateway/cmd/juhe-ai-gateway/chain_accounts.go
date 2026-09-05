@@ -1325,8 +1325,14 @@ func (s *chainAccountsSelector) loadModelMappingsByAccountIds(ctx context.Contex
 		return result, nil
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?, ", len(ids)), ", ")
+	// Node loadModelMappingsByAccountIds orders by the composite primary key
+	// columns (account_model_mappings has NO id column — Node
+	// business-schema.ts and the maintenance DDL define PRIMARY KEY
+	// (account_id, source_model, source_endpoint_family)); ordering by the
+	// drifted `id` column 500s every runtime-resolution read on fresh
+	// databases.
 	query := fmt.Sprintf(`SELECT account_id, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled
-		FROM %s WHERE account_id IN (%s) ORDER BY created_at ASC, id ASC`, s.table("account_model_mappings"), placeholders)
+		FROM %s WHERE account_id IN (%s) ORDER BY account_id ASC, source_model ASC, source_endpoint_family ASC`, s.table("account_model_mappings"), placeholders)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), rowsArgs(ids)...)
 	if err != nil {
 		return nil, err

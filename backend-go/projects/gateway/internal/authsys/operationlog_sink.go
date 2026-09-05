@@ -2,7 +2,10 @@ package authsys
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -17,12 +20,25 @@ type OperationLogProducerSink struct {
 	MaxChanges int // mirror of system setting operationLogMaxChangesPerRecord (1..500)
 }
 
+// newOperationLogID mirrors Node recordOperationLog's `input.id ??
+// newId('oplog')` (database.ts newId: prefix_ms_hex8). Without it every
+// record failed normalization ("operation log input missing id") and the
+// management plane persisted no operation logs at all.
+func newOperationLogID(now time.Time) string {
+	var random [4]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return fmt.Sprintf("oplog_%d", now.UnixMilli())
+	}
+	return fmt.Sprintf("oplog_%d_%s", now.UnixMilli(), hex.EncodeToString(random[:]))
+}
+
 func (s *OperationLogProducerSink) Record(entry OperationLogEntry, r *http.Request) {
 	if s == nil || s.Producer == nil {
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC()
 	input := operationlog.Input{
+		ID:                            newOperationLogID(now),
 		ActorSystemAccountID:          entry.ActorSystemAccountID,
 		ActorUsername:                 entry.ActorUsername,
 		ActorDisplayName:              entry.ActorDisplayName,
@@ -45,7 +61,7 @@ func (s *OperationLogProducerSink) Record(entry OperationLogEntry, r *http.Reque
 		ClientIP:        kernel.Context(r).ClientIP,
 		Method:          r.Method,
 		Path:            r.URL.Path,
-		CreatedAt:       now,
+		CreatedAt:       now.Format(time.RFC3339Nano),
 	}
 	if entry.DetailLevel != "" {
 		input.DetailLevel = entry.DetailLevel

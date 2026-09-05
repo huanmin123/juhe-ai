@@ -36,10 +36,8 @@ func TestAcceptanceFreshSQLiteBoot(t *testing.T) {
 		t.Fatalf("system health proxyLatency wrong: %#v", systemHealth)
 	}
 
-	// 进程级 /health（gateway main healthHandler）：owner/worker 字段契约。
-	// 对齐 Go cmd/juhe-ai-gateway/main.go healthHandler。已知 F4 租约缺陷
-	// 使 ready 滞后约 30-60s（见 harness waitForSystemAPIReady 注释），
-	// 这里轮询至 ready 再断言字段。
+	// 进程级 /health（gateway main healthHandler）：owner/worker 字段契约，
+	// 对齐 Go cmd/juhe-ai-gateway/main.go healthHandler。
 	health := waitForProcessHealthReady(t, fixture)
 	if health["ownerMode"] != "active" {
 		t.Fatalf("gateway /health ownerMode=%v want active", health["ownerMode"])
@@ -53,8 +51,8 @@ func TestAcceptanceFreshSQLiteBoot(t *testing.T) {
 		}
 	}
 
-	// fresh 库 + seed 管理员可登录（密码为夹具重置后的 acceptanceAdminPassword，
-	// 见 harness resetSeedAdminPassword 的缺陷说明）。
+	// fresh 库 + seed 管理员可登录（seed 默认 admin/admin，Node 与 Go
+	// 双侧语义一致，见 harness acceptanceAdminPassword）。
 	client := newClient(t, fixture.baseURL)
 	status, payload := client.do(http.MethodPost, "/__aisys__/api/auth/login",
 		map[string]any{"username": "admin", "password": acceptanceAdminPassword}, wantStatus(http.StatusOK))
@@ -82,7 +80,7 @@ func TestAcceptanceFreshPostgresBoot(t *testing.T) {
 	}
 	fixture := startGateway(t, gatewayEnvOptions{PGDSN: dsn})
 
-	// 进程级 /health 就绪（含 F4 租约缺陷的滞后预算）+ owner 字段。
+	// 进程级 /health 就绪 + owner 字段。
 	health := waitForProcessHealthReady(t, fixture)
 	if health["ownerMode"] != "active" {
 		t.Fatalf("gateway /health wrong in PG mode: %#v", health)
