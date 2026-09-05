@@ -46,6 +46,10 @@ type gatewayChain struct {
 	auditSettings      gatewayusage.AuditLogSettingsSource
 	auditDispatcher    gatewayusage.AuditDispatcher
 	usageModelResolver gatewayusage.UsageModelResolver
+	// compat answers the openai-compatible files / vector-stores families
+	// ahead of the Node 404 JSON (chain_openaicompat.go). Nil keeps the pure
+	// protocol chain (compose tests).
+	compat *chainCompatDispatcher
 }
 
 // ServeHTTP implements http.Handler over the /v1 prefix.
@@ -57,10 +61,16 @@ func (c *gatewayChain) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // preceded by the server.ts gateway middleware chain it replaces
 // (rejectUnrecognizedGatewayProtocolRequest -> body pipeline capture).
 func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http.Request) {
-	// rejectUnrecognizedGatewayProtocolRequest: non-protocol /v1 paths (e.g.
-	// the still-Node-owned openai-compatible families) keep the Node 404 JSON.
+	// rejectUnrecognizedGatewayProtocolRequest: the openai-compatible files /
+	// vector-stores families mount ahead of the protocol check (Node
+	// server.ts gateway middleware order); every other non-protocol /v1 path
+	// keeps the Node 404 JSON contract.
 	req := gatewaypreauth.NewGatewayRequest(r)
 	if !gatewayopenaiIsProtocolPath(req.PathAndQuery()) {
+		if c.compat != nil {
+			c.compat.ServeHTTP(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"message":"资源不存在"}`))

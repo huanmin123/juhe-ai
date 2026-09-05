@@ -43,6 +43,7 @@ func composeTestConfig(t *testing.T) runtimeConfig {
 		UsageCatalogDatabasePath:    filepath.Join(root, "usage-catalog.sqlite3"),
 		CodexContextShardRoot:       filepath.Join(root, "codex-context"),
 		CodexContextShardCount:      1,
+		ChatAssetsRoot:              filepath.Join(root, "chat-assets"),
 		BusinessOwner:               "gateway",
 		BusinessHandoffConfirmed:    true,
 		BusinessNodeWriterStopped:   true,

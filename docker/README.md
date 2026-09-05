@@ -2,11 +2,24 @@
 
 这是轻量 Docker 入口。默认模式的 Compose 拓扑为 Node（Web、管理 API、`/v1` 网关、background worker、DB service）、`go-jobs`（F1/F2）和 `go-gateway`（F3/F4）。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue、Node 应用及两个独立 Go 项目；Redis Streams 可靠队列默认写入 `redis-queue`，但 F1/F2/F3/F4 不使用 Redis 数据面。
 
+Go-only 模式（G20 翻转前置）使用 `compose.go-only.yml`：没有 Node 容器，`gateway` 以 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true` 绑定 `JUHE_AI_HOST:JUHE_AI_PORT` 成为主入口，`jobs` 依赖 gateway 健康后启动；`juhe-ai-data` 卷对 gateway 读写（业务库唯一 writer）、对 jobs 只读，F3/F4 input listener 仍只绑容器内 loopback。启动：
+
+```bash
+cd docker
+cp .env.example .env
+# 与 compose.yml 相同：填写镜像 digest、F3/F4 input secret 与各 owner ID。
+JUHE_AI_DEPLOY_MODE=go docker compose -f compose.go-only.yml config --quiet
+JUHE_AI_DEPLOY_MODE=go docker compose -f compose.go-only.yml up -d --build --wait
+```
+
+> `JUHE_AI_DEPLOY_MODE=go` 只是给宿主机侧流程的标记，Compose 自身不读它；实际开关由 `compose.go-only.yml` 内置的 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED` 与两服务拓扑承载。回滚时 `down` 本文件并按上文回到 `compose.yml`；两份 compose 卷同名，切换前先完成业务备份。环境变量与 `compose.yml` 的 go 服务保持同名同步，修改任一侧必须同步另一侧。
+
 > 旧单 sidecar 的开发验证不能外推到当前双项目拓扑。当前生产候选必须从干净、固定 commit 构建，并重新验证 Node -> F3/F4 -> Node 读回、F1/F2 新鲜度以及 gateway/jobs 独立重启恢复。
 
 ## 文件说明
 
 - `compose.yml`：单容器 Compose 配置，包含端口、环境变量、数据卷和镜像构建参数。
+- `compose.go-only.yml`：go-only 模式 Compose 配置，只有 `gateway`（主入口）与 `jobs` 两个 Go 服务，不含 Node 容器。
 - `compose.performance.yml`：高性能模式 Compose 配置，包含 PostgreSQL、PgBouncer、Redis cache、Redis state、独立 Redis queue 和应用服务。
 - `Dockerfile`：运行镜像构建文件，只组装已构建好的 `backend/dist`、`frontend/dist` 和后端生产依赖。
 - `Dockerfile.go-project`：通用 Go 项目镜像，通过 `GO_PROJECT=gateway|jobs` 分别构建独立模块，并内置项目 `/health` probe。

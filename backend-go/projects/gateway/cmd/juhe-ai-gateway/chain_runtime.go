@@ -23,10 +23,12 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 )
 
@@ -45,6 +47,14 @@ type chainRuntimeServices struct {
 	AuthzQuota      *gatewayquota.AuthorizationQuotaService
 	InflightQuota   *gatewayquota.InflightQuotaService
 	Accounts        *chainAccountsSelector
+	// HybridScoringCache / HybridRuntimeState are the cacheDriver==='redis'
+	// collaborators of the hybrid route resolver (nil keeps the memory
+	// drivers, mirroring the Node runtimeConfig axes).
+	HybridScoringCache gatewayhybrid.SharedJSONCache
+	HybridRuntimeState gatewayhybrid.RuntimeStateStore
+	// Identity carries the G14 session identity + affinity services (nil is
+	// rejected by the chain assembly: the preflight dereferences them).
+	Identity *sessionIdentityServices
 	// RateLimitStore is the cacheDriver==='redis' fixed-window store for the
 	// system-api rate limiter (nil keeps the memory store); see task item 9.
 	RateLimitStore ratelimit.Store
@@ -237,7 +247,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if err != nil {
 		return nil, fmt.Errorf("create gateway runtime sql read models: %w", err)
 	}
-	selector, selectorErr := newChainAccountsSelector(composed.db, composed.pgDialect, cfg.Secret, time.Now)
+	selector, selectorErr := newChainAccountsSelectorWithStats(composed.db, composed.statsDB, composed.pgDialect, cfg.Secret, time.Now)
 	if selectorErr != nil {
 		return nil, fmt.Errorf("create gateway accounts selector: %w", selectorErr)
 	}
@@ -383,11 +393,12 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create authorization quota service: %w", err)
 	}
 	services.AuthzQuota = authzQuota
-	// Estimator stays nil until the pricing slice mounts: the in-flight
-	// reservation then degrades to count-only estimates (Node
-	// estimateGatewayRequestCostUsd no-estimate branch).
+	// Estimator mounts the pricing catalog cost estimator (G20 phase-3): the
+	// in-flight reservation then derives real USD estimates like the Node
+	// estimateGatewayRequestCostUsd path.
 	inflightQuota, err := gatewayquota.NewInflightQuotaService(gatewayquota.InflightQuotaConfig{
-		APIKeys: apiKeyQuota,
+		APIKeys:   apiKeyQuota,
+		Estimator: newChainCostEstimator(cache),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create inflight quota service: %w", err)
@@ -413,6 +424,52 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		gatewaycircuit.NewWaitCoordinator(gatewaycircuit.WaitCoordinatorOptions{}),
 		chainCircuitWaitLogger{inner: slog.Default()},
 	)
+
+	// ---- hybrid Redis collaborators (cacheDriver==='redis') ----
+	// Node createSharedJsonCache('gateway:hybrid-scoring-result') +
+	// createRuntimeStateStore('gateway-hybrid-route-affinity').
+	if redisCache && cacheClient != nil {
+		scoringCache, scoringErr := gatewayhybrid.NewRedisSharedJSONCache(cacheClient, cfg.RedisNamespace)
+		if scoringErr != nil {
+			return nil, fmt.Errorf("create hybrid scoring shared cache: %w", scoringErr)
+		}
+		services.HybridScoringCache = scoringCache
+	}
+	if redisState && stateClient != nil {
+		hybridState, hybridErr := gatewayhybrid.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace)
+		if hybridErr != nil {
+			return nil, fmt.Errorf("create hybrid route affinity state: %w", hybridErr)
+		}
+		services.HybridRuntimeState = hybridState
+	}
+
+	// ---- G14 session identity + affinity services ----
+	identityService, identityErr := gatewaysession.NewIdentityService(cfg.Secret)
+	if identityErr != nil {
+		return nil, fmt.Errorf("create gateway session identity service: %w", identityErr)
+	}
+	affinityConfig := gatewaysession.AffinityConfig{
+		CacheDriver:        gatewaysession.CacheDriverMemory,
+		RuntimeStateDriver: gatewaysession.RuntimeStateDriverMemory,
+		Secret:             cfg.Secret,
+	}
+	if redisCache {
+		affinityConfig.CacheDriver = gatewaysession.CacheDriverRedis
+		affinityConfig.RedisCacheURL = cfg.RedisCacheURL
+		affinityConfig.RedisNamespace = cfg.RedisNamespace
+	}
+	if redisState {
+		affinityConfig.RuntimeStateDriver = gatewaysession.RuntimeStateDriverRedis
+	}
+	affinityService, affinityErr := gatewaysession.NewAffinityService(affinityConfig)
+	if affinityErr != nil {
+		return nil, fmt.Errorf("create gateway session affinity service: %w", affinityErr)
+	}
+	services.Identity = &sessionIdentityServices{
+		Identity: identityService,
+		Affinity: affinityService,
+		Secret:   cfg.Secret,
+	}
 	return services, nil
 }
 

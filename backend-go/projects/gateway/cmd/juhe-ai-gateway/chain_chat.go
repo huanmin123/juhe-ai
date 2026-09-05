@@ -20,14 +20,10 @@ package main
 //     storage key under JUHE_AI_CHAT_ASSETS_ROOT).
 //   - gpt-tokenizer: token counting via the o200k tokenizer.
 //
-// Registered missing ports for the chat route mount itself (compose.go keeps
-// the family unmounted until these land):
-//   - ChatAPIKeyProvider: Node ensureChatApiKeyForSystemAccountAsync (the
-//     purpose='chat' key lifecycle incl. default route strategies) has no Go
-//     owner yet — the apikeys.Store management surface does not cover it.
-//   - ImageProcessor / ImageObservations: the sharp pipeline and the
-//     observation scheduler slices.
-//   - the chat database owner (chat_store tables) for chat.Store.
+// G20 phase-3 mounts these ports together (chain_chat_keys.go ChatAPIKeyProvider,
+// chain_chat_images.go ImageProcessor, chain_chat_observation.go
+// ImageObservations, chain_chat_mount.go the chat database owner + Deps
+// assembly at ${systemApiPrefix}/my-chat).
 
 import (
 	"bytes"

@@ -23,6 +23,32 @@ const REQUIRED_RELEASE_FILES = [
 ]
 const REQUIRED_GO_PROJECTS = ['jobs', 'gateway', 'maintenance']
 
+// 部署模式校验分支（G20/X03 双轨准备）：
+// - hybrid（默认，与历史行为完全一致）：要求 Node server + 前端 + 三 Go 二进制。
+// - go：go-only 发布物不携带 backend/dist（Node server），但三 Go 二进制必填。
+// - node：回滚兜底校验，不要求 Go 二进制。
+const DEPLOY_MODES = new Set(['hybrid', 'go', 'node'])
+const REQUIRED_RELEASE_FILES_BY_MODE = new Map([
+  ['hybrid', REQUIRED_RELEASE_FILES],
+  ['go', ['start.sh', 'start.ps1', 'frontend/dist/index.html']],
+  ['node', ['start.sh', 'start.ps1', 'backend/dist/server.js', 'frontend/dist/index.html']]
+])
+const REQUIRED_GO_PROJECTS_BY_MODE = new Map([
+  ['hybrid', REQUIRED_GO_PROJECTS],
+  ['go', REQUIRED_GO_PROJECTS],
+  ['node', []]
+])
+
+export function resolveDeployMode(value) {
+  const mode = value === undefined || value === null || value === '' ? 'hybrid' : value
+  if (!DEPLOY_MODES.has(mode)) {
+    throw new ReleasePackageValidationError(
+      `Unknown deploy mode: ${mode} (expected go, hybrid, node, or omitted for hybrid)`
+    )
+  }
+  return mode
+}
+
 export class ReleasePackageValidationError extends Error {
   constructor(message) {
     super(message)
@@ -108,18 +134,19 @@ export async function validateReleasePackagePaths(paths, options = {}) {
   }
 
   const linksOnly = options.linksOnly === true
+  const deployMode = resolveDeployMode(options.deployMode)
 
   for (const inputPath of paths) {
     const absolutePath = path.resolve(inputPath)
     await visitPath(absolutePath, '', linksOnly)
     if (!linksOnly) {
-      await validateRequiredReleaseFiles(absolutePath)
+      await validateRequiredReleaseFiles(absolutePath, deployMode)
     }
   }
 }
 
-async function validateRequiredReleaseFiles(releaseRoot) {
-  for (const relativePath of REQUIRED_RELEASE_FILES) {
+async function validateRequiredReleaseFiles(releaseRoot, deployMode) {
+  for (const relativePath of REQUIRED_RELEASE_FILES_BY_MODE.get(deployMode)) {
     const absolutePath = path.join(releaseRoot, ...relativePath.split('/'))
     let stats
     try {
@@ -131,7 +158,7 @@ async function validateRequiredReleaseFiles(releaseRoot) {
       fail(relativePath, 'required release entry must be a regular file')
     }
   }
-  for (const project of REQUIRED_GO_PROJECTS) {
+  for (const project of REQUIRED_GO_PROJECTS_BY_MODE.get(deployMode)) {
     const candidates = [
       `backend-go/juhe-ai-${project}`,
       `backend-go/juhe-ai-${project}.exe`
@@ -157,6 +184,7 @@ async function main() {
   const args = process.argv.slice(2)
   let linksOnly = false
   let quiet = false
+  let deployMode = 'hybrid'
   const inputPaths = []
 
   for (const arg of args) {
@@ -170,6 +198,11 @@ async function main() {
       continue
     }
 
+    if (arg.startsWith('--deploy-mode=')) {
+      deployMode = resolveDeployMode(arg.slice('--deploy-mode='.length))
+      continue
+    }
+
     if (arg.startsWith('--')) {
       throw new ReleasePackageValidationError(`Unknown option: ${arg}`)
     }
@@ -177,11 +210,11 @@ async function main() {
     inputPaths.push(arg)
   }
 
-  await validateReleasePackagePaths(inputPaths, { linksOnly })
+  await validateReleasePackagePaths(inputPaths, { linksOnly, deployMode })
 
   if (!quiet) {
     const mode = linksOnly ? 'link safety' : 'release content'
-    process.stdout.write(`Validated ${mode}: ${inputPaths.length} path(s)\n`)
+    process.stdout.write(`Validated ${mode} (deploy mode: ${deployMode}): ${inputPaths.length} path(s)\n`)
   }
 }
 

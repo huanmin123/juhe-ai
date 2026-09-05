@@ -536,11 +536,47 @@ type sessionIdentityAdapter struct {
 	services *sessionIdentityServices
 }
 
+// chainIdentityRequest adapts the gateway request onto the G14
+// IdentityRequest surface (originalUrl / path / multi-value headers).
+type chainIdentityRequest struct {
+	req *gatewaypreauth.GatewayRequest
+}
+
+func (r chainIdentityRequest) OriginalURL() string { return r.req.PathAndQuery() }
+func (r chainIdentityRequest) Path() string        { return r.req.Path() }
+func (r chainIdentityRequest) HeaderValues(name string) []string {
+	return r.req.HTTP.Header.Values(name)
+}
+
+// ResolveGatewaySessionIdentity mirrors resolveGatewaySessionIdentity: the
+// G14 IdentityService collects the default header resolvers (codex /
+// claude-code session headers) and derives the conversation key; the
+// resolved session id + conversation key ride on the frozen identity. When
+// the identity services are absent the adapter keeps the Node
+// header-passthrough session id fallback.
 func (a sessionIdentityAdapter) ResolveGatewaySessionIdentity(req *gatewaypreauth.GatewayRequest, input gatewaypreauth.SessionIdentityInput) gatewaypreauth.SessionIdentity {
-	identity := gatewaypreauth.SessionIdentity{}
 	if req == nil {
-		return identity
+		return gatewaypreauth.SessionIdentity{}
 	}
+	if a.services != nil && a.services.Identity != nil {
+		identity, err := a.services.Identity.Resolve(
+			chainIdentityRequest{req: req},
+			gatewaysession.IdentityScope{
+				ClientProfile:   input.ClientProfile,
+				SystemAccountID: input.SystemAccountID,
+				APIKeyID:        input.APIKeyID,
+			},
+			gatewaysession.DefaultGatewaySessionIdentityResolvers,
+		)
+		if err == nil && identity.Status == gatewaysession.IdentityStatusResolved {
+			return gatewaypreauth.SessionIdentity{
+				SessionID:       identity.SessionID,
+				ConversationKey: identity.ConversationKey,
+			}
+		}
+		return gatewaypreauth.SessionIdentity{}
+	}
+	identity := gatewaypreauth.SessionIdentity{}
 	if sessionID := trimmedHeader(req, "x-session-id"); sessionID != "" {
 		identity.SessionID = sessionID
 	}

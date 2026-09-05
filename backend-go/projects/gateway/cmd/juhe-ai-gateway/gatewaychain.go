@@ -40,15 +40,19 @@ package main
 //
 // chat (my-chat family): the generation-wave port adapters live in
 // chain_chat.go (GenerationExecutor in-process bridge + ModelCatalog /
-// ChatAPIKeyProvider / GatewayKeyValidator / ObjectStore / TokenCount). The
-// route family itself stays unmounted until the chat-database owner and the
-// image pipeline (ImageProcessor / ImageObservations) slices land — see the
-// mount matrix in compose.go.
+// GatewayKeyValidator / ObjectStore / TokenCount), chain_chat_keys.go
+// (ChatAPIKeyProvider: the purpose='chat' key lifecycle), chain_chat_images.go
+// (ImageProcessor: x/image decode + built-in lossless VP8L WebP encode) and
+// chain_chat_observation.go (ImageObservations). The family mounts together
+// with its chat database owner in chain_chat_mount.go — the mount matrix in
+// compose.go.
 //
-// Remaining Node-owned /v1 neighbours (still on the legacy bridge, NOT
-// intercepted by the chain): the openai-compatible files / vector-stores
-// families that the Node server mounts ahead of openAIGatewayRouter. The
-// chain answers non-protocol /v1 paths with the Node 404 JSON contract.
+// G20 phase-3 additions: the openai-compatible files / vector-stores families
+// mount into the chain's non-protocol paths (chain_openaicompat.go, replacing
+// the legacy bridge for /v1/files + /v1/containers + /v1/vector_stores), the
+// in-flight quota cost estimator attaches to the pricing catalog
+// (chain_pricing.go), the hybrid Redis collaborators and the G14 session
+// identity services wire through chain_runtime.go / chain_ports.go.
 
 // gateGatewayChain is the phase-2 gate: every frozen port has an authored
 // adapter, so enabling the chain no longer fails. The flag only requires the

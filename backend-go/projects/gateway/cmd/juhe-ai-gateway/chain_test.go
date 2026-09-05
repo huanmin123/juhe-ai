@@ -63,6 +63,7 @@ func newChainFixture(t *testing.T) *chainFixture {
 	}
 	t.Cleanup(func() { _ = statsDB.Close() })
 	seedChainBusinessSchema(t, db)
+	seedChainStatsSchema(t, statsDB)
 	fixture := &chainFixture{db: db, statsDB: statsDB, systemAccount: "sys_owner", groupID: "group_main", accountID: "acc_1"}
 	secret := seedChainRuntimeRows(t, db, fixture)
 	fixture.apiKeySecret = secret
@@ -71,7 +72,7 @@ func newChainFixture(t *testing.T) *chainFixture {
 	if err != nil {
 		t.Fatalf("create sql read models: %v", err)
 	}
-	selector, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now)
+	selector, err := newChainAccountsSelectorWithStats(db, statsDB, false, "chain-test-secret", time.Now)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -132,12 +133,21 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
-			grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT,
+			resource_owner_system_account_id TEXT, grantee_system_account_id TEXT NOT NULL,
+			scope TEXT, status TEXT NOT NULL, expires_at TEXT,
 			effective_source_type TEXT, effective_source_team_id TEXT, limits_json TEXT)`,
 		`CREATE TABLE group_authorization_settings (
 			authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL,
 			enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT NOT NULL, provider_code TEXT, model TEXT NOT NULL, created_at TEXT NOT NULL)`,
+		`CREATE TABLE account_api_key_runtime_states (
+			account_id TEXT NOT NULL, key_fingerprint TEXT NOT NULL, key_index INTEGER,
+			status TEXT NOT NULL, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT,
+			updated_at TEXT)`,
+		`CREATE TABLE proxy_profiles (
+			id TEXT PRIMARY KEY, name TEXT, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL,
+			username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE account_model_mappings (
 			id TEXT PRIMARY KEY, account_id TEXT NOT NULL, provider_code TEXT,
 			source_model TEXT NOT NULL, source_endpoint_family TEXT, upstream_model TEXT NOT NULL,
@@ -154,6 +164,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL,
 			service_tier_prices TEXT, image_input_usd_per_1m REAL, image_output_usd_per_1m REAL,
 			output_usd_per_image REAL, context_window_tokens INTEGER, max_input_tokens INTEGER, max_output_tokens INTEGER,
+			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive INTEGER,
 			long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL,
 			default_reasoning_effort TEXT,
 			supports_prompt_caching INTEGER NOT NULL DEFAULT 0,
@@ -165,6 +176,22 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("seed schema: %v: %v", statement, err)
+		}
+	}
+}
+
+// seedChainStatsSchema creates the stats-side read surface the fresh
+// dispatch quality rows come from (account_quality_scores).
+func seedChainStatsSchema(t *testing.T, statsDB *sql.DB) {
+	t.Helper()
+	statements := []string{
+		`CREATE TABLE account_quality_scores (
+			account_id TEXT NOT NULL, quality_score REAL, quality_state TEXT,
+			ewma_first_token_ms REAL, last_sample_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	}
+	for _, statement := range statements {
+		if _, err := statsDB.Exec(statement); err != nil {
+			t.Fatalf("seed stats schema: %v: %v", statement, err)
 		}
 	}
 }

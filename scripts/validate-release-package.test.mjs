@@ -80,6 +80,42 @@ try {
   await writeFile(path.join(linksOnlyFixture, 'data', 'allowed-during-source-scan.txt'), 'ok')
   await validateReleasePackagePaths([linksOnlyFixture], { linksOnly: true })
 
+  // Deploy-mode branches: go-only packages carry no backend/dist but must
+  // carry all three Go binaries; node rollback packages skip the Go binaries.
+  const goFixture = await resetFixture()
+  await mkdir(path.join(goFixture, 'backend-go'), { recursive: true })
+  await mkdir(path.join(goFixture, 'frontend', 'dist'), { recursive: true })
+  await writeFile(path.join(goFixture, 'start.sh'), '#!/usr/bin/env bash\n')
+  await writeFile(path.join(goFixture, 'start.ps1'), 'exit 0\n')
+  await writeFile(path.join(goFixture, 'frontend', 'dist', 'index.html'), '<!doctype html>\n')
+  for (const project of ['jobs', 'gateway', 'maintenance']) {
+    await writeFile(path.join(goFixture, 'backend-go', `juhe-ai-${project}`), 'binary\n')
+  }
+  await validateReleasePackagePaths([goFixture], { deployMode: 'go' })
+  await assert.rejects(
+    validateReleasePackagePaths([goFixture], { deployMode: 'hybrid' }),
+    /backend\/dist\/server\.js.*required release file is missing/u
+  )
+  await rm(path.join(goFixture, 'backend-go', 'juhe-ai-jobs'))
+  await assert.rejects(
+    validateReleasePackagePaths([goFixture], { deployMode: 'go' }),
+    /backend-go\/juhe-ai-jobs.*required Go project release binary is missing/u
+  )
+
+  const nodeFixture = await resetFixture()
+  await mkdir(path.join(nodeFixture, 'backend', 'dist'), { recursive: true })
+  await mkdir(path.join(nodeFixture, 'frontend', 'dist'), { recursive: true })
+  await writeFile(path.join(nodeFixture, 'start.sh'), '#!/usr/bin/env bash\n')
+  await writeFile(path.join(nodeFixture, 'start.ps1'), 'exit 0\n')
+  await writeFile(path.join(nodeFixture, 'backend', 'dist', 'server.js'), 'export {}\n')
+  await writeFile(path.join(nodeFixture, 'frontend', 'dist', 'index.html'), '<!doctype html>\n')
+  await validateReleasePackagePaths([nodeFixture], { deployMode: 'node' })
+
+  await assert.rejects(
+    validateReleasePackagePaths([goFixture], { deployMode: 'bogus' }),
+    /Unknown deploy mode: bogus/u
+  )
+
   const linkFixture = await resetFixture()
   const linkTarget = path.join(tempRoot, 'link-target')
   await mkdir(linkTarget, { recursive: true })

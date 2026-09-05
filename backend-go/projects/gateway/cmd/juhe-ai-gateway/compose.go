@@ -78,13 +78,15 @@ import (
 //   - /__aisys__/api/audit-logs, /runtime-logs, /public-api-logs: the
 //     logreads.ReadsDeps needs the F1 runtime-log dataset reader (jobs module
 //     owner; cross-module import is forbidden by the three-project baseline).
-//   - /__aisys__/api/my-chat: the chat route package is mounted only together
-//     with its generation-wave ports (Executor/ModelCatalog/ChatKeys/
-//     GatewayKeys/ObjectStore/ImageProcessor/ImageObservations/Compactions/
-//     TokenCount) which dispatch into the internal gateway chain.
+//   - /__aisys__/api/my-chat: mounted with the chain (G20 phase-3,
+//     composeChatFamily): the chat database owner + the generation-wave ports
+//     (Executor/ModelCatalog/ChatKeys/GatewayKeys/ObjectStore/ImageProcessor/
+//     ImageObservations/Compactions/TokenCount) dispatch into the internal
+//     gateway chain.
 //   - /__aipublic__ external-integrations legacy family: no Go package yet.
 //   - /v1 + gateway protocol paths + openai-compatible files/vector-stores:
-//     gated behind JUHE_AI_GATEWAY_CHAIN_ENABLED, see gatewaychain.go.
+//     gated behind JUHE_AI_GATEWAY_CHAIN_ENABLED, see gatewaychain.go (the
+//     compat families mount into the chain's non-protocol paths).
 const (
 	systemAPIPrefix = "/__aisys__/api"
 	publicAPIPrefix = "/__aipublic__"
@@ -112,6 +114,18 @@ type composition struct {
 	// handle (juhe_stats.* qualification) and closes nothing here.
 	statsDB    *sql.DB
 	ownStatsDB bool
+	// chatDB backs the my-chat family (chat_* tables in the dedicated chat
+	// database / juhe_chat schema). Same dual-mode ownership as statsDB.
+	chatDB    *sql.DB
+	ownChatDB bool
+
+	// kernel + authDeps are retained so later families (my-chat) can mount
+	// with the session middleware.
+	kernel   *kernel.Kernel
+	authDeps *authsys.Deps
+	// chainServices retains the concrete chain runtime services (the chat
+	// family reads the runtime cache through them).
+	chainServices *chainRuntimeServices
 
 	producer           *operationlog.Producer
 	operationStore     operationlog.Store
@@ -132,6 +146,9 @@ func (c *composition) Shutdown() {
 	}
 	if c.ownStatsDB && c.statsDB != nil {
 		_ = c.statsDB.Close()
+	}
+	if c.ownChatDB && c.chatDB != nil {
+		_ = c.chatDB.Close()
 	}
 	if c.ownDB && c.db != nil {
 		_ = c.db.Close()
@@ -419,6 +436,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	systemAccountStore.SetSecretSealer(apikeySecretSealer{secret: cfg.Secret})
 	systemAccountStore.SetDefaultResourceEnsurer(authsys.NewSQLDefaultResources(systemAccountStore, apikeySecretSealer{secret: cfg.Secret}))
 	authDeps := authsys.NewDeps(businessAuth, systemAccountStore, captchaService, loginGuard, time.Now, businessSettings)
+	composed.authDeps = authDeps
 	authDeps.Sink = sink
 	authDeps.TemporaryAccessIPAllowlist = cfg.TemporaryAccessIPAllowlist
 	authDeps.CaptchaDisabled = cfg.CaptchaDisabled
@@ -442,6 +460,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		TrustProxyCount: trustProxyCount(cfg.TrustProxy),
 		IPRateLimit:     limiter.IPRateLimitMiddleware,
 	})
+	composed.kernel = kern
 
 	// Management route families.
 	authDeps.MountAuth(kern, cfg.CookieSameSite, cfg.CookieSecure)
@@ -491,8 +510,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// services (chain_runtime.go) plus the composition adapters
 	// (chain_*.go), then mounts the /v1 orchestrator ahead of the legacy
 	// bridge. Every frozen port fails fast by name; nothing is wired nil.
-	// The chat generation-wave port adapters (chain_chat.go) stay unmounted
-	// with the my-chat family until its remaining slices land.
 	if cfg.ChainEnabled {
 		spoolDirectory := cfg.UsageSpoolDirectory
 		if spoolDirectory == "" && cfg.StatsDatabasePath != "" {
@@ -521,6 +538,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			Avoidance:       chainServices.Avoidance,
 			Affinity:        chainServices.Affinity,
 			Recoverable:     chainServices.Recoverable,
+			// G20 phase-3: hybrid Redis collaborators + the G14 session
+			// identity services (both degrade by driver axes, never nil).
+			HybridScoringCache: chainServices.HybridScoringCache,
+			HybridRuntimeState: chainServices.HybridRuntimeState,
+			Identity:           chainServices.Identity,
 		})
 		if chainAssembleErr != nil {
 			chainServices.Close()
@@ -528,19 +550,35 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		composed.shutdowns = append(composed.shutdowns, chainShutdown)
 		composed.chain = chain
-		// The /v1 subtree serves the gateway protocol paths; non-protocol
-		// paths answer the Node 404 JSON inside the chain (the
-		// openai-compatible files / vector-stores families stay on the
-		// legacy bridge until their flip, see gatewaychain.go).
+		composed.chainServices = chainServices
+		// The /v1 subtree serves the gateway protocol paths; the
+		// openai-compatible files / vector-stores families mount into the
+		// chain's non-protocol paths (chain_openaicompat.go); everything else
+		// answers the Node 404 JSON inside the chain.
 		kern.Register("/v1", chain)
 		kern.Register("/v1/", chain)
+		if chainErr := mountChainOpenAICompatFamilies(composed, chain, cfg, chainServices); chainErr != nil {
+			return nil, fmt.Errorf("mount openai-compatible families: %w", chainErr)
+		}
+		// G20 phase-3 my-chat family: the chat database owner + the
+		// generation-wave ports mount together (the family dispatches into
+		// the in-process chain).
+		chatDB, ownChatDB, chatOpenErr := openChatDatabase(cfg, postgresPools, composed.db, composed.pgDialect)
+		if chatOpenErr != nil {
+			return nil, chatOpenErr
+		}
+		composed.chatDB = chatDB
+		composed.ownChatDB = ownChatDB
+		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain); chatErr != nil {
+			return nil, fmt.Errorf("compose my-chat family: %w", chatErr)
+		}
 		// cacheDriver==='redis': the system-api limiter switches onto the
 		// shared fixed-window redis store (task item 9); memory driver keeps
 		// the in-process store built above.
 		if chainServices.RateLimitStore != nil {
 			limiter.Store = chainServices.RateLimitStore
 		}
-		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditDispatch", cfg.AuditInputURL != "")
+		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditDispatch", cfg.AuditInputURL != "", "chatFamily", "mounted")
 	}
 
 	// /__aisys__/api/health: readiness contract; the rate limiter bypasses it

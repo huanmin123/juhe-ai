@@ -46,6 +46,13 @@ type runtimeConfig struct {
 
 	OpenAICompatibleFilesRoot string
 
+	// Chat mount config (Node runtimeConfig.chat + chatAssetsRoot).
+	ChatAssetsRoot              string
+	ChatMaxTurnsPerConversation int64
+	ChatRetentionDays           int
+	ChatDiagnosticToolEnabled   bool
+	ChatToolEnvironment         string
+
 	Host string
 	Port int
 
@@ -219,6 +226,36 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	}
 
 	cfg.OpenAICompatibleFilesRoot = strings.TrimSpace(getenv("JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT"))
+
+	// Chat mount config (Node runtimeConfig.chat + chatAssetsRoot).
+	cfg.ChatAssetsRoot = strings.TrimSpace(getenv("JUHE_AI_CHAT_ASSETS_ROOT"))
+	if cfg.ChatAssetsRoot == "" {
+		cfg.ChatAssetsRoot = "data/chat-assets"
+	}
+	cfg.ChatMaxTurnsPerConversation = 50
+	if raw := strings.TrimSpace(getenv("JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION")); raw != "" {
+		maxTurns, err := strconv.Atoi(raw)
+		if err != nil || maxTurns < 1 || maxTurns > 1000 {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION 必须在 1 到 1000 之间: %q", raw)
+		}
+		cfg.ChatMaxTurnsPerConversation = int64(maxTurns)
+	}
+	cfg.ChatRetentionDays = 3
+	if raw := strings.TrimSpace(getenv("JUHE_AI_CHAT_RETENTION_DAYS")); raw != "" {
+		retentionDays, err := strconv.Atoi(raw)
+		if err != nil || retentionDays < 1 || retentionDays > 365 {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CHAT_RETENTION_DAYS 必须在 1 到 365 之间: %q", raw)
+		}
+		cfg.ChatRetentionDays = retentionDays
+	}
+	cfg.ChatDiagnosticToolEnabled = envBoolTrue(getenv("JUHE_AI_CHAT_DIAGNOSTIC_TOOL_ENABLED"))
+	cfg.ChatToolEnvironment = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_NODE_ENV")))
+	if cfg.ChatToolEnvironment == "" {
+		cfg.ChatToolEnvironment = "development"
+	}
+	if cfg.ChatToolEnvironment != "production" && cfg.ChatToolEnvironment != "test" && cfg.ChatToolEnvironment != "development" {
+		return runtimeConfig{}, fmt.Errorf("JUHE_AI_NODE_ENV 必须是 production、test 或 development: %q", cfg.ChatToolEnvironment)
+	}
 
 	cfg.Host = strings.TrimSpace(getenv("JUHE_AI_HOST"))
 	if cfg.Host == "" {

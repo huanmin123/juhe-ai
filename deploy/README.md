@@ -10,6 +10,16 @@
 | macOS | `bash ./start.sh` |
 | Linux | `bash ./start.sh` |
 
+### 部署模式（JUHE_AI_DEPLOY_MODE）
+
+启动脚本支持 `JUHE_AI_DEPLOY_MODE` 三模式开关（环境变量或 `backend/.env`，缺省 `hybrid`）：
+
+- `hybrid`（默认）：现行拓扑，Node Web/API + Go gateway（F3/F4）+ Go jobs（F1/F2），行为与历史版本一致。
+- `go`：只启动 Go 三二进制；gateway 以 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true` 绑定 `JUHE_AI_HOST:JUHE_AI_PORT` 成为主入口，不再要求 Node/pnpm/`backend/dist`。可选预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 启动前执行幂等的 `juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径或 PostgreSQL `--dsn`），`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。go 模式下 `JUHE_AI_OWNER_LOCK_ENABLED=true` 会被拒绝（owner lock 尚无 Go server 包装）。
+- `node`：只启动 Node Web/API，不启动 Go 项目，仅作为回滚兜底入口使用。
+
+详见 `docs/migration/部署go-only双轨开关.md`（源码仓库内）。
+
 
 发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。发布包包含两个可独立部署的常驻 Go 二进制：`backend-go/juhe-ai-jobs`（Windows 为 `.exe`）承载 F1 运行日志索引与 F2 表监控，`backend-go/juhe-ai-gateway` 承载 F3 审计与 F4 操作日志；`backend-go/juhe-ai-maintenance` 只用于一次性维护命令。Go 原生 grep 仍要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
 

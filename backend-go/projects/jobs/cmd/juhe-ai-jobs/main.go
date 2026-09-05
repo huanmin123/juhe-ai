@@ -24,6 +24,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/gometricsstore"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/internalapi"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/keymodelrecovery"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckruntime"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
@@ -366,6 +367,28 @@ func main() {
 		fail(errors.New("J3b runtime is Gateway-owned; juhe-ai-jobs cannot be enabled"))
 	}
 
+	// worker 组合根（J-A~J-F 任务族）：默认关闭（JUHE_AI_JOBS_WORKER_ENABLED），
+	// 关闭时保持上方既有 F1/F2/J1/J2/J3a 行为不变；只在 owner 模式装配。
+	workerCfg, err := loadWorkerConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load jobs worker config: %w", err))
+	}
+	var worker *workerAssembly
+	if workerCfg.Enabled {
+		worker, err = buildWorkerAssembly(workerCfg, logger)
+		if err != nil {
+			fail(fmt.Errorf("assemble jobs worker: %w", err))
+		}
+	}
+	workerReady := func() bool { return true }
+	workerStatus := func() map[string]any { return nil }
+	var workerDispatch http.Handler
+	if worker != nil {
+		workerReady = worker.ready
+		workerStatus = worker.statusPayload
+		workerDispatch = worker.dispatchHandler
+	}
+
 	listener, err := listenLoopback(*healthAddress)
 	if err != nil {
 		fail(fmt.Errorf("listen jobs health endpoint %q: %w", *healthAddress, err))
@@ -533,14 +556,23 @@ func main() {
 				return proxylatency.RunnerStatus{}, true
 			}
 			return j3Runner.Snapshot()
-		}, false, j3bReady, goMetricsCollector, goMetricsSampler),
+		}, false, j3bReady, goMetricsCollector, goMetricsSampler,
+			workerCfg.Enabled, workerReady, workerStatus, workerDispatch),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", false)
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", false, "workerEnabled", workerCfg.Enabled, "workerWiredJobs", func() []string {
+		if worker == nil {
+			return nil
+		}
+		return worker.wiredJobs
+	}())
+	if worker != nil {
+		components = append(components, worker.components()...)
+	}
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
@@ -661,6 +693,12 @@ func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tabl
 	if goSampler != nil {
 		mux.Handle("/__aisys__/api/stats/go-runtime-trend", goSampler.TrendHandler())
 	}
+	// worker 侧 internalapi 派发 handler（loopback 专用，见 worker_assembly.go）。
+	if len(j3) > 11 {
+		if dispatch, ok := j3[11].(http.Handler); ok && dispatch != nil {
+			mux.Handle(internalapi.AccountTestDispatchInternalPrefix+"/", dispatch)
+		}
+	}
 	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3...)
 	mux.Handle("/health", healthHandler(ownerMode, runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
 	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
@@ -767,6 +805,9 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 	}
 	modelCheckEnabled := false
 	modelCheckReady := func() bool { return true }
+	workerEnabled := false
+	workerReady := func() bool { return true }
+	workerStatus := func() map[string]any { return nil }
 	if len(j2) > 0 {
 		if value, ok := j2[0].(bool); ok {
 			accountBalanceEnabled = value
@@ -807,6 +848,21 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 			modelCheckReady = value
 		}
 	}
+	if len(j2) > 8 {
+		if value, ok := j2[8].(bool); ok {
+			workerEnabled = value
+		}
+	}
+	if len(j2) > 9 {
+		if value, ok := j2[9].(func() bool); ok {
+			workerReady = value
+		}
+	}
+	if len(j2) > 10 {
+		if value, ok := j2[10].(func() map[string]any); ok {
+			workerStatus = value
+		}
+	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
 			http.NotFound(response, request)
@@ -819,9 +875,10 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 		proxyStatus, proxyReady := proxyLatencySnapshot()
 		proxyLatencyIsReady := !proxyLatencyEnabled || proxyReady
 		modelCheckIsReady := !modelCheckEnabled || modelCheckReady()
+		workerIsReady := !workerEnabled || workerReady()
 		response.Header().Set("Content-Type", "application/json")
-		ready := runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && modelCheckIsReady
-		_ = json.NewEncoder(response).Encode(map[string]any{
+		ready := runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && modelCheckIsReady && workerIsReady
+		payload := map[string]any{
 			"ready":                         ready,
 			"ownerReady":                    ready,
 			"ownerMode":                     ownerMode,
@@ -835,6 +892,8 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 			"proxyLatencyReady":             proxyLatencyIsReady,
 			"modelCheckEnabled":             modelCheckEnabled,
 			"modelCheckReady":               modelCheckIsReady,
+			"workerEnabled":                 workerEnabled,
+			"workerReady":                   workerIsReady,
 			"proxyLatencyOwnerHeld":         proxyStatus.OwnerHeld,
 			"proxyLatencyLastCycleAt":       proxylatencyTime(proxyStatus.LastCycleAt),
 			"proxyLatencyLastSuccessAt":     proxylatencyTime(proxyStatus.LastSuccess),
@@ -852,7 +911,11 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 			"proxyLatencyExecutionFailures": proxyStatus.ExecutionFailures,
 			"proxyLatencyReleaseFailures":   proxyStatus.ReleaseFailures,
 			"proxyLatencyPartial":           proxyStatus.Partial,
-		})
+		}
+		if status := workerStatus(); status != nil {
+			payload["worker"] = status
+		}
+		_ = json.NewEncoder(response).Encode(payload)
 	})
 }
 

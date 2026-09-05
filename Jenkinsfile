@@ -145,6 +145,31 @@ pipeline {
       }
     }
 
+    stage('构建并验证 Go 模块') {
+      when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'harbor-platform-push', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
+          sh '''#!/bin/sh
+            set -eu
+            printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" --username "$HARBOR_USERNAME" --password-stdin
+            # G20/X03 前置：发布三镜像前在受控 Go 基础镜像内完成三模块编译与
+            # 关键包（各项目 cmd）测试；镜像内不重新构建 Node/前端产物。
+            docker run --rm --network host \
+              --env CGO_ENABLED=0 --env GOFLAGS=-mod=readonly --env TZ=UTC \
+              --env HTTP_PROXY="$BUILD_HTTP_PROXY" --env HTTPS_PROXY="$BUILD_HTTP_PROXY" --env NO_PROXY="$BUILD_NO_PROXY" \
+              -v "$PWD/backend-go":/source -w /source \
+              -v juhe-ai-go-mod-cache:/go/pkg/mod \
+              -v juhe-ai-go-build-cache:/root/.cache/go-build \
+              "$GO_IMAGE" sh -c '
+                set -eu
+                go build ./...
+                go test -count=1 ./projects/gateway/cmd/... ./projects/jobs/cmd/... ./projects/maintenance/cmd/...
+              '
+          '''
+        }
+      }
+    }
+
     stage('构建并推送三镜像') {
       when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
       steps {
