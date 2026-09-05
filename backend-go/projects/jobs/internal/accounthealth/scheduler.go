@@ -846,9 +846,9 @@ func validCooldownFence(fence *CooldownFence, input Input) bool {
 }
 
 func inputEligible(input Input) bool {
-	// pending_test is the activation probe state and is intentionally allowed
-	// to carry schedulable=false until the first successful probe activates it.
-	return (input.Eligibility.Schedulable || input.Eligibility.AccountStatus == "pending_test") &&
+	// pending_test is the activation probe state and cooldown states are the
+	// recovery probe path; both may legitimately carry schedulable=false.
+	return (input.Eligibility.Schedulable || input.Eligibility.AccountStatus == "pending_test" || input.Eligibility.AccountStatus == "temporary_unavailable" || input.Eligibility.AccountStatus == "rate_limited") &&
 		input.Eligibility.BoundGroup &&
 		input.Eligibility.AuthorizationEligible
 }

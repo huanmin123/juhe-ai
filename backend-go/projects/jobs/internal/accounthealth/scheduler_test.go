@@ -1052,6 +1052,16 @@ func TestPendingTestInputEligibleBeforeActivation(t *testing.T) {
 	}
 }
 
+func TestCooldownInputEligibleWhenLegacySchedulableBitIsFalse(t *testing.T) {
+	for _, status := range []string{"temporary_unavailable", "rate_limited"} {
+		input := testInput("https://api.example.com", "chat_json")
+		input.Eligibility = Eligibility{AccountStatus: status, Schedulable: false, BoundGroup: true, AuthorizationEligible: true}
+		if !inputEligible(input) {
+			t.Fatalf("%s cooldown input must remain probeable when legacy schedulable=false", status)
+		}
+	}
+}
+
 func TestPendingTestTimeoutCarriesFrozenTerminalError(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")

@@ -285,6 +285,9 @@ func TestDirectInputRequiredRelationsStayOutsideJobsSchema(t *testing.T) {
 }
 
 func TestDirectInputCandidatesIncludeResponsesSSE(t *testing.T) {
+	if !strings.Contains(directInputCandidatesSQL, "a.status IN ('pending_test', 'temporary_unavailable', 'rate_limited') OR a.schedulable = 1") {
+		t.Fatal("due cooldown accounts must remain probeable even when a legacy schedulable bit is false")
+	}
 	if !strings.Contains(directInputCandidatesSQL, "'responses_sse'") {
 		t.Fatal("PG direct input 候选查询必须包含 responses_sse")
 	}

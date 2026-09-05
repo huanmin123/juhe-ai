@@ -404,7 +404,10 @@ WHERE a.deleted_at IS NULL
   AND (a.provider_protocol_profile_id <> 'profile_hybrid_openai_chat_v1' OR mapping.upstream_model IS NOT NULL)
   AND a.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
-  AND (a.status = 'pending_test' OR a.schedulable = 1)
+  -- Cooldown recovery is the path that restores a temporarily unavailable
+  -- account. Legacy rows can retain schedulable=0, so do not let that stale
+  -- scheduling bit permanently hide an otherwise due recovery candidate.
+  AND (a.status IN ('pending_test', 'temporary_unavailable', 'rate_limited') OR a.schedulable = 1)
   AND (a.account_expires_at IS NULL OR a.account_expires_at > $1)
   AND (a.cooldown_until IS NULL OR a.cooldown_until <= $1)
   AND binding.group_id IS NOT NULL
