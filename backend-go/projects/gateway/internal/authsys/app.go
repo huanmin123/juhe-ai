@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
 // OperationLogChange mirrors OperationLogChange (operation-log-types.ts).
@@ -80,7 +80,9 @@ func (d *Deps) recordOperationLog(r *http.Request, entry OperationLogEntry) {
 // NewDeps wires the auth slice collaborators. Profile needs the canonical
 // system-settings reader to preserve its Node response contract. The reader
 // is appended as an optional argument to keep existing callers compatible.
-func NewDeps(port businessauth.Port, accounts *AccountStore, captcha *modelcheckauth.CaptchaService, guard *modelcheckauth.LoginGuard, now func() time.Time, settings ...SystemSettingReader) *Deps {
+// The captcha and login-guard parameters accept both the process-local memory
+// drivers and the shared Redis runtime-state drivers.
+func NewDeps(port businessauth.Port, accounts *AccountStore, captcha CaptchaIssuer, guard LoginGuardDriver, now func() time.Time, settings ...SystemSettingReader) *Deps {
 	var systemSettings SystemSettingReader
 	if len(settings) > 0 {
 		systemSettings = settings[0]
@@ -166,6 +168,13 @@ func (d *Deps) createAccount(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "系统账户参数无效")
 		return
 	}
+	// createSchema description: z.string().trim().max(200).nullable().optional()
+	// (system-accounts.routes.ts:34); the trimmed value flows downstream.
+	description, ok := normalizeDescriptionInput(body.Description)
+	if !ok {
+		kernel.WriteBadRequest(w, "系统账户参数无效")
+		return
+	}
 	role := ""
 	if len(body.Role) > 0 {
 		if string(body.Role) == "null" || json.Unmarshal(body.Role, &role) != nil || (role != "admin" && role != "user") {
@@ -174,7 +183,7 @@ func (d *Deps) createAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	item, err := d.Accounts.Create(r.Context(), CreateInput{
-		Username: *body.Username, DisplayName: *body.DisplayName, Description: body.Description,
+		Username: *body.Username, DisplayName: *body.DisplayName, Description: description,
 		Password: *body.Password, Role: role, Status: valueOr(body.Status, ""),
 		MustChangePassword: body.MustChangePassword, ImageGenerationEnabled: body.ImageGenerationEnabled,
 		AIAccountLimit: body.AIAccountLimit, RequestLimits: body.RequestLimits,
@@ -183,9 +192,11 @@ func (d *Deps) createAccount(w http.ResponseWriter, r *http.Request) {
 		writeAccountError(w, err, "创建系统账户失败")
 		return
 	}
-	auth := AuthContextFrom(r)
+	// Node runLoggedOperationAsync logs the operation under the TARGET account
+	// scope with the admin_managed_my_resource viewer
+	// (system-accounts.routes.ts:114-131).
 	d.recordOperationLog(r, OperationLogEntry{
-		OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "admin",
+		OperationScopeSystemAccountID: item.ID, Mode: "admin",
 		Module: "system_accounts", Action: "create", OperationKey: "system_accounts.create",
 		ResourceType: "system_account", ResourceID: item.ID, ResourceName: item.DisplayName,
 		Summary: "创建系统账户：" + item.DisplayName,
@@ -243,14 +254,45 @@ func (d *Deps) patchAccount(w http.ResponseWriter, r *http.Request) {
 	if input.Password != nil {
 		action, operationKey = "reset_password", "system_accounts.reset_password"
 	}
+	// Node runLoggedOperationAsync logs the management patch under the TARGET
+	// account scope with the admin_managed_my_resource viewer
+	// (system-accounts.routes.ts:172-190).
 	d.recordOperationLog(r, OperationLogEntry{
-		OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "admin",
+		OperationScopeSystemAccountID: id, Mode: "admin",
 		Module: "system_accounts", Action: action, OperationKey: operationKey,
 		ResourceType: "system_account", ResourceID: id, ResourceName: resourceName,
 		Summary: summaryFor(action, resourceName),
 		Changes: buildChanges(before, input, result),
+		Viewers: []OperationLogViewer{{SystemAccountID: id, Reason: "admin_managed_my_resource"}},
 	})
 	kernel.WriteOK(w, result, "")
+}
+
+// maxDescriptionLen mirrors the zod max(200) of the create/update schemas
+// (UTF-16 code units).
+const maxDescriptionLen = 200
+
+// utf16Length counts UTF-16 code units, the length unit of zod min/max.
+func utf16Length(value string) int {
+	return len(utf16.Encode([]rune(value)))
+}
+
+// normalizeDescriptionInput applies the Node createSchema description chain
+// z.string().trim().max(200).nullable().optional(): null/absent stays nil,
+// the trimmed value flows downstream, and more than 200 UTF-16 code units is
+// a schema violation ("系统账户参数无效", 400).
+func normalizeDescriptionInput(value *string) (*string, bool) {
+	if value == nil {
+		return nil, true
+	}
+	trimmed := strings.TrimSpace(*value)
+	if utf16Length(trimmed) > maxDescriptionLen {
+		return nil, false
+	}
+	if trimmed == "" {
+		return nil, true
+	}
+	return &trimmed, true
 }
 
 func writeAccountError(w http.ResponseWriter, err error, fallback string) {
@@ -394,7 +436,12 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 		if value == nil {
 			input.Description = nil
 		} else if text, isString := value.(string); isString {
+			// updateSchema description: z.string().trim().max(200)
+			// (system-accounts.routes.ts:47).
 			trimmed := strings.TrimSpace(text)
+			if utf16Length(trimmed) > maxDescriptionLen {
+				return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
+			}
 			input.Description = &trimmed
 		} else {
 			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
@@ -404,6 +451,11 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 	if value, exists := body["password"]; exists {
 		text, isString := value.(string)
 		if !isString {
+			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
+		}
+		// updateSchema password: z.string().min(4)
+		// (system-accounts.routes.ts:48).
+		if utf16Length(text) < 4 {
 			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
 		}
 		input.Password = &text

@@ -32,6 +32,17 @@
 //   - the external integration source token creation/update (random token +
 //     encryptJson); the token-free source row seeding is ported.
 //   - repairBuiltInProviderProfileAccountTypes IS ported (pure read-merge-update).
+//
+// BUG-0167/0168 follow-up (2026-09-04): the omitted pieces above ARE ported
+// now — SeedPostgresDefaults in pg_seed.go is the complete seedPostgresDefaults
+// port (bulk upsert + guarded stale disable over the generated pricing
+// snapshot in model_catalog_data.go, default route strategies / default API
+// keys / admin chat API key with the Node crypto envelopes, and the external
+// integration source token). EnsurePostgresSeeds stays unchanged as the
+// portable subset for the existing golden test; new callers must use
+// SeedPostgresDefaults. The catalog snapshot is data-driven: the header's
+// "105 models" reflected the dump date — the 2026-09-04 Node dump yields 106
+// rows (see model_catalog_data.go).
 
 package schema
 

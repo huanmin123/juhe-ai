@@ -12,16 +12,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 )
 
 // composeTestConfig builds the sqlite-mode composition config over a temp
 // directory: the business owner gates are proven programmatically (the same
-// values the operator must provide through JUHE_AI_BUSINESS_* envs).
+// values the operator must provide through JUHE_AI_BUSINESS_* envs) and the
+// six-database storage preflight paths point at isolated temp files.
 func composeTestConfig(t *testing.T) runtimeConfig {
 	t.Helper()
 	root := t.TempDir()
+	// The codex context shard directory must exist before the preflight
+	// opens state-*.sqlite3 inside it.
+	if err := os.MkdirAll(filepath.Join(root, "codex-context"), 0o755); err != nil {
+		t.Fatalf("create codex context shard root: %v", err)
+	}
 	return runtimeConfig{
 		RuntimeMode:                 "standalone",
 		DatabaseDriver:              "sqlite",
@@ -31,6 +38,11 @@ func composeTestConfig(t *testing.T) runtimeConfig {
 		Secret:                      "compose-test-secret",
 		BusinessDatabasePath:        filepath.Join(root, "business.sqlite3"),
 		StatsDatabasePath:           filepath.Join(root, "stats.sqlite3"),
+		ChatDatabasePath:            filepath.Join(root, "chat.sqlite3"),
+		DatasetDatabasePath:         filepath.Join(root, "dataset.sqlite3"),
+		UsageCatalogDatabasePath:    filepath.Join(root, "usage-catalog.sqlite3"),
+		CodexContextShardRoot:       filepath.Join(root, "codex-context"),
+		CodexContextShardCount:      1,
 		BusinessOwner:               "gateway",
 		BusinessHandoffConfirmed:    true,
 		BusinessNodeWriterStopped:   true,
@@ -193,6 +205,58 @@ func TestComposeSystemAPIBridgesUnflippedPrefixes(t *testing.T) {
 	}
 }
 
+// TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers proves the
+// runtime-state driver switch (BUG-0171.4): with JUHE_AI_RUNTIME_STATE_DRIVER
+// = redis and the captcha enabled, the captcha route serves challenges from
+// the shared auth_captcha state store under the Node-compatible namespace.
+func TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers(t *testing.T) {
+	cfg := composeTestConfig(t)
+	redisServer := miniredis.RunT(t)
+	cfg.RuntimeStateDriver = "redis"
+	cfg.RedisStateURL = "redis://" + redisServer.Addr()
+	cfg.RedisNamespace = "dev"
+	cfg.CaptchaDisabled = false
+
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), openComposeOperationStore(t))
+	if err != nil {
+		t.Fatalf("compose system api: %v", err)
+	}
+	defer composed.Shutdown()
+	seedSystemSettings(t, composed.DB)
+
+	server := httptest.NewServer(composed.Kernel)
+	defer server.Close()
+	response, err := http.Get(server.URL + "/__aisys__/api/auth/captcha")
+	if err != nil {
+		t.Fatalf("GET captcha: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("captcha status=%d", response.StatusCode)
+	}
+	var payload struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data == nil || payload.Data["required"] != true || payload.Data["captchaId"] == nil {
+		t.Fatalf("captcha payload=%#v", payload.Data)
+	}
+
+	// The challenge lives in the namespaced shared store, not in process
+	// memory: the Go key equals redisNamespacedKey(`juhe-ai:state:auth_captcha:`).
+	found := false
+	for _, key := range redisServer.Keys() {
+		if strings.HasPrefix(key, "juhe-ai:dev:state:auth_captcha:challenge:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("challenge key missing in shared store; keys=%v", redisServer.Keys())
+	}
+}
+
 // seedSystemSettings mirrors the Node system_settings seed (schema-defaults.ts
 // DEFAULT_SYSTEM_SETTINGS): the composition reads global settings through the
 // settings store, so a smoke environment needs the seeded rows to serve the
@@ -276,18 +340,14 @@ func seedSystemSettings(t *testing.T, db *sql.DB) {
 	}
 }
 
-func TestGateGatewayChainFailsFastWithMissingAdapters(t *testing.T) {
+func TestGateGatewayChainPassesAfterPhase2(t *testing.T) {
+	// Phase 2 authored every frozen-port adapter (see gatewaychain.go), so
+	// both gate states pass and the composition assembles for real.
 	if err := gateGatewayChain(false); err != nil {
 		t.Fatalf("disabled chain must pass: %v", err)
 	}
-	err := gateGatewayChain(true)
-	if err == nil {
-		t.Fatal("enabled chain must fail while composition adapters are missing")
-	}
-	for _, adapter := range chainMissingAdapters {
-		if !strings.Contains(err.Error(), adapter) {
-			t.Fatalf("missing adapter not listed: %s", adapter)
-		}
+	if err := gateGatewayChain(true); err != nil {
+		t.Fatalf("enabled chain must pass after the phase-2 adapters landed: %v", err)
 	}
 }
 

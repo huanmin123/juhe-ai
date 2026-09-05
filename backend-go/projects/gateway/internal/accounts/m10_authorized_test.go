@@ -343,3 +343,157 @@ func TestMyAccountsTeamMembersSeeOnlyOwnInstances(t *testing.T) {
 		t.Fatalf("member B instance must survive member A's revoke: %v", listItems(t, listed))
 	}
 }
+
+// TestMyAccountsAuthorizedInstanceSourceProjection pins the T7 fix: the
+// authorized instance list projection replaces the frozen instance snapshot
+// with the source account's live values (Node
+// account-management-list.repository.ts:501-527), takes the bound group's
+// local scheduling values (:547-555), outputs the instance stamp fields
+// (:568-569) and renders canReturnAuthorization only for manual sources
+// (:747-770, resource_authorizations.effective_source_type via the :296
+// join). Owner rows keep their own semantics and never carry the stamps.
+func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
+	env, authzStore := newAuthorizedTestEnv(t)
+	ownerID := env.login(t, "owner5", "owner-pass", "user")
+	memberID := env.login(t, "member5", "member-pass", "user")
+	manualID := env.login(t, "manual5", "manual-pass", "user")
+	env.seedAccount(t, "acc-proj-src", ownerID, "投影源账户", "active")
+	env.seedTeamMember(t, "team-proj", ownerID, memberID)
+
+	// Team grant: the member's runtime row carries effective_source_type='team'
+	// (authz upsertRuntimeForUser), so canReturnAuthorization stays false.
+	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
+		ResourceType: "account", ResourceID: "acc-proj-src",
+		GranteeType: "team", GranteeID: "team-proj",
+	}, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	runtimeTeam := env.queryCell(t, `SELECT id FROM resource_authorizations
+		WHERE grantee_system_account_id = ? AND resource_id = 'acc-proj-src'`, memberID)
+	if runtimeTeam == "" {
+		t.Fatal("team runtime row missing")
+	}
+	env.seedAuthorizationInstance(t, "acc-proj-inst", memberID, runtimeTeam, "acc-proj-src")
+
+	// Bound group with local scheduling overrides on the member's binding.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-proj', ?, '成员分组', 'gpt', 1, 'personal', ?, ?)`, memberID, now, now)
+	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id,
+		local_priority, local_super_priority_enabled, local_fallback_enabled, enabled, created_at, updated_at)
+		VALUES (?, 'grp-proj', 'acc-proj-inst', ?, 42, 1, 1, 1, ?, ?)`, memberID, runtimeTeam, now, now)
+
+	// The source account drifts after provisioning: the list must reflect the
+	// live source values instead of the instance's frozen snapshot.
+	env.exec(t, `INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
+		VALUES ('prov-claude', 'claude', 'Claude', 1, ?, ?)`, now, now)
+	env.exec(t, `UPDATE accounts SET provider_code = 'claude', provider_protocol_profile_id = 'prof-claude',
+		protocol_code = 'anthropic', protocol_version = 'v2', type = 'oauth',
+		concurrency_limit = 1234, client_compatibility = 'codex_responses'
+		WHERE id = 'acc-proj-src'`)
+
+	// Member list: live source values, bound-group local scheduling, stamp
+	// fields and the team-source permission set.
+	env.login(t, "member5", "member-pass", "user")
+	code, listed := env.do(t, http.MethodGet, "/__aisys__/api/my-accounts", "")
+	if code != http.StatusOK {
+		t.Fatalf("member list: %d %v", code, listed)
+	}
+	instance := listItems(t, listed)["acc-proj-inst"]
+	if instance == nil {
+		t.Fatalf("authorized instance missing from member list: %v", listed)
+	}
+	if instance["accessType"] != "authorized" {
+		t.Fatalf("instance accessType: %v", instance["accessType"])
+	}
+	for key, want := range map[string]any{
+		"providerCode":                         "claude",
+		"providerName":                         "Claude",
+		"providerProtocolProfileId":            "prof-claude",
+		"protocolCode":                         "anthropic",
+		"protocolVersion":                      "v2",
+		"type":                                 "oauth",
+		"concurrencyLimit":                     float64(1234),
+		"clientCompatibility":                  "codex_responses",
+		"priority":                             float64(42),
+		"superPriorityEnabled":                 true,
+		"fallbackEnabled":                      true,
+		"boundGroupId":                         "grp-proj",
+		"accountAuthorizationId":               runtimeTeam,
+		"authorizationInstanceSourceAccountId": "acc-proj-src",
+	} {
+		if instance[key] != want {
+			t.Fatalf("instance %s: got %v want %v", key, instance[key], want)
+		}
+	}
+	permissions := instance["permissions"].(map[string]any)
+	if permissions["canReturnAuthorization"] != false || permissions["canUse"] != true || permissions["canLock"] != true {
+		t.Fatalf("team-source instance permissions: %v", permissions)
+	}
+
+	// Direct user grant: effective_source_type='manual' → the instance renders
+	// canReturnAuthorization=true over the same live source projection.
+	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
+		ResourceType: "account", ResourceID: "acc-proj-src",
+		GranteeType: "system_account", GranteeID: manualID,
+	}, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	runtimeManual := env.queryCell(t, `SELECT id FROM resource_authorizations
+		WHERE grantee_system_account_id = ? AND resource_id = 'acc-proj-src'`, manualID)
+	if runtimeManual == "" {
+		t.Fatal("manual runtime row missing")
+	}
+	env.seedAuthorizationInstance(t, "acc-proj-manual", manualID, runtimeManual, "acc-proj-src")
+	env.login(t, "manual5", "manual-pass", "user")
+	code, listed = env.do(t, http.MethodGet, "/__aisys__/api/my-accounts", "")
+	if code != http.StatusOK {
+		t.Fatalf("manual grantee list: %d %v", code, listed)
+	}
+	manualItem := listItems(t, listed)["acc-proj-manual"]
+	if manualItem == nil {
+		t.Fatalf("manual instance missing from grantee list: %v", listed)
+	}
+	if manualItem["accountAuthorizationId"] != runtimeManual || manualItem["authorizationInstanceSourceAccountId"] != "acc-proj-src" {
+		t.Fatalf("manual instance stamp fields: %v", manualItem)
+	}
+	if manualItem["providerCode"] != "claude" || manualItem["concurrencyLimit"] != float64(1234) {
+		t.Fatalf("manual instance live source values: %v", manualItem)
+	}
+	manualPermissions := manualItem["permissions"].(map[string]any)
+	if manualPermissions["canReturnAuthorization"] != true {
+		t.Fatalf("manual-source permissions: %v", manualPermissions)
+	}
+
+	// Owner view: the source row keeps owner semantics with its own live
+	// values, carries no stamp fields, and never sees the grantee instances.
+	env.login(t, "owner5", "owner-pass", "user")
+	code, listed = env.do(t, http.MethodGet, "/__aisys__/api/my-accounts", "")
+	if code != http.StatusOK {
+		t.Fatalf("owner list: %d %v", code, listed)
+	}
+	items := listItems(t, listed)
+	source := items["acc-proj-src"]
+	if source == nil || source["accessType"] != "owner" {
+		t.Fatalf("owner source row: %v", source)
+	}
+	if source["providerCode"] != "claude" || source["providerName"] != "Claude" || source["concurrencyLimit"] != float64(1234) {
+		t.Fatalf("owner source live values: %v", source)
+	}
+	if _, ok := source["accountAuthorizationId"]; ok {
+		t.Fatalf("owner row must not carry accountAuthorizationId: %v", source)
+	}
+	if _, ok := source["authorizationInstanceSourceAccountId"]; ok {
+		t.Fatalf("owner row must not carry authorizationInstanceSourceAccountId: %v", source)
+	}
+	ownerPermissions := source["permissions"].(map[string]any)
+	if ownerPermissions["canReturnAuthorization"] != false || ownerPermissions["canEdit"] != true {
+		t.Fatalf("owner permissions: %v", ownerPermissions)
+	}
+	if _, leaked := items["acc-proj-inst"]; leaked {
+		t.Fatalf("grantee-namespace instance must stay out of the owner list: %v", items)
+	}
+	if _, leaked := items["acc-proj-manual"]; leaked {
+		t.Fatalf("manual grantee instance must stay out of the owner list: %v", items)
+	}
+}

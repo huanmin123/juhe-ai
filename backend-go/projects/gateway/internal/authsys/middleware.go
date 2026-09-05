@@ -97,13 +97,31 @@ func AuthContextFrom(r *http.Request) *AuthContext {
 	return nil
 }
 
+// CaptchaIssuer is the captcha surface the auth routes consume
+// (Issue/Verify). *modelcheckauth.CaptchaService is the process-local memory
+// driver; SharedCaptchaService is the Redis runtime-state driver
+// (BUG-0171.4).
+type CaptchaIssuer interface {
+	Issue(clientIP string) (modelcheckauth.CaptchaIssueResult, error)
+	Verify(captchaID, code string) bool
+}
+
+// LoginGuardDriver is the login-throttle surface the auth routes consume.
+// *modelcheckauth.LoginGuard is the process-local memory driver;
+// SharedLoginGuard is the Redis runtime-state driver (BUG-0171.4).
+type LoginGuardDriver interface {
+	Check(ip, username string) (blocked bool, retryAfter int, message string)
+	Failed(ip, username string) (blocked bool, retryAfter int, message string)
+	Success(ip, username string)
+}
+
 // Deps bundles the K2 collaborators.
 type Deps struct {
 	Port       businessauth.Port
 	Accounts   *AccountStore
 	Settings   SystemSettingReader
-	Captcha    *modelcheckauth.CaptchaService
-	LoginGuard *modelcheckauth.LoginGuard
+	Captcha    CaptchaIssuer
+	LoginGuard LoginGuardDriver
 	// TemporaryAccessIPAllowlist is the parsed, exact source-IP allowlist for
 	// POST /auth/temporary-access-tokens. An empty list denies every source.
 	TemporaryAccessIPAllowlist []string

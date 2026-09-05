@@ -81,22 +81,76 @@ type AccountMutationResult struct {
 	APIKeyValidationCacheInvalidationFailed bool            `json:"apiKeyValidationCacheInvalidationFailed,omitempty"`
 }
 
+// SecretSealer is the narrow boundary for sealing generated default API-key
+// plaintexts. The injected adapter owns the Node-compatible envelope format
+// (storage/crypto.ts encryptJson({key})); the plaintext never leaves the
+// boundary sealed or logged (BUG-0170.1).
+type SecretSealer interface {
+	SealSecret(ctx context.Context, plaintext string) (string, error)
+}
+
+// DefaultResourceEnsurer runs the Node create-side default resource bootstrap
+// (groups / route strategies / default API keys / chat API key) inside the
+// account-create transaction. It is injected so production composition can
+// prove the capability is wired while legacy fixture stores keep the
+// historical account-row-only behavior (BUG-0170.1).
+type DefaultResourceEnsurer interface {
+	EnsureDefaultResources(ctx context.Context, tx *sql.Tx, accountID, nowRFC3339 string) error
+}
+
+// AccountCacheInvalidator mirrors the Node post-commit double-channel cache
+// invalidation of patchSystemAccountManagementAsync: the gateway runtime
+// cache and the gateway API-key validation cache are invalidated with the
+// same reason string; the validation channel reports failures through the
+// mutation receipt (apiKeyValidationCacheInvalidationFailed, BUG-0170.5).
+type AccountCacheInvalidator interface {
+	InvalidateRuntime(reason string)
+	InvalidateAPIKeyValidation(reason string) error
+}
+
 // AccountStore owns dual-mode system_accounts persistence beyond the session
 // primitives that modelcheckauth already provides.
 type AccountStore struct {
-	db   *sql.DB
-	mode modelcheckauth.Mode
-	now  func() time.Time
+	db          *sql.DB
+	mode        modelcheckauth.Mode
+	now         func() time.Time
+	gate        OwnerGate
+	sealer      SecretSealer
+	defaults    DefaultResourceEnsurer
+	invalidator AccountCacheInvalidator
 }
 
-func NewAccountStore(db *sql.DB, mode modelcheckauth.Mode, now func() time.Time) (*AccountStore, error) {
+// NewAccountStore constructs the store. Production composition must pass the
+// proven ownerGate; the legacy form without the variadic gate implies a ready
+// gate and exists only for out-of-package test fixtures that seed accounts.
+func NewAccountStore(db *sql.DB, mode modelcheckauth.Mode, now func() time.Time, ownerGate ...OwnerGate) (*AccountStore, error) {
 	if db == nil || (mode != modelcheckauth.SQLite && mode != modelcheckauth.Postgres) {
 		return nil, errors.New("invalid account store")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &AccountStore{db: db, mode: mode, now: now}, nil
+	gate := OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true}
+	if len(ownerGate) > 0 {
+		gate = ownerGate[0]
+	}
+	return &AccountStore{db: db, mode: mode, now: now, gate: gate}, nil
+}
+
+// SetSecretSealer wires the Node-compatible default API-key secret sealing.
+func (s *AccountStore) SetSecretSealer(sealer SecretSealer) { s.sealer = sealer }
+
+// SetDefaultResourceEnsurer wires the in-transaction default resource
+// bootstrap (Node ensure* functions). Without it Create only writes the
+// account row, which is the legacy fixture contract, never production.
+func (s *AccountStore) SetDefaultResourceEnsurer(ensurer DefaultResourceEnsurer) {
+	s.defaults = ensurer
+}
+
+// SetCacheInvalidator wires the post-commit runtime + API-key validation
+// cache invalidation channels.
+func (s *AccountStore) SetCacheInvalidator(invalidator AccountCacheInvalidator) {
+	s.invalidator = invalidator
 }
 
 func ensureCtx(ctx context.Context) context.Context {
@@ -264,6 +318,9 @@ func (s *AccountStore) findRow(ctx context.Context, where string, args ...any) (
 // expectedUpdatedAt) plus revocation of other sessions is done by the caller.
 func (s *AccountStore) UpdatePassword(ctx context.Context, id, newPassword string) (AccountSummary, error) {
 	ctx = ensureCtx(ctx)
+	if err := s.requireOwner(); err != nil {
+		return AccountSummary{}, err
+	}
 	if newPassword == "" {
 		return AccountSummary{}, &ValidationError{Message: "登录密码不能为空"}
 	}
@@ -288,6 +345,9 @@ func (s *AccountStore) UpdatePassword(ctx context.Context, id, newPassword strin
 // FindByUsername resolves an account by (case-insensitive) username.
 func (s *AccountStore) FindByUsername(ctx context.Context, username string) (AccountSummary, error) {
 	ctx = ensureCtx(ctx)
+	if err := s.requireOwner(); err != nil {
+		return AccountSummary{}, err
+	}
 	summary, _, err := s.findRow(ctx, "lower(username)=lower(?)", username)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AccountSummary{}, nil
@@ -298,6 +358,9 @@ func (s *AccountStore) FindByUsername(ctx context.Context, username string) (Acc
 // FindByID returns the summary for an account id.
 func (s *AccountStore) FindByID(ctx context.Context, id string) (AccountSummary, error) {
 	ctx = ensureCtx(ctx)
+	if err := s.requireOwner(); err != nil {
+		return AccountSummary{}, err
+	}
 	summary, _, err := s.findRow(ctx, "id = ?", id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AccountSummary{}, nil
@@ -309,6 +372,9 @@ func (s *AccountStore) FindByID(ctx context.Context, id string) (AccountSummary,
 // name, ORDER BY updated_at DESC, id DESC, pageSize+1 probe.
 func (s *AccountStore) ListPage(ctx context.Context, keyword string, page, pageSize int) (items []AccountListItem, total int64, hasMore bool, err error) {
 	ctx = ensureCtx(ctx)
+	if err := s.requireOwner(); err != nil {
+		return nil, 0, false, err
+	}
 	if page < 1 {
 		page = 1
 	}
@@ -361,6 +427,9 @@ type AccountOption struct {
 // ListOptions mirrors listSystemAccountOptionsAsync.
 func (s *AccountStore) ListOptions(ctx context.Context, ids []string, keyword string, limit int) ([]AccountOption, error) {
 	ctx = ensureCtx(ctx)
+	if err := s.requireOwner(); err != nil {
+		return nil, err
+	}
 	if limit < 1 {
 		limit = 50
 	}
@@ -497,11 +566,16 @@ func newID(prefix string) (string, error) {
 	return prefix + "_" + hex.EncodeToString(buf), nil
 }
 
-// Create mirrors createSystemAccountAsync validation and side effects
-// (default group/route strategy/api key creation remains with the group and
-// api-key slices; the account row itself is created here).
+// Create mirrors createSystemAccountWithPasswordHashInClientAsync: validation,
+// the account row, and (when a DefaultResourceEnsurer is wired, as production
+// composition always does) the four Node ensure side effects
+// (ensureDefaultBuiltInGroups / ensureDefaultRouteStrategies /
+// ensureDefaultApiKeys / ensureChatApiKey) run inside the same transaction.
 func (s *AccountStore) Create(ctx context.Context, input CreateInput) (AccountListItem, error) {
 	ctx = ensureCtx(ctx)
+	if err := s.requireOwner(); err != nil {
+		return AccountListItem{}, err
+	}
 	if input.Username == "" {
 		return AccountListItem{}, &ValidationError{Message: "用户账户不能为空"}
 	}
@@ -579,13 +653,21 @@ func (s *AccountStore) Create(ctx context.Context, input CreateInput) (AccountLi
 	if err != nil {
 		return AccountListItem{}, err
 	}
+	// normalizeNullableText (repository.ts): description is trimmed and an
+	// empty-after-trim value normalizes to SQL NULL.
+	description := normalizeNullableDescription(input.Description)
 	nowText := s.now().UTC().Format(time.RFC3339Nano)
 	mustChangeInt := boolInt(mustChange)
 	imageInt := boolInt(imageEnabled)
 	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("system_accounts")+` (id,username,display_name,description,role,status,password_hash,must_change_password,image_generation_enabled,ai_account_limit,request_limits_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`),
-		id, input.Username, input.DisplayName, input.Description, role, status, passwordHash, mustChangeInt, imageInt, input.AIAccountLimit, requestLimitsJSON, nowText, nowText)
+		id, input.Username, input.DisplayName, description, role, status, passwordHash, mustChangeInt, imageInt, input.AIAccountLimit, requestLimitsJSON, nowText, nowText)
 	if err != nil {
 		return AccountListItem{}, err
+	}
+	if s.defaults != nil {
+		if err := s.defaults.EnsureDefaultResources(ctx, tx, id, nowText); err != nil {
+			return AccountListItem{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return AccountListItem{}, err
@@ -602,6 +684,19 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+// normalizeNullableDescription mirrors normalizeNullableText
+// (system-accounts.repository.ts:1395-1404): trim, empty after trim -> nil.
+func normalizeNullableDescription(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 func marshalRequestLimits(limits *UserRequestLimits) (*string, error) {
@@ -660,11 +755,58 @@ func normalizeRFC3339(value string) (string, error) {
 	return parsed.UTC().Format(time.RFC3339Nano), nil
 }
 
+// superAdminAdvisoryLockQuery mirrors Node
+// lockActiveSuperAdminInvariantForPatchAsync
+// (system-accounts.repository.ts:1452-1462) byte for byte: the PostgreSQL
+// transaction-scoped advisory lock serializes concurrent role/status patches
+// so two simultaneous demotions of the last active super_admin cannot both
+// pass the COUNT check (BUG-0169.4). SQLite has no advisory locks but its
+// single-writer transaction (BEGIN IMMEDIATE under the pooled handle)
+// supplies the equivalent serialization.
+const (
+	superAdminAdvisoryLockQuery = "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))"
+	superAdminAdvisoryLockKey   = "juhe-ai:system-accounts:active-super-admin"
+)
+
+// superAdminInvariantLockNeeded mirrors the Node trigger condition: the patch
+// carries role or status.
+func superAdminInvariantLockNeeded(input PatchInput) bool {
+	return input.Role != nil || input.Status != nil
+}
+
+func (s *AccountStore) lockSuperAdminInvariant(ctx context.Context, tx *sql.Tx) error {
+	if s.mode != modelcheckauth.Postgres {
+		// SQLite: the single-writer transaction already serializes writers.
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, s.bind(superAdminAdvisoryLockQuery), superAdminAdvisoryLockKey)
+	return err
+}
+
+// runtimeInvalidationReason mirrors
+// systemAccountManagementRuntimeInvalidationReason (repository.ts:880-886):
+// status wins over image generation, image generation over request limits.
+func runtimeInvalidationReason(changes map[string]any) string {
+	if _, ok := changes["status"]; ok {
+		return "system_account_status_changed"
+	}
+	if _, ok := changes["image_generation_enabled"]; ok {
+		return "system_account_image_generation_changed"
+	}
+	if _, ok := changes["request_limits_json"]; ok {
+		return "system_account_request_limits_changed"
+	}
+	return ""
+}
+
 // Patch mirrors patchSystemAccountManagementAsync: FOR UPDATE lock, expected
 // updated_at comparison, only-changed-column writes, super-admin invariant,
 // forced logout on password/status changes, and the 409 conflict contract.
 func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (AccountMutationResult, error) {
 	ctx = ensureCtx(ctx)
+	if err := s.requireOwner(); err != nil {
+		return AccountMutationResult{}, err
+	}
 	expected, err := normalizeRFC3339(input.ExpectedUpdatedAt)
 	if err != nil {
 		return AccountMutationResult{}, err
@@ -674,6 +816,14 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		return AccountMutationResult{}, err
 	}
 	defer tx.Rollback()
+
+	// Serialize concurrent super-admin invariant checks before reading the
+	// row (Node takes the advisory lock before the SELECT ... FOR UPDATE).
+	if superAdminInvariantLockNeeded(input) {
+		if err := s.lockSuperAdminInvariant(ctx, tx); err != nil {
+			return AccountMutationResult{}, err
+		}
+	}
 
 	var current AccountSummary
 	var passwordHash string
@@ -785,10 +935,6 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		}
 	}
 
-	if len(changes) == 0 && !passwordChanged {
-		return mutationResult, nil
-	}
-
 	assignments := []string{"updated_at = ?"}
 	args := []any{}
 	newUpdatedAt := nowPlusOneMilli(s.now(), current.UpdatedAt)
@@ -837,6 +983,14 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 			mutationResult.AIAccountLimit = json.RawMessage(mustMarshalJSON(input.AIAccountLimit))
 		}
 	}
+	// Node evaluates every field before the no-op decision
+	// (patchSystemAccountManagementAsync: `if (!assignments.length)` after the
+	// field projections), so the gate sits after mustChangePassword /
+	// imageGenerationEnabled / aiAccountLimit detection; mustChangePassword,
+	// image and AI-account-limit-only patches are real mutations.
+	if len(changes) == 0 && !passwordChanged {
+		return mutationResult, nil
+	}
 	if value, ok := changes["ai_account_limit"]; ok {
 		setIf("ai_account_limit", value)
 	}
@@ -867,6 +1021,15 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		return AccountMutationResult{}, err
 	}
 	mutationResult.UpdatedAt = newUpdatedAt
+	// Post-commit double-channel invalidation (repository.ts:795-812): only
+	// status / image-generation / request-limits changes notify the gateway;
+	// a validation-channel failure surfaces through the mutation receipt.
+	if reason := runtimeInvalidationReason(changes); reason != "" && s.invalidator != nil {
+		s.invalidator.InvalidateRuntime(reason)
+		if err := s.invalidator.InvalidateAPIKeyValidation(reason); err != nil {
+			mutationResult.APIKeyValidationCacheInvalidationFailed = true
+		}
+	}
 	return mutationResult, nil
 }
 

@@ -27,20 +27,28 @@
 //   - Node-only conditional runtime migrations are NOT ported. They are
 //     no-ops on a database created from the DDL below (guarded by
 //     PRAGMA table_info / sqlite_master lookups) and require human review
-//     before legacy-upgrade support is added to Go:
-//       * ensureAccountHealthCheckEndpointModeSchema: full accounts table
-//         rebuild when the stored CHECK constraint lacks 'images_json'
+//     before legacy-upgrade support is added to Go. BUG-0167/0168 review
+//     verdict (2026-09-04, verified against business-schema.ts): every guard
+//     is a legacy-upgrade path that exits before writing on a fresh database,
+//     so porting stays unnecessary for the fresh dual-mode acceptance:
+//       * ensureAccountHealthCheckEndpointModeSchema (business-schema.ts):
+//         full accounts table rebuild only when the sqlite_master CHECK
+//         constraint lacks 'images_json'; the DDL below already declares
+//         images_json inside the health_check_endpoint_mode CHECK, so the
+//         guard returns before any write.
 //       * ensureSystemAccountRequestLimitsSchema,
 //         ensureSystemAccountAiAccountLimitSchema,
-//         ensureAccountTestTaskQueuedDeadlineSchema: legacy
-//         ALTER TABLE ... ADD COLUMN guards; the columns already exist in the
-//         CREATE TABLE statements
+//         ensureAccountTestTaskQueuedDeadlineSchema: ALTER TABLE guards that
+//         return early when PRAGMA table_info shows the column (or an empty
+//         table); request_limits_json / ai_account_limit / queued_deadline_at
+//         all exist in the CREATE TABLE statements below.
 //       * ensureAccountCircuitControlPlaneSchema: conditional ALTER TABLE ADD
-//         COLUMN guards (columns already exist); its unconditional
-//         CREATE UNIQUE INDEX is ported below
+//         COLUMN guards that run only when account_circuit_incidents exists
+//         without the confirmation columns (the DDL below creates them);
+//         its unconditional CREATE UNIQUE INDEX is ported below.
 //       * ensureOidcProviderSchema: conditional
 //         ALTER TABLE oauth_clients ADD COLUMN client_secret_ciphertext guard
-//         (the column already exists in the CREATE TABLE statement)
+//         (the column already exists in the CREATE TABLE statement).
 
 package schema
 

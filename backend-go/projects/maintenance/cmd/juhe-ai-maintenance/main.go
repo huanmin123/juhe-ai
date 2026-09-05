@@ -55,7 +55,20 @@ func main() {
 	j3bSQLitePath := flag.String("j3b-sqlite-path", "", "dedicated J3b SQLite path for handoff preflight (or JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH)")
 	nodeActivePathCheck := flag.Bool("scan-node-j3b-active-path", false, "read-only scan Node J3b routes, workers and writers")
 	j3cReadOnlyCheck := flag.Bool("verify-j3c-readonly-boundary", false, "read-only audit the J3b-to-J3c health reader boundary")
+	ensureSchema := flag.Bool("ensure-schema", false, "idempotently apply the six-database SQLite schema or the full PostgreSQL schema (with --driver plus --paths/--dsn)")
+	seedDefaults := flag.Bool("seed", false, "idempotently run the default seed (business SQLite or PostgreSQL; runs after --ensure-schema when both are set)")
+	bootstrapDriver := flag.String("driver", "", "storage driver for --ensure-schema/--seed: sqlite or postgres")
+	bootstrapPaths := flag.String("paths", "", "sqlite storage paths: business=...,chat=...,dataset=...,usage-catalog=...,stats=...,codex-context-shard-root=...,codex-context-shard-count=...")
+	bootstrapDSN := flag.String("dsn", "", "postgres URL for --ensure-schema/--seed")
+	seedSecret := flag.String("secret", "", "seed encryption secret (or JUHE_AI_SECRET); empty selects the Node dev default")
 	flag.Parse()
+	if *ensureSchema || *seedDefaults {
+		if *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "storage bootstrap flags are mutually exclusive with other maintenance commands")
+			os.Exit(2)
+		}
+		os.Exit(runStorageBootstrap(*ensureSchema, *seedDefaults, *bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *seedSecret))
+	}
 	if *goRuntimeMetricsCheck || *goRuntimeMetricsApply {
 		if *goRuntimeMetricsCheck && *goRuntimeMetricsApply {
 			fmt.Fprintln(os.Stderr, "Go runtime metrics check and apply flags are mutually exclusive")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -37,6 +38,11 @@ type runtimeConfig struct {
 	UsageCatalogDatabasePath string
 	StatsDatabasePath        string
 	TableMonitorDatabasePath string
+	// Codex context state shard layout (Node JUHE_AI_CODEX_CONTEXT_STATE_*,
+	// Node default 16 shards within the 1..256 bound). Consumed by the SQLite
+	// six-database startup preflight.
+	CodexContextShardRoot  string
+	CodexContextShardCount int
 
 	OpenAICompatibleFilesRoot string
 
@@ -69,6 +75,15 @@ type runtimeConfig struct {
 	// receives every prefix still Node-owned. Empty disables the bridge (the
 	// kernel then answers unmatched paths with the Node 404 JSON contract).
 	LegacyBridgeTarget string
+
+	// Chain collaborator config: the audit capture switch (Node
+	// runtimeConfig.auditLog.enabled, JUHE_AI_AUDIT_LOG_ENABLED default true),
+	// the F3 loopback audit input server base URL (derived from
+	// JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS) and the durable usage-record
+	// spool directory (JUHE_AI_USAGE_SPOOL_DIRECTORY).
+	AuditLogEnabled     bool
+	AuditInputURL       string
+	UsageSpoolDirectory string
 
 	// Business owner handoff gates for the business database this composition
 	// would own. Names mirror the J3b owner contract (modelcheckowner).
@@ -190,6 +205,15 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.UsageCatalogDatabasePath = strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH"))
 	cfg.StatsDatabasePath = strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH"))
 	cfg.TableMonitorDatabasePath = strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_DATABASE_PATH"))
+	cfg.CodexContextShardRoot = strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"))
+	cfg.CodexContextShardCount = 16
+	if raw := strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT")); raw != "" {
+		shardCount, err := strconv.Atoi(raw)
+		if err != nil || shardCount < 1 || shardCount > 256 {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 必须在 1 到 256 之间: %q", raw)
+		}
+		cfg.CodexContextShardCount = shardCount
+	}
 	if cfg.DatabaseDriver == "sqlite" && cfg.DatabasePath == "" {
 		return runtimeConfig{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_DATABASE_PATH")
 	}
@@ -244,6 +268,25 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	if cfg.ChainEnabled && !cfg.SystemAPIEnabled {
 		return runtimeConfig{}, fmt.Errorf("启用 JUHE_AI_GATEWAY_CHAIN_ENABLED 时必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED")
 	}
+
+	// Chain collaborator config (mirrors the Node runtime.ts audit + spool
+	// fields the gateway chain reads).
+	cfg.AuditLogEnabled = true
+	if raw := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_ENABLED")); raw != "" {
+		cfg.AuditLogEnabled = envBoolTrue(raw)
+	}
+	auditInputAddress := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS"))
+	if auditInputAddress != "" {
+		host, port, err := net.SplitHostPort(auditInputAddress)
+		if err != nil {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS 必须是 host:port: %q", auditInputAddress)
+		}
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		cfg.AuditInputURL = "http://" + net.JoinHostPort(host, port)
+	}
+	cfg.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
 
 	cfg.BusinessOwner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER")))
 	cfg.BusinessDatabasePath = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_DATABASE_PATH"))

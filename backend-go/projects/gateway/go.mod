@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/huanminabc/juhe-ai/backend-go-contracts v0.0.0
+	github.com/huanminabc/juhe-ai/backend-go-maintenance v0.0.0
 	github.com/huanminabc/juhe-ai/backend-go-platform v0.0.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/redis/go-redis/v9 v9.17.2
@@ -36,3 +37,10 @@ require (
 replace github.com/huanminabc/juhe-ai/backend-go-contracts => ../../shared/contracts
 
 replace github.com/huanminabc/juhe-ai/backend-go-platform => ../../shared/platform
+
+// User-approved baseline amendment (2026-09-04, X05 / BUG-0167-0168): the
+// gateway composition root runs the Node db-service startup ensure+seed for
+// the six SQLite databases through the maintenance bootstrap export surface
+// (backend-go/projects/maintenance/bootstrap). This is the documented,
+// tightly scoped exception to the no-cross-project-import baseline.
+replace github.com/huanminabc/juhe-ai/backend-go-maintenance => ../maintenance

@@ -480,7 +480,7 @@ func main() {
 			"cacheDriver", runtimeCfg.CacheDriver,
 			"runtimeStateDriver", runtimeCfg.RuntimeStateDriver,
 			"legacyBridge", runtimeCfg.LegacyBridgeTarget,
-			"chainEnabled", false,
+			"chainEnabled", runtimeCfg.ChainEnabled,
 		)
 	}
 

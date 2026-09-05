@@ -186,52 +186,54 @@ type LockStatePublic struct {
 // balanceSnapshot, apiKeyRuntime) belong to the runtime/circuit/balance
 // companion slices and stay omitted, exactly like the usage zero value.
 type ListItem struct {
-	ID                        string                `json:"id"`
-	ConfigRevision            int64                 `json:"configRevision"`
-	SystemAccountID           *string               `json:"systemAccountId,omitempty"`
-	SystemAccountName         *string               `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID      string                `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName    *string               `json:"ownerSystemAccountName,omitempty"`
-	ProviderCode              string                `json:"providerCode"`
-	ProviderName              *string               `json:"providerName,omitempty"`
-	ProviderProtocolProfileID string                `json:"providerProtocolProfileId"`
-	ProtocolCode              string                `json:"protocolCode"`
-	ProtocolVersion           string                `json:"protocolVersion"`
-	Name                      string                `json:"name"`
-	Notes                     *string               `json:"notes,omitempty"`
-	Type                      string                `json:"type"`
-	Status                    string                `json:"status"`
-	ConcurrencyLimit          int                   `json:"concurrencyLimit"`
-	Priority                  int                   `json:"priority"`
-	SuperPriorityEnabled      bool                  `json:"superPriorityEnabled"`
-	FallbackEnabled           bool                  `json:"fallbackEnabled"`
-	ClientCompatibility       string                `json:"clientCompatibility"`
-	Tags                      []TagSummary          `json:"tags"`
-	HealthCheckModel          string                `json:"healthCheckModel"`
-	HealthCheckEndpointMode   string                `json:"healthCheckEndpointMode"`
-	ProxyProfileID            *string               `json:"proxyProfileId,omitempty"`
-	ProxyProfileName          *string               `json:"proxyProfileName,omitempty"`
-	ProxyProfileType          *string               `json:"proxyProfileType,omitempty"`
-	ProxyProfileEnabled       *bool                 `json:"proxyProfileEnabled,omitempty"`
-	ProxyProfileUnavailable   *bool                 `json:"proxyProfileUnavailable,omitempty"`
-	ProxyProfileErrorMessage  *string               `json:"proxyProfileErrorMessage,omitempty"`
-	Schedulable               bool                  `json:"schedulable"`
-	AvailabilitySchedule      *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt          *string               `json:"accountExpiresAt,omitempty"`
-	CooldownUntil             *string               `json:"cooldownUntil,omitempty"`
-	LastErrorCode             *string               `json:"lastErrorCode,omitempty"`
-	LastErrorMessage          *string               `json:"lastErrorMessage,omitempty"`
-	LastErrorTraceID          *string               `json:"lastErrorTraceId,omitempty"`
-	LastUsedAt                *string               `json:"lastUsedAt,omitempty"`
-	EffectiveAvailability     EffectiveAvailability `json:"effectiveAvailability"`
-	TodayUsage                UsageSummary          `json:"todayUsage"`
-	Usage                     UsageSummary          `json:"usage"`
-	AccessType                string                `json:"accessType"`
-	BoundGroupID              *string               `json:"boundGroupId,omitempty"`
-	BoundGroupName            *string               `json:"boundGroupName,omitempty"`
-	GroupBindStatus           *string               `json:"groupBindStatus,omitempty"`
-	BindingSystemAccountID    *string               `json:"bindingSystemAccountId,omitempty"`
-	Permissions               Permissions           `json:"permissions"`
+	ID                                   string                `json:"id"`
+	ConfigRevision                       int64                 `json:"configRevision"`
+	SystemAccountID                      *string               `json:"systemAccountId,omitempty"`
+	SystemAccountName                    *string               `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID                 string                `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName               *string               `json:"ownerSystemAccountName,omitempty"`
+	ProviderCode                         string                `json:"providerCode"`
+	ProviderName                         *string               `json:"providerName,omitempty"`
+	ProviderProtocolProfileID            string                `json:"providerProtocolProfileId"`
+	ProtocolCode                         string                `json:"protocolCode"`
+	ProtocolVersion                      string                `json:"protocolVersion"`
+	Name                                 string                `json:"name"`
+	Notes                                *string               `json:"notes,omitempty"`
+	Type                                 string                `json:"type"`
+	Status                               string                `json:"status"`
+	ConcurrencyLimit                     int                   `json:"concurrencyLimit"`
+	Priority                             int                   `json:"priority"`
+	SuperPriorityEnabled                 bool                  `json:"superPriorityEnabled"`
+	FallbackEnabled                      bool                  `json:"fallbackEnabled"`
+	ClientCompatibility                  string                `json:"clientCompatibility"`
+	Tags                                 []TagSummary          `json:"tags"`
+	HealthCheckModel                     string                `json:"healthCheckModel"`
+	HealthCheckEndpointMode              string                `json:"healthCheckEndpointMode"`
+	ProxyProfileID                       *string               `json:"proxyProfileId,omitempty"`
+	ProxyProfileName                     *string               `json:"proxyProfileName,omitempty"`
+	ProxyProfileType                     *string               `json:"proxyProfileType,omitempty"`
+	ProxyProfileEnabled                  *bool                 `json:"proxyProfileEnabled,omitempty"`
+	ProxyProfileUnavailable              *bool                 `json:"proxyProfileUnavailable,omitempty"`
+	ProxyProfileErrorMessage             *string               `json:"proxyProfileErrorMessage,omitempty"`
+	Schedulable                          bool                  `json:"schedulable"`
+	AvailabilitySchedule                 *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
+	AccountExpiresAt                     *string               `json:"accountExpiresAt,omitempty"`
+	CooldownUntil                        *string               `json:"cooldownUntil,omitempty"`
+	LastErrorCode                        *string               `json:"lastErrorCode,omitempty"`
+	LastErrorMessage                     *string               `json:"lastErrorMessage,omitempty"`
+	LastErrorTraceID                     *string               `json:"lastErrorTraceId,omitempty"`
+	LastUsedAt                           *string               `json:"lastUsedAt,omitempty"`
+	EffectiveAvailability                EffectiveAvailability `json:"effectiveAvailability"`
+	TodayUsage                           UsageSummary          `json:"todayUsage"`
+	Usage                                UsageSummary          `json:"usage"`
+	AccessType                           string                `json:"accessType"`
+	AccountAuthorizationID               *string               `json:"accountAuthorizationId,omitempty"`
+	AuthorizationInstanceSourceAccountID *string               `json:"authorizationInstanceSourceAccountId,omitempty"`
+	BoundGroupID                         *string               `json:"boundGroupId,omitempty"`
+	BoundGroupName                       *string               `json:"boundGroupName,omitempty"`
+	GroupBindStatus                      *string               `json:"groupBindStatus,omitempty"`
+	BindingSystemAccountID               *string               `json:"bindingSystemAccountId,omitempty"`
+	Permissions                          Permissions           `json:"permissions"`
 	LockStatePublic
 }
 
@@ -282,6 +284,29 @@ type listRow struct {
 	bindingSystemAccountID    sql.NullString
 	boundGroupID              sql.NullString
 	boundGroupName            sql.NullString
+	// M10 authorized-instance projection columns: the runtime authorization
+	// stamp plus the source account's live values and the bound group's local
+	// scheduling overrides (Node account-management-list.repository.ts:290-322,
+	// :428-434). All nullable: owner rows and missing joins leave them NULL.
+	authorizationID                     sql.NullString
+	sourceAccountID                     sql.NullString
+	authorizationEffectiveSourceType    sql.NullString
+	sourceProviderCode                  sql.NullString
+	sourceProviderName                  sql.NullString
+	sourceProviderProtocolProfileID     sql.NullString
+	sourceProtocolCode                  sql.NullString
+	sourceProtocolVersion               sql.NullString
+	sourceAccountType                   sql.NullString
+	sourceProxyProfileID                sql.NullString
+	sourceConcurrencyLimit              sql.NullInt64
+	sourceClientCompatibility           sql.NullString
+	resolvedSourceProxyProfileID        sql.NullString
+	sourceProxyProfileName              sql.NullString
+	sourceProxyProfileType              sql.NullString
+	sourceProxyProfileEnabled           sql.NullInt64
+	boundGroupLocalPriority             sql.NullInt64
+	boundGroupLocalSuperPriorityEnabled sql.NullInt64
+	boundGroupLocalFallbackEnabled      sql.NullInt64
 }
 
 func listItemColumns(alias string) []string {
@@ -324,6 +349,30 @@ func listItemColumns(alias string) []string {
 		"group_bindings.system_account_id AS binding_system_account_id",
 		"group_bindings.group_id AS bound_group_id",
 		"bound_groups.name AS bound_group_name",
+		// M10 authorized-instance projection: the instance stamp plus the
+		// source account's live values and the bound group's local scheduling
+		// overrides (Node account-management-list.repository.ts:290-322,
+		// :428-434). Owner rows keep the frozen instance columns because every
+		// source_* column is NULL when the instance stamp is NULL.
+		alias + ".authorization_instance_authorization_id AS authorization_id",
+		alias + ".authorization_instance_source_account_id AS authorization_instance_source_account_id",
+		"authorizations.effective_source_type AS authorization_effective_source_type",
+		"source_accounts.provider_code AS source_provider_code",
+		"source_providers.name AS source_provider_name",
+		"source_accounts.provider_protocol_profile_id AS source_provider_protocol_profile_id",
+		"source_accounts.protocol_code AS source_protocol_code",
+		"source_accounts.protocol_version AS source_protocol_version",
+		"source_accounts.type AS source_type",
+		"source_accounts.proxy_profile_id AS source_proxy_profile_id",
+		"source_accounts.concurrency_limit AS source_concurrency_limit",
+		"source_accounts.client_compatibility AS source_client_compatibility",
+		"source_proxy_profiles.id AS resolved_source_proxy_profile_id",
+		"source_proxy_profiles.name AS source_proxy_profile_name",
+		"source_proxy_profiles.type AS source_proxy_profile_type",
+		"source_proxy_profiles.enabled AS source_proxy_profile_enabled",
+		"group_bindings.local_priority AS bound_group_local_priority",
+		"group_bindings.local_super_priority_enabled AS bound_group_local_super_priority_enabled",
+		"group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled",
 	}
 }
 
@@ -331,7 +380,11 @@ func listItemColumns(alias string) []string {
 // bound group name, system account names, provider display name, the proxy
 // profile display row and the stamped instance's runtime authorization row
 // (Node account-management-list.repository.ts:324-325 — both dialects share
-// the plain LEFT JOIN and the `authorizations` alias).
+// the plain LEFT JOIN and the `authorizations` alias). The source trio mirrors
+// Node :326-328 plus the COALESCE display joins :451-454 split into dedicated
+// `source_providers`/`source_proxy_profiles` aliases so owner rows keep the
+// instance-frozen display values. Every join is LEFT and keyed on a unique
+// column, so pagination's pageSize+1 probe cannot fan out.
 func (s *Store) listJoins() (cte, joins string) {
 	if s.pg {
 		joins = ` LEFT JOIN LATERAL (
@@ -370,7 +423,14 @@ func (s *Store) listJoins() (cte, joins string) {
 		LEFT JOIN ` + s.table("providers") + ` providers
 			ON providers.code = accounts.provider_code
 		LEFT JOIN ` + s.table("resource_authorizations") + ` authorizations
-			ON authorizations.id = accounts.authorization_instance_authorization_id`
+			ON authorizations.id = accounts.authorization_instance_authorization_id
+		LEFT JOIN ` + s.table("accounts") + ` source_accounts
+			ON source_accounts.id = accounts.authorization_instance_source_account_id
+			AND source_accounts.deleted_at IS NULL
+		LEFT JOIN ` + s.table("providers") + ` source_providers
+			ON source_providers.code = source_accounts.provider_code
+		LEFT JOIN ` + s.table("proxy_profiles") + ` source_proxy_profiles
+			ON source_proxy_profiles.id = source_accounts.proxy_profile_id`
 	return cte, joins
 }
 
@@ -388,6 +448,14 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.healthCheckEndpointMode, &row.proxyProfileID, &row.proxyProfileName,
 		&row.proxyProfileType, &row.proxyProfileEnabled,
 		&row.bindingSystemAccountID, &row.boundGroupID, &row.boundGroupName,
+		&row.authorizationID, &row.sourceAccountID, &row.authorizationEffectiveSourceType,
+		&row.sourceProviderCode, &row.sourceProviderName, &row.sourceProviderProtocolProfileID,
+		&row.sourceProtocolCode, &row.sourceProtocolVersion, &row.sourceAccountType,
+		&row.sourceProxyProfileID, &row.sourceConcurrencyLimit, &row.sourceClientCompatibility,
+		&row.resolvedSourceProxyProfileID, &row.sourceProxyProfileName,
+		&row.sourceProxyProfileType, &row.sourceProxyProfileEnabled,
+		&row.boundGroupLocalPriority, &row.boundGroupLocalSuperPriorityEnabled,
+		&row.boundGroupLocalFallbackEnabled,
 	)
 	return row, err
 }
@@ -610,7 +678,12 @@ func anySlice(values []string) []any {
 // newListItem mirrors accountManagementListItemFromRow plus the hydrate
 // status/schedulable/availability fields. authorized marks the M10
 // authorized-instance rows: accessType flips to 'authorized' with the
-// authorized permission set (use/lock only).
+// authorized permission set (use/lock, plus return for manual sources), and
+// the frozen instance snapshot is replaced by the source account's live
+// values and the bound group's local scheduling overrides
+// (Node account-management-list.repository.ts:501-555). The instance stamp
+// fields are row facts and surface for both access types; they stay omitted
+// on owner rows (NULL stamp, Node :568-569).
 func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) ListItem {
 	now := s.now()
 	item := ListItem{
@@ -649,8 +722,46 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) Li
 	}
 	if authorized {
 		item.AccessType = "authorized"
-		item.Permissions = authorizedPermissions()
+		item.Permissions = authorizedPermissions(nullPtrString(row.authorizationEffectiveSourceType))
+		// Node account-management-list.repository.ts:501-523: the source
+		// account's live values replace the frozen instance snapshot, each
+		// field falling back to the instance value when the source join misses.
+		if row.sourceProviderCode.Valid && row.sourceProviderCode.String != "" {
+			item.ProviderCode = row.sourceProviderCode.String
+			// Node resolves provider_name through
+			// COALESCE(source_provider_code, provider_code) (:453-454), so a
+			// missing source provider row renders without a display name.
+			item.ProviderName = nullPtrString(row.sourceProviderName)
+		}
+		if row.sourceProviderProtocolProfileID.Valid && row.sourceProviderProtocolProfileID.String != "" {
+			item.ProviderProtocolProfileID = row.sourceProviderProtocolProfileID.String
+		}
+		if row.sourceProtocolCode.Valid && row.sourceProtocolCode.String != "" {
+			item.ProtocolCode = row.sourceProtocolCode.String
+		}
+		if row.sourceProtocolVersion.Valid && row.sourceProtocolVersion.String != "" {
+			item.ProtocolVersion = row.sourceProtocolVersion.String
+		}
+		if row.sourceAccountType.Valid && row.sourceAccountType.String != "" {
+			item.Type = row.sourceAccountType.String
+		}
+		if row.sourceConcurrencyLimit.Valid {
+			item.ConcurrencyLimit = int(row.sourceConcurrencyLimit.Int64)
+		}
+		if row.sourceClientCompatibility.Valid {
+			item.ClientCompatibility = normalizeClientCompatibility(row.sourceClientCompatibility.String)
+		}
+		// Node :547-555: the bound group's local scheduling values take over —
+		// priority keeps the instance fallback while the flags render NULL as
+		// false without a fallback.
+		if row.boundGroupLocalPriority.Valid {
+			item.Priority = int(row.boundGroupLocalPriority.Int64)
+		}
+		item.SuperPriorityEnabled = row.boundGroupLocalSuperPriorityEnabled.Int64 == 1
+		item.FallbackEnabled = row.boundGroupLocalFallbackEnabled.Int64 == 1
 	}
+	item.AccountAuthorizationID = nullPtrString(row.authorizationID)
+	item.AuthorizationInstanceSourceAccountID = nullPtrString(row.sourceAccountID)
 	if access.canAccessAll() {
 		id := row.systemAccountID
 		item.SystemAccountID = &id
@@ -667,7 +778,45 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) Li
 			item.BindingSystemAccountID = &binding
 		}
 	}
-	if row.proxyProfileID.Valid && row.proxyProfileID.String != "" {
+	if authorized {
+		// Node :525-528 + :561-565: the authorized proxy id is source-only
+		// while the display row resolves through
+		// COALESCE(source_proxy_profile_id, configured_proxy_profile_id)
+		// (:451-452). With no source proxy the display row falls back to the
+		// configured profile and the id stays undefined.
+		if row.sourceProxyProfileID.Valid && row.sourceProxyProfileID.String != "" {
+			proxyID := row.sourceProxyProfileID.String
+			item.ProxyProfileID = &proxyID
+			resolved := row.resolvedSourceProxyProfileID.Valid && row.resolvedSourceProxyProfileID.String != ""
+			if resolved {
+				item.ProxyProfileName = nullPtrString(row.sourceProxyProfileName)
+				if proxyType := normalizedProxyType(row.sourceProxyProfileType); proxyType != nil {
+					item.ProxyProfileType = proxyType
+				}
+				if row.sourceProxyProfileEnabled.Valid {
+					enabled := row.sourceProxyProfileEnabled.Int64 == 1
+					item.ProxyProfileEnabled = &enabled
+				}
+			}
+			unavailable := !resolved || !row.sourceProxyProfileEnabled.Valid || row.sourceProxyProfileEnabled.Int64 != 1
+			if unavailable {
+				item.ProxyProfileUnavailable = &unavailable
+				if access.canAccessAll() {
+					message := "代理不存在或已停用，请选择一个已启用的代理"
+					item.ProxyProfileErrorMessage = &message
+				}
+			}
+		} else if row.proxyProfileID.Valid && row.proxyProfileID.String != "" {
+			item.ProxyProfileName = nullPtrString(row.proxyProfileName)
+			if proxyType := normalizedProxyType(row.proxyProfileType); proxyType != nil {
+				item.ProxyProfileType = proxyType
+			}
+			if row.proxyProfileEnabled.Valid {
+				enabled := row.proxyProfileEnabled.Int64 == 1
+				item.ProxyProfileEnabled = &enabled
+			}
+		}
+	} else if row.proxyProfileID.Valid && row.proxyProfileID.String != "" {
 		item.ProxyProfileID = &row.proxyProfileID.String
 		item.ProxyProfileName = nullPtrString(row.proxyProfileName)
 		if proxyType := normalizedProxyType(row.proxyProfileType); proxyType != nil {
