@@ -65,6 +65,14 @@
 - 证据范围：Node 历史 `backend/src/shared/http-compression.ts` 使用 `compression.filter`；锁定依赖 `compressible@2.0.18` 的实际行为为 `image/png=false`、`application/zip=false`、`application/octet-stream=false`、`text/plain=true`。Go 证据为提交 `b3115e675` 的 `compressionWriter.start` 条件分支。该结论不依赖当前未提交工作区。
 - 修复门槛：复用与 Node 对齐的 MIME 可压缩性判定（含缺失/未知类型的结果），并补充二进制、已压缩媒体、可压缩 JSON/文本及大响应 golden；在过滤结果一致前不得宣称 K1 压缩契约通过。
 
+## 已确认子项：Go 忽略 `Cache-Control: no-transform`
+
+- 对照事实：Node `compression` 在自定义 `filter` 通过后仍执行 `shouldTransform`；响应的 `Cache-Control` 含 `no-transform` 时跳过压缩，不设置 `Content-Encoding`，以遵守缓存/代理对实体不可变换的要求。
+- 历史 Go：`compressionWriter.start` 仅检查已有编码、SSE 和 attachment，没有读取 `Cache-Control`。请求接受 gzip 且正文达到阈值时，即使响应头为 `Cache-Control: no-transform`，仍会调用 `beginGzip`。
+- 可观察结果：同一大响应在 Node 保持原始正文，在 Go 被改写为 gzip。对依赖 `no-transform` 保证签名、哈希或下游媒体格式不被改变的客户端/代理，Go 会产生违反响应契约的内容编码和缓存实体。
+- 证据范围：Node 依赖 `backend/node_modules/compression/index.js` 的 `shouldTransform`（`no-transform` 分支）；Go 证据为提交 `b3115e675` 的 `compressionWriter.start`。示例头部使用规范小写指令 `Cache-Control: no-transform`，不依赖当前未提交工作区。
+- 修复门槛：在压缩决策前实现与 Node 一致的 `no-transform` 检查，并补充大小超过阈值、大小低于阈值和多指令 `Cache-Control` 的 golden；确认头部与正文均一致后再关闭该子项。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
