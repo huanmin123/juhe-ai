@@ -155,6 +155,13 @@
 - 结果偏差：刷新成功或失效失败时，Node 审计可以核对密钥轮换前后的掩码，Go 只能看到泛化状态，无法确认轮换对象；日志字段内容和追溯能力均不一致。完整密钥不会因此泄露，但审计副作用仍不等价。
 - 结论：这是 M07 `refresh_key` 日志投影相对 reveal 之外的独立确定性偏差，当前仅记录，未修改 Go 代码。
 
+### 19. API Key 排程状态同步只有库代码，未接入 Go 生产调度入口
+
+- Node 证据：历史 `32bb54673` 的 `backend/src/modules/background/background-jobs.ts` 注册 `api-key-availability-schedule-status-sync`，每 10 秒执行一次（初始延迟 1 秒，并通过 PostgreSQL scheduled lease 防重入）；任务调用 `runApiKeyAvailabilityScheduleStatusSync`，再请求 DB service 的 `sync_api_key_availability_schedule_statuses`。提交后对 `changedIds` 清理网关运行态缓存，并对无效排程记录告警。
+- Go 证据：同一历史提交新增 `backend-go/projects/jobs/internal/oauthrefresh/availability.go`，其中已有 `Store.SyncApiKeyScheduleStatuses`，并配套 `schedule_test.go`/`availability_test.go`；但 `backend-go/projects/jobs/cmd/juhe-ai-jobs/main.go` 没有导入 `backend-go-jobs/internal/oauthrefresh`，`components` 只注册 F1、F2、J1、模型恢复、J2、J3，启动日志也没有 J4 或 API Key 排程任务。以 `git grep` 检查该提交的 Go 生产代码，除 `oauthrefresh` 包自身及其测试外没有 `oauthrefresh.NewRunner`、`SyncApiKeyScheduleStatuses` 或等价调度调用。网关侧 `backend-go/projects/gateway/internal/business/account_runtime/operations.go` 还把 `sync_api_key_availability_schedule_statuses` 列在 `OutstandingManifestOperations`，注明仍需 `ScheduleEvaluator`，说明该能力没有完成 owner 接线。
+- 结果偏差：Go 包内单测通过只证明可调用的库逻辑存在，并不代表生产进程会运行它。若按该历史迁移结果由 Go 接管，API Key 到达排程边界时不会有 10 秒扫描、事件去重写回、`next_check_at` 推进、无效排程禁用或 changed ID 的网关缓存失效；数据库状态和网关实际放行结果会长期停留在旧值，而 Node 会在下一轮调度完成切换。
+- 结论：这是运行时接线缺失造成的完整功能未迁移，不是 Node/Go 排程算法的语义小差异。当前仅登记，未修改 Go 代码；修复时必须补齐唯一的 Go jobs owner、租约/周期/失败退避配置以及提交后的缓存失效端口，并用可观测的启动注册和边界回放证明任务实际运行。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
