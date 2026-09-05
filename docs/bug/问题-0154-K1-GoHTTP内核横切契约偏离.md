@@ -81,6 +81,14 @@
 - 证据范围：Node 依赖 `backend/node_modules/compression/index.js` 的 HEAD 分支；Go 证据为提交 `b3115e675` 的 `CompressionMiddleware` 与 `compressionWriter.start`，其中没有方法门禁。该结论不依赖当前未提交工作区。
 - 修复门槛：在 Go 压缩包装入口或响应头决策处实现与 Node 一致的 HEAD 短路，并补充“HEAD + 大声明长度”“HEAD + 大写入量”以及对应 GET 对照 golden。
 
+## 已确认子项：小响应和未协商响应缺少 Node 的 `Vary`
+
+- 对照事实：Node `compression` 在过滤和 `no-transform` 检查通过后、阈值判断之前调用 `vary(res, 'Accept-Encoding')`。因此可压缩但低于 1024 字节的响应，以及没有 `Accept-Encoding` 或协商最终选择 identity 的响应，仍会带 `Vary: Accept-Encoding`。
+- 历史 Go：`compressionWriter.beginGzip` 只有在实际启动 gzip 时才 `Header().Add("Vary", "Accept-Encoding")`；请求不接受 gzip 时 middleware 直接旁路，缓冲后低于阈值的响应也不添加 `Vary`。
+- 可观察结果：例如 `text/plain` 的 100 字节响应，Node 返回未压缩正文并带 `Vary: Accept-Encoding`，Go 返回同样正文但没有该头；缓存代理据此得到不同的缓存键/协商元数据，后续相同 URL 的编码复用行为会偏离。
+- 证据范围：Node 依赖 `backend/node_modules/compression/index.js` 的 `vary` 调用位于阈值和编码协商之前；Go 证据为提交 `b3115e675` 的 `beginGzip` 和 `CompressionMiddleware`。该结论不依赖当前未提交工作区。
+- 修复门槛：按 Node 的过滤/变换时序补齐 `Vary` 合并语义（包括低于阈值、无 Accept-Encoding、identity 协商），并增加响应头 golden；不得只在 gzip 已启动时补写。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
