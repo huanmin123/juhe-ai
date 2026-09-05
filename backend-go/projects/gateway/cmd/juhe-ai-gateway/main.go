@@ -95,6 +95,29 @@ func main() {
 		runPassiveGateway(*healthAddress, ownerMode, logger)
 		return
 	}
+	// G20 composition root: runtime config mirrors the Node env contract
+	// (runtime.ts); an enabled chain gate fails fast with the missing adapter
+	// list, and the system-api composition requires the proven business owner
+	// handoff before any store is opened.
+	runtimeCfg, err := loadRuntimeConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load gateway runtime config: %w", err))
+	}
+	if err := gateGatewayChain(runtimeCfg.ChainEnabled); err != nil {
+		fail(err)
+	}
+	if err := runtimeCfg.businessOwnerGate(); err != nil {
+		fail(fmt.Errorf("verify business owner gates: %w", err))
+	}
+	if runtimeCfg.SystemAPIEnabled {
+		evidenceReport, evidenceErr := modelcheckowner.VerifyConfiguredCutoverEvidence(runtimeCfg.BusinessCutoverEvidencePath, runtimeCfg.BusinessOwnerEpoch, time.Now().UTC())
+		if evidenceErr != nil {
+			fail(fmt.Errorf("read business owner cutover evidence: %w", evidenceErr))
+		}
+		if !evidenceReport.Ready {
+			fail(fmt.Errorf("verify business owner cutover evidence: %s", strings.Join(evidenceReport.Errors, "; ")))
+		}
+	}
 	// The owner contract is parsed before any gateway stores/listeners are
 	// opened. Until the J3b runtime is actually attached to this process, an
 	// enabled flag must fail closed rather than silently serving a partial owner.
@@ -367,11 +390,6 @@ func main() {
 		}
 	}
 
-	listener, err := listenLoopback(*healthAddress)
-	if err != nil {
-		fail(fmt.Errorf("listen gateway health endpoint %q: %w", *healthAddress, err))
-	}
-	defer listener.Close()
 	var auditRunning atomic.Bool
 	var operationRunning atomic.Bool
 	var j3bRunning atomic.Bool
@@ -427,6 +445,45 @@ func main() {
 			Close: operationStore.Close,
 		})
 	}
+
+	listener, err := listenLoopback(*healthAddress)
+	if err != nil {
+		fail(fmt.Errorf("listen gateway health endpoint %q: %w", *healthAddress, err))
+	}
+	defer listener.Close()
+
+	// G20 system-api composition root: opens the business-owned stores and
+	// mounts every ready route family on the kernel. The composition shares
+	// this process' lifetime; its HTTP listener binds the Node-compatible
+	// JUHE_AI_HOST:JUHE_AI_PORT entry (main HTTP entry of the flip).
+	var composed *composition
+	var mainListener net.Listener
+	var mainServer *http.Server
+	var mainServeErr chan error
+	if runtimeCfg.SystemAPIEnabled {
+		composed, err = composeSystemAPI(runtimeCfg, postgresPools, operationStore)
+		if err != nil {
+			fail(fmt.Errorf("compose gateway system api: %w", err))
+		}
+		defer composed.Shutdown()
+		mainListener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", runtimeCfg.Host, runtimeCfg.Port))
+		if err != nil {
+			fail(fmt.Errorf("listen gateway system api endpoint %s:%d: %w", runtimeCfg.Host, runtimeCfg.Port, err))
+		}
+		defer mainListener.Close()
+		mainServer = &http.Server{Handler: composed.Kernel, ReadHeaderTimeout: 30 * time.Second}
+		mainServeErr = make(chan error, 1)
+		go func() { mainServeErr <- mainServer.Serve(mainListener) }()
+		logger.Info("gateway system api composed",
+			"address", mainListener.Addr().String(),
+			"databaseDriver", runtimeCfg.DatabaseDriver,
+			"cacheDriver", runtimeCfg.CacheDriver,
+			"runtimeStateDriver", runtimeCfg.RuntimeStateDriver,
+			"legacyBridge", runtimeCfg.LegacyBridgeTarget,
+			"chainEnabled", false,
+		)
+	}
+
 	collector := gometrics.New("juhe-ai", "gateway")
 	healthHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
@@ -456,6 +513,21 @@ func main() {
 	go func() { serveErr <- healthServer.Serve(listener) }()
 	logger.Info("juhe-ai-gateway started", "healthAddress", listener.Addr().String(), "f4Enabled", operationConfig.Enabled)
 	runErr := supervisor.Run(ctx, components, logger)
+	// Graceful stop mirrors the Node order (db-service.ts shutdownDbService):
+	// stop accepting HTTP first, then drain in-process workers (composed
+	// shutdown via defer: F4 producer lease + business handle), then the
+	// supervisor-owned owners, then the shared pools (deferred).
+	if mainServer != nil {
+		mainShutdownCtx, mainShutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		mainShutdownErr := mainServer.Shutdown(mainShutdownCtx)
+		mainShutdownCancel()
+		if mainShutdownErr != nil {
+			fail(fmt.Errorf("shutdown gateway system api endpoint: %w", mainShutdownErr))
+		}
+		if mainServeResult := <-mainServeErr; mainServeResult != nil && !errors.Is(mainServeResult, http.ErrServerClosed) {
+			fail(fmt.Errorf("gateway system api endpoint stopped: %w", mainServeResult))
+		}
+	}
 	if j3bManagementServer != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = j3bManagementServer.Shutdown(shutdownCtx)

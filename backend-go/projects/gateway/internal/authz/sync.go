@@ -85,7 +85,7 @@ func (s *Store) syncUserGrantRuntime(ctx context.Context, tx *sql.Tx, grant *gra
 			return err
 		}
 		return s.refreshEffectiveSource(ctx, tx, runtimeID, actor, now, refreshOptions{})
-	}	// revoked | returned: revoke the manual sources (active or superseded) and
+	} // revoked | returned: revoke the manual sources (active or superseded) and
 	// force the terminal state (:1315-1331). Team sources are left untouched,
 	// so a runtime covered by a live team grant stays active.
 	reason := "authorization_revoked"

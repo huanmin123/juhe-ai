@@ -111,6 +111,22 @@ type Deps struct {
 	CaptchaDisabled            bool
 	DevAutoLoginUsername       string
 	Sink                       OperationLogSink
+	// AuthenticatedRateLimit mirrors app.use(systemApiPrefix,
+	// systemApiAuthenticatedRateLimit): applied right after the session is
+	// resolved (requireAuth -> user rate limit order, Node
+	// system-api-app.ts lines 155-158). It returns false after writing the
+	// 429 contract. Nil disables the user rate limit; the composition root
+	// wires the shared limiter.
+	AuthenticatedRateLimit func(w http.ResponseWriter, r *http.Request, systemAccountID string) bool
+}
+
+// rateLimitOrWrite applies the optional user rate limit once the actor is
+// known; a nil hook keeps the per-package tests self-contained.
+func (d *Deps) rateLimitOrWrite(w http.ResponseWriter, r *http.Request, systemAccountID string) bool {
+	if d.AuthenticatedRateLimit == nil {
+		return true
+	}
+	return d.AuthenticatedRateLimit(w, r, systemAccountID)
 }
 
 // RequireSession mirrors requireSessionContext: token resolution, dev auto
@@ -126,6 +142,9 @@ func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
 				return
 			case "none":
 				if auth := d.developmentAutoLogin(); auth != nil {
+					if !d.rateLimitOrWrite(w, r, auth.SystemAccountID) {
+						return
+					}
 					next.ServeHTTP(w, r.WithContext(WithAuthContext(r.Context(), auth)))
 					return
 				}
@@ -139,6 +158,9 @@ func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
 					return
 				}
 				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			if !d.rateLimitOrWrite(w, r, actor.SystemAccountID) {
 				return
 			}
 			auth := &AuthContext{

@@ -1,11 +1,13 @@
 package systemteams
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
@@ -36,6 +38,13 @@ func scopeFor(r *http.Request, auth *authsys.AuthContext, selfOnly bool) AccessS
 		filter = ""
 	}
 	return AccessScope{ViewerID: auth.SystemAccountID, IsAdmin: true, FilterID: filter}
+}
+
+// canonicalExpectedUpdatedAt mirrors the rfc3339InstantSchema('团队版本格式不正确')
+// route contract (system-teams.routes.ts:42): trim, require a Z/offset
+// instant, pass the canonical UTC form downstream (C10).
+func canonicalExpectedUpdatedAt(raw string) (string, bool) {
+	return CanonicalizeInstant(raw)
 }
 
 // Mount wires both prefixes (my-teams self scope; system-teams admin).
@@ -198,19 +207,18 @@ func (d *Deps) members(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	detail, err := d.Store.FindDetail(r.Context(), r.PathValue("id"), scopeFor(r, auth, selfOnly))
+	page := parseIntOr(r.URL.Query().Get("page"), 1)
+	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), 20)
+	result, err := d.Store.ListMembers(r.Context(), r.PathValue("id"), scopeFor(r, auth, selfOnly), page, pageSize)
 	if err != nil {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	if detail == nil {
+	if result == nil {
 		kernel.WriteError(w, http.StatusNotFound, "团队不存在")
 		return
 	}
-	kernel.WriteOK(w, map[string]any{
-		"items": detail.Members, "total": len(detail.Members),
-		"hasMore": false, "page": 1, "pageSize": len(detail.Members),
-	}, "")
+	kernel.WriteOK(w, result, "")
 }
 
 func (d *Deps) history(w http.ResponseWriter, r *http.Request, selfOnly bool) {
@@ -221,22 +229,16 @@ func (d *Deps) history(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	}
 	page := parseIntOr(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), 20)
-	entries, hasMore, err := d.Store.ListHistory(r.Context(), r.PathValue("id"), scopeFor(r, auth, selfOnly), page, pageSize)
+	result, err := d.Store.ListHistory(r.Context(), r.PathValue("id"), scopeFor(r, auth, selfOnly), page, pageSize)
 	if err != nil {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	if entries == nil {
+	if result == nil {
 		kernel.WriteError(w, http.StatusNotFound, "团队不存在")
 		return
 	}
-	total := (page-1)*pageSize + len(entries)
-	if hasMore {
-		total++
-	}
-	kernel.WriteOK(w, map[string]any{
-		"items": entries, "total": total, "hasMore": hasMore, "page": page, "pageSize": pageSize,
-	}, "")
+	kernel.WriteOK(w, result, "")
 }
 
 func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
@@ -281,6 +283,24 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 	kernel.WriteOK(w, item, "")
 }
 
+// writeMutationError surfaces Node's route-catch contract
+// (system-teams.routes.ts:334-336 etc.): the thrown error message wins — the
+// Go equivalents are ValidationError and authz.Fail — with the verbatim
+// fallback for driver-level errors.
+func writeMutationError(w http.ResponseWriter, err error, fallback string) {
+	var validation *ValidationError
+	if errorsAs(err, &validation) {
+		kernel.WriteBadRequest(w, validation.Message)
+		return
+	}
+	var fail *authz.Fail
+	if errors.As(err, &fail) {
+		kernel.WriteBadRequest(w, fail.Message)
+		return
+	}
+	kernel.WriteBadRequest(w, fallback)
+}
+
 func (d *Deps) patch(w http.ResponseWriter, r *http.Request) {
 	auth := authsys.AuthContextFrom(r)
 	if auth == nil {
@@ -288,33 +308,29 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name              *string `json:"name"`
-		Description       *string `json:"description"`
-		Status            *string `json:"status"`
-		ExpectedUpdatedAt string  `json:"expectedUpdatedAt"`
+		Name              *string    `json:"name"`
+		Description       JSONString `json:"description"`
+		Status            *string    `json:"status"`
+		ExpectedUpdatedAt string     `json:"expectedUpdatedAt"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
-		kernel.WriteBadRequest(w, "团队参数不合法")
+	expectedUpdatedAt, ok := canonicalExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if !ok {
+		kernel.WriteBadRequest(w, "团队版本格式不正确")
 		return
 	}
-	if body.Name == nil && body.Description == nil && body.Status == nil {
+	if body.Name == nil && !body.Description.Present && body.Status == nil {
 		kernel.WriteBadRequest(w, "请至少提交一个团队变更字段")
 		return
 	}
 	outcome, err := d.Store.Patch(r.Context(), r.PathValue("id"), PatchInput{
 		Name: body.Name, Description: body.Description, Status: body.Status,
-		ExpectedUpdatedAt: body.ExpectedUpdatedAt,
+		ExpectedUpdatedAt: expectedUpdatedAt,
 	}, scopeFor(r, auth, false))
 	if err != nil {
-		var validation *ValidationError
-		if errorsAs(err, &validation) {
-			kernel.WriteBadRequest(w, validation.Message)
-			return
-		}
-		kernel.WriteBadRequest(w, "更新团队失败")
+		writeMutationError(w, err, "更新团队失败")
 		return
 	}
 	switch outcome.Status {
@@ -334,7 +350,9 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request) {
 			Summary:    "更新系统团队",
 		}, r)
 	}
-	kernel.WriteOK(w, map[string]any{"status": outcome.Status}, "")
+	// Node :333 res.json(ok(outcome.result)) — {id, changedFields, rowPatch,
+	// updatedAt} (C3).
+	kernel.WriteOK(w, outcome.Result, "")
 }
 
 func (d *Deps) addMembers(w http.ResponseWriter, r *http.Request) {
@@ -350,19 +368,25 @@ func (d *Deps) addMembers(w http.ResponseWriter, r *http.Request) {
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if len(body.SystemAccountIDs) < 1 || strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
-		kernel.WriteBadRequest(w, "团队成员参数不合法")
+	// teamMembersSchema (system-teams.routes.ts:53-56): min/max batch and the
+	// version instant are schema-level 400s.
+	if len(body.SystemAccountIDs) < 1 {
+		kernel.WriteBadRequest(w, "请至少选择一个团队成员")
 		return
 	}
-	outcome, added, err := d.Store.AddMembers(r.Context(), r.PathValue("id"), body.SystemAccountIDs,
-		body.ExpectedUpdatedAt, scopeFor(r, auth, false))
+	if len(body.SystemAccountIDs) > MaxMemberBatchSize {
+		kernel.WriteBadRequest(w, "单次最多添加 20 个团队成员")
+		return
+	}
+	expectedUpdatedAt, ok := canonicalExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if !ok {
+		kernel.WriteBadRequest(w, "团队版本格式不正确")
+		return
+	}
+	outcome, err := d.Store.AddMembers(r.Context(), r.PathValue("id"), body.SystemAccountIDs,
+		expectedUpdatedAt, scopeFor(r, auth, false))
 	if err != nil {
-		var validation *ValidationError
-		if errorsAs(err, &validation) {
-			kernel.WriteBadRequest(w, validation.Message)
-			return
-		}
-		kernel.WriteBadRequest(w, "添加团队成员失败")
+		writeMutationError(w, err, "添加团队成员失败")
 		return
 	}
 	switch outcome.Status {
@@ -373,10 +397,12 @@ func (d *Deps) addMembers(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteJSON(w, http.StatusConflict, map[string]string{"message": "团队已被其他操作更新，请刷新后重试"})
 		return
 	}
-	if d.Sink != nil && outcome.Status == "updated" && added != nil {
+	if d.Sink != nil && outcome.Status == "updated" && outcome.Result != nil {
 		names := []string{}
-		for _, member := range *added {
-			names = append(names, member.DisplayName)
+		for _, member := range outcome.Result.AddedMembers {
+			if member.SystemAccountName != nil && *member.SystemAccountName != "" {
+				names = append(names, *member.SystemAccountName)
+			}
 		}
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
@@ -388,7 +414,9 @@ func (d *Deps) addMembers(w http.ResponseWriter, r *http.Request) {
 			},
 		}, r)
 	}
-	kernel.WriteOK(w, map[string]any{"id": r.PathValue("id"), "addedMembers": added, "status": outcome.Status}, "")
+	// Node :399 res.json(ok(outcome.result)) — {id, memberCount, updatedAt,
+	// addedMembers} (C3).
+	kernel.WriteOK(w, outcome.Result, "")
 }
 
 func (d *Deps) removeMember(w http.ResponseWriter, r *http.Request) {
@@ -403,14 +431,15 @@ func (d *Deps) removeMember(w http.ResponseWriter, r *http.Request) {
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if strings.TrimSpace(body.ExpectedUpdatedAt) == "" {
-		kernel.WriteBadRequest(w, "团队成员参数不合法")
+	expectedUpdatedAt, ok := canonicalExpectedUpdatedAt(body.ExpectedUpdatedAt)
+	if !ok {
+		kernel.WriteBadRequest(w, "团队版本格式不正确")
 		return
 	}
 	outcome, change, err := d.Store.RemoveMember(r.Context(), r.PathValue("id"), r.PathValue("memberId"),
-		body.ExpectedUpdatedAt, scopeFor(r, auth, false))
+		expectedUpdatedAt, scopeFor(r, auth, false))
 	if err != nil {
-		kernel.WriteBadRequest(w, "移除团队成员失败")
+		writeMutationError(w, err, "移除团队成员失败")
 		return
 	}
 	switch outcome.Status {
@@ -433,7 +462,9 @@ func (d *Deps) removeMember(w http.ResponseWriter, r *http.Request) {
 			},
 		}, r)
 	}
-	kernel.WriteOK(w, map[string]any{"id": r.PathValue("id"), "status": outcome.Status}, "")
+	// Node :465 res.json(ok(outcome.result)) — {id, memberCount, updatedAt,
+	// removedMemberId} (C3).
+	kernel.WriteOK(w, outcome.Result, "")
 }
 
 func valueOr(value *string) string {

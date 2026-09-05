@@ -1,0 +1,357 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+)
+
+// composeTestConfig builds the sqlite-mode composition config over a temp
+// directory: the business owner gates are proven programmatically (the same
+// values the operator must provide through JUHE_AI_BUSINESS_* envs).
+func composeTestConfig(t *testing.T) runtimeConfig {
+	t.Helper()
+	root := t.TempDir()
+	return runtimeConfig{
+		RuntimeMode:                 "standalone",
+		DatabaseDriver:              "sqlite",
+		CacheDriver:                 "memory",
+		RuntimeStateDriver:          "memory",
+		QueueDriver:                 "memory",
+		Secret:                      "compose-test-secret",
+		BusinessDatabasePath:        filepath.Join(root, "business.sqlite3"),
+		BusinessOwner:               "gateway",
+		BusinessHandoffConfirmed:    true,
+		BusinessNodeWriterStopped:   true,
+		BusinessSchemaReady:         true,
+		BusinessOwnerEpoch:          "epoch-compose-test",
+		BusinessCutoverEvidencePath: filepath.Join(root, "evidence.json"),
+		SystemAPIEnabled:            true,
+		CaptchaDisabled:             true,
+	}
+}
+
+func openComposeOperationStore(t *testing.T) operationlog.Store {
+	t.Helper()
+	dir := t.TempDir()
+	config := operationlog.Config{
+		Enabled:              true,
+		Mode:                 operationlog.ModeSQLite,
+		InstanceID:           "compose-test",
+		DatabasePath:         filepath.Join(dir, "operation-log.sqlite3"),
+		BusinessSettingsPath: filepath.Join(dir, "business-settings.sqlite3"),
+		OwnerLease:           30 * time.Second,
+		RetentionInterval:    time.Minute,
+		RetentionDays:        365,
+		RetentionBatchSize:   100,
+	}
+	// The F4 read-only business settings mirror requires the existing file.
+	if err := os.WriteFile(config.BusinessSettingsPath, nil, 0o644); err != nil {
+		t.Fatalf("create business settings file: %v", err)
+	}
+	store, err := operationlog.OpenStore(config)
+	if err != nil {
+		t.Fatalf("open operation log store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("ensure operation log schema: %v", err)
+	}
+	return store
+}
+
+func TestComposeSystemAPIMountsKernelContract(t *testing.T) {
+	cfg := composeTestConfig(t)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), openComposeOperationStore(t))
+	if err != nil {
+		t.Fatalf("compose system api: %v", err)
+	}
+	defer composed.Shutdown()
+	seedSystemSettings(t, composed.DB)
+
+	server := httptest.NewServer(composed.Kernel)
+	defer server.Close()
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	get := func(path string) *http.Response {
+		response, err := client.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		t.Cleanup(func() { _ = response.Body.Close() })
+		return response
+	}
+	decode := func(response *http.Response) map[string]any {
+		var payload map[string]any
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode %s body: %v", response.Request.URL.Path, err)
+		}
+		return payload
+	}
+
+	// Health endpoint: no auth, no rate limit, Node db-service shape.
+	health := get("/__aisys__/api/health")
+	if health.StatusCode != http.StatusOK {
+		t.Fatalf("health status=%d", health.StatusCode)
+	}
+	if payload := decode(health); payload["service"] != "juhe-ai-db-service" {
+		t.Fatalf("health payload=%#v", payload)
+	}
+
+	// Auth surface mounted unauthenticated (captcha disabled contract). The
+	// kernel WriteOK envelope mirrors the Node ok() helper ({data, message}).
+	captcha := get("/__aisys__/api/auth/captcha")
+	if captcha.StatusCode != http.StatusOK {
+		t.Fatalf("captcha status=%d", captcha.StatusCode)
+	}
+	captchaPayload := decode(captcha)
+	captchaData, _ := captchaPayload["data"].(map[string]any)
+	if captchaData == nil || captchaData["required"] != false {
+		t.Fatalf("captcha payload=%#v", captchaPayload)
+	}
+
+	// Protected management surface: requireAuth contract without a session.
+	for _, path := range []string{
+		"/__aisys__/api/groups",
+		"/__aisys__/api/api-keys",
+		"/__aisys__/api/accounts",
+		"/__aisys__/api/my-operation-logs",
+		"/__aisys__/api/system-teams",
+	} {
+		response := get(path)
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("GET %s status=%d want 401", path, response.StatusCode)
+		}
+		if payload := decode(response); payload["message"] != "请先登录" {
+			t.Fatalf("GET %s payload=%#v", path, payload)
+		}
+	}
+
+	// Unmatched API path keeps the Node 404 JSON contract (and the 405->404
+	// conversion happens inside the kernel).
+	response := get("/__aisys__/api/definitely-not-mounted")
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("unmatched api status=%d", response.StatusCode)
+	}
+	if payload := decode(response); payload["message"] != "资源不存在" {
+		t.Fatalf("unmatched api payload=%#v", payload)
+	}
+
+	// Shutdown must release the F4 lease so a successor can take over.
+	if !composed.operationLeaseHeld {
+		t.Fatal("composition shutdown state invalid before Shutdown")
+	}
+}
+
+func TestComposeSystemAPIBridgesUnflippedPrefixes(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"node":true,"path":"` + r.URL.Path + `"}`))
+	}))
+	defer origin.Close()
+
+	cfg := composeTestConfig(t)
+	cfg.LegacyBridgeTarget = origin.URL
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), openComposeOperationStore(t))
+	if err != nil {
+		t.Fatalf("compose system api: %v", err)
+	}
+	defer composed.Shutdown()
+	seedSystemSettings(t, composed.DB)
+	if composed.Bridge == nil {
+		t.Fatal("legacy bridge missing")
+	}
+
+	server := httptest.NewServer(composed.Kernel)
+	defer server.Close()
+	response, err := http.Get(server.URL + "/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("GET /v1: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("bridged /v1 status=%d", response.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["node"] != true || payload["path"] != "/v1/chat/completions" {
+		t.Fatalf("bridged payload=%#v", payload)
+	}
+}
+
+// seedSystemSettings mirrors the Node system_settings seed (schema-defaults.ts
+// DEFAULT_SYSTEM_SETTINGS): the composition reads global settings through the
+// settings store, so a smoke environment needs the seeded rows to serve the
+// rate-limit settings before the schema migration owner lands.
+func seedSystemSettings(t *testing.T, db *sql.DB) {
+	t.Helper()
+	defaults := map[string]any{
+		"gatewayTextRawBodyLimitMegabytes":           16,
+		"accountCircuitConfirmationFailuresRequired": 2,
+		"gatewayUserRequestLimitPerMinute":           0,
+		"gatewayUserRequestLimitPerDay":              0,
+		"gatewayUserRequestLimitPerWeek":             0,
+		"gatewayUserRequestLimitPerMonth":            0,
+		"userAiAccountLimit":                         100,
+		"systemApiRateLimitIpReadPerMinute":          600,
+		"systemApiRateLimitIpReadBurstPer10Seconds":  120,
+		"systemApiRateLimitIpWritePerMinute":         180,
+		"systemApiRateLimitIpWriteBurstPer10Seconds": 40,
+		"systemApiRateLimitUserReadPerMinute":        300,
+		"systemApiRateLimitUserWritePerMinute":       120,
+		"defaultTemporaryUnschedulableMinutes":       2,
+		"temporaryUnschedulableRetryIntervalSeconds": 3,
+		"temporaryUnschedulableRetryAttempts":        2,
+		"textFirstResponseTimeoutSeconds":            120,
+		"textStreamIdleTimeoutSeconds":               30,
+		"textUncommittedAttemptMaxLifetimeSeconds":   1800,
+		"imageFirstResponseTimeoutSeconds":           600,
+		"imageStreamIdleTimeoutSeconds":              120,
+		"imageUncommittedAttemptMaxLifetimeSeconds":  3600,
+		"imageRequestWallTimeoutSeconds":             3600,
+		"chatImageGenerationTotalTimeoutSeconds":     900,
+		"noAvailableAccountWaitTimeoutSeconds":       270,
+		"streamFailureThresholdCount":                3,
+		"streamFailureThresholdWindowMinutes":        5,
+		"operationLogRetentionDays":                  365,
+		"operationLogMaxChangesPerRecord":            100,
+		"statsAggregationIntervalSeconds":            60,
+		"statsAggregationBatchSize":                  2000,
+		"statsAggregationMaxBatchesPerRun":           5,
+		"usageHotWindowRefreshIntervalSeconds":       600,
+		"groupAccountStatsRefreshIntervalSeconds":    60,
+		"systemMetricsSampleIntervalSeconds":         30,
+		"tableMonitorMaxTablesPerRun":                4,
+		"accountQualityRefreshIntervalSeconds":       600,
+		"accountQualityWindowMinutes":                10,
+		"accountHealthCheckIntervalHours":            1,
+		"accountHealthCheckJitterMinutes":            10,
+		"accountHealthCheckFailureThreshold":         3,
+		"cooldownAccountRetestIntervalSeconds":       3,
+		"cooldownAccountRetestMaxBackoffHours":       12,
+		"oauthAccessTokenRefreshIntervalSeconds":     60,
+		"oauthAccessTokenRefreshLeadSeconds":         300,
+		"oauthAccessTokenRefreshBatchSize":           20,
+		"oauthAccessTokenRefreshRetryBackoffSeconds": 300,
+		"modelCheckRetentionDays":                    30,
+		"runtimeLogIndexRetentionDays":               14,
+		"publicApiLogRetentionDays":                  30,
+		"usageRecordRetentionDays":                   30,
+		"usageStatsTimezone":                         "UTC",
+		"usageStatsMinuteRetentionHours":             48,
+		"usageStatsHourlyRetentionDays":              60,
+		"usageStatsDailyRetentionDays":               400,
+		"usageStatsWeeklyRetentionWeeks":             104,
+		"usageStatsMonthlyRetentionMonths":           24,
+		"usageRankSnapshotRetentionDays":             30,
+		"systemMetricsRetentionDays":                 7,
+		"systemMetricsHourlyRetentionDays":           30,
+	}
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create system_settings: %v", err)
+	}
+	for key, value := range defaults {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", key, err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`, key, string(encoded), "2026-09-04T00:00:00Z"); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+}
+
+func TestGateGatewayChainFailsFastWithMissingAdapters(t *testing.T) {
+	if err := gateGatewayChain(false); err != nil {
+		t.Fatalf("disabled chain must pass: %v", err)
+	}
+	err := gateGatewayChain(true)
+	if err == nil {
+		t.Fatal("enabled chain must fail while composition adapters are missing")
+	}
+	for _, adapter := range chainMissingAdapters {
+		if !strings.Contains(err.Error(), adapter) {
+			t.Fatalf("missing adapter not listed: %s", adapter)
+		}
+	}
+}
+
+func TestLoadRuntimeConfigDriverTriState(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "juhe-ai.sqlite3")
+
+	// Standalone defaults (no hints): sqlite + memory drivers, but sqlite
+	// mode requires the explicit database path (no CWD-relative default).
+	if _, err := loadRuntimeConfig(func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_DATABASE_PATH") {
+		t.Fatalf("sqlite without database path must fail, got %v", err)
+	}
+	cfg, err := loadRuntimeConfig(func(key string) string {
+		if key == "JUHE_AI_DATABASE_PATH" {
+			return databasePath
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("standalone defaults: %v", err)
+	}
+	if cfg.RuntimeMode != "standalone" || cfg.DatabaseDriver != "sqlite" || cfg.CacheDriver != "memory" || cfg.RuntimeStateDriver != "memory" || cfg.QueueDriver != "memory" {
+		t.Fatalf("standalone defaults wrong: %#v", cfg)
+	}
+
+	// Performance hints flip every driver default; a redis driver without its
+	// URL must fail fast like the Node runtime.ts validation.
+	performance := map[string]string{
+		"JUHE_AI_DATABASE_PATH":   databasePath,
+		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
+		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+		"JUHE_AI_REDIS_QUEUE_URL": "redis://127.0.0.1:6379/2",
+		"JUHE_AI_DATABASE_DRIVER": "sqlite",
+	}
+	cfg, err = loadRuntimeConfig(func(key string) string { return performance[key] })
+	if err != nil {
+		t.Fatalf("performance hints: %v", err)
+	}
+	if cfg.RuntimeMode != "performance" || cfg.CacheDriver != "redis" || cfg.RuntimeStateDriver != "redis" || cfg.QueueDriver != "redis_stream" {
+		t.Fatalf("performance defaults wrong: %#v", cfg)
+	}
+	performance["JUHE_AI_RUNTIME_STATE_DRIVER"] = "redis"
+	delete(performance, "JUHE_AI_REDIS_STATE_URL")
+	if _, err := loadRuntimeConfig(func(key string) string { return performance[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL") {
+		t.Fatalf("redis state driver without URL must fail, got %v", err)
+	}
+
+	// none-cookie requires secure; OIDC requires issuer + secret.
+	cookieEnv := map[string]string{"JUHE_AI_DATABASE_PATH": databasePath, "JUHE_AI_COOKIE_SAME_SITE": "none"}
+	if _, err := loadRuntimeConfig(func(key string) string { return cookieEnv[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_COOKIE_SECURE") {
+		t.Fatalf("none cookie without secure must fail, got %v", err)
+	}
+	oidcEnv := map[string]string{"JUHE_AI_DATABASE_PATH": databasePath, "JUHE_AI_OIDC_ENABLED": "true"}
+	if _, err := loadRuntimeConfig(func(key string) string { return oidcEnv[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_OIDC_ISSUER") {
+		t.Fatalf("oidc without issuer must fail, got %v", err)
+	}
+}
+
+func TestBusinessOwnerGateFailsClosed(t *testing.T) {
+	cfg := composeTestConfig(t)
+	if err := cfg.businessOwnerGate(); err != nil {
+		t.Fatalf("proven gates must pass: %v", err)
+	}
+	cfg.BusinessNodeWriterStopped = false
+	if err := cfg.businessOwnerGate(); err == nil {
+		t.Fatal("unstopped Node writer must fail closed")
+	}
+}

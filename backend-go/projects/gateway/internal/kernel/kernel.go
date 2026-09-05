@@ -23,6 +23,10 @@ type Options struct {
 	JSONBodyLimitBytes  int64  // default 256 KiB (systemApiJsonBodyLimit)
 	TrustProxyCount     int    // X-Forwarded-For entries to trust
 	Readiness           func() (status int, payload any)
+	// IPRateLimit mirrors app.use(systemApiPrefix, systemApiIpRateLimit):
+	// applied to system API paths between the body limit and the no-store
+	// middleware. Nil disables the IP rate limit.
+	IPRateLimit func(http.Handler) http.Handler
 }
 
 func (o *Options) fill() {
@@ -105,7 +109,11 @@ func (k *Kernel) rootHandler() http.Handler {
 		}
 	})
 	limited := bodyLimitMiddleware(k.opts.SystemAPIPrefix, k.opts.JSONBodyLimitBytes)(k.mux)
-	noStore := prefixMiddleware(k.opts.SystemAPIPrefix, noStoreMiddleware)(limited)
+	rateLimited := limited
+	if k.opts.IPRateLimit != nil {
+		rateLimited = prefixMiddleware(k.opts.SystemAPIPrefix, k.opts.IPRateLimit)(limited)
+	}
+	noStore := prefixMiddleware(k.opts.SystemAPIPrefix, noStoreMiddleware)(rateLimited)
 	compressed := noStore
 	if !k.opts.CompressionDisabled {
 		compressed = CompressionMiddleware(noStore)

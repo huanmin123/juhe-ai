@@ -160,6 +160,27 @@ type Limiter struct {
 	Store     Store
 }
 
+// IPRateLimitMiddleware mirrors app.use(systemApiPrefix, systemApiIpRateLimit)
+// for the composition root: the per-IP minute+burst buckets with the health
+// path bypass and the exact 429 contract.
+func (l *Limiter) IPRateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if l.ipRateLimit(w, r) {
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+// AuthenticatedRateLimit mirrors systemApiAuthenticatedRateLimit for one
+// already-authenticated system account (requireAuth -> user rate limit order).
+// It returns false after writing the 429 contract.
+func (l *Limiter) AuthenticatedRateLimit(w http.ResponseWriter, r *http.Request, systemAccountID string) bool {
+	if r.URL.Path == "/health" || strings.HasSuffix(r.URL.Path, "/__aisys__/api/health") {
+		return true
+	}
+	return l.authenticatedRateLimit(w, r, systemAccountID)
+}
+
 func (l *Limiter) ipRateLimit(w http.ResponseWriter, r *http.Request) bool {
 	if r.URL.Path == "/health" || strings.HasSuffix(r.URL.Path, "/__aisys__/api/health") {
 		return true

@@ -585,7 +585,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		return
 	case "conflict":
 		kernel.WriteJSON(w, http.StatusConflict, map[string]any{
-			"message": "授权配置已被其他操作更新，请刷新后重试",
+			"message":          "授权配置已被其他操作更新，请刷新后重试",
 			"currentUpdatedAt": outcome.CurrentUpdatedAt,
 		})
 		return
