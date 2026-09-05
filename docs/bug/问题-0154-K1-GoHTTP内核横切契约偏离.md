@@ -137,6 +137,14 @@
 - 证据范围：Node 历史 `backend/src/modules/system-api/system-api-app.ts` 第 129 行及 `handleJsonBodyError` 链；Go 证据为提交 `b3115e675` 的 `kernel.go` body limit 与 `dedupe.go` 第 255–289 行。该结论不依赖当前未提交工作区。
 - 修复门槛：在任何 claim 前识别并收口 `MaxBytesError` 为 Node 同样的 413，保证 body 未成功读取时不执行 fingerprint/claim；补充刚好等于上限、超过 1 字节和重复发送的状态/缓存 golden。
 
+## 已确认子项：Go `DecodeJSON` 接受 Node 会跳过的非 JSON media type
+
+- 对照事实：Node `express.json()`/`body-parser` 默认 `type` 为 `application/json`，只对匹配的 JSON media type（含 `application/*+json`）读取并解析；`Content-Type: text/plain`、`application/octet-stream` 等请求会跳过 parser，路由随后看到未解析的 body 并按参数缺失返回 400。
+- 历史 Go：`DecodeJSON` 直接 `io.ReadAll` 后 `json.Unmarshal`，没有检查 `Content-Type` 或 media type；只要正文是合法 JSON，即使请求声明 `text/plain` 也会填充 target 并继续业务处理。
+- 可观察结果：对创建/更新端点发送合法 JSON 但 `Content-Type: text/plain` 时，Node 不解析并返回参数校验 400，Go 解析后可能成功写入或返回业务成功；客户端错误输入因此从拒绝变成接受，响应状态和持久化副作用均发生偏离。
+- 证据范围：Node 历史 `backend/src/modules/system-api/system-api-app.ts` 的 `express.json` 挂载及 `body-parser@1.20.5` `json.js` 的默认 type-check；Go 证据为提交 `b3115e675` 的 `DecodeJSON`（第 127–150 行）未读取 Content-Type。该结论不依赖当前未提交工作区。
+- 修复门槛：在解析前按 Node 的 media type 匹配规则决定是否解析，并补充 `application/json`、`application/problem+json`、`text/plain`、缺失 Content-Type 与合法/非法 JSON 的状态及副作用 golden。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
