@@ -19,13 +19,14 @@ var registerDirectInputRowsLifecycleDriver sync.Once
 
 type directInputRowsLifecycleDriver struct{}
 
-func (directInputRowsLifecycleDriver) Open(string) (driver.Conn, error) {
-	return &directInputRowsLifecycleConn{}, nil
+func (directInputRowsLifecycleDriver) Open(name string) (driver.Conn, error) {
+	return &directInputRowsLifecycleConn{mode: name}, nil
 }
 
 type directInputRowsLifecycleConn struct {
 	mu                sync.Mutex
 	candidateRowsOpen bool
+	mode              string
 }
 
 func (*directInputRowsLifecycleConn) Prepare(string) (driver.Stmt, error) {
@@ -46,7 +47,7 @@ func (conn *directInputRowsLifecycleConn) ExecContext(context.Context, string, [
 	return directInputRowsLifecycleResult{}, nil
 }
 
-func (conn *directInputRowsLifecycleConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+func (conn *directInputRowsLifecycleConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if conn.candidateRowsOpen {
@@ -54,7 +55,30 @@ func (conn *directInputRowsLifecycleConn) QueryContext(_ context.Context, query 
 	}
 	if strings.Contains(query, "FROM juhe_business.accounts a") {
 		conn.candidateRowsOpen = true
-		return &directInputRowsLifecycleRows{conn: conn, candidate: true, columns: directInputLifecycleCandidateColumns(), values: [][]driver.Value{directInputLifecycleCandidateValues()}}, nil
+		values := [][]driver.Value{directInputLifecycleCandidateValues()}
+		if conn.mode == "malformed" {
+			offset := int64(0)
+			if len(args) >= 5 {
+				offset, _ = args[4].Value.(int64)
+			}
+			switch offset {
+			case 0:
+				malformed := directInputLifecycleCandidateValues()
+				malformed[0] = "account-malformed-fence"
+				malformed[19] = "2030-08-16T11:00:00Z"
+				malformed[20] = nil
+				values = [][]driver.Value{malformed}
+			case 1:
+				values = [][]driver.Value{directInputLifecycleCandidateValues()}
+			default:
+				values = [][]driver.Value{}
+			}
+		} else if conn.mode == "scan-error" {
+			invalid := directInputLifecycleCandidateValues()
+			invalid[1] = "not-an-input-version"
+			values = [][]driver.Value{invalid}
+		}
+		return &directInputRowsLifecycleRows{conn: conn, candidate: true, columns: directInputLifecycleCandidateColumns(), values: values}, nil
 	}
 	if strings.Contains(query, "SELECT key, value_json") {
 		return &directInputRowsLifecycleRows{columns: []string{"key", "value_json"}, values: directInputLifecycleSettingsValues()}, nil
@@ -115,13 +139,17 @@ func directInputLifecycleCandidateColumns() []string {
 }
 
 func directInputLifecycleCandidateValues() []driver.Value {
+	return directInputLifecycleCandidateValuesFor("account-rows-lifecycle")
+}
+
+func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	secret := "direct-input-rows-lifecycle-secret"
 	credentials, err := EncryptV1Envelope(secret, []byte(`{"api_keys":["sk-test"],"base_url":"https://api.example.com"}`))
 	if err != nil {
 		panic(err)
 	}
 	values := make([]driver.Value, 51)
-	values[0] = "account-rows-lifecycle"
+	values[0] = accountID
 	values[1] = int64(1)
 	values[2] = int64(2)
 	values[3] = int64(3)
@@ -188,6 +216,60 @@ func TestPostgresDirectInputReaderClosesCandidateRowsBeforeQuotaQueries(t *testi
 	}
 	if len(result.Inputs) != 1 || result.Inputs[0].AccountID != "account-rows-lifecycle" {
 		t.Fatalf("unexpected direct input result: %#v", result)
+	}
+}
+
+func TestPostgresDirectInputReaderIsolatesMalformedCooldownFence(t *testing.T) {
+	registerDirectInputRowsLifecycleDriver.Do(func() {
+		sql.Register(directInputRowsLifecycleDriverName, directInputRowsLifecycleDriver{})
+	})
+	database, err := sql.Open(directInputRowsLifecycleDriverName, "malformed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	now := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	reader, err := NewPostgresDirectInputReader(database, "direct-input-rows-lifecycle-secret", time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.LoadDueWithFailures(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("malformed cooldown fence must be isolated to its candidate: %v", err)
+	}
+	if len(result.Failures) != 1 {
+		t.Fatalf("malformed candidate failures = %#v", result.Failures)
+	}
+	if got := result.Failures[0]; got.AccountID != "account-malformed-fence" || got.InputVersion != 1 || got.ConfigRevision != 2 || got.DispatchRevision != 3 {
+		t.Fatalf("malformed candidate failure fence = %#v", got)
+	}
+	if len(result.Inputs) != 1 || result.Inputs[0].AccountID != "account-rows-lifecycle" {
+		t.Fatalf("valid candidate must continue after malformed row: %#v", result.Inputs)
+	}
+}
+
+func TestPostgresDirectInputReaderKeepsScanErrorsFailClosed(t *testing.T) {
+	registerDirectInputRowsLifecycleDriver.Do(func() {
+		sql.Register(directInputRowsLifecycleDriverName, directInputRowsLifecycleDriver{})
+	})
+	database, err := sql.Open(directInputRowsLifecycleDriverName, "scan-error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	now := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
+	reader, err := NewPostgresDirectInputReader(database, "direct-input-rows-lifecycle-secret", time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.LoadDueWithFailures(context.Background(), 1)
+	if err == nil || !strings.Contains(err.Error(), "解码 PG direct input 候选失败") {
+		t.Fatalf("rows.Scan failure must fail the whole read: result=%#v err=%v", result, err)
+	}
+	if len(result.Inputs) != 0 || len(result.Failures) != 0 {
+		t.Fatalf("failed scan must not produce partial results: %#v", result)
 	}
 }
 

@@ -190,6 +190,10 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 			pageCount++
 			candidate, err := scanDirectCandidate(rows)
 			if err != nil {
+				if failure, ok := directInputFailureForCandidate(candidate); ok {
+					result.Failures = append(result.Failures, failure)
+					continue
+				}
 				rows.Close()
 				return 0, err
 			}
@@ -475,15 +479,15 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	result.account.TemporaryUnavailableContinuousProbeEnabled = continuousProbe.Valid && continuousProbe.Bool
 	var err error
 	if result.account.AccountExpiresAt, err = parseNullableDirectTime(accountExpires); err != nil {
-		return directCandidate{}, err
+		return result, err
 	}
 	if result.account.CooldownUntil, err = parseNullableDirectTime(cooldownUntil); err != nil {
-		return directCandidate{}, err
+		return result, err
 	}
 	if observationStarted.Valid || cooldownGeneration.Valid {
 		observed, err := parseRequiredDirectTime(observationStarted, "cooldown observation")
 		if err != nil || !cooldownGeneration.Valid || strings.TrimSpace(cooldownGeneration.String) == "" {
-			return directCandidate{}, fmt.Errorf("PG direct input 的 cooldown fence 无效")
+			return result, fmt.Errorf("PG direct input 的 cooldown fence 无效")
 		}
 		result.account.Cooldown = &CooldownFence{ObservationStartedAt: observed, Generation: cooldownGeneration.String}
 	}
@@ -491,7 +495,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	if authorizationID.Valid {
 		expiresAt, err := parseNullableDirectTime(authorizationExpires)
 		if err != nil {
-			return directCandidate{}, err
+			return result, err
 		}
 		result.authorization = &DirectAuthorization{ID: authorizationID.String, Status: authorizationStatus.String, ExpiresAt: expiresAt}
 		result.authorizationLimits = authorizationLimits.String
@@ -502,11 +506,11 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	if sourceID.Valid {
 		expiresAt, err := parseNullableDirectTime(sourceExpires)
 		if err != nil {
-			return directCandidate{}, err
+			return result, err
 		}
 		cooldownAt, err := parseNullableDirectTime(sourceCooldown)
 		if err != nil {
-			return directCandidate{}, err
+			return result, err
 		}
 		result.source = &DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceProvider.String, ProtocolProfileID: sourceProfile.String, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
 		if result.account.Cooldown != nil {
@@ -518,6 +522,19 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		result.proxy = &DirectProxy{ID: proxyID.String, Enabled: proxyEnabled.Bool, Type: proxyType.String, Host: proxyHost.String, Port: int(proxyPort.Int64), Username: proxyUsername.String, PasswordEncrypted: proxyPassword.String}
 	}
 	return result, nil
+}
+
+func directInputFailureForCandidate(candidate directCandidate) (DirectInputFailure, bool) {
+	failure := DirectInputFailure{
+		AccountID:        candidate.account.ID,
+		InputVersion:     candidate.inputVersion,
+		ConfigRevision:   candidate.account.ConfigRevision,
+		DispatchRevision: candidate.account.DispatchRevision,
+	}
+	if strings.TrimSpace(failure.AccountID) == "" || failure.InputVersion < 1 || failure.ConfigRevision < 1 || failure.DispatchRevision < 1 {
+		return DirectInputFailure{}, false
+	}
+	return failure, true
 }
 
 func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (Schedule, *time.Location, error) {
