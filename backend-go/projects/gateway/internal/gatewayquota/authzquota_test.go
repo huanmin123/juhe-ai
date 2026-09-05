@@ -384,3 +384,29 @@ func TestCheckAuthorizationQuotaBatchAsyncServerRoleDBService(t *testing.T) {
 		t.Fatalf("expected second db-service batch call, got %d", dbService.checkBatchCalls)
 	}
 }
+
+// TestCheckAuthorizationQuotaInvalidLimitsJSONFailsClosed pins the Node
+// fail-closed semantics of authorization-quota.service.ts
+// (authorizationQuotaCostChecksForAuthorizationRow /
+// authorizationQuotaCostChecksForTeamRow): parseRequestQuotaLimitsJson throws
+// on a malformed limits_json and the error propagates, so a parse failure must
+// return an error instead of being treated as "no limits" (allow).
+func TestCheckAuthorizationQuotaInvalidLimitsJSONFailsClosed(t *testing.T) {
+	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	ctx := context.Background()
+	seedAuthzRow(t, fixture.business, "ga-bad", "sysA", "sysB", "group", "g1", "", `{invalid`, "active")
+
+	decisions, err := fixture.service.CheckAuthorizationQuotaBatchByIDs(ctx, "ga-bad", []AccountRef{{AccountID: "u1"}}, fixture.clock.Now())
+	if err == nil {
+		t.Fatalf("invalid authorization limits_json must error, got decisions %+v", decisions)
+	}
+
+	// Team grant rows fail the same way (the authorization itself unlimited).
+	seedAuthzRow(t, fixture.business, "ga-team", "sysA", "sysB", "group", "g2", "team1", "", "active")
+	seedGrantRow(t, fixture.business, "grant-bad", "group", "g2", "team1", "sysA", `{invalid`)
+
+	decisions, err = fixture.service.CheckAuthorizationQuotaBatchByIDs(ctx, "ga-team", []AccountRef{{AccountID: "u1"}}, fixture.clock.Now())
+	if err == nil {
+		t.Fatalf("invalid team grant limits_json must error, got decisions %+v", decisions)
+	}
+}

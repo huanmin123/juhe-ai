@@ -31,13 +31,21 @@ type EngineConfig struct {
 	KeyModelForegroundQueuePollMs int64
 }
 
-// DefaultEngineConfig mirrors the Node runtime defaults.
+// DefaultEngineConfig mirrors the Node runtime defaults (config/runtime.ts):
+// the retry budget, initial delay and max delay align with
+// gateway.accountConcurrencyRetry* (runtime.ts:766-768). The attempt safety
+// limit mirrors gateway.accountApiKeyRequestAttemptSafetyLimit
+// (runtime.ts:769), whose Node default is globalConcurrencyMax
+// (JUHE_AI_CONCURRENCY_GLOBAL_MAX, default 5_000, range 1..50_000,
+// runtime.ts:410); this constant takes that default and the assembly root
+// must override it with the env-configured globalMax at wiring time (this
+// package ships no assembly, so there is no runtime impact today).
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
-		AccountConcurrencyRetryBudgetMs:        1_000,
-		AccountConcurrencyRetryInitialDelayMs:  50,
-		AccountConcurrencyRetryMaxDelayMs:      400,
-		AccountApiKeyRequestAttemptSafetyLimit: 12,
+		AccountConcurrencyRetryBudgetMs:        1_200,
+		AccountConcurrencyRetryInitialDelayMs:  120,
+		AccountConcurrencyRetryMaxDelayMs:      480,
+		AccountApiKeyRequestAttemptSafetyLimit: 5_000,
 		KeyModelForegroundQueueWaitMs:          1_200,
 		KeyModelForegroundQueuePollMs:          25,
 	}

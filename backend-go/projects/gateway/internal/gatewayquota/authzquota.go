@@ -775,10 +775,17 @@ func (s *AuthorizationQuotaService) loadCostChecksByScope(ctx context.Context, s
 		row, ok := rowsByID[scope.authorizationID]
 		checks := []authorizationQuotaCostCheck{}
 		if ok {
-			checks = authorizationQuotaCostChecksForAuthorizationRow(row, scope.scopeType, now, location)
+			checks, err = authorizationQuotaCostChecksForAuthorizationRow(row, scope.scopeType, now, location)
+			if err != nil {
+				return nil, err
+			}
 			if row.EffectiveSourceTeamID.Valid && row.EffectiveSourceTeamID.String != "" {
 				if teamRow, teamOK := teamRowsByAuthorizationID[row.ID]; teamOK {
-					checks = append(checks, authorizationQuotaCostChecksForTeamRow(teamRow, scope.scopeType, row.EffectiveSourceTeamID.String, now, location)...)
+					teamChecks, err := authorizationQuotaCostChecksForTeamRow(teamRow, scope.scopeType, row.EffectiveSourceTeamID.String, now, location)
+					if err != nil {
+						return nil, err
+					}
+					checks = append(checks, teamChecks...)
 				}
 			}
 		}
@@ -788,11 +795,16 @@ func (s *AuthorizationQuotaService) loadCostChecksByScope(ctx context.Context, s
 }
 
 // authorizationQuotaCostChecksForAuthorizationRow mirrors
-// authorizationQuotaCostChecksForAuthorizationRow(_Async).
-func authorizationQuotaCostChecksForAuthorizationRow(row AuthorizationQuotaRow, scopeType authorizationQuotaScopeType, now time.Time, location *time.Location) []authorizationQuotaCostCheck {
+// authorizationQuotaCostChecksForAuthorizationRow(_Async): a limits_json
+// parse error propagates like the Node throw (fail-closed), only a successful
+// parse without any enabled limit yields no checks.
+func authorizationQuotaCostChecksForAuthorizationRow(row AuthorizationQuotaRow, scopeType authorizationQuotaScopeType, now time.Time, location *time.Location) ([]authorizationQuotaCostCheck, error) {
 	limits, err := ParseRequestQuotaLimitsJSON(nullStringOrEmpty(row.LimitsJSON))
-	if err != nil || !HasEnabledRequestQuotaLimit(limits) {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if !HasEnabledRequestQuotaLimit(limits) {
+		return nil, nil
 	}
 	systemAccountID := authorizationQuotaStatsSystemAccountID(row, scopeType)
 	hourly, hasHourly := limitsHourly(limits)
@@ -808,20 +820,24 @@ func authorizationQuotaCostChecksForAuthorizationRow(row AuthorizationQuotaRow, 
 		cacheKey:  "authorization\x00" + systemAccountID + "\x00" + string(scopeType) + "\x00" + row.ID + "\x00" + CostKey(costInput, location) + "\x00" + nullStringOrEmpty(row.LimitsJSON),
 		limits:    limits,
 		costInput: costInput,
-	}}
+	}}, nil
 }
 
 // authorizationQuotaCostChecksForTeamRow mirrors
-// authorizationQuotaCostChecksForTeamRow(_Async).
-func authorizationQuotaCostChecksForTeamRow(row TeamAuthorizationQuotaRow, scopeType authorizationQuotaScopeType, teamID string, now time.Time, location *time.Location) []authorizationQuotaCostCheck {
+// authorizationQuotaCostChecksForTeamRow(_Async): a limits_json parse error
+// propagates like the Node throw (fail-closed).
+func authorizationQuotaCostChecksForTeamRow(row TeamAuthorizationQuotaRow, scopeType authorizationQuotaScopeType, teamID string, now time.Time, location *time.Location) ([]authorizationQuotaCostCheck, error) {
 	limits, err := ParseRequestQuotaLimitsJSON(nullStringOrEmpty(row.LimitsJSON))
-	if err != nil || !HasEnabledRequestQuotaLimit(limits) {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if !HasEnabledRequestQuotaLimit(limits) {
+		return nil, nil
 	}
 	systemAccountID := teamAuthorizationQuotaStatsSystemAccountID(row, scopeType)
 	resourceID, hasResourceID := teamAuthorizationResourceID(row, scopeType)
 	if !hasResourceID || resourceID == "" {
-		return nil
+		return nil, nil
 	}
 	scopeID := resourceID + ":" + teamID
 	hourly, hasHourly := limitsHourly(limits)
@@ -837,7 +853,7 @@ func authorizationQuotaCostChecksForTeamRow(row TeamAuthorizationQuotaRow, scope
 		cacheKey:  "team_authorization\x00" + systemAccountID + "\x00" + string(scopeType) + "\x00" + teamID + "\x00" + row.ID + "\x00" + CostKey(costInput, location) + "\x00" + nullStringOrEmpty(row.LimitsJSON),
 		limits:    limits,
 		costInput: costInput,
-	}}
+	}}, nil
 }
 
 func limitsHourly(limits RequestQuotaLimits) (int, bool) {
