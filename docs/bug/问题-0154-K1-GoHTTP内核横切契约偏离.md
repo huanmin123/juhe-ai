@@ -129,6 +129,14 @@
 - 证据范围：Node 历史 `backend/src/modules/system-api/system-api-app.ts` 的 parser 顺序、`mutation-guard.middleware.ts` 的 claim 位置；Go 证据为提交 `b3115e675` 的 `dedupe.go` 第 255–289 行。该结论不依赖当前未提交工作区。
 - 修复门槛：让 JSON 解析/大小错误在 claim 前以 Node 同样的 400/413 收口；补充首发与重复畸形请求、合法空 body、合法 JSON 的状态码和去重状态 golden，确认无错误输入会污染去重缓存。
 
+## 已确认子项：超大 body 会在 Go mutation guard 中先占用去重键
+
+- 对照事实：Node 对系统 API 在进入路由前使用 `express.json({ limit: '256kb' })`，`handleJsonBodyError` 在超过上限时直接返回 413；mutation guard 位于 parser 之后，不会为超大请求创建 claim。
+- 历史 Go：kernel 先用 `http.MaxBytesReader` 包装 body，但 `MutationGuardMiddleware` 的 `io.ReadAll(r.Body)` 忽略 `MaxBytesError`，仍继续执行 fingerprint 和 `store.Claim`；下游 `DecodeJSON` 才再次读到 sticky 的超限错误并返回 413。
+- 可观察结果：同一超大 JSON 首次请求在 Node 和 Go 都可能返回 413，但 Go 已留下 `failed/processing` 去重项，短 TTL 内重复请求会先被 guard 返回 409“请求刚刚失败”；Node 重复请求仍由 parser 返回 413。错误请求因此污染去重容量并改变客户端重试状态码。
+- 证据范围：Node 历史 `backend/src/modules/system-api/system-api-app.ts` 第 129 行及 `handleJsonBodyError` 链；Go 证据为提交 `b3115e675` 的 `kernel.go` body limit 与 `dedupe.go` 第 255–289 行。该结论不依赖当前未提交工作区。
+- 修复门槛：在任何 claim 前识别并收口 `MaxBytesError` 为 Node 同样的 413，保证 body 未成功读取时不执行 fingerprint/claim；补充刚好等于上限、超过 1 字节和重复发送的状态/缓存 golden。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
