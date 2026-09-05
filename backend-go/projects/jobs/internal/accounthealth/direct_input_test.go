@@ -65,8 +65,8 @@ func (conn *directInputRowsLifecycleConn) QueryContext(_ context.Context, query 
 			case 0:
 				malformed := directInputLifecycleCandidateValues()
 				malformed[0] = "account-malformed-fence"
-				malformed[19] = "2030-08-16T11:00:00Z"
-				malformed[20] = nil
+				malformed[20] = "2030-08-16T11:00:00Z"
+				malformed[21] = nil
 				values = [][]driver.Value{malformed}
 			case 1:
 				values = [][]driver.Value{directInputLifecycleCandidateValues()}
@@ -131,7 +131,7 @@ func (rows *directInputRowsLifecycleRows) Next(dest []driver.Value) error {
 }
 
 func directInputLifecycleCandidateColumns() []string {
-	columns := make([]string, 51)
+	columns := make([]string, 53)
 	for index := range columns {
 		columns[index] = fmt.Sprintf("c%d", index)
 	}
@@ -148,7 +148,7 @@ func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	if err != nil {
 		panic(err)
 	}
-	values := make([]driver.Value, 51)
+	values := make([]driver.Value, 53)
 	values[0] = accountID
 	values[1] = int64(1)
 	values[2] = int64(2)
@@ -158,29 +158,31 @@ func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	values[6] = "openai"
 	values[7] = "v1"
 	values[8] = "api_key"
-	values[9] = "active"
-	values[10] = int64(1)
-	values[11] = "chat_json"
-	values[12] = "gpt-test"
-	values[15] = credentials
-	values[21] = "system-account"
-	values[22] = "authorization-1"
-	values[23] = "active"
-	values[25] = `{}`
-	values[26] = "source-account"
-	values[27] = "owner-account"
-	values[29] = "source-account"
-	values[30] = int64(4)
-	values[31] = "openai"
-	values[32] = "profile_openai_openai_v1"
-	values[33] = "openai"
-	values[34] = "v1"
-	values[35] = "api_key"
-	values[36] = "active"
-	values[37] = int64(1)
-	values[41] = credentials
-	values[42] = "group-1"
-	values[43] = "authorization-1"
+	values[9] = "openai_standard"
+	values[10] = "active"
+	values[11] = int64(1)
+	values[12] = "chat_json"
+	values[13] = "gpt-test"
+	values[16] = credentials
+	values[22] = "system-account"
+	values[23] = "authorization-1"
+	values[24] = "active"
+	values[26] = `{}`
+	values[27] = "source-account"
+	values[28] = "owner-account"
+	values[30] = "source-account"
+	values[31] = int64(4)
+	values[32] = "openai"
+	values[33] = "profile_openai_openai_v1"
+	values[34] = "openai"
+	values[35] = "v1"
+	values[36] = "api_key"
+	values[37] = "openai_standard"
+	values[38] = "active"
+	values[39] = int64(1)
+	values[43] = credentials
+	values[44] = "group-1"
+	values[45] = "authorization-1"
 	return values
 }
 

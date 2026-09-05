@@ -72,6 +72,47 @@ func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 	}
 }
 
+func TestProbeOpenAICodexResponsesMatchesManualCompatibilityContract(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Originator") != "Codex Desktop" || request.Header.Get("User-Agent") != "Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)" {
+			t.Fatalf("unexpected Codex client headers: %#v", request.Header)
+		}
+		if request.Header.Get("Session-Id") != "j1-account-1" || request.Header.Get("Thread-Id") != "j1-account-1" || request.Header.Get("X-Codex-Window-Id") != "j1-account-1:0" {
+			t.Fatalf("unexpected Codex identity headers: %#v", request.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["store"] != false || body["parallel_tool_calls"] != false || body["prompt_cache_key"] != "j1-account-1" {
+			t.Fatalf("unexpected Codex compatibility body: %#v", body)
+		}
+		include, ok := body["include"].([]any)
+		if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+			t.Fatalf("unexpected Codex include: %#v", body["include"])
+		}
+		reasoning, ok := body["reasoning"].(map[string]any)
+		if !ok || reasoning["context"] != "all_turns" {
+			t.Fatalf("unexpected Codex reasoning: %#v", body["reasoning"])
+		}
+		metadata, ok := body["client_metadata"].(map[string]any)
+		if !ok || metadata["x-codex-window-id"] != "j1-account-1:0" || metadata["session_id"] != "j1-account-1" {
+			t.Fatalf("unexpected Codex metadata: %#v", body["client_metadata"])
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	input := testInput(server.URL, "responses_sse")
+	input.ClientCompatibility = "codex_responses"
+	result := ProbeOpenAI(context.Background(), input, CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected Codex compatibility probe result: %#v", result)
+	}
+}
+
 func TestProbeGPTOAuthResponsesSSEUsesCodexPath(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

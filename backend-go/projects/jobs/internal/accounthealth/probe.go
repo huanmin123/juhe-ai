@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	probeChallenge        = "juhe"
-	probeInstructions     = "You are ChatGPT, a helpful assistant."
-	defaultMaxBodyBytes   = int64(256 * 1024)
+	probeChallenge      = "juhe"
+	probeInstructions   = "You are ChatGPT, a helpful assistant."
+	defaultMaxBodyBytes = int64(256 * 1024)
 )
 
 type ProbeOptions struct {
@@ -234,6 +234,9 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	default:
 		return nil, errors.New("未冻结的 endpoint mode")
 	}
+	if protocol == "openai" && input.ClientCompatibility == "codex_responses" && (input.EndpointMode == "responses_json" || input.EndpointMode == "responses_sse") {
+		applyCodexResponsesCompatibility(body.(map[string]any), input.HealthModel, input.AccountID, input.InputVersion)
+	}
 	codeAssist := protocol == "gemini" && input.Type == "google_oauth" && (input.OAuthType == "code_assist" || input.OAuthType == "google_one")
 	if codeAssist {
 		path = "/v1internal:streamGenerateContent?alt=sse"
@@ -303,6 +306,9 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			request.Header.Set("x-grok-client-version", "0.2.93")
 		}
 	}
+	if protocol == "openai" && input.ClientCompatibility == "codex_responses" && (input.EndpointMode == "responses_json" || input.EndpointMode == "responses_sse") {
+		applyCodexProbeHeaders(request, input)
+	}
 	if input.EndpointMode == "responses_sse" || input.EndpointMode == "chat_sse" || input.EndpointMode == "messages_sse" || input.EndpointMode == "generate_content_sse" || input.EndpointMode == "interactions_sse" || codeAssist {
 		// Match the Node manual account-test request. OAuth keeps the official
 		// client-only stream accept header; API-key and google_oauth probes use
@@ -325,6 +331,58 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		request.Header.Set("Content-Type", "application/json")
 	}
 	return request, nil
+}
+
+// applyCodexResponsesCompatibility keeps the scheduled J1 request body in the
+// same shape as account-test.service's codex_responses diagnostic path.
+func applyCodexResponsesCompatibility(body map[string]any, model, accountID string, inputVersion int64) {
+	body["store"] = false
+	body["include"] = []string{"reasoning.encrypted_content"}
+	body["reasoning"] = map[string]any{"context": "all_turns"}
+	body["parallel_tool_calls"] = false
+	metadata := map[string]any{
+		"installation_id":         "j1-account-health",
+		"session_id":              fmt.Sprintf("j1-%s", accountID),
+		"thread_id":               fmt.Sprintf("j1-%s", accountID),
+		"turn_id":                 fmt.Sprintf("j1-%s-%d", accountID, inputVersion),
+		"window_id":               fmt.Sprintf("j1-%s:0", accountID),
+		"request_kind":            "turn",
+		"thread_source":           "user",
+		"sandbox":                 "none",
+		"turn_started_at_unix_ms": time.Now().UnixMilli(),
+	}
+	body["client_metadata"] = map[string]any{
+		"x-codex-window-id":       metadata["window_id"],
+		"turn_id":                 metadata["turn_id"],
+		"session_id":              metadata["session_id"],
+		"x-codex-turn-metadata":   codexMetadataJSON(metadata),
+		"x-codex-installation-id": metadata["installation_id"],
+		"thread_id":               metadata["thread_id"],
+	}
+	body["prompt_cache_key"] = metadata["session_id"]
+}
+
+func applyCodexProbeHeaders(request *http.Request, input Input) {
+	windowID := fmt.Sprintf("j1-%s:0", input.AccountID)
+	sessionID := fmt.Sprintf("j1-%s", input.AccountID)
+	turnID := fmt.Sprintf("j1-%s-%d", input.AccountID, input.InputVersion)
+	metadata := fmt.Sprintf(`{"installation_id":"j1-account-health","session_id":"%s","thread_id":"%s","turn_id":"%s","window_id":"%s","request_kind":"turn","thread_source":"user","sandbox":"none","turn_started_at_unix_ms":%d}`, sessionID, sessionID, turnID, windowID, time.Now().UnixMilli())
+	request.Header.Set("Originator", "Codex Desktop")
+	request.Header.Set("User-Agent", "Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)")
+	request.Header.Set("Session-Id", sessionID)
+	request.Header.Set("Thread-Id", sessionID)
+	request.Header.Set("X-Client-Request-Id", sessionID)
+	request.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
+	request.Header.Set("X-Codex-Turn-Metadata", metadata)
+	request.Header.Set("X-Codex-Window-Id", windowID)
+}
+
+func codexMetadataJSON(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }
 
 func parseBaseURL(raw string, allowInsecure bool) (*url.URL, error) {
