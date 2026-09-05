@@ -169,6 +169,14 @@
 - 运行证据：仓库历史 Node 依赖实测“`res.flush(); res.end('x'.repeat(2048))`、无 `Content-Length`、`Accept-Encoding: gzip`”返回 `ce=gzip`；Go `Flush` 的 `decide(0)`/`bodyWritten` 分支可静态确定相同序列不会压缩。该结论不依赖当前未提交工作区。
 - 修复门槛：保持 `Flush` 在无压缩流时不提交最终压缩决策，按 Node 的首写/Content-Length 时序延迟头部；补充 flush-before-write、flush-after-small-write、flush-after-large-write 及 SSE 过滤场景的 Node/Go golden。
 
+## 已确认子项：Go 内核前缀中间件缺少 Express 路径段边界
+
+- 对照事实：历史 Node 通过 `app.use('/__aisys__/api', ...)` 挂载 system API 的 body limit、限流和 `no-store` 中间件。Express mount 按路径段匹配：`/__aisys__/api`、`/__aisys__/api/`、`/__aisys__/api/x` 命中，而相邻路径 `/__aisys__/apix` 不命中。
+- 历史 Go：提交 `b3115e675` 的 `prefixMiddleware` 和 `bodyLimitMiddleware` 统一使用 `strings.HasPrefix(r.URL.Path, prefix)`，没有检查路径结束或下一个字符是否为 `/`。因此 `/__aisys__/apix` 也会进入 system API 的 `no-store`、body limit 和可选 IP 限流链。
+- 可观察结果：访问未挂载的相邻路径 `/__aisys__/apix` 时，Node 保持普通路由行为和普通缓存头，Go 错误套用 system API 横切策略；若该路径后续被其他公开/静态 handler 接管，响应的 `Cache-Control`、请求体读取上限和限流桶都会发生偏移，错误路径也可能被提前拒绝。
+- 运行证据：仓库历史 Express 运行探针实测 `/__aisys__/api`、`/__aisys__/api/`、`/__aisys__/api/x` 命中 mount，`/__aisys__/apix` 返回未命中；Go 前缀判断可由提交 `b3115e675` 的 `prefixMiddleware`/`bodyLimitMiddleware` 静态确定会命中。该结论不依赖当前未提交工作区。
+- 修复门槛：抽取与 Express mount 等价的路径段匹配函数，覆盖精确前缀、斜杠子路径、相邻前缀、空/根前缀和 URL 编码边界；分别验证 management、system API、public API 的所有横切中间件不越界。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
