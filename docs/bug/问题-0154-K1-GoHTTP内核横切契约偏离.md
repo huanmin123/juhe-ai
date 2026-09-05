@@ -177,6 +177,14 @@
 - 运行证据：仓库历史 Express 运行探针实测 `/__aisys__/api`、`/__aisys__/api/`、`/__aisys__/api/x` 命中 mount，`/__aisys__/apix` 返回未命中；Go 前缀判断可由提交 `b3115e675` 的 `prefixMiddleware`/`bodyLimitMiddleware` 静态确定会命中。该结论不依赖当前未提交工作区。
 - 修复门槛：抽取与 Express mount 等价的路径段匹配函数，覆盖精确前缀、斜杠子路径、相邻前缀、空/根前缀和 URL 编码边界；分别验证 management、system API、public API 的所有横切中间件不越界。
 
+## 已确认子项：K1 响应包装器丢失无压缩请求的 Flusher 能力
+
+- 对照事实：历史 Node `compression` 无论最终是否创建压缩流，都会在 middleware 入口给 `res.flush` 安装统一方法；SSE/分块 handler 可以在不接受 gzip 时继续通过 flush 把已写数据及时交给客户端。Node 运行探针中，未带 `Accept-Encoding` 的 event-stream 首块在后续 150ms 延迟前即可到达客户端。
+- 历史 Go：提交 `b3115e675` 的 `Kernel.Handler` 外层使用 `localizeWriter`，该类型未实现 `http.Flusher`；不接受 gzip 时 `CompressionMiddleware` 直接旁路，handler 收到的 `methodContractWriter`/`localizeWriter` 链也没有 `Flush`。即使 handler 通过类型断言发现可 flush，实际只能走无 flush 分支；接受 gzip 时才会得到实现 `Flush` 的 `compressionWriter`。
+- 可观察结果：同一流式 handler 在 Node（无 `Accept-Encoding`）会立即发送首个 SSE chunk，而 Go 首个 chunk 被 wrapper 缓存到 handler 返回，150ms 延迟后才到达客户端；首 token 时点、客户端超时和流式体验发生偏离。临时 Go 回放测试实测首行耗时约 152ms，证明 flush 能力在当前 kernel 链中未生效。
+- 证据范围：Node 依赖 `compression/index.js` 的 `res.flush` 安装和 event-stream 运行探针；Go 证据为提交 `b3115e675` 的 `localizeWriter`、`methodContractWriter` 与 `compressionWriter` 接口实现。临时探针已删除，未改变工作区功能代码。
+- 修复门槛：所有响应包装器按需透传 `http.Flusher`（以及流式 handler 实际依赖的其他 ResponseWriter 能力），并确保无压缩、identity、gzip 三条路径的首块 flush 时序一致；补充不带/带 `Accept-Encoding` 的 SSE 首 chunk 及时性 golden。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
