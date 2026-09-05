@@ -392,6 +392,29 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 		concurrency_limit = 1234, client_compatibility = 'codex_responses'
 		WHERE id = 'acc-proj-src'`)
 
+	// gpt vendor on an openai/v1 profile: the strict normalizer renders
+	// codex_responses for the oauth type unconditionally, whatever the stored
+	// legacy value (Node account-client-compatibility.ts:42-45).
+	env.seedAccount(t, "acc-oauth-src", ownerID, "OAuth源账户", "active")
+	env.exec(t, `UPDATE accounts SET type = 'oauth', client_compatibility = 'openai_standard'
+		WHERE id = 'acc-oauth-src'`)
+	// gpt+api_key keeps a stored valid compatibility as-is (:46).
+	env.seedAccount(t, "acc-key-codex", ownerID, "Codex密钥账户", "active")
+	env.exec(t, `UPDATE accounts SET client_compatibility = 'codex_responses'
+		WHERE id = 'acc-key-codex'`)
+	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
+		ResourceType: "account", ResourceID: "acc-oauth-src",
+		GranteeType: "team", GranteeID: "team-proj",
+	}, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	runtimeOAuth := env.queryCell(t, `SELECT id FROM resource_authorizations
+		WHERE grantee_system_account_id = ? AND resource_id = 'acc-oauth-src'`, memberID)
+	if runtimeOAuth == "" {
+		t.Fatal("oauth runtime row missing")
+	}
+	env.seedAuthorizationInstance(t, "acc-oauth-inst", memberID, runtimeOAuth, "acc-oauth-src")
+
 	// Member list: live source values, bound-group local scheduling, stamp
 	// fields and the team-source permission set.
 	env.login(t, "member5", "member-pass", "user")
@@ -407,14 +430,17 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 		t.Fatalf("instance accessType: %v", instance["accessType"])
 	}
 	for key, want := range map[string]any{
-		"providerCode":                         "claude",
-		"providerName":                         "Claude",
-		"providerProtocolProfileId":            "prof-claude",
-		"protocolCode":                         "anthropic",
-		"protocolVersion":                      "v2",
-		"type":                                 "oauth",
-		"concurrencyLimit":                     float64(1234),
-		"clientCompatibility":                  "codex_responses",
+		"providerCode":              "claude",
+		"providerName":              "Claude",
+		"providerProtocolProfileId": "prof-claude",
+		"protocolCode":              "anthropic",
+		"protocolVersion":           "v2",
+		"type":                      "oauth",
+		"concurrencyLimit":          float64(1234),
+		// claude is not a gpt vendor: the stored codex_responses value must
+		// normalize to openai_standard (Node
+		// account-client-compatibility.ts:30-49, non-gpt branch).
+		"clientCompatibility":                  "openai_standard",
 		"priority":                             float64(42),
 		"superPriorityEnabled":                 true,
 		"fallbackEnabled":                      true,
@@ -429,6 +455,17 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	permissions := instance["permissions"].(map[string]any)
 	if permissions["canReturnAuthorization"] != false || permissions["canUse"] != true || permissions["canLock"] != true {
 		t.Fatalf("team-source instance permissions: %v", permissions)
+	}
+
+	// The gpt+oauth instance renders codex_responses over the stored legacy
+	// openai_standard value (Node account-client-compatibility.ts:42-45).
+	oauthInstance := listItems(t, listed)["acc-oauth-inst"]
+	if oauthInstance == nil {
+		t.Fatalf("oauth instance missing from member list: %v", listed)
+	}
+	if oauthInstance["providerCode"] != "gpt" || oauthInstance["type"] != "oauth" ||
+		oauthInstance["clientCompatibility"] != "codex_responses" {
+		t.Fatalf("gpt+oauth instance compatibility: %v", oauthInstance)
 	}
 
 	// Direct user grant: effective_source_type='manual' → the instance renders
@@ -480,6 +517,20 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	if source["providerCode"] != "claude" || source["providerName"] != "Claude" || source["concurrencyLimit"] != float64(1234) {
 		t.Fatalf("owner source live values: %v", source)
 	}
+	// Owner rows normalize identically: the non-gpt claude row collapses to
+	// openai_standard, the gpt+oauth legacy row renders codex_responses and the
+	// gpt+api_key row passes its stored codex_responses through.
+	if source["clientCompatibility"] != "openai_standard" {
+		t.Fatalf("owner claude clientCompatibility: %v", source["clientCompatibility"])
+	}
+	oauthSource := items["acc-oauth-src"]
+	if oauthSource == nil || oauthSource["clientCompatibility"] != "codex_responses" {
+		t.Fatalf("owner gpt+oauth clientCompatibility: %v", oauthSource)
+	}
+	keyCodex := items["acc-key-codex"]
+	if keyCodex == nil || keyCodex["clientCompatibility"] != "codex_responses" {
+		t.Fatalf("owner gpt+api_key clientCompatibility passthrough: %v", keyCodex)
+	}
 	if _, ok := source["accountAuthorizationId"]; ok {
 		t.Fatalf("owner row must not carry accountAuthorizationId: %v", source)
 	}
@@ -492,6 +543,9 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	}
 	if _, leaked := items["acc-proj-inst"]; leaked {
 		t.Fatalf("grantee-namespace instance must stay out of the owner list: %v", items)
+	}
+	if _, leaked := items["acc-oauth-inst"]; leaked {
+		t.Fatalf("oauth grantee instance must stay out of the owner list: %v", items)
 	}
 	if _, leaked := items["acc-proj-manual"]; leaked {
 		t.Fatalf("manual grantee instance must stay out of the owner list: %v", items)

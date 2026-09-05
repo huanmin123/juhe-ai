@@ -636,7 +636,11 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	items := make([]ListItem, 0, len(records))
 	ids := make([]string, 0, len(records))
 	for _, row := range records {
-		items = append(items, s.newListItem(row, access, authorized[row.id]))
+		item, itemErr := s.newListItem(row, access, authorized[row.id])
+		if itemErr != nil {
+			return nil, itemErr
+		}
+		items = append(items, item)
 		ids = append(ids, row.id)
 	}
 	if err := s.hydrateTags(ctx, items, ids); err != nil {
@@ -683,8 +687,11 @@ func anySlice(values []string) []any {
 // values and the bound group's local scheduling overrides
 // (Node account-management-list.repository.ts:501-555). The instance stamp
 // fields are row facts and surface for both access types; they stay omitted
-// on owner rows (NULL stamp, Node :568-569).
-func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) ListItem {
+// on owner rows (NULL stamp, Node :568-569). Client compatibility renders
+// through the strict vendor/profile normalizer (:517-523) over the effective
+// (possibly source-replaced) provider/type/protocol; a corrupt stored value
+// fails the page with Node's 客户端兼容配置无效 error.
+func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (ListItem, error) {
 	now := s.now()
 	item := ListItem{
 		ID:                        row.id,
@@ -703,7 +710,6 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) Li
 		Priority:                  row.priority,
 		SuperPriorityEnabled:      row.superPriorityEnabled == 1,
 		FallbackEnabled:           row.fallbackEnabled == 1,
-		ClientCompatibility:       normalizeClientCompatibility(row.clientCompatibility),
 		Tags:                      []TagSummary{},
 		HealthCheckModel:          strings.TrimSpace(row.healthCheckModel),
 		HealthCheckEndpointMode:   row.healthCheckEndpointMode,
@@ -748,9 +754,6 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) Li
 		if row.sourceConcurrencyLimit.Valid {
 			item.ConcurrencyLimit = int(row.sourceConcurrencyLimit.Int64)
 		}
-		if row.sourceClientCompatibility.Valid {
-			item.ClientCompatibility = normalizeClientCompatibility(row.sourceClientCompatibility.String)
-		}
 		// Node :547-555: the bound group's local scheduling values take over —
 		// priority keeps the instance fallback while the flags render NULL as
 		// false without a fallback.
@@ -760,6 +763,26 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) Li
 		item.SuperPriorityEnabled = row.boundGroupLocalSuperPriorityEnabled.Int64 == 1
 		item.FallbackEnabled = row.boundGroupLocalFallbackEnabled.Int64 == 1
 	}
+	// Node :517-523: client compatibility renders from the effective (possibly
+	// source-replaced) provider/type/protocol with the stored value — the
+	// source column when authorized (SQL NULL flattens to '', which behaves
+	// identically to Node's null under the strict check), else the instance
+	// column. Both access types normalize identically.
+	clientValue := row.clientCompatibility
+	if authorized && row.sourceClientCompatibility.Valid {
+		clientValue = row.sourceClientCompatibility.String
+	}
+	clientCompatibility, err := normalizeOpenAIAccountClientCompatibility(
+		item.ProviderCode, item.Type, clientValue, protocolProfileRef{
+			ProviderCode:              item.ProviderCode,
+			ProtocolCode:              item.ProtocolCode,
+			ProtocolVersion:           item.ProtocolVersion,
+			ProviderProtocolProfileID: item.ProviderProtocolProfileID,
+		})
+	if err != nil {
+		return ListItem{}, err
+	}
+	item.ClientCompatibility = clientCompatibility
 	item.AccountAuthorizationID = nullPtrString(row.authorizationID)
 	item.AuthorizationInstanceSourceAccountID = nullPtrString(row.sourceAccountID)
 	if access.canAccessAll() {
@@ -834,7 +857,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) Li
 		}
 	}
 	item.EffectiveAvailability = ownerEffectiveAvailability(item, now)
-	return item
+	return item, nil
 }
 
 func groupBindStatus(row listRow) string {
@@ -1360,6 +1383,19 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	if err := DecryptJSON(s.secret, row.credentialsEncrypted, &credentials); err != nil {
 		return nil, err
 	}
+	// The edit surface renders client compatibility through the same strict
+	// vendor/profile normalizer as the list (owner rows only — instance rows
+	// return 403 above).
+	clientCompatibility, err := normalizeOpenAIAccountClientCompatibility(
+		row.providerCode, row.accountType, row.clientCompatibility, protocolProfileRef{
+			ProviderCode:              row.providerCode,
+			ProtocolCode:              row.protocolCode,
+			ProtocolVersion:           row.protocolVersion,
+			ProviderProtocolProfileID: row.providerProtocolProfileID,
+		})
+	if err != nil {
+		return nil, err
+	}
 	detail := &EditBasicDetail{
 		ID:                        row.id,
 		ConfigRevision:            row.configRevision,
@@ -1377,7 +1413,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		Priority:                  row.priority,
 		SuperPriorityEnabled:      row.superPriorityEnabled == 1,
 		FallbackEnabled:           row.fallbackEnabled == 1,
-		ClientCompatibility:       normalizeClientCompatibility(row.clientCompatibility),
+		ClientCompatibility:       clientCompatibility,
 		SupportedModels:           models,
 		Tags:                      tags,
 		HealthCheckModel:          strings.TrimSpace(row.healthCheckModel),
