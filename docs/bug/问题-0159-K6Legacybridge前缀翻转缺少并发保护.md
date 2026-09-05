@@ -22,9 +22,17 @@
 
 ## 根因与证据
 
-- 文件：`backend-go/projects/gateway/internal/legacybridge/bridge.go`。
+- 文件：`backend-go/projects/gateway/internal/legacybridge/legacybridge.go`。
 - `RegisterPrefix`/`RemovePrefix` 修改共享列表，`ServeHTTP` 同时遍历该列表，未使用 mutex 或不可变快照；代理重写也未恢复 X-Forwarded 链。
 - 提交测试只覆盖顺序注册、删除和代理，不覆盖并发翻转。
+
+## 已确认子项：方法不匹配时 legacy bridge 不会接管
+
+- 对照事实：K6 的目标是让 Go 成为唯一入口，已迁移的具体路由优先，仍由 Node 持有的同一前缀请求通过 fallback 代理。只要某个 HTTP 方法没有 Go 路由，且前缀仍在 bridge 列表中，该方法仍应到 Node。
+- 历史 Go：`kernel.Handler` 先让 Go 1.22 `ServeMux` 匹配具体路径；当路径模式存在但方法不匹配时，`ServeMux` 返回 405，外层 `methodContractWriter` 将其改写为 404。该请求不会落到 `RegisterFallback` 挂载的 `legacybridge.Bridge`，因为 fallback 只处理完全没有匹配模式的路径。
+- 可观察结果：例如 Go 只注册 `GET /__aisys__/api/items`、bridge 仍注册 `/__aisys__/api` 时，`POST /__aisys__/api/items` 在 Node 仍可由旧端点处理，Go 却直接返回 404；部分迁移期间同一路径的未迁移方法被错误屏蔽，造成接口不可达。
+- 证据范围：历史提交 `21dc58a01` 的 `kernel.go`（`RegisterFallback`、`methodContractWriter`）与 `legacybridge/legacybridge.go`；该提交测试只覆盖完全未注册路径和翻转后的 404，未覆盖“已注册路径 + 未注册方法”。该结论不依赖当前未提交工作区。
+- 修复门槛：在方法不匹配且前缀仍由 bridge 持有时继续代理到 Node；仅在 bridge 未命中时才保持 Node 404 语义，并补 GET/POST 同路径的 fallback 对照及翻转后 404 回归。
 
 ## 修复与验证
 
