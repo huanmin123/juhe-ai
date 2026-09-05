@@ -33,3 +33,5 @@ Thumbs.db
 .codegraph/
 
 vendor
+
+/.codegraph/
