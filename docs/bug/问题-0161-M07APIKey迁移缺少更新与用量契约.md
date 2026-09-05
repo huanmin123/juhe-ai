@@ -141,6 +141,13 @@
 - 结果偏差：同一 `GET /api-keys/:id`（以及 self 详情）在 Node 返回该 API Key 的真实累计用量，Go 始终返回零值。即使列表 usage 后续完成接线，详情仍会显示错误统计，前端详情页和审计使用方无法得到 Node 的结果。
 - 结论：这是 M07 详情读模型的确定性字段遗漏，当前仅记录，未修改 Go 代码。
 
+### 17. 创建时 `expiresAt` 纯空白字符串被错误当成清除值
+
+- Node 证据：历史 `apiKeyMutationSchema` 允许 `expiresAt` 为字符串后，`normalizeOptionalApiKeyExpiresAt` 只把 `undefined`、`null` 和精确空字符串 `''` 当成未设置；非空但 `trim()` 后为空的值（例如 `'   '`）会抛出“API Key 过期时间必须是有效时间字符串”，创建返回 400。
+- Go 证据：历史 `backend-go/projects/gateway/internal/apikeys/routes.go` 的 `createBody` 接受任意字符串 `expiresAt`，`backend-go/projects/gateway/internal/apikeys/store.go` 的 `normalizeOptionalExpiresAt` 以 `strings.TrimSpace(*value) == ""` 直接返回 NULL，因此纯空白输入会成功创建且不设置过期时间。
+- 结果偏差：相同 `POST /api-keys` 请求 `{"name":"...","expiresAt":"   "}` 在 Node 被拒绝，Go 返回 201 并持久化无过期时间；客户端无法依赖 Node 的非法时间输入保护，且错误请求会产生真实密钥和审计记录。
+- 结论：这是 M07 创建时间字段的确定性输入契约偏差，当前仅记录，未修改 Go 代码。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
@@ -148,4 +155,5 @@
 - 新增未修复子项：`reveal_secret` 日志应与 Node 一样保留 `keyPrefix...keySuffix` 脱敏 after、不要伪造 `before: "未设置"`，并补充 operation-log JSON 回放，确认完整密钥不会进入日志。
 - 新增未修复子项：API Key 列表/详情读取关联策略时应复用 Node 的 `mode` 规范化：空值补 `normal`，未知值显式失败；补充空字符串、未知 mode 和正常五种 mode 的 Node/Go DTO 与错误回放。
 - 新增未修复子项：API Key 详情必须像 Node `findApiKeySummaryAsync` 一样加载并返回该 key 的真实 usage 汇总，补充非零 usage 与空 usage 的 Node/Go DTO 回放；不能只修列表。
+- 新增未修复子项：创建 `expiresAt` 必须区分精确空字符串与纯空白字符串：仅前者按未设置处理，后者应保持 Node 的 400；补充空字符串、空白、合法 offset 和非法时间的回放。
 - 结论：M07 不能视为完整 API Key 功能迁移或 Node 可归档。
