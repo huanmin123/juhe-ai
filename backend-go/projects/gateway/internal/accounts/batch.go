@@ -360,19 +360,20 @@ type batchLockedAccount struct {
 
 // batchPreparedAccount mirrors AccountBatchUpdatePreparedAccount.
 type batchPreparedAccount struct {
-	accountID              string
-	expectedConfigRevision int64
-	changedFields          []string
-	sets                   []string
-	setArgs                []any
-	supportedModels        []string
-	modelMappings          []ModelMapping
-	hasModelMappings       bool
-	tags                   []string
-	hasTags                bool
-	dispatchBinding        *batchDispatchBinding
-	groupStatsAffected     bool
-	gatewayRuntimeAffected bool
+	accountID               string
+	expectedConfigRevision  int64
+	changedFields           []string
+	sets                    []string
+	setArgs                 []any
+	supportedModels         []string
+	modelMappings           []ModelMapping
+	hasModelMappings        bool
+	tags                    []string
+	hasTags                 bool
+	dispatchBinding         *batchDispatchBinding
+	dispatchRevisionChanged bool
+	groupStatsAffected      bool
+	gatewayRuntimeAffected  bool
 }
 
 type batchDispatchBinding struct {
@@ -437,6 +438,12 @@ func (s *Store) BatchUpdate(ctx context.Context, input BatchUpdateInput, access 
 	}
 	items := []BatchUpdateItem{}
 	changedFields := map[string]bool{}
+	// Post-commit side-effect audiences (Node transactionResult
+	// changedAccountIds/statsAccountIds/gatewayAccountIds,
+	// account-batch-update.repository.ts:195-213).
+	changedAccountIDs := []string{}
+	statsAccountIDs := []string{}
+	gatewayAccountIDs := []string{}
 	owner := ""
 	if len(accounts) > 0 {
 		owner = accounts[0].systemAccountID
@@ -476,6 +483,18 @@ func (s *Store) BatchUpdate(ctx context.Context, input BatchUpdateInput, access 
 				return nil, err
 			}
 		}
+		if account.dispatchRevisionChanged {
+			// In-transaction dispatch family advance (Node
+			// account-batch-update.repository.ts:167-174): any error aborts
+			// the whole batch with the transaction.
+			if err := s.advanceBatchDispatchRevisionFamily(ctx, tx, batchDispatchRevision{
+				accountID:    account.accountID,
+				transitionID: batchID + ":" + account.accountID,
+				nowMS:        now.UnixMilli(),
+			}); err != nil {
+				return nil, err
+			}
+		}
 		if account.dispatchBinding != nil {
 			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("group_accounts")+`
 				SET local_priority = ?, local_super_priority_enabled = ?, local_fallback_enabled = ?, updated_at = ?
@@ -492,6 +511,13 @@ func (s *Store) BatchUpdate(ctx context.Context, input BatchUpdateInput, access 
 			changedFields[field] = true
 		}
 		items = append(items, item)
+		changedAccountIDs = append(changedAccountIDs, account.accountID)
+		if account.groupStatsAffected {
+			statsAccountIDs = append(statsAccountIDs, account.accountID)
+		}
+		if account.gatewayRuntimeAffected {
+			gatewayAccountIDs = append(gatewayAccountIDs, account.accountID)
+		}
 	}
 
 	result := &BatchUpdateResult{BatchID: batchID, Items: items, OwnerSystemAccountID: owner}
@@ -502,7 +528,16 @@ func (s *Store) BatchUpdate(ctx context.Context, input BatchUpdateInput, access 
 	if result.ChangedFields == nil {
 		result.ChangedFields = []string{}
 	}
-	return result, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	// Post-commit best-effort chain (Node account-batch-update.repository.ts:
+	// 216-241): lookup + stats + runtime invalidation, failures logged only.
+	// Node also calls cleanupChangedBalanceSnapshots here for proxy-changed
+	// accounts (account-batch-edit.service.ts:97,398-412); the Go side has no
+	// balance snapshot mechanism, so that step stays unported.
+	s.finishBatchUpdateSideEffects(ctx, batchID, changedAccountIDs, statsAccountIDs, gatewayAccountIDs)
+	return result, nil
 }
 
 // assertBatchTargets mirrors assertBatchTargets.
@@ -945,6 +980,9 @@ func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[str
 			}
 		}
 	}
+	// Node account-batch-edit.service.ts:391: dispatchRevisionChanged: proxyChanged —
+	// the same field comparison that drives the changedFields entry.
+	result.dispatchRevisionChanged = proxyChanged
 
 	// Dispatch fields.
 	nextConcurrency := account.concurrencyLimit

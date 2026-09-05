@@ -84,6 +84,7 @@ type testEnv struct {
 	mu     sync.Mutex
 	sink   *recordingSink
 	db     *sql.DB
+	store  *Store
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -121,7 +122,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	(&Deps{Store: store, Auth: deps, Sink: sink}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, db: db}
+	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, db: db, store: store}
 }
 
 // schemaStatements mirrors the maintenance business schema subset the slice
@@ -243,6 +244,44 @@ var schemaStatements = []string{
 	// account-management-list.repository.ts:324-334), so the fixture carries
 	// the production table; column set mirrors m10AuthzDDL.
 	`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
+	// Batch-edit side effects (问题-0172 T1): the dispatch revision outbox and
+	// the group stats dirty marker (Node business-schema.ts:553-584,1108-1112).
+	`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (
+		group_id TEXT PRIMARY KEY,
+		reason TEXT,
+		updated_at TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS account_circuit_outbox (
+		event_id TEXT PRIMARY KEY,
+		projection_key TEXT NOT NULL,
+		dedupe_key TEXT NOT NULL,
+		event_type TEXT NOT NULL CHECK (event_type IN ('dispatch_revision_changed', 'incident_changed')),
+		account_id TEXT NOT NULL,
+		account_runtime_key TEXT NOT NULL,
+		circuit_scope_key TEXT,
+		incident_id TEXT,
+		transition_id TEXT NOT NULL,
+		dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
+		generation INTEGER,
+		ledger_revision INTEGER,
+		status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'dispatched')),
+		available_at_ms INTEGER NOT NULL,
+		claim_token TEXT,
+		claimed_by TEXT,
+		claim_until_ms INTEGER,
+		attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+		last_error_class TEXT,
+		acknowledged_at_ms INTEGER,
+		created_at_ms INTEGER NOT NULL,
+		updated_at_ms INTEGER NOT NULL,
+		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+		UNIQUE (projection_key, dedupe_key),
+		CHECK (length(event_id) BETWEEN 1 AND 256),
+		CHECK (length(projection_key) BETWEEN 1 AND 128),
+		CHECK (length(dedupe_key) BETWEEN 1 AND 256),
+		CHECK (length(account_runtime_key) BETWEEN 1 AND 1024),
+		CHECK (length(transition_id) BETWEEN 1 AND 256)
+	)`,
 }
 
 func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]any) {

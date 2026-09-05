@@ -101,6 +101,10 @@ type Store struct {
 	// authorized is the M10 authorized-instance reader (authz slice, narrow
 	// interface). Nil until SetAuthorizedReader / Deps.Mount wires it.
 	authorized AuthorizedAccountReader
+	// invalidator is the batch-edit post-commit cache invalidation port
+	// (batch_effects.go). Nil until SetCacheInvalidator wires it; a nil port
+	// keeps the batch self-contained.
+	invalidator CacheInvalidator
 }
 
 // NewStore builds the store.
