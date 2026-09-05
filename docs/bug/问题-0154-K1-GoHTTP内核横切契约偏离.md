@@ -153,6 +153,14 @@
 - 运行证据：在仓库历史 Node 依赖上启动 `compression({threshold:1024})`，实测 `Accept-Encoding: br` 返回 `ce=br`、`Accept-Encoding: deflate` 返回 `ce=deflate`、`Accept-Encoding: gzip` 返回 `ce=gzip`；Go 分支由 `acceptsGzip` 的单一 token 判断可静态确定前两者不进入压缩路径。该结论不依赖当前未提交工作区。
 - 修复门槛：实现与 Node 一致的 `br`/`gzip`/`deflate`/`identity` 协商和权重处理（或明确冻结并验证等价的受支持编码集合），补充三种编码、并列权重、不可接受和大响应 golden；在响应头与正文编码均一致前不得关闭 K1 压缩契约。
 
+## 已确认子项：Go 对无 Content-Length 的分块响应错误执行 1024B 阈值
+
+- 对照事实：历史 Node `compression` 在没有 `Content-Length` 的响应上，第一次 `res.write()` 会先提交响应头；此时长度估算为空，不会命中“低于阈值”分支，随后按协商结果立即创建压缩流。也就是说，分块响应即使首块只有 1 字节，后续仍以 gzip/br/deflate 流输出。
+- 历史 Go：提交 `b3115e675` 的 `compressionWriter.Write` 在第一次写入时调用 `decide(c.buffer.Len()+len(body))`；由于 `buffer` 从未接收首块，首个小分片（例如 1 或 600 字节）低于 1024 时直接写原文并将 `bodyWritten` 置为 true，后续写入不再重新评估，也不会启动 gzip。
+- 可观察结果：同一无 `Content-Length`、分两次写出的响应（首块 1 字节、末块 1 字节），Node 在 `Accept-Encoding: gzip` 下返回 `Content-Encoding: gzip` 的压缩流，Go 返回 identity 且没有 `Vary`；SSE 之外的 chunked 大响应会出现编码头、正文字节和客户端解码路径偏离。该差异与单次 `Write` 大于阈值的 happy path 不同，现有 K1 测试未覆盖。
+- 运行证据：仓库历史 Node 依赖实测 `res.write('a'); res.end('b')`、无 `Content-Length`、`Accept-Encoding: gzip` 返回 `ce=gzip`；Go `Write`/`decide` 的首块判断和 `bodyWritten` 单次门禁可静态确定相同请求不会压缩。该结论不依赖当前未提交工作区。
+- 修复门槛：按 Node 的 `Content-Length`/首写时序重建分块响应决策，区分“明确小 Content-Length 的 end 响应”和“未知长度的 chunked 响应”；补充首块小于阈值、后续累计超过阈值、首写即 flush 及显式小/大 `Content-Length` 的 Node/Go golden。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
