@@ -25,6 +25,7 @@ import (
 	businesssettings "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/delegated"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/helpweb"
@@ -38,9 +39,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/policyreads"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/publicapilogs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/proxyprofiles"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/publicapilogs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
@@ -807,6 +808,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			Clock:           gatewaypreauth.SystemClock{},
 			AuditLogEnabled: func() bool { return cfg.AuditLogEnabled },
 			AuditInputURL:   cfg.AuditInputURL,
+			QueueDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
+				MaxQueueSize:        cfg.ConcurrencyGlobalMax,
+				PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
+			},
 			SpoolDirectory:  spoolDirectory,
 			Circuits:        chainServices.Circuits,
 			IPPolicy:        chainServices.IPPolicy,

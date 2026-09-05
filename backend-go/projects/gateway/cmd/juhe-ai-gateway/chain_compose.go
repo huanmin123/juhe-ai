@@ -72,6 +72,10 @@ type chainRuntimeDeps struct {
 	AuditInputURL string
 	// SpoolDirectory enables the durable usage-record spool.
 	SpoolDirectory string
+	// QueueDefaults carries the concurrency.globalMax derived DEFAULT
+	// high-concurrency scheduling bounds (Node runtimeConfig.concurrency.
+	// globalMax, default 5000) for the speed-first body admission gate.
+	QueueDefaults gatewayclientip.HighConcurrencyPolicyDefaults
 
 	// G13 runtime services (required: preflight hot path).
 	Circuits        gatewaypreauth.PreAuthCircuits
@@ -289,6 +293,10 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		observability:      observability,
 		clock:              clock,
 		bodyPipeline:       bodyPipeline,
+		speedFirstAdmission: &chainSpeedFirstBodyAdmissionGate{
+			preauth:       preauthService,
+			QueueDefaults: deps.QueueDefaults,
+		},
 		finalizationUsage:  recorder,
 		auditSettings:      auditSettingsSourceAdapter{enabled: deps.AuditLogEnabled},
 		auditDispatcher:    auditUsageDispatcher{target: deps.AuditInputURL, logger: logger},

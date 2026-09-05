@@ -29,6 +29,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
@@ -515,6 +516,108 @@ func TestSpooledUsageRecorderDeliversAndOverflowsToSpool(t *testing.T) {
 	entries := spoolDirectoryEntries(t, filepath.Join(dir, "spool"))
 	if len(entries) == 0 {
 		t.Fatal("spool must hold the delivered records")
+	}
+}
+
+// capturingUsageRecorder collects the enqueued usage records for assertions.
+type capturingUsageRecorder struct {
+	records []gatewayusage.UsageRecordInput
+}
+
+func (r *capturingUsageRecorder) EnqueueUsageRecord(_ gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
+	r.records = append(r.records, input)
+	return nil
+}
+
+// TestChainFinalizationUsageFailedAttemptCarriesFullIdentity locks the U2
+// regression: the finalization-side failed attempt usage record must carry the
+// same identity dimensions as the completed path (records.ts 失败路径同样写入
+// traceId/clientIp/systemAccountId/apiKeyId/groupId/endpoint/providerCode/
+// accountId).
+func TestChainFinalizationUsageFailedAttemptCarriesFullIdentity(t *testing.T) {
+	recorder := &capturingUsageRecorder{}
+	usage := chainFinalizationUsage{recorder: recorder}
+	statusCode := 502
+	usage.RecordFailedUpstreamAttempt(gatewayresponse.FailedAttemptInput{
+		UsageContext: gatewaypreauth.GatewayFailureUsageContext{
+			TraceID:         "trace_failed_1",
+			TrafficSource:   "gateway",
+			ClientIP:        "203.0.113.7",
+			SystemAccountID: "sys_acc_1",
+			APIKeyID:        "key_1",
+			GroupID:         "group_1",
+			Endpoint:        "/v1/chat/completions",
+			ProviderCode:    "openai",
+		},
+		Account:            gatewayresponse.OpenAIAccountView{Account: gatewayruntimecache.OpenAIAccountSecret{ID: "acc_failed_1"}},
+		StatusCode:         &statusCode,
+		ErrorMessage:       "upstream connect timeout",
+		FailureAttribution: "account_upstream",
+	})
+	if len(recorder.records) != 1 {
+		t.Fatalf("records = %d, want 1", len(recorder.records))
+	}
+	record := recorder.records[0]
+	if record.TraceID != "trace_failed_1" {
+		t.Errorf("TraceID = %q, want trace_failed_1", record.TraceID)
+	}
+	if record.ClientIP != "203.0.113.7" {
+		t.Errorf("ClientIP = %q, want 203.0.113.7", record.ClientIP)
+	}
+	if record.SystemAccountID != "sys_acc_1" {
+		t.Errorf("SystemAccountID = %q, want sys_acc_1", record.SystemAccountID)
+	}
+	if record.APIKeyID != "key_1" {
+		t.Errorf("APIKeyID = %q, want key_1", record.APIKeyID)
+	}
+	if record.GroupID != "group_1" {
+		t.Errorf("GroupID = %q, want group_1", record.GroupID)
+	}
+	if record.Endpoint != "/v1/chat/completions" {
+		t.Errorf("Endpoint = %q, want /v1/chat/completions", record.Endpoint)
+	}
+	if record.ProviderCode != "openai" {
+		t.Errorf("ProviderCode = %q, want openai", record.ProviderCode)
+	}
+	if record.AccountID != "acc_failed_1" {
+		t.Errorf("AccountID = %q, want acc_failed_1", record.AccountID)
+	}
+	if record.Success {
+		t.Error("Success = true, want false for a failed attempt")
+	}
+	if record.ErrorMessage != "upstream connect timeout" {
+		t.Errorf("ErrorMessage = %q, want upstream connect timeout", record.ErrorMessage)
+	}
+	if record.FailureAttribution != "account_upstream" {
+		t.Errorf("FailureAttribution = %q, want account_upstream", record.FailureAttribution)
+	}
+	if record.StatusCode == nil || *record.StatusCode != 502 {
+		t.Errorf("StatusCode = %v, want 502", record.StatusCode)
+	}
+}
+
+// TestChainFinalizationUsageFailedAttemptOmitsAbsentStatusCode locks the
+// statusCode nil semantics: when the failed attempt carries no status code the
+// record must omit StatusCode entirely (nil pointer), never a pointer to 0;
+// a missing account must leave AccountID empty.
+func TestChainFinalizationUsageFailedAttemptOmitsAbsentStatusCode(t *testing.T) {
+	recorder := &capturingUsageRecorder{}
+	usage := chainFinalizationUsage{recorder: recorder}
+	usage.RecordFailedUpstreamAttempt(gatewayresponse.FailedAttemptInput{
+		UsageContext: gatewaypreauth.GatewayFailureUsageContext{TraceID: "trace_failed_2"},
+	})
+	if len(recorder.records) != 1 {
+		t.Fatalf("records = %d, want 1", len(recorder.records))
+	}
+	record := recorder.records[0]
+	if record.StatusCode != nil {
+		t.Errorf("StatusCode = %v, want nil when the attempt has no status", record.StatusCode)
+	}
+	if record.AccountID != "" {
+		t.Errorf("AccountID = %q, want empty when the attempt has no account", record.AccountID)
+	}
+	if record.TraceID != "trace_failed_2" {
+		t.Errorf("TraceID = %q, want trace_failed_2", record.TraceID)
 	}
 }
 

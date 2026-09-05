@@ -100,6 +100,11 @@ type runtimeConfig struct {
 	// database the ai-health reads merge (jobs JUHE_AI_JOBS_OUTCOME_POSTGRES_URL
 	// counterpart; Node merged readPostgresOutcomesForAccounts from the same DB).
 	AccountHealthOutcomePostgresURL string
+	// ConcurrencyGlobalMax mirrors Node runtimeConfig.concurrency.globalMax
+	// (JUHE_AI_CONCURRENCY_GLOBAL_MAX, default 5000): the DEFAULT
+	// high-concurrency scheduling policy queue bounds and the dispatch
+	// candidate window limit derive from it.
+	ConcurrencyGlobalMax int
 	// FrontendDistPath is the frontend dist directory backing the
 	// /__aisys__/help static surface (Node derives it from backendRoot).
 	FrontendDistPath string
@@ -352,6 +357,14 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	}
 	cfg.AccountHealthOutcomeSQLitePath = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH"))
 	cfg.AccountHealthOutcomePostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL"))
+	cfg.ConcurrencyGlobalMax = 5000
+	if raw := strings.TrimSpace(getenv("JUHE_AI_CONCURRENCY_GLOBAL_MAX")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须是正整数: %q", raw)
+		}
+		cfg.ConcurrencyGlobalMax = parsed
+	}
 	cfg.FrontendDistPath = strings.TrimSpace(getenv("JUHE_AI_FRONTEND_DIST_PATH"))
 
 	// Runtime-logs grep surface: Node numberConfig clamps instead of failing.

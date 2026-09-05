@@ -85,6 +85,14 @@ func resolveGroupSchedulingPolicy(value map[string]any, defaults HighConcurrency
 	}, nil
 }
 
+// ResolveGroupSchedulingPolicy is the exported composition-root entry to
+// resolveGroupSchedulingPolicy: the gateway chain's speed-first body
+// admission gate (server.ts admitSpeedFirstRequestBody) resolves the same
+// consumed queue subset off the same scheduling_policy_json payload.
+func ResolveGroupSchedulingPolicy(value map[string]any, defaults HighConcurrencyPolicyDefaults) (GroupSchedulingPolicy, error) {
+	return resolveGroupSchedulingPolicy(value, defaults)
+}
+
 // EffectiveImageLaneConcurrencyLimit mirrors effectiveImageLaneConcurrencyLimit.
 func EffectiveImageLaneConcurrencyLimit(accountConcurrencyLimit int, policy GroupSchedulingPolicy) int {
 	hardLimit := positiveIntClamp(accountConcurrencyLimit, 1, 1_000_000)

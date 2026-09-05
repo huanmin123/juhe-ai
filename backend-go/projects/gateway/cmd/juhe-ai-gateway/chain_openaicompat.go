@@ -127,8 +127,20 @@ func (d *chainCompatDispatcher) matches(path string) bool {
 	return false
 }
 
+// ServeHTTP answers matched compat routes through the mux; a family-prefix
+// path without a registered route keeps the Node 404 JSON contract. Without
+// this probe the net/http mux answers unknown sub-paths with its text/plain
+// `404 page not found` body (and unmatched methods with text/plain 405),
+// while the Node express routers fall through to
+// rejectUnrecognizedGatewayProtocolRequest's 404 JSON.
 func (d *chainCompatDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if d == nil || d.mux == nil || !d.matches(r.URL.Path) {
+		writeChainNotFound(w)
+		return
+	}
+	// Handler returns an empty pattern when nothing matches (unknown
+	// sub-path or method-only mismatch); those all render the 404 JSON.
+	if _, pattern := d.mux.mux.Handler(r); pattern == "" {
 		writeChainNotFound(w)
 		return
 	}

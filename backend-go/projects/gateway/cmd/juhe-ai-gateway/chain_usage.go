@@ -261,12 +261,15 @@ func (u chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespons
 	if u.recorder == nil {
 		return
 	}
-	statusCode := 0
-	if input.StatusCode != nil {
-		statusCode = *input.StatusCode
-	}
 	record := gatewayusage.UsageRecordInput{
+		TraceID:            input.UsageContext.TraceID,
 		TrafficSource:      "gateway",
+		ClientIP:           input.UsageContext.ClientIP,
+		SystemAccountID:    input.UsageContext.SystemAccountID,
+		APIKeyID:           input.UsageContext.APIKeyID,
+		GroupID:            input.UsageContext.GroupID,
+		Endpoint:           input.UsageContext.Endpoint,
+		ProviderCode:       input.UsageContext.ProviderCode,
 		UsageSemantic:      "gateway_request",
 		Success:            false,
 		ErrorCode:          "upstream_retryable_error",
@@ -274,8 +277,13 @@ func (u chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespons
 		FailureAttribution: input.FailureAttribution,
 		CreatedAt:          time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 	}
-	record.StatusCode = &statusCode
-	println("DEBUG enqueue failed attempt, recorder nil?", u.recorder == nil)
+	if input.Account != nil && input.Account.GetID() != "" {
+		record.AccountID = input.Account.GetID()
+	}
+	if input.StatusCode != nil {
+		statusCode := *input.StatusCode
+		record.StatusCode = &statusCode
+	}
 	_ = u.recorder.EnqueueUsageRecord(context.Background(), record)
 }
 

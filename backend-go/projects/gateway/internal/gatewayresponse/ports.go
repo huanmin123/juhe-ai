@@ -59,6 +59,12 @@ type CompletedAttemptInput struct {
 
 // FailedAttemptInput 对齐 recordFailedUpstreamAttempt 的 input。
 type FailedAttemptInput struct {
+	// UsageContext / Account 承载 Node recordFailedUpstreamAttempt 的
+	// usageContext / account 参数：失败 usage 记录同样携带完整身份维度
+	// （records.ts 失败路径经 dispatchUsageRecord 写入 traceId/clientIp/
+	// systemAccountId/apiKeyId/groupId/accountId/endpoint/providerCode）。
+	UsageContext       gatewaypreauth.GatewayFailureUsageContext
+	Account            AccountView
 	UpstreamURL        string
 	StartedAtMs        int64
 	StatusCode         *int

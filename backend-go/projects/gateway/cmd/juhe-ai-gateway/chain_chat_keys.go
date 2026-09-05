@@ -214,7 +214,13 @@ func (p *chatAPIKeyProvider) ensureDefaultRouteStrategies(ownerID, timestamp str
 		if err != nil {
 			return err
 		}
-		description := fmt.Sprintf("系统默认普通路由，绑定%s。", group.name)
+		// Node route-strategy.repository.ts: `group.name ?? '默认分组'` —
+		// only a SQL NULL falls back; an empty string stays verbatim.
+		boundGroupName := group.name
+		if group.nameNull {
+			boundGroupName = "默认分组"
+		}
+		description := fmt.Sprintf("系统默认普通路由，绑定%s。", boundGroupName)
 		_, err = p.db.Exec(p.bind(fmt.Sprintf(`INSERT INTO %s (
 				id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at
 			) VALUES (?, ?, ?, ?, 'normal', 'active', 1, NULL, ?, ?)`, p.table("route_strategies"))),
@@ -237,10 +243,12 @@ func (p *chatAPIKeyProvider) ensureDefaultRouteStrategies(ownerID, timestamp str
 	return nil
 }
 
-// chatDefaultGroup mirrors the RouteStrategyBindableGroupRow subset.
+// chatDefaultGroup mirrors the RouteStrategyBindableGroupRow subset. nameNull
+// carries the SQL NULL the Node `group.name ?? '默认分组'` fallback covers.
 type chatDefaultGroup struct {
-	id   string
-	name string
+	id       string
+	name     string
+	nameNull bool
 }
 
 // defaultRouteStrategyGroups mirrors defaultRouteStrategyGroupsForSystemAccountAsync.
@@ -253,14 +261,16 @@ func (p *chatAPIKeyProvider) defaultRouteStrategyGroups(ownerID string) ([]chatD
 	defer rows.Close()
 	out := []chatDefaultGroup{}
 	for rows.Next() {
-		var id, name, providerCode string
+		var id string
+		var name sql.NullString
+		var providerCode string
 		if err := rows.Scan(&id, &name, &providerCode); err != nil {
 			return nil, err
 		}
 		if strings.EqualFold(strings.TrimSpace(providerCode), "hybrid") {
 			continue
 		}
-		out = append(out, chatDefaultGroup{id: id, name: name})
+		out = append(out, chatDefaultGroup{id: id, name: name.String, nameNull: !name.Valid})
 	}
 	return out, rows.Err()
 }

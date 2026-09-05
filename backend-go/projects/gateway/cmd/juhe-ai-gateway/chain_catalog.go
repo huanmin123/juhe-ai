@@ -175,7 +175,11 @@ func (s *chainCatalogSource) builtinCatalogQuery(input gatewayruntimecache.Model
 }
 
 // customCatalogQuery mirrors listCustomProviderModelsForCatalog: the
-// global/personal scope window over custom_provider_models.
+// global/personal scope window over custom_provider_models. The model ordering
+// is dual-dialect like the Node read
+// (custom-provider-models.repository.ts): SQLite orders by
+// `model COLLATE NOCASE`, PostgreSQL has no such collation and orders by
+// `lower(model)`.
 func (s *chainCatalogSource) customCatalogQuery(input gatewayruntimecache.ModelCatalogListOptions, now string) (string, []any) {
 	clauses := []string{"provider_code = ?"}
 	args := []any{input.ProviderCode}
@@ -189,9 +193,20 @@ func (s *chainCatalogSource) customCatalogQuery(input gatewayruntimecache.ModelC
 	} else {
 		clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
 	}
-	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s ORDER BY scope ASC, model COLLATE NOCASE ASC, id ASC`,
-		catalogColumnList(chainCustomCatalogColumns), s.table("custom_provider_models"), strings.Join(clauses, " AND "))
+	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s ORDER BY scope ASC, %s ASC, id ASC`,
+		catalogColumnList(chainCustomCatalogColumns), s.table("custom_provider_models"), strings.Join(clauses, " AND "), s.modelOrderExpression())
 	return query, args
+}
+
+// modelOrderExpression mirrors the Node dual-dialect custom-provider model
+// ordering (custom-provider-models.repository.ts listCustomProviderModelsForCatalog
+// vs its postgres arm): `model COLLATE NOCASE` on SQLite, `lower(model)` on
+// PostgreSQL.
+func (s *chainCatalogSource) modelOrderExpression() string {
+	if s.postgres {
+		return "lower(model)"
+	}
+	return "model COLLATE NOCASE"
 }
 
 func catalogColumnList(columns [][2]string) string {

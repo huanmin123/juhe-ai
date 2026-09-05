@@ -5,17 +5,25 @@ package main
 // half). The stage order, error exits and SSE semantics mirror the Node call
 // sequence:
 //
+//	preauth (runtime resolution + guards) -> body pipeline ->
 //	request.accepted log -> request snapshot -> audit capture ->
-//	preauth (runtime resolution + guards) -> preflight
-//	(route-action finalize) -> engine dispatch loop ->
+//	preflight (route-action fallback loop) -> engine dispatch loop
+//	(with the api-key group fallback switch) ->
 //	response handling (stream pipe / non-stream) -> finalization.
+//
+// The preauth + body stages run first because the archived Node mounts them
+// as server-level middlewares ahead of openAIGatewayRouter (server.ts
+// 488-500); the accepted log (routes.ts:287), the usage request snapshot
+// (:296) and the audit capture (:297) therefore observe the parsed body.
 //
 // The deep per-branch server-retry loops of the Node source (speed-first
 // cutover, codex encrypted-content recovery, account-lock lease carry) run
-// inside the frozen Go engine / response slices; this file sequences them and
-// renders the Node error exits.
+// inside the frozen Go engine / response slices; this file sequences them,
+// walks the Node resolveRouteAction / switchToFallbackGroup fallback loops
+// and renders the Node error exits.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,6 +38,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
 // gatewayTrafficSource mirrors normalizeOpenAIGatewayTrafficSource(undefined).
@@ -37,18 +46,23 @@ const gatewayTrafficSource = "gateway"
 
 // gatewayChain is the assembled /v1 chain.
 type gatewayChain struct {
-	preauth            *gatewaypreauth.Service
-	engine             *gatewaydispatch.Engine
-	observability      gatewaypreauth.Observability
-	clock              gatewaypreauth.Clock
-	bodyPipeline       *gatewaybody.Middleware
-	finalizationUsage  gatewayusage.UsageRecorder
-	auditSettings      gatewayusage.AuditLogSettingsSource
-	auditDispatcher    gatewayusage.AuditDispatcher
-	usageModelResolver gatewayusage.UsageModelResolver
-	// compat answers the openai-compatible files / vector-stores families
-	// ahead of the Node 404 JSON (chain_openaicompat.go). Nil keeps the pure
-	// protocol chain (compose tests).
+	preauth             *gatewaypreauth.Service
+	engine              *gatewaydispatch.Engine
+	observability       gatewaypreauth.Observability
+	clock               gatewaypreauth.Clock
+	bodyPipeline        *gatewaybody.Middleware
+	speedFirstAdmission *chainSpeedFirstBodyAdmissionGate
+	finalizationUsage   gatewayusage.UsageRecorder
+	auditSettings       gatewayusage.AuditLogSettingsSource
+	auditDispatcher     gatewayusage.AuditDispatcher
+	usageModelResolver  gatewayusage.UsageModelResolver
+	// compat answers the openai-compatible files / vector-stores families.
+	// Deliberate Go enhancement over the archived Node server.ts order: the
+	// archived Node mounted these routers AFTER
+	// rejectUnrecognizedGatewayProtocolRequest (server.ts:490-494), so their
+	// non-protocol paths 404'd through the gate and stayed unreachable; Go
+	// mounts the family ahead of the protocol check on purpose. Nil keeps the
+	// pure protocol chain (compose tests).
 	compat *chainCompatDispatcher
 }
 
@@ -59,12 +73,13 @@ func (c *gatewayChain) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleOpenAIGatewayRequest mirrors handleOpenAIGatewayRequest (routes.ts)
 // preceded by the server.ts gateway middleware chain it replaces
-// (rejectUnrecognizedGatewayProtocolRequest -> body pipeline capture).
+// (rejectUnrecognizedGatewayProtocolRequest -> preauth -> body pipeline).
 func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http.Request) {
-	// rejectUnrecognizedGatewayProtocolRequest: the openai-compatible files /
-	// vector-stores families mount ahead of the protocol check (Node
-	// server.ts gateway middleware order); every other non-protocol /v1 path
-	// keeps the Node 404 JSON contract.
+	// Protocol gate. The openai-compatible families answer ahead of the gate
+	// on purpose (see the gatewayChain.compat note): that ordering is a Go
+	// enhancement, NOT the archived Node server.ts order, where the same
+	// routers sat behind rejectUnrecognizedGatewayProtocolRequest. Every
+	// other non-protocol /v1 path keeps the Node 404 JSON contract.
 	req := gatewaypreauth.NewGatewayRequest(r)
 	if !gatewayopenaiIsProtocolPath(req.PathAndQuery()) {
 		if c.compat != nil {
@@ -86,22 +101,8 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	}
 	endpoint := gatewaypreauth.RequestEndpoint(req)
 	requestLane := gatewaypreauth.ResolveOpenAIGatewayRequestLane(req)
-	model, _ := gatewaypreauth.RequestModel(req)
-	stream := gatewaypreauth.RequestStream(req)
-	c.observability.LogRequestStage("request.accepted", map[string]any{
-		"traceId":       traceID,
-		"method":        req.MethodUpper(),
-		"endpoint":      endpoint,
-		"requestLane":   string(requestLane),
-		"trafficSource": gatewayTrafficSource,
-		"model":         model,
-		"stream":        stream,
-	}, "success", c.clock.Now())
 
-	requestSnapshot := usageRequestSnapshotOf(req, traceID)
-	auditCapture := c.newAuditCapture(req, traceID, startedAt)
-
-	// ---- pre-auth stage (request/pre-auth.ts middleware order) ----
+	// ---- pre-auth stage (request/preauth.ts middleware order) ----
 	if err := c.preauth.PreResolveGatewayRuntime(ctx, res, req, func() {}); err != nil {
 		c.handleOrchestratorError(err, req, res, startedAt, endpoint)
 		return
@@ -111,10 +112,26 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	}
 
 	// ---- body pipeline (rejectGatewayRawBodyByContentLength ->
-	//      parseGatewayRawBody -> captureGatewayRawBody) ----
+	//      admitSpeedFirstRequestBody -> parseGatewayRawBody -> capture) ----
 	if c.bodyPipeline != nil {
 		if c.bodyPipeline.RejectByContentLength(w, r) {
 			return
+		}
+		// speed-first + high-concurrency groups admit request bodies through a
+		// bounded queue (Node server.ts admitSpeedFirstRequestBody); 429
+		// backpressure replaces the body stages entirely.
+		if c.speedFirstAdmission != nil {
+			admission, admErr := c.speedFirstAdmission.AdmitBody(r.Context(), req, res, requestLane)
+			if admErr != nil {
+				c.handleOrchestratorError(admErr, req, res, startedAt, endpoint)
+				return
+			}
+			if admission.Handled {
+				return
+			}
+			if admission.Release != nil {
+				defer admission.Release()
+			}
 		}
 		rawBody, parserErr := c.bodyPipeline.ReadRawBody(w, r)
 		if parserErr != nil {
@@ -137,6 +154,31 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		req.Body = bodyReq
 	}
 
+	// ---- request acceptance + audit capture (routes.ts:287 / :296 / :297) ----
+	// Node runs these inside handleOpenAIGatewayRequest, i.e. after the
+	// server-level preauth and body middlewares: the accepted log and the
+	// capture creation see the parsed body (snapshot body state, capture
+	// rawBody — capture.service.ts addClientRequestPayload reads req.rawBody
+	// once the body middleware has attached it).
+	model, _ := gatewaypreauth.RequestModel(req)
+	stream := gatewaypreauth.RequestStream(req)
+	c.observability.LogRequestStage("request.accepted", map[string]any{
+		"traceId":       traceID,
+		"method":        req.MethodUpper(),
+		"endpoint":      endpoint,
+		"requestLane":   string(requestLane),
+		"trafficSource": gatewayTrafficSource,
+		"model":         model,
+		"stream":        stream,
+	}, "success", c.clock.Now())
+
+	requestSnapshot := usageRequestSnapshotOf(req, traceID)
+	auditCapture := c.newAuditCapture(req, traceID, startedAt)
+	// Node finally (routes.ts:2645): an un-finalized capture is canceled at
+	// request end so its active-capture slot is recycled. Idempotent; the
+	// failure paths below may cancel earlier.
+	defer gatewaypreauth.CancelAuditCapture(auditCapture)
+
 	// ---- preflight (request/preflight.ts) ----
 	preflight, err := c.preauth.PrepareOpenAIGatewayDispatchContext(ctx, gatewaypreauth.PreflightInput{
 		Req:             req,
@@ -151,71 +193,65 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		Signal:          ctx,
 	})
 	if err != nil {
+		// Node routes.ts:509-517.
+		gatewaypreauth.CancelAuditCapture(auditCapture)
 		c.observability.LogRequestStage("preflight.failed", map[string]any{
 			"traceId": traceID, "error": err.Error(),
 		}, "unexpected_failure", c.clock.Now())
 		c.handleOrchestratorError(err, req, res, startedAt, endpoint)
 		return
 	}
-	if preflight.IsRouteAction() {
-		c.finalizeRouteAction(preflight.RouteAction, req, res, auditCapture, startedAt)
-		return
-	}
-	if preflight.DispatchContext == nil {
-		// The request completed inside a preflight step (Node undefined).
-		c.observability.LogRequestStage("preflight.rejected", map[string]any{
-			"traceId": traceID, "failureReason": "preflight_rejected",
-		}, "expected_failure", c.clock.Now())
-		return
-	}
-	context := preflight.DispatchContext
-	c.observability.LogRequestStage("preflight.completed", map[string]any{
-		"traceId":               traceID,
-		"groupId":               context.UsageContext.GroupID,
-		"apiKeyId":              context.UsageContext.APIKeyID,
-		"candidateAccountCount": len(context.Accounts),
-	}, "success", c.clock.Now())
 
-	// ---- dispatch loop (dispatch/upstream-dispatch.ts) ----
-	settings := context.ActiveGatewaySettings
+	// ---- per-request coordination budgets (routes.ts:258/263) ----
 	budgets, err := newRequestBudgets(traceID, startedAt, c.clock)
 	if err != nil {
 		c.handleOrchestratorError(err, req, res, startedAt, endpoint)
 		return
 	}
 	serverRetryBudget := gatewaypreauth.NewServerRetryBudget(0, c.clock)
-	coordination := &gatewaydispatch.RequestCoordinationContext{
-		Scope:                    gatewaydispatch.CoordinationScopeGatewayRequest,
-		ServerRetryBudget:        serverRetryBudget,
-		GatewayRequestWallBudget: budgets.wall,
-		RouteCoordinationBudget:  budgets.coordination,
-		RequestAttemptTracker:    budgets.tracker,
+
+	loop := &v1DispatchLoop{
+		c:                   c,
+		req:                 req,
+		res:                 res,
+		auditCapture:        auditCapture,
+		requestSnapshot:     requestSnapshot,
+		budgets:             budgets,
+		serverRetryBudget:   serverRetryBudget,
+		startedAt:           startedAt,
+		endpoint:            endpoint,
+		traceID:             traceID,
+		actionVisitedGroups: map[string]bool{},
+		enteredGroups:       map[string]bool{},
 	}
-	dispatched, dispatchErr := c.engine.FetchFirstAvailableUpstream(ctx, gatewaydispatch.FetchFirstAvailableUpstreamArgs{
-		Req:                             req,
-		Accounts:                        context.Accounts,
-		Settings:                        settings,
-		UsageContext:                    context.UsageContext,
-		AuditCapture:                    c.engineAuditCapture(auditCapture),
-		SessionAffinityKey:              context.SessionAffinityKey,
-		Signal:                          ctx,
-		ClientIPAccountAvoidanceTracker: context.ClientIPAccountAvoidance,
-		RequestLane:                     string(context.RequestLane),
-		GroupSchedulingPolicy:           context.GroupSchedulingPolicy,
-		AccountStateMutationEnabled:     context.UsageContext.TrafficSource == gatewayTrafficSource,
-		RequestClientCompatibility:      context.ClientStrategy.RequestClientCompatibility,
-		ModelPriority:                   context.ModelPriority,
-		AllowPrecheckHalfOpen:           context.PrecheckHalfOpenEligible,
-		RequestCoordination:             coordination,
-		WaitForRecoverableFailures:      true,
-	})
-	if dispatchErr != nil {
-		c.handleDispatchError(dispatchErr, req, res, auditCapture, context, startedAt, endpoint)
+	context, err := loop.resolveRouteAction(ctx, preflight)
+	if err != nil {
+		// Node runs resolveRouteAction outside the preflight try (routes.ts:
+		// 518-520); a fallback preparation error propagates to the express
+		// error middleware.
+		c.handleOrchestratorError(err, req, res, startedAt, endpoint)
 		return
 	}
+	if context == nil {
+		// Node routes.ts:521-529: undefined after the route-action fallback
+		// loop, or a preflight step completed the request.
+		gatewaypreauth.CancelAuditCapture(auditCapture)
+		c.observability.LogRequestStage("preflight.rejected", map[string]any{
+			"traceId": traceID, "failureReason": "preflight_rejected",
+		}, "expected_failure", c.clock.Now())
+		return
+	}
+	c.observability.LogRequestStage("preflight.completed", map[string]any{
+		"traceId":               traceID,
+		"groupId":               context.UsageContext.GroupID,
+		"apiKeyId":              context.UsageContext.APIKeyID,
+		"candidateAccountCount": len(context.Accounts),
+		"routeStrategyId":       routeStrategyIDOf(context.APIKeyRecord),
+	}, "success", c.clock.Now())
 
-	// ---- response piping + finalization (response/finalization.ts) ----
-	c.handleUpstreamResponse(req, res, auditCapture, context, dispatched, startedAt, settings, budgets)
+	loop.current = context
+	loop.enteredGroups[context.UsageContext.GroupID] = true
+	loop.run(ctx)
 }
 
 // handleUpstreamResponse mirrors handleStreamUpstreamResponse /
@@ -234,7 +270,13 @@ func (c *gatewayChain) handleUpstreamResponse(
 	commitState := &gatewayresponse.DownstreamCommitState{}
 	upstream := dispatched.Response
 	streamRequest := gatewaypreauth.IsOpenAIStreamRequest(req)
-	handleAsStream := gatewayresponse.ShouldHandleOpenAIUpstreamResponseAsStream(upstream.ContentType(), streamRequest)
+	// Node routes.ts:1550-1553: shouldHandleAsStream = upstreamResponse.ok &&
+	// shouldHandle... . A complete non-2xx is already the terminal upstream
+	// response; never interpret a missing/misleading SSE content type as a
+	// stream and replace the provider error body (429/503 with an
+	// text/event-stream content type) with a gateway event.
+	handleAsStream := shouldHandleOpenAIUpstreamResponseAsStreamWithStatus(
+		upstream.Status(), upstream.ContentType(), streamRequest)
 	input := &gatewayresponse.HandleUpstreamResponseInput{
 		Req:        req,
 		Downstream: gatewayresponse.StreamDownstream{Res: res},
@@ -276,9 +318,14 @@ func (c *gatewayChain) handleUpstreamResponse(
 		handling, err = gatewayresponse.HandleNonStreamUpstreamResponse(*input)
 	}
 	if err != nil {
-		if !res.HeadersSent() {
-			gatewaypreauth.SendGatewayJSONError(res, http.StatusBadGateway,
-				gatewaypreauth.GatewayErrorPayloadOf("上游响应处理失败", "upstream_error"),
+		// Node has no dedicated response-handler error exit: the failure
+		// falls through to the top-level catch contract. A committed
+		// downstream stays untouched (bare disconnect); an unwritten one
+		// renders the fixed 503 upstream copy. (V6: the previous 502
+		// 上游响应处理失败/upstream_error exit had no Node source.)
+		if !res.HeadersSent() && !commitState.TransportCommitted {
+			gatewaypreauth.SendGatewayJSONError(res, http.StatusServiceUnavailable,
+				gatewaypreauth.GatewayErrorPayloadOf("上游暂时不可用，请重试", "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode),
 				gatewaypreauth.SendGatewayErrorOptions{Protocol: clientErrorProtocol(req)})
 		}
 		return
@@ -286,15 +333,485 @@ func (c *gatewayChain) handleUpstreamResponse(
 	gatewayresponse.FinalizeHandledUpstreamResponse(*input, handling)
 }
 
+// ---------------------------------------------------------------------------
+// dispatch loop with the api-key group fallback (routes.ts second half)
+// ---------------------------------------------------------------------------
+
+// v1DispatchLoop carries the mutable per-request state of the Node dispatch
+// loop (routes.ts:537-566 locals): the current preflight context, the
+// visited-group markers of resolveRouteAction (routeActionVisitedGroupIds) and
+// switchToFallbackGroup (enteredRouteGroupIds), and the fallback hop counter.
+type v1DispatchLoop struct {
+	c                   *gatewayChain
+	req                 *gatewaypreauth.GatewayRequest
+	res                 *gatewaypreauth.TrackingWriter
+	auditCapture        gatewaypreauth.AuditCaptureContext
+	requestSnapshot     gatewaypreauth.UsageRequestSnapshot
+	budgets             requestBudgets
+	serverRetryBudget   *gatewaypreauth.ServerRetryBudget
+	startedAt           int64
+	endpoint            string
+	traceID             string
+	current             *gatewaypreauth.DispatchContext
+	actionVisitedGroups map[string]bool
+	enteredGroups       map[string]bool
+	fallbackSwitches    int
+}
+
+// v1FallbackSwitch mirrors the switchToFallbackGroup return union
+// (routes.ts:570-572).
+type v1FallbackSwitch string
+
+const (
+	v1FallbackNone      v1FallbackSwitch = "none"
+	v1FallbackSwitched  v1FallbackSwitch = "switched"
+	v1FallbackCompleted v1FallbackSwitch = "completed"
+)
+
+// run mirrors the Node while(true) dispatch loop: fetch the first available
+// upstream for the current group context and hand the response to the
+// response layer; classify dispatch errors, switching to the fallback group
+// before rendering the terminal exits.
+func (l *v1DispatchLoop) run(ctx context.Context) {
+	for {
+		current := l.current
+		coordination := &gatewaydispatch.RequestCoordinationContext{
+			Scope:                    gatewaydispatch.CoordinationScopeGatewayRequest,
+			ServerRetryBudget:        l.serverRetryBudget,
+			GatewayRequestWallBudget: l.budgets.wall,
+			RouteCoordinationBudget:  l.budgets.coordination,
+			RequestAttemptTracker:    l.budgets.tracker,
+		}
+		dispatched, dispatchErr := l.c.engine.FetchFirstAvailableUpstream(ctx, gatewaydispatch.FetchFirstAvailableUpstreamArgs{
+			Req:                             l.req,
+			Accounts:                        current.Accounts,
+			Settings:                        current.ActiveGatewaySettings,
+			UsageContext:                    current.UsageContext,
+			AuditCapture:                    l.c.engineAuditCapture(l.auditCapture),
+			SessionAffinityKey:              current.SessionAffinityKey,
+			Signal:                          ctx,
+			ClientIPAccountAvoidanceTracker: current.ClientIPAccountAvoidance,
+			RequestLane:                     string(current.RequestLane),
+			GroupSchedulingPolicy:           current.GroupSchedulingPolicy,
+			AccountStateMutationEnabled:     current.UsageContext.TrafficSource == gatewayTrafficSource,
+			RequestClientCompatibility:      current.ClientStrategy.RequestClientCompatibility,
+			ModelPriority:                   current.ModelPriority,
+			AllowPrecheckHalfOpen:           current.PrecheckHalfOpenEligible,
+			RequestCoordination:             coordination,
+			WaitForRecoverableFailures:      true,
+		})
+		if dispatchErr == nil {
+			// ---- response piping + finalization (response/finalization.ts) ----
+			l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets)
+			return
+		}
+		if l.settleDispatchError(ctx, dispatchErr) {
+			return
+		}
+	}
+}
+
+// settleDispatchError maps one dispatch-loop error onto the Node error
+// handling (routes.ts:1285-1487 catch + the top-level catch 2532-2638). It
+// returns true when the request is settled (response written, aborted, or
+// terminal exit rendered) and false when the loop should continue on the
+// switched fallback group.
+func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr error) bool {
+	// Node top-level catch: known errors (downstream closed, agent guidance,
+	// validation / codex adapter, diagnostic timeout/cancel) render their own
+	// contracts before the exhaustion exits.
+	if l.c.preauth.HandleGatewayRequestKnownErrorResponse(gatewaypreauth.KnownErrorResponseInput{
+		Req:          l.req,
+		Res:          l.res,
+		AuditCapture: l.auditCapture,
+		Err:          dispatchErr,
+		Signal:       ctx,
+	}) {
+		return true
+	}
+	var aborted *gatewaydispatch.UpstreamRequestAbortedError
+	if errors.As(dispatchErr, &aborted) {
+		// Downstream closed / request aborted: no response contract.
+		return true
+	}
+	var wall *gatewaydispatch.GatewayRequestWallBudgetExhaustedError
+	if errors.As(dispatchErr, &wall) {
+		if wall.BudgetKind == gatewaydispatch.WallBudgetKindCoordination {
+			// Node routes.ts:1346-1370: the coordination kind hands the
+			// request back to the client instead of the wall 503.
+			l.auditCapture.AddGatewayMetadata("gateway_request_client_handoff", map[string]any{
+				"reason":          "route_coordination_budget_exhausted",
+				"wallRemainingMs": wall.WallRemainingMs,
+			})
+			l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
+				message:        "网关请求协调预算已到，请客户端重试并重新选择可用账户",
+				usageContext:   l.current.UsageContext,
+				clientStrategy: &l.current.ClientStrategy,
+			})
+			return true
+		}
+		// The wall kind keeps the fixed 503 wall exit (review ruling V4; the
+		// Go engine surfaces the wall error instead of the Node while-loop
+		// continue, whose continuation the engine budget loop internalizes).
+		message := "网关请求时间预算已用尽，请稍后重试"
+		l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+			Req:             l.req,
+			Res:             l.res,
+			AuditCapture:    l.auditCapture,
+			UsageContext:    l.current.UsageContext,
+			StartedAt:       l.startedAt,
+			StatusCode:      http.StatusServiceUnavailable,
+			ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, "service_unavailable", "gateway_request_wall_budget_exhausted"),
+			Audit: gatewaypreauth.FailureAudit{
+				Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
+				ErrorPhase:   "dispatch",
+				ErrorCode:    "gateway_request_wall_budget_exhausted",
+				ErrorMessage: message,
+			},
+			FailureScope: "upstream",
+		})
+		return true
+	}
+	var attempt *gatewaydispatch.UpstreamAttemptError
+	if errors.As(dispatchErr, &attempt) {
+		if !attempt.TerminalUpstreamFailure {
+			// Node 1469-1478: try the fallback group before the exhaustion
+			// exit. A switched fallback continues the loop; a completed one
+			// means the fallback preflight settled the request.
+			reason := "upstream_accounts_exhausted"
+			if attempt.AgentGuidanceResponse != nil {
+				reason = "account_scoped_agent_guidance_exhausted"
+			}
+			switch fallback, fallbackErr := l.switchToFallbackGroup(ctx, reason); {
+			case fallbackErr != nil:
+				// Node: the switch error propagates to the top-level catch.
+				l.renderUnexpectedDispatchFailure(fallbackErr)
+				return true
+			case fallback == v1FallbackCompleted:
+				return true
+			case fallback == v1FallbackSwitched:
+				return false
+			}
+		}
+		l.renderDispatchExhausted(attempt)
+		return true
+	}
+	// Node top-level catch: an unexpected dispatch error keeps the 503
+	// upstream contract — never the orchestrator 500 (V5).
+	l.renderUnexpectedDispatchFailure(dispatchErr)
+	return true
+}
+
+// renderDispatchExhausted mirrors the Node top-level catch for the
+// UpstreamAttemptError branch (routes.ts:2551-2638): the client payload is
+// the fixed copy pair (no candidate accounts vs. retryable upstream), the
+// detailed last-attempt diagnostics stay on the audit/log surface
+// (upstream-dispatch.ts buildUpstreamAttemptFailureMessage,
+// dispatch-exhaustion-classifier.ts).
+func (l *v1DispatchLoop) renderDispatchExhausted(attempt *gatewaydispatch.UpstreamAttemptError) {
+	lastAttempt := attempt.LastAttempt
+	fields := map[string]any{
+		"event":         "gateway_dispatch_exhausted",
+		"endpoint":      l.current.UsageContext.Endpoint,
+		"apiKeyId":      l.current.UsageContext.APIKeyID,
+		"groupId":       l.current.UsageContext.GroupID,
+		"trafficSource": l.current.UsageContext.TrafficSource,
+	}
+	failureReason, upstreamStatus := classifyGatewayDispatchExhaustion(lastAttempt)
+	fields["failureReason"] = failureReason
+	if upstreamStatus != nil {
+		fields["upstreamStatus"] = upstreamStatus
+	}
+	if lastAttempt != nil {
+		fields["lastAttemptAccountId"] = lastAttempt.AccountID
+	}
+	fields["failedAccountIds"] = attempt.FailedAccountIDs
+	l.c.observability.Logger().Warn("gateway_dispatch_exhausted", fields, "网关上游调度已耗尽")
+
+	payloadMessage := "上游暂时不可用，请重试"
+	payloadCode := gatewaypreauth.GatewayStreamClientRetryErrorCode
+	if lastAttempt == nil {
+		// Node: message === '没有可用的上游账户' — the no-candidate attempt
+		// error carries no last attempt.
+		payloadMessage = "没有可用的上游账户"
+		payloadCode = "no_available_upstream_account"
+	}
+	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+		Req:             l.req,
+		Res:             l.res,
+		AuditCapture:    l.auditCapture,
+		UsageContext:    l.current.UsageContext,
+		StartedAt:       l.startedAt,
+		StatusCode:      http.StatusServiceUnavailable,
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(payloadMessage, "service_unavailable", payloadCode),
+		Audit: gatewaypreauth.FailureAudit{
+			Outcome:      gatewaypreauth.AuditOutcomeUpstreamFailed,
+			ErrorPhase:   "dispatch",
+			ErrorCode:    payloadCode,
+			ErrorMessage: attempt.Message,
+		},
+		RecordUsage:  boolPtr(lastAttempt == nil),
+		FailureScope: "upstream",
+	})
+}
+
+// renderUnexpectedDispatchFailure mirrors the Node top-level catch for
+// non-attempt errors (routes.ts:2564-2572 + 2616-2638): the 503 upstream
+// contract with the fixed copy; the error detail stays on the log/audit
+// surface.
+func (l *v1DispatchLoop) renderUnexpectedDispatchFailure(dispatchErr error) {
+	l.c.observability.Logger().Warn("gateway_request_unexpected_error", map[string]any{
+		"event":    "gateway_request_unexpected_error",
+		"endpoint": l.current.UsageContext.Endpoint,
+		"apiKeyId": l.current.UsageContext.APIKeyID,
+		"groupId":  l.current.UsageContext.GroupID,
+		"error":    dispatchErr.Error(),
+	}, "网关请求处理出现未预期异常")
+	payload := gatewaypreauth.GatewayErrorPayloadOf("上游暂时不可用，请重试", "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode)
+	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+		Req:             l.req,
+		Res:             l.res,
+		AuditCapture:    l.auditCapture,
+		UsageContext:    l.current.UsageContext,
+		StartedAt:       l.startedAt,
+		StatusCode:      http.StatusServiceUnavailable,
+		ResponsePayload: payload,
+		Audit: gatewaypreauth.FailureAudit{
+			Outcome:      gatewaypreauth.AuditOutcomeUpstreamFailed,
+			ErrorPhase:   "dispatch",
+			ErrorCode:    gatewaypreauth.GatewayStreamClientRetryErrorCode,
+			ErrorMessage: dispatchErr.Error(),
+		},
+		RecordUsage:  boolPtr(true),
+		FailureScope: "upstream",
+	})
+}
+
+// resolveRouteAction mirrors resolveRouteAction (routes.ts:433-487): walk
+// route actions, attempting the api-key group fallback before rendering a
+// terminal action. A nil result means the request ended inside the loop
+// (terminal action rendered, or the fallback preflight completed/rejected it).
+func (l *v1DispatchLoop) resolveRouteAction(ctx context.Context, initial gatewaypreauth.PreflightResult) (*gatewaypreauth.DispatchContext, error) {
+	result := initial
+	for result.IsRouteAction() {
+		action := result.RouteAction
+		groupID := action.UsageContext.GroupID
+		mayTryFallback := action.Coordination.Outcome != gatewaypreauth.RouteOutcomeClientHandoff &&
+			action.InteractionResourceAffinity == nil &&
+			!l.actionVisitedGroups[groupID]
+		l.actionVisitedGroups[groupID] = true
+		if mayTryFallback {
+			actionAPIKeyRecord := action.APIKeyRecord
+			if action.GroupFallbackAPIKeyRecord != nil {
+				actionAPIKeyRecord = action.GroupFallbackAPIKeyRecord
+			}
+			fallback, err := l.c.preauth.PrepareAPIKeyGroupFallbackDispatchContext(ctx, gatewaypreauth.APIKeyGroupFallbackDispatchInput{
+				Req:                        l.req,
+				Res:                        l.res,
+				AuditCapture:               l.auditCapture,
+				Options:                    l.actionFallbackOptions(action),
+				StartedAt:                  l.startedAt,
+				TraceID:                    l.traceID,
+				ClientIP:                   l.req.ClientIP,
+				Endpoint:                   l.endpoint,
+				RequestSnapshot:            l.requestSnapshot,
+				Signal:                     ctx,
+				Reason:                     action.Coordination.Reason,
+				APIKeyRecord:               actionAPIKeyRecord,
+				GroupFallbackAPIKeyRecord:  actionAPIKeyRecord,
+				SystemAccountID:            action.UsageContext.SystemAccountID,
+				APIKeyID:                   action.UsageContext.APIKeyID,
+				GroupID:                    groupID,
+				TrafficSource:              action.UsageContext.TrafficSource,
+				RequestLane:                action.RequestLane,
+				RequestClientCompatibility: action.ClientStrategy.RequestClientCompatibility,
+				RoutePlanSnapshot:          action.RoutePlanSnapshot,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if fallback.Attempted {
+				if !isEmptyPreflightResult(fallback.Context) {
+					result = fallback.Context
+					continue
+				}
+				// attempted && undefined: the fallback preflight completed or
+				// rejected the request (Node 481).
+				return nil, nil
+			}
+		}
+		l.finalizeRouteAction(action)
+		return nil, nil
+	}
+	return result.DispatchContext, nil
+}
+
+// actionFallbackOptions mirrors the option bag Node passes from the route
+// action (routes.ts:449-459): the shared budgets and the per-group runtime
+// fields travel into the fallback preflight.
+func (l *v1DispatchLoop) actionFallbackOptions(action *gatewaypreauth.RouteAction) *gatewaypreauth.PreflightOptions {
+	return &gatewaypreauth.PreflightOptions{
+		TrafficSource:              gatewayTrafficSource,
+		RequestLane:                action.RequestLane,
+		ServerRetryBudget:          action.ServerRetryBudget,
+		GatewayRequestWallBudget:   action.GatewayRequestWallBudget,
+		RouteCoordinationBudget:    action.RouteCoordinationBudget,
+		RequestAttemptTracker:      action.RequestAttemptTracker,
+		DownstreamCommitState:      action.DownstreamCommitState,
+		NormalRouteFirstByteConfig: action.NormalRouteFirstByteConfig,
+	}
+}
+
+// switchToFallbackGroup mirrors switchToFallbackGroup (routes.ts:570-662).
+func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason string) (v1FallbackSwitch, error) {
+	current := l.current
+	if current.InteractionResourceAffinity != nil {
+		return v1FallbackNone, nil
+	}
+	// Node 576-578 + 624: the agent-guidance reason may elevate to the
+	// group-fallback key record; both records default to the current one.
+	groupFallbackRecord := current.APIKeyRecord
+	if current.GroupFallbackAPIKeyRecord != nil {
+		groupFallbackRecord = current.GroupFallbackAPIKeyRecord
+	}
+	fallbackAPIKeyRecord := current.APIKeyRecord
+	if reason == "account_scoped_agent_guidance_exhausted" {
+		fallbackAPIKeyRecord = groupFallbackRecord
+	}
+	groupBindingCount := 0
+	if fallbackAPIKeyRecord != nil {
+		groupBindingCount = len(fallbackAPIKeyRecord.GroupBindings)
+	}
+	if groupBindingCount > 0 && l.fallbackSwitches >= groupBindingCount {
+		l.auditCapture.AddGatewayMetadata("api_key_group_route_fallback_skipped", map[string]any{
+			"reason":              reason,
+			"groupBindingCount":   groupBindingCount,
+			"fallbackSwitchCount": l.fallbackSwitches,
+			"skippedReason":       "fallback_hop_limit",
+		})
+		return v1FallbackNone, nil
+	}
+	fallback, err := l.c.preauth.PrepareAPIKeyGroupFallbackDispatchContext(ctx, gatewaypreauth.APIKeyGroupFallbackDispatchInput{
+		Req:                        l.req,
+		Res:                        l.res,
+		AuditCapture:               l.auditCapture,
+		Options:                    l.fallbackOptions(current),
+		StartedAt:                  l.startedAt,
+		TraceID:                    l.traceID,
+		ClientIP:                   l.req.ClientIP,
+		Endpoint:                   l.endpoint,
+		RequestSnapshot:            l.requestSnapshot,
+		Signal:                     ctx,
+		Reason:                     reason,
+		APIKeyRecord:               fallbackAPIKeyRecord,
+		GroupFallbackAPIKeyRecord:  groupFallbackRecord,
+		SystemAccountID:            current.UsageContext.SystemAccountID,
+		APIKeyID:                   current.UsageContext.APIKeyID,
+		GroupID:                    current.UsageContext.GroupID,
+		TrafficSource:              current.UsageContext.TrafficSource,
+		RequestLane:                current.RequestLane,
+		RequestClientCompatibility: current.ClientStrategy.RequestClientCompatibility,
+		RoutePlanSnapshot:          current.RoutePlanSnapshot,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !fallback.Attempted {
+		return v1FallbackNone, nil
+	}
+	// An empty fallback context means the fallback preflight completed the
+	// request (Node 630-633).
+	if isEmptyPreflightResult(fallback.Context) {
+		return v1FallbackCompleted, nil
+	}
+	next, err := l.resolveRouteAction(ctx, fallback.Context)
+	if err != nil {
+		return "", err
+	}
+	if next == nil {
+		return v1FallbackCompleted, nil
+	}
+	l.fallbackSwitches++
+	// Node 640-642: a repeated group target stops the switch (the hop still
+	// counts).
+	if l.enteredGroups[next.UsageContext.GroupID] {
+		return v1FallbackNone, nil
+	}
+	l.enteredGroups[next.UsageContext.GroupID] = true
+	// Node 644-651 transfers the client-ip slot and settles the hot-quality
+	// reservation; those lifecycle ports stay engine-internal in Go. The
+	// per-group retry resets ride on the fresh DispatchContext.
+	l.current = next
+	return v1FallbackSwitched, nil
+}
+
+// fallbackOptions mirrors the option bag Node passes from the current
+// preflight (routes.ts:597-607).
+func (l *v1DispatchLoop) fallbackOptions(current *gatewaypreauth.DispatchContext) *gatewaypreauth.PreflightOptions {
+	return &gatewaypreauth.PreflightOptions{
+		TrafficSource:              gatewayTrafficSource,
+		RequestLane:                current.RequestLane,
+		ServerRetryBudget:          current.ServerRetryBudget,
+		GatewayRequestWallBudget:   current.GatewayRequestWallBudget,
+		RouteCoordinationBudget:    current.RouteCoordinationBudget,
+		RequestAttemptTracker:      current.RequestAttemptTracker,
+		DownstreamCommitState:      current.DownstreamCommitState,
+		NormalRouteFirstByteConfig: current.NormalRouteFirstByteConfig,
+	}
+}
+
+// streamServerRetryExhaustedInput mirrors sendStreamServerRetryExhaustedResponse's
+// consumed input (routes.ts:2966-2982).
+type streamServerRetryExhaustedInput struct {
+	message        string
+	usageContext   gatewaypreauth.GatewayFailureUsageContext
+	clientStrategy *gatewaypreauth.ClientStrategyContext
+}
+
+// sendStreamServerRetryExhaustedResponse renders the stream server-retry
+// exhausted / client-handoff contract (routes.ts:2966 →
+// sendPreCommitStreamRetryExhaustedResponse:3109-3133). The Go frozen surface
+// carries neither the retryCoordination failure signal nor a committed-
+// downstream tracker across the dispatch boundary, so the pre-commit
+// HTTP-error branch is the reachable rendering: 503 + fixed copy +
+// stream_failed audit + recordUsage:false.
+func (l *v1DispatchLoop) sendStreamServerRetryExhaustedResponse(input streamServerRetryExhaustedInput) {
+	message := input.message
+	if message == "" {
+		message = "服务端流式重试未找到可用账号"
+	}
+	if input.clientStrategy != nil {
+		l.auditCapture.AddGatewayMetadata("stream_server_retry_exhausted", map[string]any{
+			"retryReason":        "pre_commit_stream_failure",
+			"responseMode":       "pre_commit_http_error",
+			"clientProfile":      input.clientStrategy.ClientProfile,
+			"downstreamProtocol": input.clientStrategy.DownstreamProtocol,
+		})
+	}
+	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+		Req:             l.req,
+		Res:             l.res,
+		AuditCapture:    l.auditCapture,
+		UsageContext:    input.usageContext,
+		StartedAt:       l.startedAt,
+		StatusCode:      http.StatusServiceUnavailable,
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode),
+		Audit: gatewaypreauth.FailureAudit{
+			Outcome:      gatewaypreauth.AuditOutcomeStreamFailed,
+			ErrorPhase:   "stream",
+			ErrorCode:    gatewaypreauth.GatewayStreamClientRetryErrorCode,
+			ErrorMessage: message,
+		},
+		FailureScope:      "upstream",
+		RecordUsage:       boolPtr(false),
+		UsageErrorMessage: message,
+	})
+}
+
 // finalizeRouteAction mirrors the Node finalizeRouteAction: the route-action
-// failure / blocked / exhausted exits.
-func (c *gatewayChain) finalizeRouteAction(
-	action *gatewaypreauth.RouteAction,
-	req *gatewaypreauth.GatewayRequest,
-	res gatewaypreauth.GatewayResponseWriter,
-	auditCapture gatewaypreauth.AuditCaptureContext,
-	startedAt int64,
-) {
+// failure / client-handoff / blocked / exhausted exits (routes.ts:373-432).
+func (l *v1DispatchLoop) finalizeRouteAction(action *gatewaypreauth.RouteAction) {
+	res := l.res
 	if writableEndedOf(res) {
 		return
 	}
@@ -307,12 +824,12 @@ func (c *gatewayChain) finalizeRouteAction(
 			}
 			res.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSeconds))
 		}
-		c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
-			Req:             req,
+		l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+			Req:             l.req,
 			Res:             res,
-			AuditCapture:    auditCapture,
+			AuditCapture:    l.auditCapture,
 			UsageContext:    action.UsageContext,
-			StartedAt:       startedAt,
+			StartedAt:       l.startedAt,
 			StatusCode:      failure.StatusCode,
 			ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(failure.Message, failure.ErrorType, failure.ErrorCode),
 			Audit: gatewaypreauth.FailureAudit{
@@ -325,17 +842,27 @@ func (c *gatewayChain) finalizeRouteAction(
 		})
 		return
 	}
+	if action.Coordination.Outcome == gatewaypreauth.RouteOutcomeClientHandoff {
+		// Node 398-411: the client-handoff outcome renders the stream server
+		// retry exhausted contract instead of the exhausted-accounts copy.
+		l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
+			message:        "当前路由暂时无法继续派发，请客户端重试并重新选择可用账户",
+			usageContext:   action.UsageContext,
+			clientStrategy: &action.ClientStrategy,
+		})
+		return
+	}
 	temporarilyBlocked := action.Coordination.Outcome == "temporarily_blocked"
 	message := "当前路由没有可用的上游账户"
 	if temporarilyBlocked {
 		message = "当前路由暂时没有可派发账户，请稍后重试"
 	}
-	c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
-		Req:             req,
+	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+		Req:             l.req,
 		Res:             res,
-		AuditCapture:    auditCapture,
+		AuditCapture:    l.auditCapture,
 		UsageContext:    action.UsageContext,
-		StartedAt:       startedAt,
+		StartedAt:       l.startedAt,
 		StatusCode:      http.StatusServiceUnavailable,
 		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, "service_unavailable", "upstream_retryable_error"),
 		Audit: gatewaypreauth.FailureAudit{
@@ -348,68 +875,48 @@ func (c *gatewayChain) finalizeRouteAction(
 	})
 }
 
-// handleDispatchError maps the dispatch-loop error unions onto the Node
-// error exits (classifyGatewayDispatchExhaustion + wall-budget exhaustion).
-func (c *gatewayChain) handleDispatchError(
-	err error,
-	req *gatewaypreauth.GatewayRequest,
-	res gatewaypreauth.GatewayResponseWriter,
-	auditCapture gatewaypreauth.AuditCaptureContext,
-	context *gatewaypreauth.DispatchContext,
-	startedAt int64,
-	endpoint string,
-) {
-	var aborted *gatewaydispatch.UpstreamRequestAbortedError
-	if errors.As(err, &aborted) {
-		// Downstream closed / request aborted: no response contract.
-		return
+// shouldHandleOpenAIUpstreamResponseAsStreamWithStatus mirrors routes.ts:1550:
+// shouldHandleAsStream = upstreamResponse.ok &&
+// shouldHandleOpenAIUpstreamResponseAsStream({contentType, streamRequest}).
+// The status gate is explicit (not gatewaydispatch.GatewayUpstreamResponse.OK)
+// so the decision stays unit-testable over plain vectors.
+func shouldHandleOpenAIUpstreamResponseAsStreamWithStatus(status int, contentType string, streamRequest bool) bool {
+	return status >= http.StatusOK && status < http.StatusMultipleChoices &&
+		gatewayresponse.ShouldHandleOpenAIUpstreamResponseAsStream(contentType, streamRequest)
+}
+
+// classifyGatewayDispatchExhaustion mirrors
+// response/dispatch-exhaustion-classifier.ts.
+func classifyGatewayDispatchExhaustion(lastAttempt *gatewaydispatch.UpstreamAttempt) (string, any) {
+	if lastAttempt == nil {
+		return "no_available_account", nil
 	}
-	var attempt *gatewaydispatch.UpstreamAttemptError
-	if errors.As(err, &attempt) {
-		message := attempt.Message
-		if message == "" {
-			message = "上游账户请求失败"
-		}
-		c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
-			Req:             req,
-			Res:             res,
-			AuditCapture:    auditCapture,
-			UsageContext:    context.UsageContext,
-			StartedAt:       startedAt,
-			StatusCode:      http.StatusServiceUnavailable,
-			ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, "service_unavailable", "upstream_retryable_error"),
-			Audit: gatewaypreauth.FailureAudit{
-				Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
-				ErrorPhase:   "dispatch",
-				ErrorCode:    "upstream_retryable_error",
-				ErrorMessage: message,
-			},
-			FailureScope: "upstream",
-		})
-		return
+	switch lastAttempt.UpstreamURL {
+	case "account:api_key_pool_unavailable":
+		return "api_key_pool_unavailable", nil
+	case "account:locally_suppressed":
+		return "all_accounts_locally_suppressed", nil
+	case "concurrency:limit":
+		return "account_concurrency_exhausted", nil
 	}
-	var wall *gatewaydispatch.GatewayRequestWallBudgetExhaustedError
-	if errors.As(err, &wall) {
-		message := "网关请求时间预算已用尽，请稍后重试"
-		c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
-			Req:             req,
-			Res:             res,
-			AuditCapture:    auditCapture,
-			UsageContext:    context.UsageContext,
-			StartedAt:       startedAt,
-			StatusCode:      http.StatusServiceUnavailable,
-			ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, "service_unavailable", "gateway_request_wall_budget_exhausted"),
-			Audit: gatewaypreauth.FailureAudit{
-				Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
-				ErrorPhase:   "dispatch",
-				ErrorCode:    "gateway_request_wall_budget_exhausted",
-				ErrorMessage: message,
-			},
-			FailureScope: "upstream",
-		})
-		return
+	if lastAttempt.HasStatus && lastAttempt.Status > 0 {
+		return "upstream_http_error", lastAttempt.Status
 	}
-	c.handleOrchestratorError(err, req, res, startedAt, endpoint)
+	return "upstream_transport_error", nil
+}
+
+// isEmptyPreflightResult mirrors the Node undefined member of the
+// DispatchContext | RouteAction | undefined union.
+func isEmptyPreflightResult(result gatewaypreauth.PreflightResult) bool {
+	return result.DispatchContext == nil && result.RouteAction == nil
+}
+
+// routeStrategyIDOf mirrors routes.ts:535 preflight.apiKeyRecord?.route_strategy_id.
+func routeStrategyIDOf(record *gatewayruntimecache.GatewayAPIKeyRow) string {
+	if record == nil {
+		return ""
+	}
+	return record.RouteStrategyID
 }
 
 // handleOrchestratorError mirrors handleGatewayDbServiceUnavailable + the
@@ -435,9 +942,10 @@ func (c *gatewayChain) handleOrchestratorError(
 			gatewaypreauth.SendGatewayErrorOptions{Protocol: clientErrorProtocol(req)})
 		return
 	}
-	gatewaypreauth.SendGatewayJSONError(res, http.StatusInternalServerError,
-		gatewaypreauth.GatewayErrorPayloadOf("网关内部错误，请稍后重试", "internal_error"),
-		gatewaypreauth.SendGatewayErrorOptions{Protocol: clientErrorProtocol(req)})
+	// Express error middleware fallback (server.ts:525-539): the plain
+	// {"message":"服务器内部错误"} 500 body — no gateway error envelope, no
+	// invented copy.
+	kernel.WriteError(res, http.StatusInternalServerError, "服务器内部错误")
 }
 
 // dbServiceUnavailableMessage mirrors dbServiceUnavailableMessage.
@@ -554,6 +1062,11 @@ func (c preauthAuditCapture) BindContext(context gatewaypreauth.AuditGatewayCont
 func (c preauthAuditCapture) AddGatewayMetadata(label string, metadata map[string]any) {
 	c.inner.AddGatewayMetadata(label, metadata)
 }
+
+// Cancel exposes the capture lifecycle (gatewaypreauth.AuditCaptureCanceller):
+// the chain cancels an un-finalized capture on the preflight failure /
+// rejection paths and at request end (routes.ts:515/527/2645).
+func (c preauthAuditCapture) Cancel() { c.inner.Cancel() }
 
 func (c preauthAuditCapture) Finalize(input gatewaypreauth.AuditFinalizeInput) {
 	converted := gatewayusage.FinalizeAuditInput{
