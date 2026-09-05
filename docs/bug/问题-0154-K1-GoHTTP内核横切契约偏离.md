@@ -161,6 +161,14 @@
 - 运行证据：仓库历史 Node 依赖实测 `res.write('a'); res.end('b')`、无 `Content-Length`、`Accept-Encoding: gzip` 返回 `ce=gzip`；Go `Write`/`decide` 的首块判断和 `bodyWritten` 单次门禁可静态确定相同请求不会压缩。该结论不依赖当前未提交工作区。
 - 修复门槛：按 Node 的 `Content-Length`/首写时序重建分块响应决策，区分“明确小 Content-Length 的 end 响应”和“未知长度的 chunked 响应”；补充首块小于阈值、后续累计超过阈值、首写即 flush 及显式小/大 `Content-Length` 的 Node/Go golden。
 
+## 已确认子项：Go `Flush()` 提前锁定 identity，Node 不会
+
+- 对照事实：历史 Node `compression` 暴露的 `res.flush()` 只有在压缩流已经创建后才刷新该流；尚未写入正文时调用 `res.flush()` 不会提交响应头，也不会放弃后续压缩。随后 `res.end` 写入大正文仍按 `Content-Length`/首写时序协商编码。
+- 历史 Go：提交 `b3115e675` 的 `compressionWriter.Flush` 在 `!headerPassed` 时立即调用 `WriteHeader(200)`、`decide(0)` 并把 `bodyWritten` 置为 true。此时总量为 0，必然不创建 gzip；后续 `Write` 直接走原文路径，无法重新决策。
+- 可观察结果：同一请求先调用 `Flush()`、再结束 2048 字节 `text/plain` 正文，Node 在 `Accept-Encoding: gzip` 下返回 gzip，Go 已提交的 identity 头和正文保持未压缩；依赖 flush 提前发送或统一封装响应的非 SSE handler 会出现编码、体积和缓存变体差异。
+- 运行证据：仓库历史 Node 依赖实测“`res.flush(); res.end('x'.repeat(2048))`、无 `Content-Length`、`Accept-Encoding: gzip`”返回 `ce=gzip`；Go `Flush` 的 `decide(0)`/`bodyWritten` 分支可静态确定相同序列不会压缩。该结论不依赖当前未提交工作区。
+- 修复门槛：保持 `Flush` 在无压缩流时不提交最终压缩决策，按 Node 的首写/Content-Length 时序延迟头部；补充 flush-before-write、flush-after-small-write、flush-after-large-write 及 SSE 过滤场景的 Node/Go golden。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
