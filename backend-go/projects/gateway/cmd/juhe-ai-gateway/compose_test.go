@@ -30,6 +30,7 @@ func composeTestConfig(t *testing.T) runtimeConfig {
 		QueueDriver:                 "memory",
 		Secret:                      "compose-test-secret",
 		BusinessDatabasePath:        filepath.Join(root, "business.sqlite3"),
+		StatsDatabasePath:           filepath.Join(root, "stats.sqlite3"),
 		BusinessOwner:               "gateway",
 		BusinessHandoffConfirmed:    true,
 		BusinessNodeWriterStopped:   true,

@@ -50,7 +50,7 @@ import (
 //	/__aisys__/api/system-accounts                 -> authsys.MountSystemAccounts
 //	/__aisys__/api/announcements + /my-announcements -> announcements.Mount
 //	/__aisys__/api/my-teams + /system-teams        -> systemteams.Deps.Mount
-//	/__aisys__/api/authorization-options + /authorizations (+ my-*) -> authz
+//	/__aisys__/api/authorizations + /my-authorizations -> authz
 //	/__aisys__/api/settings (+ /settings/public)   -> settings.Deps.Mount
 //	/__aisys__/api/groups + /my-groups             -> groups.Deps.Mount
 //	/__aisys__/api/route-strategies + /my-*        -> routestrategies.Deps.Mount
@@ -69,6 +69,10 @@ import (
 //
 // Registered NOT mounted in this phase (slice not composition-ready; the
 // legacy bridge keeps serving them from the Node origin):
+//   - /__aisys__/api/authorization-options + /my-authorization-options: the
+//     authorization-options family (including the grantee-* reference
+//     queries) stays Node-owned (M02 顺延 -> W3, final-migration PLAN.md);
+//     authz mounts only the /authorizations + /my-authorizations families.
 //   - /__aisys__/api/audit-logs, /runtime-logs, /public-api-logs: the
 //     logreads.ReadsDeps needs the F1 runtime-log dataset reader (jobs module
 //     owner; cross-module import is forbidden by the three-project baseline).
@@ -96,6 +100,12 @@ type composition struct {
 	db        *sql.DB
 	ownDB     bool
 	pgDialect bool
+	// statsDB backs the ipstats reads (client_ip_* tables live in the stats
+	// database, never the business file). SQLite mode owns a dedicated stats
+	// file handle closed in Shutdown; PostgreSQL mode aliases the shared pool
+	// handle (juhe_stats.* qualification) and closes nothing here.
+	statsDB    *sql.DB
+	ownStatsDB bool
 
 	producer           *operationlog.Producer
 	operationStore     operationlog.Store
@@ -108,11 +118,14 @@ type composition struct {
 // Shutdown mirrors the Node db-service shutdown order (db-service.ts
 // shutdownDbService): background workers drain first (chat generation hub,
 // usage/audit dispatchers land with the chain slice), then the F4 producer,
-// then the SQL handle. The HTTP servers and the shared pools are closed by
-// main around this.
+// then the owned SQL handles (stats file, business handle). The HTTP servers
+// and the shared pools are closed by main around this.
 func (c *composition) Shutdown() {
 	for i := len(c.shutdowns) - 1; i >= 0; i-- {
 		c.shutdowns[i]()
+	}
+	if c.ownStatsDB && c.statsDB != nil {
+		_ = c.statsDB.Close()
 	}
 	if c.ownDB && c.db != nil {
 		_ = c.db.Close()
@@ -193,6 +206,32 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		composed.ownDB = true
 	}
 
+	// ipstats data source (Node getStatsDatabase() split): the client_ip_*
+	// tables live only in the stats database — PostgreSQL reaches juhe_stats
+	// through schema qualification on the shared business pool, SQLite needs
+	// its own handle over the dedicated stats file. The stats path is
+	// required in SQLite mode like every other Go stats consumer (auditlog F3
+	// isolation validation, jobs tablemonitor/statsverify); there is no
+	// CWD-relative default.
+	if composed.pgDialect {
+		composed.statsDB = composed.db
+	} else {
+		if cfg.StatsDatabasePath == "" {
+			return nil, errors.New("sqlite 模式缺少 JUHE_AI_STATS_DATABASE_PATH，无法打开 ip-stats stats 数据库")
+		}
+		statsDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.StatsDatabasePath))
+		if err != nil {
+			return nil, fmt.Errorf("open stats sqlite database: %w", err)
+		}
+		statsDB.SetMaxOpenConns(1)
+		if err := configureSQLiteConnection(statsDB); err != nil {
+			_ = statsDB.Close()
+			return nil, fmt.Errorf("configure stats sqlite database: %w", err)
+		}
+		composed.statsDB = statsDB
+		composed.ownStatsDB = true
+	}
+
 	ownerGate := businesssettings.OwnerGate{
 		Confirmed:         cfg.BusinessHandoffConfirmed,
 		SchemaReady:       cfg.BusinessSchemaReady,
@@ -249,10 +288,15 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create provider store: %w", err)
 	}
-	ipStatsStore, err := ipstats.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus, settingsTimezone(settingValue))
+	ipStatsStore, err := ipstats.NewStore(composed.statsDB, composed.pgDialect, time.Now, newCompositionID, bus, settingsTimezone(settingValue))
 	if err != nil {
 		return nil, fmt.Errorf("create ip-stats store: %w", err)
 	}
+	// M15 detail hydration (client-ip-stats-detail.repository.ts hydrates in
+	// both modes): account/owner display names are business-database reads —
+	// the SQLite handle queries the unqualified tables, PostgreSQL qualifies
+	// juhe_business.* on the same pool.
+	ipStatsStore.SetDetailAccountLookup(ipstats.NewBusinessAccountLookup(composed.db, composed.pgDialect))
 	inspectionStore, err := policyreads.NewInspectionStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
 	if err != nil {
 		return nil, fmt.Errorf("create inspection store: %w", err)
