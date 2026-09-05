@@ -1062,6 +1062,24 @@ func TestCooldownInputEligibleWhenLegacySchedulableBitIsFalse(t *testing.T) {
 	}
 }
 
+func TestCooldownNextDueRecoversFromDirectInputFailureState(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	cooldownUntil := now.Add(-time.Minute)
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: false, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = &CooldownFence{ObservationStartedAt: now.Add(-time.Hour), Generation: "repaired-generation"}
+	retryAt := now.Add(-time.Second)
+	state := CurrentState{
+		InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision,
+		NextDueAt: &retryAt, ErrorCode: "direct_input_invalid",
+	}
+
+	kind, due, ok := nextDue(input, state, true, now)
+	if !ok || kind != "cooldown_retest" || !due.Equal(retryAt) {
+		t.Fatalf("repaired cooldown candidate must resume as cooldown retest: kind=%q due=%s ok=%t", kind, due, ok)
+	}
+}
+
 func TestPendingTestTimeoutCarriesFrozenTerminalError(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")

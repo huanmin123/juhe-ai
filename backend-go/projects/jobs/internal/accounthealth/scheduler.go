@@ -576,6 +576,19 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 		}
 		return "health", input.IssuedAt, true
 	}
+	// A quarantined direct-input candidate records only retry metadata. Once
+	// the business row is repaired, that jobs state intentionally has no
+	// account status or cooldown fence; resume from the current business input
+	// as a cooldown retest instead of misclassifying it as ordinary health.
+	if state.AccountStatus == "" && (input.Eligibility.AccountStatus == "temporary_unavailable" || input.Eligibility.AccountStatus == "rate_limited") {
+		if !validCooldownFence(input.Cooldown, input) || input.Eligibility.CooldownUntil == nil {
+			return "", time.Time{}, false
+		}
+		if state.NextDueAt != nil {
+			return "cooldown_retest", *state.NextDueAt, true
+		}
+		return "cooldown_retest", *input.Eligibility.CooldownUntil, true
+	}
 	if state.NextDueAt == nil {
 		return "health", now, true
 	}
