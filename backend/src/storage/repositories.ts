@@ -14,7 +14,7 @@ import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isAnthropicProtocolProfile, 
 import { accountBalanceQueryIdentity, normalizeAccountBalanceConfig, validateAccountBalanceCapability } from '../modules/accounts/account-balance-config.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
-import { cooldownRetestObservationStartedAtForStatus, initialCooldownUntilForStatus, invalidateGatewayRuntimeAfterBusinessWrite, isAccountExpired } from './account-runtime-mutation-helpers.js'
+import { cooldownRetestObservationStartedAtForStatus, initialCooldownUntilForStatus, invalidateGatewayRuntimeAfterBusinessWrite, isAccountExpired, newCooldownRetestGeneration } from './account-runtime-mutation-helpers.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
@@ -2609,6 +2609,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   )
   const boundedRecoveryPolicyActivated = current.temporaryUnavailableContinuousProbeEnabled !== false
     && !nextTemporaryUnavailableContinuousProbeEnabled
+  const boundedRecoveryGeneration = boundedRecoveryPolicyActivated
+    ? newCooldownRetestGeneration()
+    : undefined
   const boundedRecoveryObservationStartedAt = boundedRecoveryPolicyActivated
     ? new Date(updateNowMs).toISOString()
     : undefined
@@ -2663,6 +2666,13 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     nextCooldownRetestObservationStartedAt = undefined
     clearCooldownRetestState = true
   }
+  const nextCooldownRetestGeneration = nextCooldownRetestObservationStartedAt === undefined
+    ? undefined
+    : restartBoundedRecoveryObservation
+      ? boundedRecoveryGeneration
+      : nextCooldownRetestObservationStartedAt !== current.cooldownRetestObservationStartedAt || !current.cooldownRetestGeneration
+        ? newCooldownRetestGeneration()
+        : current.cooldownRetestGeneration
   const hasSuperPriorityInput = hasOwnInput(input, 'superPriorityEnabled')
   const requestedSuperPriority = normalizeSuperPriorityInput(
     input.superPriorityEnabled,
@@ -2730,6 +2740,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     lastErrorTraceId: nextLastErrorTraceId,
     cooldownRetestFailureCount: clearCooldownRetestState ? 0 : current.cooldownRetestFailureCount,
     cooldownRetestObservationStartedAt: nextCooldownRetestObservationStartedAt,
+    cooldownRetestGeneration: nextCooldownRetestGeneration,
     cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
     cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
     temporaryUnavailableContinuousProbeEnabled: nextTemporaryUnavailableContinuousProbeEnabled,
@@ -2759,7 +2770,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?, last_error_trace_id = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_generation = NULL, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE
               WHEN ? = 1 THEN ?
@@ -2795,6 +2806,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.lastErrorTraceId ?? null,
         next.cooldownRetestFailureCount ?? 0,
         next.cooldownRetestObservationStartedAt ?? null,
+        next.cooldownRetestGeneration ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
         next.temporaryUnavailableContinuousProbeEnabled ? 1 : 0,
@@ -2863,7 +2875,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             config_revision = config_revision + 1,
             cooldown_retest_failure_count = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN 0 ELSE cooldown_retest_failure_count END,
             cooldown_retest_observation_started_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_observation_started_at END,
-            cooldown_retest_generation = NULL,
+            cooldown_retest_generation = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_generation END,
             cooldown_retest_last_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_at END,
             cooldown_retest_last_status_code = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_status_code END,
             cooldown_until = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_until END,
@@ -2874,6 +2886,8 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         boundedRecoveryPolicyActivated ? 1 : 0,
         boundedRecoveryPolicyActivated ? 1 : 0,
         boundedRecoveryObservationStartedAt ?? null,
+        boundedRecoveryPolicyActivated ? 1 : 0,
+        boundedRecoveryGeneration ?? null,
         boundedRecoveryPolicyActivated ? 1 : 0,
         boundedRecoveryPolicyActivated ? 1 : 0,
         boundedRecoveryPolicyActivated ? 1 : 0,
@@ -3420,6 +3434,9 @@ export async function updateAccountAsync(
   )
   const boundedRecoveryPolicyActivated = current.temporaryUnavailableContinuousProbeEnabled !== false
     && !nextTemporaryUnavailableContinuousProbeEnabled
+  const boundedRecoveryGeneration = boundedRecoveryPolicyActivated
+    ? newCooldownRetestGeneration()
+    : undefined
   const boundedRecoveryObservationStartedAt = boundedRecoveryPolicyActivated
     ? new Date(updateNowMs).toISOString()
     : undefined
@@ -3474,6 +3491,13 @@ export async function updateAccountAsync(
     nextCooldownRetestObservationStartedAt = undefined
     clearCooldownRetestState = true
   }
+  const nextCooldownRetestGeneration = nextCooldownRetestObservationStartedAt === undefined
+    ? undefined
+    : restartBoundedRecoveryObservation
+      ? boundedRecoveryGeneration
+      : nextCooldownRetestObservationStartedAt !== current.cooldownRetestObservationStartedAt || !current.cooldownRetestGeneration
+        ? newCooldownRetestGeneration()
+        : current.cooldownRetestGeneration
   const hasSuperPriorityInput = hasOwnInput(input, 'superPriorityEnabled')
   const requestedSuperPriority = normalizeSuperPriorityInput(
     input.superPriorityEnabled,
@@ -3541,6 +3565,7 @@ export async function updateAccountAsync(
     lastErrorTraceId: nextLastErrorTraceId,
     cooldownRetestFailureCount: clearCooldownRetestState ? 0 : current.cooldownRetestFailureCount,
     cooldownRetestObservationStartedAt: nextCooldownRetestObservationStartedAt,
+    cooldownRetestGeneration: nextCooldownRetestGeneration,
     cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
     cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
     temporaryUnavailableContinuousProbeEnabled: nextTemporaryUnavailableContinuousProbeEnabled,
@@ -3573,7 +3598,7 @@ export async function updateAccountAsync(
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?, last_error_trace_id = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_generation = NULL, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE
               WHEN ? = 1 THEN ?
@@ -3611,6 +3636,7 @@ export async function updateAccountAsync(
         next.lastErrorTraceId ?? null,
         next.cooldownRetestFailureCount ?? 0,
         nextCooldownRetestObservationStartedAt ?? null,
+        nextCooldownRetestGeneration ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
         next.temporaryUnavailableContinuousProbeEnabled ? 1 : 0,
@@ -3687,7 +3713,7 @@ export async function updateAccountAsync(
               config_revision = config_revision + 1,
               cooldown_retest_failure_count = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN 0 ELSE cooldown_retest_failure_count END,
               cooldown_retest_observation_started_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_observation_started_at END,
-              cooldown_retest_generation = NULL,
+              cooldown_retest_generation = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_generation END,
               cooldown_retest_last_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_at END,
               cooldown_retest_last_status_code = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_status_code END,
               cooldown_until = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_until END,
@@ -3698,6 +3724,8 @@ export async function updateAccountAsync(
           boundedRecoveryPolicyActivated ? 1 : 0,
           boundedRecoveryPolicyActivated ? 1 : 0,
           boundedRecoveryObservationStartedAt ?? null,
+          boundedRecoveryPolicyActivated ? 1 : 0,
+          boundedRecoveryGeneration ?? null,
           boundedRecoveryPolicyActivated ? 1 : 0,
           boundedRecoveryPolicyActivated ? 1 : 0,
           boundedRecoveryPolicyActivated ? 1 : 0,
