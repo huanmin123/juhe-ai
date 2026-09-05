@@ -42,6 +42,14 @@
 - 证据范围：Node 历史 `backend/src/server.ts` 第 208–210、265–269 行的 Express 前缀挂载；Go 迁移提交 `21dc58a01` 的 `legacybridge.go` 第 64–68 行。结论不依赖当前未提交工作区。
 - 修复门槛：使用路径段边界匹配（`path == prefix || strings.HasPrefix(path, prefix+"/")`，根前缀单独处理），并补相邻前缀、尾斜杠和 query 请求的代理/404 对照测试。
 
+## 已确认子项：legacy bridge 丢失 `X-Forwarded-*` 客户端链
+
+- 对照事实：Node server 开启 `trust proxy`；Node 的代理请求构造会保留既有 `X-Forwarded-For` 并追加当前客户端地址，同时传递 `X-Forwarded-Host` 与 `X-Forwarded-Proto`。未迁移路由在 Node 看到的 `req.ip`、协议和原始 Host 依赖这组头。
+- 历史 Go：`legacybridge.New` 使用 `httputil.ReverseProxy.Rewrite` 调用 `SetURL`，但没有调用 `ProxyRequest.SetXForwarded`，也没有复制入站 `X-Forwarded-*`。Go 标准库在进入 `Rewrite` 前会删除 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host`、`X-Forwarded-Proto`，因此出站请求只剩 bridge 到 Node 的连接信息。
+- 可观察结果：经 Go bridge 到 Node 的请求会把客户端 IP 退化为 bridge 地址，Node 的基于 IP 限流、审计来源、访问日志和协议判断可能与 Node 直连结果不同；同一客户端在翻转期间还可能被按两个不同 IP 计数。该差异不是 header 排版问题，而是安全与业务结果变化。
+- 证据范围：Node 历史 `backend/src/server.ts` 第 201–202 行启用 `trust proxy`，`backend/src/modules/db-service/db-service-http-proxy.ts` 第 146–168 行的 `appendForwardedFor`/三组 forwarded headers；Go 迁移提交 `21dc58a01` 的 `legacybridge.go` 第 23–34 行；Go 标准库 `net/http/httputil/reverseproxy.go` 在 `Rewrite` 前删除四组 forwarding headers。结论不依赖当前未提交工作区。
+- 修复门槛：明确 bridge 的可信代理边界后，复制并追加入站 forwarding 链，再设置 host/proto；补真实 HTTP 请求的多级 `X-Forwarded-For`、无头和伪造头用例，断言 Node 侧 `req.ip`/协议/Host 与直连等价且不接受未受信任的客户端伪造。
+
 ## 修复与验证
 
 - 修改点：使用读写锁或原子不可变路由快照，显式恢复受信任的 X-Forwarded 链，并补并发 register/remove/serve 的 race 与真实 client-IP 测试。
