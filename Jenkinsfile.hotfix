@@ -1,0 +1,125 @@
+pipeline {
+  agent any
+  options {
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+    skipDefaultCheckout(true)
+  }
+  environment {
+    TZ = 'UTC'
+    HARBOR_REPOSITORY_NODE = 'platform/juhe-ai'
+    HARBOR_REPOSITORY_JOBS = 'platform/juhe-ai-go-jobs'
+    HARBOR_REPOSITORY_GATEWAY = 'platform/juhe-ai-go-gateway'
+    HARBOR_CACHE_REPOSITORY = 'platform/ci-cache'
+    HARBOR_REGISTRY_FILE = '/run/jenkins-secrets/harbor-registry'
+    HARBOR_BASE_IMAGES_FILE = '/run/jenkins-secrets/harbor-base-images'
+    BUILD_HTTP_PROXY = 'http://10.66.45.2:7890'
+    BUILD_NO_PROXY = '127.0.0.1,localhost,192.168.1.76,192.168.1.203,10.66.45.2'
+  }
+  stages {
+    stage('检出固定 hotfix 提交') {
+      steps {
+        checkout scm
+        script {
+          env.SOURCE_COMMIT = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
+          env.SOURCE_COMMIT_FULL = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+          env.HARBOR_REGISTRY = readFile(env.HARBOR_REGISTRY_FILE).trim()
+          if (!validRegistry(env.HARBOR_REGISTRY)) error 'HARBOR_REGISTRY 必须是 host 或 host:port。'
+          def baseImages = readHarborBaseImages()
+          env.NODE_RUNTIME_PNPM_IMAGE = baseImages.NODE_RUNTIME_PNPM_10_32_IMAGE
+          env.GO_IMAGE = baseImages.GO_IMAGE
+          env.RUNTIME_IMAGE = baseImages.RUNTIME_IMAGE
+        }
+      }
+    }
+    stage('构建 Node 产物') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'harbor-platform-push', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
+          sh '''#!/bin/sh
+            set -eu
+            builder_image="juhe-ai-node-builder:${BUILD_TAG}"
+            builder_container="juhe-ai-node-builder-${BUILD_TAG}"
+            cache_ref="$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-node-builder:buildcache"
+            trap 'docker rm -f "$builder_container" >/dev/null 2>&1 || true; docker image rm "$builder_image" >/dev/null 2>&1 || true' EXIT
+            printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" --username "$HARBOR_USERNAME" --password-stdin
+            if docker manifest inspect "$cache_ref" >/dev/null 2>&1; then
+              docker buildx build --cache-from "type=registry,ref=$cache_ref" --cache-to "type=registry,ref=$cache_ref,mode=max" --load --network host \
+                --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
+                --build-arg NODE_BUILDER_PNPM_IMAGE="$NODE_RUNTIME_PNPM_IMAGE" --build-arg VITE_JUHE_AI_BUILD_ID="$SOURCE_COMMIT_FULL" \
+                --tag "$builder_image" --file docker/Dockerfile.builder .
+            else
+              docker buildx build --cache-to "type=registry,ref=$cache_ref,mode=max" --load --network host \
+                --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
+                --build-arg NODE_BUILDER_PNPM_IMAGE="$NODE_RUNTIME_PNPM_IMAGE" --build-arg VITE_JUHE_AI_BUILD_ID="$SOURCE_COMMIT_FULL" \
+                --tag "$builder_image" --file docker/Dockerfile.builder .
+            fi
+            docker create --name "$builder_container" "$builder_image" >/dev/null
+            mkdir -p backend/dist frontend/dist
+            docker cp "$builder_container:/source/backend/dist/." backend/dist/
+            docker cp "$builder_container:/source/frontend/dist/." frontend/dist/
+          '''
+        }
+      }
+    }
+    stage('构建并推送 hotfix 三镜像') {
+      steps {
+        script {
+          env.NODE_IMAGE = "${env.HARBOR_REGISTRY}/${env.HARBOR_REPOSITORY_NODE}:hotfix-${env.SOURCE_COMMIT}"
+          env.JOBS_IMAGE = "${env.HARBOR_REGISTRY}/${env.HARBOR_REPOSITORY_JOBS}:hotfix-${env.SOURCE_COMMIT}"
+          env.GATEWAY_IMAGE = "${env.HARBOR_REGISTRY}/${env.HARBOR_REPOSITORY_GATEWAY}:hotfix-${env.SOURCE_COMMIT}"
+        }
+        withCredentials([usernamePassword(credentialsId: 'harbor-platform-push', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
+          sh '''#!/bin/sh
+            set -eu
+            printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" --username "$HARBOR_USERNAME" --password-stdin
+            build_with_cache() {
+              cache_ref=$1
+              shift
+              if docker manifest inspect "$cache_ref" >/dev/null 2>&1; then
+                docker buildx build --cache-from "type=registry,ref=$cache_ref" --cache-to "type=registry,ref=$cache_ref,mode=max" "$@"
+              else
+                docker buildx build --cache-to "type=registry,ref=$cache_ref,mode=max" "$@"
+              fi
+            }
+            build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-node-runtime:buildcache" --load --network host --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" --build-arg NODE_RUNTIME_PNPM_IMAGE="$NODE_RUNTIME_PNPM_IMAGE" --tag "$NODE_IMAGE" --file docker/Dockerfile .
+            build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-go-jobs:buildcache" --load --network host --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" --build-arg GO_IMAGE="$GO_IMAGE" --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" --build-arg GO_PROJECT=jobs --tag "$JOBS_IMAGE" --file docker/Dockerfile.go-project .
+            build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-go-gateway:buildcache" --load --network host --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" --build-arg GO_IMAGE="$GO_IMAGE" --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" --build-arg GO_PROJECT=gateway --tag "$GATEWAY_IMAGE" --file docker/Dockerfile.go-project .
+            docker push "$NODE_IMAGE"
+            docker push "$JOBS_IMAGE"
+            docker push "$GATEWAY_IMAGE"
+            for image in "$NODE_IMAGE" "$JOBS_IMAGE" "$GATEWAY_IMAGE"; do
+              digest=$(docker image inspect --format='{{index .RepoDigests 0}}' "$image")
+              case "$digest" in *@sha256:*) printf '%s\n' "${digest##*@}" ;; *) echo "无法取得 $image 的不可变 digest" >&2; exit 1 ;; esac
+            done > .juhe-ai-digests
+          '''
+        }
+        archiveArtifacts artifacts: '.juhe-ai-digests', fingerprint: true
+        script {
+          def digests = readFile('.juhe-ai-digests').readLines()
+          if (digests.size() != 3 || digests.any { !validDigest(it) }) error '三镜像 digest 不完整或格式错误。'
+          currentBuild.description = "hotfix source=${env.SOURCE_COMMIT}; node=${digests[0]}; jobs=${digests[1]}; gateway=${digests[2]}"
+        }
+      }
+    }
+  }
+}
+
+def validRegistry(value) { return value ==~ /^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/ }
+def validDigest(value) { return value ==~ /^sha256:[a-f0-9]{64}$/ }
+def validHarborDigestImage(value) {
+  if (!value || value != value.trim()) return false
+  def prefix = "${env.HARBOR_REGISTRY}/"
+  def separator = value.lastIndexOf('@sha256:')
+  return value.startsWith(prefix) && separator > prefix.length() && value.indexOf('@sha256:') == separator && validDigest(value.substring(separator + 1))
+}
+def readHarborBaseImages() {
+  if (!fileExists(env.HARBOR_BASE_IMAGES_FILE)) error '缺少 Harbor 基础镜像清单。'
+  def requiredKeys = ['NODE_RUNTIME_PNPM_10_32_IMAGE', 'GO_IMAGE', 'RUNTIME_IMAGE']
+  def values = [:]
+  readFile(env.HARBOR_BASE_IMAGES_FILE).readLines().each { line ->
+    def pair = line.split('=', 2)
+    if (pair.size() == 2) values[pair[0].trim()] = pair[1].trim()
+  }
+  requiredKeys.each { key -> if (!validHarborDigestImage(values[key])) error "Harbor 基础镜像 ${key} 必须是当前 Harbor 的不可变 digest。" }
+  return values
+}
