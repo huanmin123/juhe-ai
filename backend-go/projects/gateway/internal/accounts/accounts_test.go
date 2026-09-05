@@ -238,6 +238,11 @@ var schemaStatements = []string{
 		lease_until_ms INTEGER,
 		updated_at TEXT NOT NULL
 	)`,
+	// The management list LEFT JOINs the runtime authorization rows for the
+	// stamped-instance status guard (Node
+	// account-management-list.repository.ts:324-334), so the fixture carries
+	// the production table; column set mirrors m10AuthzDDL.
+	`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
 }
 
 func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]any) {

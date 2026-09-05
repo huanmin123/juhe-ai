@@ -328,8 +328,10 @@ func listItemColumns(alias string) []string {
 }
 
 // listJoins renders the management-list joins: ranked group bindings,
-// bound group name, system account names, provider display name and the proxy
-// profile display row.
+// bound group name, system account names, provider display name, the proxy
+// profile display row and the stamped instance's runtime authorization row
+// (Node account-management-list.repository.ts:324-325 — both dialects share
+// the plain LEFT JOIN and the `authorizations` alias).
 func (s *Store) listJoins() (cte, joins string) {
 	if s.pg {
 		joins = ` LEFT JOIN LATERAL (
@@ -366,7 +368,9 @@ func (s *Store) listJoins() (cte, joins string) {
 		LEFT JOIN ` + s.table("proxy_profiles") + ` proxy_profiles
 			ON proxy_profiles.id = accounts.proxy_profile_id
 		LEFT JOIN ` + s.table("providers") + ` providers
-			ON providers.code = accounts.provider_code`
+			ON providers.code = accounts.provider_code
+		LEFT JOIN ` + s.table("resource_authorizations") + ` authorizations
+			ON authorizations.id = accounts.authorization_instance_authorization_id`
 	return cte, joins
 }
 
@@ -394,6 +398,12 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 // through an id IN clause (access_type='authorized' rows).
 func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, authorized map[string]bool, args *[]any) string {
 	clauses := []string{"accounts.deleted_at IS NULL"}
+	// Node account-management-list.repository.ts:331-334: revoke and return
+	// only flip the runtime authorization row status, so the stamped instance
+	// is hidden through this unconditional status guard (admin and self alike;
+	// the status set is literal in Node, no bind params).
+	clauses = append(clauses,
+		"(accounts.authorization_instance_authorization_id IS NULL OR authorizations.status IN ('active', 'paused', 'expired'))")
 	if scoped != "" {
 		if ids := authorizedIDList(authorized); len(ids) > 0 {
 			clauses = append(clauses, "(accounts.system_account_id = ? OR accounts.id IN ("+placeholders(len(ids))+"))")
@@ -1062,8 +1072,14 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		return nil, nil
 	}
 	// M10 authorized-instance pass-through: an authorized instance account is
-	// found outside the owner scope; the reserved instance branch below still
-	// denies the credential surface (Node access_type='authorized').
+	// found outside the owner scope so the grantee reaches the same reserved
+	// branch Node renders for every instance row. The pass-through never
+	// widens visibility: the instance branch below denies the credential
+	// surface unconditionally (Node account-edit-basic.repository.ts:149-151
+	// throws AccountEditBasicForbiddenError for any instance row, regardless
+	// of the runtime authorization status — revoke/return only flip the
+	// authorization row, resource-authorization-write.repository.ts:986-992,
+	// so a revoked stamped instance still renders 403 here, matching Node).
 	authorized := s.authorizedReadableIDs(ctx, access)[id]
 	scopeClause := ""
 	args := []any{id}
@@ -1140,9 +1156,10 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	if err != nil {
 		return nil, err
 	}
-	// canManageResourceOwner: users may only manage their own rows; M10
-	// authorized instance accounts stay visible (the instance branch below
-	// renders the reserved 403) but never manageable.
+	// canManageResourceOwner (Node account-edit-basic.repository.ts:148):
+	// users may only manage their own rows; M10 authorized instance accounts
+	// stay visible (the instance branch below renders the reserved 403) but
+	// never manageable.
 	if !access.canAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
 		return nil, nil
 	}

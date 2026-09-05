@@ -98,15 +98,29 @@ func TestAuthorizedReadableAccountIDsTeamAndDirect(t *testing.T) {
 
 	teamRuntime := runtimeIDFor(t, f, "member1", "acc-src-team")
 	f.seedInstanceAccount(t, "acc-inst-team", "member1", teamRuntime, "acc-src-team")
+	// Each member's instance is stamped with his own runtime row inside his
+	// own namespace (Node resource-authorization-write.repository.ts:1880-1915,
+	// grantee namespace at :1893).
+	directRuntime := runtimeIDFor(t, f, "member2", "acc-src-direct")
+	f.seedInstanceAccount(t, "acc-inst-direct", "member2", directRuntime, "acc-src-direct")
 	f.seedInstanceAccount(t, "acc-inst-direct-legacy", "member2", "", "acc-src-direct")
 
 	teamIDs := readableKeys(t, f, "member1")
 	if !teamIDs["acc-inst-team"] || len(teamIDs) != 1 {
 		t.Fatalf("team member readable ids: %v", teamIDs)
 	}
+	// Cross-member isolation: the team source must never surface another
+	// member's runtime row or instance (Node visibility is own-row only; no
+	// team-member branch on the read path).
+	if teamIDs["acc-inst-direct"] || teamIDs["acc-inst-direct-legacy"] {
+		t.Fatalf("team member must not read member2 instances: %v", teamIDs)
+	}
 	directIDs := readableKeys(t, f, "member2")
-	if !directIDs["acc-inst-direct-legacy"] || len(directIDs) != 1 {
+	if !directIDs["acc-inst-direct"] || !directIDs["acc-inst-direct-legacy"] || len(directIDs) != 2 {
 		t.Fatalf("direct grantee readable ids: %v", directIDs)
+	}
+	if directIDs["acc-inst-team"] {
+		t.Fatalf("member2 must not read the member1 team instance: %v", directIDs)
 	}
 	if ids := readableKeys(t, f, "outsider"); len(ids) != 0 {
 		t.Fatalf("outsider must see nothing: %v", ids)
@@ -145,14 +159,16 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 		t.Fatalf("active grant must expose the instance: %v", ids)
 	}
 
-	// Paused team grant → runtime paused → not readable.
+	// Paused team grant → runtime paused → still readable: the Node list guard
+	// keeps instances visible for status IN ('active','paused','expired')
+	// (account-management-list.repository.ts:331-334).
 	paused := StatusPaused
 	if outcome, err := f.store.Patch(context.Background(), result.Item.ID, PatchInput{Status: &paused},
 		result.Item.UpdatedAt, "owner"); err != nil || outcome.Status != "updated" {
 		t.Fatalf("pause patch: %+v err=%v", outcome, err)
 	}
-	if ids := readableKeys(t, f, "member1"); len(ids) != 0 {
-		t.Fatalf("paused grant must hide the instance: %v", ids)
+	if ids := readableKeys(t, f, "member1"); !ids["acc-inst"] {
+		t.Fatalf("paused grant must keep the instance readable: %v", ids)
 	}
 
 	// Patching the team grant back to active runs the Node grant→runtime sync
@@ -219,8 +235,10 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 	}
 
 	// Model an existing expired row directly: Node rejects an attempt to create
-	// a newly expired authorization, while the read path must still hide rows
-	// that have become expired after a valid creation.
+	// a newly expired authorization, and expiry is materialized as the status
+	// flip by the sweep (expireDueResourceAuthorizationsAsync :930-969). The
+	// Node list guard keeps 'expired' instances readable
+	// (account-management-list.repository.ts:331-334).
 	futureExpiry := f.now.Add(time.Hour).UTC().Format(time.RFC3339Nano)
 	created, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "acc-src",
@@ -239,8 +257,8 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 		StatusExpired, expiredAt); err != nil {
 		t.Fatal(err)
 	}
-	if ids := readableKeys(t, f, "member1"); len(ids) != 0 {
-		t.Fatalf("expired grant must hide the instance: %v", ids)
+	if ids := readableKeys(t, f, "member1"); !ids["acc-inst"] {
+		t.Fatalf("expired grant must keep the instance readable: %v", ids)
 	}
 }
 
