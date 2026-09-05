@@ -145,6 +145,14 @@
 - 证据范围：Node 历史 `backend/src/modules/system-api/system-api-app.ts` 的 `express.json` 挂载及 `body-parser@1.20.5` `json.js` 的默认 type-check；Go 证据为提交 `b3115e675` 的 `DecodeJSON`（第 127–150 行）未读取 Content-Type。该结论不依赖当前未提交工作区。
 - 修复门槛：在解析前按 Node 的 media type 匹配规则决定是否解析，并补充 `application/json`、`application/problem+json`、`text/plain`、缺失 Content-Type 与合法/非法 JSON 的状态及副作用 golden。
 
+## 已确认子项：Go 压缩协商仅支持 gzip，漏掉 Node 的 br/deflate
+
+- 对照事实：历史 Node `compression` 在运行时支持 `br`、`gzip`、`deflate`、`identity`，按 `Accept-Encoding` 权重选择首选编码；在响应体达到 1024 字节且客户端仅声明 `br` 或 `deflate` 时，会分别返回对应 `Content-Encoding`。
+- 历史 Go：提交 `b3115e675` 的 `CompressionMiddleware` 只在 `acceptsGzip` 返回 true 时包装响应，`acceptsGzip` 仅匹配 `gzip` token；`Accept-Encoding: br` 或 `Accept-Encoding: deflate` 会直接旁路，既不压缩也不设置 `Vary`。
+- 可观察结果：同一 2048 字节 `text/plain` 响应，Node 在 `br`/`deflate` 客户端上分别返回 `Content-Encoding: br`/`deflate` 和压缩正文，Go 返回 identity 正文。支持这些编码的客户端会看到响应体积、编码头和缓存变体集合不同；若上游/回放断言协商结果，Go 会把可接受编码错误地降级为未压缩。
+- 运行证据：在仓库历史 Node 依赖上启动 `compression({threshold:1024})`，实测 `Accept-Encoding: br` 返回 `ce=br`、`Accept-Encoding: deflate` 返回 `ce=deflate`、`Accept-Encoding: gzip` 返回 `ce=gzip`；Go 分支由 `acceptsGzip` 的单一 token 判断可静态确定前两者不进入压缩路径。该结论不依赖当前未提交工作区。
+- 修复门槛：实现与 Node 一致的 `br`/`gzip`/`deflate`/`identity` 协商和权重处理（或明确冻结并验证等价的受支持编码集合），补充三种编码、并列权重、不可接受和大响应 golden；在响应头与正文编码均一致前不得关闭 K1 压缩契约。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
