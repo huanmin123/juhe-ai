@@ -134,10 +134,18 @@
 - 结果偏差：关联策略 `mode=''` 时 Node 返回 `routeStrategyMode: "normal"`，Go 省略字段；关联策略 `mode='bogus'` 时 Node 让列表/详情进入错误处理，Go 却以 200 成功并省略该字段。这样 API Key 的路由能力展示与损坏数据可见性均不一致，前端可能把未知策略误当成无模式而继续编辑或放行。
 - 结论：这是 M07 列表/详情读模型的确定性状态规范化缺口，当前仅记录，未修改 Go 代码。
 
+### 16. API Key 详情遗漏 Node 的真实 usage 汇总
+
+- Node 证据：历史 `findApiKeySummaryAsync` 读取后调用 `apiKeySummariesFromRowsAsync`，默认 `includeUsage !== false`，会按 `{systemAccountId, scopeId: apiKey.id}` 加载并返回 `usage`（`requestCount`、`totalTokens`、`totalCost`）；同一 mapper 也用于详情 DTO。
+- Go 证据：历史 `backend-go/projects/gateway/internal/apikeys/store.go` 的 `FindDetail` 复用 `newListItem`，该函数把 `Usage` 固定填为 `emptyListUsageSummary()`；历史 M07 包没有详情 usage 查询或注入路径。
+- 结果偏差：同一 `GET /api-keys/:id`（以及 self 详情）在 Node 返回该 API Key 的真实累计用量，Go 始终返回零值。即使列表 usage 后续完成接线，详情仍会显示错误统计，前端详情页和审计使用方无法得到 Node 的结果。
+- 结论：这是 M07 详情读模型的确定性字段遗漏，当前仅记录，未修改 Go 代码。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
 - 当前验证：Go 包内测试通过不代表 PATCH/usage/失效契约；未执行真实 gateway listener 验证。
 - 新增未修复子项：`reveal_secret` 日志应与 Node 一样保留 `keyPrefix...keySuffix` 脱敏 after、不要伪造 `before: "未设置"`，并补充 operation-log JSON 回放，确认完整密钥不会进入日志。
 - 新增未修复子项：API Key 列表/详情读取关联策略时应复用 Node 的 `mode` 规范化：空值补 `normal`，未知值显式失败；补充空字符串、未知 mode 和正常五种 mode 的 Node/Go DTO 与错误回放。
+- 新增未修复子项：API Key 详情必须像 Node `findApiKeySummaryAsync` 一样加载并返回该 key 的真实 usage 汇总，补充非零 usage 与空 usage 的 Node/Go DTO 回放；不能只修列表。
 - 结论：M07 不能视为完整 API Key 功能迁移或 Node 可归档。
