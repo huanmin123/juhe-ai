@@ -8,9 +8,11 @@
 //
 // File layout (prefixes keep parallel read slices coexistable in this
 // package): audit_reads.go carries the shared read plumbing plus the audit
-// family, runtime_reads.go the runtime family, public_reads.go the public API
-// log family. Each family has a local Reader interface so route tests can
-// mock the store boundary.
+// family, audit_detail.go the payload/by-id hydration, audit_hot_search.go
+// the NDJSON hot-search scan, runtime_reads.go the runtime family,
+// runtime_grep.go the file-log grep family and public_reads.go the public
+// API log family. Each family has a local Reader interface so route tests
+// can mock the store boundary.
 package logreads
 
 import (
@@ -406,27 +408,41 @@ type ReadsDeps struct {
 	Audit   AuditLogReader
 	Runtime RuntimeLogReader
 	Public  PublicApiLogReader
-	Auth    *authsys.Deps
+	// Grep backs the runtime-logs grep family (grep-options/grep/
+	// grep-detail over the process file logs). Optional: when nil the grep
+	// routes stay unregistered (the pre-M14 bridge behaviour).
+	Grep *RuntimeLogGrep
+	Auth *authsys.Deps
 }
 
 // Mount registers every read route under /__aisys__/api behind requireAdmin,
 // matching the Node routers (each router mounts requireAdmin for the whole
-// family).
+// family). Node mounts no my-* variants for these three families, so the Go
+// surfaces are admin-only as well.
 func (d *ReadsDeps) Mount(k *kernel.Kernel) {
 	prefix := "/__aisys__/api"
 	admin := func(handler http.Handler) http.Handler {
 		return d.Auth.RequireAdmin(handler)
 	}
 	// Audit-logs family (backend/src/modules/audit-logs/audit-logs.routes.ts).
+	// ServeMux cannot order /{id}/... wildcards against the literal
+	// error-groups family (the Express registration order), so the detail,
+	// payload and error-group-events paths dispatch inside the subtree
+	// handler below.
 	k.Register("GET "+prefix+"/audit-logs", admin(http.HandlerFunc(d.handleListAuditLogs)))
+	k.Register("GET "+prefix+"/audit-logs/search-hot", admin(http.HandlerFunc(d.handleAuditSearchHot)))
 	k.Register("GET "+prefix+"/audit-logs/runtime", admin(http.HandlerFunc(d.handleAuditLogRuntime)))
 	k.Register("GET "+prefix+"/audit-logs/error-groups", admin(http.HandlerFunc(d.handleListAuditErrorGroups)))
-	k.Register("GET "+prefix+"/audit-logs/error-groups/{id}/events", admin(http.HandlerFunc(d.handleListAuditErrorGroupEvents)))
-	k.Register("GET "+prefix+"/audit-logs/{id}", admin(http.HandlerFunc(d.handleGetAuditLogDetail)))
-	// Runtime-logs family (runtime-logs.routes.ts); grep endpoints stay on the
-	// Node file scanner and are not part of this dataset slice.
+	k.Register("GET "+prefix+"/audit-logs/", admin(http.HandlerFunc(d.handleAuditLogSubtree)))
+	// Runtime-logs family (runtime-logs.routes.ts); the grep endpoints ride
+	// on the optional file-scanner service.
 	k.Register("GET "+prefix+"/runtime-logs", admin(http.HandlerFunc(d.handleListRuntimeLogs)))
 	k.Register("GET "+prefix+"/runtime-logs/facets", admin(http.HandlerFunc(d.handleRuntimeLogFacets)))
+	if d.Grep != nil {
+		k.Register("GET "+prefix+"/runtime-logs/grep-options", admin(http.HandlerFunc(d.handleRuntimeLogGrepOptions)))
+		k.Register("GET "+prefix+"/runtime-logs/grep", admin(http.HandlerFunc(d.handleRuntimeLogGrep)))
+		k.Register("GET "+prefix+"/runtime-logs/grep-detail", admin(http.HandlerFunc(d.handleRuntimeLogGrepDetail)))
+	}
 	k.Register("GET "+prefix+"/runtime-logs/{id}", admin(http.HandlerFunc(d.handleGetRuntimeLogDetail)))
 	// Public-api-logs family (public-api-logs.routes.ts).
 	k.Register("GET "+prefix+"/public-api-logs", admin(http.HandlerFunc(d.handleListPublicApiLogs)))
@@ -639,6 +655,15 @@ type AuditLogReader interface {
 	ListAuditErrorGroups(ctx context.Context, options AuditErrorGroupListOptions) (ReadPage[AuditErrorGroupSummary], error)
 	GetAuditLogDetail(ctx context.Context, id string) (*AuditLogDetail, error)
 	Runtime() AuditLogRuntime
+	// ListAuditLogsByID backs the /search-hot item hydration (Node
+	// listAuditLogsByIds): chunked IN lookups that keep the caller's order.
+	ListAuditLogsByID(ctx context.Context, ids []string) ([]AuditLogListItem, error)
+	// GetAuditLogPayload backs /{id}/payloads/{payloadId} with the full body
+	// window (Node getAuditLogPayload(..., { full: true })).
+	GetAuditLogPayload(ctx context.Context, auditLogID string, payloadID string) (*AuditLogPayloadDetail, error)
+	// SearchHot is the Node-contract hot search scan over the F3 NDJSON
+	// buckets (repository searchHot; not the writer-side SearchHotSearch).
+	SearchHot(ctx context.Context, options AuditHotSearchOptions) (AuditHotSearchScan, error)
 }
 
 // auditLogNonPersistedTrafficSources mirrors persistedAuditTrafficSourceParams:
@@ -666,11 +691,35 @@ const (
 type auditLogSQLReader struct {
 	db   *sql.DB
 	mode ReadDBMode
+	// hotDir is the F3 hot-search NDJSON root (JUHE_AI_AUDIT_LOG_HOT_SEARCH_
+	// DIRECTORY); empty disables /search-hot with the Node unconfigured
+	// contract. blobDir is the payload blob root
+	// (JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY) used by the payload detail route.
+	hotDir  string
+	blobDir string
+	// Now backs the hot-search window clamp; nil means time.Now.
+	Now func() time.Time
 }
 
 // NewAuditLogSQLReader opens the read-only audit dataset adapter. The caller
-// owns the database handle and the schema (F3 EnsureSchema).
+// owns the database handle and the schema (F3 EnsureSchema). The hot-search
+// and payload-blob roots stay unset, so /search-hot answers the Node
+// "unconfigured directory" contract and payload bodies report file_missing.
 func NewAuditLogSQLReader(db *sql.DB, mode ReadDBMode) (AuditLogReader, error) {
+	return NewAuditLogQueryReader(db, mode, AuditQueryDirectories{})
+}
+
+// AuditQueryDirectories bundles the file roots the audit query routes need
+// beyond the dataset tables (Node createAuditLogF3QueryRepository options).
+type AuditQueryDirectories struct {
+	HotSearchDirectory   string
+	PayloadBlobDirectory string
+}
+
+// NewAuditLogQueryReader opens the read-only audit dataset adapter with the
+// hot-search and payload-blob roots required by the /search-hot and payload
+// detail routes.
+func NewAuditLogQueryReader(db *sql.DB, mode ReadDBMode, directories AuditQueryDirectories) (AuditLogReader, error) {
 	if db == nil {
 		return nil, errors.New("audit 数据集数据库句柄必填")
 	}
@@ -678,7 +727,19 @@ func NewAuditLogSQLReader(db *sql.DB, mode ReadDBMode) (AuditLogReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &auditLogSQLReader{db: db, mode: dialect}, nil
+	return &auditLogSQLReader{
+		db:      db,
+		mode:    dialect,
+		hotDir:  strings.TrimSpace(directories.HotSearchDirectory),
+		blobDir: strings.TrimSpace(directories.PayloadBlobDirectory),
+	}, nil
+}
+
+func (s *auditLogSQLReader) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
 func (s *auditLogSQLReader) Runtime() AuditLogRuntime {
@@ -963,26 +1024,32 @@ func (s *auditLogSQLReader) listPayloads(ctx context.Context, auditLogID string)
 	}
 	payloads := make([]AuditLogPayloadSummary, 0, len(rows))
 	for _, row := range rows {
-		size := readNumberOr(row["raw_size_bytes"], 0)
-		payloads = append(payloads, AuditLogPayloadSummary{
-			ID:                  readRawString(row["id"]),
-			AttemptID:           readOptionalText(row["attempt_id"]),
-			PartType:            readRawString(row["part_type"]),
-			SequenceIndex:       readNumberOr(row["sequence_index"], 0),
-			ContentType:         readOptionalText(row["content_type"]),
-			ContentEncoding:     readOptionalText(row["content_encoding"]),
-			HeadersSha256:       readOptionalText(row["headers_sha256"]),
-			BodySha256:          readOptionalText(row["body_sha256"]),
-			SizeBytes:           size,
-			CompressedSizeBytes: readNumberOr(row["compressed_size_bytes"], size),
-			CaptureStatus:       readRawString(row["capture_status"]),
-			DropReason:          readOptionalText(row["drop_reason"]),
-			CreatedAt:           readRawString(row["created_at"]),
-			HasHeaders:          readOptionalText(row["headers_blob_id"]) != "",
-			HasBody:             readOptionalText(row["body_blob_id"]) != "",
-		})
+		payloads = append(payloads, auditLogPayloadSummaryFromRow(row))
 	}
 	return payloads, nil
+}
+
+// auditLogPayloadSummaryFromRow mirrors auditLogPayloadSummaryFromRow
+// (audit-log-f3-mappers.ts payload()).
+func auditLogPayloadSummaryFromRow(row map[string]any) AuditLogPayloadSummary {
+	size := readNumberOr(row["raw_size_bytes"], 0)
+	return AuditLogPayloadSummary{
+		ID:                  readRawString(row["id"]),
+		AttemptID:           readOptionalText(row["attempt_id"]),
+		PartType:            readRawString(row["part_type"]),
+		SequenceIndex:       readNumberOr(row["sequence_index"], 0),
+		ContentType:         readOptionalText(row["content_type"]),
+		ContentEncoding:     readOptionalText(row["content_encoding"]),
+		HeadersSha256:       readOptionalText(row["headers_sha256"]),
+		BodySha256:          readOptionalText(row["body_sha256"]),
+		SizeBytes:           size,
+		CompressedSizeBytes: readNumberOr(row["compressed_size_bytes"], size),
+		CaptureStatus:       readRawString(row["capture_status"]),
+		DropReason:          readOptionalText(row["drop_reason"]),
+		CreatedAt:           readRawString(row["created_at"]),
+		HasHeaders:          readOptionalText(row["headers_blob_id"]) != "",
+		HasBody:             readOptionalText(row["body_blob_id"]) != "",
+	}
 }
 
 func (s *auditLogSQLReader) findErrorGroup(ctx context.Context, id string) (*AuditErrorGroupSummary, error) {

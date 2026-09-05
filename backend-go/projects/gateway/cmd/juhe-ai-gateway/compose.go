@@ -9,13 +9,17 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/aipublic"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/announcements"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 	businesssettings "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/settings"
@@ -23,6 +27,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/delegated"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/helpweb"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ipstats"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -35,10 +40,14 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/policyreads"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/proxyprofiles"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/statreads"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/systemteams"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/tablemonitor"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/uibootstrap"
 )
 
 // Mount matrix (Node system-api-app.ts / db-service.ts app.use prefix -> Go
@@ -62,28 +71,41 @@ import (
 //	/__aisys__/api/{provider}-oauth + /my-*        -> oauthmgmt.Deps.Mount
 //	/__aisys__/api/response-inspection-policies    -> policyreads.InspectionDeps
 //	/__aisys__/api/operation-logs + /my-operation-logs -> logreads.Deps (F4)
+//	/__aisys__/api/{audit-logs,runtime-logs,public-api-logs} -> logreads.ReadsDeps
+//	  (X04: F3/F1/F5 dataset readers over the audit, runtime-log and dataset
+//	  databases; the runtime-logs grep family scans JUHE_AI_LOG_DIR files.
+//	  Node mounts no my-* variants for these three families)
 //	/__aisys__/api/ip-stats                        -> ipstats.Deps.Mount
 //	/__aisys__/api/external-integration-sources    -> policyreads.ExternalDeps
 //	/__aisys__/api/oauth (admin management)        -> policyreads.OAuthDeps
 //	/__aisys__/api/health                          -> kernel health (rate-limit bypass)
 //	/.well-known + /oauth (public protocol)        -> oidc.Deps.Mount
 //	/__aidelegated__/v1                            -> delegated.Deps.Mount
+//	/__aisys__/api/stats + /my-stats               -> statreads.Deps.Mount (X04)
+//	/__aisys__/api/usage-records + /my-*           -> statreads.Deps.Mount (X04)
+//	/__aisys__/api/authorization-options + /my-*   -> authz.Deps.MountAuthorizationOptions (X04)
+//	/__aisys__/api/proxies                         -> proxyprofiles.Mount (X04)
+//	/__aisys__/api/table-monitor (3 GET)           -> tablemonitor.Deps.Mount (X04; the
+//	  non-business-data cleanup POST stays Node-owned per the W6 record: the
+//	  gateway has no record-maintenance worker channel)
+//	/__aisys__/api/ui-bootstrap + /my-*            -> uibootstrap.Deps.Mount (X04)
+//	/__aisys__/help (static help center)           -> helpweb.Deps.Mount (X04; disabled
+//	  unless JUHE_AI_FRONTEND_DIST_PATH points at the frontend dist)
 //
 // Registered NOT mounted in this phase (slice not composition-ready; the
 // legacy bridge keeps serving them from the Node origin):
-//   - /__aisys__/api/authorization-options + /my-authorization-options: the
-//     authorization-options family (including the grantee-* reference
-//     queries) stays Node-owned (M02 顺延 -> W3, final-migration PLAN.md);
-//     authz mounts only the /authorizations + /my-authorizations families.
-//   - /__aisys__/api/audit-logs, /runtime-logs, /public-api-logs: the
-//     logreads.ReadsDeps needs the F1 runtime-log dataset reader (jobs module
-//     owner; cross-module import is forbidden by the three-project baseline).
+//   - /__aisys__/api/audit-logs, /runtime-logs, /public-api-logs: mounted
+//     through logreads.ReadsDeps (X04 404 项补齐); the F1 runtime-log dataset
+//     stays jobs-owned (the gateway only opens a read-only handle, the F1
+//     indexer keeps the schema).
 //   - /__aisys__/api/my-chat: mounted with the chain (G20 phase-3,
 //     composeChatFamily): the chat database owner + the generation-wave ports
 //     (Executor/ModelCatalog/ChatKeys/GatewayKeys/ObjectStore/ImageProcessor/
 //     ImageObservations/Compactions/TokenCount) dispatch into the internal
 //     gateway chain.
-//   - /__aipublic__ external-integrations legacy family: no Go package yet.
+//   - /__aipublic__ external-integrations legacy family -> aipublic.Deps.Mount
+//     (X04: bearer-token auth + per-source penalty-window rate limiting +
+//     scope checks; the admin management family stays in policyreads).
 //   - /v1 + gateway protocol paths + openai-compatible files/vector-stores:
 //     gated behind JUHE_AI_GATEWAY_CHAIN_ENABLED, see gatewaychain.go (the
 //     compat families mount into the chain's non-protocol paths).
@@ -203,7 +225,7 @@ func settingsString(value any) string {
 // Callers must prove the business owner gates first (businessOwnerGate plus
 // cutover evidence verification); this function fails fast on any incomplete
 // wiring instead of serving a partial surface.
-func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operationStore operationlog.Store, operationLease *operationlog.LeaseKeeper) (*composition, error) {
+func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operationStore operationlog.Store, operationLease *operationlog.LeaseKeeper, auditConfig auditlog.Config) (*composition, error) {
 	if operationStore == nil {
 		return nil, errors.New("系统 API 组合根要求 F4 操作日志 store 已启用（JUHE_AI_OPERATION_LOG_* 配置）")
 	}
@@ -276,6 +298,117 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		composed.ownStatsDB = true
 	}
 
+	// X04 read faces: SQLite mode additionally opens the usage-catalog
+	// registry (usage-records shard walk) and the table-monitor snapshot
+	// database. PostgreSQL mode reaches juhe_usage/juhe_stats through the
+	// shared pool, mirroring the Node PG branches.
+	var usageCatalogDB *sql.DB
+	if composed.pgDialect {
+		usageCatalogDB = composed.db
+	} else {
+		if cfg.UsageCatalogDatabasePath == "" {
+			return nil, errors.New("sqlite 模式缺少 JUHE_AI_USAGE_CATALOG_DATABASE_PATH，无法打开 usage-records 目录数据库")
+		}
+		catalog, err := sql.Open("sqlite", sqliteFileDSN(cfg.UsageCatalogDatabasePath))
+		if err != nil {
+			return nil, fmt.Errorf("open usage catalog sqlite database: %w", err)
+		}
+		catalog.SetMaxOpenConns(1)
+		if err := configureSQLiteConnection(catalog); err != nil {
+			_ = catalog.Close()
+			return nil, fmt.Errorf("configure usage catalog sqlite database: %w", err)
+		}
+		usageCatalogDB = catalog
+		composed.shutdowns = append(composed.shutdowns, func() { _ = catalog.Close() })
+	}
+	var tableMonitorDB *sql.DB
+	if composed.pgDialect {
+		tableMonitorDB = composed.db
+	} else {
+		if cfg.TableMonitorDatabasePath == "" {
+			return nil, errors.New("sqlite 模式缺少 JUHE_AI_TABLE_MONITOR_DATABASE_PATH，无法打开表监控快照数据库")
+		}
+		monitorDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.TableMonitorDatabasePath))
+		if err != nil {
+			return nil, fmt.Errorf("open table monitor sqlite database: %w", err)
+		}
+		monitorDB.SetMaxOpenConns(1)
+		if err := configureSQLiteConnection(monitorDB); err != nil {
+			_ = monitorDB.Close()
+			return nil, fmt.Errorf("configure table monitor sqlite database: %w", err)
+		}
+		tableMonitorDB = monitorDB
+		composed.shutdowns = append(composed.shutdowns, func() { _ = monitorDB.Close() })
+	}
+
+	// X04 404 项补齐 (logreads three-family reads): the audit F3 dataset, the
+	// runtime-log F1 dataset and the F5 dataset file. Node opens all three
+	// read-only (database.ts shouldOpenSqliteDatabaseReadOnly), so SQLite mode
+	// opens read-only handles here and PostgreSQL mode reaches juhe_dataset
+	// through the shared pools: audit through the F3 store pool (the same
+	// JUHE_AI_AUDIT_LOG_POSTGRES_URL pool main acquired), runtime-log and
+	// public-api-logs through the business pool like every other dataset
+	// repository. The runtime-log file stays F1-jobs-owned: a missing file
+	// keeps composing (the routes answer 500 like the Node readOnly open
+	// would) instead of failing the whole composition.
+	var auditDatasetDB *sql.DB
+	if composed.pgDialect {
+		if auditConfig.Mode == auditlog.ModePostgres && auditConfig.PostgresPool != nil {
+			auditDatasetDB = auditConfig.PostgresPool.DB()
+		}
+		if auditDatasetDB == nil {
+			return nil, errors.New("postgres 模式缺少 F3 audit 数据集连接池，无法挂载审计日志读面")
+		}
+	} else {
+		if auditConfig.AuditDatabasePath == "" {
+			return nil, errors.New("sqlite 模式缺少 JUHE_AI_AUDIT_LOG_DATABASE_PATH，无法打开审计日志读面数据库")
+		}
+		if _, err := os.Stat(auditConfig.AuditDatabasePath); err != nil {
+			return nil, fmt.Errorf("audit 数据集文件不存在（F3 input server 应已初始化）: %w", err)
+		}
+		handle, err := openSQLiteReadOnly(auditConfig.AuditDatabasePath)
+		if err != nil {
+			return nil, fmt.Errorf("open audit dataset sqlite database: %w", err)
+		}
+		auditDatasetDB = handle
+		composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
+	}
+	logReadsMode := logreads.ReadSQLite
+	if composed.pgDialect {
+		logReadsMode = logreads.ReadPostgres
+	}
+	var runtimeLogDatasetDB *sql.DB
+	if composed.pgDialect {
+		runtimeLogDatasetDB = composed.db
+	} else {
+		if cfg.RuntimeLogDatabasePath == "" {
+			return nil, errors.New("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH，无法打开运行日志读面数据库")
+		}
+		handle, err := openSQLiteReadOnly(cfg.RuntimeLogDatabasePath)
+		if err != nil {
+			return nil, fmt.Errorf("open runtime-log dataset sqlite database: %w", err)
+		}
+		runtimeLogDatasetDB = handle
+		composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
+	}
+	var publicApiLogDatasetDB *sql.DB
+	if composed.pgDialect {
+		publicApiLogDatasetDB = composed.db
+	} else {
+		if cfg.DatasetDatabasePath == "" {
+			return nil, errors.New("sqlite 模式缺少 JUHE_AI_DATASET_DATABASE_PATH，无法打开公开接口日志读面数据库")
+		}
+		if _, err := os.Stat(cfg.DatasetDatabasePath); err != nil {
+			return nil, fmt.Errorf("dataset 数据集文件不存在（启动 preflight 应已创建）: %w", err)
+		}
+		handle, err := openSQLiteReadOnly(cfg.DatasetDatabasePath)
+		if err != nil {
+			return nil, fmt.Errorf("open public-api-log dataset sqlite database: %w", err)
+		}
+		publicApiLogDatasetDB = handle
+		composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
+	}
+
 	ownerGate := businesssettings.OwnerGate{
 		Confirmed:         cfg.BusinessHandoffConfirmed,
 		SchemaReady:       cfg.BusinessSchemaReady,
@@ -303,6 +436,43 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	}
 	composed.settingsStore = settingsStore
 	settingValue := settingsValueReader(settingsStore)
+
+	// X04 404 项补齐 (logreads three-family reads): build the audit/runtime/
+	// public-api log readers over the dataset handles opened above.
+	auditLogReader, err := logreads.NewAuditLogQueryReader(auditDatasetDB, logReadsMode, logreads.AuditQueryDirectories{
+		HotSearchDirectory:   auditConfig.HotSearchDirectory,
+		PayloadBlobDirectory: auditConfig.PayloadBlobDirectory,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create audit log reader: %w", err)
+	}
+	// Retention days mirror Node runtimeLogIndexRetentionDaysFromSettings:
+	// the integer runtimeLogIndexRetentionDays setting (else the 14-day
+	// default), clamped to 1..90 by the reader.
+	runtimeLogReader, err := logreads.NewRuntimeLogSQLReaderWithSources(runtimeLogDatasetDB, logReadsMode, func() int {
+		value, readErr := settingValue("runtimeLogIndexRetentionDays")
+		if readErr != nil {
+			return 14
+		}
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(value))
+		if parseErr != nil {
+			return 14
+		}
+		return parsed
+	}, time.Now)
+	if err != nil {
+		return nil, fmt.Errorf("create runtime log reader: %w", err)
+	}
+	publicApiLogReader, err := logreads.NewPublicApiLogSQLStore(publicApiLogDatasetDB, logReadsMode)
+	if err != nil {
+		return nil, fmt.Errorf("create public api log reader: %w", err)
+	}
+	grepService := logreads.NewRuntimeLogGrep(logreads.RuntimeLogGrepConfig{
+		FileEnabled:   cfg.LogFileEnabled,
+		Directory:     cfg.LogDir,
+		MaxFiles:      cfg.LogMaxFiles,
+		RetentionDays: cfg.LogRetentionDays,
+	})
 
 	authzStore, err := authz.NewStore(composed.db, composed.pgDialect, time.Now)
 	if err != nil {
@@ -476,7 +646,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	authDeps.MountSystemAccounts(kern, cfg.CookieSameSite, cfg.CookieSecure)
 	announcements.Mount(kern, authDeps, announcementStore, sink)
 	(&systemteams.Deps{Store: teamStore, Sink: sink, Auth: authDeps}).Mount(kern)
-	(&authz.Deps{Store: authzStore, Sink: sink, Auth: authDeps}).Mount(kern)
+	// The authorization family (M04) plus its X04 authorization-options
+	// surface mount through authzDeps below.
 	(&settings.Deps{Store: settingsStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&groups.Deps{Store: groupsStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&routestrategies.Deps{Store: routeStrategyStore, Auth: authDeps, Sink: sink}).Mount(kern)
@@ -488,7 +659,77 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	(&policyreads.ExternalDeps{Store: externalStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&policyreads.OAuthDeps{Store: oauthPolicyStore, Auth: authDeps, OIDCEnabled: cfg.OIDCEnabled, OIDCIssuer: cfg.OIDCIssuer}).Mount(kern)
 	(&logreads.Deps{Reader: operationStore, Auth: authDeps}).Mount(kern)
+	// X04 404 项补齐: the audit-logs / runtime-logs / public-api-logs read
+	// families (Node system-api-app.ts lines: /audit-logs, /runtime-logs,
+	// /public-api-logs; none of them has a my-* variant).
+	(&logreads.ReadsDeps{
+		Audit:   auditLogReader,
+		Runtime: runtimeLogReader,
+		Public:  publicApiLogReader,
+		Grep:    grepService,
+		Auth:    authDeps,
+	}).Mount(kern)
 	(&ipstats.Deps{Store: ipStatsStore, Auth: authDeps, Sink: sink}).Mount(kern)
+	// X04 404 项补齐: stats + usage-records (statreads), ui-bootstrap,
+	// authorization-options (authz), proxies (proxyprofiles) and the
+	// table-monitor read family. The cleanup POST stays Node-owned (W6).
+	authzDeps := &authz.Deps{Store: authzStore, Sink: sink, Auth: authDeps}
+	authzDeps.Mount(kern)
+	authzDeps.MountAuthorizationOptions(kern)
+	proxyStore, err := proxyprofiles.NewStore(proxyprofiles.Deps{
+		DB:        composed.db,
+		PGDialect: composed.pgDialect,
+		Secret:    cfg.Secret,
+		Now:       time.Now,
+		NewID:     newCompositionID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create proxy store: %w", err)
+	}
+	proxyprofiles.Mount(kern, authDeps, proxyStore, sink)
+	(&uibootstrap.Deps{DB: composed.db, PGDialect: composed.pgDialect, Auth: authDeps}).Mount(kern)
+	tableMonitorStore, err := tablemonitor.NewStore(tableMonitorDB, composed.pgDialect)
+	if err != nil {
+		return nil, fmt.Errorf("create table monitor store: %w", err)
+	}
+	(&tablemonitor.Deps{Store: tableMonitorStore, Cache: tablemonitor.NewOverviewCache()}).Mount(kern, authDeps)
+	var healthOutcomes *statreads.HealthOutcomeSource
+	if cfg.AccountHealthOutcomeSQLitePath != "" {
+		healthOutcomes = &statreads.HealthOutcomeSource{SQLitePath: cfg.AccountHealthOutcomeSQLitePath}
+	}
+	(&statreads.Deps{
+		Business:            composed.db,
+		Stats:               composed.statsDB,
+		UsageCatalog:        usageCatalogDB,
+		PGDialect:           composed.pgDialect,
+		Auth:                authDeps,
+		Now:                 time.Now,
+		Timezone:            statreads.NewSystemSettingsTimezoneSource(composed.db, composed.pgDialect),
+		GoRuntimeMetricsURL: cfg.GoRuntimeMetricsURL,
+		HealthOutcomes:      healthOutcomes,
+	}).Mount(kern)
+	// X04: the /__aipublic__ externally maintained legacy family. Bearer-token
+	// sources (external_integration_sources/token tables) are validated by the
+	// aipublic guard; resource families reuse the same store instances as the
+	// management mounts above.
+	(&aipublic.Deps{
+		DB:             composed.db,
+		PGDialect:      composed.pgDialect,
+		Now:            time.Now,
+		SystemAccounts: systemAccountStore,
+		Groups:         groupsStore,
+		Strategies:     routeStrategyStore,
+		ApiKeys:        apiKeyStore,
+		AiAccounts:     accountStore,
+		Sink:           sink,
+	}).Mount(kern)
+	// X04: the /__aisys__/help static help center, session-gated like the Node
+	// web layer (requireHelpSession + role redirects over dist/help).
+	(&helpweb.Deps{
+		Auth:         authDeps,
+		DistPath:     cfg.FrontendDistPath,
+		DevAutoLogin: devAutoLoginResolver(authDeps, cfg.DevAutoLoginUsername),
+	}).Mount(kern)
 
 	// Public protocol surface (root-level paths, mirroring oauthPublicRouter)
 	// and the delegated API share the protocol rate limiter instance.
@@ -633,6 +874,28 @@ func settingsTimezone(read SettingValueFunc) ipstats.TimezoneSource {
 	}
 }
 
+// devAutoLoginResolver wires the development auto-login account into the help
+// static surface (Node serve development auto login through the db-service
+// loopback /auth/me); without a configured username it resolves nothing.
+func devAutoLoginResolver(authDeps *authsys.Deps, username string) func(*http.Request) *authsys.AuthContext {
+	if username == "" || authDeps.Accounts == nil {
+		return nil
+	}
+	return func(*http.Request) *authsys.AuthContext {
+		summary, err := authDeps.Accounts.FindByUsername(context.Background(), username)
+		if err != nil || summary.ID == "" || summary.Status != "active" {
+			return nil
+		}
+		return &authsys.AuthContext{
+			SystemAccountID: summary.ID,
+			Username:        summary.Username,
+			DisplayName:     summary.DisplayName,
+			Role:            summary.Role,
+			SessionID:       "development-auto-login",
+		}
+	}
+}
+
 type delegatedSettingsAdapter struct{ read SettingValueFunc }
 
 func (a delegatedSettingsAdapter) SettingValue(key string) (string, error) { return a.read(key) }
@@ -770,6 +1033,18 @@ func trimSpace(value string) string {
 		end--
 	}
 	return value[start:end]
+}
+
+// openSQLiteReadOnly opens a read-only SQLite handle over an existing file
+// (Node createSqliteDatabase readOnly open: the gateway never creates or
+// migrates another owner's database).
+func openSQLiteReadOnly(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
 }
 
 // businessDialect converts the storage dialect for the business-owner stores.

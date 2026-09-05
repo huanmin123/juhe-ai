@@ -491,7 +491,9 @@ func main() {
 	var mainServer *http.Server
 	var mainServeErr chan error
 	if runtimeCfg.SystemAPIEnabled {
-		composed, err = composeSystemAPI(runtimeCfg, postgresPools, operationStore, operationLease)
+		// X04: the F3 audit config backs the audit-logs read face (dataset
+		// handle pool, hot-search and payload-blob roots).
+		composed, err = composeSystemAPI(runtimeCfg, postgresPools, operationStore, operationLease, auditConfig)
 		if err != nil {
 			fail(fmt.Errorf("compose gateway system api: %w", err))
 		}

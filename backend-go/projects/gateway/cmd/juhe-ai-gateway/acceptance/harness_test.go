@@ -346,12 +346,12 @@ type gatewayEnvOptions struct {
 }
 
 type gatewayFixture struct {
-	baseURL     string
-	healthURL   string
-	root        string
-	secret      string
-	spoolDir    string
-	assetsRoot  string
+	baseURL    string
+	healthURL  string
+	root       string
+	secret     string
+	spoolDir   string
+	assetsRoot string
 	// storage 暴露六库路径与专用目录（jobs 场景复用同一隔离存储布局）。
 	storage map[string]string
 	process *managedProcess
@@ -397,44 +397,48 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	)
 	mustTouchFile(t, filepath.Join(root, "storage", "audit-business-settings.sqlite3"))
 	mustTouchFile(t, filepath.Join(root, "storage", "oplog-business-settings.sqlite3"))
+	// X04 logreads: the runtime-log file is F1-jobs-owned (the gateway
+	// only reads it); fresh boots provision the minimal dataset schema
+	// like a deployed F1 indexer would (helper in log_faces_test.go).
+	provisionRuntimeLogDataset(t, sixPaths["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"])
 
 	spoolDir := filepath.Join(root, "storage", "usage-record-spool")
 	fixture.spoolDir = spoolDir
 	fixture.assetsRoot = filepath.Join(root, "chat-assets")
 
 	env := map[string]string{
-		"JUHE_AI_HOST":                          "127.0.0.1",
-		"JUHE_AI_PORT":                          fmt.Sprint(mainPort),
-		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS": fmt.Sprintf("127.0.0.1:%d", healthPort),
-		"JUHE_AI_RUNTIME_MODE":                  "standalone",
-		"JUHE_AI_SECRET":                        secret,
-		"JUHE_AI_BUSINESS_OWNER":                "gateway",
-		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED":    "true",
-		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED":  "true",
-		"JUHE_AI_BUSINESS_SCHEMA_READY":         "true",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH":          ownerEpoch,
-		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH": writeCutoverEvidence(t, root, ownerEpoch),
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED":    "true",
-		"JUHE_AI_AUTH_CAPTCHA_DISABLED":         "true",
-		"JUHE_AI_AUDIT_LOG_STORE":               "sqlite",
-		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":         "acceptance-gateway",
-		"JUHE_AI_AUDIT_LOG_DATABASE_PATH":       filepath.Join(root, "storage", "audit.sqlite3"),
-		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":      filepath.Join(root, "storage", "audit-blobs"),
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "storage", "audit-business-settings.sqlite3"),
-		"JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS":   fmt.Sprintf("127.0.0.1:%d", f3Port),
-		"JUHE_AI_AUDIT_LOG_INPUT_SECRET":           randomHex(t, 16),
-		"JUHE_AI_OPERATION_LOG_STORE":           "sqlite",
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":     "acceptance-gateway",
-		"JUHE_AI_OPERATION_LOG_DATABASE_PATH":   filepath.Join(root, "storage", "operation-log.sqlite3"),
+		"JUHE_AI_HOST":                                 "127.0.0.1",
+		"JUHE_AI_PORT":                                 fmt.Sprint(mainPort),
+		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS":        fmt.Sprintf("127.0.0.1:%d", healthPort),
+		"JUHE_AI_RUNTIME_MODE":                         "standalone",
+		"JUHE_AI_SECRET":                               secret,
+		"JUHE_AI_BUSINESS_OWNER":                       "gateway",
+		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED":           "true",
+		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED":         "true",
+		"JUHE_AI_BUSINESS_SCHEMA_READY":                "true",
+		"JUHE_AI_BUSINESS_OWNER_EPOCH":                 ownerEpoch,
+		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH":       writeCutoverEvidence(t, root, ownerEpoch),
+		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED":           "true",
+		"JUHE_AI_AUTH_CAPTCHA_DISABLED":                "true",
+		"JUHE_AI_AUDIT_LOG_STORE":                      "sqlite",
+		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":                "acceptance-gateway",
+		"JUHE_AI_AUDIT_LOG_DATABASE_PATH":              filepath.Join(root, "storage", "audit.sqlite3"),
+		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":             filepath.Join(root, "storage", "audit-blobs"),
+		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH":     filepath.Join(root, "storage", "audit-business-settings.sqlite3"),
+		"JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS":       fmt.Sprintf("127.0.0.1:%d", f3Port),
+		"JUHE_AI_AUDIT_LOG_INPUT_SECRET":               randomHex(t, 16),
+		"JUHE_AI_OPERATION_LOG_STORE":                  "sqlite",
+		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":            "acceptance-gateway",
+		"JUHE_AI_OPERATION_LOG_DATABASE_PATH":          filepath.Join(root, "storage", "operation-log.sqlite3"),
 		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "storage", "oplog-business-settings.sqlite3"),
 		"JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS":   fmt.Sprintf("127.0.0.1:%d", f4Port),
 		"JUHE_AI_OPERATION_LOG_INPUT_SECRET":           randomHex(t, 16),
-		"JUHE_AI_USAGE_SHARD_ROOT":              usageShardRoot,
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":  codexRoot,
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "1",
-		"JUHE_AI_CHAT_ASSETS_ROOT":              fixture.assetsRoot,
-		"JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT":  filepath.Join(root, "openai-files"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY":         spoolDir,
+		"JUHE_AI_USAGE_SHARD_ROOT":                     usageShardRoot,
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":       codexRoot,
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT":      "1",
+		"JUHE_AI_CHAT_ASSETS_ROOT":                     fixture.assetsRoot,
+		"JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT":         filepath.Join(root, "openai-files"),
+		"JUHE_AI_USAGE_SPOOL_DIRECTORY":                spoolDir,
 	}
 	for key, value := range sixPaths {
 		env[key] = value
@@ -552,8 +556,8 @@ func envMapToSlice(env map[string]string) []string {
 // ---------------------------------------------------------------------------
 
 type acceptanceClient struct {
-	t      *testing.T
-	http   *http.Client
+	t       *testing.T
+	http    *http.Client
 	baseURL string
 }
 
@@ -644,5 +648,3 @@ func dataString(payload map[string]any, key string) string {
 	text, _ := nested[key].(string)
 	return text
 }
-
-

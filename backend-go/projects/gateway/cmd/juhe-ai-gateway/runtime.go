@@ -92,6 +92,28 @@ type runtimeConfig struct {
 	AuditInputURL       string
 	UsageSpoolDirectory string
 
+	// Read-face collaborators (X04 404 项补齐):
+	// GoRuntimeMetricsURL is the loopback origin of the Go jobs metrics
+	// server that the /stats/system-metrics/go-runtime-trend route proxies
+	// (Node JUHE_AI_GO_RUNTIME_METRICS_URL, default http://127.0.0.1:3305).
+	GoRuntimeMetricsURL string
+	// AccountHealthOutcomeSQLitePath is the J1 jobs outcome store the ai-health
+	// reads merge (Node JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH).
+	AccountHealthOutcomeSQLitePath string
+	// FrontendDistPath is the frontend dist directory backing the
+	// /__aisys__/help static surface (Node derives it from backendRoot).
+	FrontendDistPath string
+
+	// Runtime-logs grep surface (X04 404 项补齐): Node runtimeConfig.log
+	// fields the grep family reads (JUHE_AI_LOG_DIR / JUHE_AI_LOG_FILE_ENABLED
+	// / JUHE_AI_LOG_MAX_FILES / JUHE_AI_LOG_RETENTION_DAYS). The gateway only
+	// scans these files; an empty directory keeps the family on the
+	// file-logging-disabled contract.
+	LogDir           string
+	LogFileEnabled   bool
+	LogMaxFiles      int
+	LogRetentionDays int
+
 	// Business owner handoff gates for the business database this composition
 	// would own. Names mirror the J3b owner contract (modelcheckowner).
 	BusinessOwner               string
@@ -324,6 +346,28 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		cfg.AuditInputURL = "http://" + net.JoinHostPort(host, port)
 	}
 	cfg.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
+
+	cfg.GoRuntimeMetricsURL = strings.TrimSpace(getenv("JUHE_AI_GO_RUNTIME_METRICS_URL"))
+	if cfg.GoRuntimeMetricsURL == "" {
+		cfg.GoRuntimeMetricsURL = "http://127.0.0.1:3305"
+	}
+	cfg.AccountHealthOutcomeSQLitePath = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH"))
+	cfg.FrontendDistPath = strings.TrimSpace(getenv("JUHE_AI_FRONTEND_DIST_PATH"))
+
+	// Runtime-logs grep surface: Node numberConfig clamps instead of failing.
+	cfg.LogDir = strings.TrimSpace(getenv("JUHE_AI_LOG_DIR"))
+	cfg.LogFileEnabled = true
+	if raw := strings.TrimSpace(getenv("JUHE_AI_LOG_FILE_ENABLED")); raw != "" {
+		cfg.LogFileEnabled = envBoolTrue(raw)
+	}
+	cfg.LogMaxFiles = 500
+	if parsed, err := strconv.Atoi(strings.TrimSpace(getenv("JUHE_AI_LOG_MAX_FILES"))); err == nil {
+		cfg.LogMaxFiles = min(max(parsed, 1), 500)
+	}
+	cfg.LogRetentionDays = 30
+	if parsed, err := strconv.Atoi(strings.TrimSpace(getenv("JUHE_AI_LOG_RETENTION_DAYS"))); err == nil {
+		cfg.LogRetentionDays = min(max(parsed, 1), 30)
+	}
 
 	cfg.BusinessOwner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER")))
 	cfg.BusinessDatabasePath = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_DATABASE_PATH"))

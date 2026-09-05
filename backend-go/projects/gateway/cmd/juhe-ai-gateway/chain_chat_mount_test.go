@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,10 @@ func composeChatTestSystemAPI(t *testing.T, devAutoLogin bool) (*composition, *h
 		cfg.DevAutoLoginUsername = "admin"
 	}
 	store := openComposeOperationStore(t)
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store))
+	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
+	auditConfig, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	defer closeAudit()
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditConfig)
 	if err != nil {
 		t.Fatalf("compose system api with chat family: %v", err)
 	}

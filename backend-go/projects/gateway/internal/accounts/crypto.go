@@ -127,6 +127,10 @@ func MaskSecret(value any) string {
 		return ""
 	}
 	runes := []rune(text)
+	if len(runes) == 1 {
+		// Node slice(-2) is safe on a single rune; Go slicing would panic.
+		return string(runes[:1]) + "***"
+	}
 	if len(runes) <= 10 {
 		return string(runes[:2]) + "***" + string(runes[len(runes)-2:])
 	}

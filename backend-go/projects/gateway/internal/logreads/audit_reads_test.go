@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,9 +31,14 @@ var readsAuthTables = []string{
 // backing the auth tables, the dataset tables seeded per family, and the
 // logreads routes mounted behind the real requireAdmin chain.
 type readsTestEnv struct {
-	server *httptest.Server
-	db     *sql.DB
-	jar    map[string]string
+	server   *httptest.Server
+	db       *sql.DB
+	jar      map[string]string
+	accounts *authsys.AccountStore
+	hotDir   string
+	blobDir  string
+	logDir   string
+	grep     *RuntimeLogGrep
 }
 
 // newReadsTestEnv builds the env over the given dataset DDL. The optional
@@ -63,7 +69,14 @@ func newReadsTestEnv(t *testing.T, datasetDDL []string, mutate func(audit AuditL
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	audit, err := NewAuditLogSQLReader(db, ReadSQLite)
+	directories := t.TempDir()
+	hotDir := filepath.Join(directories, "audit-hot")
+	blobDir := filepath.Join(directories, "audit-blobs")
+	logDir := filepath.Join(directories, "logs")
+	audit, err := NewAuditLogQueryReader(db, ReadSQLite, AuditQueryDirectories{
+		HotSearchDirectory:   hotDir,
+		PayloadBlobDirectory: blobDir,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,12 +91,13 @@ func newReadsTestEnv(t *testing.T, datasetDDL []string, mutate func(audit AuditL
 	if mutate != nil {
 		mutate(audit, runtimeReader, public)
 	}
+	grep := NewRuntimeLogGrep(RuntimeLogGrepConfig{FileEnabled: true, Directory: logDir, MaxFiles: 500, RetentionDays: 30})
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	deps.MountAuth(k, "lax", false)
-	(&ReadsDeps{Audit: audit, Runtime: runtimeReader, Public: public, Auth: deps}).Mount(k)
+	(&ReadsDeps{Audit: audit, Runtime: runtimeReader, Public: public, Grep: grep, Auth: deps}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	env := &readsTestEnv{server: server, db: db, jar: map[string]string{}}
+	env := &readsTestEnv{server: server, db: db, jar: map[string]string{}, accounts: accounts, hotDir: hotDir, blobDir: blobDir, logDir: logDir, grep: grep}
 	if login {
 		if _, err := accounts.Create(context.Background(), authsys.CreateInput{
 			Username: "admin", DisplayName: "admin_name", Password: "admin-password-123", Role: "admin",
@@ -100,6 +114,9 @@ func newReadsTestEnv(t *testing.T, datasetDDL []string, mutate func(audit AuditL
 }
 
 func boolPtr(value bool) *bool { return &value }
+
+// resetSession drops the cookie jar so subsequent calls act anonymously.
+func (e *readsTestEnv) resetSession() { e.jar = map[string]string{} }
 
 func (e *readsTestEnv) do(t *testing.T, method, path, body string) (int, map[string]any) {
 	t.Helper()

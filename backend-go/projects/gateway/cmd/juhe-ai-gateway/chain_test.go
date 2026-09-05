@@ -322,7 +322,10 @@ func TestComposeSystemAPIServesGatewayChain(t *testing.T) {
 	cfg := composeTestConfig(t)
 	cfg.ChainEnabled = true
 	store := openComposeOperationStore(t)
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store))
+	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
+	auditConfig, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	defer closeAudit()
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditConfig)
 	if err != nil {
 		t.Fatalf("compose system api with chain: %v", err)
 	}

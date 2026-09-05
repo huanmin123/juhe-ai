@@ -114,6 +114,24 @@ func NewRuntimeLogSQLReader(db *sql.DB, mode ReadDBMode) (RuntimeLogReader, erro
 	return &runtimeLogSQLReader{db: db, mode: dialect}, nil
 }
 
+// NewRuntimeLogSQLReaderWithSources opens the read-only runtime log dataset
+// adapter with the settings-backed retention source and the clock seam (Node
+// currentRuntimeLogIndexRetentionDays). Either source may be nil; the
+// retention value is clamped to 1..90 with the 14-day default upstream.
+func NewRuntimeLogSQLReaderWithSources(db *sql.DB, mode ReadDBMode, retentionDays func() int, now func() time.Time) (RuntimeLogReader, error) {
+	reader, err := NewRuntimeLogSQLReader(db, mode)
+	if err != nil {
+		return nil, err
+	}
+	concrete, ok := reader.(*runtimeLogSQLReader)
+	if !ok {
+		return nil, errors.New("runtime 日志数据集读取器类型异常")
+	}
+	concrete.RetentionDays = retentionDays
+	concrete.Now = now
+	return concrete, nil
+}
+
 func (s *runtimeLogSQLReader) now() time.Time {
 	if s.Now != nil {
 		return s.Now()
