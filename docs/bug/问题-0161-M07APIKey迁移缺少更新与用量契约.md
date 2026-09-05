@@ -148,6 +148,13 @@
 - 结果偏差：相同 `POST /api-keys` 请求 `{"name":"...","expiresAt":"   "}` 在 Node 被拒绝，Go 返回 201 并持久化无过期时间；客户端无法依赖 Node 的非法时间输入保护，且错误请求会产生真实密钥和审计记录。
 - 结论：这是 M07 创建时间字段的确定性输入契约偏差，当前仅记录，未修改 Go 代码。
 
+### 18. 刷新密钥操作日志丢失旧/新脱敏前后缀
+
+- Node 证据：历史 `POST /:id/refresh-key` 的 `safeChange('key', '密钥标识', \`${outcome.previousKeyPrefix}...${outcome.previousKeySuffix}\`, \`${outcome.result.keyPrefix}...${outcome.result.keySuffix}\`)` 同时记录旧密钥和新密钥的脱敏标识，并保留 validation-cache 失败时的 500 `statusCode`。
+- Go 证据：历史 `backend-go/projects/gateway/internal/apikeys/routes.go` 的 `refresh_key` 日志固定写 `{Before: "已设置", After: "已变更", Sensitive: true}`，没有使用 `PreviousKeyPrefix/PreviousKeySuffix`，也没有在当前日志结构中携带状态码（状态码遗漏另有已登记子项）。
+- 结果偏差：刷新成功或失效失败时，Node 审计可以核对密钥轮换前后的掩码，Go 只能看到泛化状态，无法确认轮换对象；日志字段内容和追溯能力均不一致。完整密钥不会因此泄露，但审计副作用仍不等价。
+- 结论：这是 M07 `refresh_key` 日志投影相对 reveal 之外的独立确定性偏差，当前仅记录，未修改 Go 代码。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
@@ -156,4 +163,5 @@
 - 新增未修复子项：API Key 列表/详情读取关联策略时应复用 Node 的 `mode` 规范化：空值补 `normal`，未知值显式失败；补充空字符串、未知 mode 和正常五种 mode 的 Node/Go DTO 与错误回放。
 - 新增未修复子项：API Key 详情必须像 Node `findApiKeySummaryAsync` 一样加载并返回该 key 的真实 usage 汇总，补充非零 usage 与空 usage 的 Node/Go DTO 回放；不能只修列表。
 - 新增未修复子项：创建 `expiresAt` 必须区分精确空字符串与纯空白字符串：仅前者按未设置处理，后者应保持 Node 的 400；补充空字符串、空白、合法 offset 和非法时间的回放。
+- 新增未修复子项：`refresh_key` 日志应保留 Node 的旧/新 `keyPrefix...keySuffix` 脱敏值，并与 statusCode 一起回放；确认日志不写入完整密钥且能区分轮换前后。
 - 结论：M07 不能视为完整 API Key 功能迁移或 Node 可归档。
