@@ -49,11 +49,12 @@ type workerConfig struct {
 	UsageShardRoot         string
 	UsageShardCount        int
 
-	StatsEnabled       bool
-	OAuthEnabled       bool
-	TaskRunsEnabled    bool
-	UsageWriterEnabled bool
-	InternalAPIEnabled bool
+	StatsEnabled         bool
+	OAuthEnabled         bool
+	TaskRunsEnabled      bool
+	UsageWriterEnabled   bool
+	InternalAPIEnabled   bool
+	BalanceDetectEnabled bool
 
 	DrainTimeout time.Duration
 }
@@ -90,13 +91,14 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		WorkerReplicaIdx:     0,
 		PostgresMaxOpenConns: 8,
 		PostgresMaxIdleConns: 8,
-		UsageShardCount:      16,
-		StatsEnabled:         true,
-		OAuthEnabled:         true,
-		TaskRunsEnabled:      true,
-		UsageWriterEnabled:   true,
-		InternalAPIEnabled:   true,
-		DrainTimeout:         10 * time.Second,
+		UsageShardCount:     16,
+		StatsEnabled:        true,
+		OAuthEnabled:        true,
+		TaskRunsEnabled:     true,
+		UsageWriterEnabled:  true,
+		InternalAPIEnabled:  true,
+		BalanceDetectEnabled: true,
+		DrainTimeout:        10 * time.Second,
 	}
 	enabled, err := workerEnvBool(getenv, "JUHE_AI_JOBS_WORKER_ENABLED", false)
 	if err != nil {
@@ -151,6 +153,7 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		{"JUHE_AI_JOBS_TASK_RUNS_ENABLED", &config.TaskRunsEnabled, true},
 		{"JUHE_AI_JOBS_USAGE_WRITER_ENABLED", &config.UsageWriterEnabled, true},
 		{"JUHE_AI_JOBS_INTERNAL_API_ENABLED", &config.InternalAPIEnabled, true},
+		{"JUHE_AI_JOBS_BALANCE_DETECT_ENABLED", &config.BalanceDetectEnabled, true},
 	} {
 		*toggle.target, err = workerEnvBool(getenv, toggle.name, toggle.fallback)
 		if err != nil {
@@ -188,6 +191,9 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		}
 		if config.UsageWriterEnabled && (config.UsageCatalogSQLitePath == "" || config.UsageShardRoot == "") {
 			return config, fmt.Errorf("启用 JUHE_AI_JOBS_USAGE_WRITER_ENABLED 后必须配置 JUHE_AI_USAGE_CATALOG_DATABASE_PATH 与 JUHE_AI_USAGE_SHARD_ROOT")
+		}
+		if config.BalanceDetectEnabled && (config.BusinessSQLitePath == "" || config.StatsSQLitePath == "") {
+			return config, fmt.Errorf("启用 JUHE_AI_JOBS_BALANCE_DETECT_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH 与 JUHE_AI_STATS_DATABASE_PATH")
 		}
 	}
 	return config, nil

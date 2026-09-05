@@ -48,6 +48,12 @@ type workerAssembly struct {
 	closers   []func() error
 
 	wiredJobs []string
+	// wiredTasks 记录已注册（含租约包裹）的任务闭包，供测试/运维入口
+	// 单轮执行；生产调度仍只经 scheduler。
+	wiredTasks map[string]jobsched.Task
+	// disabledJobs 是注册表已收录但依赖未齐、本轮不调度的 scheduled job
+	// 清单（见 worker_partial_jobs.go）。
+	disabledJobs []disabledJob
 
 	dispatchHandler http.Handler
 }
@@ -126,9 +132,10 @@ func buildWorkerAssembly(config workerConfig, logger *slog.Logger) (*workerAssem
 		logger = slog.Default()
 	}
 	assembly := &workerAssembly{
-		config:   config,
-		logger:   logger,
-		settings: staticSettings{},
+		config:     config,
+		logger:     logger,
+		settings:   staticSettings{},
+		wiredTasks: map[string]jobsched.Task{},
 	}
 	assembly.scheduler = jobsched.NewScheduler(jobsched.Options{
 		StableSeed: fmt.Sprintf("%s:%s:%d", config.InstanceID, config.WorkerRole, config.WorkerReplicaIdx),
@@ -179,7 +186,26 @@ func (a *workerAssembly) wireFamilies(ctx context.Context) error {
 	if err := a.wireUsageWriterFamily(ctx); err != nil {
 		return err
 	}
+	if err := a.wireBalanceDetectFamily(ctx); err != nil {
+		return err
+	}
+	registerDisabledJobsStartup(a, a.logger)
 	return nil
+}
+
+// registerDisabledJob 登记并输出一条启动日志（Node registry 显式登记缺失、
+// 不静默跳过的语义在组合根侧的等价物）。
+func (a *workerAssembly) registerDisabledJob(name, reason string) {
+	a.disabledJobs = append(a.disabledJobs, disabledJob{JobName: name, Reason: reason})
+	a.logger.Info("后台任务未接线，本轮不调度",
+		"job", name,
+		"registryStatus", func() string {
+			if entry, ok := jobregistry.Find(name); ok {
+				return string(entry.GoStatus)
+			}
+			return "unknown"
+		}(),
+		"missing", reason)
 }
 
 // wireTaskRunsFamily：background_task_runs + background_job_leases 存储、
@@ -574,6 +600,17 @@ func (a *workerAssembly) scheduleWiredJob(name string, task jobsched.Task) {
 	}
 	a.scheduler.Schedule(spec)
 	a.wiredJobs = append(a.wiredJobs, name)
+	a.wiredTasks[name] = spec.Task
+}
+
+// runWiredJobOnce 直接执行一个已注册任务一轮（含租约包裹），供测试与
+// 运维单轮验证使用；生产调度仍只经 scheduler。
+func (a *workerAssembly) runWiredJobOnce(ctx context.Context, name string) (jobsched.TaskResult, error) {
+	task, ok := a.wiredTasks[name]
+	if !ok {
+		return jobsched.TaskResult{}, fmt.Errorf("任务 %s 未注册", name)
+	}
+	return task(ctx, jobsched.TaskContext{})
 }
 
 // withLease 包裹 taskruns.RunWithScheduledLease；SQLite 模式与 Node 一致
@@ -675,6 +712,7 @@ func (a *workerAssembly) statusPayload() map[string]any {
 		"workerDriver":          a.config.Driver,
 		"workerWiredJobs":       a.wiredJobs,
 		"workerRegisteredTodo":  registeredNotWired,
+		"workerDisabledJobs":    a.disabledJobs,
 		"workerUsageWriter":     a.writer != nil,
 		"workerDispatchMounted": a.dispatchHandler != nil,
 		"workerJobs":            snapshots,

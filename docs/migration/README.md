@@ -22,6 +22,7 @@
 - [J2 余额刷新完整迁移契约](J2-余额刷新完整迁移契约.md)：冻结周期刷新、首次探测补偿、手动刷新、单 API Key、provider adapter、快照/CAS 与 SQLite/PG owner 边界；当前完成 L2 Go jobs、Node projector 与显式 Go-owner bridge，发布前门禁仍以契约为准。
 - [Go 三项目部署与验证计划](Go三项目部署与验证计划.md)：当前兼容部署、隔离开发验证、后续 jobs-only candidate 与生产 handover 的分层验收。
 - [部署 go-only 双轨开关](部署go-only双轨开关.md)：`JUHE_AI_DEPLOY_MODE=go|hybrid|node` 三模式在 start.sh/start.ps1、docker、CI 与发布物校验中的现状、启动顺序、健康检查端口与回滚开关（X03 前置，实际生产切换仍走正式工作包）。
+- [X04 前端 Go 模式收口与契约差异清单](X04-前端Go模式收口与契约差异清单.md)：前端 `VITE_JUHE_AI_DEPLOY_MODE` 连接模式、连接面盘点、J3b UI gate 核对结论，以及前端指向 Go gateway 主入口时未挂载前缀（审计/运行/公开 API 日志、授权选项、统计、使用记录、代理、表监控、ui-bootstrap、帮助中心）的降级面清单。
 
 > 面向 AI、维护者和后续迁移执行者。
 > 本目录集中维护 `juhe-ai` 从 Node.js + TypeScript 后端迁移到 Go 后端的长期规则、顺序、验收和部署调整。
