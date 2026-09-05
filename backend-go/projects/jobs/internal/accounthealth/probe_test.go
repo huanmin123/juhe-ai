@@ -51,7 +51,7 @@ func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 		if request.URL.Path != "/v1/responses" || request.Method != http.MethodPost {
 			t.Fatalf("unexpected direct path: %s %s", request.Method, request.URL.Path)
 		}
-		if request.Header.Get("Accept") != "text/event-stream" {
+		if request.Header.Get("Accept") != "application/json, text/event-stream" {
 			t.Fatalf("unexpected accept header: %q", request.Header.Get("Accept"))
 		}
 		var body map[string]any
@@ -208,7 +208,7 @@ func TestProbeGeminiNativeUsesGoogleOAuthHeadersAndCompletion(t *testing.T) {
 func TestProbeGeminiInteractionsSSERequiresCompletedEvent(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1beta/interactions" || request.Header.Get("api-revision") != "2026-05-20" || request.Header.Get("Accept") != "text/event-stream" {
+		if request.URL.Path != "/v1beta/interactions" || request.Header.Get("api-revision") != "2026-05-20" || request.Header.Get("Accept") != "application/json, text/event-stream" {
 			t.Fatalf("unexpected Gemini Interactions request: path=%s headers=%#v", request.URL.Path, request.Header)
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")

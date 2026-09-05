@@ -21,7 +21,6 @@ const (
 	probeChallenge        = "juhe"
 	probeInstructions     = "You are ChatGPT, a helpful assistant."
 	defaultMaxBodyBytes   = int64(256 * 1024)
-	defaultProbeUserAgent = "juhe-ai-jobs-account-health/1"
 )
 
 type ProbeOptions struct {
@@ -259,7 +258,6 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", defaultProbeUserAgent)
 	switch protocol {
 	case "anthropic":
 		request.Header.Set("anthropic-version", "2023-06-01")
@@ -306,7 +304,14 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		}
 	}
 	if input.EndpointMode == "responses_sse" || input.EndpointMode == "chat_sse" || input.EndpointMode == "messages_sse" || input.EndpointMode == "generate_content_sse" || input.EndpointMode == "interactions_sse" || codeAssist {
-		request.Header.Set("Accept", "text/event-stream")
+		// Match the Node manual account-test request. OAuth keeps the official
+		// client-only stream accept header; API-key and google_oauth probes use
+		// the same dual accept header as the manual gateway diagnostic.
+		if input.Type == "oauth" || codeAssist {
+			request.Header.Set("Accept", "text/event-stream")
+		} else {
+			request.Header.Set("Accept", "application/json, text/event-stream")
+		}
 	} else {
 		request.Header.Set("Accept", "application/json")
 	}
