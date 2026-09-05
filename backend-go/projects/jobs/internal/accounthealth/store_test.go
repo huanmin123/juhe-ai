@@ -407,6 +407,83 @@ func TestSQLiteTaskFailureWithDueOnlyReschedulesWithoutChangingState(t *testing.
 	}
 }
 
+func TestSQLiteCooldownCASRehydratesDirectInputQuarantineAndKeepsAdvancing(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	ctx := context.Background()
+	observed := time.Now().UTC().Round(0)
+	quarantineDue := observed.Add(5 * time.Minute)
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "rehydrate-direct-invalid", RequestID: "rehydrate-direct-invalid-request", AccountID: "account-rehydrate-cooldown",
+		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		ErrorCode: "direct_input_invalid", NextDueAt: &quarantineDue, FailureCount: 1,
+	})
+
+	fence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "rehydrated-generation"}
+	firstDue := observed.Add(7 * time.Minute)
+	first := cooldownCASOutcome("rehydrate-first", "rehydrate-first-request", "account-rehydrate-cooldown", observed.Add(6*time.Minute), fence)
+	first.NextDueAt = &firstDue
+	appendStoreOutcome(t, store, lease, first)
+	state, found, err := store.LoadCurrentState(ctx, first.AccountID)
+	if err != nil || !found || state.OutcomeID != first.OutcomeID || state.AccountStatus != "temporary_unavailable" || state.NextDueAt == nil || !state.NextDueAt.Equal(firstDue) || !sameCooldownFence(state.CooldownFence, fence) {
+		t.Fatalf("direct-input quarantine must rehydrate into fenced cooldown state: found=%t state=%#v err=%v", found, state, err)
+	}
+	assertStoredOutcomeProjectionPresent(t, store, first.RequestID)
+
+	secondDue := observed.Add(9 * time.Minute)
+	second := cooldownCASOutcome("rehydrate-second", "rehydrate-second-request", first.AccountID, observed.Add(8*time.Minute), fence)
+	second.NextDueAt = &secondDue
+	appendStoreOutcome(t, store, lease, second)
+	state, found, err = store.LoadCurrentState(ctx, second.AccountID)
+	if err != nil || !found || state.OutcomeID != second.OutcomeID || state.NextDueAt == nil || !state.NextDueAt.Equal(secondDue) || !sameCooldownFence(state.CooldownFence, fence) {
+		t.Fatalf("rehydrated cooldown state must keep advancing on later probes: found=%t state=%#v err=%v", found, state, err)
+	}
+	assertStoredOutcomeProjectionPresent(t, store, second.RequestID)
+
+	recovered := Outcome{
+		OutcomeID: "rehydrate-success", RequestID: "rehydrate-success-request", AccountID: first.AccountID,
+		Outcome: OutcomeSuccess, ObservedAt: observed.Add(10 * time.Minute), InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		AccountStatus: "active",
+		Projection: &Projection{
+			TargetAccountID: first.AccountID, TransitionKind: "cooldown_success", InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+			ExpectedAccountStatus: "temporary_unavailable", ExpectedCooldownFence: fence,
+		},
+	}
+	appendStoreOutcome(t, store, lease, recovered)
+	state, found, err = store.LoadCurrentState(ctx, recovered.AccountID)
+	if err != nil || !found || state.OutcomeID != recovered.OutcomeID || state.AccountStatus != "active" || !sameCooldownFence(state.CooldownFence, fence) {
+		t.Fatalf("successful cooldown probe must recover active state and retain its audit fence: found=%t state=%#v err=%v", found, state, err)
+	}
+
+	health := projectedHealthCASOutcome("rehydrate-active-health", "rehydrate-active-health-request", recovered.AccountID, observed.Add(11*time.Minute), 7, 11, 17)
+	appendStoreOutcome(t, store, lease, health)
+	state, found, err = store.LoadCurrentState(ctx, health.AccountID)
+	if err != nil || !found || state.OutcomeID != health.OutcomeID || state.AccountStatus != "temporary_unavailable" {
+		t.Fatalf("ordinary health state must keep advancing after cooldown recovery: found=%t state=%#v err=%v", found, state, err)
+	}
+	assertStoredOutcomeProjectionPresent(t, store, health.RequestID)
+}
+
+func TestSQLiteCooldownCASDoesNotRehydrateOtherBlankState(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	ctx := context.Background()
+	observed := time.Now().UTC().Round(0)
+	retryDue := observed.Add(5 * time.Minute)
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "blank-other-error", RequestID: "blank-other-error-request", AccountID: "account-blank-other-error",
+		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		ErrorCode: "request_deadline_elapsed", NextDueAt: &retryDue, FailureCount: 1,
+	})
+
+	fence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "must-not-rehydrate"}
+	candidate := cooldownCASOutcome("blank-other-candidate", "blank-other-candidate-request", "account-blank-other-error", observed.Add(time.Second), fence)
+	appendStoreOutcome(t, store, lease, candidate)
+	state, found, err := store.LoadCurrentState(ctx, candidate.AccountID)
+	if err != nil || !found || state.OutcomeID != "blank-other-error" || state.AccountStatus != "" || state.CooldownFence != nil {
+		t.Fatalf("non-quarantine blank state must not be rehydrated: found=%t state=%#v err=%v", found, state, err)
+	}
+	assertStoredOutcomeProjectionPresent(t, store, candidate.RequestID)
+}
+
 func TestSQLiteCurrentStateCooldownCASRejectsGenerationMismatchAndBootstrapsMissingState(t *testing.T) {
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()

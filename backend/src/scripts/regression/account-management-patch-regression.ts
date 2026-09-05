@@ -120,6 +120,9 @@ try {
   const manuallyIsolatedRow = accountRow(manuallyIsolatedAccount.id)
   assert.equal(manuallyIsolatedRow.status, 'temporary_unavailable')
   assert.equal(manuallyIsolatedRow.schedulable, 0, '人工隔离必须立即移除调度资格')
+  assert.match(manuallyIsolatedRow.cooldown_retest_observation_started_at ?? '', /^\d{4}-\d{2}-\d{2}T/, '人工隔离必须建立 cooldown observation')
+  assert.match(manuallyIsolatedRow.cooldown_retest_generation ?? '', /^cooldown:/, '人工隔离必须建立完整 cooldown fence')
+  assert.match(manuallyIsolatedRow.cooldown_until ?? '', /^\d{4}-\d{2}-\d{2}T/, '人工隔离必须设置首次恢复探测时间')
 
   const manualIsolationRestore = await patchRepository.patchAccountManagementAsync(manuallyIsolatedAccount.id, {
     expectedConfigRevision: 2,
@@ -132,6 +135,9 @@ try {
   const manuallyRestoredRow = accountRow(manuallyIsolatedAccount.id)
   assert.equal(manuallyRestoredRow.status, 'active')
   assert.equal(manuallyRestoredRow.schedulable, 1, '人工隔离账户恢复可调度时必须恢复调度资格')
+  assert.equal(manuallyRestoredRow.cooldown_retest_observation_started_at, null)
+  assert.equal(manuallyRestoredRow.cooldown_retest_generation, null)
+  assert.equal(manuallyRestoredRow.cooldown_until, null)
 
   const pendingIsolationAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -972,12 +978,22 @@ function relationDml(dml: string[]): string[] {
   return dml.filter((sql) => /account_supported_models|account_model_mappings|account_tag_bindings|group_accounts/i.test(sql))
 }
 
-function accountRow(accountId: string): { config_revision: number; notes: string | null; priority: number; status: string; schedulable: number } {
+function accountRow(accountId: string): {
+  config_revision: number
+  notes: string | null
+  priority: number
+  status: string
+  schedulable: number
+  cooldown_until: string | null
+  cooldown_retest_observation_started_at: string | null
+  cooldown_retest_generation: string | null
+} {
   return databaseModule.getBusinessDatabase().prepare(`
-    SELECT config_revision, notes, priority, status, schedulable
+    SELECT config_revision, notes, priority, status, schedulable, cooldown_until,
+      cooldown_retest_observation_started_at, cooldown_retest_generation
     FROM accounts
     WHERE id = ?
-  `).get(accountId) as unknown as { config_revision: number; notes: string | null; priority: number; status: string; schedulable: number }
+  `).get(accountId) as unknown as ReturnType<typeof accountRow>
 }
 
 function activeGroupId(accountId: string): string | undefined {

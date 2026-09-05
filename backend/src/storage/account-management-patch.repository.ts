@@ -1697,6 +1697,9 @@ function nextRuntimeState(
       && (input.nextStatus !== row.status || !cooldownUntil)) {
       cooldownUntil = initialCooldownUntilForStatus(input.nextStatus, input.nowMs) ?? null
       cooldownRetestObservationStartedAt = cooldownRetestObservationStartedAtForStatus(input.nextStatus, input.nowMs) ?? null
+      cooldownRetestGeneration = cooldownRetestObservationStartedAt
+        ? newCooldownRetestGeneration()
+        : null
       lastErrorCode = null
       lastErrorMessage = input.nextStatus === 'temporary_unavailable'
         ? '手动设置为临时不可调用'
@@ -1714,7 +1717,7 @@ function nextRuntimeState(
   }
   if (clearRetest) {
     cooldownRetestFailureCount = 0
-    cooldownRetestGeneration = null
+    if (!cooldownRetestObservationStartedAt) cooldownRetestGeneration = null
     cooldownRetestLastAt = null
     cooldownRetestLastStatusCode = null
   }

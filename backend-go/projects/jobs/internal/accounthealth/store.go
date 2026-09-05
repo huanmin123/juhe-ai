@@ -652,10 +652,12 @@ WHERE (account_health_current_state.input_version < excluded.input_version
 }
 
 // Cooldown transitions first require an already-recorded fence and therefore
-// use a strict UPDATE. If that UPDATE finds no row, an insert-only bootstrap
-// may create the missing state; ON CONFLICT leaves any existing generation,
-// status, or revision untouched. Node still performs the final business-fence
-// stale decision for the durable cooldown projection.
+// use a strict UPDATE. A same-epoch direct-input quarantine has no status or
+// fence; after its business input is repaired, that exact baseline may be
+// rehydrated once. If neither path finds a row, an insert-only bootstrap may
+// create missing state; ON CONFLICT leaves any existing generation, status, or
+// revision untouched. Node still performs the final business-fence stale
+// decision for the durable cooldown projection.
 func (s *Store) updateCooldownCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
 	fence := outcome.Projection.ExpectedCooldownFence
 	if s.mode == StorePostgres {
@@ -666,10 +668,15 @@ WHERE account_id=$1
   AND config_revision=$6
   AND dispatch_revision=$7
   AND observed_at <= $4
-  AND account_status=$18
-  AND cooldown_observation_started_at=$19
-  AND cooldown_generation=$20
-  AND cooldown_source_config_revision IS NOT DISTINCT FROM $21`
+  AND ((account_status=$18
+        AND cooldown_observation_started_at=$19
+        AND cooldown_generation=$20
+        AND cooldown_source_config_revision IS NOT DISTINCT FROM $21)
+       OR (account_status=''
+           AND error_code='direct_input_invalid'
+           AND cooldown_observation_started_at IS NULL
+           AND cooldown_generation IS NULL
+           AND cooldown_source_config_revision IS NULL))`
 		args = append(args, outcome.Projection.ExpectedAccountStatus, fence.ObservationStartedAt.UTC(), fence.Generation, nullableInt64(fence.SourceConfigRevision))
 		stateApplied, err := execCurrentStateCAS(ctx, tx, query, args...)
 		if err != nil || stateApplied {
@@ -683,10 +690,15 @@ WHERE account_id=?
   AND config_revision=?
   AND dispatch_revision=?
   AND observed_at <= ?
-  AND account_status=?
-  AND cooldown_observation_started_at=?
-	  AND cooldown_generation=?
-	  AND cooldown_source_config_revision IS ?`
+  AND ((account_status=?
+        AND cooldown_observation_started_at=?
+	    AND cooldown_generation=?
+	    AND cooldown_source_config_revision IS ?)
+       OR (account_status=''
+           AND error_code='direct_input_invalid'
+           AND cooldown_observation_started_at IS NULL
+           AND cooldown_generation IS NULL
+           AND cooldown_source_config_revision IS NULL))`
 	args := append(currentStateUpdateArgs(outcome),
 		outcome.ObservedAt.UTC().Format(time.RFC3339Nano),
 		outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, outcome.ObservedAt.UTC().Format(time.RFC3339Nano),
