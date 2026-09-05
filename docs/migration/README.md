@@ -1,5 +1,7 @@
 # Go 渐进减法迁移目录
 
+> **状态：已完成的终局迁移（2026-09-05）。** Node→Go 全量清零迁移已按 [final-migration/PLAN.md](final-migration/PLAN.md) 执行完毕（W1-W10 全部 done，终局条目见该文件执行日志末尾），终局数字、里程碑、质量门、架构终态与遗留项见 [Node到Go全量迁移终局报告-20260905](../reports/Node到Go全量迁移终局报告-20260905.md)。当前后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`；原 Node 后端已归档至 `migration-backup/node/final-archive/`。本目录其余文档保留为迁移过程规则与历史记录：其中“当前”“Go opt-in”“Node 拥有”等措辞只反映各自写作时点，不再描述现状。
+
 ## 当前 Go 项目边界
 
 - [Go 三项目架构基线](Go三项目架构基线.md)：固定 `gateway`、`jobs`、`maintenance` 三个独立 Go 模块的源码、部署、依赖、并发和定时迁移边界。F1/F2 已在 `jobs`，F3/F4 已在 `gateway`，J3a 代理延迟检测也已由 `jobs` 独占；一般新定时功能不得写入 Node worker 或 gateway，J3b 的方案 A 单进程 owner 是明确例外。
@@ -29,7 +31,7 @@
 
 ## 1. 目录目标
 
-> **现行决策（2026-08-15）。** [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md) 仍是完整功能接管的唯一规则：SQLite 与 PostgreSQL/Redis 都是正式目标模式；一个功能只有在唯一 owner、真实依赖、发布切换和 Node 活跃路径归零均已验收后，才能标记为完成。代码位于 Go 项目、单元测试通过或历史文档写有“接管”都不是生产 owner 证据。
+> **终局结论（2026-09-05）。** [完整功能接管与 Node 归档迁移规则](完整功能接管与Node归档迁移规则.md) 作为迁移期间的接管规则已完成使命：全部功能已按其标准完成唯一 owner 验收、Node 活跃路径清零与归档。当前事实以 [final-migration/PLAN.md](final-migration/PLAN.md) 终局条目与 [终局报告](../reports/Node到Go全量迁移终局报告-20260905.md) 为准。
 
 > **当前工作基线（2026-08-15，历史截面）。** `F1/F2` 的 Go 实现在 `jobs`，`F3/F4` 的 Go 实现在 `gateway`。本次已在独立 SQLite 及可销毁 PostgreSQL/PgBouncer 子库完成 F1-F4 store/RPC 验证；这只证明开发基线。Node 仍是对外网关与主要业务 owner；方案 A 的 J3b Gateway 实现正在单独推进，但未通过 Business handoff、三库回填、切换/回滚和 Node active-path-zero 前不得启用 listener、停止 Node 或归档。F4 仍处于切换前状态；任一环境的实际 owner、端口、发布包和回滚点必须由该环境的部署证据单独确认，不能从本仓库代码反推。后台任务后续顺序以 [后台任务迁移总设计与路线图](后台任务迁移总设计与路线图.md) 为准。
 

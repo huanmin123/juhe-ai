@@ -2,7 +2,7 @@
 
 `juhe-ai` 是一个轻量、可扩展的 AI 账号调度与 OpenAI-compatible 网关。客户端只需配置本地 API Key 和一个稳定入口；账号凭据、模型能力、分组、路由、授权、用量与审计统一由后台管理。
 
-> 整体迁移仍在进行：Web/网关、账户、管理 API、用量、统计和运维任务仍由 Node.js 承载；F1–F4 的运行日志、表监控、原始审计和操作日志职责已由 Go 承接。项目事实与迁移状态以 [整体架构](docs/architecture/架构总览.md) 和 [迁移文档](docs/migration/README.md) 为准。
+> 后端已由 Node.js 全量迁移到 Go（`backend-go/` 三项目：gateway / jobs / maintenance），Node 后端已归档至 `migration-backup/`。项目事实以 [整体架构](docs/architecture/架构总览.md) 为准，迁移终局见 [Node到Go全量迁移终局报告-20260905](docs/reports/Node到Go全量迁移终局报告-20260905.md)。
 
 ## 适用场景
 
@@ -47,10 +47,9 @@ OpenAI-compatible 指本地入口、认证方式和错误结构的兼容性；�
 
 ### 环境要求
 
-- Node.js `22.13.0+`（22.x）或 `24.11.0+`（24.x），并支持内置 `node:sqlite`
-- pnpm `9+`
+- Go `1.26.x`，可从 `PATH` 调用
+- Node.js `22+` 与 pnpm `9+`（前端开发服务器与构建工具链）
 - Windows 环境推荐 PowerShell 7
-- 根目录 `pnpm dev` 还需要可从 `PATH` 调用的 Go 1.26.x，用于启动已迁移的辅助进程
 
 ### 安装与启动
 
@@ -58,11 +57,10 @@ OpenAI-compatible 指本地入口、认证方式和错误结构的兼容性；�
 
 ```powershell
 pnpm install
-Copy-Item backend/.env.example backend/.env
-Copy-Item frontend/.env.example frontend/.env
-pnpm --filter juhe-ai-backend check:runtime
 pnpm dev
 ```
+
+`pnpm dev` 是 go-only 启动器：自动拉起 Go `juhe-ai-gateway`（管理面、公开面与 `/v1` 网关链）、Go `juhe-ai-jobs` 与前端；开发数据统一落在 gitignore 的 `.local/dev/`，不依赖已归档的 Node 后端。
 
 默认开发地址：
 
@@ -91,7 +89,7 @@ API Key: 后台创建的本地 API Key
 ## 常用命令
 
 ```powershell
-# 启动开发环境（Node 后端、前端及已迁移的 Go 辅助进程）
+# 启动开发环境（Go gateway + Go jobs + 前端）
 pnpm dev
 
 # 类型检查与静态检查
@@ -101,10 +99,7 @@ pnpm lint
 # 构建全部工作区
 pnpm build
 
-# 本地网关烟测
-pnpm test:smoke
-
-# 构建 Windows 发布包
+# 构建 Windows 发布包（go-only：前端 dist + 三 Go 二进制 + 部署脚本）
 pnpm package:release:windows
 ```
 
@@ -113,11 +108,10 @@ pnpm package:release:windows
 ## 架构与运行形态
 
 - `frontend/`：Vue 3、TypeScript 与 Ant Design Vue 管理后台。
-- `backend/`：Node.js、TypeScript 与 Express；承载网关、管理 API 代理、DB service 和现有 worker。
-- `backend-go/`：渐进迁移层；`juhe-ai-jobs` 与 `juhe-ai-gateway` 已承接部分日志、审计与表监控职责，`juhe-ai-maintenance` 用于一次性维护命令。
-- 默认单机运行由 Web/网关主进程、`ingest-worker`、`stats-worker`、`ops-worker`、DB service 和相应 Go 进程组成。
+- `backend-go/`：Go 后端三项目（`go.work`）；`projects/gateway` 是唯一 HTTP 主入口（管理 API、公开面、`/v1` 网关链、chat），`projects/jobs` 承载后台任务与探针/统计/retention 任务族，`projects/maintenance` 提供 schema/seed 一次性 CLI。
+- 默认单机运行由 `juhe-ai-gateway` 与 `juhe-ai-jobs` 两个常驻进程组成；原 Node.js 后端（含 worker 与 DB service）已归档至 `migration-backup/node/final-archive/`。
 
-存储、进程职责和迁移边界见 [架构总览](docs/architecture/架构总览.md)、[后端架构](docs/architecture/backend/README.md) 与 [Go 后端迁移层](backend-go/README.md)。
+存储、进程职责见 [架构总览](docs/architecture/架构总览.md) 与 [Go 三项目架构基线](docs/migration/Go三项目架构基线.md)。
 
 ## 部署与文档
 
@@ -125,7 +119,7 @@ pnpm package:release:windows
 - [部署文档](docs/deploy/README.md)：按部署场景选择构建、Docker、Windows、Linux、macOS、代理与 HTTPS 指南。
 - [功能文档](docs/functions/README.md)：账户、路由、模型、授权、存储、统计和网关的具体契约。
 - [前端架构](docs/architecture/frontend/README.md) 与 [后端架构](docs/architecture/backend/README.md)：实现边界和维护约束。
-- [迁移文档](docs/migration/README.md)：Node 到 Go 的渐进迁移状态、验收和归档规则。
+- [迁移文档](docs/migration/README.md)：已完成的 Node→Go 终局迁移状态、规则与历史记录索引。
 
 ## 项目边界
 

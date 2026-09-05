@@ -5,12 +5,12 @@
 - 本文件只承担项目级导航、核心业务边界和高频事件入口，不复制专题文档正文。
 - 具体架构、功能、前后端实现、测试、问题、重构、迁移和报告规则以 `docs/` 下对应权威文档为准。
 - 本文件不自动触发生产部署或线上运维流程；只有用户主动提出生产操作并明确提供适用资料后，才读取和执行对应范围内的外部操作规范。
-- 目前backend-go 不参与实际业务开发，目前在进行迁移中，所以我们不需要改node的同时改go 因为到时候迁移方会负责同步改动。
+- 后端为 Go 三项目（`backend-go/projects/{gateway,jobs,maintenance}`）；原 Node 后端（`backend/`）已完成 Node→Go 全量迁移并归档至 `migration-backup/node/final-archive/`（不得恢复、修改或运行），运行事实以 Go 实现为准。
 
 ## 项目定位
 
 - 这里是 `juhe-ai`，定位为轻量级 OpenAI 兼容中转与账号管理项目。
-- 前端使用 Vue 3 + TypeScript + Ant Design Vue；后端使用 Node.js + TypeScript，并包含后台 worker 和本地 DB service。
+- 前端使用 Vue 3 + TypeScript + Ant Design Vue；后端使用 Go：`gateway`（管理面、公开面与 `/v1` 网关链主入口）、`jobs`（后台任务与探针/统计/retention 任务族）、`maintenance`（schema/seed 一次性 CLI）。
 - 当前启用 OpenAI 供应商，支持 OpenAI OAuth 与 OpenAI API Key 两种账户创建方式；其他供应商保留架构扩展空间。
 
 ## 核心业务边界
@@ -24,8 +24,8 @@
 
 ## 本地管理页面测试
 
-- 需要通过项目管理页面执行 AI 账户、模型、探针或其他本地联调测试时，默认启动隔离的开发实例并使用开发自动登录；不得把截图、识别或人工输入验证码作为默认测试步骤。
-- 隔离后端至少设置 `JUHE_AI_DEV_AUTO_LOGIN_USERNAME=admin` 和 `JUHE_AI_AUTH_CAPTCHA_DISABLED=true`，并为业务库、用量库、统计库、日志和运行时文件设置独立临时目录，禁止污染现有开发数据。
+- 需要通过项目管理页面执行 AI 账户、模型、探针或其他本地联调测试时，默认启动隔离的 Go 后端开发实例（`backend-go/projects/gateway` 的 `juhe-ai-gateway`，需 schema 时先用 `backend-go/projects/maintenance` 的 `juhe-ai-maintenance --ensure-schema/--seed` 初始化隔离库）并使用开发自动登录；不得把截图、识别或人工输入验证码作为默认测试步骤。
+- 隔离后端至少设置 `JUHE_AI_DEV_AUTO_LOGIN_USERNAME=admin` 和 `JUHE_AI_AUTH_CAPTCHA_DISABLED=true`（Go gateway 支持这两个变量），并为业务库、用量库、统计库、日志和运行时文件设置独立临时目录，禁止污染现有开发数据。
 - 隔离前端通过 `VITE_JUHE_AI_BACKEND_TARGET` 和 `VITE_JUHE_AI_GATEWAY_BASE_URL` 指向该隔离后端；使用未占用的新端口，不停止或复用用户已经运行的前后端进程。
 - 浏览器打开前必须完成隔离预检：确认后端健康检查指向本次新端口，`/auth/me` 已返回配置的开发账户，且 `/auth/captcha` 返回 `required: false`；任一检查失败都必须先修复启动配置，禁止把登录页当作目标页面继续操作。
 - 端口选择必须以实时监听检查为准；默认端口被占用时自动选择未占用的新后端端口和前端端口，并同步更新 `VITE_JUHE_AI_BACKEND_TARGET`，不得复用已有服务、抢占端口或停止用户进程。
@@ -76,7 +76,7 @@
 | 项目定位、模块边界、数据关系或网关主流程变化 | `docs/architecture/架构总览.md` |
 | 新功能、字段、接口、存储、脚本或关键流程 | `docs/architecture/功能开发指导.md` 和 `docs/functions/README.md` |
 | 前端页面、布局、样式、交互、文案或品牌 | `docs/architecture/frontend/README.md` |
-| 后端接口、存储、网关、脚本、worker 或队列 | `docs/architecture/backend/README.md` |
+| 后端接口、存储、网关、后台任务或队列 | `backend-go/README.md` 与 `docs/migration/Go三项目架构基线.md`；后端实现专题见 `docs/architecture/backend/README.md`（历史） |
 | 需求计划、执行进度或关联文档 | `docs/plans/README.md` |
 | 本地安装、运行、联调、测试或验证 | `docs/develop/README.md` |
 | bug、异常、测试失败或数据不一致 | `docs/architecture/问题修复指导.md`，必要时记录到 `docs/bug/README.md` |
