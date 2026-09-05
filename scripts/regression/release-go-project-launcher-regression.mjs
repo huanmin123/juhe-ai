@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
-const backendRoot = join(repoRoot, 'backend')
+// X02：backend/ 已归档，启动器回归的隔离沙盒改用系统临时目录。
 const launcherPath = join(repoRoot, 'scripts', 'start-go-project.mjs')
 const launcherSource = readFileSync(launcherPath, 'utf8')
 const powershellSource = readFileSync(join(repoRoot, 'deploy', 'start.ps1'), 'utf8')
@@ -210,7 +211,7 @@ function assertLauncherRejectsSqliteJ2Store() {
 }
 
 function runLauncher(project, overrides, baseEnv = '') {
-  const isolatedBackend = mkdtempSync(join(backendRoot, `.release-go-${project}-launcher-regression-`))
+  const isolatedBackend = mkdtempSync(join(tmpdir(), `juhe-ai-release-go-${project}-launcher-regression-`))
   const logPath = join(isolatedBackend, `${project}.log`)
   const capturePath = join(isolatedBackend, 'child-environment.json')
   const testLauncherPath = join(isolatedBackend, 'start-go-project-testable.mjs')

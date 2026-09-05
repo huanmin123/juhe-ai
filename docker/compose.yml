@@ -1,104 +1,23 @@
+# Go-only 部署拓扑（X01/X03 终态，仓库内唯一 Compose 应用拓扑）。
+#
+# Node backend 已物理归档到 migration-backup/node/final-archive/（X02），
+# legacybridge 反代已删除（X01）：本文件即原 compose.go-only.yml，
+# hybrid 双轨 Compose 已退役（docker/Dockerfile、Dockerfile.builder 与
+# entrypoint.sh 一并删除）。高性能 PostgreSQL/Redis 拓扑见
+# compose.performance.yml，其 go-only 变体仍是 X03 待办。
+#
+# 拓扑要点：
+# - 没有 Node 容器；juhe-ai-go-gateway 以 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true
+#   绑定 JUHE_AI_HOST:JUHE_AI_PORT 成为唯一 HTTP 入口（Web/管理 API）。
+# - gateway 对业务库卷为读写（system API 的唯一 business writer）；
+#   jobs 对业务库卷只读，只写自己的 F1/F2/J1 专用输出。
+# - jobs 与 gateway 之间没有 loopback 依赖，不使用
+#   network_mode: service:<Node>；F3/F4 input listener 仍只绑定容器内 loopback。
 services:
-  juhe-ai:
-    image: ${JUHE_AI_IMAGE:-juhe-ai:local}
-    container_name: ${JUHE_AI_CONTAINER_NAME:-juhe-ai}
-    restart: unless-stopped
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      args:
-        NODE_RUNTIME_IMAGE: ${JUHE_AI_NODE_IMAGE:?JUHE_AI_NODE_IMAGE must be a Harbor digest image reference}
-        PNPM_VERSION: ${JUHE_AI_PNPM_VERSION:-10.32.1}
-    ports:
-      - "${JUHE_AI_PUBLIC_BIND:-127.0.0.1}:${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
-    environment:
-      TZ: UTC
-      NODE_ENV: ${NODE_ENV:-production}
-      JUHE_AI_USAGE_STATS_TIMEZONE: ${JUHE_AI_USAGE_STATS_TIMEZONE:-UTC}
-      JUHE_AI_HOST: ${JUHE_AI_HOST:-0.0.0.0}
-      JUHE_AI_PORT: ${JUHE_AI_PORT:-3000}
-      JUHE_AI_PUBLIC_PORT: ${JUHE_AI_PUBLIC_PORT:-3000}
-      JUHE_AI_PUBLIC_ORIGIN: ${JUHE_AI_PUBLIC_ORIGIN:-}
-      JUHE_AI_ALLOWED_ORIGINS: ${JUHE_AI_ALLOWED_ORIGINS:-}
-      JUHE_AI_SECRET: ${JUHE_AI_SECRET:-}
-      JUHE_AI_COOKIE_SECURE: ${JUHE_AI_COOKIE_SECURE:-false}
-      JUHE_AI_COOKIE_SAME_SITE: ${JUHE_AI_COOKIE_SAME_SITE:-lax}
-      JUHE_AI_TRUST_PROXY: ${JUHE_AI_TRUST_PROXY:-false}
-      JUHE_AI_DB_SERVICE_HTTP_HOST: ${JUHE_AI_DB_SERVICE_HTTP_HOST:-127.0.0.1}
-      JUHE_AI_DB_SERVICE_HTTP_PORT: ${JUHE_AI_DB_SERVICE_HTTP_PORT:-0}
-      JUHE_AI_RUNTIME_MODE: ${JUHE_AI_RUNTIME_MODE:-standalone}
-      JUHE_AI_DATABASE_DRIVER: ${JUHE_AI_DATABASE_DRIVER:-sqlite}
-      JUHE_AI_CACHE_DRIVER: ${JUHE_AI_CACHE_DRIVER:-memory}
-      JUHE_AI_RUNTIME_STATE_DRIVER: ${JUHE_AI_RUNTIME_STATE_DRIVER:-memory}
-      JUHE_AI_QUEUE_DRIVER: ${JUHE_AI_QUEUE_DRIVER:-memory}
-      JUHE_AI_AUDIT_LOG_ENABLED: ${JUHE_AI_AUDIT_LOG_ENABLED:-true}
-      JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS: ${JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS:-1}
-      JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE: ${JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE:-0.1}
-      JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS: ${JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS:-3}
-      JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS: ${JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS:-7}
-      JUHE_AI_AUDIT_LOG_SUCCESS_FULL_BODY_LIMIT_KB: ${JUHE_AI_AUDIT_LOG_SUCCESS_FULL_BODY_LIMIT_KB:-512}
-      JUHE_AI_AUDIT_LOG_PROBLEM_FULL_BODY_LIMIT_KB: ${JUHE_AI_AUDIT_LOG_PROBLEM_FULL_BODY_LIMIT_KB:-2048}
-      JUHE_AI_AUDIT_LOG_INPUT_URL: ${JUHE_AI_AUDIT_LOG_INPUT_URL:-http://127.0.0.1:3303}
-      JUHE_AI_AUDIT_LOG_INPUT_SECRET: ${JUHE_AI_AUDIT_LOG_INPUT_SECRET:?JUHE_AI_AUDIT_LOG_INPUT_SECRET is required}
-      JUHE_AI_AUDIT_LOG_DATABASE_PATH: ${JUHE_AI_AUDIT_LOG_DATABASE_PATH:-/app/backend/audit-log-data/juhe-ai-audit-log.sqlite3}
-      JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY: ${JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY:-/app/backend/audit-log-data/audit-payload-blobs}
-      JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY: ${JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY:-/app/backend/audit-log-data/audit-hot-search}
-      JUHE_AI_OPERATION_LOG_INPUT_URL: ${JUHE_AI_OPERATION_LOG_INPUT_URL:-http://127.0.0.1:3304}
-      JUHE_AI_OPERATION_LOG_INPUT_SECRET: ${JUHE_AI_OPERATION_LOG_INPUT_SECRET:?JUHE_AI_OPERATION_LOG_INPUT_SECRET is required}
-      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:-}
-      JUHE_AI_REDIS_CACHE_URL: ${JUHE_AI_REDIS_CACHE_URL:-}
-      JUHE_AI_REDIS_STATE_URL: ${JUHE_AI_REDIS_STATE_URL:-}
-      JUHE_AI_REDIS_QUEUE_URL: ${JUHE_AI_REDIS_QUEUE_URL:-}
-      JUHE_AI_DB_POOL_MAX: ${JUHE_AI_DB_POOL_MAX:-50}
-      JUHE_AI_DB_WRITE_MAX_CONCURRENCY: ${JUHE_AI_DB_WRITE_MAX_CONCURRENCY:-100}
-      JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: ${JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS:-50000}
-      JUHE_AI_DATABASE_PATH: ${JUHE_AI_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}
-      JUHE_AI_DATASET_DATABASE_PATH: ${JUHE_AI_DATASET_DATABASE_PATH:-/app/backend/data/juhe-ai-dataset.sqlite3}
-      JUHE_AI_RUNTIME_LOG_DATABASE_PATH: ${JUHE_AI_RUNTIME_LOG_DATABASE_PATH:-/app/backend/runtime-log-data/juhe-ai-runtime-log.sqlite3}
-      JUHE_AI_TABLE_MONITOR_DATABASE_PATH: ${JUHE_AI_TABLE_MONITOR_DATABASE_PATH:-/app/backend/table-monitor-data/juhe-ai-table-monitor.sqlite3}
-      JUHE_AI_USAGE_CATALOG_DATABASE_PATH: ${JUHE_AI_USAGE_CATALOG_DATABASE_PATH:-/app/backend/data/juhe-ai-usage-catalog.sqlite3}
-      JUHE_AI_STATS_DATABASE_PATH: ${JUHE_AI_STATS_DATABASE_PATH:-/app/backend/data/juhe-ai-stats.sqlite3}
-      JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT: ${JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT:-/app/backend/data/codex-context/state-shards}
-      JUHE_AI_USAGE_SHARD_ROOT: ${JUHE_AI_USAGE_SHARD_ROOT:-/app/backend/data/usage-shards}
-      JUHE_AI_USAGE_SHARD_COUNT: ${JUHE_AI_USAGE_SHARD_COUNT:-16}
-      JUHE_AI_LOG_DIR: ${JUHE_AI_LOG_DIR:-/app/backend/logs}
-      JUHE_AI_LOG_FILE_ENABLED: ${JUHE_AI_LOG_FILE_ENABLED:-true}
-      JUHE_AI_LOG_CONSOLE_ENABLED: ${JUHE_AI_LOG_CONSOLE_ENABLED:-true}
-      JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: ${JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS:-false}
-      JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST: ${JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST:-}
-      JUHE_AI_OAUTH_PROXY_URL: ${JUHE_AI_OAUTH_PROXY_URL:-}
-      JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: ${JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:-go}
-      JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY: ${JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:-/app/backend/account-health-inputs}
-      JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: ${JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY:-}
-      JUHE_AI_ACCOUNT_HEALTH_INPUT_PUBLISHER_ENABLED: ${JUHE_AI_ACCOUNT_HEALTH_INPUT_PUBLISHER_ENABLED:-false}
-      JUHE_AI_ACCOUNT_HEALTH_INPUT_PUBLISHER_POLL_MS: ${JUHE_AI_ACCOUNT_HEALTH_INPUT_PUBLISHER_POLL_MS:-1000}
-      JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH: ${JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH:-/app/backend/account-health-data/juhe-ai-account-health.sqlite3}
-      JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_ENABLED: ${JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_ENABLED:-false}
-      JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_POLL_MS: ${JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_POLL_MS:-1000}
-      JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_BATCH_SIZE: ${JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_BATCH_SIZE:-100}
-      JUHE_AI_ACCOUNT_HEALTH_JOBS_SOURCE_FENCE_CONSUMER_ENABLED: ${JUHE_AI_ACCOUNT_HEALTH_JOBS_SOURCE_FENCE_CONSUMER_ENABLED:-false}
-      JUHE_AI_ACCOUNT_HEALTH_JOBS_SOURCE_FENCE_CONSUMER_POLL_MS: ${JUHE_AI_ACCOUNT_HEALTH_JOBS_SOURCE_FENCE_CONSUMER_POLL_MS:-1000}
-      JUHE_AI_ACCOUNT_HEALTH_JOBS_SOURCE_FENCE_CONSUMER_LOOKBACK_MS: ${JUHE_AI_ACCOUNT_HEALTH_JOBS_SOURCE_FENCE_CONSUMER_LOOKBACK_MS:-300000}
-    volumes:
-      - juhe-ai-data:/app/backend/data
-      - juhe-ai-runtime-log-data:/app/backend/runtime-log-data:ro
-      - juhe-ai-table-monitor-data:/app/backend/table-monitor-data:ro
-      - juhe-ai-audit-log-data:/app/backend/audit-log-data:ro
-      - juhe-ai-account-health-data:/app/backend/account-health-data:ro
-      - juhe-ai-account-health-inputs:/app/backend/account-health-inputs
-      - juhe-ai-logs:/app/backend/logs
-    healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:' + (process.env.JUHE_AI_PORT || '3000') + '/__aisys__/api/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\""]
-      interval: 10s
-      timeout: 5s
-      start_period: 30s
-      retries: 12
-
-  go-gateway:
+  gateway:
     image: ${JUHE_AI_GO_GATEWAY_IMAGE:-juhe-ai-go-gateway:local}
     container_name: ${JUHE_AI_GO_GATEWAY_CONTAINER_NAME:-juhe-ai-go-gateway}
     restart: unless-stopped
-    network_mode: service:juhe-ai
     build:
       context: ..
       dockerfile: docker/Dockerfile.go-project
@@ -107,12 +26,15 @@ services:
         GO_IMAGE: ${JUHE_AI_GO_IMAGE:?JUHE_AI_GO_IMAGE must be a Harbor digest image reference}
         RUNTIME_IMAGE: ${JUHE_AI_GO_GATEWAY_RUNTIME_IMAGE:?JUHE_AI_GO_GATEWAY_RUNTIME_IMAGE must be a Harbor digest image reference}
         GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
-    depends_on:
-      juhe-ai:
-        condition: service_healthy
+    ports:
+      - "${JUHE_AI_PUBLIC_BIND:-127.0.0.1}:${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
     environment:
       TZ: UTC
       NODE_ENV: ${NODE_ENV:-production}
+      JUHE_AI_HOST: ${JUHE_AI_HOST:-0.0.0.0}
+      JUHE_AI_PORT: ${JUHE_AI_PORT:-3000}
+      # Go-only 模式的主入口开关；显式设 false 属于配置错误，健康检查会失败。
+      JUHE_AI_GATEWAY_SYSTEM_API_ENABLED: ${JUHE_AI_GATEWAY_SYSTEM_API_ENABLED:-true}
       JUHE_AI_DATABASE_DRIVER: ${JUHE_AI_DATABASE_DRIVER:-sqlite}
       JUHE_AI_RUNTIME_MODE: ${JUHE_AI_RUNTIME_MODE:-standalone}
       JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS: ${JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS:-127.0.0.1:3306}
@@ -133,7 +55,13 @@ services:
       JUHE_AI_OPERATION_LOG_POSTGRES_URL: ${JUHE_AI_OPERATION_LOG_POSTGRES_URL:-}
       JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS: ${JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS:-127.0.0.1:3304}
       JUHE_AI_OPERATION_LOG_INPUT_SECRET: ${JUHE_AI_OPERATION_LOG_INPUT_SECRET:?JUHE_AI_OPERATION_LOG_INPUT_SECRET is required}
+      JUHE_AI_SECRET: ${JUHE_AI_SECRET:-}
+      JUHE_AI_ALLOWED_ORIGINS: ${JUHE_AI_ALLOWED_ORIGINS:-}
+      JUHE_AI_COOKIE_SECURE: ${JUHE_AI_COOKIE_SECURE:-false}
+      JUHE_AI_COOKIE_SAME_SITE: ${JUHE_AI_COOKIE_SAME_SITE:-lax}
+      JUHE_AI_TRUST_PROXY: ${JUHE_AI_TRUST_PROXY:-false}
       JUHE_AI_DATABASE_PATH: ${JUHE_AI_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}
+      JUHE_AI_CHAT_DATABASE_PATH: ${JUHE_AI_CHAT_DATABASE_PATH:-/app/backend/data/juhe-ai-chat.sqlite3}
       JUHE_AI_DATASET_DATABASE_PATH: ${JUHE_AI_DATASET_DATABASE_PATH:-/app/backend/data/juhe-ai-dataset.sqlite3}
       JUHE_AI_RUNTIME_LOG_DATABASE_PATH: ${JUHE_AI_RUNTIME_LOG_DATABASE_PATH:-/app/backend/runtime-log-data/juhe-ai-runtime-log.sqlite3}
       JUHE_AI_TABLE_MONITOR_DATABASE_PATH: ${JUHE_AI_TABLE_MONITOR_DATABASE_PATH:-/app/backend/table-monitor-data/juhe-ai-table-monitor.sqlite3}
@@ -142,10 +70,14 @@ services:
       JUHE_AI_USAGE_SHARD_ROOT: ${JUHE_AI_USAGE_SHARD_ROOT:-/app/backend/data/usage-shards}
       JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT: ${JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT:-/app/backend/data/codex-context/state-shards}
       JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:-}
+      JUHE_AI_REDIS_CACHE_URL: ${JUHE_AI_REDIS_CACHE_URL:-}
+      JUHE_AI_REDIS_STATE_URL: ${JUHE_AI_REDIS_STATE_URL:-}
+      JUHE_AI_REDIS_QUEUE_URL: ${JUHE_AI_REDIS_QUEUE_URL:-}
       JUHE_AI_LOG_DIR: ${JUHE_AI_LOG_DIR:-/app/backend/logs}
       JUHE_AI_LOG_FILE_ENABLED: ${JUHE_AI_LOG_FILE_ENABLED:-true}
     volumes:
-      - juhe-ai-data:/app/backend/data:ro
+      # Go-only 语义：gateway 是业务库唯一 writer，不能再挂只读。
+      - juhe-ai-data:/app/backend/data
       - juhe-ai-runtime-log-data:/app/backend/runtime-log-data:ro
       - juhe-ai-table-monitor-data:/app/backend/table-monitor-data:ro
       - juhe-ai-audit-log-data:/app/backend/audit-log-data
@@ -158,11 +90,10 @@ services:
       start_period: 20s
       retries: 6
 
-  go-jobs:
+  jobs:
     image: ${JUHE_AI_GO_JOBS_IMAGE:-juhe-ai-go-jobs:local}
     container_name: ${JUHE_AI_GO_JOBS_CONTAINER_NAME:-juhe-ai-go-jobs}
     restart: unless-stopped
-    network_mode: service:juhe-ai
     build:
       context: ..
       dockerfile: docker/Dockerfile.go-project
@@ -172,7 +103,7 @@ services:
         RUNTIME_IMAGE: ${JUHE_AI_GO_JOBS_RUNTIME_IMAGE:?JUHE_AI_GO_JOBS_RUNTIME_IMAGE must be a Harbor digest image reference}
         GO_PROXY: ${JUHE_AI_GO_PROXY:-https://proxy.golang.org,direct}
     depends_on:
-      juhe-ai:
+      gateway:
         condition: service_healthy
     environment:
       TZ: UTC

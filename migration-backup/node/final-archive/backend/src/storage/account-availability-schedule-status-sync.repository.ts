@@ -1,0 +1,360 @@
+import { nextAccountAvailabilityScheduleCheckAt, parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
+import { dueApiKeyAvailabilityScheduleEvent } from './api-key-availability-schedule.js'
+import { runtimeConfig } from '../config/runtime.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import {
+  beginDatabaseTransaction,
+  commitDatabaseTransaction,
+  getBusinessDatabase,
+  newId,
+  nowIso,
+  rollbackDatabaseTransaction
+} from './database.js'
+import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
+import { getPostgresPool } from './postgres-client.js'
+import { invalidateAccountLookupCache } from './repository-lookups.js'
+import {
+  advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction,
+  advanceAccountCircuitDispatchRevisionFamilyInTransaction,
+  lockAccountCircuitDispatchFamilyRootInTransaction
+} from './account-circuit-control-plane.repository.js'
+
+interface ScheduledAccountAvailabilityRow {
+  id: string
+  status: 'active' | 'disabled' | 'pending_test' | 'error' | 'rate_limited' | 'temporary_unavailable' | 'quality_isolated'
+  availability_schedule_json: string | null
+  availability_schedule_next_check_at: string | null
+}
+
+interface ScheduledAccountAvailabilityUpdate {
+  id: string
+  nextCheckAt: string | null
+  eventKey?: string
+  status?: 'active' | 'disabled'
+}
+
+export interface AccountAvailabilityScheduleStatusSyncResult {
+  scanned: number
+  activated: number
+  disabled: number
+  unchanged: number
+  invalid: number
+  skipped: number
+  changedIds: string[]
+  invalidIds: string[]
+}
+
+const availabilityScheduleStatusSyncBatchLimit = runtimeConfig.background.accountAvailabilityScheduleSyncBatchLimit
+const businessSchemaName = 'juhe_business'
+
+export function syncAccountAvailabilityScheduleStatuses(now = new Date()): AccountAvailabilityScheduleStatusSyncResult {
+  const database = getBusinessDatabase()
+  const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
+  const rows = listScheduledAccountStatusRows(database, updatedAt)
+  const result: AccountAvailabilityScheduleStatusSyncResult = {
+    scanned: rows.length,
+    activated: 0,
+    disabled: 0,
+    unchanged: 0,
+    invalid: 0,
+    skipped: 0,
+    changedIds: [],
+    invalidIds: []
+  }
+  const updates: ScheduledAccountAvailabilityUpdate[] = []
+
+  for (const row of rows) {
+    try {
+      const schedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
+      const nextCheckAt = nextAccountAvailabilityScheduleCheckAt(schedule, now)
+      const event = dueApiKeyAvailabilityScheduleEvent(schedule, now)
+      if (!event) {
+        updates.push({ id: row.id, nextCheckAt })
+        result.unchanged += 1
+        continue
+      }
+      if (!isScheduleMutableAccountStatus(row.status)) {
+        updates.push({ id: row.id, nextCheckAt })
+        result.unchanged += 1
+        continue
+      }
+      updates.push({
+        id: row.id,
+        nextCheckAt,
+        eventKey: `${row.id}:${event.eventKey}`,
+        status: event.status
+      })
+    } catch {
+      result.invalid += 1
+      result.invalidIds.push(row.id)
+      if (row.status === 'active') {
+        updates.push({ id: row.id, nextCheckAt: null, status: 'disabled' })
+      } else {
+        updates.push({ id: row.id, nextCheckAt: null })
+      }
+    }
+  }
+
+  if (!updates.length) {
+    return result
+  }
+
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    const insertEvent = database.prepare(`
+      INSERT OR IGNORE INTO account_schedule_status_events (event_key, account_id, status, executed_at)
+      VALUES (?, ?, ?, ?)
+    `)
+    const updateStatus = database.prepare(`
+      UPDATE accounts
+      SET status = ?, availability_schedule_next_check_at = ?, updated_at = ?
+      WHERE id = ?
+        AND availability_schedule_json IS NOT NULL
+        AND deleted_at IS NULL
+        AND status IN ('active', 'disabled')
+        AND status <> ?
+        AND NOT EXISTS (
+          SELECT 1 FROM account_quality_enforcements aqe
+          WHERE aqe.account_id = accounts.id
+            AND aqe.state = 'active'
+            AND aqe.action = 'disable'
+        )
+    `)
+    const updateNextCheck = database.prepare(`
+      UPDATE accounts
+      SET availability_schedule_next_check_at = ?
+      WHERE id = ?
+        AND availability_schedule_json IS NOT NULL
+        AND deleted_at IS NULL
+        AND COALESCE(availability_schedule_next_check_at, '') <> COALESCE(?, '')
+    `)
+    for (const update of updates) {
+      if (update.eventKey && update.status) {
+        const eventChanges = insertEvent.run(update.eventKey, update.id, update.status, updatedAt).changes ?? 0
+        if (eventChanges <= 0) {
+          result.skipped += 1
+          updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
+          continue
+        }
+      }
+      if (update.status === undefined) {
+        updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
+        continue
+      }
+      const changes = updateStatus.run(update.status, update.nextCheckAt, updatedAt, update.id, update.status).changes ?? 0
+      if (changes <= 0) {
+        updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
+        result.unchanged += 1
+        continue
+      }
+      result.changedIds.push(update.id)
+      if (update.status === 'active') {
+        advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
+          accountId: update.id,
+          accountRuntimeKey: update.id,
+          transitionId: newId('dispatch'),
+          nowMs: Date.now()
+        })
+        result.activated += 1
+      } else {
+        result.disabled += 1
+      }
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    try {
+      rollbackDatabaseTransaction(database, transactionStarted)
+    } catch {
+    }
+    throw error
+  }
+
+  if (result.changedIds.length > 0) {
+    refreshGroupAccountStatsAfterWrite({ accountIds: result.changedIds, reason: 'account_availability_schedule' })
+    for (const id of result.changedIds) {
+      invalidateAccountLookupCache(id)
+    }
+    invalidateGroupAccountIdsCache()
+    notifyGatewayRuntimeCacheInvalidation('account_availability_schedule')
+  }
+
+  return result
+}
+
+export async function syncAccountAvailabilityScheduleStatusesAsync(now = new Date()): Promise<AccountAvailabilityScheduleStatusSyncResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return syncAccountAvailabilityScheduleStatuses(now)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
+  const rows = await listScheduledAccountStatusRowsAsync(client, updatedAt)
+  const result: AccountAvailabilityScheduleStatusSyncResult = {
+    scanned: rows.length,
+    activated: 0,
+    disabled: 0,
+    unchanged: 0,
+    invalid: 0,
+    skipped: 0,
+    changedIds: [],
+    invalidIds: []
+  }
+  const updates: ScheduledAccountAvailabilityUpdate[] = []
+
+  for (const row of rows) {
+    try {
+      const schedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
+      const nextCheckAt = nextAccountAvailabilityScheduleCheckAt(schedule, now)
+      const event = dueApiKeyAvailabilityScheduleEvent(schedule, now)
+      if (!event) {
+        updates.push({ id: row.id, nextCheckAt })
+        result.unchanged += 1
+        continue
+      }
+      if (!isScheduleMutableAccountStatus(row.status)) {
+        updates.push({ id: row.id, nextCheckAt })
+        result.unchanged += 1
+        continue
+      }
+      updates.push({
+        id: row.id,
+        nextCheckAt,
+        eventKey: `${row.id}:${event.eventKey}`,
+        status: event.status
+      })
+    } catch {
+      result.invalid += 1
+      result.invalidIds.push(row.id)
+      if (row.status === 'active') {
+        updates.push({ id: row.id, nextCheckAt: null, status: 'disabled' })
+      } else {
+        updates.push({ id: row.id, nextCheckAt: null })
+      }
+    }
+  }
+
+  if (!updates.length) {
+    return result
+  }
+
+  await client.transaction(async (tx) => {
+    for (const update of updates) {
+      await lockAccountCircuitDispatchFamilyRootInTransaction(tx, update.id)
+      if (update.eventKey && update.status) {
+        const eventChanges = await tx.execute(`
+          INSERT INTO ${accountScheduleStatusTable(tx, 'account_schedule_status_events')} (event_key, account_id, status, executed_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(event_key) DO NOTHING
+        `, [update.eventKey, update.id, update.status, updatedAt])
+        if (eventChanges.changes <= 0) {
+          result.skipped += 1
+          await updateAccountNextCheckAtAsync(tx, update)
+          continue
+        }
+      }
+      if (update.status === undefined) {
+        await updateAccountNextCheckAtAsync(tx, update)
+        continue
+      }
+      const changes = await tx.execute(`
+        UPDATE ${accountScheduleStatusTable(tx, 'accounts')}
+        SET status = ?, availability_schedule_next_check_at = ?, updated_at = ?
+        WHERE id = ?
+          AND availability_schedule_json IS NOT NULL
+          AND deleted_at IS NULL
+          AND status IN ('active', 'disabled')
+          AND status <> ?
+          AND NOT EXISTS (
+            SELECT 1 FROM ${accountScheduleStatusTable(tx, 'account_quality_enforcements')} aqe
+            WHERE aqe.account_id = accounts.id
+              AND aqe.state = 'active'
+              AND aqe.action = 'disable'
+          )
+      `, [update.status, update.nextCheckAt, updatedAt, update.id, update.status])
+      if (changes.changes <= 0) {
+        await updateAccountNextCheckAtAsync(tx, update)
+        result.unchanged += 1
+        continue
+      }
+      result.changedIds.push(update.id)
+      if (update.status === 'active') {
+        await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
+          accountId: update.id,
+          accountRuntimeKey: update.id,
+          transitionId: newId('dispatch'),
+          nowMs: Date.now()
+        })
+        result.activated += 1
+      } else {
+        result.disabled += 1
+      }
+    }
+  })
+
+  if (result.changedIds.length > 0) {
+    for (const id of result.changedIds) {
+      invalidateAccountLookupCache(id)
+    }
+    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: result.changedIds, reason: 'account_availability_schedule' }, client)
+    invalidateGroupAccountIdsCache()
+    notifyGatewayRuntimeCacheInvalidation('account_availability_schedule')
+  }
+
+  return result
+}
+
+function listScheduledAccountStatusRows(database: ReturnType<typeof getBusinessDatabase>, dueAt: string): ScheduledAccountAvailabilityRow[] {
+  const selectColumns = 'id, status, availability_schedule_json, availability_schedule_next_check_at'
+  return database
+    .prepare(`
+      SELECT ${selectColumns}
+      FROM accounts
+      WHERE availability_schedule_json IS NOT NULL
+        AND deleted_at IS NULL
+        AND (
+          availability_schedule_next_check_at IS NULL
+          OR availability_schedule_next_check_at <= ?
+        )
+      ORDER BY availability_schedule_next_check_at IS NOT NULL ASC, availability_schedule_next_check_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(dueAt, availabilityScheduleStatusSyncBatchLimit) as unknown as ScheduledAccountAvailabilityRow[]
+}
+
+async function listScheduledAccountStatusRowsAsync(client: DatabaseClient, dueAt: string): Promise<ScheduledAccountAvailabilityRow[]> {
+  const selectColumns = 'id, status, availability_schedule_json, availability_schedule_next_check_at'
+  return client.query<ScheduledAccountAvailabilityRow>(`
+    SELECT ${selectColumns}
+    FROM ${accountScheduleStatusTable(client, 'accounts')}
+    WHERE availability_schedule_json IS NOT NULL
+      AND deleted_at IS NULL
+      AND (
+        availability_schedule_next_check_at IS NULL
+        OR availability_schedule_next_check_at <= ?
+      )
+    ORDER BY availability_schedule_next_check_at IS NOT NULL ASC, availability_schedule_next_check_at ASC, id ASC
+    LIMIT ?
+  `, [dueAt, availabilityScheduleStatusSyncBatchLimit])
+}
+
+async function updateAccountNextCheckAtAsync(client: DatabaseClient, update: Pick<ScheduledAccountAvailabilityUpdate, 'id' | 'nextCheckAt'>): Promise<void> {
+  await client.execute(`
+    UPDATE ${accountScheduleStatusTable(client, 'accounts')}
+    SET availability_schedule_next_check_at = ?
+    WHERE id = ?
+      AND availability_schedule_json IS NOT NULL
+      AND deleted_at IS NULL
+      AND COALESCE(availability_schedule_next_check_at, '') <> COALESCE(?, '')
+  `, [update.nextCheckAt, update.id, update.nextCheckAt])
+}
+
+function accountScheduleStatusTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
+function isScheduleMutableAccountStatus(status: ScheduledAccountAvailabilityRow['status']): boolean {
+  return status === 'active' || status === 'disabled'
+}

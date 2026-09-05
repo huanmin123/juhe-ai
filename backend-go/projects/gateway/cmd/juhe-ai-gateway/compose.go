@@ -31,7 +31,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ipstats"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/legacybridge"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/logreads"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/oauthmgmt"
@@ -51,8 +50,9 @@ import (
 )
 
 // Mount matrix (Node system-api-app.ts / db-service.ts app.use prefix -> Go
-// composition). Every entry is either mounted below or explicitly registered
-// as still Node-owned (bridged).
+// composition). X01 go-only terminal state: every family below is mounted in
+// Go, the Node origin is archived, and the internal/legacybridge proxy package
+// is deleted. Unmounted prefixes answer the kernel 404/405 JSON contract.
 //
 //	/__aisys__/api middleware chain (request context, security headers,
 //	  compression, no-store, body limit, IP rate limit, user rate limit,
@@ -92,8 +92,8 @@ import (
 //	/__aisys__/help (static help center)           -> helpweb.Deps.Mount (X04; disabled
 //	  unless JUHE_AI_FRONTEND_DIST_PATH points at the frontend dist)
 //
-// Registered NOT mounted in this phase (slice not composition-ready; the
-// legacy bridge keeps serving them from the Node origin):
+// Slice provenance notes (X01 go-only terminal state: every prefix below is
+// mounted in Go; the archived Node origin serves nothing):
 //   - /__aisys__/api/audit-logs, /runtime-logs, /public-api-logs: mounted
 //     through logreads.ReadsDeps (X04 404 项补齐); the F1 runtime-log dataset
 //     stays jobs-owned (the gateway only opens a read-only handle, the F1
@@ -118,10 +118,9 @@ const (
 type composition struct {
 	Kernel http.Handler
 	Bus    *inval.Bus
-	Bridge *legacybridge.Bridge
 	// chain is the assembled /v1 gateway chain (nil when
-	// JUHE_AI_GATEWAY_CHAIN_ENABLED is off; /v1 traffic then stays on the
-	// legacy bridge).
+	// JUHE_AI_GATEWAY_CHAIN_ENABLED is off; /v1 traffic then answers the
+	// kernel 404 JSON contract).
 	chain *gatewayChain
 	// DB is the business database handle (SQLite file handle or the shared
 	// PostgreSQL pool connection). Exposed for seed/maintenance helpers.
@@ -220,7 +219,7 @@ func settingsString(value any) string {
 // composeSystemAPI assembles the Go system-api composition root: business
 // stores over the dual-mode business database, the kernel in the Node
 // system-api-app.ts middleware order, every mount-ready management and public
-// route family, the legacy bridge fallback and the /health endpoint.
+// route family and the /health endpoint.
 //
 // Callers must prove the business owner gates first (businessOwnerGate plus
 // cutover evidence verification); this function fails fast on any incomplete
@@ -758,8 +757,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 
 	// G20 phase-2 AI gateway /v1 chain: assembles the concrete runtime
 	// services (chain_runtime.go) plus the composition adapters
-	// (chain_*.go), then mounts the /v1 orchestrator ahead of the legacy
-	// bridge. Every frozen port fails fast by name; nothing is wired nil.
+	// (chain_*.go), then mounts the /v1 orchestrator on the kernel. Every
+	// frozen port fails fast by name; nothing is wired nil.
 	if cfg.ChainEnabled {
 		spoolDirectory := cfg.UsageSpoolDirectory
 		if spoolDirectory == "" && cfg.StatsDatabasePath != "" {
@@ -845,19 +844,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 	}))
 
-	// Legacy bridge: every still-Node-owned prefix (including the frontend and
-	// the unflipped read families listed in the mount matrix) falls through to
-	// the Node origin. Registered kernel routes always win over the bridge.
-	if cfg.LegacyBridgeTarget != "" {
-		bridge, err := legacybridge.New(cfg.LegacyBridgeTarget)
-		if err != nil {
-			return nil, fmt.Errorf("create legacy bridge: %w", err)
-		}
-		bridge.RegisterPrefix("/")
-		composed.Bridge = bridge
-		kern.RegisterFallback(bridge)
-	}
-
+	// X01 go-only terminal state: no legacy bridge fallback remains. The
+	// Node origin is archived, so every prefix without a registered route
+	// resolves to the kernel 404 JSON contract (405 converts to the same
+	// 404 JSON, mirroring Express).
 	// Composition shutdown order (Node shutdownDbService mirror): the F4
 	// producer is drained by the composed shutdown before main closes the
 	// shared LeaseKeeper, which then releases the F4 persistence lease so a

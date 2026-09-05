@@ -80,8 +80,8 @@ try {
   await writeFile(path.join(linksOnlyFixture, 'data', 'allowed-during-source-scan.txt'), 'ok')
   await validateReleasePackagePaths([linksOnlyFixture], { linksOnly: true })
 
-  // Deploy-mode branches: go-only packages carry no backend/dist but must
-  // carry all three Go binaries; node rollback packages skip the Go binaries.
+  // X01/X03：缺省 deploy mode 为 go。go-only 包不含 backend/dist，但必须带
+  // 全部三个 Go 二进制；hybrid / node 分支仅为历史发布包校验保留。
   const goFixture = await resetFixture()
   await mkdir(path.join(goFixture, 'backend-go'), { recursive: true })
   await mkdir(path.join(goFixture, 'frontend', 'dist'), { recursive: true })
@@ -91,14 +91,16 @@ try {
   for (const project of ['jobs', 'gateway', 'maintenance']) {
     await writeFile(path.join(goFixture, 'backend-go', `juhe-ai-${project}`), 'binary\n')
   }
-  await validateReleasePackagePaths([goFixture], { deployMode: 'go' })
+  // 缺省调用（不传 deployMode）即 go 模式：历史 hybrid 包必需的 backend/dist
+  // 缺失时仍然通过，证明默认已切到 go。
+  await validateReleasePackagePaths([goFixture])
   await assert.rejects(
     validateReleasePackagePaths([goFixture], { deployMode: 'hybrid' }),
     /backend\/dist\/server\.js.*required release file is missing/u
   )
   await rm(path.join(goFixture, 'backend-go', 'juhe-ai-jobs'))
   await assert.rejects(
-    validateReleasePackagePaths([goFixture], { deployMode: 'go' }),
+    validateReleasePackagePaths([goFixture]),
     /backend-go\/juhe-ai-jobs.*required Go project release binary is missing/u
   )
 

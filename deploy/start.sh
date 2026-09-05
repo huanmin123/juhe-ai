@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# X01/X03 go-only 终态：本脚本是唯一的启动路径。Node Web/API 已物理归档到
+# migration-backup/node/final-archive/（X02），legacybridge 反代已删除，
+# 不再提供 hybrid / node 部署模式；历史值会被 fail-closed 拒绝。
+
 APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 cd "$APP_DIR"
 export TZ=UTC
@@ -12,19 +16,13 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-RUNTIME_CHECK_SCRIPT='backend/dist/scripts/preflight/check-node-sqlite.js'
 GO_PROJECT_START_SCRIPT='scripts/start-go-project.mjs'
-server_pid=''
 go_gateway_pid=''
 go_jobs_pid=''
 go_gateway_pid_file='backend/runtime/juhe-ai-gateway.pid'
 go_jobs_pid_file='backend/runtime/juhe-ai-jobs.pid'
 go_gateway_log_file='backend/logs/juhe-ai-gateway.log'
 go_jobs_log_file='backend/logs/juhe-ai-jobs.log'
-
-ripgrep_dependency_ready() {
-  (cd backend && node --input-type=module -e "import('@vscode/ripgrep').then(({ rgPath }) => import('node:fs').then(({ existsSync }) => process.exit(existsSync(rgPath) ? 0 : 1))).catch(() => process.exit(1))" >/dev/null 2>&1)
-}
 
 read_dotenv_value() {
   name="$1"
@@ -70,14 +68,13 @@ generate_secret() {
 }
 
 resolve_deploy_mode() {
-  mode="${JUHE_AI_DEPLOY_MODE:-$(read_dotenv_value JUHE_AI_DEPLOY_MODE hybrid)}"
-  case "$mode" in
-    hybrid|go|node) printf '%s' "$mode" ;;
-    *)
-      echo "JUHE_AI_DEPLOY_MODE must be hybrid, go, or node (got: $mode)." >&2
-      return 1
-      ;;
-  esac
+  mode="${JUHE_AI_DEPLOY_MODE:-$(read_dotenv_value JUHE_AI_DEPLOY_MODE go)}"
+  [ -n "$mode" ] || mode='go'
+  if [ "$mode" != 'go' ]; then
+    echo "JUHE_AI_DEPLOY_MODE must be go (got: $mode). The hybrid and node deploy modes were retired with the archived Node backend (X01/X02); go-only is the only supported topology." >&2
+    return 1
+  fi
+  printf '%s' "$mode"
 }
 
 ensure_deployment_defaults() {
@@ -140,22 +137,6 @@ stop_go_project() {
     return 1
   fi
   rm -f -- "$pid_path"
-}
-
-stop_server_process() {
-  if [ -z "$server_pid" ] || ! kill -0 "$server_pid" 2>/dev/null; then
-    return 0
-  fi
-  kill -TERM "$server_pid"
-  attempts=0
-  while kill -0 "$server_pid" 2>/dev/null && [ "$attempts" -lt 10 ]; do
-    sleep 1
-    attempts=$((attempts + 1))
-  done
-  if kill -0 "$server_pid" 2>/dev/null; then
-    echo "juhe-ai Web/API process did not stop within 10 seconds (PID $server_pid)." >&2
-    return 1
-  fi
 }
 
 wait_for_http_status() {
@@ -222,7 +203,6 @@ start_go_project() {
 on_exit() {
   exit_code=$?
   trap - EXIT INT TERM
-  if ! stop_server_process && [ "$exit_code" -eq 0 ]; then exit_code=1; fi
   if ! stop_go_project "$go_jobs_pid_file" 'juhe-ai-jobs' && [ "$exit_code" -eq 0 ]; then exit_code=1; fi
   if ! stop_go_project "$go_gateway_pid_file" 'juhe-ai-gateway' && [ "$exit_code" -eq 0 ]; then exit_code=1; fi
   exit "$exit_code"
@@ -275,13 +255,20 @@ run_go_maintenance_bootstrap() {
   fi
   echo 'Running optional Go maintenance preflight (ensure-schema; seed when enabled)...'
   # Relative backend/.env storage paths resolve against backend/, matching the
-  # Node per-file storage layout; the maintenance command is idempotent.
+  # historical per-file storage layout; the maintenance command is idempotent.
   (cd backend && "$binary" "${bootstrap_args[@]}")
 }
 
 if [ ! -f backend/.env ]; then
-  cp backend/.env.example backend/.env
-  echo 'Created backend/.env from backend/.env.example'
+  if [ -f backend/.env.example ]; then
+    cp backend/.env.example backend/.env
+    echo 'Created backend/.env from backend/.env.example'
+  else
+    # go-only 发布包不再携带 backend/.env.example（X02 裁剪）：创建空文件，
+    # 由 ensure_deployment_defaults 写入生成的 JUHE_AI_SECRET / ALLOWED_ORIGINS。
+    : > backend/.env
+    echo 'Created empty backend/.env (go-only release ships no backend/.env.example).'
+  fi
   echo 'Configure all JUHE_AI_*_INSTANCE_ID values and F3/F4 input secrets before production use.'
 fi
 
@@ -290,140 +277,55 @@ mkdir -p backend/data
 
 DEPLOY_MODE="$(resolve_deploy_mode)" || exit 1
 
-if [ "$DEPLOY_MODE" != 'go' ]; then
-  if ! command -v pnpm >/dev/null 2>&1; then
-    if command -v corepack >/dev/null 2>&1; then
-      corepack enable
-      corepack prepare pnpm@latest --activate
-    else
-      echo 'pnpm is required. Install pnpm or enable corepack first.' >&2
-      exit 1
-    fi
-  fi
-  if [ ! -f "$RUNTIME_CHECK_SCRIPT" ]; then
-    echo "Runtime preflight script not found: $RUNTIME_CHECK_SCRIPT. Please rebuild the release package." >&2
-    exit 1
-  fi
-  if [ ! -d node_modules ] || [ ! -d backend/node_modules ] || ! ripgrep_dependency_ready; then
-    echo 'Installing production dependencies...'
-    pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
-  else
-    echo 'Using existing node_modules. Remove node_modules and backend/node_modules to force reinstall.'
-  fi
-  node "$RUNTIME_CHECK_SCRIPT"
-fi
-
 HOST="${JUHE_AI_HOST:-$(read_dotenv_value JUHE_AI_HOST '127.0.0.1')}"
 PORT="${JUHE_AI_PORT:-$(read_dotenv_value JUHE_AI_PORT '3000')}"
 export JUHE_AI_AUDIT_LOG_INPUT_URL="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
 export JUHE_AI_OPERATION_LOG_INPUT_URL="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
 
-echo "Starting juhe-ai at http://${HOST}:${PORT} (deploy mode: ${DEPLOY_MODE})"
-if [ "$DEPLOY_MODE" = 'hybrid' ]; then
-  echo 'The Web/API process supervises its Node worker and DB service; Go jobs owns F1/F2 and Go gateway owns F3/F4.'
-fi
+echo "Starting juhe-ai at http://${HOST}:${PORT} (deploy mode: ${DEPLOY_MODE}; go-only: the Go gateway owns the main HTTP entry, Go jobs owns F1/F2)"
 OWNER_LOCK_ENABLED="${JUHE_AI_OWNER_LOCK_ENABLED:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_ENABLED false)}"
 OWNER_LOCK_ENABLED_NORMALIZED="$(printf '%s' "$OWNER_LOCK_ENABLED" | tr '[:upper:]' '[:lower:]')"
-SERVER_WITH_OWNER_LOCK=false
-if [ "$DEPLOY_MODE" = 'go' ] && [ "$OWNER_LOCK_ENABLED_NORMALIZED" = 'true' ]; then
-  echo 'JUHE_AI_OWNER_LOCK_ENABLED=true has no Go-mode server wrapper yet; go mode refuses to start without this deployment guard.' >&2
+if [ "$OWNER_LOCK_ENABLED_NORMALIZED" = 'true' ]; then
+  echo 'JUHE_AI_OWNER_LOCK_ENABLED=true has no Go-mode server wrapper yet; go-only mode refuses to start without this deployment guard.' >&2
   exit 1
-fi
-if [ "$DEPLOY_MODE" != 'go' ] && [ "$OWNER_LOCK_ENABLED_NORMALIZED" = 'true' ]; then
-  OWNER_MANIFEST_PATH="$APP_DIR/deploy/owner-manifest.json"
-  MANIFEST_EPOCH="$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('deploy/owner-manifest.json','utf8')).deploymentEpoch)")"
-  [ -n "$MANIFEST_EPOCH" ] || { echo 'Unable to read deploy/owner-manifest.json deploymentEpoch.' >&2; exit 1; }
-  node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json
-  OWNER_LOCK_PATH="${JUHE_AI_OWNER_LOCK_PATH:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_PATH '')}"
-  case "$OWNER_LOCK_PATH" in /*) ;; *) echo 'JUHE_AI_OWNER_LOCK_PATH must be an absolute shared path outside the release directory.' >&2; exit 1 ;; esac
-  OWNER_LOCK_EPOCH="${JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH "$MANIFEST_EPOCH")}"
-  [ "$OWNER_LOCK_EPOCH" = "$MANIFEST_EPOCH" ] || { echo 'JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH does not match deploy/owner-manifest.json.' >&2; exit 1; }
-  NODE_VERSION="$(node -p "require('./package.json').version")"
-  node scripts/validate-owner-manifest.mjs --require-deployment-epoch="$OWNER_LOCK_EPOCH" --require-node-version="$NODE_VERSION" deploy/owner-manifest.json
-  export JUHE_AI_OWNER_MANIFEST_PATH="$OWNER_MANIFEST_PATH"
-  export JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH="$OWNER_LOCK_EPOCH"
-  SERVER_WITH_OWNER_LOCK=true
 fi
 
 trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if [ "$DEPLOY_MODE" != 'go' ]; then
-  if [ "$SERVER_WITH_OWNER_LOCK" = 'true' ]; then
-    node scripts/run-with-owner-lock.mjs --lock-path "$OWNER_LOCK_PATH" --release-root "$APP_DIR" --deployment-epoch "$OWNER_LOCK_EPOCH" --role server --version "$NODE_VERSION" -- node backend/dist/server.js &
-  else
-    node backend/dist/server.js &
-  fi
-  server_pid=$!
-  wait_for_http_status "$server_pid" "http://${HOST}:${PORT}/__aisys__/api/health" 200 'juhe-ai Web/API process'
-fi
-
-if [ "$DEPLOY_MODE" != 'node' ]; then
-  if [ "$DEPLOY_MODE" = 'go' ]; then
-    configured_system_api="$(printf '%s' "${JUHE_AI_GATEWAY_SYSTEM_API_ENABLED:-$(read_dotenv_value JUHE_AI_GATEWAY_SYSTEM_API_ENABLED '')}" | tr '[:upper:]' '[:lower:]')"
-    case "$configured_system_api" in
-      ''|true) export JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true ;;
-      *)
-        echo "Deploy mode 'go' requires JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true (got: $configured_system_api); the gateway must own the main HTTP entry." >&2
-        exit 1
-        ;;
-    esac
-    GO_MAINTENANCE_BOOTSTRAP="$(printf '%s' "${JUHE_AI_GO_MAINTENANCE_BOOTSTRAP:-$(read_dotenv_value JUHE_AI_GO_MAINTENANCE_BOOTSTRAP false)}" | tr '[:upper:]' '[:lower:]')"
-    if [ "$GO_MAINTENANCE_BOOTSTRAP" = 'true' ]; then
-      run_go_maintenance_bootstrap || exit 1
-    fi
-  fi
-  gateway_health_url="${JUHE_AI_GATEWAY_HEALTH_URL:-$(read_dotenv_value JUHE_AI_GATEWAY_HEALTH_URL 'http://127.0.0.1:3306')}"
-  jobs_health_url="${JUHE_AI_JOBS_HEALTH_URL:-$(read_dotenv_value JUHE_AI_JOBS_HEALTH_URL 'http://127.0.0.1:3305')}"
-  go_gateway_pid="$(start_go_project gateway "$gateway_health_url")"
-  go_jobs_pid="$(start_go_project jobs "$jobs_health_url")"
-  audit_input_url="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
-  operation_input_url="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
-  wait_for_http_status "$go_gateway_pid" "${audit_input_url%/}/__aiinternal__/health" 204 'juhe-ai-go-gateway F3'
-  wait_for_http_status "$go_gateway_pid" "${operation_input_url%/}/__aiinternal__/v1/operation-logs/health" 204 'juhe-ai-go-gateway F4'
-  if [ "$DEPLOY_MODE" = 'go' ]; then
-    wait_for_http_status "$go_gateway_pid" "http://${HOST}:${PORT}/__aisys__/api/health" 200 'juhe-ai-go-gateway system API'
-  fi
-  echo "Started juhe-ai-go-gateway (PID $go_gateway_pid) and juhe-ai-go-jobs (PID $go_jobs_pid)."
-fi
-
-if [ "$DEPLOY_MODE" = 'go' ]; then
-  while kill -0 "$go_gateway_pid" 2>/dev/null && kill -0 "$go_jobs_pid" 2>/dev/null; do
-    sleep 1
-  done
-  if ! kill -0 "$go_gateway_pid" 2>/dev/null; then
-    [ -f "$go_gateway_log_file" ] && tail -n 20 "$go_gateway_log_file" >&2
-    echo "juhe-ai-go-gateway exited unexpectedly (PID $go_gateway_pid)." >&2
+configured_system_api="$(printf '%s' "${JUHE_AI_GATEWAY_SYSTEM_API_ENABLED:-$(read_dotenv_value JUHE_AI_GATEWAY_SYSTEM_API_ENABLED '')}" | tr '[:upper:]' '[:lower:]')"
+case "$configured_system_api" in
+  ''|true) export JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true ;;
+  *)
+    echo "go-only deploy requires JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true (got: $configured_system_api); the gateway must own the main HTTP entry." >&2
     exit 1
-  fi
-  [ -f "$go_jobs_log_file" ] && tail -n 20 "$go_jobs_log_file" >&2
-  echo "juhe-ai-go-jobs exited unexpectedly (PID $go_jobs_pid)." >&2
-  exit 1
-fi
-if [ "$DEPLOY_MODE" = 'node' ]; then
-  while kill -0 "$server_pid" 2>/dev/null; do
-    sleep 1
-  done
-  echo "juhe-ai Web/API process exited unexpectedly (PID $server_pid)." >&2
-  exit 1
+    ;;
+esac
+GO_MAINTENANCE_BOOTSTRAP="$(printf '%s' "${JUHE_AI_GO_MAINTENANCE_BOOTSTRAP:-$(read_dotenv_value JUHE_AI_GO_MAINTENANCE_BOOTSTRAP false)}" | tr '[:upper:]' '[:lower:]')"
+if [ "$GO_MAINTENANCE_BOOTSTRAP" = 'true' ]; then
+  run_go_maintenance_bootstrap || exit 1
 fi
 
-while kill -0 "$server_pid" 2>/dev/null && kill -0 "$go_gateway_pid" 2>/dev/null && kill -0 "$go_jobs_pid" 2>/dev/null; do
+gateway_health_url="${JUHE_AI_GATEWAY_HEALTH_URL:-$(read_dotenv_value JUHE_AI_GATEWAY_HEALTH_URL 'http://127.0.0.1:3306')}"
+jobs_health_url="${JUHE_AI_JOBS_HEALTH_URL:-$(read_dotenv_value JUHE_AI_JOBS_HEALTH_URL 'http://127.0.0.1:3305')}"
+go_gateway_pid="$(start_go_project gateway "$gateway_health_url")"
+go_jobs_pid="$(start_go_project jobs "$jobs_health_url")"
+audit_input_url="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
+operation_input_url="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
+wait_for_http_status "$go_gateway_pid" "${audit_input_url%/}/__aiinternal__/health" 204 'juhe-ai-go-gateway F3'
+wait_for_http_status "$go_gateway_pid" "${operation_input_url%/}/__aiinternal__/v1/operation-logs/health" 204 'juhe-ai-go-gateway F4'
+wait_for_http_status "$go_gateway_pid" "http://${HOST}:${PORT}/__aisys__/api/health" 200 'juhe-ai-go-gateway system API'
+echo "Started juhe-ai-go-gateway (PID $go_gateway_pid) and juhe-ai-go-jobs (PID $go_jobs_pid)."
+
+while kill -0 "$go_gateway_pid" 2>/dev/null && kill -0 "$go_jobs_pid" 2>/dev/null; do
   sleep 1
 done
-if ! kill -0 "$go_gateway_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
+if ! kill -0 "$go_gateway_pid" 2>/dev/null; then
   [ -f "$go_gateway_log_file" ] && tail -n 20 "$go_gateway_log_file" >&2
   echo "juhe-ai-go-gateway exited unexpectedly (PID $go_gateway_pid)." >&2
   exit 1
 fi
-if ! kill -0 "$go_jobs_pid" 2>/dev/null && kill -0 "$server_pid" 2>/dev/null; then
-  [ -f "$go_jobs_log_file" ] && tail -n 20 "$go_jobs_log_file" >&2
-  echo "juhe-ai-go-jobs exited unexpectedly (PID $go_jobs_pid)." >&2
-  exit 1
-fi
-if ! kill -0 "$server_pid" 2>/dev/null; then
-  echo "juhe-ai Web/API process exited unexpectedly (PID $server_pid)." >&2
-  exit 1
-fi
+[ -f "$go_jobs_log_file" ] && tail -n 20 "$go_jobs_log_file" >&2
+echo "juhe-ai-go-jobs exited unexpectedly (PID $go_jobs_pid)." >&2
 exit 1

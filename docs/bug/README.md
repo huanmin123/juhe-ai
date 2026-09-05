@@ -17,7 +17,7 @@
 - [BUG-0161](问题-0161-M07APIKey迁移缺少更新与用量契约.md)：M07 API Key 缺少 PATCH、真实 usage 与必需 validation cache 失效；待修复。
 
 - [BUG-0160](问题-0160-K7Mock上游未记录模型与流式字段.md)：K7 mock upstream 未记录 `Model`/`StreamField`，16 场景无法验证关键请求契约；待修复。
-- [BUG-0159](问题-0159-K6Legacybridge前缀翻转缺少并发保护.md)：K6 legacybridge 前缀注册/删除与请求遍历共享 slice 无并发保护；待修复。
+- [BUG-0159](问题-0159-K6Legacybridge前缀翻转缺少并发保护.md)：K6 legacybridge 前缀注册/删除与请求遍历共享 slice 无并发保护；已关闭（X01 随 legacybridge 包整体删除失效，非代码修复）。
 - [BUG-0158](问题-0158-K5缓存失效总线丢通知且注销失效.md)：K5 订阅注销无效且同 topic 1 秒内的本地失效通知被丢弃；待修复。
 - [BUG-0157](问题-0157-K4操作日志清洗结果偏离Node.md)：K4 敏感字段和长结构化 changes 的清洗结果偏离 Node；待修复。
 - [BUG-0156](问题-0156-K3内存限流双桶键冲突.md)：K3 内存限流未区分分钟与突发桶，两个窗口相互覆盖；待修复。

@@ -154,6 +154,12 @@ assert.match(jenkinsfile, /actor == 'jenkins-prod-promotion'[\s\S]*?params\.PROD
   'prod 晋级写状态必须在函数内部校验审批单')
 assert.match(jenkinsfile, /actor == 'jenkins-prod-rollback'[\s\S]*?params\.ROLLBACK_SCHEMA_COMPATIBILITY_TICKET/,
   'prod 回滚写状态必须在函数内部校验回滚审批和 schema 兼容证据')
-assert.match(jenkinsfile, /metadataValue\('test', 'sourceCommit'\)[\s\S]*?metadataValue\('test', 'nodeImageDigest'\)[\s\S]*?metadataValue\('test', 'gatewayImageDigest'\)/,
+assert.match(jenkinsfile, /metadataValue\('test', 'sourceCommit'\)[\s\S]*?metadataValue\('test', 'jobsImageDigest'\)[\s\S]*?metadataValue\('test', 'gatewayImageDigest'\)/,
   '生产晋级二次读取必须继续绑定 test source commit 与全部组件 digest')
+assert.match(jenkinsfile, /def validNodeDigest\(value\) \{ return value == '-' \|\| validDigest\(value\) \}/,
+  'go-only 收口后 Node 镜像位必须用显式 - 哨兵并通过 validNodeDigest 校验')
+assert.match(jenkinsfile, /if \(nodeDigest != '-'\) \{[\s\S]*?replaceDigest\("\$\{overlay\}\/kustomization\.yaml", 'juhe-ai', nodeDigest\)/,
+  'go-only 候选不得回写已退役的 juhe-ai Node 镜像块，历史回滚候选仍按真实 digest 复原')
+assert.doesNotMatch(jenkinsfile, /HARBOR_REPOSITORY_NODE|NODE_IMAGE|Dockerfile\.builder|stage\('构建前端与 Node 产物'\)/,
+  'go-only 流水线不得保留 Node 镜像构建与推送入口')
 console.log('Jenkins API release flow contract passed')

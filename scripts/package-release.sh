@@ -345,7 +345,9 @@ if ! command -v pnpm >/dev/null 2>&1; then
   fi
 fi
 
-pnpm --filter juhe-ai-backend check:runtime
+# Node backend（juhe-ai-backend）已于 2026-09-04 物理归档到
+# migration-backup/node/final-archive/（X02 全量归档）；Node check:runtime
+# 预检随之移除，发布物走 go-only 校验（见文件末尾 --deploy-mode=go）。
 
 export VITE_JUHE_AI_API_BASE_URL="$FRONTEND_API_BASE_URL"
 export VITE_JUHE_AI_GATEWAY_BASE_URL="$FRONTEND_GATEWAY_BASE_URL"
@@ -380,15 +382,18 @@ TAR_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.tar.gz"
 ZIP_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.zip"
 assert_safe_removal_target "$PACKAGE_ROOT" "$RELEASE_ROOT" 1
 rm -rf "$PACKAGE_ROOT"
-mkdir -p "$PACKAGE_ROOT/backend" "$PACKAGE_ROOT/backend-go" "$PACKAGE_ROOT/frontend" "$PACKAGE_ROOT/docs" "$PACKAGE_ROOT/scripts" "$PACKAGE_ROOT/deploy"
+mkdir -p "$PACKAGE_ROOT/backend-go" "$PACKAGE_ROOT/frontend" "$PACKAGE_ROOT/docs" "$PACKAGE_ROOT/scripts" "$PACKAGE_ROOT/deploy"
 printf '%s\n' "$RELEASE_SOURCE_COMMIT" > "$PACKAGE_ROOT/RELEASE_SOURCE_COMMIT"
 
 copy_required_item "$REPO_ROOT/package.json" "$PACKAGE_ROOT/package.json"
 copy_required_item "$REPO_ROOT/pnpm-lock.yaml" "$PACKAGE_ROOT/pnpm-lock.yaml"
 copy_required_item "$REPO_ROOT/pnpm-workspace.yaml" "$PACKAGE_ROOT/pnpm-workspace.yaml"
-copy_release_backend_package_json "$REPO_ROOT/backend/package.json" "$PACKAGE_ROOT/backend/package.json"
-copy_required_item "$REPO_ROOT/backend/.env.example" "$PACKAGE_ROOT/backend/.env.example"
-copy_required_item "$REPO_ROOT/backend/dist" "$PACKAGE_ROOT/backend/dist"
+# Node backend 已归档到 migration-backup/node/final-archive/（X02）；go-only
+# 发布物不再复制 backend/package.json、backend/.env.example、backend/dist。
+# copy_release_backend_package_json 函数保留仅供历史 hybrid 包对照，不再调用。
+# copy_release_backend_package_json "$REPO_ROOT/backend/package.json" "$PACKAGE_ROOT/backend/package.json"
+# copy_required_item "$REPO_ROOT/backend/.env.example" "$PACKAGE_ROOT/backend/.env.example"
+# copy_required_item "$REPO_ROOT/backend/dist" "$PACKAGE_ROOT/backend/dist"
 copy_required_item "$REPO_ROOT/frontend/package.json" "$PACKAGE_ROOT/frontend/package.json"
 copy_required_item "$REPO_ROOT/frontend/.env.example" "$PACKAGE_ROOT/frontend/.env.example"
 copy_required_item "$REPO_ROOT/frontend/dist" "$PACKAGE_ROOT/frontend/dist"
@@ -427,7 +432,8 @@ tr -d '\r' < "$PACKAGE_ROOT/start.sh" > "$TMP_START_SCRIPT"
 mv "$TMP_START_SCRIPT" "$PACKAGE_ROOT/start.sh"
 chmod +x "$PACKAGE_ROOT/start.sh"
 
-node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"
+# Node backend 已归档（X02）：发布物为 go-only 形态，用 go 模式校验。
+node "$VALIDATOR_PATH" --quiet --deploy-mode=go "$PACKAGE_ROOT"
 
 if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   echo "==> Creating tar.gz archive"

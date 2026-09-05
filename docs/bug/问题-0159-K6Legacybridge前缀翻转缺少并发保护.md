@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0159
-- 状态：待修复
+- 状态：已关闭（随组件删除失效）
 - 严重程度：P1
 - 发现时间：2026-09-04
 - 发现方式：自查（已提交 Git 历史审计）
@@ -11,6 +11,8 @@
 - 关联计划：`docs/migration/Node全量清零迁移总计划-20260904.md`
 - 关联 bug：无
 - 责任人：待定
+
+> X01 收口（2026-09-05）：`internal/legacybridge` 过渡反代包连同 `kernel.RegisterFallback` 扩展点与 `JUHE_AI_LEGACY_BRIDGE_TARGET` 装配已整体删除，`kernel` 未命中路径固定返回 Node 404 JSON 契约。下列三个子项的修复门槛均以「bridge 继续存在」为前提，组件删除后不再适用；本文保留为历史缺陷证据。
 
 ## 问题概述
 

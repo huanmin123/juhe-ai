@@ -1,84 +1,60 @@
-# 部署 go-only 双轨开关（X03 前置）
+# 部署 go-only 终态（原「双轨开关」收口）
 
-> 状态：部署资产已支持 `JUHE_AI_DEPLOY_MODE` 三模式开关；实际生产切换、PM2/LaunchDaemon 等主机侧变更仍归 X03/G20 正式工作包，本文只描述仓库内可验证的机制。
-> 适用资产：`deploy/start.sh`、`deploy/start.ps1`、`docker/compose.go-only.yml`、`Jenkinsfile`（go build/test 阶段）、`scripts/validate-release-package.mjs`（`--deploy-mode` 分支）。
+> 状态：X01/X03 收口完成。Node backend 已物理归档到 `migration-backup/node/final-archive/`（X02，2026-09-04），Go 侧 `internal/legacybridge` 过渡反代已删除（X01）。本文由「三模式双轨开关（X03 前置）」改写为 go-only 终态说明；`hybrid` / `node` 部署模式已退役，历史值会被启动脚本 fail-closed 拒绝。
+> 适用资产：`deploy/start.sh`、`deploy/start.ps1`、`docker/compose.yml`、`docker/compose.performance.yml`（遗留参考）、`Jenkinsfile`、`scripts/validate-release-package.mjs`、`scripts/package-release.sh|.ps1`。
 
-## 1. 模式矩阵
+## 1. 唯一拓扑
 
-`JUHE_AI_DEPLOY_MODE` 可通过进程环境或 `backend/.env` 配置（环境变量优先），缺省 `hybrid`；非法值一律启动失败。
+go-only 是唯一受支持的部署拓扑：
 
-| 模式 | Node Web/API | Go gateway | Go jobs | maintenance 预检 | 用途 |
-| --- | --- | --- | --- | --- | --- |
-| `hybrid`（默认） | 启动（现状路径，零行为变化） | 启动（F3/F4 owner） | 启动（F1/F2 owner） | 不执行 | G20 翻转前后通用的现行拓扑 |
-| `go` | 不启动，不要求 `backend/dist` 与 pnpm | 启动并强制 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true`，绑定 `JUHE_AI_HOST:JUHE_AI_PORT` 成为主入口 | 启动 | 可选（见下） | G20 翻转后的目标拓扑演练与切换 |
-| `node` | 启动 | 不启动 | 不启动 | 不执行 | G20 翻转后回滚兜底（Node 作为入口直启） |
-
-限制：
-
-- `node` 模式只负责启动 Node Web/API；F1-F4 的 owner 语义不变（hybrid 现状下同样由 Go 承载）。翻转前用 `node` 模式做紧急止血时，F1/F2/F3/F4 写入与 Go owner 停机是已知的降级状态，不是受支持的长期拓扑。
-- `go` 模式下 `JUHE_AI_OWNER_LOCK_ENABLED=true` 会显式拒绝启动（owner lock 的 server 包装只覆盖 Node 进程，暂无 Go 等价物；补齐前禁止静默失去部署保护）。
-- `go` 模式仍要求 `node` 可用：`scripts/start-go-project.mjs` 是 Go 二进制的 detached 启动器与 env 组装器，仍是现有 launcher 的一部分；X03 正式翻转时可评估去 Node 化。
-- `go` 模式下 gateway 显式配置 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED` 为非 `true` 值会拒绝启动（go 模式要求 gateway 拥有主入口）。
-
-## 2. 环境变量（新增部分）
-
-| 变量 | 默认 | 说明 |
+| 角色 | 进程 | 职责 |
 | --- | --- | --- |
-| `JUHE_AI_DEPLOY_MODE` | `hybrid` | `go` / `hybrid` / `node`；读环境变量后回退 `backend/.env` |
-| `JUHE_AI_GO_MAINTENANCE_BOOTSTRAP` | `false` | 仅 go 模式：启动前执行 `backend-go/juhe-ai-maintenance --ensure-schema`（幂等），SQLite 按 `backend/.env` 的六个库路径组装 `--paths`，PostgreSQL 用 `--dsn "$JUHE_AI_POSTGRES_URL"` |
-| `JUHE_AI_GO_MAINTENANCE_SEED` | `false` | 仅 go 模式：在 bootstrap 命令上追加 `--seed`；默认种子写入依赖该显式开关 |
+| 主入口 | `juhe-ai-go-gateway` | 以 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true` 绑定 `JUHE_AI_HOST:JUHE_AI_PORT`，提供 Web/管理 API、公开协议面、`/v1` AI 网关链与 F3/F4 owner |
+| 后台 owner | `juhe-ai-go-jobs` | F1 运行日志、F2 表监控（J1 默认关闭） |
 
-`hybrid` 与 `node` 模式不读取上述两个 maintenance 开关，行为与历史版本一致。
+- 没有 Node Web/API 进程，没有 `JUHE_AI_DEPLOY_MODE` 分支；`deploy/start.sh|start.ps1` 只有一条 go 路径。
+- `JUHE_AI_DEPLOY_MODE` 仅保留 fail-closed 校验：环境变量或 `backend/.env` 中出现 `hybrid` / `node` 等历史值时拒绝启动，并提示唯一合法值为 `go`。
+- 未挂载前缀的行为是 Go kernel 的 404/405 JSON 契约（`{"message":"资源不存在"}`）；`JUHE_AI_LEGACY_BRIDGE_TARGET` 环境变量与反代路径已随 `internal/legacybridge` 删除，不存在任何 502 代理回退路径。
 
-## 3. 启动顺序与健康检查端口
+## 2. 启动脚本行为（deploy/start.sh、deploy/start.ps1）
 
-### hybrid（默认，与历史一致）
+1. `backend/.env` 缺失时从 example 创建；生成/复用 `JUHE_AI_SECRET` 与 `JUHE_AI_ALLOWED_ORIGINS`（Go 组合根同样必需）。
+2. fail-closed 校验（全部保留）：
+   - `JUHE_AI_DEPLOY_MODE` 必须为 `go`（缺省即 go）；
+   - `JUHE_AI_OWNER_LOCK_ENABLED=true` 拒绝启动（owner lock 的 server 包装只覆盖过 Node 进程，无 Go 等价物；补齐前禁止静默失去部署保护）；
+   - `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED` 配置为非 `true` 值时拒绝启动（gateway 必须拥有主入口）。
+3. 可选维护预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 时执行幂等的 `backend-go/juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径组装 `--paths`，PostgreSQL 用 `--dsn "$JUHE_AI_POSTGRES_URL"`）；`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。
+4. 启动 `juhe-ai-go-gateway`（owner health `3306 /health` 200、F3 `3303 /__aiinternal__/health` 与 F4 `3304 /__aiinternal__/v1/operation-logs/health` 204、业务端口 `/__aisys__/api/health` 200），随后启动 `juhe-ai-go-jobs`（owner health `3305 /health` 200）。
+5. 监控仅覆盖两个 Go 进程；任一退出即结束本次启动并清理其余进程。PID 与日志位置不变：`backend/runtime/juhe-ai-{gateway,jobs}.pid`（Windows 为 `juhe-ai-go-{gateway,jobs}.pid`）与 `backend/logs/juhe-ai-{gateway,jobs}.log`。
 
-1. `backend/.env` 缺失时从 example 创建，生成/复用 `JUHE_AI_SECRET` 与 `JUHE_AI_ALLOWED_ORIGINS`。
-2. pnpm 依赖安装与 `backend/dist/scripts/preflight/check-node-sqlite.js` 预检。
-3. 启动 Node `backend/dist/server.js`，等待 `http://JUHE_AI_HOST:JUHE_AI_PORT/__aisys__/api/health` 返回 `200`。
-4. 启动 `juhe-ai-go-gateway`，等待 `http://127.0.0.1:3306/health` 返回 `200`；再确认 F3 `3303 /__aiinternal__/health` 与 F4 `3304 /__aiinternal__/v1/operation-logs/health` 返回 `204`。
-5. 启动 `juhe-ai-go-jobs`，等待 `http://127.0.0.1:3305/health` 返回 `200`。
-6. 三个进程任一退出即结束本次启动并清理其余进程。
+`node` 仍为运行时依赖：`scripts/start-go-project.mjs` 是 Go 二进制的 detached 启动器与健康探测组装器；去 Node 化（纯 Go launcher）留待后续评估。
 
-### go
+## 3. Docker
 
-1. 与 hybrid 相同的 `.env` 创建与默认值生成（`JUHE_AI_SECRET` 对 Go 同样必需）。
-2. 校验 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED` 并强制为 `true`；按开关执行 maintenance `--ensure-schema [--seed]`（幂等，可重复启动）。
-3. 启动 `juhe-ai-go-gateway`（owner health `3306 /health` 200、F3/F4 input 204 同上），随后等待 `http://JUHE_AI_HOST:JUHE_AI_PORT/__aisys__/api/health` 返回 `200`（gateway system API 组合根提供与 Node 相同的健康契约）。
-4. 启动 `juhe-ai-go-jobs`（owner health `3305 /health` 200）。
-5. 监控仅覆盖两个 Go 进程；任一退出即结束并清理。
+- `docker/compose.yml` 即终态 go-only 拓扑（原 `compose.go-only.yml` 已并入本文件并删除，避免双文件漂移）：`gateway`（主入口，发布 `${JUHE_AI_PUBLIC_BIND}:${JUHE_AI_PUBLIC_PORT}`）+ `jobs`（`depends_on: gateway: service_healthy`）。
+- 卷语义：`juhe-ai-data` 对 gateway 读写（system API 是业务库唯一 writer），对 jobs 只读；F3/F4 input listener 仍只绑容器内 loopback，不使用 `network_mode: service:<Node>`。
+- 启动：`cd docker && docker compose config --quiet && docker compose up -d --build --wait`；`.env` 必填项与原先相同（`JUHE_AI_GO_IMAGE`、`JUHE_AI_GO_*_RUNTIME_IMAGE`、F3/F4 input secret、各 owner ID）。`.env.example` 已移除 `JUHE_AI_NODE_IMAGE`、`JUHE_AI_IMAGE` 与 `JUHE_AI_USAGE_STATS_TIMEZONE`（Go 时区来自 settings 库）。
+- `docker/Dockerfile`、`docker/Dockerfile.builder`、`docker/entrypoint.sh`（Node 镜像与构建器）已删除；`docker/compose.performance.yml` 是 hybrid 遗留形态的参考，其 `juhe-ai` 服务在本仓库当前状态不可构建，go-only 高性能变体仍是 X03 平台侧待办。
 
-### node
+## 4. CI 与发布物
 
-`.env` 与预检同 hybrid；只启动 Node Web/API 并等待 `/__aisys__/api/health` 200，随后监控 Node 进程。
+- `Jenkinsfile`：已移除「构建前端与 Node 产物」与 Node 镜像构建/推送；现有阶段为「构建并验证 Go 模块」（三模块 build + 关键 cmd 测试）与「构建并推送 Go 镜像」（jobs + gateway 双镜像 digest）。
+- 发布状态 schema 保持 10 列 history 与 `nodeImageDigest` metadata 键不变，避免破坏既有平台仓库与历史回滚：go-only 候选在该位写入 `'-'` 哨兵且不回写平台 kustomization 的 `juhe-ai` 镜像块；历史 Node 时代回滚候选仍携带真实 digest，可按原样复原旧拓扑。
+- `scripts/validate-release-package.mjs`：`--deploy-mode` 缺省为 `go`（API `deployMode` 同步）；`hybrid` / `node` 分支仅为校验历史发布包保留。
+- `scripts/package-release.sh|.ps1`：只产出 go-only 包（`frontend/dist` + 三 Go 二进制 + 部署脚本），不携带 `backend/dist`，并以 `--deploy-mode=go` 校验。
 
-PID 与日志位置不变：`backend/runtime/juhe-ai-{gateway,jobs}.pid`（Windows 为 `juhe-ai-go-{gateway,jobs}.pid`）与 `backend/logs/juhe-ai-{gateway,jobs}.log`。
-
-## 4. Docker
-
-- `docker/compose.go-only.yml` 是 go-only 拓扑：`gateway`（主入口，发布 `${JUHE_AI_PUBLIC_BIND}:${JUHE_AI_PUBLIC_PORT}`，`JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true`）+ `jobs`（F1/F2，`depends_on: gateway: service_healthy`）。两者不再依赖 Node 容器或 `network_mode: service:juhe-ai`；F3/F4 input listener 仍只绑容器内 loopback。
-- 卷语义差异：go-only 下 `juhe-ai-data` 对 gateway 读写（system API 是业务库唯一 writer），对 jobs 只读；hybrid `compose.yml` 保持 Node 读写、两个 Go 项目只读的现状。
-- 启动：`cd docker && docker compose -f compose.go-only.yml up -d --build --wait`；`.env` 的镜像与 secret 变量与 `compose.yml` 同名（`JUHE_AI_GO_IMAGE`、`JUHE_AI_GO_*_RUNTIME_IMAGE`、F3/F4 input secret、各 owner ID 必填）。
-- 回滚：`docker compose -f compose.go-only.yml down` 后按 `docker/README.md` 回到 `compose.yml`（hybrid）即可；两份 compose 的卷同名，数据卷在模式切换间复用，切换前应先完成业务备份。
-
-## 5. CI 与发布物校验
-
-- `Jenkinsfile` 新增「构建并推送三镜像」之前的「构建并验证 Go 模块」阶段：在受控 `GO_IMAGE` 内执行 `go build ./...`（workspace 全部模块）与 `go test -count=1 ./projects/gateway/cmd/... ./projects/jobs/cmd/... ./projects/maintenance/cmd/...`；发布三镜像阶段本身不变。
-- `scripts/validate-release-package.mjs` 支持 `--deploy-mode=go|hybrid|node`（API 参数 `deployMode`）：`hybrid`（默认）要求 Node server + 前端 + 三 Go 二进制（历史行为）；`go` 不要求 `backend/dist`，但三 Go 二进制必填；`node` 不要求 Go 二进制。`package-release` 打包仍产出完整 hybrid 包，go-only 部署通过 `JUHE_AI_DEPLOY_MODE=go` 在运行时选择，无需单独包形态。
-
-## 6. 回滚开关
+## 5. 回滚语义
 
 | 场景 | 操作 |
 | --- | --- |
-| go 模式运行异常（翻转后） | `JUHE_AI_DEPLOY_MODE=node` 重启（或 docker 回 `compose.yml`）；Node 重新成为入口。注意 F1-F4 owner 若已由 Go 承载，需按各自迁移契约的回滚门执行，`node` 模式本身不回切 owner |
-| go 模式误开（翻转前） | 取消 `JUHE_AI_DEPLOY_MODE` 或设回 `hybrid`，重启即恢复现状拓扑 |
-| schema 预检误跑 | `--ensure-schema` 幂等；如需回退 schema 变更，按 `docs/deploy/部署指南.md` 的项目/业务备份恢复，不提供自动降级 |
+| go-only 运行异常 | 按 `docs/deploy/部署指南.md` 的项目/业务备份恢复进程与数据；启动脚本不再提供 `node` 模式止血入口 |
+| 历史双镜像拓扑回滚 | `ROLLBACK_PROD` 选择 Node 时代 release state 时，Jenkins 按历史 `nodeImageDigest` 复原平台 kustomization（属于恢复旧拓扑，不是受支持的长期运行形态） |
+| schema 预检误跑 | `--ensure-schema` 幂等；如需回退 schema 变更，按 `docs/deploy/部署指南.md` 的备份恢复，不提供自动降级 |
 
-## 7. 主机侧待办（不在本仓库内，X03/G20 跟进）
+## 6. 平台侧待办（不在本仓库内，X03/G20 跟进）
 
-- Mac LaunchDaemon / 八台 Edge 相关的常驻定义仍在 `.local/project-resources/prod/` 私有资料中，仓库内无对应资产可改；翻转时需按其 runbook 将 `JUHE_AI_DEPLOY_MODE=go` 落到主机环境。
-- PM2/systemd ecosystem 文件不在仓库内；如有主机侧进程管理，同样需要补 go 模式的启动参数。
-- owner lock（`run-with-owner-lock.mjs --role server`）暂无 Go 等价包装；go 模式下该保护被显式禁用，X03 需补齐或将 go 模式纳入新的单实例保护机制。
-- `docker/compose.performance.yml`（PostgreSQL/PgBouncer/Redis 高性能拓扑）尚未提供 go-only 变体；其 schema 初始化链路（`pnpm --filter juhe-ai-backend postgres:init-schema`）仍依赖 Node 工具链，可改用 `juhe-ai-maintenance --ensure-schema --driver postgres` 替代后再翻转。
-- 发布包 `scripts/package-release.sh|.ps1` 目前固定产出 hybrid 包；若 X03 决定发布 go-only 包形态，需让两个打包脚本按 `--deploy-mode` 裁剪 `backend/dist` 并调整包内 README。
+- Mac LaunchDaemon / 八台 Edge 的常驻定义仍在 `.local/project-resources/prod/` 私有资料中；主机环境已无需 `JUHE_AI_DEPLOY_MODE`。
+- PM2/systemd ecosystem 文件不在仓库内；如有主机侧进程管理，需改为直接拉起两个 Go 二进制。
+- owner lock（`run-with-owner-lock.mjs --role server`）无 Go 等价包装；go-only 下该保护被显式拒绝，X03 需补齐或将 go 拓扑纳入新的单实例保护机制。
+- 平台仓库（k8s-juhe）的 overlay 仍声明 `juhe-ai` Node 容器与 `network_mode` 时代的共享网络语义：需要移除该镜像块并切换到 go-only 双容器拓扑后，Jenkins 写入的 `'-'` 哨兵才与运行态完全一致。
+- `docker/compose.performance.yml` 的 go-only 变体（PostgreSQL/PgBouncer/Redis 高性能拓扑）未落地；schema 初始化可改用 `juhe-ai-maintenance --ensure-schema --driver postgres` 替代 Node 工具链。

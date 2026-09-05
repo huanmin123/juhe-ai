@@ -48,8 +48,9 @@ package main
 // compose.go.
 //
 // G20 phase-3 additions: the openai-compatible files / vector-stores families
-// mount into the chain's non-protocol paths (chain_openaicompat.go, replacing
-// the legacy bridge for /v1/files + /v1/containers + /v1/vector_stores), the
+// mount into the chain's non-protocol paths (chain_openaicompat.go; since X01
+// the legacy bridge proxy is deleted, so these are the only /v1 file and
+// container surfaces), the
 // in-flight quota cost estimator attaches to the pricing catalog
 // (chain_pricing.go), the hybrid Redis collaborators and the G14 session
 // identity services wire through chain_runtime.go / chain_ports.go.

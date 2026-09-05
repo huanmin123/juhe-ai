@@ -280,7 +280,7 @@ try {
     throw 'PowerShell package script reported completion after tar failed'
   }
   $packageBash = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\package-release.sh') -Raw
-  foreach ($required in @('--expected-commit', 'assert-release-source.sh', 'RELEASE_SOURCE_COMMIT', 'frontend-api-base-contract.mjs', 'shared strict contract', 'Windows_NT:*', '*:Windows_NT', 'requires native macOS or Linux', '-buildvcs=false', 'node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"')) {
+  foreach ($required in @('--expected-commit', 'assert-release-source.sh', 'RELEASE_SOURCE_COMMIT', 'frontend-api-base-contract.mjs', 'shared strict contract', 'Windows_NT:*', '*:Windows_NT', 'requires native macOS or Linux', '-buildvcs=false', 'node "$VALIDATOR_PATH" --quiet --deploy-mode=go "$PACKAGE_ROOT"')) {
     if ($packageBash -notmatch [regex]::Escape($required)) {
       throw "bash package script must include release source gate: $required"
     }
@@ -294,7 +294,7 @@ try {
   if ([regex]::Matches($packageBash, 'assert-release-source\.sh').Count -lt 2) {
     throw 'bash package script must recheck the release source after the build'
   }
-  if ($packageBash.IndexOf('copy_required_item "$REPO_ROOT/frontend/dist"', [StringComparison]::Ordinal) -gt $packageBash.IndexOf('node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"', [StringComparison]::Ordinal)) {
+  if ($packageBash.IndexOf('copy_required_item "$REPO_ROOT/frontend/dist"', [StringComparison]::Ordinal) -gt $packageBash.IndexOf('node "$VALIDATOR_PATH" --quiet --deploy-mode=go "$PACKAGE_ROOT"', [StringComparison]::Ordinal)) {
     throw 'bash package script must validate the completed frontend bundle before archive creation'
   }
 

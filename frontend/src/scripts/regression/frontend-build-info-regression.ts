@@ -48,7 +48,7 @@ const powerShellReleaseSource = readFileSync(new URL('../../../../scripts/packag
 const shellReleaseSource = readFileSync(new URL('../../../../scripts/package-release.sh', import.meta.url), 'utf8')
 const builderDockerfileSource = readFileSync(new URL('../../../../docker/Dockerfile.builder', import.meta.url), 'utf8')
 const jenkinsSource = readFileSync(new URL('../../../../Jenkinsfile', import.meta.url), 'utf8')
-const serverSource = readFileSync(new URL('../../../../backend/src/server.ts', import.meta.url), 'utf8')
+const serverSource = readFileSync(new URL('../../../../migration-backup/node/final-archive/backend/src/server.ts', import.meta.url), 'utf8')
 
 assert.match(viteConfigSource, /__JUHE_AI_FRONTEND_BUILD_ID__/, 'Vite 必须注入当前页面 Build ID')
 assert.match(viteConfigSource, /fileName:\s*['"]build-info\.json['"]/, 'Vite 必须输出静态 Build ID 清单')

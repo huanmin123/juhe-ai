@@ -140,12 +140,16 @@ function Assert-SafeRemovalTarget {
 function Invoke-ReleasePackageValidator {
   param(
     [Parameter(Mandatory = $true)][string[]]$Paths,
-    [switch]$LinksOnly
+    [switch]$LinksOnly,
+    [string]$DeployMode
   )
 
   $validatorArgs = @('--quiet')
   if ($LinksOnly) {
     $validatorArgs += '--links-only'
+  }
+  if ($DeployMode) {
+    $validatorArgs += "--deploy-mode=$DeployMode"
   }
   $validatorArgs += $Paths
 
@@ -260,10 +264,9 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
   }
 }
 
-pnpm --filter juhe-ai-backend check:runtime
-if ($LASTEXITCODE -ne 0) {
-  throw 'Node.js runtime preflight failed.'
-}
+# Node backend（juhe-ai-backend）已于 2026-09-04 物理归档到
+# migration-backup/node/final-archive/（X02 全量归档）；Node check:runtime
+# 预检随之移除，发布物走 go-only 校验（见文件末尾 -DeployMode go）。
 
 Write-Host '==> Building workspace'
 $env:VITE_JUHE_AI_API_BASE_URL = $FrontendApiBaseUrl
@@ -290,7 +293,6 @@ Assert-SafeOutputAncestors -BasePath $repoRoot -CandidatePath $releaseRoot
 Assert-SafeRemovalTarget -TargetPath $packageRoot -ExpectedParent $releaseRoot -Recurse
 Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $packageRoot | Out-Null
-New-Item -ItemType Directory -Force (Join-Path $packageRoot 'backend') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'backend-go') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'frontend') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'docs') | Out-Null
@@ -328,9 +330,12 @@ foreach ($project in @('gateway', 'jobs', 'maintenance')) {
 Copy-RequiredItem (Join-Path $repoRoot 'package.json') (Join-Path $packageRoot 'package.json')
 Copy-RequiredItem (Join-Path $repoRoot 'pnpm-lock.yaml') (Join-Path $packageRoot 'pnpm-lock.yaml')
 Copy-RequiredItem (Join-Path $repoRoot 'pnpm-workspace.yaml') (Join-Path $packageRoot 'pnpm-workspace.yaml')
-Copy-ReleaseBackendPackageJson (Join-Path $repoRoot 'backend/package.json') (Join-Path $packageRoot 'backend/package.json')
-Copy-RequiredItem (Join-Path $repoRoot 'backend/.env.example') (Join-Path $packageRoot 'backend/.env.example')
-Copy-RequiredItem (Join-Path $repoRoot 'backend/dist') (Join-Path $packageRoot 'backend/dist')
+# Node backend 已归档到 migration-backup/node/final-archive/（X02）；go-only
+# 发布物不再复制 backend/package.json、backend/.env.example、backend/dist。
+# Copy-ReleaseBackendPackageJson 函数保留仅供历史 hybrid 包对照，不再调用。
+# Copy-ReleaseBackendPackageJson (Join-Path $repoRoot 'backend/package.json') (Join-Path $packageRoot 'backend/package.json')
+# Copy-RequiredItem (Join-Path $repoRoot 'backend/.env.example') (Join-Path $packageRoot 'backend/.env.example')
+# Copy-RequiredItem (Join-Path $repoRoot 'backend/dist') (Join-Path $packageRoot 'backend/dist')
 Copy-RequiredItem (Join-Path $repoRoot 'frontend/package.json') (Join-Path $packageRoot 'frontend/package.json')
 Copy-RequiredItem (Join-Path $repoRoot 'frontend/.env.example') (Join-Path $packageRoot 'frontend/.env.example')
 Copy-RequiredItem (Join-Path $repoRoot 'frontend/dist') (Join-Path $packageRoot 'frontend/dist')
@@ -353,7 +358,8 @@ $startPowerShellContent = Get-Content -Raw -LiteralPath $startPowerShellPath
 Write-Utf8NoBom -Path $startPowerShellPath -Content $startPowerShellContent
 
 Assert-NoReparsePoints -Path $packageRoot -Recurse
-Invoke-ReleasePackageValidator -Paths @($packageRoot)
+# Node backend 已归档（X02）：发布物为 go-only 形态，用 go 模式校验。
+Invoke-ReleasePackageValidator -Paths @($packageRoot) -DeployMode go
 
 if ($ArchiveFormat -eq 'tar.gz' -or $ArchiveFormat -eq 'both') {
   Write-Host '==> Creating tar.gz archive'

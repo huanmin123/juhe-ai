@@ -67,6 +67,29 @@ func waitForSinkInputs(t *testing.T, store *sinkFakeStore, count int) []operatio
 	return store.recorded()
 }
 
+// findSinkInputByModule returns the persisted entry with the given module.
+// Node recordOperationLog persists fire-and-forget (void
+// recordOperationLogUnsafe -> void dispatchOperationLogToGo) with no
+// ordering contract, and the Go Producer.Record goroutine-per-entry mirror
+// inherits that: assertions must match by identity, never by slice index.
+func findSinkInputByModule(inputs []operationlog.Input, module string) *operationlog.Input {
+	for i := range inputs {
+		if inputs[i].Module == module {
+			return &inputs[i]
+		}
+	}
+	return nil
+}
+
+func findSinkInputByMetadata(inputs []operationlog.Input, metadata string) *operationlog.Input {
+	for i := range inputs {
+		if string(inputs[i].Metadata) == metadata {
+			return &inputs[i]
+		}
+	}
+	return nil
+}
+
 // TestOperationLogProducerSinkDeferredFieldsLockedIn mirrors the M12
 // deferral closure: entries carrying Node OperationLogInput detailLevel /
 // visibilityScope / metadata (storage/operation-log-types.ts) reach the F4
@@ -109,17 +132,25 @@ func TestOperationLogProducerSinkDeferredFieldsLockedIn(t *testing.T) {
 	if len(inputs) < 2 {
 		t.Fatalf("expected 2 persisted entries, got %d", len(inputs))
 	}
-	if inputs[0].DetailLevel != "full" || inputs[0].VisibilityScope != "admin_only" {
-		t.Fatalf("deferred fields not passed through: detailLevel=%q visibilityScope=%q", inputs[0].DetailLevel, inputs[0].VisibilityScope)
+	deferred := findSinkInputByModule(inputs, "client_ip_stats")
+	if deferred == nil {
+		t.Fatalf("client_ip_stats entry not persisted, got %d entries", len(inputs))
 	}
-	if string(inputs[0].Metadata) != `{"ipHash":"abc","policyId":"ip_policy_1"}` {
-		t.Fatalf("metadata not passed through: %s", string(inputs[0].Metadata))
+	if deferred.DetailLevel != "full" || deferred.VisibilityScope != "admin_only" {
+		t.Fatalf("deferred fields not passed through: detailLevel=%q visibilityScope=%q", deferred.DetailLevel, deferred.VisibilityScope)
 	}
-	if inputs[1].DetailLevel != "summary" || inputs[1].VisibilityScope != "targeted" {
-		t.Fatalf("legacy default drift: detailLevel=%q visibilityScope=%q", inputs[1].DetailLevel, inputs[1].VisibilityScope)
+	if string(deferred.Metadata) != `{"ipHash":"abc","policyId":"ip_policy_1"}` {
+		t.Fatalf("metadata not passed through: %s", string(deferred.Metadata))
 	}
-	if len(inputs[1].Metadata) != 0 {
-		t.Fatalf("legacy metadata must stay empty, got %s", string(inputs[1].Metadata))
+	legacy := findSinkInputByModule(inputs, "api_keys")
+	if legacy == nil {
+		t.Fatalf("api_keys entry not persisted, got %d entries", len(inputs))
+	}
+	if legacy.DetailLevel != "summary" || legacy.VisibilityScope != "targeted" {
+		t.Fatalf("legacy default drift: detailLevel=%q visibilityScope=%q", legacy.DetailLevel, legacy.VisibilityScope)
+	}
+	if len(legacy.Metadata) != 0 {
+		t.Fatalf("legacy metadata must stay empty, got %s", string(legacy.Metadata))
 	}
 
 	// The metadata copy must be defensive: mutating the entry afterwards
@@ -132,8 +163,12 @@ func TestOperationLogProducerSinkDeferredFieldsLockedIn(t *testing.T) {
 	if len(inputs) < 3 {
 		t.Fatalf("expected 3 persisted entries, got %d", len(inputs))
 	}
-	if string(inputs[2].Metadata) != `{"k":1}` {
-		t.Fatalf("metadata snapshot semantics broken: %s", string(inputs[2].Metadata))
+	snapshot := findSinkInputByMetadata(inputs, `{"k":1}`)
+	if snapshot == nil {
+		t.Fatalf("metadata snapshot entry not persisted, got %d entries", len(inputs))
+	}
+	if string(snapshot.Metadata) != `{"k":1}` {
+		t.Fatalf("metadata snapshot semantics broken: %s", string(snapshot.Metadata))
 	}
 }
 

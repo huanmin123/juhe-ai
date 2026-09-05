@@ -110,7 +110,8 @@ func TestAcceptanceReadFaces(t *testing.T) {
 		client.do(http.MethodGet, "/__aisys__/api/table-monitor/history?databaseRole=business&tableName=accounts", nil, wantStatus(http.StatusServiceUnavailable))
 		// 非法角色 → 400。
 		client.do(http.MethodGet, "/__aisys__/api/table-monitor/history?databaseRole=ghost&tableName=accounts", nil, wantStatus(http.StatusBadRequest))
-		// cleanup POST 仍由 Node 拥有（W6）：未配 bridge 时走 404 JSON 契约。
+		// cleanup POST 未迁移（W6 记录：gateway 无 record-maintenance worker
+		// 通道）：go-only 终态走 404 JSON 契约。
 		client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup", map[string]any{"cutoffAt": "2026-09-01T00:00:00.000Z"}, wantStatus(http.StatusNotFound))
 	})
 

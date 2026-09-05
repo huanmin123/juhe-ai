@@ -1,0 +1,65 @@
+import { isIP } from 'node:net'
+import type { Request } from 'express'
+
+import { getGatewayRequestBodyState } from './body.js'
+
+export function extractBearerToken(authorization?: string): string | undefined {
+  if (!authorization) return undefined
+  const match = authorization.match(/^Bearer\s+(.+)$/i)
+  return match?.[1]?.trim()
+}
+
+export function extractClientIp(req: Request): string | undefined {
+  return normalizeClientIp(req.ip) ?? normalizeClientIp(req.socket.remoteAddress)
+}
+
+export function requestModel(req: Request): string | undefined {
+  const bodyState = getGatewayRequestBodyState(req)
+  return requestModelFromGeminiPath(req)
+    ?? bodyState?.model
+    ?? (typeof req.body?.model === 'string' ? req.body.model : undefined)
+}
+
+export function requestStream(req: Request): boolean {
+  const bodyState = getGatewayRequestBodyState(req)
+  return (bodyState?.stream ?? req.body?.stream === true) || requestGeminiInteractionStreamQuery(req)
+}
+
+export function requestEndpoint(req: Request): string {
+  return `${req.method.toUpperCase()} ${req.originalUrl.split('?')[0] || req.path}`
+}
+
+function normalizeClientIp(value?: string): string | undefined {
+  if (!value) return undefined
+  let ip = value.trim()
+  if (!ip) return undefined
+  if (ip.startsWith('[')) {
+    const end = ip.indexOf(']')
+    if (end > 0) ip = ip.slice(1, end)
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(ip)) {
+    ip = ip.replace(/:\d+$/, '')
+  }
+  if (ip.startsWith('::ffff:')) {
+    ip = ip.slice('::ffff:'.length)
+  }
+  return isIP(ip) === 4 ? ip : undefined
+}
+
+function requestModelFromGeminiPath(req: Request): string | undefined {
+  const path = req.originalUrl.split('?', 1)[0] || req.path || ''
+  const match = /\/models\/([^/:?#]+):(?:generateContent|streamGenerateContent|countTokens|embedContent)$/i.exec(path)
+  if (!match?.[1]) return undefined
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return match[1]
+  }
+}
+
+function requestGeminiInteractionStreamQuery(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'GET') return false
+  const [path, query = ''] = (req.originalUrl || req.path || '').split('?', 2)
+  if (!/^\/(?:v1beta\/)?interactions\/[^/]+$/i.test(path)) return false
+  return new URLSearchParams(query).get('stream')?.toLowerCase() === 'true'
+}

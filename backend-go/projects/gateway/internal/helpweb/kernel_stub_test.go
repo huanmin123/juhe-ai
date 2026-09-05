@@ -15,8 +15,6 @@ func (k *kernelStub) Register(pattern string, handler http.Handler) {
 	k.order = append(k.order, pattern)
 }
 
-func (k *kernelStub) RegisterFallback(handler http.Handler) {}
-
 func (k *kernelStub) handlerFor(method, path string) http.Handler {
 	if handler, ok := k.handlers[method+" "+path]; ok {
 		return handler

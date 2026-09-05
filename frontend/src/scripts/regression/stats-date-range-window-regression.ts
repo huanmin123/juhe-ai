@@ -10,7 +10,7 @@ const usageStatsPageConfigSource = readFileSync(resolve(frontendRoot, 'views', '
 const aiPerformanceViewSource = readFileSync(resolve(frontendRoot, 'views', 'ai-performance', 'AiPerformanceView.vue'), 'utf8')
 const ipStatsViewSource = readFileSync(resolve(frontendRoot, 'views', 'ip-stats', 'IpStatsView.vue'), 'utf8')
 const usageStatsWindowSource = readFileSync(resolve(frontendRoot, 'composables', 'useUsageStatsWindow.ts'), 'utf8')
-const statsRoutesSource = readFileSync(resolve(frontendRoot, '..', '..', 'backend', 'src', 'modules', 'stats', 'stats.routes.ts'), 'utf8')
+const statsRoutesSource = readFileSync(resolve(frontendRoot, '..', '..', 'migration-backup', 'node', 'final-archive', 'backend', 'src', 'modules', 'stats', 'stats.routes.ts'), 'utf8')
 
 assert.match(
   usageStatsWindowSource,

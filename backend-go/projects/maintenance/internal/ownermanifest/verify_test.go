@@ -9,11 +9,14 @@ import (
 
 func TestVerifyRepositoryBusinessOwnerManifest(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "..")
+	// Node backend was physically archived (X02, 2026-09-04); the db-service
+	// contract sources now live only in the final-archive browsable copy.
+	archive := filepath.Join(root, "migration-backup", "node", "final-archive", "backend", "src", "modules", "db-service")
 	report, err := Verify(
 		filepath.Join(root, "docs", "migration", "BusinessSQLite-owner-manifest.json"),
-		filepath.Join(root, "backend", "src", "modules", "db-service", "db-service-types.ts"),
-		filepath.Join(root, "backend", "src", "modules", "db-service", "db-service-operation-access-mode.ts"),
-		filepath.Join(root, "backend", "src", "modules", "db-service", "db-service-handlers.ts"),
+		filepath.Join(archive, "db-service-types.ts"),
+		filepath.Join(archive, "db-service-operation-access-mode.ts"),
+		filepath.Join(archive, "db-service-handlers.ts"),
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -1,0 +1,413 @@
+import {
+  ANTHROPIC_PROVIDER_CODE,
+  DEEPSEEK_PROVIDER_CODE,
+  GEMINI_PROVIDER_CODE,
+  GLM_PROVIDER_CODE,
+  XAI_PROVIDER_CODE,
+  isOpenAICompatibleProviderCode,
+  normalizeProviderToken
+} from '../../domain/provider-protocol.js'
+import { anthropicModelPricingData } from './anthropic-model-pricing.data.js'
+import { deepSeekModelPricingData } from './deepseek-model-pricing.data.js'
+import { geminiModelPricingData } from './gemini-model-pricing.data.js'
+import { glmModelPricingData } from './glm-model-pricing.data.js'
+import { openAIModelPricingData } from './openai-model-pricing.data.js'
+import { xAIModelPricingData } from './xai-model-pricing.data.js'
+import {
+  anthropicProviderBillingPolicy,
+  deepSeekProviderBillingPolicy,
+  geminiProviderBillingPolicy,
+  glmProviderBillingPolicy,
+  openAIProviderBillingPolicy,
+  xAIProviderBillingPolicy
+} from './provider-billing.policies.js'
+import type {
+  ModelPricingProviderDriver,
+  ModelPricingProviderDriverHelpers,
+  ProviderModelApiProtocol,
+  RawModelPricing
+} from './provider-driver.types.js'
+
+const openAIModels = openAIModelPricingData as readonly RawModelPricing[]
+const anthropicModels = anthropicModelPricingData as readonly RawModelPricing[]
+const deepSeekModels = deepSeekModelPricingData as readonly RawModelPricing[]
+const geminiModels = geminiModelPricingData as readonly RawModelPricing[]
+const glmModels = glmModelPricingData as readonly RawModelPricing[]
+const xAIModels = xAIModelPricingData as readonly RawModelPricing[]
+
+const openAIModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'openai-compatible',
+  pricingSource: 'openai-pricing-snapshot',
+  rawModels: openAIModels,
+  billingPolicy: openAIProviderBillingPolicy,
+  supportsProvider(providerCode) {
+    return isOpenAICompatibleProviderCode(providerCode)
+  },
+  isUnavailableModel: isUnavailableOpenAIModel,
+  buildModelCandidates: buildOpenAIModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date
+      ?? helpers.extractModelReleaseDate(item.model)
+      ?? inferOpenAIModelReleaseDate(item.model, helpers)
+  },
+  inferModelApiProtocols: inferOpenAIModelApiProtocols
+}
+
+const anthropicModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'anthropic',
+  pricingSource: 'anthropic-pricing-snapshot',
+  rawModels: anthropicModels,
+  billingPolicy: anthropicProviderBillingPolicy,
+  supportsProvider(providerCode) {
+    return normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE
+  },
+  buildModelCandidates: buildAnthropicModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date ?? helpers.extractModelReleaseDate(item.model)
+  },
+  inferModelApiProtocols(item) {
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : []
+  }
+}
+
+const deepSeekModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'deepseek',
+  pricingSource: 'deepseek-pricing-snapshot',
+  rawModels: deepSeekModels,
+  billingPolicy: deepSeekProviderBillingPolicy,
+  supportsProvider(providerCode) {
+    return normalizeProviderToken(providerCode) === DEEPSEEK_PROVIDER_CODE
+  },
+  buildModelCandidates: buildDeepSeekModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date ?? helpers.extractModelReleaseDate(item.model)
+  },
+  inferModelApiProtocols(item) {
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : ['chat_completions']
+  }
+}
+
+const glmModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'glm',
+  pricingSource: 'glm-pricing-snapshot',
+  rawModels: glmModels,
+  billingPolicy: glmProviderBillingPolicy,
+  supportsProvider(providerCode) {
+    return normalizeProviderToken(providerCode) === GLM_PROVIDER_CODE
+  },
+  buildModelCandidates: buildGlmModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date ?? helpers.extractModelReleaseDate(item.model)
+  },
+  inferModelApiProtocols(item) {
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : ['chat_completions']
+  }
+}
+
+const geminiModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'gemini',
+  pricingSource: 'gemini-pricing-snapshot',
+  rawModels: geminiModels,
+  billingPolicy: geminiProviderBillingPolicy,
+  supportsProvider(providerCode) {
+    return normalizeProviderToken(providerCode) === GEMINI_PROVIDER_CODE
+  },
+  buildModelCandidates: buildGeminiModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date ?? helpers.extractModelReleaseDate(item.model)
+  },
+  inferModelApiProtocols(item) {
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : ['generate_content', 'stream_generate_content', 'count_tokens']
+  }
+}
+
+const xAIModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'xai',
+  pricingSource: 'xai-official-pricing-2026-07-18',
+  rawModels: xAIModels,
+  billingPolicy: xAIProviderBillingPolicy,
+  supportsProvider(providerCode) {
+    return normalizeProviderToken(providerCode) === XAI_PROVIDER_CODE
+  },
+  buildModelCandidates: buildXAIModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date ?? helpers.extractModelReleaseDate(item.model)
+  },
+  inferModelApiProtocols(item) {
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : []
+  }
+}
+
+const modelPricingProviderDrivers: readonly ModelPricingProviderDriver[] = [
+  openAIModelPricingDriver,
+  deepSeekModelPricingDriver,
+  glmModelPricingDriver,
+  anthropicModelPricingDriver,
+  geminiModelPricingDriver,
+  xAIModelPricingDriver
+]
+
+export function listModelPricingProviderDrivers(): readonly ModelPricingProviderDriver[] {
+  return modelPricingProviderDrivers
+}
+
+export function modelPricingProviderDriverForProvider(providerCode: string | undefined): ModelPricingProviderDriver | undefined {
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  if (!normalizedProviderCode) return undefined
+  return modelPricingProviderDrivers.find((driver) => driver.supportsProvider(normalizedProviderCode))
+}
+
+function buildOpenAIModelCandidates(model: string): string[] {
+  const candidates = new Set<string>()
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
+  if (withoutDate !== model) candidates.add(withoutDate)
+
+  if (model.startsWith('gpt-5.6-sol-')) candidates.add('gpt-5.6-sol')
+  if (model.startsWith('gpt-5.6-terra-')) candidates.add('gpt-5.6-terra')
+  if (model.startsWith('gpt-5.6-luna-')) candidates.add('gpt-5.6-luna')
+  if (model.startsWith('gpt-5.5-')) candidates.add('gpt-5.5')
+  if (model.startsWith('gpt-5.4-mini-')) candidates.add('gpt-5.4-mini')
+  if (model.startsWith('gpt-5.4-nano-')) candidates.add('gpt-5.4-nano')
+  if (model.startsWith('gpt-5.4-')) candidates.add('gpt-5.4')
+  if (model === 'gpt-5.3-codex') candidates.add('gpt-5.3-codex')
+  if (model.startsWith('gpt-image-2-')) candidates.add('gpt-image-2')
+  if (model.startsWith('gpt-4.1-nano-')) candidates.add('gpt-4.1-nano')
+  if (model.startsWith('gpt-4.1-mini-')) candidates.add('gpt-4.1-mini')
+  if (model.startsWith('gpt-4.1-')) candidates.add('gpt-4.1')
+
+  return Array.from(candidates)
+}
+
+function isUnavailableOpenAIModel(model: string): boolean {
+  return unavailableOpenAIModels.has(model)
+    || model.startsWith('gpt-4.5-preview')
+    || model.startsWith('gpt-4-turbo-preview')
+    || model.startsWith('gpt-4o-realtime-preview')
+    || model.startsWith('gpt-4o-mini-realtime-preview')
+    || model.startsWith('gpt-4o-audio-preview')
+    || model.startsWith('gpt-4o-mini-audio-preview')
+    || model.startsWith('gpt-4o-search-preview')
+    || model.startsWith('gpt-4o-mini-search-preview')
+    || model.startsWith('o1-preview')
+}
+
+function buildDeepSeekModelCandidates(model: string): string[] {
+  const candidates = new Set<string>()
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
+  if (withoutDate !== model) candidates.add(withoutDate)
+
+  return Array.from(candidates)
+}
+
+function buildGlmModelCandidates(model: string): string[] {
+  const candidates = new Set<string>()
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
+  if (withoutDate !== model) candidates.add(withoutDate)
+
+  for (const base of glmModelCandidateBasesBySpecificity) {
+    if (model === base || model.startsWith(`${base}-`)) candidates.add(base)
+  }
+
+  return Array.from(candidates)
+}
+
+function buildGeminiModelCandidates(model: string): string[] {
+  const candidates = new Set<string>()
+  const withoutModelsPrefix = model.replace(/^models\//, '')
+  if (withoutModelsPrefix !== model) candidates.add(withoutModelsPrefix)
+
+  for (const base of geminiModelCandidateBasesBySpecificity) {
+    if (model === base || withoutModelsPrefix === base) {
+      candidates.add(base)
+    }
+  }
+
+  return Array.from(candidates)
+}
+
+function buildXAIModelCandidates(model: string): string[] {
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
+  return withoutDate === model ? [] : [withoutDate]
+}
+
+const modelDateSuffixPattern = /-(?:\d{4}-\d{2}-\d{2}|\d{8})$/
+
+const glmModelCandidateBases = [
+  'glm-5.3',
+  'glm-5.2',
+  'glm-5.1',
+  'glm-5-turbo',
+  'glm-5',
+  'glm-4.7-flashx',
+  'glm-4.7-flash',
+  'glm-4.7',
+  'glm-4.6',
+  'glm-4.5-airx',
+  'glm-4.5-air',
+  'glm-4.5-flash',
+  'glm-4.5-x',
+  'glm-4.5'
+]
+const glmModelCandidateBasesBySpecificity = [...glmModelCandidateBases]
+  .sort((left, right) => right.length - left.length)
+
+const geminiModelCandidateBases = geminiModels.map((item) => item.model)
+const geminiModelCandidateBasesBySpecificity = [...geminiModelCandidateBases]
+  .sort((left, right) => right.length - left.length)
+
+const unavailableOpenAIModels = new Set([
+  'chatgpt-4o-latest',
+  'codex-mini-latest',
+  'gpt-5.3-codex-spark',
+  'o1-2024-12-17',
+  'o1-pro-2025-03-19',
+  'o1-mini',
+  'o3-mini-2025-01-31',
+  'o4-mini-2025-04-16',
+  'gpt-4-0125-preview',
+  'gpt-4-1106-vision-preview',
+  'gpt-4-0314',
+  'gpt-4-32k',
+  'gpt-4-32k-0314',
+  'gpt-4-32k-0613'
+])
+
+function inferOpenAIModelApiProtocols(
+  item: RawModelPricing,
+  helpers: ModelPricingProviderDriverHelpers
+): ProviderModelApiProtocol[] {
+  if (item.supported_api_protocols?.length) {
+    return [...item.supported_api_protocols]
+  }
+
+  const model = helpers.normalizeModel(item.model)
+  const mode = (item.mode ?? '').trim()
+
+  if (mode === 'image_generation' || model.startsWith('gpt-image') || model.startsWith('dall-e')) {
+    return ['images']
+  }
+
+  if (mode === 'completion') {
+    return ['completions']
+  }
+
+  if (model.includes('codex') || model.includes('-pro')) {
+    return ['responses']
+  }
+
+  if (mode === 'responses') {
+    return ['responses']
+  }
+
+  if (mode === 'chat' || model.startsWith('gpt-') || model.startsWith('o')) {
+    return ['chat_completions', 'responses']
+  }
+
+  return []
+}
+
+function inferOpenAIModelReleaseDate(model: string, helpers: ModelPricingProviderDriverHelpers): string | undefined {
+  const normalized = helpers.normalizeModel(model)
+  const exactDate = openAIModelReleaseDates.get(normalized)
+  if (exactDate) return exactDate
+
+  return undefined
+}
+
+const openAIModelReleaseDates = new Map<string, string>([
+  ['gpt-5.6-sol', '2026-06-26'],
+  ['gpt-5.6-terra', '2026-06-26'],
+  ['gpt-5.6-luna', '2026-06-26'],
+  ['gpt-5.5', '2026-04-23'],
+  ['gpt-5.5-pro', '2026-04-23'],
+  ['gpt-image-2', '2026-04-21'],
+  ['gpt-5.4-mini', '2026-03-17'],
+  ['gpt-5.4-nano', '2026-03-17'],
+  ['gpt-5.4', '2026-03-05'],
+  ['gpt-5.4-pro', '2026-03-05'],
+  ['gpt-5.3-codex', '2026-02-24'],
+  ['gpt-image-1.5', '2025-12-16'],
+  ['gpt-5.2', '2025-12-11'],
+  ['gpt-5.2-pro', '2025-12-11'],
+  ['gpt-5.1', '2025-11-13'],
+  ['gpt-5-pro', '2025-10-06'],
+  ['gpt-image-1-mini', '2025-10-06'],
+  ['gpt-5', '2025-08-07'],
+  ['gpt-5-mini', '2025-08-07'],
+  ['gpt-5-nano', '2025-08-07'],
+  ['o3-pro', '2025-06-10'],
+  ['gpt-image-1', '2025-04-23'],
+  ['o3', '2025-04-16'],
+  ['o4-mini', '2025-04-16'],
+  ['gpt-4.1', '2025-04-14'],
+  ['gpt-4.1-mini', '2025-04-14'],
+  ['gpt-4.1-nano', '2025-04-14'],
+  ['o1-pro', '2025-03-19'],
+  ['o3-mini', '2025-01-31'],
+  ['o1', '2024-12-17'],
+  ['gpt-4o-mini', '2024-07-18'],
+  ['gpt-4o', '2024-05-13'],
+  ['gpt-4-turbo', '2024-04-09'],
+  ['gpt-3.5-turbo-0125', '2024-02-01'],
+  ['gpt-4-1106-preview', '2023-11-06'],
+  ['gpt-3.5-turbo-1106', '2023-11-06'],
+  ['gpt-4', '2023-03-14'],
+  ['gpt-3.5-turbo', '2023-03-01'],
+  ['gpt-4-0613', '2023-06-13']
+])
+
+function buildAnthropicModelCandidates(model: string): string[] {
+  const candidates = new Set<string>()
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
+  if (withoutDate !== model) candidates.add(withoutDate)
+
+  for (const base of anthropicModelCandidateBasesBySpecificity) {
+    if (model === base || model.startsWith(`${base}-`)) candidates.add(base)
+  }
+
+  return Array.from(candidates)
+}
+
+const anthropicModelCandidateBases = [
+  'best',
+  'fable',
+  'opus',
+  'opus[1m]',
+  'opusplan',
+  'sonnet',
+  'sonnet[1m]',
+  'haiku',
+  'claude-fable-5-1',
+  'claude-fable-5',
+  'claude-mythos-5',
+  'claude-mythos-preview',
+  'claude-fake-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-opus-4-6-thinking',
+  'antigravity-claude-opus-4-6-thinking',
+  'antigravity/claude-opus-4-6-thinking',
+  'google/antigravity-claude-opus-4-6-thinking',
+  'google-antigravity/claude-opus-4-6-thinking',
+  'google-antigravity:claude-opus-4-6-thinking',
+  'claude-opus-4-6-antigravity',
+  'claude-opus-4-5',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-6-antigravity',
+  'antigravity-claude-sonnet-4-6',
+  'antigravity/claude-sonnet-4-6',
+  'google/antigravity-claude-sonnet-4-6',
+  'google-antigravity/claude-sonnet-4-6',
+  'google-antigravity:claude-sonnet-4-6',
+  'claude-sonnet-4-6-thinking',
+  'antigravity-claude-sonnet-4-6-thinking',
+  'antigravity/claude-sonnet-4-6-thinking',
+  'google/antigravity-claude-sonnet-4-6-thinking',
+  'google-antigravity/claude-sonnet-4-6-thinking',
+  'google-antigravity:claude-sonnet-4-6-thinking',
+  'claude-sonnet-4-5',
+  'claude-haiku-4-5'
+]
+const anthropicModelCandidateBasesBySpecificity = [...anthropicModelCandidateBases]
+  .sort((left, right) => right.length - left.length)

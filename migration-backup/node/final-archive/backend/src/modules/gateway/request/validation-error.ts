@@ -1,0 +1,69 @@
+export class GatewayRequestValidationError extends Error {
+  readonly statusCode: number
+  readonly type: string
+  readonly code: string
+  readonly accountScoped: boolean
+
+  constructor(
+    message: string,
+    code = 'invalid_gateway_request',
+    options: { statusCode?: number; type?: string; accountScoped?: boolean } = {}
+  ) {
+    super(message)
+    this.code = code
+    this.statusCode = options.statusCode ?? 400
+    this.type = options.type ?? 'invalid_request_error'
+    this.accountScoped = options.accountScoped === true
+  }
+}
+
+export type GatewayAgentGuidanceProtocol = 'chat_completions' | 'responses' | 'messages' | 'gemini'
+
+export class GatewayAgentGuidanceResponse extends Error {
+  readonly statusCode = 200
+  readonly type = 'agent_guidance'
+  readonly code: string
+  readonly accountScoped: boolean
+  readonly protocol: GatewayAgentGuidanceProtocol
+  readonly stream: boolean
+  readonly model: string
+
+  constructor(input: {
+    message: string
+    code: string
+    protocol: GatewayAgentGuidanceProtocol
+    stream: boolean
+    model: string
+    accountScoped?: boolean
+  }) {
+    super(input.message)
+    this.code = input.code
+    this.protocol = input.protocol
+    this.stream = input.stream
+    this.model = input.model
+    this.accountScoped = input.accountScoped !== false
+  }
+}
+
+export class GatewayLocalProtocolResponse extends Error {
+  readonly statusCode: number
+  readonly type = 'local_protocol_response'
+  readonly code: string
+  readonly accountScoped = false
+  readonly body: string
+  readonly contentType: string
+
+  constructor(input: {
+    message: string
+    code: string
+    body: string
+    contentType: string
+    statusCode?: number
+  }) {
+    super(input.message)
+    this.code = input.code
+    this.body = input.body
+    this.contentType = input.contentType
+    this.statusCode = input.statusCode ?? 200
+  }
+}

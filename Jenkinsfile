@@ -22,8 +22,10 @@ pipeline {
 
   environment {
     // CI 墙上时钟固定为 UTC；业务日历时区由应用显式配置。
+    // X01/X03 go-only 收口：Node backend 已物理归档（X02），不再构建/推送
+    // juhe-ai Node 镜像；发布状态中的 nodeImageDigest 写 '-' 哨兵
+    // （历史 Node 时代 release 回滚仍可按历史 digest 复原双镜像拓扑）。
     TZ = 'UTC'
-    HARBOR_REPOSITORY_NODE = 'platform/juhe-ai'
     HARBOR_REPOSITORY_JOBS = 'platform/juhe-ai-go-jobs'
     HARBOR_REPOSITORY_GATEWAY = 'platform/juhe-ai-go-gateway'
     HARBOR_CACHE_REPOSITORY = 'platform/ci-cache'
@@ -49,9 +51,6 @@ pipeline {
             error 'HARBOR_REGISTRY 必须是 host 或 host:port。'
           }
           def baseImages = readHarborBaseImages()
-          env.NODE_RUNTIME_IMAGE = baseImages.NODE_RUNTIME_IMAGE
-          env.NODE_RUNTIME_PNPM_IMAGE = baseImages.NODE_RUNTIME_PNPM_10_32_IMAGE
-          env.NODE_BUILDER_PNPM_IMAGE = baseImages.NODE_BUILDER_PNPM_10_32_IMAGE
           env.GO_IMAGE = baseImages.GO_IMAGE
           env.RUNTIME_IMAGE = baseImages.RUNTIME_IMAGE
           if (!fileExists(env.GITEE_WRITE_KEY)) {
@@ -110,41 +109,6 @@ pipeline {
       }
     }
 
-    stage('构建前端与 Node 产物') {
-      when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'harbor-platform-push', usernameVariable: 'HARBOR_USERNAME', passwordVariable: 'HARBOR_PASSWORD')]) {
-          sh '''#!/bin/sh
-            set -eu
-            builder_image="juhe-ai-node-builder:${BUILD_TAG}"
-            builder_container="juhe-ai-node-builder-${BUILD_TAG}"
-            cache_ref="$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-node-builder:buildcache"
-            trap 'docker rm -f "$builder_container" >/dev/null 2>&1 || true; docker image rm "$builder_image" >/dev/null 2>&1 || true' EXIT
-            printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" --username "$HARBOR_USERNAME" --password-stdin
-            build_with_cache() {
-              cache_ref=$1
-              shift
-              if docker manifest inspect "$cache_ref" >/dev/null 2>&1; then
-                docker buildx build --cache-from "type=registry,ref=$cache_ref" --cache-to "type=registry,ref=$cache_ref,mode=max" "$@"
-              else
-                docker buildx build --cache-to "type=registry,ref=$cache_ref,mode=max" "$@"
-              fi
-            }
-            build_with_cache "$cache_ref" --load --network host \
-              --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
-              --build-arg NODE_BUILDER_PNPM_IMAGE="$NODE_BUILDER_PNPM_IMAGE" \
-              --build-arg VITE_JUHE_AI_BUILD_ID="$SOURCE_COMMIT_FULL" \
-              --build-arg VITE_JUHE_AI_J3B_ENABLED=false \
-              --tag "$builder_image" --file docker/Dockerfile.builder .
-            docker create --name "$builder_container" "$builder_image" >/dev/null
-            mkdir -p backend/dist frontend/dist
-            docker cp "$builder_container:/source/backend/dist/." backend/dist/
-            docker cp "$builder_container:/source/frontend/dist/." frontend/dist/
-          '''
-        }
-      }
-    }
-
     stage('构建并验证 Go 模块') {
       when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
       steps {
@@ -152,7 +116,7 @@ pipeline {
           sh '''#!/bin/sh
             set -eu
             printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" --username "$HARBOR_USERNAME" --password-stdin
-            # G20/X03 前置：发布三镜像前在受控 Go 基础镜像内完成三模块编译与
+            # X01/X03 go-only：发布 Go 双镜像前在受控 Go 基础镜像内完成三模块编译与
             # 关键包（各项目 cmd）测试；镜像内不重新构建 Node/前端产物。
             docker run --rm --network host \
               --env CGO_ENABLED=0 --env GOFLAGS=-mod=readonly --env TZ=UTC \
@@ -170,11 +134,10 @@ pipeline {
       }
     }
 
-    stage('构建并推送三镜像') {
+    stage('构建并推送 Go 镜像') {
       when { expression { !params.DEPLOY_PROD && !reverseDeployRequested() && !rollbackRequested() } }
       steps {
         script {
-          env.NODE_IMAGE = "${env.HARBOR_REGISTRY}/${env.HARBOR_REPOSITORY_NODE}:${env.SOURCE_COMMIT}"
           env.JOBS_IMAGE = "${env.HARBOR_REGISTRY}/${env.HARBOR_REPOSITORY_JOBS}:${env.SOURCE_COMMIT}"
           env.GATEWAY_IMAGE = "${env.HARBOR_REGISTRY}/${env.HARBOR_REPOSITORY_GATEWAY}:${env.SOURCE_COMMIT}"
         }
@@ -182,6 +145,7 @@ pipeline {
           sh '''#!/bin/sh
             set -eu
             printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" --username "$HARBOR_USERNAME" --password-stdin
+            # X01/X03 go-only：只构建/推送 jobs 与 gateway 两个 Go 镜像。
             build_with_cache() {
               cache_ref=$1
               shift
@@ -191,10 +155,6 @@ pipeline {
                 docker buildx build --cache-to "type=registry,ref=$cache_ref,mode=max" "$@"
               fi
             }
-            build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-node-runtime:buildcache" --load --network host \
-              --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
-              --build-arg NODE_RUNTIME_PNPM_IMAGE="$NODE_RUNTIME_PNPM_IMAGE" \
-              --tag "$NODE_IMAGE" --file docker/Dockerfile .
             build_with_cache "$HARBOR_REGISTRY/$HARBOR_CACHE_REPOSITORY/juhe-ai-go-jobs:buildcache" --load --network host \
               --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
               --build-arg GO_IMAGE="$GO_IMAGE" --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" \
@@ -203,10 +163,9 @@ pipeline {
               --build-arg HTTP_PROXY="$BUILD_HTTP_PROXY" --build-arg HTTPS_PROXY="$BUILD_HTTP_PROXY" --build-arg NO_PROXY="$BUILD_NO_PROXY" \
               --build-arg GO_IMAGE="$GO_IMAGE" --build-arg RUNTIME_IMAGE="$RUNTIME_IMAGE" \
               --build-arg GO_PROJECT=gateway --tag "$GATEWAY_IMAGE" --file docker/Dockerfile.go-project .
-            docker push "$NODE_IMAGE"
             docker push "$JOBS_IMAGE"
             docker push "$GATEWAY_IMAGE"
-            for image in "$NODE_IMAGE" "$JOBS_IMAGE" "$GATEWAY_IMAGE"; do
+            for image in "$JOBS_IMAGE" "$GATEWAY_IMAGE"; do
               digest=$(docker image inspect --format='{{index .RepoDigests 0}}' "$image")
               case "$digest" in *@sha256:*) printf '%s\n' "${digest##*@}" ;; *) echo "无法取得 $image 的不可变 digest" >&2; exit 1 ;; esac
             done > .juhe-ai-digests
@@ -214,12 +173,11 @@ pipeline {
         }
         script {
           def digests = readFile('.juhe-ai-digests').readLines()
-          if (digests.size() != 3 || digests.any { !validDigest(it) }) {
-            error '三镜像 digest 不完整或格式错误。'
+          if (digests.size() != 2 || digests.any { !validDigest(it) }) {
+            error 'Go 双镜像 digest 不完整或格式错误。'
           }
-          env.NODE_DIGEST = digests[0]
-          env.JOBS_DIGEST = digests[1]
-          env.GATEWAY_DIGEST = digests[2]
+          env.JOBS_DIGEST = digests[0]
+          env.GATEWAY_DIGEST = digests[1]
         }
       }
     }
@@ -232,7 +190,8 @@ pipeline {
           env.RELEASE_MODE = params.RELEASE_MODE?.trim()
           env.SCHEMA_CHANGE_CLASS = params.SCHEMA_CHANGE_CLASS?.trim()
           validateReleaseStrategy(env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
-          env.TEST_RELEASE_STATE_REVISION = writeReleaseState('test', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-ci', null, env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
+          // go-only 候选：Node 镜像已退役，nodeDigest 位写 '-' 哨兵。
+          env.TEST_RELEASE_STATE_REVISION = writeReleaseState('test', env.SOURCE_COMMIT, '-', env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-ci', null, env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
         }
       }
     }
@@ -243,7 +202,6 @@ pipeline {
         script {
           def release = readTestRelease(params.DEPLOY_PROD)
           env.SOURCE_COMMIT = release.sourceCommit
-          env.NODE_DIGEST = release.nodeDigest
           env.JOBS_DIGEST = release.jobsDigest
           env.GATEWAY_DIGEST = release.gatewayDigest
           env.J3A_MANAGEMENT_ENABLED = release.j3aManagementEnabled
@@ -259,7 +217,6 @@ pipeline {
         script {
           def release = readTestRelease(true)
           env.SOURCE_COMMIT = release.sourceCommit
-          env.NODE_DIGEST = release.nodeDigest
           env.JOBS_DIGEST = release.jobsDigest
           env.GATEWAY_DIGEST = release.gatewayDigest
           env.J3A_MANAGEMENT_ENABLED = release.j3aManagementEnabled
@@ -270,7 +227,7 @@ pipeline {
           env.RELEASE_MODE = release.releaseMode
           env.SCHEMA_CHANGE_CLASS = release.schemaChangeClass
           env.TEST_RELEASE_STATE_REVISION = release.platformRevision
-          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-promotion', env.TEST_RELEASE_STATE_REVISION, env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, release.nodeDigest, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-promotion', env.TEST_RELEASE_STATE_REVISION, env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
         }
       }
     }
@@ -289,13 +246,12 @@ pipeline {
             error "回滚目标 ${targetCommit} 不在历史 prod release state 中。"
           }
           env.SOURCE_COMMIT = selected.sourceCommit
-          env.NODE_DIGEST = selected.nodeDigest
           env.JOBS_DIGEST = selected.jobsDigest
           env.GATEWAY_DIGEST = selected.gatewayDigest
           env.J3A_MANAGEMENT_ENABLED = selected.j3aManagementEnabled
           env.RELEASE_MODE = 'single-active-stop'
           env.SCHEMA_CHANGE_CLASS = 'requires-stop'
-          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, env.NODE_DIGEST, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-rollback', selected.platformRevision, env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
+          env.PROD_RELEASE_STATE_REVISION = writeReleaseState('prod', env.SOURCE_COMMIT, selected.nodeDigest, env.JOBS_DIGEST, env.GATEWAY_DIGEST, env.J3A_MANAGEMENT_ENABLED, 'jenkins-prod-rollback', selected.platformRevision, env.RELEASE_MODE, env.SCHEMA_CHANGE_CLASS)
           currentBuild.description = "prod 已写入回滚 release state，source=${env.SOURCE_COMMIT}"
         }
       }
@@ -313,6 +269,9 @@ def validHarborDigestImage(value) {
     value.indexOf('@sha256:') == separator && validDigest(value.substring(separator + 1))
 }
 def validCommit(value) { return value ==~ /^[a-f0-9]{7,40}$/ }
+// X01/X03 go-only：Node 镜像位使用 '-' 哨兵（已退役）；历史 Node 时代的
+// release state / 回滚候选仍携带真实 digest，回滚时可复原旧双镜像拓扑。
+def validNodeDigest(value) { return value == '-' || validDigest(value) }
 def validSha256Hex(value) { return value ==~ /^[a-f0-9]{64}$/ }
 def validApprovalTicket(value) { return value != null && value.toString() ==~ /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/ }
 def validEvidenceRef(value) { return value != null && value.toString() ==~ /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._\/-]{1,256}$/ }
@@ -346,7 +305,9 @@ def readHarborBaseImages() {
   if (!fileExists(env.HARBOR_BASE_IMAGES_FILE)) {
     error '缺少 Harbor 基础镜像清单；CI 禁止从外网拉取基础镜像。请先运行 platform/harbor/sync-base-images.sh。'
   }
-  def requiredKeys = ['NODE_RUNTIME_PNPM_10_32_IMAGE', 'NODE_BUILDER_PNPM_10_32_IMAGE', 'GO_IMAGE', 'RUNTIME_IMAGE']
+  // go-only 收口：不再消费 Node builder/runtime 基础镜像；清单中遗留的
+  // NODE_* 键不校验、不使用。
+  def requiredKeys = ['GO_IMAGE', 'RUNTIME_IMAGE']
   def values = [:]
   readFile(env.HARBOR_BASE_IMAGES_FILE).readLines().eachWithIndex { line, index ->
     def trimmed = line.trim()
@@ -456,7 +417,7 @@ def readTestRelease(boolean requireVerification = false) {
     verificationSchemaChangeClass: metadataValueOptional('test', 'verification.schemaChangeClass')
   ]
   release.platformRevision = sh(script: "git -C '${releaseWorkspace()}' rev-parse HEAD", returnStdout: true).trim()
-  if (!validCommit(release.sourceCommit) || !validDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false']) || !validReleaseMode(release.releaseMode) || !validSchemaChangeClass(release.schemaChangeClass)) {
+  if (!validCommit(release.sourceCommit) || !validNodeDigest(release.nodeDigest) || !validDigest(release.jobsDigest) || !validDigest(release.gatewayDigest) || !(release.j3aManagementEnabled in ['true', 'false']) || !validReleaseMode(release.releaseMode) || !validSchemaChangeClass(release.schemaChangeClass)) {
     error 'test release state 未通过完整性检查。'
   }
   validateReleaseStrategy(release.releaseMode, release.schemaChangeClass)
@@ -524,7 +485,7 @@ def prodRollbackCandidates() {
     def schemaChangeClass = fields.size() == 10 ? fields[9] : (fields.size() == 9 ? fields[8] : 'requires-stop')
     if (!(fields[0] ==~ /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/) ||
         !(fields[1] in ['legacy-prod-state', 'jenkins-prod-promotion', 'jenkins-prod-rollback']) ||
-        !validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false']) || !validReleaseMode(releaseMode) || !validSchemaChangeClass(schemaChangeClass) || !build) {
+        !validCommit(sourceCommit) || !validNodeDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false']) || !validReleaseMode(releaseMode) || !validSchemaChangeClass(schemaChangeClass) || !build) {
       error "prod release-history.tsv 第 ${index + 1} 行字段非法。"
     }
     if (sourceCommit == current.sourceCommit && nodeDigest == current.nodeDigest && jobsDigest == current.jobsDigest && gatewayDigest == current.gatewayDigest && j3aManagementEnabled == current.j3aManagementEnabled && releaseMode == current.releaseMode && schemaChangeClass == current.schemaChangeClass) {
@@ -637,7 +598,7 @@ def configureJ3aManagementRelease(overlay, enabled) {
 }
 
 def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest, j3aManagementEnabled, actor, expectedPlatformRevision = null, releaseMode = params.RELEASE_MODE?.trim(), schemaChangeClass = params.SCHEMA_CHANGE_CLASS?.trim()) {
-  if (!validCommit(sourceCommit) || !validDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false'])) error '发布状态字段不合法。'
+  if (!validCommit(sourceCommit) || !validNodeDigest(nodeDigest) || !validDigest(jobsDigest) || !validDigest(gatewayDigest) || !(j3aManagementEnabled in ['true', 'false'])) error '发布状态字段不合法。'
   validateReleaseStrategy(releaseMode, schemaChangeClass)
   if (environmentName == 'prod' && actor in ['jenkins-prod-promotion', 'jenkins-prod-rollback']) {
     if (params.RELEASE_MODE?.trim() != releaseMode || params.SCHEMA_CHANGE_CLASS?.trim() != schemaChangeClass) {
@@ -686,7 +647,12 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
     }
   }
   def overlay = "${releaseWorkspace()}/apps/juhe-ai/overlays/${environmentName}"
-  replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai', nodeDigest)
+  // go-only 候选（nodeDigest='-'）不再回写 juhe-ai 镜像块；平台仓库的
+  // go-only overlay 移除该镜像块前，块保持最后一次 Node 时代 digest。
+  // 历史回滚候选携带真实 Node digest 时仍按原样复原。
+  if (nodeDigest != '-') {
+    replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai', nodeDigest)
+  }
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-jobs', jobsDigest)
   replaceDigest("${overlay}/kustomization.yaml", 'juhe-ai-go-gateway', gatewayDigest)
   configureJ3aManagementRelease(overlay, j3aManagementEnabled)

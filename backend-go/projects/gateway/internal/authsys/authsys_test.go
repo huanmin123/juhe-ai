@@ -121,6 +121,11 @@ func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 		LoginGuard: modelcheckauth.NewLoginGuard(now), Settings: settings, Now: now, CaptchaDisabled: true,
 		TemporaryAccessIPAllowlist: []string{"127.0.0.1"},
 	}
+	// MutationGuardMiddleware falls back to the package-level
+	// DefaultDeduplicationStore (process-wide). With -count>1 reruns share the
+	// process, so a fresh store per test keeps dedupe TTL state (409
+	// "该操作刚刚已处理") from leaking across runs.
+	kernel.DefaultDeduplicationStore = kernel.NewDeduplicationStore(now)
 	k := kernel.New(kernel.Options{})
 	deps.MountAuth(k, "lax", false)
 	deps.MountSystemAccounts(k, "lax", false)

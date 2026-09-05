@@ -1,5 +1,11 @@
 // One-shot regeneration tool for model_catalog_data.go (migration period).
 //
+// ARCHIVE NOTE (X02, 2026-09-04): the Node backend this tool imports from was
+// physically archived to `migration-backup/node/final-archive/backend/` and
+// removed from the working tree. The `../../../../../backend/src/...` imports
+// below now resolve (as a browsable copy) inside that archive only; restore
+// from git history (HEAD d8bfbc2a or earlier) to actually re-run this tool.
+//
 // It runs the exact Node functions that seed-defaults.ts /
 // postgres-seed-defaults.ts use (listProviderModelPricing in the
 // DEFAULT_PROVIDER_SEEDS order plus providerModelCatalogId) and emits the Go

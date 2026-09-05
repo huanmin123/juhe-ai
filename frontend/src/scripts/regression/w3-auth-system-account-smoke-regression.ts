@@ -146,10 +146,12 @@ function assertSourceBoundaries(): void {
     assertNotIncludes(systemAccountsViewSource, forbidden, `系统账户页不应引用敏感字段：${forbidden}`)
   }
 
+  // Node backend 已归档（X02）；执行入口随 backend workspace 移除，
+  // 对应的登录/系统账户 smoke 面由 Go gateway acceptance 覆盖。
   assert.equal(
     frontendPackageJson.scripts?.['test:w3-auth-system-account-smoke'],
-    'pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w3-auth-system-account-smoke-regression.ts',
-    '前端 package script 应暴露 W3 auth / 系统账户 smoke'
+    undefined,
+    'W3 smoke 的 backend tsx 执行入口必须已随 Node backend 归档移除'
   )
 }
 

@@ -5,9 +5,9 @@ const viewSource = readFileSync(new URL('../../views/stats/StatsView.vue', impor
 const routerSource = readFileSync(new URL('../../router/index.ts', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../../api/domains/stats.ts', import.meta.url), 'utf8')
 const chartSource = readFileSync(new URL('../../views/stats/statsChartOptions.ts', import.meta.url), 'utf8')
-const workerSource = readFileSync(new URL('../../../../backend/src/storage/sqlite-read-worker.ts', import.meta.url), 'utf8')
-const workerTypesSource = readFileSync(new URL('../../../../backend/src/storage/sqlite-read-worker-pool.types.ts', import.meta.url), 'utf8')
-const routesSource = readFileSync(new URL('../../../../backend/src/modules/stats/stats.routes.ts', import.meta.url), 'utf8')
+const workerSource = readFileSync(new URL('../../../../migration-backup/node/final-archive/backend/src/storage/sqlite-read-worker.ts', import.meta.url), 'utf8')
+const workerTypesSource = readFileSync(new URL('../../../../migration-backup/node/final-archive/backend/src/storage/sqlite-read-worker-pool.types.ts', import.meta.url), 'utf8')
+const routesSource = readFileSync(new URL('../../../../migration-backup/node/final-archive/backend/src/modules/stats/stats.routes.ts', import.meta.url), 'utf8')
 
 assert.doesNotMatch(viewSource, /api\.(?:stats|myStats)\.usageOverview\(/, '统计首页不得继续调用旧组合 usage-overview')
 assert.match(viewSource, /usageOverviewSummary\(/, '统计首页首屏必须调用独立 summary')

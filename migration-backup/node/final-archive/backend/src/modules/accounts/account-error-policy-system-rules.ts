@@ -1,0 +1,196 @@
+import {
+  normalizeAccountErrorHandlingRules,
+  type AccountErrorHandlingRule
+} from './account-error-policy-validation.js'
+
+export const SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID = 'system.upstream_insufficient_quota'
+
+export type AccountErrorPolicyOverrideAction = 'replace' | 'delete'
+
+export interface AccountErrorPolicyOverride {
+  system_rule_id: string
+  action: AccountErrorPolicyOverrideAction
+  rule_index?: number
+}
+
+export type AccountErrorPolicyRuleSource = 'system' | 'account'
+
+export interface EffectiveAccountErrorHandlingRule extends AccountErrorHandlingRule {
+  id: string
+  source: AccountErrorPolicyRuleSource
+  inherited: boolean
+  editable: boolean
+}
+
+/**
+ * This registry is intentionally code-defined.  It is never persisted into an
+ * account credential or system setting, so upgrades take effect consistently
+ * for every account without altering customer configuration.
+ */
+const systemRules: readonly EffectiveAccountErrorHandlingRule[] = [
+  {
+    id: SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID,
+    source: 'system',
+    inherited: true,
+    editable: false,
+    enabled: true,
+    name: '上游额度不足',
+    priority: 1,
+    action: 'rate_limited',
+    reset_strategy: 'duration',
+    duration_hours: 1,
+    status_codes: [402, 403],
+    error_codes: [
+      'insufficient_user_quota',
+      'insufficient_quota',
+      'insufficient_balance',
+      'quota_exceeded',
+      'quota_exhausted',
+      'default_group_global_quota_exhausted',
+      'billing_hard_limit_reached',
+      'wallet_balance_exhausted',
+      'pre_consume_token_quota_failed'
+    ],
+    keywords: [
+      '余额不足',
+      '额度不足',
+      'insufficient balance',
+      'insufficient quota',
+      'subscription quota insufficient',
+      'credit balance too low',
+      'wallet balance exhausted'
+    ],
+    description: '匹配 HTTP 402 或 HTTP 403 的明确余额/额度不足响应；默认进入限流，可按普通规则调整恢复策略。'
+  }
+]
+
+const insufficientQuotaStableCodes = new Set(
+  systemRules[0]!.error_codes!.map(normalizeErrorIdentifier)
+)
+
+const insufficientQuotaTextMarkers = systemRules[0]!.keywords!.map((value) => value.toLowerCase())
+
+const nonQuota403ErrorIdentifiers = new Set([
+  'content_policy_violation',
+  'content_policy_blocked',
+  'prompt_guard_blocked',
+  'client_restricted',
+  'permission_denied',
+  'access_denied',
+  'forbidden'
+])
+
+export function systemAccountErrorHandlingRules(): EffectiveAccountErrorHandlingRule[] {
+  return systemRules.map(cloneEffectiveRule)
+}
+
+export function normalizeAccountErrorPolicyOverrides(value: unknown): AccountErrorPolicyOverride[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error('错误处理策略覆盖格式无效')
+  return value.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error(`第 ${index + 1} 条错误处理策略覆盖格式无效`)
+    const record = item as Record<string, unknown>
+    if (record.system_rule_id !== SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID) {
+      throw new Error(`第 ${index + 1} 条错误处理策略覆盖的系统规则 ID 无效`)
+    }
+    if (record.action !== 'replace' && record.action !== 'delete') {
+      throw new Error(`第 ${index + 1} 条错误处理策略覆盖动作无效`)
+    }
+    const keys = record.action === 'replace'
+      ? ['system_rule_id', 'action', 'rule_index']
+      : ['system_rule_id', 'action']
+    const unexpected = Object.keys(record).find((key) => !keys.includes(key))
+    if (unexpected) throw new Error(`第 ${index + 1} 条错误处理策略覆盖包含不支持字段：${unexpected}`)
+    if (record.action === 'replace' && (!Number.isInteger(record.rule_index) || Number(record.rule_index) < 0)) {
+      throw new Error(`第 ${index + 1} 条错误处理策略覆盖规则索引无效`)
+    }
+    return record.action === 'replace'
+      ? { system_rule_id: SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID, action: 'replace', rule_index: Number(record.rule_index) }
+      : { system_rule_id: SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID, action: 'delete' }
+  })
+}
+
+export function effectiveAccountErrorHandlingRules(value: unknown, overridesValue?: unknown): EffectiveAccountErrorHandlingRule[] {
+  const accountRules = normalizeAccountErrorHandlingRules(value)
+  const overrides = normalizeAccountErrorPolicyOverrides(overridesValue)
+  const quotaOverride = overrides.find((item) => item.system_rule_id === SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID)
+  const replacedIndex = quotaOverride?.action === 'replace' ? quotaOverride.rule_index : undefined
+  const accountEffective = accountRules
+    .map((rule, index) => ({ rule, index }))
+    .sort((left, right) => left.rule.priority - right.rule.priority)
+    .map(({ rule, index }) => ({
+      ...cloneRule(rule),
+      id: index === replacedIndex ? SYSTEM_INSUFFICIENT_QUOTA_ERROR_POLICY_RULE_ID : `account.${index + 1}`,
+      source: 'account' as const,
+      inherited: false,
+      editable: true
+    }))
+  const system = quotaOverride?.action === 'delete' || quotaOverride?.action === 'replace'
+    ? []
+    : systemAccountErrorHandlingRules()
+  return [...system, ...accountEffective]
+}
+
+/**
+ * The system rule is deliberately stricter than generic account-rule
+ * matching: its code markers and high-confidence text markers are
+ * alternatives, rather than requiring both configured lists to match.
+ */
+export function systemInsufficientQuotaRuleMatches(input: {
+  statusCode: number
+  errorCode?: string
+  errorType?: string
+  searchableText?: string
+}): boolean {
+  if (input.statusCode !== 402 && input.statusCode !== 403) return false
+  const errorCode = normalizeErrorIdentifier(input.errorCode)
+  const errorType = normalizeErrorIdentifier(input.errorType)
+  if (
+    insufficientQuotaStableCodes.has(errorCode)
+    || insufficientQuotaStableCodes.has(errorType)
+    || isQuotaErrorCode(errorCode)
+    || isQuotaErrorCode(errorType)
+  ) {
+    return true
+  }
+  if (nonQuota403ErrorIdentifiers.has(errorCode) || nonQuota403ErrorIdentifiers.has(errorType)) {
+    return false
+  }
+  if (input.statusCode === 402 && !errorCode && !errorType) return true
+  const text = input.searchableText?.toLowerCase() ?? ''
+  if ([...nonQuota403ErrorIdentifiers].some((identifier) => text.includes(identifier.replaceAll('_', ' ')) || text.includes(identifier))) {
+    return false
+  }
+  return insufficientQuotaTextMarkers.some((marker) => text.includes(marker))
+}
+
+function isQuotaErrorCode(value: string): boolean {
+  return value.includes('quota')
+}
+
+function cloneEffectiveRule(rule: EffectiveAccountErrorHandlingRule): EffectiveAccountErrorHandlingRule {
+  return {
+    ...cloneRule(rule),
+    id: rule.id,
+    source: rule.source,
+    inherited: rule.inherited,
+    editable: rule.editable
+  }
+}
+
+function cloneRule(rule: AccountErrorHandlingRule): AccountErrorHandlingRule {
+  const copied = Object.fromEntries(
+    Object.entries(rule).filter(([, value]) => value !== undefined)
+  ) as AccountErrorHandlingRule
+  return {
+    ...copied,
+    ...(rule.status_codes ? { status_codes: [...rule.status_codes] } : {}),
+    ...(rule.error_codes ? { error_codes: [...rule.error_codes] } : {}),
+    ...(rule.error_types ? { error_types: [...rule.error_types] } : {}),
+    ...(rule.keywords ? { keywords: [...rule.keywords] } : {})
+  }
+}
+
+function normalizeErrorIdentifier(value: string | undefined): string {
+  return (value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+}

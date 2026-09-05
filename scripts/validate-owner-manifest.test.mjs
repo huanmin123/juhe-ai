@@ -16,7 +16,9 @@ import {
 } from './validate-owner-manifest.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const releaseSchemaSource = await readFile(path.join(repoRoot, 'backend/src/shared/release-schema-version.ts'), 'utf8')
+// Node backend 已物理归档（X02，2026-09-04）：release schema 事实源改从
+// final-archive 全量归档读取，内容与归档时 HEAD d8bfbc2a 一致。
+const releaseSchemaSource = await readFile(path.join(repoRoot, 'migration-backup/node/final-archive/backend/src/shared/release-schema-version.ts'), 'utf8')
 const currentRuntimeSchemaVersion = Number(/^export const CURRENT_RELEASE_SCHEMA_VERSION = (\d+)$/mu.exec(releaseSchemaSource)?.[1])
 const currentManifest = JSON.parse(await readFile(path.join(repoRoot, 'deploy/owner-manifest.json'), 'utf8'))
 const rootPackage = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'))
@@ -105,10 +107,24 @@ for (const { relativePath, source } of startupScripts) {
     false,
     `${relativePath} must use the validator current schema version instead of a duplicated literal`
   )
-  assert.match(
+  // X01/X03 go-only 终态：owner lock 的 Node server 包装（含
+  // JUHE_AI_OWNER_MANIFEST_PATH 传递）已随 Node backend 退役；启动脚本必须
+  // 对 JUHE_AI_OWNER_LOCK_ENABLED=true 保持 fail-closed 拒绝，而不是引用
+  // 已无消费者的 manifest 环境变量。
+  assert.doesNotMatch(
     source,
     /JUHE_AI_OWNER_MANIFEST_PATH/u,
-    `${relativePath} must pass the absolute validated owner manifest path to Node workers`
+    `${relativePath} must not reference the retired Node owner-lock manifest export`
+  )
+  assert.match(
+    source,
+    /JUHE_AI_OWNER_LOCK_ENABLED/u,
+    `${relativePath} must keep the fail-closed JUHE_AI_OWNER_LOCK_ENABLED refusal`
+  )
+  assert.doesNotMatch(
+    source,
+    /run-with-owner-lock\.mjs/u,
+    `${relativePath} must not retain the retired Node owner-lock server wrapper`
   )
 }
 assertRequiredOwners(valid, { management: 'node', gateway: 'node' })

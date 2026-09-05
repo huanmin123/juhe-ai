@@ -11,7 +11,8 @@ const statusBarSource = readFileSync(resolve(frontendRoot, 'views/ai-health/AiHe
 const routerSource = readFileSync(resolve(frontendRoot, 'router/index.ts'), 'utf8')
 const statsApiSource = readFileSync(resolve(frontendRoot, 'api/domains/stats.ts'), 'utf8')
 const statsTypesSource = readFileSync(resolve(frontendRoot, 'types/domain/usage-stats.ts'), 'utf8')
-const monitorRepositorySource = readFileSync(resolve(repositoryRoot, 'backend/src/storage/account-health-monitor.repository.ts'), 'utf8')
+// Node backend 已归档（X02）；遗留 repository 契约源改读 final-archive 浏览副本。
+const monitorRepositorySource = readFileSync(resolve(repositoryRoot, 'migration-backup/node/final-archive/backend/src/storage/account-health-monitor.repository.ts'), 'utf8')
 
 assert.match(routerSource, /path: '\/ai-health'[\s\S]+title: 'AI健康监控'/, '管理菜单必须注册 AI 健康监控')
 assert.match(routerSource, /path: '\/my-ai-health'[\s\S]+viewScope: 'self'/, '用户菜单必须注册自助健康监控')

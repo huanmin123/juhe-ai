@@ -160,8 +160,11 @@ foreach ($contract in @(
     throw "Performance topology installer implementation missing: $contract"
   }
 }
-$serverSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'backend\src\server.ts')
-foreach ($contract in @('processPid: process.pid', 'dbServicePid: dbService.pid', 'workerProcesses')) {
+# backend/ was physically archived (X02); the Node server source now lives
+# only in the final-archive browsable copy (same contract as the
+# legacy-node-postgres-index-bridge contract test).
+$serverSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'migration-backup\node\final-archive\backend\src\server.ts')
+foreach ($contract in @('processPid: process.pid', 'dbServicePid: health.dbService.pid', 'workerProcesses')) {
   if (-not $serverSource.Contains($contract, [StringComparison]::Ordinal)) {
     throw "Server health topology identity contract missing: $contract"
   }

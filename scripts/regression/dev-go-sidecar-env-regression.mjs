@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -47,9 +47,13 @@ const previousEnvironment = new Map(environmentKeys.map((key) => [key, process.e
 
 try {
   for (const key of environmentKeys) delete process.env[key]
-  const backendRoot = join(fixtureRoot, 'backend')
-  mkdirSync(backendRoot, { recursive: true })
-  writeFileSync(join(backendRoot, '.env'), [
+  // Node 原行为差异：Node 时代的 dev.mjs 从 backend/.env 读取后端环境变量，
+  // 相对路径以 backend root（backend/data/...）为基。backend/ 已随 X02 迁移
+  // 物理删除，go-only 终态的 dev.mjs 改从仓库根 .env 读取（JUHE_AI_ENV_FILE
+  // overlay 相对仓库根解析），dev 数据/日志相对路径统一落在 gitignored 的
+  // .local/dev/{data,logs} 下。fixture 按终态语义构造。
+  const fixtureDevDataRoot = join(fixtureRoot, '.local', 'dev', 'data')
+  writeFileSync(join(fixtureRoot, '.env'), [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_GO_RUNTIME_METRICS_STORE=sqlite',
     'JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH=./data/go-runtime-metrics.sqlite3',
@@ -76,7 +80,7 @@ try {
 
   assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_STORE, 'sqlite')
   assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_STORE, 'sqlite')
-  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH, join(backendRoot, 'data', 'go-runtime-metrics.sqlite3'))
+  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH, join(fixtureDevDataRoot, 'data', 'go-runtime-metrics.sqlite3'))
   assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_INTERVAL, '15s')
   assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS, '30')
   assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_SERVICE, 'juhe-ai')
@@ -93,19 +97,19 @@ try {
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID, 'dev-operation-log')
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3304')
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_URL, 'http://127.0.0.1:3304')
-  assert.equal(sidecarEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, join(backendRoot, 'data', 'table-monitor.sqlite3'))
-  assert.equal(sidecarEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, join(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3'))
-  assert.equal(sidecarEnv.JUHE_AI_STATS_DATABASE_PATH, join(backendRoot, 'data', 'juhe-ai-stats.sqlite3'))
-  assert.equal(sidecarEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, join(backendRoot, 'data', 'codex-context', 'state-shards'))
-  assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(backendRoot, 'data', 'runtime-log.sqlite3'))
-  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH, join(backendRoot, 'data', 'juhe-ai-operation-log.sqlite3'))
-  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, join(backendRoot, 'data', 'juhe-ai.sqlite3'))
+  assert.equal(sidecarEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, join(fixtureDevDataRoot, 'data', 'table-monitor.sqlite3'))
+  assert.equal(sidecarEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, join(fixtureDevDataRoot, 'data', 'juhe-ai-usage-catalog.sqlite3'))
+  assert.equal(sidecarEnv.JUHE_AI_STATS_DATABASE_PATH, join(fixtureDevDataRoot, 'data', 'juhe-ai-stats.sqlite3'))
+  assert.equal(sidecarEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, join(fixtureDevDataRoot, 'data', 'codex-context', 'state-shards'))
+  assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(fixtureDevDataRoot, 'data', 'runtime-log.sqlite3'))
+  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH, join(fixtureDevDataRoot, 'juhe-ai-operation-log.sqlite3'))
+  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, join(fixtureDevDataRoot, 'data', 'juhe-ai.sqlite3'))
 
-  const postgresFixture = readFileSync(join(backendRoot, '.env'), 'utf8')
+  const postgresFixture = readFileSync(join(fixtureRoot, '.env'), 'utf8')
     .replace(/^JUHE_AI_GO_RUNTIME_METRICS_STORE=.*(?:\r?\n|$)/mu, 'JUHE_AI_GO_RUNTIME_METRICS_STORE=postgres\n')
     .replace(/^JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH=.*(?:\r?\n|$)/mu, '')
     + '\nJUHE_AI_POSTGRES_URL=postgres://dev.example/juhe_ai\n'
-  writeFileSync(join(backendRoot, '.env'), postgresFixture)
+  writeFileSync(join(fixtureRoot, '.env'), postgresFixture)
   const postgresEnv = module.resolveGoProjectEnv()
   assert.equal(postgresEnv.JUHE_AI_GO_RUNTIME_METRICS_STORE, 'postgres')
   assert.equal(postgresEnv.JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL, 'postgres://dev.example/juhe_ai')
@@ -114,7 +118,7 @@ try {
   delete process.env.JUHE_AI_AUDIT_LOG_INPUT_SECRET
   delete process.env.JUHE_AI_OPERATION_LOG_INSTANCE_ID
   delete process.env.JUHE_AI_OPERATION_LOG_INPUT_SECRET
-  writeFileSync(join(backendRoot, '.env'), readFileSync(join(backendRoot, '.env'), 'utf8')
+  writeFileSync(join(fixtureRoot, '.env'), readFileSync(join(fixtureRoot, '.env'), 'utf8')
     .replace(/^JUHE_AI_AUDIT_LOG_INSTANCE_ID=.*(?:\r?\n|$)/mu, '')
     .replace(/^JUHE_AI_AUDIT_LOG_INPUT_SECRET=.*(?:\r?\n|$)/mu, '')
     .replace(/^JUHE_AI_OPERATION_LOG_INSTANCE_ID=.*(?:\r?\n|$)/mu, '')

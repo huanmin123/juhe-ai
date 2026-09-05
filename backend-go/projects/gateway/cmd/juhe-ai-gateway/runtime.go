@@ -74,14 +74,10 @@ type runtimeConfig struct {
 	// only when the operator explicitly hands the system API to this process.
 	SystemAPIEnabled bool
 	// ChainEnabled gates the AI gateway /v1 composition. When enabled the
-	// startup fails fast listing the composition adapters that are still
-	// Node-owned (see gatewaychain.go); when disabled /v1 traffic is proxied
-	// to the Node origin through the legacy bridge.
+	// startup assembles the full serving chain; when disabled /v1 traffic
+	// answers the kernel 404 JSON contract (X01: the legacy bridge proxy was
+	// deleted together with the archived Node origin).
 	ChainEnabled bool
-	// LegacyBridgeTarget is the Node origin (e.g. http://127.0.0.1:3000) that
-	// receives every prefix still Node-owned. Empty disables the bridge (the
-	// kernel then answers unmatched paths with the Node 404 JSON contract).
-	LegacyBridgeTarget string
 
 	// Chain collaborator config: the audit capture switch (Node
 	// runtimeConfig.auditLog.enabled, JUHE_AI_AUDIT_LOG_ENABLED default true),
@@ -323,7 +319,6 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 
 	cfg.SystemAPIEnabled = envBoolTrue(getenv("JUHE_AI_GATEWAY_SYSTEM_API_ENABLED"))
 	cfg.ChainEnabled = envBoolTrue(getenv("JUHE_AI_GATEWAY_CHAIN_ENABLED"))
-	cfg.LegacyBridgeTarget = strings.TrimSpace(getenv("JUHE_AI_LEGACY_BRIDGE_TARGET"))
 	if cfg.ChainEnabled && !cfg.SystemAPIEnabled {
 		return runtimeConfig{}, fmt.Errorf("启用 JUHE_AI_GATEWAY_CHAIN_ENABLED 时必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED")
 	}

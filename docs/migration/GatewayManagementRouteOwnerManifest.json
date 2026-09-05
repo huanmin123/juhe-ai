@@ -1,6 +1,6 @@
 {
   "manifest_version": 1,
-  "source_app": "backend/src/modules/system-api/system-api-app.ts",
+  "source_app": "migration-backup/node/final-archive/backend/src/modules/system-api/system-api-app.ts",
   "purpose": "方案A system-api mutation 路由到 Go Gateway handler 的单 owner 映射；未接线路由必须保持 fail-closed。",
   "status_definition": {
     "implemented": "Gateway 已完整承接该路由族且有可核验 evidence；仍需真实切换证据。",
@@ -12,7 +12,7 @@
     {
       "id": "auth",
       "node_mount": "/auth",
-      "node_router_file": "backend/src/modules/auth/auth.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/auth/auth.routes.ts",
       "node_router_symbol": "authRouter",
       "mutation_count": 6,
       "gateway_handler": "backend-go/projects/gateway/internal/authsys",
@@ -34,7 +34,7 @@
     {
       "id": "accounts",
       "node_mount": "/accounts and /my-accounts",
-      "node_router_file": "backend/src/modules/accounts/accounts.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/accounts/accounts.routes.ts",
       "node_router_symbol": "accountsRouter",
       "mutation_count": 4,
       "gateway_handler": "backend-go/projects/gateway/internal/business/accounts",
@@ -50,7 +50,7 @@
     {
       "id": "groups",
       "node_mount": "/groups and /my-groups",
-      "node_router_file": "backend/src/modules/groups/groups.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/groups/groups.routes.ts",
       "node_router_symbol": "groupsRouter",
       "mutation_count": 4,
       "gateway_handler": "backend-go/projects/gateway/internal/business/groups",
@@ -66,7 +66,7 @@
     {
       "id": "route-strategies",
       "node_mount": "/route-strategies and /my-route-strategies",
-      "node_router_file": "backend/src/modules/route-strategies/route-strategies.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/route-strategies/route-strategies.routes.ts",
       "node_router_symbol": "routeStrategiesRouter",
       "mutation_count": 3,
       "gateway_handler": "backend-go/projects/gateway/internal/business/route_strategies",
@@ -82,7 +82,7 @@
     {
       "id": "api-keys",
       "node_mount": "/api-keys and /my-api-keys",
-      "node_router_file": "backend/src/modules/api-keys/api-keys.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/api-keys/api-keys.routes.ts",
       "node_router_symbol": "apiKeysRouter",
       "mutation_count": 4,
       "gateway_handler": "backend-go/projects/gateway/internal/business/api_keys",
@@ -98,7 +98,7 @@
     {
       "id": "authorizations",
       "node_mount": "/authorizations and /my-authorizations",
-      "node_router_file": "backend/src/modules/authorizations/authorizations.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/authorizations/authorizations.routes.ts",
       "node_router_symbol": "authorizationsRouter",
       "mutation_count": 5,
       "gateway_handler": "backend-go/projects/gateway/internal/business/authorizations",
@@ -114,7 +114,7 @@
     {
       "id": "oauth-anthropic",
       "node_mount": "/anthropic-oauth and /my-anthropic-oauth",
-      "node_router_file": "backend/src/modules/anthropic-oauth/anthropic-oauth.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/anthropic-oauth/anthropic-oauth.routes.ts",
       "node_router_symbol": "anthropicOAuthRouter",
       "mutation_count": 6,
       "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/anthropic",
@@ -130,7 +130,7 @@
     {
       "id": "oauth-gemini",
       "node_mount": "/gemini-oauth and /my-gemini-oauth",
-      "node_router_file": "backend/src/modules/gemini-oauth/gemini-oauth.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/gemini-oauth/gemini-oauth.routes.ts",
       "node_router_symbol": "geminiOAuthRouter",
       "mutation_count": 6,
       "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/gemini",
@@ -146,7 +146,7 @@
     {
       "id": "oauth-grok",
       "node_mount": "/grok-oauth and /my-grok-oauth",
-      "node_router_file": "backend/src/modules/grok-oauth/grok-oauth.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/grok-oauth/grok-oauth.routes.ts",
       "node_router_symbol": "grokOAuthRouter",
       "mutation_count": 7,
       "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/grok",
@@ -162,7 +162,7 @@
     {
       "id": "oauth-openai",
       "node_mount": "/openai-oauth and /my-openai-oauth",
-      "node_router_file": "backend/src/modules/openai-oauth/openai-oauth.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/openai-oauth/openai-oauth.routes.ts",
       "node_router_symbol": "openAIOAuthRouter",
       "mutation_count": 6,
       "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/openai",
@@ -178,7 +178,7 @@
     {
       "id": "oauth-management",
       "node_mount": "/oauth",
-      "node_router_file": "backend/src/modules/oidc-provider/oidc-provider.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/oidc-provider/oidc-provider.routes.ts",
       "node_router_symbol": "oauthManagementRouter",
       "mutation_count": 3,
       "gateway_handler": "backend-go/projects/gateway/internal/business/oauth/management",
@@ -194,7 +194,7 @@
     {
       "id": "providers",
       "node_mount": "/providers",
-      "node_router_file": "backend/src/modules/providers/providers.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/providers/providers.routes.ts",
       "node_router_symbol": "providersRouter",
       "mutation_count": 4,
       "gateway_handler": "backend-go/projects/gateway/internal/business/providers",
@@ -210,7 +210,7 @@
     {
       "id": "proxies",
       "node_mount": "/proxies",
-      "node_router_file": "backend/src/modules/proxies/proxies.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/proxies/proxies.routes.ts",
       "node_router_symbol": "proxiesRouter",
       "mutation_count": 3,
       "gateway_handler": "backend-go/projects/gateway/internal/business/proxies",
@@ -226,7 +226,7 @@
     {
       "id": "response-inspection-policies",
       "node_mount": "/response-inspection-policies",
-      "node_router_file": "backend/src/modules/response-inspection-policies/response-inspection-policies.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/response-inspection-policies/response-inspection-policies.routes.ts",
       "node_router_symbol": "responseInspectionPoliciesRouter",
       "mutation_count": 3,
       "gateway_handler": "backend-go/projects/gateway/internal/business/response_inspection_policies",
@@ -242,7 +242,7 @@
     {
       "id": "external-integration-sources",
       "node_mount": "/external-integration-sources",
-      "node_router_file": "backend/src/modules/external-integrations/external-integration-sources.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/external-integrations/external-integration-sources.routes.ts",
       "node_router_symbol": "externalIntegrationSourcesRouter",
       "mutation_count": 6,
       "gateway_handler": "backend-go/projects/gateway/internal/business/external_integrations",
@@ -258,7 +258,7 @@
     {
       "id": "ip-stats",
       "node_mount": "/ip-stats",
-      "node_router_file": "backend/src/modules/ip-stats/ip-stats.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/ip-stats/ip-stats.routes.ts",
       "node_router_symbol": "ipStatsRouter",
       "mutation_count": 4,
       "gateway_handler": "backend-go/projects/gateway/internal/business/ip_stats",
@@ -274,7 +274,7 @@
     {
       "id": "settings",
       "node_mount": "/settings",
-      "node_router_file": "backend/src/modules/settings/settings.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/settings/settings.routes.ts",
       "node_router_symbol": "settingsRouter",
       "mutation_count": 3,
       "gateway_handler": "backend-go/projects/gateway/internal/business/settings",
@@ -290,7 +290,7 @@
     {
       "id": "system-accounts",
       "node_mount": "/system-accounts",
-      "node_router_file": "backend/src/modules/system-accounts/system-accounts.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/system-accounts/system-accounts.routes.ts",
       "node_router_symbol": "systemAccountsRouter",
       "mutation_count": 2,
       "gateway_handler": "backend-go/projects/gateway/internal/authsys",
@@ -311,7 +311,7 @@
     {
       "id": "system-teams",
       "node_mount": "/system-teams",
-      "node_router_file": "backend/src/modules/system-teams/system-teams.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/system-teams/system-teams.routes.ts",
       "node_router_symbol": "systemTeamsRouter",
       "mutation_count": 4,
       "gateway_handler": "backend-go/projects/gateway/internal/business/system_teams",
@@ -327,7 +327,7 @@
     {
       "id": "announcements",
       "node_mount": "/announcements",
-      "node_router_file": "backend/src/modules/announcements/announcements.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/announcements/announcements.routes.ts",
       "node_router_symbol": "announcementsRouter",
       "mutation_count": 6,
       "gateway_handler": "backend-go/projects/gateway/internal/business/announcements",
@@ -343,7 +343,7 @@
     {
       "id": "table-monitor",
       "node_mount": "/table-monitor",
-      "node_router_file": "backend/src/modules/table-monitor/table-monitor.routes.ts",
+      "node_router_file": "migration-backup/node/final-archive/backend/src/modules/table-monitor/table-monitor.routes.ts",
       "node_router_symbol": "tableMonitorRouter",
       "mutation_count": 1,
       "gateway_handler": "backend-go/projects/gateway/internal/business/table_monitor",

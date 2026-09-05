@@ -1,6 +1,5 @@
 import { closeSync, existsSync, openSync, readFileSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
-import { createRequire } from 'node:module'
 import { spawn } from 'node:child_process'
 
 const [project, binaryPath, backendRoot, logPath] = process.argv.slice(2)
@@ -8,9 +7,33 @@ if (!['gateway', 'jobs'].includes(project) || !binaryPath || !backendRoot || !lo
   throw new Error('Usage: node scripts/start-go-project.mjs <gateway|jobs> <binary-path> <backend-root> <log-path>')
 }
 
-const require = createRequire(resolve(backendRoot, 'package.json'))
-const { parse } = require('dotenv')
-const readEnv = (path) => existsSync(path) ? parse(readFileSync(path)) : {}
+// X02/X03 go-only：Node backend 已归档，go-only 发布包不再携带 backend 的
+// node_modules，dotenv 无法再从 backend/package.json 解析。这里内联一个
+// 覆盖 dotenv 基础语义（KEY=VALUE、export 前缀、单双引号、行内/整行注释、
+// 空值 trim）的最小解析器，启动器自此零第三方依赖。
+function parseEnvFile(content) {
+  const parsed = {}
+  for (const rawLine of content.split(/\r?\n/)) {
+    let line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    if (line.startsWith('export ')) line = line.slice('export '.length).trim()
+    const equalsIndex = line.indexOf('=')
+    if (equalsIndex <= 0) continue
+    const key = line.slice(0, equalsIndex).trim()
+    if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(key)) continue
+    let value = line.slice(equalsIndex + 1).trim()
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+      value = value.slice(1, -1)
+    } else {
+      const hashIndex = value.indexOf(' #')
+      if (hashIndex !== -1) value = value.slice(0, hashIndex).trim()
+    }
+    parsed[key] = value
+  }
+  return parsed
+}
+
+const readEnv = (path) => existsSync(path) ? parseEnvFile(readFileSync(path, 'utf8')) : {}
 const baseEnvPath = resolve(backendRoot, '.env')
 const capacityEnvPath = resolve(backendRoot, '.env.capacity')
 const disableBaseEnv = String(process.env.JUHE_AI_DISABLE_BASE_ENV ?? '').trim().toLowerCase() === 'true'

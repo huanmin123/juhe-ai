@@ -19,8 +19,8 @@ const runtimeIndexStateSource = source('../../views/runtime-logs/useRuntimeLogIn
 const runtimeFacetsStateSource = source('../../views/runtime-logs/useRuntimeLogFacetsState.ts')
 const logsApiSource = source('../../api/domains/logs.ts')
 const runtimeTypesSource = source('../../types/domain/runtime-logs.ts')
-const runtimeRouteSource = source('../../../../backend/src/modules/runtime-logs/runtime-logs.routes.ts')
-const auditRouteSource = source('../../../../backend/src/modules/audit-logs/audit-logs.routes.ts')
+const runtimeRouteSource = source('../../../../migration-backup/node/final-archive/backend/src/modules/runtime-logs/runtime-logs.routes.ts')
+const auditRouteSource = source('../../../../migration-backup/node/final-archive/backend/src/modules/audit-logs/audit-logs.routes.ts')
 const globalStylesSource = source('../../styles/global.css')
 
 const auditFetchPageSource = auditViewSource.match(/fetchPage: async[\s\S]*?requestSignature:/)?.[0] ?? ''

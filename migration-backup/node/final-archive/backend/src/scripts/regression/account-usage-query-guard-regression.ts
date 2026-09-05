@@ -1,0 +1,429 @@
+import { strict as assert } from 'node:assert'
+import type { SQLInputValue } from 'node:sqlite'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import { logger } from '../../shared/logger.js'
+import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from '../../storage/usage-stats-types.js'
+
+const tempRoot = resolve(tmpdir(), `juhe-ai-account-usage-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.secret = 'account-usage-query-guard-secret'
+runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.fileEnabled = false
+runtimeConfig.processRole = 'worker'
+mkdirSync(tempRoot, { recursive: true })
+logger.level = 'silent'
+
+const [databaseModule, repositories, accountUsageRepository] = await Promise.all([
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
+  import('../../storage/account-usage.repository.js')
+])
+
+const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes.ts', import.meta.url), 'utf8')
+const repositoriesSource = readFileSync(new URL('../../storage/repositories.ts', import.meta.url), 'utf8')
+assert(statsRoutesSource.includes('getAccountUsageStatsOverviewPageAsync'), '账号用量统计接口必须调用 async repository，避免 PG 模式下阻塞系统 API')
+assert(!/ok\(getAccountUsageStatsOverviewPage\(/.test(statsRoutesSource), '账号用量统计接口不应直接调用同步 repository')
+assert(repositoriesSource.includes('buildAccountUsageStatsOverviewPageFromWindowsAsync'), '账号用量统计 repository 必须暴露 PG 异步统计读取路径')
+
+const range = {
+  startDate: '2026-02-01',
+  endDate: '2026-02-28',
+  days: 28,
+  maxDays: 31
+}
+
+try {
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const group = repositories.createGroup({
+    name: '账号用量查询防护分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
+  const matchedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'keywordneedle 账号用量账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-query-guard-matched',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const otherAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '普通 keywordneedle 账号用量账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-query-guard-other',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const selectedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'selected-account 账号用量账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-query-guard-selected',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const notesOnlyAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '备注字段账号用量账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-query-guard-notes',
+      base_url: 'https://api.openai.com/v1'
+    },
+    notes: 'keywordnote 备注前缀',
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const owner = repositories.createSystemAccount({
+    username: 'account_usage_auth_owner',
+    displayName: '账号用量授权方',
+    password: 'Password-123456',
+    mustChangePassword: false
+  })
+  const grantee = repositories.createSystemAccount({
+    username: 'account_usage_auth_grantee',
+    displayName: '账号用量被授权方',
+    password: 'Password-123456',
+    mustChangePassword: false
+  })
+  const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const ownerGroup = repositories.createGroup({
+    name: '账号用量授权方分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, ownerAccess)
+  const granteeTargetGroup = repositories.createGroup({
+    name: '账号用量授权目标分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, granteeAccess)
+  const authorizedSourceAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '授权用量来源初始名',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-authorized-source',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: ownerGroup.id,
+    supportedModels: ['gpt-5.5']
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: authorizedSourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeTargetGroup.id,
+    remark: '账号用量来源名查询回归'
+  }, ownerAccess)
+  const authorizedInstance = repositories.listAccounts(granteeAccess)
+    .find((account) => account.authorizationInstanceSourceAccountId === authorizedSourceAccount.id)
+  assert(authorizedInstance?.id, '账号用量回归需要被授权实例账户')
+  repositories.updateAccount(authorizedSourceAccount.id, {
+    name: '授权用量来源当前名'
+  }, ownerAccess)
+  const authorizedGroup = repositories.createGroup({
+    name: '账号用量授权来源分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, ownerAccess)
+  const groupAuthorizedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '授权用量分组账户A',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-group-authorized-source',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: authorizedGroup.id,
+    supportedModels: ['gpt-5.5']
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: authorizedGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '账号用量分组来源名查询回归'
+  }, ownerAccess)
+
+  seedUsageStatsDaily(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', matchedAccount.id, 7)
+  seedUsageStatsDaily(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', otherAccount.id, 3)
+  seedUsageStatsDaily(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', selectedAccount.id, 1)
+  seedUsageStatsDaily(grantee.id, 'caller_account', authorizedInstance.id, 11)
+  seedUsageStatsDaily(grantee.id, 'caller_account', groupAuthorizedAccount.id, 13)
+
+  const businessDatabase = databaseModule.getBusinessDatabase()
+  const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
+  const businessCalls: Array<{ sql: string; params: unknown[] }> = []
+  businessDatabase.prepare = ((sql: string) => {
+    const statement = originalBusinessPrepare(sql)
+    if (/^\s*SELECT\s+accounts\.id\s+FROM\s+accounts\b/i.test(sql)) {
+      const originalAll = statement.all.bind(statement) as typeof statement.all
+      statement.all = ((...params: SQLInputValue[]) => {
+        businessCalls.push({ sql, params })
+        return originalAll(...params)
+      }) as typeof statement.all
+    }
+    return statement
+  }) as typeof businessDatabase.prepare
+
+  const statsDatabase = databaseModule.getStatsDatabase()
+  const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
+  const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
+  statsDatabase.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    if (/\bFROM\s+usage_stats_daily\s+usage_window\b/i.test(sql)) {
+      const originalAll = statement.all.bind(statement) as typeof statement.all
+      const originalGet = statement.get.bind(statement) as typeof statement.get
+      statement.all = ((...params: SQLInputValue[]) => {
+        capturedCalls.push({ sql, params })
+        return originalAll(...params)
+      }) as typeof statement.all
+      statement.get = ((...params: SQLInputValue[]) => {
+        capturedCalls.push({ sql, params })
+        return originalGet(...params)
+      }) as typeof statement.get
+    }
+    return statement
+  }) as typeof statsDatabase.prepare
+
+  try {
+    const keywordResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      keyword: 'keywordneedle',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.deepEqual(keywordResult.rows.map((row) => row.id), [matchedAccount.id, otherAccount.id], '账号用量关键词应按名称包含匹配解析账号 ID 后再筛统计窗口')
+    assert.equal(keywordResult.rows[0]?.rangeUsage.requestCount, 7, '账号用量关键词结果应保留范围日聚合用量')
+    assert.deepEqual(keywordResult.rows[0]?.dailyUsage, [], '账号用量列表只返回范围摘要，不返回日序列')
+    const trendResult = await accountUsageRepository.getAccountUsageStatsTrendAsync(access, range, [matchedAccount.id])
+    assert.deepEqual(trendResult.rows.map((row) => row.id), [matchedAccount.id], '账户用量趋势应通过独立接口按账户返回')
+
+    const prefixResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      keyword: uniquePrefix(matchedAccount.id, otherAccount.id),
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.equal(prefixResult.total, 0, '账号用量关键词不应通过账号 ID 前缀命中，ID 精确回填只能走 accountIds')
+
+    const missResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      keyword: 'missing-keyword-needle',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.equal(missResult.total, 0, '账号用量关键词无匹配账号时应直接返回空窗口')
+
+    const notesOnlyResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      keyword: 'keywordnote',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.equal(notesOnlyResult.total, 0, '账号用量关键词不应通过备注字段命中账号，避免通用关键词扫描长文本')
+    assert(!notesOnlyResult.rows.some((row) => row.id === notesOnlyAccount.id), '备注字段命中的账号不应混入账号用量结果')
+
+    const selectedResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      accountIds: [selectedAccount.id],
+      page: 1,
+      pageSize: 1,
+      range
+    })
+    assert.deepEqual(selectedResult.rows.map((row) => row.id), [matchedAccount.id, selectedAccount.id], '账号用量手动选择的账户应按 ID 补入当前页结果')
+    assert.equal(selectedResult.rows[1]?.rangeUsage.requestCount, 1, '账号用量手动选择补入行应读取日聚合')
+    assert.equal(selectedResult.hasMore, true, '账号用量手动补入不应抹掉原始分页 hasMore')
+
+    const selectedPageTwoResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      accountIds: [selectedAccount.id],
+      page: 2,
+      pageSize: 1,
+      range
+    })
+    assert.deepEqual(selectedPageTwoResult.rows.map((row) => row.id), [otherAccount.id, selectedAccount.id], '账号用量翻页后仍应把手动选择账户补入当前页结果')
+    assert.equal(selectedPageTwoResult.total, 3, '账号用量手动补入行不应让分页上界 total 低估总结果数')
+
+    const typeIgnoredResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      type: 'oauth',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.deepEqual(typeIgnoredResult.rows.map((row) => row.id), [matchedAccount.id, otherAccount.id, selectedAccount.id], '账号用量统计不应按 OAuth/API Key 账号类型缩窄明细')
+
+    const authorizedSourceKeywordResult = repositories.getAccountUsageStatsOverviewPage(granteeAccess, {
+      keyword: '授权用量来源当前名',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.deepEqual(authorizedSourceKeywordResult.rows.map((row) => row.id), [authorizedInstance.id], '被授权用户应能通过来源账户当前名称查询自己的授权实例用量')
+    assert.equal(authorizedSourceKeywordResult.rows[0]?.accessType, 'authorized', '来源账户名命中的账号用量应保留授权实例口径')
+    assert.equal(authorizedSourceKeywordResult.rows[0]?.rangeUsage.requestCount, 11, '来源账户名命中的授权实例用量应读取当前用户 caller_account 日聚合')
+
+    const groupAuthorizedKeywordResult = repositories.getAccountUsageStatsOverviewPage(granteeAccess, {
+      keyword: '授权用量分组账户A',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.deepEqual(groupAuthorizedKeywordResult.rows.map((row) => row.id), [groupAuthorizedAccount.id], '被授权用户应能通过来源账户名称查询分组授权产生的账号用量')
+    assert.equal(groupAuthorizedKeywordResult.rows[0]?.accessType, 'authorized', '分组授权命中的账号用量应标记为授权来源')
+    assert.equal(groupAuthorizedKeywordResult.rows[0]?.rangeUsage.requestCount, 13, '分组授权账号用量应读取当前用户 caller_account 日聚合')
+
+    const granteeDefaultResult = repositories.getAccountUsageStatsOverviewPage(granteeAccess, {
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.deepEqual(granteeDefaultResult.rows.map((row) => row.id), [groupAuthorizedAccount.id, authorizedInstance.id], '被授权用户默认账号用量列表应直接读取自己的 caller_account 窗口')
+  } finally {
+    statsDatabase.prepare = originalPrepare
+    businessDatabase.prepare = originalBusinessPrepare
+  }
+
+  assert(businessCalls.length >= 3, '回归应捕获账号用量关键词预解析 SQL')
+  const accountUsageRepositorySource = readFileSync(resolve('src/storage/account-usage.repository.ts'), 'utf8')
+  assert.match(accountUsageRepositorySource, /export async function getAccountUsageStatsTrendAsync/, '账户用量趋势必须提供独立按账户查询入口')
+  assert.match(accountUsageRepositorySource, /export async function getAccountUsageStatsSummaryAsync/, '账户用量汇总必须提供独立查询入口')
+  assert.match(statsRoutesSource, /req\.query\.includeSummary !== undefined[\s\S]{0,220}status\(400\)/, '旧 includeSummary 列表参数必须明确拒绝')
+  assert.match(accountUsageRepositorySource, /AccountUsageStatsListResult/, '分页列表必须使用严格无 summary DTO')
+  const sqlitePageSource = accountUsageRepositorySource.slice(
+    accountUsageRepositorySource.indexOf('export function getAccountUsageStatsOverviewPageFromWindows'),
+    accountUsageRepositorySource.indexOf('export async function getAccountUsageStatsOverviewPageFromWindowsAsync')
+  )
+  const postgresPageSource = accountUsageRepositorySource.slice(
+    accountUsageRepositorySource.indexOf('export async function getAccountUsageStatsOverviewPageFromWindowsAsync'),
+    accountUsageRepositorySource.indexOf('export async function getAccountUsageStatsTrendAsync')
+  )
+  assert.doesNotMatch(postgresPageSource, /loadUsageDailySeriesForScopeRequestsAsync/, '账户用量分页接口不得加载整页 dailyUsage')
+  assert.doesNotMatch(sqlitePageSource, /loadUsageDailySeriesForScopeRequests\(/, 'SQLite 账户用量分页接口不得加载整页 dailyUsage')
+  assert.doesNotMatch(sqlitePageSource, /usage_window\.(?:cache_write|thinking|input_image|output_image)/, 'SQLite 账户用量列表窗口只应读取表格所需 rangeUsage 字段')
+  assert.doesNotMatch(postgresPageSource, /usage_window\.(?:cache_write|thinking|input_image|output_image)/, 'PG 账户用量列表窗口只应读取表格所需 rangeUsage 字段')
+  const accountUsageAsyncKeywordSnippet = accountUsageRepositorySource.slice(
+    accountUsageRepositorySource.indexOf('async function loadAccountUsageKeywordAccountIdsAsync'),
+    accountUsageRepositorySource.indexOf('function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword')
+  )
+  assert.match(
+    accountUsageAsyncKeywordSnippet,
+    /accounts\.name COLLATE "C" LIKE '%' \|\| \? \|\| '%' ESCAPE '\\\\'/,
+    'PG 账号用量关键词预解析账号名必须用可索引的转义 LIKE 支持名称前中后包含匹配'
+  )
+  assert.doesNotMatch(
+    accountUsageAsyncKeywordSnippet,
+    /LOWER\(accounts\.name\)/,
+    'PG 账号用量关键词预解析不能折叠账号名称大小写'
+  )
+  assert.doesNotMatch(
+    accountUsageAsyncKeywordSnippet,
+    /LOWER\([^)]+\)\s+LIKE\s+\?/,
+    'PG 账号用量关键词预解析不能使用 LOWER(...) LIKE 前缀扫描'
+  )
+  assert.match(
+    accountUsageRepositorySource,
+    /function postgresSubstringLikePattern[\s\S]+replaceAll\('%', '\\\\%'\)[\s\S]+replaceAll\('_', '\\\\_'\)/,
+    'PG 账号用量关键词必须转义用户输入的 LIKE 通配符'
+  )
+  const postgresSchemaSource = readFileSync(resolve('src/storage/postgres-schema.ts'), 'utf8')
+  assert.match(postgresSchemaSource, /idx_accounts_name_c_trgm_lookup/, 'PG 账号名称包含搜索必须有 trigram 索引')
+  assert.match(postgresSchemaSource, /idx_accounts_provider_code_c_trgm_lookup/, 'PG 供应商包含搜索必须有 trigram 索引')
+  assert.match(postgresSchemaSource, /idx_accounts_type_c_trgm_lookup/, 'PG 账户类型包含搜索必须有 trigram 索引')
+  assert.match(postgresSchemaSource, /idx_groups_name_c_trgm_lookup/, 'PG 分组包含搜索必须有 trigram 索引')
+  for (const call of businessCalls) {
+    assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账号用量关键词预解析不应通过 COALESCE 做包含扫描')
+    assert(!/\baccounts\.id\s*(?:=|LIKE)\s*\?/i.test(call.sql), '账号用量关键词预解析不应按账号 ID 搜索')
+    assert(!/\baccounts\.notes\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账号用量关键词预解析不应把备注字段放进通用关键词 WHERE')
+    assert(!/\bLIKE\s+\?/i.test(call.sql), '账号用量关键词预解析不应使用 LIKE，避免大小写折叠或通配符语义')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量关键词预解析不应接收前导通配符参数')
+    assert.equal(call.params[call.params.length - 1], 50, '账号用量关键词预解析最多只取 50 个候选账号')
+  }
+  assert(capturedCalls.length >= 4, '回归应捕获账号用量日聚合查询 SQL')
+  assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql)), '账号用量关键词日聚合查询应使用 scope_id 命中预解析账号')
+  assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql) && call.params.includes(selectedAccount.id)), '账号用量手动选择补入应使用 scope_id 命中选中账号')
+  assert(capturedCalls.some((call) => /\bAND\s+0\s+=\s+1\b/i.test(call.sql)), '账号用量关键词无匹配时应避免扫描日聚合表')
+  assert(capturedCalls.every((call) => /\busage_window\.stat_date\s*>=\s*\?\s*\n\s*AND\s+usage_window\.stat_date\s*<=\s*\?/i.test(call.sql)), '账号用量查询必须限制日聚合日期范围')
+  for (const call of capturedCalls) {
+    assert(!/\bLIKE\s+\?/i.test(call.sql), '账号用量窗口查询不应拼入业务字段 LIKE')
+    assert(!/\baccount_usage_business\.accounts\b/i.test(call.sql), '账号用量关键词日聚合查询不应在统计结果库查询内挂业务库账号表')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量日聚合查询不应接收前导通配符参数')
+  }
+
+  assertQueryPlanUsesIndex(`
+    SELECT scope_id
+    FROM usage_stats_daily usage_window
+    WHERE usage_window.system_account_id = ?
+      AND usage_window.scope_type = ?
+      AND usage_window.stat_date >= ?
+      AND usage_window.stat_date <= ?
+    GROUP BY usage_window.scope_id
+    ORDER BY SUM(usage_window.request_count) DESC, SUM(usage_window.total_cost_usd) DESC, SUM(usage_window.input_tokens + usage_window.output_tokens) DESC, MAX(usage_window.last_used_at) DESC, usage_window.scope_id ASC
+    LIMIT ?
+  `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', range.startDate, range.endDate, 10], 'idx_usage_stats_daily_system_scope_date', true)
+
+  console.log('账号用量查询防护回归通过：关键词先解析账号 ID，手动选中账户按日聚合 scope_id 补入，查询不再接收前导通配符，并使用 scope/date 索引')
+} finally {
+  try {
+    databaseModule.getBusinessDatabase().close()
+    databaseModule.closeStorageDatabases()
+  } catch {
+  }
+  rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function seedUsageStatsDaily(systemAccountId: string, scopeType: string, scopeId: string, requestCount: number): void {
+  const updatedAt = '2026-02-28T23:59:59.000Z'
+  databaseModule.getStatsDatabase()
+    .prepare(`
+      INSERT INTO usage_stats_daily (
+        system_account_id, scope_type, scope_id, stat_date,
+        request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+        total_cost_usd, last_used_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?)
+    `)
+    .run(systemAccountId, scopeType, scopeId, range.startDate, requestCount, requestCount * 0.01, updatedAt, updatedAt)
+}
+
+function uniquePrefix(value: string, otherValue: string): string {
+  for (let length = 1; length <= value.length; length += 1) {
+    const prefix = value.slice(0, length)
+    if (!otherValue.startsWith(prefix)) return prefix
+  }
+  return value
+}
+
+function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string, allowTemporarySort = false): void {
+  const details = databaseModule.getStatsDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
+  if (!allowTemporarySort) {
+    assert(!/USE TEMP B-TREE/i.test(details), `查询计划不应创建临时排序树，实际计划：${details}`)
+  }
+  assert(details.includes(indexName), `查询计划应使用 ${indexName}，实际计划：${details}`)
+}

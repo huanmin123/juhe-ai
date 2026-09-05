@@ -1,0 +1,306 @@
+import type { Request } from 'express'
+
+import {
+  accountSupportsOpenAIEndpointMode,
+  openAIEndpointModeForRequestShape
+} from '../../../../domain/openai-endpoint-modes.js'
+import {
+  ANTHROPIC_PROTOCOL_CODE,
+  GEMINI_PROTOCOL_CODE,
+  GPT_OPENAI_V1_PROFILE_ID,
+  GPT_VENDOR_CODE,
+  OPENAI_PROTOCOL_CODE,
+  OPENAI_PROTOCOL_VERSION,
+  isGptVendorCode,
+  isOpenAIProtocolProfile
+} from '../../../../domain/provider-protocol.js'
+import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
+import { buildOpenAIOAuthCodexRequestParts } from '../../../gateway/adapters/gpt-codex/oauth-adapter.js'
+import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/registry.js'
+import {
+  applyOpenAIClientCompatibilityHeaders,
+  buildOpenAIClientCompatibilityBody,
+  shouldForceOpenAICodexResponsesSse
+} from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
+import {
+  buildOpenAIModelMappedJsonBody,
+  isGeminiGenerateContentToChatCompletionsModelMapping,
+  isAnthropicMessagesToChatCompletionsModelMapping,
+  isOpenAIResponsesToChatCompletionsModelMapping,
+  openAIRequestEndpointFamily,
+  openAIModelMappedUpstreamPathAndQuery,
+  resolveOpenAIAccountModelMapping,
+  resolveOpenAIRequestModelMapping
+} from '../../../gateway/protocols/openai-v1/model-mapping.js'
+import {
+  buildOpenAICodexUpstreamUrls,
+  buildUpstreamUrl,
+  buildUpstreamUrls
+} from '../../../gateway/protocols/openai-v1/route-helpers.js'
+import {
+  buildUpstreamHeaders,
+  buildUpstreamRequestBody,
+  isEffectiveOpenAIStreamRequest
+} from '../../../gateway/upstream/request.js'
+import { requestModel } from '../../../gateway/request/metadata.js'
+import { isGatewayUpstreamModelsProbe } from '../../../gateway/request/upstream-models-probe.js'
+import {
+  anthropicMessagesChatBridgeRequiredEndpointMode,
+  buildAnthropicMessagesChatBridgeBody,
+  prepareAnthropicMessagesChatBridgeHeaders,
+  transformAnthropicMessagesChatBridgeUpstreamResponse
+} from '../_shared/anthropic-openai-chat-bridge.js'
+import {
+  buildGeminiGenerateContentChatBridgeBody,
+  geminiGenerateContentChatBridgeRequiredEndpointMode,
+  prepareGeminiGenerateContentChatBridgeHeaders,
+  transformGeminiGenerateContentChatBridgeUpstreamResponse
+} from '../_shared/gemini-openai-chat-bridge.js'
+import {
+  buildCodexResponsesChatBridgeBody,
+  codexResponsesChatBridgeRequiredEndpointMode,
+  prepareCodexResponsesChatBridgeHeaders,
+  transformCodexResponsesChatBridgeUpstreamResponse
+} from '../_shared/codex-responses-chat-bridge.js'
+import type { ProviderDriver, ProviderDriverAccount, ProviderGatewayRequestContext } from '../_shared/types.js'
+import { prepareGptAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
+import { applyGptAccountRequestOverridesToBody, normalizeGptRequestOverrideCapabilitiesForGateway } from './request-override-body.js'
+import type { GptRequestOverrideEndpointFamily } from './request-overrides.js'
+
+function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext) {
+  return openAIEndpointModeForRequestShape({
+    endpoint: req.path || req.originalUrl.split('?', 1)[0],
+    stream: account.type === 'api_key' && shouldForceOpenAICodexResponsesSse(req, context?.requestClientCompatibility)
+      ? true
+      : isEffectiveOpenAIStreamRequest(req, account)
+  })
+}
+
+export const gptProviderDriver: ProviderDriver = {
+  id: 'gpt',
+  providerCode: GPT_VENDOR_CODE,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  usageSemantic: 'openai',
+  profileIds: [GPT_OPENAI_V1_PROFILE_ID],
+  supportsProfile(profile) {
+    const profileId = profile?.providerProtocolProfileId ?? profile?.id
+    return isGptVendorCode(profile?.providerCode)
+      && isOpenAIProtocolProfile(profile)
+      && profileId === GPT_OPENAI_V1_PROFILE_ID
+  },
+  resolveUsageModel(account, requestedModel, sourceEndpointFamily) {
+    const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)
+    return {
+      upstreamModel: modelMapping?.upstreamModel ?? requestedModel,
+      modelMappingApplied: Boolean(modelMapping),
+      modelMappingSource: modelMapping ? modelMapping.runtimeSource ?? 'account' : undefined,
+      sourceEndpointFamily: modelMapping?.sourceEndpointFamily,
+      upstreamEndpointFamily: modelMapping?.upstreamEndpointFamily
+    }
+  },
+  async prepareAccountBeforeDispatch(account, context) {
+    return await prepareGptAccountBeforeDispatch(account, context.signal)
+  },
+  buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
+    if (isGatewayUpstreamModelsProbe(req)) {
+      return account.type === 'api_key'
+        ? buildUpstreamUrls(account.baseUrl, req.originalUrl)
+        : []
+    }
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE) && !(account.type !== 'oauth' && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping))) {
+      return []
+    }
+    if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE) && !(account.type !== 'oauth' && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping))) {
+      return []
+    }
+    if (account.type !== 'oauth' && modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping) || isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping))) {
+      return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
+    }
+    if (account.type === 'oauth') {
+      return buildOpenAICodexUpstreamUrls(req)
+    }
+    return buildUpstreamUrls(account.baseUrl, req.originalUrl)
+  },
+  async buildUpstreamRequestParts(req, account, identity, signal, context) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (account.type !== 'oauth' && modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
+      const headers = buildUpstreamHeaders(req.headers, account)
+      prepareAnthropicMessagesChatBridgeHeaders(headers, req)
+      const body = await buildAnthropicMessagesChatBridgeBody(req, {
+        defaultModel: modelMapping.upstreamModel,
+        modelOverride: modelMapping.upstreamModel
+      }, signal)
+      return {
+        headers,
+        body: await applyGptAccountRequestOverridesToBody(body, {
+          credentials: account.credentials,
+          account,
+          endpointFamily: 'chat_completions',
+          upstreamModel: modelMapping.upstreamModel,
+          signal
+        })
+      }
+    }
+    if (account.type !== 'oauth' && modelMapping && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
+      const headers = buildUpstreamHeaders(req.headers, account)
+      prepareGeminiGenerateContentChatBridgeHeaders(headers, req)
+      const body = await buildGeminiGenerateContentChatBridgeBody(req, {
+        defaultModel: modelMapping.upstreamModel,
+        modelOverride: modelMapping.upstreamModel
+      }, signal)
+      return {
+        headers,
+        body: await applyGptAccountRequestOverridesToBody(body, {
+          credentials: account.credentials,
+          account,
+          endpointFamily: 'chat_completions',
+          upstreamModel: modelMapping.upstreamModel,
+          signal
+        })
+      }
+    }
+    if (account.type !== 'oauth' && modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+      const headers = buildUpstreamHeaders(req.headers, account)
+      prepareCodexResponsesChatBridgeHeaders(headers)
+      const body = await buildCodexResponsesChatBridgeBody(req, {
+        defaultModel: modelMapping.upstreamModel,
+        modelOverride: modelMapping.upstreamModel
+      }, signal)
+      return {
+        headers,
+        body: await applyGptAccountRequestOverridesToBody(body, {
+          credentials: account.credentials,
+          account,
+          endpointFamily: 'chat_completions',
+          upstreamModel: modelMapping.upstreamModel,
+          signal
+        })
+      }
+    }
+    if (account.type === 'oauth') {
+      const { modelCapabilities: requestOverrideModelCapabilities } = await normalizeGptRequestOverrideCapabilitiesForGateway({
+        credentials: account.credentials,
+        account,
+        endpointFamily: 'responses',
+        compact: isOpenAIResponsesCompactRequest(req),
+        upstreamModel: modelMapping?.upstreamModel ?? requestModel(req)
+      })
+      return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal, {
+        modelOverride: modelMapping?.upstreamModel,
+        requestOverrideModelCapabilities,
+        sanitizeCodexHistory: context?.requestClientCompatibility === 'codex_responses'
+      })
+    }
+    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {
+      modelOverride: modelMapping?.upstreamModel,
+      requestClientCompatibility: context?.requestClientCompatibility
+    })
+    const headers = buildUpstreamHeaders(req.headers, account)
+    applyOpenAIClientCompatibilityHeaders(req, headers, {
+      modelOverride: modelMapping?.upstreamModel,
+      requestClientCompatibility: context?.requestClientCompatibility
+    })
+    const body = compatibilityBody
+      ?? (modelMapping ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal) : buildUpstreamRequestBody(req))
+    return {
+      headers,
+      body: await applyGptAccountRequestOverridesToBody(body, {
+        credentials: account.credentials,
+        account,
+        endpointFamily: gptRequestOverrideEndpointFamily(
+          modelMapping?.upstreamEndpointFamily ?? openAIRequestEndpointFamily(req)
+        ),
+        compact: isOpenAIResponsesCompactRequest(req),
+        upstreamModel: modelMapping?.upstreamModel,
+        signal
+      })
+    }
+  },
+  transformUpstreamResponse(req, account, response, context) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    const anthropicMessagesResponse = transformAnthropicMessagesChatBridgeUpstreamResponse(req, response, {
+      enabled: account.type !== 'oauth' && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping),
+      model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'gpt-5.3-codex'
+    })
+    const geminiGenerateContentResponse = transformGeminiGenerateContentChatBridgeUpstreamResponse(req, anthropicMessagesResponse, {
+      enabled: account.type !== 'oauth' && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping),
+      model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'gpt-5.3-codex'
+    })
+    return transformCodexResponsesChatBridgeUpstreamResponse(req, geminiGenerateContentResponse, {
+      defaultModel: modelMapping?.upstreamModel ?? requestModel(req) ?? 'gpt-5.3-codex',
+      enabled: account.type !== 'oauth' && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
+      explicitMappingBridge: true,
+      idPrefix: 'openai_bridge',
+      model: modelMapping?.upstreamModel,
+      previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
+      onCompleted: context?.codexResponsesChatBridgeCompletionHandler,
+      continueChatRequest: context?.codexResponsesChatBridgeContinueChatRequest,
+      requestClientCompatibility: context?.requestClientCompatibility
+    })
+  },
+  endpointModeForRequest: openAIEndpointModeForGatewayRequest,
+  accountSupportsRequest(req, account, context) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (account.type !== 'oauth' && modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: anthropicMessagesChatBridgeRequiredEndpointMode(isEffectiveOpenAIStreamRequest(req, account)),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
+    if (account.type !== 'oauth' && modelMapping && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: geminiGenerateContentChatBridgeRequiredEndpointMode(req),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
+    if (account.type !== 'oauth' && modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: codexResponsesChatBridgeRequiredEndpointMode(),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
+    if (account.type === 'oauth'
+      && context?.requestClientCompatibility
+      && context.requestClientCompatibility !== 'codex_responses') {
+      return false
+    }
+    const mode = openAIEndpointModeForGatewayRequest(req, account, context)
+    if (!mode) return true
+    return accountSupportsOpenAIEndpointMode({
+      mode,
+      supportedEndpointModes: account.supportedEndpointModes,
+      credentials: account.credentials,
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      accountType: account.type,
+      clientCompatibility: account.clientCompatibility
+    })
+  }
+}
+
+function isOpenAIResponsesCompactRequest(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'POST') return false
+  const path = (req.originalUrl || req.path || '').split('?', 1)[0]
+  return (path.replace(/^\/v1(?=\/|$)/, '') || '/') === '/responses/compact'
+}
+
+function gptRequestOverrideEndpointFamily(value: string | undefined): GptRequestOverrideEndpointFamily | undefined {
+  return value === 'chat_completions' || value === 'responses' ? value : undefined
+}

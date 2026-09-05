@@ -1,3 +1,7 @@
+# 高性能 PostgreSQL/PgBouncer/Redis 拓扑（hybrid 遗留形态，X03 待办）。
+# Node backend 已物理归档（X02）：下方 juhe-ai 服务的 docker/Dockerfile 构建
+# 已随之退役，在本仓库当前状态不可构建；go-only 高性能变体落地前，本文件仅作
+# 拓扑与中间件契约参考，不得用于 `--build` 启动。
 services:
   postgres:
     image: ${JUHE_AI_POSTGRES_IMAGE:?JUHE_AI_POSTGRES_IMAGE must be a Harbor digest image reference}

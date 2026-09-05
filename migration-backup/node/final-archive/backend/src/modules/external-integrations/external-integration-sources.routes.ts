@@ -1,0 +1,523 @@
+import { Router, type Request, type Response } from 'express'
+import { z } from 'zod'
+
+import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { rfc3339InstantSchema } from '../../shared/zod-rfc3339.js'
+import {
+  builtInExternalIntegrationTestSourceId,
+  externalIntegrationScopeOptions
+} from '../../storage/external-integration-source-constants.js'
+import {
+  createExternalIntegrationSourceAuthorizationAsync,
+  createExternalIntegrationSourceTokenAsync,
+  deleteExternalIntegrationSourceAsync,
+  ExternalIntegrationSourcePatchConflictError,
+  findExternalIntegrationSourceAsync,
+  findExternalIntegrationSourceRecordAsync,
+  findExternalIntegrationSourceTokenSecretAsync,
+  listExternalIntegrationSourcesAsync,
+  resetBuiltInExternalIntegrationTestTokenAsync,
+  updateExternalIntegrationSourceAsync,
+  updateExternalIntegrationSourceTokenAsync
+} from '../../storage/external-integration-source.repository.js'
+import type {
+  CreatedExternalIntegrationSourceToken,
+  ExternalIntegrationSourceListItem,
+  ExternalIntegrationSourceRecord
+} from '../../storage/external-integration-source-types.js'
+import { getRequestAuthContext } from '../auth/request-context.js'
+import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
+import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
+import { getExternalPublicApiCatalog } from './external-public-api-catalog.js'
+
+export const externalIntegrationSourcesRouter = Router()
+
+const rateLimitRuleSchema = z.object({
+  windowSeconds: z.number().int().min(1, '限频窗口不能小于 1 秒').max(86400, '限频窗口不能超过 86400 秒'),
+  maxRequests: z.number().int().min(1, '限频次数不能小于 1').max(100000, '限频次数不能超过 100000')
+}).strict()
+
+const expiresAtSchema = z.union([
+  rfc3339InstantSchema('过期时间无效'),
+  z.null()
+]).optional()
+
+const sourceBodySchema = z.object({
+  name: z.string().trim().min(1, '来源系统名称不能为空').max(80, '来源系统名称不能超过 80 个字符'),
+  status: z.enum(['active', 'disabled']).optional(),
+  scopes: z.array(z.string().trim().min(1)).optional(),
+  rateLimits: z.array(rateLimitRuleSchema).max(8, '限频规则最多 8 条').optional(),
+  expiresAt: expiresAtSchema,
+  notes: z.string().trim().max(500, '备注不能超过 500 个字符').nullable().optional()
+}).strict()
+
+const expectedUpdatedAtSchema = rfc3339InstantSchema('外部来源配置版本格式不正确')
+const sourceUpdateBodySchema = sourceBodySchema.partial().extend({
+  expectedUpdatedAt: expectedUpdatedAtSchema
+}).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
+  message: '请提供要修改的来源配置字段'
+})
+
+const sourceDeleteBodySchema = z.object({
+  expectedUpdatedAt: expectedUpdatedAtSchema
+}).strict()
+
+const tokenBodySchema = z.object({
+  name: z.string().trim().min(1, 'Token 名称不能为空').max(80, 'Token 名称不能超过 80 个字符'),
+  status: z.enum(['active', 'disabled', 'revoked']).optional(),
+  scopes: z.array(z.string().trim().min(1)).optional(),
+  expiresAt: expiresAtSchema
+}).strict()
+
+const tokenUpdateBodySchema = tokenBodySchema.partial().extend({
+  expectedUpdatedAt: expectedUpdatedAtSchema
+}).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
+  message: '请提供要修改的 Token 字段'
+})
+
+const listQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  keyword: z.string().trim().optional(),
+  status: z.enum(['all', 'active', 'disabled']).optional()
+})
+
+const idParamSchema = z.object({
+  id: z.string().trim().min(1, '来源系统不存在')
+})
+
+const tokenParamSchema = z.object({
+  id: z.string().trim().min(1, '来源系统不存在'),
+  tokenId: z.string().trim().min(1, 'Token 不存在')
+})
+
+externalIntegrationSourcesRouter.get('/scopes', (_req, res) => {
+  res.json(ok(externalIntegrationScopeOptions))
+})
+
+externalIntegrationSourcesRouter.get('/api-docs', (_req, res) => {
+  res.json(ok(getExternalPublicApiCatalog()))
+})
+
+externalIntegrationSourcesRouter.get('/', async (req, res, next) => {
+  const parsed = listQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '来源系统列表参数无效')))
+    return
+  }
+  try {
+    res.json(ok(await listExternalIntegrationSourcesAsync(parsed.data)))
+  } catch (error) {
+    next(error)
+  }
+})
+
+externalIntegrationSourcesRouter.post('/built-in-test-token/reset', mutationGuard({
+  operationKey: 'external_integration_sources.reset_builtin_test_token',
+  fingerprint: () => ({
+    target: 'built_in_test_token'
+  })
+}), async (req, res) => {
+  try {
+    const token = await resetBuiltInExternalIntegrationTestTokenAsync()
+    const source = await findExternalIntegrationSourceRecordAsync(builtInExternalIntegrationTestSourceId)
+    await recordSourceOperation(req, {
+      action: 'reset_builtin_test_token',
+      operationKey: 'external_integration_sources.reset_builtin_test_token',
+      sourceRefId: source?.id ?? 'built_in_test_token',
+      sourceName: source?.name ?? '内置测试 Token',
+      summary: '重置内置测试 Token',
+      changes: [
+        safeChange('tokenPreview', 'Token 标识', undefined, `${token.tokenPrefix}...${token.tokenSuffix}`)
+      ]
+    })
+    setSecretResponseHeaders(res)
+    res.json(ok({ token }))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '重置内置测试 Token 失败'))
+  }
+})
+
+externalIntegrationSourcesRouter.post('/', mutationGuard({
+  operationKey: 'external_integration_sources.create',
+  fingerprint: (req) => ({
+    name: bodyField(req, 'name'),
+    status: bodyField(req, 'status'),
+    scopes: bodyField(req, 'scopes'),
+    rateLimits: bodyField(req, 'rateLimits'),
+    expiresAt: bodyField(req, 'expiresAt'),
+    notes: bodyField(req, 'notes')
+  })
+}), async (req, res) => {
+  const parsed = sourceBodySchema.safeParse(req.body ?? {})
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '来源系统参数无效')))
+    return
+  }
+  try {
+    const created = await createExternalIntegrationSourceAuthorizationAsync(parsed.data)
+    const source = created.source
+    await recordSourceOperation(req, {
+      action: 'create',
+      operationKey: 'external_integration_sources.create',
+      sourceRefId: source.id,
+      sourceName: source.name,
+      summary: `创建外部来源系统：${source.name}`,
+      changes: [
+        safeChange('name', '名称', undefined, source.name),
+        safeChange('status', '状态', undefined, source.status),
+        safeChange('expiresAt', '到期时间', undefined, source.expiresAt),
+        safeChange('rateLimits', '限频规则', undefined, formatRateLimits(source.rateLimits))
+      ]
+    })
+    setSecretResponseHeaders(res)
+    res.status(201).json(ok({
+      item: createdSourceListItem(source, created.token),
+      token: created.token
+    }))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '来源系统创建失败'))
+  }
+})
+
+externalIntegrationSourcesRouter.get('/:id', async (req, res, next) => {
+  const params = idParamSchema.safeParse(req.params)
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
+    return
+  }
+  try {
+    const source = await findExternalIntegrationSourceAsync(params.data.id)
+    if (!source) {
+      res.status(404).json({ message: '来源系统不存在' })
+      return
+    }
+    res.json(ok(source))
+  } catch (error) {
+    next(error)
+  }
+})
+
+externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
+  operationKey: 'external_integration_sources.update',
+  fingerprint: (req) => ({
+    id: req.params.id,
+    name: bodyField(req, 'name'),
+    status: bodyField(req, 'status'),
+    scopes: bodyField(req, 'scopes'),
+    expiresAt: bodyField(req, 'expiresAt'),
+    rateLimits: bodyField(req, 'rateLimits'),
+    notes: bodyField(req, 'notes'),
+    expectedUpdatedAt: bodyField(req, 'expectedUpdatedAt')
+  })
+}), async (req, res) => {
+  const params = idParamSchema.safeParse(req.params)
+  const body = sourceUpdateBodySchema.safeParse(req.body ?? {})
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
+    return
+  }
+  if (!body.success) {
+    res.status(400).json(badRequest(firstIssueMessage(body.error, '来源系统参数无效')))
+    return
+  }
+  let outcome: Awaited<ReturnType<typeof updateExternalIntegrationSourceAsync>>
+  try {
+    outcome = await updateExternalIntegrationSourceAsync(params.data.id, body.data)
+  } catch (error) {
+    if (error instanceof ExternalIntegrationSourcePatchConflictError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '来源系统更新失败'))
+    return
+  }
+  if (!outcome) {
+    res.status(404).json({ message: '来源系统不存在' })
+    return
+  }
+  if (outcome.changes.length) {
+    await recordSourceOperation(req, {
+      action: 'update',
+      operationKey: 'external_integration_sources.update',
+      sourceRefId: outcome.mutation.id,
+      sourceName: outcome.sourceName,
+      summary: `更新外部来源系统：${outcome.sourceName}`,
+      changes: sourcePatchOperationChanges(outcome.changes)
+    })
+  }
+  res.json(ok(outcome.mutation))
+})
+
+externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
+  operationKey: 'external_integration_sources.delete',
+  fingerprint: (req) => ({
+    id: req.params.id,
+    expectedUpdatedAt: bodyField(req, 'expectedUpdatedAt')
+  })
+}), async (req, res) => {
+  const params = idParamSchema.safeParse(req.params)
+  const body = sourceDeleteBodySchema.safeParse(req.body ?? {})
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
+    return
+  }
+  if (!body.success) {
+    res.status(400).json(badRequest(firstIssueMessage(body.error, '来源系统删除参数无效')))
+    return
+  }
+  let deleted: Awaited<ReturnType<typeof deleteExternalIntegrationSourceAsync>>
+  try {
+    deleted = await deleteExternalIntegrationSourceAsync(params.data.id, body.data.expectedUpdatedAt)
+    if (!deleted) {
+      res.status(404).json({ message: '来源系统不存在' })
+      return
+    }
+  } catch (error) {
+    if (error instanceof ExternalIntegrationSourcePatchConflictError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '删除来源授权失败'))
+    return
+  }
+  await recordSourceOperation(req, {
+    action: 'delete',
+    operationKey: 'external_integration_sources.delete',
+    sourceRefId: params.data.id,
+    sourceName: deleted.name,
+    summary: `删除外部来源系统：${deleted.name}`,
+    changes: [
+      safeChange('deleted', '删除状态', false, true)
+    ]
+  })
+  res.status(204).send()
+})
+
+externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
+  operationKey: 'external_integration_sources.create_token',
+  fingerprint: (req) => ({
+    id: req.params.id,
+    name: bodyField(req, 'name'),
+    status: bodyField(req, 'status'),
+    scopes: bodyField(req, 'scopes'),
+    expiresAt: bodyField(req, 'expiresAt')
+  })
+}), async (req, res) => {
+  const params = idParamSchema.safeParse(req.params)
+  const body = tokenBodySchema.safeParse(req.body ?? {})
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
+    return
+  }
+  if (!body.success) {
+    res.status(400).json(badRequest(firstIssueMessage(body.error, 'Token 参数无效')))
+    return
+  }
+  try {
+    const token = await createExternalIntegrationSourceTokenAsync({
+      sourceRefId: params.data.id,
+      ...body.data
+    })
+    const source = await findExternalIntegrationSourceRecordAsync(params.data.id)
+    await recordSourceOperation(req, {
+      action: 'create_token',
+      operationKey: 'external_integration_sources.create_token',
+      sourceRefId: params.data.id,
+      sourceName: source?.name ?? params.data.id,
+      summary: `生成外部来源系统 Token：${source?.name ?? params.data.id}`,
+      changes: [
+        safeChange('tokenName', 'Token 名称', undefined, token.name),
+        safeChange('tokenPreview', 'Token 标识', undefined, `${token.tokenPrefix}...${token.tokenSuffix}`),
+        safeChange('expiresAt', '到期时间', undefined, token.expiresAt)
+      ]
+    })
+    setSecretResponseHeaders(res)
+    res.status(201).json(ok({ token }))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Token 创建失败'))
+  }
+})
+
+externalIntegrationSourcesRouter.get('/:id/tokens/:tokenId/secret', async (req, res, next) => {
+  const params = tokenParamSchema.safeParse(req.params)
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, 'Token 不存在')))
+    return
+  }
+  try {
+    const token = await findExternalIntegrationSourceTokenSecretAsync(params.data.id, params.data.tokenId)
+    if (!token) {
+      res.status(404).json({ message: 'Token 不存在' })
+      return
+    }
+    setSecretResponseHeaders(res)
+    res.json(ok(token))
+  } catch (error) {
+    next(error)
+  }
+})
+
+externalIntegrationSourcesRouter.patch('/:id/tokens/:tokenId', mutationGuard({
+  operationKey: 'external_integration_sources.update_token',
+  fingerprint: (req) => ({
+    id: req.params.id,
+    tokenId: req.params.tokenId,
+    name: bodyField(req, 'name'),
+    status: bodyField(req, 'status'),
+    scopes: bodyField(req, 'scopes'),
+    expiresAt: bodyField(req, 'expiresAt'),
+    expectedUpdatedAt: bodyField(req, 'expectedUpdatedAt')
+  })
+}), async (req, res) => {
+  const params = tokenParamSchema.safeParse(req.params)
+  const body = tokenUpdateBodySchema.safeParse(req.body ?? {})
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, 'Token 不存在')))
+    return
+  }
+  if (!body.success) {
+    res.status(400).json(badRequest(firstIssueMessage(body.error, 'Token 参数无效')))
+    return
+  }
+  let outcome: Awaited<ReturnType<typeof updateExternalIntegrationSourceTokenAsync>>
+  try {
+    outcome = await updateExternalIntegrationSourceTokenAsync(params.data.id, params.data.tokenId, body.data)
+  } catch (error) {
+    if (error instanceof ExternalIntegrationSourcePatchConflictError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Token 更新失败'))
+    return
+  }
+  if (!outcome) {
+    res.status(404).json({ message: 'Token 不存在' })
+    return
+  }
+  if (outcome.changes.length) {
+    await recordSourceOperation(req, {
+      action: 'update_token',
+      operationKey: 'external_integration_sources.update_token',
+      sourceRefId: params.data.id,
+      sourceName: outcome.sourceName,
+      summary: `更新外部来源系统 Token：${outcome.tokenName}`,
+      changes: tokenPatchOperationChanges(outcome.changes)
+    })
+  }
+  res.json(ok(outcome.mutation))
+})
+
+async function recordSourceOperation(req: Request, input: {
+  action: string
+  operationKey: string
+  sourceRefId: string
+  sourceName: string
+  summary: string
+  changes: ReturnType<typeof safeChange>[]
+}): Promise<void> {
+  const actor = getRequestAuthContext()?.systemAccountId
+  if (!actor) {
+    return
+  }
+  await recordOperationLogAsync({
+    module: 'external_integration_sources',
+    action: input.action,
+    operationKey: input.operationKey,
+    resourceType: 'external_integration_source',
+    resourceId: input.sourceRefId,
+    resourceName: input.sourceName,
+    summary: input.summary,
+    detailLevel: 'full',
+    visibilityScope: 'admin_only',
+    changes: input.changes
+  }, req)
+}
+
+function formatRateLimits(rules: Array<{ windowSeconds: number; maxRequests: number }>): string {
+  return rules.length
+    ? rules.map((rule) => `${rule.windowSeconds}s/${rule.maxRequests}次`).join(', ')
+    : '不限制'
+}
+
+function sourcePatchOperationChanges(changes: Array<{ field: string; before: unknown; after: unknown }>): ReturnType<typeof safeChange>[] {
+  return changes.map((change) => {
+    if (change.field === 'rateLimits') {
+      return safeChange(
+        change.field,
+        '限频规则',
+        formatRateLimits(asRateLimitRules(change.before)),
+        formatRateLimits(asRateLimitRules(change.after))
+      )
+    }
+    if (change.field === 'scopes') {
+      return safeChange(change.field, '接口资源授权', formatScopes(change.before), formatScopes(change.after))
+    }
+    const label = change.field === 'name'
+      ? '名称'
+      : change.field === 'status'
+        ? '状态'
+        : change.field === 'expiresAt'
+          ? '到期时间'
+          : '备注'
+    return safeChange(change.field, label, change.before, change.after)
+  })
+}
+
+function tokenPatchOperationChanges(changes: Array<{ field: string; before: unknown; after: unknown }>): ReturnType<typeof safeChange>[] {
+  return changes.map((change) => safeChange(
+    `token${change.field.slice(0, 1).toUpperCase()}${change.field.slice(1)}`,
+    change.field === 'name'
+      ? 'Token 名称'
+      : change.field === 'status'
+        ? 'Token 状态'
+        : change.field === 'scopes'
+          ? 'Token 接口资源授权'
+          : 'Token 到期时间',
+    change.field === 'scopes' ? formatScopes(change.before) : change.before,
+    change.field === 'scopes' ? formatScopes(change.after) : change.after
+  ))
+}
+
+function asRateLimitRules(value: unknown): Array<{ windowSeconds: number; maxRequests: number }> {
+  return Array.isArray(value)
+    ? value.filter((item): item is { windowSeconds: number; maxRequests: number } => (
+        Boolean(item)
+        && typeof item === 'object'
+        && typeof (item as { windowSeconds?: unknown }).windowSeconds === 'number'
+        && typeof (item as { maxRequests?: unknown }).maxRequests === 'number'
+      ))
+    : []
+}
+
+function formatScopes(value: unknown): string {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').join(', ') : ''
+}
+
+function createdSourceListItem(
+  source: ExternalIntegrationSourceRecord,
+  token: CreatedExternalIntegrationSourceToken
+): ExternalIntegrationSourceListItem {
+  return {
+    id: source.id,
+    name: source.name,
+    status: source.status,
+    scopes: source.scopes,
+    rateLimits: source.rateLimits,
+    expiresAt: source.expiresAt,
+    notes: source.notes,
+    lastUsedAt: source.lastUsedAt,
+    updatedAt: source.updatedAt,
+    primaryToken: {
+      id: token.id,
+      tokenPrefix: token.tokenPrefix,
+      tokenSuffix: token.tokenSuffix
+    },
+    isBuiltIn: source.isBuiltIn
+  }
+}
+
+function setSecretResponseHeaders(res: Response): void {
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('Pragma', 'no-cache')
+}

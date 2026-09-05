@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "src/modules/model-checks/**",
+    "src/modules/background/background-dataset-writer.ts",
+    "src/modules/background/model-quality-scheduled-check.service.ts",
+    "src/storage/model-checks.repository.ts",
+    "src/scripts/maintenance/mockdata/**",
+    "src/scripts/maintenance/mockdata.ts",
+    "src/scripts/regression/model-*.ts",
+    "src/scripts/performance/**/*.ts",
+    "src/scripts/regression/**/*.ts",
+    "src/scripts/smoke/**/*.ts"
+  ]
+}

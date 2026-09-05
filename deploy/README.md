@@ -10,32 +10,28 @@
 | macOS | `bash ./start.sh` |
 | Linux | `bash ./start.sh` |
 
-### 部署模式（JUHE_AI_DEPLOY_MODE）
+### 部署模式（go-only 终态）
 
-启动脚本支持 `JUHE_AI_DEPLOY_MODE` 三模式开关（环境变量或 `backend/.env`，缺省 `hybrid`）：
+发布包是 go-only 形态，只有一条启动路径：`juhe-ai-go-gateway` 以 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true` 绑定 `JUHE_AI_HOST:JUHE_AI_PORT` 成为主入口，`juhe-ai-go-jobs` 承载 F1/F2。Node Web/API 已归档，不再提供 `hybrid` / `node` 部署模式；`JUHE_AI_DEPLOY_MODE` 出现历史值时启动脚本会拒绝启动，唯一合法值是 `go`（缺省即 go）。
 
-- `hybrid`（默认）：现行拓扑，Node Web/API + Go gateway（F3/F4）+ Go jobs（F1/F2），行为与历史版本一致。
-- `go`：只启动 Go 三二进制；gateway 以 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true` 绑定 `JUHE_AI_HOST:JUHE_AI_PORT` 成为主入口，不再要求 Node/pnpm/`backend/dist`。可选预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 启动前执行幂等的 `juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径或 PostgreSQL `--dsn`），`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。go 模式下 `JUHE_AI_OWNER_LOCK_ENABLED=true` 会被拒绝（owner lock 尚无 Go server 包装）。
-- `node`：只启动 Node Web/API，不启动 Go 项目，仅作为回滚兜底入口使用。
+可选预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 启动前执行幂等的 `backend-go/juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径或 PostgreSQL `--dsn`），`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。`JUHE_AI_OWNER_LOCK_ENABLED=true` 会被拒绝（owner lock 尚无 Go server 包装）。
 
 详见 `docs/migration/部署go-only双轨开关.md`（源码仓库内）。
 
 
-发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。发布包包含两个可独立部署的常驻 Go 二进制：`backend-go/juhe-ai-jobs`（Windows 为 `.exe`）承载 F1 运行日志索引与 F2 表监控，`backend-go/juhe-ai-gateway` 承载 F3 审计与 F4 操作日志；`backend-go/juhe-ai-maintenance` 只用于一次性维护命令。Go 原生 grep 仍要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
+发布包可以来自 Windows、macOS 或 Linux 任一打包平台。发布包包含两个可独立部署的常驻 Go 二进制：`backend-go/juhe-ai-jobs`（Windows 为 `.exe`）承载 F1 运行日志索引与 F2 表监控，`backend-go/juhe-ai-gateway` 承载主入口、F3 审计与 F4 操作日志；`backend-go/juhe-ai-maintenance` 只用于一次性维护命令。日志搜索（Go 原生 grep）要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
 
 ## 部署前检查
 
-- Node.js 必须使用官方 LTS，当前支持 22.x LTS（>=22.13.0）或 24.x LTS（>=24.11.0），且内置 SQLite 必须支持 FTS5 / trigram tokenizer。
-- `pnpm` 可用，或 `corepack` 可用且能启用 `pnpm`。
+- Node.js LTS（22.x LTS >=22.13.0 或 24.x LTS >=24.11.0）仍需安装：启动脚本用 `node` 运行 `scripts/start-go-project.mjs` 启动器与健康探测；不再需要 pnpm、`node_modules` 或 `backend/dist`。
 - 默认端口 `3000` 没有冲突；冲突时修改 `backend/.env` 的 `JUHE_AI_PORT`。
 - 当前目录有写入权限和足够磁盘空间。
 
 ## 配置
 
-发布包带有 `backend/.env.example`。可以在正式启动前复制并编辑 `backend/.env`：
+go-only 发布包不再携带 `backend/.env.example`（X02 裁剪）。可以直接手工创建并编辑 `backend/.env`（启动脚本也会在缺失时创建空文件）：
 
 ```powershell
-Copy-Item .\backend\.env.example .\backend\.env -ErrorAction SilentlyContinue
 notepad .\backend\.env
 ```
 
@@ -46,11 +42,8 @@ notepad .\backend\.env
 ```env
 JUHE_AI_HOST=127.0.0.1
 JUHE_AI_PORT=3000
-JUHE_AI_DB_SERVICE_HTTP_HOST=127.0.0.1
-JUHE_AI_DB_SERVICE_HTTP_PORT=0
-# production performance 模式必填；每个 Node 进程使用不同的稳定值。
-JUHE_AI_INSTANCE_ID=juhe-ai-control-1
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
+JUHE_AI_CHAT_DATABASE_PATH=./data/juhe-ai-chat.sqlite3
 JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
 JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/juhe-ai-runtime-log.sqlite3
 JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/juhe-ai-usage-catalog.sqlite3
@@ -84,31 +77,27 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 JUHE_AI_SECRET=可留空由启动脚本首次生成，或换成自己保存的强随机密钥
 JUHE_AI_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 JUHE_AI_OAUTH_PROXY_URL=
-# 业务日界线使用显式 IANA timezone；绝对 API 时间仍始终为 RFC3339 UTC/offset。
-JUHE_AI_USAGE_STATS_TIMEZONE=UTC
 ```
 
 新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 是两把不同密钥，不能留示例文字、不能相互复用或回退到 `JUHE_AI_SECRET`，并须在安全的密码管理或受限 env 中保存。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`；Go F3 原始审计事实、payload/blob 与 hot-search 分别使用上述 F3 专用路径；Go F4 操作日志事实库在 `JUHE_AI_OPERATION_LOG_DATABASE_PATH`，只读业务设置来自 `JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH`。八个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
 
-发布包启动器会为 Node 与 Go 子进程设置 `TZ=UTC`。所有 API、异步任务、日志事件和回执中的绝对时间只接受或输出 RFC3339 的 `Z` 或明确数字 offset，绝不以本机时区或上海裸时间表达。管理页面按浏览器本地时区展示；排班、可用时段和统计日界线等业务日历只使用显式 IANA timezone。`JUHE_AI_USAGE_STATS_TIMEZONE` 必须配置为部署实际采用的 IANA 值，例如 `UTC` 或 `Asia/Shanghai`，它不改变绝对时间协议。
+发布包启动器会为 Go 子进程设置 `TZ=UTC`。所有 API、异步任务、日志事件和回执中的绝对时间只接受或输出 RFC3339 的 `Z` 或明确数字 offset，绝不以本机时区或上海裸时间表达。管理页面按浏览器本地时区展示；排班、可用时段和统计日界线等业务日历只使用显式 IANA timezone（在管理后台「系统设置」中配置，持久化于 `system_settings`）。
 
-启动脚本先启动 Node 并等待其 DB-ready health，再分别启动 Go `juhe-ai-gateway` 与 `juhe-ai-jobs`，确认两个 `/health` 返回 `200` 后，再确认 gateway 的 F3/F4 loopback health 返回 `204`。F1、F2、F3、F4 各自拥有 Store、schema 和 owner lease，且 owner ID 必须在 `backend/.env` 或更高优先级环境中显式配置且稳定；启动脚本绝不生成或改写这些标识。普通单条/单轮错误只记录并交给下一轮处理；租约丢失、启动预检失败、外部停止或 OOM/runtime fatal 等不可恢复故障只结束所属 Go 项目并交由服务管理器恢复。PID 与日志分别位于 `backend/runtime/juhe-ai-go-{gateway,jobs}.pid` 和 `backend/logs/juhe-ai-go-{gateway,jobs}.log`。
+启动脚本先启动 `juhe-ai-go-gateway` 并等待 owner health `3306 /health` 返回 `200`，再确认 F3 `3303 /__aiinternal__/health` 与 F4 `3304 /__aiinternal__/v1/operation-logs/health` 返回 `204`，然后确认业务端口 `/__aisys__/api/health` 返回 `200`；随后启动 `juhe-ai-go-jobs` 并确认 `3305 /health` 返回 `200`。F1、F2、F3、F4 各自拥有 Store、schema 和 owner lease，且 owner ID 必须在 `backend/.env` 或更高优先级环境中显式配置且稳定；启动脚本绝不生成或改写这些标识。普通单条/单轮错误只记录并交给下一轮处理；租约丢失、启动预检失败、外部停止或 OOM/runtime fatal 等不可恢复故障只结束所属 Go 项目并交由服务管理器恢复。PID 与日志分别位于 `backend/runtime/juhe-ai-{gateway,jobs}.pid`（Windows 为 `juhe-ai-go-{gateway,jobs}.pid`）和 `backend/logs/juhe-ai-{gateway,jobs}.log`。
 
-F1 是运行日志索引、cursor、facet 与保留清理的唯一 writer；F2 是表监控采样、快照写入和保留清理的唯一 owner；F3 是原始审计持久化、payload/blob、hot-search 与保留的唯一 writer；F4 是操作日志写入、读取、摘要索引与保留的唯一 owner。Node 对 F1/F2/F3/F4 只保留各自的生产输入或只读查询，不保留旧 Node writer、队列或 fallback。SQLite 的 F1/F2/F3/F4 路径必须物理隔离；PostgreSQL 下各功能优先使用各自 `JUHE_AI_*_POSTGRES_URL`，留空时才回退 `JUHE_AI_POSTGRES_URL`。
+F1 是运行日志索引、cursor、facet 与保留清理的唯一 writer；F2 是表监控采样、快照写入和保留清理的唯一 owner；F3 是原始审计持久化、payload/blob、hot-search 与保留的唯一 writer；F4 是操作日志写入、读取、摘要索引与保留的唯一 owner。gateway 的 system API 组合根直接读写业务库，是业务库唯一 writer。SQLite 的 F1/F2/F3/F4 路径必须物理隔离；PostgreSQL 下各功能优先使用各自 `JUHE_AI_*_POSTGRES_URL`，留空时才回退 `JUHE_AI_POSTGRES_URL`。
 
-`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 分别是 Node/F3 和 Node/F4 共用的显式 HMAC 密钥，不能省略、互用或回退到 `JUHE_AI_SECRET`，且在 production 至少 32 位。两组 `*_INPUT_LISTEN_ADDRESS` 与 `*_INPUT_URL` 必须各自指向同一 loopback 端口。F3/F4 输入 RPC 的默认超时均为 `7000ms`，但业务提交后的 producer 采用 fire-and-forget，不等待 `204`；可分别用对应 `*_INPUT_TIMEOUT_MS` 在 `1000..60000` 毫秒内调整。
+`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 分别是 gateway 进程内 F3、F4 loopback HMAC 输入端点的显式密钥，不能省略、互用或回退到 `JUHE_AI_SECRET`，且在 production 至少 32 位。两组 `*_INPUT_LISTEN_ADDRESS` 与 `*_INPUT_URL` 必须各自指向同一 loopback 端口。F3/F4 输入 RPC 的默认超时均为 `7000ms`，但业务提交后的 producer 采用 fire-and-forget，不等待 `204`；可分别用对应 `*_INPUT_TIMEOUT_MS` 在 `1000..60000` 毫秒内调整。
 
 ### 空 PostgreSQL 库的首次初始化
 
-`start.sh` / `start.ps1` **不会**初始化 PostgreSQL schema。对新建、可销毁且确认为空的 PostgreSQL 库，先在 release 根目录完成依赖安装和完整初始化，再启动 release：
+`start.sh` / `start.ps1` 默认**不**初始化 PostgreSQL schema。对新建、可销毁且确认为空的 PostgreSQL 库，设置 `JUHE_AI_POSTGRES_URL` 后使用 maintenance 预检完成 ensure-schema 与种子，再启动 release：
 
 ```bash
-pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
-node ./backend/dist/scripts/maintenance/init-postgres-schema.js
-bash ./start.sh
+JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true JUHE_AI_GO_MAINTENANCE_SEED=true bash ./start.sh
 ```
 
-完整初始化会写入当前 schema 与默认种子数据，F1/F2/F3/F4 依赖的 `juhe_business.system_settings` 也在其中；跳过这一步时 sidecar 必须明确失败。它只适用于空库或明确可重建的测试库。已有业务库先完成项目/业务备份和临时预演，只按 [高性能模式部署指南](../docs/deploy/高性能模式部署指南.md) 的既有库流程做 `schema-only` 校验或受控迁移，禁止把完整初始化当作普通升级命令。
+它写入当前 schema 与默认种子数据，F1/F2/F3/F4 依赖的 `juhe_business.system_settings` 也在其中；命令幂等，可重复执行。只适用于空库或明确可重建的测试库。已有业务库先完成项目/业务备份和临时预演，只按 [高性能模式部署指南](../docs/deploy/高性能模式部署指南.md) 的既有库流程做 `schema-only` 校验或受控迁移，禁止把完整初始化当作普通升级命令。
 
 ## 启动与验证
 
@@ -138,7 +127,7 @@ tail -n 100 ./backend/logs/juhe-ai-go-gateway.log
 tail -n 100 ./backend/logs/juhe-ai-go-jobs.log
 ```
 
-上例使用默认 F3/F4 端口；如变更对应 `*_INPUT_LISTEN_ADDRESS`，health URL 也必须相应变更。上述 HTTP health 只证明 listener 可用，发布验收仍须从 Node 只读接口确认 F1/F2 数据新鲜，并发起一次可审计业务请求后在管理员审计与操作日志详情中读回同一记录，证明 Node -> F3/F4 -> Node 完整链路。
+上例使用默认 F3/F4 端口；如变更对应 `*_INPUT_LISTEN_ADDRESS`，health URL 也必须相应变更。上述 HTTP health 只证明 listener 可用，发布验收仍须确认 F1/F2 数据新鲜，并发起一次可审计业务请求后在管理员审计与操作日志详情中读回同一记录，证明业务提交 -> F3/F4 -> 管理读面的完整链路。
 
 ## 备份
 
@@ -153,16 +142,4 @@ tail -n 100 ./backend/logs/juhe-ai-go-jobs.log
 
 ## 统计重建
 
-统计重建不是每次上线动作。只有统计表、统计口径、授权消耗规则或额度窗口规则变化时，才在停掉 Web 和 background worker 后执行：
-
-Windows：
-
-```powershell
-node .\backend\dist\scripts\maintenance\rebuild-usage-stats.js
-```
-
-macOS/Linux：
-
-```bash
-node ./backend/dist/scripts/maintenance/rebuild-usage-stats.js
-```
+统计重建不是每次上线动作。只有统计表、统计口径、授权消耗规则或额度窗口规则变化时才执行。go-only 发布包不再携带历史 Node 重建脚本（`backend/dist/scripts/maintenance/rebuild-usage-stats.js` 已随 Node backend 于 X02 归档）；Go 侧等价重建工具落地前，统计重建属未收口能力，执行前先以 `backend-go/juhe-ai-maintenance --help` 核对当前可用维护命令，不要复用归档脚本处理 go-only 的统计库。

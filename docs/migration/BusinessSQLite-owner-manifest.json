@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "generated_from": [
-    "backend/src/modules/db-service/db-service-types.ts:476-1089",
+    "backend/src/modules/db-service/db-service-types.ts:512-1125",
     "backend/src/modules/db-service/db-service-operation-access-mode.ts",
     "backend/src/modules/db-service/db-service-handlers.ts"
   ],
@@ -48,7 +48,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 844,
+        "type_line": 880,
         "access_mode_line": 55,
         "handler_line": 951,
         "entrypoint": "db-service-handler",
@@ -67,7 +67,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1005,
+        "type_line": 1041,
         "access_mode_line": 82,
         "handler_line": 612,
         "entrypoint": "db-service-handler",
@@ -86,7 +86,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 922,
+        "type_line": 958,
         "access_mode_line": 69,
         "handler_line": 1108,
         "entrypoint": "db-service-handler",
@@ -105,7 +105,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 903,
+        "type_line": 939,
         "access_mode_line": 65,
         "handler_line": 1100,
         "entrypoint": "db-service-handler",
@@ -124,7 +124,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 656,
+        "type_line": 692,
         "access_mode_line": 39,
         "handler_line": 799,
         "entrypoint": "db-service-handler",
@@ -143,7 +143,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 611,
+        "type_line": 647,
         "access_mode_line": 31,
         "handler_line": 883,
         "entrypoint": "db-service-handler",
@@ -162,7 +162,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 619,
+        "type_line": 655,
         "access_mode_line": 33,
         "handler_line": 897,
         "entrypoint": "db-service-handler",
@@ -181,7 +181,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 624,
+        "type_line": 660,
         "access_mode_line": 34,
         "handler_line": 908,
         "entrypoint": "db-service-handler",
@@ -200,7 +200,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 915,
+        "type_line": 951,
         "access_mode_line": 68,
         "handler_line": 1106,
         "entrypoint": "db-service-handler",
@@ -219,7 +219,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 957,
+        "type_line": 993,
         "access_mode_line": 74,
         "handler_line": 1125,
         "entrypoint": "db-service-handler",
@@ -238,7 +238,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 963,
+        "type_line": 999,
         "access_mode_line": 75,
         "handler_line": 1127,
         "entrypoint": "db-service-handler",
@@ -257,7 +257,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 994,
+        "type_line": 1030,
         "access_mode_line": 80,
         "handler_line": 1069,
         "entrypoint": "db-service-handler",
@@ -276,7 +276,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 895,
+        "type_line": 931,
         "access_mode_line": 63,
         "handler_line": 1085,
         "entrypoint": "db-service-handler",
@@ -295,7 +295,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 898,
+        "type_line": 934,
         "access_mode_line": 64,
         "handler_line": 1094,
         "entrypoint": "db-service-handler",
@@ -314,7 +314,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 756,
+        "type_line": 792,
         "access_mode_line": 47,
         "handler_line": 589,
         "entrypoint": "db-service-handler",
@@ -333,7 +333,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 737,
+        "type_line": 773,
         "access_mode_line": 44,
         "handler_line": 975,
         "entrypoint": "db-service-handler",
@@ -352,7 +352,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1056,
+        "type_line": 1092,
         "access_mode_line": 90,
         "handler_line": 989,
         "entrypoint": "db-service-handler",
@@ -371,7 +371,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 796,
+        "type_line": 832,
         "access_mode_line": 50,
         "handler_line": 919,
         "entrypoint": "db-service-handler",
@@ -390,7 +390,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 907,
+        "type_line": 943,
         "access_mode_line": 66,
         "handler_line": 1102,
         "entrypoint": "db-service-handler",
@@ -409,7 +409,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1023,
+        "type_line": 1059,
         "access_mode_line": 85,
         "handler_line": 627,
         "entrypoint": "db-service-handler",
@@ -428,7 +428,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 530,
+        "type_line": 566,
         "access_mode_line": 16,
         "handler_line": 406,
         "entrypoint": "db-service-handler",
@@ -447,7 +447,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 550,
+        "type_line": 586,
         "access_mode_line": 20,
         "handler_line": 442,
         "entrypoint": "db-service-handler",
@@ -466,7 +466,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 570,
+        "type_line": 606,
         "access_mode_line": 24,
         "handler_line": 478,
         "entrypoint": "db-service-handler",
@@ -485,7 +485,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 709,
+        "type_line": 745,
         "access_mode_line": 42,
         "handler_line": 713,
         "entrypoint": "db-service-handler",
@@ -504,7 +504,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 875,
+        "type_line": 911,
         "access_mode_line": 58,
         "handler_line": 997,
         "entrypoint": "db-service-handler",
@@ -523,7 +523,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 544,
+        "type_line": 580,
         "access_mode_line": 19,
         "handler_line": 433,
         "entrypoint": "db-service-handler",
@@ -542,7 +542,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 564,
+        "type_line": 600,
         "access_mode_line": 23,
         "handler_line": 469,
         "entrypoint": "db-service-handler",
@@ -561,7 +561,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 585,
+        "type_line": 621,
         "access_mode_line": 27,
         "handler_line": 507,
         "entrypoint": "db-service-handler",
@@ -580,7 +580,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 815,
+        "type_line": 851,
         "access_mode_line": 51,
         "handler_line": 924,
         "entrypoint": "db-service-handler",
@@ -599,7 +599,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 892,
+        "type_line": 928,
         "access_mode_line": 62,
         "handler_line": 774,
         "entrypoint": "db-service-handler",
@@ -618,7 +618,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1035,
+        "type_line": 1071,
         "access_mode_line": 86,
         "handler_line": 637,
         "entrypoint": "db-service-handler",
@@ -637,7 +637,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 787,
+        "type_line": 823,
         "access_mode_line": 49,
         "handler_line": 561,
         "entrypoint": "db-service-handler",
@@ -656,7 +656,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 507,
+        "type_line": 543,
         "access_mode_line": 13,
         "handler_line": 369,
         "entrypoint": "db-service-handler",
@@ -675,7 +675,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 646,
+        "type_line": 682,
         "access_mode_line": 36,
         "handler_line": 784,
         "entrypoint": "db-service-handler",
@@ -694,7 +694,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 911,
+        "type_line": 947,
         "access_mode_line": 67,
         "handler_line": 1104,
         "entrypoint": "db-service-handler",
@@ -713,7 +713,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 538,
+        "type_line": 574,
         "access_mode_line": 18,
         "handler_line": 419,
         "entrypoint": "db-service-handler",
@@ -732,7 +732,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 558,
+        "type_line": 594,
         "access_mode_line": 22,
         "handler_line": 455,
         "entrypoint": "db-service-handler",
@@ -751,7 +751,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 578,
+        "type_line": 614,
         "access_mode_line": 26,
         "handler_line": 491,
         "entrypoint": "db-service-handler",
@@ -770,7 +770,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1075,
+        "type_line": 1111,
         "access_mode_line": 95,
         "handler_line": 1017,
         "entrypoint": "db-service-handler",
@@ -789,7 +789,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1079,
+        "type_line": 1115,
         "access_mode_line": 96,
         "handler_line": 1019,
         "entrypoint": "db-service-handler",
@@ -808,7 +808,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1083,
+        "type_line": 1119,
         "access_mode_line": 97,
         "handler_line": 1021,
         "entrypoint": "db-service-handler",
@@ -827,7 +827,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1048,
+        "type_line": 1084,
         "access_mode_line": 88,
         "handler_line": 647,
         "entrypoint": "db-service-handler",
@@ -846,7 +846,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 840,
+        "type_line": 876,
         "access_mode_line": 54,
         "handler_line": 946,
         "entrypoint": "db-service-handler",
@@ -865,7 +865,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 944,
+        "type_line": 980,
         "access_mode_line": 72,
         "handler_line": 1118,
         "entrypoint": "db-service-handler",
@@ -884,7 +884,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 937,
+        "type_line": 973,
         "access_mode_line": 71,
         "handler_line": 1116,
         "entrypoint": "db-service-handler",
@@ -903,7 +903,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 950,
+        "type_line": 986,
         "access_mode_line": 73,
         "handler_line": 1123,
         "entrypoint": "db-service-handler",
@@ -922,7 +922,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1059,
+        "type_line": 1095,
         "access_mode_line": 91,
         "handler_line": 862,
         "entrypoint": "db-service-handler",
@@ -941,7 +941,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1062,
+        "type_line": 1098,
         "access_mode_line": 92,
         "handler_line": 869,
         "entrypoint": "db-service-handler",
@@ -960,7 +960,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 493,
+        "type_line": 529,
         "access_mode_line": 11,
         "handler_line": 337,
         "entrypoint": "db-service-handler",
@@ -979,7 +979,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 500,
+        "type_line": 536,
         "access_mode_line": 12,
         "handler_line": 353,
         "entrypoint": "db-service-handler",
@@ -998,7 +998,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 534,
+        "type_line": 570,
         "access_mode_line": 17,
         "handler_line": 411,
         "entrypoint": "db-service-handler",
@@ -1017,7 +1017,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 596,
+        "type_line": 632,
         "access_mode_line": 29,
         "handler_line": 525,
         "entrypoint": "db-service-handler",
@@ -1036,7 +1036,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 574,
+        "type_line": 610,
         "access_mode_line": 25,
         "handler_line": 483,
         "entrypoint": "db-service-handler",
@@ -1055,7 +1055,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 554,
+        "type_line": 590,
         "access_mode_line": 21,
         "handler_line": 447,
         "entrypoint": "db-service-handler",
@@ -1074,7 +1074,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 604,
+        "type_line": 640,
         "access_mode_line": 30,
         "handler_line": 543,
         "entrypoint": "db-service-handler",
@@ -1093,7 +1093,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 478,
+        "type_line": 514,
         "access_mode_line": 7,
         "handler_line": 316,
         "entrypoint": "db-service-handler",
@@ -1112,7 +1112,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 515,
+        "type_line": 551,
         "access_mode_line": 14,
         "handler_line": 386,
         "entrypoint": "db-service-handler",
@@ -1131,7 +1131,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1071,
+        "type_line": 1107,
         "access_mode_line": 94,
         "handler_line": 1015,
         "entrypoint": "db-service-handler",
@@ -1150,7 +1150,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 861,
+        "type_line": 897,
         "access_mode_line": 56,
         "handler_line": 960,
         "entrypoint": "db-service-handler",
@@ -1169,7 +1169,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 742,
+        "type_line": 778,
         "access_mode_line": 45,
         "handler_line": 825,
         "entrypoint": "db-service-handler",
@@ -1188,7 +1188,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 750,
+        "type_line": 786,
         "access_mode_line": 46,
         "handler_line": 845,
         "entrypoint": "db-service-handler",
@@ -1207,7 +1207,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1017,
+        "type_line": 1053,
         "access_mode_line": 84,
         "handler_line": 622,
         "entrypoint": "db-service-handler",
@@ -1226,7 +1226,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1013,
+        "type_line": 1049,
         "access_mode_line": 83,
         "handler_line": 617,
         "entrypoint": "db-service-handler",
@@ -1245,7 +1245,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 770,
+        "type_line": 806,
         "access_mode_line": 48,
         "handler_line": 570,
         "entrypoint": "db-service-handler",
@@ -1264,7 +1264,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 871,
+        "type_line": 907,
         "access_mode_line": 57,
         "handler_line": 991,
         "entrypoint": "db-service-handler",
@@ -1283,7 +1283,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 638,
+        "type_line": 674,
         "access_mode_line": 37,
         "handler_line": 749,
         "entrypoint": "db-service-handler",
@@ -1302,7 +1302,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 650,
+        "type_line": 686,
         "access_mode_line": 38,
         "handler_line": 792,
         "entrypoint": "db-service-handler",
@@ -1321,7 +1321,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 836,
+        "type_line": 872,
         "access_mode_line": 53,
         "handler_line": 940,
         "entrypoint": "db-service-handler",
@@ -1340,7 +1340,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1052,
+        "type_line": 1088,
         "access_mode_line": 89,
         "handler_line": 657,
         "entrypoint": "db-service-handler",
@@ -1359,7 +1359,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 615,
+        "type_line": 651,
         "access_mode_line": 32,
         "handler_line": 890,
         "entrypoint": "db-service-handler",
@@ -1378,7 +1378,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 987,
+        "type_line": 1023,
         "access_mode_line": 79,
         "handler_line": 1054,
         "entrypoint": "db-service-handler",
@@ -1397,7 +1397,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 979,
+        "type_line": 1015,
         "access_mode_line": 78,
         "handler_line": 1037,
         "entrypoint": "db-service-handler",
@@ -1416,7 +1416,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 523,
+        "type_line": 559,
         "access_mode_line": 15,
         "handler_line": 404,
         "entrypoint": "db-service-handler",
@@ -1435,7 +1435,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 485,
+        "type_line": 521,
         "access_mode_line": 9,
         "handler_line": 323,
         "entrypoint": "db-service-handler",
@@ -1454,7 +1454,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 675,
+        "type_line": 711,
         "access_mode_line": 40,
         "handler_line": 667,
         "entrypoint": "db-service-handler",
@@ -1473,7 +1473,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 697,
+        "type_line": 733,
         "access_mode_line": 41,
         "handler_line": 688,
         "entrypoint": "db-service-handler",
@@ -1492,7 +1492,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 725,
+        "type_line": 761,
         "access_mode_line": 43,
         "handler_line": 809,
         "entrypoint": "db-service-handler",
@@ -1511,7 +1511,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1067,
+        "type_line": 1103,
         "access_mode_line": 93,
         "handler_line": 1023,
         "entrypoint": "db-service-handler",
@@ -1530,7 +1530,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 929,
+        "type_line": 965,
         "access_mode_line": 70,
         "handler_line": 1112,
         "entrypoint": "db-service-handler",
@@ -1549,7 +1549,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 488,
+        "type_line": 524,
         "access_mode_line": 10,
         "handler_line": 328,
         "entrypoint": "db-service-handler",
@@ -1568,7 +1568,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 975,
+        "type_line": 1011,
         "access_mode_line": 77,
         "handler_line": 1032,
         "entrypoint": "db-service-handler",
@@ -1587,7 +1587,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 971,
+        "type_line": 1007,
         "access_mode_line": 76,
         "handler_line": 1027,
         "entrypoint": "db-service-handler",
@@ -1606,7 +1606,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 592,
+        "type_line": 628,
         "access_mode_line": 28,
         "handler_line": 517,
         "entrypoint": "db-service-handler",
@@ -1625,7 +1625,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 999,
+        "type_line": 1035,
         "access_mode_line": 81,
         "handler_line": 1080,
         "entrypoint": "db-service-handler",
@@ -1644,7 +1644,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1086,
+        "type_line": 1122,
         "access_mode_line": 98,
         "handler_line": 1025,
         "entrypoint": "db-service-handler",
@@ -1663,7 +1663,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 889,
+        "type_line": 925,
         "access_mode_line": 61,
         "handler_line": 764,
         "entrypoint": "db-service-handler",
@@ -1682,7 +1682,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 886,
+        "type_line": 922,
         "access_mode_line": 60,
         "handler_line": 757,
         "entrypoint": "db-service-handler",
@@ -1701,7 +1701,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 1042,
+        "type_line": 1078,
         "access_mode_line": 87,
         "handler_line": 642,
         "entrypoint": "db-service-handler",
@@ -1720,7 +1720,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 882,
+        "type_line": 918,
         "access_mode_line": 59,
         "handler_line": 1009,
         "entrypoint": "db-service-handler",
@@ -1739,7 +1739,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 632,
+        "type_line": 668,
         "access_mode_line": 35,
         "handler_line": 730,
         "entrypoint": "db-service-handler",
@@ -1758,7 +1758,7 @@
       "source": {
         "type_union": "backend/src/modules/db-service/db-service-types.ts",
         "handler": "backend/src/modules/db-service/db-service-handlers.ts",
-        "type_line": 481,
+        "type_line": 517,
         "access_mode_line": 8,
         "handler_line": 321,
         "entrypoint": "db-service-handler",

@@ -134,7 +134,12 @@ for (const route of fixture.routes) {
   for (const evidence of route.nodeContractEvidence) {
     assert.ok(typeof evidence.file === 'string' && evidence.file.length > 0, `${routeKey(route)} Node evidence file must be named`)
     assert.ok(Array.isArray(evidence.tokens) && evidence.tokens.length > 0, `${routeKey(route)} Node evidence tokens must be non-empty`)
-    const nodeContract = await readFile(path.resolve(scriptsDirectory, '..', evidence.file), 'utf8')
+    // Node backend 已物理归档（X02，2026-09-04）：fixture 里的 backend/ Node
+    // 证据文件改从 final-archive 全量归档读取。
+    const evidencePath = evidence.file.startsWith('backend/')
+      ? path.resolve(scriptsDirectory, '..', 'migration-backup/node/final-archive', evidence.file)
+      : path.resolve(scriptsDirectory, '..', evidence.file)
+    const nodeContract = await readFile(evidencePath, 'utf8')
     for (const token of evidence.tokens) {
       assert.ok(nodeContract.includes(token), `${routeKey(route)} Node contract evidence ${evidence.file} must contain ${token}`)
     }

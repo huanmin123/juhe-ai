@@ -5,8 +5,8 @@ package main
 // chain (server.ts: openAICompatibleFilesRouter + openAICompatibleVectorStoresRouter,
 // preResolveGatewayRuntime -> files -> vector-stores). The composition builds
 // the openaicompat Store over the business database and hands the chain a
-// non-protocol dispatcher so /v1/files, /v1/containers and /v1/vector_stores
-// no longer fall through to the legacy bridge; every other non-protocol /v1
+// non-protocol dispatcher covering /v1/files, /v1/containers and
+// /v1/vector_stores; every other non-protocol /v1
 // path keeps the Node 404 JSON contract (rejectUnrecognizedGatewayProtocolRequest).
 
 import (

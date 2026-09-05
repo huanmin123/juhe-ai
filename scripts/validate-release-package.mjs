@@ -18,15 +18,20 @@ const FORBIDDEN_PERSISTENCE_SUFFIXES = [
 const REQUIRED_RELEASE_FILES = [
   'start.sh',
   'start.ps1',
+  // Node backend 已物理归档到 migration-backup/node/final-archive/（X02，
+  // 2026-09-04）。hybrid/node 模式的 backend/dist/server.js 仅用于校验历史
+  // 发布包；当前打包（package-release.*）产出 go-only 发布物并以 go 模式校验。
   'backend/dist/server.js',
   'frontend/dist/index.html'
 ]
 const REQUIRED_GO_PROJECTS = ['jobs', 'gateway', 'maintenance']
 
-// 部署模式校验分支（G20/X03 双轨准备）：
-// - hybrid（默认，与历史行为完全一致）：要求 Node server + 前端 + 三 Go 二进制。
-// - go：go-only 发布物不携带 backend/dist（Node server），但三 Go 二进制必填。
-// - node：回滚兜底校验，不要求 Go 二进制。
+// 部署模式校验分支（X01/X03 go-only 终态）：
+// - go（默认）：go-only 发布物不携带 backend/dist（Node server），但三 Go 二进制必填。
+//   package-release.* 只产出并以 go 模式校验发布物。
+// - hybrid / node：仅为校验历史发布包保留的兼容分支；hybrid 要求 Node server +
+//   前端 + 三 Go 二进制，node（回滚兜底）不要求 Go 二进制。
+const DEFAULT_DEPLOY_MODE = 'go'
 const DEPLOY_MODES = new Set(['hybrid', 'go', 'node'])
 const REQUIRED_RELEASE_FILES_BY_MODE = new Map([
   ['hybrid', REQUIRED_RELEASE_FILES],
@@ -40,10 +45,10 @@ const REQUIRED_GO_PROJECTS_BY_MODE = new Map([
 ])
 
 export function resolveDeployMode(value) {
-  const mode = value === undefined || value === null || value === '' ? 'hybrid' : value
+  const mode = value === undefined || value === null || value === '' ? DEFAULT_DEPLOY_MODE : value
   if (!DEPLOY_MODES.has(mode)) {
     throw new ReleasePackageValidationError(
-      `Unknown deploy mode: ${mode} (expected go, hybrid, node, or omitted for hybrid)`
+      `Unknown deploy mode: ${mode} (expected go, hybrid, node, or omitted for ${DEFAULT_DEPLOY_MODE})`
     )
   }
   return mode
@@ -184,7 +189,7 @@ async function main() {
   const args = process.argv.slice(2)
   let linksOnly = false
   let quiet = false
-  let deployMode = 'hybrid'
+  let deployMode = DEFAULT_DEPLOY_MODE
   const inputPaths = []
 
   for (const arg of args) {

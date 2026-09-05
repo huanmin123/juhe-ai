@@ -231,10 +231,12 @@ function assertSourceBoundaries(): void {
   const authorizationActionsSource = readSource('src/views/authorizations/useAuthorizationActions.ts')
   const routerSource = readSource('src/router/index.ts')
 
+  // Node backend 已归档（X02）；执行入口随 backend workspace 移除，
+  // 对应的团队/统一授权 smoke 面由 Go gateway acceptance 覆盖。
   assert.equal(
     packageJson.scripts?.['test:w4-team-authorization-smoke'],
-    'pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w4-team-authorization-smoke-regression.ts',
-    '前端 package script 应暴露 W4 团队 / 统一授权 smoke'
+    undefined,
+    'W4 smoke 的 backend tsx 执行入口必须已随 Node backend 归档移除'
   )
 
   assertIncludes(scopedApiSource, 'api.systemTeams.list(params)', '授权团队页面管理侧列表必须走 systemTeams')

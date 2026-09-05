@@ -3,6 +3,10 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
   $PSNativeCommandUseErrorActionPreference = $true
 }
 
+# X01/X03 go-only 终态：本脚本是唯一的启动路径。Node Web/API 已物理归档到
+# migration-backup/node/final-archive/（X02），legacybridge 反代已删除，
+# 不再提供 hybrid / node 部署模式；历史值会被 fail-closed 拒绝。
+
 $appDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $appDir
 $env:TZ = 'UTC'
@@ -53,10 +57,11 @@ function New-JuheSecret {
 }
 
 function Get-DeployMode {
-  $mode = if ($env:JUHE_AI_DEPLOY_MODE) { $env:JUHE_AI_DEPLOY_MODE } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_DEPLOY_MODE' -Fallback 'hybrid' }
+  $mode = if ($env:JUHE_AI_DEPLOY_MODE) { $env:JUHE_AI_DEPLOY_MODE } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_DEPLOY_MODE' -Fallback 'go' }
   $normalized = $mode.Trim().ToLowerInvariant()
-  if ($normalized -notin @('hybrid', 'go', 'node')) {
-    throw "JUHE_AI_DEPLOY_MODE must be hybrid, go, or node (got: $mode)."
+  if (-not $normalized) { $normalized = 'go' }
+  if ($normalized -ne 'go') {
+    throw "JUHE_AI_DEPLOY_MODE must be go (got: $mode). The hybrid and node deploy modes were retired with the archived Node backend (X01/X02); go-only is the only supported topology."
   }
   return $normalized
 }
@@ -98,7 +103,7 @@ function Invoke-GoMaintenanceBootstrap {
   if ($env:JUHE_AI_SECRET) { $bootstrapArguments.AddRange([string[]]@('--secret', $env:JUHE_AI_SECRET)) }
   Write-Host 'Running optional Go maintenance preflight (ensure-schema; seed when enabled)...'
   # Relative backend/.env storage paths resolve against backend/, matching the
-  # Node per-file storage layout; the maintenance command is idempotent.
+  # historical per-file storage layout; the maintenance command is idempotent.
   $maintenanceProcess = Start-Process -FilePath $binaryPath -ArgumentList $bootstrapArguments -WorkingDirectory (Join-Path $appDir 'backend') -NoNewWindow -Wait -PassThru
   if ($maintenanceProcess.ExitCode -ne 0) { throw "juhe-ai-maintenance bootstrap failed with exit code $($maintenanceProcess.ExitCode)." }
 }
@@ -125,16 +130,6 @@ function Ensure-DeploymentDefaults {
     Write-Host "Set JUHE_AI_ALLOWED_ORIGINS to $defaultOrigins. Adjust backend/.env if using a public domain or reverse proxy."
   } elseif (-not $env:JUHE_AI_ALLOWED_ORIGINS) {
     $env:JUHE_AI_ALLOWED_ORIGINS = $fileOrigins
-  }
-}
-
-function Test-RipgrepDependency {
-  Push-Location 'backend'
-  try {
-    node --input-type=module -e "import('@vscode/ripgrep').then(({ rgPath }) => import('node:fs').then(({ existsSync }) => process.exit(existsSync(rgPath) ? 0 : 1))).catch(() => process.exit(1))" *> $null
-    return $LASTEXITCODE -eq 0
-  } finally {
-    Pop-Location
   }
 }
 
@@ -234,157 +229,70 @@ function Start-GoProject {
   return [pscustomobject]@{ Process = $process; PidPath = $pidPath; LogPath = $logPath }
 }
 
-function Start-ManagedNodeProcess {
-  param([Parameter(Mandatory = $true)][string]$WorkingDirectory, [Parameter(Mandatory = $true)][string[]]$Arguments)
-  $nodeCommand = Get-Command node -ErrorAction Stop | Select-Object -First 1
-  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $nodeCommand.Source
-  $startInfo.WorkingDirectory = $WorkingDirectory
-  $startInfo.UseShellExecute = $false
-  foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
-  $process = [System.Diagnostics.Process]::new()
-  $process.StartInfo = $startInfo
-  if (-not $process.Start()) { throw 'Unable to start the juhe-ai Web/API process.' }
-  return $process
-}
-
-function Stop-ManagedNodeProcess {
-  param($Process)
-  if ($null -eq $Process -or $Process.HasExited) { return }
-  try { $Process.Kill($true) } catch { if (-not $Process.HasExited) { throw } }
-  $deadline = [DateTime]::UtcNow.AddSeconds(10)
-  while (-not $Process.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200; $Process.Refresh() }
-  if (-not $Process.HasExited) { throw "juhe-ai Web/API process did not stop within 10 seconds (PID $($Process.Id))." }
-}
-
 if (-not (Test-CommandExists 'node')) { throw 'Node.js LTS is required. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) before running this script.' }
 $env:NODE_ENV = if ($env:NODE_ENV) { $env:NODE_ENV } else { 'production' }
 if (-not (Test-Path -LiteralPath 'backend/.env')) {
-  Copy-Item -LiteralPath 'backend/.env.example' -Destination 'backend/.env'
-  Write-Host 'Created backend/.env from backend/.env.example'
+  if (Test-Path -LiteralPath 'backend/.env.example') {
+    Copy-Item -LiteralPath 'backend/.env.example' -Destination 'backend/.env'
+    Write-Host 'Created backend/.env from backend/.env.example'
+  } else {
+    # go-only 发布包不再携带 backend/.env.example（X02 裁剪）：创建空文件，
+    # 由 Ensure-DeploymentDefaults 写入生成的 JUHE_AI_SECRET / ALLOWED_ORIGINS。
+    New-Item -ItemType File -Force 'backend/.env' | Out-Null
+    Write-Host 'Created empty backend/.env (go-only release ships no backend/.env.example).'
+  }
   Write-Host 'Configure all JUHE_AI_*_INSTANCE_ID values and F3/F4 input secrets before production use.'
 }
 Ensure-DeploymentDefaults
 New-Item -ItemType Directory -Force 'backend/data' | Out-Null
 $deployMode = Get-DeployMode
-if ($deployMode -ne 'go') {
-  if (-not (Test-CommandExists 'pnpm')) {
-    if (Test-CommandExists 'corepack') { corepack enable; corepack prepare pnpm@latest --activate } else { throw 'pnpm is required. Install pnpm or enable corepack first.' }
-  }
-  $runtimeCheckPath = 'backend/dist/scripts/preflight/check-node-sqlite.js'
-  if (-not (Test-Path -LiteralPath $runtimeCheckPath)) { throw "Runtime preflight script not found: $runtimeCheckPath. Please rebuild the release package." }
-  if (-not (Test-Path -LiteralPath 'node_modules') -or -not (Test-Path -LiteralPath 'backend/node_modules') -or -not (Test-RipgrepDependency)) {
-    Write-Host 'Installing production dependencies...'
-    pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
-  } else {
-    Write-Host 'Using existing node_modules. Remove node_modules and backend/node_modules to force reinstall.'
-  }
-  node $runtimeCheckPath
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
 
 $hostValue = if ($env:JUHE_AI_HOST) { $env:JUHE_AI_HOST } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_HOST' -Fallback '127.0.0.1' }
 $portValue = if ($env:JUHE_AI_PORT) { $env:JUHE_AI_PORT } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_PORT' -Fallback '3000' }
 $env:JUHE_AI_AUDIT_LOG_INPUT_URL = if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }
 $env:JUHE_AI_OPERATION_LOG_INPUT_URL = if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }
 
-Write-Host "Starting juhe-ai at http://${hostValue}:${portValue} (deploy mode: ${deployMode})"
+Write-Host "Starting juhe-ai at http://${hostValue}:${portValue} (deploy mode: ${deployMode}; go-only: the Go gateway owns the main HTTP entry, Go jobs owns F1/F2)"
 $ownerLockEnabled = if ($env:JUHE_AI_OWNER_LOCK_ENABLED) { $env:JUHE_AI_OWNER_LOCK_ENABLED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_ENABLED' -Fallback 'false' }
-$serverArguments = @('backend/dist/server.js')
-if ($deployMode -eq 'go' -and $ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIgnoreCase)) {
-  throw 'JUHE_AI_OWNER_LOCK_ENABLED=true has no Go-mode server wrapper yet; go mode refuses to start without this deployment guard.'
-}
-if ($deployMode -ne 'go' -and $ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIgnoreCase)) {
-  $ownerManifestPath = [System.IO.Path]::GetFullPath((Join-Path $appDir 'deploy/owner-manifest.json'))
-  $manifestEpoch = node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('deploy/owner-manifest.json','utf8')).deploymentEpoch)"
-  if ($LASTEXITCODE -ne 0 -or -not $manifestEpoch) { throw 'Unable to read deploy/owner-manifest.json deploymentEpoch.' }
-  node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  $ownerLockPath = if ($env:JUHE_AI_OWNER_LOCK_PATH) { $env:JUHE_AI_OWNER_LOCK_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_PATH' -Fallback '' }
-  if (-not [System.IO.Path]::IsPathRooted($ownerLockPath)) { throw 'JUHE_AI_OWNER_LOCK_PATH must be an absolute shared path outside the release directory.' }
-  $ownerLockEpoch = if ($env:JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH) { $env:JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH' -Fallback $manifestEpoch }
-  if ($ownerLockEpoch -ne $manifestEpoch) { throw 'JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH does not match deploy/owner-manifest.json.' }
-  $nodeVersion = node -p "require('./package.json').version"
-  if ($LASTEXITCODE -ne 0 -or -not $nodeVersion) { throw 'Unable to read Node release version.' }
-  node scripts/validate-owner-manifest.mjs --require-deployment-epoch=$ownerLockEpoch --require-node-version=$nodeVersion deploy/owner-manifest.json
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  $env:JUHE_AI_OWNER_MANIFEST_PATH = $ownerManifestPath
-  $env:JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH = $ownerLockEpoch
-  $serverArguments = @('scripts/run-with-owner-lock.mjs', '--lock-path', $ownerLockPath, '--release-root', $appDir, '--deployment-epoch', $ownerLockEpoch, '--role', 'server', '--version', $nodeVersion, '--', 'node', 'backend/dist/server.js')
+if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIgnoreCase)) {
+  throw 'JUHE_AI_OWNER_LOCK_ENABLED=true has no Go-mode server wrapper yet; go-only mode refuses to start without this deployment guard.'
 }
 
 $goGateway = $null
 $goJobs = $null
-$serverProcess = $null
-$serverExitCode = 1
 try {
-  if ($deployMode -ne 'go') {
-    $serverProcess = Start-ManagedNodeProcess -WorkingDirectory $appDir -Arguments $serverArguments
-    Wait-HttpStatus -Process $serverProcess -Url "http://${hostValue}:${portValue}/__aisys__/api/health" -ExpectedStatus 200 -Description 'juhe-ai Web/API process'
+  $configuredSystemApi = if ($env:JUHE_AI_GATEWAY_SYSTEM_API_ENABLED) { $env:JUHE_AI_GATEWAY_SYSTEM_API_ENABLED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_GATEWAY_SYSTEM_API_ENABLED' -Fallback '' }
+  $configuredSystemApi = $configuredSystemApi.Trim().ToLowerInvariant()
+  if ($configuredSystemApi -eq '') {
+    $env:JUHE_AI_GATEWAY_SYSTEM_API_ENABLED = 'true'
+  } elseif ($configuredSystemApi -ne 'true') {
+    throw "go-only deploy requires JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true (got: $configuredSystemApi); the gateway must own the main HTTP entry."
   }
-  if ($deployMode -ne 'node') {
-    if ($deployMode -eq 'go') {
-      $configuredSystemApi = if ($env:JUHE_AI_GATEWAY_SYSTEM_API_ENABLED) { $env:JUHE_AI_GATEWAY_SYSTEM_API_ENABLED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_GATEWAY_SYSTEM_API_ENABLED' -Fallback '' }
-      $configuredSystemApi = $configuredSystemApi.Trim().ToLowerInvariant()
-      if ($configuredSystemApi -eq '') {
-        $env:JUHE_AI_GATEWAY_SYSTEM_API_ENABLED = 'true'
-      } elseif ($configuredSystemApi -ne 'true') {
-        throw "Deploy mode 'go' requires JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true (got: $configuredSystemApi); the gateway must own the main HTTP entry."
-      }
-      $goMaintenanceBootstrap = if ($env:JUHE_AI_GO_MAINTENANCE_BOOTSTRAP) { $env:JUHE_AI_GO_MAINTENANCE_BOOTSTRAP } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_GO_MAINTENANCE_BOOTSTRAP' -Fallback 'false' }
-      if ($goMaintenanceBootstrap.Trim().ToLowerInvariant() -eq 'true') { Invoke-GoMaintenanceBootstrap }
-    }
-    $gatewayHealthUrl = if ($env:JUHE_AI_GATEWAY_HEALTH_URL) { $env:JUHE_AI_GATEWAY_HEALTH_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_GATEWAY_HEALTH_URL' -Fallback 'http://127.0.0.1:3306' }
-    $jobsHealthUrl = if ($env:JUHE_AI_JOBS_HEALTH_URL) { $env:JUHE_AI_JOBS_HEALTH_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_JOBS_HEALTH_URL' -Fallback 'http://127.0.0.1:3305' }
-    $goGateway = Start-GoProject -AppDirectory $appDir -Project gateway -HealthUrl $gatewayHealthUrl
-    $goJobs = Start-GoProject -AppDirectory $appDir -Project jobs -HealthUrl $jobsHealthUrl
-    $auditInputUrl = (if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }).TrimEnd('/')
-    $operationInputUrl = (if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }).TrimEnd('/')
-    Wait-HttpStatus -Process $goGateway.Process -Url "$auditInputUrl/__aiinternal__/health" -ExpectedStatus 204 -Description 'juhe-ai-go-gateway F3'
-    Wait-HttpStatus -Process $goGateway.Process -Url "$operationInputUrl/__aiinternal__/v1/operation-logs/health" -ExpectedStatus 204 -Description 'juhe-ai-go-gateway F4'
-    if ($deployMode -eq 'go') {
-      Wait-HttpStatus -Process $goGateway.Process -Url "http://${hostValue}:${portValue}/__aisys__/api/health" -ExpectedStatus 200 -Description 'juhe-ai-go-gateway system API'
-    }
-    Write-Host "Started juhe-ai-go-gateway (PID $($goGateway.Process.Id)) and juhe-ai-go-jobs (PID $($goJobs.Process.Id))."
-  }
-  if ($deployMode -eq 'go') {
-    while (-not $goGateway.Process.HasExited -and -not $goJobs.Process.HasExited) {
-      Start-Sleep -Seconds 1
-      $goGateway.Process.Refresh()
-      $goJobs.Process.Refresh()
-    }
-    if ($goGateway.Process.HasExited) {
-      if (Test-Path -LiteralPath $goGateway.LogPath) { Get-Content -LiteralPath $goGateway.LogPath -Tail 20 | Write-Error }
-      throw "juhe-ai-go-gateway exited unexpectedly (PID $($goGateway.Process.Id))."
-    }
-    if (Test-Path -LiteralPath $goJobs.LogPath) { Get-Content -LiteralPath $goJobs.LogPath -Tail 20 | Write-Error }
-    throw "juhe-ai-go-jobs exited unexpectedly (PID $($goJobs.Process.Id))."
-  }
-  if ($deployMode -eq 'node') {
-    while (-not $serverProcess.HasExited) {
-      Start-Sleep -Seconds 1
-      $serverProcess.Refresh()
-    }
-    throw "juhe-ai Web/API process exited unexpectedly (PID $($serverProcess.Id))."
-  }
-  while (-not $serverProcess.HasExited -and -not $goGateway.Process.HasExited -and -not $goJobs.Process.HasExited) {
+  $goMaintenanceBootstrap = if ($env:JUHE_AI_GO_MAINTENANCE_BOOTSTRAP) { $env:JUHE_AI_GO_MAINTENANCE_BOOTSTRAP } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_GO_MAINTENANCE_BOOTSTRAP' -Fallback 'false' }
+  if ($goMaintenanceBootstrap.Trim().ToLowerInvariant() -eq 'true') { Invoke-GoMaintenanceBootstrap }
+  $gatewayHealthUrl = if ($env:JUHE_AI_GATEWAY_HEALTH_URL) { $env:JUHE_AI_GATEWAY_HEALTH_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_GATEWAY_HEALTH_URL' -Fallback 'http://127.0.0.1:3306' }
+  $jobsHealthUrl = if ($env:JUHE_AI_JOBS_HEALTH_URL) { $env:JUHE_AI_JOBS_HEALTH_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_JOBS_HEALTH_URL' -Fallback 'http://127.0.0.1:3305' }
+  $goGateway = Start-GoProject -AppDirectory $appDir -Project gateway -HealthUrl $gatewayHealthUrl
+  $goJobs = Start-GoProject -AppDirectory $appDir -Project jobs -HealthUrl $jobsHealthUrl
+  $auditInputUrl = (if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }).TrimEnd('/')
+  $operationInputUrl = (if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }).TrimEnd('/')
+  Wait-HttpStatus -Process $goGateway.Process -Url "$auditInputUrl/__aiinternal__/health" -ExpectedStatus 204 -Description 'juhe-ai-go-gateway F3'
+  Wait-HttpStatus -Process $goGateway.Process -Url "$operationInputUrl/__aiinternal__/v1/operation-logs/health" -ExpectedStatus 204 -Description 'juhe-ai-go-gateway F4'
+  Wait-HttpStatus -Process $goGateway.Process -Url "http://${hostValue}:${portValue}/__aisys__/api/health" -ExpectedStatus 200 -Description 'juhe-ai-go-gateway system API'
+  Write-Host "Started juhe-ai-go-gateway (PID $($goGateway.Process.Id)) and juhe-ai-go-jobs (PID $($goJobs.Process.Id))."
+  while (-not $goGateway.Process.HasExited -and -not $goJobs.Process.HasExited) {
     Start-Sleep -Seconds 1
-    $serverProcess.Refresh()
     $goGateway.Process.Refresh()
     $goJobs.Process.Refresh()
   }
-  if ($goGateway.Process.HasExited -and -not $serverProcess.HasExited) {
+  if ($goGateway.Process.HasExited) {
     if (Test-Path -LiteralPath $goGateway.LogPath) { Get-Content -LiteralPath $goGateway.LogPath -Tail 20 | Write-Error }
     throw "juhe-ai-go-gateway exited unexpectedly (PID $($goGateway.Process.Id))."
   }
-  if ($goJobs.Process.HasExited -and -not $serverProcess.HasExited) {
-    if (Test-Path -LiteralPath $goJobs.LogPath) { Get-Content -LiteralPath $goJobs.LogPath -Tail 20 | Write-Error }
-    throw "juhe-ai-go-jobs exited unexpectedly (PID $($goJobs.Process.Id))."
-  }
-  if ($serverProcess.HasExited) { throw "juhe-ai Web/API process exited unexpectedly (PID $($serverProcess.Id))." }
+  if (Test-Path -LiteralPath $goJobs.LogPath) { Get-Content -LiteralPath $goJobs.LogPath -Tail 20 | Write-Error }
+  throw "juhe-ai-go-jobs exited unexpectedly (PID $($goJobs.Process.Id))."
 } finally {
-  if ($null -ne $serverProcess) { Stop-ManagedNodeProcess -Process $serverProcess }
   if ($null -ne $goJobs) { Stop-GoProject -PidPath $goJobs.PidPath -BinaryName 'juhe-ai-jobs.exe' }
   if ($null -ne $goGateway) { Stop-GoProject -PidPath $goGateway.PidPath -BinaryName 'juhe-ai-gateway.exe' }
 }
-exit $serverExitCode
+exit 0

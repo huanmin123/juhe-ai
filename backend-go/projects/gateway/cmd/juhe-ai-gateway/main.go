@@ -511,7 +511,6 @@ func main() {
 			"databaseDriver", runtimeCfg.DatabaseDriver,
 			"cacheDriver", runtimeCfg.CacheDriver,
 			"runtimeStateDriver", runtimeCfg.RuntimeStateDriver,
-			"legacyBridge", runtimeCfg.LegacyBridgeTarget,
 			"chainEnabled", runtimeCfg.ChainEnabled,
 		)
 	}

@@ -45,11 +45,9 @@ func (o *Options) fill() {
 }
 
 type Kernel struct {
-	opts         Options
-	mux          *http.ServeMux
-	catchAll     sync.Once
-	fallback     http.Handler
-	fallbackOnce sync.Once
+	opts     Options
+	mux      *http.ServeMux
+	catchAll sync.Once
 }
 
 func New(options Options) *Kernel {
@@ -65,15 +63,6 @@ func (k *Kernel) Register(pattern string, handler http.Handler) {
 
 func (k *Kernel) RegisterFunc(pattern string, handler http.HandlerFunc) {
 	k.mux.HandleFunc(pattern, handler)
-}
-
-// RegisterFallback mounts the handler for requests unmatched by any pattern
-// (the legacybridge during migration). Only the first registration wins; the
-// default fallback is the Node 404 JSON contract.
-func (k *Kernel) RegisterFallback(handler http.Handler) {
-	k.fallbackOnce.Do(func() {
-		k.fallback = handler
-	})
 }
 
 // Handler returns the fully wrapped root handler.
@@ -99,14 +88,13 @@ func (k *Kernel) rootHandler() http.Handler {
 	// Catch-all: Node's end-of-chain 404 JSON. Registered in New() is not
 	// possible (mux not shared); guard with sync.Once for idempotency because
 	// Handler() may be invoked multiple times (tests, health snapshots).
+	// X01 go-only terminal state: the legacybridge fallback registration was
+	// deleted with the archived Node origin, so every unmatched request takes
+	// this contract.
 	k.catchAll.Do(func() {
-		if k.fallback != nil {
-			k.mux.Handle("/", k.fallback)
-		} else {
-			k.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-				WriteAPINotFound(w)
-			})
-		}
+		k.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			WriteAPINotFound(w)
+		})
 	})
 	limited := bodyLimitMiddleware(k.opts.SystemAPIPrefix, k.opts.JSONBodyLimitBytes)(k.mux)
 	rateLimited := limited

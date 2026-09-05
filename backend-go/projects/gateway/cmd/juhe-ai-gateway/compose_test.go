@@ -243,49 +243,6 @@ func TestComposeSystemAPIMountsKernelContract(t *testing.T) {
 	}
 }
 
-func TestComposeSystemAPIBridgesUnflippedPrefixes(t *testing.T) {
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"node":true,"path":"` + r.URL.Path + `"}`))
-	}))
-	defer origin.Close()
-
-	cfg := composeTestConfig(t)
-	cfg.LegacyBridgeTarget = origin.URL
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditConfig)
-	if err != nil {
-		t.Fatalf("compose system api: %v", err)
-	}
-	defer composed.Shutdown()
-	seedSystemSettings(t, composed.DB)
-	if composed.Bridge == nil {
-		t.Fatal("legacy bridge missing")
-	}
-
-	server := httptest.NewServer(composed.Kernel)
-	defer server.Close()
-	response, err := http.Get(server.URL + "/v1/chat/completions")
-	if err != nil {
-		t.Fatalf("GET /v1: %v", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("bridged /v1 status=%d", response.StatusCode)
-	}
-	var payload map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload["node"] != true || payload["path"] != "/v1/chat/completions" {
-		t.Fatalf("bridged payload=%#v", payload)
-	}
-}
-
 // TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers proves the
 // runtime-state driver switch (BUG-0171.4): with JUHE_AI_RUNTIME_STATE_DRIVER
 // = redis and the captcha enabled, the captcha route serves challenges from
