@@ -49,6 +49,14 @@
 - 行为影响：修复后所有 Go 切片共享同一套可验证的 HTTP 契约；在修复和回放完成前不得宣称 K1 archived 或继续扩大 Go 入口范围。
 - 发布异常处理：压缩/trace/去重任一 golden 不一致即停止切换；不通过 Node↔Go 跨进程调用绕过内核差异。
 
+## 已确认子项：Accept-Encoding 的 q=0 被 Go 错当成接受 gzip
+
+- 对照事实：Node `compression` 在响应头阶段使用 `Negotiator.encoding(...)` 选择编码；当请求为 `Accept-Encoding: gzip;q=0` 且响应体达到 1024 字节时，gzip 的质量为 0，不会选择 gzip，响应保持 identity（同时仍会按 middleware 流程处理 `Vary: Accept-Encoding`）。
+- 历史 Go：`backend-go/projects/gateway/internal/kernel/compression.go` 的 `acceptsGzip` 只把 `;` 前的 token 与 `gzip` 比较，忽略 `q` 参数。`gzip;q=0` 会返回 `true`，随后达到阈值的可写响应设置 `Content-Encoding: gzip`。
+- 可观察结果：同一可压缩、长度超过阈值的响应，在客户端明确声明不接受 gzip 时，Node 返回未压缩正文，Go 返回 gzip 正文；不支持 gzip 解码或按协商严格校验的客户端会出现正文解析失败，缓存/代理的内容协商结果也会偏离。
+- 证据范围：Node 历史实现 `backend/src/shared/http-compression.ts` 调用 `compression.filter`，依赖版本 `backend/node_modules/compression/index.js` 的 `Negotiator` 分支（`encoding(...)`）；Go 证据为提交 `b3115e675` 中的 `acceptsGzip` 实现。该结论不依赖当前未提交工作区。
+- 修复门槛：实现与 Node 一致的编码权重/不可接受处理，并补充 `gzip;q=0`、缺失 header、并列权重和大响应 golden 用例；在回放通过前不得将 K1 标记为已归档。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
