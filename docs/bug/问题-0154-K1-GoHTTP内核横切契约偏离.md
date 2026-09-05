@@ -17,7 +17,7 @@
 - 现象：K1 提交 `b3115e675` 新增 `backend-go/projects/gateway/internal/kernel`，作为后续 Go 管理入口的横切 HTTP 内核；与 Node `shared/http-compression`、`request-context`、`http-security`、`deduplication/mutation-guard` 对照后，存在多项客户端可观察差异。
 - 期望：Go 入口接管后，响应压缩、安全头、trace、请求体错误和 mutation 去重应与 Node 的状态码、头部、缓存及重试语义一致。
 - 实际：
-  1. `compression.go` 只按 token 接受 gzip，忽略 `q=0`/权重、br/deflate、compressible Content-Type、`Cache-Control: no-transform` 和 HEAD；只在单次首次写入达到 1024B 时压缩，多次小写入不会累计；不压缩响应也不会按 Node 保留 `Vary: Accept-Encoding`。
+  1. `compression.go` 只按 token 接受 gzip，忽略 `q=0`/权重、br/deflate、compressible Content-Type、`Cache-Control: no-transform` 和 HEAD；会累计多次写入并在总量达到 1024B 时压缩，但过滤和协商边界仍与 Node 不同；不压缩响应也不会按 Node 保留 `Vary: Accept-Encoding`。
   2. Go 不在响应中设置 `x-trace-id`，也不回退 `x-trace-id`/`x-correlation-id`；`traceparent` 未按 Node 的四段、版本和全零 ID 规则严格校验。
   3. Go CSP 的 `script-src` 包含 `'unsafe-inline'`，Node 仅允许 `'self'`，安全策略被放宽。
   4. Go mutation guard 在 JSON parser 前读取并尝试解析原始 body，忽略 `ReadAll`/JSON 错误后仍可能先 claim；畸形或超大请求随后才由 decoder 返回 400/413，TTL 内重试可变成 409。Go decoder 还接受非 `application/json` 的合法 JSON，而 Node `express.json()` 默认不解析该类型。
