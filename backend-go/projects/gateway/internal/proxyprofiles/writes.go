@@ -119,10 +119,7 @@ func (s *Store) Create(ctx context.Context, input proxyInput, systemAccountID st
 	query := `
 		INSERT INTO ` + s.table("proxy_profiles") + ` (id, system_account_id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	var enabledValue any = int64(0)
-	if profile.Enabled {
-		enabledValue = int64(1)
-	}
+	var enabledValue any = s.enabledDBValue(profile.Enabled)
 	_, err := s.db.ExecContext(ctx, s.bind(query),
 		profile.ID, systemAccountID, profile.Name, nullIfEmpty(profile.Description), profile.Type, profile.Host,
 		profile.Port, nullIfEmpty(profile.Username), passwordEncrypted, enabledValue, profile.TestStatus, now, now)
@@ -268,6 +265,10 @@ func (s *Store) Patch(ctx context.Context, id string, input proxyInput) (*patchO
 	if input.Enabled != nil {
 		add("enabled", "enabled", current.enabled, *input.Enabled, false)
 		if current.enabled != *input.Enabled {
+			// The assignment just appended carries the JSON value (bool); the
+			// bound database value is dialect-shaped (Node
+			// buildProxyManagementPatchPlan proxy.repository.ts:978).
+			assignments[len(assignments)-1].value = s.enabledDBValue(*input.Enabled)
 			// Node: enabled flips set runtimeChanged only (no test reset).
 			runtimeChanged = true
 		}
@@ -331,10 +332,14 @@ func (s *Store) Patch(ctx context.Context, id string, input proxyInput) (*patchO
 		params = append(params, updatedAtCandidate, updatedAtCandidate)
 	}
 	params = append(params, id, currentUpdatedAt)
+	// Node bumps the timestamp when the same-millisecond collision occurs;
+	// the SQLite CASE expression mirrors that exactly. The PG CAS predicate
+	// casts the revision text explicitly (patchProxyForManagementAsync
+	// proxy.repository.ts:856).
 	updateQuery := `
 		UPDATE ` + s.table("proxy_profiles") + `
 		SET ` + strings.Join(setClauses, ", ") + `
-		WHERE id = ? AND updated_at = ?`
+		WHERE id = ? AND updated_at = ` + s.revisionCastPlaceholder()
 	result, err := s.db.ExecContext(ctx, s.bind(updateQuery), params...)
 	if err != nil {
 		if isProxyNameDuplicate(err) {
@@ -462,7 +467,8 @@ func (s *Store) loadProfileRow(ctx context.Context, id string) (*profileRow, err
 	var enabled any
 	var port any
 	query := `
-		SELECT id, name, description, type, host, port, username, password_encrypted, enabled, test_status, updated_at
+		SELECT id, name, description, type, host, port, username, password_encrypted, enabled, test_status, ` +
+		s.revisionSelectExpression() + `
 		FROM ` + s.table("proxy_profiles") + `
 		WHERE id = ?`
 	err := s.db.QueryRowContext(ctx, s.bind(query), id).Scan(
@@ -586,4 +592,40 @@ func toTextValue(value any) string {
 	default:
 		return ""
 	}
+}
+
+// enabledDBValue shapes the bound boolean for the dialect: PG columns are
+// `enabled boolean` and take the bool directly (Node createProxyAsync
+// proxy.repository.ts:558 passes proxy.enabled; buildProxyManagementPatchPlan
+// line 978 binds `next` on PG); SQLite keeps the 0/1 integer (line 517 and the
+// toSqliteValues mapping in database-client.ts:377).
+func (s *Store) enabledDBValue(enabled bool) any {
+	if s.pg {
+		return enabled
+	}
+	if enabled {
+		return int64(1)
+	}
+	return int64(0)
+}
+
+// revisionSelectExpression textifies updated_at on PG so the revision scans
+// back as text (Node proxyManagementPatchSelectColumns proxy.repository.ts:887-889
+// and proxySummarySelectColumns line 450 use the same to_char US pattern); the
+// SQLite column is already RFC3339 text.
+func (s *Store) revisionSelectExpression() string {
+	if s.pg {
+		return `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
+	}
+	return "updated_at"
+}
+
+// revisionCastPlaceholder wraps the CAS parameter on PG (Node
+// patchProxyForManagementAsync proxy.repository.ts:856:
+// `updated_at = CAST(? AS timestamptz)`).
+func (s *Store) revisionCastPlaceholder() string {
+	if s.pg {
+		return "CAST(? AS timestamptz)"
+	}
+	return "?"
 }

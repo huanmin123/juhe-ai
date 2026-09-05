@@ -42,7 +42,14 @@ type Deps struct {
 	// store (Node runtimeConfig.accountHealthJobs.outcomeSqlitePath); nil
 	// keeps the merge absent exactly like an unconfigured Node source.
 	HealthOutcomes *HealthOutcomeSource
+	// RuntimeMode mirrors runtimeConfig.runtimeMode ('standalone' |
+	// 'performance'); empty keeps the standalone contract (fixed role list
+	// exports for the system-metrics trend statuses).
+	RuntimeMode string
 }
+
+// runtimeStandalone mirrors runtimeConfig.runtimeMode === 'standalone'.
+func (d *Deps) runtimeStandalone() bool { return d.RuntimeMode != "performance" }
 
 // Mount wires the statreads route families:
 //

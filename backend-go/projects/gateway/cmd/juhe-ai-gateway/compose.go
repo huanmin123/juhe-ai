@@ -86,9 +86,9 @@ import (
 //	/__aisys__/api/usage-records + /my-*           -> statreads.Deps.Mount (X04)
 //	/__aisys__/api/authorization-options + /my-*   -> authz.Deps.MountAuthorizationOptions (X04)
 //	/__aisys__/api/proxies                         -> proxyprofiles.Mount (X04)
-//	/__aisys__/api/table-monitor (3 GET)           -> tablemonitor.Deps.Mount (X04; the
-//	  non-business-data cleanup POST stays Node-owned per the W6 record: the
-//	  gateway has no record-maintenance worker channel)
+//	/__aisys__/api/table-monitor (3 GET + cleanup POST) -> tablemonitor.Deps.Mount
+//	  (the cleanup POST enqueues the Node-shaped job through the durable
+//	  record_maintenance_jobs channel; the jobs wave drains it)
 //	/__aisys__/api/ui-bootstrap + /my-*            -> uibootstrap.Deps.Mount (X04)
 //	/__aisys__/help (static help center)           -> helpweb.Deps.Mount (X04; disabled
 //	  unless JUHE_AI_FRONTEND_DIST_PATH points at the frontend dist)
@@ -686,7 +686,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	(&ipstats.Deps{Store: ipStatsStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	// X04 404 项补齐: stats + usage-records (statreads), ui-bootstrap,
 	// authorization-options (authz), proxies (proxyprofiles) and the
-	// table-monitor read family. The cleanup POST stays Node-owned (W6).
+	// table-monitor family (cleanup POST dispatches through the durable
+	// record_maintenance_jobs table; jobs-side drain stays jobs-owned).
 	authzDeps := &authz.Deps{Store: authzStore, Sink: sink, Auth: authDeps}
 	authzDeps.Mount(kern)
 	authzDeps.MountAuthorizationOptions(kern)
@@ -706,7 +707,16 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create table monitor store: %w", err)
 	}
-	(&tablemonitor.Deps{Store: tableMonitorStore, Cache: tablemonitor.NewOverviewCache()}).Mount(kern, authDeps)
+	recordMaintenanceDispatch, err := tablemonitor.NewDurableRecordMaintenanceDispatch(composed.db, composed.pgDialect, time.Now)
+	if err != nil {
+		return nil, fmt.Errorf("create record maintenance dispatch: %w", err)
+	}
+	(&tablemonitor.Deps{
+		Store:    tableMonitorStore,
+		Cache:    tablemonitor.NewOverviewCache(),
+		Dispatch: recordMaintenanceDispatch,
+		Sink:     sink,
+	}).Mount(kern, authDeps)
 	var healthOutcomes *statreads.HealthOutcomeSource
 	if cfg.AccountHealthOutcomeSQLitePath != "" {
 		healthOutcomes = &statreads.HealthOutcomeSource{SQLitePath: cfg.AccountHealthOutcomeSQLitePath}
@@ -728,6 +738,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		Timezone:            statreads.NewSystemSettingsTimezoneSource(composed.db, composed.pgDialect),
 		GoRuntimeMetricsURL: cfg.GoRuntimeMetricsURL,
 		HealthOutcomes:      healthOutcomes,
+		RuntimeMode:         cfg.RuntimeMode,
 	}).Mount(kern)
 	// X04: the /__aisys__/help static help center, session-gated like the Node
 	// web layer (requireHelpSession + role redirects over dist/help).

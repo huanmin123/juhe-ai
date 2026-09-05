@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"golang.org/x/text/unicode/norm"
 )
 
 // AI-performance read family (Node usage-stats-ai-performance.repository.ts):
@@ -261,11 +262,18 @@ func (d *Deps) defaultAiPerformanceAccountCandidates(r *http.Request, scope perf
 	}
 	candidates := make([]aiPerfCandidate, 0, len(rows))
 	for _, row := range rows {
+		// Node Number(row.rank ?? 0): a NULL snapshot rank coerces to 0 and
+		// therefore sorts first in the merge ordering
+		// (usage-stats-ai-performance.repository.ts:438 / 477).
+		rank := int64(0)
+		if row.nullNumber("rank") != nil {
+			rank = *row.nullNumber("rank")
+		}
 		candidates = append(candidates, aiPerfCandidate{
 			ID:                 row.text("scope_id"),
 			RequestCountLast7d: row.number("request_count_last_7d"),
 			LastStatHour:       row.nullText("last_stat_hour"),
-			Rank:               row.nullNumber("rank"),
+			Rank:               &rank,
 		})
 	}
 	return candidates, nil
@@ -279,12 +287,27 @@ func (d *Deps) defaultAiPerformanceAccounts(r *http.Request, scope perfScopeStat
 	return d.mergeAiPerformanceStatsWithAccounts(r, scope, candidates)
 }
 
+// explicitAiPerformanceAccounts mirrors loadExplicitAiPerformanceAccounts*
+// (usage-stats-ai-performance.repository.ts:496-504 / 521-529): hydrate the
+// requested ids once, then re-sort to the requested accountIds order (the
+// merge-level rank/name ordering is overridden for explicit selections).
 func (d *Deps) explicitAiPerformanceAccounts(r *http.Request, scope perfScopeState, accountIds []string) ([]aiPerfAccountRow, error) {
 	candidates := make([]aiPerfCandidate, 0, len(accountIds))
 	for _, id := range accountIds {
 		candidates = append(candidates, aiPerfCandidate{ID: id})
 	}
-	return d.mergeAiPerformanceStatsWithAccounts(r, scope, candidates)
+	merged, err := d.mergeAiPerformanceStatsWithAccounts(r, scope, candidates)
+	if err != nil {
+		return nil, err
+	}
+	order := make(map[string]int, len(accountIds))
+	for index, id := range accountIds {
+		order[id] = index
+	}
+	sort.SliceStable(merged, func(left, right int) bool {
+		return order[merged[left].ID] < order[merged[right].ID]
+	})
+	return merged, nil
 }
 
 // mergeAiPerformanceStatsWithAccounts mirrors the business-database hydration
@@ -395,10 +418,17 @@ func (d *Deps) mergeAiPerformanceStatsWithAccounts(r *http.Request, scope perfSc
 
 // aiPerformanceKeywordAccountIds mirrors the keyword option query: direct
 // accounts, authorized instances and (scoped) group-authorized accounts.
+// SQLite keeps the Node SQLite path (two instr queries at
+// usage-stats-ai-performance.repository.ts:665-686); PostgreSQL ports the Node
+// PG path (single UNION ALL candidate query with source_priority semantics and
+// in-database ROW_NUMBER dedupe, lines 711-791).
 func (d *Deps) aiPerformanceKeywordAccountIds(r *http.Request, scope perfScopeState, keyword string, limit int) ([]string, error) {
 	normalized := nfkcTrim(keyword)
 	if normalized == "" {
 		return nil, nil
+	}
+	if d.PGDialect {
+		return d.aiPerformanceKeywordAccountIdsPostgres(r, scope, normalized, limit)
 	}
 	ids := []string{}
 	appendLimit := func(current []string, rows []Row) []string {
@@ -485,6 +515,133 @@ func (d *Deps) aiPerformanceKeywordAccountIds(r *http.Request, scope perfScopeSt
 	}
 	ids = appendLimit(ids, rows)
 	return ids, nil
+}
+
+// aiPerformanceKeywordAccountIdsPostgres ports the keyword candidate query of
+// Node loadAiPerformanceAccountOptionRowsAsync (Postgres path,
+// usage-stats-ai-performance.repository.ts:711-791): one UNION ALL over the
+// direct / authorized-instance / group-visible / source-name branches with
+// source_priority 0=own, 1=authorized (or global instance), 2=group-visible,
+// 3=instance whose source name matches, deduped and ordered in-database by
+// ROW_NUMBER over (source_priority, sort_name COLLATE "C", id). The escaped
+// substring LIKE keeps % / _ / \ literal (postgresSubstringLikePattern).
+func (d *Deps) aiPerformanceKeywordAccountIdsPostgres(r *http.Request, scope perfScopeState, normalized string, limit int) ([]string, error) {
+	globalScope := scope.SystemAccountID == globalStatsSystemAccountID
+	pattern := postgresSubstringLikePattern(normalized)
+	keywordParams := func() []any { return []any{pattern} }
+	candidateSQL := []string{}
+	params := []any{}
+	if globalScope {
+		candidateSQL = append(candidateSQL, `
+			SELECT accounts.id, accounts.name AS sort_name, 0 AS source_priority
+			FROM `+d.businessTable("accounts")+` accounts
+			WHERE accounts.deleted_at IS NULL
+				AND accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\'
+		`)
+		params = append(params, keywordParams()...)
+	} else {
+		candidateSQL = append(candidateSQL, `
+			SELECT accounts.id, accounts.name AS sort_name, 0 AS source_priority
+			FROM `+d.businessTable("accounts")+` accounts
+			WHERE accounts.system_account_id = ?
+				AND accounts.deleted_at IS NULL
+				AND accounts.authorization_instance_authorization_id IS NULL
+				AND accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\'
+		`)
+		params = append(params, scope.SystemAccountID)
+		params = append(params, keywordParams()...)
+		candidateSQL = append(candidateSQL, `
+			SELECT accounts.id, accounts.name AS sort_name, 1 AS source_priority
+			FROM `+d.businessTable("accounts")+` accounts
+			WHERE accounts.system_account_id = ?
+				AND accounts.deleted_at IS NULL
+				AND accounts.authorization_instance_authorization_id IS NOT NULL
+				AND accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\'
+		`)
+		params = append(params, scope.SystemAccountID)
+		params = append(params, keywordParams()...)
+		candidateSQL = append(candidateSQL, `
+			SELECT accounts.id, accounts.name AS sort_name, 2 AS source_priority
+			FROM `+d.businessTable("accounts")+` accounts
+			WHERE accounts.deleted_at IS NULL
+				AND accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\'
+				AND EXISTS (
+					SELECT 1
+					FROM `+d.businessTable("group_accounts")+` visible_group_accounts
+					INNER JOIN `+d.businessTable("resource_authorizations")+` visible_group_authorization_rows
+						ON visible_group_authorization_rows.resource_type = 'group'
+						AND visible_group_authorization_rows.resource_id = visible_group_accounts.group_id
+						AND visible_group_authorization_rows.grantee_system_account_id = ?
+						AND visible_group_authorization_rows.status = 'active'
+						AND (visible_group_authorization_rows.expires_at IS NULL OR visible_group_authorization_rows.expires_at > ?)
+					WHERE visible_group_accounts.account_id = accounts.id
+						AND visible_group_accounts.enabled = 1
+				)
+		`)
+		params = append(params, keywordParams()...)
+		params = append(params, scope.SystemAccountID, rfc3339Millis(d.Now()))
+	}
+	if globalScope {
+		candidateSQL = append(candidateSQL, `
+			SELECT instance_accounts.id, source_accounts.name AS sort_name, 1 AS source_priority
+			FROM `+d.businessTable("accounts")+` source_accounts
+			INNER JOIN `+d.businessTable("accounts")+` instance_accounts
+				ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
+			WHERE source_accounts.deleted_at IS NULL
+				AND instance_accounts.deleted_at IS NULL
+				AND source_accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\'
+		`)
+		params = append(params, keywordParams()...)
+	} else {
+		candidateSQL = append(candidateSQL, `
+			SELECT instance_accounts.id, source_accounts.name AS sort_name, 3 AS source_priority
+			FROM `+d.businessTable("accounts")+` source_accounts
+			INNER JOIN `+d.businessTable("accounts")+` instance_accounts
+				ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
+			WHERE source_accounts.deleted_at IS NULL
+				AND instance_accounts.deleted_at IS NULL
+				AND source_accounts.name COLLATE "C" LIKE '%' || ? || '%' ESCAPE '\'
+				AND instance_accounts.system_account_id = ?
+		`)
+		params = append(params, keywordParams()...)
+		params = append(params, scope.SystemAccountID)
+	}
+	query := `
+		SELECT id
+		FROM (
+			SELECT
+				id,
+				sort_name,
+				source_priority,
+				ROW_NUMBER() OVER (
+					PARTITION BY id
+					ORDER BY source_priority ASC, sort_name COLLATE "C" ASC, id ASC
+				) AS duplicate_rank
+			FROM (` + strings.Join(candidateSQL, "\nUNION ALL\n") + `) candidate_rows
+		) ranked_candidates
+		WHERE duplicate_rank = 1
+		ORDER BY source_priority ASC, sort_name COLLATE "C" ASC, id ASC
+		LIMIT ?
+	`
+	params = append(params, limit)
+	rows, err := d.queryBusiness(r, query, params...)
+	if err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	for _, row := range rows {
+		if id := row.text("id"); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// postgresSubstringLikePattern mirrors postgresSubstringLikePattern: escape
+// \\, % and _ so the keyword stays a literal inside the LIKE with ESCAPE '\'.
+func postgresSubstringLikePattern(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(value)
 }
 
 // aiPerformanceVisibleAccountFilter mirrors aiPerformanceVisibleAccountFilter:
@@ -773,10 +930,11 @@ func nfkcTrim(value string) string {
 	return strings.TrimSpace(normNFKC(value))
 }
 
-// normNFKC delegates to golang.org/x/text when available; the local fallback
-// trims without normalization for ASCII-heavy keywords (contract note: the
-// vast majority of account names never change under NFKC).
-func normNFKC(value string) string { return value }
+// normNFKC mirrors String.prototype.normalize('NFKC')
+// (normalizeAccountNameKeyword, usage-stats-ai-performance.repository.ts:801)
+// through golang.org/x/text/unicode/norm; nfkcTrim applies it before the trim
+// exactly like the Node `.normalize('NFKC').trim()` pair.
+func normNFKC(value string) string { return norm.NFKC.String(value) }
 
 // rfc3339Millis mirrors nowIso(): millisecond UTC RFC3339.
 func rfc3339Millis(now time.Time) string {

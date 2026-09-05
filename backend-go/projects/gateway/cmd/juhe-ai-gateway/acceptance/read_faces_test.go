@@ -8,6 +8,7 @@ package acceptance
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -103,6 +104,7 @@ func TestAcceptanceReadFaces(t *testing.T) {
 	})
 
 	t.Run("table-monitor read faces", func(t *testing.T) {
+
 		// fresh boot 快照表未建（采样 owner 是 jobs）：W6 typed unavailable 503，
 		// 不伪造空结果。
 		client.do(http.MethodGet, "/__aisys__/api/table-monitor/overview", nil, wantStatus(http.StatusServiceUnavailable))
@@ -110,9 +112,24 @@ func TestAcceptanceReadFaces(t *testing.T) {
 		client.do(http.MethodGet, "/__aisys__/api/table-monitor/history?databaseRole=business&tableName=accounts", nil, wantStatus(http.StatusServiceUnavailable))
 		// 非法角色 → 400。
 		client.do(http.MethodGet, "/__aisys__/api/table-monitor/history?databaseRole=ghost&tableName=accounts", nil, wantStatus(http.StatusBadRequest))
-		// cleanup POST 未迁移（W6 记录：gateway 无 record-maintenance worker
-		// 通道）：go-only 终态走 404 JSON 契约。
-		client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup", map[string]any{"cutoffAt": "2026-09-01T00:00:00.000Z"}, wantStatus(http.StatusNotFound))
+		// cleanup POST 已迁移：经 record_maintenance_jobs 持久任务表入队
+		// （Node 回执形状；jobs 侧 drain 由 jobs wave 消费）。成功回执
+		// queued=true + jobId；未来截止 / 缺参 → 400；同 fingerprint 重复
+		// 提交 → 409（mutationGuard）。
+		_, receipt := client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup",
+			map[string]any{"cutoffAt": "2026-09-01T00:00:00.000Z"}, wantStatus(http.StatusOK))
+		if data(receipt)["queued"] != true {
+			t.Fatalf("cleanup receipt wrong: %#v", receipt)
+		}
+		if jobId := dataString(receipt, "jobId"); !strings.HasPrefix(jobId, "recmaint_") {
+			t.Fatalf("cleanup jobId wrong: %q", jobId)
+		}
+		client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup",
+			map[string]any{"cutoffAt": "2026-09-01T00:00:00.000Z"}, wantStatus(http.StatusConflict))
+		client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup",
+			map[string]any{"cutoffAt": "2099-01-01T00:00:00.000Z"}, wantStatus(http.StatusBadRequest))
+		client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup",
+			map[string]any{}, wantStatus(http.StatusBadRequest))
 	})
 
 	t.Run("ui-bootstrap both surfaces", func(t *testing.T) {

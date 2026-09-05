@@ -35,6 +35,9 @@ type HealthOutcomeSource struct {
 func (d *Deps) aiHealthListHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		values := r.URL.Query()
+		// Node aiHealthQuerySchema (stats.routes.ts:102-107): integer hours
+		// 1..31*24, page >= 1, pageSize 10..50, keyword trim + max 200; any
+		// violation answers 400 instead of clamping.
 		hours, err := boundedQueryInt(values, "hours", 168, 1, 31*24)
 		if err != "" {
 			kernel.WriteBadRequest(w, "AI 健康监控参数不合法")
@@ -50,7 +53,11 @@ func (d *Deps) aiHealthListHandler(selfOnly bool) http.HandlerFunc {
 			kernel.WriteBadRequest(w, "AI 健康监控参数不合法")
 			return
 		}
-		keyword := strings.TrimSpace(values.Get("keyword"))
+		keyword, keywordTooLong := boundedKeyword(values, "keyword")
+		if keywordTooLong {
+			kernel.WriteBadRequest(w, "AI 健康监控参数不合法")
+			return
+		}
 		scope := requestScope(r)
 		if selfOnly {
 			scope = selfScope(r)
@@ -101,6 +108,10 @@ func isValidCalendarStatHour(value string) bool {
 	return ok
 }
 
+// boundedQueryInt mirrors the zod `z.coerce.number().int().min().max()`
+// optional query schema: absent or empty keeps the fallback; a non-integer or
+// out-of-range value is reported as a bad request instead of clamping
+// (Node aiHealthQuerySchema, stats.routes.ts:102-107).
 func boundedQueryInt(values urlValues, key string, fallback, minValue, maxValue int) (int, string) {
 	raw := strings.TrimSpace(values.Get(key))
 	if raw == "" {
@@ -110,11 +121,8 @@ func boundedQueryInt(values urlValues, key string, fallback, minValue, maxValue 
 	if err != nil {
 		return fallback, "invalid"
 	}
-	if parsed < minValue {
-		return minValue, ""
-	}
-	if parsed > maxValue {
-		return maxValue, ""
+	if parsed < minValue || parsed > maxValue {
+		return fallback, "range"
 	}
 	return parsed, ""
 }

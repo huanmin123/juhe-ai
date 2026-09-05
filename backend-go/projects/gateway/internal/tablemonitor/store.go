@@ -1,14 +1,12 @@
-// Package tablemonitor ports the read half of the table-storage-monitor route
-// family (Node backend/src/modules/table-monitor/table-monitor.routes.ts +
+// Package tablemonitor ports the table-storage-monitor route family (Node
+// backend/src/modules/table-monitor/table-monitor.routes.ts +
 // storage/table-monitor.repository.ts): overview, per-table history and
 // database history over the table_storage_snapshots /
-// database_storage_snapshots tables. PostgreSQL reads juhe_stats.* on the
+// database_storage_snapshots tables, plus the non-business-data cleanup POST
+// (enqueue.go: the cleanup write dispatches through the durable
+// record_maintenance_jobs channel). PostgreSQL reads juhe_stats.* on the
 // shared pool; SQLite opens the dedicated table-monitor database (the same
 // file the jobs sampler writes).
-//
-// The cleanup write (POST /non-business-data/cleanup) stays Node-owned per
-// the W6 record (docs/migration/W6-管理端表监控只读Schema共存记录.md): the
-// Go gateway has no record-maintenance worker channel.
 package tablemonitor
 
 import (

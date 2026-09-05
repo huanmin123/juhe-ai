@@ -170,6 +170,12 @@ func (d *Deps) guard(scope string, handler http.HandlerFunc) http.Handler {
 		}
 		context, authErr := d.ValidateToken(r.Context(), token, scope)
 		if authErr != nil {
+			// Infrastructure failures carry no code (Node global handler
+			// contract); typed auth failures render {message, code}.
+			if authErr.Code == "" {
+				kernel.WriteError(w, authErr.StatusCode, authErr.Message)
+				return
+			}
 			writeCodeError(w, authErr.StatusCode, authErr.Code, authErr.Message)
 			return
 		}

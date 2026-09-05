@@ -11,6 +11,8 @@ package proxyprofiles
 import (
 	"encoding/json"
 	"errors"
+	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"sort"
@@ -80,7 +82,8 @@ func optionsHandler(w http.ResponseWriter, r *http.Request, store *Store) {
 		kernel.WriteBadRequest(w, badRequest)
 		return
 	}
-	limit := optionLimitValue(integerQueryOrZero(values.Get("limit")), strings.TrimSpace(values.Get("limit")) != "")
+	limitValue, hasLimit := integerQueryValue(values.Get("limit"))
+	limit := optionLimitValue(limitValue, hasLimit)
 	options, err := store.ListOptions(r.Context(), strings.TrimSpace(values.Get("keyword")), limit, selectedIds)
 	if err != nil {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
@@ -130,30 +133,148 @@ func parseSelectedProxyOptionIds(values url.Values) ([]string, string) {
 	return selectedIds, ""
 }
 
-// optionLimitValue mirrors optionLimitValue: absent -> 50, clamped 1..50.
-func optionLimitValue(value int, present bool) int {
+// optionLimitValue mirrors optionLimitValue (proxies.routes.ts:123-125):
+// present integer -> clamp 1..50, otherwise 50. Non-integer inputs ("abc",
+// "1.8") resolve to absent upstream and fall back to 50.
+func optionLimitValue(value float64, present bool) int {
 	if !present {
+		return 50
+	}
+	if value > 50 {
 		return 50
 	}
 	if value < 1 {
 		return 1
 	}
-	if value > 50 {
-		return 50
-	}
-	return value
+	return int(value)
 }
 
-func integerQueryOrZero(raw string) int {
+// integerQueryValue mirrors Node integerQueryValue (shared/query-values.ts:21-30):
+// trim; empty or a non-integer Number() result is absent. Number() accepts the
+// ECMAScript decimal grammar, 0x/0o/0b radix literals ("1e2" is 100) and the
+// exact "Infinity" spelling; everything else is NaN.
+func integerQueryValue(raw string) (float64, bool) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
-		return 0
+		return 0, false
 	}
-	parsed, err := strconv.Atoi(text)
+	number, ok := jsStringToNumber(text)
+	if !ok {
+		return 0, false
+	}
+	if math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) {
+		return 0, false
+	}
+	return number, true
+}
+
+func jsStringToNumber(text string) (float64, bool) {
+	body := text
+	negative := false
+	switch body[0] {
+	case '+':
+		body = body[1:]
+	case '-':
+		negative = true
+		body = body[1:]
+	}
+	if body == "" {
+		return 0, false
+	}
+	if body == "Infinity" {
+		if negative {
+			return math.Inf(-1), true
+		}
+		return math.Inf(1), true
+	}
+	// Radix literals are unsigned: Number("-0x10") is NaN.
+	if len(body) > 2 && body[0] == '0' {
+		var base int
+		switch body[1] {
+		case 'x', 'X':
+			base = 16
+		case 'o', 'O':
+			base = 8
+		case 'b', 'B':
+			base = 2
+		}
+		if base != 0 {
+			if negative {
+				return 0, false
+			}
+			parsed, exact := new(big.Int).SetString(body[2:], base)
+			if !exact {
+				return 0, false
+			}
+			value, _ := new(big.Float).SetInt(parsed).Float64()
+			return value, true
+		}
+	}
+	if !isDecimalNumericLiteral(body) {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(body, 64)
 	if err != nil {
-		return 0
+		// ErrRange overflows to ±Inf (not an integer) or underflows to zero
+		// (Number("1e-400") is the integer 0).
+		if errors.Is(err, strconv.ErrRange) && value == 0 {
+			return 0, true
+		}
+		return 0, false
 	}
-	return parsed
+	if negative {
+		value = -value
+	}
+	return value, true
+}
+
+// isDecimalNumericLiteral gates strconv.ParseFloat onto the ECMAScript decimal
+// string grammar; ParseFloat alone would also accept hex-float and the
+// case-insensitive inf/nan spellings that JS Number() rejects.
+func isDecimalNumericLiteral(text string) bool {
+	index := 0
+	digits := func() bool {
+		start := index
+		for index < len(text) && text[index] >= '0' && text[index] <= '9' {
+			index++
+		}
+		return index > start
+	}
+	intPart := digits()
+	fractionPart := false
+	if index < len(text) && text[index] == '.' {
+		index++
+		fractionPart = digits()
+	}
+	if !intPart && !fractionPart {
+		return false
+	}
+	if index < len(text) && (text[index] == 'e' || text[index] == 'E') {
+		index++
+		if index < len(text) && (text[index] == '+' || text[index] == '-') {
+			index++
+		}
+		if !digits() {
+			return false
+		}
+	}
+	return index == len(text)
+}
+
+// intFromQuery adapts an integerQueryValue result onto the int-typed store
+// inputs: absent -> fallback; present values saturate (the store clamps page
+// and pageSize ranges itself).
+func intFromQuery(value float64, present bool, fallback int) int {
+	if !present {
+		return fallback
+	}
+	if value > float64(math.MaxInt) {
+		return math.MaxInt
+	}
+	if value < float64(math.MinInt) {
+		return math.MinInt
+	}
+	return int(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -163,34 +284,15 @@ func integerQueryOrZero(raw string) int {
 func listHandler(store *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		values := r.URL.Query()
-		page, hasPage := integerQuery(values.Get("page"))
-		pageSize, hasPageSize := integerQuery(values.Get("pageSize"))
-		result, err := store.ListPage(r.Context(), intOr(page, hasPage, 1), intOr(pageSize, hasPageSize, 20), strings.TrimSpace(values.Get("keyword")))
+		page, hasPage := integerQueryValue(values.Get("page"))
+		pageSize, hasPageSize := integerQueryValue(values.Get("pageSize"))
+		result, err := store.ListPage(r.Context(), intFromQuery(page, hasPage, 1), intFromQuery(pageSize, hasPageSize, 20), strings.TrimSpace(values.Get("keyword")))
 		if err != nil {
 			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
 		kernel.WriteOK(w, result, "")
 	}
-}
-
-func integerQuery(raw string) (int, bool) {
-	text := strings.TrimSpace(raw)
-	if text == "" {
-		return 0, false
-	}
-	parsed, err := strconv.Atoi(text)
-	if err != nil {
-		return 0, false
-	}
-	return parsed, true
-}
-
-func intOr(value int, present bool, fallback int) int {
-	if present {
-		return value
-	}
-	return fallback
 }
 
 // ---------------------------------------------------------------------------

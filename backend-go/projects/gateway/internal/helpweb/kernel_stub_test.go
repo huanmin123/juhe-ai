@@ -1,6 +1,9 @@
 package helpweb
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 type kernelStub struct {
 	handlers map[string]http.Handler
@@ -15,11 +18,26 @@ func (k *kernelStub) Register(pattern string, handler http.Handler) {
 	k.order = append(k.order, pattern)
 }
 
-func (k *kernelStub) handlerFor(method, path string) http.Handler {
-	if handler, ok := k.handlers[method+" "+path]; ok {
+// handlerFor resolves the registered handler for a request path: the mount
+// uses method-less patterns, so exact then longest-prefix subtree lookups.
+func (k *kernelStub) handlerFor(_ string, path string) http.Handler {
+	if handler, ok := k.handlers[path]; ok {
 		return handler
 	}
-	return k.handlers[method+" "+path+"/"]
+	best := ""
+	for pattern, handler := range k.handlers {
+		if !strings.HasSuffix(pattern, "/") {
+			continue
+		}
+		if strings.HasPrefix(path, pattern) && len(pattern) > len(best) {
+			best = pattern
+			_ = handler
+		}
+	}
+	if best != "" {
+		return k.handlers[best]
+	}
+	return nil
 }
 
 func newKernelStub() *kernelStub { return &kernelStub{} }

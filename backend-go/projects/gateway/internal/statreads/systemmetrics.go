@@ -7,6 +7,8 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,8 +82,8 @@ func (d *Deps) systemMetricsTrendHandler(w http.ResponseWriter, r *http.Request)
 	}
 	kernel.WriteOK(w, systemMetricsTrendOverview{
 		HourlyTrend:                  hourlyTrend,
-		ProcessEventLoopLatestStatus: buildProcessEventLoopTrendLatestStatus(latestRows),
-		ProcessEventLoopPeakStatus:   buildProcessEventLoopTrendPeakStatus(peakRows),
+		ProcessEventLoopLatestStatus: d.buildProcessEventLoopTrendLatestStatus(latestRows),
+		ProcessEventLoopPeakStatus:   d.buildProcessEventLoopTrendPeakStatus(peakRows),
 		ProcessEventLoopTrend:        trendRows,
 	}, "")
 }
@@ -194,6 +196,11 @@ var validProcessRoles = map[string]bool{
 	"db-service": true,
 }
 
+// workerReplicaRolePattern mirrors the worker replica family of
+// processEventLoopRoleFromUnknown (shared/process-event-loop-monitor.ts):
+// <worker-role>:<replica index 1..64>, digits only, no leading zeros.
+var workerReplicaRolePattern = regexp.MustCompile(`^(?:ingest-worker|usage-worker|log-worker|stats-worker|ops-worker):(?:[1-9]|[1-5][0-9]|6[0-4])$`)
+
 func isValidProcessRole(value string) bool {
 	if validProcessRoles[value] {
 		return true
@@ -204,12 +211,34 @@ func isValidProcessRole(value string) bool {
 			return true
 		}
 	}
-	return false
+	return workerReplicaRolePattern.MatchString(value)
 }
 
-// trendStatusRoles mirrors trendStatusRoles: the standalone role list keeps
-// the fixed process family order.
+// standaloneProcessRoles mirrors PROCESS_EVENT_LOOP_ROLES
+// (system-metrics.repository.ts:27-33).
 var standaloneProcessRoles = []string{"server", "ingest-worker", "stats-worker", "ops-worker", "db-service"}
+
+// trendStatusRoles mirrors trendStatusRoles
+// (system-metrics.repository.ts:1355-1358): standalone mode keeps the fixed
+// process family order; performance mode exports the roles present in the
+// data rows sorted by role text (compareText, plain string compare).
+func (d *Deps) trendStatusRoles(rows []Row) []string {
+	if d.runtimeStandalone() {
+		return standaloneProcessRoles
+	}
+	seen := map[string]bool{}
+	roles := []string{}
+	for _, row := range rows {
+		role := row.text("process_role")
+		if !isValidProcessRole(role) || seen[role] {
+			continue
+		}
+		seen[role] = true
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	return roles
+}
 
 type trendStatusRow struct {
 	ProcessRole      string
@@ -222,7 +251,7 @@ type trendStatusRow struct {
 	ProcessHeapTotal *int64
 }
 
-func buildProcessEventLoopTrendLatestStatus(rows []Row) []processEventLoopStatus {
+func (d *Deps) buildProcessEventLoopTrendLatestStatus(rows []Row) []processEventLoopStatus {
 	mapped := map[string]trendStatusRow{}
 	for _, row := range rows {
 		role := row.text("process_role")
@@ -241,7 +270,7 @@ func buildProcessEventLoopTrendLatestStatus(rows []Row) []processEventLoopStatus
 		}
 	}
 	statuses := make([]processEventLoopStatus, 0, len(standaloneProcessRoles))
-	for _, role := range standaloneProcessRoles {
+	for _, role := range d.trendStatusRoles(rows) {
 		if entry, ok := mapped[role]; ok {
 			statuses = append(statuses, processEventLoopStatus{
 				ProcessRole:      role,
@@ -260,13 +289,17 @@ func buildProcessEventLoopTrendLatestStatus(rows []Row) []processEventLoopStatus
 	return statuses
 }
 
-func buildProcessEventLoopTrendPeakStatus(rows []Row) []processEventLoopPeakStatus {
+func (d *Deps) buildProcessEventLoopTrendPeakStatus(rows []Row) []processEventLoopPeakStatus {
 	mapped := map[string]Row{}
 	for _, row := range rows {
-		mapped[row.text("process_role")] = row
+		role := row.text("process_role")
+		if !isValidProcessRole(role) {
+			continue
+		}
+		mapped[role] = row
 	}
 	statuses := make([]processEventLoopPeakStatus, 0, len(standaloneProcessRoles))
-	for _, role := range standaloneProcessRoles {
+	for _, role := range d.trendStatusRoles(rows) {
 		if row, ok := mapped[role]; ok {
 			statuses = append(statuses, processEventLoopPeakStatus{
 				ProcessRole:     role,

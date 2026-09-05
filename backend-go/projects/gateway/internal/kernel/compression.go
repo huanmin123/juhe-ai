@@ -139,6 +139,14 @@ func (c *compressionWriter) MarkUpstream() {
 	}
 }
 
+// MarkExplicitMethodContract forwards the handler-facing 405 opt-out to the
+// kernel contract writer underneath the compression layer.
+func (c *compressionWriter) MarkExplicitMethodContract() {
+	if exempt, ok := c.ResponseWriter.(MethodContractExempt); ok {
+		exempt.MarkExplicitMethodContract()
+	}
+}
+
 func (c *compressionWriter) MarkedUpstream() bool {
 	if marker, ok := c.ResponseWriter.(UpstreamMarker); ok {
 		return marker.MarkedUpstream()

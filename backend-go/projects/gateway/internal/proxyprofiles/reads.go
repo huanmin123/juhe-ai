@@ -26,12 +26,11 @@ func (s *Store) ListPage(ctx context.Context, page, pageSize int, keyword string
 	clauses := ""
 	params := []any{}
 	if keyword != "" {
-		clauses = " WHERE name >= ? AND name < ?"
-		params = append(params, keyword, textPrefixUpperBound(keyword))
+		clauses = " WHERE " + s.keywordFilter()
+		params = s.keywordFilterParams(keyword)
 	}
 	query := `
-		SELECT id, name, description, type, host, port, username, enabled, test_status,
-			latency_ms, outbound_ip, outbound_region, last_test_message, last_tested_at, updated_at
+		SELECT ` + s.summarySelectColumns() + `
 		FROM ` + s.table("proxy_profiles") + clauses + `
 		ORDER BY updated_at DESC, id DESC
 		LIMIT ? OFFSET ?`
@@ -82,13 +81,13 @@ func (s *Store) ListOptions(ctx context.Context, keyword string, limit int, sele
 	keywordClause := ""
 	params := []any{}
 	if keyword != "" {
-		keywordClause = " AND name >= ? AND name < ?"
-		params = append(params, keyword, textPrefixUpperBound(keyword))
+		keywordClause = " AND " + s.keywordFilter()
+		params = s.keywordFilterParams(keyword)
 	}
 	windowQuery := `
-		SELECT id, name, type, enabled, updated_at
+		SELECT ` + s.optionSelectColumns() + `
 		FROM ` + s.table("proxy_profiles") + `
-		WHERE enabled = 1` + keywordClause + `
+		WHERE ` + s.enabledFilter() + keywordClause + `
 		ORDER BY name ASC, updated_at DESC, id ASC
 		LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, s.bind(windowQuery), append(params, limit)...)
@@ -102,9 +101,9 @@ func (s *Store) ListOptions(ctx context.Context, keyword string, limit int, sele
 	selectedRows := []optionRow{}
 	if len(selectedIds) > 0 {
 		selectedQuery := `
-			SELECT id, name, type, enabled, updated_at
+			SELECT ` + s.optionSelectColumns() + `
 			FROM ` + s.table("proxy_profiles") + `
-			WHERE enabled = 1 AND id IN (` + placeholders(len(selectedIds)) + `)
+			WHERE ` + s.enabledFilter() + ` AND id IN (` + placeholders(len(selectedIds)) + `)
 			ORDER BY name ASC, updated_at DESC, id ASC`
 		selectedQueryRows, err := s.db.QueryContext(ctx, s.bind(selectedQuery), idsToAny(selectedIds)...)
 		if err != nil {
@@ -200,6 +199,68 @@ func clampInt(value, minValue, maxValue int) int {
 		return maxValue
 	}
 	return value
+}
+
+// enabledFilter renders the enabled predicate per dialect: PG stores
+// `enabled boolean` (Node listProxyOptionsAsync proxy.repository.ts:263,273
+// uses `enabled = true`), SQLite stores the 0/1 integer (readonly variant
+// proxy.repository.ts:234,239 uses `enabled = 1`).
+func (s *Store) enabledFilter() string {
+	if s.pg {
+		return "enabled = true"
+	}
+	return "enabled = 1"
+}
+
+// keywordFilter renders the name prefix window per dialect (Node
+// buildProxyKeywordFilter proxy.repository.ts:385-392 for SQLite and
+// buildProxyKeywordFilterAsync proxy.repository.ts:394-401 for PG: the PG
+// variant pins byte collation and adds starts_with because the C collation
+// range scan alone misses locale-sorted rows).
+func (s *Store) keywordFilter() string {
+	if s.pg {
+		return `(name COLLATE "C" >= ? AND name COLLATE "C" < ? AND starts_with(name, ?))`
+	}
+	return "(name >= ? AND name < ?)"
+}
+
+// keywordFilterParams mirrors the clause shape above: the PG variant binds the
+// keyword a third time for starts_with (proxy.repository.ts:399).
+func (s *Store) keywordFilterParams(keyword string) []any {
+	upper := textPrefixUpperBound(keyword)
+	if s.pg {
+		return []any{keyword, upper, keyword}
+	}
+	return []any{keyword, upper}
+}
+
+// summarySelectColumns mirrors proxySummarySelectColumns
+// (proxy.repository.ts:433-453): on PG the timestamps are textified in SQL —
+// updated_at keeps the database's microsecond text (US pattern, line 450) and
+// last_tested_at mirrors the JS Date.toISOString() millisecond shape the
+// driver path produced (normalizePostgresRows database-client.ts:460-476, MS
+// pattern). Scanning stays string-typed on both dialects.
+func (s *Store) summarySelectColumns() string {
+	if s.pg {
+		return `id, name, description, type, host, port, username, enabled, test_status,
+			latency_ms, outbound_ip, outbound_region, last_test_message,
+			to_char(last_tested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_tested_at,
+			to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
+	}
+	return `id, name, description, type, host, port, username, enabled, test_status,
+		latency_ms, outbound_ip, outbound_region, last_test_message, last_tested_at, updated_at`
+}
+
+// optionSelectColumns renders the options projection (Node
+// listProxyOptionsAsync proxy.repository.ts:261-265): PG textifies updated_at
+// with the same US pattern used for the summary revision so the option merge
+// ordering keeps comparing UTC text.
+func (s *Store) optionSelectColumns() string {
+	if s.pg {
+		return `id, name, type, enabled,
+			to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
+	}
+	return "id, name, type, enabled, updated_at"
 }
 
 func textPrefixUpperBound(value string) string {

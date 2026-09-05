@@ -82,7 +82,9 @@ func (d *Deps) ValidateToken(ctx context.Context, token string, requiredScope st
 	}
 	row, err := d.loadTokenForAuth(ctx, token)
 	if err != nil {
-		return nil, &AuthError{StatusCode: 500, Code: "external_source_internal_error", Message: "服务器内部错误"}
+		// Node: the repository throw bypasses the typed failure branches and
+		// the global error handler answers 500 {message} without a code.
+		return nil, &AuthError{StatusCode: http.StatusInternalServerError, Message: "服务器内部错误"}
 	}
 	if row == nil {
 		return nil, &AuthError{StatusCode: 401, Code: "external_source_unauthorized", Message: "来源系统或 token 无效"}
@@ -293,5 +295,7 @@ func (d *Deps) clock() time.Time {
 }
 
 func (d *Deps) nowISO() string {
-	return d.clock().UTC().Format(time.RFC3339Nano)
+	// Node nowIso() = new Date().toISOString(): UTC with millisecond
+	// precision.
+	return d.clock().UTC().Format("2006-01-02T15:04:05.000Z")
 }

@@ -77,8 +77,8 @@ func (d *Deps) accountUsageHandler(selfOnly bool) http.HandlerFunc {
 func (d *Deps) accountUsageOptionsHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		values := r.URL.Query()
-		keyword, hasKeyword := boundedKeyword(values, "keyword")
-		if keyword == "" && hasKeyword {
+		keyword, keywordTooLong := boundedKeyword(values, "keyword")
+		if keywordTooLong {
 			// Node schema: keyword max 200; longer keywords are a 400.
 			kernel.WriteBadRequest(w, "账户候选参数不合法")
 			return

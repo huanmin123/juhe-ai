@@ -303,6 +303,44 @@ func TestNotFoundAndMethodMismatchContract(t *testing.T) {
 	}
 }
 
+// 显式 405 豁免：Node 中间件（requireHelpSession 等）直接写
+// res.status(405).json(...)，该响应必须原样到达客户端；只有 mux 自身的
+// 方法不匹配才落到 404 JSON（TestNotFoundAndMethodMismatchContract）。
+func TestExplicitMethodContractKeepsHandlerWritten405(t *testing.T) {
+	k := newTestKernel(t, nil)
+	// 无方法 pattern：所有方法进入 handler（helpweb 挂载方式）。
+	k.RegisterFunc("/__aisys__/help", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			MarkExplicitMethodContract(w)
+			WriteError(w, http.StatusMethodNotAllowed, "帮助文档只支持读取")
+			return
+		}
+		WriteOK(w, nil, "")
+	})
+	server := httptest.NewServer(k.Handler())
+	defer server.Close()
+
+	post, err := http.Post(server.URL+"/__aisys__/help", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer post.Body.Close()
+	raw, _ := io.ReadAll(post.Body)
+	if post.StatusCode != http.StatusMethodNotAllowed || string(raw) != `{"message":"帮助文档只支持读取"}` {
+		t.Fatalf("explicit 405 must survive: status=%d body=%s", post.StatusCode, raw)
+	}
+
+	// 同一 handler 的 GET 分支不受影响。
+	get, err := http.Get(server.URL + "/__aisys__/help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer get.Body.Close()
+	if get.StatusCode != http.StatusOK {
+		t.Fatalf("get branch broken: %d", get.StatusCode)
+	}
+}
+
 func TestMutationGuardLifecycle(t *testing.T) {
 	clock := &manualClock{now: time.Unix(1_000_000, 0)}
 	store := NewDeduplicationStore(clock.Now)

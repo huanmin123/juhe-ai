@@ -187,13 +187,21 @@ func readAll(r *http.Request) ([]byte, error) {
 
 // methodContractWriter converts the Go mux 405 response into the Node
 // contract: Express falls through to the 404 JSON for unmatched methods.
+// Handlers that answer 405 explicitly (Node middlewares such as
+// requireHelpSession write res.status(405).json(...) directly and those
+// responses reach the client verbatim) opt out through
+// MarkExplicitMethodContract.
 type methodContractWriter struct {
 	http.ResponseWriter
 	converted bool
+	explicit  bool
 }
 
+// MarkExplicitMethodContract implements the handler-facing opt-out.
+func (m *methodContractWriter) MarkExplicitMethodContract() { m.explicit = true }
+
 func (m *methodContractWriter) WriteHeader(status int) {
-	if status == http.StatusMethodNotAllowed && !m.converted {
+	if status == http.StatusMethodNotAllowed && !m.converted && !m.explicit {
 		m.converted = true
 		header := m.Header()
 		header.Del("Allow")
@@ -231,6 +239,22 @@ func NotFoundHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteAPINotFound(w)
 	})
+}
+
+// MethodContractExempt is implemented by the kernel response wrapper so
+// handler-written 405 responses bypass the global 405→404 fallback.
+type MethodContractExempt interface {
+	MarkExplicitMethodContract()
+}
+
+// MarkExplicitMethodContract flags the response so a subsequent explicit 405
+// write reaches the client verbatim (Node middlewares like requireHelpSession
+// answer 405 JSON directly; only the express router's own method fallthrough
+// resolves to the 404 JSON). No-op on writers without the kernel wrapper.
+func MarkExplicitMethodContract(w http.ResponseWriter) {
+	if exempt, ok := w.(MethodContractExempt); ok {
+		exempt.MarkExplicitMethodContract()
+	}
 }
 
 // HealthHandler serves the readiness contract (200 ok / 503 degraded).

@@ -275,11 +275,10 @@ func chainAccountAPIKeyEntries(secret string, credentials map[string]any) []chai
 }
 
 // chainFingerprintAPIKey mirrors fingerprintAccountApiKey
-// (createHmac('sha256', runtimeConfig.secret)).
+// (createHmac('sha256', runtimeConfig.secret)). Node's createHmac computes
+// normally with an empty key, so deployments without JUHE_AI_SECRET still get
+// the HMAC digest as the weighted entry id — no empty-string shortcut.
 func chainFingerprintAPIKey(secret, key string) string {
-	if secret == "" {
-		return ""
-	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(key))
 	return hex.EncodeToString(mac.Sum(nil))
