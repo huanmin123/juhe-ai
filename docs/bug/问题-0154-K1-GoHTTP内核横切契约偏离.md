@@ -113,6 +113,14 @@
 - 证据范围：Node 历史 `backend/src/shared/request-context.ts` 的正则与零值/`ff` 检查；Go 证据为提交 `b3115e675` 的 `normalizeTraceID`。该结论不依赖当前未提交工作区。
 - 修复门槛：按 Node 的四段、版本、ID 全零和 flags 规则实现严格解析，并增加上述非法样例与合法大小写样例的 golden，验证失败后回退/生成路径也一致。
 
+## 已确认子项：管理面 CSP 在 Go 放宽了 `script-src`
+
+- 对照事实：Node `managementHeaders` 的 CSP 明确为 `script-src 'self'`，只允许同源脚本；同一策略仅在 `style-src` 保留 `'unsafe-inline'` 以兼容样式。
+- 历史 Go：`managementHeaders` 将 `script-src` 写成 `script-src 'self' 'unsafe-inline'`，把内联脚本执行加入允许集合。
+- 可观察结果：相同管理页响应在 Node 会阻止未带 nonce/hash 的 inline `<script>`，Go 会放行；若管理端页面、错误页或注入内容包含内联脚本，浏览器执行边界发生变化，防护强度和客户端行为不再一致。
+- 证据范围：Node 历史 `backend/src/shared/http-security.ts` 第 12 行的 CSP；Go 证据为提交 `b3115e675` 的 `security.go` 第 8–12 行。该结论不依赖当前未提交工作区。
+- 修复门槛：恢复 `script-src 'self'`，保留其他 directive 的原值，并以管理页面、错误响应和内联脚本阻断/允许矩阵做浏览器或 CSP 解析 golden；未通过前不能宣称安全头迁移等价。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
