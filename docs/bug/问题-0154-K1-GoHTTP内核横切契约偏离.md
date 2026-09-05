@@ -57,6 +57,14 @@
 - 证据范围：Node 历史实现 `backend/src/shared/http-compression.ts` 调用 `compression.filter`，依赖版本 `backend/node_modules/compression/index.js` 的 `Negotiator` 分支（`encoding(...)`）；Go 证据为提交 `b3115e675` 中的 `acceptsGzip` 实现。该结论不依赖当前未提交工作区。
 - 修复门槛：实现与 Node 一致的编码权重/不可接受处理，并补充 `gzip;q=0`、缺失 header、并列权重和大响应 golden 用例；在回放通过前不得将 K1 标记为已归档。
 
+## 已确认子项：Go 缺少 Node 的 Content-Type 可压缩性过滤
+
+- 对照事实：Node `compression.filter` 先调用 `compressible(Content-Type)`；`Content-Type` 缺失、`image/png`、`application/zip`、`application/octet-stream` 等不可压缩类型会直接跳过压缩，只有可压缩类型（例如 `text/plain`、`application/json`）继续进入阈值和协商流程。
+- 历史 Go：`compressionWriter.start` 只排除已有 `Content-Encoding`、`text/event-stream` 和 `attachment`，没有检查 `Content-Type` 是否可压缩。只要请求接受 gzip 且响应声明长度或累计写入达到 1024 字节，`image/png`、`application/zip` 或无 `Content-Type` 的正文也会设置 `Content-Encoding: gzip`。
+- 可观察结果：以 2048 字节 `image/png` 为例，Node 保持原始二进制正文，Go 改写为 gzip；未带 `Content-Encoding` 解码链的客户端会把压缩字节当作图片/归档内容读取而失败，且已压缩媒体被再次压缩会改变缓存体积与校验结果。
+- 证据范围：Node 历史 `backend/src/shared/http-compression.ts` 使用 `compression.filter`；锁定依赖 `compressible@2.0.18` 的实际行为为 `image/png=false`、`application/zip=false`、`application/octet-stream=false`、`text/plain=true`。Go 证据为提交 `b3115e675` 的 `compressionWriter.start` 条件分支。该结论不依赖当前未提交工作区。
+- 修复门槛：复用与 Node 对齐的 MIME 可压缩性判定（含缺失/未知类型的结果），并补充二进制、已压缩媒体、可压缩 JSON/文本及大响应 golden；在过滤结果一致前不得宣称 K1 压缩契约通过。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
