@@ -120,8 +120,16 @@
 - 影响：排程边界到达时 Go 数据库会从 active/disabled 切换，但网关 validation/lookup cache 仍可能保留旧结果，直到其他刷新或缓存过期才改变实际放行行为；Node 与 Go 的最终可用性结果不一致。
 - 结论：这是排程运行态副作用的遗漏；需要为 Go worker 注入等价的 lookup/validation 失效端口，并在提交成功后只对真正改变的 API Key 执行失效。
 
+### 14. 查看完整密钥的操作日志丢失脱敏标识
+
+- Node 证据：历史 `GET /:id/secret` 在返回密钥前构造 `safeChange('key', '密钥标识', undefined, \`${apiKey.keyPrefix}...${apiKey.keySuffix}\`)`；日志的 `before` 不写入，`after` 保留可核对的前后缀而不包含完整密钥（`backend/src/modules/api-keys/api-keys.routes.ts`）。
+- Go 证据：历史 `backend-go/projects/gateway/internal/apikeys/routes.go` 的 `reveal` 记录 `{Field: "key", Label: "密钥标识", Before: "未设置", After: "已变更", Sensitive: true}`，没有写入 `keyPrefix...keySuffix`，并额外产生了 Node 不存在的 `before` 值。
+- 结果偏差：同一成功查看操作在 operation log 中无法像 Node 一样通过前后缀确认实际密钥版本，审计变更字段也从“无 before + 脱敏标识”变成“未设置→已变更”；依赖日志追溯密钥轮换/泄露调查时，Go 结果信息不足且 DTO 不一致。该差异不影响明文密钥 HTTP 响应，但属于已迁移管理副作用的功能遗漏。
+- 结论：这是 M07 `reveal_secret` 操作日志投影的确定性偏差，当前仅记录，未修改 Go 代码。
+
 ## 修复与验证
 
 - 修改点：补齐 PATCH 及严格校验/乐观并发，接入真实 usage 投影和必需 invalidator；补 gateway main、Redis/SQLite 双模式、前端端点和写后缓存回归。
 - 当前验证：Go 包内测试通过不代表 PATCH/usage/失效契约；未执行真实 gateway listener 验证。
+- 新增未修复子项：`reveal_secret` 日志应与 Node 一样保留 `keyPrefix...keySuffix` 脱敏 after、不要伪造 `before: "未设置"`，并补充 operation-log JSON 回放，确认完整密钥不会进入日志。
 - 结论：M07 不能视为完整 API Key 功能迁移或 Node 可归档。
