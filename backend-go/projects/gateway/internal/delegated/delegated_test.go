@@ -184,6 +184,10 @@ var delegatedSchema = []string{
 		updated_at TEXT NOT NULL
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique ON accounts(system_account_id, name) WHERE deleted_at IS NULL`,
+	// accounts.ListPage joins resource_authorizations unconditionally
+	// (list.go listJoins, the M10 authorized-instance overlay); the DDL
+	// mirrors the accounts package test fixture.
+	`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS account_supported_models (
 		account_id TEXT NOT NULL, provider_code TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL,
 		PRIMARY KEY (account_id, model)
@@ -546,15 +550,15 @@ func (r response) requireOAuthError(t *testing.T, wantStatus int, wantBody, want
 // ---------------------------------------------------------------------------
 
 const (
-	invalidTokenBody       = `{"error":"invalid_token","error_description":"访问令牌无效或已过期"}`
-	insufficientScopeBody  = `{"error":"insufficient_scope","error_description":"访问令牌缺少所需权限"}`
-	rateLimitedBody        = `{"error":"rate_limited","error_description":"OAuth 请求过于频繁，请稍后重试"}`
-	notFoundBody           = `{"message":"资源不存在"}`
-	serverErrorBody        = `{"message":"服务器内部错误"}`
-	groupMissingBody       = `{"message":"分组不存在"}`
-	strategyMissingBody    = `{"message":"策略路由不存在"}`
-	accountMissingBody     = `{"message":"AI 账户不存在"}`
-	profileMissingBody     = `{"message":"用户不存在"}`
+	invalidTokenBody      = `{"error":"invalid_token","error_description":"访问令牌无效或已过期"}`
+	insufficientScopeBody = `{"error":"insufficient_scope","error_description":"访问令牌缺少所需权限"}`
+	rateLimitedBody       = `{"error":"rate_limited","error_description":"OAuth 请求过于频繁，请稍后重试"}`
+	notFoundBody          = `{"message":"资源不存在"}`
+	serverErrorBody       = `{"message":"服务器内部错误"}`
+	groupMissingBody      = `{"message":"分组不存在"}`
+	strategyMissingBody   = `{"message":"策略路由不存在"}`
+	accountMissingBody    = `{"message":"AI 账户不存在"}`
+	profileMissingBody    = `{"message":"用户不存在"}`
 )
 
 func TestRequireDelegatedAccessRejectsMissingBearer(t *testing.T) {
@@ -973,4 +977,3 @@ func TestGetRequestLimitsUsageUnavailableDegrades(t *testing.T) {
 		t.Fatalf("perMinute = %v", windows["perMinute"])
 	}
 }
-

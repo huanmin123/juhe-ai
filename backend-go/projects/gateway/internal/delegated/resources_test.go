@@ -2,9 +2,12 @@ package delegated
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 )
 
 // ---------------------------------------------------------------------------
@@ -837,13 +840,22 @@ func aiAccountKeys(t *testing.T, item map[string]any, wantID, wantName, wantStat
 		"superPriorityEnabled": false, "fallbackEnabled": false,
 		"healthCheckModel": "", "healthCheckEndpointMode": "chat_json",
 	}
-	if len(item) != len(want)+2 { // + configRevision, concurrencyLimit asserted numerically below
+	// +2 numeric (configRevision/concurrencyLimit below) and +2 array keys
+	// (supportedModels/modelMappings, asserted after the loop: Node emits them
+	// as [] even without facts).
+	if len(item) != len(want)+4 {
 		t.Fatalf("ai account dto keys = %v", keysOf(item))
 	}
 	for key, value := range want {
 		if item[key] != value {
 			t.Fatalf("ai account dto[%q] = %v, want %v (full %v)", key, item[key], value, item)
 		}
+	}
+	if models, ok := item["supportedModels"].([]any); !ok || len(models) != 0 {
+		t.Fatalf("supportedModels = %v, want empty array", item["supportedModels"])
+	}
+	if mappings, ok := item["modelMappings"].([]any); !ok || len(mappings) != 0 {
+		t.Fatalf("modelMappings = %v, want empty array", item["modelMappings"])
 	}
 	if !numEqual(item["configRevision"], float64(wantRevision)) {
 		t.Fatalf("configRevision = %v, want %d", item["configRevision"], wantRevision)
@@ -957,6 +969,116 @@ func TestPatchAiAccount(t *testing.T) {
 			`{"expectedConfigRevision":99,"name":"x"}`, f.token)
 		r.requireMessage(t, http.StatusConflict, "账户配置已被其他操作更新，请刷新后重试")
 	})
+}
+
+// ---------------------------------------------------------------------------
+// AI accounts: supportedModels / modelMappings hydration
+// (Node aiAccountDto spreads them only when set, delegated-api.routes.ts:638-639;
+// the facts come from the account_supported_models / account_model_mappings
+// child tables, account-read.repository.ts:553-577).
+// ---------------------------------------------------------------------------
+
+func seedAiAccountModelFacts(env *env, accountID string) {
+	env.t.Helper()
+	stamp := isoMillis(env.clock.Now())
+	env.exec(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
+		VALUES (?, 'openai', 'gpt-4o-mini', ?), (?, 'openai', 'gpt-4o', ?)`,
+		accountID, stamp, accountID, stamp)
+	env.exec(`INSERT INTO account_model_mappings (account_id, provider_code, source_model,
+			source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
+		VALUES (?, 'openai', 'gpt-4o', 'chat_json', 'gpt-4o-2024-08-06', 'chat_json', 1, ?, ?),
+			(?, 'openai', 'gpt-4o', 'responses_sse', 'gpt-4o-responses', 'responses_json', 0, ?, ?)`,
+		accountID, stamp, stamp, accountID, stamp, stamp)
+}
+
+func TestListAiAccountsModelFacts(t *testing.T) {
+	f := newFixture(t, "juhe:ai_accounts.read")
+	f.env.seedAiAccount("acct-1", f.accountID, "with-models", "active", "")
+	f.env.seedAiAccount("acct-2", f.accountID, "no-models", "active", "")
+	seedAiAccountModelFacts(f.env, "acct-1")
+
+	r := f.env.do(http.MethodGet, Prefix+"/ai-accounts", "", f.token)
+	if r.status != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", r.status, r.raw)
+	}
+	items := r.dataArray(t, "items")
+	if len(items) != 2 {
+		t.Fatalf("len(items) = %d, want 2", len(items))
+	}
+
+	// acct-1: fields present with the loader ordering (models by model ASC,
+	// mappings by source_model, source_endpoint_family ASC) and the JSON
+	// mapping shape (sourceModel/.../enabled).
+	item := items[0].(map[string]any)
+	if item["id"] != "acct-1" {
+		t.Fatalf("items[0].id = %v, want acct-1", item["id"])
+	}
+	models, ok := item["supportedModels"].([]any)
+	if !ok {
+		t.Fatalf("supportedModels missing: %v", item)
+	}
+	if len(models) != 2 || models[0] != "gpt-4o" || models[1] != "gpt-4o-mini" {
+		t.Fatalf("supportedModels = %v, want [gpt-4o gpt-4o-mini]", models)
+	}
+	mappings, ok := item["modelMappings"].([]any)
+	if !ok {
+		t.Fatalf("modelMappings missing: %v", item)
+	}
+	if len(mappings) != 2 {
+		t.Fatalf("len(modelMappings) = %d, want 2", len(mappings))
+	}
+	first := mappings[0].(map[string]any)
+	wantFirst := map[string]any{
+		"sourceModel": "gpt-4o", "sourceEndpointFamily": "chat_json",
+		"upstreamModel": "gpt-4o-2024-08-06", "upstreamEndpointFamily": "chat_json",
+		"enabled": true,
+	}
+	if len(first) != len(wantFirst) {
+		t.Fatalf("mapping keys = %v", keysOf(first))
+	}
+	for key, want := range wantFirst {
+		if first[key] != want {
+			t.Fatalf("modelMappings[0][%q] = %v, want %v", key, first[key], want)
+		}
+	}
+	second := mappings[1].(map[string]any)
+	if second["sourceEndpointFamily"] != "responses_sse" || second["upstreamModel"] != "gpt-4o-responses" ||
+		second["upstreamEndpointFamily"] != "responses_json" || second["enabled"] != false {
+		t.Fatalf("modelMappings[1] = %v", second)
+	}
+
+	// acct-2: Node still emits both keys as empty arrays ([] is truthy in the
+	// JS spread, account-summary.repository.ts:972-973).
+	empty := items[1].(map[string]any)
+	if empty["id"] != "acct-2" {
+		t.Fatalf("items[1].id = %v, want acct-2", empty["id"])
+	}
+	if models, ok := empty["supportedModels"].([]any); !ok || len(models) != 0 {
+		t.Fatalf("supportedModels = %v, want empty array", empty["supportedModels"])
+	}
+	if mappings, ok := empty["modelMappings"].([]any); !ok || len(mappings) != 0 {
+		t.Fatalf("modelMappings = %v, want empty array", empty["modelMappings"])
+	}
+}
+
+func TestPatchAiAccountResponseCarriesModelFacts(t *testing.T) {
+	f := newFixture(t, "juhe:ai_accounts.write")
+	f.env.seedAiAccount("acct-1", f.accountID, "own-1", "active", "")
+	seedAiAccountModelFacts(f.env, "acct-1")
+
+	r := f.env.do(http.MethodPatch, Prefix+"/ai-accounts/acct-1",
+		`{"expectedConfigRevision":1,"name":"renamed"}`, f.token)
+	if r.status != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", r.status, r.raw)
+	}
+	data := r.data(t)
+	models, ok := data["supportedModels"].([]any)
+	if !ok || len(models) != 2 || models[0] != "gpt-4o" {
+		t.Fatalf("patch response supportedModels = %v (data %v)", data["supportedModels"], data)
+	}
+	if _, ok := data["modelMappings"].([]any); !ok {
+		t.Fatalf("patch response modelMappings missing: %v", data)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,6 +1263,128 @@ func TestPatchApiKeyGuards(t *testing.T) {
 		r := f.env.do(http.MethodPatch, Prefix+"/api-keys/ak-1",
 			`{"expectedRevision":"2026-01-10T08:30:00.000Z","name":"taken"}`, f.token)
 		r.requireMessage(t, http.StatusConflict, "API Key 名称已存在：taken")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// PATCH /api-keys/{id}: committed cache invalidation (Node
+// api-key.repository.ts:1256-1271 — validation flush required on
+// routeStrategyId/status/expiresAt/quotaLimits with the 500 contract
+// delegated-api.routes.ts:365-368; runtime lookup (name) best effort).
+// ---------------------------------------------------------------------------
+
+// fakePatchInvalidator records the apikeys.CacheInvalidator calls the
+// delegated patch issues; validationErr simulates a failing bus.
+type fakePatchInvalidator struct {
+	validationCalls []string
+	validationHash  [][]string
+	runtimeCalls    []string
+	quotaCalls      []string
+	validationErr   error
+}
+
+func (f *fakePatchInvalidator) InvalidateValidation(apiKeyID, reason string, keyHashes []string) error {
+	f.validationCalls = append(f.validationCalls, apiKeyID+" "+reason)
+	f.validationHash = append(f.validationHash, keyHashes)
+	return f.validationErr
+}
+
+func (f *fakePatchInvalidator) InvalidateRuntime(apiKeyID, reason string) {
+	f.runtimeCalls = append(f.runtimeCalls, apiKeyID+" "+reason)
+}
+
+func (f *fakePatchInvalidator) InvalidateQuota(apiKeyID, reason string) {
+	f.quotaCalls = append(f.quotaCalls, apiKeyID+" "+reason)
+}
+
+const (
+	seededKeyRevision = "2026-01-10T08:30:00.000Z"
+	seededKeyHash     = "ak-1key-1" // seedApiKey hashes apikeys.HashSecret(id+name)
+)
+
+func TestPatchApiKeyCacheInvalidation(t *testing.T) {
+	t.Run("route_strategy_change_requires_validation", func(t *testing.T) {
+		f := newApiKeyFixture(t)
+		inval := &fakePatchInvalidator{}
+		f.env.deps.Inval = inval
+		r := f.env.do(http.MethodPatch, Prefix+"/api-keys/ak-1",
+			`{"expectedRevision":"`+seededKeyRevision+`","routeStrategyId":"rst-3"}`, f.token)
+		if r.status != http.StatusOK {
+			t.Fatalf("status = %d (body %s)", r.status, r.raw)
+		}
+		if len(inval.validationCalls) != 1 || inval.validationCalls[0] != "ak-1 api_key_updated" {
+			t.Fatalf("validation calls = %v", inval.validationCalls)
+		}
+		hashes := inval.validationHash[0]
+		if len(hashes) != 1 || hashes[0] != apikeys.HashSecret(seededKeyHash) {
+			t.Fatalf("validation key hashes = %v, want [%s]", hashes, apikeys.HashSecret(seededKeyHash))
+		}
+		if len(inval.runtimeCalls) != 0 || len(inval.quotaCalls) != 0 {
+			t.Fatalf("runtime = %v quota = %v, want none", inval.runtimeCalls, inval.quotaCalls)
+		}
+	})
+
+	t.Run("status_change_requires_validation", func(t *testing.T) {
+		f := newApiKeyFixture(t)
+		inval := &fakePatchInvalidator{}
+		f.env.deps.Inval = inval
+		r := f.env.do(http.MethodPatch, Prefix+"/api-keys/ak-1",
+			`{"expectedRevision":"`+seededKeyRevision+`","status":"disabled"}`, f.token)
+		if r.status != http.StatusOK {
+			t.Fatalf("status = %d (body %s)", r.status, r.raw)
+		}
+		if len(inval.validationCalls) != 1 || inval.validationCalls[0] != "ak-1 api_key_updated" {
+			t.Fatalf("validation calls = %v", inval.validationCalls)
+		}
+		if len(inval.runtimeCalls) != 0 {
+			t.Fatalf("runtime calls = %v, want none", inval.runtimeCalls)
+		}
+	})
+
+	t.Run("rename_is_runtime_only", func(t *testing.T) {
+		f := newApiKeyFixture(t)
+		inval := &fakePatchInvalidator{}
+		f.env.deps.Inval = inval
+		r := f.env.do(http.MethodPatch, Prefix+"/api-keys/ak-1",
+			`{"expectedRevision":"`+seededKeyRevision+`","name":"renamed-key"}`, f.token)
+		if r.status != http.StatusOK {
+			t.Fatalf("status = %d (body %s)", r.status, r.raw)
+		}
+		if len(inval.validationCalls) != 0 {
+			t.Fatalf("validation calls = %v, want none", inval.validationCalls)
+		}
+		if len(inval.runtimeCalls) != 1 || inval.runtimeCalls[0] != "ak-1 api_key_updated" {
+			t.Fatalf("runtime calls = %v", inval.runtimeCalls)
+		}
+	})
+
+	t.Run("no_change_skips_invalidation", func(t *testing.T) {
+		f := newApiKeyFixture(t)
+		inval := &fakePatchInvalidator{}
+		f.env.deps.Inval = inval
+		r := f.env.do(http.MethodPatch, Prefix+"/api-keys/ak-1",
+			`{"expectedRevision":"`+seededKeyRevision+`","name":"key-1"}`, f.token)
+		if r.status != http.StatusOK {
+			t.Fatalf("status = %d (body %s)", r.status, r.raw)
+		}
+		if len(inval.validationCalls) != 0 || len(inval.runtimeCalls) != 0 || len(inval.quotaCalls) != 0 {
+			t.Fatalf("calls = %v %v %v, want none",
+				inval.validationCalls, inval.runtimeCalls, inval.quotaCalls)
+		}
+	})
+
+	t.Run("validation_failure_500", func(t *testing.T) {
+		// Node delegated-api.routes.ts:365-368 renders the verbatim 500 copy
+		// when the required validation flush fails.
+		f := newApiKeyFixture(t)
+		inval := &fakePatchInvalidator{validationErr: errors.New("bus down")}
+		f.env.deps.Inval = inval
+		r := f.env.do(http.MethodPatch, Prefix+"/api-keys/ak-1",
+			`{"expectedRevision":"`+seededKeyRevision+`","routeStrategyId":"rst-3"}`, f.token)
+		r.requireMessage(t, http.StatusInternalServerError, "API Key 已更新，但 validation cache 失效失败")
+		if len(inval.validationCalls) != 1 {
+			t.Fatalf("validation calls = %v", inval.validationCalls)
+		}
 	})
 }
 

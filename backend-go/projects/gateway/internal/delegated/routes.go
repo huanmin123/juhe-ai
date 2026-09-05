@@ -65,6 +65,14 @@ type Deps struct {
 	PGDialect  bool
 	Settings   SettingReader
 	Usage      UsageReader
+	// Inval carries the committed api-key patch cache invalidation
+	// (Node api-key.repository.ts:1256-1271): the apikeys.Store keeps its
+	// invalidator private, so the delegated patch takes the same
+	// apikeys.CacheInvalidator port (wire apikeys.BusInvalidator{Bus: bus}
+	// in the composition root; pending as of 2026-09-05, see
+	// docs/bug/问题-0172 T4). Nil keeps the patch valid with no-op
+	// invalidation.
+	Inval apikeys.CacheInvalidator
 	// RedisNamespace mirrors runtimeConfig.redis.namespace for the
 	// request-limit bucket keys (empty keeps the "juhe" default).
 	RedisNamespace string
@@ -1310,7 +1318,85 @@ func isOwnedPhysicalAccount(item accounts.ListItem, inherited bool) bool {
 	return item.AccessType == "owner" && !inherited
 }
 
-func aiAccountDTO(item accounts.ListItem) map[string]any {
+// accountModelFacts carries the per-account supported-models /
+// model-mappings hydration the Node delegated ai-account rows carry
+// (hydrateAccountRowsWithRuntimeState → loadSupportedModelsByAccountIds +
+// loadModelMappingsByAccountIds, account-read.repository.ts:553-577).
+type accountModelFacts struct {
+	supportedModels []string
+	modelMappings   []accounts.ModelMapping
+}
+
+// loadAccountModelFacts batch-loads the supported-models / model-mappings
+// child rows for the given account ids (delegated has no big-list SQL of its
+// own; these are the same relations the accounts clone-context slice reads).
+// Ordering mirrors the Node loaders: models by account_id, model; mappings by
+// account_id, source_model, source_endpoint_family.
+func (d *Deps) loadAccountModelFacts(ctx context.Context, ids []string) (map[string]accountModelFacts, error) {
+	facts := map[string]accountModelFacts{}
+	if len(ids) == 0 {
+		return facts, nil
+	}
+	placeholders := "?" + strings.Repeat(", ?", len(ids)-1)
+	args := anySliceDelegated(ids)
+	modelRows, err := d.DB.QueryContext(ctx, d.bind(`SELECT account_id, model FROM `+d.table("account_supported_models")+`
+		WHERE account_id IN (`+placeholders+`)
+		ORDER BY account_id ASC, model ASC`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer modelRows.Close()
+	for modelRows.Next() {
+		var accountID, model string
+		if err := modelRows.Scan(&accountID, &model); err != nil {
+			return nil, err
+		}
+		fact := facts[accountID]
+		fact.supportedModels = append(fact.supportedModels, model)
+		facts[accountID] = fact
+	}
+	if err := modelRows.Err(); err != nil {
+		return nil, err
+	}
+	modelRows.Close()
+	mappingRows, err := d.DB.QueryContext(ctx, d.bind(`SELECT account_id, source_model, source_endpoint_family,
+			upstream_model, upstream_endpoint_family, enabled
+		FROM `+d.table("account_model_mappings")+`
+		WHERE account_id IN (`+placeholders+`)
+		ORDER BY account_id ASC, source_model ASC, source_endpoint_family ASC`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer mappingRows.Close()
+	for mappingRows.Next() {
+		var accountID string
+		var enabled int64
+		mapping := accounts.ModelMapping{}
+		if err := mappingRows.Scan(&accountID, &mapping.SourceModel, &mapping.SourceEndpointFamily,
+			&mapping.UpstreamModel, &mapping.UpstreamEndpointFamily, &enabled); err != nil {
+			return nil, err
+		}
+		enabledFlag := enabled == 1
+		mapping.Enabled = &enabledFlag
+		fact := facts[accountID]
+		fact.modelMappings = append(fact.modelMappings, mapping)
+		facts[accountID] = fact
+	}
+	if err := mappingRows.Err(); err != nil {
+		return nil, err
+	}
+	return facts, nil
+}
+
+func anySliceDelegated(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
+func aiAccountDTO(item accounts.ListItem, facts accountModelFacts) map[string]any {
 	dto := map[string]any{
 		"id": item.ID, "configRevision": item.ConfigRevision, "providerCode": item.ProviderCode,
 		"name": item.Name, "type": item.Type, "status": item.Status,
@@ -1328,6 +1414,16 @@ func aiAccountDTO(item accounts.ListItem) map[string]any {
 	if item.ProtocolVersion != "" {
 		dto["protocolVersion"] = item.ProtocolVersion
 	}
+	// Mirror Node: always present, [] when no facts. Nil slices would marshal
+	// as null, so normalize to empty slices first.
+	if facts.supportedModels == nil {
+		facts.supportedModels = []string{}
+	}
+	if facts.modelMappings == nil {
+		facts.modelMappings = []accounts.ModelMapping{}
+	}
+	dto["supportedModels"] = facts.supportedModels
+	dto["modelMappings"] = facts.modelMappings
 	if len(item.Tags) > 0 {
 		tags := make([]map[string]any, 0, len(item.Tags))
 		for _, tag := range item.Tags {
@@ -1362,11 +1458,24 @@ func (d *Deps) listAiAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := []map[string]any{}
+	owned := []accounts.ListItem{}
 	for _, item := range result.Items {
 		if !isOwnedPhysicalAccount(item, inherited[item.ID]) {
 			continue
 		}
-		items = append(items, aiAccountDTO(item))
+		owned = append(owned, item)
+	}
+	ownedIDs := make([]string, 0, len(owned))
+	for _, item := range owned {
+		ownedIDs = append(ownedIDs, item.ID)
+	}
+	facts, err := d.loadAccountModelFacts(r.Context(), ownedIDs)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	for _, item := range owned {
+		items = append(items, aiAccountDTO(item, facts[item.ID]))
 	}
 	kernel.WriteOK(w, map[string]any{
 		"items": items, "total": len(items), "hasMore": false,
@@ -1474,7 +1583,12 @@ func (d *Deps) patchAiAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, item := range after.Items {
 		if item.ID == id && isOwnedPhysicalAccount(item, inherited[item.ID]) {
-			kernel.WriteOK(w, aiAccountDTO(item), "")
+			facts, err := d.loadAccountModelFacts(r.Context(), []string{id})
+			if err != nil {
+				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			kernel.WriteOK(w, aiAccountDTO(item, facts[item.ID]), "")
 			return
 		}
 	}

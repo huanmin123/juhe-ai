@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
@@ -26,13 +27,21 @@ const maxRequestQuotaHourlyWindowHours = 24 * 30
 // apiKeyRevisionConflictMessage mirrors ApiKeyRevisionConflictError.
 const apiKeyRevisionConflictMessage = "API Key 已被其他操作修改，请刷新后重试"
 
+// apiKeyValidationCacheErrorMessage mirrors the Node delegated patch route
+// 500 copy for a failed required validation-cache flush
+// (delegated-api.routes.ts:365-368).
+const apiKeyValidationCacheErrorMessage = "API Key 已更新，但 validation cache 失效失败"
+
 // apiKeyPatchOutcome mirrors ApiKeyPatchOutcome.result: the route renders
 // ok(outcome.result) verbatim (id/revision/changedFields/rowPatch).
+// ValidationCacheError is the outcome.validationCacheError side channel
+// (json "-": it only flips the route to the 500 contract, never the body).
 type apiKeyPatchOutcome struct {
-	ID            string         `json:"id"`
-	Revision      string         `json:"revision"`
-	ChangedFields []string       `json:"changedFields"`
-	RowPatch      map[string]any `json:"rowPatch"`
+	ID                   string         `json:"id"`
+	Revision             string         `json:"revision"`
+	ChangedFields        []string       `json:"changedFields"`
+	RowPatch             map[string]any `json:"rowPatch"`
+	ValidationCacheError error          `json:"-"`
 }
 
 // zodTypeError mirrors the zod v3 invalid_type copy for string fields.
@@ -226,6 +235,10 @@ func (d *Deps) patchApiKey(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusNotFound, "API Key 不存在")
 		return
 	}
+	if outcome.ValidationCacheError != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, apiKeyValidationCacheErrorMessage)
+		return
+	}
 	kernel.WriteOK(w, outcome, "")
 }
 
@@ -336,7 +349,41 @@ func (d *Deps) patchApiKeyTx(ctx context.Context, id, systemAccountID string, in
 		return nil, err
 	}
 	_ = nextName
+	d.invalidateCommittedApiKeyPatchCaches(current, outcome)
 	return outcome, nil
+}
+
+// invalidateCommittedApiKeyPatchCaches mirrors the committed-mutation cache
+// flush of patchApiKeyAsync (api-key.repository.ts:1256-1271, Go sibling
+// apikeys/patch.go:537-551): the required validation flush fires when
+// changedFields intersect {routeStrategyId, status, expiresAt, quotaLimits}
+// and its failure surfaces as outcome.validationCacheError (route 500);
+// runtime lookup (name) and quota (quotaLimits) stay best-effort. The
+// delegated apiKeyPatchSchema can only write name/status/routeStrategyId, so
+// the expiresAt/quotaLimits branches are unreachable here.
+func (d *Deps) invalidateCommittedApiKeyPatchCaches(current *apiKeyMutationRow, outcome *apiKeyPatchOutcome) {
+	if d.Inval == nil || len(outcome.ChangedFields) == 0 {
+		return
+	}
+	validationChanged := changedFieldIn(outcome.ChangedFields, "routeStrategyId") ||
+		changedFieldIn(outcome.ChangedFields, "status")
+	if validationChanged {
+		if err := d.Inval.InvalidateValidation(current.ID, apikeys.ReasonAPIKeyUpdated, []string{current.KeyHash}); err != nil {
+			outcome.ValidationCacheError = err
+		}
+	}
+	if changedFieldIn(outcome.ChangedFields, "name") {
+		d.Inval.InvalidateRuntime(current.ID, apikeys.ReasonAPIKeyUpdated)
+	}
+}
+
+func changedFieldIn(changed []string, field string) bool {
+	for _, candidate := range changed {
+		if candidate == field {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Deps) hasStatusChange(changedFields []string) bool {

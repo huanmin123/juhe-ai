@@ -26,20 +26,24 @@ type EngineConfig struct {
 	// AccountCircuitConfirmationFailuresRequired mirrors the optional
 	// runtime override (nil = settings value).
 	AccountCircuitConfirmationFailuresRequired *int64
-	// KeyModelForegroundQueueWaitMs / PollMs mirror the constants.
+	// KeyModelForegroundQueueWaitMs / PollMs mirror the local dispatch
+	// constants keyModelForegroundQueueWaitMs=1_200 /
+	// keyModelForegroundQueuePollMs=25
+	// (gateway/dispatch/upstream-dispatch.ts:305-306), not config/runtime.ts.
 	KeyModelForegroundQueueWaitMs int64
 	KeyModelForegroundQueuePollMs int64
 }
 
-// DefaultEngineConfig mirrors the Node runtime defaults (config/runtime.ts):
-// the retry budget, initial delay and max delay align with
-// gateway.accountConcurrencyRetry* (runtime.ts:766-768). The attempt safety
-// limit mirrors gateway.accountApiKeyRequestAttemptSafetyLimit
-// (runtime.ts:769), whose Node default is globalConcurrencyMax
-// (JUHE_AI_CONCURRENCY_GLOBAL_MAX, default 5_000, range 1..50_000,
-// runtime.ts:410); this constant takes that default and the assembly root
-// must override it with the env-configured globalMax at wiring time (this
-// package ships no assembly, so there is no runtime impact today).
+// DefaultEngineConfig mirrors the Node runtime defaults: the retry budget,
+// initial delay and max delay align with gateway.accountConcurrencyRetry*
+// (config/runtime.ts:766-768). The attempt safety limit mirrors
+// gateway.accountApiKeyRequestAttemptSafetyLimit (runtime.ts:769), whose Node
+// default is globalConcurrencyMax (JUHE_AI_CONCURRENCY_GLOBAL_MAX, default
+// 5_000, range 1..50_000, runtime.ts:410); this constant takes that default
+// and the assembly root must override it with the env-configured globalMax at
+// wiring time (this package ships no assembly, so there is no runtime impact
+// today). KeyModelForegroundQueueWaitMs/PollMs mirror the upstream-dispatch
+// local constants (upstream-dispatch.ts:305-306), not config/runtime.ts.
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
 		AccountConcurrencyRetryBudgetMs:        1_200,
