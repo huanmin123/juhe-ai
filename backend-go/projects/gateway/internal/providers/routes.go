@@ -3,12 +3,13 @@ package providers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
-// Deps bundles the M11 slice collaborators.
+// Deps bundles the T5 slice collaborators.
 type Deps struct {
 	Store *Store
 	Auth  *authsys.Deps
@@ -18,40 +19,37 @@ type Deps struct {
 // subpaths that depend on the C03 model pricing/catalog service.
 const deferredModelCatalogMessage = "模型目录服务待迁移"
 
-// Mount wires the providers route family: admin surface on /providers and
-// the force-self mirror on /my-providers (groups pattern). Providers are
-// global catalog rows, so the self surface serves the same reads pinned to
-// the caller identity. The Node write endpoints that depend on the C03 model
-// catalog pricing service (POST/PATCH/DELETE /:code/models,
-// PUT /:code/default-health-check-model) are mounted on both surfaces and
-// render the documented 400 deferral until that slice migrates.
+// Mount wires the providers route family exactly as Node mounts it
+// (system-api-app.ts): a single ${systemApiPrefix}/providers surface, global
+// session auth only, the admin gate on GET /providers (providersRouter
+// requireAdmin) and the viewScope=admin management fork on /list, /:code and
+// /:code/models. Node has no my-providers surface; the earlier Go mirror is
+// removed. The write endpoints that depend on the C03 model catalog service
+// (POST/PATCH/DELETE /{code}/models, PUT /{code}/default-health-check-model)
+// render the documented 400 deferral with Node's {code} path shape.
 func (d *Deps) Mount(k *kernel.Kernel) {
 	prefix := "/__aisys__/api"
 	admin := d.Auth.RequireAdmin
-	self := d.Auth.RequireSession(true)
+	// Node requireAuth with the providers GET rule at mode 'read'
+	// (system-api-db-access.ts) touches no session.
+	read := d.Auth.RequireSession(false)
 
-	// Admin surface.
-	k.Register("GET "+prefix+"/providers", admin(http.HandlerFunc(d.list)))
-	k.Register("GET "+prefix+"/providers/{id}", admin(http.HandlerFunc(d.find)))
+	k.Register("GET "+prefix+"/providers/list", read(http.HandlerFunc(d.listItems)))
+	k.Register("GET "+prefix+"/providers", admin(http.HandlerFunc(d.listDefinitions)))
+	k.Register("GET "+prefix+"/providers/options", read(http.HandlerFunc(d.options)))
+	k.Register("GET "+prefix+"/providers/definitions", read(http.HandlerFunc(d.definitions)))
+	k.Register("GET "+prefix+"/providers/models/options", read(http.HandlerFunc(d.modelOptions)))
+	k.Register("GET "+prefix+"/providers/{code}", read(http.HandlerFunc(d.find)))
+	k.Register("GET "+prefix+"/providers/{code}/models", read(http.HandlerFunc(d.models)))
+	k.Register("GET "+prefix+"/providers/{code}/models/{modelId}/capabilities", read(http.HandlerFunc(d.modelCapabilities)))
 
-	// Self surface (forceSelfAccessScope mirror).
-	k.Register("GET "+prefix+"/my-providers", self(http.HandlerFunc(d.list)))
-	k.Register("GET "+prefix+"/my-providers/{id}", self(http.HandlerFunc(d.find)))
-
-	// C03-deferred write subpaths (Node providers.routes.ts write family).
-	for _, surface := range []struct {
-		base string
-		wrap func(http.Handler) http.Handler
-	}{
-		{"/providers", admin},
-		{"/my-providers", self},
-	} {
-		base := prefix + surface.base
-		d.mountDeferredWrite(k, "POST "+base+"/{id}/models", surface.wrap)
-		d.mountDeferredWrite(k, "PATCH "+base+"/{id}/models/{modelId}", surface.wrap)
-		d.mountDeferredWrite(k, "DELETE "+base+"/{id}/models/{modelId}", surface.wrap)
-		d.mountDeferredWrite(k, "PUT "+base+"/{id}/default-health-check-model", surface.wrap)
-	}
+	// C03-deferred write subpaths (Node providers.routes.ts write family,
+	// {code} path params aligned to avoid a second break when C03 lands).
+	base := prefix + "/providers"
+	d.mountDeferredWrite(k, "POST "+base+"/{code}/models", admin)
+	d.mountDeferredWrite(k, "PATCH "+base+"/{code}/models/{modelId}", admin)
+	d.mountDeferredWrite(k, "DELETE "+base+"/{code}/models/{modelId}", admin)
+	d.mountDeferredWrite(k, "PUT "+base+"/{code}/default-health-check-model", admin)
 }
 
 // mountDeferredWrite registers one write endpoint that stays behind the C03
@@ -63,44 +61,316 @@ func (d *Deps) mountDeferredWrite(k *kernel.Kernel, pattern string, wrap func(ht
 	})))
 }
 
-func parseIntOr(raw string, fallback int) int {
-	if raw == "" {
-		return fallback
+// isManagementProviderRequest mirrors providers.routes.ts:612-618: the
+// viewScope=admin query (single value, Node string identity) plus an admin
+// role (super_admin or admin).
+func isManagementProviderRequest(r *http.Request) bool {
+	values := r.URL.Query()["viewScope"]
+	if len(values) != 1 || values[0] != "admin" {
+		return false
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 1 {
-		return fallback
-	}
-	return value
+	auth := authsys.AuthContextFrom(r)
+	return auth != nil && isAdminRole(auth.Role)
 }
 
-func (d *Deps) list(w http.ResponseWriter, r *http.Request) {
-	page := parseIntOr(r.URL.Query().Get("page"), 1)
-	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), defaultProviderListPage)
-	result, err := d.Store.ListPage(r.Context(), page, pageSize, r.URL.Query().Get("keyword"))
+func isAdminRole(role string) bool {
+	return role == "super_admin" || role == "admin"
+}
+
+// requestSystemAccountID mirrors providerModelRequestSystemAccountId(
+// getRequestAccessScope(req.query.systemAccountId)): admins may pass a
+// systemAccountId filter (anything but 'all'), everyone else is pinned to
+// the caller identity.
+func requestSystemAccountID(r *http.Request) string {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		return ""
+	}
+	filter := ""
+	if values := r.URL.Query()["systemAccountId"]; len(values) == 1 {
+		filter = strings.TrimSpace(values[0])
+		if filter == "all" {
+			filter = ""
+		}
+	}
+	if filter != "" && isAdminRole(auth.Role) {
+		return filter
+	}
+	return auth.SystemAccountID
+}
+
+// firstQueryValue mirrors firstQueryValue: repeated params collapse to the
+// first value; anything else is absent.
+func firstQueryValue(r *http.Request, key string) string {
+	if values := r.URL.Query()[key]; len(values) > 0 {
+		return values[0]
+	}
+	return ""
+}
+
+// booleanQueryValue mirrors booleanQueryValue.
+func booleanQueryValue(r *http.Request, key string) *bool {
+	values := r.URL.Query()[key]
+	if len(values) == 0 {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(values[0])) {
+	case "1", "true", "yes":
+		enabled := true
+		return &enabled
+	case "0", "false", "no":
+		disabled := false
+		return &disabled
+	}
+	return nil
+}
+
+// listItems serves GET /list: the catalogue list rows with the
+// defaultHealthCheckModel preference overlay; the management fork
+// (viewScope=admin + admin role) sees disabled providers too.
+func (d *Deps) listItems(w http.ResponseWriter, r *http.Request) {
+	items, err := d.Store.ListCatalogListItems(r.Context())
 	if err != nil {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	setNoStoreHeaders(w)
-	kernel.WriteOK(w, result, "")
+	if !isManagementProviderRequest(r) {
+		enabled := items[:0]
+		for _, item := range items {
+			if item.Enabled {
+				enabled = append(enabled, item)
+			}
+		}
+		items = enabled
+	}
+	d.overlayListItems(r, items)
+	kernel.WriteOK(w, items, "")
 }
 
+func (d *Deps) overlayListItems(r *http.Request, items []ProviderListItem) {
+	if len(items) == 0 {
+		return
+	}
+	codes := make([]string, 0, len(items))
+	for _, item := range items {
+		codes = append(codes, item.Code)
+	}
+	preferences, err := d.Store.ListDefaultHealthCheckModelPreferences(r.Context(), requestSystemAccountID(r), codes)
+	if err != nil {
+		preferences = map[string]string{}
+	}
+	systemDefaults, err := d.Store.ListSystemDefaultHealthCheckModels(r.Context(), codes)
+	if err != nil {
+		systemDefaults = map[string]string{}
+	}
+	overlayListItemHealthCheckModels(items, preferences, systemDefaults)
+}
+
+// listDefinitions serves GET / (requireAdmin): the flat ProviderDefinition
+// array (non-paginated envelope) with the preference overlay.
+func (d *Deps) listDefinitions(w http.ResponseWriter, r *http.Request) {
+	definitions, err := d.Store.ListDefinitions(r.Context())
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	d.overlayDefinitions(r, definitions)
+	kernel.WriteOK(w, definitions, "")
+}
+
+// definitions serves GET /definitions: the flat ProviderDefinition array
+// filtered to enabled providers.
+func (d *Deps) definitions(w http.ResponseWriter, r *http.Request) {
+	definitions, err := d.Store.ListDefinitions(r.Context())
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	enabled := definitions[:0]
+	for _, definition := range definitions {
+		if definition.Enabled {
+			enabled = append(enabled, definition)
+		}
+	}
+	definitions = enabled
+	d.overlayDefinitions(r, definitions)
+	kernel.WriteOK(w, definitions, "")
+}
+
+func (d *Deps) overlayDefinitions(r *http.Request, definitions []ProviderDefinition) {
+	if len(definitions) == 0 {
+		return
+	}
+	codes := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		codes = append(codes, definition.Code)
+	}
+	preferences, err := d.Store.ListDefaultHealthCheckModelPreferences(r.Context(), requestSystemAccountID(r), codes)
+	if err != nil {
+		preferences = map[string]string{}
+	}
+	systemDefaults, err := d.Store.ListSystemDefaultHealthCheckModels(r.Context(), codes)
+	if err != nil {
+		systemDefaults = map[string]string{}
+	}
+	overlayDefinitionHealthCheckModels(definitions, preferences, systemDefaults)
+}
+
+// options serves GET /options: enabled {id, code, name, enabled} rows.
+func (d *Deps) options(w http.ResponseWriter, r *http.Request) {
+	providerOptions, err := d.Store.ListProviderOptions(r.Context())
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	kernel.WriteOK(w, providerOptions, "")
+}
+
+// modelOptions serves GET /models/options: query normalization (400 on
+// invalid protocol/limit), the enabled-provider 404 fork, then the merged
+// built-in/custom selection options.
+func (d *Deps) modelOptions(w http.ResponseWriter, r *http.Request) {
+	query, message := normalizeModelOptionQuery(r)
+	if message != "" {
+		kernel.WriteBadRequest(w, message)
+		return
+	}
+	if query.ProviderCode != "" {
+		provider, err := d.Store.FindProviderOption(r.Context(), query.ProviderCode)
+		if err != nil {
+			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if provider == nil || !provider.Enabled {
+			kernel.WriteNotFound(w, "供应商不存在或已停用")
+			return
+		}
+	}
+	query.SystemAccountID = requestSystemAccountID(r)
+	providerModelOptions, err := d.Store.ListProviderModelSelectionOptions(r.Context(), query)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	kernel.WriteOK(w, providerModelOptions, "")
+}
+
+// normalizeModelOptionQuery mirrors normalizeProviderModelOptionQuery and
+// returns the 400 message on invalid input.
+func normalizeModelOptionQuery(r *http.Request) (ModelOptionQuery, string) {
+	query := ModelOptionQuery{Limit: 50}
+	query.ProviderCode = strings.TrimSpace(firstQueryValue(r, "providerCode"))
+	protocol := strings.TrimSpace(firstQueryValue(r, "protocol"))
+	if protocol != "" && protocol != "openai" && protocol != "anthropic" && protocol != "gemini" {
+		return query, "protocol 必须是 openai、anthropic 或 gemini"
+	}
+	query.Protocol = protocol
+	query.Keyword = strings.TrimSpace(firstQueryValue(r, "keyword"))
+	if limitText := strings.TrimSpace(firstQueryValue(r, "limit")); limitText != "" {
+		limit, parseErr := strconv.ParseFloat(limitText, 64)
+		if parseErr != nil || limit != float64(int64(limit)) || limit < 1 || limit > 50 {
+			return query, "limit 必须是 1 到 50 的整数"
+		}
+		query.Limit = int(limit)
+	}
+	query.SelectedIDs = normalizeSelectedIDs(r)
+	return query, ""
+}
+
+// normalizeSelectedIDs mirrors the selectedIds / selectedIds[] union with
+// comma splitting, trimming, dedupe and the 50 entry cap.
+func normalizeSelectedIDs(r *http.Request) []string {
+	values := append(append([]string{}, r.URL.Query()["selectedIds"]...), r.URL.Query()["selectedIds[]"]...)
+	seen := map[string]bool{}
+	output := []string{}
+	for _, raw := range values {
+		for _, piece := range strings.Split(raw, ",") {
+			trimmed := strings.TrimSpace(piece)
+			if trimmed == "" || seen[trimmed] {
+				continue
+			}
+			seen[trimmed] = true
+			if len(output) < 50 {
+				output = append(output, trimmed)
+			}
+		}
+	}
+	return output
+}
+
+// find serves GET /{code}: the ProviderDefinition by code with the
+// preference overlay; non-management requests receive the Node 404 for
+// disabled providers.
 func (d *Deps) find(w http.ResponseWriter, r *http.Request) {
-	detail, err := d.Store.FindDetail(r.Context(), r.PathValue("id"))
+	definition, err := d.Store.FindDefinition(r.Context(), r.PathValue("code"))
 	if err != nil {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	if detail == nil {
-		kernel.WriteNotFound(w, "供应商不存在")
+	if definition == nil || (!definition.Enabled && !isManagementProviderRequest(r)) {
+		kernel.WriteNotFound(w, "供应商不存在或已停用")
 		return
 	}
-	setNoStoreHeaders(w)
-	kernel.WriteOK(w, detail, "")
+	roster := []ProviderDefinition{*definition}
+	d.overlayDefinitions(r, roster)
+	kernel.WriteOK(w, roster[0], "")
 }
 
-func setNoStoreHeaders(w http.ResponseWriter) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
+// models serves GET /{code}/models: the merged model catalog; the 404 fork
+// carries Node's shorter message for this route.
+func (d *Deps) models(w http.ResponseWriter, r *http.Request) {
+	provider, err := d.Store.FindProviderOption(r.Context(), r.PathValue("code"))
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if provider == nil || (!provider.Enabled && !isManagementProviderRequest(r)) {
+		kernel.WriteError(w, http.StatusNotFound, "供应商不存在")
+		return
+	}
+	items, err := d.Store.ListProviderModelsForRequest(r.Context(), provider.Code, requestSystemAccountID(r),
+		booleanOrFalse(booleanQueryValue(r, "includeInactive")),
+		booleanOrFalse(booleanQueryValue(r, "includeUnpriced")))
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	kernel.WriteOK(w, items, "")
+}
+
+func booleanOrFalse(value *bool) bool {
+	return value != nil && *value
+}
+
+// modelCapabilities serves GET /{code}/models/{modelId}/capabilities: the
+// provider must exist and be enabled (no management bypass, Node :164), the
+// model resolution follows the merged test catalog.
+func (d *Deps) modelCapabilities(w http.ResponseWriter, r *http.Request) {
+	definitions, err := d.Store.ListDefinitions(r.Context())
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	code := r.PathValue("code")
+	providerFound := false
+	for _, definition := range definitions {
+		if definition.Code == code {
+			providerFound = definition.Enabled
+			break
+		}
+	}
+	if !providerFound {
+		kernel.WriteNotFound(w, "供应商不存在或已停用")
+		return
+	}
+	capability, err := d.Store.FindProviderModelCapabilities(r.Context(), code, requestSystemAccountID(r), r.PathValue("modelId"))
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if capability == nil {
+		kernel.WriteNotFound(w, "模型不存在")
+		return
+	}
+	kernel.WriteOK(w, capability, "")
 }

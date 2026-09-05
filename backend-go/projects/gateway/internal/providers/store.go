@@ -1,14 +1,17 @@
-// Package providers owns the M11 vertical slice: the management-plane read
-// family over the Node-owned provider catalog tables (providers,
-// provider_protocol_profiles, provider_model_catalog), ported from
+// Package providers owns the T5 management read family over the Node-owned
+// provider catalog tables (providers, provider_protocol_profiles,
+// provider_protocol_profile_families, protocol_endpoint_families,
+// provider_model_catalog, custom_provider_models,
+// provider_default_health_check_models,
+// provider_system_default_health_check_models), ported from
 // backend/src/modules/providers/providers.routes.ts plus
-// provider.repository.ts / provider-model-catalog.repository.ts. Node mounts
-// the router once and distinguishes the management view via the viewScope
-// query; the Go gateway mirrors the groups slice instead: an admin surface on
-// /providers and a force-self surface on /my-providers serving the same
-// global catalog rows. The model write family (custom models, built-in model
+// provider.repository.ts / provider-model-catalog.repository.ts /
+// custom-provider-models.repository.ts. Node mounts the router once at
+// ${systemApiPrefix}/providers (no my- surface) and distinguishes the
+// management view via the viewScope=admin query; the Go gateway mirrors that
+// contract directly. The model write family (custom models, built-in model
 // patches, default-health-check-model preferences) depends on the C03 model
-// pricing/catalog service and is mounted as a documented 400 deferral.
+// pricing/catalog service and stays a documented 400 deferral.
 package providers
 
 import (
@@ -21,13 +24,25 @@ import (
 	"time"
 )
 
-// Limits mirror the slice pagination bounds. The two preferred profile ids
-// mirror provider-protocol.ts (gemini native v1beta, glm coding openai v1).
+// maxProviderDefinitions and maxProviderProtocolProfiles mirror the slice
+// limits in provider.repository.ts. The two preferred profile ids mirror
+// provider-protocol.ts (gemini native v1beta, glm coding openai v1).
 const (
-	maxProviderListPageSize   = 200
-	defaultProviderListPage   = 50
-	preferredGeminiProfileID  = "profile_gemini_native_v1beta"
-	preferredGLMCodingProfile = "profile_glm_coding_openai_v1"
+	maxProviderDefinitions      = 50
+	maxProviderProtocolProfiles = 200
+	preferredGeminiProfileID    = "profile_gemini_native_v1beta"
+	preferredGLMCodingProfile   = "profile_glm_coding_openai_v1"
+	// Provider/protocol codes from domain/provider-protocol.ts.
+	geminiProviderCode       = "gemini"
+	glmProviderCode          = "glm"
+	hybridProviderCode       = "hybrid"
+	openaiProviderCode       = "openai" // OPENAI_COMPATIBLE_PROVIDER_CODE
+	openaiProtocolCode       = "openai"
+	openaiProtocolVersion    = "v1"
+	anthropicProtocolCode    = "anthropic"
+	anthropicProtocolVersion = "v1"
+	geminiProtocolCode       = "gemini"
+	geminiProtocolVersion    = "v1beta"
 )
 
 // Store is the dual-mode provider catalog persistence (SQLite + PostgreSQL).
@@ -82,18 +97,19 @@ func ensureCtx(ctx context.Context) context.Context {
 	return ctx
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func nullPtrString(value sql.NullString) *string {
 	if !value.Valid || value.String == "" {
 		return nil
 	}
 	return &value.String
+}
+
+func textPtr(value sql.NullString) *string {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil
+	}
+	trimmed := strings.TrimSpace(value.String)
+	return &trimmed
 }
 
 func parseJSONArray(value sql.NullString) []string {
@@ -113,307 +129,280 @@ func parseJSONArray(value sql.NullString) []string {
 	return output
 }
 
+// EndpointFamily mirrors ProtocolEndpointFamilyDefinition.
+type EndpointFamily struct {
+	Code        string  `json:"code"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+}
+
 // ProtocolProfile mirrors ProviderProtocolProfileDefinition.
 type ProtocolProfile struct {
+	ID                      string           `json:"id"`
+	ProviderCode            string           `json:"providerCode"`
+	Name                    string           `json:"name"`
+	Description             *string          `json:"description,omitempty"`
+	Enabled                 bool             `json:"enabled"`
+	ProtocolCode            string           `json:"protocolCode"`
+	ProtocolVersion         string           `json:"protocolVersion"`
+	BaseURL                 string           `json:"baseUrl"`
+	DefaultHealthCheckModel string           `json:"defaultHealthCheckModel"`
+	AccountTypes            []string         `json:"accountTypes"`
+	Capabilities            []string         `json:"capabilities"`
+	EndpointFamilies        []EndpointFamily `json:"endpointFamilies"`
+}
+
+// ProviderDefinition mirrors the Node ProviderDefinition DTO (the flat
+// contract of GET /providers, GET /providers/definitions and
+// GET /providers/{code}); systemDefaultHealthCheckModel rides on the
+// providerWithDefaultHealthCheckModelPreference overlay.
+type ProviderDefinition struct {
+	ID                            string            `json:"id"`
+	Code                          string            `json:"code"`
+	Name                          string            `json:"name"`
+	ParentCode                    *string           `json:"parentCode,omitempty"`
+	Description                   *string           `json:"description,omitempty"`
+	Enabled                       bool              `json:"enabled"`
+	DefaultProtocolProfileID      string            `json:"defaultProtocolProfileId"`
+	ProtocolCode                  string            `json:"protocolCode"`
+	ProtocolVersion               string            `json:"protocolVersion"`
+	BaseURL                       string            `json:"baseUrl"`
+	DefaultHealthCheckModel       string            `json:"defaultHealthCheckModel"`
+	SystemDefaultHealthCheckModel *string           `json:"systemDefaultHealthCheckModel,omitempty"`
+	DefaultSupportedModels        []string          `json:"defaultSupportedModels"`
+	AccountTypes                  []string          `json:"accountTypes"`
+	Capabilities                  []string          `json:"capabilities"`
+	ProtocolProfiles              []ProtocolProfile `json:"protocolProfiles"`
+}
+
+// ProviderListItem mirrors the catalogue list row of GET /providers/list
+// (mapProviderListRow): the preferred default profile rides along without
+// its id/version and without protocol profiles.
+type ProviderListItem struct {
 	ID                      string   `json:"id"`
-	ProviderCode            string   `json:"providerCode"`
+	Code                    string   `json:"code"`
 	Name                    string   `json:"name"`
+	ParentCode              *string  `json:"parentCode,omitempty"`
 	Description             *string  `json:"description,omitempty"`
 	Enabled                 bool     `json:"enabled"`
 	ProtocolCode            string   `json:"protocolCode"`
-	ProtocolVersion         string   `json:"protocolVersion"`
 	BaseURL                 string   `json:"baseUrl"`
 	DefaultHealthCheckModel string   `json:"defaultHealthCheckModel"`
+	DefaultSupportedModels  []string `json:"defaultSupportedModels"`
 	AccountTypes            []string `json:"accountTypes"`
 	Capabilities            []string `json:"capabilities"`
 }
 
-// CatalogModel mirrors the ProviderModelCatalogItem projection the detail
-// view serves (a subset of provider_model_catalog columns).
-type CatalogModel struct {
-	ID                    string   `json:"id"`
-	ProviderCode          string   `json:"providerCode"`
-	Model                 string   `json:"model"`
-	Status                string   `json:"status"`
-	Mode                  *string  `json:"mode,omitempty"`
-	CatalogOrder          *int64   `json:"catalogOrder,omitempty"`
-	ReleaseDate           *string  `json:"releaseDate,omitempty"`
-	ShutdownDate          *string  `json:"shutdownDate,omitempty"`
-	SupportedAPIProtocols []string `json:"supportedApiProtocols"`
-	ContextWindowTokens   *int64   `json:"contextWindowTokens,omitempty"`
-	MaxInputTokens        *int64   `json:"maxInputTokens,omitempty"`
-	MaxOutputTokens       *int64   `json:"maxOutputTokens,omitempty"`
-	InputUsdPer1M         *float64 `json:"inputUsdPer1M,omitempty"`
-	OutputUsdPer1M        *float64 `json:"outputUsdPer1M,omitempty"`
-	SupportsPromptCaching bool     `json:"supportsPromptCaching"`
-	CatalogVisible        bool     `json:"catalogVisible"`
-	UpdatedAt             string   `json:"updatedAt"`
+// ProviderOption mirrors GET /providers/options rows.
+type ProviderOption struct {
+	ID      string `json:"id"`
+	Code    string `json:"code"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
 }
 
-// ListItem mirrors the management provider list row: the providers table
-// row, the preferred default protocol profile (Node listProviderListItems
-// lateral pick) and the provider_model_catalog count.
-type ListItem struct {
-	ID                       string   `json:"id"`
-	Code                     string   `json:"code"`
-	Name                     string   `json:"name"`
-	ParentCode               *string  `json:"parentCode,omitempty"`
-	Description              *string  `json:"description,omitempty"`
-	Enabled                  bool     `json:"enabled"`
-	DefaultSupportedModels   []string `json:"defaultSupportedModels"`
-	DefaultProtocolProfileID string   `json:"defaultProtocolProfileId"`
-	ProtocolCode             string   `json:"protocolCode"`
-	ProtocolVersion          string   `json:"protocolVersion"`
-	BaseURL                  string   `json:"baseUrl"`
-	DefaultHealthCheckModel  string   `json:"defaultHealthCheckModel"`
-	AccountTypes             []string `json:"accountTypes"`
-	Capabilities             []string `json:"capabilities"`
-	ModelCatalogCount        int      `json:"modelCatalogCount"`
-	CreatedAt                string   `json:"createdAt"`
-	UpdatedAt                string   `json:"updatedAt"`
-}
-
-// Detail mirrors the provider detail: the list row plus every protocol
-// profile and the model catalog entries.
-type Detail struct {
-	ListItem
-	ProtocolProfiles []ProtocolProfile `json:"protocolProfiles"`
-	Models           []CatalogModel    `json:"models"`
-}
-
-// ListPageResult mirrors the slice pagination envelope (groups shape).
-type ListPageResult struct {
-	Items    []ListItem `json:"items"`
-	Total    int        `json:"total"`
-	HasMore  bool       `json:"hasMore"`
-	Page     int        `json:"page"`
-	PageSize int        `json:"pageSize"`
-}
-
-type providerRow struct {
-	id                      string
-	code                    string
-	name                    string
-	parentCode              sql.NullString
-	description             sql.NullString
-	enabled                 bool
-	defaultSupportedModels  sql.NullString
-	defaultProfileID        sql.NullString
-	protocolCode            sql.NullString
-	protocolVersion         sql.NullString
-	baseURL                 sql.NullString
-	defaultHealthCheckModel sql.NullString
-	accountTypes            sql.NullString
-	capabilities            sql.NullString
-	defaultProfileEnabled   sql.NullInt64
-	createdAt               string
-	updatedAt               string
-	modelCatalogCount       int
-}
-
-// preferredProfileOrder mirrors the Node default-profile pick: enabled first,
-// then the gemini-native / glm-coding preferred ids, then recency.
-const preferredProfileOrder = `candidate.enabled DESC,
-		CASE WHEN candidate.id IN (?, ?) THEN 0 ELSE 1 END,
-		candidate.updated_at DESC, candidate.id ASC`
-
-func (s *Store) providerColumns() string {
-	return `p.id, p.code, p.name, p.parent_code, p.description, p.enabled,
-		p.default_supported_models_json, p.created_at, p.updated_at,
-		ppp.id, ppp.protocol_code, ppp.protocol_version, ppp.base_url,
-		ppp.default_health_check_model, ppp.account_types_json, ppp.capabilities_json,
-		ppp.enabled,
-		(SELECT COUNT(*) FROM ` + s.table("provider_model_catalog") + ` catalog_count
-			WHERE catalog_count.provider_code = p.code) AS model_catalog_count`
-}
-
-// providerJoin mirrors the Node listProviderListItems lateral: one preferred
-// default profile per provider.
-func (s *Store) providerJoin() string {
-	return ` LEFT JOIN ` + s.table("provider_protocol_profiles") + ` ppp ON ppp.id = (
-		SELECT candidate.id FROM ` + s.table("provider_protocol_profiles") + ` candidate
-		WHERE candidate.provider_code = p.code
-		ORDER BY ` + preferredProfileOrder + ` LIMIT 1
-	)`
-}
-
-func scanProviderRow(scan func(...any) error) (providerRow, error) {
-	var row providerRow
-	var enabled int
-	err := scan(&row.id, &row.code, &row.name, &row.parentCode, &row.description, &enabled,
-		&row.defaultSupportedModels, &row.createdAt, &row.updatedAt,
-		&row.defaultProfileID, &row.protocolCode, &row.protocolVersion, &row.baseURL,
-		&row.defaultHealthCheckModel, &row.accountTypes, &row.capabilities,
-		&row.defaultProfileEnabled, &row.modelCatalogCount)
-	if err != nil {
-		return providerRow{}, err
-	}
-	row.enabled = enabled == 1
-	return row, nil
-}
-
-func (s *Store) newListItem(row providerRow) ListItem {
-	item := ListItem{
-		ID:                     row.id,
-		Code:                   row.code,
-		Name:                   row.name,
-		ParentCode:             nullPtrString(row.parentCode),
-		Description:            nullPtrString(row.description),
-		Enabled:                row.enabled,
-		DefaultSupportedModels: parseJSONArray(row.defaultSupportedModels),
-		AccountTypes:           parseJSONArray(row.accountTypes),
-		Capabilities:           parseJSONArray(row.capabilities),
-		ModelCatalogCount:      row.modelCatalogCount,
-		CreatedAt:              row.createdAt,
-		UpdatedAt:              row.updatedAt,
-	}
-	if row.defaultProfileID.Valid {
-		item.DefaultProtocolProfileID = row.defaultProfileID.String
-		item.ProtocolCode = row.protocolCode.String
-		item.ProtocolVersion = row.protocolVersion.String
-		item.BaseURL = row.baseURL.String
-		item.DefaultHealthCheckModel = row.defaultHealthCheckModel.String
-	}
-	return item
-}
-
-// ListPage mirrors the management list: every provider row (the Node
-// management view shows disabled providers too) with the preferred default
-// profile and the model catalog count, ordered by name then code, pageSize+1
-// probe and the paged total upper bound.
-func (s *Store) ListPage(ctx context.Context, page, pageSize int, keyword string) (*ListPageResult, error) {
+// ListCatalogListItems mirrors listProviderListItemsAsync (GET /list rows):
+// every provider with the lateral preferred default profile, ordered by name
+// then code, bounded by maxProviderDefinitions. Preference overlay is applied
+// by the route (listProviderListItemsForRequestAsync).
+func (s *Store) ListCatalogListItems(ctx context.Context) ([]ProviderListItem, error) {
 	ctx = ensureCtx(ctx)
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 {
-		pageSize = defaultProviderListPage
-	}
-	pageSize = minInt(maxProviderListPageSize, pageSize)
-	// The providerJoin carries the first two bind values (the preferred
-	// profile id pair), so they lead the argument list.
 	args := append([]any{}, preferredProfileArgs()...)
-	clauses := []string{}
-	text := strings.TrimSpace(keyword)
-	if text != "" {
-		clauses = append(clauses, "(p.name >= ? AND p.name < ? OR p.code >= ? AND p.code < ?)")
-		args = append(args, text, textPrefixUpperBound(text), text, textPrefixUpperBound(text))
-	}
-	where := ""
-	if len(clauses) > 0 {
-		where = " WHERE " + strings.Join(clauses, " AND ")
-	}
-	args = append(args, pageSize+1, (page-1)*pageSize)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+s.providerColumns()+`
-		FROM `+s.table("providers")+` p`+s.providerJoin()+where+`
-		ORDER BY p.name ASC, p.code ASC
-		LIMIT ? OFFSET ?`), args...)
+	args = append(args, maxProviderDefinitions)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT p.id, p.code, p.name, p.parent_code, p.description,
+			p.enabled, p.default_supported_models_json,
+			ppp.protocol_code, ppp.base_url, ppp.default_health_check_model,
+			ppp.account_types_json, ppp.capabilities_json
+		FROM `+s.table("providers")+` p`+s.providerJoin()+`
+		ORDER BY p.name ASC, p.code ASC LIMIT ?`), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	records := []providerRow{}
+	items := []ProviderListItem{}
 	for rows.Next() {
-		row, scanErr := scanProviderRow(rows.Scan)
+		var (
+			item                   ProviderListItem
+			enabled                int
+			parentCode, desc       sql.NullString
+			defaultSupportedModels sql.NullString
+			protocolCode, baseURL  sql.NullString
+			healthCheckModel       sql.NullString
+			accountTypes, caps     sql.NullString
+		)
+		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &parentCode, &desc, &enabled,
+			&defaultSupportedModels, &protocolCode, &baseURL, &healthCheckModel, &accountTypes, &caps); err != nil {
+			return nil, err
+		}
+		item.Enabled = enabled == 1
+		item.ParentCode = nullPtrString(parentCode)
+		item.Description = nullPtrString(desc)
+		item.ProtocolCode = protocolCode.String
+		item.BaseURL = baseURL.String
+		item.DefaultHealthCheckModel = healthCheckModel.String
+		item.DefaultSupportedModels = parseJSONArray(defaultSupportedModels)
+		item.AccountTypes = parseJSONArray(accountTypes)
+		item.Capabilities = parseJSONArray(caps)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// ListDefinitions mirrors listProvidersAsync() (no code filter): the flat
+// ProviderDefinition rows with the full protocol profile list and the
+// preferred default profile fields (providerDefaultProfileFields).
+func (s *Store) ListDefinitions(ctx context.Context) ([]ProviderDefinition, error) {
+	ctx = ensureCtx(ctx)
+	args := append([]any{}, maxProviderDefinitions)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, code, name, parent_code, description, enabled,
+			default_supported_models_json
+		FROM `+s.table("providers")+`
+		ORDER BY name ASC, code ASC LIMIT ?`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	definitions := []*ProviderDefinition{}
+	for rows.Next() {
+		definition, scanErr := s.scanProviderDefinition(rows.Scan)
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		records = append(records, row)
+		definitions = append(definitions, definition)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	hasMore := len(records) > pageSize
-	if hasMore {
-		records = records[:pageSize]
+	if err := s.attachProtocolProfiles(ctx, definitions); err != nil {
+		return nil, err
 	}
-	items := make([]ListItem, 0, len(records))
-	for _, row := range records {
-		items = append(items, s.newListItem(row))
+	output := make([]ProviderDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		output = append(output, *definition)
 	}
-	total := (page-1)*pageSize + len(items)
-	if hasMore {
-		total++
-	}
-	return &ListPageResult{Items: items, Total: total, HasMore: hasMore, Page: page, PageSize: pageSize}, nil
+	return output, nil
 }
 
-// FindDetail resolves one provider by code first (the Node :code routes) and
-// falls back to the row id (the slice {id} contract), with the full protocol
-// profile list and the model catalog ordered by catalog_order then model.
-// Returns (nil, nil) when no row matches (route renders 404).
-func (s *Store) FindDetail(ctx context.Context, key string) (*Detail, error) {
+// FindDefinition resolves one provider by code (the Node GET /:code lookup:
+// listProvidersAsync(code), code-only). Returns (nil, nil) when no row
+// matches (route renders 404).
+func (s *Store) FindDefinition(ctx context.Context, code string) (*ProviderDefinition, error) {
 	ctx = ensureCtx(ctx)
-	id := strings.TrimSpace(key)
-	if id == "" {
+	trimmed := strings.TrimSpace(code)
+	if trimmed == "" {
 		return nil, nil
 	}
-	row, err := s.findProviderRow(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return nil, nil
-	}
-	profiles, err := s.listProfiles(ctx, row.code)
-	if err != nil {
-		return nil, err
-	}
-	models, err := s.listCatalogModels(ctx, row.code)
-	if err != nil {
-		return nil, err
-	}
-	return &Detail{ListItem: s.newListItem(*row), ProtocolProfiles: profiles, Models: models}, nil
-}
-
-func (s *Store) findProviderRow(ctx context.Context, key string) (*providerRow, error) {
-	row, err := s.findProviderRowBy(ctx, "p.code = ?", key)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		row, err = s.findProviderRowBy(ctx, "p.id = ?", key)
-	}
-	return row, err
-}
-
-func (s *Store) findProviderRowBy(ctx context.Context, clause, value string) (*providerRow, error) {
-	args := append([]any{}, preferredProfileArgs()...)
-	args = append(args, value)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+s.providerColumns()+`
-		FROM `+s.table("providers")+` p`+s.providerJoin()+`
-		WHERE `+clause+`
-		LIMIT 1`), args...)
+	args := append([]any{}, trimmed, maxProviderDefinitions)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, code, name, parent_code, description, enabled,
+			default_supported_models_json
+		FROM `+s.table("providers")+`
+		WHERE code = ?
+		ORDER BY name ASC, code ASC LIMIT ?`), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	var definition *ProviderDefinition
 	for rows.Next() {
-		record, scanErr := scanProviderRow(rows.Scan)
+		record, scanErr := s.scanProviderDefinition(rows.Scan)
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		return &record, rows.Err()
+		definition = record
 	}
-	return nil, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if definition == nil {
+		return nil, nil
+	}
+	if err := s.attachProtocolProfiles(ctx, []*ProviderDefinition{definition}); err != nil {
+		return nil, err
+	}
+	return definition, nil
 }
 
-// preferredProfileArgs feeds the CASE WHEN candidate.id IN (?, ?) pair of the
-// preferred-profile pick.
-func preferredProfileArgs() []any {
-	return []any{preferredGeminiProfileID, preferredGLMCodingProfile}
+func (s *Store) scanProviderDefinition(scan func(...any) error) (*ProviderDefinition, error) {
+	var (
+		definition             ProviderDefinition
+		enabled                int
+		parentCode, desc       sql.NullString
+		defaultSupportedModels sql.NullString
+	)
+	if err := scan(&definition.ID, &definition.Code, &definition.Name, &parentCode, &desc, &enabled,
+		&defaultSupportedModels); err != nil {
+		return nil, err
+	}
+	definition.Enabled = enabled == 1
+	definition.ParentCode = nullPtrString(parentCode)
+	definition.Description = nullPtrString(desc)
+	definition.DefaultSupportedModels = parseJSONArray(defaultSupportedModels)
+	definition.ProtocolProfiles = []ProtocolProfile{}
+	return &definition, nil
 }
 
-// listProfiles mirrors listProviderProtocolProfiles (all profiles of the
-// provider, enabled first is not applied here: the detail view is the raw
-// management read).
-func (s *Store) listProfiles(ctx context.Context, providerCode string) ([]ProtocolProfile, error) {
+// attachProtocolProfiles ports providerProtocolProfilesByProviderCode plus
+// providerDefaultProfileFields: one profiles query (provider_code ASC,
+// updated_at DESC, id ASC, LIMIT 200), one families query, then the
+// preferred default profile fields ride onto every definition.
+func (s *Store) attachProtocolProfiles(ctx context.Context, definitions []*ProviderDefinition) error {
+	if len(definitions) == 0 {
+		return nil
+	}
+	codes := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		codes = append(codes, definition.Code)
+	}
+	profiles, err := s.listProtocolProfiles(ctx, codes)
+	if err != nil {
+		return err
+	}
+	profileIDs := make([]string, 0, len(profiles))
+	for _, profile := range profiles {
+		profileIDs = append(profileIDs, profile.ID)
+	}
+	families, err := s.listEndpointFamilies(ctx, profileIDs)
+	if err != nil {
+		return err
+	}
+	for index := range profiles {
+		profiles[index].EndpointFamilies = families[profiles[index].ID]
+		if profiles[index].EndpointFamilies == nil {
+			profiles[index].EndpointFamilies = []EndpointFamily{}
+		}
+	}
+	profilesByCode := map[string][]ProtocolProfile{}
+	for _, profile := range profiles {
+		profilesByCode[profile.ProviderCode] = append(profilesByCode[profile.ProviderCode], profile)
+	}
+	for _, definition := range definitions {
+		providerProfiles := profilesByCode[definition.Code]
+		if providerProfiles == nil {
+			providerProfiles = []ProtocolProfile{}
+		}
+		definition.ProtocolProfiles = providerProfiles
+		applyPreferredDefaultProfile(definition, preferredDefaultProtocolProfile(definition.Code, providerProfiles))
+	}
+	return nil
+}
+
+// listProtocolProfiles mirrors listProviderProtocolProfilesAsync.
+func (s *Store) listProtocolProfiles(ctx context.Context, providerCodes []string) ([]ProtocolProfile, error) {
+	where := ""
+	args := []any{}
+	if len(providerCodes) > 0 {
+		where = " WHERE provider_code IN (" + placeholders(len(providerCodes)) + ")"
+		for _, code := range providerCodes {
+			args = append(args, code)
+		}
+	}
+	args = append(args, maxProviderProtocolProfiles)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, provider_code, name, description, enabled,
-		protocol_code, protocol_version, base_url, default_health_check_model,
-		account_types_json, capabilities_json
-		FROM `+s.table("provider_protocol_profiles")+`
-		WHERE provider_code = ?
-		ORDER BY updated_at DESC, id ASC`), providerCode)
+			protocol_code, protocol_version, base_url, default_health_check_model,
+			account_types_json, capabilities_json
+		FROM `+s.table("provider_protocol_profiles")+where+`
+		ORDER BY provider_code ASC, updated_at DESC, id ASC
+		LIMIT ?`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -438,78 +427,357 @@ func (s *Store) listProfiles(ctx context.Context, providerCode string) ([]Protoc
 	return profiles, rows.Err()
 }
 
-// listCatalogModels reads the provider_model_catalog rows of the provider.
-// The boolean flags stay INTEGER 0/1 in both modes (Node
-// providerEnabledPredicate); the CASE normalizes the PG boolean variant.
-func (s *Store) listCatalogModels(ctx context.Context, providerCode string) ([]CatalogModel, error) {
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, provider_code, model, status, mode, catalog_order,
-		release_date, shutdown_date, supported_api_protocols_json,
-		context_window_tokens, max_input_tokens, max_output_tokens,
-		input_usd_per_1m, output_usd_per_1m,
-		CASE WHEN supports_prompt_caching THEN 1 ELSE 0 END,
-		CASE WHEN catalog_visible THEN 1 ELSE 0 END,
-		updated_at
-		FROM `+s.table("provider_model_catalog")+`
-		WHERE provider_code = ?
-		ORDER BY (catalog_order IS NULL) ASC, catalog_order ASC, model ASC`), providerCode)
+// listEndpointFamilies mirrors providerEndpointFamiliesByProfileIdAsync.
+func (s *Store) listEndpointFamilies(ctx context.Context, profileIDs []string) (map[string][]EndpointFamily, error) {
+	result := map[string][]EndpointFamily{}
+	if len(profileIDs) == 0 {
+		return result, nil
+	}
+	args := stringSliceToAny(profileIDs)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT ppf.profile_id,
+			f.family_code, f.name, f.description
+		FROM `+s.table("provider_protocol_profile_families")+` ppf
+		INNER JOIN `+s.table("provider_protocol_profiles")+` ppp
+			ON ppp.id = ppf.profile_id
+		INNER JOIN `+s.table("protocol_endpoint_families")+` f
+			ON f.protocol_code = ppp.protocol_code
+			AND f.protocol_version = ppp.protocol_version
+			AND f.family_code = ppf.family_code
+		WHERE ppf.profile_id IN (`+placeholders(len(profileIDs))+`)
+			AND ppf.enabled = 1
+			AND f.enabled = 1
+		ORDER BY ppf.profile_id ASC, f.family_code ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	models := []CatalogModel{}
 	for rows.Next() {
-		var model CatalogModel
-		var mode, releaseDate, shutdownDate, supportedProtocols sql.NullString
-		var catalogOrder, contextWindow, maxInput, maxOutput sql.NullInt64
-		var inputUsd, outputUsd sql.NullFloat64
-		var promptCaching, catalogVisible int
-		if err := rows.Scan(&model.ID, &model.ProviderCode, &model.Model, &model.Status, &mode, &catalogOrder,
-			&releaseDate, &shutdownDate, &supportedProtocols,
-			&contextWindow, &maxInput, &maxOutput, &inputUsd, &outputUsd,
-			&promptCaching, &catalogVisible, &model.UpdatedAt); err != nil {
+		var profileID string
+		var family EndpointFamily
+		var description sql.NullString
+		if err := rows.Scan(&profileID, &family.Code, &family.Name, &description); err != nil {
 			return nil, err
 		}
-		model.Mode = nullPtrString(mode)
-		model.ReleaseDate = nullPtrString(releaseDate)
-		model.ShutdownDate = nullPtrString(shutdownDate)
-		model.SupportedAPIProtocols = parseJSONArray(supportedProtocols)
-		model.CatalogOrder = nullInt64Ptr(catalogOrder)
-		model.ContextWindowTokens = nullInt64Ptr(contextWindow)
-		model.MaxInputTokens = nullInt64Ptr(maxInput)
-		model.MaxOutputTokens = nullInt64Ptr(maxOutput)
-		model.InputUsdPer1M = nullFloat64Ptr(inputUsd)
-		model.OutputUsdPer1M = nullFloat64Ptr(outputUsd)
-		model.SupportsPromptCaching = promptCaching == 1
-		model.CatalogVisible = catalogVisible == 1
-		models = append(models, model)
+		family.Description = nullPtrString(description)
+		result[profileID] = append(result[profileID], family)
 	}
-	return models, rows.Err()
+	return result, rows.Err()
 }
 
-func nullInt64Ptr(value sql.NullInt64) *int64 {
-	if !value.Valid {
-		return nil
+// applyPreferredDefaultProfile ports providerDefaultProfileFields: the
+// preferred profile fields ride onto the definition; without any profile the
+// Node shape carries empty strings and empty arrays.
+func applyPreferredDefaultProfile(definition *ProviderDefinition, preferred *ProtocolProfile) {
+	if preferred == nil {
+		definition.DefaultProtocolProfileID = ""
+		definition.ProtocolCode = ""
+		definition.ProtocolVersion = ""
+		definition.BaseURL = ""
+		definition.DefaultHealthCheckModel = ""
+		definition.AccountTypes = []string{}
+		definition.Capabilities = []string{}
+		return
 	}
-	copied := value.Int64
-	return &copied
+	definition.DefaultProtocolProfileID = preferred.ID
+	definition.ProtocolCode = preferred.ProtocolCode
+	definition.ProtocolVersion = preferred.ProtocolVersion
+	definition.BaseURL = preferred.BaseURL
+	definition.DefaultHealthCheckModel = preferred.DefaultHealthCheckModel
+	definition.AccountTypes = preferred.AccountTypes
+	definition.Capabilities = preferred.Capabilities
 }
 
-func nullFloat64Ptr(value sql.NullFloat64) *float64 {
-	if !value.Valid {
-		return nil
-	}
-	copied := value.Float64
-	return &copied
-}
-
-// textPrefixUpperBound mirrors the shared prefix upper bound (codePoint + 1).
-func textPrefixUpperBound(value string) string {
-	runes := []rune(value)
-	for index := len(runes) - 1; index >= 0; index-- {
-		if runes[index] < 0x10ffff {
-			runes[index]++
-			return string(runes[:index+1])
+// preferredDefaultProtocolProfile mirrors the in-memory
+// preferredDefaultProtocolProfile pick used by listProvidersAsync: enabled
+// profiles first (else all), then the gemini-native / glm-coding preferred
+// ids, then the first candidate. The definition rows keep the raw profiles
+// slice order (provider_code ASC, updated_at DESC, id ASC).
+func preferredDefaultProtocolProfile(providerCode string, profiles []ProtocolProfile) *ProtocolProfile {
+	enabledProfiles := []ProtocolProfile{}
+	for _, profile := range profiles {
+		if profile.Enabled {
+			enabledProfiles = append(enabledProfiles, profile)
 		}
 	}
-	return value + "\uffff"
+	candidates := enabledProfiles
+	if len(candidates) == 0 {
+		candidates = profiles
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	for index := range candidates {
+		if candidates[index].ProviderCode == geminiProviderCode && candidates[index].ID == preferredGeminiProfileID {
+			return &candidates[index]
+		}
+	}
+	for index := range candidates {
+		if candidates[index].ProviderCode == glmProviderCode && candidates[index].ID == preferredGLMCodingProfile {
+			return &candidates[index]
+		}
+	}
+	return &candidates[0]
+}
+
+// ListProviderOptions mirrors listEnabledProviderOptionsAsync: enabled rows
+// only, ordered by name then code, bounded by maxProviderDefinitions.
+func (s *Store) ListProviderOptions(ctx context.Context) ([]ProviderOption, error) {
+	ctx = ensureCtx(ctx)
+	args := append([]any{}, maxProviderDefinitions)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, code, name, enabled
+		FROM `+s.table("providers")+`
+		WHERE enabled = 1
+		ORDER BY name ASC, code ASC LIMIT ?`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	options := []ProviderOption{}
+	for rows.Next() {
+		var option ProviderOption
+		var enabled int
+		if err := rows.Scan(&option.ID, &option.Code, &option.Name, &enabled); err != nil {
+			return nil, err
+		}
+		option.Enabled = enabled == 1
+		options = append(options, option)
+	}
+	return options, rows.Err()
+}
+
+// FindProviderOption mirrors findProviderOptionByCodeAsync (code lookup, the
+// enabled flag rides along for the route-level 404 forks).
+func (s *Store) FindProviderOption(ctx context.Context, code string) (*ProviderOption, error) {
+	ctx = ensureCtx(ctx)
+	trimmed := strings.TrimSpace(code)
+	if trimmed == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, code, name, enabled
+		FROM `+s.table("providers")+`
+		WHERE code = ?
+		LIMIT 1`), trimmed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var option ProviderOption
+		var enabled int
+		if err := rows.Scan(&option.ID, &option.Code, &option.Name, &enabled); err != nil {
+			return nil, err
+		}
+		option.Enabled = enabled == 1
+		return &option, rows.Err()
+	}
+	return nil, rows.Err()
+}
+
+// ProtocolProviderCodes mirrors listProtocolProviderCodesAsync: distinct
+// provider codes carrying an enabled profile of the protocol, provider row
+// enabled, ordered by code, bounded by maxProviderDefinitions.
+func (s *Store) ProtocolProviderCodes(ctx context.Context, protocolCode, protocolVersion string) ([]string, error) {
+	ctx = ensureCtx(ctx)
+	args := append([]any{}, protocolCode, protocolVersion, maxProviderDefinitions)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT p.code
+		FROM `+s.table("provider_protocol_profiles")+` ppp
+		INNER JOIN `+s.table("providers")+` p
+			ON p.code = ppp.provider_code
+		WHERE p.enabled = 1
+			AND ppp.enabled = 1
+			AND ppp.protocol_code = ?
+			AND ppp.protocol_version = ?
+		ORDER BY p.code ASC
+		LIMIT ?`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	codes := []string{}
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return nil, err
+		}
+		codes = append(codes, code)
+	}
+	return codes, rows.Err()
+}
+
+// EnabledNonHybridProviderCodes mirrors the /models/options fallback source
+// pick: listProvidersAsync() filtered to enabled non-hybrid providers
+// (already ordered by name then code, LIMIT 50).
+func (s *Store) EnabledNonHybridProviderCodes(ctx context.Context) ([]string, error) {
+	definitions, err := s.ListDefinitions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	codes := []string{}
+	for _, definition := range definitions {
+		if !definition.Enabled || isHybridProviderCode(definition.Code) {
+			continue
+		}
+		trimmed := strings.TrimSpace(definition.Code)
+		if trimmed == "" {
+			continue
+		}
+		codes = append(codes, trimmed)
+	}
+	return codes, nil
+}
+
+// ListDefaultHealthCheckModelPreferences mirrors
+// listProviderDefaultHealthCheckModelPreferencesAsync: the personal
+// per-system-account preference rows; empty systemAccountID yields no rows.
+func (s *Store) ListDefaultHealthCheckModelPreferences(ctx context.Context, systemAccountID string, providerCodes []string) (map[string]string, error) {
+	ctx = ensureCtx(ctx)
+	result := map[string]string{}
+	trimmedAccount := strings.TrimSpace(systemAccountID)
+	if trimmedAccount == "" {
+		return result, nil
+	}
+	codes := normalizeProviderCodeList(providerCodes)
+	where := " WHERE system_account_id = ?"
+	args := append([]any{}, trimmedAccount)
+	if len(codes) > 0 {
+		where += " AND provider_code IN (" + placeholders(len(codes)) + ")"
+		for _, code := range codes {
+			args = append(args, code)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_code, model
+		FROM `+s.table("provider_default_health_check_models")+where+`
+		ORDER BY provider_code ASC`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var code, model string
+		if err := rows.Scan(&code, &model); err != nil {
+			return nil, err
+		}
+		code = strings.TrimSpace(code)
+		model = strings.TrimSpace(model)
+		if code == "" || model == "" {
+			continue
+		}
+		result[code] = model
+	}
+	return result, rows.Err()
+}
+
+// ListSystemDefaultHealthCheckModels mirrors
+// listProviderSystemDefaultHealthCheckModelsAsync.
+func (s *Store) ListSystemDefaultHealthCheckModels(ctx context.Context, providerCodes []string) (map[string]string, error) {
+	ctx = ensureCtx(ctx)
+	result := map[string]string{}
+	codes := normalizeProviderCodeList(providerCodes)
+	where := ""
+	args := []any{}
+	if len(codes) > 0 {
+		where = " WHERE provider_code IN (" + placeholders(len(codes)) + ")"
+		for _, code := range codes {
+			args = append(args, code)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_code, model
+		FROM `+s.table("provider_system_default_health_check_models")+where+`
+		ORDER BY provider_code ASC`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var code, model string
+		if err := rows.Scan(&code, &model); err != nil {
+			return nil, err
+		}
+		code = strings.TrimSpace(code)
+		model = strings.TrimSpace(model)
+		if code == "" || model == "" {
+			continue
+		}
+		result[code] = model
+	}
+	return result, rows.Err()
+}
+
+// overlayListItemHealthCheckModels ports the /list overlay
+// (listProviderListItemsForRequestAsync): personal preference wins, then the
+// system default, then the profile default.
+func overlayListItemHealthCheckModels(items []ProviderListItem, preferences, systemDefaults map[string]string) {
+	for index := range items {
+		code := items[index].Code
+		if model := preferences[code]; model != "" {
+			items[index].DefaultHealthCheckModel = model
+			continue
+		}
+		if model := systemDefaults[code]; model != "" {
+			items[index].DefaultHealthCheckModel = model
+		}
+	}
+}
+
+// overlayDefinitionHealthCheckModels ports
+// providerWithDefaultHealthCheckModelPreference for ProviderDefinition rows:
+// personal || system || original, plus the systemDefaultHealthCheckModel key
+// (present only when a system default row exists).
+func overlayDefinitionHealthCheckModels(definitions []ProviderDefinition, preferences, systemDefaults map[string]string) {
+	for index := range definitions {
+		definition := &definitions[index]
+		personal := preferences[definition.Code]
+		system := systemDefaults[definition.Code]
+		if personal != "" {
+			definition.DefaultHealthCheckModel = personal
+		} else if system != "" {
+			definition.DefaultHealthCheckModel = system
+		}
+		if system != "" {
+			copied := system
+			definition.SystemDefaultHealthCheckModel = &copied
+		}
+	}
+}
+
+// providerJoin mirrors the Node listProviderListItems lateral: one preferred
+// default profile per provider.
+func (s *Store) providerJoin() string {
+	return ` LEFT JOIN ` + s.table("provider_protocol_profiles") + ` ppp ON ppp.id = (
+		SELECT candidate.id FROM ` + s.table("provider_protocol_profiles") + ` candidate
+		WHERE candidate.provider_code = p.code
+		ORDER BY ` + preferredProfileOrder + ` LIMIT 1
+	)`
+}
+
+// preferredProfileOrder mirrors the Node default-profile pick in SQL: enabled
+// first, then the gemini-native / glm-coding preferred ids, then recency.
+const preferredProfileOrder = `candidate.enabled DESC,
+		CASE WHEN candidate.id IN (?, ?) THEN 0 ELSE 1 END,
+		candidate.updated_at DESC, candidate.id ASC`
+
+// preferredProfileArgs feeds the CASE WHEN candidate.id IN (?, ?) pair of the
+// preferred-profile pick.
+func preferredProfileArgs() []any {
+	return []any{preferredGeminiProfileID, preferredGLMCodingProfile}
+}
+
+func placeholders(count int) string {
+	return strings.TrimSuffix(strings.Repeat("?, ", count), ", ")
+}
+
+// normalizeProviderCodeList mirrors the normalized provider code lists of the
+// preference repositories (trim, drop empties, dedupe).
+func normalizeProviderCodeList(codes []string) []string {
+	seen := map[string]bool{}
+	output := []string{}
+	for _, code := range codes {
+		trimmed := strings.TrimSpace(code)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		output = append(output, trimmed)
+	}
+	return output
 }
