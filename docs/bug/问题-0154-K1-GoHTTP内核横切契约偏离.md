@@ -121,6 +121,14 @@
 - 证据范围：Node 历史 `backend/src/shared/http-security.ts` 第 12 行的 CSP；Go 证据为提交 `b3115e675` 的 `security.go` 第 8–12 行。该结论不依赖当前未提交工作区。
 - 修复门槛：恢复 `script-src 'self'`，保留其他 directive 的原值，并以管理页面、错误响应和内联脚本阻断/允许矩阵做浏览器或 CSP 解析 golden；未通过前不能宣称安全头迁移等价。
 
+## 已确认子项：畸形 JSON 会在 Go mutation guard 中先占用去重键
+
+- 对照事实：Node `system-api-app.ts` 先挂载 `express.json(...)` 与 `handleJsonBodyError`，再进入各路由的 `mutationGuard`。畸形 JSON 在 parser 阶段直接返回 400，guard 不会执行 fingerprint 或 claim；同一请求重复发送仍得到 parser 的 400。
+- 历史 Go：`MutationGuardMiddleware` 先 `io.ReadAll` 并尝试 `json.Unmarshal`，但忽略 unmarshal 错误，仍把原始 body 恢复后继续执行 fingerprint/`store.Claim`。下游 handler 再调用 `DecodeJSON` 时才返回 400，已产生的 claim 则按失败短 TTL 保留。
+- 可观察结果：对 `POST` 创建类端点发送同一畸形 JSON（例如 body 为 `{`）时，Node 首次和短时间内的重复请求都返回 400；Go 首次返回 400 但会留下 `failed` 去重项，短 TTL 内第二次先被 guard 拦截为 409“请求刚刚失败”。这会把客户端的参数错误改写成重复提交错误。
+- 证据范围：Node 历史 `backend/src/modules/system-api/system-api-app.ts` 的 parser 顺序、`mutation-guard.middleware.ts` 的 claim 位置；Go 证据为提交 `b3115e675` 的 `dedupe.go` 第 255–289 行。该结论不依赖当前未提交工作区。
+- 修复门槛：让 JSON 解析/大小错误在 claim 前以 Node 同样的 400/413 收口；补充首发与重复畸形请求、合法空 body、合法 JSON 的状态码和去重状态 golden，确认无错误输入会污染去重缓存。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
