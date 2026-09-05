@@ -365,12 +365,15 @@ func currentUTCDate() string {
 	return time.Now().UTC().Format("2006-01-02")
 }
 
-// toProviderModelPricing mirrors toProviderModelPricing.
-func toProviderModelPricing(item *rawModel, entry *providerEntry) *Pricing {
+// toProviderModelPricing mirrors toProviderModelPricing. providerCode is the
+// normalized caller provider code (Node passes normalizedProviderCode, not
+// the internal driver id), so downstream policy lookup via
+// providerBillingPolicyForProvider sees the same token as Node does.
+func toProviderModelPricing(item *rawModel, entry *providerEntry, providerCode string) *Pricing {
 	supportedServiceTiers := append([]string(nil), item.SupportedServiceTiers...)
 	catalogVisible := item.CatalogVisible == nil || *item.CatalogVisible
 	return &Pricing{
-		ProviderCode: entry.providerID,
+		ProviderCode: providerCode,
 		Model:        item.Model,
 		Mode:         item.Mode,
 		CatalogOrder: item.CatalogOrder,

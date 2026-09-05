@@ -98,5 +98,10 @@ func (s *Store) Delete(ctx context.Context, accountID string, access AccessScope
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
+	// Post-commit invalidation (T2 audit; Node
+	// account-delete-cleanup.repository.ts:197-201): one lookup flush per
+	// deleted account plus one whole-surface runtime invalidation,
+	// best-effort.
+	s.finishDeleteSideEffects(ctx, accountIDs)
 	return true, nil
 }

@@ -87,6 +87,12 @@ func (s *DeduplicationStore) Claim(key, operationKey string, processingTTL time.
 	return true, *entry
 }
 
+// DedupNoRetention 显式声明「完成后不保留去重条目」（Node mutationGuard 的
+// succeededTtlMs/failedTtlMs: 0 语义）。0 在 Go 侧表示「用默认 TTL」
+//（既有调用方依赖），负值哨兵用于区分两种意图；冻结时钟下正的极小 TTL
+// 永不过期，因此不保留必须走删除路径。
+const DedupNoRetention time.Duration = -1
+
 func (s *DeduplicationStore) Complete(key string, status DedupStatus, succeededTTL, failedTTL time.Duration) {
 	now := s.clock()
 	s.mu.Lock()
@@ -98,6 +104,10 @@ func (s *DeduplicationStore) Complete(key string, status DedupStatus, succeededT
 	ttl := failedTTL
 	if status == DedupSucceeded {
 		ttl = succeededTTL
+	}
+	if ttl == DedupNoRetention {
+		delete(s.entry, key)
+		return
 	}
 	if ttl <= 0 {
 		if status == DedupSucceeded {

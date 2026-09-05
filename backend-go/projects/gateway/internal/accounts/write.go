@@ -357,12 +357,24 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, &ValidationError{Message: "供应商协议档案 " + profile.name + " 不支持账户类型 " + accountType}
 	}
 
-	// Credentials: kept as provided (the credential normalization service is a
-	// companion slice), sealed with the shared AES-GCM envelope plus the
-	// fingerprint and mask columns.
-	credentials := input.Credentials
-	if credentials == nil {
-		credentials = Credentials{}
+	// Credentials: normalized through the ported
+	// normalizeAccountCredentialsForWrite family, then sealed with the shared
+	// AES-GCM envelope plus the fingerprint and mask columns.
+	credentials, err := NormalizeAccountCredentialsForWrite(accountType, input.Credentials, &EndpointModeDefaultContext{
+		ProviderCode: providerCode,
+		AccountType:  accountType,
+		ClientCompatibility: deriveOpenAIAccountClientCompatibility(providerCode, accountType, protocolProfileRef{
+			ProviderCode:              profile.providerCode,
+			ProtocolCode:              profile.protocolCode,
+			ProtocolVersion:           profile.protocolVersion,
+			ProviderProtocolProfileID: profile.id,
+		}),
+		ProviderProtocolProfileID: profile.id,
+		ProtocolCode:              profile.protocolCode,
+		ProtocolVersion:           profile.protocolVersion,
+	})
+	if err != nil {
+		return nil, err
 	}
 	source, err := requiredAccountCredentialSource(accountType, credentials)
 	if err != nil {

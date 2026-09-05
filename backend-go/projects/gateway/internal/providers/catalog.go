@@ -88,6 +88,15 @@ type ModelCatalogItem struct {
 	CreatedAt                               string                   `json:"createdAt"`
 	UpdatedAt                               string                   `json:"updatedAt"`
 	Source                                  string                   `json:"source"`
+	CachedImageInputUsdPer1M                *float64                 `json:"cachedImageInputUsdPer1M,omitempty"`
+	SourcePricingCurrency                   string                   `json:"sourcePricingCurrency,omitempty"`
+	SourceExchangeRateToUsd                 *float64                 `json:"sourceExchangeRateToUsd,omitempty"`
+	SourceExchangeRateDate                  string                   `json:"sourceExchangeRateDate,omitempty"`
+	SourcePricingNote                       string                   `json:"sourcePricingNote,omitempty"`
+	// CatalogDisplay mirrors withCatalogDisplay: present on every merged
+	// catalog row (possibly []), absent on the save/mutation responses
+	// (Node toCustomCatalogItem carries no catalogDisplay).
+	CatalogDisplay *[]catalogDisplaySection `json:"catalogDisplay,omitempty"`
 }
 
 // ModelSelectionOption mirrors ProviderModelSelectionOption.
@@ -188,6 +197,12 @@ func (s *Store) listProviderModelCatalog(ctx context.Context, providerCode, syst
 	sort.SliceStable(filtered, func(left, right int) bool {
 		return compareProviderModelCatalogItems(filtered[left], filtered[right]) < 0
 	})
+	// withCatalogDisplay rides on every merged catalog row (Node maps the
+	// sorted catalog through withCatalogDisplay).
+	for index := range filtered {
+		display := buildProviderCatalogDisplay(&filtered[index])
+		filtered[index].CatalogDisplay = &display
+	}
 	return filtered, nil
 }
 
@@ -375,12 +390,52 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.SupportsPromptCaching = promptCaching.Int64 == 1 && promptCaching.Valid
 	visible := catalogVisible.Int64 == 1 && catalogVisible.Valid
 	item.CatalogVisible = &visible
+	applyBuiltInStaticDerivedFields(&item)
+	item.SupportsServiceTier = len(item.SupportedServiceTiers) > 0
+	return item, nil
+}
+
+// applyBuiltInStaticDerivedFields ports the toBuiltInCatalogItem capability
+// derivations: modality/tool fallbacks from the static pricing table (the
+// internal/pricing seam), the generated generation-parameter capabilities
+// clamped by maxOutputTokens and the static-only source-pricing passthroughs
+// (keepStaticPricingSource: a manual-override row keeps its own pricing
+// provenance).
+func applyBuiltInStaticDerivedFields(item *ModelCatalogItem) {
 	item.InputModalities = []string{}
 	item.OutputModalities = []string{}
 	item.SupportedTools = []string{}
-	item.GenerationParameterCapabilities = map[string]any{}
-	item.SupportsServiceTier = len(item.SupportedServiceTiers) > 0
-	return item, nil
+	item.SourcePricingCurrency = ""
+	item.SourceExchangeRateDate = ""
+	item.SourcePricingNote = ""
+	static := staticPricingFor(item.ProviderCode, item.Model)
+	keepStaticPricingSource := item.Source != "manual-override"
+	if static != nil {
+		if len(static.InputModalities) > 0 {
+			item.InputModalities = append([]string{}, static.InputModalities...)
+		}
+		if len(static.OutputModalities) > 0 {
+			item.OutputModalities = append([]string{}, static.OutputModalities...)
+		}
+		if len(static.SupportedTools) > 0 {
+			item.SupportedTools = append([]string{}, static.SupportedTools...)
+		}
+		if keepStaticPricingSource {
+			if static.CachedImageInputUsdPer1M != nil {
+				item.CachedImageInputUsdPer1M = static.CachedImageInputUsdPer1M
+			}
+			item.SourcePricingCurrency = static.SourcePricingCurrency
+			item.SourceExchangeRateToUsd = static.SourceExchangeRateToUsd
+			item.SourceExchangeRateDate = static.SourceExchangeRateDate
+			item.SourcePricingNote = static.SourcePricingNote
+		}
+	}
+	capabilities := generationParameterCapabilitiesForModel(item.ProviderCode, item.Model, item.MaxOutputTokens)
+	if static != nil && len(static.GenerationParameterCapabilities) > 0 {
+		capabilities = static.GenerationParameterCapabilities
+	}
+	item.GenerationParameterCapabilities = generationParameterCapabilitiesToAny(
+		limitGenerationParameterMaxOutputTokens(capabilities, item.MaxOutputTokens))
 }
 
 // listCustomCatalogModels mirrors listCustomProviderModelsForCatalogAsync
@@ -415,7 +470,7 @@ func (s *Store) listCustomModelRows(ctx context.Context, providerCodes []string,
 		args = append(args, modelFilter)
 	}
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, provider_code, model, scope, system_account_id, status,
-			mode, release_date, supported_api_protocols_json, supported_service_tiers_json,
+			mode, release_date, shutdown_date, supported_api_protocols_json, supported_service_tiers_json,
 			supported_reasoning_efforts_json, default_reasoning_effort,
 			context_window_tokens, max_input_tokens, max_output_tokens,
 			input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
@@ -459,7 +514,7 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		notes                           sql.NullString
 	)
 	if err := scan(&item.ID, &item.ProviderCode, &item.Model, &item.Scope, &systemAccountID, &item.Status,
-		&mode, &releaseDate, &protocols, &tiers, &efforts, &defaultEffort,
+		&mode, &releaseDate, &shutdownDate, &protocols, &tiers, &efforts, &defaultEffort,
 		&contextWindow, &maxInput, &maxOut,
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage,
 		&tierPrices,
@@ -497,11 +552,13 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.CapabilityNotes = textPtr(capabilityNotes)
 	item.Notes = textPtr(notes)
 	// toCustomCatalogItem: empty static capability shapes, prompt caching is
-	// derived from the cached-input price, source from the scope.
+	// derived from the cached-input price, source from the scope and the
+	// generation-parameter capabilities generate from provider+model.
 	item.InputModalities = []string{}
 	item.OutputModalities = []string{}
 	item.SupportedTools = []string{}
-	item.GenerationParameterCapabilities = map[string]any{}
+	item.GenerationParameterCapabilities = generationParameterCapabilitiesToAny(
+		generationParameterCapabilitiesForModel(item.ProviderCode, item.Model, item.MaxOutputTokens))
 	item.CodexSupportedReasoningLevels = []string{}
 	item.SupportsPromptCaching = item.CachedInputUsdPer1M != nil
 	item.SupportsServiceTier = len(item.SupportedServiceTiers) > 0

@@ -411,3 +411,47 @@ type manualClock struct{ now time.Time }
 
 func (c *manualClock) Now() time.Time          { return c.now }
 func (c *manualClock) advance(d time.Duration) { c.now = c.now.Add(d) }
+
+// 回归测试：DedupNoRetention 必须在 Complete 时删除条目（Node mutationGuard
+// succeededTtlMs/failedTtlMs 0 的「不保留」语义）。冻结时钟下任何正 TTL 都
+// 永不过期，历史实现以 time.Nanosecond 近似导致同指纹重试被 409 拦死
+// （accounts runtime-reset TestRuntimeResetOwnerAccount 复现）。
+func TestMutationGuardNoRetentionAllowsImmediateRetry(t *testing.T) {
+	clock := &manualClock{now: time.Unix(1_000_000, 0)}
+	store := NewDeduplicationStore(clock.Now)
+	k := newTestKernel(t, nil)
+	guard := MutationGuardMiddleware(MutationGuardOptions{
+		OperationKey: "test.noretention",
+		Store:        store,
+		SucceededTTL: DedupNoRetention,
+		FailedTTL:    DedupNoRetention,
+		Fingerprint: func(r *http.Request) (any, error) {
+			return map[string]any{"name": TextField(BodyField(r, "name"))}, nil
+		},
+	})
+	attempts := 0
+	handler := guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		WriteOK(w, nil, "")
+	}))
+	k.Register("POST /__aisys__/api/guarded-noretention", handler)
+	server := httptest.NewServer(k.Handler())
+	defer server.Close()
+
+	body := strings.NewReader(`{"name":"same"}`)
+	resp, err := http.Post(server.URL+"/__aisys__/api/guarded-noretention", "application/json", body)
+	if err != nil || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("first attempt must fail with 400: %v %d", err, resp.StatusCode)
+	}
+	resp.Body.Close()
+	// 冻结时钟未推进：失败条目若被保留（默认 TTL），本次 claim 必 409。
+	resp2, err := http.Post(server.URL+"/__aisys__/api/guarded-noretention", "application/json", strings.NewReader(`{"name":"same"}`))
+	if err != nil || resp2.StatusCode != http.StatusOK {
+		t.Fatalf("no-retention must allow immediate retry under frozen clock: %v %d", err, resp2.StatusCode)
+	}
+	resp2.Body.Close()
+}

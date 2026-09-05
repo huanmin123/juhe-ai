@@ -105,6 +105,10 @@ type Store struct {
 	// (batch_effects.go). Nil until SetCacheInvalidator wires it; a nil port
 	// keeps the batch self-contained.
 	invalidator CacheInvalidator
+	// runtimeEffects is the runtime-reset port (runtime_reset_effects.go). Nil
+	// until SetRuntimeResetEffects wires it; a nil port keeps the endpoint
+	// self-contained (tests) and reports the runtime surfaces unavailable.
+	runtimeEffects RuntimeResetEffects
 }
 
 // NewStore builds the store.

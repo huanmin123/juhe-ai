@@ -11,12 +11,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/internalapi"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsverify"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
@@ -41,7 +44,7 @@ type workerAssembly struct {
 	oauthStore    *oauthrefresh.Store
 	writer        *usagewriter.Writer
 
-	settings staticSettings
+	settings workerSettingsSource
 
 	pools     []*pgpool.Handle
 	sqliteDBs []*sql.DB
@@ -50,6 +53,10 @@ type workerAssembly struct {
 	wiredJobs []string
 	// retention 是 J6 保留清理家族（worker_retention.go 装配）。
 	retention *retentionFamily
+	// probeRepoStore / circuitProbeService 由 wireProbeFamily 装配后供账户
+	// 电路族（worker_circuit_jobs.go）的恢复目标解析复用。
+	probeRepoStore      *proberepo.Store
+	circuitProbeService *accountprobe.Service
 	// wiredTasks 记录已注册（含租约包裹）的任务闭包，供测试/运维入口
 	// 单轮执行；生产调度仍只经 scheduler。
 	wiredTasks map[string]jobsched.Task
@@ -61,28 +68,16 @@ type workerAssembly struct {
 }
 
 // staticSettings 以 Node DEFAULT_SYSTEM_SETTINGS 为默认值解析任务设置；
-// jobs 侧暂无 system_settings 读模型时保持 Node 默认语义（后续接入设置存储
-// 时只需替换该类型）。
+// stats 家族在 wireStatsFamily 中升级为 dbSettingsSource（system_settings
+// 读模型），本类型保留为家族未装配数据库时的默认语义。
 type staticSettings struct{}
 
-func (staticSettings) number(key string, fallback, min, max int) int {
-	_ = key
-	value := fallback
-	if value < min {
-		value = min
-	}
-	if value > max {
-		value = max
-	}
-	return value
+func (staticSettings) statsAggregationBatchSize(context.Context) (int, error) {
+	return 2000, nil
 }
 
-func (s staticSettings) statsAggregationBatchSize() int {
-	return s.number("statsAggregationBatchSize", 2000, 100, 10000)
-}
-
-func (s staticSettings) statsAggregationMaxBatches() int {
-	return s.number("statsAggregationMaxBatchesPerRun", 5, 1, 100)
+func (staticSettings) statsAggregationMaxBatches(context.Context) (int, error) {
+	return 5, nil
 }
 
 func newRandomToken() string {
@@ -365,10 +360,31 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	a.aggregator = &statsagg.Aggregator{DB: aggDB, Dialect: dialect, Clock: timezone}
 	a.windows = &statsagg.WindowRefresher{DB: aggDB, Dialect: dialect, Clock: timezone}
 
+	// system_settings 读模型（background-jobs settingsNumber 移植）：PG 复用
+	// 共享池，SQLite 读 business 库；读取失败按 Node 语义降级默认（缺表/快照
+	// 失败 warn）或使任务失败（整数/边界校验）。
+	settingsDB := aggDB
+	if !postgres {
+		if settingsDB, err = a.openSQLite(a.config.BusinessSQLitePath, "settings"); err != nil {
+			return err
+		}
+	}
+	a.settings = dbSettingsSource{source: jobssettings.NewSource(jobssettings.Options{
+		DB:   settingsDB,
+		Mode: settingsMode(postgres),
+		Warn: jobssettingsWarn(a.logger),
+	})}
+
 	// usage-stats-aggregation（批量循环对齐 stats-writer aggregate_usage_stats）。
 	a.scheduleWiredJob("usage-stats-aggregation", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		batchSize := a.settings.statsAggregationBatchSize()
-		maxBatches := a.settings.statsAggregationMaxBatches()
+		batchSize, err := a.settings.statsAggregationBatchSize(taskCtx)
+		if err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		maxBatches, err := a.settings.statsAggregationMaxBatches(taskCtx)
+		if err != nil {
+			return jobsched.TaskResult{}, err
+		}
 		for index := 0; index < maxBatches; index++ {
 			if taskCtx.Err() != nil {
 				break
@@ -385,9 +401,17 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	})
 
 	a.scheduleWiredJob("client-ip-stats-aggregation", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		_, err := store.RunClientIPStatsAggregation(taskCtx, statsverify.RunClientIPStatsAggregationOptions{
-			StatsAggregationBatchSize:        a.settings.statsAggregationBatchSize(),
-			StatsAggregationMaxBatchesPerRun: a.settings.statsAggregationMaxBatches(),
+		batchSize, err := a.settings.statsAggregationBatchSize(taskCtx)
+		if err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		maxBatches, err := a.settings.statsAggregationMaxBatches(taskCtx)
+		if err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		_, err = store.RunClientIPStatsAggregation(taskCtx, statsverify.RunClientIPStatsAggregationOptions{
+			StatsAggregationBatchSize:        batchSize,
+			StatsAggregationMaxBatchesPerRun: maxBatches,
 		})
 		return jobsched.TaskResult{}, err
 	})
@@ -554,8 +578,9 @@ func (l slogWriterLogger) Error(msg string, fields map[string]any) {
 }
 
 // wireDispatchHandler 把 internalapi 账户测试派发 handler 挂到 loopback mux
-// （由 main 的 jobsHTTPHandler 消费）；未接 ManualTestQueue 适配器前派发
-// 回调返回 false（503 服务暂不可用），不伪造受理。
+// （由 main 的 jobsHTTPHandler 消费）；账号测试执行器（gateway 域诊断链）
+// 未迁移前派发回调返回 false（503 服务暂不可用，任务留在 queued 由
+// queued-max-wait sweep 收口），不伪造受理。
 func (a *workerAssembly) wireDispatchHandler() {
 	if !a.config.InternalAPIEnabled || a.config.Secret == "" {
 		return

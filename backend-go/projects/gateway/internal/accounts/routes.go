@@ -56,6 +56,9 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("POST "+prefix+"/accounts/import/confirm", d.mountGuarded(d.importConfirmHandler(false), "accounts.import", false))
 	k.Register("POST "+prefix+"/accounts/export", admin(d.exportHandler(false)))
 
+	// Runtime-reset family (维护者 6f9739e96, account-detail.routes.ts).
+	d.mountRuntimeResetRoutes(k, prefix)
+
 	// Self surface (forceSelfAccessScope).
 	k.Register("GET "+prefix+"/my-accounts", self(d.listHandler(true)))
 	k.Register("GET "+prefix+"/my-accounts/options", self(d.optionsHandler(true)))

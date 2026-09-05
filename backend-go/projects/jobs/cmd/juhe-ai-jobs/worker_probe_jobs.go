@@ -53,7 +53,7 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 		return nil
 	}
 	if err := store.ValidateCoreTables(ctx); err != nil {
-		a.registerProbeFamilyDisabled("业务库契约校验失败："+err.Error())
+		a.registerProbeFamilyDisabled("业务库契约校验失败：" + err.Error())
 		_ = business.close()
 		return nil
 	}
@@ -68,7 +68,7 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 		return err
 	}
 	logger := probeFamilyLogger{logger: a.logger}
-	settings := probeSettingsNumber()
+	settings := a.probeSettingsSource(business)
 	concurrency := accountquality.QueueConcurrency(func() int { return a.config.ProbeConcurrency })
 
 	// 质量统计存储（RefreshRunner 的 account_quality_* 读写）。
@@ -131,6 +131,16 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 	a.scheduleWiredJob("account-api-key-cooldown-retest", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		return jobsched.TaskResult{}, cooldown.Scan(taskCtx)
 	})
+
+	// 保存探针族句柄供账户电路族恢复解析复用，并接线账户电路族
+	// （control-plane maintenance + circuit recovery）。
+	a.probeRepoStore = store
+	a.circuitProbeService = probeService
+	if err := a.wireCircuitFamily(ctx, business, func(name, reason string) {
+		a.registerDisabledJob(name, reason)
+	}); err != nil {
+		return err
+	}
 
 	// ---- normal-route-speed-first-recovery-probe ----
 	redisConfig := proberepo.SpeedFirstRedisConfig{
@@ -217,11 +227,14 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 	return nil
 }
 
-// registerProbeFamilyDisabled 一次性登记探针族全部三个任务 disabled。
+// registerProbeFamilyDisabled 一次性登记探针族三个任务与账户电路族两个任务
+// disabled（电路族复用探针族业务库/探针服务，schema/契约失败时一并 fail closed）。
 func (a *workerAssembly) registerProbeFamilyDisabled(reason string) {
 	a.registerDisabledJob("account-quality-refresh", reason)
 	a.registerDisabledJob("account-api-key-cooldown-retest", reason)
 	a.registerDisabledJob("normal-route-speed-first-recovery-probe", reason)
+	a.registerDisabledJob("account-circuit-control-plane-maintenance", "同探针族失败："+reason)
+	a.registerDisabledJob("account-circuit-recovery", "同探针族失败："+reason)
 }
 
 // probeFamilyBatchSize 对齐 Node normalRouteSpeedFirstRecoveryProbeBatchSize
@@ -237,28 +250,10 @@ func parseRFC3339Millis(value string) (int64, error) {
 	return parsed.UnixMilli(), nil
 }
 
-// probeSettingsNumber 以 Node DEFAULT_SYSTEM_SETTINGS 默认值解析任务设置
-// （accountQualityWindowMinutes=10、cooldownAccountRetestMaxBackoffHours=12，
-// 越界回落边界值）；jobs 侧尚无 system_settings 读模型。
-func probeSettingsNumber() accountquality.SettingsNumber {
-	defaults := map[string]int{
-		"accountQualityWindowMinutes":          10,
-		"cooldownAccountRetestMaxBackoffHours": 12,
-	}
-	return func(key string, min, max int) int {
-		value, ok := defaults[key]
-		if !ok {
-			return min
-		}
-		if value < min {
-			return min
-		}
-		if value > max {
-			return max
-		}
-		return value
-	}
-}
+// probeSettingsNumber 已由 a.probeSettingsSource（worker_settings.go）替换：
+// 经 internal/jobssettings 读取 system_settings（DEFAULT_SYSTEM_SETTINGS：
+// accountQualityWindowMinutes=10、cooldownAccountRetestMaxBackoffHours=12），
+// 读取失败按 accountquality.SettingsNumber 的无错误签名回落默认值并 warn。
 
 // probeBusinessMetaLookup 适配 proberepo.Store 为 accountquality.BusinessLookup。
 type probeBusinessMetaLookup struct{ store *proberepo.Store }

@@ -84,6 +84,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		Dataset:        dataset,
 		Stats:          stats,
 		UsageCatalog:   usageCatalog,
+		Business:       business,
 		Shards:         shards,
 		Now:            family.now,
 		Timezone:       timezoneSource,
@@ -342,6 +343,7 @@ func (f *retentionFamily) settingsSource() retention.SettingsSource {
 		}, nil
 	}
 }
+
 // ---- ports 适配 ----
 
 // familyRelatedCleaner 把 record-maintenance runner 的关联清理分派回 family。
@@ -354,7 +356,7 @@ func (c *familyRelatedCleaner) CleanupApiKeyRelated(ctx context.Context, job ret
 		return retention.RelatedCleanupResult{}, fmt.Errorf("retention record cleanup store 未初始化")
 	}
 	if c.family.postgres {
-		return retention.RelatedCleanupResult{}, errPostgresStatsSubtractPending()
+		return c.family.recordCleanup.CleanupAPIKeyRelatedPostgres(ctx, job.APIKeyID, job.SystemAccountID)
 	}
 	return c.family.recordCleanup.CleanupAPIKeyRelatedSQLite(ctx, job.APIKeyID, job.SystemAccountID, statsWriter)
 }
@@ -364,7 +366,13 @@ func (c *familyRelatedCleaner) CleanupAccountRelated(ctx context.Context, job re
 		return retention.RelatedCleanupResult{}, fmt.Errorf("retention record cleanup store 未初始化")
 	}
 	if c.family.postgres {
-		return retention.RelatedCleanupResult{}, errPostgresStatsSubtractPending()
+		return c.family.recordCleanup.CleanupAccountRelatedPostgres(ctx, retention.ExpiredDeletedAccountTarget{
+			AccountID:         job.AccountID,
+			SystemAccountID:   job.SystemAccountID,
+			RelatedAccountIDs: job.RelatedAccountIDs,
+			AuthorizationIDs:  job.AuthorizationIDs,
+			TeamScopeIDs:      job.TeamScopeIDs,
+		})
 	}
 	return c.family.recordCleanup.CleanupAccountRelatedSQLite(ctx, retention.ExpiredDeletedAccountTarget{
 		AccountID:         job.AccountID,
@@ -375,19 +383,13 @@ func (c *familyRelatedCleaner) CleanupAccountRelated(ctx context.Context, job re
 	}, statsWriter)
 }
 
-// errPostgresStatsSubtractPending 显式登记 PostgreSQL 统计扣减链
-// （Node subtractPostgresUsageStatsRows 家族）尚未迁移，禁止静默回落。
-func errPostgresStatsSubtractPending() error {
-	return fmt.Errorf("PostgreSQL 已删除记录关联清理的统计扣减链（subtractPostgresUsageStatsRows）尚未完成 jobs 侧迁移；高性能模式请继续由 Node worker 承担该任务")
-}
-
 type familyAPIKeyRetryer struct {
 	family *retentionFamily
 }
 
 func (r *familyAPIKeyRetryer) CleanupPendingTargets(ctx context.Context, limit int, statsWriter retention.StatsWriter) (retention.PendingCleanupSummary, error) {
 	if r.family.postgres {
-		return retention.PendingCleanupSummary{}, errPostgresStatsSubtractPending()
+		return r.family.recordCleanup.CleanupPendingAPIKeyTargetsPostgres(ctx, limit)
 	}
 	return r.family.recordCleanup.CleanupPendingAPIKeyTargets(ctx, limit, statsWriter)
 }
@@ -398,7 +400,7 @@ type familyAccountRetryer struct {
 
 func (r *familyAccountRetryer) CleanupPendingTargets(ctx context.Context, limit int, statsWriter retention.StatsWriter) (retention.PendingCleanupSummary, error) {
 	if r.family.postgres {
-		return retention.PendingCleanupSummary{}, errPostgresStatsSubtractPending()
+		return r.family.recordCleanup.CleanupPendingAccountTargetsPostgres(ctx, limit)
 	}
 	return r.family.recordCleanup.CleanupPendingAccountTargets(ctx, limit, statsWriter)
 }

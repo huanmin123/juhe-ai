@@ -19,19 +19,13 @@ type disabledJob struct {
 // 权威来源，禁止使用“暂不支持”一类无信息量措辞。
 // account-quality-refresh / account-api-key-cooldown-retest /
 // normal-route-speed-first-recovery-probe 已由 wireProbeFamily 接管
-// （worker_probe_jobs.go），从本清单移除。
+// （worker_probe_jobs.go），account-circuit-control-plane-maintenance /
+// account-circuit-recovery 已由 wireCircuitFamily（worker_circuit_jobs.go）
+// 接管，从本清单移除。
 var workerPartialJobGaps = []disabledJob{
 	{
-		JobName: "account-circuit-control-plane-maintenance",
-		Reason:  "缺 Redis CircuitStore（gatewaycircuit/store_redis.go + lua.go，Lua 状态机单实现）与 ControlPlaneLedger/Outbox 适配器；跨模块不可 import，复制实现有状态分歧风险",
-	},
-	{
 		JobName: "account-list-availability-projection-maintenance",
-		Reason:  "缺 ListAvailabilityRepo（PostgreSQL 读模型仓储）与 LoadItems 物化载荷来源（ProjectionItem payload 由网关域组装，jobs 无等价实现）",
-	},
-	{
-		JobName: "account-circuit-recovery",
-		Reason:  "缺 Redis CircuitStore（同 control-plane：gatewaycircuit 单实现）与恢复探针目标解析（账户域读取链）",
+		Reason:  "ListAvailabilityRepo（17 方法 PG 双模读模型）与 overlay Redis 对账已由 circuitstore 提供；仍缺 LoadItems 物化载荷来源（ProjectionItem payload/AccountListItem 由网关域组装，jobs 无等价实现），不降级伪装",
 	},
 }
 
@@ -46,6 +40,21 @@ func registerDisabledJobsStartup(assembly *workerAssembly, logger *slog.Logger) 
 			continue
 		}
 		assembly.registerDisabledJob(gap.JobName, gap.Reason)
+	}
+	// GoWired 但所属家族未启用（JUHE_AI_JOBS_*_ENABLED=false）的任务同样必须
+	// 显式登记，不允许从未接线任务静默消失。
+	registered := map[string]bool{}
+	for _, job := range assembly.wiredJobs {
+		registered[job] = true
+	}
+	for _, disabled := range assembly.disabledJobs {
+		registered[disabled.JobName] = true
+	}
+	for _, entry := range jobregistry.ScheduledEntries() {
+		if entry.GoStatus != jobregistry.GoWired || registered[entry.JobName] {
+			continue
+		}
+		assembly.registerDisabledJob(entry.JobName, "所属家族未启用（对应 JUHE_AI_JOBS_*_ENABLED=false，组合根未装配依赖）")
 	}
 	_ = logger
 }

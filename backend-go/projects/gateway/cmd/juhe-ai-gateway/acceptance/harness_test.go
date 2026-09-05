@@ -446,6 +446,9 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	// business owner 门禁要求显式的 Business 数据库路径（sqlite 模式，
 	// runtime.go businessOwnerGate）。
 	env["JUHE_AI_BUSINESS_DATABASE_PATH"] = sixPaths["JUHE_AI_DATABASE_PATH"]
+	// 验收场景把 AI 账户指向本机 mock 上游（gateway_chain / chat_flow），
+	// 属于 accounts upstream_base_url.go 明确允许的临时回归通道。
+	env["JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS"] = "true"
 	fixture.storage = map[string]string{
 		"business":      sixPaths["JUHE_AI_DATABASE_PATH"],
 		"stats":         sixPaths["JUHE_AI_STATS_DATABASE_PATH"],

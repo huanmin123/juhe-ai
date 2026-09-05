@@ -5,6 +5,18 @@
 // invalidations. Cache services subscribe per topic
 // (gateway_runtime_cache, gateway_api_key_validation_cache,
 // authorization_quota_cache, api_key_quota_cache, settings:*).
+//
+// Shared-version protocol (T2 audit decision): the Go bus keeps the int64
+// monotonic protocol and does NOT implement the archived Node format
+// (`{version:"<millis>-<rand>",reason,publishedAt}` JSON under the
+// gateway_cache_invalidation runtime-state store, deduplicated by string
+// equality). Node is archived, so multi-instance consistency is only required
+// between Go gateways; Node's equality-compared opaque tokens carry no
+// ordering, while every Go consumer (Bus.versions, the SyncFromShared max
+// merge, the lastSeen comparisons in gatewayruntimecache and gatewayquota) is
+// built on int64 ordering. The RedisSharedStore layout
+// (`<namespace>:inval:topic-version:<topic>`) is therefore Go-only and NOT
+// interoperable with the Node history format by design.
 package inval
 
 import (
@@ -25,11 +37,22 @@ const (
 type Handler func(topic, reason string)
 
 // SharedStore persists topic versions across instances (Redis driver).
+//
+// The version contract is monotonic per topic: PublishVersion only ever
+// moves the stored version forward and returns the effective stored version,
+// so a losing writer adopts the winner and its next proposal orders above
+// every version published so far. This is what keeps Invalidate's local
+// counter reconciled with the cluster (a fresh instance that proposes 1 while
+// the cluster sits at 9 must not drag the shared version backwards, and must
+// not lose its own invalidation either — adopting 9 makes its next proposal
+// 10).
 type SharedStore interface {
 	// GetVersion returns the persisted version (0 when absent).
 	GetVersion(ctx context.Context, topic string) (int64, error)
-	// SetVersion stores the version (best-effort).
-	SetVersion(ctx context.Context, topic string, version int64) error
+	// PublishVersion stores max(current, version) monotonically and returns
+	// the effective stored version (best-effort: an error leaves the local
+	// counter untouched).
+	PublishVersion(ctx context.Context, topic string, version int64) (int64, error)
 }
 
 // Bus is the in-process invalidation hub.
@@ -90,6 +113,13 @@ func (b *Bus) Subscribe(topic string, handler Handler) (unsubscribe func()) {
 // notifies subscribers. Concurrent invalidations coalesce within the
 // throttle window: a bump while another is in flight waits and re-checks
 // (Node 1s throttle semantics).
+//
+// With a shared store wired the bump publishes monotonically across
+// instances: the proposal (local+1) goes to PublishVersion, the effective
+// stored version is adopted back onto the local counter, and only then do
+// the local handlers run (same ordering as the Node publish-then-notify
+// path, so a handler-triggered read can never observe a not-yet-published
+// version).
 func (b *Bus) Invalidate(topic, reason string) {
 	b.mu.Lock()
 	if last := b.throttle[topic]; b.now().Sub(last) < b.coalesce {
@@ -104,8 +134,15 @@ func (b *Bus) Invalidate(topic, reason string) {
 
 	if b.shared != nil {
 		ctx, cancel := context.WithTimeout(b.bgContext, 3*time.Second)
-		_ = b.shared.SetVersion(ctx, topic, version)
+		effective, err := b.shared.PublishVersion(ctx, topic, version)
 		cancel()
+		if err == nil && effective > version {
+			b.mu.Lock()
+			if b.versions[topic] < effective {
+				b.versions[topic] = effective
+			}
+			b.mu.Unlock()
+		}
 	}
 	for _, handler := range handlers {
 		handler(topic, reason)

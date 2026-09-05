@@ -594,9 +594,23 @@ func buildGeminiOAuthCredentials(info *geminiTokenInfo, fallback *geminiCredenti
 		credentials["quota_project_id"] = quotaProjectID
 	}
 	if oauthType != "ai_studio" {
-		credentials["supported_endpoint_modes"] = append([]string{}, geminiCLIEndpointModes...)
+		// The accounts credentials write path consumes the decoded-JSON record
+		// shape (lists as []any, mirroring a Node decryptJson product); a
+		// Go-native []string here fails the 上游接口能力必须是数组 array check.
+		credentials["supported_endpoint_modes"] = endpointModesJSONValue(geminiCLIEndpointModes)
 	}
 	return credentials
+}
+
+// endpointModesJSONValue widens the Go-native mode list onto the decoded-JSON
+// []any shape (the credentials record contract the accounts write path
+// validates).
+func endpointModesJSONValue(modes []string) []any {
+	output := make([]any, 0, len(modes))
+	for _, mode := range modes {
+		output = append(output, mode)
+	}
+	return output
 }
 
 func fallbackScope(fallback *geminiCredentialFallback) string {

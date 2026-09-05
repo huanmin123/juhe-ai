@@ -92,7 +92,11 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 	if mappings := first["modelMappings"].([]any); len(mappings) != 0 {
 		t.Fatalf("context modelMappings: %v", mappings)
 	}
-	if modes := first["supportedEndpointModes"].([]any); len(modes) != 0 {
+	// Credentials normalization (第 1 段) pins the endpoint-mode defaults on
+	// every write: the gpt api_key account carries the four OpenAI modes.
+	modes := first["supportedEndpointModes"].([]any)
+	if len(modes) != 4 || modes[0] != "chat_json" || modes[1] != "chat_sse" ||
+		modes[2] != "responses_json" || modes[3] != "responses_sse" {
 		t.Fatalf("context supportedEndpointModes: %v", modes)
 	}
 	if _, leaked := first["ownerSystemAccountId"]; leaked {
@@ -280,8 +284,7 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 		{"unknown update field", `{"targets":[{"accountId":"` + ids[0] + `","configRevision":2},{"accountId":"` + ids[1] + `","configRevision":2}],"updates":{"bogus":{"enabled":true,"value":1}}}`, "批量编辑参数无效"},
 		{"nothing enabled", `{"targets":[{"accountId":"` + ids[0] + `","configRevision":2},{"accountId":"` + ids[1] + `","configRevision":2}],"updates":{"notes":{"enabled":false}}}`, "请至少选择一项需要覆盖的配置"},
 		{"bad revision", `{"targets":[{"accountId":"` + ids[0] + `","configRevision":0},{"accountId":"` + ids[1] + `","configRevision":2}],"updates":{"notes":{"enabled":true,"value":"x"}}}`, "批量编辑参数无效"},
-		{"credential rules deferred", `{"targets":[{"accountId":"` + ids[0] + `","configRevision":2},{"accountId":"` + ids[1] + `","configRevision":2}],"updates":{"errorHandlingRules":{"enabled":true,"value":[]}}}`, "批量编辑暂不支持覆盖 errorHandlingRules，请等待凭据配置切片迁移"},
-		{"inspection rules deferred", `{"targets":[{"accountId":"` + ids[0] + `","configRevision":2},{"accountId":"` + ids[1] + `","configRevision":2}],"updates":{"responseInspectionRules":{"enabled":true,"value":[]}}}`, "批量编辑暂不支持覆盖 responseInspectionRules，请等待凭据配置切片迁移"},
+		{"credential rules not array", `{"targets":[{"accountId":"` + ids[0] + `","configRevision":2},{"accountId":"` + ids[1] + `","configRevision":2}],"updates":{"errorHandlingRules":{"enabled":true,"value":{}}}}`, "批量编辑参数无效"},
 	}
 	for _, testCase := range updateCases {
 		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/batch-update", testCase.body)
@@ -537,7 +540,7 @@ func TestAccountImportPreviewAndConfirm(t *testing.T) {
 	code, noGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/preview", `{"data":{
 		"type":"juhe-ai-account-import","version":1,
 		"accounts":[{"name":"导入四号","providerCode":"gpt","providerProtocolProfileId":"prof-gpt","type":"api_key",
-			"status":"active","credentials":{"api_key":"sk-import-secret-5"},"groupName":"缺失分组","supportedModels":["gpt-4o-mini"]}]},
+			"status":"active","credentials":{"api_key":"sk-import-secret-5","base_url":"https://api.openai.com/v1"},"groupName":"缺失分组","supportedModels":["gpt-4o-mini"]}]},
 		"options":{"createMissingGroups":false}}`)
 	if code != http.StatusOK || dataMap(t, noGroup)["canImport"] != false {
 		t.Fatalf("no-group preview: %d %v", code, noGroup)

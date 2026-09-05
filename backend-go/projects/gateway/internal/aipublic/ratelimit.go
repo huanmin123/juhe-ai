@@ -1,17 +1,133 @@
 // Penalty-window rate limiter for the /__aipublic__ family, ported from
-// backend/src/modules/rate-limit/penalty-window-rate-limit.ts (memory mode,
-// exponential penalty). Each rule gets its own bucket keyed
+// backend/src/modules/rate-limit/penalty-window-rate-limit.ts (exponential
+// penalty). Each rule gets its own bucket keyed
 // "<scopeKey>:<windowSeconds>:<maxRequests>"; hitting the cap opens a penalty
 // block whose duration doubles per consecutive block up to maxPenaltyMs.
-// Node's Redis runtime-state driver shares these buckets across instances;
-// the Go slice keeps the process-local memory model until the shared
-// runtime-state driver lands for this store (tracked as a leftover).
+//
+// consumeRateLimit mirrors consumePenaltyWindowRateLimitAsync: with the Redis
+// runtime-state driver enabled (Deps.RedisDriver + Deps.RedisStateClient) the
+// buckets live in the shared Redis keyspace through the same-source
+// internal/gatewayproxyhealth driver — identical Lua script and identical
+// redisPenaltyWindowRateLimitKey layout
+// (juhe-ai:<namespace>:rate-limit:penalty:<sha256(storeName)>:<sha256(scopeKey)>
+// :<windowSeconds>:<maxRequests>), so Go and Node instances share one bucket
+// space during the migration window. A Redis failure falls back to the
+// process-local memory model with a warn (migration-time degradation chosen
+// over the Node hard failure; wired through Deps.Warn).
 package aipublic
 
 import (
+	"context"
+	"log"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
+	redis "github.com/redis/go-redis/v9"
 )
+
+// RedisStateClient is the go-redis command subset the shared penalty-window
+// Redis driver needs. *redis.Client satisfies it; the method set matches the
+// gatewayproxyhealth runtime-state client so one client value feeds both.
+type RedisStateClient interface {
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd
+	SetNX(ctx context.Context, key string, value any, expiration time.Duration) *redis.BoolCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+	MGet(ctx context.Context, keys ...string) *redis.SliceCmd
+	Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd
+}
+
+// penaltyWindowStoreName mirrors createPenaltyWindowRateLimitStore({name:
+// 'external_source_public_api'}) — the store name hashes into the shared Redis
+// keyspace keys exactly like the Node store.
+const penaltyWindowStoreName = "external_source_public_api"
+
+// redisPenaltyDriver bundles the shared-store limiter built once per Deps.
+type redisPenaltyDriver struct {
+	limiter *gatewayproxyhealth.PenaltyWindowRateLimiter
+	store   *gatewayproxyhealth.PenaltyWindowRateLimitStore
+}
+
+// redisDriver lazily builds the gatewayproxyhealth penalty-window limiter and
+// the 'external_source_public_api' store. The namespace flows through the
+// same namespacedRedisKey normalization, penaltyMode stays exponential (the
+// Node aipublic store never overrides it) and the maxIdle/maxPenalty defaults
+// match the Node store constants.
+func (d *Deps) redisDriver() *redisPenaltyDriver {
+	d.redisOnce.Do(func() {
+		clock := d.Now
+		if clock == nil {
+			clock = time.Now
+		}
+		client := d.RedisStateClient
+		d.redisShared = &redisPenaltyDriver{
+			limiter: gatewayproxyhealth.NewPenaltyWindowRateLimiter(clock, true, client, d.RedisNamespace),
+			store: gatewayproxyhealth.NewPenaltyWindowRateLimitStore(clock, gatewayproxyhealth.PenaltyWindowStoreOptions{
+				Name: penaltyWindowStoreName,
+			}),
+		}
+	})
+	return d.redisShared
+}
+
+// warnPenaltyFallback reports the Redis fallback (Deps.Warn, standard log
+// otherwise) — the migration-time degradation marker.
+func (d *Deps) warnPenaltyFallback(err error) {
+	message := "aipublic penalty-window Redis 限流不可用，回退进程内存：" + err.Error()
+	if d.Warn != nil {
+		d.Warn(message)
+		return
+	}
+	log.Printf("%s", message)
+}
+
+// consumeRateLimit mirrors consumePenaltyWindowRateLimitAsync: the Redis
+// driver consumes through the shared Lua script; any Redis failure falls back
+// to the process-local memory model with a warn instead of failing the
+// request. Memory mode (RedisDriver off) keeps the direct memory consume.
+func (d *Deps) consumeRateLimit(ctx context.Context, scopeKey string, rules []RateLimitRule) LimitDecision {
+	if d.RedisDriver && d.RedisStateClient != nil {
+		shared := d.redisDriver()
+		decision, err := shared.limiter.ConsumeAsync(ctx, shared.store, scopeKey, sharedRateLimitRules(rules), nil)
+		if err == nil {
+			if decision.Allowed {
+				return LimitDecision{Allowed: true}
+			}
+			rule := firstRateLimitRule(rules)
+			if decision.Rule != nil {
+				rule = RateLimitRule{WindowSeconds: int(decision.Rule.WindowSeconds), MaxRequests: int(decision.Rule.MaxRequests)}
+			}
+			retry := int64(1)
+			if decision.RetryAfterSeconds != nil && *decision.RetryAfterSeconds > retry {
+				retry = *decision.RetryAfterSeconds
+			}
+			return LimitDecision{Allowed: false, RetryAfterSeconds: int(retry), Rule: rule}
+		}
+		d.warnPenaltyFallback(err)
+	}
+	return d.limiter().Consume(scopeKey, rules)
+}
+
+// sharedRateLimitRules converts the aipublic rule ints into the shared driver
+// int64 rules (same window/max tuples).
+func sharedRateLimitRules(rules []RateLimitRule) []gatewayproxyhealth.PenaltyWindowRateLimitRule {
+	out := make([]gatewayproxyhealth.PenaltyWindowRateLimitRule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, gatewayproxyhealth.PenaltyWindowRateLimitRule{
+			WindowSeconds: int64(rule.WindowSeconds),
+			MaxRequests:   int64(rule.MaxRequests),
+		})
+	}
+	return out
+}
+
+func firstRateLimitRule(rules []RateLimitRule) RateLimitRule {
+	if len(rules) > 0 {
+		return rules[0]
+	}
+	return RateLimitRule{}
+}
 
 const (
 	rateLimitMaxEntries   = 20_000

@@ -78,6 +78,10 @@ type workerConfig struct {
 	RedisStateURL  string
 	RedisNamespace string
 
+	// circuitCapacityMS 是账户电路运行态容量（JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY，
+	// 默认 50000 与 Node 一致；与网关不一致会导致容量/驱逐判定分歧）。
+	circuitCapacity int64
+
 	DrainTimeout time.Duration
 }
 
@@ -103,6 +107,14 @@ func workerEnvInt(getenv func(string) string, name string, fallback int) (int, e
 		return 0, fmt.Errorf("%s 必须是整数", name)
 	}
 	return parsed, nil
+}
+
+// CircuitCapacity 返回账户电路运行态容量。
+func (c workerConfig) CircuitCapacity() int64 {
+	if c.circuitCapacity < 1 {
+		return 50_000
+	}
+	return c.circuitCapacity
 }
 
 func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
@@ -223,6 +235,18 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	}
 	config.RedisStateURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
 	config.RedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
+	capacity := int64(50_000)
+	if value := strings.TrimSpace(getenv("JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY")); value != "" {
+		parsed, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr != nil {
+			return config, fmt.Errorf("JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY 必须是整数")
+		}
+		capacity = parsed
+	}
+	if capacity < 1_000 || capacity > 1_000_000 {
+		return config, fmt.Errorf("JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY 必须介于 1000 和 1000000 之间")
+	}
+	config.circuitCapacity = capacity
 	drainMS, err := workerEnvInt(getenv, "JUHE_AI_JOBS_DRAIN_TIMEOUT_MS", 10_000)
 	if err != nil {
 		return config, err

@@ -703,6 +703,36 @@ func (s *Store) ListSystemDefaultHealthCheckModels(ctx context.Context, provider
 	return result, rows.Err()
 }
 
+// UpsertDefaultHealthCheckModelPreference ports
+// upsertProviderDefaultHealthCheckModelPreferenceAsync (personal rows).
+func (s *Store) UpsertDefaultHealthCheckModelPreference(ctx context.Context, systemAccountID, providerCode, model string) error {
+	ctx = ensureCtx(ctx)
+	now := s.nowUTC().Format("2006-01-02T15:04:05.000Z07:00")
+	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("provider_default_health_check_models")+`
+		(system_account_id, provider_code, model, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(system_account_id, provider_code) DO UPDATE SET
+			model = excluded.model,
+			updated_at = excluded.updated_at`),
+		strings.TrimSpace(systemAccountID), strings.TrimSpace(providerCode), strings.TrimSpace(model), now, now)
+	return err
+}
+
+// UpsertSystemDefaultHealthCheckModel ports
+// upsertProviderSystemDefaultHealthCheckModelAsync.
+func (s *Store) UpsertSystemDefaultHealthCheckModel(ctx context.Context, providerCode, model string) error {
+	ctx = ensureCtx(ctx)
+	now := s.nowUTC().Format("2006-01-02T15:04:05.000Z07:00")
+	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("provider_system_default_health_check_models")+`
+		(provider_code, model, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(provider_code) DO UPDATE SET
+			model = excluded.model,
+			updated_at = excluded.updated_at`),
+		strings.TrimSpace(providerCode), strings.TrimSpace(model), now, now)
+	return err
+}
+
 // overlayListItemHealthCheckModels ports the /list overlay
 // (listProviderListItemsForRequestAsync): personal preference wins, then the
 // system default, then the profile default.

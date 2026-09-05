@@ -40,6 +40,26 @@ func normalizeProviderToken(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+// deriveOpenAIAccountClientCompatibility mirrors
+// deriveOpenAIAccountClientCompatibility (account-client-compatibility.ts:50-66):
+// the stored-value-free derivation used when writing a new account — an
+// openai/v1 profile renders codex_responses for gpt vendor accounts of the
+// api_key/oauth types and openai_standard otherwise.
+func deriveOpenAIAccountClientCompatibility(providerCode, accountType string, profile protocolProfileRef) string {
+	if !isOpenAIProtocolProfileOf(protocolPredicateInput{
+		providerCode:              profile.ProviderCode,
+		protocolCode:              profile.ProtocolCode,
+		protocolVersion:           profile.ProtocolVersion,
+		providerProtocolProfileID: profile.ProviderProtocolProfileID,
+	}) {
+		return "openai_standard"
+	}
+	if isGptVendorCodeToken(providerCode) && (accountType == "oauth" || accountType == "api_key") {
+		return "codex_responses"
+	}
+	return "openai_standard"
+}
+
 // normalizeOpenAIAccountClientCompatibility renders the effective client
 // compatibility for one account row (account-client-compatibility.ts:30-49):
 // a gpt vendor account on an openai/v1 protocol profile renders

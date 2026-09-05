@@ -71,6 +71,12 @@ type Store struct {
 	exchanger    TokenExchanger
 	ssoRequester SSODeviceRequester
 	ssoSleep     func(ctx context.Context, delay time.Duration) error
+	// invalidator / revisionAdvancer are the rotation post-commit
+	// invalidation + in-transaction circuit fence ports (invalidation.go).
+	// Nil until the With* options wire them; a nil port keeps the rotation
+	// self-contained (out-of-package fixtures).
+	invalidator      CacheInvalidator
+	revisionAdvancer DispatchRevisionAdvancer
 }
 
 // Option configures optional collaborators.
@@ -677,13 +683,28 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 	if affected, _ := result.RowsAffected(); affected != 1 {
 		return nil, &RevisionConflictError{Message: "账户配置版本冲突"}
 	}
+	// In-transaction circuit fence (T2 audit; Node
+	// oauth-credential-rotation.repository.ts:202-214): when the upstream
+	// connection identity changed, advance the dispatch revision family so an
+	// OPEN transport circuit cannot survive a credential rotation. The family
+	// advance must run inside the rotation transaction — a failure rolls the
+	// whole rotation back.
+	if s.revisionAdvancer != nil && circuitCredentialIdentityChanged(current, input.Credentials) {
+		if err := s.revisionAdvancer.AdvanceDispatchRevisionFamily(ctx, tx, row.id, s.newI("dispatch"), s.now().UnixMilli()); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &RotationResult{
+	rotation := &RotationResult{
 		ID: row.id, ConfigRevision: row.configRevision + 1,
 		UpdatedAt: updatedAt, Changed: true, Credentials: input.Credentials,
-	}, nil
+	}
+	// Post-commit double notification (T2 audit; Node
+	// oauth-credential-rotation.repository.ts:223-226).
+	s.finishRotationSideEffects(rotation)
+	return rotation, nil
 }
 
 // credentialsEqual mirrors isDeepStrictEqual over the JSON-normalized

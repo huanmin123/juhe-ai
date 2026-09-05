@@ -174,9 +174,18 @@ var schemaStatements = []string{
 		health_check_failure_started_at TEXT,
 		cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
 		cooldown_retest_observation_started_at TEXT,
+		cooldown_retest_generation TEXT,
 		cooldown_retest_last_at TEXT,
 		cooldown_retest_last_status_code INTEGER,
 		temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
+		last_health_check_at TEXT,
+		last_health_success_at TEXT,
+		last_health_check_status_code INTEGER,
+		last_health_check_error_code TEXT,
+		last_health_check_error_message TEXT,
+		last_health_check_trace_id TEXT,
+		stream_failure_count INTEGER NOT NULL DEFAULT 0,
+		stream_failure_window_started_at TEXT,
 		next_health_check_at TEXT,
 		balance_query_enabled INTEGER NOT NULL DEFAULT 0,
 		balance_query_next_refresh_at TEXT,
@@ -352,8 +361,9 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 func (e *testEnv) seedProviderAndDefaultGroup(t *testing.T, ownerID string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	e.exec(t, testProviderDDL)
-	e.exec(t, testProfileDDL)
+	// Idempotent per env: several fixtures seed the same provider/profile.
+	e.exec(t, strings.Replace(testProviderDDL, "INSERT INTO providers", "INSERT OR IGNORE INTO providers", 1))
+	e.exec(t, strings.Replace(testProfileDDL, "INSERT INTO provider_protocol_profiles", "INSERT OR IGNORE INTO provider_protocol_profiles", 1))
 	e.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
 		VALUES (?, ?, '默认分组', 'gpt', 1, 1, 'personal', ?, ?)`, "grp-default-"+ownerID, ownerID, now, now)
 }
@@ -668,11 +678,11 @@ func TestAccountCreateValidation(t *testing.T) {
 		{"missing provider", `{"providerProtocolProfileId":"prof-gpt","name":"x2","type":"api_key"}`, 400, "账户参数无效"},
 		{"unknown provider", `{"providerCode":"anthropic","providerProtocolProfileId":"prof-gpt","name":"x3","type":"api_key"}`, 400, "不支持的供应商：anthropic"},
 		{"bad account type", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x4","type":"google_oauth"}`, 400, "供应商协议档案 OpenAI 官方协议 不支持账户类型 google_oauth"},
-		{"missing credentials", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x5","type":"api_key","supportedModels":["gpt-4o-mini"]}`, 400, "API Key 不能为空"},
-		{"unknown provider", `{"providerCode":"provider-zzz","providerProtocolProfileId":"prof-gpt","name":"g2","type":"api_key","credentials":{"api_key":"sk-1"},"supportedModels":["gpt-4o-mini"]}`, 400, "不支持的供应商：provider-zzz"},
-		{"unsupported health model", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"h1","type":"api_key","credentials":{"api_key":"sk-1"},"supportedModels":["gpt-4o-mini"],"healthCheckModel":"claude-3"}`, 400, "账户检查模型必须属于账户支持模型"},
-		{"super and fallback", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"sf1","type":"api_key","credentials":{"api_key":"sk-1"},"supportedModels":["gpt-4o-mini"],"superPriorityEnabled":true,"fallbackEnabled":true}`, 400, "超级优先和降级备用不能同时开启"},
-		{"bad expires", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"e1","type":"api_key","credentials":{"api_key":"sk-1"},"accountExpiresAt":"yesterday"}`, 400, "账户套餐到期时间必须是有效时间字符串"},
+		{"missing credentials", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x5","type":"api_key","supportedModels":["gpt-4o-mini"]}`, 400, "Base URL不能为空"},
+		{"unknown provider", `{"providerCode":"provider-zzz","providerProtocolProfileId":"prof-gpt","name":"g2","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`, 400, "不支持的供应商：provider-zzz"},
+		{"unsupported health model", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"h1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"healthCheckModel":"claude-3"}`, 400, "账户检查模型必须属于账户支持模型"},
+		{"super and fallback", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"sf1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"superPriorityEnabled":true,"fallbackEnabled":true}`, 400, "超级优先和降级备用不能同时开启"},
+		{"bad expires", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"e1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"accountExpiresAt":"yesterday"}`, 400, "账户套餐到期时间必须是有效时间字符串"},
 	}
 	// Enabled provider whose owner lacks a default group.
 	now2 := time.Now().UTC().Format(time.RFC3339Nano)
@@ -687,7 +697,7 @@ func TestAccountCreateValidation(t *testing.T) {
 		body    string
 		status  int
 		message string
-	}{"missing default group", `{"providerCode":"openai","providerProtocolProfileId":"prof-openai","name":"g3","type":"api_key","credentials":{"api_key":"sk-1"},"supportedModels":["gpt-4o-mini"]}`, 400, "当前用户缺少供应商 openai 的启用默认分组"})
+	}{"missing default group", `{"providerCode":"openai","providerProtocolProfileId":"prof-openai","name":"g3","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`, 400, "当前用户缺少供应商 openai 的启用默认分组"})
 
 	for _, testCase := range cases {
 		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", testCase.body)
@@ -699,7 +709,7 @@ func TestAccountCreateValidation(t *testing.T) {
 	// Explicit group bound to another provider is rejected; same-provider
 	// explicit groups are honored.
 	code, wrongGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"wg","type":"api_key","credentials":{"api_key":"sk-1"},"supportedModels":["gpt-4o-mini"],"groupId":"grp-missing"}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"wg","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"groupId":"grp-missing"}`)
 	if code != 400 || wrongGroup["message"] != "账户分组无效" {
 		t.Fatalf("wrong group: %d %v", code, wrongGroup)
 	}
@@ -707,7 +717,7 @@ func TestAccountCreateValidation(t *testing.T) {
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-extra', ?, '扩展分组', 'gpt', 1, 0, 'personal', ?, ?)`, adminID, now, now)
 	code, okGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"okgroup","type":"api_key","credentials":{"api_key":"sk-1"},"supportedModels":["gpt-4o-mini"],"groupId":"grp-extra"}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"okgroup","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"groupId":"grp-extra"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("explicit group create: %d %v", code, okGroup)
 	}
@@ -729,7 +739,7 @@ func TestAccountCreateValidation(t *testing.T) {
 	// Default creation status: pending_test + health-check notice + paused
 	// scheduling (Node's accountCreationStatusInput derivation).
 	code, pending := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"pending","type":"api_key","credentials":{"api_key":"sk-1"},"supportedModels":["gpt-4o-mini"]}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"pending","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("pending create: %d %v", code, pending)
 	}
@@ -744,7 +754,7 @@ func TestAccountCreateValidation(t *testing.T) {
 
 	// Expired package disables at creation with the account_expired marker.
 	code, expired := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"expired","type":"api_key","credentials":{"api_key":"sk-1"},"supportedModels":["gpt-4o-mini"],"status":"active","accountExpiresAt":"2000-01-01T00:00:00Z"}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"expired","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"status":"active","accountExpiresAt":"2000-01-01T00:00:00Z"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("expired create: %d %v", code, expired)
 	}

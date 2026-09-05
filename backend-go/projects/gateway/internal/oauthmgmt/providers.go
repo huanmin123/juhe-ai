@@ -140,11 +140,22 @@ func isOpenAIBlockedErrorAccount(account *rotationAccount) bool {
 // this slice (the policy validators belong to the accounts companion slice).
 var policyPatchKeys = []string{"error_handling_rules", "response_inspection_rules", "quota_recovery_policy"}
 
-func endpointModes(value any) ([]string, bool) {
+// endpointModes parses the patch array and keeps the decoded-JSON list shape
+// the accounts credentials write path consumes ([]any of strings; a Go-native
+// []string fails the array shape check downstream).
+func endpointModes(value any) ([]any, bool) {
 	if value == nil {
 		return nil, true
 	}
-	return parseStringSlice(value, 20)
+	modes, ok := parseStringSlice(value, 20)
+	if !ok {
+		return nil, false
+	}
+	output := make([]any, 0, len(modes))
+	for _, mode := range modes {
+		output = append(output, mode)
+	}
+	return output, true
 }
 
 // parseOpenAICredentialsPatch mirrors the openai oauthCredentialsPatchSchema.

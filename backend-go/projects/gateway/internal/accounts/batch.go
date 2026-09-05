@@ -376,6 +376,16 @@ type batchPreparedAccount struct {
 	gatewayRuntimeAffected  bool
 }
 
+// batchCredentialFieldMap mirrors the Node credentialFieldMap: batch update
+// key → credentials record key for the five credential-config overrides.
+var batchCredentialFieldMap = [][2]string{
+	{"errorHandlingRules", "error_handling_rules"},
+	{"responseInspectionRules", "response_inspection_rules"},
+	{"supportedEndpointModes", "supported_endpoint_modes"},
+	{"serviceTierOverride", "service_tier_override"},
+	{"reasoningEffortOverride", "reasoning_effort_override"},
+}
+
 type batchDispatchBinding struct {
 	priority             int
 	superPriorityEnabled bool
@@ -750,22 +760,12 @@ var batchModelConfigurationFields = map[string]bool{
 	"serviceTierOverride": true, "reasoningEffortOverride": true,
 }
 
-// prepareBatchUpdates mirrors prepareBatchUpdatesAsync +
-// prepareAccountUpdateAsync restricted to the fields this slice owns; the
-// credential-config overrides (errorHandlingRules, responseInspectionRules,
-// supportedEndpointModes, serviceTierOverride, reasoningEffortOverride) stay
-// with the credential-normalization companion slice and are rejected here.
+// prepareBatchUpdates mirrors prepareBatchUpdatesAsync: all 16 request fields
+// are honored (the five credential-config overrides landed with the
+// credential-normalization slice); the provider-catalog validations Node runs
+// for model mappings and the gpt request overrides stay with the
+// model-validation companion slice (registered M09 deferral).
 func (s *Store) prepareBatchUpdates(ctx context.Context, q queryer, accounts []batchLockedAccount, updates map[string]BatchUpdateField) ([]batchPreparedAccount, error) {
-	for field := range updates {
-		if !updates[field].Enabled {
-			continue
-		}
-		// The credential-config overrides stay with the credential
-		// normalization companion slice.
-		if deferredBatchCredentialFields[field] {
-			return nil, &ValidationError{Message: "批量编辑暂不支持覆盖 " + field + "，请等待凭据配置切片迁移"}
-		}
-	}
 	homogeneous := false
 	for field := range updates {
 		if updates[field].Enabled && batchModelConfigurationFields[field] {
@@ -823,9 +823,32 @@ func (s *Store) prepareBatchUpdates(ctx context.Context, q queryer, accounts []b
 	return prepared, nil
 }
 
-var deferredBatchCredentialFields = map[string]bool{
-	"errorHandlingRules": true, "responseInspectionRules": true, "supportedEndpointModes": true,
-	"serviceTierOverride": true, "reasoningEffortOverride": true,
+// applyNullableCredentialOverride mirrors applyNullableCredentialOverride: a
+// null/” batch value deletes the credential key, everything else copies.
+func applyNullableCredentialOverride(credentials Credentials, updates map[string]BatchUpdateField, updateKey, credentialKey string) {
+	update, ok := updates[updateKey]
+	if !ok || !update.Enabled {
+		return
+	}
+	if update.Value == nil || update.Value == "" {
+		delete(credentials, credentialKey)
+		return
+	}
+	credentials[credentialKey] = update.Value
+}
+
+// jsonValueDeepEqual mirrors Node isDeepStrictEqual for decoded-JSON values:
+// both sides render through a canonical JSON round-trip before comparison.
+func jsonValueDeepEqual(left, right any) bool {
+	leftEncoded, err := json.Marshal(canonicalizeJSONValue(left))
+	if err != nil {
+		return false
+	}
+	rightEncoded, err := json.Marshal(canonicalizeJSONValue(right))
+	if err != nil {
+		return false
+	}
+	return string(leftEncoded) == string(rightEncoded)
 }
 
 // prepareBatchAccount mirrors prepareAccountUpdateAsync for the supported
@@ -848,6 +871,73 @@ func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[str
 	}
 	fieldValue := func(field string) any {
 		return updates[field].Value
+	}
+
+	// Credential-config overrides (account-batch-edit.service.ts:139-183):
+	// merge the five fields into the decrypted credentials record, normalize
+	// through NormalizeAccountCredentialsForWrite and re-seal on change.
+	nextCredentials := account.credentials
+	credentialsChangedFields := map[string]bool{}
+	credentialsChanged := false
+	hasCredentialConfigUpdate := false
+	for _, pair := range batchCredentialFieldMap {
+		if hasOwn(pair[0]) {
+			hasCredentialConfigUpdate = true
+			break
+		}
+	}
+	if hasCredentialConfigUpdate {
+		merged := Credentials{}
+		for key, value := range account.credentials {
+			merged[key] = value
+		}
+		if hasOwn("errorHandlingRules") {
+			rules, err := normalizeAccountErrorHandlingRules(fieldValue("errorHandlingRules"))
+			if err != nil {
+				return result, err
+			}
+			merged["error_handling_rules"] = rules
+		}
+		if hasOwn("responseInspectionRules") {
+			rules, err := normalizeAccountResponseInspectionRules(fieldValue("responseInspectionRules"))
+			if err != nil {
+				return result, err
+			}
+			merged["response_inspection_rules"] = rules
+		}
+		if hasOwn("supportedEndpointModes") {
+			merged["supported_endpoint_modes"] = fieldValue("supportedEndpointModes")
+		}
+		applyNullableCredentialOverride(merged, updates, "serviceTierOverride", "service_tier_override")
+		applyNullableCredentialOverride(merged, updates, "reasoningEffortOverride", "reasoning_effort_override")
+		normalized, err := NormalizeAccountCredentialsForWrite(account.accountType, merged, &EndpointModeDefaultContext{
+			ProviderCode:              account.providerCode,
+			AccountType:               account.accountType,
+			ClientCompatibility:       account.clientCompatibility,
+			ProviderProtocolProfileID: account.providerProtocolProfileID,
+			ProtocolCode:              account.protocolCode,
+			ProtocolVersion:           account.protocolVersion,
+		})
+		if err != nil {
+			return result, err
+		}
+		nextCredentials = normalized
+		for _, pair := range batchCredentialFieldMap {
+			if !hasOwn(pair[0]) {
+				continue
+			}
+			if !jsonValueDeepEqual(account.credentials[pair[1]], nextCredentials[pair[1]]) {
+				credentialsChangedFields[pair[0]] = true
+				credentialsChanged = true
+			}
+		}
+		if credentialsChanged {
+			sealed, err := EncryptJSON(s.secret, map[string]any(nextCredentials))
+			if err != nil {
+				return result, err
+			}
+			setColumn("credentials_encrypted", sealed)
+		}
 	}
 
 	// supportedModels.
@@ -906,11 +996,28 @@ func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[str
 		setColumn("health_check_model", nextHealthCheckModel)
 	}
 
-	// healthCheckEndpointMode (the endpoint-mode resolution service belongs to
-	// the credential companion slice; the explicit value passes through).
+	// healthCheckEndpointMode (account-batch-edit.service.ts:223-253): the
+	// explicit value resolves against the final enabled endpoint modes. The
+	// images_json model-catalog confirmation stays with the model-validation
+	// companion slice, so the pre-slice fallback
+	// (account.healthCheckEndpointMode === 'images_json') stands in.
 	nextHealthCheckEndpointMode := account.healthCheckEndpointMode
+	resolveHealthMode := hasOwn("healthCheckEndpointMode") || hasOwn("supportedEndpointModes")
 	if hasOwn("healthCheckEndpointMode") {
 		nextHealthCheckEndpointMode = textString(fieldValue("healthCheckEndpointMode"))
+	}
+	if resolveHealthMode {
+		resolved, err := resolveHealthCheckEndpointMode(
+			&nextHealthCheckEndpointMode,
+			account.providerCode,
+			account.providerProtocolProfileID,
+			storedEndpointModes(nextCredentials["supported_endpoint_modes"]),
+			boolPtr(account.healthCheckEndpointMode == "images_json"),
+		)
+		if err != nil {
+			return result, err
+		}
+		nextHealthCheckEndpointMode = resolved
 	}
 	if nextHealthCheckEndpointMode != account.healthCheckEndpointMode {
 		addChange("healthCheckEndpointMode")
@@ -919,8 +1026,8 @@ func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[str
 
 	// modelMappings.
 	nextModelMappings := account.modelMappings
-	shouldValidateMappings := hasOwn("modelMappings")
-	if shouldValidateMappings {
+	shouldValidateMappings := hasOwn("modelMappings") || hasOwn("supportedEndpointModes")
+	if hasOwn("modelMappings") {
 		mappings, err := normalizeBatchModelMappings(fieldValue("modelMappings"))
 		if err != nil {
 			return result, err
@@ -929,6 +1036,20 @@ func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[str
 	}
 	if shouldValidateMappings || supportedModelsChanged {
 		if err := assertMappingUpstreamsAllowed(nextModelMappings, nextSupportedModels); err != nil {
+			return result, err
+		}
+	}
+	// Node also runs assertEndpointModesCompatible here against the final
+	// credential endpoint modes.
+	if shouldValidateMappings || hasOwn("healthCheckEndpointMode") {
+		if err := assertEndpointModesCompatible(account.providerCode, account.accountType, account.clientCompatibility,
+			protocolPredicateInput{
+				providerCode:              account.providerCode,
+				protocolCode:              account.protocolCode,
+				protocolVersion:           account.protocolVersion,
+				providerProtocolProfileID: account.providerProtocolProfileID,
+			},
+			storedEndpointModes(nextCredentials["supported_endpoint_modes"])); err != nil {
 			return result, err
 		}
 	}
@@ -1140,9 +1261,19 @@ func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[str
 
 	// Health check reschedule marker (column exists in the maintenance schema).
 	shouldScheduleHealthCheck := proxyChanged || supportedModelsChanged || healthCheckModelChanged ||
-		nextHealthCheckEndpointMode != account.healthCheckEndpointMode || modelMappingsChanged
+		nextHealthCheckEndpointMode != account.healthCheckEndpointMode || modelMappingsChanged ||
+		(credentialsChanged && hasOwn("supportedEndpointModes"))
 	if shouldScheduleHealthCheck && nextStatus != "disabled" {
 		setColumn("next_health_check_at", nil)
+	}
+
+	// Record the credential-config field changes after the status/health block
+	// so changedFields stay sorted with the rest (Node collects into a Set and
+	// sorts at the end).
+	for _, pair := range batchCredentialFieldMap {
+		if credentialsChangedFields[pair[0]] {
+			addChange(pair[0])
+		}
 	}
 
 	sortStrings(result.changedFields)
@@ -1152,6 +1283,8 @@ func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[str
 		"superPriorityEnabled": true, "fallbackEnabled": true, "proxyProfileId": true,
 		"supportedModels": true, "modelMappings": true, "healthCheckModel": true,
 		"healthCheckEndpointMode": true, "availabilitySchedule": true, "accountExpiresAt": true,
+		"errorHandlingRules": true, "responseInspectionRules": true, "supportedEndpointModes": true,
+		"serviceTierOverride": true, "reasoningEffortOverride": true,
 	}
 	for _, field := range result.changedFields {
 		if groupStatsFields[field] {

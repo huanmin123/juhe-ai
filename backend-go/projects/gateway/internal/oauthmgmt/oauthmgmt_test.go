@@ -128,6 +128,44 @@ type testEnv struct {
 	sso       *scriptedSSORequester
 	db        *sql.DB
 	store     *Store
+	rotation  *rotationInvalidatorRecorder
+}
+
+// rotationInvalidatorRecorder captures the rotation post-commit invalidation
+// channels (T2 audit) so the route tests can assert topic + reason parity
+// with oauth-credential-rotation.repository.ts:223-226.
+type rotationInvalidatorRecorder struct {
+	mu         sync.Mutex
+	lookups    []string
+	runtime    []string
+	validation []string
+}
+
+func (r *rotationInvalidatorRecorder) InvalidateAccountLookup(accountID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lookups = append(r.lookups, accountID)
+	return nil
+}
+
+func (r *rotationInvalidatorRecorder) InvalidateRuntime(reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runtime = append(r.runtime, reason)
+	return nil
+}
+
+func (r *rotationInvalidatorRecorder) InvalidateAPIKeyValidation(reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.validation = append(r.validation, reason)
+	return nil
+}
+
+func (r *rotationInvalidatorRecorder) channels() (lookups, runtime, validation []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string{}, r.lookups...), append([]string{}, r.runtime...), append([]string{}, r.validation...)
 }
 
 var testSchema = []string{
@@ -242,6 +280,35 @@ var testSchema = []string{
 		lease_until_ms INTEGER,
 		updated_at TEXT NOT NULL
 	)`,
+	// T2 audit: the rotation dispatch-revision fence writes the pending
+	// outbox rows through the accounts family advance (Node
+	// business-schema.ts account_circuit_outbox).
+	`CREATE TABLE IF NOT EXISTS account_circuit_outbox (
+		event_id TEXT PRIMARY KEY,
+		projection_key TEXT NOT NULL,
+		dedupe_key TEXT NOT NULL,
+		event_type TEXT NOT NULL CHECK (event_type IN ('dispatch_revision_changed', 'incident_changed')),
+		account_id TEXT NOT NULL,
+		account_runtime_key TEXT NOT NULL,
+		circuit_scope_key TEXT,
+		incident_id TEXT,
+		transition_id TEXT NOT NULL,
+		dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
+		generation INTEGER,
+		ledger_revision INTEGER,
+		status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'dispatched')),
+		available_at_ms INTEGER NOT NULL,
+		claim_token TEXT,
+		claimed_by TEXT,
+		claim_until_ms INTEGER,
+		attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+		last_error_class TEXT,
+		acknowledged_at_ms INTEGER,
+		created_at_ms INTEGER NOT NULL,
+		updated_at_ms INTEGER NOT NULL,
+		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+		UNIQUE (projection_key, dedupe_key)
+	)`,
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -279,8 +346,13 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	exchanger := &mockExchanger{respond: staticToken(`{}`)}
 	sso := &scriptedSSORequester{}
+	rotation := &rotationInvalidatorRecorder{}
 	store, err := NewStore(db, false, testSecret, accountStore, exchanger, nil, nil,
-		WithSSODeviceTransport(sso), WithSSOSleep(func(context.Context, time.Duration) error { return nil }))
+		WithSSODeviceTransport(sso), WithSSOSleep(func(context.Context, time.Duration) error { return nil }),
+		// T2 audit: the rotation post-commit channels + the in-transaction
+		// circuit dispatch revision family advance (same accounts store).
+		WithCacheInvalidator(rotation),
+		WithDispatchRevisionAdvancer(accountStore))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,6 +364,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	return &testEnv{
 		deps: deps, k: k, server: server, jar: map[string]string{},
 		sink: sink, exchanger: exchanger, sso: sso, db: db, store: store,
+		rotation: rotation,
 	}
 }
 
@@ -891,8 +964,14 @@ func TestGeminiOAuthCapabilitiesAndFamily(t *testing.T) {
 		studioCredentials["tier_id"] != "aistudio_free" {
 		t.Fatalf("studio credentials: %v", studioCredentials)
 	}
-	if _, exists := studioCredentials["supported_endpoint_modes"]; exists {
-		t.Fatalf("ai_studio must not pin endpoint modes: %v", studioCredentials)
+	// The ai_studio builder must not pin the CLI mode pair; the stored record
+	// still carries the google_oauth normalization defaults (Node
+	// normalizeGoogleOAuthAccountCredentials always writes
+	// supported_endpoint_modes; absent input falls back to
+	// defaultGeminiEndpointModes' five values).
+	if modes, ok := studioCredentials["supported_endpoint_modes"].([]any); !ok || len(modes) != 5 ||
+		modes[0] != "generate_content_json" || modes[1] != "generate_content_sse" {
+		t.Fatalf("ai_studio endpoint modes must be the five gemini defaults, not the CLI pair: %v", studioCredentials["supported_endpoint_modes"])
 	}
 
 	// refresh-token on the code_assist account keeps the stored base_url.

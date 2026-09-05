@@ -9,30 +9,32 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
-// Deps bundles the T5 slice collaborators.
+// Deps bundles the providers collaborators.
 type Deps struct {
 	Store *Store
 	Auth  *authsys.Deps
+	// Sink receives the built-in model configuration operation log entries
+	// (Node recordOperationLogAsync); nil disables recording.
+	Sink authsys.OperationLogSink
 }
-
-// deferredModelCatalogMessage is the verbatim deferral copy for the write
-// subpaths that depend on the C03 model pricing/catalog service.
-const deferredModelCatalogMessage = "模型目录服务待迁移"
 
 // Mount wires the providers route family exactly as Node mounts it
 // (system-api-app.ts): a single ${systemApiPrefix}/providers surface, global
 // session auth only, the admin gate on GET /providers (providersRouter
 // requireAdmin) and the viewScope=admin management fork on /list, /:code and
 // /:code/models. Node has no my-providers surface; the earlier Go mirror is
-// removed. The write endpoints that depend on the C03 model catalog service
-// (POST/PATCH/DELETE /{code}/models, PUT /{code}/default-health-check-model)
-// render the documented 400 deferral with Node's {code} path shape.
+// removed. The write family (POST/PATCH/DELETE /{code}/models,
+// PUT /{code}/default-health-check-model) is session-level in Node
+// (providers.routes.ts:188-241,334-606 — getRequestAuthContext without an
+// admin gate), so Go mounts it behind RequireSession(true) (the write touch)
+// and enforces the per-route admin forks inside the handlers.
 func (d *Deps) Mount(k *kernel.Kernel) {
 	prefix := "/__aisys__/api"
 	admin := d.Auth.RequireAdmin
 	// Node requireAuth with the providers GET rule at mode 'read'
 	// (system-api-db-access.ts) touches no session.
 	read := d.Auth.RequireSession(false)
+	write := d.Auth.RequireSession(true)
 
 	k.Register("GET "+prefix+"/providers/list", read(http.HandlerFunc(d.listItems)))
 	k.Register("GET "+prefix+"/providers", admin(http.HandlerFunc(d.listDefinitions)))
@@ -43,22 +45,11 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/providers/{code}/models", read(http.HandlerFunc(d.models)))
 	k.Register("GET "+prefix+"/providers/{code}/models/{modelId}/capabilities", read(http.HandlerFunc(d.modelCapabilities)))
 
-	// C03-deferred write subpaths (Node providers.routes.ts write family,
-	// {code} path params aligned to avoid a second break when C03 lands).
 	base := prefix + "/providers"
-	d.mountDeferredWrite(k, "POST "+base+"/{code}/models", admin)
-	d.mountDeferredWrite(k, "PATCH "+base+"/{code}/models/{modelId}", admin)
-	d.mountDeferredWrite(k, "DELETE "+base+"/{code}/models/{modelId}", admin)
-	d.mountDeferredWrite(k, "PUT "+base+"/{code}/default-health-check-model", admin)
-}
-
-// mountDeferredWrite registers one write endpoint that stays behind the C03
-// model catalog migration: authenticated clients receive the 400 deferral
-// instead of a silent 404.
-func (d *Deps) mountDeferredWrite(k *kernel.Kernel, pattern string, wrap func(http.Handler) http.Handler) {
-	k.Register(pattern, wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		kernel.WriteBadRequest(w, deferredModelCatalogMessage)
-	})))
+	k.Register("POST "+base+"/{code}/models", write(http.HandlerFunc(d.createModel)))
+	k.Register("PATCH "+base+"/{code}/models/{modelId}", write(http.HandlerFunc(d.patchModel)))
+	k.Register("DELETE "+base+"/{code}/models/{modelId}", write(http.HandlerFunc(d.deleteModel)))
+	k.Register("PUT "+base+"/{code}/default-health-check-model", write(http.HandlerFunc(d.putDefaultHealthCheckModel)))
 }
 
 // isManagementProviderRequest mirrors providers.routes.ts:612-618: the

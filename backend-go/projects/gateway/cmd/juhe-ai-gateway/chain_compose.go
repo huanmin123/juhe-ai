@@ -13,10 +13,13 @@ package main
 // behaviour when the corresponding runtime feature is absent.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -27,7 +30,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -169,7 +174,12 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	dispatch.OverflowEnabled = spool != nil
 	usageService := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
 		WithClock(clock).
-		WithLogger(slogLogger{inner: logger})
+		WithLogger(slogLogger{inner: logger}).
+		// Synchronous catalog pricing (chain_pricing.go): the cacheDriver!=='redis'
+		// gate is ServiceConfig.SyncPricingAllowed above; the adapter resolves
+		// the catalog row through the same runtime cache and bills through the
+		// shared internal/pricing engine (Node model-catalog.service.ts).
+		WithPricingCatalog(newChainUsagePricingCatalog(deps.Cache))
 
 	// ---- response sink (G16) ----
 	// The models fast-path reads the client model catalog through the same
@@ -358,6 +368,230 @@ func hybridAuxiliaryOf(dispatcher hybridAuxiliaryDispatcher) gatewayhybrid.Auxil
 		return nil
 	}
 	return dispatcher
+}
+
+// ---------------------------------------------------------------------------
+// hybrid auxiliary dispatcher (T2 终局遗留①装配; Node
+// modules/gateway/hybrid/auxiliary-dispatch.service.ts dispatchHybridAuxiliaryChatCompletion)
+// ---------------------------------------------------------------------------
+
+// chainHybridAuxiliaryDispatcher implements gatewayhybrid.AuxiliaryDispatcher
+// by replaying the Node auxiliary loop over the same in-process pieces the /v1
+// orchestrator uses: the routing runtime cache selects the target group and
+// provides the hydrated account secrets (prepareOpenAIGatewayDispatchAccounts
+// equivalent for the single-attempt auxiliary lane), the shared provider
+// driver builds the upstream URL/headers/body (buildGatewayUpstream*), and the
+// engine transport executes the one attempt (fetchFirstAvailableUpstream).
+//
+// Assembled-minimal residuals against the full Node loop (documented handover,
+// each degrades to the Node failure path, never to a wrong success):
+//   - audit capture / hot-quality attempt records / client-ip avoidance
+//     tracker: the auxiliary call is invisible to those channels;
+//   - circuit confirm/lease hooks (confirmSameAccountApiKeyFailures,
+//     confirmHalfOpenSuccess) run inside Finish in Node; the Go Finish is a
+//     call-once no-op because the adapter holds no circuit lease;
+//   - server retry budget rides on the caller context deadline only.
+type chainHybridAuxiliaryDispatcher struct {
+	cache  *gatewayruntimecache.Service
+	driver *chainProviderDriver
+}
+
+func newChainHybridAuxiliaryDispatcher(cache *gatewayruntimecache.Service) *chainHybridAuxiliaryDispatcher {
+	return &chainHybridAuxiliaryDispatcher{
+		cache:  cache,
+		driver: newChainProviderDriver(),
+	}
+}
+
+// auxiliaryDispatchFailure mirrors the failed arm constructor.
+func auxiliaryDispatchFailure(input gatewayhybrid.AuxiliaryDispatchInput, errorCode, errorMessage string, account *gatewayhybrid.OpenAIAccountSecret, groupID string, hasGroupID bool, statusCode int, hasStatusCode bool, shouldRecordUsage bool) (gatewayhybrid.AuxiliaryDispatchSuccess, *gatewayhybrid.AuxiliaryDispatchFailure) {
+	return gatewayhybrid.AuxiliaryDispatchSuccess{}, &gatewayhybrid.AuxiliaryDispatchFailure{
+		ErrorCode:         errorCode,
+		ErrorMessage:      errorMessage,
+		Account:           account,
+		GroupID:           groupID,
+		HasGroupID:        hasGroupID,
+		StatusCode:        statusCode,
+		HasStatusCode:     hasStatusCode,
+		ShouldRecordUsage: shouldRecordUsage,
+	}
+}
+
+// DispatchHybridAuxiliaryChatCompletion mirrors dispatchHybridAuxiliaryChatCompletion:
+// select the auxiliary target group, dispatch the synthesized body once, and
+// settle through the returned Finish callback (call-once, side-effect free in
+// the assembled-minimal wiring).
+func (d *chainHybridAuxiliaryDispatcher) DispatchHybridAuxiliaryChatCompletion(ctx context.Context, input gatewayhybrid.AuxiliaryDispatchInput) (gatewayhybrid.AuxiliaryDispatchSuccess, *gatewayhybrid.AuxiliaryDispatchFailure) {
+	if d == nil || d.cache == nil {
+		return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, nil, "", false, 0, false, false)
+	}
+	// 1. selectGatewayModelTargetGroup over the routing runtime cache.
+	selection, err := (hybridTargetGroups{cache: d.cache}).SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
+		APIKeyRecord:               input.APIKeyRecord,
+		TargetModel:                input.TargetModel,
+		RequestClientCompatibility: input.RequestClientCompatibility,
+	})
+	if err != nil {
+		return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, nil, "", false, 0, false, false)
+	}
+	if selection == nil || len(selection.Accounts) == 0 {
+		return auxiliaryDispatchFailure(input, input.NoAccountErrorCode, input.NoAccountErrorMessage, nil, "", false, 0, false, false)
+	}
+
+	// 2. Hydrated candidate accounts (Node prepareOpenAIGatewayDispatchAccounts):
+	// the runtime cache snapshots carry the decrypted upstream credentials.
+	candidates, err := d.cache.ListCachedOpenAIAccountsForGroupAsync(ctx, selection.GroupID, input.APIKeyRecord.SystemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
+		RequestedModel:          input.TargetModel,
+		RequestedEndpointFamily: requestEndpointFamilyOf("/v1/chat/completions"),
+	})
+	if err != nil {
+		return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, nil, selection.GroupID, true, 0, false, false)
+	}
+	byID := make(map[string]gatewayruntimecache.OpenAIAccountSecret, len(candidates))
+	for _, candidate := range candidates {
+		byID[candidate.ID] = candidate
+	}
+	// Keep the selection order (Node preparation preserves the binding order).
+	ordered := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(selection.Accounts))
+	for _, secret := range selection.Accounts {
+		if candidate, ok := byID[secret.ID]; ok {
+			ordered = append(ordered, candidate)
+		}
+	}
+	if len(ordered) == 0 {
+		return auxiliaryDispatchFailure(input, input.NoAccountErrorCode, input.NoAccountErrorMessage, nil, selection.GroupID, true, 0, false, false)
+	}
+
+	// 3. One upstream attempt over the first available account
+	// (fetchFirstAvailableUpstream, single-shot; per-account compatibility
+	// skipping mirrors the attempt loop's capability filter).
+	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(input.TimeoutMs)*time.Millisecond)
+	defer cancel()
+	var lastAccount *gatewayhybrid.OpenAIAccountSecret
+	for _, account := range ordered {
+		if account.BaseURL == "" {
+			continue
+		}
+		lastAccount = &gatewayhybrid.OpenAIAccountSecret{ID: account.ID}
+		httpReq, reqErr := http.NewRequestWithContext(timeoutCtx, http.MethodPost, "http://hybrid-auxiliary.internal/v1/chat/completions", bytes.NewReader(input.RawBody))
+		if reqErr != nil {
+			break
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		gatewayReq := gatewaypreauth.NewGatewayRequest(httpReq)
+		gatewayReq.Body = &gatewaybody.Request{RawBody: input.RawBody, ContentTypeHeader: "application/json"}
+		urls, urlErr := d.driver.BuildGatewayUpstreamURLsForAccount(ctx, account, gatewayReq)
+		if urlErr != nil || len(urls) == 0 {
+			continue
+		}
+		parts, partsErr := d.driver.BuildGatewayUpstreamRequestParts(ctx, gatewayReq, account, gatewaydispatch.UsageIdentity{}, input.RequestClientCompatibility)
+		if partsErr != nil {
+			continue
+		}
+		body := parts.Body
+		// The synthesized body carries the scoring/quality model as the
+		// target model; an account-level model mapping switches it upstream
+		// exactly like the dispatch pipeline (the generic parsed-body path
+		// cannot run on the synthetic request, so the mapping replays through
+		// the shared openai resolver directly).
+		if mapping := resolveAuxiliaryAccountModelMapping(account, input.TargetModel); mapping != nil {
+			transformed, transformErr := d.driver.openai.BuildUpstreamRequest(gatewayproto.BuildUpstreamRequestInput{
+				Method:              http.MethodPost,
+				ClientPathAndQuery:  "/v1/chat/completions",
+				Body:                body,
+				Header:              parts.Headers,
+				ParsedBody:          gatewayhybrid.ToNativeValue(input.Body),
+				ParsedBodyAvailable: input.Body != nil,
+				ModelMapping:        mapping,
+			})
+			if transformErr != nil {
+				continue
+			}
+			body = transformed.Body
+		}
+		timeoutMs := int64(input.TimeoutMs)
+		response, requestErr := gatewaydispatch.RequestUpstream(timeoutCtx, urls[0], gatewaydispatch.UpstreamRequestOptions{
+			Method:    http.MethodPost,
+			Header:    parts.Headers,
+			Body:      body,
+			ProxyURL:  deref(account.ProxyURL),
+			TimeoutMs: &timeoutMs,
+			Signal:    timeoutCtx,
+		}, gatewaydispatch.TransportDeps{})
+		if requestErr != nil {
+			message := requestErr.Error()
+			return auxiliaryDispatchFailure(input, input.DispatchErrorCode, firstNonEmptyString(message, input.DispatchErrorMessage), lastAccount, selection.GroupID, true, 0, false, true)
+		}
+		// 4. Bounded body read (readUpstreamBodyLimited) + parse + usage.
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(response.Body, int64(input.ResponseMaxBytes)+1))
+		_ = response.Body.Close()
+		if readErr != nil {
+			return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, lastAccount, selection.GroupID, true, response.Status(), true, true)
+		}
+		truncated := len(bodyBytes) > input.ResponseMaxBytes
+		if truncated {
+			bodyBytes = bodyBytes[:input.ResponseMaxBytes]
+			return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.ResponseTooLargeMessage, lastAccount, selection.GroupID, true, response.Status(), true, true)
+		}
+		bodyText := string(bodyBytes)
+		if !response.OK() {
+			errorCode, errorMessage := gatewayhybrid.AuxiliaryUpstreamFailure(gatewayhybrid.AuxiliaryUpstreamFailureInput{
+				Account:           *lastAccount,
+				BodyText:          bodyText,
+				ContentType:       response.ContentType(),
+				StatusCode:        response.Status(),
+				FallbackErrorCode: input.HTTPErrorCode,
+			})
+			return auxiliaryDispatchFailure(input, errorCode, errorMessage, lastAccount, selection.GroupID, true, response.Status(), true, true)
+		}
+		parsedResponseBody, usage := gatewayhybrid.ParseHybridAuxiliaryResponse(bodyText, response.ContentType())
+		return gatewayhybrid.AuxiliaryDispatchSuccess{
+			Account:               *lastAccount,
+			GroupID:               selection.GroupID,
+			StatusCode:            response.Status(),
+			ResponseBody:          bodyBytes,
+			ResponseBodyText:      bodyText,
+			ResponseBodyTruncated: false,
+			ParsedResponseBody:    parsedResponseBody,
+			Usage:                 usage,
+			Finish: func(context.Context, gatewayhybrid.AuxiliaryDispatchFinishInput) error {
+				// createFinish call-once guard (the scoring service wraps it
+				// in AuxiliaryFinishOnce); the audit / hot-quality /
+				// circuit-lease side effects stay unported (residuals above).
+				return nil
+			},
+		}, nil
+	}
+	if lastAccount != nil {
+		return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, lastAccount, selection.GroupID, true, 0, false, true)
+	}
+	return auxiliaryDispatchFailure(input, input.NoAccountErrorCode, input.NoAccountErrorMessage, nil, selection.GroupID, true, 0, false, false)
+}
+
+// resolveAuxiliaryAccountModelMapping resolves the account mapping for the
+// auxiliary target model through the shared openai resolver (the same source
+// of truth the provider driver uses).
+func resolveAuxiliaryAccountModelMapping(account gatewayruntimecache.OpenAIAccountSecret, targetModel string) *gatewayproto.ResolvedModelMapping {
+	if targetModel == "" {
+		return nil
+	}
+	runtime := &gatewayopenai.RuntimeAccount{
+		ModelMappings:             openAIModelMappingsOf(account.ModelMappings),
+		ProviderCode:              account.ProviderCode,
+		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
+		ProtocolCode:              account.ProtocolCode,
+		ProtocolVersion:           account.ProtocolVersion,
+	}
+	return gatewayopenai.ResolveAccountModelMapping(runtime, targetModel, gatewayopenai.FamilyChatCompletions)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func hybridUsageRecorderOf(recorder hybridUsageRecorder) gatewayhybrid.UsageRecorder {

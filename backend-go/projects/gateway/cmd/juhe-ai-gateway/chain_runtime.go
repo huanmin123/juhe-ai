@@ -20,6 +20,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
@@ -29,6 +30,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 )
 
@@ -58,6 +60,27 @@ type chainRuntimeServices struct {
 	// RateLimitStore is the cacheDriver==='redis' fixed-window store for the
 	// system-api rate limiter (nil keeps the memory store); see task item 9.
 	RateLimitStore ratelimit.Store
+
+	// QuotaStats is the shared G07 stats reader; the accounts runtime-reset
+	// bridge (compose_accounts_reset.go) reuses it for the
+	// AuthorizationQuotaExceeded port so both consumers read the same
+	// juhe_stats projections through one instance.
+	QuotaStats *gatewayquota.StatsStore
+	// LatencyDegradation is the store-backed normal-route latency degradation
+	// service. The dispatch-side ordering port stays explicitly degraded
+	// (chain_dispatch.go degradedLatency); this instance owns the
+	// runtime-state store the maintenance runtime-reset clear goes through
+	// (accounts RuntimeResetEffects port) and is the store the dispatch
+	// collaborator will mount when that slice lands.
+	LatencyDegradation *gatewayproxyhealth.LatencyDegradationService
+	// StateClient is the runtime-state redis client (nil unless
+	// runtimeStateDriver === 'redis'); shared with the aipublic penalty-window
+	// limiter so both limiter families sit in one Redis keyspace.
+	StateClient *redis.Client
+	// AccountAPIKeyGuard is the process-local api-key failure guard
+	// (gatewayaccounteffects); the runtime-reset bridge reaches the failure
+	// guard / transient tombstone clears through it.
+	AccountAPIKeyGuard *gatewayaccounteffects.AccountAPIKeyFailureGuard
 
 	closeFuncs []func()
 }
@@ -127,32 +150,6 @@ type redisEvalClient struct{ client *redis.Client }
 
 func (c redisEvalClient) Eval(ctx context.Context, script string, keys []string, args ...any) (any, error) {
 	return c.client.Eval(ctx, script, keys, args...).Result()
-}
-
-// redisSharedVersions persists inval topic versions across instances
-// (inval.SharedStore over the cache redis; Node invalidation shared store).
-type redisSharedVersions struct {
-	client    *redis.Client
-	namespace string
-}
-
-func (s redisSharedVersions) key(topic string) string {
-	normalized := strings.TrimRight(strings.TrimSpace(s.namespace), ":")
-	if normalized == "" {
-		normalized = "juhe-ai"
-	}
-	if !strings.HasPrefix(normalized, "juhe-ai:") {
-		normalized = "juhe-ai:" + normalized
-	}
-	return normalized + ":inval:topic-version:" + topic
-}
-
-func (s redisSharedVersions) GetVersion(ctx context.Context, topic string) (int64, error) {
-	return s.client.Get(ctx, s.key(topic)).Int64()
-}
-
-func (s redisSharedVersions) SetVersion(ctx context.Context, topic string, version int64) error {
-	return s.client.Set(ctx, s.key(topic), version, 0).Err()
 }
 
 // redisStateClientProvider mirrors getRedisClient(stateUrl) with failure
@@ -225,10 +222,6 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		}
 		cacheClient = redis.NewClient(options)
 		services.closeFuncs = append(services.closeFuncs, func() { _ = cacheClient.Close() })
-		// K5 invalidation shared-version persistence (inval.SharedStore).
-		if composed.Bus != nil {
-			composed.Bus.SetSharedStore(redisSharedVersions{client: cacheClient, namespace: cfg.RedisNamespace})
-		}
 		// system-api rate limiter fixed-window store (task item 9).
 		services.RateLimitStore = &ratelimit.RedisStore{Client: redisEvalClient{client: cacheClient}}
 	}
@@ -240,6 +233,17 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		}
 		stateClient = redis.NewClient(options)
 		services.closeFuncs = append(services.closeFuncs, func() { _ = stateClient.Close() })
+		// Exposed for siblings that share the runtime-state client (aipublic
+		// penalty-window limiter). nil when runtimeStateDriver !== 'redis'.
+		services.StateClient = stateClient
+		// K5 invalidation shared-version persistence (inval.SharedStore, T2
+		// audit wiring): the runtime-state redis, mirroring the Node topology
+		// (publish + sync both gated on runtimeStateDriver === 'redis', which
+		// is also the SyncInvalidationsOnRead gate of the runtime cache below).
+		// Go-only int64 monotonic protocol — see internal/inval package docs.
+		if composed.Bus != nil {
+			composed.Bus.SetSharedStore(inval.NewRedisSharedStore(stateClient, cfg.RedisNamespace))
+		}
 	}
 
 	// ---- runtime cache (G10) ----
@@ -347,6 +351,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if err != nil {
 		return nil, fmt.Errorf("create gateway quota stats store: %w", err)
 	}
+	services.QuotaStats = statsStore
 	var snapshotRuntimeState gatewayquota.RuntimeStateStore
 	if redisCache && redisState {
 		snapshotRuntimeState, err = gatewayquota.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, gatewayquota.GatewayQuotaSnapshotRuntimeStateStoreName)
@@ -428,6 +433,38 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		gatewaycircuit.NewWaitCoordinator(gatewaycircuit.WaitCoordinatorOptions{}),
 		chainCircuitWaitLogger{inner: slog.Default()},
 	)
+
+	// ---- normal-route latency degradation (runtimeStateDriver fork) ----
+	// Node createRuntimeStateStore('gateway-normal-route-latency-degradation');
+	// memory keeps the process-local store, redis shares it across instances.
+	var latencyStore gatewayproxyhealth.RuntimeStateStore
+	if redisState && stateClient != nil {
+		store, storeErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-normal-route-latency-degradation")
+		if storeErr != nil {
+			return nil, fmt.Errorf("create normal route latency degradation runtime state: %w", storeErr)
+		}
+		latencyStore = store
+	} else {
+		latencyStore = gatewayproxyhealth.NewMemoryRuntimeStateStore(nil)
+	}
+	services.LatencyDegradation = gatewayproxyhealth.NewLatencyDegradationService(latencyStore, nil, gatewayproxyhealth.LatencyDegradationOptions{})
+
+	// ---- account api-key failure guard (runtimeStateDriver fork) ----
+	// gatewayaccounteffects module state: the process-local suppression map in
+	// the memory driver, the Redis transient tombstones through the lazy
+	// store factory in the redis driver (Node
+	// gatewayAccountApiKeyTransientStateStore()).
+	guardConfig := gatewayaccounteffects.SideEffectsConfig{RuntimeStateDriver: cfg.RuntimeStateDriver}
+	var guardFactory gatewayaccounteffects.TransientStateStoreFactory
+	if redisState {
+		guardFactory = func() (gatewayaccounteffects.AccountApiKeyTransientStateStore, error) {
+			return gatewayaccounteffects.NewRedisAccountApiKeyTransientStateStore(gatewayaccounteffects.RedisAccountApiKeyTransientStateStoreOptions{
+				RedisURL:  cfg.RedisStateURL,
+				Namespace: cfg.RedisNamespace,
+			})
+		}
+	}
+	services.AccountAPIKeyGuard = gatewayaccounteffects.NewAccountAPIKeyFailureGuard(guardConfig, gatewayaccounteffects.SystemClock{}, nil, guardFactory)
 
 	// ---- hybrid Redis collaborators (cacheDriver==='redis') ----
 	// Node createSharedJsonCache('gateway:hybrid-scoring-result') +

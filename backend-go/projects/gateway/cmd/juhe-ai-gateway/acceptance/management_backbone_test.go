@@ -199,10 +199,12 @@ func TestAcceptanceManagementBackbone(t *testing.T) {
 			"providerProtocolProfileId": "profile_gpt_openai_v1",
 			"name":                      "验收账户" + runTag,
 			"type":                      "api_key",
-			"credentials":               map[string]any{"api_key": "sk-acceptance-" + runTag, "base_url": ""},
-			"supportedModels":           []string{"gpt-5.6-sol"},
-			"skipInitialHealthCheck":    true,
-			"groupId":                   "grp_default_gpt_sys_admin",
+			// Node 契约收紧（credentials_normalize）：api_key 账户 Base URL 必填，
+			// 空 base_url 现在渲染 400。
+			"credentials":            map[string]any{"api_key": "sk-acceptance-" + runTag, "base_url": "https://api.openai.com/v1"},
+			"supportedModels":        []string{"gpt-5.6-sol"},
+			"skipInitialHealthCheck": true,
+			"groupId":                "grp_default_gpt_sys_admin",
 		}, wantStatus(http.StatusCreated))
 		createdData := data(created)
 		accountID := str(createdData["id"])

@@ -96,6 +96,10 @@ type runtimeConfig struct {
 	// AccountHealthOutcomeSQLitePath is the J1 jobs outcome store the ai-health
 	// reads merge (Node JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH).
 	AccountHealthOutcomeSQLitePath string
+	// AccountHealthOutcomePostgresURL is the performance-topology J1 outcome
+	// database the ai-health reads merge (jobs JUHE_AI_JOBS_OUTCOME_POSTGRES_URL
+	// counterpart; Node merged readPostgresOutcomesForAccounts from the same DB).
+	AccountHealthOutcomePostgresURL string
 	// FrontendDistPath is the frontend dist directory backing the
 	// /__aisys__/help static surface (Node derives it from backendRoot).
 	FrontendDistPath string
@@ -347,6 +351,7 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		cfg.GoRuntimeMetricsURL = "http://127.0.0.1:3305"
 	}
 	cfg.AccountHealthOutcomeSQLitePath = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH"))
+	cfg.AccountHealthOutcomePostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL"))
 	cfg.FrontendDistPath = strings.TrimSpace(getenv("JUHE_AI_FRONTEND_DIST_PATH"))
 
 	// Runtime-logs grep surface: Node numberConfig clamps instead of failing.

@@ -1064,8 +1064,13 @@ func (s *Store) planImportAccount(ctx context.Context, value any, index int, pla
 	plan.item.ProtocolVersion = textPointerOrNil(source.protocolVersion)
 	plan.item.AccountType = textPointerOrNil(source.accountType)
 
-	// Client compatibility / endpoint-mode compatibility asserts and the gpt
-	// request-override validation belong to the companion slices.
+	// Credential normalization (account-import-account-plan.ts:257-277): the
+	// normalized record feeds Store.Create; a failure lands as a per-account
+	// message and marks the item failed, exactly like the Node plan helper.
+	s.normalizeImportAccountCredentials(source)
+
+	// The endpoint-mode compatibility asserts and the gpt request-override
+	// validation stay with the model-validation companion slice.
 
 	if err := s.validateImportModelCatalogFields(source, planCtx); err != nil {
 		return plan, err
@@ -1102,6 +1107,41 @@ func applyImportAccountProtocolProfileDefaults(source *normalizedImportAccount, 
 	source.providerProtocolProfileID = profile.id
 	source.protocolCode = profile.protocolCode
 	source.protocolVersion = profile.protocolVersion
+}
+
+// normalizeImportAccountCredentials mirrors the credential normalization block
+// of account-import-account-plan.ts: normalize the raw credentials with the
+// resolved provider profile context, push the failure as a per-account message
+// and keep the raw record untouched (Store.Create re-normalizes for the write).
+func (s *Store) normalizeImportAccountCredentials(source *normalizedImportAccount) {
+	clientCompatibility, err := normalizeOpenAIAccountClientCompatibility(
+		source.providerCode,
+		source.accountType,
+		"",
+		protocolProfileRef{
+			ProviderCode:              source.providerCode,
+			ProtocolCode:              source.protocolCode,
+			ProtocolVersion:           source.protocolVersion,
+			ProviderProtocolProfileID: source.providerProtocolProfileID,
+		},
+	)
+	if err != nil {
+		source.push(err.Error())
+		return
+	}
+	normalized, err := NormalizeAccountCredentialsForWrite(source.accountType, source.credentials, &EndpointModeDefaultContext{
+		ProviderCode:              source.providerCode,
+		AccountType:               source.accountType,
+		ClientCompatibility:       clientCompatibility,
+		ProviderProtocolProfileID: source.providerProtocolProfileID,
+		ProtocolCode:              source.protocolCode,
+		ProtocolVersion:           source.protocolVersion,
+	})
+	if err != nil {
+		source.push(err.Error())
+		return
+	}
+	source.credentials = normalized
 }
 
 // validateImportProviderAndBasics mirrors validateImportProviderAndBasics.

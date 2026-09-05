@@ -20,11 +20,16 @@ import (
 var statHourPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$`)
 
 // HealthOutcomeSource mirrors accountHealthJobsOutcomeStoreSource: the
-// jobs-owned outcome store the gateway only reads. PostgreSQL outcome stores
-// stay on the Node reader until the shared pool owns that database (see the
-// package report notes); nil keeps the merge absent.
+// jobs-owned outcome store the gateway only reads. SQLite mode points at the
+// outcome file (outcomeSqlitePath); PostgreSQL mode points at the jobs
+// database URL (outcomePostgresUrl) and reads juhe_jobs.account_health_outcomes
+// through the same per-slice reader the Node async path uses
+// (listAccountHealthJobsOutcomesForAccountsAsync). The merge semantics
+// (j1OutcomeHealthRows / newestJ1OutcomeHourRow) are mode-independent. An
+// absent/unconfigured source keeps the merge absent exactly like Node.
 type HealthOutcomeSource struct {
-	SQLitePath string
+	SQLitePath  string
+	PostgresURL string
 }
 
 func (d *Deps) aiHealthListHandler(selfOnly bool) http.HandlerFunc {
@@ -421,10 +426,16 @@ type j1Outcome struct {
 }
 
 func (d *Deps) j1OutcomesForAccounts(ctx context.Context, accountIds []string, now time.Time, hours int, location *time.Location, hourBuckets []string) ([]j1Outcome, error) {
-	if d.HealthOutcomes == nil || d.HealthOutcomes.SQLitePath == "" || len(accountIds) == 0 || len(hourBuckets) == 0 {
+	if d.HealthOutcomes == nil || len(accountIds) == 0 || len(hourBuckets) == 0 {
 		return nil, nil
 	}
 	observedAfter := time.UnixMilli(now.UnixMilli() - int64(hours+2)*int64(time.Hour/time.Millisecond)).UTC().Format("2006-01-02T15:04:05.000Z")
+	if d.HealthOutcomes.PostgresURL != "" {
+		return d.j1PostgresOutcomesForAccounts(ctx, accountIds, observedAfter, location, hourBuckets)
+	}
+	if d.HealthOutcomes.SQLitePath == "" {
+		return nil, nil
+	}
 	db, err := sql.Open("sqlite", "file:"+d.HealthOutcomes.SQLitePath+"?mode=ro&_pragma=query_only(1)")
 	if err != nil {
 		return nil, err
@@ -482,6 +493,104 @@ func zonedHourRange(statHour string, location *time.Location) (string, string) {
 		return "", ""
 	}
 	return base.UTC().Format("2006-01-02T15:04:05.000Z"), base.Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+// ---------------------------------------------------------------------------
+// PostgreSQL outcome reader (readPostgresOutcomesForAccounts, the
+// timezone + hourBuckets slice the management pages always request).
+// ---------------------------------------------------------------------------
+
+// j1PostgresOutcomeBudget mirrors the Node reader's 5s statement_timeout /
+// query_timeout; one budget covers the connection and the single slice query.
+const j1PostgresOutcomeBudget = 5 * time.Second
+
+// j1PostgresOutcomesForAccounts reads one management-page account slice from
+// juhe_jobs.account_health_outcomes: per account/hour the latest non-stale
+// outcome inside the zoned hour (BEGIN READ ONLY semantics degrade to the
+// statement budget — the gateway connection stays read-only by contract).
+func (d *Deps) j1PostgresOutcomesForAccounts(ctx context.Context, accountIds []string, observedAfter string, location *time.Location, hourBuckets []string) ([]j1Outcome, error) {
+	query, args, err := j1PostgresOutcomeQuery(accountIds, hourBuckets, observedAfter, location.String())
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("pgx", d.HealthOutcomes.PostgresURL)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	readCtx, cancel := context.WithTimeout(ctx, j1PostgresOutcomeBudget)
+	defer cancel()
+	rows, err := queryRowsContext(readCtx, db, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return decodeJ1OutcomeRows(rows)
+}
+
+// j1PostgresOutcomeQuery mirrors the timezone+hourBuckets branch of
+// readPostgresOutcomesForAccounts: unnest the account/hour arrays and pick the
+// newest non-stale outcome per zoned hour through a LATERAL join.
+func j1PostgresOutcomeQuery(accountIds, hourBuckets []string, observedAfter, timezoneName string) (string, []any, error) {
+	if len(accountIds) > 50 {
+		return "", nil, errors.New("J1 outcome 账户查询最多允许 50 个账户")
+	}
+	buckets := dedupeStrings(hourBuckets)
+	if len(buckets) > 31*24 {
+		return "", nil, errors.New("AI 健康 J1 outcome 查询小时桶超出允许范围")
+	}
+	for _, bucket := range buckets {
+		if !statHourPattern.MatchString(bucket) {
+			return "", nil, errors.New("AI 健康 J1 outcome 查询小时桶无效")
+		}
+	}
+	query := `
+		SELECT selected.payload,
+			to_char(selected.observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at
+		FROM unnest($1::text[]) AS accounts(account_id)
+		CROSS JOIN unnest($2::text[]) AS hours(stat_hour)
+		CROSS JOIN LATERAL (
+			SELECT payload, observed_at
+			FROM juhe_jobs.account_health_outcomes
+			WHERE account_id = accounts.account_id
+				AND observed_at >= $3::timestamptz
+				AND observed_at >= (hours.stat_hour || ':00:00')::timestamp AT TIME ZONE $4
+				AND observed_at < ((hours.stat_hour || ':00:00')::timestamp + INTERVAL '1 hour') AT TIME ZONE $4
+				AND outcome <> 'stale'
+			ORDER BY observed_at DESC, outcome_id DESC
+			LIMIT 1
+		) AS selected`
+	// normalizeAccountOutcomeQuery dedupes the account ids in first-seen order.
+	return query, []any{dedupeStrings(accountIds), buckets, observedAfter, timezoneName}, nil
+}
+
+// decodeJ1OutcomeRows decodes the payload column of the outcome rows; a
+// malformed payload row is skipped exactly like the Go SQLite branch (the
+// management merge treats undecodable outcomes as absent).
+func decodeJ1OutcomeRows(rows []Row) ([]j1Outcome, error) {
+	outcomes := make([]j1Outcome, 0, len(rows))
+	for _, row := range rows {
+		var outcome j1Outcome
+		if err := json.Unmarshal([]byte(row.text("payload")), &outcome); err != nil {
+			continue
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes, nil
+}
+
+// dedupeStrings keeps the first occurrence order.
+func dedupeStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func j1OutcomeHealthStatus(outcome j1Outcome) string {

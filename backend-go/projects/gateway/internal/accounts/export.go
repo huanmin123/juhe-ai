@@ -486,11 +486,10 @@ type exportBody struct {
 	filters    map[string]any
 }
 
-// parseExportBody parses the POST /accounts/export request body. Unlike the
-// Node accountExportRequestSchema union (strict {accountIds} or strict
-// {filters}, rejecting a body with both keys), this implementation accepts
-// both keys and prefers accountIds; the strict-union 400 semantics are a
-// registered deferral (docs/migration/final-migration/PLAN.md M09).
+// parseExportBody parses the POST /accounts/export request body with the
+// accountExportRequestSchema union contract: strict {accountIds} or strict
+// {filters}; a body carrying both keys fails both strict branches and renders
+// the shared 400 (the registered deferral is closed).
 func parseExportBody(body map[string]any) (exportBody, bool) {
 	for key := range body {
 		switch key {
@@ -498,6 +497,13 @@ func parseExportBody(body map[string]any) (exportBody, bool) {
 		default:
 			return exportBody{}, false
 		}
+	}
+	_, hasAccountIDs := body["accountIds"]
+	_, hasFilters := body["filters"]
+	if hasAccountIDs && hasFilters {
+		// accountExportByIdsRequestSchema / accountExportByFiltersRequestSchema
+		// are both .strict(): a body with both keys matches neither branch.
+		return exportBody{}, false
 	}
 	if raw, ok := body["accountIds"]; ok && raw != nil {
 		list, ok := raw.([]any)

@@ -40,6 +40,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
@@ -92,9 +93,25 @@ type Deps struct {
 	// recordOperationLogAsync with actor `external:<sourceRefId>`). Nil keeps
 	// the routes functional without the log.
 	Sink authsys.OperationLogSink
+	// Capture mirrors the /__aipublic__ public-api-log capture middleware
+	// (Node capturePublicApiLog for the external-integrations family). Nil
+	// keeps the routes functional without capture.
+	Capture PublicApiLogCapture
+	// Redis shared penalty-window state (Node runtimeStateDriver === 'redis'):
+	// RedisStateClient is the go-redis state client, RedisNamespace the
+	// deployment namespace. Both must be set for the shared driver; otherwise
+	// the process-local memory model applies.
+	RedisDriver      bool
+	RedisStateClient RedisStateClient
+	RedisNamespace   string
+	// Warn receives the Redis-unavailable fallback warning (nil falls back to
+	// the standard log).
+	Warn func(message string)
 	// rateLimiter is created lazily by limiter(); tests can inject a clock via
 	// NewPenaltyWindowLimiter.
 	rateLimiter *PenaltyWindowLimiter
+	redisOnce   sync.Once
+	redisShared *redisPenaltyDriver
 }
 
 // Mount wires the 16 public routes (Node app.use(publicApiPrefix,
@@ -141,9 +158,11 @@ func bearerToken(r *http.Request) string {
 }
 
 // guard mirrors requireExternalIntegrationSource(scope): bearer parse, token
-// validation, rate limiting and the typed 401/403/429 bodies.
+// validation, rate limiting and the typed 401/403/429 bodies. The capture
+// lifecycle wraps the whole guard (Node mounts capturePublicApiLog ahead of
+// the auth middleware), so 401/429 responses record with a nil source too.
 func (d *Deps) guard(scope string, handler http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return d.withCapture(func(w http.ResponseWriter, r *http.Request, source *captureSourceHolder) {
 		token := bearerToken(r)
 		if token == "" {
 			writeCodeError(w, http.StatusUnauthorized, "external_source_token_missing", "缺少来源系统 token")
@@ -154,7 +173,8 @@ func (d *Deps) guard(scope string, handler http.HandlerFunc) http.Handler {
 			writeCodeError(w, authErr.StatusCode, authErr.Code, authErr.Message)
 			return
 		}
-		decision := d.limiter().Consume(context.SourceRefID+":"+context.TokenID+":"+context.TokenPrefix, context.RateLimits)
+		source.set(context)
+		decision := d.consumeRateLimit(r.Context(), context.SourceRefID+":"+context.TokenID+":"+context.TokenPrefix, context.RateLimits)
 		if !decision.Allowed {
 			w.Header().Set("Retry-After", itoa(decision.RetryAfterSeconds))
 			writeCodeErrorDetails(w, http.StatusTooManyRequests, "external_source_rate_limited", "来源系统调用过于频繁，请稍后重试", map[string]any{

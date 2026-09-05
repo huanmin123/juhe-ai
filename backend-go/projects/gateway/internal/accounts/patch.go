@@ -126,28 +126,32 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		args = append(args, scoped)
 	}
 	var row struct {
-		id                      string
-		configRevision          int64
-		systemAccountID         string
-		name                    string
-		notes                   sql.NullString
-		accountType             string
-		credentialsEncrypted    string
-		status                  string
-		concurrencyLimit        int
-		priority                int
-		superPriorityEnabled    int
-		fallbackEnabled         int
-		schedulable             int
-		availabilitySchedule    sql.NullString
-		accountExpiresAt        sql.NullString
-		lastErrorCode           sql.NullString
-		lastErrorMessage        sql.NullString
-		lastErrorTraceID        sql.NullString
-		cooldownUntil           sql.NullString
-		healthCheckModel        string
-		healthCheckEndpointMode string
-		providerCode            string
+		id                        string
+		configRevision            int64
+		systemAccountID           string
+		name                      string
+		notes                     sql.NullString
+		accountType               string
+		credentialsEncrypted      string
+		status                    string
+		concurrencyLimit          int
+		priority                  int
+		superPriorityEnabled      int
+		fallbackEnabled           int
+		schedulable               int
+		availabilitySchedule      sql.NullString
+		accountExpiresAt          sql.NullString
+		lastErrorCode             sql.NullString
+		lastErrorMessage          sql.NullString
+		lastErrorTraceID          sql.NullString
+		cooldownUntil             sql.NullString
+		healthCheckModel          string
+		healthCheckEndpointMode   string
+		providerCode              string
+		providerProtocolProfileID string
+		protocolCode              string
+		protocolVersion           string
+		clientCompatibility       string
 	}
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, accounts.name, accounts.notes, accounts.type,
@@ -156,7 +160,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			accounts.schedulable, accounts.availability_schedule_json, accounts.account_expires_at,
 			accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
 			accounts.cooldown_until, accounts.health_check_model, accounts.health_check_endpoint_mode,
-			accounts.provider_code
+			accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code,
+			accounts.protocol_version, accounts.client_compatibility
 		FROM `+s.table("accounts")+` accounts
 		WHERE accounts.id = ?
 			AND accounts.deleted_at IS NULL`+scopeClause+`
@@ -166,7 +171,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.priority, &row.superPriorityEnabled, &row.fallbackEnabled, &row.schedulable,
 		&row.availabilitySchedule, &row.accountExpiresAt, &row.lastErrorCode,
 		&row.lastErrorMessage, &row.lastErrorTraceID, &row.cooldownUntil,
-		&row.healthCheckModel, &row.healthCheckEndpointMode, &row.providerCode)
+		&row.healthCheckModel, &row.healthCheckEndpointMode, &row.providerCode,
+		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion,
+		&row.clientCompatibility)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -374,8 +381,11 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
-	// Credentials: editable-key merge into the decrypted record, then re-seal
-	// with fresh fingerprint/mask columns.
+	// Credentials: editable-key merge into the decrypted record, normalize
+	// through the ported normalizeAccountCredentialsForWrite family, then
+	// re-seal with fresh fingerprint/mask columns when the deep-equal
+	// comparison reports a change (Node account-management-patch.repository.ts
+	// :336-360).
 	if input.CredentialsPresent {
 		current := Credentials{}
 		if err := DecryptJSON(s.secret, row.credentialsEncrypted, &current); err != nil {
@@ -388,18 +398,31 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		for key, value := range input.Credentials {
 			next[key] = value
 		}
-		source, err := requiredAccountCredentialSource(row.accountType, next)
+		normalized, err := NormalizeAccountCredentialsForWrite(row.accountType, next, &EndpointModeDefaultContext{
+			ProviderCode:              row.providerCode,
+			AccountType:               row.accountType,
+			ClientCompatibility:       row.clientCompatibility,
+			ProviderProtocolProfileID: row.providerProtocolProfileID,
+			ProtocolCode:              row.protocolCode,
+			ProtocolVersion:           row.protocolVersion,
+		})
 		if err != nil {
 			return nil, err
 		}
-		sealed, err := EncryptJSON(s.secret, map[string]any(next))
-		if err != nil {
-			return nil, err
+		if !credentialsDeepEqual(current, normalized) {
+			source, err := requiredAccountCredentialSource(row.accountType, normalized)
+			if err != nil {
+				return nil, err
+			}
+			sealed, err := EncryptJSON(s.secret, map[string]any(normalized))
+			if err != nil {
+				return nil, err
+			}
+			fingerprint := accountCredentialFingerprint(source)
+			addChange("credentials", "已设置", "已变更")
+			sets = append(sets, "credentials_encrypted = ?", "credential_fingerprint = ?", "credential_mask = ?")
+			setArgs = append(setArgs, sealed, fingerprint, MaskSecret(source))
 		}
-		fingerprint := accountCredentialFingerprint(source)
-		addChange("credentials", "已设置", "已变更")
-		sets = append(sets, "credentials_encrypted = ?", "credential_fingerprint = ?", "credential_mask = ?")
-		setArgs = append(setArgs, sealed, fingerprint, MaskSecret(source))
 	}
 
 	// Tags: replace through the shared tag maintenance.
@@ -472,7 +495,14 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 	result.ConfigRevision = row.configRevision + 1
 	result.Tags = savedTags
-	return result, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	// Post-commit invalidation (T2 audit; Node
+	// account-management-patch.repository.ts:1877-1896): conditional lookup
+	// flush + gateway runtime invalidation, best-effort.
+	s.finishPatchSideEffects(result)
+	return result, nil
 }
 
 func scheduleNextCheckArg(schedule *AvailabilitySchedule, now time.Time) sql.NullString {

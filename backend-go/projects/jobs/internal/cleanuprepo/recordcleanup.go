@@ -35,14 +35,22 @@ type RecordCleanupStore struct {
 	Stats        *DB
 	UsageCatalog *DB
 	Shards       *ShardStore
+	// Business PG 模式下 juhe_business 句柄，供 PG 扣减链授权查找
+	// （createPostgresUsageStatsAuthorizationLookup 的
+	// resource_authorizations 查询）；SQLite 分片路径不使用。
+	Business *DB
 	// DerivedWindows SQLite 派生窗口刷新；nil 时由组合根登记为跳过（Go 的
 	// 调度式窗口刷新 jobs 已覆盖同一收敛语义）。
-	DerivedWindows        DerivedWindowRefresher
+	DerivedWindows DerivedWindowRefresher
 	// OnDerivedWindowsSkipped 在 DerivedWindows 为 nil 时上报（不静默）。
 	OnDerivedWindowsSkipped func(reason string)
-	Now            func() time.Time
+	Now                     func() time.Time
 	// Timezone 提供业务统计时区（时间桶键计算）。
 	Timezone func(ctx context.Context) (*time.Location, error)
+	// CacheReadCostEstimator 注入 Node estimateProviderCacheReadCostUsd
+	// （PG 扣减链 applyPostgresEstimatedCacheReadCost 的估算回填；
+	// nil 时与 Node 估算返回 undefined 同语义：不回填）。
+	CacheReadCostEstimator statsagg.CacheReadCostEstimator
 }
 
 func (s *RecordCleanupStore) nowIso() string {

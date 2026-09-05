@@ -11,14 +11,23 @@
 //     (per-million conversion, rounding, nil/NaN collapsing, catalog model
 //     aliasing in catalog.go).
 //
-// Not ported yet (deferred to later slices): the per-provider billing
-// policies with the cost breakdown lookup loop
-// (provider-billing.policies.ts / provider-billing.service.ts), the GPT
-// Priority/Flex tier linkage
-// (docs/functions/GPT请求服务等级与思考级别覆盖设计.md) and the pricing
-// freeze helper for the J-F usage writer
-// (freezeUsageRecordPricingFactsAsync). Accordingly the package exposes no
-// exported functions and no catalog lookup closure yet.
+// Ported (T3 billing slice):
+//
+//   - the lookup closure (lookup.go): ListProviderModelPricing /
+//     FindProviderModelPricing with the per-provider candidate loop and the
+//     canonical OpenAI alias double fallback (model-pricing.service.ts
+//     findProviderModelPricing), shutdown filtering and catalog ordering,
+//   - the billing engine (billing.go): BuildCostBreakdown +
+//     EstimateProviderCostUsd / EstimateProviderCacheWriteCostUsd /
+//     EstimateProviderCacheReadCostUsd over the six per-provider policies
+//     (provider-billing.{shared,policies,registry,service}.ts): tier
+//     exact prices (priority/flex/batch), cache split into
+//     input/cache_write/cache_write_1h/cache_read, long-context
+//     multipliers, image/audio line items and the costUsd override.
+//
+// Deferred: the catalog display rendering (buildCatalogDisplay,
+// presentation-only) and the account-custom catalog merge
+// (model-catalog.service.ts, providers slice).
 //
 // The module exposes no HTTP routes on the Node side; the model catalog
 // management surface (model-catalog.service.ts custom catalog + codex models)

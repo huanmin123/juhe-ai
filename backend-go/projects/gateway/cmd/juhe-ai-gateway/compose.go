@@ -38,6 +38,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/policyreads"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/publicapilogs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/proxyprofiles"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
@@ -497,6 +498,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create account store: %w", err)
 	}
+	// T2 audit wiring: every AI-account management write path invalidates the
+	// gateway runtime cache through the K5 bus post-commit (batch edit,
+	// management patch, soft delete; Node invalidateGatewayRuntimeAfterBusinessWrite).
+	accountStore.SetCacheInvalidator(accountsBusInvalidator{bus: bus})
 	announcementStore, err := announcements.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID)
 	if err != nil {
 		return nil, fmt.Errorf("create announcement store: %w", err)
@@ -530,7 +535,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create oauth policy store: %w", err)
 	}
-	oauthStore, err := oauthmgmt.NewStore(composed.db, composed.pgDialect, cfg.Secret, accountStore, oauthmgmt.NewHTTPTokenExchanger(), time.Now, newCompositionID)
+	oauthStore, err := oauthmgmt.NewStore(composed.db, composed.pgDialect, cfg.Secret, accountStore, oauthmgmt.NewHTTPTokenExchanger(), time.Now, newCompositionID,
+		// T2 audit wiring: the rotation post-commit invalidation channels ride
+		// the same bus adapter as the accounts slice, and the in-transaction
+		// circuit dispatch-revision fence reuses the accounts family advance
+		// (Node oauth-credential-rotation.repository.ts:202-226).
+		oauthmgmt.WithCacheInvalidator(accountsBusInvalidator{bus: bus}),
+		oauthmgmt.WithDispatchRevisionAdvancer(accountStore))
 	if err != nil {
 		return nil, fmt.Errorf("create oauth management store: %w", err)
 	}
@@ -652,7 +663,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	(&routestrategies.Deps{Store: routeStrategyStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&apikeys.Deps{Store: apiKeyStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&accounts.Deps{Store: accountStore, Auth: authDeps, Sink: sink}).Mount(kern)
-	(&providers.Deps{Store: providerStore, Auth: authDeps}).Mount(kern)
+	// providers built-in PATCH (update_model_configuration) operation log:
+	// same authsys producer sink as the other management families (the Deps
+	// port existed without its composition wiring until this wave's assembly
+	// handover).
+	(&providers.Deps{Store: providerStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&oauthmgmt.Deps{Store: oauthStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&policyreads.InspectionDeps{Store: inspectionStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&policyreads.ExternalDeps{Store: externalStore, Auth: authDeps, Sink: sink}).Mount(kern)
@@ -696,6 +711,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if cfg.AccountHealthOutcomeSQLitePath != "" {
 		healthOutcomes = &statreads.HealthOutcomeSource{SQLitePath: cfg.AccountHealthOutcomeSQLitePath}
 	}
+	if healthOutcomes == nil {
+		healthOutcomes = &statreads.HealthOutcomeSource{}
+	}
+	// J1 durable outcomes in the performance topology live in the jobs
+	// Postgres database (juhe_jobs); the SQLite path above stays the
+	// standalone-mode source. Mirrors Node readPostgresOutcomesForAccounts.
+	healthOutcomes.PostgresURL = cfg.AccountHealthOutcomePostgresURL
 	(&statreads.Deps{
 		Business:            composed.db,
 		Stats:               composed.statsDB,
@@ -706,21 +728,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		Timezone:            statreads.NewSystemSettingsTimezoneSource(composed.db, composed.pgDialect),
 		GoRuntimeMetricsURL: cfg.GoRuntimeMetricsURL,
 		HealthOutcomes:      healthOutcomes,
-	}).Mount(kern)
-	// X04: the /__aipublic__ externally maintained legacy family. Bearer-token
-	// sources (external_integration_sources/token tables) are validated by the
-	// aipublic guard; resource families reuse the same store instances as the
-	// management mounts above.
-	(&aipublic.Deps{
-		DB:             composed.db,
-		PGDialect:      composed.pgDialect,
-		Now:            time.Now,
-		SystemAccounts: systemAccountStore,
-		Groups:         groupsStore,
-		Strategies:     routeStrategyStore,
-		ApiKeys:        apiKeyStore,
-		AiAccounts:     accountStore,
-		Sink:           sink,
 	}).Mount(kern)
 	// X04: the /__aisys__/help static help center, session-gated like the Node
 	// web layer (requireHelpSession + role redirects over dist/help).
@@ -741,12 +748,15 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		Now:         time.Now,
 	}).Mount(kern)
 	(&delegated.Deps{
-		Tokens:         oidcStore,
-		Limiter:        protocolLimiter,
-		Groups:         groupsStore,
-		Strategies:     routeStrategyStore,
-		ApiKeys:        apiKeyStore,
-		AiAccounts:     accountStore,
+		Tokens:     oidcStore,
+		Limiter:    protocolLimiter,
+		Groups:     groupsStore,
+		Strategies: routeStrategyStore,
+		ApiKeys:    apiKeyStore,
+		AiAccounts: accountStore,
+		// T2 audit wiring: committed api-key patches invalidate through the
+		// same bus (delegated.Deps.Inval carries the apikeys.CacheInvalidator).
+		Inval:          apikeys.BusInvalidator{Bus: bus},
 		DB:             composed.db,
 		PGDialect:      composed.pgDialect,
 		Settings:       delegatedSettingsAdapter{read: settingValue},
@@ -759,15 +769,25 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// services (chain_runtime.go) plus the composition adapters
 	// (chain_*.go), then mounts the /v1 orchestrator on the kernel. Every
 	// frozen port fails fast by name; nothing is wired nil.
+	// chainServices is hoisted so the /__aipublic__ family (mounted after this
+	// block) can share the runtime-state redis client for its penalty-window
+	// limiter.
+	var chainServices *chainRuntimeServices
 	if cfg.ChainEnabled {
 		spoolDirectory := cfg.UsageSpoolDirectory
 		if spoolDirectory == "" && cfg.StatsDatabasePath != "" {
 			spoolDirectory = filepath.Join(filepath.Dir(cfg.StatsDatabasePath), "usage-record-spool")
 		}
-		chainServices, chainErr := composeChainRuntimeServices(composed, cfg, settingValue)
+		services, chainErr := composeChainRuntimeServices(composed, cfg, settingValue)
 		if chainErr != nil {
 			return nil, fmt.Errorf("compose gateway chain runtime services: %w", chainErr)
 		}
+		chainServices = services
+		// Runtime-reset port assembly (compose_accounts_reset.go): the
+		// maintenance reset endpoint reaches the gateway runtime surfaces
+		// through this bridge. With the chain disabled the port stays nil and
+		// the endpoint keeps its self-contained degraded contract.
+		accountStore.SetRuntimeResetEffects(newAccountsRuntimeResetBridge(composed, settingValue, chainServices))
 		// Shutdown order is LIFO: services registered first close last, after
 		// the chain drained its usage buffer.
 		composed.shutdowns = append(composed.shutdowns, chainServices.Close)
@@ -792,6 +812,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			HybridScoringCache: chainServices.HybridScoringCache,
 			HybridRuntimeState: chainServices.HybridRuntimeState,
 			Identity:           chainServices.Identity,
+			// T2 终局遗留①: the auxiliary dispatch loop replays in-process over
+			// the routing runtime cache + shared provider driver + engine
+			// transport (Node dispatchHybridAuxiliaryChatCompletion).
+			HybridAuxiliary: newChainHybridAuxiliaryDispatcher(chainServices.Cache),
 		})
 		if chainAssembleErr != nil {
 			chainServices.Close()
@@ -829,6 +853,56 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditDispatch", cfg.AuditInputURL != "", "chatFamily", "mounted")
 	}
+
+	// X04: the /__aipublic__ externally maintained legacy family mounts after
+	// the chain runtime services exist (the penalty-window limiter shares the
+	// runtime-state redis client); bearer-token sources
+	// (external_integration_sources/token tables) are validated by the
+	// aipublic guard; resource families reuse the same store instances as the
+	// management mounts above.
+	aipublicDeps := &aipublic.Deps{
+		DB:             composed.db,
+		PGDialect:      composed.pgDialect,
+		Now:            time.Now,
+		SystemAccounts: systemAccountStore,
+		Groups:         groupsStore,
+		Strategies:     routeStrategyStore,
+		ApiKeys:        apiKeyStore,
+		AiAccounts:     accountStore,
+		Sink:           sink,
+	}
+	// Penalty-window limiter shares the runtime-state redis keyspace with the
+	// gatewayproxyhealth limiter family (memory fallback keeps single-instance
+	// semantics when runtimeStateDriver !== 'redis').
+	if chainServices != nil && chainServices.StateClient != nil {
+		aipublicDeps.RedisDriver = true
+		aipublicDeps.RedisStateClient = chainServices.StateClient
+		aipublicDeps.RedisNamespace = cfg.RedisNamespace
+	}
+	// capturePublicApiLog (Node /__aipublic__ prefix middleware): a writable
+	// dataset handle feeds the P05 pipeline (bounded channel → batch insert).
+	// The read families open dataset handles read-only; the capture writer is
+	// the go-only gateway's one writable dataset consumer.
+	var captureDatasetDB *sql.DB
+	if composed.pgDialect {
+		captureDatasetDB = composed.db
+	} else if cfg.DatasetDatabasePath != "" {
+		if _, err := os.Stat(cfg.DatasetDatabasePath); err == nil {
+			handle, err := sql.Open("sqlite", "file:"+cfg.DatasetDatabasePath)
+			if err == nil {
+				captureDatasetDB = handle
+				composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
+			}
+		}
+	}
+	if captureDatasetDB != nil {
+		if logStore, err := publicapilogs.NewStore(captureDatasetDB, composed.pgDialect, time.Now, nil); err == nil {
+			pipeline := publicapilogs.NewPipeline(logStore, publicapilogs.Config{})
+			composed.shutdowns = append(composed.shutdowns, func() { pipeline.Close(context.Background()) })
+			aipublicDeps.Capture = aipublic.PublicApiLogCaptureSink(pipeline.Enqueue)
+		}
+	}
+	aipublicDeps.Mount(kern)
 
 	// /__aisys__/api/health: readiness contract; the rate limiter bypasses it
 	// (isSystemApiHealthPath mirror) and the kernel registers it ahead of the
@@ -920,6 +994,43 @@ func (a authsysBusInvalidator) InvalidateRuntime(reason string) {
 }
 
 func (a authsysBusInvalidator) InvalidateAPIKeyValidation(reason string) error {
+	if a.bus == nil {
+		return errors.New("cache invalidation bus is not wired")
+	}
+	a.bus.Invalidate(inval.TopicGatewayAPIKeyValidation, reason)
+	return nil
+}
+
+// accountsBusInvalidator adapts the K5 invalidation bus onto the AI-account
+// management write-path invalidation channels (T2 audit wiring): the
+// accounts.CacheInvalidator batch port (问题-0172 T1), the patch/delete
+// runtime channel and the oauthmgmt rotation ports all publish the Node
+// reason strings onto the shared topics. The per-account lookup channel stays
+// a documented no-op until the Go management slice grows a lookup cache (the
+// gateway runtime accountsCache is cleared wholesale by the runtime channel
+// that always follows in the same post-commit tail).
+type accountsBusInvalidator struct{ bus *inval.Bus }
+
+func (a accountsBusInvalidator) InvalidateAccountLookup(accountID string) error {
+	_ = accountID
+	return nil
+}
+
+func (a accountsBusInvalidator) InvalidateGatewayRuntime(reason string) error {
+	if a.bus == nil {
+		return errors.New("cache invalidation bus is not wired")
+	}
+	a.bus.Invalidate(inval.TopicGatewayRuntime, reason)
+	return nil
+}
+
+// InvalidateRuntime / InvalidateAPIKeyValidation mirror the authsys
+// double-channel shape for the oauthmgmt rotation (CacheInvalidator port).
+func (a accountsBusInvalidator) InvalidateRuntime(reason string) error {
+	return a.InvalidateGatewayRuntime(reason)
+}
+
+func (a accountsBusInvalidator) InvalidateAPIKeyValidation(reason string) error {
 	if a.bus == nil {
 		return errors.New("cache invalidation bus is not wired")
 	}

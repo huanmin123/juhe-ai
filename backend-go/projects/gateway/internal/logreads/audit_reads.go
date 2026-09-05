@@ -336,6 +336,57 @@ func readOptionalText(value any) string {
 	return strings.TrimSpace(readRawString(value))
 }
 
+// trimJSSpace mirrors JavaScript String.prototype.trim(): the ECMAScript
+// WhiteSpace + LineTerminator set, including U+FEFF which Go's
+// strings.TrimSpace does not cover (same helper shape as
+// internal/gatewaybody's trimJSSpace).
+func trimJSSpace(value string) string {
+	return strings.TrimFunc(value, func(r rune) bool {
+		switch r {
+		case 0x0009, 0x000B, 0x000C, 0x0020, 0x00A0, 0x1680, 0x202F, 0x205F, 0x3000,
+			0x000A, 0x000D, 0x2028, 0x2029, 0xFEFF:
+			return true
+		}
+		return r >= 0x2000 && r <= 0x200A
+	})
+}
+
+// sanitizeUrlCredentialsForLog mirrors shared/request-context.ts:757-760
+// (freeze state): trim the ECMAScript whitespace set; blank collapses to
+// undefined (the bool result). The Node attempts mapper applies it to
+// proxy_url (via text()) and upstream_url
+// (audit-log-f3-mappers.ts:20-22). No credential stripping lives on the read
+// path — the persisted proxy/upstream URLs keep credentials and query
+// verbatim; only sanitizeUrlForLog (the OAuth query redaction ported in
+// internal/publicapilogs/sanitize.go) rewrites URLs in Node, and that helper
+// is not part of the attempts mapping (W6 记录与统计读接口迁移记录: 只对齐
+// Node 首尾空白语义，不增加脱敏).
+func sanitizeUrlCredentialsForLog(value string) (string, bool) {
+	trimmed := trimJSSpace(value)
+	return trimmed, trimmed != ""
+}
+
+// attemptProxyURL mirrors `sanitizeUrlCredentialsForLog(text(row.proxy_url))`:
+// trimmed non-blank text, omitted when blank.
+func attemptProxyURL(value any) string {
+	trimmed, ok := sanitizeUrlCredentialsForLog(readRawString(value))
+	if !ok {
+		return ""
+	}
+	return trimmed
+}
+
+// attemptUpstreamURL mirrors `sanitizeUrlCredentialsForLog(String(row.upstream_url))
+// ?? String(row.upstream_url)`: the trimmed value, falling back to the raw
+// string when the trimmed value is blank.
+func attemptUpstreamURL(value any) string {
+	raw := readRawString(value)
+	if trimmed, ok := sanitizeUrlCredentialsForLog(raw); ok {
+		return trimmed
+	}
+	return raw
+}
+
 // readOptionalNumber mirrors num(): finite numbers only.
 func readOptionalNumber(value any) *int64 {
 	number, ok := readInt64(value)
@@ -992,7 +1043,7 @@ func (s *auditLogSQLReader) listAttempts(ctx context.Context, auditLogID string)
 			AccountID:                   readOptionalText(row["account_id"]),
 			AccountOwnerSystemAccountID: readOptionalText(row["account_owner_system_account_id"]),
 			GroupID:                     readOptionalText(row["group_id"]),
-			ProxyURL:                    readOptionalText(row["proxy_url"]),
+			ProxyURL:                    attemptProxyURL(row["proxy_url"]),
 			ProviderCode:                readOptionalText(row["provider_code"]),
 			Model:                       readOptionalText(row["attempt_model"]),
 			UpstreamModel:               readOptionalText(row["attempt_upstream_model"]),
@@ -1002,7 +1053,7 @@ func (s *auditLogSQLReader) listAttempts(ctx context.Context, auditLogID string)
 			SourceEndpointFamily:        readOptionalText(row["attempt_source_endpoint_family"]),
 			UpstreamEndpointFamily:      readOptionalText(row["attempt_upstream_endpoint_family"]),
 			UpstreamMethod:              readRawString(row["upstream_method"]),
-			UpstreamURL:                 readRawString(row["upstream_url"]),
+			UpstreamURL:                 attemptUpstreamURL(row["upstream_url"]),
 			UpstreamStatusCode:          readOptionalNumber(row["upstream_status_code"]),
 			Success:                     readBool(row["success"]),
 			ErrorPhase:                  readOptionalText(row["error_phase"]),

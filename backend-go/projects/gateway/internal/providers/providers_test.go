@@ -75,6 +75,9 @@ var schemaStatements = []string{
 		created_by TEXT NOT NULL, updated_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS provider_default_health_check_models (system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, provider_code))`,
 	`CREATE TABLE IF NOT EXISTS provider_system_default_health_check_models (provider_code TEXT PRIMARY KEY, model TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, deleted_at TEXT)`,
+	`CREATE TABLE IF NOT EXISTS account_supported_models (account_id TEXT NOT NULL, provider_code TEXT NOT NULL, model TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS account_model_mappings (account_id TEXT NOT NULL, source_model TEXT NOT NULL, upstream_model TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)`,
 }
 
 type testEnv struct {
@@ -84,6 +87,8 @@ type testEnv struct {
 	jar    map[string]string
 	mu     sync.Mutex
 	db     *sql.DB
+	// providersDeps is the mounted providers route bundle (the Sink hook).
+	providersDeps *Deps
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -117,10 +122,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	deps.MountAuth(k, "lax", false)
-	(&Deps{Store: store, Auth: deps}).Mount(k)
+	providersDeps := &Deps{Store: store, Auth: deps}
+	providersDeps.Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, db: db}
+	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, db: db, providersDeps: providersDeps}
 }
 
 func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]any) {
@@ -897,8 +903,22 @@ func TestProvidersModelsCatalog(t *testing.T) {
 			t.Fatalf("built-in row missing %s: %v", key, mini)
 		}
 	}
-	if _, exists := mini["catalogDisplay"]; exists {
-		t.Fatalf("catalogDisplay is not migrated and must stay absent: %v", mini)
+	// catalogDisplay rides the merged catalog rows (withCatalogDisplay) with
+	// the openai policy sections: token prices, reasoning levels, capacity.
+	display, ok := mini["catalogDisplay"].([]any)
+	if !ok || len(display) != 3 {
+		t.Fatalf("catalogDisplay sections: %v", mini["catalogDisplay"])
+	}
+	firstSection := display[0].(map[string]any)
+	if firstSection["key"] != "token_pricing" || firstSection["label"] != "Token 计费" {
+		t.Fatalf("token pricing section: %v", firstSection)
+	}
+	items := firstSection["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["key"] != "input" || items[0].(map[string]any)["value"] != float64(0) {
+		t.Fatalf("token pricing items: %v", items)
+	}
+	if display[1].(map[string]any)["key"] != "reasoning" || display[2].(map[string]any)["key"] != "capacity" {
+		t.Fatalf("section order: %v", display)
 	}
 
 	// includeInactive lifts the SQL availability predicate: the disabled row,
@@ -1028,35 +1048,13 @@ func TestProvidersModelCapabilities(t *testing.T) {
 	}
 }
 
-// TestProvidersDeferredWritesOnCodePaths keeps the C03 deferral contract on
-// the Node {code} path shape and asserts the my-providers mirror is gone.
-func TestProvidersDeferredWritesOnCodePaths(t *testing.T) {
+// TestProvidersWriteSurfaceRemoved keeps the my-providers assertion of the
+// former deferral test; the write contract itself lives in write_test.go.
+func TestProvidersWriteSurfaceRemoved(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
 	env.login(t, "root", "root-pass", "super_admin")
 
-	// Anonymous callers hit the admin wrapper first.
-	clearSession(t, env)
-	code, anonymous := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", `{}`)
-	if code != http.StatusUnauthorized {
-		t.Fatalf("anonymous write: %d %v", code, anonymous)
-	}
-
-	env.login(t, "root", "root-pass", "super_admin")
-	deferred := [][2]string{
-		{http.MethodPost, "/__aisys__/api/providers/gpt/models"},
-		{http.MethodPatch, "/__aisys__/api/providers/gpt/models/custom_model_1"},
-		{http.MethodDelete, "/__aisys__/api/providers/gpt/models/custom_model_1"},
-		{http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model"},
-	}
-	for _, entry := range deferred {
-		code, payload := env.do(t, entry[0], entry[1], `{}`)
-		if code != http.StatusBadRequest || payload["message"] != "模型目录服务待迁移" {
-			t.Fatalf("deferred write %s %s: %d %v", entry[0], entry[1], code, payload)
-		}
-	}
-
-	// The Node-contract-foreign my-providers surface is removed.
 	code, gone := env.do(t, http.MethodGet, "/__aisys__/api/my-providers", "")
 	if code != http.StatusNotFound {
 		t.Fatalf("my-providers must be gone: %d %v", code, gone)

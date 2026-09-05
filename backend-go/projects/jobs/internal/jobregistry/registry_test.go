@@ -80,10 +80,14 @@ func usesOwnLeaseOrLeaseFree(jobName string) bool {
 	// 逐候选使用自有 runWithAccountBalanceLease（background-jobs.ts:327 + account-balance-auto-detect.service.ts:118）。
 	// account-api-key-cooldown-retest / normal-route-speed-first-recovery-probe 同样不包
 	// （background-jobs.ts:331-332），前者内部为 claim CAS（10min lease），后者为 Redis mutation/probe-claim 锁。
+	// account-circuit-control-plane-maintenance / account-circuit-recovery 同样不包
+	// （background-jobs.ts:333/365）：并发安全由账户电路 Redis Lua 状态机
+	// （单键转移原子性 + replayOrder 幂等）与 incident outbox claim CAS 承担。
 	switch jobName {
 	case "usage-hot-window-refresh", "account-balance-refresh", "key-model-memory-recovery",
 		"account-balance-auto-detect-recovery", "account-api-key-cooldown-retest",
-		"normal-route-speed-first-recovery-probe":
+		"normal-route-speed-first-recovery-probe",
+		"account-circuit-control-plane-maintenance", "account-circuit-recovery":
 		return true
 	}
 	return false

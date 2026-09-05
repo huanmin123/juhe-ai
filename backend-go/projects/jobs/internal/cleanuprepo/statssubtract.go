@@ -1112,7 +1112,10 @@ func (s *RecordCleanupStore) UpsertAccountUsageSnapshots(ctx context.Context, bu
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, s.Stats.Bind(fmt.Sprintf(`
+		// Node SQLite 路径写裸表名 + excluded 小写；PG 路径写
+		// juhe_stats.account_usage_snapshots + EXCLUDED 大写
+		// （account-usage-snapshot.repository.ts 两个分支的逐字段对照）。
+		snapshotStatement := `
       INSERT INTO account_usage_snapshots (
         system_account_id, account_id, kind, source, snapshot_json, refresh_status,
         last_success_at, last_error_message, updated_at, created_at
@@ -1126,7 +1129,26 @@ func (s *RecordCleanupStore) UpsertAccountUsageSnapshots(ctx context.Context, bu
         last_success_at = excluded.last_success_at,
         last_error_message = NULL,
         updated_at = excluded.updated_at
-		`)), systemAccountID, input.AccountID, input.Kind, input.Source, snapshotJSON, updatedAt, updatedAt, now); err != nil {
+		`
+		if s.Stats.Postgres {
+			snapshotStatement = `
+      INSERT INTO juhe_stats.account_usage_snapshots (
+        system_account_id, account_id, kind, source, snapshot_json, refresh_status,
+        last_success_at, last_error_message, updated_at, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, 'fresh', ?, NULL, ?, ?)
+      ON CONFLICT(system_account_id, account_id, kind) DO UPDATE SET
+        system_account_id = EXCLUDED.system_account_id,
+        source = EXCLUDED.source,
+        snapshot_json = EXCLUDED.snapshot_json,
+        refresh_status = 'fresh',
+        last_success_at = EXCLUDED.last_success_at,
+        last_error_message = NULL,
+        updated_at = EXCLUDED.updated_at
+		`
+		}
+		if _, err := tx.ExecContext(ctx, s.Stats.Bind(snapshotStatement),
+			systemAccountID, input.AccountID, input.Kind, input.Source, snapshotJSON, updatedAt, updatedAt, now); err != nil {
 			return err
 		}
 	}
