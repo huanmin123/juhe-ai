@@ -89,6 +89,14 @@
 - 证据范围：Node 依赖 `backend/node_modules/compression/index.js` 的 `vary` 调用位于阈值和编码协商之前；Go 证据为提交 `b3115e675` 的 `beginGzip` 和 `CompressionMiddleware`。该结论不依赖当前未提交工作区。
 - 修复门槛：按 Node 的过滤/变换时序补齐 `Vary` 合并语义（包括低于阈值、无 Accept-Encoding、identity 协商），并增加响应头 golden；不得只在 gzip 已启动时补写。
 
+## 已确认子项：Go 未回写 Node 契约要求的 `x-trace-id`
+
+- 对照事实：Node `requestContextMiddleware` 先从 `traceparent`、`x-trace-id`、`x-correlation-id` 归一化或生成 trace ID，然后对每个响应执行 `res.setHeader('x-trace-id', traceId)`；因此成功、业务错误和网关错误都能通过响应头把请求 trace 关联回客户端。
+- 历史 Go：`RequestContextMiddleware` 只把 trace ID 放进 request context，未对 `http.ResponseWriter` 设置 `x-trace-id`；`Kernel.Handler` 的其余包装也没有统一回写该头。即使 Go 已生成 UUID 或接受了合法 `traceparent`，普通管理/公开响应仍缺少该响应头。
+- 可观察结果：同一请求 Node 返回可供客户端日志关联的 `x-trace-id`，历史 Go 返回没有该头；客户端按响应头关联异步错误、支持工单追踪或重试时无法得到同一 trace 标识，导致外部可见诊断行为偏离。
+- 证据范围：Node 历史 `backend/src/shared/request-context.ts` 的 `res.setHeader`；Go 证据为提交 `b3115e675` 的 `ctx.go` 与 `kernel.go`，其中没有任何响应头回写。该结论不依赖当前未提交工作区。
+- 修复门槛：在共享 kernel 的响应提交前统一写入归一化/生成的 trace ID，并补充无入站 trace、合法 `traceparent`、业务 4xx/5xx 和路由 404 的响应头 golden；不能只在个别 chat handler 中补写。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
