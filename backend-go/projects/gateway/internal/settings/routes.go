@@ -54,7 +54,8 @@ func (d *Deps) getSettings(w http.ResponseWriter, r *http.Request) {
 
 // patchSettings mirrors PATCH /settings: runLoggedOperationAsync wraps
 // updateSettingsAsync and always appends the settings.update operation log
-// with the diffSafeFields change list (empty when values did not change).
+// with the diffSafeFields change list (empty when values did not change) and
+// the all_users/summary visibility set by settings.routes.ts.
 func (d *Deps) patchSettings(w http.ResponseWriter, r *http.Request) {
 	auth := authsys.AuthContextFrom(r)
 	if auth == nil {
@@ -89,6 +90,8 @@ func (d *Deps) patchSettings(w http.ResponseWriter, r *http.Request) {
 			ResourceID:           "system",
 			ResourceName:         "系统运行设置",
 			Summary:              "更新系统运行设置",
+			VisibilityScope:      "all_users",
+			DetailLevel:          "summary",
 			Changes:              diffSafeFields(before, settings, bodyKeys(body)),
 		}, r)
 	}

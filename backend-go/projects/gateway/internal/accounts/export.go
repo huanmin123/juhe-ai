@@ -486,8 +486,11 @@ type exportBody struct {
 	filters    map[string]any
 }
 
-// parseExportBody mirrors the accountExportRequestSchema union: strict
-// {accountIds} or strict {filters}.
+// parseExportBody parses the POST /accounts/export request body. Unlike the
+// Node accountExportRequestSchema union (strict {accountIds} or strict
+// {filters}, rejecting a body with both keys), this implementation accepts
+// both keys and prefers accountIds; the strict-union 400 semantics are a
+// registered deferral (docs/migration/final-migration/PLAN.md M09).
 func parseExportBody(body map[string]any) (exportBody, bool) {
 	for key := range body {
 		switch key {

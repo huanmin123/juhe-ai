@@ -1,23 +1,24 @@
-// Package pricing owns the C03 vertical slice: the static model pricing
-// catalog and cost calculator ported from
-// backend/src/modules/model-pricing/ (model-pricing.service.ts,
-// provider-billing.shared.ts, provider-billing.policies.ts,
-// provider-billing.service.ts and the *.data.ts snapshots). It covers:
+// Package pricing holds the static model pricing catalog ported from
+// backend/src/modules/model-pricing/ (the *.data.ts snapshots). The package
+// currently contains only:
 //
 //   - the six provider pricing snapshots (openai/gpt, anthropic, deepseek,
 //     glm, gemini, xai) as immutable Go data with per-million conversions
 //     bit-compatible with the Node snapshots,
-//   - the provider billing policies (per-provider token cost breakdowns with
-//     cache split, service-tier exact prices and long-context multipliers),
-//   - the GPT Priority/Flex tier linkage: tiers always bill the exact
-//     per-model tier prices from the catalog, never a generic multiplier
-//     (docs/functions/GPT请求服务等级与思考级别覆盖设计.md); the tier
-//     switches are read from the settings snapshot provider, defaulting to
-//     enabled, which is the current Node contract path,
-//   - the pricing freeze helper for the J-F usage writer
-//     (freezeUsageRecordPricingFactsAsync): a usage record is priced once at
-//     request time and the frozen snapshot is never re-interpreted against a
-//     future catalog.
+//   - the shared pricing/billing types (PriceSet, Pricing, CostInput,
+//     CostLineItem, CostBreakdown) mirrored from provider-billing.types.ts,
+//   - the unexported shared helpers the later billing slice builds on
+//     (per-million conversion, rounding, nil/NaN collapsing, catalog model
+//     aliasing in catalog.go).
+//
+// Not ported yet (deferred to later slices): the per-provider billing
+// policies with the cost breakdown lookup loop
+// (provider-billing.policies.ts / provider-billing.service.ts), the GPT
+// Priority/Flex tier linkage
+// (docs/functions/GPT请求服务等级与思考级别覆盖设计.md) and the pricing
+// freeze helper for the J-F usage writer
+// (freezeUsageRecordPricingFactsAsync). Accordingly the package exposes no
+// exported functions and no catalog lookup closure yet.
 //
 // The module exposes no HTTP routes on the Node side; the model catalog
 // management surface (model-catalog.service.ts custom catalog + codex models)
@@ -164,8 +165,8 @@ const (
 // CostBreakdown mirrors ProviderCostBreakdown. Missing optional cost/rate
 // fields stay nil (Node undefined).
 type CostBreakdown struct {
-	Currency      string // always "USD" when produced by BuildCostBreakdown
-	BillingPolicy string // policy id when produced by BuildCostBreakdown
+	Currency      string // "USD" in the Node ProviderCostBreakdown output
+	BillingPolicy string // provider billing policy id in the Node output
 	LineItems     []CostLineItem
 
 	InputCostUsd        *float64

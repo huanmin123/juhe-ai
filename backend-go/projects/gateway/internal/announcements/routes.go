@@ -157,6 +157,23 @@ func announcementPatch(w http.ResponseWriter, r *http.Request, store *Store, sin
 	case "unpublish":
 		input = MutationInput{Status: trimPtr("archived")}
 	}
+	// announcements.routes.ts derives the operation-log visibilityScope and
+	// detailLevel from the announcement status: update keys off the before and
+	// after status (announcements.routes.ts), publish/unpublish are always
+	// all_users/summary. Read the current status before the patch mutates it.
+	beforeStatus := ""
+	if action == "update" {
+		beforeDetail, detailErr := store.FindEditDetail(r.Context(), id)
+		if detailErr != nil {
+			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if beforeDetail == nil {
+			kernel.WriteError(w, http.StatusNotFound, "公告不存在")
+			return
+		}
+		beforeStatus = beforeDetail.Status
+	}
 	receipt, err = store.Patch(r.Context(), id, input, expected, auth.SystemAccountID)
 	if receipt == nil && err == nil {
 		kernel.WriteError(w, http.StatusNotFound, "公告不存在")
@@ -177,11 +194,23 @@ func announcementPatch(w http.ResponseWriter, r *http.Request, store *Store, sin
 		return
 	}
 	if sink != nil {
+		visibilityScope, detailLevel := "admin_only", "full"
+		switch action {
+		case "publish", "unpublish":
+			visibilityScope, detailLevel = "all_users", "summary"
+		default: // update
+			afterStatus, _ := normalizeStatus(input.Status, beforeStatus)
+			if afterStatus == "published" || beforeStatus == "published" {
+				visibilityScope, detailLevel = "all_users", "summary"
+			}
+		}
 		sink.Record(authsys.OperationLogEntry{
 			OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "admin",
 			Module: "announcements", Action: action, OperationKey: "announcements." + action,
 			ResourceType: "announcement", ResourceID: receipt.ID,
-			Summary: summaryFor(action, receipt),
+			Summary:         summaryFor(action, receipt),
+			VisibilityScope: visibilityScope,
+			DetailLevel:     detailLevel,
 		}, r)
 	}
 	kernel.WriteOK(w, receipt, "")
@@ -203,6 +232,19 @@ func announcementDelete(w http.ResponseWriter, r *http.Request, store *Store, si
 		kernel.WriteBadRequest(w, "公告版本参数无效")
 		return
 	}
+	// announcements.routes.ts keys the delete log visibility off the status
+	// before the deletion, so read it while the announcement still exists.
+	beforeStatus := ""
+	beforeDetail, detailErr := store.FindEditDetail(r.Context(), r.PathValue("id"))
+	if detailErr != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if beforeDetail == nil {
+		kernel.WriteError(w, http.StatusNotFound, "公告不存在")
+		return
+	}
+	beforeStatus = beforeDetail.Status
 	receipt, err := store.Delete(r.Context(), r.PathValue("id"), body.ExpectedRevision)
 	if receipt == nil && err == nil {
 		kernel.WriteError(w, http.StatusNotFound, "公告不存在")
@@ -218,11 +260,17 @@ func announcementDelete(w http.ResponseWriter, r *http.Request, store *Store, si
 		return
 	}
 	if sink != nil {
+		visibilityScope, detailLevel := "admin_only", "full"
+		if beforeStatus == "published" {
+			visibilityScope, detailLevel = "all_users", "summary"
+		}
 		sink.Record(authsys.OperationLogEntry{
 			OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "admin",
 			Module: "announcements", Action: "delete", OperationKey: "announcements.delete",
 			ResourceType: "announcement", ResourceID: receipt.ID,
-			Summary: "删除公告",
+			Summary:         "删除公告",
+			VisibilityScope: visibilityScope,
+			DetailLevel:     detailLevel,
 		}, r)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -299,6 +347,13 @@ func mountGuardedCreate(d *authsys.Deps, store *Store, sink authsys.OperationLog
 			return
 		}
 		if sink != nil {
+			// announcements.routes.ts keys the create log visibility off the
+			// created announcement status (normalizeStatus default: draft).
+			createStatus, _ := normalizeStatus(body.Status, "draft")
+			visibilityScope, detailLevel := "admin_only", "full"
+			if createStatus == "published" {
+				visibilityScope, detailLevel = "all_users", "summary"
+			}
 			sink.Record(authsys.OperationLogEntry{
 				OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "admin",
 				Module: "announcements", Action: "create", OperationKey: "announcements.create",
@@ -306,6 +361,8 @@ func mountGuardedCreate(d *authsys.Deps, store *Store, sink authsys.OperationLog
 				ResourceName: strings.TrimSpace(*body.Title),
 				Summary:      "创建公告：" + strings.TrimSpace(*body.Title),
 
+				VisibilityScope: visibilityScope,
+				DetailLevel:     detailLevel,
 				Changes: []authsys.OperationLogChange{
 					{Field: "title", Label: "标题", After: strings.TrimSpace(*body.Title)},
 					{Field: "level", Label: "级别", After: valueOrText(body.Level, "info")},

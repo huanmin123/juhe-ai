@@ -372,7 +372,7 @@ func adaptChannelSource(input any, mode string, state *adapterState) {
 func adaptCLIProxyAPI(input any, state *adapterState) {
 	parsed, err := parseSourceJSON(input, "CLIProxyAPI")
 	if err != nil {
-		addSourceMessage(state, "CLIProxyAPI 导入内容必须是有效 YAML 或 JSON")
+		addSourceMessage(state, "CLIProxyAPI 导入内容必须是有效 JSON（YAML 导入暂未支持）")
 		return
 	}
 	root, ok := parsed.(map[string]any)
