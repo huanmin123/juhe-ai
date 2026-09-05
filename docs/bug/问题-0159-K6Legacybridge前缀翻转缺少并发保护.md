@@ -34,6 +34,14 @@
 - 证据范围：历史提交 `21dc58a01` 的 `kernel.go`（`RegisterFallback`、`methodContractWriter`）与 `legacybridge/legacybridge.go`；该提交测试只覆盖完全未注册路径和翻转后的 404，未覆盖“已注册路径 + 未注册方法”。该结论不依赖当前未提交工作区。
 - 修复门槛：在方法不匹配且前缀仍由 bridge 持有时继续代理到 Node；仅在 bridge 未命中时才保持 Node 404 语义，并补 GET/POST 同路径的 fallback 对照及翻转后 404 回归。
 
+## 已确认子项：legacy bridge 前缀匹配缺少路径段边界
+
+- 对照事实：Node 通过 Express `app.use(systemPrefix, ...)` / `app.use(systemApiPrefix, ...)` 挂载前缀；Express 的 mount path 只匹配该路径本身或其后续 `/` 段，不会把 `/__aisys__/api2` 当作 `/__aisys__/api` 子路径（已用 Node 运行时边界请求复核）。
+- 历史 Go：`Bridge.ServeHTTP` 对每个注册前缀直接调用 `strings.HasPrefix(r.URL.Path, p)`，未要求路径等于前缀或以 `p + "/"` 开始。注册 `/__aisys__/api` 后，`/__aisys__/api2`、`/__aisys__/apix/anything` 都会命中代理。
+- 可观察结果：拼写错误、相邻资源名或未迁移的相似前缀请求会被错误转发到 Node，Node/Go owner 边界扩大；错误请求可能返回旧系统的 200/鉴权结果，而正确语义应由 Go 404 或其他独立路由处理，造成安全与功能路由漂移。
+- 证据范围：Node 历史 `backend/src/server.ts` 第 208–210、265–269 行的 Express 前缀挂载；Go 迁移提交 `21dc58a01` 的 `legacybridge.go` 第 64–68 行。结论不依赖当前未提交工作区。
+- 修复门槛：使用路径段边界匹配（`path == prefix || strings.HasPrefix(path, prefix+"/")`，根前缀单独处理），并补相邻前缀、尾斜杠和 query 请求的代理/404 对照测试。
+
 ## 修复与验证
 
 - 修改点：使用读写锁或原子不可变路由快照，显式恢复受信任的 X-Forwarded 链，并补并发 register/remove/serve 的 race 与真实 client-IP 测试。
