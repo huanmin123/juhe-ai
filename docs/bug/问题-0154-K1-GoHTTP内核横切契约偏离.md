@@ -105,6 +105,14 @@
 - 证据范围：Node 历史 `backend/src/shared/request-context.ts` 的 `normalizeTraceId`/`normalizeHeaderId`；Go 证据为提交 `b3115e675` 的 `ctx.go`，仅解析 `traceparent`。该结论不依赖当前未提交工作区。
 - 修复门槛：补齐相同顺序、字符集、长度和逗号首值规则，并增加“无效 traceparent + 合法 x-trace-id”“仅 correlation-id”“非法回退头” golden，确认最终 trace ID 与响应头/日志一致。
 
+## 已确认子项：Go 接受 Node 会拒绝的非法 `traceparent`
+
+- 对照事实：Node `parseTraceParent` 只接受严格四段格式 `version-traceid-parentid-flags`，各段长度固定为 2/32/16/2 个十六进制字符；拒绝版本 `ff`、全零 trace ID 和全零 parent ID，格式失败后才进入兼容回退头。
+- 历史 Go：`normalizeTraceID` 仅要求以 `-` 分割后至少三段、第二段恰好 32 个十六进制字符；不校验版本、parent ID、flags 的长度/字符、全零值，也接受额外段。收到这些非法头时会直接采用其中的 trace ID，不会像 Node 一样回退或生成新 ID。
+- 可观察结果：例如 `ff-<32hex>-<16hex>-01`、`00-<32hex>-0000000000000000-01`、`bad-<32hex>-x` 或带第五段的值，Node 不采纳并按回退规则处理，Go 却把 `<32hex>` 当成当前 trace。无效传播上下文会污染日志关联、跨服务采样和重试链路。
+- 证据范围：Node 历史 `backend/src/shared/request-context.ts` 的正则与零值/`ff` 检查；Go 证据为提交 `b3115e675` 的 `normalizeTraceID`。该结论不依赖当前未提交工作区。
+- 修复门槛：按 Node 的四段、版本、ID 全零和 flags 规则实现严格解析，并增加上述非法样例与合法大小写样例的 golden，验证失败后回退/生成路径也一致。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
