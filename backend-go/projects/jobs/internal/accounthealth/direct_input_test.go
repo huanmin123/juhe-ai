@@ -492,6 +492,11 @@ func TestDirectInputCandidatesQuerySuppressesExactFencedGenerationBeforeLimit(t 
 	if got, ok := args[4].(time.Time); !ok || !got.Equal(nextDue) {
 		t.Fatalf("suppression due arg = %#v", args[4])
 	}
+	for _, expected := range []string{"$6::text", "$7::bigint", "$8::bigint", "$9::bigint", "$10::timestamptz", "iv.current_version::bigint", "a.config_revision::bigint", "a.dispatch_revision::bigint", "$1::timestamptz"} {
+		if !strings.Contains(query, expected) {
+			t.Fatalf("suppression query must pin PostgreSQL parameter type %q: %s", expected, query)
+		}
+	}
 }
 
 func TestDirectInputAcceptsOAuthResponsesSSE(t *testing.T) {

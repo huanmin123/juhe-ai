@@ -289,10 +289,10 @@ func directInputCandidatesQuery(suppressions []DirectInputSuppression) (string, 
 	args := make([]any, 0, len(suppressions)*5)
 	for index, suppression := range suppressions {
 		base := 6 + index*5
-		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d)", base, base+1, base+2, base+3, base+4))
+		values = append(values, fmt.Sprintf("($%d::text,$%d::bigint,$%d::bigint,$%d::bigint,$%d::timestamptz)", base, base+1, base+2, base+3, base+4))
 		args = append(args, suppression.AccountID, suppression.InputVersion, suppression.ConfigRevision, suppression.DispatchRevision, suppression.NextDueAt.UTC())
 	}
-	clause := "\n  AND NOT EXISTS (SELECT 1 FROM (VALUES " + strings.Join(values, ",") + ") AS suppressed(account_id, input_version, config_revision, dispatch_revision, next_due_at) WHERE suppressed.account_id = a.id AND suppressed.input_version = iv.current_version AND suppressed.config_revision = a.config_revision AND suppressed.dispatch_revision = a.dispatch_revision AND suppressed.next_due_at > $1)"
+	clause := "\n  AND NOT EXISTS (SELECT 1 FROM (VALUES " + strings.Join(values, ",") + ") AS suppressed(account_id, input_version, config_revision, dispatch_revision, next_due_at) WHERE suppressed.account_id = a.id AND suppressed.input_version = iv.current_version::bigint AND suppressed.config_revision = a.config_revision::bigint AND suppressed.dispatch_revision = a.dispatch_revision::bigint AND suppressed.next_due_at > $1::timestamptz)"
 	marker := "\n-- Keep activation work first"
 	query := strings.Replace(directInputCandidatesSQL, marker, clause+marker, 1)
 	return query, args
