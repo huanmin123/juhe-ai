@@ -97,6 +97,14 @@
 - 证据范围：Node 历史 `backend/src/shared/request-context.ts` 的 `res.setHeader`；Go 证据为提交 `b3115e675` 的 `ctx.go` 与 `kernel.go`，其中没有任何响应头回写。该结论不依赖当前未提交工作区。
 - 修复门槛：在共享 kernel 的响应提交前统一写入归一化/生成的 trace ID，并补充无入站 trace、合法 `traceparent`、业务 4xx/5xx 和路由 404 的响应头 golden；不能只在个别 chat handler 中补写。
 
+## 已确认子项：Go 丢失 `x-trace-id`/`x-correlation-id` 入站回退
+
+- 对照事实：Node `normalizeTraceId` 先尝试严格解析 `traceparent`；解析失败或缺失时，按顺序取第一个合法的 `x-trace-id`，再取 `x-correlation-id`，并把该值作为当前请求 trace ID。
+- 历史 Go：`RequestContextMiddleware` 只把 `r.Header.Get("traceparent")` 传给 `normalizeTraceID`；当该头缺失或无效时直接生成 UUID，没有读取两个兼容回退头。
+- 可观察结果：请求带 `x-trace-id: client-chain-42`（或仅带 `x-correlation-id: client-chain-42`）时，Node 会沿用 `client-chain-42` 记录、响应和下游审计，Go 会新建另一条 trace；跨服务日志、客户端重试和故障工单无法按原链路合并。
+- 证据范围：Node 历史 `backend/src/shared/request-context.ts` 的 `normalizeTraceId`/`normalizeHeaderId`；Go 证据为提交 `b3115e675` 的 `ctx.go`，仅解析 `traceparent`。该结论不依赖当前未提交工作区。
+- 修复门槛：补齐相同顺序、字符集、长度和逗号首值规则，并增加“无效 traceparent + 合法 x-trace-id”“仅 correlation-id”“非法回退头” golden，确认最终 trace ID 与响应头/日志一致。
+
 ## 验证记录
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
