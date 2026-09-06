@@ -611,6 +611,10 @@ func TestM11TrafficMigrationContract(t *testing.T) {
 	// Cross-group target → 400.
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-other', ?, '其它分组', 'gpt', 1, 0, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, adminID)
+	// Group reassignment replaces the account's prior binding. Keeping both rows
+	// makes the selected binding depend on RFC3339Nano's variable-width textual
+	// fraction when the repository orders by updated_at.
+	env.exec(t, `DELETE FROM group_accounts WHERE account_id = 'acc-dst'`)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT OR REPLACE INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
 		VALUES (?, 'grp-other', 'acc-dst', 1, ?, ?)`, adminID, now, now)
