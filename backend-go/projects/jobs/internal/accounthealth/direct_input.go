@@ -38,6 +38,7 @@ type DirectAccount struct {
 	ProtocolCode                               string
 	ProtocolVersion                            string
 	Type                                       string
+	ClientCompatibility                        string
 	Status                                     string
 	Schedulable                                bool
 	EndpointMode                               string
@@ -59,6 +60,7 @@ type DirectSource struct {
 	ProtocolCode         string
 	ProtocolVersion      string
 	Type                 string
+	ClientCompatibility  string
 	Status               string
 	Schedulable          bool
 	AccountExpiresAt     *time.Time
@@ -117,6 +119,7 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 		effective.ProtocolCode = d.Source.ProtocolCode
 		effective.ProtocolVersion = d.Source.ProtocolVersion
 		effective.Type = d.Source.Type
+		effective.ClientCompatibility = d.Source.ClientCompatibility
 		effective.CredentialsEncrypted = d.Source.CredentialsEncrypted
 		sourceRevision = int64Pointer(d.Source.ConfigRevision)
 	}
@@ -141,23 +144,24 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 		return Input{}, fmt.Errorf("PG direct input 的有效来源协议 profile 不受 J1 支持")
 	}
 	result := Input{
-		AccountID:         d.Account.ID,
-		InputVersion:      d.InputVersion,
-		ConfigRevision:    d.Account.ConfigRevision,
-		DispatchRevision:  d.Account.DispatchRevision,
-		Provider:          protocol,
-		ProtocolProfileID: effective.ProtocolProfileID,
-		ProtocolCode:      effective.ProtocolCode,
-		ProtocolVersion:   effective.ProtocolVersion,
-		Type:              d.Account.Type,
-		EndpointMode:      probeMode,
-		HealthModel:       probeModel,
-		IssuedAt:          d.IssuedAt.UTC(),
-		ExpiresAt:         d.ExpiresAt.UTC(),
-		TLSPolicyVersion:  d.TLSPolicy,
-		Eligibility:       Eligibility{AccountStatus: d.Account.Status, Schedulable: d.Account.Schedulable, BoundGroup: true, AuthorizationEligible: true, SourceConfigRevision: sourceRevision, CooldownUntil: cloneTime(d.Account.CooldownUntil), TemporaryUnavailableContinuousProbeEnabled: boolPointer(d.Account.TemporaryUnavailableContinuousProbeEnabled)},
-		Cooldown:          d.Account.Cooldown,
-		Schedule:          d.Schedule,
+		AccountID:           d.Account.ID,
+		InputVersion:        d.InputVersion,
+		ConfigRevision:      d.Account.ConfigRevision,
+		DispatchRevision:    d.Account.DispatchRevision,
+		Provider:            protocol,
+		ProtocolProfileID:   effective.ProtocolProfileID,
+		ProtocolCode:        effective.ProtocolCode,
+		ProtocolVersion:     effective.ProtocolVersion,
+		Type:                d.Account.Type,
+		ClientCompatibility: effective.ClientCompatibility,
+		EndpointMode:        probeMode,
+		HealthModel:         probeModel,
+		IssuedAt:            d.IssuedAt.UTC(),
+		ExpiresAt:           d.ExpiresAt.UTC(),
+		TLSPolicyVersion:    d.TLSPolicy,
+		Eligibility:         Eligibility{AccountStatus: d.Account.Status, Schedulable: d.Account.Schedulable, BoundGroup: true, AuthorizationEligible: true, SourceConfigRevision: sourceRevision, CooldownUntil: cloneTime(d.Account.CooldownUntil), TemporaryUnavailableContinuousProbeEnabled: boolPointer(d.Account.TemporaryUnavailableContinuousProbeEnabled)},
+		Cooldown:            d.Account.Cooldown,
+		Schedule:            d.Schedule,
 	}
 	if (d.Account.Status == "temporary_unavailable" || d.Account.Status == "rate_limited") && !validCooldownFence(d.Account.Cooldown, result) {
 		return Input{}, fmt.Errorf("PG direct input 的冷却账户缺少完整 fence")

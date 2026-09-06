@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
@@ -256,6 +258,11 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	default:
 		return nil, errors.New("未冻结的 endpoint mode")
 	}
+	var codexIdentity *codexProbeIdentity
+	if protocol == "openai" && input.ClientCompatibility == "codex_responses" && (input.EndpointMode == "responses_json" || input.EndpointMode == "responses_sse") {
+		identity := applyCodexResponsesCompatibility(body.(map[string]any))
+		codexIdentity = &identity
+	}
 	codeAssist := protocol == "gemini" && input.Type == "google_oauth" && (input.OAuthType == "code_assist" || input.OAuthType == "google_one")
 	if codeAssist {
 		path = "/v1internal:streamGenerateContent?alt=sse"
@@ -326,8 +333,15 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			request.Header.Set("x-grok-client-version", "0.2.93")
 		}
 	}
+	if codexIdentity != nil {
+		applyCodexProbeHeaders(request, *codexIdentity, input)
+	}
 	if input.EndpointMode == "responses_sse" || input.EndpointMode == "chat_sse" || input.EndpointMode == "messages_sse" || input.EndpointMode == "generate_content_sse" || input.EndpointMode == "interactions_sse" || codeAssist {
-		request.Header.Set("Accept", "text/event-stream")
+		if codexIdentity != nil {
+			request.Header.Set("Accept", "application/json, text/event-stream")
+		} else {
+			request.Header.Set("Accept", "text/event-stream")
+		}
 	} else {
 		request.Header.Set("Accept", "application/json")
 	}
@@ -341,6 +355,78 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		request.Header.Set("Content-Type", "application/json")
 	}
 	return request, nil
+}
+
+type codexProbeIdentity struct {
+	installationID string
+	sessionID      string
+	threadID       string
+	turnID         string
+	windowID       string
+	metadataJSON   string
+}
+
+// applyCodexResponsesCompatibility keeps the scheduled J1 request body in the
+// same shape as the account-test.service codex_responses diagnostic path.
+func applyCodexResponsesCompatibility(body map[string]any) codexProbeIdentity {
+	sessionID := uuid.NewString()
+	threadID := sessionID
+	turnID := uuid.NewString()
+	installationID := uuid.NewString()
+	windowID := threadID + ":0"
+	body["store"] = false
+	body["include"] = []string{"reasoning.encrypted_content"}
+	body["reasoning"] = map[string]any{"context": "all_turns"}
+	body["parallel_tool_calls"] = false
+	metadata := map[string]any{
+		"installation_id":         installationID,
+		"session_id":              sessionID,
+		"thread_id":               threadID,
+		"turn_id":                 turnID,
+		"window_id":               windowID,
+		"request_kind":            "turn",
+		"thread_source":           "user",
+		"sandbox":                 "none",
+		"turn_started_at_unix_ms": time.Now().UnixMilli(),
+	}
+	metadataJSON := codexMetadataJSON(metadata)
+	body["client_metadata"] = map[string]any{
+		"x-codex-window-id":       windowID,
+		"turn_id":                 turnID,
+		"session_id":              sessionID,
+		"x-codex-turn-metadata":   metadataJSON,
+		"x-codex-installation-id": installationID,
+		"thread_id":               threadID,
+	}
+	body["prompt_cache_key"] = sessionID
+	return codexProbeIdentity{installationID: installationID, sessionID: sessionID, threadID: threadID, turnID: turnID, windowID: windowID, metadataJSON: metadataJSON}
+}
+
+func applyCodexProbeHeaders(request *http.Request, identity codexProbeIdentity, input Input) {
+	request.Header.Set("Originator", "Codex Desktop")
+	request.Header.Set("User-Agent", "Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)")
+	request.Header.Set("Session-Id", identity.sessionID)
+	request.Header.Set("Thread-Id", identity.threadID)
+	request.Header.Set("X-Client-Request-Id", identity.sessionID)
+	request.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
+	request.Header.Set("X-Codex-Turn-Metadata", identity.metadataJSON)
+	request.Header.Set("X-Codex-Window-Id", identity.windowID)
+	if isCodexResponsesLiteModel(input.HealthModel) {
+		request.Header.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
+	}
+}
+
+func isCodexResponsesLiteModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return model == "gpt-5.6-sol" || model == "gpt-5.6-terra" || model == "gpt-5.6-luna"
+}
+
+func codexMetadataJSON(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }
 
 func parseBaseURL(raw string, allowInsecure bool) (*url.URL, error) {

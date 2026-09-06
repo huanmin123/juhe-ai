@@ -354,12 +354,12 @@ func directInputScanCap(limit int) int {
 
 const directInputCandidatesSQL = `
 SELECT
-  a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.provider_code, a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.type, a.status, a.schedulable,
+  a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.provider_code, a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.type, a.client_compatibility, a.status, a.schedulable,
   a.health_check_endpoint_mode, a.health_check_model, mapping.upstream_model, mapping.upstream_endpoint_family, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
   a.system_account_id,
   ra.id, ra.status, ra.expires_at, ra.limits_json, ra.resource_id, ra.resource_owner_system_account_id, ra.effective_source_team_id,
-  source.id, source.config_revision, source.provider_code, source.provider_protocol_profile_id, source.protocol_code, source.protocol_version, source.type, source.status, source.schedulable,
+  source.id, source.config_revision, source.provider_code, source.provider_protocol_profile_id, source.protocol_code, source.protocol_version, source.type, source.client_compatibility, source.status, source.schedulable,
   source.account_expires_at, source.cooldown_until, source.last_error_code, source.credentials_encrypted,
   binding.group_id, binding.account_authorization_id,
   proxy.id, proxy.enabled, proxy.type, proxy.host, proxy.port, proxy.username, proxy.password_encrypted
@@ -447,20 +447,20 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var accountExpires, cooldownUntil, observationStarted, cooldownGeneration sql.NullString
 	var authorizationID, authorizationStatus, authorizationExpires, authorizationLimits sql.NullString
 	var authorizationResourceID, authorizationOwner, authorizationTeam sql.NullString
-	var accountProfile, accountProtocol, accountProtocolVersion sql.NullString
+	var accountProfile, accountProtocol, accountProtocolVersion, accountClientCompatibility sql.NullString
 	var mappedUpstreamModel, mappedUpstreamFamily sql.NullString
-	var sourceID, sourceProvider, sourceProfile, sourceProtocol, sourceProtocolVersion, sourceType, sourceStatus, sourceExpires, sourceCooldown, sourceError, sourceCredentials sql.NullString
+	var sourceID, sourceProvider, sourceProfile, sourceProtocol, sourceProtocolVersion, sourceType, sourceClientCompatibility, sourceStatus, sourceExpires, sourceCooldown, sourceError, sourceCredentials sql.NullString
 	var sourceRevision sql.NullInt64
 	var groupID, bindingAuthorizationID sql.NullString
 	var proxyID, proxyType, proxyHost, proxyUsername, proxyPassword sql.NullString
 	var proxyEnabled sql.NullBool
 	var proxyPort sql.NullInt64
 	if err := rows.Scan(
-		&result.account.ID, &result.inputVersion, &result.account.ConfigRevision, &result.account.DispatchRevision, &result.account.Provider, &accountProfile, &accountProtocol, &accountProtocolVersion, &result.account.Type, &result.account.Status, &schedulable,
+		&result.account.ID, &result.inputVersion, &result.account.ConfigRevision, &result.account.DispatchRevision, &result.account.Provider, &accountProfile, &accountProtocol, &accountProtocolVersion, &result.account.Type, &accountClientCompatibility, &result.account.Status, &schedulable,
 		&result.account.EndpointMode, &result.account.HealthModel, &mappedUpstreamModel, &mappedUpstreamFamily, &result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe,
 		&observationStarted, &cooldownGeneration, &result.systemAccount,
 		&authorizationID, &authorizationStatus, &authorizationExpires, &authorizationLimits, &authorizationResourceID, &authorizationOwner, &authorizationTeam,
-		&sourceID, &sourceRevision, &sourceProvider, &sourceProfile, &sourceProtocol, &sourceProtocolVersion, &sourceType, &sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
+		&sourceID, &sourceRevision, &sourceProvider, &sourceProfile, &sourceProtocol, &sourceProtocolVersion, &sourceType, &sourceClientCompatibility, &sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
 		&groupID, &bindingAuthorizationID,
 		&proxyID, &proxyEnabled, &proxyType, &proxyHost, &proxyPort, &proxyUsername, &proxyPassword,
 	); err != nil {
@@ -469,6 +469,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	result.account.ProtocolProfileID = accountProfile.String
 	result.account.ProtocolCode = accountProtocol.String
 	result.account.ProtocolVersion = accountProtocolVersion.String
+	result.account.ClientCompatibility = accountClientCompatibility.String
 	result.account.MappedUpstreamModel = mappedUpstreamModel.String
 	result.account.MappedUpstreamEndpointFamily = mappedUpstreamFamily.String
 	result.account.Schedulable = schedulable.Valid && schedulable.Int64 == 1
@@ -508,7 +509,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		if err != nil {
 			return directCandidate{}, err
 		}
-		result.source = &DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceProvider.String, ProtocolProfileID: sourceProfile.String, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
+		result.source = &DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceProvider.String, ProtocolProfileID: sourceProfile.String, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, ClientCompatibility: sourceClientCompatibility.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
 		if result.account.Cooldown != nil {
 			value := result.source.ConfigRevision
 			result.account.Cooldown.SourceConfigRevision = &value

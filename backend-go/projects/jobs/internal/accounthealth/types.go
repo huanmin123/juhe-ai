@@ -34,6 +34,7 @@ type Input struct {
 	ProtocolCode         string              `json:"protocol_code,omitempty"`
 	ProtocolVersion      string              `json:"protocol_version,omitempty"`
 	Type                 string              `json:"type"`
+	ClientCompatibility  string              `json:"client_compatibility,omitempty"`
 	EndpointMode         string              `json:"endpoint_mode"`
 	HealthModel          string              `json:"health_model"`
 	BaseURL              string              `json:"base_url"`
