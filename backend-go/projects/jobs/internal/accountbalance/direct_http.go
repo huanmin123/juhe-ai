@@ -1,10 +1,12 @@
 package accountbalance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -317,10 +319,14 @@ func (r *balanceRequester) getJSON(path string, auth ...requestAuth) (any, *quer
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return nil, &queryDiagnostic{code: fmt.Sprintf("http_%d", response.StatusCode), message: fmt.Sprintf("余额上游返回 HTTP %d", response.StatusCode)}
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
+		return nil, &queryDiagnostic{code: "invalid_json", message: "余额上游响应不是有效 JSON"}
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, &queryDiagnostic{code: "invalid_json", message: "余额上游响应不是有效 JSON"}
 	}
 	return value, nil
