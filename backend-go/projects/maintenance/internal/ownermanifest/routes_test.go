@@ -43,6 +43,40 @@ func TestVerifyGatewayRouteOwnerManifestRejectsSourceDrift(t *testing.T) {
 	}
 }
 
+func TestVerifyGatewayRouteOwnerManifestTreatsArchivedMountAsHistorical(t *testing.T) {
+	root := t.TempDir()
+	const archive = "migration-backup/node/final-archive/backend/src/modules/example"
+	writeFixtureFile(t, root, "migration-backup/node/final-archive/backend/src/system-api-app.ts", "app.use('/example', exampleRouter)\n")
+	writeFixtureFile(t, root, archive+"/example.routes.ts", "exampleRouter.post('/rotate', handler)\n")
+	manifest := GatewayRouteOwnerManifest{
+		ManifestVersion: 1,
+		SourceApp:       "migration-backup/node/final-archive/backend/src/system-api-app.ts",
+		Families: []GatewayRouteFamily{{
+			ID:               "example",
+			NodeMount:        "/example",
+			NodeRouterFile:   archive + "/example.routes.ts",
+			NodeRouterSymbol: "exampleRouter",
+			NodeMutations:    []string{"POST /rotate"},
+			MutationCount:    1,
+			GatewayHandler:   "backend-go/projects/gateway/internal/example",
+			Status:           "implemented-archive-pending",
+			AcceptanceGates:  []string{"gate"},
+			Rollback:         "drain",
+			Evidence:         []string{archive + "/example.routes.ts"},
+		}},
+	}
+	if err := writeManifest(root, manifest); err != nil {
+		t.Fatal(err)
+	}
+	report, err := VerifyGatewayRouteOwnerManifest(filepath.Join(root, "manifest.json"), root)
+	if err != nil {
+		t.Fatalf("archived mount must be treated as historical evidence: %v", err)
+	}
+	if !contains(report.PendingFamilies, "example") {
+		t.Fatalf("archive-pending family must remain pending: %+v", report)
+	}
+}
+
 func TestVerifyGatewayRouteOwnerManifestModelChecksArchiveClosesFamily(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "..")
 	report, err := VerifyGatewayRouteOwnerManifest(filepath.Join(root, "docs", "migration", "GatewayManagementRouteOwnerManifest.json"), root)

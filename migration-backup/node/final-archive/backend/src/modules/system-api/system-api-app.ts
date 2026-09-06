@@ -1,6 +1,5 @@
 import express, { type NextFunction, type Request, type Response } from 'express'
 
-import { errorLogFields } from '../../shared/logger.js'
 import { accountsRouter } from '../accounts/accounts.routes.js'
 import { announcementsRouter } from '../announcements/announcements.routes.js'
 import { apiKeysRouter } from '../api-keys/api-keys.routes.js'
@@ -8,12 +7,14 @@ import { auditLogsRouter } from '../audit-logs/audit-logs.routes.js'
 import { authorizationOptionsRouter } from '../authorization-options/authorization-options.routes.js'
 import { authorizationsRouter } from '../authorizations/authorizations.routes.js'
 import { forceSelfAccessScope, requireAdmin, requireAuth } from '../auth/auth.middleware.js'
+import { authRouter } from '../auth/auth.routes.js'
 import { externalIntegrationsRouter } from '../external-integrations/external-integrations.routes.js'
 import { externalIntegrationSourcesRouter } from '../external-integrations/external-integration-sources.routes.js'
 import { delegatedApiRouter } from '../delegated-api/delegated-api.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
 import { chatRouter } from '../chat/chat.routes.js'
 import { ipStatsRouter } from '../ip-stats/ip-stats.routes.js'
+import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/operation-logs.routes.js'
 import { anthropicOAuthRouter } from '../anthropic-oauth/anthropic-oauth.routes.js'
 import { geminiOAuthRouter } from '../gemini-oauth/gemini-oauth.routes.js'
@@ -29,6 +30,7 @@ import { routeStrategiesRouter } from '../route-strategies/route-strategies.rout
 import { settingsRouter } from '../settings/settings.routes.js'
 import { statsRouter } from '../stats/stats.routes.js'
 import { responseInspectionPoliciesRouter } from '../response-inspection-policies/response-inspection-policies.routes.js'
+import { systemAccountsRouter } from '../system-accounts/system-accounts.routes.js'
 import { myTeamsRouter, systemTeamsRouter } from '../system-teams/system-teams.routes.js'
 import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from '../usage-records/usage-records.routes.js'
@@ -82,7 +84,6 @@ export interface SystemApiHealthResponse {
   status: 'ok' | 'degraded'
   service: 'juhe-ai-db-service'
   accountBalance: SystemApiDependencyHealth
-  proxyLatency: SystemApiDependencyHealth
 }
 
 /**
@@ -90,16 +91,12 @@ export interface SystemApiHealthResponse {
  * without turning it into the Node process readiness signal. A dead or
  * unreachable DB service still fails at the parent proxy boundary (503/504).
  */
-export function resolveSystemApiHealth(
-  accountBalance: SystemApiDependencyHealth,
-  proxyLatency: SystemApiDependencyHealth
-): SystemApiHealthResponse {
+export function resolveSystemApiHealth(accountBalance: SystemApiDependencyHealth): SystemApiHealthResponse {
   return {
     statusCode: 200,
-    status: accountBalance.ready && proxyLatency.ready ? 'ok' : 'degraded',
+    status: accountBalance.ready ? 'ok' : 'degraded',
     service: 'juhe-ai-db-service',
-    accountBalance,
-    proxyLatency
+    accountBalance
   }
 }
 
@@ -133,9 +130,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
 
   app.get(`${systemApiPrefix}/health`, async (_req, res) => {
     const accountBalance = await (options.accountBalanceHealth ?? accountBalanceGoOwnerHealth)()
-    // J3a is owned by the Go jobs management endpoint. Preserve the health
-    // response shape without making Node observe or call that process.
-    const health = resolveSystemApiHealth(accountBalance, { enabled: false, ready: true })
+    const health = resolveSystemApiHealth(accountBalance)
     res.status(health.statusCode).json({ ...health, checkedAt: new Date().toISOString() })
   })
 
@@ -143,6 +138,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use('/oauth', controlReadReplicaPrimaryOnlyRequestGuard)
   app.use(systemApiDbServiceAdmissionControl, oauthPublicRouter)
 
+  app.use(`${systemApiPrefix}/auth`, systemApiDbServiceAdmissionControl, authRouter)
   app.get(`${systemApiPrefix}/settings/public`, async (_req, res, next) => {
     try {
       res.json(ok(await listPublicGlobalSettingsAsync()))
@@ -171,6 +167,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-grok-oauth`, forceSelfAccessScope, grokOAuthRouter)
   app.use(`${systemApiPrefix}/my-openai-oauth`, forceSelfAccessScope, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/my-usage-records`, forceSelfAccessScope, usageRecordsRouter)
+  app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
   app.use(`${systemApiPrefix}/providers`, providersRouter)
@@ -188,6 +185,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/openai-oauth`, requireAdmin, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/proxies`, proxiesRouter)
   app.use(`${systemApiPrefix}/usage-records`, requireAdmin, usageRecordsRouter)
+  app.use(`${systemApiPrefix}/model-checks`, requireAdmin, modelChecksRouter)
   app.use(`${systemApiPrefix}/operation-logs`, requireAdmin, operationLogsRouter)
   app.use(`${systemApiPrefix}/public-api-logs`, requireAdmin, publicApiLogsRouter)
   app.use(`${systemApiPrefix}/audit-logs`, requireAdmin, auditLogsRouter)
@@ -198,6 +196,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/oauth`, requireAdmin, oauthManagementRouter)
   app.use(`${systemApiPrefix}/table-monitor`, requireAdmin, tableMonitorRouter)
   app.use(`${systemApiPrefix}/settings`, settingsRouter)
+  app.use(`${systemApiPrefix}/system-accounts`, systemAccountsRouter)
   app.use(`${systemApiPrefix}/my-teams`, forceSelfAccessScope, myTeamsRouter)
   app.use(`${systemApiPrefix}/system-teams`, systemTeamsRouter)
 
@@ -217,7 +216,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
 export async function accountBalanceGoOwnerHealth(
   env: NodeJS.ProcessEnv = process.env,
   dependencies: { projectorReady?: () => boolean; fetch?: typeof fetch } = {}
-): Promise<{ enabled: boolean; ready: boolean; projectorReady?: boolean }> {
+): Promise<SystemApiDependencyHealth> {
   if (!accountBalanceGoOwnerEnabled(env)) return { enabled: false, ready: true }
   const endpoint = env.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL?.trim()
   const configuredOwnerMode = env.JUHE_AI_BLUE_GREEN_OWNER_MODE?.trim()
@@ -238,13 +237,9 @@ export async function accountBalanceGoOwnerHealth(
     const response = await (dependencies.fetch ?? fetch)(healthUrl, { signal: AbortSignal.timeout(2_000) })
     const payload: unknown = await response.json()
     const health = payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
-    const processReady = response.ok
-    // A standby slot intentionally does not acquire the account-balance owner.
-    // Its health contract is process reachability plus a fresh read-only
-    // projector, not active-owner readiness.
     const ready = ownerMode === 'standby'
-      ? processReady && health?.ownerMode === 'standby' && projectorReady
-      : processReady && health?.ready === true && health.accountBalanceReady === true
+      ? response.ok && health?.ownerMode === 'standby' && projectorReady
+      : response.ok && health?.ready === true && health.accountBalanceEnabled === true && health.accountBalanceReady === true
     return {
       enabled: true,
       ready,
@@ -296,12 +291,14 @@ function handleJsonBodyError(error: BodyParserError, req: Request, res: Response
 }
 
 function handleSystemApiError(error: unknown, req: Request, res: Response, _next: NextFunction): void {
-  getRequestLogger().error(errorLogFields(error, {
+  getRequestLogger().error({
     event: 'system_api_unhandled_error',
+    err: error instanceof Error ? error : undefined,
+    errorMessage: error instanceof Error ? undefined : String(error),
     method: req.method,
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl)
-  }), '系统 API 未处理错误')
+  }, '系统 API 未处理错误')
 
   if (res.headersSent) {
     res.end()

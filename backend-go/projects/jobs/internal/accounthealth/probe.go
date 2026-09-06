@@ -20,10 +20,9 @@ import (
 )
 
 const (
-	probeChallenge        = "juhe"
-	probeInstructions     = "You are ChatGPT, a helpful assistant."
-	defaultMaxBodyBytes   = int64(256 * 1024)
-	defaultProbeUserAgent = "juhe-ai-jobs-account-health/1"
+	probeChallenge      = "juhe"
+	probeInstructions   = "You are ChatGPT, a helpful assistant."
+	defaultMaxBodyBytes = int64(256 * 1024)
 )
 
 type ProbeOptions struct {
@@ -287,7 +286,6 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", defaultProbeUserAgent)
 	switch protocol {
 	case "anthropic":
 		request.Header.Set("anthropic-version", "2023-06-01")
@@ -337,10 +335,15 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		applyCodexProbeHeaders(request, *codexIdentity, input)
 	}
 	if input.EndpointMode == "responses_sse" || input.EndpointMode == "chat_sse" || input.EndpointMode == "messages_sse" || input.EndpointMode == "generate_content_sse" || input.EndpointMode == "interactions_sse" || codeAssist {
+		// Codex 官方客户端走双 accept；OAuth（openai/google）保持官方客户端
+		// 纯流式头；API-key/google_oauth 探针与手动网关诊断同为双 accept
+		// （合并 master 与 prod-account-recovery-hotfix 两侧实现）。
 		if codexIdentity != nil {
 			request.Header.Set("Accept", "application/json, text/event-stream")
-		} else {
+		} else if input.Type == "oauth" || codeAssist {
 			request.Header.Set("Accept", "text/event-stream")
+		} else {
+			request.Header.Set("Accept", "application/json, text/event-stream")
 		}
 	} else {
 		request.Header.Set("Accept", "application/json")

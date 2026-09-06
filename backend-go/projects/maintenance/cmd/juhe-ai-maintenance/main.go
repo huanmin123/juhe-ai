@@ -18,6 +18,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
 )
 
+const archivedDBServiceSourceRoot = "migration-backup/node/final-archive/backend/src/modules/db-service"
+
 func main() {
 	version := flag.Bool("version", false, "print the maintenance project contract version")
 	check := flag.Bool("check-boundary", false, "verify the scaffold boundary")
@@ -535,7 +537,7 @@ func resolveRepositoryRoot() string {
 		return "."
 	}
 	for depth := 0; depth <= 8; depth++ {
-		if info, statErr := os.Stat(filepath.Join(dir, "backend", "src")); statErr == nil && info.IsDir() {
+		if isRepositoryRoot(dir) {
 			return dir
 		}
 		parent := filepath.Dir(dir)
@@ -547,11 +549,31 @@ func resolveRepositoryRoot() string {
 	return "."
 }
 
+// isRepositoryRoot uses the Go project, migration documents and the archived
+// Node source tree as stable repository markers. The live backend/src tree is
+// intentionally absent after the final Node archive, so it cannot be used as
+// a repository-root marker any longer.
+func isRepositoryRoot(dir string) bool {
+	for _, marker := range []string{
+		"backend-go",
+		"docs/migration",
+		"migration-backup/node/final-archive/backend/src",
+	} {
+		info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(marker)))
+		if err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
 func runBusinessOwnerManifestCheck() {
 	manifestPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json"))
-	typesPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_TYPES", "backend/src/modules/db-service/db-service-types.ts"))
-	accessPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_ACCESS", "backend/src/modules/db-service/db-service-operation-access-mode.ts"))
-	handlerPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", "backend/src/modules/db-service/db-service-handlers.ts"))
+	// The manifest records original Node source locations for provenance, but
+	// its immutable source-of-truth files now live in final-archive.
+	typesPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_TYPES", filepath.Join(archivedDBServiceSourceRoot, "db-service-types.ts")))
+	accessPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_ACCESS", filepath.Join(archivedDBServiceSourceRoot, "db-service-operation-access-mode.ts")))
+	handlerPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", filepath.Join(archivedDBServiceSourceRoot, "db-service-handlers.ts")))
 	report, err := ownermanifest.Verify(manifestPath, typesPath, accessPath, handlerPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Business SQLite owner manifest verification failed: %v\n", err)

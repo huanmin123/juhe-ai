@@ -15,7 +15,59 @@ import (
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/businesshandoff"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
 )
+
+func TestMaintenanceCommandDefaultsUseFinalArchive(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build maintenance command: %v\n%s", err, output)
+	}
+
+	commandExitCode := func(t *testing.T, args ...string) ([]byte, int) {
+		t.Helper()
+		output, err := exec.Command(binary, args...).CombinedOutput()
+		if err == nil {
+			return output, 0
+		}
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("run maintenance command %v: %v\n%s", args, err, output)
+		}
+		return output, exitErr.ExitCode()
+	}
+
+	output, exitCode := commandExitCode(t, "-verify-business-owner-manifest")
+	if exitCode != 0 {
+		t.Fatalf("business owner manifest exit=%d output=%s", exitCode, output)
+	}
+	var ownerReport ownermanifest.Report
+	if err := json.Unmarshal(output, &ownerReport); err != nil || ownerReport.Operations == 0 {
+		t.Fatalf("business owner manifest report=%s err=%v", output, err)
+	}
+
+	output, exitCode = commandExitCode(t, "-verify-gateway-route-owner-manifest")
+	if exitCode != 3 {
+		t.Fatalf("gateway owner manifest exit=%d output=%s", exitCode, output)
+	}
+	var routeReport ownermanifest.GatewayRouteOwnerReport
+	if err := json.Unmarshal(output, &routeReport); err != nil || len(routeReport.PendingFamilies) == 0 {
+		t.Fatalf("gateway owner manifest report=%s err=%v", output, err)
+	}
+
+	output, exitCode = commandExitCode(t, "-scan-node-j3b-active-path")
+	if exitCode != 0 {
+		t.Fatalf("node active path scan exit=%d output=%s", exitCode, output)
+	}
+	var activeReport ownermanifest.ActivePathReport
+	if err := json.Unmarshal(output, &activeReport); err != nil || activeReport.ScannedFiles != 0 || activeReport.BlockedFindings != 0 {
+		t.Fatalf("node active path report=%s err=%v", output, err)
+	}
+}
 
 func TestJ3bCutoverEvidenceExitCodeKeepsUnreadyGateClosed(t *testing.T) {
 	if got := j3bCutoverEvidenceExitCode(businesshandoff.J3bCutoverEvidenceReport{}); got != 3 {

@@ -190,6 +190,10 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 			pageCount++
 			candidate, err := scanDirectCandidate(rows)
 			if err != nil {
+				if failure, ok := directInputFailureForCandidate(candidate); ok {
+					result.Failures = append(result.Failures, failure)
+					continue
+				}
 				rows.Close()
 				return 0, err
 			}
@@ -285,10 +289,10 @@ func directInputCandidatesQuery(suppressions []DirectInputSuppression) (string, 
 	args := make([]any, 0, len(suppressions)*5)
 	for index, suppression := range suppressions {
 		base := 6 + index*5
-		values = append(values, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d)", base, base+1, base+2, base+3, base+4))
+		values = append(values, fmt.Sprintf("($%d::text,$%d::bigint,$%d::bigint,$%d::bigint,$%d::timestamptz)", base, base+1, base+2, base+3, base+4))
 		args = append(args, suppression.AccountID, suppression.InputVersion, suppression.ConfigRevision, suppression.DispatchRevision, suppression.NextDueAt.UTC())
 	}
-	clause := "\n  AND NOT EXISTS (SELECT 1 FROM (VALUES " + strings.Join(values, ",") + ") AS suppressed(account_id, input_version, config_revision, dispatch_revision, next_due_at) WHERE suppressed.account_id = a.id AND suppressed.input_version = iv.current_version AND suppressed.config_revision = a.config_revision AND suppressed.dispatch_revision = a.dispatch_revision AND suppressed.next_due_at > $1)"
+	clause := "\n  AND NOT EXISTS (SELECT 1 FROM (VALUES " + strings.Join(values, ",") + ") AS suppressed(account_id, input_version, config_revision, dispatch_revision, next_due_at) WHERE suppressed.account_id = a.id AND suppressed.input_version = iv.current_version::bigint AND suppressed.config_revision = a.config_revision::bigint AND suppressed.dispatch_revision = a.dispatch_revision::bigint AND suppressed.next_due_at > $1::timestamptz)"
 	marker := "\n-- Keep activation work first"
 	query := strings.Replace(directInputCandidatesSQL, marker, clause+marker, 1)
 	return query, args
@@ -400,7 +404,10 @@ WHERE a.deleted_at IS NULL
   AND (a.provider_protocol_profile_id <> 'profile_hybrid_openai_chat_v1' OR mapping.upstream_model IS NOT NULL)
   AND a.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
-  AND (a.status = 'pending_test' OR a.schedulable = 1)
+  -- Cooldown recovery is the path that restores a temporarily unavailable
+  -- account. Legacy rows can retain schedulable=0, so do not let that stale
+  -- scheduling bit permanently hide an otherwise due recovery candidate.
+  AND (a.status IN ('pending_test', 'temporary_unavailable', 'rate_limited') OR a.schedulable = 1)
   AND (a.account_expires_at IS NULL OR a.account_expires_at > $1)
   AND (a.cooldown_until IS NULL OR a.cooldown_until <= $1)
   AND binding.group_id IS NOT NULL
@@ -476,15 +483,15 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	result.account.TemporaryUnavailableContinuousProbeEnabled = continuousProbe.Valid && continuousProbe.Bool
 	var err error
 	if result.account.AccountExpiresAt, err = parseNullableDirectTime(accountExpires); err != nil {
-		return directCandidate{}, err
+		return result, err
 	}
 	if result.account.CooldownUntil, err = parseNullableDirectTime(cooldownUntil); err != nil {
-		return directCandidate{}, err
+		return result, err
 	}
 	if observationStarted.Valid || cooldownGeneration.Valid {
 		observed, err := parseRequiredDirectTime(observationStarted, "cooldown observation")
 		if err != nil || !cooldownGeneration.Valid || strings.TrimSpace(cooldownGeneration.String) == "" {
-			return directCandidate{}, fmt.Errorf("PG direct input 的 cooldown fence 无效")
+			return result, fmt.Errorf("PG direct input 的 cooldown fence 无效")
 		}
 		result.account.Cooldown = &CooldownFence{ObservationStartedAt: observed, Generation: cooldownGeneration.String}
 	}
@@ -492,7 +499,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	if authorizationID.Valid {
 		expiresAt, err := parseNullableDirectTime(authorizationExpires)
 		if err != nil {
-			return directCandidate{}, err
+			return result, err
 		}
 		result.authorization = &DirectAuthorization{ID: authorizationID.String, Status: authorizationStatus.String, ExpiresAt: expiresAt}
 		result.authorizationLimits = authorizationLimits.String
@@ -503,11 +510,11 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	if sourceID.Valid {
 		expiresAt, err := parseNullableDirectTime(sourceExpires)
 		if err != nil {
-			return directCandidate{}, err
+			return result, err
 		}
 		cooldownAt, err := parseNullableDirectTime(sourceCooldown)
 		if err != nil {
-			return directCandidate{}, err
+			return result, err
 		}
 		result.source = &DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceProvider.String, ProtocolProfileID: sourceProfile.String, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, ClientCompatibility: sourceClientCompatibility.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
 		if result.account.Cooldown != nil {
@@ -519,6 +526,19 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		result.proxy = &DirectProxy{ID: proxyID.String, Enabled: proxyEnabled.Bool, Type: proxyType.String, Host: proxyHost.String, Port: int(proxyPort.Int64), Username: proxyUsername.String, PasswordEncrypted: proxyPassword.String}
 	}
 	return result, nil
+}
+
+func directInputFailureForCandidate(candidate directCandidate) (DirectInputFailure, bool) {
+	failure := DirectInputFailure{
+		AccountID:        candidate.account.ID,
+		InputVersion:     candidate.inputVersion,
+		ConfigRevision:   candidate.account.ConfigRevision,
+		DispatchRevision: candidate.account.DispatchRevision,
+	}
+	if strings.TrimSpace(failure.AccountID) == "" || failure.InputVersion < 1 || failure.ConfigRevision < 1 || failure.DispatchRevision < 1 {
+		return DirectInputFailure{}, false
+	}
+	return failure, true
 }
 
 func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (Schedule, *time.Location, error) {

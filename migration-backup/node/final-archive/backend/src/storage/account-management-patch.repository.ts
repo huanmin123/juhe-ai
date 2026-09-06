@@ -84,7 +84,8 @@ import { maxAccountNameLength, replaceAccountNameSearchTermsAsync } from './acco
 import {
   cooldownRetestObservationStartedAtForStatus,
   initialCooldownUntilForStatus,
-  isAccountExpired
+  isAccountExpired,
+  newCooldownRetestGeneration
 } from './account-runtime-mutation-helpers.js'
 import { normalizeAccountTagNamesInput, replaceAccountTagsAsync } from './account-tags.repository.js'
 import {
@@ -651,10 +652,13 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   )
   addChange('temporaryUnavailableContinuousProbeEnabled', currentContinuousProbe, nextContinuousProbe)
   const boundedRecoveryActivated = currentContinuousProbe && !nextContinuousProbe
+  const boundedRecoveryGeneration = boundedRecoveryActivated
+    ? newCooldownRetestGeneration()
+    : null
   if (boundedRecoveryActivated && row.status === 'temporary_unavailable') {
     mainColumns.set('cooldown_retest_failure_count', 0)
     mainColumns.set('cooldown_retest_observation_started_at', now)
-    mainColumns.set('cooldown_retest_generation', null)
+    mainColumns.set('cooldown_retest_generation', boundedRecoveryGeneration)
     mainColumns.set('cooldown_retest_last_at', null)
     mainColumns.set('cooldown_retest_last_status_code', null)
     mainColumns.set('cooldown_until', initialCooldownUntilForStatus('temporary_unavailable', nowMs) ?? null)
@@ -813,7 +817,7 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
             config_revision = config_revision + 1,
             cooldown_retest_failure_count = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN 0 ELSE cooldown_retest_failure_count END,
             cooldown_retest_observation_started_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_observation_started_at END,
-            cooldown_retest_generation = NULL,
+            cooldown_retest_generation = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_generation END,
             cooldown_retest_last_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_at END,
             cooldown_retest_last_status_code = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_status_code END,
             cooldown_until = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_until END,
@@ -825,6 +829,8 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
         boundedRecoveryActivated ? 1 : 0,
         boundedRecoveryActivated ? 1 : 0,
         boundedRecoveryActivated ? now : null,
+        boundedRecoveryActivated ? 1 : 0,
+        boundedRecoveryGeneration,
         boundedRecoveryActivated ? 1 : 0,
         boundedRecoveryActivated ? 1 : 0,
         boundedRecoveryActivated ? 1 : 0,
@@ -1785,6 +1791,9 @@ function nextRuntimeState(
       && (input.nextStatus !== row.status || !cooldownUntil)) {
       cooldownUntil = initialCooldownUntilForStatus(input.nextStatus, input.nowMs) ?? null
       cooldownRetestObservationStartedAt = cooldownRetestObservationStartedAtForStatus(input.nextStatus, input.nowMs) ?? null
+      cooldownRetestGeneration = cooldownRetestObservationStartedAt
+        ? newCooldownRetestGeneration()
+        : null
       lastErrorCode = null
       lastErrorMessage = input.nextStatus === 'temporary_unavailable'
         ? '手动设置为临时不可调用'
@@ -1802,7 +1811,7 @@ function nextRuntimeState(
   }
   if (clearRetest) {
     cooldownRetestFailureCount = 0
-    cooldownRetestGeneration = null
+    if (!cooldownRetestObservationStartedAt) cooldownRetestGeneration = null
     cooldownRetestLastAt = null
     cooldownRetestLastStatusCode = null
   }

@@ -125,6 +125,10 @@ func VerifyGatewayRouteOwnerManifest(manifestPath, repositoryRoot string) (Gatew
 	if err != nil {
 		return GatewayRouteOwnerReport{}, fmt.Errorf("read Node system-api app: %w", err)
 	}
+	// An app source inside final-archive is historical evidence, not a live
+	// Node mount. Its app.use calls must still be parsed to prove the frozen
+	// route inventory, but they cannot keep an owner gate open after archive.
+	sourceAppArchived := strings.HasPrefix(filepath.ToSlash(manifest.SourceApp), "migration-backup/node/")
 	report := GatewayRouteOwnerReport{ManifestVersion: manifest.ManifestVersion, Families: len(manifest.Families), StatusCoverage: map[string]int{}}
 	seenIDs := map[string]struct{}{}
 	seenFiles := map[string]struct{}{}
@@ -179,11 +183,13 @@ func VerifyGatewayRouteOwnerManifest(manifestPath, repositoryRoot string) (Gatew
 		archivedSource := strings.HasPrefix(filepath.ToSlash(family.NodeRouterFile), "migration-backup/node/")
 		if family.Status == "implemented-archive-pending" {
 			// The slice is Go-owned: the Node mount MUST be gone, while the
-			// physical file move is deferred to the P8 final archive.
-			if mounted {
+			// physical file move is deferred to the P8 final archive. Once the
+			// app source itself is archived, a preserved historical mount is not
+			// a live mount and must not fail this read-only verifier.
+			if mounted && !sourceAppArchived {
 				return GatewayRouteOwnerReport{}, fmt.Errorf("route family %q is archive-pending but still mounted by %s", family.ID, family.NodeRouterFile)
 			}
-		} else if !mounted && !(family.ID == "model-checks" && ((family.Status == "partial") || (family.Status == "implemented" && archivedSource))) {
+		} else if !sourceAppArchived && !mounted && !(family.ID == "model-checks" && ((family.Status == "partial") || (family.Status == "implemented" && archivedSource))) {
 			return GatewayRouteOwnerReport{}, fmt.Errorf("route family %q router %q is not mounted by %s", family.ID, family.NodeRouterSymbol, manifest.SourceApp)
 		}
 		actual := make([]string, 0)

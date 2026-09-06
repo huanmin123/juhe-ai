@@ -24,6 +24,17 @@ func TestScanNodeJ3bActivePathsReportsKnownEntrypoints(t *testing.T) {
 	}
 }
 
+func TestScanNodeJ3bActivePathsTreatsArchivedActiveTreeAsClean(t *testing.T) {
+	root := t.TempDir()
+	report, err := ScanNodeJ3bActivePaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Root != filepath.Join(root, "backend", "src") || report.ScannedFiles != 0 || report.BlockedFindings != 0 || len(report.Findings) != 0 {
+		t.Fatalf("archived active tree must be clean: %+v", report)
+	}
+}
+
 func TestScanNodeJ3bActivePathsIgnoresGeneratedDirectories(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"backend/src/node_modules", "backend/src/dist"} {

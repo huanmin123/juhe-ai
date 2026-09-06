@@ -131,13 +131,14 @@ try {
   }, ownerAccess)
   const boundedInstance = databaseModule.getBusinessDatabase().prepare(`
     SELECT cooldown_retest_failure_count, cooldown_retest_observation_started_at,
-      cooldown_retest_last_at, cooldown_retest_last_status_code, cooldown_until,
+      cooldown_retest_generation, cooldown_retest_last_at, cooldown_retest_last_status_code, cooldown_until,
       temporary_unavailable_continuous_probe_enabled
     FROM accounts
     WHERE id = ?
   `).get(authorizedAccount.id) as {
     cooldown_retest_failure_count: number
     cooldown_retest_observation_started_at: string | null
+    cooldown_retest_generation: string | null
     cooldown_retest_last_at: string | null
     cooldown_retest_last_status_code: number | null
     cooldown_until: string | null
@@ -147,6 +148,7 @@ try {
   assert.equal(boundedInstance.cooldown_retest_failure_count, 0, '来源正常时也必须按授权实例自身临时不可用状态清零失败计数')
   assert.notEqual(boundedInstance.cooldown_retest_observation_started_at, oldObservationStartedAt, '授权实例必须从保存时重启十分钟观察代次')
   assert.ok(Date.parse(boundedInstance.cooldown_retest_observation_started_at ?? '') >= policyChangedAt, '授权实例新观察代次不得早于本次保存')
+  assert.match(boundedInstance.cooldown_retest_generation ?? '', /^cooldown:/, '授权实例重启观察窗口时必须创建完整的 cooldown fence')
   assert.equal(boundedInstance.cooldown_retest_last_at, null, '授权实例重启观察窗口时必须清理旧复测时间')
   assert.equal(boundedInstance.cooldown_retest_last_status_code, null, '授权实例重启观察窗口时必须清理旧状态码')
   assert.ok(Date.parse(boundedInstance.cooldown_until ?? '') > policyChangedAt, '授权实例重启观察窗口后必须尽快安排下一次复测')

@@ -2,6 +2,7 @@ package ownermanifest
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,13 +64,19 @@ func ScanNodeJ3bActivePaths(root string) (ActivePathReport, error) {
 		return ActivePathReport{}, fmt.Errorf("Node active-path scan root is required")
 	}
 	sourceRoot := filepath.Join(root, "backend", "src")
+	report := ActivePathReport{Root: sourceRoot, RuleVersion: "j3b-active-path-v2", Rules: append([]ActivePathRule(nil), nodeJ3bPatterns...)}
 	if info, err := os.Stat(sourceRoot); err != nil || !info.IsDir() {
+		// After the final Node archive there is no active Node source tree.
+		// That is the success condition for this active-path scan, not an I/O
+		// failure. Other stat failures still make the check fail closed.
+		if errors.Is(err, os.ErrNotExist) {
+			return report, nil
+		}
 		if err == nil {
 			err = fmt.Errorf("not a directory")
 		}
 		return ActivePathReport{}, fmt.Errorf("Node active-path scan source root %s: %w", sourceRoot, err)
 	}
-	report := ActivePathReport{Root: sourceRoot, RuleVersion: "j3b-active-path-v2", Rules: append([]ActivePathRule(nil), nodeJ3bPatterns...)}
 	addSkip := func(path, rule, reason string) {
 		rel, err := filepath.Rel(root, path)
 		if err != nil {

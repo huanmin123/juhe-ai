@@ -300,7 +300,7 @@ func validateDirectAccount(account DirectAccount, now time.Time) error {
 	if account.Status != "active" && account.Status != "pending_test" && account.Status != "temporary_unavailable" && account.Status != "rate_limited" {
 		return fmt.Errorf("PG direct input 的账户状态不可探活")
 	}
-	if account.Status != "pending_test" && !account.Schedulable {
+	if account.Status != "pending_test" && account.Status != "temporary_unavailable" && account.Status != "rate_limited" && !account.Schedulable {
 		return fmt.Errorf("PG direct input 的 active 账户不可调度")
 	}
 	if account.AccountExpiresAt != nil && !account.AccountExpiresAt.After(now) {

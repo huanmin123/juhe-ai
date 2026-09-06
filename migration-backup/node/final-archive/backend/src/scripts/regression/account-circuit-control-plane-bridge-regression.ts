@@ -1163,23 +1163,23 @@ await new Promise((resolve) => setTimeout(resolve, 20))
 assert.equal(staleCalls, 1, 'stale dispatch revision 不得进入永久重试')
 assert.equal(staleBridge.isReady(), true)
 
-let deletedAccountCalls = 0
-const deletedAccountBridge = new AccountCircuitControlPlaneBridge({
+let accountNotFoundCalls = 0
+const accountNotFoundBridge = new AccountCircuitControlPlaneBridge({
   store: new MemoryAccountCircuitStore({ capacity: 8 }),
   retryDelayMs: 5,
   maxPersistAttempts: 2,
   loadRebuildPage: async () => ({ items: [], nextCursor: undefined }),
-  persistIncident: async () => {
-    deletedAccountCalls++
-    return { status: 'account_not_found', currentDispatchRevision: 0 }
+  persistIncident: async (input) => {
+    accountNotFoundCalls++
+    return { status: 'account_not_found', currentDispatchRevision: input.dispatchRevision }
   }
 })
-assert.equal((await deletedAccountBridge.rebuild()).blocked, false)
-deletedAccountBridge.observe({ scope, state: open })
-await waitUntil(() => deletedAccountCalls === 1, '已删除账户应完成一次终态持久化结算')
+assert.equal((await accountNotFoundBridge.rebuild()).blocked, false)
+accountNotFoundBridge.observe({ scope, state: open })
+await waitUntil(() => accountNotFoundCalls === 1, '已删除账户的迟到状态必须被持久层终态吸收')
 await new Promise((resolve) => setTimeout(resolve, 20))
-assert.equal(deletedAccountCalls, 1, '已删除账户终态不得进入 retry/error 循环')
-assert.equal(deletedAccountBridge.isAccountReady(scope.accountRuntimeKey), true, '已删除账户终态不得污染 bridge readiness error')
+assert.equal(accountNotFoundCalls, 1, 'account_not_found 不得进入重试')
+assert.equal(accountNotFoundBridge.isReady(), true)
 
 for (const forbidden of ['scopeKey', 'lease', 'generation', 'revision', 'count', 'ip']) {
   assert.equal(JSON.stringify(publicAccountCircuitSummary([baseIncident])).toLowerCase().includes(forbidden.toLowerCase()), false)
