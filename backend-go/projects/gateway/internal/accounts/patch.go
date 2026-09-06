@@ -280,6 +280,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			"last_error_code = NULL", "last_error_message = NULL", "last_error_trace_id = NULL",
 			"cooldown_until = NULL", "health_check_failure_count = 0", "health_check_failure_started_at = NULL",
 			"cooldown_retest_failure_count = 0", "cooldown_retest_observation_started_at = NULL",
+			// 归档 patchAccountFailureStateInTransaction：观察起点清空时代际同步
+			// 清空；悬挂代际会让 jobs direct input 把候选判为 cooldown fence 无效。
+			"cooldown_retest_generation = NULL",
 			"cooldown_retest_last_at = NULL", "cooldown_retest_last_status_code = NULL")
 	}
 
@@ -665,13 +668,18 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			sets = append(sets, "temporary_unavailable_continuous_probe_enabled = ?")
 			setArgs = append(setArgs, next)
 			if row.temporaryProbeEnabled == 1 && next == 0 && row.status == "temporary_unavailable" {
+				// 热修（归档 account-management-patch.repository.ts
+				// boundedRecoveryActivated / restartBoundedRecoveryObservation）：
+				// bounded recovery 观察窗口重启时写入新生成代际，替代旧的
+				// 无条件 NULL——丢失代际会让 jobs 侧冷却恢复候选无法通过
+				// fence 认领，恢复任务无法续跑。
 				sets = append(sets,
 					"cooldown_retest_failure_count = 0",
 					"cooldown_retest_observation_started_at = ?",
-					"cooldown_retest_generation = NULL",
+					"cooldown_retest_generation = ?",
 					"cooldown_retest_last_at = NULL",
 					"cooldown_retest_last_status_code = NULL")
-				setArgs = append(setArgs, nowISO)
+				setArgs = append(setArgs, nowISO, newCooldownGeneration())
 				if cooldown := initialCooldownUntilForStatus("temporary_unavailable", now); cooldown != "" {
 					sets = append(sets, "cooldown_until = ?")
 					setArgs = append(setArgs, cooldown)

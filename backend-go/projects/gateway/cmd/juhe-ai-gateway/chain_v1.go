@@ -32,6 +32,8 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -514,6 +516,9 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 	// dispatch (no account exclusion) stops with the exhausted contract.
 	if handling.RetryReason == gatewayresponse.StreamServerRetryResponseInspection &&
 		handling.ResponseInspection != nil && !policyRequestedAccountExclusion {
+		// Node routes.ts:2332: the terminal failure confirms the pending
+		// client-IP account failures before the response renders.
+		l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, current, "response_inspection_no_dispatch_change")
 		l.auditCapture.AddGatewayMetadata("response_inspection_server_retry_stopped", map[string]any{
 			"reason":        "no_dispatch_change",
 			"accountId":     accountID,
@@ -525,6 +530,9 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 		})
 		l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
 			message:        handling.Message,
+			retryReason:    handling.RetryReason,
+			errorCode:      handling.ErrorCode,
+			decision:       handling.ResponseInspection,
 			usageContext:   current.UsageContext,
 			clientStrategy: &current.ClientStrategy,
 		})
@@ -544,7 +552,7 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 		switch fallback, fallbackErr := l.switchToFallbackGroup(ctx, fallbackReason); {
 		case fallbackErr != nil:
 			// Node: the switch error propagates to the top-level catch.
-			l.renderUnexpectedDispatchFailure(fallbackErr)
+			l.renderUnexpectedDispatchFailure(ctx, fallbackErr)
 			return true
 		case fallback == v1FallbackCompleted:
 			return true
@@ -553,8 +561,14 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 		}
 		// Node 2386-2397: no fallback switch → the stream server-retry
 		// exhausted contract (503, recordUsage:false), never an empty 200.
+		// Node routes.ts:2374: the pending client-IP account failures are
+		// confirmed before the exhausted response renders.
+		l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, current, "stream_server_retry_exhausted")
 		l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
 			message:        handling.Message,
+			retryReason:    handling.RetryReason,
+			errorCode:      handling.ErrorCode,
+			decision:       handling.ResponseInspection,
 			usageContext:   current.UsageContext,
 			clientStrategy: &current.ClientStrategy,
 		})
@@ -598,6 +612,8 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 			})
 			l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
 				message:        "网关请求协调预算已到，请客户端重试并重新选择可用账户",
+				retryReason:    "pre_commit_stream_failure",
+				errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
 				usageContext:   l.current.UsageContext,
 				clientStrategy: &l.current.ClientStrategy,
 			})
@@ -641,7 +657,7 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 			switch fallback, fallbackErr := l.switchToFallbackGroup(ctx, reason); {
 			case fallbackErr != nil:
 				// Node: the switch error propagates to the top-level catch.
-				l.renderUnexpectedDispatchFailure(fallbackErr)
+				l.renderUnexpectedDispatchFailure(ctx, fallbackErr)
 				return true
 			case fallback == v1FallbackCompleted:
 				return true
@@ -649,12 +665,12 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 				return false
 			}
 		}
-		l.renderDispatchExhausted(attempt)
+		l.renderDispatchExhausted(ctx, attempt)
 		return true
 	}
 	// Node top-level catch: an unexpected dispatch error keeps the 503
 	// upstream contract — never the orchestrator 500 (V5).
-	l.renderUnexpectedDispatchFailure(dispatchErr)
+	l.renderUnexpectedDispatchFailure(ctx, dispatchErr)
 	return true
 }
 
@@ -664,7 +680,7 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 // detailed last-attempt diagnostics stay on the audit/log surface
 // (upstream-dispatch.ts buildUpstreamAttemptFailureMessage,
 // dispatch-exhaustion-classifier.ts).
-func (l *v1DispatchLoop) renderDispatchExhausted(attempt *gatewaydispatch.UpstreamAttemptError) {
+func (l *v1DispatchLoop) renderDispatchExhausted(ctx context.Context, attempt *gatewaydispatch.UpstreamAttemptError) {
 	lastAttempt := attempt.LastAttempt
 	fields := map[string]any{
 		"event":         "gateway_dispatch_exhausted",
@@ -692,6 +708,11 @@ func (l *v1DispatchLoop) renderDispatchExhausted(attempt *gatewaydispatch.Upstre
 		payloadMessage = "没有可用的上游账户"
 		payloadCode = "no_available_upstream_account"
 	}
+	// Node routes.ts:2619: the gateway failure response confirms the pending
+	// client-IP account failures first (the dispatch_exhausted_protocol_retry
+	// branch at routes.ts:2576 has no Go rendering — V5 kept the fixed 503
+	// upstream contract — so this single confirm covers the terminal exit).
+	l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, l.current, "gateway_failure_response")
 	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
 		Req:             l.req,
 		Res:             l.res,
@@ -715,7 +736,7 @@ func (l *v1DispatchLoop) renderDispatchExhausted(attempt *gatewaydispatch.Upstre
 // non-attempt errors (routes.ts:2564-2572 + 2616-2638): the 503 upstream
 // contract with the fixed copy; the error detail stays on the log/audit
 // surface.
-func (l *v1DispatchLoop) renderUnexpectedDispatchFailure(dispatchErr error) {
+func (l *v1DispatchLoop) renderUnexpectedDispatchFailure(ctx context.Context, dispatchErr error) {
 	l.c.observability.Logger().Warn("gateway_request_unexpected_error", map[string]any{
 		"event":    "gateway_request_unexpected_error",
 		"endpoint": l.current.UsageContext.Endpoint,
@@ -724,6 +745,9 @@ func (l *v1DispatchLoop) renderUnexpectedDispatchFailure(dispatchErr error) {
 		"error":    dispatchErr.Error(),
 	}, "网关请求处理出现未预期异常")
 	payload := gatewaypreauth.GatewayErrorPayloadOf("上游暂时不可用，请重试", "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode)
+	// Node routes.ts:2619: the same terminal confirm precedes the gateway
+	// failure response.
+	l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, l.current, "gateway_failure_response")
 	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
 		Req:             l.req,
 		Res:             l.res,
@@ -948,33 +972,82 @@ func (l *v1DispatchLoop) fallbackOptions(current *gatewaypreauth.DispatchContext
 }
 
 // streamServerRetryExhaustedInput mirrors sendStreamServerRetryExhaustedResponse's
-// consumed input (routes.ts:2966-2982).
+// consumed input (routes.ts:2966-2982). retryReason / errorCode carry the
+// actual verdict values the caller received (Node: input.retryReason /
+// input.errorCode).
 type streamServerRetryExhaustedInput struct {
 	message        string
+	retryReason    string
+	errorCode      string
+	decision       *gatewayresponse.ResponseInspectionDecision
 	usageContext   gatewaypreauth.GatewayFailureUsageContext
 	clientStrategy *gatewaypreauth.ClientStrategyContext
 }
 
 // sendStreamServerRetryExhaustedResponse renders the stream server-retry
 // exhausted / client-handoff contract (routes.ts:2966 →
-// sendPreCommitStreamRetryExhaustedResponse:3109-3133). The Go frozen surface
-// carries neither the retryCoordination failure signal nor a committed-
-// downstream tracker across the dispatch boundary, so the pre-commit
-// HTTP-error branch is the reachable rendering: 503 + fixed copy +
-// stream_failed audit + recordUsage:false.
+// sendPreCommitStreamRetryExhaustedResponse:3109-3133).
+//
+// Client-payload rule (V6 fix): input.message is the internal strategy /
+// pipeline copy and only feeds the audit errorMessage — with the
+// '服务端流式重试未找到可用账号' empty-input fallback (routes.ts:2984), which is
+// an audit-only string, never the client copy. The client payload is one of
+// the two fixed copies, chosen by the pre-commit failure signal:
+//
+//   - retryCoordination.preCommitFailureSignal === 'protocol_error_event' →
+//     gatewayStreamClientRetryMessage '上游流式响应在输出前失败，请重试'
+//     (responses.ts:190, via sendPreCommitStreamRetryExhaustedResponse's
+//     clientVisibleMessage). Node renders it as a 200 SSE response.failed
+//     event; the Go frozen surface carries no committed-SSE channel across
+//     the dispatch boundary, so the same copy renders as the pre-commit HTTP
+//     error with the sendPreCommit audit shape (stream_failed / 'stream').
+//   - otherwise → '上游暂时不可用，请重试' (routes.ts:3036-3040) with the
+//     pre_commit_http_error audit shape (upstream_failed / 'dispatch').
+//
+// The committed-disconnect branch (routes.ts:3013-3034) stays unreachable for
+// the same frozen-surface reason; every Go call site renders the 503.
 func (l *v1DispatchLoop) sendStreamServerRetryExhaustedResponse(input streamServerRetryExhaustedInput) {
-	message := input.message
-	if message == "" {
-		message = "服务端流式重试未找到可用账号"
+	auditMessage := input.message
+	if auditMessage == "" {
+		auditMessage = "服务端流式重试未找到可用账号"
+	}
+	protocolErrorEvent := clientStrategyPreCommitFailureSignal(input.clientStrategy) == gatewaycodex.FailureSignalProtocolErrorEvent
+	clientMessage := "上游暂时不可用，请重试"
+	auditOutcome := gatewaypreauth.AuditOutcomeUpstreamFailed
+	auditErrorPhase := "dispatch"
+	usageErrorMessage := auditMessage
+	metadata := map[string]any{
+		"retryReason":  input.retryReason,
+		"responseMode": "pre_commit_http_error",
+	}
+	if protocolErrorEvent {
+		clientMessage = "上游流式响应在输出前失败，请重试"
+		auditOutcome = gatewaypreauth.AuditOutcomeStreamFailed
+		auditErrorPhase = "stream"
+		usageErrorMessage = clientMessage
+		errorCodeValue := input.errorCode
+		if errorCodeValue == "" {
+			errorCodeValue = gatewaypreauth.GatewayStreamClientRetryErrorCode
+		}
+		metadata["errorCode"] = errorCodeValue
+	} else if input.errorCode != "" {
+		metadata["upstreamErrorCode"] = input.errorCode
+	}
+	// routes.ts:3052-3057: the response-inspection decision rides the
+	// pre-commit HTTP-error metadata (the protocol branch drops it).
+	if !protocolErrorEvent && input.decision != nil {
+		metadata["policyId"] = input.decision.PolicyID
+		metadata["policyName"] = input.decision.PolicyName
+		metadata["accountSwitch"] = input.decision.AccountSwitch
+		metadata["retryEnabled"] = input.decision.RetryEnabled
+		metadata["matchedField"] = input.decision.MatchedField
+		metadata["matchedValue"] = input.decision.MatchedValue
 	}
 	if input.clientStrategy != nil {
-		l.auditCapture.AddGatewayMetadata("stream_server_retry_exhausted", map[string]any{
-			"retryReason":        "pre_commit_stream_failure",
-			"responseMode":       "pre_commit_http_error",
-			"clientProfile":      input.clientStrategy.ClientProfile,
-			"downstreamProtocol": input.clientStrategy.DownstreamProtocol,
-		})
+		metadata["clientProfile"] = input.clientStrategy.ClientProfile
+		metadata["downstreamProtocol"] = input.clientStrategy.DownstreamProtocol
 	}
+	l.auditCapture.AddGatewayMetadata("stream_server_retry_exhausted", metadata)
 	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
 		Req:             l.req,
 		Res:             l.res,
@@ -982,16 +1055,78 @@ func (l *v1DispatchLoop) sendStreamServerRetryExhaustedResponse(input streamServ
 		UsageContext:    input.usageContext,
 		StartedAt:       l.startedAt,
 		StatusCode:      http.StatusServiceUnavailable,
-		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode),
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(clientMessage, "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode),
 		Audit: gatewaypreauth.FailureAudit{
-			Outcome:      gatewaypreauth.AuditOutcomeStreamFailed,
-			ErrorPhase:   "stream",
+			Outcome:      auditOutcome,
+			ErrorPhase:   auditErrorPhase,
 			ErrorCode:    gatewaypreauth.GatewayStreamClientRetryErrorCode,
-			ErrorMessage: message,
+			ErrorMessage: auditMessage,
 		},
 		FailureScope:      "upstream",
 		RecordUsage:       boolPtr(false),
-		UsageErrorMessage: message,
+		UsageErrorMessage: usageErrorMessage,
+	})
+}
+
+// clientStrategyPreCommitFailureSignal extracts
+// retryCoordination.preCommitFailureSignal from the frozen G18 strategy
+// context (Node input.clientStrategy?.retryCoordination.preCommitFailureSignal);
+// the archived codex strategy rides the Opaque member.
+func clientStrategyPreCommitFailureSignal(strategy *gatewaypreauth.ClientStrategyContext) string {
+	if strategy == nil {
+		return ""
+	}
+	resolved, ok := strategy.Opaque.(gatewaycodex.OpenAIGatewayClientStrategyContext)
+	if !ok {
+		return ""
+	}
+	return resolved.RetryCoordination.PreCommitFailureSignal
+}
+
+// confirmClientIPAccountAvoidanceAfterFinalFailure mirrors
+// confirmCurrentClientIpAccountAvoidanceAfterFinalFailure (routes.ts:2690-2725):
+// once the request failed back to the client, the tracker's pending account
+// failures become client-IP avoidance entries immediately instead of waiting
+// for the next request's success confirm. The tracker rides the DispatchContext
+// (Node preflight.clientIpAccountAvoidanceTracker) and the avoidance service is
+// the G05 factory the preauth service was assembled with.
+func (l *v1DispatchLoop) confirmClientIPAccountAvoidanceAfterFinalFailure(ctx context.Context, context *gatewaypreauth.DispatchContext, reason string) {
+	if gatewayusage.IsAccountDiagnosticTrafficSource(context.UsageContext.TrafficSource) {
+		return
+	}
+	avoidance, _ := l.c.preauth.AccountAvoidance.(*gatewayclientip.Avoidance)
+	tracker, _ := context.ClientIPAccountAvoidance.(*gatewayclientip.AvoidanceTracker)
+	if avoidance == nil || tracker == nil {
+		return
+	}
+	settings := context.ActiveGatewaySettings
+	result, err := avoidance.ConfirmAfterFinalFailureAsync(ctx, tracker, &settings)
+	if err != nil {
+		// Node: a rejection here would abandon the terminal render and jump to
+		// the finally block. Go keeps the terminal render (a failed avoidance
+		// confirmation must not swallow the client exit) and logs instead.
+		l.c.observability.Logger().Warn("gateway_client_ip_account_avoidance_confirm_failed", map[string]any{
+			"event":  "gateway_client_ip_account_avoidance_confirm_failed",
+			"reason": reason,
+			"error":  err.Error(),
+		}, "客户端 IP 级账号回避终态确认失败")
+		return
+	}
+	if len(result.ConfirmedAccountIDs) == 0 {
+		return
+	}
+	l.c.observability.Logger().Warn("gateway_client_ip_account_failure_confirmed_after_final_failure", map[string]any{
+		"event":               "gateway_client_ip_account_failure_confirmed_after_final_failure",
+		"reason":              reason,
+		"confirmedAccountIds": result.ConfirmedAccountIDs,
+		"systemAccountId":     context.UsageContext.SystemAccountID,
+		"apiKeyId":            context.UsageContext.APIKeyID,
+		"groupId":             context.UsageContext.GroupID,
+		"clientIp":            context.UsageContext.ClientIP,
+	}, "请求失败已返回客户端，客户端 IP 级账号回避状态已立即确认")
+	l.auditCapture.AddGatewayMetadata("client_ip_account_avoidance_update", map[string]any{
+		"reason":              reason,
+		"confirmedAccountIds": result.ConfirmedAccountIDs,
 	})
 }
 
@@ -1034,6 +1169,8 @@ func (l *v1DispatchLoop) finalizeRouteAction(action *gatewaypreauth.RouteAction)
 		// retry exhausted contract instead of the exhausted-accounts copy.
 		l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
 			message:        "当前路由暂时无法继续派发，请客户端重试并重新选择可用账户",
+			retryReason:    "pre_commit_stream_failure",
+			errorCode:      gatewaypreauth.GatewayStreamClientRetryErrorCode,
 			usageContext:   action.UsageContext,
 			clientStrategy: &action.ClientStrategy,
 		})

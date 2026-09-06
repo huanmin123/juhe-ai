@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
@@ -195,6 +196,7 @@ func RequestUpstream(ctx context.Context, upstreamURL string, options UpstreamRe
 		client, err = sharedupstreamhttp.SharedClient(options.ProxyURL, sharedupstreamhttp.TransportOptions{})
 	}
 	if err != nil {
+		requestCancel()
 		releaseSlot()
 		return nil, err
 	}
@@ -210,36 +212,39 @@ func RequestUpstream(ctx context.Context, upstreamURL string, options UpstreamRe
 				}
 			}, nil)
 		}
-		// firstByteDeadlineMs mirrors the Node deadline timer: the handler
-		// decides; only 'abort' destroys the request.
-		if options.FirstByteDeadlineMs != nil {
-			deadlineMs := *options.FirstByteDeadlineMs
-			deadlineStartedAtMs := NowMs()
-			startRequestPhaseTimer(requestCtx, requestCancel, state, deadlineMs, true, func() error {
-				return &GatewayFirstByteTimeoutError{
-					Message:   "上游请求 " + strconv.FormatInt(int64CeilDiv(deadlineMs, 1000), 10) + "s 后仍未返回首个响应",
-					TimeoutMs: deadlineMs,
-					Source:    FirstByteTimeoutSourceConfiguredDeadline,
-				}
-			}, func() error {
-				action := FirstByteDeadlineActionAbort
-				if options.OnFirstByteDeadline != nil {
-					action = options.OnFirstByteDeadline(FirstByteDeadlineDecisionInput{
+			// firstByteDeadlineMs mirrors the Node deadline timer: the handler
+			// decides; only 'abort' destroys the request. A throwing handler
+			// destroys the request with the locally-terminated handler error
+			// instead (Node request.ts:266-282 .catch ->
+			// normalizeFirstByteDeadlineHandlerError).
+			if options.FirstByteDeadlineMs != nil {
+				deadlineMs := *options.FirstByteDeadlineMs
+				deadlineStartedAtMs := NowMs()
+				startRequestPhaseTimer(requestCtx, requestCancel, state, deadlineMs, true, func() error {
+					return &GatewayFirstByteTimeoutError{
+						Message:   "上游请求 " + strconv.FormatInt(int64CeilDiv(deadlineMs, 1000), 10) + "s 后仍未返回首个响应",
+						TimeoutMs: deadlineMs,
+						Source:    FirstByteTimeoutSourceConfiguredDeadline,
+					}
+				}, func() error {
+					action, handlerErr := runDeadlineHandler(options.OnFirstByteDeadline, FirstByteDeadlineDecisionInput{
 						ElapsedMs: NowMs() - deadlineStartedAtMs,
 						TimeoutMs: deadlineMs,
 						Transport: firstNonEmpty(options.FirstByteDeadlineTransport, "non_stream"),
 					})
-				}
-				if action != FirstByteDeadlineActionAbort {
-					return nil // 'continue': the request keeps running
-				}
-				return &GatewayFirstByteTimeoutError{
-					Message:   "上游请求 " + strconv.FormatInt(int64CeilDiv(deadlineMs, 1000), 10) + "s 后仍未返回首个响应",
-					TimeoutMs: deadlineMs,
-					Source:    FirstByteTimeoutSourceConfiguredDeadline,
-				}
-			})
-		}
+					if handlerErr != nil {
+						return handlerErr
+					}
+					if action != FirstByteDeadlineActionAbort {
+						return nil // 'continue': the request keeps running
+					}
+					return &GatewayFirstByteTimeoutError{
+						Message:   "上游请求 " + strconv.FormatInt(int64CeilDiv(deadlineMs, 1000), 10) + "s 后仍未返回首个响应",
+						TimeoutMs: deadlineMs,
+						Source:    FirstByteTimeoutSourceConfiguredDeadline,
+					}
+				})
+			}
 		// TimeoutMs applies to the header phase as well.
 		if options.TimeoutMs != nil {
 			startRequestPhaseTimer(requestCtx, requestCancel, state, *options.TimeoutMs, false, func() error {
@@ -288,11 +293,23 @@ func RequestUpstream(ctx context.Context, upstreamURL string, options UpstreamRe
 		return nil, decodeErr
 	}
 	// Node keeps the request handle alive for the whole response stream and
-	// destroys it at response end: the cancel moves into the body closer.
+	// destroys it at response end: the cancel moves into the body closer. The
+	// response-body idle watch starts here, mirroring the Node socket timer
+	// that stays armed after the response headers arrive.
+	bodyIdleWatch := time.Duration(0)
+	if !options.DisableTimeouts {
+		watchMs := int64(120_000) // Node: options.timeoutMs ?? 120000
+		if options.TimeoutMs != nil {
+			watchMs = *options.TimeoutMs
+		}
+		bodyIdleWatch = time.Duration(maxInt64(1, watchMs)) * time.Millisecond
+	}
+	upstreamBody := newSlotReleasingBodyWithCancel(decoded, releaseSlot, requestCancel, bodyIdleWatch)
+	upstreamBody.armIdleWatch()
 	return &GatewayUpstreamResponse{
 		status: response.StatusCode,
 		Header: response.Header,
-		Body:   newSlotReleasingBodyWithCancel(decoded, releaseSlot, requestCancel),
+		Body:   upstreamBody,
 	}, nil
 }
 
@@ -407,9 +424,10 @@ func upstreamRequestHeaders(headers http.Header, body []byte) http.Header {
 	return output
 }
 
-// decodeUpstreamResponseBody mirrors decodeUpstreamResponseBody: gzip /
-// x-gzip / deflate / x-deflate / identity; anything else (including brotli,
-// for which Node raises the same unsupported error) fails the response.
+// decodeUpstreamResponseBody mirrors decodeUpstreamResponseBody: br / gzip /
+// x-gzip / deflate / x-deflate / identity; anything else fails the response.
+// The archived Node decoder creates a brotli stream for 'br'
+// (request.ts createUpstreamResponseDecoder -> createBrotliDecompress).
 func decodeUpstreamResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadCloser, error) {
 	encodings := parseContentEncodings(contentEncoding)
 	if len(encodings) == 0 || allIdentity(encodings) {
@@ -422,6 +440,8 @@ func decodeUpstreamResponseBody(body io.ReadCloser, contentEncoding string) (io.
 			continue
 		}
 		switch encoding {
+		case "br":
+			stream = io.NopCloser(brotli.NewReader(stream))
 		case "gzip", "x-gzip":
 			decoder, err := gzip.NewReader(stream)
 			if err != nil {
@@ -466,29 +486,47 @@ func allIdentity(encodings []string) bool {
 
 // slotReleasingBody releases the concurrency slot exactly once when the body
 // is closed or fully drained (Node: message.once('end'/'error'/'close')).
+//
+// It also carries the response-body phase of the Node request.setTimeout
+// socket idle watch (request.ts:285-287, `request.setTimeout(options.timeoutMs
+// ?? 120000, abort)`): the Node socket timer stays armed after the response
+// headers arrive and destroys the request when the upstream goes silent
+// mid-body. Go enforces the header phase with the startRequestPhaseTimer above
+// and this per-Read idle watch; once the idle budget elapses the upstream
+// request context is cancelled, so a pending Read fails instead of blocking
+// forever (Node: request.destroy(new Error('上游请求超时'))).
 type slotReleasingBody struct {
 	reader   io.ReadCloser
 	released atomic.Bool
 	release  func()
 	cancel   func()
-}
 
-func newSlotReleasingBody(reader io.ReadCloser, release func()) io.ReadCloser {
-	return &slotReleasingBody{reader: reader, release: release}
+	// idleTimeout is the per-Read idle budget (0 disables the watch; the
+	// caller derives it from TimeoutMs with the Node 120000 default).
+	idleTimeout time.Duration
+
+	mu          sync.Mutex
+	idleTimer   *time.Timer
+	idleExpired bool
 }
 
 // newSlotReleasingBodyWithCancel additionally cancels the upstream request
 // context once the body is released (EOF or Close). Node destroys the request
 // handle at response end; without this the context would leak for the whole
-// body stream lifetime.
-func newSlotReleasingBodyWithCancel(reader io.ReadCloser, release func(), cancel func()) io.ReadCloser {
-	return &slotReleasingBody{reader: reader, release: release, cancel: cancel}
+// body stream lifetime. idleTimeout > 0 arms the response-body idle watch.
+func newSlotReleasingBodyWithCancel(reader io.ReadCloser, release func(), cancel func(), idleTimeout time.Duration) *slotReleasingBody {
+	return &slotReleasingBody{reader: reader, release: release, cancel: cancel, idleTimeout: idleTimeout}
 }
 
 func (b *slotReleasingBody) Read(p []byte) (int, error) {
+	if b.isIdleExpired() {
+		return 0, &UpstreamRequestTimeoutError{Message: "上游请求超时"}
+	}
+	b.armIdleWatch()
 	n, err := b.reader.Read(p)
 	if err == io.EOF {
 		// Fully drained: Node destroys the request handle at response end.
+		b.stopIdleWatch()
 		b.cancelOnce()
 		b.releaseOnce()
 	}
@@ -496,6 +534,7 @@ func (b *slotReleasingBody) Read(p []byte) (int, error) {
 }
 
 func (b *slotReleasingBody) Close() error {
+	b.stopIdleWatch()
 	b.cancelOnce()
 	b.releaseOnce()
 	return b.reader.Close()
@@ -510,6 +549,44 @@ func (b *slotReleasingBody) releaseOnce() {
 func (b *slotReleasingBody) cancelOnce() {
 	if b.cancel != nil {
 		b.cancel()
+	}
+}
+
+func (b *slotReleasingBody) isIdleExpired() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.idleExpired
+}
+
+// armIdleWatch (re)starts the idle countdown before every Read; the timer
+// fires only when no read activity happens for the whole budget.
+func (b *slotReleasingBody) armIdleWatch() {
+	if b.cancel == nil || b.idleTimeout <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.idleExpired {
+		return
+	}
+	if b.idleTimer == nil {
+		b.idleTimer = time.AfterFunc(b.idleTimeout, func() {
+			b.mu.Lock()
+			b.idleExpired = true
+			b.mu.Unlock()
+			// Node: abort = () => request.destroy(new Error('上游请求超时')).
+			b.cancel()
+		})
+		return
+	}
+	b.idleTimer.Reset(b.idleTimeout)
+}
+
+func (b *slotReleasingBody) stopIdleWatch() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.idleTimer != nil {
+		b.idleTimer.Stop()
 	}
 }
 

@@ -19,8 +19,13 @@ import (
 // 与 Node 相同：postgres 使用 FOR UPDATE [SKIP LOCKED]，SQLite 退化为
 // 单 writer 串行；业务表位于 juhe_business schema（PG）。
 //
-// 本适配器只读 ledger（写侧仍归 Node/gateway 的 CAS 写路径），outbox ack
-// 中对 circuit_projection_revision / projected_ledger_revision 的回写与
+// 本适配器只读 ledger（写侧归 gateway 模块
+// backend-go/projects/gateway/internal/business/circuit_control_plane 的 CAS
+// 写路径；归档热修 account_not_found 终态语义——账户行缺失或 deleted_at 非空时
+// 迟到运行态观察必须终态而非重试——也在该写侧实现，跨 module 不可 import，
+// 同键同语义注释互指；本文件 List* 读侧的 deleted_at IS NULL 围栏与归档
+// repository 一致，保证已删账户的迟到事实不回放），outbox ack 中对
+// circuit_projection_revision / projected_ledger_revision 的回写与
 // Node acknowledge 完全一致。
 
 // ProjectionKey 与 Node accountCircuitProjectionKey 一致。

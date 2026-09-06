@@ -223,8 +223,14 @@ func TestSpoolStartStopReplayLoop(t *testing.T) {
 	}
 	replay := &recordingReplay{}
 	spool.StartReplay(replay)
+	// 交付回调与 spool 文件删除是两个异步步：等待条件必须同时覆盖
+	// 「已投递」与「目录已清空」，否则 StopReplay 可能打断删除（-count>1 残留）。
+	listEntries := func() int {
+		list, _ := os.ReadDir(filepath.Join(directory, "inst-1"))
+		return len(list)
+	}
 	deadline := time.Now().Add(2 * time.Second)
-	for len(replay.recorded()) == 0 && time.Now().Before(deadline) {
+	for (len(replay.recorded()) == 0 || listEntries() != 0) && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	spool.StopReplay()

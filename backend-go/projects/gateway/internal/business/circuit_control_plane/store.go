@@ -238,7 +238,7 @@ func (s *Store) CheckContract(ctx context.Context) error {
 		name string
 		cols string
 	}{
-		{name: "accounts", cols: "id,dispatch_revision,circuit_projection_revision"},
+		{name: "accounts", cols: "id,dispatch_revision,circuit_projection_revision,deleted_at"},
 		{name: "account_circuit_incidents", cols: incidentColumns},
 		{name: "account_circuit_outbox", cols: outboxColumns},
 	}
@@ -572,9 +572,26 @@ func (s *Store) CompareAndSetIncident(ctx context.Context, in IncidentMutation) 
 		return IncidentResult{}, err
 	}
 	defer tx.Rollback()
+	// Node hotfix（migration-backup/node/final-archive/backend/src/storage/
+	// account-circuit-control-plane.repository.ts compareAndSetAccountCircuitIncidentInClient）：
+	// 物理清理会在逻辑删除后级联 circuit ledger，锁行 SELECT 需补 deleted_at
+	// 列；账户行缺失或已逻辑删除时，迟到的运行态观察必须落为 account_not_found
+	// 终态而不是错误或 stale 重试。jobs 侧同键读面见
+	// backend-go/projects/jobs/internal/circuitstore/controlplane.go（跨 module
+	// 不可 import，同键同语义注释互指）。
 	var currentDispatch int64
-	if err = tx.QueryRowContext(ctx, s.bind("SELECT dispatch_revision FROM "+s.table("accounts")+" WHERE id=?"+s.forUpdate()), in.AccountID).Scan(&currentDispatch); err != nil {
+	var accountDeletedAt sql.NullString
+	err = tx.QueryRowContext(ctx, s.bind("SELECT dispatch_revision, deleted_at FROM "+s.table("accounts")+" WHERE id=?"+s.forUpdate()), in.AccountID).Scan(&currentDispatch, &accountDeletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return IncidentResult{Status: "account_not_found", CurrentDispatchRevision: 0}, nil
+	}
+	if err != nil {
 		return IncidentResult{}, err
+	}
+	if accountDeletedAt.Valid {
+		_ = tx.Rollback()
+		return IncidentResult{Status: "account_not_found", CurrentDispatchRevision: currentDispatch}, nil
 	}
 	if currentDispatch != in.DispatchRevision {
 		_ = tx.Rollback()

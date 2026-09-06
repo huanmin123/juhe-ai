@@ -333,6 +333,49 @@ func TestBridgeRebuildInvalidCursorBlocks(t *testing.T) {
 	}
 }
 
+// TestBridgeObserveAccountNotFoundTerminal 对齐归档热修回归
+// account-circuit-control-plane-bridge-regression.ts：物理删除账户的迟到运行态
+// 观察必须被 account_not_found 终态吸收——只结算一次持久化、不进入重试、
+// 不把持久层返回的 revision 记入 bridge 缓存、不污染 account readiness。
+func TestBridgeObserveAccountNotFoundTerminal(t *testing.T) {
+	store := newNonExpiringMemoryStore(t)
+	db := &mockControlPlaneDB{casResponses: []CompareAndSetIncidentResult{
+		{Status: CASAccountNotFound, CurrentDispatchRevision: 99},
+		{Status: CASAccountNotFound, CurrentDispatchRevision: 99},
+		{Status: CASAccountNotFound, CurrentDispatchRevision: 99},
+	}}
+	bridge := newTestBridge(t, store, db, nil)
+	if _, err := bridge.Rebuild(context.Background()); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if !bridge.IsReady() {
+		t.Fatalf("rebuild must open the global readiness gate")
+	}
+
+	state := ClosedState(accountScope("acc"), "7", 1, "t1", 900)
+	state.Phase = PhaseSuspect
+	bridge.Observe(accountScope("acc"), state)
+	waitForBridgeIdle(t, bridge)
+	time.Sleep(20 * time.Millisecond)
+
+	if len(db.casCalls) != 1 {
+		t.Fatalf("account_not_found must settle after one attempt, got %d", len(db.casCalls))
+	}
+	bridge.mu.Lock()
+	recordedRevision, hasRecordedRevision := bridge.dispatchRevisions["acc"]
+	_, hasLedgerRevision := bridge.ledgerRevisions[MustScopeKey(accountScope("acc"))]
+	bridge.mu.Unlock()
+	if !hasRecordedRevision || recordedRevision != 7 {
+		t.Fatalf("persisted revision must not be recorded, got %d (present=%t)", recordedRevision, hasRecordedRevision)
+	}
+	if hasLedgerRevision {
+		t.Fatalf("ledger revision must not be recorded for a terminal account_not_found")
+	}
+	if ready, err := bridge.IsAccountReady("acc"); err != nil || !ready {
+		t.Fatalf("terminal account_not_found must not poison account readiness: ready=%t err=%v", ready, err)
+	}
+}
+
 func TestBridgeProjectPending(t *testing.T) {
 	store := newNonExpiringMemoryStore(t)
 	db := &mockControlPlaneDB{}

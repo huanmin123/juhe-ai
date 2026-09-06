@@ -534,6 +534,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// gateway runtime cache through the K5 bus post-commit (batch edit,
 	// management patch, soft delete; Node invalidateGatewayRuntimeAfterBusinessWrite).
 	accountStore.SetCacheInvalidator(accountsBusInvalidator{bus: bus})
+	// SQLite account deletion performs the Node per-grant authorization
+	// runtime sync only through this composition-root port; PostgreSQL keeps
+	// its existing bulk transaction path inside accounts.Delete.
+	accountStore.SetDeletedResourceGrantRevoker(authzStore)
 	announcementStore, err := announcements.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID)
 	if err != nil {
 		return nil, fmt.Errorf("create announcement store: %w", err)
@@ -976,13 +980,18 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 
 	// /__aisys__/api/health: readiness contract; the rate limiter bypasses it
 	// (isSystemApiHealthPath mirror) and the kernel registers it ahead of the
-	// auth chain like Node line 134.
+	// auth chain like Node line 134. The account-balance dependency resolves
+	// through the archived Node accountBalanceGoOwnerHealth hotfix contract:
+	// blue-green ownerMode splitting with standby judged by jobs reachability
+	// plus the peer ownerMode; the answer stays 200 and degrades only in the
+	// body (resolveSystemApiHealth mirror).
 	kern.Register("GET "+systemAPIPrefix+"/health", kernel.HealthHandler(func() (int, any) {
+		accountBalance := accountBalanceGoOwnerHealth(os.Getenv, accountBalanceHealthDeps{})
 		return http.StatusOK, map[string]any{
 			"statusCode":     200,
-			"status":         "ok",
+			"status":         accountBalanceSystemHealthStatus(accountBalance.Ready),
 			"service":        "juhe-ai-db-service",
-			"accountBalance": map[string]any{"enabled": false, "ready": true},
+			"accountBalance": accountBalance,
 			"proxyLatency":   map[string]any{"enabled": false, "ready": true},
 			"checkedAt":      time.Now().UTC().Format(time.RFC3339Nano),
 		}

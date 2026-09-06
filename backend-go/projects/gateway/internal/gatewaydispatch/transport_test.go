@@ -2,8 +2,8 @@ package gatewaydispatch
 
 import (
 	"bufio"
-	"compress/gzip"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
@@ -73,7 +74,7 @@ func TestRequestUpstreamGzipDecode(t *testing.T) {
 
 func TestRequestUpstreamUnsupportedEncoding(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Encoding", "br")
+		w.Header().Set("Content-Encoding", "zstd")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -83,8 +84,56 @@ func TestRequestUpstreamUnsupportedEncoding(t *testing.T) {
 	if !errorsAs(err, &unsupported) {
 		t.Fatalf("expected UnsupportedUpstreamResponseEncodingError, got %v", err)
 	}
-	if unsupported.Message != "不支持的上游响应压缩编码: br" {
+	if unsupported.Message != "不支持的上游响应压缩编码: zstd" {
 		t.Fatalf("message = %q", unsupported.Message)
+	}
+}
+
+// br 在归档 Node 中显式支持（request.ts createUpstreamResponseDecoder ->
+// createBrotliDecompress）；Go 用同一 andybalholm/brotli 库解压。
+func TestRequestUpstreamBrotliDecode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "br")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(brotliBytes(t, []byte(`{"ok":true}`)))
+	}))
+	defer server.Close()
+
+	response, err := RequestUpstream(context.Background(), server.URL, UpstreamRequestOptions{Method: http.MethodGet}, TransportDeps{})
+	if err != nil {
+		t.Fatalf("RequestUpstream: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != `{"ok":true}` {
+		t.Fatalf("decoded body = %q", string(body))
+	}
+}
+
+// 双层编码按列表逆序解压（归档 Node decodeUpstreamResponseBody 同样
+// [...encodings].reverse() 逐层套 decoder；"gzip, br" 表示先 gzip 再 br 编码）。
+func TestRequestUpstreamGzipThenBrotliDecode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip, br")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(brotliBytes(t, gzipBytes(t, []byte(`{"ok":"double"}`))))
+	}))
+	defer server.Close()
+
+	response, err := RequestUpstream(context.Background(), server.URL, UpstreamRequestOptions{Method: http.MethodGet}, TransportDeps{})
+	if err != nil {
+		t.Fatalf("RequestUpstream: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != `{"ok":"double"}` {
+		t.Fatalf("decoded body = %q", string(body))
 	}
 }
 
@@ -177,6 +226,39 @@ func TestRequestUpstreamFirstByteDeadlineHandler(t *testing.T) {
 			t.Fatalf("timeoutMs = %d", deadlineErr.TimeoutMs)
 		}
 	})
+}
+
+// 回归（第五轮审查项 5）：OnFirstByteDeadline 回调 panic 必须转成本地终止
+// 错误路径（Node request.ts:266-282 .catch ->
+// normalizeFirstByteDeadlineHandlerError），不能带崩 AfterFunc goroutine。
+func TestRequestUpstreamFirstByteDeadlineHandlerPanic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	deadlineMs := int64(30)
+	_, err := RequestUpstream(context.Background(), server.URL, UpstreamRequestOptions{
+		Method:              http.MethodGet,
+		FirstByteDeadlineMs: &deadlineMs,
+		OnFirstByteDeadline: func(input FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
+			panic("决策崩溃")
+		},
+	}, TransportDeps{})
+	if err == nil {
+		t.Fatal("expected the handler panic to fail the request")
+	}
+	// 非 error panic 值归一为「网关首字截止决策失败」（deadlineHandlerPanic）。
+	if err.Error() != "网关首字截止决策失败" {
+		t.Fatalf("error = %v", err)
+	}
+	// 本地终止错误不标记 upstreamRequestStarted（Node
+	// markLocallyTerminatedUpstreamRequestError）。
+	var started *StartedTransportError
+	if errorsAs(err, &started) {
+		t.Fatalf("locally terminated error must not be marked started: %T", err)
+	}
 }
 
 func TestRequestUpstreamSignalAbortAfterStart(t *testing.T) {
@@ -440,6 +522,15 @@ func gzipBytes(t *testing.T, payload []byte) []byte {
 	return buffer.Bytes()
 }
 
+func brotliBytes(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := brotli.NewWriter(&buffer)
+	_, _ = writer.Write(payload)
+	_ = writer.Close()
+	return buffer.Bytes()
+}
+
 // 回归测试（P0）：响应体必须在 RequestUpstream 返回后仍可完整读取。
 // 历史缺陷：defer requestCancel() 在返回时取消请求上下文，超过传输内部
 // 缓冲（~4KB）的响应体在后续 Read 时报 context canceled——大响应与长
@@ -506,5 +597,87 @@ func TestRequestUpstreamSSEStreamReadableAfterReturn(t *testing.T) {
 	_ = response.Body.Close()
 	if events != 40 {
 		t.Fatalf("stream truncated after return: got %d events, want 40", events)
+	}
+}
+
+// 回归（第五轮审查项 6，Node request.setTimeout 语义）：响应头之后 body 中段
+// 空闲 TimeoutMs 必须销毁请求，Read 以 UpstreamRequestTimeoutError 失败，
+// 而不是永久阻塞。流式管道的秒级 idle 超时（ReadStreamChunkWithIdleTimeout）
+// 之上，这是 Node socket idle timer 的等价兜底。
+func TestRequestUpstreamBodyIdleWatchFailsSilentUpstream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"first\":true}\n\n")
+		w.(http.Flusher).Flush()
+		// 之后既不发数据也不关闭：Node request.setTimeout 的 destroy 点。
+		time.Sleep(2 * time.Second)
+	}))
+	defer server.Close()
+
+	timeoutMs := int64(80)
+	response, err := RequestUpstream(context.Background(), server.URL, UpstreamRequestOptions{
+		Method:    http.MethodGet,
+		TimeoutMs: &timeoutMs,
+	}, TransportDeps{})
+	if err != nil {
+		t.Fatalf("RequestUpstream: %v", err)
+	}
+	buffer := make([]byte, 256)
+	n, err := response.Body.Read(buffer)
+	if err != nil {
+		t.Fatalf("first read failed before any idle: %v", err)
+	}
+	if !strings.Contains(string(buffer[:n]), "first") {
+		t.Fatalf("first chunk = %q", string(buffer[:n]))
+	}
+
+	start := time.Now()
+	idleErr := (*UpstreamRequestTimeoutError)(nil)
+	for i := 0; i < 5; i++ {
+		_, err = response.Body.Read(buffer)
+		if err == nil {
+			continue
+		}
+		if errorsAs(err, &idleErr) {
+			break
+		}
+	}
+	_ = response.Body.Close()
+	if idleErr == nil {
+		t.Fatalf("expected UpstreamRequestTimeoutError after idle, last err=%v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+		t.Fatalf("idle watch fired too early: %v", elapsed)
+	}
+}
+
+// DisableTimeouts 同时关闭 body idle watch（Node disableTimeouts 跳过
+// request.setTimeout）。
+func TestRequestUpstreamBodyIdleWatchDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"first\":true}\n\n")
+		w.(http.Flusher).Flush()
+		time.Sleep(400 * time.Millisecond)
+		_, _ = io.WriteString(w, "data: {\"second\":true}\n\n")
+	}))
+	defer server.Close()
+
+	timeoutMs := int64(50)
+	response, err := RequestUpstream(context.Background(), server.URL, UpstreamRequestOptions{
+		Method:          http.MethodGet,
+		TimeoutMs:       &timeoutMs,
+		DisableTimeouts: true,
+	}, TransportDeps{})
+	if err != nil {
+		t.Fatalf("RequestUpstream: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read body with timeouts disabled: %v", err)
+	}
+	if !strings.Contains(string(body), "second") {
+		t.Fatalf("body = %q", string(body))
 	}
 }

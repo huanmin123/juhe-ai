@@ -61,6 +61,12 @@ type NonStreamPipeInput struct {
 // InspectBytes>0 时先整体缓冲（协议校验要求完整文档），超过窗口才转为透传。
 // FullyBuffered=true 时下游尚未写入，由调用方在检查通过后发送完整正文。
 func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResult, error) {
+	// Body 所有权收口（Node for-await 的 return() 语义）：signal 中断 abort、
+	// 读错误 partialFailure、正常 EOF 与 panic 面统一关闭上游体；Close 幂等，
+	// 与调用方 HandleNonStreamUpstreamResponse 的收口重复安全。
+	if input.Body != nil {
+		defer input.Body.Close()
+	}
 	nowMs := input.NowMs
 	if nowMs == nil {
 		nowMs = defaultNowMs
@@ -214,6 +220,11 @@ func signalAbortedChannel(signal interface{ Done() <-chan struct{} }) bool {
 // 失败分类、审计触发点与 usage 组装逐字段对齐；上游非流式管道由
 // PipeNonStreamUpstreamResponse 承担。
 func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamResponseHandlingResult, error) {
+	// Body 所有权收口：覆盖管道进入前的 signal 已 abort 早退，以及管道与
+	// 后置 finalize 序列的全部返回路径；Close 幂等。
+	if input.UpstreamResponse != nil && input.UpstreamResponse.Body != nil {
+		defer input.UpstreamResponse.Body.Close()
+	}
 	if signalAborted(input.Signal) {
 		return UpstreamResponseHandlingResult{}, &UpstreamRequestAbortedError{Message: ErrUpstreamRequestAbortedMessage, UpstreamRequestStarted: true}
 	}

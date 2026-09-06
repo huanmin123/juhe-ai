@@ -973,17 +973,21 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 			delay = int64Min(delay*2, 30_000)
 			continue
 		}
+		// Physical account cleanup is a terminal outcome for late runtime
+		// observations; do not retain a pending item, do not record
+		// dispatch/ledger revisions and do not schedule retries.（对齐归档热修
+		// migration-backup/node/final-archive/backend/src/modules/gateway/runtime/
+		// account-circuit-control-plane-bridge.ts persistWithRetry；jobs 侧
+		// internal/circuitstore 同键读面注释互指，跨 module 不可 import。）
+		if persisted.Status == CASAccountNotFound {
+			return nil
+		}
 		b.mu.Lock()
 		b.dispatchRevisions[accountID] = persisted.CurrentDispatchRevision
 		if persisted.Incident != nil {
 			b.ledgerRevisions[desiredState.ScopeKey] = persisted.Incident.LedgerRevision
 		}
 		b.mu.Unlock()
-		// Physical account cleanup is a terminal outcome for late runtime
-		// observations; do not retain a pending item or schedule retries.
-		if persisted.Status == CASAccountNotFound {
-			return nil
-		}
 		if persisted.Status == CASStaleDispatchRevision {
 			return nil
 		}

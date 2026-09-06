@@ -19,7 +19,7 @@ func testStore(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	ddls := []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, dispatch_revision INTEGER NOT NULL DEFAULT 1, circuit_projection_revision INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY, dispatch_revision INTEGER NOT NULL DEFAULT 1, circuit_projection_revision INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)`,
 		`CREATE TABLE account_circuit_incidents (
  circuit_scope_key TEXT PRIMARY KEY, account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, scope_kind TEXT NOT NULL,
  key_fingerprint TEXT, protocol_code TEXT, request_lane TEXT, model_family TEXT, client_model TEXT, capability_hash TEXT,
@@ -154,6 +154,50 @@ func TestIncidentCASAndProjection(t *testing.T) {
 	var projected int
 	if err := db.QueryRow(`SELECT projected_ledger_revision FROM account_circuit_incidents WHERE circuit_scope_key='scope-1'`).Scan(&projected); err != nil || projected != 1 {
 		t.Fatalf("projected=%d err=%v", projected, err)
+	}
+}
+
+// TestIncidentCASAccountNotFoundTerminal 对齐归档热修
+// compareAndSetAccountCircuitIncidentInClient：账户行缺失或 deleted_at 非空时，
+// 迟到的运行态观察必须得到 account_not_found 终态（缺失行 currentDispatchRevision
+// 为 0，已删行返回行内当前 revision），且终态优先于 stale_dispatch_revision，
+// 不写 incident/outbox。
+func TestIncidentCASAccountNotFoundTerminal(t *testing.T) {
+	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision,deleted_at) VALUES ('a-deleted',3,0,'2020-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	mutation := func(accountID string, dispatchRevision int64) IncidentMutation {
+		incidentID := "inc-" + accountID
+		return IncidentMutation{Incident: Incident{
+			CircuitScopeKey: "scope-" + accountID, AccountID: accountID, AccountRuntimeKey: accountID,
+			ScopeKind: "account", IncidentID: &incidentID, State: "OPEN", Generation: 1,
+			DispatchRevision: dispatchRevision, TransitionID: "tr-" + accountID,
+			ConfirmationFailuresRequired: 1, ChildIncidentIDs: []string{}, ConfirmationFailureEvidenceKeys: []string{},
+			CreatedAtMS: 100, UpdatedAtMS: 100,
+		}}
+	}
+
+	missing, err := s.CompareAndSetIncident(ctx, mutation("missing-account", 1))
+	if err != nil || missing.Status != "account_not_found" || missing.CurrentDispatchRevision != 0 || missing.Incident != nil {
+		t.Fatalf("missing account = %+v err=%v", missing, err)
+	}
+	deleted, err := s.CompareAndSetIncident(ctx, mutation("a-deleted", 3))
+	if err != nil || deleted.Status != "account_not_found" || deleted.CurrentDispatchRevision != 3 || deleted.Incident != nil {
+		t.Fatalf("deleted account = %+v err=%v", deleted, err)
+	}
+	// 终态优先：revision 不一致时仍必须是 account_not_found，而非 stale。
+	deletedStale, err := s.CompareAndSetIncident(ctx, mutation("a-deleted", 99))
+	if err != nil || deletedStale.Status != "account_not_found" || deletedStale.CurrentDispatchRevision != 3 {
+		t.Fatalf("deleted account stale fence = %+v err=%v", deletedStale, err)
+	}
+	var incidents, outbox int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM account_circuit_incidents`).Scan(&incidents); err != nil || incidents != 0 {
+		t.Fatalf("terminal CAS must not write incidents: %d err=%v", incidents, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM account_circuit_outbox`).Scan(&outbox); err != nil || outbox != 0 {
+		t.Fatalf("terminal CAS must not write outbox: %d err=%v", outbox, err)
 	}
 }
 

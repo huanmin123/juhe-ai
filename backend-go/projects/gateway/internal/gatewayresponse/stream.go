@@ -210,6 +210,14 @@ type PipeUpstreamStreamInput struct {
 
 // PipeUpstreamStream 对齐 pipeUpstreamStream。
 func PipeUpstreamStream(input PipeUpstreamStreamInput) (StreamPipeResult, error) {
+	// Body 所有权收口（Node for-await 的 return() 语义）：管道返回的所有路径
+	// —— 客户端断开 abort、response precommit deadline、一般 pipe 错误、
+	// HandleStreamFailure 回调错误早退与 panic 面 —— 统一关闭上游体。
+	// 传输层 slotReleasingBody / ReaderUpstreamBody 的 Close 幂等
+	//（release + cancel 恰好一次），与管道内既有显式 Close 重复调用安全。
+	if input.UpstreamBody != nil {
+		defer input.UpstreamBody.Close()
+	}
 	pipe := newStreamPipe(input)
 	return pipe.run()
 }

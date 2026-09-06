@@ -322,7 +322,7 @@ func TestV1DispatchLoopExhaustedCopyBranches(t *testing.T) {
 	loop := newV1TestLoop(t, sink)
 
 	// With a last attempt: retryable copy, detailed message only in audit.
-	loop.renderDispatchExhausted(&gatewaydispatch.UpstreamAttemptError{
+	loop.renderDispatchExhausted(context.Background(), &gatewaydispatch.UpstreamAttemptError{
 		Message:          "所有上游账户均失败；最后一次尝试 账户一 https://upstream 返回 500",
 		LastAttempt:      &gatewaydispatch.UpstreamAttempt{AccountID: "acc_1", UpstreamURL: "https://upstream", HasStatus: true, Status: 500},
 		FailedAccountIDs: []string{"acc_1"},
@@ -343,7 +343,7 @@ func TestV1DispatchLoopExhaustedCopyBranches(t *testing.T) {
 
 	// Without a last attempt: the no-candidate copy.
 	sink.inputs = nil
-	loop.renderDispatchExhausted(&gatewaydispatch.UpstreamAttemptError{Message: "上游账户请求失败"})
+	loop.renderDispatchExhausted(context.Background(), &gatewaydispatch.UpstreamAttemptError{Message: "上游账户请求失败"})
 	if len(sink.inputs) != 1 {
 		t.Fatalf("inputs=%d", len(sink.inputs))
 	}
@@ -357,7 +357,7 @@ func TestV1DispatchLoopExhaustedCopyBranches(t *testing.T) {
 
 	// Unexpected dispatch error: the 503 upstream contract, never a 500.
 	sink.inputs = nil
-	loop.renderUnexpectedDispatchFailure(errors.New("意外的调度故障"))
+	loop.renderUnexpectedDispatchFailure(context.Background(), errors.New("意外的调度故障"))
 	if len(sink.inputs) != 1 {
 		t.Fatalf("inputs=%d", len(sink.inputs))
 	}
@@ -387,10 +387,16 @@ func TestV1DispatchLoopWallBudgetKinds(t *testing.T) {
 		t.Fatalf("inputs=%d", len(sink.inputs))
 	}
 	handoff := sink.inputs[0]
-	if handoff.ResponsePayload.Error.Message != "网关请求协调预算已到，请客户端重试并重新选择可用账户" {
+	// V6 文案分流：handoff message 只是 audit 原文（Node 把它作为
+	// sendStreamServerRetryExhaustedResponse 的 input.message），客户端 payload
+	// 是无 signal 分支的固定文案（routes.ts:3036-3040）。
+	if handoff.ResponsePayload.Error.Message != "上游暂时不可用，请重试" {
 		t.Fatalf("handoff copy wrong: %+v", handoff.ResponsePayload)
 	}
-	if handoff.Audit.Outcome != gatewaypreauth.AuditOutcomeStreamFailed {
+	if handoff.Audit.ErrorMessage != "网关请求协调预算已到，请客户端重试并重新选择可用账户" {
+		t.Fatalf("handoff audit message wrong: %+v", handoff.Audit)
+	}
+	if handoff.Audit.Outcome != gatewaypreauth.AuditOutcomeUpstreamFailed {
 		t.Fatalf("handoff audit wrong: %+v", handoff.Audit)
 	}
 
@@ -424,10 +430,15 @@ func TestV1RouteActionClientHandoffExit(t *testing.T) {
 		t.Fatalf("inputs=%d", len(sink.inputs))
 	}
 	handoff := sink.inputs[0]
-	if handoff.ResponsePayload.Error.Message != "当前路由暂时无法继续派发，请客户端重试并重新选择可用账户" {
+	// V6 文案分流：client-handoff message 只是 audit 原文，客户端 payload 是
+	// 固定文案（Node routes.ts:3036-3040）。
+	if handoff.ResponsePayload.Error.Message != "上游暂时不可用，请重试" {
 		t.Fatalf("client-handoff copy wrong: %+v", handoff.ResponsePayload)
 	}
-	if handoff.Audit.Outcome != gatewaypreauth.AuditOutcomeStreamFailed {
+	if handoff.Audit.ErrorMessage != "当前路由暂时无法继续派发，请客户端重试并重新选择可用账户" {
+		t.Fatalf("client-handoff audit message wrong: %+v", handoff.Audit)
+	}
+	if handoff.Audit.Outcome != gatewaypreauth.AuditOutcomeUpstreamFailed {
 		t.Fatalf("client-handoff audit wrong: %+v", handoff.Audit)
 	}
 }

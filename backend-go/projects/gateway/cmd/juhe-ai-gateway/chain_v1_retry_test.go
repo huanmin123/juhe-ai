@@ -73,7 +73,9 @@ func TestV1ResponseRetryRotatesAccounts(t *testing.T) {
 }
 
 // TestV1ResponseRetryNoDispatchChangeStops：response_inspection 决定未要求
-// 换号 → no_dispatch_change 终态（Node routes.ts:2326-2356）。
+// 换号 → no_dispatch_change 终态（Node routes.ts:2326-2356）。客户端 payload
+// 是固定文案「上游暂时不可用，请重试」（routes.ts:3036-3040），内部策略原文
+// 只进 audit errorMessage。
 func TestV1ResponseRetryNoDispatchChangeStops(t *testing.T) {
 	sink := &recordingFailureSink{}
 	loop := newV1TestLoop(t, sink)
@@ -92,8 +94,19 @@ func TestV1ResponseRetryNoDispatchChangeStops(t *testing.T) {
 	if exit.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d want 503", exit.StatusCode)
 	}
-	if exit.Audit.Outcome != gatewaypreauth.AuditOutcomeStreamFailed {
+	// 无 preCommitFailureSignal → pre-commit HTTP error 分支的
+	// upstream_failed/dispatch audit 形态（Node routes.ts:3046-3061）。
+	if exit.Audit.Outcome != gatewaypreauth.AuditOutcomeUpstreamFailed {
 		t.Fatalf("audit outcome=%s", exit.Audit.Outcome)
+	}
+	if exit.Audit.ErrorPhase != "dispatch" {
+		t.Fatalf("audit errorPhase=%s", exit.Audit.ErrorPhase)
+	}
+	if exit.ResponsePayload.Error.Message != "上游暂时不可用，请重试" {
+		t.Fatalf("client payload leaked internal copy: %q", exit.ResponsePayload.Error.Message)
+	}
+	if exit.Audit.ErrorMessage != "响应命中检查策略：过载重试" {
+		t.Fatalf("audit errorMessage must keep the internal copy: %q", exit.Audit.ErrorMessage)
 	}
 	if exit.RecordUsage == nil || *exit.RecordUsage {
 		t.Fatal("exhausted exit must skip usage recording")
