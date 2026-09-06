@@ -51,7 +51,20 @@ go-only 是唯一受支持的部署拓扑：
 | 历史双镜像拓扑回滚 | `ROLLBACK_PROD` 选择 Node 时代 release state 时，Jenkins 按历史 `nodeImageDigest` 复原平台 kustomization（属于恢复旧拓扑，不是受支持的长期运行形态） |
 | schema 预检误跑 | `--ensure-schema` 幂等；如需回退 schema 变更，按 `docs/deploy/部署指南.md` 的备份恢复，不提供自动降级 |
 
-## 6. 平台侧待办（不在本仓库内，X03/G20 跟进）
+## 6. 近期新增的可选运行环境变量
+
+以下 env 均有缺省值，常规单机部署无需设置；这里补登记近期新增项，避免只在源码可见。
+
+| 环境变量 | 说明 | 已收录于 |
+| --- | --- | --- |
+| `JUHE_AI_JOBS_INTERNAL_URL` | gateway 回调 jobs internal-api 派发面的 loopback origin，默认 `http://127.0.0.1:3305`；手动账户测试派发（`/v1/account-test/dispatch`）、请求失败链与 runtime-reset/激活面的账户健康检查派发（`/v1/account-health-check/dispatch`）与账户余额健康裁决都经过它 | `deploy/README.md`（完整说明） |
+| `JUHE_AI_BLUE_GREEN_OWNER_MODE` | Go 进程蓝绿 owner 模式，`active` / `standby` / `drain`（缺省 `active`，非法值启动失败）；仅 `active` 参与 owner 判定 | `deploy/README.md`（完整说明） |
+| `JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL` | gateway ai-health 读面合并 jobs J1 durable outcome 的 PostgreSQL outcome 库（jobs `JUHE_AI_JOBS_OUTCOME_POSTGRES_URL` 的对端）；性能拓扑使用，留空时只读 SQLite outcome（`JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH`） | 本节（新增） |
+| `JUHE_AI_CONCURRENCY_GLOBAL_MAX` | Node `concurrency.globalMax` 对应项，默认 `5000`、范围 1..50000；高并发调度策略默认队列上限（全局队列与每 API Key 队列界限）与派发候选窗口默认值来源 | 本节（新增） |
+| `JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT` | `/v1` 派发候选窗口终值，缺省取 `JUHE_AI_CONCURRENCY_GLOBAL_MAX`，范围 1..50000；实际扫描窗口为 limit × 2 | 本节（新增） |
+| `JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS` | `true` / `1` 时放行上游 Base URL 指向本机/内网/保留地址；仅限临时回归，常规本地联调优先 `JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST` | `docs/deploy/部署指南.md`（完整说明） |
+
+## 7. 平台侧待办（不在本仓库内，X03/G20 跟进）
 
 - Mac LaunchDaemon / 八台 Edge 的常驻定义仍在 `.local/project-resources/prod/` 私有资料中；主机环境已无需 `JUHE_AI_DEPLOY_MODE`。
 - PM2/systemd ecosystem 文件不在仓库内；如有主机侧进程管理，需改为直接拉起两个 Go 二进制。

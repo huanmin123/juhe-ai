@@ -24,10 +24,15 @@ package main
 //	ClearAPIKeyTransientFailure          → gatewayaccounteffects
 //	                                       AccountAPIKeyFailureGuard.ClearTransientFailure
 //	                                       (generation CAS)
-//	DispatchAccountHealthCheck           → REGISTERED NIL: the Go gateway has no
-//	                                       health-check dispatcher yet (Node
-//	                                       dispatchAccountHealthCheck, internal-api
-//	                                       service); the dispatch is logged and skipped
+//	DispatchAccountHealthCheck           → the request-failure health bridge
+//	                                       (chain_request_failure_health.go):
+//	                                       POST {JobsInternalURL}/__aiinternal__/
+//	                                       v1/account-health-check/dispatch,
+//	                                       HMAC-SHA256 signed (Node
+//	                                       dispatchAccountHealthCheck,
+//	                                       internal-api service); fire-and-forget
+//	                                       — a rejected dispatch logs and the
+//	                                       reset continues
 //	AuthorizationQuotaExceeded           → gatewayquota StatsStore.LoadCostsBatch +
 //	                                       IsRequestQuotaExceeded over the
 //	                                       authorization + team-grant limits
@@ -54,6 +59,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -63,8 +69,10 @@ import (
 // newAccountsRuntimeResetBridge builds the RuntimeResetEffects port over the
 // composed runtime collaborators. Every collaborator is already non-nil (the
 // chain runtime construction fail-fasts otherwise); the accountkeystates store
-// fails fast on a missing business handle / runtime secret.
-func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices, secret string) (accounts.RuntimeResetEffects, error) {
+// fails fast on a missing business handle / runtime secret. healthDispatch is
+// the jobs internal-api health-check bridge (an inert empty-URL bridge keeps
+// the dispatch on its logged skip contract).
+func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices, secret string, healthDispatch *chainJobsHealthDispatchBridge) (accounts.RuntimeResetEffects, error) {
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
 		DB:       composed.db,
 		Postgres: composed.pgDialect,
@@ -88,6 +96,7 @@ func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingVa
 		guard:     services.AccountAPIKeyGuard,
 		stats:     services.QuotaStats,
 		keyStates: keyStates,
+		health:    healthDispatch,
 		now:       time.Now,
 	}, nil
 }
@@ -102,6 +111,7 @@ type accountsRuntimeResetBridge struct {
 	guard     *gatewayaccounteffects.AccountAPIKeyFailureGuard
 	stats     *gatewayquota.StatsStore
 	keyStates *accountkeystates.Store
+	health    *chainJobsHealthDispatchBridge
 	now       func() time.Time
 
 	// transientGenerations remembers the opaque Redis CAS generation strings
@@ -216,14 +226,23 @@ func (b *accountsRuntimeResetBridge) ClearAPIKeyTransientFailure(ctx context.Con
 	return b.guard.ClearTransientFailure(ctx, b.guardAccount(accountID, keyFingerprint, generation))
 }
 
-// DispatchAccountHealthCheck is a REGISTERED NIL port entry: the Go gateway
-// owns no health-check dispatcher yet (Node dispatchAccountHealthCheck,
-// internal-api service); the reset continues and the skip is observable in the
-// logs. 账户 API Key 运行池域（account_api_key_runtime_states）已由
-// accountkeystates 落地；本项剩余缺口仅是健康检查派发器本身。
+// DispatchAccountHealthCheck bridges the reset/activation health-check
+// dispatch over the jobs internal-api loopback: the same HMAC-signed endpoint
+// the request-failure health bridge posts to (chain_request_failure_health.go →
+// jobs internal/internalapi/healthdispatch.go; Node dispatchAccountHealthCheck,
+// internal-api service). Fire-and-forget: a rejected dispatch (jobs absent,
+// non-202, empty bridge target) logs a warning and the reset continues.
 func (b *accountsRuntimeResetBridge) DispatchAccountHealthCheck(accountID, reason string) {
-	slogOnceWarn("accounts.RuntimeResetEffects.DispatchAccountHealthCheck", "健康检查派发未装配，跳过后台复检派发")
-	slog.Info("runtime-reset 健康检查派发未装配", "accountId", accountID, "reason", reason)
+	outcome := b.health.dispatch(accountID, reason, "", nil)
+	if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
+		slog.Warn("runtime-reset 健康检查派发未受理",
+			"event", "account_health_check_dispatch_rejected",
+			"accountId", accountID, "reason", reason, "decisionCode", outcome.DecisionCode)
+		return
+	}
+	slog.Info("runtime-reset 健康检查派发已受理",
+		"event", "account_health_check_dispatched",
+		"accountId", accountID, "reason", reason, "targetRole", outcome.TargetRole)
 }
 
 // AuthorizationQuotaExceeded bridges the quota gate: the authorization-scoped

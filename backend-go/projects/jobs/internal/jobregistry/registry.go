@@ -303,7 +303,7 @@ func QueueEntries() []Entry {
 			"W7 已随 gateway 进程内写路径接管"),
 		{JobName: "background_worker_record_maintenance", Category: CategoryIPCQueue, Kind: "maintenance", DefaultRole: "ingest-worker",
 			Writes: []string{"dataset:*", "stats:*", "usage-shards:usage_records"}, GoStatus: GoWired, GoPackage: "cleanuprepo + retention + recordmaintenance",
-			GoBinding: "recordmaintenance runner + cleanuprepo 执行器 + 组合根本地队列 flush 循环 + record_maintenance_jobs 交接表 drain（gateway cleanup POST 落行：ORDER BY created_at、成功删行、失败保留；Redis Stream/IPC 按 Go 总设计消灭）"},
+			GoBinding: "recordmaintenance runner + cleanuprepo 执行器 + 组合根本地队列 flush 循环 + record_maintenance_jobs 交接表 drain（gateway cleanup POST 落行：ORDER BY created_at、成功删行、失败保留；Redis Stream/IPC 按 Go 总设计消灭）。通道已扩展 v2 契约：record_maintenance_jobs 在既有 6 清理列上加快照列 account_id/kind/source/snapshot_json/updated_at（清理行与快照行互斥填充各自列组，gateway/jobs 两侧按列名幂等 ALTER ADD），gateway tablemonitor.DurableDispatch 快照行投递（含 codex 用量响应头快照通道 compose_codex_usage_headers.go），jobs drain 读 v2 列并把 account_usage_snapshot_upsert 连续段合并为一次批量 upsert"},
 		batch("background_worker_account_test_tasks", []string{"business:account_test_tasks"}, GoWired, "opsjobs + manualtestrepo + manualtest + accountprobe",
 			"ManualTestQueue + manualtestrepo 双模仓储 + manualtest 执行器（draft v1 信封解密 → accountprobe.ManualDiagnostics 分级诊断 → result_json 信封写回 → 取消响应）全链路接线；internalapi loopback 派发回调接 DispatchAccountTestTask，族 disabled 时派发保持 503 不可用语义"),
 		control("background_worker_account_test_cancel", "ops-worker", GoWired, "ManualTestQueue.CancelLocal 已随手动测试族执行器接线（internalapi loopback POST /v1/account-test/cancel 扩展路由，对齐 Node worker IPC background_worker_account_test_cancel 的取消语义；DB 侧 cancel_requested 标记与会话取消语义在 manualtestrepo 覆盖）"),
@@ -357,7 +357,7 @@ func QueueEntries() []Entry {
 			GoStatus: GoWired, GoPackage: "cleanuprepo + retention", GoBinding: "cleanuprepo.NonBusinessDatasetStore + StatsRetentionStore（dataset/usage-catalog/stats 三 scope 双模；audit payload 归 F3）"},
 		{JobName: "record-maintenance:account_usage_snapshot_upsert", Category: CategoryMaintenanceTask, Kind: "maintenance", DefaultRole: "ingest-worker",
 			Writes: []string{"stats:account_usage_snapshots"}, GoStatus: GoWired, GoPackage: "cleanuprepo + retention",
-			GoBinding: "cleanuprepo.RecordCleanupStore.UpsertAccountUsageSnapshots（owners 查 business accounts）"},
+			GoBinding: "cleanuprepo.RecordCleanupStore.UpsertAccountUsageSnapshots（owners 查 business accounts）；任务行经 record_maintenance_jobs v2 快照列（account_id/kind/source/snapshot_json/updated_at）由 gateway durable channel 投递，drain 合并连续段批量执行"},
 	}
 }
 

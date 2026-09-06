@@ -849,9 +849,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		chainServices = services
 		// Runtime-reset port assembly (compose_accounts_reset.go): the
 		// maintenance reset endpoint reaches the gateway runtime surfaces
-		// through this bridge. With the chain disabled the port stays nil and
-		// the endpoint keeps its self-contained degraded contract.
-		resetBridge, resetBridgeErr := newAccountsRuntimeResetBridge(composed, settingValue, chainServices, cfg.Secret)
+		// through this bridge, and reset/activation health-check dispatches
+		// ride the jobs internal-api HMAC bridge (the request-failure
+		// health-dispatch endpoint). With the chain disabled the port stays
+		// nil and the endpoint keeps its self-contained degraded contract.
+		resetBridge, resetBridgeErr := newAccountsRuntimeResetBridge(composed, settingValue, chainServices, cfg.Secret,
+			newChainJobsHealthDispatchBridge(cfg.JobsInternalURL, cfg.Secret, nil))
 		if resetBridgeErr != nil {
 			return nil, fmt.Errorf("compose accounts runtime reset bridge: %w", resetBridgeErr)
 		}

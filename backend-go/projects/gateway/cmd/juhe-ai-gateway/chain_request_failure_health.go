@@ -217,8 +217,23 @@ type chainRequestFailureHealthDispatcher struct {
 
 func newChainRequestFailureHealthDispatcher(baseURL, secret string, client *http.Client) *chainRequestFailureHealthDispatcher {
 	return &chainRequestFailureHealthDispatcher{
-		bridge: &chainJobsHealthDispatchBridge{baseURL: baseURL, secret: secret, client: client},
+		bridge: newChainJobsHealthDispatchBridge(baseURL, secret, client),
 		marks:  newChainRequestDispatchMarks(4096),
+	}
+}
+
+// newChainJobsHealthDispatchBridge assembles the health-check dispatch bridge
+// over a jobs internal-api loopback origin (the same HMAC contract the
+// request-failure dispatcher publishes through). A nil client installs the
+// 5s-timeout transport client; an empty baseURL/secret keeps the bridge inert
+// (dispatch reports input_unavailable without touching the network), which is
+// the degraded contract for hand-assembled tests and the chain-disabled
+// composition.
+func newChainJobsHealthDispatchBridge(baseURL, secret string, client *http.Client) *chainJobsHealthDispatchBridge {
+	return &chainJobsHealthDispatchBridge{
+		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		secret:  secret,
+		client:  client,
 	}
 }
 

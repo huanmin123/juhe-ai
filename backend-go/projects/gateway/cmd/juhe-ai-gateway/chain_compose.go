@@ -128,8 +128,9 @@ type chainRuntimeDeps struct {
 	AccountAPIKeyObservation chainAPIKeyObservationPort
 
 	// codex 用量响应头失败面派发（failure-dispatch.ts:340-344；optional：
-	// gateway→jobs record-maintenance 快照通道在建，组合根暂持 nil，
-	// gatewaycodex 对 nil 派发器静默跳过）。
+	// gateway→jobs record-maintenance 快照通道已接——compose.go 经
+	// newCodexUsageHeadersChannelDispatcher 把快照 job 落 record_maintenance_jobs
+	// v2 快照行；gatewaycodex 对 nil 派发器仍静默跳过，仅测试/降级装配传 nil）。
 	CodexUsageHeadersDispatcher gatewaycodex.CodexUsageHeadersDispatcher
 
 	// 失败派发链装配（chain_request_failure_health.go / chain_turn_probe_store.go /
