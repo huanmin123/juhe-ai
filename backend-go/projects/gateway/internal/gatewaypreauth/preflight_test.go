@@ -433,6 +433,12 @@ func TestRouteCoordinatorOwnerContract(t *testing.T) {
 	if err != nil || !decision.Attempted || pendingReason != "capacity_wait_timeout" {
 		t.Fatalf("decision = %+v err = %v reason = %q", decision, err, pendingReason)
 	}
+	// Node parity (F5-1): the preflight-time requestFallback carries no
+	// excludedAccountIds (preflight.ts:1078) — the exhausted set only exists
+	// on the dispatch loop.
+	if candidates := service.Candidates.(*fakeCandidates).lastFallbackInput; candidates == nil || candidates.ExcludedAccountIDs != nil {
+		t.Fatalf("requestFallback must pass no excluded account set: %+v", candidates)
+	}
 	if err := coordinator.CompleteFailure(context.Background(), gatewayrouting.GatewayRouteFinalFailure{
 		StatusCode: 429, ErrorCode: "gateway_capacity_exhausted", RetryAfterMs: int64Ptr(120),
 	}); err != nil {
@@ -440,6 +446,43 @@ func TestRouteCoordinatorOwnerContract(t *testing.T) {
 	}
 	if pendingFailure == nil || !isTemporarilyBlockedRouteFailure(pendingFailure) {
 		t.Fatalf("pendingFailure = %+v", pendingFailure)
+	}
+}
+
+// TestPrepareAPIKeyGroupFallbackDispatchContextExcludesExhausted pins the F5-1
+// pass-through: the dispatch-input exhausted set travels into the candidate
+// port (switchToFallbackGroup → excludedAccountIds, routes.ts:625).
+func TestPrepareAPIKeyGroupFallbackDispatchContextExcludesExhausted(t *testing.T) {
+	candidates := &fakeCandidates{fallbackFound: false}
+	service, _, _ := newTestService(t, func(s *Service) { s.Candidates = candidates })
+	excluded := map[string]struct{}{"acc_shared": {}}
+	result, err := service.PrepareAPIKeyGroupFallbackDispatchContext(context.Background(), APIKeyGroupFallbackDispatchInput{
+		Req:                &GatewayRequest{},
+		Reason:             "upstream_accounts_exhausted",
+		APIKeyRecord:       validRuntimeRow(),
+		SystemAccountID:    "system_1",
+		APIKeyID:           "key_1",
+		GroupID:            "group_1",
+		TrafficSource:      "gateway",
+		RequestLane:        "text",
+		ExcludedAccountIDs: excluded,
+		RoutePlanSnapshot:  gatewayrouting.RoutePlanSnapshot[string]{OrderedAllowedTargets: []string{"group_1", "group_2"}, Cursor: 0},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if result.Attempted {
+		t.Fatal("found=false must not attempt the fallback")
+	}
+	captured := candidates.lastFallbackInput
+	if captured == nil {
+		t.Fatal("candidate port was not consulted")
+	}
+	if captured.ExcludedAccountIDs == nil || len(captured.ExcludedAccountIDs) != 1 {
+		t.Fatalf("excluded set must pass through: %+v", captured.ExcludedAccountIDs)
+	}
+	if _, ok := captured.ExcludedAccountIDs["acc_shared"]; !ok {
+		t.Fatalf("excluded set content wrong: %+v", captured.ExcludedAccountIDs)
 	}
 }
 

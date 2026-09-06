@@ -341,6 +341,15 @@ type GroupFallbackCandidateInput struct {
 	GroupID                    string
 	RequestLane                string
 	RequestClientCompatibility string
+	// ExcludedAccountIDs mirrors excludedAccountIds: the request-level
+	// exhausted account set the dispatch loop hands to switchToFallbackGroup
+	// (routes.ts:568/625). Every candidate group window drops these accounts
+	// before the capability/model/quota gates
+	// (api-key-group-fallback-candidate.ts:79-84); nil keeps every account.
+	// The preflight-time requestFallback stays nil — Node passes no
+	// excludedAccountIds there (preflight.ts:1078), the set only exists on
+	// the dispatch loop.
+	ExcludedAccountIDs         map[string]struct{}
 	RoutePlanSnapshot          gatewayrouting.RoutePlanSnapshot[string]
 }
 

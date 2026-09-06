@@ -667,6 +667,10 @@ type APIKeyGroupFallbackDispatchInput struct {
 	TrafficSource              string
 	RequestLane                gatewayProtoLane
 	RequestClientCompatibility string
+	// ExcludedAccountIDs mirrors the switchToFallbackGroup exhaustedAccountIds
+	// (routes.ts:625); nil on the route-action fallback (Node resolveRouteAction
+	// passes none, routes.ts:449-478).
+	ExcludedAccountIDs         map[string]struct{}
 	RoutePlanSnapshot          gatewayrouting.RoutePlanSnapshot[string]
 }
 
@@ -688,6 +692,7 @@ func (s *Service) PrepareAPIKeyGroupFallbackDispatchContext(ctx context.Context,
 		SystemAccountID: input.SystemAccountID, GroupID: input.GroupID,
 		RequestLane:                string(input.RequestLane),
 		RequestClientCompatibility: input.RequestClientCompatibility,
+		ExcludedAccountIDs:         input.ExcludedAccountIDs,
 		RoutePlanSnapshot:          snapshot,
 	})
 	if err != nil {

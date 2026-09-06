@@ -121,6 +121,7 @@ func (p *CandidatePipeline) ResolveNextGroupFallbackCandidate(ctx context.Contex
 		GroupID:                    input.GroupID,
 		RequestLane:                input.RequestLane,
 		RequestClientCompatibility: input.RequestClientCompatibility,
+		ExcludedAccountIDs:         input.ExcludedAccountIDs,
 		RoutePlanSnapshot:          &input.RoutePlanSnapshot,
 	})
 	if err != nil || !found {

@@ -270,6 +270,18 @@ type FetchFirstAvailableUpstreamArgs struct {
 	WaitForRecoverableFailures     bool
 	AccountCircuitConfirmation     *gatewaycircuit.Confirmation
 	BypassKeyModelAdmission        bool
+	// CodexTurnAccountAvoidanceApplied / CodexTurnAvoidedAccountIDs mirror the
+	// preflight's codexTurnAccountAvoidanceApplied / codexTurnAvoidedAccountIds
+	// (routes.ts:890-892). Node filters the avoided accounts out of the
+	// dispatch list before every fetch attempt, with the last-resort reversal
+	// once everything else is exhausted (routes.ts:911-917 / 1060-1075 /
+	// 1454-1465); the Go engine internalizes that route loop, so the filter
+	// lives here. The reversal state is per call: a fallback group switch
+	// prepares a fresh context and calls the engine again, which resets it
+	// exactly like Node's codexTurnAvoidedFallbackEnabled=false on the switch
+	// (routes.ts:651).
+	CodexTurnAccountAvoidanceApplied bool
+	CodexTurnAvoidedAccountIDs       []string
 }
 
 // SpeedFirstCutoverReservationHandle mirrors preAcquiredConcurrency.
@@ -349,6 +361,28 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 			}
 		}
 		dispatchAccounts = filtered
+	}
+	// Codex turn avoidance (routes.ts:911-917): while the avoidance is applied
+	// the avoided accounts are filtered out of the dispatch list before any
+	// attempt; the circuit-confirmation path keeps the full list. When the
+	// filter empties the list the last-resort reversal fires immediately
+	// (routes.ts:1060-1075) — nothing has been exhausted inside this call yet.
+	codexTurnAvoided := stringSet(args.CodexTurnAvoidedAccountIDs)
+	codexTurnReversalFired := false
+	codexTurnAvoidanceActive := args.CodexTurnAccountAvoidanceApplied &&
+		len(codexTurnAvoided) > 0 && args.AccountCircuitConfirmation == nil
+	if codexTurnAvoidanceActive {
+		dispatchAccounts = filterCodexTurnAvoidedAccounts(dispatchAccounts, codexTurnAvoided, false)
+		if len(dispatchAccounts) == 0 {
+			if reversal := codexTurnReversalCandidates(args.Accounts, codexTurnAvoided, nil); len(reversal) > 0 {
+				codexTurnReversalFired = true
+				auditCapture.AddGatewayMetadata("client_source_avoided_accounts_last_resort", map[string]any{
+					"avoidedAccountIds":   args.CodexTurnAvoidedAccountIDs,
+					"exhaustedAccountIds": []string{},
+				})
+				dispatchAccounts = reversal
+			}
+		}
 	}
 	{
 		filtered := make([]AccountCandidate, 0, len(dispatchAccounts))
@@ -617,6 +651,7 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 	var cycleRecoverableAccountIDs map[string]struct{}
 	var pendingApiKeyFailures []PendingAccountApiKeyFailure
 
+codexTurnReversalPass:
 	for len(dispatchAccounts) > 0 {
 		cycleRecoverableAccountIDs = map[string]struct{}{}
 		capacityLimitFailures = nil
@@ -954,6 +989,27 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 			Message:                   "所有上游账户仍处于本地短期屏蔽",
 		}
 		break
+	}
+	// Codex turn last-resort reversal (routes.ts:1454-1465): before the caller
+	// moves to the group fallback, avoided accounts that were not exhaustively
+	// failed get one avoided-only pass. Fires at most once per call; a
+	// fallback group switch calls the engine fresh, which is the reset
+	// (routes.ts:651).
+	if codexTurnAvoidanceActive && !codexTurnReversalFired {
+		exhausted := nonRecoverableFailedAccountIDs(failedAccountIDs, recoverableFailedAccountIDs)
+		reversal := codexTurnReversalCandidates(args.Accounts, codexTurnAvoided, exhausted)
+		if len(reversal) > 0 {
+			codexTurnReversalFired = true
+			auditCapture.AddGatewayMetadata("client_source_avoided_accounts_last_resort", map[string]any{
+				"avoidedAccountIds":   args.CodexTurnAvoidedAccountIDs,
+				"exhaustedAccountIds": setToSlice(exhausted),
+			})
+			// A fresh pass: Node re-enters fetchFirstAvailableUpstream, whose
+			// last attempt starts undefined.
+			lastAttempt = nil
+			dispatchAccounts = reversal
+			goto codexTurnReversalPass
+		}
 	}
 
 	return UpstreamDispatchResult{}, &UpstreamAttemptError{

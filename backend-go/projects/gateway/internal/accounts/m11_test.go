@@ -8,6 +8,7 @@ package accounts
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -632,7 +633,10 @@ func TestM11TrafficMigrationContract(t *testing.T) {
 		t.Fatalf("missing migration: %d %v", code, missing)
 	}
 	// Happy path: temporary_unavailable source + the runtime session count 0
-	// (unwired port fallback).
+	// (nil-port degraded fallback: with the chain disabled the composition
+	// root keeps the port unwired and the route mirrors the Node IPC-miss
+	// `?? { migratedSessionCount: 0 }`; the wired contract is pinned in
+	// TestM11TrafficMigrationRuntimeMigratorWiring).
 	code, migrated := env.do(t, http.MethodPost, "/__aisys__/api/accounts/acc-src/traffic-migration",
 		`{"targetAccountId":"acc-dst"}`)
 	if code != http.StatusOK {
@@ -676,6 +680,128 @@ func TestM11TrafficMigrationContract(t *testing.T) {
 	if !seen {
 		t.Fatal("traffic migration operation log missing")
 	}
+}
+
+func TestM11TrafficMigrationRuntimeMigratorWiring(t *testing.T) {
+	env, store := newM11TestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+	groupID := "grp-default-" + adminID
+	bind := func(accountID string) {
+		t.Helper()
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		env.exec(t, `INSERT OR REPLACE INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, 1, ?, ?)`, adminID, groupID, accountID, now, now)
+	}
+	env.seedM11Account(t, "acc-src", adminID, "源账户", "api_key", "active", Credentials{"api_key": "sk-src"})
+	env.seedM11Account(t, "acc-dst", adminID, "目标账户", "api_key", "active", Credentials{"api_key": "sk-dst"})
+	bind("acc-src")
+	bind("acc-dst")
+
+	migrator := &fakeTrafficRuntimeMigrator{count: 3}
+	store.SetTrafficRuntimeMigrator(migrator)
+
+	// Wired port: the migrated session count flows through and the runtime
+	// input mirrors the route assembly (owner branch → no affinity scope, the
+	// preference scope rides the source group).
+	code, migrated := env.do(t, http.MethodPost, "/__aisys__/api/accounts/acc-src/traffic-migration",
+		`{"targetAccountId":"acc-dst"}`)
+	if code != http.StatusOK {
+		t.Fatalf("migration: %d %v", code, migrated)
+	}
+	if dataMap(t, migrated)["migratedSessionCount"] != float64(3) {
+		t.Fatalf("migratedSessionCount must surface the wired port result: %v", dataMap(t, migrated))
+	}
+	if len(migrator.inputs()) != 1 {
+		t.Fatalf("migrator calls = %d", len(migrator.inputs()))
+	}
+	input := migrator.inputs()[0]
+	if input.SourceAccountID != "acc-src" || input.TargetAccountID != "acc-dst" || input.PreferMigratedSessions {
+		t.Fatalf("runtime input: %+v", input)
+	}
+	if input.AffinityScope != nil {
+		t.Fatalf("owner branch must not carry an affinity scope: %+v", input.AffinityScope)
+	}
+	if input.PreferenceScope == nil || input.PreferenceScope.SystemAccountID != adminID || input.PreferenceScope.GroupID != groupID {
+		t.Fatalf("preference scope: %+v", input.PreferenceScope)
+	}
+
+	// Failure path: the explicit error outlet (Node catch renders the
+	// message); the route never silently degrades to zero.
+	migrator.fail(errors.New("Redis 会话亲和迁移失败"))
+	env.exec(t, `UPDATE accounts SET status = 'active' WHERE id = 'acc-src'`)
+	code, failed := env.do(t, http.MethodPost, "/__aisys__/api/accounts/acc-src/traffic-migration",
+		`{"targetAccountId":"acc-dst"}`)
+	if code != http.StatusBadRequest || failed["message"] != "Redis 会话亲和迁移失败" {
+		t.Fatalf("migrator failure must surface explicitly: %d %v", code, failed)
+	}
+	// The committed DB effect stays durable (Node: the repository write is
+	// committed inside runLoggedOperationAsync before the runtime handover).
+	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = 'acc-src' AND status = 'temporary_unavailable'`) != 1 {
+		t.Fatal("source row must stay migrated after the runtime failure")
+	}
+	// The operation log lands before the handover (Node ordering), so the
+	// failed runtime migration keeps its audit trail.
+	seen := false
+	for _, action := range env.sink.actions() {
+		if action == "accounts.traffic_migration" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("traffic migration operation log missing on the failure path")
+	}
+
+	// unchanged branch: preferMigratedSessions=true and no preference write.
+	migrator.reset(5)
+	env.exec(t, `UPDATE accounts SET status = 'active' WHERE id = 'acc-src'`)
+	code, unchanged := env.do(t, http.MethodPost, "/__aisys__/api/accounts/acc-src/traffic-migration",
+		`{"targetAccountId":"acc-dst","sourceStatus":"unchanged"}`)
+	if code != http.StatusOK || dataMap(t, unchanged)["migratedSessionCount"] != float64(5) {
+		t.Fatalf("unchanged migration: %d %v", code, unchanged)
+	}
+	unchangedInput := migrator.inputs()[len(migrator.inputs())-1]
+	if !unchangedInput.PreferMigratedSessions || unchangedInput.PreferenceScope != nil {
+		t.Fatalf("unchanged runtime input: %+v", unchangedInput)
+	}
+}
+
+// fakeTrafficRuntimeMigrator records the runtime handover inputs and replays
+// the canned outcome.
+type fakeTrafficRuntimeMigrator struct {
+	mu    sync.Mutex
+	calls []TrafficRuntimeMigrationInput
+	count int
+	err   error
+}
+
+func (f *fakeTrafficRuntimeMigrator) MigrateOpenAIAccountTrafficRuntime(_ context.Context, input TrafficRuntimeMigrationInput) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, input)
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.count, nil
+}
+
+func (f *fakeTrafficRuntimeMigrator) inputs() []TrafficRuntimeMigrationInput {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]TrafficRuntimeMigrationInput(nil), f.calls...)
+}
+
+func (f *fakeTrafficRuntimeMigrator) fail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *fakeTrafficRuntimeMigrator) reset(count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.count = count
+	f.err = nil
 }
 
 func TestM11ReturnAuthorizationContract(t *testing.T) {

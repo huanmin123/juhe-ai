@@ -46,6 +46,11 @@ type workerAssembly struct {
 
 	settings workerSettingsSource
 
+	// scheduleIntervals 解析 SettingsIntervalJobNames 的系统设置驱动间隔
+	// （F3-1，worker_schedule_settings.go 装配）；nil 时全部按注册表默认
+	// 间隔调度。测试可直接注入 mock 源。
+	scheduleIntervals jobregistry.SettingsInterval
+
 	pools     []*pgpool.Handle
 	sqliteDBs []*sql.DB
 	closers   []func() error
@@ -174,6 +179,11 @@ func buildWorkerAssembly(config workerConfig, logger *slog.Logger) (*workerAssem
 // store 打开 → schema 校验/初始化 → 启动恢复（taskruns）→ 一次性脏标记
 // （group stats，PG）→ 任务注册。
 func (a *workerAssembly) wireFamilies(ctx context.Context) error {
+	// F3-1：设置驱动间隔源先于全部任务注册装配（Node scheduler.schedule 的
+	// settingsNumber 在同一时点读取）。
+	if err := a.wireScheduleSettings(); err != nil {
+		return err
+	}
 	if err := a.wireTaskRunsFamily(ctx); err != nil {
 		return err
 	}
@@ -662,11 +672,19 @@ func (a *workerAssembly) scheduleWiredJob(name string, task jobsched.Task) {
 // scheduleWiredJobWithSettings 是 scheduleWiredJob 的间隔覆盖变体（env 驱动
 // 的可变 interval，如 account-list-availability-projection-maintenance 的
 // accountListAvailabilityProjectionIntervalMs；T6b 冻结清单 §4）。
+//
+// F3-1：除调用方显式传入的 settings 覆盖外，统一叠加组合根的系统设置间隔
+// 源（a.scheduleIntervals），让 SettingsIntervalJobNames 的设置间隔真正
+// 生效；两个源对同一 job 不会同时命中（设置驱动 job 不用显式覆盖注册），
+// 显式覆盖优先经 ResolveScheduleForDriver 的既有语义保持。
 func (a *workerAssembly) scheduleWiredJobWithSettings(name string, settings jobregistry.SettingsInterval, task jobsched.Task) {
 	entry, ok := jobregistry.Find(name)
 	if !ok || entry.GoStatus != jobregistry.GoWired {
 		a.logger.Warn("拒绝注册非 GoWired 任务", "job", name)
 		return
+	}
+	if settings == nil {
+		settings = a.scheduleIntervals
 	}
 	schedule, ok := jobregistry.ResolveScheduleForDriver(name, settings, a.config.Driver)
 	if !ok {

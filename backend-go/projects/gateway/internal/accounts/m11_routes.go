@@ -541,16 +541,9 @@ func (d *Deps) trafficMigration(selfOnly bool) http.HandlerFunc {
 			kernel.WriteError(w, http.StatusNotFound, "账户不存在或无权迁移")
 			return
 		}
-		// Gateway runtime session handover (Node
-		// migrateServerOpenAIAccountTrafficRuntime ?? { migratedSessionCount: 0 }).
-		migrated := 0
-		if migrator := d.Store.wiredTrafficRuntimeMigrator(); migrator != nil {
-			if count, err := migrator.MigrateOpenAIAccountTrafficRuntime(r.Context(), buildRuntimeMigrationInput(result, input, access)); err == nil {
-				migrated = count
-			} else {
-				println("accounts slice traffic runtime migration failed: " + err.Error())
-			}
-		}
+		// Operation log first (Node runLoggedOperationAsync lands the log
+		// before the runtime handover), so a runtime migration failure keeps
+		// the audit trail like the Node route.
 		if d.Sink != nil {
 			owner := result.SourceAccount.OwnerSystemAccountID
 			targetOwner := result.TargetAccount.OwnerSystemAccountID
@@ -580,6 +573,20 @@ func (d *Deps) trafficMigration(selfOnly bool) http.HandlerFunc {
 				},
 			}, r)
 			_ = targetOwner
+		}
+		// Gateway runtime session handover (Node
+		// migrateServerOpenAIAccountTrafficRuntime). A wired-port failure is
+		// an explicit error outlet — the Node catch renders the message —
+		// never a silent zero-count degradation. A nil port (chain disabled)
+		// keeps the { migratedSessionCount: 0 } fallback.
+		migrated := 0
+		if migrator := d.Store.wiredTrafficRuntimeMigrator(); migrator != nil {
+			count, migrateErr := migrator.MigrateOpenAIAccountTrafficRuntime(r.Context(), buildRuntimeMigrationInput(result, input, access))
+			if migrateErr != nil {
+				kernel.WriteBadRequest(w, migrateErr.Error())
+				return
+			}
+			migrated = count
 		}
 		setNoStoreHeaders(w)
 		payload := map[string]any{

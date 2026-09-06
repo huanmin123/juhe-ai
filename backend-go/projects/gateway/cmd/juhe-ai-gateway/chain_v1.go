@@ -356,6 +356,12 @@ type v1DispatchLoop struct {
 	actionVisitedGroups map[string]bool
 	enteredGroups       map[string]bool
 	fallbackSwitches    int
+	// exhaustedAccounts is the request-level exhausted set (Node
+	// exhaustedAccountIds, routes.ts:568): every non-recoverable failed
+	// account of an UpstreamAttemptError enters it, and switchToFallbackGroup
+	// hands it to the fallback candidate window as excludedAccountIds
+	// (routes.ts:625).
+	exhaustedAccounts map[string]struct{}
 }
 
 // v1FallbackSwitch mirrors the switchToFallbackGroup return union
@@ -397,8 +403,12 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			RequestClientCompatibility:      current.ClientStrategy.RequestClientCompatibility,
 			ModelPriority:                   current.ModelPriority,
 			AllowPrecheckHalfOpen:           current.PrecheckHalfOpenEligible,
-			RequestCoordination:             coordination,
-			WaitForRecoverableFailures:      true,
+			// F5-2: the codex turn (client source) avoidance filter + last-
+			// resort reversal ride the dispatch loop (Node routes.ts:911-917).
+			CodexTurnAccountAvoidanceApplied: current.CodexTurnAccountAvoidanceApplied,
+			CodexTurnAvoidedAccountIDs:       current.CodexTurnAvoidedAccountIDs,
+			RequestCoordination:              coordination,
+			WaitForRecoverableFailures:       true,
 		})
 		if dispatchErr == nil {
 			// ---- response piping + finalization (response/finalization.ts) ----
@@ -475,6 +485,9 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 	var attempt *gatewaydispatch.UpstreamAttemptError
 	if errors.As(dispatchErr, &attempt) {
 		if !attempt.TerminalUpstreamFailure {
+			// Node 1425-1433: only the non-recoverable failed accounts enter
+			// the exhausted set; recoverable failures stay retryable.
+			l.exhaustDispatchFailedAccounts(attempt)
 			// Node 1469-1478: try the fallback group before the exhaustion
 			// exit. A switched fallback continues the loop; a completed one
 			// means the fallback preflight settled the request.
@@ -662,6 +675,29 @@ func (l *v1DispatchLoop) actionFallbackOptions(action *gatewaypreauth.RouteActio
 	}
 }
 
+// exhaustDispatchFailedAccounts adds the attempt's non-recoverable failed
+// accounts to the request-level exhausted set (Node routes.ts:1425-1433:
+// failedAccountIds minus recoverableAccountIds; recoverable failures keep the
+// account retryable).
+func (l *v1DispatchLoop) exhaustDispatchFailedAccounts(attempt *gatewaydispatch.UpstreamAttemptError) {
+	if len(attempt.FailedAccountIDs) == 0 {
+		return
+	}
+	recoverable := make(map[string]struct{}, len(attempt.RecoverableAccountIDs))
+	for _, id := range attempt.RecoverableAccountIDs {
+		recoverable[id] = struct{}{}
+	}
+	if l.exhaustedAccounts == nil {
+		l.exhaustedAccounts = make(map[string]struct{})
+	}
+	for _, id := range attempt.FailedAccountIDs {
+		if _, isRecoverable := recoverable[id]; isRecoverable {
+			continue
+		}
+		l.exhaustedAccounts[id] = struct{}{}
+	}
+}
+
 // switchToFallbackGroup mirrors switchToFallbackGroup (routes.ts:570-662).
 func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason string) (v1FallbackSwitch, error) {
 	current := l.current
@@ -711,7 +747,10 @@ func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason strin
 		TrafficSource:              current.UsageContext.TrafficSource,
 		RequestLane:                current.RequestLane,
 		RequestClientCompatibility: current.ClientStrategy.RequestClientCompatibility,
-		RoutePlanSnapshot:          current.RoutePlanSnapshot,
+		// Node 625: the request-level exhausted set filters every fallback
+		// candidate group window.
+		ExcludedAccountIDs: l.exhaustedAccounts,
+		RoutePlanSnapshot:  current.RoutePlanSnapshot,
 	})
 	if err != nil {
 		return "", err

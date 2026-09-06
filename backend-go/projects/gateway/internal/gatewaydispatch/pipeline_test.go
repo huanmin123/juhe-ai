@@ -382,6 +382,70 @@ func TestResolveNextGroupFallbackCandidate(t *testing.T) {
 	}
 }
 
+// TestResolveNextGroupFallbackCandidateExcludesExhaustedAccounts pins the F5-1
+// wiring: the request-level exhausted set (switchToFallbackGroup's
+// excludedAccountIds, routes.ts:625) removes shared accounts from every
+// candidate group window (api-key-group-fallback-candidate.ts:79-84), and a
+// group whose accounts are all exhausted is skipped instead of entered.
+func TestResolveNextGroupFallbackCandidateExcludesExhaustedAccounts(t *testing.T) {
+	pipeline, engine, _, _ := newPipeline(t)
+	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
+	engine.Cache = &fakeCacheFallback{
+		accounts: map[string][]AccountCandidate{
+			"group-2": testAccounts("a-shared", "b-1"),
+			"group-3": testAccounts("a-shared"),
+		},
+	}
+	apiKeyRecord := &gatewayruntimecache.GatewayAPIKeyRow{
+		ID: "apikey-1",
+		GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
+			{GroupID: "group-1", Status: "active", GroupEnabled: 1},
+			{GroupID: "group-2", Status: "active", GroupEnabled: 1},
+			{GroupID: "group-3", Status: "active", GroupEnabled: 1},
+		},
+	}
+	// Cross-group overlap: a-shared failed in group-1 enters the exhausted
+	// set and must not reappear in the group-2 fallback window.
+	candidate, found, err := pipeline.ResolveNextGroupFallbackCandidateForArgs(context.Background(), GroupFallbackArgs{
+		Req:                req,
+		Reason:             "upstream_accounts_exhausted",
+		APIKeyRecord:       apiKeyRecord,
+		SystemAccountID:    "system-1",
+		GroupID:            "group-1",
+		RequestLane:        "text",
+		ExcludedAccountIDs: map[string]struct{}{"a-shared": {}},
+	})
+	if err != nil {
+		t.Fatalf("ResolveNextGroupFallbackCandidate: %v", err)
+	}
+	if !found {
+		t.Fatal("expected a fallback candidate from group-2")
+	}
+	if candidate.GroupID != "group-2" {
+		t.Fatalf("candidate group = %s", candidate.GroupID)
+	}
+	if len(candidate.Accounts) != 1 || candidate.Accounts[0].ID != "b-1" {
+		t.Fatalf("exhausted account must be excluded from the candidate window: %#v", candidate.Accounts)
+	}
+	// A group whose accounts are all exhausted is skipped entirely: the scan
+	// continues and reports not-found when no later group has candidates.
+	_, found, err = pipeline.ResolveNextGroupFallbackCandidateForArgs(context.Background(), GroupFallbackArgs{
+		Req:                req,
+		Reason:             "upstream_accounts_exhausted",
+		APIKeyRecord:       apiKeyRecord,
+		SystemAccountID:    "system-1",
+		GroupID:            "group-2",
+		RequestLane:        "text",
+		ExcludedAccountIDs: map[string]struct{}{"a-shared": {}},
+	})
+	if err != nil {
+		t.Fatalf("resolve group-3: %v", err)
+	}
+	if found {
+		t.Fatal("a group with only exhausted accounts must be skipped")
+	}
+}
+
 func TestResolveNextGroupFallbackCandidateRuntimeDegradedSkipsAllDegraded(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
 	engine.Cache = &fakeCacheFallback{

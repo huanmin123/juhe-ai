@@ -107,6 +107,16 @@ func newTestEnv(t *testing.T) *testEnv {
 		// Return-authorization route surfaces (the authz return domain reads
 		// and writes these tables through internal/authz).
 		`CREATE TABLE IF NOT EXISTS resource_authorization_grants (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
+		// authz downstream sync (quota hourly window scope bindings) also
+		// writes through internal/authz on the grant write paths; the health
+		// input fanout joins accounts on the authorization-instance columns
+		// (mirrors authorized_reads_test.go accountsFixtureDDL shape).
+		`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, source_type TEXT NOT NULL, source_id TEXT NOT NULL, window_hours INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, scope_type, scope_id))`,
+		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (id TEXT PRIMARY KEY, version INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (id TEXT PRIMARY KEY, kind TEXT NOT NULL, reason TEXT NOT NULL, account_id TEXT NOT NULL, source_authorization_id TEXT, payload TEXT NOT NULL, created_at TEXT NOT NULL, processed_at TEXT)`,
+		`ALTER TABLE accounts ADD COLUMN resource_owner_system_account_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE accounts ADD COLUMN authorization_instance_authorization_id TEXT`,
+		`ALTER TABLE accounts ADD COLUMN authorization_instance_source_account_id TEXT`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)

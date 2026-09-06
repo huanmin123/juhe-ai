@@ -400,6 +400,9 @@ type fakeCandidates struct {
 	fallbackCandidate    *GroupFallbackCandidate
 	fallbackCandidateErr error
 	fallbackFound        bool
+	// lastFallbackInput captures the most recent fallback candidate input so
+	// tests can pin the field pass-through (F5-1 ExcludedAccountIDs).
+	lastFallbackInput *GroupFallbackCandidateInput
 }
 
 func (f *fakeCandidates) FilterCandidates(context.Context, CandidateFilterInput) (CandidateFilterResult, error) {
@@ -414,7 +417,9 @@ func (f *fakeCandidates) PrepareDispatchAccounts(context.Context, DispatchPrepar
 	}
 	return f.preparation, nil
 }
-func (f *fakeCandidates) ResolveNextGroupFallbackCandidate(context.Context, GroupFallbackCandidateInput) (GroupFallbackCandidate, bool, error) {
+func (f *fakeCandidates) ResolveNextGroupFallbackCandidate(ctx context.Context, input GroupFallbackCandidateInput) (GroupFallbackCandidate, bool, error) {
+	captured := input
+	f.lastFallbackInput = &captured
 	if f.fallbackCandidateErr != nil {
 		return GroupFallbackCandidate{}, false, f.fallbackCandidateErr
 	}

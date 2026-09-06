@@ -278,6 +278,43 @@ func (chainStubCapture) BindContext(gatewaypreauth.AuditGatewayContext) {}
 func (chainStubCapture) AddGatewayMetadata(string, map[string]any)      {}
 func (chainStubCapture) Finalize(gatewaypreauth.AuditFinalizeInput)     {}
 
+// TestV1DispatchLoopExhaustedAccounts pins the F5-1 request-level exhausted
+// set: non-recoverable failed accounts enter the set (Node routes.ts:1425-1433:
+// failedAccountIds minus recoverableAccountIds), it accumulates across
+// attempts, and switchToFallbackGroup hands it to the fallback input as
+// ExcludedAccountIds (routes.ts:625).
+func TestV1DispatchLoopExhaustedAccounts(t *testing.T) {
+	sink := &recordingFailureSink{}
+	loop := newV1TestLoop(t, sink)
+
+	loop.exhaustDispatchFailedAccounts(&gatewaydispatch.UpstreamAttemptError{
+		Message:               "failed",
+		FailedAccountIDs:      []string{"acc_1", "acc_2"},
+		RecoverableAccountIDs: []string{"acc_2"},
+	})
+	if len(loop.exhaustedAccounts) != 1 {
+		t.Fatalf("exhausted = %v", loop.exhaustedAccounts)
+	}
+	if _, exhausted := loop.exhaustedAccounts["acc_1"]; !exhausted {
+		t.Fatalf("acc_1 must be exhausted: %v", loop.exhaustedAccounts)
+	}
+	// Recoverable failures keep the account retryable.
+	if _, exhausted := loop.exhaustedAccounts["acc_2"]; exhausted {
+		t.Fatalf("recoverable acc_2 must not be exhausted: %v", loop.exhaustedAccounts)
+	}
+	// The set accumulates across attempts (Node: one set per request).
+	loop.exhaustDispatchFailedAccounts(&gatewaydispatch.UpstreamAttemptError{
+		Message:          "failed again",
+		FailedAccountIDs: []string{"acc_3"},
+	})
+	if len(loop.exhaustedAccounts) != 2 {
+		t.Fatalf("exhausted after second attempt = %v", loop.exhaustedAccounts)
+	}
+	if loop.exhaustedAccounts == nil {
+		t.Fatal("exhausted set must be initialized for the fallback handover")
+	}
+}
+
 // TestV1DispatchLoopExhaustedCopyBranches covers the two fixed-copy branches
 // of renderDispatchExhausted plus the unexpected-error contract.
 func TestV1DispatchLoopExhaustedCopyBranches(t *testing.T) {

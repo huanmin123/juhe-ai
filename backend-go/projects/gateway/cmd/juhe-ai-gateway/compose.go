@@ -837,6 +837,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			return nil, fmt.Errorf("compose accounts runtime reset bridge: %w", resetBridgeErr)
 		}
 		accountStore.SetRuntimeResetEffects(resetBridge)
+		// M11 runtime handover assembly (F1-1): the traffic-migration route
+		// reaches the gateway session affinity through this bridge (Node
+		// migrateServerOpenAIAccountTrafficRuntime local branch). With the
+		// chain disabled the port stays nil and the route keeps its
+		// { migratedSessionCount: 0 } degraded contract.
+		accountStore.SetTrafficRuntimeMigrator(trafficRuntimeMigratorBridge{affinity: chainServices.Identity.Affinity})
 		// Shutdown order is LIFO: services registered first close last, after
 		// the chain drained its usage buffer.
 		composed.shutdowns = append(composed.shutdowns, chainServices.Close)

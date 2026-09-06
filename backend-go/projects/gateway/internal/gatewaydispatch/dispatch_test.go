@@ -396,3 +396,141 @@ func TestIsTransientSameAccountHttpStatus(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// F5-2: the codex turn (client source) avoidance filter + last-resort reversal
+// (Node routes.ts:911-917 / 1060-1075 / 1454-1465, engine-internalized).
+// ---------------------------------------------------------------------------
+
+func codexTurnDispatchArgs(t *testing.T, req *gatewaypreauth.GatewayRequest, accounts []AccountCandidate, audit *frozenAudit, avoided []string) FetchFirstAvailableUpstreamArgs {
+	t.Helper()
+	args := dispatchArgs(t, req, accounts)
+	args.AuditCapture = AuditCapture{Context: audit, Sink: audit.sink}
+	args.CodexTurnAccountAvoidanceApplied = true
+	args.CodexTurnAvoidedAccountIDs = avoided
+	return args
+}
+
+// TestFetchFirstAvailableUpstreamCodexTurnAvoidanceFilter: while the avoidance
+// is applied the avoided accounts are filtered out of the dispatch list even
+// when they sit in front of the fresh ones.
+func TestFetchFirstAvailableUpstreamCodexTurnAvoidanceFilter(t *testing.T) {
+	avoidedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-avoided"}`))
+	}))
+	defer avoidedUpstream.Close()
+	freshUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-fresh"}`))
+	}))
+	defer freshUpstream.Close()
+
+	engine, driver, _ := newTestEngine(t)
+	driver.urlByAccount = map[string][]string{
+		"a-1": {avoidedUpstream.URL + "/v1/chat/completions"},
+		"a-2": {freshUpstream.URL + "/v1/chat/completions"},
+	}
+	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+	audit := &frozenAudit{sink: &fakeAuditSink{}}
+	args := codexTurnDispatchArgs(t, req, testAccounts("a-1", "a-2"), audit, []string{"a-1"})
+	result, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
+	if err != nil {
+		t.Fatalf("FetchFirstAvailableUpstream: %v", err)
+	}
+	if result.Account.ID != "a-2" {
+		t.Fatalf("fresh account must be dispatched, got %s", result.Account.ID)
+	}
+}
+
+// TestFetchFirstAvailableUpstreamCodexTurnLastResortReversal: the avoided
+// accounts get one avoided-only pass once every fresh account failed, audited
+// as client_source_avoided_accounts_last_resort.
+func TestFetchFirstAvailableUpstreamCodexTurnLastResortReversal(t *testing.T) {
+	var mu sync.Mutex
+	freshHits, avoidedHits := 0, 0
+	freshUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		freshHits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream down","type":"server_error","code":"upstream_error"}}`))
+	}))
+	defer freshUpstream.Close()
+	avoidedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		avoidedHits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-avoided-ok"}`))
+	}))
+	defer avoidedUpstream.Close()
+
+	engine, driver, _ := newTestEngine(t)
+	driver.urlByAccount = map[string][]string{
+		"a-1": {freshUpstream.URL + "/v1/chat/completions"},
+		"a-2": {avoidedUpstream.URL + "/v1/chat/completions"},
+	}
+	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+	audit := &frozenAudit{sink: &fakeAuditSink{}}
+	args := codexTurnDispatchArgs(t, req, testAccounts("a-1", "a-2"), audit, []string{"a-2"})
+	result, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
+	if err != nil {
+		t.Fatalf("FetchFirstAvailableUpstream: %v", err)
+	}
+	if result.Account.ID != "a-2" {
+		t.Fatalf("the avoided account must serve the last-resort pass, got %s", result.Account.ID)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// The fresh account burns its same-account retries on the 500 before the
+	// reversal; the avoided account must be attempted exactly once, only
+	// after that.
+	if avoidedHits != 1 || freshHits < 1 {
+		t.Fatalf("hits: fresh=%d avoided=%d (the avoided account must not be tried before the reversal)", freshHits, avoidedHits)
+	}
+	reversalAudited := false
+	for _, label := range audit.metadata {
+		if label == "client_source_avoided_accounts_last_resort" {
+			reversalAudited = true
+		}
+	}
+	if !reversalAudited {
+		t.Fatalf("last-resort reversal must be audited: %v", audit.metadata)
+	}
+}
+
+// TestFetchFirstAvailableUpstreamCodexTurnEntryReversal: when the filter
+// empties the dispatch list at entry, the reversal fires before anything is
+// dispatched (routes.ts:1060-1075).
+func TestFetchFirstAvailableUpstreamCodexTurnEntryReversal(t *testing.T) {
+	avoidedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-avoided-entry"}`))
+	}))
+	defer avoidedUpstream.Close()
+
+	engine, driver, _ := newTestEngine(t)
+	driver.urlByAccount = map[string][]string{
+		"a-1": {avoidedUpstream.URL + "/v1/chat/completions"},
+	}
+	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+	audit := &frozenAudit{sink: &fakeAuditSink{}}
+	args := codexTurnDispatchArgs(t, req, testAccounts("a-1"), audit, []string{"a-1"})
+	result, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
+	if err != nil {
+		t.Fatalf("FetchFirstAvailableUpstream: %v", err)
+	}
+	if result.Account.ID != "a-1" {
+		t.Fatalf("the avoided account must serve the entry reversal, got %s", result.Account.ID)
+	}
+	reversalAudited := false
+	for _, label := range audit.metadata {
+		if label == "client_source_avoided_accounts_last_resort" {
+			reversalAudited = true
+		}
+	}
+	if !reversalAudited {
+		t.Fatalf("entry reversal must be audited: %v", audit.metadata)
+	}
+}

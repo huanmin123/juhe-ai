@@ -74,7 +74,12 @@
 
 权威表：`backend-go/projects/jobs/internal/jobregistry/schedule.go`（`schedules()`）；
 注册门禁：`worker_assembly.go scheduleWiredJob` 只注册 `GoStatus = GoWired` 的 job；
-设置间隔映射：`jobregistry.SettingsIntervalJobNames()`。
+设置间隔映射：`jobregistry.SettingsIntervalJobNames()`；生产消费方为组合根
+`worker_schedule_settings.go`（F3-1 接线：`wireScheduleSettings` 在装配期经
+`internal/jobssettings` 读模型按 `jobsScheduleIntervalSpecs` 的 Node
+`settingsNumber` 边界解析间隔，传入 `ResolveScheduleForDriver`；interval 与
+Node 一样在 schedule() 时固定，改设置于下次装配生效；读取失败 warn 回落
+注册表默认间隔）。
 T6b 后模式分叉权威表：`jobregistry.ModeConstraints()` +
 `ResolveScheduleForDriver(jobName, settings, databaseDriver)`
 （`usage-overview-windows-refresh` SQLite=30min / PG=5min、
@@ -85,7 +90,7 @@ T6b 后模式分叉权威表：`jobregistry.ModeConstraints()` +
 
 | job | Node 两分支参数 | Go `schedules()` | 判定 |
 | --- | --- | --- | --- |
-| system-metrics-sample / usage-stats-aggregation / client-ip-stats-aggregation / group-account-stats-refresh / usage-hot-window-refresh / usage-stats-consistency-check / account-quality-refresh | 见 2.1 | 与 Node 一致；设置驱动间隔经 `SettingsIntervalJobNames` | 一致 |
+| system-metrics-sample / usage-stats-aggregation / client-ip-stats-aggregation / group-account-stats-refresh / usage-hot-window-refresh / usage-stats-consistency-check / account-quality-refresh | 见 2.1 | 与 Node 一致；设置驱动间隔经 `SettingsIntervalJobNames` → 组合根 `worker_schedule_settings.go` 消费（F3-1；`system-metrics-sample` 为 GoEquivalent，由 Go runtime metrics sampler 等价接管，不经本调度路径） | 一致（F3-1 落地） |
 | usage-rank-snapshots-refresh | stage 集合按模式分叉（PG 剔除 ai_performance_summary_windows） | 单一注册；stage 集合经 `rankSnapshotCoreStages(postgres)` 按模式消费（T6b） | 一致（T6b 落地） |
 | ai-performance-summary-windows-refresh | 仅 PG 分支注册 | `ModeConstraint.PostgresOnly`：仅 PG 分支注册；SQLite 分支 stage 并入 usage-rank-snapshots-refresh（T6b） | 一致（T6b 落地） |
 | system-metrics-trend-windows-refresh / authorization-usage-range-windows-refresh | 两分支一致 | 与 Node 一致 | 一致 |
