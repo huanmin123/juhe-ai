@@ -231,6 +231,9 @@ function Start-GoProject {
 
 if (-not (Test-CommandExists 'node')) { throw 'Node.js LTS is required. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) before running this script.' }
 $env:NODE_ENV = if ($env:NODE_ENV) { $env:NODE_ENV } else { 'production' }
+# go-only release packages intentionally omit the archived backend/ tree.
+# Create its runtime configuration root before the first .env write.
+New-Item -ItemType Directory -Force 'backend' | Out-Null
 if (-not (Test-Path -LiteralPath 'backend/.env')) {
   if (Test-Path -LiteralPath 'backend/.env.example') {
     Copy-Item -LiteralPath 'backend/.env.example' -Destination 'backend/.env'

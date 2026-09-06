@@ -259,6 +259,9 @@ run_go_maintenance_bootstrap() {
   (cd backend && "$binary" "${bootstrap_args[@]}")
 }
 
+# go-only release packages intentionally omit the archived backend/ tree.
+# Create its runtime configuration root before the first .env write.
+mkdir -p backend
 if [ ! -f backend/.env ]; then
   if [ -f backend/.env.example ]; then
     cp backend/.env.example backend/.env

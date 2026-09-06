@@ -30,6 +30,7 @@ assertLauncherForwardsGatewayOwnershipGates()
 assertLauncherForwardsGatewayJobsOrigins()
 assertLauncherForwardsJ2PathsAndOwner()
 assertLauncherForwardsGoRuntimeMetricsConfig()
+assertReleaseScriptsCreateGoOnlyBackendRoot()
 
 console.log('release Go project launcher regression passed')
 
@@ -184,6 +185,19 @@ function assertLauncherForwardsGatewayJobsOrigins() {
   } finally {
     gateway.cleanup()
   }
+}
+
+function assertReleaseScriptsCreateGoOnlyBackendRoot() {
+  assert.match(
+    shellSource,
+    /mkdir -p backend\r?\nif \[ ! -f backend\/\.env \]; then/u,
+    'Unix go-only startup must create the omitted backend root before writing backend/.env'
+  )
+  assert.match(
+    powershellSource,
+    /New-Item -ItemType Directory -Force 'backend' \| Out-Null\r?\nif \(-not \(Test-Path -LiteralPath 'backend\/\.env'\)\)/u,
+    'Windows go-only startup must create the omitted backend root before writing backend/.env'
+  )
 }
 
 function assertLauncherForwardsJ2PathsAndOwner() {
