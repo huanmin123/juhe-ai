@@ -17,15 +17,17 @@ type fakeTestTaskRepo struct {
 	running        map[string]*ManualTestTaskRecord
 	completed      []string
 	failed         map[string]string
+	resultJSON     map[string]string
 	canceled       []string
 	messages       map[string]string
 }
 
 func newFakeTestTaskRepo() *fakeTestTaskRepo {
 	return &fakeTestTaskRepo{
-		running:  map[string]*ManualTestTaskRecord{},
-		failed:   map[string]string{},
-		messages: map[string]string{},
+		running:    map[string]*ManualTestTaskRecord{},
+		failed:     map[string]string{},
+		resultJSON: map[string]string{},
+		messages:   map[string]string{},
 	}
 }
 
@@ -53,17 +55,19 @@ func (f *fakeTestTaskRepo) MarkRunning(_ context.Context, taskID string) (*Manua
 	return task, nil
 }
 
-func (f *fakeTestTaskRepo) Complete(_ context.Context, taskID string, _ ManualTestTaskExecutorResult, _ *string) error {
+func (f *fakeTestTaskRepo) Complete(_ context.Context, taskID string, result ManualTestTaskExecutorResult, _ *string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.completed = append(f.completed, taskID)
+	f.resultJSON[taskID] = result.ResultJSON
 	return nil
 }
 
-func (f *fakeTestTaskRepo) Fail(_ context.Context, taskID, message string, _ *string) error {
+func (f *fakeTestTaskRepo) Fail(_ context.Context, taskID, message, resultJSON string, _ *string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failed[taskID] = message
+	f.resultJSON[taskID] = resultJSON
 	return nil
 }
 
@@ -213,6 +217,32 @@ func TestManualTestQueueExecutorFailureFailsTask(t *testing.T) {
 	queue.drain(context.Background())
 	if repo.failed["task-err"] != "upstream exploded" {
 		t.Fatalf("fail message = %q", repo.failed["task-err"])
+	}
+}
+
+// 诊断失败带结果信封 → fail(message, resultJSON)；诊断成功 → complete 带
+// 信封（result_json 写回路径）。
+func TestManualTestQueueCarriesResultJSON(t *testing.T) {
+	repo := newFakeTestTaskRepo()
+	repo.running["task-fail"] = manualTestTask("task-fail")
+	repo.running["task-ok"] = manualTestTask("task-ok")
+	queue, err := NewManualTestQueue(repo, func(_ context.Context, task ManualTestTaskRecord, _ ProgressReporter) (ManualTestTaskExecutorResult, error) {
+		if task.ID == "task-ok" {
+			return ManualTestTaskExecutorResult{Success: true, Message: "测试通过", ResultJSON: `{"success":true}`}, nil
+		}
+		return ManualTestTaskExecutorResult{Success: false, Message: "上游拒绝", ResultJSON: `{"success":false}`}, nil
+	}, testQueueConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue.EnqueueLocal("task-fail")
+	queue.EnqueueLocal("task-ok")
+	queue.drain(context.Background())
+	if repo.failed["task-fail"] != "上游拒绝" || repo.resultJSON["task-fail"] != `{"success":false}` {
+		t.Fatalf("fail 透传 = %q / %q", repo.failed["task-fail"], repo.resultJSON["task-fail"])
+	}
+	if len(repo.completed) != 1 || repo.completed[0] != "task-ok" || repo.resultJSON["task-ok"] != `{"success":true}` {
+		t.Fatalf("complete 透传 = %v / %q", repo.completed, repo.resultJSON["task-ok"])
 	}
 }
 

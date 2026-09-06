@@ -145,6 +145,12 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 		return err
 	}
 
+	// 账户列表可用性投影族（LoadItems 物化载荷 + 投影维护；依赖探针族
+	// 凭据解码与 OAuth 族 schedule 同步）。
+	if err := a.wireListProjectionFamily(ctx, business, store); err != nil {
+		return err
+	}
+
 	// ---- normal-route-speed-first-recovery-probe ----
 	redisConfig := proberepo.SpeedFirstRedisConfig{
 		URL:       a.config.RedisStateURL,

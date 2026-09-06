@@ -57,6 +57,9 @@ type workerAssembly struct {
 	// 电路族（worker_circuit_jobs.go）的恢复目标解析复用。
 	probeRepoStore      *proberepo.Store
 	circuitProbeService *accountprobe.Service
+	// manualTestQueue 由 wireManualTestFamily 装配（worker_manualtest.go）；
+	// nil 表示本族 disabled，派发回调保持 503 不可用语义。
+	manualTestQueue *opsjobs.ManualTestQueue
 	// wiredTasks 记录已注册（含租约包裹）的任务闭包，供测试/运维入口
 	// 单轮执行；生产调度仍只经 scheduler。
 	wiredTasks map[string]jobsched.Task
@@ -190,6 +193,9 @@ func (a *workerAssembly) wireFamilies(ctx context.Context) error {
 		return err
 	}
 	if err := a.wireProbeFamily(ctx); err != nil {
+		return err
+	}
+	if err := a.wireManualTestFamily(ctx); err != nil {
 		return err
 	}
 	registerDisabledJobsStartup(a, a.logger)
@@ -632,20 +638,15 @@ func (l slogWriterLogger) Error(msg string, fields map[string]any) {
 	l.logger.Error(msg, "fields", fields)
 }
 
-// wireDispatchHandler 把 internalapi 账户测试派发 handler 挂到 loopback mux
-// （由 main 的 jobsHTTPHandler 消费）；账号测试执行器（gateway 域诊断链）
-// 未迁移前派发回调返回 false（503 服务暂不可用，任务留在 queued 由
-// queued-max-wait sweep 收口），不伪造受理。
+// wireDispatchHandler 把 internalapi 账户测试派发/取消 handler 挂到 loopback
+// mux（由 main 的 jobsHTTPHandler 消费）；手动测试族未接线时派发回调返回
+// false（503 服务暂不可用，任务留在 queued 由 queued-max-wait sweep 收口），
+// 不伪造受理。
 func (a *workerAssembly) wireDispatchHandler() {
 	if !a.config.InternalAPIEnabled || a.config.Secret == "" {
 		return
 	}
-	a.dispatchHandler = internalapi.NewAccountTestDispatchHandler(internalapi.AccountTestDispatchRouterOptions{
-		Secret: a.config.Secret,
-		Dispatch: func(ctx context.Context, taskID string) (bool, error) {
-			return false, nil
-		},
-	})
+	a.dispatchHandler = internalapi.NewAccountTestDispatchHandler(a.manualTestDispatchOptions(a.config.Secret))
 }
 
 // scheduleWiredJob 按注册表登记的调度参数注册一个 GoWired 任务，并统一
@@ -655,12 +656,19 @@ func (a *workerAssembly) wireDispatchHandler() {
 // usage-overview-windows-refresh 的 SQLite 30min、usage-scope-range/ai-
 // performance 的分支独占注册）；反向模式返回 !ok 时拒绝注册。
 func (a *workerAssembly) scheduleWiredJob(name string, task jobsched.Task) {
+	a.scheduleWiredJobWithSettings(name, nil, task)
+}
+
+// scheduleWiredJobWithSettings 是 scheduleWiredJob 的间隔覆盖变体（env 驱动
+// 的可变 interval，如 account-list-availability-projection-maintenance 的
+// accountListAvailabilityProjectionIntervalMs；T6b 冻结清单 §4）。
+func (a *workerAssembly) scheduleWiredJobWithSettings(name string, settings jobregistry.SettingsInterval, task jobsched.Task) {
 	entry, ok := jobregistry.Find(name)
 	if !ok || entry.GoStatus != jobregistry.GoWired {
 		a.logger.Warn("拒绝注册非 GoWired 任务", "job", name)
 		return
 	}
-	schedule, ok := jobregistry.ResolveScheduleForDriver(name, nil, a.config.Driver)
+	schedule, ok := jobregistry.ResolveScheduleForDriver(name, settings, a.config.Driver)
 	if !ok {
 		a.logger.Warn("任务在当前 databaseDriver 分支不注册（Node 调度分支冻结）", "job", name, "driver", a.config.Driver)
 		return
@@ -780,6 +788,10 @@ func (a *workerAssembly) components() []supervisor.Component {
 			},
 		})
 	}
+	if a.manualTestQueue != nil {
+		name, run := manualTestQueueComponent(a.manualTestQueue, a.config.DrainTimeout, a.logger)
+		components = append(components, supervisor.Component{Name: name, Run: run})
+	}
 	return components
 }
 
@@ -806,6 +818,7 @@ func (a *workerAssembly) statusPayload() map[string]any {
 		"workerDisabledJobs":    a.disabledJobs,
 		"workerUsageWriter":     a.writer != nil,
 		"workerDispatchMounted": a.dispatchHandler != nil,
+		"workerManualTestQueue": a.manualTestQueue != nil,
 		"workerJobs":            snapshots,
 	}
 }

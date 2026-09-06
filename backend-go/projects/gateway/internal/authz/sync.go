@@ -29,13 +29,29 @@ type runtimeProjection struct {
 }
 
 // syncGrantRuntime mirrors syncResourceAuthorizationGrantRuntimeAsync
-// (:995-1000): direct grants fan to the single runtime row, team grants to
-// their member rows.
+// (:995-1003): direct grants fan to the single runtime row, team grants to
+// their member rows; the tail then resyncs the quota hourly-window scope
+// bindings (:1001) and enqueues the account-health input fanout (:1002)
+// inside the same transaction.
 func (s *Store) syncGrantRuntime(ctx context.Context, tx *sql.Tx, grant *grantRow, actor, now string) error {
 	if grant.GranteeType == "system_account" {
-		return s.syncUserGrantRuntime(ctx, tx, grant, actor, now)
+		if err := s.syncUserGrantRuntime(ctx, tx, grant, actor, now); err != nil {
+			return err
+		}
+	} else {
+		if err := s.syncTeamGrantRuntime(ctx, tx, grant, actor, now); err != nil {
+			return err
+		}
 	}
-	return s.syncTeamGrantRuntime(ctx, tx, grant, actor, now)
+	// Downstream tail (:1001-1002): the bindings rebuild reads the just-written
+	// runtime rows, so it must stay after the projection and inside the tx.
+	if err := s.syncGrantQuotaScopeBindings(ctx, tx, grant, now); err != nil {
+		return err
+	}
+	if _, err := s.enqueueGrantAccountHealthInputs(ctx, tx, grant, now); err != nil {
+		return err
+	}
+	return nil
 }
 
 // syncUserGrantRuntime mirrors syncUserGrantRuntimeAsync (:1249-1332).

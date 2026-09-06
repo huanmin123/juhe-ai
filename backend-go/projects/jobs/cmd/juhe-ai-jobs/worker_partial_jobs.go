@@ -21,13 +21,10 @@ type disabledJob struct {
 // normal-route-speed-first-recovery-probe 已由 wireProbeFamily 接管
 // （worker_probe_jobs.go），account-circuit-control-plane-maintenance /
 // account-circuit-recovery 已由 wireCircuitFamily（worker_circuit_jobs.go）
-// 接管，从本清单移除。
-var workerPartialJobGaps = []disabledJob{
-	{
-		JobName: "account-list-availability-projection-maintenance",
-		Reason:  "ListAvailabilityRepo（17 方法 PG 双模读模型）与 overlay Redis 对账已由 circuitstore 提供；仍缺 LoadItems 物化载荷来源（ProjectionItem payload/AccountListItem 由网关域组装，jobs 无等价实现），不降级伪装",
-	},
-}
+// 接管，account-list-availability-projection-maintenance 已由
+// wireListProjectionFamily（worker_projection_jobs.go）接管，从本清单移除。
+// 当前清单为空：scheduled 注册表已无 go-partial 任务。
+var workerPartialJobGaps = []disabledJob{}
 
 // registerDisabledJobsStartup 在 worker 装配时逐项登记未接线 job：与
 // scheduleWiredJob 拒绝非 GoWired 的硬门禁互为两半——登记产生可观测启动

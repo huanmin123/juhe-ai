@@ -251,11 +251,11 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 		var pageRows []balanceDetectionRow
 		for rows.Next() {
 			var (
-				row                      balanceDetectionRow
-				id, systemID             sql.NullString
-				dispatch, revision       sql.NullInt64
-				credentials              sql.NullString
-				dueRaw                   any
+				row                balanceDetectionRow
+				id, systemID       sql.NullString
+				dispatch, revision sql.NullInt64
+				credentials        sql.NullString
+				dueRaw             any
 			)
 			if err := rows.Scan(&id, &systemID, &dispatch, &revision, &credentials, &dueRaw, &row.proxyProfileID); err != nil {
 				rows.Close()

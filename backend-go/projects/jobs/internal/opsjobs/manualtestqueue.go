@@ -47,6 +47,9 @@ type ManualTestTaskRecord struct {
 	RequestSystemAccountFilterID string  `json:"request_system_account_filter_id,omitempty"`
 	StartedAt                    *string `json:"started_at,omitempty"`
 	HasDraftAccount              bool    `json:"has_draft_account"`
+	// DraftAccountEncrypted 是任务行的 draft_account_encrypted v1 信封原文
+	//（敏感：只供执行器解密，不得进日志/状态载荷）。
+	DraftAccountEncrypted string `json:"-"`
 }
 
 // ManualTestTaskExecutorResult 是执行器的窄结果。
@@ -54,6 +57,9 @@ type ManualTestTaskExecutorResult struct {
 	Success  bool
 	Message  string
 	Canceled bool
+	// ResultJSON 是写回 result_json 列的结果信封原文（Node JSON.stringify(result)
+	// 等价；空串表示不写信封，落 NULL）。
+	ResultJSON string
 }
 
 // ManualTestTaskRepo 是测试任务持久化 port。
@@ -61,7 +67,7 @@ type ManualTestTaskRepo interface {
 	Maintenance(ctx context.Context, input ManualTestMaintenanceInput) (ManualTestMaintenanceResult, error)
 	MarkRunning(ctx context.Context, taskID string) (*ManualTestTaskRecord, error)
 	Complete(ctx context.Context, taskID string, result ManualTestTaskExecutorResult, expectedStartedAt *string) error
-	Fail(ctx context.Context, taskID string, message string, expectedStartedAt *string) error
+	Fail(ctx context.Context, taskID string, message string, resultJSON string, expectedStartedAt *string) error
 	Cancel(ctx context.Context, taskID string, message string, expectedStartedAt *string) error
 	UpdateMessage(ctx context.Context, taskID string, message string, expectedStartedAt *string) error
 }
@@ -369,7 +375,7 @@ func (q *ManualTestQueue) execute(ctx context.Context, taskID string) {
 		if message == "" {
 			message = "账号测试任务执行失败"
 		}
-		_ = q.repo.Fail(context.WithoutCancel(ctx), task.ID, message, expectedStartedAt)
+		_ = q.repo.Fail(context.WithoutCancel(ctx), task.ID, message, "", expectedStartedAt)
 		return
 	}
 	if result.Canceled {
@@ -380,7 +386,7 @@ func (q *ManualTestQueue) execute(ctx context.Context, taskID string) {
 		_ = q.repo.Complete(context.WithoutCancel(ctx), task.ID, result, expectedStartedAt)
 		return
 	}
-	_ = q.repo.Fail(context.WithoutCancel(ctx), task.ID, result.Message, expectedStartedAt)
+	_ = q.repo.Fail(context.WithoutCancel(ctx), task.ID, result.Message, result.ResultJSON, expectedStartedAt)
 }
 
 // DispatchAccountTestTask 对齐 Node internal-api dispatchAccountTestTask：
@@ -392,7 +398,7 @@ func (q *ManualTestQueue) DispatchAccountTestTask(ctx context.Context, taskID st
 	}
 	accepted := q.EnqueueLocal(normalized)
 	if !accepted {
-		if err := q.repo.Fail(ctx, normalized, "后台 worker 暂不可用，账号测试任务未能投递", nil); err != nil {
+		if err := q.repo.Fail(ctx, normalized, "后台 worker 暂不可用，账号测试任务未能投递", "", nil); err != nil {
 			return false, err
 		}
 	}

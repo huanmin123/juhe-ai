@@ -850,11 +850,15 @@ func normalizeProjectionWrite(write opsjobs.ProjectionWrite) (normalizedProjecti
 		return normalizedProjection{}, errors.New("createdAtSortKey 长度必须为 1..64")
 	}
 	projectedAt := write.Now.UTC().Format(time.RFC3339Nano)
-	// effectiveAvailable 未在投影 item 显式给出时，按 Node 状态分类默认：
-	// 非 cooling 状态视为可用（enabled/disabled 由 effectiveAvailable 决定）。
+	// effectiveAvailable 对齐 Node schedulableBucket(item, effectiveStatus)
+	// 的 item.effectiveAvailability.available：loader 显式给出时优先，
+	// payload 适配键次之，缺省视为可用（port 既有默认）。
 	effectiveAvailable := true
 	if value, ok := write.Item.Payload["effectiveAvailable"].(bool); ok {
 		effectiveAvailable = value
+	}
+	if write.Item.EffectiveAvailable != nil {
+		effectiveAvailable = *write.Item.EffectiveAvailable
 	}
 	payloadBytes, err := json.Marshal(write.Item.Payload)
 	if err != nil {

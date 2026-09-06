@@ -74,11 +74,35 @@ type workerConfig struct {
 	InternalAPIEnabled   bool
 	BalanceDetectEnabled bool
 	ProbeEnabled         bool
+	ManualTestEnabled    bool
 
 	// ProbeConcurrency 限制探针族在途上游诊断请求与队列并发（Node
 	// globalSharedQueueConcurrency 取进程内 governor 全局上限；jobs 独立进程
-	// 取保守默认 8，JUHE_AI_JOBS_PROBE_CONCURRENCY 可调）。
+	// 取保守默认 8，JUHE_AI_JOBS_PROBE_CONCURRENCY 可调）。手动账号测试队列
+	// 并发沿用同一约定。
 	ProbeConcurrency int
+
+	// ManualTestRefillMaxBatchSize 等对齐 Node runtimeConfig.background 的
+	// accountTestRefillMaxBatchSize / accountTestQueuedSweepBatchSize /
+	// accountTestQueuedMaxWaitMs / accountTestRunningStaleMs（同名 env 与
+	// 默认值；见 loadWorkerConfig）。
+	ManualTestRefillMaxBatchSize   int
+	ManualTestQueuedSweepBatchSize int
+	ManualTestQueuedMaxWaitMS      int64
+	ManualTestRunningStaleMS       int64
+
+	// 账户列表可用性投影维护（Node runtimeConfig.background
+	// accountListAvailabilityProjection* 同名 env、默认值与边界）：
+	//   - ListProjectionEnabled 默认 false（Node 默认 false，不启用不注册）；
+	//   - ListProjectionIntervalMS env 1000..60000 默认 1000；
+	//   - ListProjectionBatchSize 1..100 默认 100；
+	//   - ListProjectionMaxBatchesPerRun 1..400 默认 200；
+	//   - ListProjectionWorkerConcurrency 1..8 默认 4（仅 PG 生效，与 Node 一致）。
+	ListProjectionEnabled           bool
+	ListProjectionIntervalMS        int
+	ListProjectionBatchSize         int
+	ListProjectionMaxBatchesPerRun  int
+	ListProjectionWorkerConcurrency int
 
 	// RedisStateURL / RedisNamespace 供速度优先恢复探针读写降级运行态
 	// （与 Node 网关同一键空间）。
@@ -146,7 +170,16 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		InternalAPIEnabled:                       true,
 		BalanceDetectEnabled:                     true,
 		ProbeEnabled:                             true,
+		ManualTestEnabled:                        true,
 		ProbeConcurrency:                         8,
+		ManualTestRefillMaxBatchSize:             1_000,
+		ManualTestQueuedSweepBatchSize:           500,
+		ManualTestQueuedMaxWaitMS:                10 * 60_000,
+		ManualTestRunningStaleMS:                 10 * 60_000,
+		ListProjectionIntervalMS:                 1_000,
+		ListProjectionBatchSize:                  100,
+		ListProjectionMaxBatchesPerRun:           200,
+		ListProjectionWorkerConcurrency:          4,
 		DrainTimeout:                             10 * time.Second,
 	}
 	enabled, err := workerEnvBool(getenv, "JUHE_AI_JOBS_WORKER_ENABLED", false)
@@ -243,6 +276,7 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		{"JUHE_AI_JOBS_BALANCE_DETECT_ENABLED", &config.BalanceDetectEnabled, true},
 		{"JUHE_AI_JOBS_RETENTION_ENABLED", &config.RetentionEnabled, true},
 		{"JUHE_AI_JOBS_PROBE_ENABLED", &config.ProbeEnabled, true},
+		{"JUHE_AI_JOBS_MANUAL_TEST_ENABLED", &config.ManualTestEnabled, true},
 	} {
 		*toggle.target, err = workerEnvBool(getenv, toggle.name, toggle.fallback)
 		if err != nil {
@@ -255,6 +289,70 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	}
 	if config.ProbeConcurrency < 1 || config.ProbeConcurrency > 256 {
 		return config, fmt.Errorf("JUHE_AI_JOBS_PROBE_CONCURRENCY 必须介于 1 和 256 之间")
+	}
+	refillMaxBatchSize, err := workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_TEST_REFILL_MAX_BATCH_SIZE", config.ManualTestRefillMaxBatchSize)
+	if err != nil {
+		return config, err
+	}
+	if refillMaxBatchSize < 1 || refillMaxBatchSize > 100_000 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_TEST_REFILL_MAX_BATCH_SIZE 必须介于 1 和 100000 之间")
+	}
+	config.ManualTestRefillMaxBatchSize = refillMaxBatchSize
+	queuedSweepBatchSize, err := workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_SWEEP_BATCH_SIZE", config.ManualTestQueuedSweepBatchSize)
+	if err != nil {
+		return config, err
+	}
+	if queuedSweepBatchSize < 1 || queuedSweepBatchSize > 100_000 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_SWEEP_BATCH_SIZE 必须介于 1 和 100000 之间")
+	}
+	config.ManualTestQueuedSweepBatchSize = queuedSweepBatchSize
+	queuedMaxWaitMS, err := workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_MAX_WAIT_MS", int(config.ManualTestQueuedMaxWaitMS))
+	if err != nil {
+		return config, err
+	}
+	if queuedMaxWaitMS < 1_000 || queuedMaxWaitMS > 24*60*60_000 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_MAX_WAIT_MS 必须介于 1000 和 86400000 之间")
+	}
+	config.ManualTestQueuedMaxWaitMS = int64(queuedMaxWaitMS)
+	runningStaleMS, err := workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_TEST_RUNNING_STALE_MS", int(config.ManualTestRunningStaleMS))
+	if err != nil {
+		return config, err
+	}
+	if runningStaleMS < 60_000 || runningStaleMS > 60*60_000 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_TEST_RUNNING_STALE_MS 必须介于 60000 和 3600000 之间")
+	}
+	config.ManualTestRunningStaleMS = int64(runningStaleMS)
+	config.ListProjectionEnabled, err = workerEnvBool(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED", false)
+	if err != nil {
+		return config, err
+	}
+	config.ListProjectionIntervalMS, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS", config.ListProjectionIntervalMS)
+	if err != nil {
+		return config, err
+	}
+	if config.ListProjectionIntervalMS < 1_000 || config.ListProjectionIntervalMS > 60_000 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS 必须介于 1000 和 60000 之间")
+	}
+	config.ListProjectionBatchSize, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE", config.ListProjectionBatchSize)
+	if err != nil {
+		return config, err
+	}
+	if config.ListProjectionBatchSize < 1 || config.ListProjectionBatchSize > 100 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE 必须介于 1 和 100 之间")
+	}
+	config.ListProjectionMaxBatchesPerRun, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN", config.ListProjectionMaxBatchesPerRun)
+	if err != nil {
+		return config, err
+	}
+	if config.ListProjectionMaxBatchesPerRun < 1 || config.ListProjectionMaxBatchesPerRun > 400 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN 必须介于 1 和 400 之间")
+	}
+	config.ListProjectionWorkerConcurrency, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY", config.ListProjectionWorkerConcurrency)
+	if err != nil {
+		return config, err
+	}
+	if config.ListProjectionWorkerConcurrency < 1 || config.ListProjectionWorkerConcurrency > 8 {
+		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY 必须介于 1 和 8 之间")
 	}
 	config.RedisStateURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
 	config.RedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
@@ -319,9 +417,12 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		if config.ProbeEnabled && config.BusinessSQLitePath == "" {
 			return config, fmt.Errorf("启用 JUHE_AI_JOBS_PROBE_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH")
 		}
+		if config.ManualTestEnabled && config.BusinessSQLitePath == "" {
+			return config, fmt.Errorf("启用 JUHE_AI_JOBS_MANUAL_TEST_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH")
+		}
 	}
-	if config.ProbeEnabled && config.Secret == "" {
-		return config, fmt.Errorf("启用 JUHE_AI_JOBS_PROBE_ENABLED 后必须配置 JUHE_AI_SECRET（凭据解密与 Key 指纹不可用）")
+	if (config.ProbeEnabled || config.ManualTestEnabled) && config.Secret == "" {
+		return config, fmt.Errorf("启用探针或手动测试族后必须配置 JUHE_AI_SECRET（凭据解密与 Key 指纹不可用）")
 	}
 	return config, nil
 }

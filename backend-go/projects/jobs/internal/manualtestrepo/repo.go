@@ -126,6 +126,9 @@ func (row *taskRow) record() *opsjobs.ManualTestTaskRecord {
 		RequestRole:            row.requestRole,
 		HasDraftAccount:        row.draftAccountEncrypted.Valid && row.draftAccountEncrypted.String != "",
 	}
+	if row.draftAccountEncrypted.Valid {
+		record.DraftAccountEncrypted = row.draftAccountEncrypted.String
+	}
 	if row.message.Valid {
 		record.Message = row.message.String
 	}
@@ -342,7 +345,7 @@ func (r *Repo) MarkRunning(ctx context.Context, taskID string) (*opsjobs.ManualT
 }
 
 // Complete 对齐 completeAccountTestTask（running + cancel_requested=0 +
-// started_at 围栏；未命中时按取消收口）。
+// started_at 围栏；未命中时按取消收口；result_json 写入结果信封原文）。
 func (r *Repo) Complete(ctx context.Context, taskID string, resultValue opsjobs.ManualTestTaskExecutorResult, expectedStartedAt *string) error {
 	id, ok := normalizedText(taskID, 256)
 	if !ok {
@@ -363,13 +366,14 @@ func (r *Repo) Complete(ctx context.Context, taskID string, resultValue opsjobs.
     UPDATE `+r.table("account_test_tasks")+`
     SET status = ?,
         status_message = ?,
+        result_json = ?,
         error_message = ?,
         finished_at = ?,
         updated_at = ?
     WHERE id = ?
       AND status = 'running'
       AND cancel_requested = `+r.boolFalse()+fenceSQL,
-		append([]any{status, resultValue.Message, sqlString(resultValue.Success, resultValue.Message), now, now, id}, fenceArgs...)...)
+		append([]any{status, resultValue.Message, nullIfEmpty(resultValue.ResultJSON), sqlString(resultValue.Success, resultValue.Message), now, now, id}, fenceArgs...)...)
 	if err != nil {
 		return err
 	}
@@ -386,8 +390,9 @@ func (r *Repo) Complete(ctx context.Context, taskID string, resultValue opsjobs.
 	return tx.Commit()
 }
 
-// Fail 对齐 failAccountTestTask（queued|running → failed）。
-func (r *Repo) Fail(ctx context.Context, taskID string, message string, expectedStartedAt *string) error {
+// Fail 对齐 failAccountTestTask（queued|running → failed；resultJSON 非空时
+// 写入 result_json 结果信封，对齐 Node result ? JSON.stringify(result) : null）。
+func (r *Repo) Fail(ctx context.Context, taskID string, message string, resultJSON string, expectedStartedAt *string) error {
 	id, ok := normalizedText(taskID, 256)
 	if !ok {
 		return nil
@@ -407,13 +412,14 @@ func (r *Repo) Fail(ctx context.Context, taskID string, message string, expected
     UPDATE `+r.table("account_test_tasks")+`
     SET status = 'failed',
         status_message = ?,
+        result_json = ?,
         error_message = ?,
         finished_at = ?,
         updated_at = ?
     WHERE id = ?
       AND status IN ('queued', 'running')
       AND cancel_requested = `+r.boolFalse()+fenceSQL,
-		append([]any{message, message, now, now, id}, fenceArgs...)...)
+		append([]any{message, nullIfEmpty(resultJSON), message, now, now, id}, fenceArgs...)...)
 	if err != nil {
 		return err
 	}
@@ -549,6 +555,14 @@ func (r *Repo) boolFalse() string {
 
 func sqlString(condition bool, value string) any {
 	if condition {
+		return nil
+	}
+	return value
+}
+
+// nullIfEmpty 等价 Node result ? JSON.stringify(result) : null 的空信封分支。
+func nullIfEmpty(value string) any {
+	if strings.TrimSpace(value) == "" {
 		return nil
 	}
 	return value

@@ -763,8 +763,9 @@ var batchModelConfigurationFields = map[string]bool{
 // prepareBatchUpdates mirrors prepareBatchUpdatesAsync: all 16 request fields
 // are honored (the five credential-config overrides landed with the
 // credential-normalization slice); the provider-catalog validations Node runs
-// for model mappings and the gpt request overrides stay with the
-// model-validation companion slice (registered M09 deferral).
+// for model mappings and the gpt request overrides ride the
+// model-catalog-validation slice (model_catalog_validation.go, narrow
+// AccountModelCatalogReader port).
 func (s *Store) prepareBatchUpdates(ctx context.Context, q queryer, accounts []batchLockedAccount, updates map[string]BatchUpdateField) ([]batchPreparedAccount, error) {
 	homogeneous := false
 	for field := range updates {
@@ -814,7 +815,7 @@ func (s *Store) prepareBatchUpdates(ctx context.Context, q queryer, accounts []b
 
 	prepared := make([]batchPreparedAccount, 0, len(accounts))
 	for index := range accounts {
-		result, err := s.prepareBatchAccount(&accounts[index], updates, resolvedProxy, resolveProxy)
+		result, err := s.prepareBatchAccount(ctx, q, &accounts[index], updates, resolvedProxy, resolveProxy)
 		if err != nil {
 			return nil, err
 		}
@@ -854,7 +855,7 @@ func jsonValueDeepEqual(left, right any) bool {
 // prepareBatchAccount mirrors prepareAccountUpdateAsync for the supported
 // field subset. changedFields are collected and sorted; main-column writes use
 // the same physical columns the Node repository assigns.
-func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[string]BatchUpdateField, resolvedProxy string, resolveProxy bool) (batchPreparedAccount, error) {
+func (s *Store) prepareBatchAccount(ctx context.Context, q queryer, account *batchLockedAccount, updates map[string]BatchUpdateField, resolvedProxy string, resolveProxy bool) (batchPreparedAccount, error) {
 	result := batchPreparedAccount{
 		accountID:              account.id,
 		expectedConfigRevision: account.configRevision,
@@ -969,6 +970,21 @@ func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[str
 		result.supportedModels = nextSupportedModels
 	}
 
+	// Gpt request-override catalog assertion (account-batch-edit.service.ts:203):
+	// 触发条件与归档一致——支持模型实际变化或任一覆盖字段参与时，对最终凭据 +
+	// 最终支持模型断言。
+	if supportedModelsChanged || hasOwn("serviceTierOverride") || hasOwn("reasoningEffortOverride") {
+		if err := s.assertAccountGptRequestOverridesSupported(ctx, accountGptRequestOverridesInput{
+			ProviderCode:    account.providerCode,
+			AccountType:     account.accountType,
+			Credentials:     nextCredentials,
+			SupportedModels: nextSupportedModels,
+			SystemAccountID: account.systemAccountID,
+		}); err != nil {
+			return result, err
+		}
+	}
+
 	// healthCheckModel.
 	nextHealthCheckModel := strings.TrimSpace(account.healthCheckModel)
 	if hasOwn("healthCheckModel") {
@@ -1033,6 +1049,20 @@ func (s *Store) prepareBatchAccount(account *batchLockedAccount, updates map[str
 			return result, err
 		}
 		nextModelMappings = mappings
+	}
+	// Model mapping catalog assertion (account-batch-edit.service.ts:257, the
+	// normalizeAccountModelMappingsForProviderAsync catalog segment): 来源/
+	// 目标模型必须落在当前供应商模型目录中且目标模型支持对应上游协议。校验失败
+	// 使整个批量事务回滚（all-or-nothing，与 Node 仓库事务一致）。
+	if shouldValidateMappings {
+		if err := s.assertAccountModelMappingsInProviderCatalog(ctx, q, account.providerCode, account.systemAccountID, protocolPredicateInput{
+			providerCode:              account.providerCode,
+			protocolCode:              account.protocolCode,
+			protocolVersion:           account.protocolVersion,
+			providerProtocolProfileID: account.providerProtocolProfileID,
+		}, nextModelMappings); err != nil {
+			return result, err
+		}
 	}
 	if shouldValidateMappings || supportedModelsChanged {
 		if err := assertMappingUpstreamsAllowed(nextModelMappings, nextSupportedModels); err != nil {

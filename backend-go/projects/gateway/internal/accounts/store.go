@@ -121,6 +121,12 @@ type Store struct {
 	modelCatalogRefresher  ModelCatalogRefresher
 	returner               AuthorizationGrantReturner
 	trafficRuntimeMigrator TrafficRuntimeMigrator
+	// modelCatalog is the provider model-catalog read port behind the gpt
+	// request-override and model-mapping catalog assertions
+	// (model_catalog_validation.go). Nil until SetModelCatalogReader wires
+	// it; a nil port keeps both catalog assertions no-ops (self-contained
+	// slice behavior for tests and isolated deployments).
+	modelCatalog AccountModelCatalogReader
 }
 
 // NewStore builds the store.

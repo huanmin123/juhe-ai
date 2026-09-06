@@ -29,8 +29,10 @@ const (
 	// AccountTestDispatchSignatureDomain 是签名域分隔符（含尾部 \n）。
 	AccountTestDispatchSignatureDomain = "juhe-ai:account-test-dispatch:v1\n"
 	accountTestDispatchPath            = "/v1/account-test/dispatch"
-	rawBodyLimitBytes                  = 1024
-	signatureHeader                    = "X-Juhe-Ai-Signature"
+	// accountTestCancelPath 是 Go 侧取消扩展路由（Node 走 worker IPC）。
+	accountTestCancelPath = "/v1/account-test/cancel"
+	rawBodyLimitBytes     = 1024
+	signatureHeader       = "X-Juhe-Ai-Signature"
 )
 
 var signaturePattern = regexp.MustCompile(`^v1=([0-9a-f]{64})$`)
@@ -64,10 +66,17 @@ func CreateAccountTestDispatchSignature(secret string, rawBody []byte) string {
 // DispatchFunc 派发回调；返回 false 表示服务暂不可用（503）。
 type DispatchFunc func(ctx context.Context, taskID string) (bool, error)
 
-// AccountTestDispatchRouterOptions 对齐 Node AccountTestDispatchRouterOptions。
+// CancelFunc 取消回调（Go 侧扩展：Node 的账号测试取消走 worker IPC
+// background_worker_account_test_cancel，Go 单进程拓扑改为 loopback HTTP
+// fire-and-forget）；返回 false 表示 worker 未接线（503）。
+type CancelFunc func(ctx context.Context, taskID string) bool
+
+// AccountTestDispatchRouterOptions 对齐 Node AccountTestDispatchRouterOptions
+// （Cancel 为 Go 侧扩展字段）。
 type AccountTestDispatchRouterOptions struct {
 	Secret   string
 	Dispatch DispatchFunc
+	Cancel   CancelFunc
 }
 
 // NewAccountTestDispatchHandler 返回挂在 std http.ServeMux 上的 handler。
@@ -77,55 +86,111 @@ type AccountTestDispatchRouterOptions struct {
 //	mux.Handle(internalapi.AccountTestDispatchInternalPrefix+"/", internalapi.NewAccountTestDispatchHandler(opts))
 //
 // gateway 进程内反向调用或运维 curl 127.0.0.1 均可直调。
+// 路由面：POST {prefix}/v1/account-test/dispatch（Node 逐字节移植）+
+// POST {prefix}/v1/account-test/cancel（Go 扩展，鉴权/校验矩阵一致）。
 func NewAccountTestDispatchHandler(options AccountTestDispatchRouterOptions) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 前缀与路径精确匹配；大小写敏感（对齐 Router caseSensitive+strict）。
-		if r.Method != http.MethodPost || r.URL.Path != AccountTestDispatchInternalPrefix+accountTestDispatchPath {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		if !IsLoopbackRemoteAddress(r.RemoteAddr) {
-			writeJSONError(w, http.StatusForbidden, "禁止访问")
-			return
-		}
-		if !requireJSONContentType(r) {
-			writeJSONError(w, http.StatusUnsupportedMediaType, "仅支持 JSON 请求")
-			return
-		}
-		if !requireIdentityContentEncoding(r) {
-			writeJSONError(w, http.StatusUnsupportedMediaType, "不支持压缩请求体")
-			return
-		}
-		rawBody, bodyErr := readRawBody(r)
-		if bodyErr != nil {
-			if errors.Is(bodyErr, errBodyTooLarge) {
-				writeJSONError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+		switch r.URL.Path {
+		case AccountTestDispatchInternalPrefix + accountTestDispatchPath:
+			if r.Method != http.MethodPost {
+				http.NotFound(w, r)
 				return
 			}
-			writeJSONError(w, http.StatusBadRequest, "请求体无效")
-			return
+			handleAccountTestDispatch(w, r, options)
+		case AccountTestDispatchInternalPrefix + accountTestCancelPath:
+			if r.Method != http.MethodPost {
+				http.NotFound(w, r)
+				return
+			}
+			handleAccountTestCancel(w, r, options)
+		default:
+			http.NotFound(w, r)
 		}
-		if !hasValidSignature(r, options.Secret, rawBody) {
-			writeJSONError(w, http.StatusUnauthorized, "认证失败")
-			return
-		}
-		taskID, ok := parseTaskID(rawBody)
-		if !ok {
-			writeJSONError(w, http.StatusBadRequest, "请求参数无效")
-			return
-		}
-		accepted, dispatchErr := options.Dispatch(r.Context(), taskID)
-		if dispatchErr != nil {
-			writeJSONError(w, http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-		if !accepted {
-			writeJSONError(w, http.StatusServiceUnavailable, "服务暂不可用")
-			return
-		}
-		w.WriteHeader(http.StatusAccepted)
 	})
+}
+
+func handleAccountTestDispatch(w http.ResponseWriter, r *http.Request, options AccountTestDispatchRouterOptions) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !IsLoopbackRemoteAddress(r.RemoteAddr) {
+		writeJSONError(w, http.StatusForbidden, "禁止访问")
+		return
+	}
+	if !requireJSONContentType(r) {
+		writeJSONError(w, http.StatusUnsupportedMediaType, "仅支持 JSON 请求")
+		return
+	}
+	if !requireIdentityContentEncoding(r) {
+		writeJSONError(w, http.StatusUnsupportedMediaType, "不支持压缩请求体")
+		return
+	}
+	rawBody, bodyErr := readRawBody(r)
+	if bodyErr != nil {
+		if errors.Is(bodyErr, errBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "请求体无效")
+		return
+	}
+	if !hasValidSignature(r, options.Secret, rawBody) {
+		writeJSONError(w, http.StatusUnauthorized, "认证失败")
+		return
+	}
+	taskID, ok := parseTaskID(rawBody)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "请求参数无效")
+		return
+	}
+	accepted, dispatchErr := options.Dispatch(r.Context(), taskID)
+	if dispatchErr != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Internal Server Error")
+		return
+	}
+	if !accepted {
+		writeJSONError(w, http.StatusServiceUnavailable, "服务暂不可用")
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func handleAccountTestCancel(w http.ResponseWriter, r *http.Request, options AccountTestDispatchRouterOptions) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !IsLoopbackRemoteAddress(r.RemoteAddr) {
+		writeJSONError(w, http.StatusForbidden, "禁止访问")
+		return
+	}
+	if !requireJSONContentType(r) {
+		writeJSONError(w, http.StatusUnsupportedMediaType, "仅支持 JSON 请求")
+		return
+	}
+	if !requireIdentityContentEncoding(r) {
+		writeJSONError(w, http.StatusUnsupportedMediaType, "不支持压缩请求体")
+		return
+	}
+	rawBody, bodyErr := readRawBody(r)
+	if bodyErr != nil {
+		if errors.Is(bodyErr, errBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "请求体无效")
+		return
+	}
+	if !hasValidSignature(r, options.Secret, rawBody) {
+		writeJSONError(w, http.StatusUnauthorized, "认证失败")
+		return
+	}
+	taskID, ok := parseTaskID(rawBody)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "请求参数无效")
+		return
+	}
+	if options.Cancel == nil || !options.Cancel(r.Context(), taskID) {
+		writeJSONError(w, http.StatusServiceUnavailable, "服务暂不可用")
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func requireJSONContentType(r *http.Request) bool {

@@ -242,6 +242,20 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 			return nil, err
 		}
 	}
+	// Node create tail (:219/:233/:402/:439): quota scope bindings resync after
+	// the runtime upsert, gated on created/revived exactly like the runtime
+	// fanout above (this point is unreachable for the idempotent no-op, which
+	// returned early). Node create never enqueues health inputs.
+	bindingGrant := grantRow{ID: grantID, ResourceType: input.ResourceType, ResourceID: input.ResourceID,
+		OwnerID: ownerID, GranteeType: input.GranteeType}
+	if input.GranteeType == "system_account" {
+		bindingGrant.GranteeUserID = sql.NullString{String: input.GranteeID, Valid: true}
+	} else {
+		bindingGrant.GranteeTeamID = sql.NullString{String: input.GranteeID, Valid: true}
+	}
+	if err := s.syncGrantQuotaScopeBindings(ctx, tx, &bindingGrant, now); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -689,6 +703,15 @@ func (s *Store) Return(ctx context.Context, id, expectedUpdatedAt, granteeUserID
 		preserveExpiredWhenNoActiveSource: &noPreserve,
 		terminalStatus:                    StatusReturned,
 	}); err != nil {
+		return nil, err
+	}
+	// Node returnResourceAuthorizationGrantAsync tail (return.repository.ts:
+	// 587-596): bindings resync then the health input fanout, same reason as
+	// every other grant-terminating write.
+	if err := s.syncGrantQuotaScopeBindings(ctx, tx, grant, now); err != nil {
+		return nil, err
+	}
+	if _, err := s.enqueueGrantAccountHealthInputs(ctx, tx, grant, now); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

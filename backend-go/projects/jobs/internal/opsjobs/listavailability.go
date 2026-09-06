@@ -104,6 +104,10 @@ type ProjectionItem struct {
 	TagIDs                    []string
 	// NextTransitionCandidates 是候选状态边界（RFC3339）。
 	NextTransitionCandidates []string
+	// EffectiveAvailable 对齐 Node schedulableBucket 的
+	// item.effectiveAvailability.available 输入；nil 时回退
+	// payload["effectiveAvailable"]，再回退 true（port 既有默认）。
+	EffectiveAvailable *bool
 }
 
 // ProjectionWrite 是完整替换载荷。
@@ -323,6 +327,11 @@ func RunListAvailabilityMaintenance(ctx context.Context, opts ListAvailabilityOp
 	workerConcurrency := opts.WorkerConcurrency
 	if workerConcurrency == 0 {
 		workerConcurrency = listAvailabilityDefaultWorkerConcurrency
+	}
+	if !driverPostgres {
+		// Node：SQLite 单 writer，批量维护 worker 并发固定为 1
+		// （workerConcurrency 仅在 PostgreSQL SKIP LOCKED 路径生效）。
+		workerConcurrency = 1
 	}
 	concurrency, err := boundedProjectionWorkerConcurrency(workerConcurrency)
 	if err != nil {

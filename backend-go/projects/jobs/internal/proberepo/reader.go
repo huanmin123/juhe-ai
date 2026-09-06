@@ -27,13 +27,14 @@ import (
 // AccountForTestView 是 find_account_for_test 的完整投影（含凭据）。
 type AccountForTestView struct {
 	accountquality.AccountForTest
-	ProviderCode            string
-	ProtocolVersion         string
-	HealthCheckModel        string
-	HealthCheckEndpointMode string
-	SupportedModels         []string
-	Credentials             map[string]any
-	APIKeyRuntime           map[string]string // fingerprint -> status
+	ProviderCode              string
+	ProviderProtocolProfileID string
+	ProtocolVersion           string
+	HealthCheckModel          string
+	HealthCheckEndpointMode   string
+	SupportedModels           []string
+	Credentials               map[string]any
+	APIKeyRuntime             map[string]string // fingerprint -> status
 	// EffectiveAvailabilityStatus 为不可用时的 status 值（诊断用）。
 	EffectiveAvailabilityStatus string
 	HasEffectiveStatus          bool
@@ -176,6 +177,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		HasEffectiveAvail:    true,
 	}
 	view.ProviderCode = providerCode.String
+	view.ProviderProtocolProfileID = protocolProfile.String
 	view.ProtocolVersion = protocolVersion.String
 	view.HealthCheckModel = healthModel.String
 	view.HealthCheckEndpointMode = healthMode.String
@@ -796,21 +798,22 @@ func (s *Store) LoadProbeView(ctx context.Context, req accountquality.ProbeReque
 		return nil, nil
 	}
 	view := &accountprobe.View{
-		AccountID:               account.ID,
-		AccountName:             account.Name,
-		Type:                    candidate.Type,
-		Status:                  candidate.Status,
-		ProviderCode:            candidate.ProviderCode,
-		ProtocolCode:            candidate.ProtocolCode,
-		ProtocolVersion:         candidate.ProtocolVersion,
-		HealthCheckModel:        account.HealthCheckModel,
-		HealthCheckEndpointMode: account.HealthCheckEndpointMode,
-		SupportedModels:         account.SupportedModels,
-		BaseURL:                 textCredential(candidate.Credentials, "base_url"),
-		Credentials:             candidate.Credentials,
-		SelectedAPIKey:          candidate.SelectedAPIKey,
-		QuotaRecoveryPolicy:     candidate.QuotaRecoveryPolicy,
-		NormalizeEndpointModes:  s.normalizedEndpointModes(candidate, account),
+		AccountID:                 account.ID,
+		AccountName:               account.Name,
+		Type:                      candidate.Type,
+		Status:                    candidate.Status,
+		ProviderCode:              candidate.ProviderCode,
+		ProtocolCode:              candidate.ProtocolCode,
+		ProtocolVersion:           candidate.ProtocolVersion,
+		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
+		HealthCheckModel:          account.HealthCheckModel,
+		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
+		SupportedModels:           account.SupportedModels,
+		BaseURL:                   textCredential(candidate.Credentials, "base_url"),
+		Credentials:               candidate.Credentials,
+		SelectedAPIKey:            candidate.SelectedAPIKey,
+		QuotaRecoveryPolicy:       candidate.QuotaRecoveryPolicy,
+		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.Credentials),
 	}
 	entries := make([]accountprobe.KeyEntry, 0, len(candidate.APIKeyEntries))
 	for _, entry := range candidate.APIKeyEntries {
@@ -822,6 +825,42 @@ func (s *Store) LoadProbeView(ctx context.Context, req accountquality.ProbeReque
 		view.SelectedAPIKey = req.FixedAPIKey
 	}
 	return view, nil
+}
+
+// AssembleProbeView 由账户完整视图与分组候选组装探针视图（LoadProbeView 的
+// 纯函数投影；manualtest 保存账户路径复用同一组装，避免第二套形状）。
+func AssembleProbeView(account *AccountForTestView, candidate *CandidateAccount) *accountprobe.View {
+	if account == nil || candidate == nil {
+		return nil
+	}
+	return &accountprobe.View{
+		AccountID:                 account.ID,
+		AccountName:               account.Name,
+		Type:                      candidate.Type,
+		Status:                    candidate.Status,
+		ProviderCode:              candidate.ProviderCode,
+		ProtocolCode:              candidate.ProtocolCode,
+		ProtocolVersion:           candidate.ProtocolVersion,
+		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
+		HealthCheckModel:          account.HealthCheckModel,
+		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
+		SupportedModels:           account.SupportedModels,
+		BaseURL:                   textCredential(candidate.Credentials, "base_url"),
+		Credentials:               candidate.Credentials,
+		SelectedAPIKey:            candidate.SelectedAPIKey,
+		QuotaRecoveryPolicy:       candidate.QuotaRecoveryPolicy,
+		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.Credentials),
+		APIKeyEntries:             candidateKeyEntries(candidate),
+	}
+}
+
+// candidateKeyEntries 投影候选凭据池为探针 Key 明细。
+func candidateKeyEntries(candidate *CandidateAccount) []accountprobe.KeyEntry {
+	entries := make([]accountprobe.KeyEntry, 0, len(candidate.APIKeyEntries))
+	for _, entry := range candidate.APIKeyEntries {
+		entries = append(entries, accountprobe.KeyEntry{Key: entry.Key, Fingerprint: entry.Fingerprint, Index: entry.Index})
+	}
+	return entries
 }
 
 // LoadAccountMetadataByIds 实现 accountquality.BusinessLookup
@@ -889,21 +928,22 @@ func textCredential(credentials map[string]any, key string) string {
 	return ""
 }
 
-// normalizedEndpointModes 等价 normalizeGatewayEndpointModesForRuntime 的窄投影：
-// credentials.supported_endpoint_modes 数组有效值过滤，空/无效回落协议默认。
-func (s *Store) normalizedEndpointModes(candidate *CandidateAccount, account *AccountForTestView) map[accountprobe.EndpointMode]bool {
+// NormalizedEndpointModes 等价 normalizeGatewayEndpointModesForRuntime 的窄投影：
+// credentials.supported_endpoint_modes 数组有效值过滤，空/无效回落协议默认
+// （默认分支按探针视图的协议/类型；protocolCode 传候选凭据来源账户的协议）。
+func NormalizedEndpointModes(protocolCode, accountType string, credentials map[string]any) map[accountprobe.EndpointMode]bool {
 	modes := map[accountprobe.EndpointMode]bool{}
 	addDefaults := func() {
 		switch {
-		case strings.EqualFold(strings.TrimSpace(account.ProtocolCode), "anthropic"):
+		case strings.EqualFold(strings.TrimSpace(protocolCode), "anthropic"):
 			modes[accountprobe.ModeMessagesJSON] = true
 			modes[accountprobe.ModeMessagesSSE] = true
-		case strings.EqualFold(strings.TrimSpace(account.ProtocolCode), "gemini"):
+		case strings.EqualFold(strings.TrimSpace(protocolCode), "gemini"):
 			modes[accountprobe.ModeGenerateContentJSON] = true
 			modes[accountprobe.ModeGenerateContentSSE] = true
 			modes[accountprobe.ModeInteractionsJSON] = true
 			modes[accountprobe.ModeInteractionsSSE] = true
-		case candidate.Type == "oauth":
+		case accountType == "oauth":
 			modes[accountprobe.ModeResponsesJSON] = true
 			modes[accountprobe.ModeResponsesSSE] = true
 		default:
@@ -913,7 +953,7 @@ func (s *Store) normalizedEndpointModes(candidate *CandidateAccount, account *Ac
 			modes[accountprobe.ModeResponsesSSE] = true
 		}
 	}
-	list, ok := candidate.Credentials["supported_endpoint_modes"].([]any)
+	list, ok := credentials["supported_endpoint_modes"].([]any)
 	if !ok {
 		addDefaults()
 		return modes

@@ -106,25 +106,25 @@ VALUES ('acc-detect-1', 'sys-1', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
 func balanceDetectAssemblyEnv(t *testing.T, businessPath, statsPath string) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"JUHE_AI_JOBS_WORKER_ENABLED":          "true",
-		"JUHE_AI_DATABASE_DRIVER":              "sqlite",
-		"JUHE_AI_DATABASE_PATH":                businessPath,
-		"JUHE_AI_STATS_DATABASE_PATH":          statsPath,
-		"JUHE_AI_TASK_RUNS_DATABASE_PATH":      filepath.Join(filepath.Dir(businessPath), "task-runs.sqlite3"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":  filepath.Join(filepath.Dir(businessPath), "usage-catalog.sqlite3"),
-		"JUHE_AI_USAGE_SHARD_ROOT":             filepath.Join(filepath.Dir(businessPath), "usage-shards"),
-		"JUHE_AI_INSTANCE_ID":                  "balance-detect-instance",
-		"JUHE_AI_WORKER_ROLE":                  "ops-worker",
-		"JUHE_AI_WORKER_REPLICA_INDEX":         "0",
-		"JUHE_AI_SECRET":                       "0123456789abcdef0123456789abcdef",
-		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":        "2000",
-		"JUHE_AI_DATASET_DATABASE_PATH":        filepath.Join(filepath.Dir(businessPath), "dataset.sqlite3"),
-		"JUHE_AI_CHAT_DATABASE_PATH":           filepath.Join(filepath.Dir(businessPath), "chat.sqlite3"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": filepath.Join(filepath.Dir(businessPath), "codex-state"),
+		"JUHE_AI_JOBS_WORKER_ENABLED":             "true",
+		"JUHE_AI_DATABASE_DRIVER":                 "sqlite",
+		"JUHE_AI_DATABASE_PATH":                   businessPath,
+		"JUHE_AI_STATS_DATABASE_PATH":             statsPath,
+		"JUHE_AI_TASK_RUNS_DATABASE_PATH":         filepath.Join(filepath.Dir(businessPath), "task-runs.sqlite3"),
+		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":     filepath.Join(filepath.Dir(businessPath), "usage-catalog.sqlite3"),
+		"JUHE_AI_USAGE_SHARD_ROOT":                filepath.Join(filepath.Dir(businessPath), "usage-shards"),
+		"JUHE_AI_INSTANCE_ID":                     "balance-detect-instance",
+		"JUHE_AI_WORKER_ROLE":                     "ops-worker",
+		"JUHE_AI_WORKER_REPLICA_INDEX":            "0",
+		"JUHE_AI_SECRET":                          "0123456789abcdef0123456789abcdef",
+		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":           "2000",
+		"JUHE_AI_DATASET_DATABASE_PATH":           filepath.Join(filepath.Dir(businessPath), "dataset.sqlite3"),
+		"JUHE_AI_CHAT_DATABASE_PATH":              filepath.Join(filepath.Dir(businessPath), "chat.sqlite3"),
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":  filepath.Join(filepath.Dir(businessPath), "codex-state"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "1",
-		"JUHE_AI_JOBS_STATS_ENABLED":           "false",
-		"JUHE_AI_JOBS_OAUTH_ENABLED":           "false",
-		"JUHE_AI_JOBS_USAGE_WRITER_ENABLED":    "false",
+		"JUHE_AI_JOBS_STATS_ENABLED":              "false",
+		"JUHE_AI_JOBS_OAUTH_ENABLED":              "false",
+		"JUHE_AI_JOBS_USAGE_WRITER_ENABLED":       "false",
 	}
 }
 
@@ -214,8 +214,8 @@ func TestWorkerBalanceDetectWiresEnabledOutcome(t *testing.T) {
 	}
 
 	var (
-		refreshStatus  string
-		snapshotJSON   string
+		refreshStatus string
+		snapshotJSON  string
 	)
 	if err := statsDB.QueryRowContext(ctx, `SELECT refresh_status, snapshot_json FROM account_usage_snapshots WHERE account_id = 'acc-detect-1' AND kind = 'relay_balance'`).Scan(&refreshStatus, &snapshotJSON); err != nil {
 		t.Fatalf("relay_balance 快照行必须写入: %v", err)

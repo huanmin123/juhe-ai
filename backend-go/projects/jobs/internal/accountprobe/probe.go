@@ -19,6 +19,10 @@ import (
 // 诊断分级超时（Node accountDiagnosticRetryTimeoutMs = [10_000, 20_000, 30_000]）。
 var DiagnosticRetryTimeouts = []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second}
 
+// ImageDiagnosticRetryTimeouts 等价 Node accountImageDiagnosticRetryTimeoutMs =
+// [120_000]（images_json 单次长预算，不晋级）。
+var ImageDiagnosticRetryTimeouts = []time.Duration{120 * time.Second}
+
 // CandidateSource 由仓储层实现：为一次探针解析账户与分组内候选凭据。
 type CandidateSource interface {
 	// LoadProbeView 返回探针所需的完整视图；账户/候选缺失时返回 (nil, nil)。
@@ -42,6 +46,9 @@ type View struct {
 	ProviderCode    string
 	ProtocolCode    string
 	ProtocolVersion string
+	// ProviderProtocolProfileID 为协议档案 ID（手动测试结果信封消费；
+	// 探针请求构造不使用）。
+	ProviderProtocolProfileID string
 	// HealthCheckModel / HealthCheckEndpointMode 来自账户行。
 	HealthCheckModel        string
 	HealthCheckEndpointMode string
@@ -67,15 +74,18 @@ type Options struct {
 	// Concurrency 限制并发探针数（Node runWithBackgroundFullDiagnosticSlot /
 	// globalSharedQueueConcurrency）；0 表示不限制。
 	Concurrency int
+	// RetryTimeouts 覆盖分级超时序列；nil 使用 DiagnosticRetryTimeouts。
+	RetryTimeouts []time.Duration
 }
 
 // Service 实现 accountquality.Prober，并为速度优先探针提供单账户探针入口。
 type Service struct {
-	source CandidateSource
-	client *http.Client
-	secret string
-	now    func() time.Time
-	slots  chan struct{}
+	source        CandidateSource
+	client        *http.Client
+	secret        string
+	now           func() time.Time
+	slots         chan struct{}
+	retryTimeouts []time.Duration
 }
 
 // NewService 构建探针服务；client 为空时使用带代理不感知的默认传输。
@@ -95,7 +105,11 @@ func NewService(options Options) (*Service, error) {
 	if options.Concurrency > 0 {
 		slots = make(chan struct{}, options.Concurrency)
 	}
-	return &Service{source: options.Source, client: client, secret: options.Secret, now: now, slots: slots}, nil
+	retryTimeouts := options.RetryTimeouts
+	if len(retryTimeouts) == 0 {
+		retryTimeouts = DiagnosticRetryTimeouts
+	}
+	return &Service{source: options.Source, client: client, secret: options.Secret, now: now, slots: slots, retryTimeouts: retryTimeouts}, nil
 }
 
 func (s *Service) nowMS() int64 { return s.now().UnixMilli() }
@@ -122,7 +136,7 @@ func (s *Service) Probe(ctx context.Context, req accountquality.ProbeRequest) (*
 	}
 	limited := !req.Full
 	if req.Full {
-		return s.probePool(ctx, view)
+		return s.probePool(ctx, view, false)
 	}
 	return s.probeFixedKey(ctx, view, view.FixedKey, limited)
 }
@@ -136,7 +150,42 @@ func (s *Service) ProbeAccountView(ctx context.Context, req accountquality.Probe
 	if view == nil {
 		return nil, fmt.Errorf("账户 %s 不在当前分组或凭据不可用，无法执行网关测试", req.AccountID)
 	}
-	return s.probePool(ctx, view)
+	return s.probePool(ctx, view, false)
+}
+
+// ManualDiagnostics 是手动账号测试的诊断入口（对齐 Node worker 侧
+// runOpenAIAccountTestWithoutStateMutation 的分支选择）：
+//   - api_key 类型且凭据池可测（>1 把 Key）→ Key 池完整诊断
+//     （Node runAccountApiKeyPoolTestIfNeeded → runAccountApiKeyPoolDiagnostic）；
+//   - 其余 → 单凭据分级诊断（testOpenAIAccountWithDiagnosticRetries 的
+//     stage 循环；limited 只影响失败文案脱敏）；
+//   - images_json 形态走单次 120s 长预算（Node accountImageDiagnosticRetryTimeoutMs），
+//     其余形态走 [10s, 20s, 30s] 分级（accountDiagnosticRetryTimeoutMs）。
+func (s *Service) ManualDiagnostics(ctx context.Context, view *View, limited bool) (*accountquality.ProbeObservation, []PoolKeyAttempt, error) {
+	if view == nil {
+		return nil, nil, errors.New("探针视图缺失")
+	}
+	staged := s.withScheduleForView(view)
+	if view.Type == "api_key" && len(view.APIKeyEntries) > 1 {
+		return staged.probePoolDetailed(ctx, view, limited)
+	}
+	if len(view.APIKeyEntries) > 0 {
+		observation, err := staged.probeFixedKey(ctx, view, &view.APIKeyEntries[0], limited)
+		return observation, nil, err
+	}
+	// oauth / google_oauth：单凭据（SelectedAPIKey = access_token / refresh_token）。
+	observation, err := staged.probeFixedKey(ctx, view, nil, limited)
+	return observation, nil, err
+}
+
+// withScheduleForView 返回按视图端点形态取分级超时的派生服务
+// （images_json 单次 120s，其余保持服务默认序列）。
+func (s *Service) withScheduleForView(view *View) *Service {
+	mode, err := resolveEndpointMode(view, EndpointMode(strings.TrimSpace(view.HealthCheckEndpointMode)))
+	if err == nil && mode == ModeImagesJSON {
+		return &Service{source: s.source, client: s.client, secret: s.secret, now: s.now, slots: s.slots, retryTimeouts: ImageDiagnosticRetryTimeouts}
+	}
+	return s
 }
 
 // probeFixedKey 对单个固定 Key 执行分级诊断（Node runAccountApiKeyPoolDiagnostic
@@ -146,18 +195,18 @@ func (s *Service) probeFixedKey(ctx context.Context, view *View, entry *KeyEntry
 		return nil, errors.New("探针候选缺少可用 API Key")
 	}
 	var lastObservation *accountquality.ProbeObservation
-	for stage := 0; stage < len(DiagnosticRetryTimeouts); stage++ {
+	for stage := 0; stage < len(s.retryTimeouts); stage++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		observation := s.attemptWithTimeout(ctx, view, entry, DiagnosticRetryTimeouts[stage], limited)
+		observation := s.attemptWithTimeout(ctx, view, entry, s.retryTimeouts[stage], limited)
 		lastObservation = observation
 		if observation.Result.Success {
 			return observation, nil
 		}
 		escalate := observation.Evidence.TimedOut &&
 			observation.Evidence.HasRealUpstreamAttempt &&
-			stage+1 < len(DiagnosticRetryTimeouts)
+			stage+1 < len(s.retryTimeouts)
 		if !escalate {
 			break
 		}
@@ -165,15 +214,28 @@ func (s *Service) probeFixedKey(ctx context.Context, view *View, entry *KeyEntry
 	return lastObservation, nil
 }
 
+// PoolKeyAttempt 是池诊断的单 Key 明细（manualtest 组装池摘要信封消费）。
+type PoolKeyAttempt struct {
+	Entry       KeyEntry
+	Observation *accountquality.ProbeObservation
+}
+
 // probePool 等价 runAccountApiKeyPoolDiagnostic 的阶段循环：每个 Key 维护
 // nextStage；同一阶段内逐 Key 尝试，成功即胜出，仅“真实上游尝试后超时”
 // 晋级下一阶段，其余结果视为该 Key 完成。Node 侧并发跑同一阶段的 Key；
 // Go 端串行执行（jobs 探针槽位已限流），胜出与晋级判定逐分支一致。
-func (s *Service) probePool(ctx context.Context, view *View) (*accountquality.ProbeObservation, error) {
+func (s *Service) probePool(ctx context.Context, view *View, limited bool) (*accountquality.ProbeObservation, error) {
+	winner, _, err := s.probePoolDetailed(ctx, view, limited)
+	return winner, err
+}
+
+// probePoolDetailed 返回胜出观测与已完成 Key 的明细（entry.index 升序，
+// 对齐 Node diagnostic.attempts 的排序契约）。
+func (s *Service) probePoolDetailed(ctx context.Context, view *View, limited bool) (*accountquality.ProbeObservation, []PoolKeyAttempt, error) {
 	entries := make([]KeyEntry, len(view.APIKeyEntries))
 	copy(entries, view.APIKeyEntries)
 	if len(entries) == 0 {
-		return nil, errors.New("探针候选缺少可用 API Key")
+		return nil, nil, errors.New("探针候选缺少可用 API Key")
 	}
 	type pendingKey struct {
 		entry     KeyEntry
@@ -186,26 +248,27 @@ func (s *Service) probePool(ctx context.Context, view *View) (*accountquality.Pr
 		pending[index] = &pendingKey{entry: entries[index]}
 	}
 	var winner *accountquality.ProbeObservation
-	for stage := 0; stage < len(DiagnosticRetryTimeouts); stage++ {
+	for stage := 0; stage < len(s.retryTimeouts); stage++ {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 		for _, item := range pending {
 			if item.completed || item.nextStage != stage {
 				continue
 			}
-			observation := s.attemptWithTimeout(ctx, view, &item.entry, DiagnosticRetryTimeouts[stage], false)
+			observation := s.attemptWithTimeout(ctx, view, &item.entry, s.retryTimeouts[stage], limited)
 			if observation == nil {
 				continue
 			}
 			if observation.Result.Success {
 				winner = observation
 				item.completed = true
+				results[item.entry.Index] = observation
 				break
 			}
 			if observation.Evidence.TimedOut &&
 				observation.Evidence.HasRealUpstreamAttempt &&
-				stage+1 < len(DiagnosticRetryTimeouts) {
+				stage+1 < len(s.retryTimeouts) {
 				item.nextStage = stage + 1
 				continue
 			}
@@ -216,31 +279,35 @@ func (s *Service) probePool(ctx context.Context, view *View) (*accountquality.Pr
 			break
 		}
 	}
+	attempts := make([]PoolKeyAttempt, 0, len(results))
+	for index := range entries {
+		if observation, ok := results[entries[index].Index]; ok && observation != nil {
+			attempts = append(attempts, PoolKeyAttempt{Entry: entries[index], Observation: observation})
+		}
+	}
 	if winner != nil {
-		return winner, nil
+		return winner, attempts, nil
 	}
 	// Node：winner 缺失时取首个完成结果（diagnostic?.winner?.value ?? diagnostic?.attempts[0]?.value，
 	// attempts 按 entry.index 升序）。
-	for index := range entries {
-		if observation, ok := results[entries[index].Index]; ok && observation != nil {
-			return observation, nil
-		}
+	for _, attempt := range attempts {
+		return attempt.Observation, attempts, nil
 	}
-	return nil, errors.New("账户的 API Key 池诊断没有返回结果")
+	return nil, attempts, errors.New("账户的 API Key 池诊断没有返回结果")
 }
 
 // attemptStaged 对单个 Key 走完整分级序列（Node 单 Key 的 stage 循环）。
 func (s *Service) attemptStaged(ctx context.Context, view *View, entry *KeyEntry) *accountquality.ProbeObservation {
 	var last *accountquality.ProbeObservation
-	for stage := 0; stage < len(DiagnosticRetryTimeouts); stage++ {
-		observation := s.attemptWithTimeout(ctx, view, entry, DiagnosticRetryTimeouts[stage], false)
+	for stage := 0; stage < len(s.retryTimeouts); stage++ {
+		observation := s.attemptWithTimeout(ctx, view, entry, s.retryTimeouts[stage], false)
 		last = observation
 		if observation == nil || observation.Result.Success {
 			return observation
 		}
 		escalate := observation.Evidence.TimedOut &&
 			observation.Evidence.HasRealUpstreamAttempt &&
-			stage+1 < len(DiagnosticRetryTimeouts)
+			stage+1 < len(s.retryTimeouts)
 		if !escalate {
 			return observation
 		}

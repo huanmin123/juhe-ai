@@ -128,6 +128,14 @@ func (s *Store) ReturnGroupForGrantee(ctx context.Context, groupID, granteeUserI
 	}); err != nil {
 		return nil, err
 	}
+	// returnResourceAuthorizationGrantAsync tail (return.repository.ts:587-596):
+	// bindings resync then the health input fanout inside the same transaction.
+	if err := s.syncGrantQuotaScopeBindings(ctx, tx, &grant, now); err != nil {
+		return nil, err
+	}
+	if _, err := s.enqueueGrantAccountHealthInputs(ctx, tx, &grant, now); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}

@@ -538,6 +538,21 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		healthCheckEndpointMode = *input.HealthCheckEndpointMode
 	}
 
+	// Gpt request-override catalog assertion (accounts.routes.ts:220): the
+	// request-scope system account feeds the personal catalog scope (Node
+	// effectiveRequestSystemAccountId). The mapping catalog assertion rides
+	// the final owner below (repositories.ts create: the write-side
+	// normalizeAccountModelMappingsForProvider call), after the group switch.
+	if err := s.assertAccountGptRequestOverridesSupported(ctx, accountGptRequestOverridesInput{
+		ProviderCode:    providerCode,
+		AccountType:     accountType,
+		Credentials:     credentials,
+		SupportedModels: supportedModels,
+		SystemAccountID: access.viewerID(),
+	}); err != nil {
+		return nil, err
+	}
+
 	// Owner context (the group block below switches the owner for admins
 	// binding an explicit group).
 	systemAccountID, err := access.ownerID()
@@ -576,6 +591,19 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	}
 	if group.systemAccountID != systemAccountID || group.providerCode != providerCode {
 		return nil, &ValidationError{Message: "账户分组无效"}
+	}
+
+	// Model mapping catalog assertion (repositories.ts create:1936, the
+	// write-side normalizeAccountModelMappingsForProvider): 来源/目标模型必须
+	// 落在当前供应商模型目录中且目标模型支持对应上游协议；personal 目录按最终
+	// owner scope 读取。
+	if err := s.assertAccountModelMappingsInProviderCatalog(ctx, tx, providerCode, systemAccountID, protocolPredicateInput{
+		providerCode:              providerCode,
+		protocolCode:              profile.protocolCode,
+		protocolVersion:           profile.protocolVersion,
+		providerProtocolProfileID: profile.id,
+	}, input.ModelMappings); err != nil {
+		return nil, err
 	}
 
 	// Dispatch fields.

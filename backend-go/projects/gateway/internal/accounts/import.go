@@ -1069,12 +1069,15 @@ func (s *Store) planImportAccount(ctx context.Context, value any, index int, pla
 	// message and marks the item failed, exactly like the Node plan helper.
 	s.normalizeImportAccountCredentials(source)
 
-	// The endpoint-mode compatibility asserts and the gpt request-override
-	// validation stay with the model-validation companion slice.
+	// The endpoint-mode compatibility asserts stay with the model-validation
+	// companion slice; the gpt request-override catalog validation and the
+	// mapping catalog checks landed with the model-catalog-validation slice
+	// (model_catalog_validation.go).
 
-	if err := s.validateImportModelCatalogFields(source, planCtx); err != nil {
+	if err := s.validateImportModelCatalogFields(ctx, source, planCtx); err != nil {
 		return plan, err
 	}
+	s.validateImportGptRequestOverrides(ctx, source, planCtx)
 	if err := s.resolveImportAccountGroup(ctx, &plan, planCtx, groupIDsByKey, groupNamesToCreate); err != nil {
 		return plan, err
 	}
@@ -1199,9 +1202,10 @@ func resolveImportAccountProtocolProfile(source *normalizedImportAccount, provid
 // validateImportModelCatalogFields mirrors validateAccountModelCatalogFields
 // restricted to the slice-owned normalization subset: provider default models,
 // the required supported-model set, the health check model membership and the
-// mapping upstream allowlist. The upstream model catalog checks stay with the
-// companion slice.
-func (s *Store) validateImportModelCatalogFields(source *normalizedImportAccount, planCtx *importPlanContext) error {
+// mapping upstream allowlist. The mapping catalog checks (the
+// normalizeAccountModelMappingsForProviderAsync catalog segment) ride the
+// model-catalog-validation slice; failures land as per-account messages.
+func (s *Store) validateImportModelCatalogFields(ctx context.Context, source *normalizedImportAccount, planCtx *importPlanContext) error {
 	if source.providerCode == "" || planCtx.providers[source.providerCode] == nil || planCtx.targetOwner == "" {
 		return nil
 	}
@@ -1226,7 +1230,37 @@ func (s *Store) validateImportModelCatalogFields(source *normalizedImportAccount
 	if err := assertMappingUpstreamsAllowed(source.modelMappings, source.supportedModels); err != nil {
 		source.push(err.Error())
 	}
+	if err := s.assertAccountModelMappingsInProviderCatalog(ctx, s.db, source.providerCode, planCtx.targetOwner, protocolPredicateInput{
+		providerCode:    source.providerCode,
+		protocolCode:    source.protocolCode,
+		protocolVersion: source.protocolVersion,
+	}, source.modelMappings); err != nil {
+		source.push(err.Error())
+	}
 	return nil
+}
+
+// validateImportGptRequestOverrides mirrors
+// validateImportAccountGptRequestOverridesAsync
+// (account-import-account-plan.ts): the catalog-backed assertion with the
+// import fallback to the provider default supported models; failures land as
+// per-account messages exactly like the Node plan helper.
+func (s *Store) validateImportGptRequestOverrides(ctx context.Context, source *normalizedImportAccount, planCtx *importPlanContext) {
+	supportedModels := source.supportedModels
+	if len(supportedModels) == 0 {
+		if provider := planCtx.providers[source.providerCode]; provider != nil {
+			supportedModels = provider.defaultSupportedModels
+		}
+	}
+	if err := s.assertAccountGptRequestOverridesSupported(ctx, accountGptRequestOverridesInput{
+		ProviderCode:    source.providerCode,
+		AccountType:     source.accountType,
+		Credentials:     source.credentials,
+		SupportedModels: supportedModels,
+		SystemAccountID: planCtx.access.viewerID(),
+	}); err != nil {
+		source.push(err.Error())
+	}
 }
 
 // resolveImportAccountGroup mirrors resolveAccountGroupAsync.

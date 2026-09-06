@@ -32,6 +32,53 @@ var ddl = []string{
 	`CREATE TABLE IF NOT EXISTS resource_authorization_sources (id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL, source_type TEXT NOT NULL, source_team_id TEXT, status TEXT NOT NULL DEFAULT 'active', activated_at TEXT, ended_at TEXT, ended_reason TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS resource_authorization_grants (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorizations_user_unique ON resource_authorizations(resource_type, resource_id, grantee_system_account_id)`,
+	// Downstream-sync fixtures (downstream.go): the quota scope bindings table
+	// plus the account-health input epoch/outbox pair. The accounts superset
+	// merges the authorized-read fixture columns (name, resource_owner_,
+	// account_expires_at) with the fanout whitelist columns (provider_code,
+	// type, revisions); the per-test accountsFixtureDDL executions stay
+	// compatible because they only INSERT named columns.
+	`CREATE TABLE IF NOT EXISTS accounts (
+		id TEXT PRIMARY KEY,
+		system_account_id TEXT NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'active',
+		resource_owner_system_account_id TEXT NOT NULL DEFAULT '',
+		provider_code TEXT NOT NULL DEFAULT '',
+		type TEXT NOT NULL DEFAULT 'oauth',
+		config_revision INTEGER NOT NULL DEFAULT 1,
+		dispatch_revision INTEGER NOT NULL DEFAULT 1,
+		authorization_instance_source_account_id TEXT,
+		authorization_instance_authorization_id TEXT,
+		account_expires_at TEXT,
+		deleted_at TEXT)`,
+	`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (
+		system_account_id TEXT NOT NULL,
+		scope_type TEXT NOT NULL,
+		scope_id TEXT NOT NULL,
+		source_type TEXT NOT NULL,
+		source_id TEXT NOT NULL,
+		window_hours INTEGER NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (system_account_id, scope_type, scope_id))`,
+	`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (
+		account_id TEXT PRIMARY KEY,
+		current_version INTEGER NOT NULL CHECK (current_version >= 1),
+		reserved_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (
+		event_id TEXT PRIMARY KEY,
+		account_id TEXT NOT NULL,
+		input_version INTEGER NOT NULL CHECK (input_version >= 1),
+		event_kind TEXT NOT NULL CHECK (event_kind IN ('snapshot', 'tombstone')),
+		reason TEXT NOT NULL,
+		config_revision INTEGER NOT NULL CHECK (config_revision >= 1),
+		dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
+		status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'published', 'failed', 'superseded')),
+		available_at TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		UNIQUE (account_id, input_version))`,
 }
 
 func newFixture(t *testing.T) *fixture {

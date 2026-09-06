@@ -574,6 +574,84 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
+	// Provider model-catalog validations (account-management-patch.repository.ts
+	// :445-452 + :667 + normalizedModelMappingsForPatch): the gpt
+	// request-override assertion rides the final credential record and the
+	// final supported-model set whenever credentials or supportedModels
+	// participate; the mapping catalog assertion rides the final mapping set
+	// when modelMappings are present (with an actual change) or the enabled
+	// endpoint modes changed. Assertion failures roll the transaction back,
+	// so running it after the satellite writes stays observation-equivalent
+	// to the Node pre-write ordering.
+	if input.CredentialsPresent || input.SupportedModelsPresent {
+		finalCredentials := Credentials{}
+		if input.CredentialsPresent && credentialsChanged {
+			finalCredentials = nextCredentials
+		} else {
+			// 未变化（或无凭据输入）时归档断言用归一化后/当前凭据：normalized
+			// 与 current 深相等，解密 current 即可。
+			if err := DecryptJSON(s.secret, row.credentialsEncrypted, &finalCredentials); err != nil {
+				return nil, err
+			}
+		}
+		finalSupportedModels := []string{}
+		modelRows, err := tx.QueryContext(ctx, s.bind(`SELECT model FROM `+s.table("account_supported_models")+`
+			WHERE account_id = ? ORDER BY model ASC`), row.id)
+		if err != nil {
+			return nil, err
+		}
+		for modelRows.Next() {
+			var model string
+			if err := modelRows.Scan(&model); err != nil {
+				modelRows.Close()
+				return nil, err
+			}
+			finalSupportedModels = append(finalSupportedModels, model)
+		}
+		modelRows.Close()
+		if err := modelRows.Err(); err != nil {
+			return nil, err
+		}
+		if err := s.assertAccountGptRequestOverridesSupported(ctx, accountGptRequestOverridesInput{
+			ProviderCode:    row.providerCode,
+			AccountType:     row.accountType,
+			Credentials:     finalCredentials,
+			SupportedModels: finalSupportedModels,
+			SystemAccountID: row.systemAccountID,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	mappingValidationSource := []ModelMapping{}
+	mappingValidationNeeded := false
+	if input.ModelMappingsPresent {
+		currentMappingsForValidation, err := s.loadAccountModelMappings(ctx, tx, row.id)
+		if err != nil {
+			return nil, err
+		}
+		mappingValidationNeeded = len(input.ModelMappings) > 0 &&
+			(endpointModesChanged || !modelMappingsEqual(currentMappingsForValidation, input.ModelMappings))
+		mappingValidationSource = input.ModelMappings
+	} else if endpointModesChanged {
+		currentMappingsForValidation, err := s.loadAccountModelMappings(ctx, tx, row.id)
+		if err != nil {
+			return nil, err
+		}
+		mappingValidationNeeded = len(currentMappingsForValidation) > 0
+		mappingValidationSource = currentMappingsForValidation
+	}
+	if mappingValidationNeeded {
+		if err := s.assertAccountModelMappingsInProviderCatalog(ctx, tx, row.providerCode, row.systemAccountID, protocolPredicateInput{
+			providerCode: row.providerCode,
+			protocolCode: row.protocolCode,
+			// 归档 protocolProfileFromRow(row) 不带 profile id；成员判定只用
+			// providerCode + protocolCode + protocolVersion。
+			protocolVersion: row.protocolVersion,
+		}, mappingValidationSource); err != nil {
+			return nil, err
+		}
+	}
+
 	// Temporary-unavailable continuous probe switch (Node
 	// :643-694): absent keeps the current flag; turning it off while the
 	// account sits in temporary_unavailable arms the bounded recovery window.

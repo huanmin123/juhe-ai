@@ -80,7 +80,7 @@ func statsCleanupTables(t *testing.T, db *sql.DB) {
 		{"account_quality_minute_stats", "stat_minute"},
 		{"group_account_stats", "updated_at"},
 		{"account_quality_scores", "updated_at"},
-	{"account_quality_scores_acct", ""},
+		{"account_quality_scores_acct", ""},
 		{"account_quality_dirty_accounts", "updated_at"},
 		{"account_usage_snapshots", "updated_at"},
 		{"usage_stats_totals", "updated_at"},
@@ -216,7 +216,7 @@ func seedDataRetention(t *testing.T, dir string) {
 		`CREATE TABLE IF NOT EXISTS usage_record_shard_entries (usage_id TEXT, shard_key TEXT, created_at TEXT, system_account_id TEXT, api_key_id TEXT, account_id TEXT)`,
 		`CREATE TABLE IF NOT EXISTS usage_record_account_shards (account_id TEXT, shard_key TEXT, first_created_at TEXT, last_seen_at TEXT)`,
 		`CREATE TABLE IF NOT EXISTS usage_record_api_key_shards (api_key_id TEXT, system_account_id TEXT, shard_key TEXT, first_created_at TEXT, last_seen_at TEXT)`,
-		"INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status) VALUES ('20200101:s01', '2020-01-01', 1, '" + filepath.Join(dir, "usage-shards", "shard.sqlite3") + "', 'active')",
+		"INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status) VALUES ('20200101:s01', '2020-01-01', 1, '"+filepath.Join(dir, "usage-shards", "shard.sqlite3")+"', 'active')",
 		`INSERT INTO usage_record_shard_entries (usage_id, shard_key, created_at, system_account_id)
 		 VALUES ('usage-old', '20200101:s01', '2020-01-01T00:00:00.000Z', 'sys_a')`)
 	// 安全游标：两个必需 job 都建立 global 游标（PG 语义）与 shard 游标（SQLite 语义）。
