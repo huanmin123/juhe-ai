@@ -128,15 +128,16 @@ func TestDeleteAuthorizationChainSQLitePerGrantSync(t *testing.T) {
 
 	// Runtime rows: the direct grant terminal refresh writes the deleting
 	// actor and the authorization_revoked reason over the earlier stamps
-	// (preserveExpired=false); the team-carried runtime lands in the shared
-	// chain's terminal branch (no_active_source reason, preserve-expired).
+	// (preserveExpired=false); the team-carried runtime uses that same explicit
+	// terminal reason because the archived team cascade passes
+	// noActiveSourceReason='authorization_revoked' with preserveExpired=false.
 	if env.count(t, `SELECT COUNT(*) FROM resource_authorizations WHERE id = 'ra-live'
 		AND status = 'revoked' AND revoked_reason = 'authorization_revoked' AND revoked_by = ?
 		AND effective_source_type IS NULL AND last_source_changed_at IS NOT NULL`, adminID) != 1 {
 		t.Fatal("direct runtime must reach the revoked terminal with overwritten stamps")
 	}
 	if env.count(t, `SELECT COUNT(*) FROM resource_authorizations WHERE id = 'ra-member'
-		AND status = 'revoked' AND revoked_reason = 'no_active_source'
+		AND status = 'revoked' AND revoked_reason = 'authorization_revoked'
 		AND effective_source_type IS NULL`) != 1 {
 		t.Fatal("team runtime must reach the terminal branch of the shared refresh")
 	}
