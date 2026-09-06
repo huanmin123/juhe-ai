@@ -147,6 +147,22 @@ const projectNames = project === 'jobs'
     ]
 
 const env = { ...process.env }
+// Go-only release packages configure both projects through backend/.env. The
+// original sidecar launcher forwarded a fixed subset, which silently dropped
+// newly migrated Go settings (for example host/port and Redis drivers). Keep
+// the documented precedence in configured(): a caller-provided environment
+// variable still wins over the overlay, capacity file, and base file.
+const configuredJuheNames = new Set([
+  ...Object.keys(baseEnv),
+  ...Object.keys(capacityEnv),
+  ...Object.keys(overlayEnv)
+].filter((name) => name.startsWith('JUHE_AI_')))
+for (const name of configuredJuheNames) {
+  const value = configured(name)
+  if (value.defined) env[name] = value.value
+}
+// The explicit lists below retain the startup-only responsibilities that need
+// validation or path normalization; they no longer limit .env forwarding.
 for (const name of [...commonNames, ...projectNames]) {
   const value = configured(name)
   if (value.defined) env[name] = value.value

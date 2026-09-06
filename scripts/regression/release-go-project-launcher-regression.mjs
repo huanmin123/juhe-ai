@@ -28,6 +28,7 @@ assertLauncherRejectsSqliteJ2Store()
 assertLauncherForwardsProjectScopedPaths()
 assertLauncherForwardsGatewayOwnershipGates()
 assertLauncherForwardsGatewayJobsOrigins()
+assertLauncherForwardsGatewayRuntimeConfig()
 assertLauncherForwardsJ2PathsAndOwner()
 assertLauncherForwardsGoRuntimeMetricsConfig()
 assertReleaseScriptsCreateGoOnlyBackendRoot()
@@ -182,6 +183,36 @@ function assertLauncherForwardsGatewayJobsOrigins() {
     assert.equal(gateway.status, 0, `gateway jobs-origin launcher failed: ${gateway.output}`)
     assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_URL, 'http://127.0.0.1:4305')
     assert.equal(gateway.childEnvironment.JUHE_AI_JOBS_INTERNAL_URL, 'http://127.0.0.1:4306')
+  } finally {
+    gateway.cleanup()
+  }
+}
+
+function assertLauncherForwardsGatewayRuntimeConfig() {
+  const gateway = runLauncher('gateway', {
+    JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
+    JUHE_AI_AUDIT_LOG_INPUT_SECRET: 'release-audit-input-secret-with-32-bytes',
+    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner',
+    JUHE_AI_OPERATION_LOG_INPUT_SECRET: 'release-operation-input-secret-32-bytes'
+  }, [
+    'JUHE_AI_DATABASE_DRIVER=sqlite',
+    'JUHE_AI_HOST=127.0.0.1',
+    'JUHE_AI_PORT=4300',
+    'JUHE_AI_COOKIE_SECURE=true',
+    'JUHE_AI_COOKIE_SAME_SITE=strict',
+    'JUHE_AI_RUNTIME_STATE_DRIVER=redis',
+    'JUHE_AI_REDIS_STATE_URL=redis://state.example.test:6379/9',
+    'JUHE_AI_UNLISTED_FUTURE_GATEWAY_SETTING=kept'
+  ].join('\n'))
+  try {
+    assert.equal(gateway.status, 0, `gateway runtime-config launcher failed: ${gateway.output}`)
+    assert.equal(gateway.childEnvironment.JUHE_AI_HOST, '127.0.0.1')
+    assert.equal(gateway.childEnvironment.JUHE_AI_PORT, '4300')
+    assert.equal(gateway.childEnvironment.JUHE_AI_COOKIE_SECURE, 'true')
+    assert.equal(gateway.childEnvironment.JUHE_AI_COOKIE_SAME_SITE, 'strict')
+    assert.equal(gateway.childEnvironment.JUHE_AI_RUNTIME_STATE_DRIVER, 'redis')
+    assert.equal(gateway.childEnvironment.JUHE_AI_REDIS_STATE_URL, 'redis://state.example.test:6379/9')
+    assert.equal(gateway.childEnvironment.JUHE_AI_UNLISTED_FUTURE_GATEWAY_SETTING, 'kept')
   } finally {
     gateway.cleanup()
   }
