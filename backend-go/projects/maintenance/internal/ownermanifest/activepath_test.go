@@ -26,12 +26,23 @@ func TestScanNodeJ3bActivePathsReportsKnownEntrypoints(t *testing.T) {
 
 func TestScanNodeJ3bActivePathsTreatsArchivedActiveTreeAsClean(t *testing.T) {
 	root := t.TempDir()
+	archiveRoot := filepath.Join(root, "migration-backup", "node", "final-archive", "backend", "src")
+	if err := os.MkdirAll(archiveRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	report, err := ScanNodeJ3bActivePaths(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Root != filepath.Join(root, "backend", "src") || report.ScannedFiles != 0 || report.BlockedFindings != 0 || len(report.Findings) != 0 {
 		t.Fatalf("archived active tree must be clean: %+v", report)
+	}
+}
+
+func TestScanNodeJ3bActivePathsRejectsMissingActiveAndArchiveTrees(t *testing.T) {
+	root := t.TempDir()
+	if _, err := ScanNodeJ3bActivePaths(root); err == nil {
+		t.Fatal("missing active and archived Node source trees must fail closed")
 	}
 }
 

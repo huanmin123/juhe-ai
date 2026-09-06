@@ -66,11 +66,20 @@ func ScanNodeJ3bActivePaths(root string) (ActivePathReport, error) {
 	sourceRoot := filepath.Join(root, "backend", "src")
 	report := ActivePathReport{Root: sourceRoot, RuleVersion: "j3b-active-path-v2", Rules: append([]ActivePathRule(nil), nodeJ3bPatterns...)}
 	if info, err := os.Stat(sourceRoot); err != nil || !info.IsDir() {
-		// After the final Node archive there is no active Node source tree.
-		// That is the success condition for this active-path scan, not an I/O
-		// failure. Other stat failures still make the check fail closed.
+		// After the final Node archive there is no active Node source tree, but
+		// the archive itself must be present before this absence can be treated
+		// as a verified success. This keeps a typo'd repository root or a
+		// partially checked-out migration from producing a false-clean report.
 		if errors.Is(err, os.ErrNotExist) {
-			return report, nil
+			archiveRoot := filepath.Join(root, "migration-backup", "node", "final-archive", "backend", "src")
+			archiveInfo, archiveErr := os.Stat(archiveRoot)
+			if archiveErr == nil && archiveInfo.IsDir() {
+				return report, nil
+			}
+			if archiveErr == nil {
+				archiveErr = fmt.Errorf("not a directory")
+			}
+			return ActivePathReport{}, fmt.Errorf("Node active-path scan requires active source %s or archived source %s: %w", sourceRoot, archiveRoot, archiveErr)
 		}
 		if err == nil {
 			err = fmt.Errorf("not a directory")
