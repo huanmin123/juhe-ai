@@ -531,7 +531,13 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	}
 
 	// failure-dispatch.ts:369-390: the explicit-policy audit attribution and
-	// the state change (cooldown / disable) through the effects port.
+	// the state change (cooldown / disable) through the effects port. The
+	// Node state write runs through applyAccountErrorHandling, whose
+	// keyScoped guard (account-error-policy.service.ts:261-268) early-returns
+	// with changed:false before applyExplicitAccountErrorPolicyDecision —
+	// pool isolation scopes the failure to the selected Key (recorded above)
+	// and never marks the whole account. The audit attribution above still
+	// covers keyScoped decisions (failure-dispatch.ts:369-383).
 	if decision != nil && input.AccountStateMutationEnabled {
 		input.AuditCapture.AddGatewayMetadata("account_error_policy_matched", map[string]any{
 			"accountId":               input.Account.ID,
@@ -544,7 +550,7 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 			"quotaRecoveryMode":       decision.QuotaRecoveryMode,
 			"quotaRecoveryHintSource": decision.QuotaRecoveryHintSource,
 		})
-		if decision.Action != decisionActionRetryNext {
+		if decision.Action != decisionActionRetryNext && !decision.KeyScoped {
 			failureInput := chainErrorPolicyFailureInput{
 				StatusCode:                   statusCode,
 				HasStatusCode:                hasStatus,

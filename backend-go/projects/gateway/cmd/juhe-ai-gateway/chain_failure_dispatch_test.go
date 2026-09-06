@@ -1783,6 +1783,99 @@ func TestChainFailureDispatcherKeyScopedWriteFailureContinues(t *testing.T) {
 	}
 }
 
+// recordingErrorPolicyEffects 记录账户级状态写与 Key 级失败记录两条写入口的
+// 调用次数（keyScoped 账户级守卫的回归验证）。
+type recordingErrorPolicyEffects struct {
+	applyCalls  int
+	recordCalls int
+}
+
+func (r *recordingErrorPolicyEffects) ApplyAccountErrorPolicyDecision(context.Context, gatewaydispatch.AccountCandidate, accountErrorPolicyDecision, chainErrorPolicyFailureInput) (bool, string, error) {
+	r.applyCalls++
+	return true, cooldownStatusRateLimited, nil
+}
+
+func (r *recordingErrorPolicyEffects) RecordKeyScopedQuotaFailure(context.Context, gatewaydispatch.AccountCandidate, accountErrorPolicyDecision, chainErrorPolicyFailureInput) error {
+	r.recordCalls++
+	return nil
+}
+
+// TestChainFailureDispatcherKeyScopedSkipsAccountStateWrite：池隔离开启的
+// keyScoped 系统 quota 决策只做 Key 级失败记录 —— 归档
+// account-error-policy.service.ts:261-268 对 keyScoped 提前返回
+// （changed:false，不进入 applyExplicitAccountErrorPolicyDecision），账户级
+// cooldown/disable 状态写不得执行；audit 归因（failure-dispatch.ts:369-383
+// 对 keyScoped 同样写入）、Key 级记录与 explicit_policy failureKind 保持。
+// 对照面：非 keyScoped 的系统 quota 决策仍走账户级状态写。
+func TestChainFailureDispatcherKeyScopedSkipsAccountStateWrite(t *testing.T) {
+	response := failureDispatchUpstreamResponse(t, http.StatusPaymentRequired, "application/json",
+		`{"error":{"code":"insufficient_quota","message":"insufficient quota"}}`)
+	newDispatcher := func(poolOn bool) (*chainFailureDispatcher, *recordingErrorPolicyEffects) {
+		effects := &recordingErrorPolicyEffects{}
+		return &chainFailureDispatcher{
+			policy: newFixedErrorPolicyService(func(candidate gatewaydispatch.AccountCandidate) bool {
+				return poolOn && candidate.SelectedAPIKeyFingerprint != nil
+			}),
+			effects: effects,
+		}, effects
+	}
+
+	// 池隔离开启 → keyScoped 决策：Key 级记录在，账户级写不落。
+	fingerprint := "fp_keyscoped_guard"
+	pooledAccount := errorPolicyAccount(nil)
+	pooledAccount.APIKeys = []string{"key-a", "key-b"}
+	pooledAccount.SelectedAPIKeyFingerprint = &fingerprint
+	dispatcher, effects := newDispatcher(true)
+	sink := &failureDispatchAuditSink{}
+	input := gatewayFailedResponseInput(response, sink, "gateway")
+	input.AuditCapture = gatewaydispatch.AuditCapture{Context: sink, Sink: sink}
+	input.Account = pooledAccount
+	input.AccountStateMutationEnabled = true
+	input.Settings = gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30}
+	result, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle keyScoped failure: %v", err)
+	}
+	if effects.applyCalls != 0 {
+		t.Fatalf("keyScoped decision must not write account-level state: ApplyAccountErrorPolicyDecision calls = %d", effects.applyCalls)
+	}
+	if effects.recordCalls != 1 {
+		t.Fatalf("key-scoped record calls = %d want 1", effects.recordCalls)
+	}
+	if result.FailureKind != gatewaydispatch.FailureKindExplicitPolicy {
+		t.Fatalf("failureKind=%s want explicit_policy", result.FailureKind)
+	}
+	if !result.KeyScopedFailure {
+		t.Fatal("keyScoped decision must still authorize the same-account key rotation")
+	}
+	if result.PendingApiKeyFailure != nil {
+		t.Fatal("keyScoped failure is recorded directly; no pending key failure may be captured")
+	}
+	policyMetadata := sink.metadataByLabel("account_error_policy_matched")
+	if policyMetadata == nil {
+		t.Fatalf("account_error_policy_matched metadata missing: %+v", sink.metadata)
+	}
+	if keyScoped, ok := policyMetadata.metadata["keyScoped"].(bool); !ok || !keyScoped {
+		t.Fatalf("policy metadata keyScoped = %+v want true", policyMetadata.metadata["keyScoped"])
+	}
+
+	// 池隔离关闭 → 同一上游失败产生非 keyScoped 决策：账户级状态写保持。
+	singleDispatcher, singleEffects := newDispatcher(false)
+	singleInput := gatewayFailedResponseInput(response, &failureDispatchAuditSink{}, "gateway")
+	singleInput.Account = errorPolicyAccount(nil)
+	singleInput.AccountStateMutationEnabled = true
+	singleInput.Settings = gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30}
+	if _, err := singleDispatcher.HandleFailedUpstreamResponse(context.Background(), singleInput); err != nil {
+		t.Fatalf("handle non-keyScoped failure: %v", err)
+	}
+	if singleEffects.applyCalls != 1 {
+		t.Fatalf("non-keyScoped decision must still apply the account-level state: calls = %d", singleEffects.applyCalls)
+	}
+	if singleEffects.recordCalls != 0 {
+		t.Fatalf("non-keyScoped decision must not record the key-scoped failure: calls = %d", singleEffects.recordCalls)
+	}
+}
+
 // TestChainErrorPolicyNonJSONBodyKeepsEmptyPayload：非 JSON 失败体的
 // errorPayload 恒空（Node failure-dispatch.ts:439-447）—— 决策与 usage 都
 // 不再从捕获文本重解析结构化 code/type；error_codes 维度不命中，keywords /
