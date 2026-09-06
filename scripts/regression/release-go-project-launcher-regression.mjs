@@ -26,6 +26,7 @@ assertLauncherRejectsJ1WithoutGoOwner()
 assertLauncherRejectsMissingJ1InputDirectory()
 assertLauncherRejectsSqliteJ2Store()
 assertLauncherForwardsProjectScopedPaths()
+assertLauncherForwardsGatewayOwnershipGates()
 assertLauncherForwardsJ2PathsAndOwner()
 assertLauncherForwardsGoRuntimeMetricsConfig()
 
@@ -124,6 +125,42 @@ function assertLauncherForwardsProjectScopedPaths() {
     assert.equal(gateway.childEnvironment.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3304')
   } finally {
     jobs.cleanup()
+    gateway.cleanup()
+  }
+}
+
+function assertLauncherForwardsGatewayOwnershipGates() {
+  const gateway = runLauncher('gateway', {
+    JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
+    JUHE_AI_AUDIT_LOG_INPUT_SECRET: 'release-audit-input-secret-with-32-bytes',
+    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner',
+    JUHE_AI_OPERATION_LOG_INPUT_SECRET: 'release-operation-input-secret-32-bytes'
+  }, [
+    'JUHE_AI_DATABASE_DRIVER=sqlite',
+    'JUHE_AI_BUSINESS_OWNER=gateway',
+    'JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true',
+    'JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true',
+    'JUHE_AI_BUSINESS_SCHEMA_READY=true',
+    'JUHE_AI_BUSINESS_OWNER_EPOCH=epoch-launcher-regression',
+    'JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH=./data/cutover-evidence.json',
+    'JUHE_AI_BUSINESS_DATABASE_PATH=./data/business.sqlite3',
+    'JUHE_AI_BUSINESS_POSTGRES_URL=postgres://business-owner',
+    'JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true',
+    'JUHE_AI_GATEWAY_CHAIN_ENABLED=true'
+  ].join('\n'))
+  try {
+    assert.equal(gateway.status, 0, `gateway ownership-gate launcher failed: ${gateway.output}`)
+    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_OWNER, 'gateway')
+    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_HANDOFF_CONFIRMED, 'true')
+    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_NODE_WRITER_STOPPED, 'true')
+    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_SCHEMA_READY, 'true')
+    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_OWNER_EPOCH, 'epoch-launcher-regression')
+    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH, './data/cutover-evidence.json')
+    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_DATABASE_PATH, './data/business.sqlite3')
+    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_POSTGRES_URL, 'postgres://business-owner')
+    assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_SYSTEM_API_ENABLED, 'true')
+    assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_CHAIN_ENABLED, 'true')
+  } finally {
     gateway.cleanup()
   }
 }

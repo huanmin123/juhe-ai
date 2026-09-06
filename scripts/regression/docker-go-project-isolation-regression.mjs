@@ -23,6 +23,15 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
   assertProjectContract(gateway, 'gateway', mode)
   // go-only 主入口开关：gateway 必须以 SYSTEM_API_ENABLED=true 绑定业务端口。
   assert.match(gateway, /JUHE_AI_GATEWAY_SYSTEM_API_ENABLED: \$\{JUHE_AI_GATEWAY_SYSTEM_API_ENABLED:-true\}/u, 'standalone gateway must own the main HTTP entry by default')
+  assert.match(gateway, /JUHE_AI_GATEWAY_CHAIN_ENABLED: \$\{JUHE_AI_GATEWAY_CHAIN_ENABLED:-false\}/u, 'standalone gateway must expose the chain gate to the Go runtime')
+  for (const name of [
+    'JUHE_AI_BUSINESS_OWNER', 'JUHE_AI_BUSINESS_HANDOFF_CONFIRMED',
+    'JUHE_AI_BUSINESS_NODE_WRITER_STOPPED', 'JUHE_AI_BUSINESS_SCHEMA_READY',
+    'JUHE_AI_BUSINESS_OWNER_EPOCH', 'JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH',
+    'JUHE_AI_BUSINESS_DATABASE_PATH', 'JUHE_AI_BUSINESS_POSTGRES_URL'
+  ]) {
+    assert.match(gateway, new RegExp(`${name}:`, 'u'), `standalone gateway must receive ${name}`)
+  }
   assert.match(gateway, /ports:/u, 'standalone gateway must publish the public HTTP port')
   assert.match(gateway, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:/u, 'standalone gateway must own F3')
   assert.match(gateway, /JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, 'standalone gateway must own F4')
