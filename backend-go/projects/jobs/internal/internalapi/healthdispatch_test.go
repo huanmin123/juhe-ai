@@ -254,6 +254,30 @@ func TestHealthCheckDispatchValidatesPayload(t *testing.T) {
 			}
 		})
 	}
+	t.Run("trailing JSON value rejected", func(t *testing.T) {
+		recorder := &healthDispatchRecorder{}
+		handler := newHealthDispatchTestHandler(recorder)
+		raw := append(healthDispatchBody(t, nil), []byte(` {}`)...)
+		record := postHealthDispatch(t, handler, healthDispatchTestSecret, raw)
+		if record.Code != http.StatusBadRequest {
+			t.Fatalf("trailing JSON value must be 400: %d body=%s", record.Code, record.Body.String())
+		}
+		if recorder.calls() != 0 {
+			t.Fatalf("trailing JSON value must not reach dispatch: %d", recorder.calls())
+		}
+	})
+	t.Run("invalid UTF-8 rejected", func(t *testing.T) {
+		recorder := &healthDispatchRecorder{}
+		handler := newHealthDispatchTestHandler(recorder)
+		raw := append(healthDispatchBody(t, nil), byte(0xff))
+		record := postHealthDispatch(t, handler, healthDispatchTestSecret, raw)
+		if record.Code != http.StatusBadRequest {
+			t.Fatalf("invalid UTF-8 must be 400: %d body=%s", record.Code, record.Body.String())
+		}
+		if recorder.calls() != 0 {
+			t.Fatalf("invalid UTF-8 must not reach dispatch: %d", recorder.calls())
+		}
+	})
 	t.Run("非对象 body", func(t *testing.T) {
 		recorder := &healthDispatchRecorder{}
 		handler := newHealthDispatchTestHandler(recorder)

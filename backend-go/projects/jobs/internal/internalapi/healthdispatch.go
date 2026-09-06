@@ -1,15 +1,18 @@
 package internalapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 )
 
 // account-health-check-dispatch 接线，对齐网关桥
@@ -137,9 +140,19 @@ func handleHealthCheckDispatch(w http.ResponseWriter, r *http.Request, options H
 // 与顶层 accountId 一致），把无争议的请求错误前置为 400，剩余 revision 一致
 // 性判定（依赖账户事实）留在派发服务内。
 func parseHealthCheckDispatchPayload(rawBody []byte) (accountID, reason, traceID string, sourceFence *HealthCheckSourceFence, ok bool) {
+	// Node's TextDecoder(..., { fatal: true }) + JSON.parse reject malformed
+	// UTF-8 and any trailing JSON value. Keep the same wire boundary before
+	// extracting fields so a signed body cannot carry an ambiguous payload.
+	if !utf8.Valid(rawBody) {
+		return "", "", "", nil, false
+	}
 	var parsed any
-	decoder := json.NewDecoder(strings.NewReader(string(rawBody)))
+	decoder := json.NewDecoder(bytes.NewReader(rawBody))
 	if err := decoder.Decode(&parsed); err != nil {
+		return "", "", "", nil, false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return "", "", "", nil, false
 	}
 	record, recordOK := parsed.(map[string]any)
