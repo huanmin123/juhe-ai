@@ -27,6 +27,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -236,6 +237,10 @@ func (a usageDispatchAdapter) RecordGatewayFailure(input gatewayresponse.Failure
 // failureKind union (only the explicit-policy member has a Go constant).
 const chainFailureKindOpaqueHTTP = "opaque_http"
 
+// chainFailureKindCompatibilityRecovery mirrors the 'compatibility_recovery'
+// member of the Node failureKind union (failure-dispatch.ts:162).
+const chainFailureKindCompatibilityRecovery = "compatibility_recovery"
+
 // chainFailureErrorBodyCaptureBytes mirrors upstreamErrorBodyCaptureBytes
 // (upstream/body.ts): the bounded failure-body capture feeding retry
 // diagnostics and usage records.
@@ -258,14 +263,45 @@ const chainFailureErrorBodyCaptureBytes = 256 * 1024
 //
 // Request errors (transport failures / downstream closes) always skip the
 // account after recording; the engine owns the rethrow contracts around the
-// aborted branch. The deep branches that need collaborators this slice does
-// not mount stay registered gaps: codex encrypted-content compatibility
-// recovery (retry_with_compatibility_recovery) and the account error policy
-// service (explicit_policy failureKind / keyScoped policy actions / request
-// failure health-check dispatch).
+// aborted branch. The codex encrypted-content compatibility recovery
+// (retry_with_compatibility_recovery) runs on the mounted gatewaycodex
+// recovery helper and the engine's semantic-retry bridge; the deep branches
+// that still need collaborators this slice does not mount stay registered
+// gaps: the request-failure health-check dispatch
+// (Node dispatchRequestFailureHealthCheck) and the source-avoidance
+// availability probe (records land, the activation probe stays degraded).
 type chainFailureDispatcher struct {
 	usage    *gatewayusage.Service
 	affinity gatewaydispatch.SessionAffinityPort
+	// clientStrategy re-resolves the G18 client strategy at failure time
+	// (failure-dispatch.ts scheduleGatewayClientSourceAvoidanceFailure); nil
+	// keeps the avoidance recording off.
+	clientStrategy *gatewaycodex.ClientStrategyDeps
+	// turnRetry owns the client-source avoidance state (memory driver);
+	// nil keeps the recording off.
+	turnRetry *gatewaycodex.TurnRetryService
+	// avoidanceProbe dispatches the activation availability probe; nil keeps
+	// the short avoidance without an early probe clear (logged once).
+	avoidanceProbe *gatewaycodex.TurnAvoidanceProbeService
+	// policy 决策服务（nil → 默认时钟 + 池隔离关闭的实例）；effects 是显式
+	// 策略决策的状态写侧窄口（nil → 显式降级实现，首次使用记录一条日志）。
+	// 见 chain_error_policy.go / chain_error_policy_effects.go。
+	policy  *chainErrorPolicyService
+	effects chainAccountErrorPolicyEffects
+}
+
+func (d *chainFailureDispatcher) errorPolicyOf() *chainErrorPolicyService {
+	if d.policy != nil {
+		return d.policy
+	}
+	return newChainErrorPolicyService(chainErrorPolicyDeps{})
+}
+
+func (d *chainFailureDispatcher) errorPolicyEffectsOf() chainAccountErrorPolicyEffects {
+	if d.effects != nil {
+		return d.effects
+	}
+	return &degradedChainErrorPolicyEffects{}
 }
 
 func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Context, input gatewaydispatch.FailedUpstreamResponseInput) (gatewaydispatch.FailedUpstreamResponseResult, error) {
@@ -313,7 +349,21 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 			"accountId", input.Account.ID, "statusCode", statusCode, "error", readErr.Error())
 	}
 
-	lastAttempt := failedResponseAttemptOf(input, bodyText)
+	// failure-dispatch.ts:219-227: parseFailureBodyFacts + decideAccountErrorPolicy
+	// run right after the bounded capture — the explicit account error policy
+	// decision drives the failureKind, the key-rotation authorization, the
+	// audit/usage quota attribution and the state changes below.
+	parsedFailureBody := parsedFailureBodyOf(input.Response, bodyText)
+	policyHeader := responseHTTPHeaderOf(input.Response)
+	decision, decisionErr := d.errorPolicyOf().Decide(input.Account, statusCode, policyHeader, bodyText, parsedFailureBody, input.Settings)
+	if decisionErr != nil {
+		// Node: 读取侧规则归一是同一严格校验，抛出同步异常并按请求错误处理。
+		return gatewaydispatch.FailedUpstreamResponseResult{}, decisionErr
+	}
+	failurePayload := failureProtocolPayloadOf(bodyText, policyHeader, parsedFailureBody)
+	upstreamErrorSummary := accountErrorPayloadSummary(failurePayload)
+
+	lastAttempt := failedResponseAttemptOf(input, bodyText, parsedFailureBody)
 	if input.AuditAttemptID != "" {
 		input.AuditCapture.CompleteAttempt(input.AuditAttemptID, gatewaydispatch.CompleteAttemptInput{
 			Success:      false,
@@ -340,29 +390,129 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 			Headers:      usageFailureHeadersOf(input.Response),
 			BodyText:     bodyText,
 			ErrorMessage: lastAttempt.Message,
+			ErrorPayload: usageErrorPayloadOf(failurePayload),
 		}); err != nil {
 			return gatewaydispatch.FailedUpstreamResponseResult{}, err
 		}
 	}
 
-	// failure-dispatch.ts:392-396: without an explicit policy decision only
-	// the automatic same-account key rotation can apply, and a pre-commit
-	// transient response defers it (the dispatcher owns a bounded retry of
-	// the same physical credential).
+	// failure-dispatch.ts:292-327: the codex encrypted-content compatibility
+	// recovery runs after the audit/usage records and before the policy
+	// branches. A retry_with_body_variant result short-circuits the skip flow
+	// — the engine replays the same account with the sanitized body and the
+	// semantic-retry id. A not_recoverable verdict with a signal only adds the
+	// skip audit metadata; the decision stays the ordinary candidate failover.
+	recovery := gatewaycodex.RecoverCodexEncryptedContent(ctx, gatewaycodex.EncryptedContentRecoveryInput{
+		Req:               input.Req,
+		Account:           input.Account,
+		Body:              input.RequestBody,
+		UpstreamErrorText: bodyText,
+	})
+	if recovery.Action == gatewaycodex.RecoveryActionRetryWithBodyVariant {
+		input.AuditCapture.AddGatewayMetadata("codex_encrypted_content_recovery_retry", codexRecoveryMetadataOf(input, recovery))
+		return gatewaydispatch.FailedUpstreamResponseResult{
+			Action:      gatewaydispatch.FailedResponseActionRetryWithCompatibilityRecovery,
+			FailureKind: chainFailureKindCompatibilityRecovery,
+			LastAttempt: lastAttempt,
+			Recovery: gatewaydispatch.CompatibilityRecovery{
+				Body:            recovery.Body,
+				SemanticRetryID: recovery.SemanticRetryID,
+			},
+		}, nil
+	}
+	if recovery.Action == gatewaycodex.RecoveryActionNotRecoverable && recovery.Signal != "" {
+		skipped := map[string]any{
+			"accountId":   input.Account.ID,
+			"upstreamUrl": input.UpstreamURL,
+			"transport":   "http",
+			"signal":      recovery.Signal,
+		}
+		if recovery.Reason != "" {
+			skipped["reason"] = recovery.Reason
+		}
+		input.AuditCapture.AddGatewayMetadata("codex_encrypted_content_recovery_skipped", skipped)
+	}
+
+	// failure-dispatch.ts:346: forget the session affinity before the policy
+	// branches — the failed account leaves this conversation's ordering.
+	d.forgetSessionAffinity(ctx, input.SessionAffinityKey, input.Account.ID)
+
+	// failure-dispatch.ts:348-367: the keyScoped system-quota decision records
+	// the Key-scoped failure directly (rate_limited + quota recovery code).
+	if decision != nil && decision.KeyScoped && input.AccountStateMutationEnabled {
+		if err := d.errorPolicyEffectsOf().RecordKeyScopedQuotaFailure(ctx, input.Account, *decision, chainErrorPolicyFailureInput{
+			StatusCode:                   statusCode,
+			HasStatusCode:                hasStatus,
+			BodyText:                     bodyText,
+			UpstreamErrorSummary:         upstreamErrorSummary,
+			UpstreamErrorSummaryResolved: true,
+			TraceID:                      input.UsageContext.TraceID,
+			AttemptStartedAtMs:           input.AttemptStartedAt,
+		}); err != nil {
+			return gatewaydispatch.FailedUpstreamResponseResult{}, err
+		}
+	}
+
+	// failure-dispatch.ts:369-390: the explicit-policy audit attribution and
+	// the state change (cooldown / disable) through the effects port.
+	if decision != nil && input.AccountStateMutationEnabled {
+		input.AuditCapture.AddGatewayMetadata("account_error_policy_matched", map[string]any{
+			"accountId":               input.Account.ID,
+			"ruleId":                  decision.RuleID,
+			"ruleName":                decision.RuleName,
+			"ruleSource":              decision.RuleSource,
+			"action":                  decision.Action,
+			"cooldownStatus":          decision.CooldownStatus,
+			"keyScoped":               decision.KeyScoped,
+			"quotaRecoveryMode":       decision.QuotaRecoveryMode,
+			"quotaRecoveryHintSource": decision.QuotaRecoveryHintSource,
+		})
+		if decision.Action != decisionActionRetryNext {
+			failureInput := chainErrorPolicyFailureInput{
+				StatusCode:                   statusCode,
+				HasStatusCode:                hasStatus,
+				BodyText:                     bodyText,
+				UpstreamErrorSummary:         upstreamErrorSummary,
+				UpstreamErrorSummaryResolved: true,
+				TraceID:                      input.UsageContext.TraceID,
+				AttemptStartedAtMs:           input.AttemptStartedAt,
+			}
+			if _, _, err := d.errorPolicyEffectsOf().ApplyAccountErrorPolicyDecision(ctx, input.Account, *decision, failureInput); err != nil {
+				return gatewaydispatch.FailedUpstreamResponseResult{}, err
+			}
+		}
+	}
+
+	// failure-dispatch.ts:392-396: an explicit retry_next / keyScoped decision
+	// authorizes the same-account key rotation regardless of the pre-commit
+	// deferral; only the automatic path is deferred while the dispatcher owns
+	// a bounded retry of the same physical credential.
 	hasAlternativeAccountAPIKeys := input.Account.SelectedAPIKeyFingerprint != nil && len(input.Account.APIKeys) > 1
-	sameAccountKeyRotation := hasAlternativeAccountAPIKeys && !input.DeferAutomaticSameAccountKeyRotation
+	explicitRotation := decision != nil && (decision.Action == decisionActionRetryNext || decision.KeyScoped)
+	sameAccountKeyRotation := hasAlternativeAccountAPIKeys && (explicitRotation || !input.DeferAutomaticSameAccountKeyRotation)
+	failureKind := chainFailureKindOpaqueHTTP
+	if decision != nil {
+		failureKind = gatewaydispatch.FailureKindExplicitPolicy
+	}
 	result := gatewaydispatch.FailedUpstreamResponseResult{
 		Action:           gatewaydispatch.FailedResponseActionSkipAccount,
-		FailureKind:      chainFailureKindOpaqueHTTP,
+		FailureKind:      failureKind,
 		LastAttempt:      lastAttempt,
 		KeyScopedFailure: sameAccountKeyRotation,
 	}
+	// failure-dispatch.ts:419-435: a completed failure alone stays neutral —
+	// the pending Key failure becomes shared evidence only after a sibling Key
+	// of this same account succeeds; the keyScoped system-quota decision
+	// already recorded its own failure above.
 	if sameAccountKeyRotation && input.AccountStateMutationEnabled &&
+		(decision == nil || !decision.KeyScoped) &&
 		input.Account.SelectedAPIKeyFingerprint != nil && !input.Account.APIKeyRuntimeStateDisabled {
 		result.PendingApiKeyFailure = &gatewaydispatch.PendingAccountApiKeyFailure{
-			Account:    input.Account,
-			Status:     "temporary_unavailable",
-			StatusCode: statusCode,
+			Account:         input.Account,
+			Status:          "temporary_unavailable",
+			StatusCode:      statusCode,
+			ErrorMessage:    upstreamErrorSummary,
+			MutationContext: map[string]any{"authority": "confirmed_same_account_key_rotation", "trafficSource": gatewayTrafficSource},
 		}
 	}
 	return result, nil
@@ -415,11 +565,128 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 		}
 	}
 	d.forgetSessionAffinity(ctx, input.SessionAffinityKey, input.Account.ID)
+	// failure-dispatch.ts:572-579: the transport-failure branch schedules the
+	// client-source avoidance record after the affinity forget (the Node
+	// downstream-closed branch does not record; neither does the failed-
+	// response branch).
+	d.scheduleClientSourceAvoidanceFailure(ctx, input, message)
 	return gatewaydispatch.UpstreamRequestErrorResult{
 		Action:           gatewaydispatch.FailedResponseActionSkipAccount,
 		LastAttempt:      lastAttempt,
 		KeyScopedFailure: false,
 	}, nil
+}
+
+// scheduleClientSourceAvoidanceFailure mirrors
+// scheduleGatewayClientSourceAvoidanceFailure (failure-dispatch.ts:646-684):
+// re-resolve the client strategy at failure time with the dispatch identity,
+// record the source-scoped account failure and hand a fresh activation to the
+// availability probe. Degrades observably: without the collaborators the
+// avoidance stays off (Node keeps it off for a missing source key too), and a
+// probe dispatch failure keeps the short avoidance.
+func (d *chainFailureDispatcher) scheduleClientSourceAvoidanceFailure(ctx context.Context, input gatewaydispatch.UpstreamRequestErrorInput, message string) {
+	if d.clientStrategy == nil || d.turnRetry == nil {
+		if input.UsageContext.TrafficSource == gatewayTrafficSource {
+			slogOnceWarn("gatewaydispatch.ClientSourceAvoidanceRecording", "来源级失败避让记录未装配，避让保持关闭")
+		}
+		return
+	}
+	if input.UsageContext.TrafficSource != gatewayTrafficSource {
+		return
+	}
+	strategy := d.clientStrategy.ResolveOpenAIGatewayClientStrategy(input.Req, gatewaycodex.ClientStrategyIdentity{
+		SystemAccountID:           input.UsageContext.SystemAccountID,
+		APIKeyID:                  input.UsageContext.APIKeyID,
+		GroupID:                   input.UsageContext.GroupID,
+		Endpoint:                  input.UsageContext.Endpoint,
+		ProviderCode:              input.Account.ProviderCode,
+		ProviderProtocolProfileID: input.Account.ProviderProtocolProfileID,
+		ProtocolCode:              input.Account.ProtocolCode,
+		ProtocolVersion:           input.Account.ProtocolVersion,
+		ClientIP:                  input.UsageContext.ClientIP,
+	})
+	if !strategy.AllowClientSourceAccountAvoidance {
+		return
+	}
+	record, err := d.turnRetry.RememberGatewayClientSourceFailureAsync(ctx, strategy, input.Account.ID, gatewaycodex.CodexTurnFailureInput{
+		ErrorCode:     upstreamRequestErrorName(input.Error),
+		Message:       message,
+		ObservationID: input.AuditAttemptID + ":transport_failure",
+	})
+	if err != nil {
+		slog.Warn("来源级失败避让未能记录，保留短期避让",
+			"event", "gateway_client_source_avoidance_failure_schedule_failed",
+			"accountId", input.Account.ID, "error", err.Error())
+		return
+	}
+	if record == nil || record.Activation == nil {
+		return
+	}
+	if d.avoidanceProbe == nil {
+		slogOnceWarn("gatewaycodex.TurnAvoidanceProbeService", "来源级避让激活后探活未装配，保留短期避让")
+		return
+	}
+	activation := *record.Activation
+	account := input.Account
+	probe := d.avoidanceProbe
+	go func() {
+		probeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := probe.RunGatewayClientSourceAvoidanceAvailabilityProbe(probeCtx, gatewaycodex.CodexTurnAvoidanceProbeInput{
+			Account:    account,
+			Strategy:   strategy,
+			Activation: activation,
+		}); err != nil {
+			slog.Warn("来源级失败避让未能投递探活，保留短期避让",
+				"event", "gateway_client_source_avoidance_failure_schedule_failed",
+				"accountId", account.ID, "error", err.Error())
+		}
+	}()
+}
+
+// codexRecoveryMetadataOf mirrors the Node retry audit metadata:
+// accountId / upstreamUrl / transport plus the recovery metadata fields.
+func codexRecoveryMetadataOf(input gatewaydispatch.FailedUpstreamResponseInput, recovery gatewaycodex.CodexEncryptedContentRecoveryResult) map[string]any {
+	metadata := recovery.Metadata
+	if metadata == nil {
+		return map[string]any{
+			"accountId":   input.Account.ID,
+			"upstreamUrl": input.UpstreamURL,
+			"transport":   "http",
+		}
+	}
+	return map[string]any{
+		"accountId":                             input.Account.ID,
+		"upstreamUrl":                           input.UpstreamURL,
+		"transport":                             "http",
+		"strategy":                              metadata.Strategy,
+		"signal":                                metadata.Signal,
+		"removedReasoningEncryptedContentCount": metadata.RemovedReasoningEncryptedContentCount,
+		"removedFunctionOutputEncryptedContentCount": metadata.RemovedFunctionOutputEncryptedContentCount,
+		"removedAgentMessageEncryptedContentCount":   metadata.RemovedAgentMessageEncryptedContentCount,
+		"removedCompactionEncryptedContentCount":     metadata.RemovedCompactionEncryptedContentCount,
+		"removedReasoningItemCount":                  metadata.RemovedReasoningItemCount,
+		"removedAgentMessageItemCount":               metadata.RemovedAgentMessageItemCount,
+		"removedCompactionItemCount":                 metadata.RemovedCompactionItemCount,
+		"preservedPreviousResponseID":                metadata.PreservedPreviousResponseID,
+		"bodyBytesBefore":                            metadata.BodyBytesBefore,
+		"bodyBytesAfter":                             metadata.BodyBytesAfter,
+	}
+}
+
+// upstreamRequestErrorName mirrors the Node `error.name` diagnostic carried
+// on the avoidance record: the dynamic error type name without the package
+// qualifier.
+func upstreamRequestErrorName(err error) string {
+	if err == nil {
+		return ""
+	}
+	name := fmt.Sprintf("%T", err)
+	name = strings.TrimPrefix(name, "*")
+	if index := strings.LastIndexByte(name, '.'); index >= 0 {
+		name = name[index+1:]
+	}
+	return name
 }
 
 // recordDownstreamClosedRequestError mirrors the recording half of the Node
@@ -503,7 +770,7 @@ func readUpstreamFailureBody(ctx context.Context, response *gatewaydispatch.Gate
 // failedResponseAttemptOf rebuilds the Node lastAttempt for a failed
 // response: the previous attempt facts (when present) with the provider
 // fields overridden and the response facts attached.
-func failedResponseAttemptOf(input gatewaydispatch.FailedUpstreamResponseInput, bodyText string) *gatewaydispatch.UpstreamAttempt {
+func failedResponseAttemptOf(input gatewaydispatch.FailedUpstreamResponseInput, bodyText string, parsedBody map[string]any) *gatewaydispatch.UpstreamAttempt {
 	attempt := &gatewaydispatch.UpstreamAttempt{}
 	if input.LastAttempt != nil {
 		copied := *input.LastAttempt
@@ -522,7 +789,7 @@ func failedResponseAttemptOf(input gatewaydispatch.FailedUpstreamResponseInput, 
 	}
 	attempt.ResponseHeaders = responseHeadersOf(input.Response)
 	attempt.ResponseBodyText = bodyText
-	attempt.ParsedResponseBody = parsedFailureBodyOf(input.Response, bodyText)
+	attempt.ParsedResponseBody = parsedBody
 	return attempt
 }
 
@@ -640,6 +907,45 @@ func parsedFailureBodyOf(response *gatewaydispatch.GatewayUpstreamResponse, body
 		return value
 	}
 	return nil
+}
+
+// responseHTTPHeaderOf projects the captured response onto net/http.Header
+// for the protocol error payload parser.
+func responseHTTPHeaderOf(response *gatewaydispatch.GatewayUpstreamResponse) http.Header {
+	if response == nil {
+		return nil
+	}
+	return response.Header
+}
+
+// failureProtocolPayloadOf mirrors parseFailureBodyFacts' errorPayload: the
+// protocol-aware projection of the parsed JSON body (falls back to parsing
+// the captured text when the body did not parse as JSON).
+func failureProtocolPayloadOf(bodyText string, header http.Header, parsedBody map[string]any) gatewayproto.ErrorPayload {
+	if parsedBody != nil {
+		return gatewayopenai.ParseErrorPayloadFromJSONValue(parsedBody)
+	}
+	return gatewayopenai.ParseErrorPayload(bodyText, header)
+}
+
+// usageErrorPayloadOf mirrors recordFailedUpstreamAttempt's errorPayload
+// argument: the extracted evidence as a plain map; nil when the payload
+// carries no evidence so the usage layer keeps its own interpretation.
+func usageErrorPayloadOf(payload gatewayproto.ErrorPayload) any {
+	if !payload.HasEvidence() {
+		return nil
+	}
+	value := map[string]any{}
+	if payload.Code != "" {
+		value["code"] = payload.Code
+	}
+	if payload.Type != "" {
+		value["type"] = payload.Type
+	}
+	if payload.Message != "" {
+		value["message"] = payload.Message
+	}
+	return value
 }
 
 func requestMethodOf(req *gatewaypreauth.GatewayRequest) string {
@@ -904,6 +1210,34 @@ func (a clientStrategyAdapter) AuditMetadata(strategy gatewaypreauth.ClientStrat
 // fallback mirrors the Node header-passthrough session id.
 type sessionIdentityAdapter struct {
 	services *sessionIdentityServices
+}
+
+// codexSourceSessionAdapter bridges the G14 IdentityService onto the
+// gatewaycodex SessionIdentityResolver seam (source-identity.ts consumes the
+// full session projection: status, conversation key and semantic namespace).
+type codexSourceSessionAdapter struct {
+	identity *gatewaysession.IdentityService
+}
+
+// ResolveSessionIdentity implements gatewaycodex.SessionIdentityResolver with
+// the same G14 default resolvers the preauth identity path uses.
+func (a codexSourceSessionAdapter) ResolveSessionIdentity(req *gatewaypreauth.GatewayRequest, input gatewaypreauth.SessionIdentityInput) gatewaysession.GatewaySessionIdentity {
+	if a.identity == nil || req == nil {
+		return gatewaysession.GatewaySessionIdentity{Status: gatewaysession.IdentityStatusMissing}
+	}
+	identity, err := a.identity.Resolve(
+		chainIdentityRequest{req: req},
+		gatewaysession.IdentityScope{
+			ClientProfile:   input.ClientProfile,
+			SystemAccountID: input.SystemAccountID,
+			APIKeyID:        input.APIKeyID,
+		},
+		gatewaysession.DefaultGatewaySessionIdentityResolvers,
+	)
+	if err != nil {
+		return gatewaysession.GatewaySessionIdentity{Status: gatewaysession.IdentityStatusMissing}
+	}
+	return identity
 }
 
 // chainIdentityRequest adapts the gateway request onto the G14

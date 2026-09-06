@@ -49,16 +49,16 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		accountLockLeaseRelease := in.createAccountLockLeaseRelease(false)
 		confirmFailures := append([]PendingAccountApiKeyFailure{}, *c.loop.pendingApiKeyFailuresRef...)
 		*c.loop.resultRef = &UpstreamDispatchResult{
-			Account:             c.account,
-			Response:            response,
-			RequestBody:         c.loop.body,
-			UpstreamURL:         c.upstreamURL,
-			AuditAttemptID:      c.auditAttemptID,
-			AttemptStartedAt:    c.attemptStartedAt,
+			Account:              c.account,
+			Response:             response,
+			RequestBody:          c.loop.body,
+			UpstreamURL:          c.upstreamURL,
+			AuditAttemptID:       c.auditAttemptID,
+			AttemptStartedAt:     c.attemptStartedAt,
 			EffectiveServiceTier: c.loop.effectiveServiceTier,
-			TimeoutProfile:      in.timeoutProfile,
-			ReleaseConcurrency:  onceFunc(c.loop.concurrencySlot.Release),
-			MarkFirstOutput:     c.markFirstOutput,
+			TimeoutProfile:       in.timeoutProfile,
+			ReleaseConcurrency:   onceFunc(c.loop.concurrencySlot.Release),
+			MarkFirstOutput:      c.markFirstOutput,
 			ConfirmSameAccountApiKeyFailures: func() error {
 				return e.recordConfirmedSameAccountApiKeyFailures(ctx, confirmFailures, c.account, usageContext)
 			},
@@ -88,24 +88,24 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		c.firstByteDeadlineCoordinator.Supersede()
 	}
 	failedResponseResult, handleErr := e.FailureDispatcher.HandleFailedUpstreamResponse(ctx, FailedUpstreamResponseInput{
-		Req:                          in.args.Req,
-		RequestLane:                  in.requestLane,
-		UsageContext:                 *usageContext,
-		AuditCapture:                 auditCapture,
-		AuditAttemptID:               c.auditAttemptID,
-		Account:                      c.account,
-		UpstreamURL:                  c.upstreamURL,
-		Response:                     response,
-		RequestBody:                  c.loop.body,
-		Settings:                     in.settings,
-		AttemptStartedAt:             c.attemptStartedAt,
-		AttemptIndex:                 *c.attemptIndex,
-		AuditAttemptIndex:            *in.auditAttemptIndex,
-		SessionAffinityKey:           in.args.SessionAffinityKey,
-		LastAttempt:                  *in.lastAttempt,
-		RequestClientCompatibility:   in.args.RequestClientCompatibility,
-		ClientIPAccountAvoidance:     in.args.ClientIPAccountAvoidanceTracker,
-		AccountStateMutationEnabled:  in.args.AccountStateMutationEnabled,
+		Req:                                  in.args.Req,
+		RequestLane:                          in.requestLane,
+		UsageContext:                         *usageContext,
+		AuditCapture:                         auditCapture,
+		AuditAttemptID:                       c.auditAttemptID,
+		Account:                              c.account,
+		UpstreamURL:                          c.upstreamURL,
+		Response:                             response,
+		RequestBody:                          c.loop.body,
+		Settings:                             in.settings,
+		AttemptStartedAt:                     c.attemptStartedAt,
+		AttemptIndex:                         *c.attemptIndex,
+		AuditAttemptIndex:                    *in.auditAttemptIndex,
+		SessionAffinityKey:                   in.args.SessionAffinityKey,
+		LastAttempt:                          *in.lastAttempt,
+		RequestClientCompatibility:           in.args.RequestClientCompatibility,
+		ClientIPAccountAvoidance:             in.args.ClientIPAccountAvoidanceTracker,
+		AccountStateMutationEnabled:          in.args.AccountStateMutationEnabled,
 		AutomaticAccountStateMutationEnabled: in.automaticAccountStateMutationAllowed,
 		DeferAutomaticSameAccountKeyRotation: !*c.firstByteDeadlineTriggeredRef &&
 			halfOpenLeaseUnclaimed(c.loop.halfOpenLease) &&
@@ -142,18 +142,18 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		}
 		accountLockLeaseRelease := in.createAccountLockLeaseRelease(false)
 		*c.loop.resultRef = &UpstreamDispatchResult{
-			Account:             c.account,
-			Response:            failedResponseResult.Response,
-			RequestBody:         c.loop.body,
-			UpstreamURL:         c.upstreamURL,
-			AuditAttemptID:      c.auditAttemptID,
-			AttemptStartedAt:    c.attemptStartedAt,
-			EffectiveServiceTier: c.loop.effectiveServiceTier,
-			TimeoutProfile:      in.timeoutProfile,
-			ReleaseConcurrency:  onceFunc(c.loop.concurrencySlot.Release),
-			MarkFirstOutput:     c.markFirstOutput,
+			Account:                          c.account,
+			Response:                         failedResponseResult.Response,
+			RequestBody:                      c.loop.body,
+			UpstreamURL:                      c.upstreamURL,
+			AuditAttemptID:                   c.auditAttemptID,
+			AttemptStartedAt:                 c.attemptStartedAt,
+			EffectiveServiceTier:             c.loop.effectiveServiceTier,
+			TimeoutProfile:                   in.timeoutProfile,
+			ReleaseConcurrency:               onceFunc(c.loop.concurrencySlot.Release),
+			MarkFirstOutput:                  c.markFirstOutput,
 			ConfirmSameAccountApiKeyFailures: func() error { return nil },
-			ConfirmHalfOpenSuccess: func() bool { return false },
+			ConfirmHalfOpenSuccess:           func() bool { return false },
 			ReleaseHalfOpenLease: func() bool {
 				return releaseHalfOpenLease(ctx, c.loop.halfOpenLease)
 			},
@@ -172,7 +172,11 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 	}
 	if failedResponseResult.Action == FailedResponseActionRetryWithCompatibilityRecovery {
 		c.loop.body = failedResponseResult.Recovery.Body
-		in.coordination.SemanticRetryID = failedResponseResult.Recovery.SemanticRetryID
+		// Node keeps the recovery semantic-retry id in the local
+		// `activeSemanticRetryId` and the next attempt registration consumes
+		// it (upstream-dispatch.ts:1488/1257); the per-dispatch input field is
+		// that local, not the shared coordination context.
+		in.semanticRetryID = failedResponseResult.Recovery.SemanticRetryID
 		return responseKindContinue, responseStopSemanticRetry, nil
 	}
 	if in.accountCircuitAttempt != nil {
@@ -316,10 +320,10 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 		})
 		if e.Usage != nil {
 			_ = e.Usage.RecordFailedUpstreamAttempt(ctx, in.args.Req, *usageContext, c.account, FailedAttemptRecord{
-				UpstreamURL:               c.upstreamURL,
-				StartedAt:                 c.attemptStartedAt,
-				ErrorMessage:              message,
-				FailureAttribution:        "gateway_policy",
+				UpstreamURL:                c.upstreamURL,
+				StartedAt:                  c.attemptStartedAt,
+				ErrorMessage:               message,
+				FailureAttribution:         "gateway_policy",
 				InterpretUpstreamSemantics: boolPtr(false),
 			})
 		}
@@ -388,7 +392,7 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 				"上游 Base URL 的 DNS 解析命中本机、内网、链路本地或保留地址，已临时停止调度",
 				"unsafe_resolved_upstream_url")
 			auditCapture.AddGatewayMetadata("gateway_unsafe_resolved_upstream_url_account_temporary_unavailable", map[string]any{
-				"accountId":                 c.account.ID,
+				"accountId":                  c.account.ID,
 				"markedTemporaryUnavailable": marked,
 			})
 			if markErr != nil {

@@ -184,7 +184,7 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 	skipAccount := false
 	var accountScopedResult *UpstreamDispatchResult
 
-	rotationLoop:
+rotationLoop:
 	for {
 		retryAccountApiKey = false
 		skipAccount = false
@@ -373,24 +373,24 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 		usageContext.EffectiveReasoningEffort = requestParts.EffectiveReasoningEffort
 
 		kind, stop, loopErr := e.runUpstreamAttemptLoop(ctx, upstreamAttemptLoopContext{
-			in:                          &in,
-			account:                     account,
-			headers:                     headers,
-			body:                        body,
-			upstreamUrls:                upstreamUrls,
-			effectiveServiceTier:        effectiveServiceTier,
-			excludedApiKeyFingerprints:  excludedApiKeyFingerprints,
-			accountApiKeyAttemptCount:   &accountApiKeyAttemptCount,
-			concurrencySlot:             &concurrencySlot,
-			halfOpenLease:               halfOpenLease,
-			keepConcurrencySlotRef:      &keepConcurrencySlot,
-			pendingApiKeyFailuresRef:    &pendingAccountApiKeyFailures,
-			retryAccountApiKeyRef:       &retryAccountApiKey,
-			skipAccountRef:              &skipAccount,
-			resultRef:                   &accountScopedResult,
-			usageContext:                usageContext,
-			auditCapture:                auditCapture,
-			signal:                      signal,
+			in:                         &in,
+			account:                    account,
+			headers:                    headers,
+			body:                       body,
+			upstreamUrls:               upstreamUrls,
+			effectiveServiceTier:       effectiveServiceTier,
+			excludedApiKeyFingerprints: excludedApiKeyFingerprints,
+			accountApiKeyAttemptCount:  &accountApiKeyAttemptCount,
+			concurrencySlot:            &concurrencySlot,
+			halfOpenLease:              halfOpenLease,
+			keepConcurrencySlotRef:     &keepConcurrencySlot,
+			pendingApiKeyFailuresRef:   &pendingAccountApiKeyFailures,
+			retryAccountApiKeyRef:      &retryAccountApiKey,
+			skipAccountRef:             &skipAccount,
+			resultRef:                  &accountScopedResult,
+			usageContext:               usageContext,
+			auditCapture:               auditCapture,
+			signal:                     signal,
 		})
 		if loopErr != nil {
 			releaseTransientState()
@@ -673,21 +673,24 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 
 			if attemptErr == nil {
 				kind, stop, err := e.handleUpstreamAttemptResponse(ctx, upstreamAttemptResponseContext{
-					loop:                      c,
-					account:                   c.account,
-					response:                  response,
-					upstreamURL:               upstreamURL,
-					attemptIndex:              &attemptIndex,
-					attemptStartedAt:          attemptStartedAt,
-					auditAttemptID:            auditAttemptID,
-					hotQualityAttempt:         hotQualityAttempt,
-					keyModelAttempt:           keyModelAttempt,
-					normalRouteFirstByteDeadline: normalRouteFirstByteDeadline,
-					firstByteDeadlineCoordinator: firstByteDeadlineCoordinator,
+					// Pointer: the compatibility-recovery branch rewrites
+					// loop.body for the semantic retry attempt (Node
+					// `body = failedResponseResult.recovery.body; continue`).
+					loop:                          &c,
+					account:                       c.account,
+					response:                      response,
+					upstreamURL:                   upstreamURL,
+					attemptIndex:                  &attemptIndex,
+					attemptStartedAt:              attemptStartedAt,
+					auditAttemptID:                auditAttemptID,
+					hotQualityAttempt:             hotQualityAttempt,
+					keyModelAttempt:               keyModelAttempt,
+					normalRouteFirstByteDeadline:  normalRouteFirstByteDeadline,
+					firstByteDeadlineCoordinator:  firstByteDeadlineCoordinator,
 					firstByteDeadlineTriggeredRef: &firstByteDeadlineTriggered,
-					onFirstByteDeadline:       onFirstByteDeadline,
-					markFirstOutput:           markFirstOutput,
-					dispatchAttemptIdentity:   dispatchAttemptIdentity,
+					onFirstByteDeadline:           onFirstByteDeadline,
+					markFirstOutput:               markFirstOutput,
+					dispatchAttemptIdentity:       dispatchAttemptIdentity,
 				})
 				if err != nil {
 					return attemptLoopExhausted, attemptStopNone, err
@@ -710,20 +713,20 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 
 			// Error path (Node catch in the attempt loop).
 			kind, stop, err := e.handleUpstreamAttemptError(ctx, upstreamAttemptErrorContext{
-				loop:                         c,
-				account:                      c.account,
-				attemptFailure:               attemptErr,
-				upstreamURL:                  upstreamURL,
-				attemptIndex:                 attemptIndex,
-				attemptStartedAt:             attemptStartedAt,
-				auditAttemptID:               auditAttemptID,
-				hotQualityAttempt:            hotQualityAttempt,
-				keyModelAttempt:              keyModelAttempt,
-				normalRouteFirstByteDeadline: normalRouteFirstByteDeadline,
-				firstByteDeadlineCoordinator: firstByteDeadlineCoordinator,
+				loop:                          c,
+				account:                       c.account,
+				attemptFailure:                attemptErr,
+				upstreamURL:                   upstreamURL,
+				attemptIndex:                  attemptIndex,
+				attemptStartedAt:              attemptStartedAt,
+				auditAttemptID:                auditAttemptID,
+				hotQualityAttempt:             hotQualityAttempt,
+				keyModelAttempt:               keyModelAttempt,
+				normalRouteFirstByteDeadline:  normalRouteFirstByteDeadline,
+				firstByteDeadlineCoordinator:  firstByteDeadlineCoordinator,
 				firstByteDeadlineTriggeredRef: &firstByteDeadlineTriggered,
-				onFirstByteDeadline:          onFirstByteDeadline,
-				dispatchAttemptIdentity:      dispatchAttemptIdentity,
+				onFirstByteDeadline:           onFirstByteDeadline,
+				dispatchAttemptIdentity:       dispatchAttemptIdentity,
 			})
 			if err != nil {
 				return attemptLoopExhausted, attemptStopNone, err
@@ -793,7 +796,10 @@ const (
 
 // upstreamAttemptResponseContext carries the response handling inputs.
 type upstreamAttemptResponseContext struct {
-	loop                          upstreamAttemptLoopContext
+	// loop is a pointer: the compatibility-recovery branch rewrites
+	// loop.body in place for the retry attempt (Node mutates its local
+	// `body` before `continue`).
+	loop                          *upstreamAttemptLoopContext
 	account                       AccountCandidate
 	response                      *GatewayUpstreamResponse
 	upstreamURL                   string
@@ -829,7 +835,7 @@ const (
 )
 
 type errorStop struct {
-	kind    errorStopKind
+	kind     errorStopKind
 	rethrown error
 }
 

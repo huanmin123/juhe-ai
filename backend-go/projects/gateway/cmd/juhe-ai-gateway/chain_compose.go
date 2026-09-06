@@ -115,6 +115,12 @@ type chainRuntimeDeps struct {
 	Suppression  gatewaydispatch.SuppressionPort
 	Degradation  gatewaydispatch.DegradationPort
 	AccountLocks gatewaydispatch.AccountLocks
+
+	// 显式账户错误策略（chain_error_policy*.go）：决策服务 + 状态写侧窄口
+	// （optional；nil 时派发器保留决策事实，状态变更加显式降级日志）。生产
+	// 装配在 compose.go 的链条运行服务段（newChainErrorPolicyEffectsBridge）。
+	AccountErrorPolicy        *chainErrorPolicyService
+	AccountErrorPolicyEffects chainAccountErrorPolicyEffects
 }
 
 // sessionIdentityServices bundles the G14 services with their secret.
@@ -226,13 +232,44 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// Node dispatcher forgets the account's session affinity on its failure
 	// branches (failure-dispatch.ts:208/346/570).
 	sessionAffinity := newLocalSessionAffinity()
-	engine := gatewaydispatch.NewEngine(newChainProviderDriver(), &chainFailureDispatcher{usage: usageService, affinity: sessionAffinity})
+	// G18 client-source avoidance collaborators: the source-identity resolver
+	// plugs into the shared client-strategy deps (preauth resolution and the
+	// failure-time re-resolution use the same scope), and the turn-retry
+	// service owns the avoidance state (memory driver; the Redis state-store
+	// adapter is a registered residual). Without the G14 identity services
+	// there is no HMAC secret, so no source scope can be derived and the
+	// avoidance stays off — exactly the Node missing-source-key semantics.
+	codexClientStrategy := &gatewaycodex.ClientStrategyDeps{CompactionExpected: gatewaycodex.CodexCompactionExpectedForRequest}
+	var chainTurnRetry *gatewaycodex.TurnRetryService
+	if deps.Identity != nil && strings.TrimSpace(deps.Identity.Secret) != "" {
+		codexClientStrategy.Source = &gatewaycodex.SourceIdentityResolver{
+			Secret:  deps.Identity.Secret,
+			Session: codexSourceSessionAdapter{identity: deps.Identity.Identity},
+		}
+		chainTurnRetry = &gatewaycodex.TurnRetryService{
+			Secret: deps.Identity.Secret,
+			Clock:  clock,
+			Logger: slogWarnLogger{inner: logger},
+		}
+	}
+	engine := gatewaydispatch.NewEngine(newChainProviderDriver(), &chainFailureDispatcher{
+		usage:          usageService,
+		affinity:       sessionAffinity,
+		clientStrategy: codexClientStrategy,
+		turnRetry:      chainTurnRetry,
+		policy:         deps.AccountErrorPolicy,
+		effects:        deps.AccountErrorPolicyEffects,
+	})
 	engine.Clock = clock
 	engine.Affinity = sessionAffinity
 	engine.Latency = &degradedLatency{}
 	engine.ProxyHealth = &degradedProxyHealth{}
 	engine.HotQuality = &degradedHotQuality{}
-	engine.ClientSourceAvoidance = &degradedClientSourceAvoidance{}
+	if chainTurnRetry != nil {
+		engine.ClientSourceAvoidance = &chainClientSourceAvoidance{turnRetry: chainTurnRetry}
+	} else {
+		engine.ClientSourceAvoidance = &degradedClientSourceAvoidance{}
+	}
 	engine.ClientIPAvoidance = newChainClientIPAvoidance(deps.AvoidanceTracker)
 	engine.Quota = newChainDispatchQuota(deps.AuthzQuota)
 	if deps.ConcurrencyTracker == nil {
@@ -277,7 +314,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		Candidates:         pipeline,
 		Images:             imagePreflight,
 		Responses:          sink,
-		ClientStrategy:     clientStrategyAdapter{deps: &gatewaycodex.ClientStrategyDeps{CompactionExpected: gatewaycodex.CodexCompactionExpectedForRequest}},
+		ClientStrategy:     clientStrategyAdapter{deps: codexClientStrategy},
 		SessionIdentity:    sessionIdentityAdapter{services: deps.Identity},
 		SessionAffinity:    sessionAffinityAdapter{services: deps.Identity},
 		Codex:              chainCodexBridgePreflight(deps.CodexBridge),
@@ -292,11 +329,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	imagePreflight.preauth = preauthService
 
 	chain := &gatewayChain{
-		preauth:            preauthService,
-		engine:             engine,
-		observability:      observability,
-		clock:              clock,
-		bodyPipeline:       bodyPipeline,
+		preauth:       preauthService,
+		engine:        engine,
+		observability: observability,
+		clock:         clock,
+		bodyPipeline:  bodyPipeline,
 		speedFirstAdmission: &chainSpeedFirstBodyAdmissionGate{
 			preauth:       preauthService,
 			QueueDefaults: deps.QueueDefaults,

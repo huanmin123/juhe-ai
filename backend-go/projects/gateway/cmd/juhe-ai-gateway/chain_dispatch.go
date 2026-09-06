@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
@@ -92,6 +93,32 @@ func (d *degradedClientSourceAvoidance) OrderAsync(_ context.Context, accounts [
 		slogOnceWarn("gatewaydispatch.ClientSourceAvoidancePort", "客户端来源规避保持直通")
 	})
 	return gatewaydispatch.AvoidanceOrder{Accounts: accounts}, nil
+}
+
+// chainClientSourceAvoidance adapts the G18 gatewaycodex turn-retry service
+// onto the dispatch ClientSourceAvoidancePort (client-profiles
+// client-source-avoidance.service.ts orderOpenAIAccountsByClientSourceAvoidanceAsync:
+// failure-scoped accounts reorder behind fresh ones inside their dispatch
+// priority tiers; the frozen preauth strategy carries the source state key in
+// its Opaque G18 context).
+type chainClientSourceAvoidance struct {
+	turnRetry *gatewaycodex.TurnRetryService
+}
+
+func (a *chainClientSourceAvoidance) OrderAsync(ctx context.Context, accounts []gatewaydispatch.AccountCandidate, clientStrategy gatewaypreauth.ClientStrategyContext, modelPriority *gatewaydispatch.ModelPriority) (gatewaydispatch.AvoidanceOrder, error) {
+	codexStrategy, _ := clientStrategy.Opaque.(gatewaycodex.OpenAIGatewayClientStrategyContext)
+	result, err := a.turnRetry.OrderOpenAIAccountsByClientSourceAvoidanceAsync(ctx, accounts, codexStrategy, modelPriority)
+	if err != nil {
+		return gatewaydispatch.AvoidanceOrder{}, err
+	}
+	return gatewaydispatch.AvoidanceOrder{
+		Accounts:           result.Accounts,
+		Applied:            result.Applied,
+		AvoidedAccountIDs:  result.AvoidedAccountIDs,
+		BypassedAllAvoided: result.BypassedAllAvoided,
+		FailureCount:       result.FailureCount,
+		ThresholdReached:   result.ThresholdReached,
+	}, nil
 }
 
 // chainClientIPAvoidance adapts the G13 gatewayclientip.Avoidance onto the

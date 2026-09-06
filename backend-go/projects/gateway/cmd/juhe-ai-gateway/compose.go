@@ -843,6 +843,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// chain disabled the port stays nil and the route keeps its
 		// { migratedSessionCount: 0 } degraded contract.
 		accountStore.SetTrafficRuntimeMigrator(trafficRuntimeMigratorBridge{affinity: chainServices.Identity.Affinity})
+		// 显式账户错误策略装配（chain_error_policy_effects.go）：失败派发器的
+		// 决策服务 + cooldown/disable 状态写侧桥。装配失败按组合根约定
+		// fail-fast；链条关闭时端口随进程退出，无需单独关闭。
+		errorPolicyBridge, errorPolicyService, errorPolicyBridgeErr := newChainErrorPolicyEffectsBridge(composed, cfg.Secret)
+		if errorPolicyBridgeErr != nil {
+			return nil, fmt.Errorf("compose account error policy effects bridge: %w", errorPolicyBridgeErr)
+		}
 		// Shutdown order is LIFO: services registered first close last, after
 		// the chain drained its usage buffer.
 		composed.shutdowns = append(composed.shutdowns, chainServices.Close)
@@ -875,6 +882,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// the routing runtime cache + shared provider driver + engine
 			// transport (Node dispatchHybridAuxiliaryChatCompletion).
 			HybridAuxiliary: newChainHybridAuxiliaryDispatcher(chainServices.Cache),
+			// 显式账户错误策略：failureKind / 换 Key 授权 / cooldown-disable
+			// 状态变更 / system quota 归因（Node decideAccountErrorPolicy 接线）。
+			AccountErrorPolicy:        errorPolicyService,
+			AccountErrorPolicyEffects: errorPolicyBridge,
 		})
 		if chainAssembleErr != nil {
 			chainServices.Close()

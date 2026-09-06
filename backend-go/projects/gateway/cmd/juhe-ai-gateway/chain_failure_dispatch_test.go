@@ -16,7 +16,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,21 +29,35 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
 // ---------------------------------------------------------------------------
 // unit fakes
 // ---------------------------------------------------------------------------
 
-// failureDispatchAuditSink captures the attempt-level audit calls.
+// failureDispatchMetadata captures one addGatewayMetadata call.
+type failureDispatchMetadata struct {
+	label    string
+	metadata map[string]any
+}
+
+// failureDispatchAuditSink captures the attempt-level audit calls. It
+// implements both the attempt sink and the frozen capture context, so tests
+// may mount it either as Context or Sink.
 type failureDispatchAuditSink struct {
 	completions []gatewaydispatch.CompleteAttemptInput
 	records     []gatewaydispatch.FailedDispatchAttemptInput
+	metadata    []failureDispatchMetadata
 }
 
-func (s *failureDispatchAuditSink) StartAttempt(gatewaydispatch.StartAttemptInput) string { return "attempt_1" }
+func (s *failureDispatchAuditSink) StartAttempt(gatewaydispatch.StartAttemptInput) string {
+	return "attempt_1"
+}
 
 func (s *failureDispatchAuditSink) CompleteAttempt(_ string, input gatewaydispatch.CompleteAttemptInput) {
 	s.completions = append(s.completions, input)
@@ -48,6 +65,23 @@ func (s *failureDispatchAuditSink) CompleteAttempt(_ string, input gatewaydispat
 
 func (s *failureDispatchAuditSink) RecordFailedDispatchAttempt(input gatewaydispatch.FailedDispatchAttemptInput) {
 	s.records = append(s.records, input)
+}
+
+func (s *failureDispatchAuditSink) BindContext(gatewaypreauth.AuditGatewayContext) {}
+
+func (s *failureDispatchAuditSink) AddGatewayMetadata(label string, metadata map[string]any) {
+	s.metadata = append(s.metadata, failureDispatchMetadata{label: label, metadata: metadata})
+}
+
+func (s *failureDispatchAuditSink) Finalize(gatewaypreauth.AuditFinalizeInput) {}
+
+func (s *failureDispatchAuditSink) metadataByLabel(label string) *failureDispatchMetadata {
+	for index := range s.metadata {
+		if s.metadata[index].label == label {
+			return &s.metadata[index]
+		}
+	}
+	return nil
 }
 
 // failureDispatchAffinity records ForgetAsync calls (only the consumed method
@@ -90,15 +124,15 @@ func newFailureDispatcherForTest(affinity gatewaydispatch.SessionAffinityPort) *
 
 func gatewayFailedResponseInput(response *gatewaydispatch.GatewayUpstreamResponse, sink *failureDispatchAuditSink, trafficSource string) gatewaydispatch.FailedUpstreamResponseInput {
 	return gatewaydispatch.FailedUpstreamResponseInput{
-		UsageContext:     gatewaypreauth.GatewayFailureUsageContext{TrafficSource: trafficSource},
-		AuditCapture:     gatewaydispatch.AuditCapture{Sink: sink},
-		AuditAttemptID:   "attempt_1",
-		Account:          gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "账户一"},
-		UpstreamURL:      "https://upstream.example/chat",
-		Response:         response,
-		AttemptStartedAt: 1728000000000,
-		AttemptIndex:     1,
-		AuditAttemptIndex: 1,
+		UsageContext:       gatewaypreauth.GatewayFailureUsageContext{TrafficSource: trafficSource},
+		AuditCapture:       gatewaydispatch.AuditCapture{Sink: sink},
+		AuditAttemptID:     "attempt_1",
+		Account:            gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "账户一"},
+		UpstreamURL:        "https://upstream.example/chat",
+		Response:           response,
+		AttemptStartedAt:   1728000000000,
+		AttemptIndex:       1,
+		AuditAttemptIndex:  1,
 		SessionAffinityKey: "aff-key",
 		LastAttempt: &gatewaydispatch.UpstreamAttempt{
 			AccountID: "acc_1", UpstreamURL: "https://upstream.example/chat",
@@ -408,6 +442,307 @@ func TestChainFailureDispatcherOpaqueFailoverDisallowed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// codex encrypted-content compatibility recovery (G18 接线①)
+// ---------------------------------------------------------------------------
+
+// codexRecoveryResponsesInput 构造 /v1/responses 的 gateway 失败响应输入：
+// codex 协议账户 + 携带加密上下文的请求体 + 上游拒绝错误体。
+func codexRecoveryResponsesInput(t *testing.T, response *gatewaydispatch.GatewayUpstreamResponse, sink *failureDispatchAuditSink, requestBody string) gatewaydispatch.FailedUpstreamResponseInput {
+	t.Helper()
+	raw := httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/responses", nil)
+	input := gatewayFailedResponseInput(response, sink, "gateway")
+	// addGatewayMetadata 只在 Context 通道分发；同时挂载以便断言恢复元数据。
+	input.AuditCapture.Context = sink
+	input.Req = gatewaypreauth.NewGatewayRequest(raw)
+	input.Account = gatewaydispatch.AccountCandidate{
+		ID: "acc_1", Name: "账户一",
+		ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
+	}
+	input.RequestBody = []byte(requestBody)
+	return input
+}
+
+// TestChainFailureDispatcherCodexRecoveryReplaysSanitizedBody：上游明确拒绝
+// 加密上下文且请求体含可移除的 encrypted_content 时，派发器必须返回
+// retry_with_compatibility_recovery——恢复体去除加密状态、保留其余输入与
+// previous_response_id，语义重试 ID 带 cleanup 信号，audit 记录 retry 元数据，
+// 且不进入 skip 决策（failure-dispatch.ts:292-315）。
+func TestChainFailureDispatcherCodexRecoveryReplaysSanitizedBody(t *testing.T) {
+	const errorBody = `{"error":{"message":"Encrypted content could not be decoded","code":"invalid_encrypted_content"}}`
+	response := failureDispatchUpstreamResponse(t, http.StatusBadRequest, "application/json", errorBody)
+	sink := &failureDispatchAuditSink{}
+	dispatcher := newFailureDispatcherForTest(nil)
+	input := codexRecoveryResponsesInput(t, response, sink,
+		`{"model":"gpt-5","input":[{"type":"reasoning","summary":[],"encrypted_content":"rejected-payload"},{"type":"message","role":"user","content":[{"type":"output_text","text":"hi"}]}],"previous_response_id":"resp_prev","store":false}`)
+
+	result, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle failed upstream response: %v", err)
+	}
+	if result.Action != gatewaydispatch.FailedResponseActionRetryWithCompatibilityRecovery {
+		t.Fatalf("action=%s want retry_with_compatibility_recovery", result.Action)
+	}
+	if result.FailureKind != chainFailureKindCompatibilityRecovery {
+		t.Fatalf("failureKind=%s want compatibility_recovery", result.FailureKind)
+	}
+	if result.Response != nil {
+		t.Fatal("the recovery decision must not hand the rejected response to the response layer")
+	}
+	var sanitized map[string]any
+	if err := json.Unmarshal(result.Recovery.Body, &sanitized); err != nil {
+		t.Fatalf("recovery body must stay JSON: %v", err)
+	}
+	rawRecovery := string(result.Recovery.Body)
+	if strings.Contains(rawRecovery, "encrypted_content") {
+		t.Fatalf("recovery body still carries encrypted content: %s", rawRecovery)
+	}
+	inputItems, _ := sanitized["input"].([]any)
+	if len(inputItems) != 1 {
+		t.Fatalf("sanitized input items = %v want the single message item", sanitized["input"])
+	}
+	if sanitized["previous_response_id"] != "resp_prev" {
+		t.Fatalf("previous_response_id must be preserved: %v", sanitized["previous_response_id"])
+	}
+	if result.Recovery.SemanticRetryID != "codex_encrypted_content_cleanup:invalid_encrypted_content" {
+		t.Fatalf("semantic retry id = %q", result.Recovery.SemanticRetryID)
+	}
+	if result.LastAttempt == nil || result.LastAttempt.UpstreamURL != input.UpstreamURL || !result.LastAttempt.HasStatus {
+		t.Fatalf("last attempt must stay enriched: %+v", result.LastAttempt)
+	}
+	retryMetadata := sink.metadataByLabel("codex_encrypted_content_recovery_retry")
+	if retryMetadata == nil {
+		t.Fatalf("retry audit metadata missing: %+v", sink.metadata)
+	}
+	if retryMetadata.metadata["accountId"] != "acc_1" || retryMetadata.metadata["transport"] != "http" {
+		t.Fatalf("retry metadata identity wrong: %v", retryMetadata.metadata)
+	}
+	if retryMetadata.metadata["signal"] != gatewaycodex.SignalInvalidEncryptedContent ||
+		retryMetadata.metadata["strategy"] != "codex_encrypted_content_cleanup" {
+		t.Fatalf("retry metadata signal wrong: %v", retryMetadata.metadata)
+	}
+	if retryMetadata.metadata["preservedPreviousResponseID"] != true {
+		t.Fatalf("retry metadata must report the preserved previous_response_id: %v", retryMetadata.metadata)
+	}
+	if len(sink.completions) != 1 {
+		t.Fatalf("the audit attempt still closes before the recovery: %+v", sink.completions)
+	}
+}
+
+// TestChainFailureDispatcherCodexRecoverySkippedFallsToSkipFlow：信号命中但
+// 请求体无可移除加密内容（not_recoverable）→ 记录 skipped 元数据后继续既有
+// skip 流；完全无信号的失败不产生任何 recovery 元数据（failure-dispatch.ts:316-327）。
+func TestChainFailureDispatcherCodexRecoverySkippedFallsToSkipFlow(t *testing.T) {
+	const errorBody = `{"error":{"message":"Encrypted content could not be decoded","code":"invalid_encrypted_content"}}`
+	response := failureDispatchUpstreamResponse(t, http.StatusBadRequest, "application/json", errorBody)
+	sink := &failureDispatchAuditSink{}
+	dispatcher := newFailureDispatcherForTest(nil)
+	input := codexRecoveryResponsesInput(t, response, sink,
+		`{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"output_text","text":"hi"}]}]}`)
+
+	result, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle failed upstream response: %v", err)
+	}
+	if result.Action != gatewaydispatch.FailedResponseActionSkipAccount {
+		t.Fatalf("action=%s want skip_account", result.Action)
+	}
+	if result.FailureKind != chainFailureKindOpaqueHTTP {
+		t.Fatalf("failureKind=%s want opaque_http", result.FailureKind)
+	}
+	skipped := sink.metadataByLabel("codex_encrypted_content_recovery_skipped")
+	if skipped == nil {
+		t.Fatalf("skipped audit metadata missing: %+v", sink.metadata)
+	}
+	if skipped.metadata["signal"] != gatewaycodex.SignalInvalidEncryptedContent ||
+		skipped.metadata["reason"] != gatewaycodex.RecoveryReasonNoRemovableEncryptedContent {
+		t.Fatalf("skipped metadata wrong: %v", skipped.metadata)
+	}
+
+	// 无信号：不产生 recovery 元数据，skip 流保持原样。
+	plainSink := &failureDispatchAuditSink{}
+	plainResponse := failureDispatchUpstreamResponse(t, http.StatusInternalServerError, "application/json", `{"error":{"message":"boom"}}`)
+	plainInput := codexRecoveryResponsesInput(t, plainResponse, plainSink,
+		`{"model":"gpt-5","input":[{"type":"reasoning","summary":[],"encrypted_content":"kept-payload"}]}`)
+	plainResult, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), plainInput)
+	if err != nil {
+		t.Fatalf("handle plain failure: %v", err)
+	}
+	if plainResult.Action != gatewaydispatch.FailedResponseActionSkipAccount {
+		t.Fatalf("plain action=%s want skip_account", plainResult.Action)
+	}
+	if plainSink.metadataByLabel("codex_encrypted_content_recovery_retry") != nil ||
+		plainSink.metadataByLabel("codex_encrypted_content_recovery_skipped") != nil {
+		t.Fatalf("signal-less failure must not emit recovery metadata: %+v", plainSink.metadata)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// client-source avoidance 记录接线（G18 接线②）
+// ---------------------------------------------------------------------------
+
+// avoidanceRecordRequestInput 构造 gateway 传输失败的请求错误输入：完整派发
+// 身份（system/api-key/group/endpoint/client-ip）+ openai 协议账户。
+func avoidanceRecordRequestInput(t *testing.T, sink *failureDispatchAuditSink, trafficSource string) gatewaydispatch.UpstreamRequestErrorInput {
+	t.Helper()
+	raw := httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil)
+	input := upstreamRequestErrorInput(errors.New("连接被重置"), sink, nil)
+	input.Req = gatewaypreauth.NewGatewayRequest(raw)
+	input.UsageContext.TrafficSource = trafficSource
+	input.UsageContext.SystemAccountID = "sys_1"
+	input.UsageContext.APIKeyID = "key_1"
+	input.UsageContext.GroupID = "grp_1"
+	input.UsageContext.Endpoint = "/v1/chat/completions"
+	input.UsageContext.ClientIP = "203.0.113.9"
+	input.Account = gatewaydispatch.AccountCandidate{
+		ID: "acc_1", Name: "账户一",
+		ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
+	}
+	return input
+}
+
+// newAvoidanceDispatcherForTest 组装带 G18 避让协作器的派发器（进程内记忆
+// 驱动，源身份 HMAC secret 固定）。
+func newAvoidanceDispatcherForTest() (*chainFailureDispatcher, *gatewaycodex.TurnRetryService, *chainClientSourceAvoidance) {
+	strategyDeps := &gatewaycodex.ClientStrategyDeps{
+		Source: &gatewaycodex.SourceIdentityResolver{Secret: "unit-secret"},
+	}
+	turnRetry := &gatewaycodex.TurnRetryService{Secret: "unit-secret"}
+	adapter := &chainClientSourceAvoidance{turnRetry: turnRetry}
+	dispatcher := &chainFailureDispatcher{
+		clientStrategy: strategyDeps,
+		turnRetry:      turnRetry,
+	}
+	return dispatcher, turnRetry, adapter
+}
+
+// TestChainFailureDispatcherClientSourceAvoidanceRecordsTransportFailure：
+// gateway 传输失败按失败时身份重新解析客户端策略并记录来源级失败——两次不同
+// observation 达到阈值后激活避让，消费适配器把失败账户排到新鲜账户之后；
+// 相同 observationId 去重不重复计数。
+func TestChainFailureDispatcherClientSourceAvoidanceRecordsTransportFailure(t *testing.T) {
+	sink := &failureDispatchAuditSink{}
+	dispatcher, _, adapter := newAvoidanceDispatcherForTest()
+	input := avoidanceRecordRequestInput(t, sink, "gateway")
+	input.AuditAttemptID = "attempt_1"
+	if _, err := dispatcher.HandleUpstreamRequestError(context.Background(), input); err != nil {
+		t.Fatalf("first transport failure: %v", err)
+	}
+	input.AuditAttemptID = "attempt_2"
+	if _, err := dispatcher.HandleUpstreamRequestError(context.Background(), input); err != nil {
+		t.Fatalf("second transport failure: %v", err)
+	}
+
+	strategy := dispatcher.clientStrategy.ResolveOpenAIGatewayClientStrategy(input.Req, gatewaycodex.ClientStrategyIdentity{
+		SystemAccountID: "sys_1", APIKeyID: "key_1", GroupID: "grp_1",
+		Endpoint: "/v1/chat/completions", ClientIP: "203.0.113.9",
+		ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
+	})
+	if !strategy.AllowClientSourceAccountAvoidance {
+		t.Fatal("the resolved strategy must allow client-source avoidance")
+	}
+	accounts := []gatewaydispatch.AccountCandidate{{ID: "acc_1"}, {ID: "acc_2"}}
+	order, err := adapter.OrderAsync(context.Background(), accounts, gatewaypreauth.ClientStrategyContext{Opaque: strategy}, nil)
+	if err != nil {
+		t.Fatalf("avoidance order: %v", err)
+	}
+	if !order.Applied || !order.ThresholdReached {
+		t.Fatalf("avoidance must activate after two failures: %+v", order)
+	}
+	if order.FailureCount != 2 {
+		t.Fatalf("failure count = %d want 2", order.FailureCount)
+	}
+	if len(order.AvoidedAccountIDs) != 1 || order.AvoidedAccountIDs[0] != "acc_1" {
+		t.Fatalf("avoided accounts = %v", order.AvoidedAccountIDs)
+	}
+	if order.Accounts[0].ID != "acc_2" || order.Accounts[1].ID != "acc_1" {
+		t.Fatalf("fresh accounts must dispatch first: %v/%v", order.Accounts[0].ID, order.Accounts[1].ID)
+	}
+
+	// 相同 observationId（audit attempt id）重复投递不重复计数。
+	input.AuditAttemptID = "attempt_1"
+	if _, err := dispatcher.HandleUpstreamRequestError(context.Background(), input); err != nil {
+		t.Fatalf("duplicate transport failure: %v", err)
+	}
+	deduped, err := adapter.OrderAsync(context.Background(), accounts, gatewaypreauth.ClientStrategyContext{Opaque: strategy}, nil)
+	if err != nil {
+		t.Fatalf("deduped avoidance order: %v", err)
+	}
+	if deduped.FailureCount != 2 {
+		t.Fatalf("duplicate observation must not count: failure count = %d", deduped.FailureCount)
+	}
+}
+
+// TestChainFailureDispatcherClientSourceAvoidanceGuards：非 gateway 流量、缺
+// 源身份（无 client-ip）、未装配协作器三种情况都不记录（Node: 缺失 source
+// key 时避让天然关闭）。
+func TestChainFailureDispatcherClientSourceAvoidanceGuards(t *testing.T) {
+	// 非 gateway 流量。
+	hybridSink := &failureDispatchAuditSink{}
+	hybridDispatcher, _, hybridAdapter := newAvoidanceDispatcherForTest()
+	hybridInput := avoidanceRecordRequestInput(t, hybridSink, "hybrid_scoring")
+	if _, err := hybridDispatcher.HandleUpstreamRequestError(context.Background(), hybridInput); err != nil {
+		t.Fatalf("hybrid transport failure: %v", err)
+	}
+	hybridOrder, err := hybridAdapter.OrderAsync(context.Background(),
+		[]gatewaydispatch.AccountCandidate{{ID: "acc_1"}},
+		gatewaypreauth.ClientStrategyContext{}, nil)
+	if err != nil {
+		t.Fatalf("hybrid avoidance order: %v", err)
+	}
+	if hybridOrder.Applied || hybridOrder.FailureCount != 0 {
+		t.Fatalf("non-gateway traffic must not record: %+v", hybridOrder)
+	}
+
+	// 无 client-ip：源身份缺失 → 策略不允许避让。
+	noIPSink := &failureDispatchAuditSink{}
+	noIPDispatcher, _, noIPAdapter := newAvoidanceDispatcherForTest()
+	noIPInput := avoidanceRecordRequestInput(t, noIPSink, "gateway")
+	noIPInput.UsageContext.ClientIP = ""
+	if _, err := noIPDispatcher.HandleUpstreamRequestError(context.Background(), noIPInput); err != nil {
+		t.Fatalf("no-ip transport failure: %v", err)
+	}
+	noIPOrder, err := noIPAdapter.OrderAsync(context.Background(),
+		[]gatewaydispatch.AccountCandidate{{ID: "acc_1"}},
+		gatewaypreauth.ClientStrategyContext{}, nil)
+	if err != nil {
+		t.Fatalf("no-ip avoidance order: %v", err)
+	}
+	if noIPOrder.Applied || noIPOrder.FailureCount != 0 {
+		t.Fatalf("missing source identity must not record: %+v", noIPOrder)
+	}
+
+	// 未装配协作器：不 panic，skip 决策不变。
+	bareSink := &failureDispatchAuditSink{}
+	bareDispatcher := newFailureDispatcherForTest(nil)
+	bareInput := avoidanceRecordRequestInput(t, bareSink, "gateway")
+	bareResult, err := bareDispatcher.HandleUpstreamRequestError(context.Background(), bareInput)
+	if err != nil {
+		t.Fatalf("bare transport failure: %v", err)
+	}
+	if bareResult.Action != gatewaydispatch.FailedResponseActionSkipAccount {
+		t.Fatalf("bare action=%s want skip_account", bareResult.Action)
+	}
+}
+
+// TestChainClientSourceAvoidanceAdapterPassthrough：无 G18 策略上下文
+// （Opaque 为空）时消费适配器保持直通——装配降级与 Node 无避让状态语义一致。
+func TestChainClientSourceAvoidanceAdapterPassthrough(t *testing.T) {
+	_, turnRetry, adapter := newAvoidanceDispatcherForTest()
+	_ = turnRetry
+	accounts := []gatewaydispatch.AccountCandidate{{ID: "acc_1"}, {ID: "acc_2"}}
+	order, err := adapter.OrderAsync(context.Background(), accounts, gatewaypreauth.ClientStrategyContext{}, nil)
+	if err != nil {
+		t.Fatalf("passthrough order: %v", err)
+	}
+	if order.Applied || order.ThresholdReached || order.FailureCount != 0 {
+		t.Fatalf("passthrough must keep the scheduling order: %+v", order)
+	}
+	if len(order.Accounts) != 2 || order.Accounts[0].ID != "acc_1" || order.Accounts[1].ID != "acc_2" {
+		t.Fatalf("passthrough accounts wrong: %+v", order.Accounts)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // end to end: the /v1 chain over the wired dispatcher
 // ---------------------------------------------------------------------------
 
@@ -619,6 +954,83 @@ func TestGatewayChainAllUpstreamHTTPFailuresRenderExhaustion(t *testing.T) {
 	}
 }
 
+// TestGatewayChainResponsesRecoversRejectedEncryptedContent：端到端恢复桥
+// ——/v1/responses 请求携带加密上下文，上游首次明确拒绝
+// （invalid_encrypted_content），派发器返回兼容性恢复决策后引擎以同一账户重放
+// 清理后的请求体（语义重试），第二次命中成功；客户端拿到 200 响应。
+func TestGatewayChainResponsesRecoversRejectedEncryptedContent(t *testing.T) {
+	fixture := newChainFixture(t)
+	var hits int32
+	bodies := make(chan string, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		select {
+		case bodies <- string(raw):
+		default:
+		}
+		if atomic.AddInt32(&hits, 1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Encrypted content could not be decoded","code":"invalid_encrypted_content"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-recovered","object":"response","status":"completed","model":"gpt-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"恢复后内容"}]}]}`))
+	}))
+	defer upstream.Close()
+	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
+		t.Fatalf("update account credentials: %v", err)
+	}
+
+	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool")))
+	if err != nil {
+		t.Fatalf("compose gateway chain: %v", err)
+	}
+	defer shutdown()
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/responses", strings.NewReader(
+		`{"model":"gpt-test","stream":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"你好"}]},{"type":"reasoning","summary":[],"encrypted_content":"rejected-payload"}],"previous_response_id":"resp_prev"}`))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+fixture.apiKeySecret)
+	client := &http.Client{Timeout: 30 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("POST /v1/responses: %v", err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200 after the compatibility recovery: %s", response.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "resp-recovered") {
+		t.Fatalf("recovered upstream response missing: %s", raw)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Fatalf("upstream hits=%d want 2 (rejected attempt + sanitized semantic retry)", got)
+	}
+	// 两次命中按序捕获：第一次原始体带加密内容，第二次语义重试必须已清理。
+	firstBody := <-bodies
+	secondBody := <-bodies
+	if !strings.Contains(firstBody, "encrypted_content") {
+		t.Fatalf("first attempt body must be the original request: %s", firstBody)
+	}
+	if strings.Contains(secondBody, "encrypted_content") {
+		t.Fatalf("semantic retry must replay the sanitized body: %s", secondBody)
+	}
+	if !strings.Contains(secondBody, "resp_prev") {
+		t.Fatalf("sanitized body must preserve previous_response_id: %s", secondBody)
+	}
+}
+
 // chainV1StreamChatRequest posts a stream chat completion and returns the
 // status, content type and body.
 func chainV1StreamChatRequest(t *testing.T, serverURL, apiKey, body string) (int, string, string) {
@@ -642,4 +1054,707 @@ func chainV1StreamChatRequest(t *testing.T, serverURL, apiKey, body string) (int
 		t.Fatalf("read response: %v", err)
 	}
 	return response.StatusCode, response.Header.Get("Content-Type"), string(raw)
+}
+
+// ---------------------------------------------------------------------------
+// 显式账户错误策略：决策矩阵（account-error-policy.service.ts
+// decideAccountErrorPolicy）与状态写侧（chain_error_policy_effects.go）
+// ---------------------------------------------------------------------------
+
+// fixedErrorPolicyClock 提供固定时钟（2026-09-01T10:00:00Z）。
+var fixedErrorPolicyClock = func() time.Time {
+	return time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+}
+
+func newFixedErrorPolicyService(pool func(gatewaydispatch.AccountCandidate) bool) *chainErrorPolicyService {
+	return newChainErrorPolicyService(chainErrorPolicyDeps{Now: fixedErrorPolicyClock, PoolIsolationEnabled: pool})
+}
+
+// errorPolicyAccount 构造决策输入的候选账户。
+func errorPolicyAccount(credentials map[string]any) gatewaydispatch.AccountCandidate {
+	if credentials == nil {
+		credentials = map[string]any{}
+	}
+	return gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "账户一", Type: "api_key", ProviderCode: "openai", Credentials: credentials}
+}
+
+// errorPolicyDecide 便捷入口：status + 失败体 → 决策。
+func errorPolicyDecide(t *testing.T, service *chainErrorPolicyService, account gatewaydispatch.AccountCandidate, status int, body string) *accountErrorPolicyDecision {
+	t.Helper()
+	decision, err := service.Decide(account, status, nil, body, nil, gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30})
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	return decision
+}
+
+// TestChainErrorPolicySystemRuleMatrix：系统额度不足规则的命中/排除矩阵与
+// 系统决策形状（rate_limited 冷却 + system 来源 + api_key generic 模式）。
+func TestChainErrorPolicySystemRuleMatrix(t *testing.T) {
+	service := newFixedErrorPolicyService(nil)
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		matches bool
+	}{
+		{"402 无码命中", http.StatusPaymentRequired, `{"error":{"message":"请求失败"}}`, true},
+		{"402 余额不足文本", http.StatusPaymentRequired, `{"error":{"message":"账户余额不足，请充值"}}`, true},
+		{"403 稳定错误码", http.StatusForbidden, `{"error":{"code":"insufficient_quota","message":"You exceeded your quota"}}`, true},
+		{"403 非额度标识排除", http.StatusForbidden, `{"error":{"code":"content_policy_violation","message":"blocked"}}`, false},
+		{"429 不属于系统规则", http.StatusTooManyRequests, `{"error":{"code":"rate_limit_exceeded"}}`, false},
+		{"200 无决策", http.StatusOK, `{"error":{"code":"insufficient_quota"}}`, false},
+	}
+	for _, testCase := range cases {
+		decision := errorPolicyDecide(t, service, errorPolicyAccount(nil), testCase.status, testCase.body)
+		if !testCase.matches {
+			if decision != nil {
+				t.Fatalf("%s: decision = %+v want nil", testCase.name, decision)
+			}
+			continue
+		}
+		if decision == nil {
+			t.Fatalf("%s: decision = nil want the system quota decision", testCase.name)
+		}
+		if decision.Action != decisionActionCooldown || decision.RuleSource != "system" ||
+			decision.CooldownStatus != cooldownStatusRateLimited || decision.RuleID != systemInsufficientQuotaRuleID {
+			t.Fatalf("%s: decision = %+v", testCase.name, decision)
+		}
+		if decision.CooldownUntil == "" {
+			t.Fatalf("%s: cooldownUntil must be derived (api_key generic recovery)", testCase.name)
+		}
+		if decision.QuotaRecoveryMode != "generic" {
+			t.Fatalf("%s: quotaRecoveryMode = %q want generic", testCase.name, decision.QuotaRecoveryMode)
+		}
+	}
+}
+
+// TestChainErrorPolicyQuotaRecoveryHint：显式恢复 hint 优先于策略边界
+// （reset_at 族字段 + retry-after 响应头）。
+func TestChainErrorPolicyQuotaRecoveryHint(t *testing.T) {
+	service := newFixedErrorPolicyService(nil)
+	account := errorPolicyAccount(nil)
+
+	body := `{"error":{"code":"insufficient_quota","message":"quota exceeded","reset_at":1790000000}}`
+	decision := errorPolicyDecide(t, service, account, http.StatusPaymentRequired, body)
+	// 1790000000 是纪元秒（< 1e10 按秒转毫秒）。
+	if decision == nil || decision.QuotaRecoveryMode != "explicit_reset" ||
+		decision.QuotaRecoveryHintSource != "reset_at" || decision.CooldownUntil != "2026-09-21T14:13:20.000Z" {
+		t.Fatalf("reset_at hint decision = %+v", decision)
+	}
+
+	decisionWithHeader, err := service.Decide(account, http.StatusPaymentRequired,
+		http.Header{"Retry-After": []string{"120"}}, `{"error":{"code":"insufficient_quota"}}`, nil,
+		gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30})
+	if err != nil {
+		t.Fatalf("decide with retry-after: %v", err)
+	}
+	if decisionWithHeader == nil || decisionWithHeader.QuotaRecoveryHintSource != "retry_after" ||
+		decisionWithHeader.CooldownUntil != "2026-09-01T10:02:00.000Z" {
+		t.Fatalf("retry-after hint decision = %+v", decisionWithHeader)
+	}
+}
+
+// TestChainErrorPolicyOverridesSuppressSystemRule：账户覆盖 delete/replace
+// 抑制系统规则 —— delete 后无决策；replace 后账户规则接管匹配。
+func TestChainErrorPolicyOverridesSuppressSystemRule(t *testing.T) {
+	service := newFixedErrorPolicyService(nil)
+	body := `{"error":{"code":"insufficient_quota","message":"insufficient quota"}}`
+
+	deleted := errorPolicyAccount(map[string]any{
+		"error_handling_rule_overrides": []any{map[string]any{"system_rule_id": systemInsufficientQuotaRuleID, "action": "delete"}},
+	})
+	if decision := errorPolicyDecide(t, service, deleted, http.StatusPaymentRequired, body); decision != nil {
+		t.Fatalf("delete override must suppress the system rule: %+v", decision)
+	}
+
+	replaced := errorPolicyAccount(map[string]any{
+		"error_handling_rule_overrides": []any{map[string]any{"system_rule_id": systemInsufficientQuotaRuleID, "action": "replace", "rule_index": float64(0)}},
+		"error_handling_rules": []any{map[string]any{
+			"enabled": true, "name": "自定义额度", "priority": float64(1), "action": "temp_unschedulable",
+			"status_codes": []any{float64(402)},
+		}},
+	})
+	decision := errorPolicyDecide(t, service, replaced, http.StatusPaymentRequired, body)
+	if decision == nil || decision.RuleSource != "account" || decision.RuleName != "自定义额度" ||
+		decision.Action != decisionActionCooldown || decision.CooldownStatus != cooldownStatusTemporaryUnavailable {
+		t.Fatalf("replace override decision = %+v", decision)
+	}
+	// temp_unschedulable 冷却来自系统设置（30 分钟）。
+	if decision.CooldownUntil != "2026-09-01T10:30:00.000Z" {
+		t.Fatalf("temp_unschedulable cooldownUntil = %q", decision.CooldownUntil)
+	}
+}
+
+// TestChainErrorPolicyAccountRulePriorityAndActions：账户规则 priority 升序
+// 先命中先赢；retry_next / error_disabled / rate_limited(duration) 动作映射；
+// 关键字与状态码维度过滤；无规则默认无决策。
+func TestChainErrorPolicyAccountRulePriorityAndActions(t *testing.T) {
+	service := newFixedErrorPolicyService(nil)
+	account := errorPolicyAccount(map[string]any{
+		"error_handling_rules": []any{
+			map[string]any{
+				"enabled": true, "name": "低优先级禁用", "priority": float64(5), "action": "error_disabled",
+				"status_codes": []any{float64(500)},
+			},
+			map[string]any{
+				"enabled": true, "name": "高优先级换号", "priority": float64(2), "action": "retry_next",
+				"status_codes": []any{float64(500)},
+			},
+			map[string]any{
+				"enabled": false, "name": "停用规则", "priority": float64(1), "action": "retry_next",
+				"status_codes": []any{float64(500)},
+			},
+		},
+	})
+	decision := errorPolicyDecide(t, service, account, http.StatusInternalServerError, `{"error":{"message":"boom"}}`)
+	if decision == nil || decision.Action != decisionActionRetryNext || decision.RuleName != "高优先级换号" || decision.RuleSource != "account" {
+		t.Fatalf("priority decision = %+v", decision)
+	}
+
+	disabled := errorPolicyAccount(map[string]any{
+		"error_handling_rules": []any{map[string]any{
+			"enabled": true, "name": "上游崩溃禁用", "priority": float64(1), "action": "error_disabled",
+			"status_codes": []any{float64(500)},
+		}},
+	})
+	decision = errorPolicyDecide(t, service, disabled, http.StatusInternalServerError, `{"error":{"message":"boom"}}`)
+	if decision == nil || decision.Action != decisionActionDisable || decision.RuleName != "上游崩溃禁用" {
+		t.Fatalf("disable decision = %+v", decision)
+	}
+
+	rateLimited := errorPolicyAccount(map[string]any{
+		"error_handling_rules": []any{map[string]any{
+			"enabled": true, "name": "两小时限流", "priority": float64(1), "action": "rate_limited",
+			"error_codes":  []any{"rate_limit_exceeded"},
+			"reset_strategy": "duration", "duration_hours": float64(2),
+		}},
+	})
+	decision = errorPolicyDecide(t, service, rateLimited, http.StatusTooManyRequests, `{"error":{"code":"rate_limit_exceeded"}}`)
+	if decision == nil || decision.Action != decisionActionCooldown || decision.CooldownStatus != cooldownStatusRateLimited {
+		t.Fatalf("rate_limited decision = %+v", decision)
+	}
+	// 2 小时 duration + 被动确定性抖动（窗口 ±30 分钟）；固定时钟下稳定。
+	if decision.CooldownUntil == "2026-09-01T12:00:00.000Z" {
+		t.Fatalf("deterministic jitter must move the boundary off the exact timestamp: %q", decision.CooldownUntil)
+	}
+	until, err := time.Parse(time.RFC3339, decision.CooldownUntil)
+	if err != nil {
+		t.Fatalf("parse cooldownUntil: %v", err)
+	}
+	if delta := until.Sub(fixedErrorPolicyClock().Add(2 * time.Hour)); delta > 30*time.Minute || delta < -30*time.Minute || delta == 0 {
+		t.Fatalf("cooldownUntil delta = %v want within ±30m and non-zero", delta)
+	}
+
+	// 关键字维度：状态码不限时按消息文本命中。
+	keyword := errorPolicyAccount(map[string]any{
+		"error_handling_rules": []any{map[string]any{
+			"enabled": true, "name": "过载关键字", "priority": float64(1), "action": "retry_next",
+			"keywords": []any{"系统过载"},
+		}},
+	})
+	if decision := errorPolicyDecide(t, service, keyword, http.StatusInternalServerError, `{"error":{"message":"上游系统过载，请稍后重试"}}`); decision == nil {
+		t.Fatal("keyword rule must match the message text")
+	}
+	// 关键字不匹配 → 无决策（opaque）。
+	if decision := errorPolicyDecide(t, service, keyword, http.StatusInternalServerError, `{"error":{"message":"boom"}}`); decision != nil {
+		t.Fatalf("non-matching keyword rule must not fire: %+v", decision)
+	}
+
+	// 无规则默认：无决策。
+	if decision := errorPolicyDecide(t, service, errorPolicyAccount(nil), http.StatusInternalServerError, `{"error":{"message":"boom"}}`); decision != nil {
+		t.Fatalf("no rules must produce no decision: %+v", decision)
+	}
+}
+
+// TestChainErrorPolicyKeyScopedPoolIsolation：池隔离开启时系统额度决策带
+// keyScoped 事实（单 Key 账户恒 false）。
+func TestChainErrorPolicyKeyScopedPoolIsolation(t *testing.T) {
+	fingerprint := "fp_1"
+	poolAccount := errorPolicyAccount(nil)
+	poolAccount.SelectedAPIKeyFingerprint = &fingerprint
+	service := newFixedErrorPolicyService(func(account gatewaydispatch.AccountCandidate) bool {
+		return account.SelectedAPIKeyFingerprint != nil
+	})
+	decision := errorPolicyDecide(t, service, poolAccount, http.StatusPaymentRequired, `{"error":{"message":"insufficient quota"}}`)
+	if decision == nil || !decision.KeyScoped {
+		t.Fatalf("pooled account decision = %+v want keyScoped", decision)
+	}
+	single := errorPolicyDecide(t, service, errorPolicyAccount(nil), http.StatusPaymentRequired, `{"error":{"message":"insufficient quota"}}`)
+	if single == nil || single.KeyScoped {
+		t.Fatalf("single-key account decision = %+v want not keyScoped", single)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 状态写侧桥：SQL 副作用
+// ---------------------------------------------------------------------------
+
+// errorPolicyEffectsFixture 提供桥测试的最小业务表 + 固定时钟桥。
+type errorPolicyEffectsFixture struct {
+	db        *sql.DB
+	bridge    *chainErrorPolicyEffectsBridge
+	keyStates *accountkeystates.Store
+	now       time.Time
+}
+
+func newErrorPolicyEffectsFixture(t *testing.T) *errorPolicyEffectsFixture {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "policy.sqlite3"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	statements := []string{
+		`CREATE TABLE accounts (
+			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL DEFAULT 'sys_owner',
+			provider_code TEXT NOT NULL DEFAULT 'openai', protocol_code TEXT, protocol_version TEXT,
+			name TEXT NOT NULL DEFAULT '账户', type TEXT NOT NULL DEFAULT 'api_key',
+			status TEXT NOT NULL DEFAULT 'active', schedulable INTEGER NOT NULL DEFAULT 1,
+			config_revision INTEGER NOT NULL DEFAULT 1,
+			credentials_encrypted TEXT, cooldown_until TEXT,
+			last_error_code TEXT, last_error_message TEXT, last_error_trace_id TEXT,
+			cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
+			cooldown_retest_observation_started_at TEXT, cooldown_retest_generation TEXT,
+			cooldown_retest_last_at TEXT, cooldown_retest_last_status_code INTEGER,
+			stream_failure_count INTEGER NOT NULL DEFAULT 0, stream_failure_window_started_at TEXT,
+			account_expires_at TEXT, deleted_at TEXT, updated_at TEXT NOT NULL DEFAULT '',
+			authorization_instance_source_account_id TEXT,
+			authorization_instance_authorization_id TEXT)`,
+		`CREATE TABLE group_accounts (
+			group_id TEXT NOT NULL, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL,
+			enabled INTEGER NOT NULL, account_authorization_id TEXT)`,
+		`CREATE TABLE group_account_stats_dirty (
+			group_id TEXT PRIMARY KEY, reason TEXT, updated_at TEXT)`,
+		`CREATE TABLE account_api_key_runtime_states (
+			id TEXT PRIMARY KEY, system_account_id TEXT, account_id TEXT NOT NULL,
+			key_fingerprint TEXT NOT NULL, key_index INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'active', failure_count INTEGER NOT NULL DEFAULT 0,
+			consecutive_failures INTEGER NOT NULL DEFAULT 0, success_count INTEGER NOT NULL DEFAULT 0,
+			cooldown_until TEXT, next_probe_at TEXT, probe_backoff_seconds INTEGER NOT NULL DEFAULT 0,
+			recovery_started_at TEXT, last_attempt_at TEXT, last_failure_at TEXT,
+			last_error_code TEXT, last_error_message TEXT, last_trace_id TEXT,
+			probe_claim_token TEXT, probe_claimed_until TEXT,
+			created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
+			UNIQUE(account_id, key_fingerprint))`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed schema: %v: %v", statement, err)
+		}
+	}
+	now := fixedErrorPolicyClock()
+	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
+		DB: db, Postgres: false, Secret: "chain-error-policy-secret",
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("create key states store: %v", err)
+	}
+	bridge := &chainErrorPolicyEffectsBridge{
+		db: db, pg: false, bus: nil, keyStates: keyStates,
+		now: func() time.Time { return now },
+	}
+	return &errorPolicyEffectsFixture{db: db, bridge: bridge, keyStates: keyStates, now: now}
+}
+
+func (f *errorPolicyEffectsFixture) seedAccount(t *testing.T, id, status string, configRevision int64) {
+	t.Helper()
+	if _, err := f.db.Exec(`INSERT INTO accounts (id, status, config_revision, stream_failure_count, stream_failure_window_started_at) VALUES (?, ?, ?, 3, '2026-08-31T00:00:00.000Z')`, id, status, configRevision); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+}
+
+func (f *errorPolicyEffectsFixture) accountRow(t *testing.T, id string) map[string]any {
+	t.Helper()
+	row := f.db.QueryRow(`SELECT status, schedulable, cooldown_until, last_error_code, last_error_message, stream_failure_count, config_revision FROM accounts WHERE id = ?`, id)
+	var status string
+	var schedulable int
+	var cooldownUntil, errorCode, errorMessage sql.NullString
+	var streamFailures int
+	var configRevision int64
+	if err := row.Scan(&status, &schedulable, &cooldownUntil, &errorCode, &errorMessage, &streamFailures, &configRevision); err != nil {
+		t.Fatalf("read account row: %v", err)
+	}
+	return map[string]any{
+		"status": status, "schedulable": schedulable, "cooldown_until": cooldownUntil.String,
+		"last_error_code": errorCode.String, "last_error_message": errorMessage.String,
+		"stream_failure_count": streamFailures, "config_revision": configRevision,
+	}
+}
+
+// systemQuotaDecisionOf 构造系统额度冷却决策。
+func systemQuotaDecisionOf(mode string) accountErrorPolicyDecision {
+	return accountErrorPolicyDecision{
+		Action: decisionActionCooldown, RuleID: systemInsufficientQuotaRuleID,
+		RuleName: systemQuotaRuleName, RuleSource: "system",
+		CooldownStatus:    cooldownStatusRateLimited,
+		CooldownUntil:     "2026-09-01T11:00:00.000Z",
+		QuotaRecoveryMode: mode,
+	}
+}
+
+// TestChainErrorPolicyEffectsCooldownWrites：cooldown 写侧副作用 —— 状态、
+// schedulable、冷却时间、provenance 错误码、流失败计数复位、归因文案。
+func TestChainErrorPolicyEffectsCooldownWrites(t *testing.T) {
+	fixture := newErrorPolicyEffectsFixture(t)
+	fixture.seedAccount(t, "acc_1", "active", 2)
+
+	changed, status, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		errorPolicyAccount(nil), systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{
+			HasStatusCode: true, StatusCode: http.StatusPaymentRequired,
+			BodyText: `{"error":{"code":"insufficient_quota"}}`,
+		})
+	if err != nil {
+		t.Fatalf("apply cooldown: %v", err)
+	}
+	if !changed || status != cooldownStatusRateLimited {
+		t.Fatalf("changed=%v status=%s", changed, status)
+	}
+	row := fixture.accountRow(t, "acc_1")
+	if row["status"] != "rate_limited" || row["schedulable"] != 1 {
+		t.Fatalf("account row = %+v", row)
+	}
+	if row["cooldown_until"] != "2026-09-01T11:00:00.000Z" {
+		t.Fatalf("cooldown_until = %v", row["cooldown_until"])
+	}
+	if row["last_error_code"] != systemQuotaGenericCooldownCode {
+		t.Fatalf("last_error_code = %v", row["last_error_code"])
+	}
+	if row["stream_failure_count"] != 0 {
+		t.Fatalf("stream failure counter must reset: %+v", row)
+	}
+	if !strings.Contains(fmt.Sprint(row["last_error_message"]), "系统继承错误策略") {
+		t.Fatalf("reason must carry the system policy label: %+v", row)
+	}
+
+	// 账户规则决策写 explicit provenance 码（候选 ID 对准目标行）。
+	fixture.seedAccount(t, "acc_2", "active", 1)
+	accountDecision := accountErrorPolicyDecision{
+		Action: decisionActionCooldown, RuleName: "五分钟限流", RuleSource: "account",
+		CooldownStatus: cooldownStatusRateLimited, CooldownUntil: "2026-09-01T12:00:00.000Z",
+	}
+	secondCandidate := errorPolicyAccount(nil)
+	secondCandidate.ID = "acc_2"
+	if _, _, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		secondCandidate, accountDecision, chainErrorPolicyFailureInput{
+			HasStatusCode: true, StatusCode: http.StatusTooManyRequests,
+			BodyText: `{"error":{"code":"rate_limit_exceeded"}}`,
+		}); err != nil {
+		t.Fatalf("apply account cooldown: %v", err)
+	}
+	row = fixture.accountRow(t, "acc_2")
+	if row["last_error_code"] != explicitAccountErrorPolicyCooldownCode || row["cooldown_until"] != "2026-09-01T12:00:00.000Z" {
+		t.Fatalf("account-rule cooldown row = %+v", row)
+	}
+
+	// temporary_unavailable 决策：初始退避 3 秒（Node temporaryUnavailableRuntimeState）。
+	fixture.seedAccount(t, "acc_3", "active", 1)
+	tempDecision := accountErrorPolicyDecision{
+		Action: decisionActionCooldown, RuleName: "临时不可用", RuleSource: "account",
+		CooldownStatus: cooldownStatusTemporaryUnavailable,
+	}
+	thirdCandidate := errorPolicyAccount(nil)
+	thirdCandidate.ID = "acc_3"
+	if _, _, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		thirdCandidate, tempDecision, chainErrorPolicyFailureInput{}); err != nil {
+		t.Fatalf("apply temp cooldown: %v", err)
+	}
+	row = fixture.accountRow(t, "acc_3")
+	if row["status"] != "temporary_unavailable" || row["cooldown_until"] != "2026-09-01T10:00:03.000Z" {
+		t.Fatalf("temp cooldown row = %+v", row)
+	}
+}
+
+// TestChainErrorPolicyEffectsCooldownGuards：硬不可用账户不写；config_revision
+// 竞争不写；系统 quota 通用码不得覆盖更高优先级的显式重置冷却。
+func TestChainErrorPolicyEffectsCooldownGuards(t *testing.T) {
+	fixture := newErrorPolicyEffectsFixture(t)
+	fixture.seedAccount(t, "acc_disabled", "disabled", 1)
+	fixture.seedAccount(t, "acc_race", "active", 2)
+	fixture.seedAccount(t, "acc_explicit", "rate_limited", 1)
+	if _, err := fixture.db.Exec(`UPDATE accounts SET last_error_code = ?, cooldown_until = '2026-09-01T11:30:00.000Z' WHERE id = 'acc_explicit'`,
+		systemQuotaExplicitResetCooldownCode); err != nil {
+		t.Fatalf("seed explicit cooldown: %v", err)
+	}
+
+	changed, _, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		errorPolicyAccount(nil), systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{})
+	if err != nil {
+		t.Fatalf("apply disabled cooldown: %v", err)
+	}
+	if changed {
+		t.Fatal("hard-unavailable account must not be cooled down")
+	}
+	if row := fixture.accountRow(t, "acc_disabled"); row["status"] != "disabled" {
+		t.Fatalf("disabled row changed: %+v", row)
+	}
+
+	// config_revision 竞争：桥读取 current 前手动抬高版本。
+	if _, err := fixture.db.Exec(`UPDATE accounts SET config_revision = 3 WHERE id = 'acc_race'`); err != nil {
+		t.Fatalf("bump revision: %v", err)
+	}
+	changed, _, err = fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		errorPolicyAccount(nil), systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{})
+	if err != nil {
+		t.Fatalf("apply raced cooldown: %v", err)
+	}
+	if changed {
+		t.Fatal("stale config_revision write must be fenced off")
+	}
+
+	// generic 不覆盖 explicit（系统配额优先级围栏）。
+	changed, _, err = fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		errorPolicyAccount(nil), systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{})
+	if err != nil {
+		t.Fatalf("apply fenced cooldown: %v", err)
+	}
+	if changed {
+		t.Fatal("generic system quota must not override an explicit reset cooldown")
+	}
+	if row := fixture.accountRow(t, "acc_explicit"); row["cooldown_until"] != "2026-09-01T11:30:00.000Z" {
+		t.Fatalf("explicit cooldown must stay: %+v", row)
+	}
+}
+
+// TestChainErrorPolicyEffectsDisableWrites：disable 写 status='error' +
+// schedulable=0 + upstream_failure 码；error 账户短路。
+func TestChainErrorPolicyEffectsDisableWrites(t *testing.T) {
+	fixture := newErrorPolicyEffectsFixture(t)
+	fixture.seedAccount(t, "acc_1", "active", 1)
+	fixture.seedAccount(t, "acc_error", "error", 1)
+
+	disable := accountErrorPolicyDecision{Action: decisionActionDisable, RuleName: "上游崩溃禁用", RuleSource: "account"}
+	changed, status, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		errorPolicyAccount(nil), disable, chainErrorPolicyFailureInput{
+			HasStatusCode: true, StatusCode: http.StatusInternalServerError,
+			BodyText: `{"error":{"message":"upstream exploded"}}`,
+		})
+	if err != nil {
+		t.Fatalf("apply disable: %v", err)
+	}
+	if !changed || status != "error" {
+		t.Fatalf("changed=%v status=%s", changed, status)
+	}
+	row := fixture.accountRow(t, "acc_1")
+	if row["status"] != "error" || row["schedulable"] != 0 || row["cooldown_until"] != "" ||
+		row["last_error_code"] != "upstream_failure" {
+		t.Fatalf("disabled row = %+v", row)
+	}
+
+	changed, _, err = fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		errorPolicyAccount(nil), disable, chainErrorPolicyFailureInput{})
+	if err != nil {
+		t.Fatalf("apply error-account disable: %v", err)
+	}
+	if changed {
+		t.Fatal("error account must short-circuit the disable write")
+	}
+}
+
+// TestChainErrorPolicyEffectsKeyScopedQuotaRecord：keyScoped 系统 quota 决策
+// 写 Key 级运行态（rate_limited + quota 恢复码 + 决策冷却时间）。
+func TestChainErrorPolicyEffectsKeyScopedQuotaRecord(t *testing.T) {
+	fixture := newErrorPolicyEffectsFixture(t)
+	if _, err := fixture.db.Exec(`INSERT INTO account_api_key_runtime_states
+		(id, system_account_id, account_id, key_fingerprint, status, created_at, updated_at)
+		VALUES ('state_1', 'sys_owner', 'acc_1', ?, 'active', '2026-09-01T09:00:00.000Z', '2026-09-01T09:00:00.000Z')`,
+		fixture.keyStates.FingerprintAPIKey("key-b")); err != nil {
+		t.Fatalf("seed key state: %v", err)
+	}
+
+	fingerprint := fixture.keyStates.FingerprintAPIKey("key-b")
+	account := errorPolicyAccount(map[string]any{"api_keys": []any{"key-a", "key-b"}})
+	account.SystemAccountID = "sys_owner"
+	account.SelectedAPIKeyFingerprint = &fingerprint
+
+	if err := fixture.bridge.RecordKeyScopedQuotaFailure(context.Background(), account,
+		systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{
+			HasStatusCode:        true,
+			StatusCode:           http.StatusPaymentRequired,
+			UpstreamErrorSummary: "insufficient quota",
+		}); err != nil {
+		t.Fatalf("record key scoped failure: %v", err)
+	}
+	var status, errorCode, cooldownUntil string
+	if err := fixture.db.QueryRow(`SELECT status, last_error_code, COALESCE(cooldown_until, '') FROM account_api_key_runtime_states WHERE account_id = 'acc_1' AND key_fingerprint = ?`,
+		fingerprint).Scan(&status, &errorCode, &cooldownUntil); err != nil {
+		t.Fatalf("read key state: %v", err)
+	}
+	if status != "rate_limited" || errorCode != "api_key_quota_insufficient" {
+		t.Fatalf("key state = %s/%s", status, errorCode)
+	}
+	if cooldownUntil != "2026-09-01T11:00:00.000Z" {
+		t.Fatalf("key cooldown_until = %q", cooldownUntil)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 派发器决策驱动（failureKind / 换 Key 事实 / audit 归因）
+// ---------------------------------------------------------------------------
+
+// errorPolicyRuleAccount 构造带账户规则的候选账户。
+func errorPolicyRuleAccount(rules ...map[string]any) gatewaydispatch.AccountCandidate {
+	list := make([]any, 0, len(rules))
+	for _, rule := range rules {
+		list = append(list, rule)
+	}
+	return gatewaydispatch.AccountCandidate{
+		ID: "acc_1", Name: "账户一", Type: "api_key", ProviderCode: "openai",
+		Credentials: map[string]any{"error_handling_rules": list},
+	}
+}
+
+// TestChainFailureDispatcherExplicitPolicyFailureKind：显式决策驱动
+// failureKind=explicit_policy、审计归因 metadata；无决策保持 opaque_http。
+func TestChainFailureDispatcherExplicitPolicyFailureKind(t *testing.T) {
+	body := `{"error":{"code":"insufficient_quota","message":"insufficient quota"}}`
+	response := failureDispatchUpstreamResponse(t, http.StatusPaymentRequired, "application/json", body)
+
+	sink := &failureDispatchAuditSink{}
+	dispatcher := &chainFailureDispatcher{policy: newFixedErrorPolicyService(nil)}
+	input := gatewayFailedResponseInput(response, sink, "gateway")
+	// metadata 走冻结捕获上下文；sink 同时实现两侧，双挂保证 attempt 记录。
+	input.AuditCapture = gatewaydispatch.AuditCapture{Context: sink, Sink: sink}
+	input.AccountStateMutationEnabled = true
+	input.Settings = gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30}
+	result, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle failed response: %v", err)
+	}
+	if result.FailureKind != gatewaydispatch.FailureKindExplicitPolicy {
+		t.Fatalf("failureKind=%s want explicit_policy", result.FailureKind)
+	}
+	if result.Action != gatewaydispatch.FailedResponseActionSkipAccount {
+		t.Fatalf("action=%s", result.Action)
+	}
+	policyMetadata := sink.metadataByLabel("account_error_policy_matched")
+	if policyMetadata == nil {
+		t.Fatalf("account_error_policy_matched metadata missing: %+v", sink.metadata)
+	}
+	if policyMetadata.metadata["ruleSource"] != "system" || policyMetadata.metadata["action"] != decisionActionCooldown {
+		t.Fatalf("policy metadata = %+v", policyMetadata.metadata)
+	}
+
+	// 无规则 → opaque_http（现状契约保持）。
+	opaqueResponse := failureDispatchUpstreamResponse(t, http.StatusInternalServerError, "application/json", `{"error":{"message":"boom"}}`)
+	opaqueSink := &failureDispatchAuditSink{}
+	opaqueInput := gatewayFailedResponseInput(opaqueResponse, opaqueSink, "gateway")
+	opaqueInput.Settings = gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30}
+	opaque, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), opaqueInput)
+	if err != nil {
+		t.Fatalf("handle opaque failure: %v", err)
+	}
+	if opaque.FailureKind != chainFailureKindOpaqueHTTP {
+		t.Fatalf("opaque failureKind=%s", opaque.FailureKind)
+	}
+	if len(opaqueSink.metadata) != 0 {
+		t.Fatalf("opaque failure must not add policy metadata: %+v", opaqueSink.metadata)
+	}
+}
+
+// TestChainFailureDispatcherRetryNextAuthorizesRotation：显式 retry_next
+// 规则不受预提交推迟约束 —— DeferAutomatic 同账户换 Key 事实仍激活。
+func TestChainFailureDispatcherRetryNextAuthorizesRotation(t *testing.T) {
+	response := failureDispatchUpstreamResponse(t, http.StatusInternalServerError, "application/json", `{"error":{"message":"upstream exploded"}}`)
+	fingerprint := "fp_1"
+	account := errorPolicyRuleAccount(map[string]any{
+		"enabled": true, "name": "换号重试", "priority": float64(1), "action": "retry_next",
+		"status_codes": []any{float64(500)},
+	})
+	account.APIKeys = []string{"key-a", "key-b"}
+	account.SelectedAPIKeyFingerprint = &fingerprint
+
+	dispatcher := &chainFailureDispatcher{policy: newFixedErrorPolicyService(nil)}
+	input := gatewayFailedResponseInput(response, &failureDispatchAuditSink{}, "gateway")
+	input.Account = account
+	input.AccountStateMutationEnabled = true
+	input.DeferAutomaticSameAccountKeyRotation = true
+	input.Settings = gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30}
+	result, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle retry_next failure: %v", err)
+	}
+	if result.FailureKind != gatewaydispatch.FailureKindExplicitPolicy {
+		t.Fatalf("failureKind=%s want explicit_policy", result.FailureKind)
+	}
+	if !result.KeyScopedFailure {
+		t.Fatal("explicit retry_next must authorize the same-account key rotation despite the deferral")
+	}
+	if result.PendingApiKeyFailure == nil {
+		t.Fatal("retry_next rotation must capture the pending key failure")
+	}
+	if result.PendingApiKeyFailure.ErrorMessage == "" {
+		t.Fatal("pending failure should carry the upstream summary for confirmation")
+	}
+}
+
+// TestGatewayChain402InsufficientQuotaCooldownsAccount：端到端 —— 上游 402
+// 额度不足 → 系统继承策略冷却落库（status=rate_limited + system quota
+// provenance 码），客户端拿到耗尽契约。
+func TestGatewayChain402InsufficientQuotaCooldownsAccount(t *testing.T) {
+	fixture := newChainFixture(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = w.Write([]byte(`{"error":{"message":"insufficient quota","code":"insufficient_quota"}}`))
+	}))
+	defer upstream.Close()
+	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
+		t.Fatalf("update account credentials: %v", err)
+	}
+	// 桥写侧需要测试 schema 未包含的运行态列（生产 schema 具备）。
+	for _, alter := range []string{
+		`ALTER TABLE accounts ADD COLUMN last_error_trace_id TEXT`,
+		`ALTER TABLE accounts ADD COLUMN cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE accounts ADD COLUMN cooldown_retest_observation_started_at TEXT`,
+		`ALTER TABLE accounts ADD COLUMN cooldown_retest_generation TEXT`,
+		`ALTER TABLE accounts ADD COLUMN cooldown_retest_last_at TEXT`,
+		`ALTER TABLE accounts ADD COLUMN cooldown_retest_last_status_code INTEGER`,
+		`ALTER TABLE accounts ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (group_id TEXT PRIMARY KEY, reason TEXT, updated_at TEXT)`,
+	} {
+		if _, err := fixture.db.Exec(alter); err != nil {
+			t.Fatalf("extend fixture schema: %v: %v", alter, err)
+		}
+	}
+
+	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool"))
+	errorPolicyBridge, errorPolicyService, err := newChainErrorPolicyEffectsBridge(&composition{db: fixture.db, pgDialect: false}, "chain-test-secret")
+	if err != nil {
+		t.Fatalf("compose error policy bridge: %v", err)
+	}
+	deps.AccountErrorPolicy = errorPolicyService
+	deps.AccountErrorPolicyEffects = errorPolicyBridge
+
+	chain, shutdown, err := composeGatewayChain(deps)
+	if err != nil {
+		t.Fatalf("compose gateway chain: %v", err)
+	}
+	defer shutdown()
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	status, raw := chainV1ChatRequest(t, server.URL, fixture.apiKeySecret,
+		`{"model":"gpt-test","messages":[{"role":"user","content":"你好"}]}`)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d want 503: %s", status, raw)
+	}
+	row := fixture.db.QueryRow(`SELECT status, schedulable, last_error_code, COALESCE(cooldown_until, '') FROM accounts WHERE id = ?`, fixture.accountID)
+	var accountStatus string
+	var schedulable int
+	var errorCode, cooldownUntil string
+	if err := row.Scan(&accountStatus, &schedulable, &errorCode, &cooldownUntil); err != nil {
+		t.Fatalf("read cooled account: %v", err)
+	}
+	if accountStatus != "rate_limited" || schedulable != 1 {
+		t.Fatalf("cooled account = %s/%d", accountStatus, schedulable)
+	}
+	if errorCode != systemQuotaGenericCooldownCode {
+		t.Fatalf("provenance code = %s want system_quota_generic_cooldown", errorCode)
+	}
+	if cooldownUntil == "" {
+		t.Fatal("cooldown_until must be persisted")
+	}
 }
