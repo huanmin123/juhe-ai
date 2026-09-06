@@ -10,11 +10,10 @@ package main
 //	                                       (Node clearGatewayAccountRuntimeAvailabilityAsync)
 //	ClearNormalRouteLatencyDegradation   → gatewayproxyhealth.LatencyDegradationService.
 //	                                       ClearNormalRouteLatencyDegradationForAccount
-//	RevalidateAccountAPIKeyRuntimePool   → REGISTERED NIL: the
-//	                                       account_api_key_runtime_states domain has
-//	                                       no Go implementation yet; the port reports
-//	                                       eligible=false and the reset endpoint keeps
-//	                                       working (api_key_runtime stays unchanged)
+//	RevalidateAccountAPIKeyRuntimePool   → accountkeystates.Store.RevalidatePool
+//	                                       (Node revalidateAccountApiKeyRuntimePoolAsync,
+//	                                       account_api_key_runtime_states; jobs 侧
+//	                                       proberepo 同表同键，两侧读写互通)
 //	LoadAPIKeyTransientStates            → gatewayaccounteffects
 //	                                       AccountAPIKeyFailureGuard.
 //	                                       LoadTransientStatesForDispatch
@@ -33,10 +32,10 @@ package main
 //	                                       IsRequestQuotaExceeded over the
 //	                                       authorization + team-grant limits
 //	                                       (Node loadAuthorizationQuotaExceededByAuthorizationIdAsync)
-//	APIKeyPoolAllUnavailable             → REGISTERED NIL: same
-//	                                       account_api_key_runtime_states residual; the
-//	                                       pool reports not-all-unavailable so the reset
-//	                                       endpoint stays usable
+//	APIKeyPoolAllUnavailable             → accountkeystates.Store.AllUnavailable
+//	                                       (Node loadAccountApiKeyRuntimeSummariesByAccountIdsAsync
+//	                                       的 allUnavailable 投影；非池账户按部分可用
+//	                                       处理，与原 nil port 行为一致)
 //
 // The bridge is wired through accounts.Store.SetRuntimeResetEffects after the
 // chain runtime services compose; with JUHE_AI_GATEWAY_CHAIN_ENABLED off the
@@ -52,6 +51,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
@@ -62,30 +62,47 @@ import (
 
 // newAccountsRuntimeResetBridge builds the RuntimeResetEffects port over the
 // composed runtime collaborators. Every collaborator is already non-nil (the
-// chain runtime construction fail-fasts otherwise).
-func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices) accounts.RuntimeResetEffects {
-	return &accountsRuntimeResetBridge{
-		bus:      composed.Bus,
-		db:       composed.db,
-		pg:       composed.pgDialect,
-		settings: settingValue,
-		latency:  services.LatencyDegradation,
-		guard:    services.AccountAPIKeyGuard,
-		stats:    services.QuotaStats,
-		now:      time.Now,
+// chain runtime construction fail-fasts otherwise); the accountkeystates store
+// fails fast on a missing business handle / runtime secret.
+func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices, secret string) (accounts.RuntimeResetEffects, error) {
+	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
+		DB:       composed.db,
+		Postgres: composed.pgDialect,
+		Secret:   secret,
+		Now:      time.Now,
+		InvalidateRuntimeCache: func(reason string) {
+			if composed.Bus != nil {
+				composed.Bus.Invalidate(inval.TopicGatewayRuntime, reason)
+			}
+		},
+	})
+	if err != nil {
+		return nil, err
 	}
+	return &accountsRuntimeResetBridge{
+		bus:       composed.Bus,
+		db:        composed.db,
+		pg:        composed.pgDialect,
+		settings:  settingValue,
+		latency:   services.LatencyDegradation,
+		guard:     services.AccountAPIKeyGuard,
+		stats:     services.QuotaStats,
+		keyStates: keyStates,
+		now:       time.Now,
+	}, nil
 }
 
 // accountsRuntimeResetBridge implements accounts.RuntimeResetEffects.
 type accountsRuntimeResetBridge struct {
-	bus      *inval.Bus
-	db       *sql.DB
-	pg       bool
-	settings SettingValueFunc
-	latency  *gatewayproxyhealth.LatencyDegradationService
-	guard    *gatewayaccounteffects.AccountAPIKeyFailureGuard
-	stats    *gatewayquota.StatsStore
-	now      func() time.Time
+	bus       *inval.Bus
+	db        *sql.DB
+	pg        bool
+	settings  SettingValueFunc
+	latency   *gatewayproxyhealth.LatencyDegradationService
+	guard     *gatewayaccounteffects.AccountAPIKeyFailureGuard
+	stats     *gatewayquota.StatsStore
+	keyStates *accountkeystates.Store
+	now       func() time.Time
 
 	// transientGenerations remembers the opaque Redis CAS generation strings
 	// reported by LoadAPIKeyTransientStates. The accounts port models the
@@ -144,12 +161,20 @@ func (b *accountsRuntimeResetBridge) ClearNormalRouteLatencyDegradation(ctx cont
 	})
 }
 
-// RevalidateAccountAPIKeyRuntimePool is a REGISTERED NIL port entry
-// (account_api_key_runtime_states 域无 Go 实现): eligible=false keeps the
-// api_key_runtime surface unchanged, the endpoint stays available.
-func (b *accountsRuntimeResetBridge) RevalidateAccountAPIKeyRuntimePool(context.Context, string, int64) (accounts.AccountAPIKeyRuntimeRevalidation, error) {
-	slogOnceWarn("accounts.RuntimeResetEffects.RevalidateAccountAPIKeyRuntimePool", "API Key 运行池重校验未装配，按无可重校验状态处理")
-	return accounts.AccountAPIKeyRuntimeRevalidation{Eligible: false, Reason: "account_api_key_runtime_states 域无 Go 实现"}, nil
+// RevalidateAccountAPIKeyRuntimePool bridges the api key runtime pool
+// revalidation (accountkeystates.Store.RevalidatePool,
+// revalidateAccountApiKeyRuntimePoolAsync)：eligible/changed/reason 直接投影，
+// 参数非法以错误上抛（Node 抛出同步异常）。
+func (b *accountsRuntimeResetBridge) RevalidateAccountAPIKeyRuntimePool(ctx context.Context, accountID string, expectedConfigRevision int64) (accounts.AccountAPIKeyRuntimeRevalidation, error) {
+	result, err := b.keyStates.RevalidatePool(ctx, accountID, expectedConfigRevision)
+	if err != nil {
+		return accounts.AccountAPIKeyRuntimeRevalidation{}, err
+	}
+	return accounts.AccountAPIKeyRuntimeRevalidation{
+		Eligible: result.Eligible,
+		Changed:  result.Changed,
+		Reason:   result.Reason,
+	}, nil
 }
 
 // LoadAPIKeyTransientStates bridges the guard dispatch projection. The
@@ -192,8 +217,10 @@ func (b *accountsRuntimeResetBridge) ClearAPIKeyTransientFailure(ctx context.Con
 }
 
 // DispatchAccountHealthCheck is a REGISTERED NIL port entry: the Go gateway
-// owns no health-check dispatcher yet (Node dispatchAccountHealthCheck); the
-// reset continues and the skip is observable in the logs.
+// owns no health-check dispatcher yet (Node dispatchAccountHealthCheck,
+// internal-api service); the reset continues and the skip is observable in the
+// logs. 账户 API Key 运行池域（account_api_key_runtime_states）已由
+// accountkeystates 落地；本项剩余缺口仅是健康检查派发器本身。
 func (b *accountsRuntimeResetBridge) DispatchAccountHealthCheck(accountID, reason string) {
 	slogOnceWarn("accounts.RuntimeResetEffects.DispatchAccountHealthCheck", "健康检查派发未装配，跳过后台复检派发")
 	slog.Info("runtime-reset 健康检查派发未装配", "accountId", accountID, "reason", reason)
@@ -304,12 +331,11 @@ func (b *accountsRuntimeResetBridge) AuthorizationQuotaExceeded(ctx context.Cont
 	return false, nil
 }
 
-// APIKeyPoolAllUnavailable is a REGISTERED NIL port entry
-// (account_api_key_runtime_states 域无 Go 实现): false keeps the endpoint's
-// effective-availability projection runtime-neutral.
-func (b *accountsRuntimeResetBridge) APIKeyPoolAllUnavailable(context.Context, string) (bool, error) {
-	slogOnceWarn("accounts.RuntimeResetEffects.APIKeyPoolAllUnavailable", "API Key 运行池汇总未装配，按部分可用处理")
-	return false, nil
+// APIKeyPoolAllUnavailable bridges the pool availability projection
+// (accountkeystates.Store.AllUnavailable)：非池账户 / 无运行态账户返回 false
+// （部分可用），与 Node summaries 缺省投影一致。
+func (b *accountsRuntimeResetBridge) APIKeyPoolAllUnavailable(ctx context.Context, accountID string) (bool, error) {
+	return b.keyStates.AllUnavailable(ctx, accountID)
 }
 
 // ---- helpers ----

@@ -18,7 +18,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
@@ -71,17 +70,25 @@ func (i *recordingInvalidator) has(reason string) bool {
 }
 
 type testEnv struct {
-	deps   *authsys.Deps
-	k      *kernel.Kernel
-	server *httptest.Server
-	jar    map[string]string
-	mu     sync.Mutex
-	sink   *recordingSink
-	inval  *recordingInvalidator
-	db     *sql.DB
+	deps            *authsys.Deps
+	k               *kernel.Kernel
+	server          *httptest.Server
+	jar             map[string]string
+	mu              sync.Mutex
+	sink            *recordingSink
+	inval           *recordingInvalidator
+	db              *sql.DB
+	store           *Store
+	validationInval *recordingValidationInvalidator
 }
 
 func newTestEnv(t *testing.T) *testEnv {
+	return newTestEnvFull(t, nil)
+}
+
+// newTestEnvFull wires an optional speed-first runtime facade before Mount so
+// the runtime read endpoints register (composition parity).
+func newTestEnvFull(t *testing.T, facade SpeedFirstRuntimeFacade) *testEnv {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:routestrategies-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
 	if err != nil {
@@ -98,6 +105,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique ON groups(system_account_id, provider_code, name)`,
 		`CREATE TABLE IF NOT EXISTS group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id))`,
 		`CREATE TABLE IF NOT EXISTS group_authorization_settings (authorization_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (group_id TEXT PRIMARY KEY, reason TEXT, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, mode TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, config_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_name_unique ON route_strategies(system_account_id, name)`,
@@ -129,17 +137,17 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	groupsStore, err := groups.NewStore(db, false, nil, nil, invalidator)
-	if err != nil {
-		t.Fatal(err)
+	if facade != nil {
+		store.SetSpeedFirstRuntimeFacade(facade)
 	}
+	validationInval := &recordingValidationInvalidator{}
+	store.SetValidationCacheInvalidator(validationInval)
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	deps.MountAuth(k, "lax", false)
-	(&groups.Deps{Store: groupsStore, Auth: deps, Sink: sink}).Mount(k)
 	(&Deps{Store: store, Auth: deps, Sink: sink}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, inval: invalidator, db: db}
+	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, inval: invalidator, db: db, store: store, validationInval: validationInval}
 }
 
 func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]any) {
@@ -199,20 +207,20 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 	return created.ID
 }
 
-// createGroup makes a group and returns its id (admin surface for admins,
-// my-groups for self-service users).
-func (e *testEnv) createGroup(t *testing.T, path, name string, enabled bool) string {
+// createGroup inserts a group row directly (owner id + enabled flag) and
+// returns its id; the tests only exercise routestrategies reads of the groups
+// table, so the HTTP groups family is not mounted here.
+func (e *testEnv) createGroup(t *testing.T, ownerID, name string, enabled bool) string {
 	t.Helper()
-	body := `{"name":"` + name + `","providerCode":"openai","enabled":` + boolText(enabled) + `}`
-	code, payload := e.do(t, http.MethodPost, path, body)
-	if code != http.StatusCreated {
-		t.Fatalf("create group %s via %s: %d %v", name, path, code, payload)
+	id := "grp-" + name + "-" + strings.ReplaceAll(fmt.Sprint(time.Now().UnixNano()), "-", "")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	enabledFlag := 0
+	if enabled {
+		enabledFlag = 1
 	}
-	data, ok := payload["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("create group payload: %v", payload)
-	}
-	return data["id"].(string)
+	e.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
+		VALUES (?, ?, ?, 'openai', ?, 0, 'personal', ?, ?)`, id, ownerID, name, enabledFlag, now, now)
+	return id
 }
 
 func (e *testEnv) createStrategy(t *testing.T, path, body string) (int, map[string]any) {
@@ -300,8 +308,8 @@ func hybridConfigBody(firstMax int, secondModel string) string {
 func TestRouteStrategyAdminLifecycle(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	groupA := env.createGroup(t, "/__aisys__/api/groups", "alpha", true)
-	groupB := env.createGroup(t, "/__aisys__/api/groups", "bravo", true)
+	groupA := env.createGroup(t, adminID, "alpha", true)
+	groupB := env.createGroup(t, adminID, "bravo", true)
 
 	// Create (201): normal mode default, one binding, preview present.
 	body := `{"name":"策略一","description":"首个策略","groupBindings":[` + bindingJSON(groupA, 0) + `]}`
@@ -503,9 +511,9 @@ func TestRouteStrategyAdminLifecycle(t *testing.T) {
 
 func TestRouteStrategyModeConfigValidation(t *testing.T) {
 	env := newTestEnv(t)
-	env.login(t, "root", "root-pass", "super_admin")
-	groupA := env.createGroup(t, "/__aisys__/api/groups", "alpha", true)
-	groupB := env.createGroup(t, "/__aisys__/api/groups", "bravo", true)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	groupA := env.createGroup(t, adminID, "alpha", true)
+	groupB := env.createGroup(t, adminID, "bravo", true)
 	path := "/__aisys__/api/route-strategies"
 
 	// normal + two bindings → 普通路由只能绑定一个启用分组.
@@ -654,7 +662,7 @@ func TestRouteStrategyModeConfigValidation(t *testing.T) {
 	if code != http.StatusBadRequest || payload["message"] != "策略路由只能绑定自己的分组或有效授权给自己的分组" {
 		t.Fatalf("unknown group: %d %v", code, payload)
 	}
-	disabledGroup := env.createGroup(t, "/__aisys__/api/groups", "g-off", false)
+	disabledGroup := env.createGroup(t, adminID, "g-off", false)
 	code, payload = env.createStrategy(t, path, `{"name":"dgb","groupBindings":[{"groupId":"`+disabledGroup+`"}]}`)
 	if code != http.StatusBadRequest || payload["message"] != "策略路由不能启用已停用分组：g-off" {
 		t.Fatalf("disabled group: %d %v", code, payload)
@@ -694,7 +702,7 @@ func TestRouteStrategyModeConfigValidation(t *testing.T) {
 func TestRouteStrategyDeleteProtection(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	groupA := env.createGroup(t, "/__aisys__/api/groups", "alpha", true)
+	groupA := env.createGroup(t, adminID, "alpha", true)
 	path := "/__aisys__/api/route-strategies"
 
 	code, createdPayload := env.createStrategy(t, path,
@@ -737,7 +745,7 @@ func TestRouteStrategyDeleteProtection(t *testing.T) {
 func TestRouteStrategyMySelfScope(t *testing.T) {
 	env := newTestEnv(t)
 	userAID := env.login(t, "alice", "alice-pass", "user")
-	groupA := env.createGroup(t, "/__aisys__/api/my-groups", "alice-group", true)
+	groupA := env.createGroup(t, userAID, "alice-group", true)
 	myPath := "/__aisys__/api/my-route-strategies"
 
 	code, createdPayload := env.createStrategy(t, myPath,
@@ -756,7 +764,7 @@ func TestRouteStrategyMySelfScope(t *testing.T) {
 	}
 
 	// userB cannot see or mutate alice's strategy via my-*.
-	env.login(t, "bob", "bob-pass", "user")
+	bobID := env.login(t, "bob", "bob-pass", "user")
 	code, forbidden := env.do(t, http.MethodGet, myPath+"/"+aliceStrategy, "")
 	if code != http.StatusNotFound || forbidden["message"] != "策略路由不存在" {
 		t.Fatalf("bob read alice strategy: %d %v", code, forbidden)
@@ -773,7 +781,7 @@ func TestRouteStrategyMySelfScope(t *testing.T) {
 	}
 
 	// Bob's my-* list only shows bob's own rows.
-	groupB := env.createGroup(t, "/__aisys__/api/my-groups", "bob-group", true)
+	groupB := env.createGroup(t, bobID, "bob-group", true)
 	code, bobCreated := env.createStrategy(t, myPath,
 		`{"name":"bob-strategy","groupBindings":[`+bindingJSON(groupB, 0)+`]}`)
 	if code != http.StatusCreated {
@@ -845,8 +853,8 @@ func TestRouteStrategyPermissionMatrixAndValidation(t *testing.T) {
 		t.Fatalf("anonymous admin create: %d", code)
 	}
 
-	env.login(t, "root", "root-pass", "super_admin")
-	groupA := env.createGroup(t, "/__aisys__/api/groups", "alpha", true)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	groupA := env.createGroup(t, adminID, "alpha", true)
 
 	code, createdPayload := env.createStrategy(t, adminPath,
 		`{"name":"矩阵","groupBindings":[`+bindingJSON(groupA, 0)+`]}`)

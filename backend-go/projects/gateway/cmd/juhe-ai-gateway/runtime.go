@@ -105,6 +105,12 @@ type runtimeConfig struct {
 	// high-concurrency scheduling policy queue bounds and the dispatch
 	// candidate window limit derive from it.
 	ConcurrencyGlobalMax int
+	// DispatchAccountCandidateLimit mirrors Node
+	// runtimeConfig.gateway.dispatchAccountCandidateLimit
+	// (JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT, default
+	// ConcurrencyGlobalMax, integerConfig bounded 1..50000): the dispatch
+	// candidate window final limit; scan limit = limit * 2.
+	DispatchAccountCandidateLimit int
 	// FrontendDistPath is the frontend dist directory backing the
 	// /__aisys__/help static surface (Node derives it from backendRoot).
 	FrontendDistPath string
@@ -364,6 +370,20 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须是正整数: %q", raw)
 		}
 		cfg.ConcurrencyGlobalMax = parsed
+	}
+	// Node：dispatchAccountCandidateLimit = integerConfig(
+	// 'JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT', globalConcurrencyMax,
+	// 1, 50_000)（runtime.ts:770）：缺省回落 globalMax，非整数/越界启动报错。
+	cfg.DispatchAccountCandidateLimit = cfg.ConcurrencyGlobalMax
+	if raw := strings.TrimSpace(getenv("JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须配置为整数: %q", raw)
+		}
+		if parsed < 1 || parsed > 50000 {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须在 1-50000 范围内: %d", parsed)
+		}
+		cfg.DispatchAccountCandidateLimit = parsed
 	}
 	cfg.FrontendDistPath = strings.TrimSpace(getenv("JUHE_AI_FRONTEND_DIST_PATH"))
 

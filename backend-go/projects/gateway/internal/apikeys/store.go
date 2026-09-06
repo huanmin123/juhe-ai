@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
@@ -125,6 +126,86 @@ type Store struct {
 	newI   func(prefix string) string
 	inval  CacheInvalidator
 	usage  UsageSource
+
+	// datasetDB is the SQLite dataset-database handle (the business and
+	// dataset databases are separate files; Node registers deleted API key
+	// cleanup targets into the dataset one). Unused on PostgreSQL, where the
+	// juhe_dataset schema shares the business database handle.
+	datasetDB *sql.DB
+	// cleanupSubmitter mirrors submitApiKeyRelatedCleanupAsync's maintenance
+	// job enqueue after the delete transaction commits.
+	cleanupSubmitter CleanupSubmitter
+
+	// 60s cache over the system_settings usageStatsTimezone read
+	// (usageStatsTimezoneCacheTtlMs).
+	tzMu          sync.Mutex
+	tzCachedValue string
+	tzExpiresAt   time.Time
+	tzResolved    bool
+}
+
+// usageStatsTimezoneCacheTtl mirrors usageStatsTimezoneCacheTtlMs.
+const usageStatsTimezoneCacheTtl = 60 * time.Second
+
+// CleanupSubmitter is the after-commit maintenance-job port Node's
+// submitApiKeyRelatedCleanupAsync fills (api_key_related_cleanup enqueue).
+// Errors never fail the delete: Node logs the dropped enqueue and keeps the
+// cleanup target for the background retry pass.
+type CleanupSubmitter interface {
+	SubmitAPIKeyRelatedCleanup(ctx context.Context, apiKeyID, systemAccountID string) error
+}
+
+// SetDatasetDB wires the SQLite dataset-database handle used for the
+// post-commit cleanup-target registration.
+func (s *Store) SetDatasetDB(db *sql.DB) { s.datasetDB = db }
+
+// SetCleanupSubmitter wires the maintenance-job enqueue port.
+func (s *Store) SetCleanupSubmitter(submitter CleanupSubmitter) { s.cleanupSubmitter = submitter }
+
+// defaultScheduleTimezone mirrors defaultScheduleTimezone: the
+// system_settings usageStatsTimezone value when readable and valid, otherwise
+// the deployment timezone (usageStatsTimezone throw → DEFAULT catch).
+func (s *Store) defaultScheduleTimezone() string {
+	s.tzMu.Lock()
+	defer s.tzMu.Unlock()
+	now := s.now()
+	if s.tzResolved && now.Before(s.tzExpiresAt) {
+		return s.tzCachedValue
+	}
+	value := s.readUsageStatsTimezoneSetting()
+	if value == "" {
+		value = fallbackScheduleTimezone()
+	}
+	s.tzCachedValue = value
+	s.tzExpiresAt = now.Add(usageStatsTimezoneCacheTtl)
+	s.tzResolved = true
+	return value
+}
+
+// readUsageStatsTimezoneSetting mirrors usageStatsTimezone: the JSON string
+// setting at system_account_id='sys_admin', key='usageStatsTimezone'; any
+// absence/invalidity yields "" so the caller falls back to the deployment
+// timezone (Node throws and defaultScheduleTimezone catches).
+func (s *Store) readUsageStatsTimezoneSetting() string {
+	var raw sql.NullString
+	err := s.db.QueryRowContext(context.Background(), s.bind(`SELECT value_json FROM `+s.table("system_settings")+`
+		WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'
+		LIMIT 1`)).Scan(&raw)
+	if err != nil || !raw.Valid {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal([]byte(raw.String), &text); err != nil {
+		return ""
+	}
+	timezone := strings.TrimSpace(text)
+	if timezone == "" {
+		return ""
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return ""
+	}
+	return timezone
 }
 
 // NewStore builds the store; inval may be nil (no-op invalidation until the
@@ -305,23 +386,23 @@ func normalizeQuotaLimits(input any, fallback QuotaLimits) (QuotaLimits, error) 
 	if err := assertQuotaKeys(object); err != nil {
 		return fallback, err
 	}
-	hourly, err := normalizeHourlyQuotaLimit(object["hourly"])
+	hourly, err := normalizeHourlyQuotaLimit(object["hourly"], objectKeyPresent(object, "hourly"))
 	if err != nil {
 		return fallback, err
 	}
-	daily, err := normalizeQuotaLimit(object["daily"], "日额度")
+	daily, err := normalizeQuotaLimit(object["daily"], objectKeyPresent(object, "daily"), "日额度")
 	if err != nil {
 		return fallback, err
 	}
-	weekly, err := normalizeQuotaLimit(object["weekly"], "周额度")
+	weekly, err := normalizeQuotaLimit(object["weekly"], objectKeyPresent(object, "weekly"), "周额度")
 	if err != nil {
 		return fallback, err
 	}
-	monthly, err := normalizeQuotaLimit(object["monthly"], "月额度")
+	monthly, err := normalizeQuotaLimit(object["monthly"], objectKeyPresent(object, "monthly"), "月额度")
 	if err != nil {
 		return fallback, err
 	}
-	total, err := normalizeQuotaLimit(object["total"], "总额度")
+	total, err := normalizeQuotaLimit(object["total"], objectKeyPresent(object, "total"), "总额度")
 	if err != nil {
 		return fallback, err
 	}
@@ -355,9 +436,15 @@ func assertQuotaKeys(value map[string]any) error {
 	return nil
 }
 
-func normalizeQuotaLimit(value any, label string) (*QuotaLimit, error) {
-	if value == nil {
+func normalizeQuotaLimit(value any, present bool, label string) (*QuotaLimit, error) {
+	if !present {
 		return nil, nil
+	}
+	if value == nil {
+		// Optional-but-not-nullable: explicit null is rejected by the zod
+		// route schema in Node ("Expected object, received null"); only the
+		// top-level quotaLimits:null clears all limits.
+		return nil, &ValidationError{Message: patchTypeIssue("object", nil)}
 	}
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -380,9 +467,12 @@ func normalizeQuotaLimit(value any, label string) (*QuotaLimit, error) {
 	return &QuotaLimit{Enabled: true, Limit: limit}, nil
 }
 
-func normalizeHourlyQuotaLimit(value any) (*QuotaLimit, error) {
-	if value == nil {
+func normalizeHourlyQuotaLimit(value any, present bool) (*QuotaLimit, error) {
+	if !present {
 		return nil, nil
+	}
+	if value == nil {
+		return nil, &ValidationError{Message: patchTypeIssue("object", nil)}
 	}
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -435,8 +525,47 @@ type ListUsageSummary struct {
 
 func emptyListUsageSummary() ListUsageSummary { return ListUsageSummary{} }
 
+// AccountUsageSummary mirrors AccountUsageSummary (domain/types.ts): the FULL
+// usage projection Node renders on the detail route via
+// apiKeySummariesFromRowsAsync (usage = loadApiKeyUsageSummariesForScopes —
+// usage_stats_totals aggregate), unlike the bounded three-field list summary.
+type AccountUsageSummary struct {
+	RequestCount      int     `json:"requestCount"`
+	InputTokens       int     `json:"inputTokens"`
+	OutputTokens      int     `json:"outputTokens"`
+	CacheReadTokens   int     `json:"cacheReadTokens"`
+	CacheReadCost     float64 `json:"cacheReadCost"`
+	CacheWriteTokens  int     `json:"cacheWriteTokens"`
+	CacheWrite1hTokens int    `json:"cacheWrite1hTokens"`
+	CacheWriteCost    float64 `json:"cacheWriteCost"`
+	ThinkingTokens    int     `json:"thinkingTokens"`
+	InputImageTokens  int     `json:"inputImageTokens"`
+	OutputImageTokens int     `json:"outputImageTokens"`
+	TotalTokens       int     `json:"totalTokens"`
+	TotalCost         float64 `json:"totalCost"`
+	LastUsedAt        *string `json:"lastUsedAt,omitempty"`
+}
+
+func emptyAccountUsageSummary() AccountUsageSummary { return AccountUsageSummary{} }
+
+// utf16Length counts UTF-16 code units (JavaScript .length semantics) — the
+// basis of zod's string max() checks and Node's description guard.
+func utf16Length(text string) int {
+	units := 0
+	for _, r := range text {
+		if r > 0xFFFF {
+			units += 2
+			continue
+		}
+		units++
+	}
+	return units
+}
+
 // ListItem mirrors ApiKeyListItem. The plaintext key never appears: only the
-// masked keyPrefix/keySuffix pair.
+// masked keyPrefix/keySuffix pair. Usage carries the three-field
+// ListUsageSummary on list rows and the full AccountUsageSummary on the
+// detail projection (Node renders different summary shapes per surface).
 type ListItem struct {
 	ID                   string                `json:"id"`
 	SystemAccountID      *string               `json:"systemAccountId,omitempty"`
@@ -455,7 +584,7 @@ type ListItem struct {
 	ExpiresAt            *string               `json:"expiresAt,omitempty"`
 	QuotaLimits          QuotaLimits           `json:"quotaLimits"`
 	AvailabilitySchedule *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
-	Usage                ListUsageSummary      `json:"usage"`
+	Usage                any                   `json:"usage"`
 	Revision             string                `json:"revision"`
 }
 
@@ -520,7 +649,9 @@ type RefreshOutcome struct {
 	ValidationCacheError error
 }
 
-// DeleteResult mirrors ApiKeyDeleteResult (deleted branch subset).
+// DeleteResult mirrors ApiKeyDeleteResult (deleted branch subset). The
+// cleanup register/submit errors are Node's logged-and-continue side effects:
+// they never fail the delete but stay observable for tests and wiring.
 type DeleteResult struct {
 	Deleted               bool
 	CleanupTargetAPIKeyID string
@@ -528,6 +659,8 @@ type DeleteResult struct {
 	OwnerSystemAccountID  string
 	ResourceName          string
 	ValidationCacheError  error
+	CleanupRegisterError  error
+	CleanupSubmitError    error
 }
 
 // apiKeyRow is the shared scan target for list/detail rows.
@@ -588,8 +721,9 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		args = append(args, scoped)
 	}
 	if normalized.Keyword != "" {
-		clauses = append(clauses, "(api_keys.name >= ? AND api_keys.name < ?)")
-		args = append(args, normalized.Keyword, textPrefixUpperBound(normalized.Keyword))
+		clause, keywordArgs := apiKeyKeywordClause(s.pg, normalized.Keyword)
+		clauses = append(clauses, clause)
+		args = append(args, keywordArgs...)
 	}
 	if normalized.Status != "" {
 		clauses = append(clauses, "api_keys.status = ?")
@@ -648,8 +782,11 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		items = append(items, item)
 	}
 	// M07 deferral closure: hydrate the per-key usage summary from the stats
-	// database (nil source degrades to the zero summary).
-	s.hydrateListUsage(ctx, items, records)
+	// database (nil source degrades to the zero summary); source errors fail
+	// the list like Node's usage-summary loader throws.
+	if err := s.hydrateListUsage(ctx, items, records); err != nil {
+		return nil, err
+	}
 	total := (normalized.Page-1)*normalized.PageSize + len(items)
 	if hasMore {
 		total++
@@ -714,9 +851,42 @@ func textPrefixUpperBound(value string) string {
 	return value + "\uffff"
 }
 
-// newListItem mirrors apiKeyListItemsFromRows (usage zero value).
+// apiKeyKeywordClause mirrors the dialect split of buildApiKeyFiltersForClient:
+// PostgreSQL narrows the name range under COLLATE "C" and adds an exact
+// starts_with guard (the default collation must not decide the prefix match);
+// SQLite keeps the plain range scan of buildApiKeyFilters.
+func apiKeyKeywordClause(pg bool, keyword string) (string, []any) {
+	upper := textPrefixUpperBound(keyword)
+	if pg {
+		return `(api_keys.name COLLATE "C" >= ? AND api_keys.name COLLATE "C" < ? AND starts_with(api_keys.name, ?))`,
+			[]any{keyword, upper, keyword}
+	}
+	return "(api_keys.name >= ? AND api_keys.name < ?)", []any{keyword, upper}
+}
+
+// rowLockClause mirrors `const lockClause = tx.driver === 'postgres' ? '
+// FOR UPDATE' : ''` on the single-table refresh/delete row reads.
+func rowLockClause(pg bool) string {
+	if pg {
+		return " FOR UPDATE"
+	}
+	return ""
+}
+
+// strategyJoinLockClause mirrors findPreferredDefaultRouteStrategyReference's
+// ` FOR UPDATE OF route_strategies, route_strategy_groups, groups` on
+// PostgreSQL create-path reads.
+func strategyJoinLockClause(pg bool) string {
+	if pg {
+		return " FOR UPDATE OF route_strategies, route_strategy_groups, groups"
+	}
+	return ""
+}
+
+// newListItem mirrors apiKeyListItemsFromRows (usage zero value; the list
+// hydration pass overwrites it from the stats source).
 func (s *Store) newListItem(row apiKeyRow, access AccessScope) (ListItem, error) {
-	schedule, err := ParseScheduleJSON(row.scheduleJSON.String)
+	schedule, err := s.parseScheduleJSON(row.scheduleJSON.String)
 	if err != nil {
 		return ListItem{}, err
 	}
@@ -724,24 +894,28 @@ func (s *Store) newListItem(row apiKeyRow, access AccessScope) (ListItem, error)
 	if err != nil {
 		return ListItem{}, err
 	}
+	mode, err := normalizedRouteStrategyMode(row.routeStrategyMode)
+	if err != nil {
+		return ListItem{}, err
+	}
 	item := ListItem{
-		ID:                   row.id,
-		Name:                 row.name,
-		Description:          nullPtrString(row.description),
-		KeyPrefix:            row.keyPrefix,
-		KeySuffix:            row.keySuffix,
-		Status:               row.status,
-		IsDefault:            row.isDefault == 1,
-		Purpose:              normalizePurpose(row.purpose),
-		RouteStrategyID:      row.routeStrategyID,
-		RouteStrategyName:    nullPtrString(row.routeStrategyName),
-		RouteStrategyMode:    normalizedRouteStrategyMode(row.routeStrategyMode),
-		RouteStrategyStatus:  normalizedRouteStrategyStatus(row.routeStrategyStatus),
-		ExpiresAt:            nullPtrString(row.expiresAt),
-		QuotaLimits:          quotaLimits,
+		ID:                  row.id,
+		Name:                row.name,
+		Description:         nullPtrString(row.description),
+		KeyPrefix:           row.keyPrefix,
+		KeySuffix:           row.keySuffix,
+		Status:              row.status,
+		IsDefault:           row.isDefault == 1,
+		Purpose:             normalizePurpose(row.purpose),
+		RouteStrategyID:     row.routeStrategyID,
+		RouteStrategyName:   nullPtrString(row.routeStrategyName),
+		RouteStrategyMode:   mode,
+		RouteStrategyStatus: normalizedRouteStrategyStatus(row.routeStrategyStatus),
+		ExpiresAt:           nullPtrString(row.expiresAt),
+		QuotaLimits:         quotaLimits,
 		AvailabilitySchedule: schedule,
-		Usage:                emptyListUsageSummary(),
-		Revision:             row.updatedAt,
+		Usage:               emptyListUsageSummary(),
+		Revision:            row.updatedAt,
 	}
 	if access.canAccessAll() {
 		item.SystemAccountID = &row.systemAccountID
@@ -757,18 +931,20 @@ func normalizePurpose(value sql.NullString) string {
 	return "general"
 }
 
-// normalizedRouteStrategyMode mirrors the list mapper: NULL/empty stays
-// omitted, unknown values surface as errors (normalizeRouteStrategyMode).
-func normalizedRouteStrategyMode(value sql.NullString) *string {
+// normalizedRouteStrategyMode mirrors the list/detail mapper
+// (row.route_strategy_mode ? normalizeRouteStrategyMode(...) : undefined):
+// NULL/empty stay omitted, unknown values fail the read with Node's
+// normalizeRouteStrategyMode throw ("路由策略模式无效").
+func normalizedRouteStrategyMode(value sql.NullString) (*string, error) {
 	if !value.Valid || value.String == "" {
-		return nil
+		return nil, nil
 	}
 	switch value.String {
 	case "normal", "hybrid_smart", "weighted", "failover", "round_robin":
 		mode := value.String
-		return &mode
+		return &mode, nil
 	default:
-		return nil
+		return nil, errors.New("路由策略模式无效")
 	}
 }
 
@@ -815,6 +991,13 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	}
 	item, err := s.newListItem(row, access)
 	if err != nil {
+		return nil, err
+	}
+	// Node's detail projection is the full AccountUsageSummary
+	// (apiKeySummariesFromRowsAsync, includeUsage !== false): start from the
+	// zero summary and hydrate from the stats source.
+	item.Usage = emptyAccountUsageSummary()
+	if err := s.hydrateDetailUsage(ctx, &item, row.systemAccountID); err != nil {
 		return nil, err
 	}
 	return &item, nil
@@ -903,7 +1086,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if err != nil {
 		return nil, nil, err
 	}
-	schedule, err := NormalizeSchedule(input.AvailabilitySchedule)
+	schedule, err := normalizeScheduleWithDefault(input.AvailabilitySchedule, s.defaultScheduleTimezone)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1045,7 +1228,7 @@ func (s *Store) findPreferredDefaultRouteStrategy(ctx context.Context, q queryer
 			AND route_strategies.is_default = 1
 			AND groups.provider_code = ?
 		ORDER BY route_strategies.created_at ASC, route_strategies.id ASC
-		LIMIT 1`), ownerID, gptVendorCode).
+		LIMIT 1`+strategyJoinLockClause(s.pg)), ownerID, gptVendorCode).
 		Scan(&reference.id, &reference.name, &reference.mode, &reference.status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1057,13 +1240,13 @@ func (s *Store) findPreferredDefaultRouteStrategy(ctx context.Context, q queryer
 }
 
 // routeStrategyReference mirrors assertRouteStrategySelectableForApiKey's
-// lookup (id + owner scoped).
+// lookup (id + owner scoped, row-locked on PostgreSQL).
 func (s *Store) routeStrategyReference(ctx context.Context, q queryer, ownerID, strategyID string) (*routeStrategyReference, error) {
 	var reference routeStrategyReference
 	err := q.QueryRowContext(ctx, s.bind(`SELECT route_strategies.id, route_strategies.name, route_strategies.mode, route_strategies.status
 		FROM `+s.table("route_strategies")+` route_strategies
 		WHERE route_strategies.id = ? AND route_strategies.system_account_id = ?
-		LIMIT 1`), strategyID, ownerID).
+		LIMIT 1`+rowLockClause(s.pg)), strategyID, ownerID).
 		Scan(&reference.id, &reference.name, &reference.mode, &reference.status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1100,7 +1283,7 @@ func (s *Store) RefreshSecret(ctx context.Context, id string, access AccessScope
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT api_keys.id, api_keys.system_account_id, api_keys.name,
 			api_keys.key_hash, api_keys.key_prefix, api_keys.key_suffix, api_keys.updated_at
 		FROM `+s.table("api_keys")+` api_keys
-		WHERE api_keys.id = ?`+where+` LIMIT 1`), args...).
+		WHERE api_keys.id = ?`+where+` LIMIT 1`+rowLockClause(s.pg)), args...).
 		Scan(&rowID, &ownerID, &name, &keyHashColumn, &previousKeyPrefix, &previousKeySuffix, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1179,7 +1362,7 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT api_keys.id, api_keys.system_account_id, api_keys.name,
 			api_keys.key_hash, api_keys.is_default, api_keys.purpose
 		FROM `+s.table("api_keys")+` api_keys
-		WHERE api_keys.id = ?`+where+` LIMIT 1`), args...).
+		WHERE api_keys.id = ?`+where+` LIMIT 1`+rowLockClause(s.pg)), args...).
 		Scan(&rowID, &ownerID, &name, &keyHash, &isDefault, &purpose)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &DeleteResult{}, nil
@@ -1204,14 +1387,15 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	if err := s.syncQuotaHourlyWindowBinding(ctx, tx, rowID, ownerID, sql.NullString{}, false, isoMillis(s.now())); err != nil {
 		return nil, err
 	}
-	updatedAt := isoMillis(s.now())
-	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.datasetTable("api_key_record_cleanup_targets")+`
-		(api_key_id, system_account_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(api_key_id) DO UPDATE SET
-			system_account_id = excluded.system_account_id,
-			updated_at = excluded.updated_at`), rowID, ownerID, updatedAt, updatedAt); err != nil {
-		return nil, err
+	// Node registers the dataset cleanup target inside the delete transaction
+	// only on PostgreSQL, where juhe_dataset shares the business database; on
+	// SQLite the registration happens after commit against the separate
+	// dataset database (submitApiKeyRelatedCleanupAsync, best effort).
+	if s.pg {
+		updatedAt := isoMillis(s.now())
+		if err := s.insertCleanupTarget(ctx, tx, rowID, ownerID, updatedAt); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -1223,6 +1407,15 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		OwnerSystemAccountID:  ownerID,
 		ResourceName:          name,
 	}
+	if !s.pg {
+		if s.datasetDB == nil {
+			outcome.CleanupRegisterError = errors.New("api keys dataset 数据库未接入，清理目标未登记")
+		} else if err := s.insertCleanupTarget(ctx, s.datasetDB, rowID, ownerID, isoMillis(s.now())); err != nil {
+			// Node catches the registration failure, logs it and still
+			// submits the worker job; the delete stays successful.
+			outcome.CleanupRegisterError = err
+		}
+	}
 	if s.inval != nil {
 		if err := s.inval.InvalidateValidation(rowID, ReasonAPIKeyDeleted, []string{keyHash}); err != nil {
 			outcome.ValidationCacheError = err
@@ -1230,7 +1423,25 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		s.inval.InvalidateRuntime(rowID, ReasonAPIKeyDeleted)
 		s.inval.InvalidateQuota(rowID, ReasonAPIKeyDeleted)
 	}
+	if s.cleanupSubmitter != nil {
+		if err := s.cleanupSubmitter.SubmitAPIKeyRelatedCleanup(ctx, rowID, ownerID); err != nil {
+			outcome.CleanupSubmitError = err
+		}
+	}
 	return outcome, nil
+}
+
+// insertCleanupTarget upserts the deleted API key cleanup target into the
+// dataset placement (juhe_dataset schema on PostgreSQL, dedicated dataset
+// database file on SQLite).
+func (s *Store) insertCleanupTarget(ctx context.Context, q queryer, apiKeyID, ownerID, updatedAt string) error {
+	_, err := q.ExecContext(ctx, s.bind(`INSERT INTO `+s.datasetTable("api_key_record_cleanup_targets")+`
+		(api_key_id, system_account_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(api_key_id) DO UPDATE SET
+			system_account_id = excluded.system_account_id,
+			updated_at = excluded.updated_at`), apiKeyID, ownerID, updatedAt, updatedAt)
+	return err
 }
 
 // syncQuotaHourlyWindowBinding mirrors
@@ -1265,7 +1476,8 @@ func (s *Store) syncQuotaHourlyWindowBinding(ctx context.Context, q queryer, api
 	return err
 }
 
-// normalizeOptionalDescription mirrors normalizeOptionalApiKeyDescription.
+// normalizeOptionalDescription mirrors normalizeOptionalApiKeyDescription:
+// the 200 cap counts UTF-16 code units (JavaScript .length).
 func normalizeOptionalDescription(value *string) (sql.NullString, error) {
 	if value == nil {
 		return sql.NullString{}, nil
@@ -1274,16 +1486,17 @@ func normalizeOptionalDescription(value *string) (sql.NullString, error) {
 	if trimmed == "" {
 		return sql.NullString{}, nil
 	}
-	if len([]rune(trimmed)) > 200 {
+	if utf16Length(trimmed) > 200 {
 		return sql.NullString{}, &ValidationError{Message: "API Key 说明不能超过 200 个字符"}
 	}
 	return sql.NullString{String: trimmed, Valid: true}, nil
 }
 
-// normalizeOptionalExpiresAt mirrors normalizeOptionalApiKeyExpiresAt: empty
-// clears, otherwise an RFC3339 instant with explicit offset is required.
+// normalizeOptionalExpiresAt mirrors normalizeOptionalApiKeyExpiresAt: only
+// undefined/null and the exact empty string clear the column; whitespace-only
+// input fails the RFC3339 parse and is rejected.
 func normalizeOptionalExpiresAt(value *string) (sql.NullString, error) {
-	if value == nil || strings.TrimSpace(*value) == "" {
+	if value == nil || *value == "" {
 		return sql.NullString{}, nil
 	}
 	canonical, ok := canonicalRFC3339(*value)

@@ -483,8 +483,12 @@ func TestAPIKeyAdminLifecycleAndSealedSecret(t *testing.T) {
 	if code != http.StatusNotFound || gone["message"] != "API Key 不存在" {
 		t.Fatalf("after delete: %d %v", code, gone)
 	}
-	if env.count(t, `SELECT COUNT(*) FROM api_key_record_cleanup_targets WHERE api_key_id = ? AND system_account_id = ?`, keyID, adminID) != 1 {
-		t.Fatal("cleanup target row missing")
+	// BUG-0161 claim 11: SQLite deletes no longer write the cleanup target
+	// into the BUSINESS database (Node registers it in the separate dataset
+	// database after commit; wiring the dataset handle is the owner handoff,
+	// see bug0161_test.go for the placement and submitter contracts).
+	if env.count(t, `SELECT COUNT(*) FROM api_key_record_cleanup_targets`) != 0 {
+		t.Fatal("cleanup target must not land in the business database on SQLite")
 	}
 	if !env.inval.has("api_key_deleted") {
 		t.Fatalf("invalidation reasons: %v", env.inval.reasons)

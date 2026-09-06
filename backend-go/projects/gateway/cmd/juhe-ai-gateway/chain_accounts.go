@@ -40,11 +40,15 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// dispatchCandidateScanLimit mirrors gatewayDispatchAccountCandidateScanLimit.
-const dispatchCandidateScanLimit = 200
-
-// dispatchCandidateFinalLimit mirrors gatewayDispatchAccountCandidateLimit.
-const dispatchCandidateFinalLimit = 20
+// dispatchCandidateScanLimitFor mirrors
+// gatewayDispatchAccountCandidateScanLimit = limit * 2
+// (openai-account-selector.types.ts:208). The final limit itself is
+// configuration: Node dispatchAccountCandidateLimit =
+// integerConfig('JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT',
+// concurrency.globalMax, 1, 50_000) (runtime.ts:770) — the candidate windows
+// (LIMIT ?), the hydration batching and the diagnostics all consume the
+// runtime value instead of a fixed constant.
+func dispatchCandidateScanLimitFor(finalLimit int) int { return finalLimit * 2 }
 
 // chainAccountsSelector implements gatewayruntimecache.AccountsSelector over
 // the business + stats databases.
@@ -54,20 +58,31 @@ type chainAccountsSelector struct {
 	postgres bool
 	secret   string
 	now      func() time.Time
+	// candidateFinalLimit mirrors gatewayDispatchAccountCandidateLimit
+	// (runtimeConfig.gateway.dispatchAccountCandidateLimit, default
+	// concurrency.globalMax); candidateScanLimit = finalLimit * 2.
+	candidateFinalLimit int
+	candidateScanLimit  int
 }
 
 // newChainAccountsSelector keeps the phase-2 constructor signature; quality
 // reads fall back to the business handle when no separate stats handle is
 // supplied (the dual-handle constructor is newChainAccountsSelectorWithStats).
-func newChainAccountsSelector(db *sql.DB, postgres bool, secret string, now func() time.Time) (*chainAccountsSelector, error) {
-	return newChainAccountsSelectorWithStats(db, db, postgres, secret, now)
+// dispatchAccountCandidateLimit comes from the runtime config (Node default
+// concurrency.globalMax, bounded 1..50000); out-of-range values fail the
+// constructor like the Node integerConfig range error.
+func newChainAccountsSelector(db *sql.DB, postgres bool, secret string, now func() time.Time, dispatchAccountCandidateLimit int) (*chainAccountsSelector, error) {
+	return newChainAccountsSelectorWithStats(db, db, postgres, secret, now, dispatchAccountCandidateLimit)
 }
 
 // newChainAccountsSelectorWithStats wires the stats database the fresh
 // account_quality_scores reads run against (Node getStatsDatabase()).
-func newChainAccountsSelectorWithStats(db *sql.DB, statsDB *sql.DB, postgres bool, secret string, now func() time.Time) (*chainAccountsSelector, error) {
+func newChainAccountsSelectorWithStats(db *sql.DB, statsDB *sql.DB, postgres bool, secret string, now func() time.Time, dispatchAccountCandidateLimit int) (*chainAccountsSelector, error) {
 	if db == nil {
 		return nil, fmt.Errorf("网关链账户选择器需要业务数据库")
+	}
+	if dispatchAccountCandidateLimit < 1 || dispatchAccountCandidateLimit > 50000 {
+		return nil, fmt.Errorf("JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须在 1-50000 范围内: %d", dispatchAccountCandidateLimit)
 	}
 	if statsDB == nil {
 		statsDB = db
@@ -75,7 +90,15 @@ func newChainAccountsSelectorWithStats(db *sql.DB, statsDB *sql.DB, postgres boo
 	if now == nil {
 		now = time.Now
 	}
-	return &chainAccountsSelector{db: db, statsDB: statsDB, postgres: postgres, secret: secret, now: now}, nil
+	return &chainAccountsSelector{
+		db:                  db,
+		statsDB:             statsDB,
+		postgres:            postgres,
+		secret:              secret,
+		now:                 now,
+		candidateFinalLimit: dispatchAccountCandidateLimit,
+		candidateScanLimit:  dispatchCandidateScanLimitFor(dispatchAccountCandidateLimit),
+	}, nil
 }
 
 func (s *chainAccountsSelector) table(name string) string {
@@ -358,8 +381,8 @@ func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Con
 	accountsOut := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(ordered))
 	hydrationBatchCount := 0
 	hydrationDroppedCount := 0
-	for offset := 0; offset < len(ordered) && len(accountsOut) < dispatchCandidateFinalLimit; offset += dispatchCandidateFinalLimit {
-		end := offset + dispatchCandidateFinalLimit
+	for offset := 0; offset < len(ordered) && len(accountsOut) < s.candidateFinalLimit; offset += s.candidateFinalLimit {
+		end := offset + s.candidateFinalLimit
 		if end > len(ordered) {
 			end = len(ordered)
 		}
@@ -403,7 +426,7 @@ func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Con
 			}
 			if account != nil {
 				accountsOut = append(accountsOut, *account)
-				if len(accountsOut) >= dispatchCandidateFinalLimit {
+				if len(accountsOut) >= s.candidateFinalLimit {
 					break
 				}
 			} else {
@@ -415,8 +438,8 @@ func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Con
 	return gatewayruntimecache.OpenAIAccountsForGroupResult{
 		Accounts: accountsOut,
 		Diagnostics: &gatewayruntimecache.OpenAIAccountsForGroupDiagnostics{
-			ScanLimit:             dispatchCandidateScanLimit,
-			FinalLimit:            dispatchCandidateFinalLimit,
+			ScanLimit:             s.candidateScanLimit,
+			FinalLimit:            s.candidateFinalLimit,
 			CandidateRowCount:     len(groupAccountRows),
 			ScannedRowCount:       len(groupAccountRows),
 			EligibleRowCount:      len(eligible),
@@ -424,7 +447,7 @@ func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Con
 			HydratedAccountCount:  len(accountsOut),
 			HydrationDroppedCount: hydrationDroppedCount,
 			FinalAccountCount:     len(accountsOut),
-			ScanLimitReached:      len(groupAccountRows) >= dispatchCandidateScanLimit,
+			ScanLimitReached:      len(groupAccountRows) >= s.candidateScanLimit,
 		},
 	}, nil
 }
@@ -493,7 +516,7 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 				group_accounts.account_id ASC
 			LIMIT ?`)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode,
-		includeFlag, now, groupAccess.ProviderCode, includeFlag, now, now, now, dispatchCandidateScanLimit)
+		includeFlag, now, groupAccess.ProviderCode, includeFlag, now, now, now, s.candidateScanLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -597,7 +620,7 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 		LIMIT ?`)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode,
 		includeFlag, now, groupAccess.ProviderCode, includeFlag, now, now, now,
-		model, model, requestedEndpointFamily, dispatchCandidateScanLimit)
+		model, model, requestedEndpointFamily, s.candidateScanLimit)
 	if err != nil {
 		return nil, nil, err
 	}

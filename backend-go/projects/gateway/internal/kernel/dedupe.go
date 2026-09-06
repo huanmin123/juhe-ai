@@ -6,9 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,7 +92,7 @@ func (s *DeduplicationStore) Claim(key, operationKey string, processingTTL time.
 
 // DedupNoRetention 显式声明「完成后不保留去重条目」（Node mutationGuard 的
 // succeededTtlMs/failedTtlMs: 0 语义）。0 在 Go 侧表示「用默认 TTL」
-//（既有调用方依赖），负值哨兵用于区分两种意图；冻结时钟下正的极小 TTL
+// （既有调用方依赖），负值哨兵用于区分两种意图；冻结时钟下正的极小 TTL
 // 永不过期，因此不保留必须走删除路径。
 const DedupNoRetention time.Duration = -1
 
@@ -262,17 +265,19 @@ func MutationGuardMiddleware(options MutationGuardOptions) func(http.Handler) ht
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Buffer the JSON body, stash the parsed map, and restore the
-			// body so the downstream handler can decode it again.
-			if raw, err := io.ReadAll(r.Body); err == nil {
-				_ = r.Body.Close()
-				r.Body = io.NopCloser(bytes.NewReader(raw))
-				var parsed map[string]any
-				if len(bytes.TrimSpace(raw)) > 0 {
-					_ = json.Unmarshal(raw, &parsed)
-				}
-				r = r.WithContext(context.WithValue(r.Context(), bodyKey{}, parsed))
+			// system-api-app.ts mounts express.json + handleJsonBodyError at
+			// the prefix level, BEFORE any router (and its mutationGuard).
+			// Parser-level failures must therefore answer before the guard
+			// can fingerprint or claim: an oversized JSON body answers 413
+			// 请求体过大 and malformed JSON answers 400 请求体无效 without
+			// ever creating a dedup entry. A body the Node parser would skip
+			// (non-JSON media type or no body at all) passes through with an
+			// empty parsed body, exactly like req.body = {} in Express.
+			parsed, handled := applyJSONBodyParser(w, r)
+			if handled {
+				return
 			}
+			r = r.WithContext(context.WithValue(r.Context(), bodyKey{}, parsed))
 			fingerprint, err := options.Fingerprint(r)
 			if err != nil {
 				message := "请求参数无效"
@@ -301,16 +306,39 @@ func MutationGuardMiddleware(options MutationGuardOptions) func(http.Handler) ht
 				WriteJSON(w, http.StatusConflict, map[string]string{"message": duplicateMessage(entry.Status)})
 				return
 			}
-			// Reuse the kernel's tracking writer when present so the claim
-			// observes the client-visible status (Node res 'finish').
-			if lw := ResponseWriterFromContext(r.Context()); lw != nil {
-				next.ServeHTTP(lw, r)
-				store.Complete(key, statusFromCode(lw.status), options.SucceededTTL, options.FailedTTL)
-				return
+			// Serve through the chain the guard received so guarded
+			// responses keep every kernel layer (compression, method
+			// contract, ...), then resolve the client-visible status the way
+			// Node reads res.statusCode at 'finish'. Inside the kernel chain
+			// the compression writer records the status at handler WriteHeader
+			// (it defers the forward) and the shared tracking writer observes
+			// every writer that forwards immediately; standalone guards fall
+			// back to their own tracking wrapper.
+			var local *localizeWriter
+			if ResponseWriterFromContext(r.Context()) == nil {
+				local = newLocalizeWriter(w)
+				w = local
 			}
-			lw := newLocalizeWriter(w)
-			next.ServeHTTP(lw, r)
-			store.Complete(key, statusFromCode(lw.status), options.SucceededTTL, options.FailedTTL)
+			next.ServeHTTP(w, r)
+			status := http.StatusOK
+			if local != nil {
+				status = local.status
+			} else {
+				lw := ResponseWriterFromContext(r.Context())
+				if recorder, ok := w.(interface{ recordedStatus() (int, bool) }); ok {
+					if recorded, recordedOK := recorder.recordedStatus(); recordedOK {
+						status = recorded
+					} else if lw.wroteHeader {
+						status = lw.status
+					}
+				} else if lw.wroteHeader {
+					status = lw.status
+				}
+			}
+			if status == 0 {
+				status = http.StatusOK
+			}
+			store.Complete(key, statusFromCode(status), options.SucceededTTL, options.FailedTTL)
 		})
 	}
 }
@@ -320,6 +348,90 @@ func statusFromCode(code int) DedupStatus {
 		return DedupSucceeded
 	}
 	return DedupFailed
+}
+
+// applyJSONBodyParser mirrors the express.json() + handleJsonBodyError stage
+// that system-api-app.ts mounts ahead of every router: the body is read once,
+// parser-level failures answer 413 请求体过大 / 400 请求体无效 before any
+// dedup claim, and the raw body is restored for the downstream decoder.
+// Non-JSON media types and bodyless requests skip parsing entirely (the
+// body-parser default type check via type-is), leaving the parsed map nil
+// like Express' req.body = {}. handled=true means the parser error response
+// was already written.
+func applyJSONBodyParser(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
+	shouldParse := jsonBodyMediaType(r.Header) && hasRequestBody(r)
+	raw, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			if shouldParse {
+				w.Header().Set("Cache-Control", "no-store")
+				WriteError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+				return nil, true
+			}
+			// The Node parser never reads bodies it would skip, so the body
+			// limit never fires for them; restore what arrived.
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			return nil, false
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		WriteError(w, http.StatusBadRequest, "请求体无效")
+		return nil, true
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	var parsed map[string]any
+	if shouldParse && len(bytes.TrimSpace(raw)) > 0 {
+		if !json.Valid(raw) {
+			w.Header().Set("Cache-Control", "no-store")
+			WriteError(w, http.StatusBadRequest, "请求体无效")
+			return nil, true
+		}
+		// Arrays and scalars are valid JSON bodies for the parser (req.body
+		// carries them); only object-shaped bodies feed the map, mirroring
+		// bodyField(req, name) returning undefined otherwise.
+		_ = json.Unmarshal(raw, &parsed)
+	}
+	return parsed, false
+}
+
+// mediaTypePattern validates type/subtype tokens the way media-typer does
+// (invalid types make type-is return false).
+var mediaTypePattern = regexp.MustCompile(`^[\w!#$%&'*+\-.^` + "`" + `|~]+/[\w!#$%&'*+\-.^` + "`" + `|~]+$`)
+
+// jsonBodyMediaType mirrors body-parser json.js's default type check through
+// type-is: only the exact media type application/json (parameters stripped,
+// case-insensitive) is parsed. application/problem+json and other +json
+// suffixes are NOT parsed by the default express.json() — verified against
+// body-parser@1.20.5 + type-is@1.6.18.
+func jsonBodyMediaType(header http.Header) bool {
+	contentType := header.Get("Content-Type")
+	if contentType == "" {
+		return false
+	}
+	mediaType := strings.TrimSpace(contentType)
+	if index := strings.IndexByte(mediaType, ';'); index >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:index])
+	}
+	mediaType = strings.ToLower(mediaType)
+	if !mediaTypePattern.MatchString(mediaType) {
+		return false
+	}
+	return mediaType == "application/json"
+}
+
+// hasRequestBody mirrors type-is hasBody: a transfer-encoding header or a
+// numeric content-length header.
+func hasRequestBody(r *http.Request) bool {
+	if r.Header.Get("Transfer-Encoding") != "" {
+		return true
+	}
+	contentLength := r.Header.Get("Content-Length")
+	if contentLength == "" {
+		return false
+	}
+	_, err := strconv.ParseInt(strings.TrimSpace(contentLength), 10, 64)
+	return err == nil
 }
 
 func duplicateMessage(status DedupStatus) string {

@@ -3,6 +3,7 @@ package statsverify
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ func TestRunClientIPStatsAggregationBatchLoopStopsOnShortBatch(t *testing.T) {
 	}
 	// Node caps: batchSize <= 1000, maxBatches <= 10 regardless of settings.
 	result, err := store.RunClientIPStatsAggregation(ctx, RunClientIPStatsAggregationOptions{
+		IngestGate:                       allowIngest{},
 		Clock:                            clock,
 		StatsAggregationBatchSize:        10000, // setting above the cap
 		StatsAggregationMaxBatchesPerRun: 100,   // setting above the cap
@@ -57,6 +59,7 @@ func TestRunClientIPStatsAggregationTimeBudgetMirrorsNodeLoop(t *testing.T) {
 	}
 	// Mirror aggregateClientIpStats: batchSize=1, maxBatches=10.
 	result, err := store.RunClientIPStatsAggregation(ctx, RunClientIPStatsAggregationOptions{
+		IngestGate:                       allowIngest{},
 		Clock:                            clock,
 		StatsAggregationBatchSize:        1,
 		StatsAggregationMaxBatchesPerRun: 10,
@@ -70,6 +73,7 @@ func TestRunClientIPStatsAggregationTimeBudgetMirrorsNodeLoop(t *testing.T) {
 	}
 	// Remaining rows are picked up by the next scheduled run.
 	rest, err := store.RunClientIPStatsAggregation(ctx, RunClientIPStatsAggregationOptions{
+		IngestGate:                       allowIngest{},
 		Clock:                            clock,
 		StatsAggregationBatchSize:        1,
 		StatsAggregationMaxBatchesPerRun: 10,
@@ -86,7 +90,7 @@ func TestRunClientIPStatsAggregationEmptyInputRunsWindowRefresh(t *testing.T) {
 	store := openTestStore(t, "UTC")
 	ctx := context.Background()
 	clock := fixedUTC(t, "2026-03-10T12:00:00Z")
-	result, err := store.RunClientIPStatsAggregation(ctx, RunClientIPStatsAggregationOptions{Clock: clock})
+	result, err := store.RunClientIPStatsAggregation(ctx, RunClientIPStatsAggregationOptions{IngestGate: allowIngest{}, Clock: clock})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -207,5 +211,46 @@ func TestBoundPositiveInt(t *testing.T) {
 		if got := boundPositiveInt(tc.in, tc.min, tc.max); got != tc.want {
 			t.Fatalf("boundPositiveInt(%d,%d,%d)=%d, want %d", tc.in, tc.min, tc.max, got, tc.want)
 		}
+	}
+}
+
+// allowIngest 恒放行的排干门控桩（Node ensureUsageRecordsSafeForStatsAggregation
+// 放行路径）。
+type allowIngest struct{}
+
+func (allowIngest) EnsureUsageRecordsIngested(context.Context) error { return nil }
+
+// denyIngest 恒拒绝的排干门控桩（Node 队列未排干失败本轮路径）。
+type denyIngest struct{ calls *int }
+
+func (d denyIngest) EnsureUsageRecordsIngested(context.Context) error {
+	*d.calls++
+	return errors.New("ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录")
+}
+
+func TestRunClientIPStatsAggregationIngestGate(t *testing.T) {
+	store := openTestStore(t, "UTC")
+	ctx := context.Background()
+	clock := fixedUTC(t, "2026-03-10T12:00:00Z")
+	insertUsageRecord(t, ctx, store, UsageStatsRecordRow{
+		ID: "a", SystemAccountID: "sys", ClientIP: strPtr("1.2.3.4"),
+		Success: 1, CreatedAt: "2026-03-10T10:00:00.000Z",
+	})
+	// Node runClientIpStatsAggregation：门控先于任何聚合执行，未排干即失败本轮。
+	calls := 0
+	if _, err := store.RunClientIPStatsAggregation(ctx, RunClientIPStatsAggregationOptions{
+		IngestGate:                       denyIngest{calls: &calls},
+		Clock:                            clock,
+		StatsAggregationBatchSize:        100,
+		StatsAggregationMaxBatchesPerRun: 2,
+	}); err == nil {
+		t.Fatal("队列未排干时本轮必须失败")
+	}
+	if calls != 1 {
+		t.Fatalf("门控调用次数 = %d, want 1", calls)
+	}
+	// nil 门控 = Node 必填依赖缺失 → 显式失败，不静默降级。
+	if _, err := store.RunClientIPStatsAggregation(ctx, RunClientIPStatsAggregationOptions{Clock: clock}); err == nil {
+		t.Fatal("nil 门控必须显式失败")
 	}
 }

@@ -376,7 +376,15 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	})}
 
 	// usage-stats-aggregation（批量循环对齐 stats-writer aggregate_usage_stats）。
+	// Node runUsageStatsAggregation 先过 usageStatsAggregationSafety 排干门控
+	// （background-jobs.ts:484-507），并把 safeCreatedBefore 传给
+	// aggregate_usage_stats，防止统计游标越过排队记录；statsagg 的
+	// SafeCreatedBefore 选项承接该交接。
 	a.scheduleWiredJob("usage-stats-aggregation", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		safety, err := a.ingestDrainSafety(taskCtx)
+		if err != nil {
+			return jobsched.TaskResult{}, err
+		}
 		batchSize, err := a.settings.statsAggregationBatchSize(taskCtx)
 		if err != nil {
 			return jobsched.TaskResult{}, err
@@ -389,7 +397,10 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			if taskCtx.Err() != nil {
 				break
 			}
-			processed, err := a.aggregator.AggregateUsageStatsBatch(taskCtx, statsagg.AggregateOptions{BatchSize: batchSize})
+			processed, err := a.aggregator.AggregateUsageStatsBatch(taskCtx, statsagg.AggregateOptions{
+				BatchSize:         batchSize,
+				SafeCreatedBefore: safety.SafeCreatedBefore,
+			})
 			if err != nil {
 				return jobsched.TaskResult{}, err
 			}
@@ -410,6 +421,7 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			return jobsched.TaskResult{}, err
 		}
 		_, err = store.RunClientIPStatsAggregation(taskCtx, statsverify.RunClientIPStatsAggregationOptions{
+			IngestGate:                       gateFunc(a.ingestDrainGate()),
 			StatsAggregationBatchSize:        batchSize,
 			StatsAggregationMaxBatchesPerRun: maxBatches,
 		})
@@ -434,26 +446,56 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			return jobsched.TaskResult{}, nil
 		}
 	}
-	a.scheduleWiredJob("usage-rank-snapshots-refresh", windowTask("usage-rank-snapshots-refresh", rankSnapshotCoreStages()))
-	a.scheduleWiredJob("ai-performance-summary-windows-refresh", windowTask("ai_performance_summary_windows", []statsagg.WindowStageName{statsagg.StageAiPerformanceSummaryWindows}))
+	// 窗口刷新任务的 databaseDriver 注册分叉（T6b，Node background-jobs.ts
+	// :286-316，冻结清单 §2.2/§4.1）：
+	//   - usage-rank-snapshots-refresh 的 PG stage 集合剔除
+	//     ai_performance_summary_windows（:291 postgresUsageRankSnapshotCoreStageNames）；
+	//   - ai-performance-summary-windows-refresh 仅 PG 分支注册（:292），
+	//     默认/SQLite 分支该 stage 并入 usage-rank-snapshots-refresh（:310）；
+	//   - usage-scope-range-windows-refresh 仅默认/SQLite 分支注册（:313），
+	//     PG 分支跳过并打 background_cold_range_window_refresh_disabled（:296-300）；
+	//   - usage-overview-windows-refresh interval PG 5min / SQLite 30min
+	//     （:294 vs :312，经 ResolveScheduleForDriver 模式分叉消费）。
+	if postgres {
+		a.scheduleWiredJob("ai-performance-summary-windows-refresh", windowTask("ai_performance_summary_windows", []statsagg.WindowStageName{statsagg.StageAiPerformanceSummaryWindows}))
+	} else {
+		a.registerDisabledJob("ai-performance-summary-windows-refresh",
+			"默认/SQLite 分支不独立注册（Node background-jobs.ts:310 该 stage 并入 usage-rank-snapshots-refresh）")
+	}
+	a.scheduleWiredJob("usage-rank-snapshots-refresh", windowTask("usage-rank-snapshots-refresh", rankSnapshotCoreStages(postgres)))
 	a.scheduleWiredJob("system-metrics-trend-windows-refresh", windowTask("system_metrics_trend_windows", []statsagg.WindowStageName{statsagg.StageSystemMetricsTrendWindows}))
 	a.scheduleWiredJob("usage-overview-windows-refresh", windowTask("usage_overview_windows", []statsagg.WindowStageName{statsagg.StageUsageOverviewWindows}))
-	a.scheduleWiredJob("usage-scope-range-windows-refresh", windowTask("usage_scope_range_windows", []statsagg.WindowStageName{statsagg.StageUsageScopeRangeWindows}))
+	if postgres {
+		// Node PG 高性能分支跳过在线冷历史范围窗口重刷（:296-300 原文案）。
+		a.logger.Info("background_cold_range_window_refresh_disabled",
+			slog.String("driver", a.config.Driver),
+			slog.Any("hotStages", []string{"usage_scope_range_windows"}),
+			slog.String("message", "PG 高性能模式跳过在线冷历史范围窗口重刷，热窗口刷新保持今日范围数据新鲜"))
+		a.registerDisabledJob("usage-scope-range-windows-refresh",
+			"PG 高性能模式不注册（Node background-jobs.ts:296-300 跳过冷历史范围窗口重刷）")
+	} else {
+		a.scheduleWiredJob("usage-scope-range-windows-refresh", windowTask("usage_scope_range_windows", []statsagg.WindowStageName{statsagg.StageUsageScopeRangeWindows}))
+	}
 	a.scheduleWiredJob("authorization-usage-range-windows-refresh", windowTask("authorization_usage_range_windows", []statsagg.WindowStageName{statsagg.StageAuthorizationUsageRangeWindows}))
 	a.scheduleWiredJob("usage-hot-window-refresh", windowTask("usage_hot_window_refresh", hotUsageWindowStages()))
 	return nil
 }
 
-// rankSnapshotCoreStages 对齐 postgresUsageRankSnapshotCoreStageNames
-// （ai_performance_summary_windows 由独立 job 刷新，不重复入列）。
-func rankSnapshotCoreStages() []statsagg.WindowStageName {
-	return []statsagg.WindowStageName{
+// rankSnapshotCoreStages 对齐 usageRankSnapshotCoreStageNames（SQLite 分支，
+// 含 ai_performance_summary_windows）与 postgresUsageRankSnapshotCoreStageNames
+// （PG 分支，由独立 job 承担、不重复入列）。
+func rankSnapshotCoreStages(postgres bool) []statsagg.WindowStageName {
+	core := []statsagg.WindowStageName{
 		statsagg.StageAccountLast7dRequestRank,
 		statsagg.StageCallerAccountLast7dRequestRank,
 		statsagg.StageApiKeyCurrentMonthCostRank,
 		statsagg.StageAccountAuthorizationCurrentMonthRank,
 		statsagg.StageGroupAuthorizationCurrentMonthRank,
 	}
+	if postgres {
+		return core
+	}
+	return append(core, statsagg.StageAiPerformanceSummaryWindows)
 }
 
 // hotUsageWindowStages 对齐 Node hotUsageWindowStageNames。
@@ -511,8 +553,21 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 		return jobsched.TaskResult{}, nil
 	})
 	a.scheduleWiredJob("resource-authorization-expiry-sweep", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		if _, err := store.RunAuthorizationExpirySweep(taskCtx, nil, 0); err != nil {
+		// T6d：GrantFinalizer 装配注入——事务内的健康任务输入 fanout 是
+		// Node syncResourceAuthorizationGrantRuntimeAsync 中可移植的下游
+		// 副作用；runtime 投影/quota scope bindings 属 gateway authz 域，
+		// 由 durable handoff 登记承接（见 worker_oauth_sweep.go）。
+		result, err := store.RunAuthorizationExpirySweep(taskCtx, authorizationGrantHealthFanout{store: store}, 0)
+		if err != nil {
 			return jobsched.TaskResult{}, err
+		}
+		if result.Expired > 0 {
+			// Node expireDueResourceAuthorizationsAsync 尾部：
+			// refreshAfterResourceAuthorizationBusinessWriteAsync('authorization_expired')
+			// → markAllGroupAccountStatsDirty(reason)（双 driver 同语义）。
+			if err := markAllGroupAccountStatsAfterAuthzWrite(taskCtx, a.logger, a.statsStore, "authorization_expired"); err != nil {
+				return jobsched.TaskResult{}, err
+			}
 		}
 		return jobsched.TaskResult{}, nil
 	})
@@ -595,16 +650,19 @@ func (a *workerAssembly) wireDispatchHandler() {
 
 // scheduleWiredJob 按注册表登记的调度参数注册一个 GoWired 任务，并统一
 // 包裹 postgres 租约（对齐 Node runWithPostgresScheduledLease 只在
-// driver=postgres 生效的语义）。非 GoWired 名称一律拒绝注册。
+// driver=postgres 生效的语义）。非 GoWired 名称一律拒绝注册。调度参数经
+// ResolveScheduleForDriver 应用 databaseDriver 注册分叉（T6b：
+// usage-overview-windows-refresh 的 SQLite 30min、usage-scope-range/ai-
+// performance 的分支独占注册）；反向模式返回 !ok 时拒绝注册。
 func (a *workerAssembly) scheduleWiredJob(name string, task jobsched.Task) {
 	entry, ok := jobregistry.Find(name)
 	if !ok || entry.GoStatus != jobregistry.GoWired {
 		a.logger.Warn("拒绝注册非 GoWired 任务", "job", name)
 		return
 	}
-	schedule, ok := jobregistry.ResolveSchedule(name, nil)
+	schedule, ok := jobregistry.ResolveScheduleForDriver(name, nil, a.config.Driver)
 	if !ok {
-		a.logger.Warn("任务缺少调度参数，跳过注册", "job", name)
+		a.logger.Warn("任务在当前 databaseDriver 分支不注册（Node 调度分支冻结）", "job", name, "driver", a.config.Driver)
 		return
 	}
 	spec := jobsched.Spec{

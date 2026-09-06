@@ -410,6 +410,15 @@ func (d *Deps) runPatch(w http.ResponseWriter, r *http.Request, auth *authsys.Au
 			}, r)
 		}
 	}
+	// Node PATCH route tail (accounts.routes.ts:367-369): a health-relevant
+	// change dispatches the post-commit configuration probe. The
+	// tags-only surface never carries those fields, so the check is harmless
+	// there.
+	if result.HealthCheckRequired && result.HealthCheckReason != "" {
+		if effects := d.Store.runtimeResetEffectsOrNil(); effects != nil {
+			effects.DispatchAccountHealthCheck(result.ID, result.HealthCheckReason)
+		}
+	}
 	setNoStoreHeaders(w)
 	kernel.WriteOK(w, map[string]any{
 		"id":             result.ID,
@@ -904,20 +913,14 @@ func createBody(body map[string]any) (CreateInput, string) {
 			if !ok {
 				return CreateInput{}, "账户参数无效"
 			}
-			mapping := ModelMapping{
-				SourceModel:            strings.TrimSpace(textString(object["sourceModel"])),
-				SourceEndpointFamily:   strings.TrimSpace(textString(object["sourceEndpointFamily"])),
-				UpstreamModel:          strings.TrimSpace(textString(object["upstreamModel"])),
-				UpstreamEndpointFamily: strings.TrimSpace(textString(object["upstreamEndpointFamily"])),
-			}
-			if mapping.SourceModel == "" || mapping.UpstreamModel == "" ||
-				mapping.SourceEndpointFamily == "" || mapping.UpstreamEndpointFamily == "" {
+			mapping, ok := normalizeModelMappingBody(object)
+			if !ok {
 				return CreateInput{}, "账户参数无效"
 			}
-			if enabled, ok := object["enabled"].(bool); ok {
-				mapping.Enabled = &enabled
-			}
 			input.ModelMappings = append(input.ModelMappings, mapping)
+		}
+		if len(input.ModelMappings) > 500 {
+			return CreateInput{}, "账户参数无效"
 		}
 	}
 	if value, exists := body["tags"]; exists && value != nil {
@@ -991,13 +994,49 @@ func createBody(body map[string]any) (CreateInput, string) {
 	if value, exists := body["availabilitySchedule"]; exists {
 		input.AvailabilitySchedule = value
 	}
-	if value, exists := body["balanceQueryEnabled"]; exists && value != nil {
-		if enabled, ok := value.(bool); ok {
-			input.BalanceQueryEnabled = enabled
+	// Balance query: the enable flag is a strict boolean, a present config is
+	// normalized even when the query stays disabled (Node create route), and
+	// the capability boundary mirrors validateAccountBalanceCapability.
+	if value, exists := body["balanceQueryEnabled"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return CreateInput{}, "账户参数无效"
+		}
+		input.BalanceQueryEnabled = enabled
+	}
+	if value, exists := body["balanceQueryConfig"]; exists {
+		if value == nil {
+			return CreateInput{}, "账户参数无效"
+		}
+		config, err := NormalizeAccountBalanceConfig(value)
+		if err != nil {
+			return CreateInput{}, err.Error()
+		}
+		raw, err := canonicalBalanceConfigJSON(config)
+		if err != nil {
+			return CreateInput{}, "账户参数无效"
+		}
+		input.BalanceQueryConfigCanonical = &raw
+	}
+	if input.BalanceQueryEnabled {
+		enabled, err := ValidateAccountBalanceCapability(BalanceCapabilityInput{
+			AccountType: input.AccountType,
+			Credentials: input.Credentials,
+		}, input.BalanceQueryEnabled)
+		if err != nil {
+			return CreateInput{}, err.Error()
+		}
+		input.BalanceQueryEnabled = enabled
+		if input.BalanceQueryEnabled && input.BalanceQueryConfigCanonical == nil {
+			return CreateInput{}, "开启上游余额查询时必须选择查询类型"
 		}
 	}
-	if value, exists := body["balanceQueryConfig"]; exists && value != nil {
-		input.BalanceQueryConfig = value
+	if value, exists := body["temporaryUnavailableContinuousProbeEnabled"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return CreateInput{}, "账户参数无效"
+		}
+		input.TemporaryUnavailableContinuousProbeEnabled = &enabled
 	}
 	if value, exists := body["notes"]; exists && value != nil {
 		text, ok := value.(string)
@@ -1018,8 +1057,10 @@ func patchBody(body map[string]any) (PatchInput, string) {
 		case "expectedConfigRevision", "name", "notes", "status", "concurrencyLimit",
 			"priority", "superPriorityEnabled", "fallbackEnabled", "schedulable",
 			"credentials", "credentialsPatch", "supportedModels", "healthCheckModel",
-			"healthCheckEndpointMode", "tags", "accountExpiresAt", "availabilitySchedule",
-			"clearFailureState":
+			"healthCheckEndpointMode", "modelMappings", "tags", "accountExpiresAt",
+			"availabilitySchedule", "clearFailureState", "proxyProfileId", "groupId",
+			"balanceQueryEnabled", "balanceQueryConfig",
+			"temporaryUnavailableContinuousProbeEnabled":
 		default:
 			return PatchInput{}, "账户更新参数无效"
 		}
@@ -1155,6 +1196,81 @@ func patchBody(body map[string]any) (PatchInput, string) {
 	if value, exists := body["availabilitySchedule"]; exists {
 		input.AvailabilitySchedulePresent = true
 		input.AvailabilitySchedule = value
+	}
+	// modelMappings mirrors accountUpdateSchema (same strict mapping schema as
+	// the create body).
+	if value, exists := body["modelMappings"]; exists && value != nil {
+		mappings, ok := value.([]any)
+		if !ok {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		for _, item := range mappings {
+			object, ok := item.(map[string]any)
+			if !ok {
+				return PatchInput{}, "账户更新参数无效"
+			}
+			mapping, ok := normalizeModelMappingBody(object)
+			if !ok {
+				return PatchInput{}, "账户更新参数无效"
+			}
+			input.ModelMappings = append(input.ModelMappings, mapping)
+		}
+		if len(input.ModelMappings) > 500 {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		input.ModelMappingsPresent = true
+	}
+	if value, exists := body["proxyProfileId"]; exists {
+		input.ProxyProfileIDPresent = true
+		if value != nil {
+			if text, ok := value.(string); ok {
+				input.ProxyProfileID = &text
+			} else {
+				return PatchInput{}, "账户更新参数无效"
+			}
+		}
+	}
+	if value, exists := body["groupId"]; exists {
+		input.GroupIDPresent = true
+		if value == nil {
+			return PatchInput{}, "账户分组不能为空"
+		}
+		text, ok := value.(string)
+		if !ok {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		input.GroupID = &text
+	}
+	// Balance fields: the enable flag is a strict boolean and a present config
+	// is normalized up front (Node PATCH route order).
+	if value, exists := body["balanceQueryEnabled"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		input.BalanceQueryEnabled = &enabled
+	}
+	if value, exists := body["balanceQueryConfig"]; exists {
+		if value == nil {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		config, err := NormalizeAccountBalanceConfig(value)
+		if err != nil {
+			return PatchInput{}, err.Error()
+		}
+		raw, err := canonicalBalanceConfigJSON(config)
+		if err != nil {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		input.BalanceQueryConfigCanonical = &raw
+		input.BalanceQueryConfigPresent = true
+	}
+	if value, exists := body["temporaryUnavailableContinuousProbeEnabled"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		input.TemporaryUnavailableContinuousProbeEnabled = &enabled
 	}
 	if value, exists := body["clearFailureState"]; exists && value != nil {
 		if enabled, ok := value.(bool); ok {

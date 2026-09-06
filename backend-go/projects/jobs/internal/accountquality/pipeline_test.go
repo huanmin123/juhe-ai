@@ -527,6 +527,7 @@ func TestRefreshRunnerOrchestration(t *testing.T) {
 	precheck := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: reader, Prober: prober, Mutation: mutation, Concurrency: 1})
 	runner := NewRefreshRunner(RefreshDeps{
 		Store: store, Logger: logger, Caches: caches, Precheck: precheck,
+		IngestGate: allowIngestGate{},
 		Settings: func(key string, min, max int) int {
 			if key == "accountQualityWindowMinutes" {
 				return 10
@@ -558,7 +559,8 @@ func TestRefreshRunnerEmptyRun(t *testing.T) {
 	precheck := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: &mockReader{}, Prober: &mockProber{}, Mutation: &mockPrecheckMutation{}, Concurrency: 1})
 	runner := NewRefreshRunner(RefreshDeps{
 		Store: store, Logger: logger, Caches: caches, Precheck: precheck,
-		Settings: func(string, int, int) int { return 10 }, Concurrency: func() int { return 2 },
+		IngestGate: allowIngestGate{},
+		Settings:   func(string, int, int) int { return 10 }, Concurrency: func() int { return 2 },
 	})
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -568,6 +570,58 @@ func TestRefreshRunnerEmptyRun(t *testing.T) {
 	}
 	if logger.findByEvent("background_account_quality_refresh_completed") != nil {
 		t.Fatal("空转不应打完成事件")
+	}
+}
+
+// allowIngestGate 恒放行的排干门控桩。
+type allowIngestGate struct{}
+
+func (allowIngestGate) EnsureUsageRecordsIngested(context.Context) error { return nil }
+
+// denyIngestGate 恒拒绝的排干门控桩（模拟 Node 队列未排干跳过本轮）。
+type denyIngestGate struct{ called *bool }
+
+func (d denyIngestGate) EnsureUsageRecordsIngested(context.Context) error {
+	if d.called != nil {
+		*d.called = true
+	}
+	return errIngestNotDrained
+}
+
+var errIngestNotDrained = errors.New("ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录")
+
+func TestRefreshRunnerIngestGate(t *testing.T) {
+	store, _, _ := newQualityStore(t)
+	logger := &fakeLogger{}
+	caches := &mockCacheInvalidator{}
+	precheck := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: &mockReader{}, Prober: &mockProber{}, Mutation: &mockPrecheckMutation{}, Concurrency: 1})
+	// 门控失败 → 本轮直接失败，不推进统计、不打完成事件（Node
+	// ensureUsageRecordsIngestedBeforeStatsAggregation 抛错语义）。
+	denied := false
+	runner := NewRefreshRunner(RefreshDeps{
+		Store: store, Logger: logger, Caches: caches, Precheck: precheck,
+		IngestGate: denyIngestGate{called: &denied},
+		Settings:   func(string, int, int) int { return 10 }, Concurrency: func() int { return 2 },
+	})
+	if err := runner.Run(context.Background()); err == nil {
+		t.Fatal("队列未排干时本轮必须失败")
+	}
+	if !denied {
+		t.Fatal("门控应在本轮被调用")
+	}
+	if logger.findByEvent("background_account_quality_refresh_completed") != nil {
+		t.Fatal("门控失败不应打完成事件")
+	}
+	if caches.called {
+		t.Fatal("门控失败不应清缓存")
+	}
+	// nil 门控 = Node 必填依赖缺失 → 任务失败，不静默降级。
+	bare := NewRefreshRunner(RefreshDeps{
+		Store: store, Logger: logger, Caches: caches, Precheck: precheck,
+		Settings: func(string, int, int) int { return 10 },
+	})
+	if err := bare.Run(context.Background()); err == nil {
+		t.Fatal("nil 门控必须显式失败（Node 必填依赖）")
 	}
 }
 

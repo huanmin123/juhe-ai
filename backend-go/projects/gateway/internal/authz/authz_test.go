@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1089,6 +1090,11 @@ func TestAuthorizationRouteInputContract(t *testing.T) {
 			url += "/expire"
 		}
 		req := httptest.NewRequest(http.MethodPatch, url, strings.NewReader(body))
+		// Node express.json only parses bodies announced by content-length /
+		// transfer-encoding (type-is hasBody); a direct ServeHTTP call must
+		// declare the length the wire would carry.
+		req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		req.Header.Set("Content-Type", "application/json")
 		req.SetPathValue("id", created.Item.ID)
 		req = req.WithContext(adminContext)
 		rec := httptest.NewRecorder()
@@ -1119,6 +1125,8 @@ func TestAuthorizationRouteInputContract(t *testing.T) {
 	}
 	// Revoke version validation.
 	revokeReq := httptest.NewRequest(http.MethodDelete, "/authorizations/"+created.Item.ID, strings.NewReader(`{"expectedUpdatedAt":"bad"}`))
+	revokeReq.Header.Set("Content-Length", strconv.Itoa(len(`{"expectedUpdatedAt":"bad"}`)))
+	revokeReq.Header.Set("Content-Type", "application/json")
 	revokeReq.SetPathValue("id", created.Item.ID)
 	revokeReq = revokeReq.WithContext(adminContext)
 	revokeRec := httptest.NewRecorder()

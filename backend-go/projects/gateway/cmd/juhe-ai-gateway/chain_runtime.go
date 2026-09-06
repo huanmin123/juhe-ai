@@ -255,7 +255,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// management settings PATCH immediately (Node clears the shared
 	// systemSettingsCache on write) instead of a stale 60s snapshot.
 	models.SetSettingsStore(composed.settingsStore)
-	selector, selectorErr := newChainAccountsSelectorWithStats(composed.db, composed.statsDB, composed.pgDialect, cfg.Secret, time.Now)
+	selector, selectorErr := newChainAccountsSelectorWithStats(composed.db, composed.statsDB, composed.pgDialect, cfg.Secret, time.Now, cfg.DispatchAccountCandidateLimit)
 	if selectorErr != nil {
 		return nil, fmt.Errorf("create gateway accounts selector: %w", selectorErr)
 	}

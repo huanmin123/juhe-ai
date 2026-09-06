@@ -24,7 +24,7 @@
 
 - [BUG-0155](问题-0155-M04授权去重ProcessingTTL单位错误.md)：M04 Go 授权去重 `ProcessingTTL` 曾将纳秒常量误作 120ms，现已修正为与 Node 等价的 120s；M04 其他迁移缺口仍待修复。
 
-- [BUG-0154](问题-0154-K1-GoHTTP内核横切契约偏离.md)：K1 Go HTTP 内核在压缩协商/缓冲、trace、安全头、body parser 与 mutation 去重时序上偏离 Node 契约；待修复。
+- [BUG-0154](问题-0154-K1-GoHTTP内核横切契约偏离.md)：K1 Go HTTP 内核在压缩协商/缓冲、trace、安全头、body parser 与 mutation 去重时序上偏离 Node 契约；17 项已按 Node 锁定依赖实测修复并建立 golden；cmd/acceptance 全量回归待并行迁移批次落定后重跑。
 
 - [BUG-0153](问题-0153-M01公告迁移端点与数据契约偏离.md)：M01 公告 Go 实现未接入 gateway，并遗漏公开端点、管理投影、严格校验、时间字段、revision、副作用等 Node/前端契约；待修复。
 

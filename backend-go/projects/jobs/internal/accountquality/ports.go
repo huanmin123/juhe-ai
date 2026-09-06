@@ -214,6 +214,15 @@ type RuntimeCacheInvalidator interface {
 	ClearGatewayRuntimeCache(ctx context.Context)
 }
 
+// IngestDrainGate 对应 Node runAccountQualityRefresh 的
+// ensureUsageRecordsIngestedBeforeStatsAggregation 依赖
+// （background/account-probe-jobs.ts:46 → ensureUsageRecordsSafeForStatsAggregation）：
+// 统计游标推进前确认 ingest 队列已排干/安全；未排干时返回错误使本轮刷新
+// 跳过（Node 让该错误使任务本轮失败）。组合根经 internal/ingestgate 构造。
+type IngestDrainGate interface {
+	EnsureUsageRecordsIngested(ctx context.Context) error
+}
+
 // Logger 接收结构化字段事件；字段键与 Node 日志事件一致。
 type Logger interface {
 	Debug(event string, fields map[string]any, message string)

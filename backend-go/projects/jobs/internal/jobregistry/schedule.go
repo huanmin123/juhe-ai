@@ -53,6 +53,73 @@ func ResolveSchedule(jobName string, settings SettingsInterval) (Schedule, bool)
 	return schedule, true
 }
 
+// DatabaseDriver 标记 Node databaseDriver 模式
+// （isPostgresHighPerformanceMode() 即 databaseDriver === 'postgres'）。
+const DriverPostgres = "postgres"
+
+// ModeConstraint 冻结 Node background-jobs.ts:286-316 的 databaseDriver 注册
+// 分叉（权威对照：docs/migration/jobs调度分支冻结清单.md 第 2.2/4.1 节）。
+type ModeConstraint struct {
+	// PostgresOnly：仅 PG 高性能分支注册（默认分支把该 stage 并入
+	// usage-rank-snapshots-refresh）——ai-performance-summary-windows-refresh。
+	PostgresOnly bool
+	// SQLiteOnly：仅默认/SQLite 分支注册；PG 高性能分支跳过并打
+	// background_cold_range_window_refresh_disabled（background-jobs.ts:296-300）
+	// ——usage-scope-range-windows-refresh。
+	SQLiteOnly bool
+	// SQLiteInterval：默认/SQLite 分支的 interval 覆盖。该字段只用于非
+	// settings 驱动的固定间隔分叉（usage-overview-windows-refresh：
+	// PG=usageOverviewWindowRefreshIntervalMs 5min（:294），SQLite=
+	// usageRankSnapshotRefreshIntervalMs 30min（:312））。
+	SQLiteInterval time.Duration
+}
+
+// modeConstraints 返回带 databaseDriver 注册分叉的 job 约束表；未列出的 job
+// 两分支同参注册。
+func modeConstraints() map[string]ModeConstraint {
+	return map[string]ModeConstraint{
+		"ai-performance-summary-windows-refresh": {PostgresOnly: true},
+		"usage-scope-range-windows-refresh":      {SQLiteOnly: true},
+		"usage-overview-windows-refresh":         {SQLiteInterval: 30 * minute},
+	}
+}
+
+// ModeConstraintFor 返回一个 job 的模式分叉约束（无分叉返回零值 + false）。
+func ModeConstraintFor(jobName string) (ModeConstraint, bool) {
+	constraint, ok := modeConstraints()[jobName]
+	return constraint, ok
+}
+
+// ResolveScheduleForDriver 在 ResolveSchedule 基础上应用 databaseDriver 分支：
+// PostgresOnly/SQLiteOnly 的 job 在反向模式下不注册（ok=false），SQLiteInterval
+// 在默认/SQLite 分支覆盖固定 interval（宿主 settings 覆盖优先于模式默认，
+// 与 ResolveSchedule 既有语义一致；这些分叉 job 均不在
+// SettingsIntervalJobNames 中，生产路径不传 settings）。
+func ResolveScheduleForDriver(jobName string, settings SettingsInterval, databaseDriver string) (Schedule, bool) {
+	constraint, hasConstraint := modeConstraints()[jobName]
+	if hasConstraint {
+		postgres := databaseDriver == DriverPostgres
+		if (constraint.PostgresOnly && !postgres) || (constraint.SQLiteOnly && postgres) {
+			return Schedule{}, false
+		}
+	}
+	schedule, ok := ScheduleFor(jobName)
+	if !ok {
+		return Schedule{}, false
+	}
+	intervalOverridden := false
+	if settings != nil {
+		if interval, matches := settings(jobName); matches && interval > 0 {
+			schedule.Interval = interval
+			intervalOverridden = true
+		}
+	}
+	if hasConstraint && databaseDriver != DriverPostgres && constraint.SQLiteInterval > 0 && !intervalOverridden {
+		schedule.Interval = constraint.SQLiteInterval
+	}
+	return schedule, true
+}
+
 // SettingsIntervalJobNames 列出间隔来自系统设置的 job（供组合根解析）。
 func SettingsIntervalJobNames() map[string]string {
 	return map[string]string{

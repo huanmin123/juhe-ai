@@ -117,6 +117,9 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 		Logger:      logger,
 		Precheck:    precheck,
 		Concurrency: concurrency,
+		// Node runAccountQualityRefresh 的必填排干门控依赖
+		// （account-probe-jobs.ts:46）：未排干失败本轮，防统计游标越过排队记录。
+		IngestGate: gateFunc(a.ingestDrainGate()),
 	})
 	a.addCloser(func() error {
 		precheck.StopAndDrain(a.config.DrainTimeout)

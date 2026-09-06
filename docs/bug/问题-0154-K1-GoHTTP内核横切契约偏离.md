@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0154
-- 状态：待修复
+- 状态：已修复（kernel golden 全绿；cmd/acceptance 全量回归因 groups/apikeys 并发迁移中间态待重试）
 - 严重程度：P1
 - 发现时间：2026-09-04
 - 发现方式：自查（已提交 Git 历史审计与独立复核）
@@ -189,11 +189,17 @@
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| 定向测试 | K1 内核现有测试 | `go test ./internal/kernel -count=1` | 正常路径通过 | 现有测试通过，未覆盖边界矩阵 | 部分通过 |
-| 压缩回归 | 协商、过滤、阈值、多次 Write、HEAD、Vary | 构造请求并对照 Node | 头部与正文完全一致 | 多项差异已由代码确认 | 未通过 |
-| trace 回归 | fallback、严格 traceparent、响应头 | 构造请求并对照 Node | trace ID 与响应头一致 | 多项差异已由代码确认 | 未通过 |
-| body/dedupe 回归 | parser 顺序、Content-Type、畸形/超大 body | 构造重复 mutation | 首次/重试状态与 Node 一致 | Go 可能先 claim 后返回 400/413/409 | 未通过 |
-| 生产接线 | gateway `main.go` | 静态调用链检查 | kernel 在真实业务入口生效 | 当前未接线 | 未通过 |
+| 定向测试 | K1 内核全部测试（含新增 golden） | `go test ./internal/kernel -count=3` 与 `-race` | 全部通过 | ok（count=3 与 -race 均绿） | 通过 |
+| 压缩回归 | 协商、过滤、阈值、多次 Write、HEAD、Vary、flush 时序 | `internal/kernel/contract_test.go`（Node 实测 golden：negotiator 16 例、compressible 18 例、响应探针 8 类） | 头部与解码正文一致 | 全部一致 | 通过 |
+| trace 回归 | fallback、严格 traceparent、响应头 | `TestTraceContract` | trace ID 与响应头一致 | 一致 | 通过 |
+| body/dedupe 回归 | parser 顺序、Content-Type、畸形/超大 body、去重状态 | `TestJSONParserBeforeMutationGuardClaim`、`TestDecodeJSONContentTypeGate` | 首次/重试状态与 Node 一致 | 一致（畸形/超大重复不再 409） | 通过 |
+| 安全头回归 | CSP 逐字节 | `TestManagementSecurityHeadersByteExact` | script-src 'self' | 一致 | 通过 |
+| 前缀边界回归 | mount 段边界、编码边界 | `TestPrefixSegmentBoundary` | 相邻前缀不越界 | 一致 | 通过 |
+| flusher 回归 | identity 路径 SSE 首 chunk | `TestSSEFlushTimelinessWithoutCompression` | 首 chunk 先于 handler 延迟到达 | 到达（<120ms） | 通过 |
+| 受影响包回归 | authz/proxyprofiles/tablemonitor 直连 ServeHTTP 测试 | 修正测试到 Node 契约（wire 会携带 Content-Length/Content-Type） | 包内测试通过 | ok | 通过 |
+| cmd/acceptance | 组合根 + 验收套件（HEAD 树 + 修复后 kernel 隔离验证） | `go test ./cmd/juhe-ai-gateway/...` | 通过 | ok（cmd 110s / acceptance 93s）；发现并修正 acceptance 冻结的历史意外行为：proxies DELETE Node 契约为 `res.status(204).send()`，历史 kernel 对「只写状态不写体」的响应从不转发状态、net/http 兜底 200，修复后如实转发 204 | 通过 |
+| 生产接线 | gateway `main.go`/`compose.go` | 静态调用链检查 | kernel 在真实业务入口生效 | compose.go 已挂载 kernel（超出本缺陷范围按现状保留） | 通过 |
+| 并发批次隔离 | live 工作区 groups/apikeys/routestrategies 失败归因 | 同一测试在「HEAD kernel + live 包」副本复跑 | 失败与 kernel 无关 | apikeys/groups/routestrategies 失败在 HEAD kernel 下同样复现，属并行迁移批次未提交中间态 | 阻塞（非本缺陷引入） |
 
 ## 复发记录
 
@@ -210,6 +216,15 @@
 
 ## 完成总结
 
-- 完成时间：待修复
-- 结论：K1 内核当前存在多项已确认的行为偏差，不能作为后续完整迁移的合格基础。
-- 后续建议：先修复并建立 Node/Go HTTP golden，再重审 K2 及各管理切片。
+- 完成时间：2026-09-06
+- 结论：K1 内核 17 项已确认偏差全部按 Node 锁定依赖（compression@1.8.1 + negotiator@0.6.4 + compressible@2.0.18 + vary@1.1.2 + body-parser@1.20.5 + type-is@1.6.18，均以本地 node_modules 实测为准）修复并配齐回归 golden。
+- 修复清单：
+  1. 压缩整链重写（`internal/kernel/compression.go`）：完整 br/gzip/deflate/identity 权重协商（negotiator@0.6.4 语义含隐式 identity 与 NaN q）、compressible@2.0.18 + mime-db@1.52.0 可压缩过滤（`mime_compressible.go` 生成表）、`Cache-Control: no-transform`、HEAD 短路、`Vary: Accept-Encoding` 时序（filter/no-transform 之后、阈值/编码协商之前）、on-headers 决策时序（单写 end 语义按完整正文做阈值，多写/Flush 走 Node write 语义无阈值估计）、flush-before-write 不再锁定 identity、brotli（`andybalholm/brotli` quality 4 对齐 `BROTLI_PARAM_QUALITY=4`）与 zlib-wrapped deflate。
+  2. trace（`internal/kernel/ctx.go`）：每个响应统一回写 `x-trace-id`；补齐 `x-trace-id`/`x-correlation-id` 回退链（首逗号值、≤128、`[A-Za-z0-9._:-]+`）；`ParseTraceParent` 严格四段/版本 ff/全零拒绝。
+  3. 安全头（`internal/kernel/security.go`）：CSP `script-src` 恢复 `'self'`，与 `http-security.ts` 逐字节一致。
+  4. dedupe/decoder（`internal/kernel/dedupe.go`、`kernel.go`）：guard 前置 express.json+handleJsonBodyError 语义——超大 JSON 先 413 请求体过大、畸形 JSON 先 400 请求体无效，不再污染去重键；`DecodeJSON` 按 body-parser 默认 type 只解析精确 `application/json`（实测 `application/problem+json` 等默认不解析，修正了本文档「含 application/*+json」的括注）；guard 恢复经完整 kernel 链写出响应（受守卫路由保留压缩/405 层），状态观察对齐 Node `res.statusCode`。
+  5. 前缀边界（`internal/kernel/kernel.go`）：`prefixMiddleware`/`bodyLimitMiddleware` 改为 Express mount 段边界匹配（`/__aisys__/apix` 不再命中），并在 escaped path 上匹配以对齐 Express 原始 pathname 语义。
+  6. Flusher 传播：`localizeWriter`/`methodContractWriter` 增加 `Flush` 透传，identity 路径 SSE 首 chunk 及时性与 Node 一致。
+- 附带说明：压缩字节流内部（gzip/br 字节序列）由 zlib 与 Go 实现差异决定，契约以 Content-Encoding 协商、头部与解码后正文一致为准。
+- 遗留项：cmd/acceptance 与 groups/apikeys/routestrategies 的全量回归受同一工作区并行迁移批次（M03-M08/K 系列审查修复波）的未提交中间态影响，需该批次落定后重跑 `go build ./... && go test ./cmd/juhe-ai-gateway/...`。
+- 后续建议：已建立 kernel golden（`internal/kernel/contract_test.go`，含 Node 实测协商表与响应探针）；后续接入新入口时以此回放。

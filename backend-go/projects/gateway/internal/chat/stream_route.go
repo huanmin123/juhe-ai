@@ -700,7 +700,13 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	runner = NewChatGenerationRunner(options, runnerContext, runnerCancel, func() bool {
 		return runnerContext.Err() != nil
 	})
-	if rt.deps.Hub == nil || !rt.deps.Hub.Start(runner) {
+	// Register claims the conversation slot; the generation goroutine only
+	// launches after the SSE subscriber attached below. Node's event loop
+	// orders start() before any runner event and the subscribe inside the
+	// same synchronous block, so a subscriber never misses an earlier event;
+	// the explicit Register/Subscribe/Launch sequence preserves that contract
+	// under Go's preemptive scheduling.
+	if rt.deps.Hub == nil || !rt.deps.Hub.Register(runner) {
 		_, _ = rt.deps.Store.FailChatTurn(FailTurnInput{
 			ConversationID:  conversation.ID,
 			SystemAccountID: ownerID,
@@ -743,6 +749,19 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 				sse.End()
 			})
 		}
+	}
+	if !rt.deps.Hub.Launch(runner) {
+		_, _ = rt.deps.Store.FailChatTurn(FailTurnInput{
+			ConversationID:  conversation.ID,
+			SystemAccountID: ownerID,
+			TurnID:          accepted.TurnID,
+			ErrorCode:       "internal_generation_failed",
+			ErrorMessage:    "当前会话生成任务冲突",
+			TraceID:         &traceID,
+			Now:             rt.now(),
+		})
+		writeMessageCode(w, http.StatusConflict, "当前会话生成任务冲突", "chat_stream_conflict")
+		return
 	}
 	<-runner.Completion()
 	if stopHeartbeat != nil {

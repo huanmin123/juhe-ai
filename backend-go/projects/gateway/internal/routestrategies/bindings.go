@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -38,6 +39,7 @@ type bindingRow struct {
 	routeStrategyID string
 	groupID         string
 	priority        int
+	weightRaw       sql.NullString
 	weight          int
 	status          string
 	groupName       sql.NullString
@@ -58,7 +60,13 @@ func (r bindingRow) summary() GroupBinding {
 	}
 }
 
-const bindingRowColumns = `route_strategy_groups.id,
+// bindingRowColumns mirrors routeStrategyGroupBindingRowsSqlForClient: the
+// authorization joins feed both the group_enabled authorized branch (owner OR
+// active grant with COALESCE(settings.enabled, 1)) and the weight/priority
+// integrity guards in appendRouteStrategyBindingRows. The `expires_at > ?`
+// placeholder binds the caller-supplied now (first argument).
+func (s *Store) bindingRowColumns() string {
+	return `route_strategy_groups.id,
 	route_strategy_groups.route_strategy_id,
 	route_strategy_groups.group_id,
 	route_strategy_groups.priority,
@@ -69,8 +77,27 @@ const bindingRowColumns = `route_strategy_groups.id,
 	CASE
 		WHEN groups.id IS NULL THEN 0
 		WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN groups.enabled
+		WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
 		ELSE 0
 	END AS group_enabled`
+}
+
+// bindingRowFrom mirrors the FROM/JOIN section of
+// routeStrategyGroupBindingRowsSqlForClient.
+func (s *Store) bindingRowFrom() string {
+	return `FROM ` + s.table("route_strategy_groups") + ` route_strategy_groups
+	LEFT JOIN ` + s.table("groups") + ` groups ON groups.id = route_strategy_groups.group_id
+	LEFT JOIN ` + s.table("resource_authorizations") + ` group_authorization
+		ON group_authorization.resource_type = 'group'
+		AND group_authorization.resource_id = groups.id
+		AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
+		AND group_authorization.status = 'active'
+		AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+	LEFT JOIN ` + s.table("group_authorization_settings") + ` group_authorization_settings
+		ON group_authorization_settings.authorization_id = group_authorization.id
+		AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
+		AND group_authorization_settings.group_id = groups.id`
+}
 
 const bindingRowOrder = `ORDER BY route_strategy_groups.route_strategy_id ASC,
 		CASE WHEN route_strategy_groups.status = 'active' THEN 0 ELSE 1 END ASC,
@@ -81,7 +108,7 @@ const bindingRowOrder = `ORDER BY route_strategy_groups.route_strategy_id ASC,
 func scanBindingRow(scan func(...any) error) (bindingRow, error) {
 	row := bindingRow{}
 	var groupEnabled int
-	err := scan(&row.id, &row.routeStrategyID, &row.groupID, &row.priority, &row.weight, &row.status,
+	err := scan(&row.id, &row.routeStrategyID, &row.groupID, &row.priority, &row.weightRaw, &row.status,
 		&row.groupName, &row.providerCode, &groupEnabled)
 	if err != nil {
 		return bindingRow{}, err
@@ -97,10 +124,39 @@ func scanBindingRow(scan func(...any) error) (bindingRow, error) {
 	if groupEnabled != 0 && groupEnabled != 1 {
 		return bindingRow{}, &ValidationError{Message: "策略路由分组绑定关联分组状态无效：" + row.id}
 	}
+	// normalizeApiKeyGroupBindingWeight: NULL/missing defaults to 1, anything
+	// outside the 1-100 integer range fails the read.
+	weight, weightErr := normalizeBindingWeight(row.weightRaw)
+	if weightErr != nil {
+		return bindingRow{}, weightErr
+	}
+	row.weight = weight
 	return row, nil
 }
 
-// loadBindings mirrors loadRouteStrategyGroupBindingSummariesByRouteStrategyIds
+// normalizeBindingWeight mirrors normalizeApiKeyGroupBindingWeight over the
+// stored column (NULL/blank → 1; non-integer or out of 1-100 → error).
+func normalizeBindingWeight(raw sql.NullString) (int, error) {
+	text := strings.TrimSpace(raw.String)
+	if !raw.Valid || text == "" {
+		return 1, nil
+	}
+	if value, err := strconv.ParseInt(text, 10, 64); err == nil {
+		if value >= 1 && value <= 100 {
+			return int(value), nil
+		}
+		return 0, &ValidationError{Message: "策略路由分组权重必须是 1-100 之间的整数"}
+	}
+	// Driver-rendered decimal (e.g. REAL 5.0) still counts as an integer when
+	// the value is integral, mirroring Number.isInteger(5.0).
+	if value, err := strconv.ParseFloat(text, 64); err == nil && value == float64(int64(value)) &&
+		value >= 1 && value <= 100 {
+		return int(value), nil
+	}
+	return 0, &ValidationError{Message: "策略路由分组权重必须是 1-100 之间的整数"}
+}
+
+// loadBindings mirrors loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync
 // (owner branch): presentation-ordered summaries grouped by strategy id.
 func (s *Store) loadBindings(ctx context.Context, q queryer, strategyIDs []string) (map[string][]GroupBinding, error) {
 	result := map[string][]GroupBinding{}
@@ -114,9 +170,11 @@ func (s *Store) loadBindings(ctx context.Context, q queryer, strategyIDs []strin
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	rows, err := q.QueryContext(ctx, s.bind(`SELECT `+bindingRowColumns+`
-		FROM `+s.table("route_strategy_groups")+` route_strategy_groups
-		LEFT JOIN `+s.table("groups")+` groups ON groups.id = route_strategy_groups.group_id
+	// The authorization join binds `expires_at > now` first (Node binds `now`
+	// before the WHERE ids).
+	args = append([]any{s.nowISO()}, args...)
+	rows, err := q.QueryContext(ctx, s.bind(`SELECT `+s.bindingRowColumns()+`
+		`+s.bindingRowFrom()+`
 		WHERE route_strategy_groups.route_strategy_id IN (`+strings.Join(placeholders, ",")+`)
 		`+bindingRowOrder), args...)
 	if err != nil {
@@ -133,12 +191,14 @@ func (s *Store) loadBindings(ctx context.Context, q queryer, strategyIDs []strin
 	return result, rows.Err()
 }
 
-// normalizeBindings mirrors normalizeRouteStrategyGroupBindings: uniqueness,
+// normalizeBindings mirrors normalizeRouteStrategyGroupBindingsAsync: uniqueness,
 // active-priority uniqueness, at-least-one-active, bindable-group boundary
-// (owner branch; authorized-grantee bindings belong to the authorization
-// slice) and disabled-group activation guard. Result is sorted by
-// (priority, groupId) like the source.
-func (s *Store) normalizeBindings(ctx context.Context, q queryer, inputs []BindingInput, ownerID string) ([]bindingWrite, error) {
+// (owner branch + authorized-grantee branch) and disabled-group activation
+// guard. lockRows mirrors Node's lockRows=true on the create/PATCH transaction
+// paths (PostgreSQL `FOR UPDATE OF groups` keeps the enable/binding check
+// serialized with the write). Result is sorted by (priority, groupId) like the
+// source.
+func (s *Store) normalizeBindings(ctx context.Context, q queryer, inputs []BindingInput, ownerID string, lockRows bool) ([]bindingWrite, error) {
 	if len(inputs) == 0 {
 		return nil, &ValidationError{Message: "策略路由至少需要绑定一个分组"}
 	}
@@ -175,7 +235,7 @@ func (s *Store) normalizeBindings(ctx context.Context, q queryer, inputs []Bindi
 		return nil, &ValidationError{Message: "策略路由至少需要一个启用分组"}
 	}
 
-	groups, err := s.loadBindableGroups(ctx, q, inputs, ownerID)
+	groups, err := s.loadBindableGroups(ctx, q, inputs, ownerID, lockRows)
 	if err != nil {
 		return nil, err
 	}
@@ -230,26 +290,57 @@ func (g bindableGroup) namePtr() *string {
 	return &g.name
 }
 
+// bindableGroupsQuery renders the loadRouteStrategyBindableGroupsAsync select
+// (authorization joins + optional PostgreSQL FOR UPDATE OF groups lock).
+func (s *Store) bindableGroupsQuery(placeholders []string, lockRows bool) string {
+	lockClause := ""
+	if lockRows && s.pg {
+		lockClause = " FOR UPDATE OF groups"
+	}
+	return s.bind(`SELECT groups.id, groups.system_account_id, groups.provider_code, groups.name,
+			CASE WHEN groups.system_account_id = ? THEN 1
+				WHEN group_authorization.id IS NOT NULL THEN 1
+				ELSE 0
+			END AS can_bind,
+			CASE WHEN groups.system_account_id = ? THEN groups.enabled
+				WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
+				ELSE 0
+			END AS enabled
+		FROM ` + s.table("groups") + ` groups
+		LEFT JOIN ` + s.table("resource_authorizations") + ` group_authorization
+			ON group_authorization.resource_type = 'group'
+			AND group_authorization.resource_id = groups.id
+			AND group_authorization.grantee_system_account_id = ?
+			AND group_authorization.status = 'active'
+			AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+		LEFT JOIN ` + s.table("group_authorization_settings") + ` group_authorization_settings
+			ON group_authorization_settings.authorization_id = group_authorization.id
+			AND group_authorization_settings.system_account_id = ?
+			AND group_authorization_settings.group_id = groups.id
+		WHERE groups.id IN (` + strings.Join(placeholders, ",") + ")" + lockClause)
+}
+
 // loadBindableGroups mirrors loadRouteStrategyBindableGroupsAsync: owned
-// groups bind with their own enabled flag; foreign groups stay unbindable
-// until the authorization slice adds the grantee branch.
-func (s *Store) loadBindableGroups(ctx context.Context, q queryer, inputs []BindingInput, ownerID string) (map[string]bindableGroup, error) {
+// groups bind with their own enabled flag; foreign groups bind only through an
+// active group grant (resource_authorizations) whose settings keep it enabled.
+// lockRows adds the PostgreSQL `FOR UPDATE OF groups` row lock Node uses on
+// the create/PATCH transaction paths.
+func (s *Store) loadBindableGroups(ctx context.Context, q queryer, inputs []BindingInput, ownerID string, lockRows bool) (map[string]bindableGroup, error) {
 	ids := uniqueGroupIDs(inputs)
 	result := map[string]bindableGroup{}
 	if len(ids) == 0 {
 		return result, nil
 	}
 	placeholders := make([]string, len(ids))
-	args := []any{ownerID}
+	// Param order mirrors the source: owner (can_bind), owner (enabled),
+	// grantee, now (expires_at), settings owner, then the chunked ids.
+	args := []any{ownerID, ownerID, ownerID, s.nowISO(), ownerID}
 	for i, id := range ids {
 		placeholders[i] = "?"
 		args = append(args, id)
 	}
-	rows, err := q.QueryContext(ctx, s.bind(`SELECT groups.id, groups.system_account_id, groups.provider_code, groups.name,
-			groups.enabled,
-			CASE WHEN groups.system_account_id = ? THEN 1 ELSE 0 END AS can_bind
-		FROM `+s.table("groups")+` groups
-		WHERE groups.id IN (`+strings.Join(placeholders, ",")+")"), args...)
+	query := s.bindableGroupsQuery(placeholders, lockRows)
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +349,7 @@ func (s *Store) loadBindableGroups(ctx context.Context, q queryer, inputs []Bind
 		var group bindableGroup
 		var enabled, canBind int
 		var name sql.NullString
-		if err := rows.Scan(&group.id, &group.ownerID, &group.providerCode, &name, &enabled, &canBind); err != nil {
+		if err := rows.Scan(&group.id, &group.ownerID, &group.providerCode, &name, &canBind, &enabled); err != nil {
 			return nil, err
 		}
 		group.name = name.String

@@ -342,11 +342,90 @@ func (s *Store) Options(ctx context.Context, access AccessScope, query OptionsQu
 	return summaries, nil
 }
 
+// RouteStrategyOptions mirrors listRouteStrategyGroupOptionRowsForAccessAsync +
+// listRouteStrategyGroupOptionsAsync: the authorization-aware group rows
+// projected to {id,name,providerCode,enabled}, with the authorized arm
+// reflecting the per-grantee settings override of enabled.
+func (s *Store) RouteStrategyOptions(ctx context.Context, access AccessScope, query OptionsQuery) ([]RouteStrategyGroupOption, error) {
+	ctx = ensureCtx(ctx)
+	pageSize := query.Limit
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 500 {
+		pageSize = 500
+	}
+	owner := access.manageableID()
+	viewer := owner
+	if viewer == "" {
+		viewer = access.ViewerID
+	}
+	var (
+		queryText string
+		queryArgs []any
+	)
+	switch {
+	case owner == "" && access.canAccessAll():
+		clauses, args := rowFilter("g", query.ProviderCode, query.Keyword, query.IDs)
+		where := ""
+		if len(clauses) > 0 {
+			where = " WHERE " + strings.Join(clauses, " AND ")
+		}
+		queryText = `SELECT g.id, g.name, g.provider_code, g.enabled
+			FROM ` + s.table("groups") + ` g` + where + `
+			ORDER BY g.updated_at DESC, g.id DESC
+			LIMIT ?`
+		queryArgs = args
+	default:
+		if viewer == "" {
+			return nil, &ValidationError{Message: "缺少系统账户上下文"}
+		}
+		clauses, outerArgs := rowFilter("", query.ProviderCode, query.Keyword, query.IDs)
+		outerWhere := ""
+		if len(clauses) > 0 {
+			outerWhere = " WHERE " + strings.Join(clauses, " AND ")
+		}
+		queryText = `SELECT id, name, provider_code, enabled FROM (
+				SELECT g.id, g.name, g.provider_code, g.enabled, g.is_default, g.updated_at
+				FROM ` + s.table("groups") + ` g
+				WHERE g.system_account_id = ?
+				UNION ALL
+				SELECT g.id, g.name, g.provider_code,
+					CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
+					g.is_default,
+					COALESCE(s.updated_at, g.updated_at) AS updated_at
+				FROM ` + s.table("resource_authorizations") + ` ra
+				INNER JOIN ` + s.table("groups") + ` g ON g.id = ra.resource_id
+				` + s.authorizationSettingsJoin() + `
+				` + authorizedArmWhere + `
+			) group_rows` + outerWhere + `
+			ORDER BY updated_at DESC, id DESC
+			LIMIT ?`
+		queryArgs = append([]any{ownerOrViewer(owner, viewer), viewer, ownerOrViewer(owner, viewer)}, outerArgs...)
+	}
+	queryArgs = append(queryArgs, pageSize)
+	rows, err := s.db.QueryContext(ctx, s.bind(queryText), queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	options := []RouteStrategyGroupOption{}
+	for rows.Next() {
+		var option RouteStrategyGroupOption
+		var enabled int64
+		if err := rows.Scan(&option.ID, &option.Name, &option.ProviderCode, &enabled); err != nil {
+			return nil, err
+		}
+		option.Enabled = enabled == 1
+		options = append(options, option)
+	}
+	return options, rows.Err()
+}
+
 // ownerOrViewer mirrors Node's `ownerSystemAccountId ?? viewerSystemAccountId`
 // page parameters (the two never disagree: manageableSystemAccountId already
 // falls back to the viewer for non-admins).
-func ownerOrViewer(owner, viewer string) string {
-	if owner != "" {
+func ownerOrViewer(owner, viewer string) string {	if owner != "" {
 		return owner
 	}
 	return viewer
@@ -356,10 +435,18 @@ func ownerOrViewer(owner, viewer string) string {
 // authorized rows force isDefault=false, carry the runtime authorization
 // columns plus the parsed limits document, and render
 // authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row)) whenever
-// the row's owner differs from the viewer.
+// the row's owner differs from the viewer. Corrupted stored group types or
+// scheduling policies propagate as read errors (the Node read path throws).
 func (s *Store) newOptionSummary(row optionRow, names map[string]string, includeOwnerFields bool, viewer string) (OptionSummary, error) {
 	authorized := row.accessType == "authorized"
-	groupType := normalizeGroupTypeStored(row.groupType)
+	groupType, err := normalizeStoredGroupType(row.groupType)
+	if err != nil {
+		return OptionSummary{}, err
+	}
+	policy, err := parseStoredSchedulingPolicy(row.schedulingJSON.String, row.schedulingJSON.Valid, groupType, s.globalConcurrencyMax())
+	if err != nil {
+		return OptionSummary{}, err
+	}
 	summary := OptionSummary{
 		ID:                     row.id,
 		OwnerSystemAccountID:   row.systemAccountID,
@@ -369,7 +456,7 @@ func (s *Store) newOptionSummary(row optionRow, names map[string]string, include
 		Enabled:                row.enabled == 1,
 		IsDefault:              !authorized && row.isDefault == 1,
 		GroupType:              groupType,
-		SchedulingPolicy:       parseSchedulingPolicy(row.schedulingJSON.String, row.schedulingJSON.Valid, groupType),
+		SchedulingPolicy:       policy,
 		AccessType:             row.accessType,
 		GroupAuthorizationID:   nullPtrString(row.authorizationID),
 		AuthorizationExpiresAt: nullPtrString(row.authorizationExpiresAt),
@@ -386,7 +473,7 @@ func (s *Store) newOptionSummary(row optionRow, names map[string]string, include
 		if err != nil {
 			return OptionSummary{}, err
 		}
-		summary.Permissions = authorizedGroupPermissions(canBind)
+		summary.Permissions = authorizedGroupPermissions(canBind, false)
 	}
 	if includeOwnerFields {
 		summary.SystemAccountID = ptrString(row.systemAccountID)
@@ -450,9 +537,17 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(queryText), args...).Scan(
 		&name, &providerCode, &description, &enabled, &groupType, &schedulingJSON, &updatedAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	normalizedType, err := normalizeStoredGroupType(groupType)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := parseStoredSchedulingPolicy(schedulingJSON.String, schedulingJSON.Valid, normalizedType, s.globalConcurrencyMax())
 	if err != nil {
 		return nil, err
 	}
@@ -461,8 +556,8 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 		ProviderCode:     providerCode,
 		Description:      nullPtrString(description),
 		Enabled:          enabled == 1,
-		GroupType:        normalizeGroupTypeStored(groupType),
-		SchedulingPolicy: parseSchedulingPolicy(schedulingJSON.String, schedulingJSON.Valid, normalizeGroupTypeStored(groupType)),
+		GroupType:        normalizedType,
+		SchedulingPolicy: policy,
 		UpdatedAt:        updatedAt,
 	}, nil
 }
@@ -532,6 +627,128 @@ func (d *Deps) editBasic(w http.ResponseWriter, r *http.Request, access AccessSc
 		return
 	}
 	kernel.WriteOK(w, detail, "")
+}
+
+// GroupAuthorizationOption mirrors GroupAuthorizationOption
+// (listGroupAuthorizationOptionsAsync).
+type GroupAuthorizationOption struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	CanAuthorize bool   `json:"canAuthorize"`
+}
+
+// authorizationOptions mirrors GET /authorization-options
+// (groups.routes.ts:71): the same authorization-aware group options projected
+// to {id,name,canAuthorize} for the authorization editor.
+func (d *Deps) authorizationOptions(w http.ResponseWriter, r *http.Request, access AccessScope) {
+	query, ok := parseGroupOptionQuery(w, r)
+	if !ok {
+		return
+	}
+	summaries, err := d.Store.Options(r.Context(), access, query)
+	if err != nil {
+		d.writeOptionsError(w, err)
+		return
+	}
+	options := make([]GroupAuthorizationOption, 0, len(summaries))
+	for _, summary := range summaries {
+		options = append(options, GroupAuthorizationOption{
+			ID:           summary.ID,
+			Name:         summary.Name,
+			CanAuthorize: summary.Permissions.CanAuthorize,
+		})
+	}
+	kernel.WriteOK(w, options, "")
+}
+
+// AccountGroupOptionSummary mirrors AccountGroupOptionSummary
+// (listAccountGroupOptionsAsync): the full option summary plus accountIds —
+// the owner view lists the group's member account ids while the authorized
+// view always returns an empty array so the owner's accounts never leak.
+type AccountGroupOptionSummary struct {
+	OptionSummary
+	AccountIDs []string `json:"accountIds"`
+}
+
+// accountOptions mirrors GET /account-options (groups.routes.ts:82).
+func (d *Deps) accountOptions(w http.ResponseWriter, r *http.Request, access AccessScope) {
+	query, ok := parseGroupOptionQuery(w, r)
+	if !ok {
+		return
+	}
+	owner := access.manageableID()
+	viewer := ownerOrViewer(owner, access.ViewerID)
+	summaries, err := d.Store.Options(r.Context(), access, query)
+	if err != nil {
+		d.writeOptionsError(w, err)
+		return
+	}
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.ID)
+	}
+	accountIDsByGroup, err := d.Store.groupAccountIDsByGroupIDs(r.Context(), ids)
+	if err != nil {
+		d.writeOptionsError(w, err)
+		return
+	}
+	options := make([]AccountGroupOptionSummary, 0, len(summaries))
+	for _, summary := range summaries {
+		accountIDs := []string{}
+		if !(summary.AccessType == "authorized" && summary.OwnerSystemAccountID != viewer) {
+			if groupIDs, exists := accountIDsByGroup[summary.ID]; exists {
+				accountIDs = groupIDs
+			}
+		}
+		options = append(options, AccountGroupOptionSummary{OptionSummary: summary, AccountIDs: accountIDs})
+	}
+	kernel.WriteOK(w, options, "")
+}
+
+// RouteStrategyGroupOption mirrors RouteStrategyGroupOption
+// (listRouteStrategyGroupOptionsAsync): the authorization settings override
+// of enabled reflected back to the route-strategy selector.
+type RouteStrategyGroupOption struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	ProviderCode string `json:"providerCode"`
+	Enabled      bool   `json:"enabled"`
+}
+
+// routeStrategyOptions mirrors GET /route-strategy-options
+// (groups.routes.ts:93): ids/keyword/providerCode/limit over the
+// authorization-aware group rows with {id,name,providerCode,enabled}.
+func (d *Deps) routeStrategyOptions(w http.ResponseWriter, r *http.Request, access AccessScope) {
+	query, ok := parseGroupOptionQuery(w, r)
+	if !ok {
+		return
+	}
+	options, err := d.Store.RouteStrategyOptions(r.Context(), access, query)
+	if err != nil {
+		d.writeOptionsError(w, err)
+		return
+	}
+	kernel.WriteOK(w, options, "")
+}
+
+// parseGroupOptionQuery mirrors parseGroupOptionListOptions without the
+// purpose gate: ids/keyword/providerCode/limit/manageableOnly/preferDefault.
+func parseGroupOptionQuery(w http.ResponseWriter, r *http.Request) (OptionsQuery, bool) {
+	query := r.URL.Query()
+	for _, name := range []string{"ids", "keyword", "providerCode", "limit", "manageableOnly", "preferDefault"} {
+		if len(query[name]) > 1 {
+			kernel.WriteBadRequest(w, "分组参数无效")
+			return OptionsQuery{}, false
+		}
+	}
+	return OptionsQuery{
+		IDs:            queryTextList(query["ids"], 50),
+		Keyword:        strings.TrimSpace(query.Get("keyword")),
+		ProviderCode:   strings.TrimSpace(query.Get("providerCode")),
+		ManageableOnly: booleanQueryValue(query.Get("manageableOnly")),
+		PreferDefault:  booleanQueryValue(query.Get("preferDefault")),
+		Limit:          optionLimitValue(query.Get("limit")),
+	}, true
 }
 
 func (d *Deps) writeOptionsError(w http.ResponseWriter, err error) {
@@ -630,14 +847,15 @@ func keywordFilterAlias(alias, keyword string) (string, []any) {
 }
 
 // authorizedGroupPermissions mirrors authorizedGroupPermissions
-// (storage/resource-permissions.ts): the authorized base with editing kept
-// and canBindToApiKey gated on the runtime row state.
-func authorizedGroupPermissions(canBindToApiKey bool) ResourcePermissions {
+// (storage/resource-permissions.ts): the authorized base with editing kept,
+// canReturnAuthorization threaded through, and canBindToApiKey gated on the
+// runtime row state.
+func authorizedGroupPermissions(canBindToApiKey, canReturnAuthorization bool) ResourcePermissions {
 	return ResourcePermissions{
 		CanUse:                 true,
 		CanEdit:                true,
 		CanDelete:              false,
-		CanReturnAuthorization: false,
+		CanReturnAuthorization: canReturnAuthorization,
 		CanAuthorize:           false,
 		CanViewCredentials:     false,
 		CanManageAccounts:      false,

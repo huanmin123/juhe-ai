@@ -2,6 +2,7 @@ package statsverify
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 )
@@ -15,7 +16,11 @@ import (
 // Known, deliberate deviations from the Node runtime (each inherited from
 // the Go jobs architecture, not from behavioural drift):
 //   - ingest-worker drain safety (ensureUsageRecordsSafeForStatsAggregation)
-//     is a scheduler-side IPC concern; Go hosts gate the call themselves.
+//     is injected as RunClientIPStatsAggregationOptions.IngestGate (Node
+//     scheduler-side gate; the Go composition root builds it from
+//     internal/ingestgate over usagewriter.Runtime() — the in-process
+//     replacement of the eliminated ingest-worker IPC). A nil gate fails the
+//     run exactly like an unavailable Node drain snapshot.
 //   - PostgreSQL fencing leases are pinned by the jobs supervisor, not
 //     inside this package.
 //   - Node's SQLite driver scans usage-record shard files; the Go SQLite
@@ -60,11 +65,22 @@ const (
 // schema-defaults.ts.
 type SettingsNumber func(key string, min, max int) (int, error)
 
+// IngestDrainGate 对应 Node runClientIpStatsAggregation 的
+// ensureUsageRecordsSafeForStatsAggregation 前置门控
+// （background-jobs.ts:600）：未排干时返回错误使本轮聚合跳过，避免统计游标
+// 越过排队记录。组合根经 internal/ingestgate 构造。
+type IngestDrainGate interface {
+	EnsureUsageRecordsIngested(ctx context.Context) error
+}
+
 // RunClientIPStatsAggregationOptions carries the host-provided settings and
 // clock. Interval scheduling and lease ownership stay with the jobs
 // supervisor.
 type RunClientIPStatsAggregationOptions struct {
 	Clock Clock
+	// IngestGate 对应 Node 排干门控（必填依赖；nil 使本轮直接失败，等价
+	// Node 快照不可用路径）。组合根注入；测试用桩。
+	IngestGate IngestDrainGate
 	// StatsAggregationBatchSize resolves system setting
 	// 'statsAggregationBatchSize' (bounded 100..10000).
 	StatsAggregationBatchSize int
@@ -81,11 +97,23 @@ type ClientIPStatsAggregationResult struct {
 }
 
 // RunClientIPStatsAggregation mirrors aggregateClientIpStats
-// (background-stats-writer.ts lines 393-408): the caller-provided batch size
-// is capped at 1000 and the batch count at 10 (scheduler-side caps); the
-// loop stops when a batch returns fewer rows than requested or the 5s time
-// budget is exhausted; the range-window refresh always runs at the end.
+// (background-stats-writer.ts lines 393-408) plus the scheduler-side pre-steps
+// of runClientIpStatsAggregation (background-jobs.ts:597-618): the ingest
+// drain gate runs first (Node ensureUsageRecordsSafeForStatsAggregation; the
+// caller-provided batch size is capped at 1000 and the batch count at 10
+// (scheduler-side caps); the loop stops when a batch returns fewer rows than
+// requested or the 5s time budget is exhausted; the range-window refresh
+// always runs at the end.
 func (s *Store) RunClientIPStatsAggregation(ctx context.Context, options RunClientIPStatsAggregationOptions) (ClientIPStatsAggregationResult, error) {
+	// Node：聚合先过 ingest 排干门控，未排干即失败本轮（丢弃的
+	// safeCreatedBefore 只由 usage_stats 聚合消费，client-ip 路径自带游标
+	// 安全延迟，语义见 clientipagg.go）。
+	if options.IngestGate == nil {
+		return ClientIPStatsAggregationResult{}, errors.New("client-ip-stats-aggregation 未注入 ingest 排干门控（Node ensureUsageRecordsSafeForStatsAggregation 必填依赖）")
+	}
+	if err := options.IngestGate.EnsureUsageRecordsIngested(ctx); err != nil {
+		return ClientIPStatsAggregationResult{}, err
+	}
 	clock := options.Clock
 	if clock == nil {
 		clock = SystemClock{}

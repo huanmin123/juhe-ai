@@ -19,6 +19,14 @@ type BindingInput struct {
 	Priority *int // nil = default (index+1)
 	Weight   *int // nil = 1
 	Status   string
+
+	// presence flags mirror hasOwnInput over the parsed request fields so the
+	// create audit log renders only what the caller actually sent (Node logs
+	// parsed.data.groupBindings verbatim). Store-level constructors leave them
+	// false; normalizeBindings never reads them.
+	priorityProvided bool
+	weightProvided   bool
+	statusProvided   bool
 }
 
 // MutationInput is the create/patch payload; pointers/flags mirror
@@ -106,7 +114,10 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 		return nil, err
 	}
 	defer tx.Rollback()
-	bindings, err := s.normalizeBindings(ctx, tx, input.Bindings, ownerID)
+	// Node createRouteStrategyAsync: normalizeRouteStrategyGroupBindingsAsync(
+	// ..., lockRows=true) — PostgreSQL locks the group rows inside the write
+	// transaction.
+	bindings, err := s.normalizeBindings(ctx, tx, input.Bindings, ownerID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -156,13 +167,13 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 
 // nullableDescription mirrors normalizeNullableTextInput: trimmed value or
 // NULL (explicit null and blank both store NULL); length follows the zod
-// max(200) bound.
+// max(200) bound counted in UTF-16 code units (JavaScript String.length).
 func nullableDescription(input MutationInput) (*string, error) {
 	if !input.HasDescription || input.Description == nil {
 		return nil, nil
 	}
 	trimmed := strings.TrimSpace(*input.Description)
-	if len([]rune(trimmed)) > 200 {
+	if utf16CodeUnits(trimmed) > 200 {
 		return nil, &ValidationError{Message: "策略路由说明不能超过 200 个字符"}
 	}
 	if trimmed == "" {
@@ -202,10 +213,16 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		where += " AND route_strategies.system_account_id = ?"
 		args = append(args, managedOwner)
 	}
+	// loadLockedRouteStrategyPatchCurrentAsync: PostgreSQL locks the strategy
+	// row for the duration of the patch transaction.
+	lockClause := ""
+	if s.pg {
+		lockClause = " FOR UPDATE"
+	}
 	current, err := scanStrategyRow(func(targets ...any) error {
 		return tx.QueryRowContext(ctx, s.bind(`SELECT `+strategyRowColumns+`
 			FROM `+s.table("route_strategies")+` route_strategies
-			WHERE route_strategies.id = ?`+where+` LIMIT 1`), args...).Scan(targets...)
+			WHERE route_strategies.id = ?`+where+` LIMIT 1`+lockClause), args...).Scan(targets...)
 	}, false)
 	if isNoRows(err) {
 		return conflict()
@@ -334,14 +351,14 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	bindingsChanged := false
 	var beforeBindings []GroupBinding
 	if input.HasBindings || input.Mode != nil {
-		currentBindings, loadErr := s.loadBindings(ctx, tx, []string{id})
-		if loadErr != nil {
-			return nil, loadErr
-		}
-		beforeBindings = currentBindings[id]
-		currentWrites := bindingWritesFromSummaries(beforeBindings)
-		if input.HasBindings {
-			normalized, normalizeErr := s.normalizeBindings(ctx, tx, input.Bindings, current.systemAccountID)
+			currentBindings, loadErr := s.loadBindings(ctx, tx, []string{id})
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			beforeBindings = currentBindings[id]
+			currentWrites := bindingWritesFromSummaries(beforeBindings)
+			if input.HasBindings {
+				normalized, normalizeErr := s.normalizeBindings(ctx, tx, input.Bindings, current.systemAccountID, true)
 			if normalizeErr != nil {
 				return nil, normalizeErr
 			}
@@ -409,6 +426,12 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	}
 	if gatewayRuntimeChanged(changedFields) {
 		s.invalidateRuntime("route_strategy_updated")
+		// patchRouteStrategyAsync: the API-Key validation cache follows the
+		// runtime invalidation; its failure fails the PATCH (500 at the
+		// route, after the row is committed).
+		if err := s.invalidateValidationCache("route_strategy_updated"); err != nil {
+			return nil, err
+		}
 	}
 	return &PatchResult{
 		ID:                   current.id,
@@ -528,6 +551,19 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		return nil, err
 	}
 	defer tx.Rollback()
+	// lockRouteStrategyMutationRowAsync: PostgreSQL pins the strategy row
+	// before the delete guards run.
+	if s.pg {
+		var lockedID string
+		lockErr := tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("route_strategies")+`
+			WHERE id = ? AND system_account_id = ? LIMIT 1 FOR UPDATE`), id, ownerID).Scan(&lockedID)
+		if isNoRows(lockErr) {
+			return &DeleteResult{}, nil
+		}
+		if lockErr != nil {
+			return nil, lockErr
+		}
+	}
 	var isDefault int
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT is_default FROM `+s.table("route_strategies")+`
 		WHERE id = ? AND system_account_id = ? LIMIT 1`), id, ownerID).Scan(&isDefault)

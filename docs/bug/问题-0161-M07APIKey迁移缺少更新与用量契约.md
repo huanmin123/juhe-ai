@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0161
-- 状态：待修复
+- 状态：部分修复（M07 包内真实偏差已修复并配测试；usage 生产接线与 authsys/jobs 侧子项移交对应 owner，见文末「复审与移交状态 2026-09-04」）
 - 严重程度：P1
 - 发现时间：2026-09-04
 - 发现方式：自查（已提交 Git 历史审计）
@@ -172,3 +172,52 @@
 - 新增未修复子项：创建 `expiresAt` 必须区分精确空字符串与纯空白字符串：仅前者按未设置处理，后者应保持 Node 的 400；补充空字符串、空白、合法 offset 和非法时间的回放。
 - 新增未修复子项：`refresh_key` 日志应保留 Node 的旧/新 `keyPrefix...keySuffix` 脱敏值，并与 statusCode 一起回放；确认日志不写入完整密钥且能区分轮换前后。
 - 结论：M07 不能视为完整 API Key 功能迁移或 Node 可归档。
+
+## 复审与移交状态 2026-09-04
+
+本节为「审查即修复」复审结果：逐条对照 Node 归档（`migration-backup/node/final-archive/backend/src/...`）后的三值裁决与处置。HEAD 现状已包含 PATCH（`patch.go`）、列表 usage（`usage.go`）与 refresh/delete 失效 500 契约，文档前文相应表述以本节为准。
+
+### 已修复（internal/apikeys/ 包内，均配对齐测试 `bug0161_test.go` / `usage_test.go`）
+
+| 主张 | 裁决 | 复审要点与处置 |
+| --- | --- | --- |
+| 1 排程默认时区 | 真实偏差 | Node 缺省走 `system_settings` 的 `usageStatsTimezone`（60s 缓存），缺失/无效才回退进程时区；文档「缺失或无效时抛错」指 `usageStatsTimezone()` 本身，`defaultScheduleTimezone` 会捕获。Go 已接入 store 级 `defaultScheduleTimezone()`（惰性解析，避免单连接 SQLite 嵌套查询死锁），读不到或非法时回退 `fallbackScheduleTimezone()`。 |
+| 2 排程子字段显式 null | 真实偏差 | zod 对 optional 非 nullable 子字段拒绝 null；Go map 无法区分缺失与 null。已按 presence 区分，null 返回 zod 同文消息；顺带对齐 allow 例外缺 `windows` 的 Node superRefine 消息。注意两侧 HTTP 观察一致：无 CJK 的 zod 消息经 Node `res.json` 包装（`localizeSystemErrorPayload`）/ Go kernel `localize.go` 统一渲染为 400 状态默认「请求参数无效」，含 CJK 消息原文透传。 |
+| 3 额度子项显式 null | 真实偏差 | `normalizeQuotaLimit/normalizeHourlyQuotaLimit` 已区分缺失与 null，仅顶层 `quotaLimits:null` 清空；null 子项按 zod 消息拒绝（HTTP 观察同上），PATCH 拒绝后原值保留。 |
+| 4 列表分页数字解析 | 真实偏差 | 新增 `jsQueryInteger/jsNumber/jsTrim` 复刻 `Number()`+`Number.isInteger`（`1e2`→100、`1.0`→1、`0x10`→16、`Infinity`/`1_000`/`inf` 为 absent）。 |
+| 5 PG 关键字筛选 | 真实偏差 | `apiKeyKeywordClause` 按方言分支：PG 使用 `COLLATE "C"` 范围 + `starts_with` 精确前缀；SQLite 保持纯范围（与 Node `buildApiKeyFiltersForClient`/`buildApiKeyFilters` 一致）。 |
+| 6 空白排程脏值 | 真实偏差 | `parseScheduleJSONWithDefault` 仅空字符串视为无排程；空白串走 JSON 解析错误。读路径解析/归一化错误为普通 error（500），与 Node 原始 throw 一致（含 PATCH 触碰脏排程的分支）。 |
+| 7 说明长度 UTF-16 | 真实偏差 | 新增 `utf16Length`；create/patch 路由层返回 zod 消息 `String must contain at most 200 character(s)`（ASCII，HTTP 渲染为「请求参数无效」，与 Node 一致），store 层保留 Node repository 消息（与 Node 分层一致）。 |
+| 9 PG 行锁 | 真实偏差 | `RefreshSecret`/`Delete` 行读追加 ` FOR UPDATE`；create 路径 `findPreferredDefaultRouteStrategy` 用 ` FOR UPDATE OF route_strategies, route_strategy_groups, groups`、`routeStrategyReference` 用 ` FOR UPDATE`（均仅 PG），与 patch.go 既有锁同构。 |
+| 12 错误过度降级（包内部分） | 真实偏差 | `hydrateListUsage`/`hydrateDetailUsage` 错误上抛使列表/详情失败；`degradeOnMissingStats` 仅对 SQLite `no such table:`/`unable to open database file` 降级，PG 及其余错误全部上抛（Go 无 read-worker 进程门控，属登记过的适配）。 |
+| 15 关联策略 mode | 部分真实偏差 | 复审修正：Node list/detail mapper 先做真值守卫，空值/NULL 是省略字段而非补 `normal`（Go 原本已一致）；未知值 Node 抛 `路由策略模式无效` 使读失败，Go 已改为显式错误。文档原文「空值补 normal」表述有误。 |
+| 16 详情 usage | 真实偏差 | 详情 usage 是完整 `AccountUsageSummary`（14 字段，非列表 3 字段）。`ListItem.Usage` 改为 `any`，`FindDetail` 渲染零值全量 summary 并经 `ApiKeyUsageSummaries` 水合；`StatsUsageSource` 补全 `usage_stats_totals` 聚合投影（`cache_read_cost_usd` 必填、`last_used_at` 规范化）。aipublic 经 `sanitizeApiKeyItem` 投影，不受字段类型变化影响。 |
+| 17 expiresAt 空白串 | 真实偏差 | 仅精确空串/缺失清空；`"   "` 走 RFC3339 解析失败，create/PATCH 均返回 Node 同文 400。 |
+| 8/11 清理目标与投递（包内部分） | 真实偏差 | PG 保持删除事务内登记 `juhe_dataset` 目标；SQLite 改为提交后写入注入的独立 dataset 句柄（`SetDatasetDB`），不再写业务库；新增 `CleanupSubmitter`（`SetCleanupSubmitter`）在提交后投递 `api_key_related_cleanup` 语义任务。登记/投递失败不回滚删除，经 `DeleteResult.CleanupRegisterError/CleanupSubmitError` 可观测（对应 Node 的 catch-and-continue）。 |
+
+### 基线已对（文档表述需修正，不改代码）
+
+- **14 reveal_secret 日志**：Node `safeChange('key', ...)` 对敏感字段固定折叠为 `未设置/已设置→已变更`（`sensitiveOperationChangeFields` 含 `key`），`keyPrefix...keySuffix` 掩码从不落日志。Go 现有 `{Before:"未设置", After:"已变更", Sensitive:true}` 与 Node 渲染结果逐字节一致。文档「after 保留前后缀」与「新增未修复子项 1」系误读 call-site 表达式，未采纳；按文档实施反而会引入 Node 不存在的日志泄露。
+- **18 refresh_key 日志**：同上，Node 旧/新掩码经 `safeChange` 折叠为 `已设置→已变更`，Go 现值一致。文档「保留旧/新脱敏前后缀」不成立。
+- **PATCH /{id}、列表 usage、refresh/delete 失效 500 契约、gateway 挂载**：HEAD 已补（`patch.go`、`usage.go`、`compose.go:494/665` 注入 `BusInvalidator`），文档概述中「routes.go/store.go 没有 PATCH」「gateway main 未挂载该包」已过时。owner manifest 状态按其定义属切换证据问题，仍由迁移计划 owner 维护。
+
+### 移交（不动手，涉及其他包/工程）
+
+| 主张 | 移交对象与内容 |
+| --- | --- |
+| 10 操作日志 statusCode | `internal/authsys`：`OperationLogEntry` 增加 `StatusCode`（Node `OperationLogInput.statusCode`，表列 `status_code` 已存在），并在 `operationlog_sink.go` 映射；随后 apikeys 路由按 Node 补 create=201、refresh=200/500、delete=204/500、patch=200/500。 |
+| 12 usage 生产接线 | `cmd/juhe-ai-gateway/compose.go`：用既有 `statsDB` 句柄 `NewStatsUsageSource(statsDB, pgDialect)` 并 `apiKeyStore.SetUsageSource(...)`（当前无生产调用方，列表/详情仍为零值）。 |
+| 13 排程切换缓存失效 | `backend-go/projects/jobs/internal/oauthrefresh`：`SyncApiKeyScheduleStatuses` 提交后按 `ChangedIDs` 注入 lookup/validation 失效端口。 |
+| 19 排程任务接入调度 | `backend-go/projects/jobs/cmd/juhe-ai-jobs/main.go`：注册 oauthrefresh J4 组件（10s 周期、PostgreSQL 租约防重入、失败退避）；`business/account_runtime` 的 `OutstandingManifestOperations` 同步收敛。 |
+| 8/11 收尾（投递基础设施） | Go 侧尚无 record-maintenance 队列（`enqueueRecordMaintenanceJobWithResult` 等价物）；owner 需提供生产 `CleanupSubmitter` 实现并接入 dataset 句柄（SQLite 为独立 dataset 文件）。包内端口与语义已就绪。 |
+
+### 复审中登记、未在本轮处理的相邻偏差（未列入 BUG-0161 主张，供后续拆 bug）
+
+- 存储脏数据经 ValidationError/普通 error 的 HTTP 状态分流与 Node 不完全一致（如 PATCH 读到非法存储 quota/schedule 时 Go 400 vs Node 500）；quota 金额、窗口、排程时间/日期字段的 400 消息文本与 zod 消息存在未对齐差异（状态码一致）。
+- Node PATCH 快照（`apiKeyUpdateSnapshotAsync`）总是解析存储排程并按 `normalizeRouteStrategyMode`（空值补 `normal`）渲染 `routeStrategyMode`；Go patch 仅在变更分支携带原值。
+- `isDuplicateApiKeyNameError` 未覆盖 `idx_api_keys_owner_name_unique_lower`。
+
+### 验证
+
+- `go build ./internal/apikeys/...`、`go vet ./internal/apikeys/...`、`go test ./internal/apikeys/... -count=1 -race` 通过（`internal/groups` 当时的编译错误来自并行迁移工作，不在本包范围）。
+- 双模：SQLite 用例覆盖；PG-only 行为（行锁、COLLATE/starts_with、PG usage 严格上抛）以方言分支单元测试与 Node SQL 对照锁定，等待真实 PG 回归。

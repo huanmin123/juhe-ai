@@ -66,6 +66,14 @@ func allDaysOfWeek() []int { return []int{1, 2, 3, 4, 5, 6, 7} }
 // (field absent or null) yields nil; anything else must be a schedule object
 // with enabled=true, mode=allow_windows and at least one window.
 func NormalizeSchedule(input any) (*AvailabilitySchedule, error) {
+	return normalizeScheduleWithDefault(input, fallbackScheduleTimezone)
+}
+
+// normalizeScheduleWithDefault threads the default-timezone resolver through
+// the normalization (Node resolves it lazily inside normalizeScheduleTimezone
+// via defaultScheduleTimezone → usageStatsTimezone; laziness matters because
+// the resolver hits the business database).
+func normalizeScheduleWithDefault(input any, defaultTimezone func() string) (*AvailabilitySchedule, error) {
 	if input == nil {
 		return nil, nil
 	}
@@ -82,7 +90,7 @@ func NormalizeSchedule(input any) (*AvailabilitySchedule, error) {
 	if mode, _ := object["mode"].(string); mode != scheduleModeAllowWindows {
 		return nil, &ValidationError{Message: "API Key 时间计划模式必须为 allow_windows"}
 	}
-	timezone, err := normalizeScheduleTimezone(object["timezone"])
+	timezone, err := normalizeScheduleTimezone(object["timezone"], objectKeyPresent(object, "timezone"), defaultTimezone)
 	if err != nil {
 		return nil, err
 	}
@@ -93,11 +101,11 @@ func NormalizeSchedule(input any) (*AvailabilitySchedule, error) {
 	if len(windows) == 0 {
 		return nil, &ValidationError{Message: "API Key 时间计划至少需要一个允许时段"}
 	}
-	dateRange, err := normalizeScheduleDateRange(object["dateRange"])
+	dateRange, err := normalizeScheduleDateRange(object["dateRange"], objectKeyPresent(object, "dateRange"))
 	if err != nil {
 		return nil, err
 	}
-	exceptions, err := normalizeScheduleExceptions(object["exceptions"])
+	exceptions, err := normalizeScheduleExceptions(object["exceptions"], objectKeyPresent(object, "exceptions"))
 	if err != nil {
 		return nil, err
 	}
@@ -112,16 +120,37 @@ func NormalizeSchedule(input any) (*AvailabilitySchedule, error) {
 }
 
 // ParseScheduleJSON mirrors parseApiKeyAvailabilityScheduleJson (stored rows
-// are re-normalized on read; invalid rows surface as errors).
+// are re-normalized on read; invalid rows surface as errors). Only falsy
+// values (empty string) mean "no schedule": whitespace-only storage is a
+// corruption signal and fails the read exactly like Node's JSON.parse throw.
 func ParseScheduleJSON(raw string) (*AvailabilitySchedule, error) {
-	if strings.TrimSpace(raw) == "" {
+	return parseScheduleJSONWithDefault(raw, fallbackScheduleTimezone)
+}
+
+// parseScheduleJSON re-parses a stored schedule with the store-resolved
+// default timezone. The resolver stays lazy: it must only run when a stored
+// row actually lacks a timezone (reading it eagerly would nest a
+// system_settings query inside open list cursors / write transactions on the
+// single-connection SQLite pool). Both the JSON syntax error and the
+// normalization error surface as plain errors (Node throws raw errors here;
+// the routes render them as 500, never as the input-validation 400 set).
+func (s *Store) parseScheduleJSON(raw string) (*AvailabilitySchedule, error) {
+	return parseScheduleJSONWithDefault(raw, s.defaultScheduleTimezone)
+}
+
+func parseScheduleJSONWithDefault(raw string, defaultTimezone func() string) (*AvailabilitySchedule, error) {
+	if raw == "" {
 		return nil, nil
 	}
 	var decoded any
 	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
-		return nil, &ValidationError{Message: "API Key 时间计划参数无效"}
+		return nil, fmt.Errorf("存储的 API Key 时间计划 JSON 解析失败: %w", err)
 	}
-	return NormalizeSchedule(decoded)
+	schedule, err := normalizeScheduleWithDefault(decoded, defaultTimezone)
+	if err != nil {
+		return nil, fmt.Errorf("存储的 API Key 时间计划无效: %w", err)
+	}
+	return schedule, nil
 }
 
 // ScheduleJSON mirrors apiKeyAvailabilityScheduleJson: nil → NULL column.
@@ -148,26 +177,39 @@ func ScheduleStatus(schedule *AvailabilitySchedule, now time.Time) (string, bool
 	return "disabled", true
 }
 
-func normalizeScheduleTimezone(value any) (string, error) {
+func normalizeScheduleTimezone(value any, present bool, defaultTimezone func() string) (string, error) {
+	if !present {
+		// Node: timezone === undefined → defaultScheduleTimezone(). Resolved
+		// lazily so read/write paths never nest a settings query.
+		return defaultTimezone(), nil
+	}
 	if value == nil {
-		return defaultScheduleTimezone(), nil
+		// Optional-but-not-nullable: explicit JSON null is rejected by the
+		// zod route schema ("Expected string, received null").
+		return "", &ValidationError{Message: patchTypeIssue("string", nil)}
 	}
 	text, ok := value.(string)
-	if !ok || strings.TrimSpace(text) == "" {
-		return "", &ValidationError{Message: "API Key 时间计划时区不能为空"}
+	if !ok {
+		return "", &ValidationError{Message: patchTypeIssue("string", value)}
 	}
 	timezone := strings.TrimSpace(text)
+	if timezone == "" {
+		return "", &ValidationError{Message: "API Key 时间计划时区不能为空"}
+	}
 	if _, err := time.LoadLocation(timezone); err != nil {
 		return "", &ValidationError{Message: "API Key 时间计划时区无效"}
 	}
 	return timezone, nil
 }
 
-// defaultScheduleTimezone mirrors defaultScheduleTimezone: the deployment
-// timezone when resolvable, otherwise UTC (Node resolves the process tz).
-func defaultScheduleTimezone() string {
-	if name := time.Local.String(); name != "Local" && name != "" {
-		return name
+// fallbackScheduleTimezone mirrors DEFAULT_USAGE_STATS_TIMEZONE: the
+// deployment timezone when resolvable through the tz database, otherwise UTC
+// (Node: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC').
+func fallbackScheduleTimezone() string {
+	if name := time.Local.String(); name != "" && name != "Local" {
+		if _, err := time.LoadLocation(name); err == nil {
+			return name
+		}
 	}
 	return "UTC"
 }
@@ -257,9 +299,13 @@ func normalizeDaysOfWeek(value any) ([]int, error) {
 	return days, nil
 }
 
-func normalizeScheduleDateRange(input any) (*ScheduleDateRange, error) {
-	if input == nil {
+func normalizeScheduleDateRange(input any, present bool) (*ScheduleDateRange, error) {
+	if !present {
 		return nil, nil
+	}
+	if input == nil {
+		// Optional-but-not-nullable: explicit null is a zod-level rejection.
+		return nil, &ValidationError{Message: patchTypeIssue("object", nil)}
 	}
 	object, ok := input.(map[string]any)
 	if !ok {
@@ -268,11 +314,11 @@ func normalizeScheduleDateRange(input any) (*ScheduleDateRange, error) {
 	if err := assertOnlyKeys(object, []string{"startDate", "endDate"}, "API Key 时间计划生效日期范围"); err != nil {
 		return nil, err
 	}
-	startDate, err := normalizeDateKey(object["startDate"], "开始日期")
+	startDate, err := normalizeDateKey(object["startDate"], objectKeyPresent(object, "startDate"), "开始日期")
 	if err != nil {
 		return nil, err
 	}
-	endDate, err := normalizeDateKey(object["endDate"], "结束日期")
+	endDate, err := normalizeDateKey(object["endDate"], objectKeyPresent(object, "endDate"), "结束日期")
 	if err != nil {
 		return nil, err
 	}
@@ -285,9 +331,13 @@ func normalizeScheduleDateRange(input any) (*ScheduleDateRange, error) {
 	return &ScheduleDateRange{StartDate: startDate, EndDate: endDate}, nil
 }
 
-func normalizeScheduleExceptions(input any) ([]ScheduleException, error) {
-	if input == nil {
+func normalizeScheduleExceptions(input any, present bool) ([]ScheduleException, error) {
+	if !present {
 		return nil, nil
+	}
+	if input == nil {
+		// Optional-but-not-nullable: explicit null is a zod-level rejection.
+		return nil, &ValidationError{Message: patchTypeIssue("array", nil)}
 	}
 	list, ok := input.([]any)
 	if !ok {
@@ -318,7 +368,7 @@ func normalizeScheduleException(input any) (ScheduleException, error) {
 	if err := assertOnlyKeys(object, []string{"date", "action", "windows"}, "API Key 时间计划例外日期"); err != nil {
 		return ScheduleException{}, err
 	}
-	date, err := normalizeDateKey(object["date"], "例外日期")
+	date, err := normalizeDateKey(object["date"], objectKeyPresent(object, "date"), "例外日期")
 	if err != nil {
 		return ScheduleException{}, err
 	}
@@ -329,19 +379,31 @@ func normalizeScheduleException(input any) (ScheduleException, error) {
 	if action != scheduleExceptionAllow && action != scheduleExceptionDeny {
 		return ScheduleException{}, &ValidationError{Message: "API Key 时间计划例外动作无效"}
 	}
-	if action == scheduleExceptionDeny && object["windows"] != nil {
+	windows, windowsPresent := object["windows"]
+	if action == scheduleExceptionDeny && windowsPresent {
+		if windows == nil {
+			// zod rejects the null array before superRefine runs.
+			return ScheduleException{}, &ValidationError{Message: patchTypeIssue("array", nil)}
+		}
+		// windows === undefined is the only allowed deny shape.
 		return ScheduleException{}, &ValidationError{Message: "API Key 时间计划拒绝例外不能配置允许时段"}
 	}
 	if action == scheduleExceptionAllow {
-		windows, windowErr := normalizeScheduleWindows(object["windows"], false)
+		if !windowsPresent {
+			return ScheduleException{}, &ValidationError{Message: "API Key 时间计划允许例外至少需要一个允许时段"}
+		}
+		if windows == nil {
+			return ScheduleException{}, &ValidationError{Message: patchTypeIssue("array", nil)}
+		}
+		allowWindows, windowErr := normalizeScheduleWindows(windows, false)
 		if windowErr != nil {
 			return ScheduleException{}, windowErr
 		}
-		if len(windows) == 0 {
+		if len(allowWindows) == 0 {
 			return ScheduleException{}, &ValidationError{Message: "API Key 时间计划允许例外至少需要一个允许时段"}
 		}
-		stripped := make([]ScheduleWindow, 0, len(windows))
-		for _, window := range windows {
+		stripped := make([]ScheduleWindow, 0, len(allowWindows))
+		for _, window := range allowWindows {
 			stripped = append(stripped, ScheduleWindow{Start: window.Start, End: window.End})
 		}
 		return ScheduleException{Date: date, Action: action, Windows: stripped}, nil
@@ -349,9 +411,12 @@ func normalizeScheduleException(input any) (ScheduleException, error) {
 	return ScheduleException{Date: date, Action: action}, nil
 }
 
-func normalizeDateKey(value any, label string) (string, error) {
-	if value == nil {
+func normalizeDateKey(value any, present bool, label string) (string, error) {
+	if !present {
 		return "", nil
+	}
+	if value == nil {
+		return "", &ValidationError{Message: patchTypeIssue("string", nil)}
 	}
 	text, ok := value.(string)
 	if !ok || !scheduleDatePattern.MatchString(strings.TrimSpace(text)) {
@@ -363,6 +428,13 @@ func normalizeDateKey(value any, label string) (string, error) {
 		return "", &ValidationError{Message: "API Key 时间计划" + label + "无效"}
 	}
 	return date, nil
+}
+
+// objectKeyPresent distinguishes a missing JSON key (undefined in Node) from
+// an explicit null: Go maps collapse both to a nil lookup.
+func objectKeyPresent(object map[string]any, key string) bool {
+	_, exists := object[key]
+	return exists
 }
 
 func assertOnlyKeys(value map[string]any, allowed []string, label string) error {

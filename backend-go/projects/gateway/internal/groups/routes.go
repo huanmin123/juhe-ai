@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,15 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/groups/options", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.options(w, r, adminScope(r))
 	})))
+	k.Register("GET "+prefix+"/groups/authorization-options", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.authorizationOptions(w, r, adminScope(r))
+	})))
+	k.Register("GET "+prefix+"/groups/account-options", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.accountOptions(w, r, adminScope(r))
+	})))
+	k.Register("GET "+prefix+"/groups/route-strategy-options", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.routeStrategyOptions(w, r, adminScope(r))
+	})))
 	k.Register("GET "+prefix+"/groups/{id}", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.find(w, r, adminScope(r))
 	})))
@@ -52,6 +62,15 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	})))
 	k.Register("GET "+prefix+"/my-groups/options", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.options(w, r, selfScope(r))
+	})))
+	k.Register("GET "+prefix+"/my-groups/authorization-options", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.authorizationOptions(w, r, selfScope(r))
+	})))
+	k.Register("GET "+prefix+"/my-groups/account-options", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.accountOptions(w, r, selfScope(r))
+	})))
+	k.Register("GET "+prefix+"/my-groups/route-strategy-options", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.routeStrategyOptions(w, r, selfScope(r))
 	})))
 	k.Register("GET "+prefix+"/my-groups/{id}", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.find(w, r, selfScope(r))
@@ -85,20 +104,33 @@ func selfScope(r *http.Request) AccessScope {
 	return AccessScope{ViewerID: auth.SystemAccountID}
 }
 
-func parseIntOr(raw string, fallback int) int {
-	if raw == "" {
+// listPageQuery mirrors parseGroupListOptions: integerQueryValue turns
+// absent/non-integer values into the defaults; the store clamps pageSize to
+// 1..500 (default 50) and page to 1..floor(1000/pageSize).
+func listPageQuery(query url.Values) (int, int) {
+	return integerQueryValue(query.Get("page"), 1), integerQueryValue(query.Get("pageSize"), 50)
+}
+
+// integerQueryValue mirrors shared/query-values.ts integerQueryValue followed
+// by the store-side integer clamp: non-integer text falls back to the default,
+// integers below 1 clamp to 1, integers above max clamp to max.
+func integerQueryValue(raw string, fallback int) int {
+	text := strings.TrimSpace(raw)
+	if text == "" {
 		return fallback
 	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 1 {
+	value, err := strconv.Atoi(text)
+	if err != nil {
 		return fallback
+	}
+	if value < 1 {
+		return 1
 	}
 	return value
 }
 
 func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) {
-	page := parseIntOr(r.URL.Query().Get("page"), 1)
-	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), 20)
+	page, pageSize := listPageQuery(r.URL.Query())
 	result, err := d.Store.ListPage(r.Context(), access, page, pageSize, r.URL.Query().Get("keyword"))
 	if err != nil {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
@@ -120,7 +152,9 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, access AccessScope) 
 	kernel.WriteOK(w, detail, "")
 }
 
-// createBody validates the route payload (Node groupSchema.strict()).
+// createBody validates the route payload (Node groupSchema.strict()): every
+// optional field rejects null (zod optional accepts only undefined) and the
+// schedulingPolicy object runs the strict per-key int/range/enum checks.
 func createBody(body map[string]any) (MutationInput, bool) {
 	input := MutationInput{}
 	for key := range body {
@@ -140,30 +174,30 @@ func createBody(body map[string]any) (MutationInput, bool) {
 	}
 	input.Name = &name
 	input.ProviderCode = &providerCode
-	if value, exists := body["description"]; exists && value != nil {
+	if value, exists := body["description"]; exists {
 		text, isString := value.(string)
 		if !isString {
 			return MutationInput{}, false
 		}
 		input.Description = &text
 	}
-	if value, exists := body["enabled"]; exists && value != nil {
+	if value, exists := body["enabled"]; exists {
 		enabled, isBool := value.(bool)
 		if !isBool {
 			return MutationInput{}, false
 		}
 		input.Enabled = &enabled
 	}
-	if value, exists := body["groupType"]; exists && value != nil {
+	if value, exists := body["groupType"]; exists {
 		text, isString := value.(string)
 		if !isString || (text != GroupTypePersonal && text != GroupTypeHighConcurrency) {
 			return MutationInput{}, false
 		}
 		input.GroupType = &text
 	}
-	if value, exists := body["schedulingPolicy"]; exists && value != nil {
+	if value, exists := body["schedulingPolicy"]; exists {
 		policy, isObject := value.(map[string]any)
-		if !isObject {
+		if !isObject || !validateSchedulingPolicyInput(policy) {
 			return MutationInput{}, false
 		}
 		input.SchedulingPolicy = policy
@@ -344,47 +378,48 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope)
 	}, "")
 }
 
-// patchBody mirrors groupPatchSchema.partial(): every field is optional.
+// patchBody mirrors groupPatchSchema.partial(): every field is optional and
+// null is rejected exactly like the create schema.
 func patchBody(body map[string]any) MutationInput {
 	input := MutationInput{}
-	if value, exists := body["name"]; exists && value != nil {
+	if value, exists := body["name"]; exists {
 		text, isString := value.(string)
 		if !isString || strings.TrimSpace(text) == "" {
 			return MutationInput{}
 		}
 		input.Name = &text
 	}
-	if value, exists := body["providerCode"]; exists && value != nil {
+	if value, exists := body["providerCode"]; exists {
 		text, isString := value.(string)
 		if !isString || strings.TrimSpace(text) == "" {
 			return MutationInput{}
 		}
 		input.ProviderCode = &text
 	}
-	if value, exists := body["description"]; exists && value != nil {
+	if value, exists := body["description"]; exists {
 		text, isString := value.(string)
 		if !isString {
 			return MutationInput{}
 		}
 		input.Description = &text
 	}
-	if value, exists := body["enabled"]; exists && value != nil {
+	if value, exists := body["enabled"]; exists {
 		enabled, isBool := value.(bool)
 		if !isBool {
 			return MutationInput{}
 		}
 		input.Enabled = &enabled
 	}
-	if value, exists := body["groupType"]; exists && value != nil {
+	if value, exists := body["groupType"]; exists {
 		text, isString := value.(string)
 		if !isString || (text != GroupTypePersonal && text != GroupTypeHighConcurrency) {
 			return MutationInput{}
 		}
 		input.GroupType = &text
 	}
-	if value, exists := body["schedulingPolicy"]; exists && value != nil {
+	if value, exists := body["schedulingPolicy"]; exists {
 		policy, isObject := value.(map[string]any)
-		if !isObject {
+		if !isObject || !validateSchedulingPolicyInput(policy) {
 			return MutationInput{}
 		}
 		input.SchedulingPolicy = policy
@@ -421,6 +456,20 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 				After: summarizeAffectedRouteStrategies(result.AffectedRouteStrategies),
 			})
 		}
+		var metadata json.RawMessage
+		if len(result.AffectedRouteStrategies) > 0 {
+			sample := result.AffectedRouteStrategies
+			if len(sample) > 20 {
+				sample = sample[:20]
+			}
+			document, marshalErr := json.Marshal(map[string]any{
+				"affectedRouteStrategyCount": len(result.AffectedRouteStrategies),
+				"affectedRouteStrategies":    sample,
+			})
+			if marshalErr == nil {
+				metadata = document
+			}
+		}
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID:          auth.SystemAccountID,
 			ActorUsername:                 auth.Username,
@@ -436,6 +485,7 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 			ResourceName:                  resourceName,
 			Summary:                       "删除分组：" + resourceName,
 			Changes:                       changes,
+			Metadata:                      metadata,
 			Viewers: []authsys.OperationLogViewer{
 				{SystemAccountID: result.OwnerSystemAccountID, Reason: "resource_owner"},
 			},
@@ -512,7 +562,7 @@ func summarizeAffectedRouteStrategies(changes []RouteStrategyChange) string {
 			removedName = change.RemovedGroupID
 		}
 		removedText := "移除分组 " + removedName
-		if change.RemovedBindingStatus == "disabled" {
+		if change.RemovedBindingStatus != nil && *change.RemovedBindingStatus == "disabled" {
 			removedText = "移除停用分组 " + removedName
 		}
 		sample = append(sample, change.RouteStrategyName+"："+removedText)

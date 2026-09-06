@@ -2,6 +2,7 @@ package accountquality
 
 import (
 	"context"
+	"errors"
 )
 
 // RefreshRunner 承载 scheduled 任务 account-quality-refresh
@@ -15,6 +16,7 @@ type RefreshRunner struct {
 	precheckBatch int
 	offset        int
 	concurrency   QueueConcurrency
+	ingest        IngestDrainGate
 }
 
 // RefreshDeps 组装 runner。
@@ -27,6 +29,12 @@ type RefreshDeps struct {
 	Concurrency QueueConcurrency
 	// PrecheckBatchSize 为空取默认 10（Node runtimeConfig 默认）。
 	PrecheckBatchSize int
+	// IngestGate 对应 Node deps.ensureUsageRecordsIngestedBeforeStatsAggregation
+	// （account-probe-jobs.ts:46，必填依赖）：统计刷新前排干门控，未排干时
+	// 返回错误跳过本轮，避免统计游标越过排队记录。nil 在 Run 时报错
+	// （Node 依赖缺失等价任务失败，不静默降级）。组合根用 internal/ingestgate
+	// 构造；测试注入桩。
+	IngestGate IngestDrainGate
 }
 
 // NewRefreshRunner 构建 runner。offset 状态在进程内保持（与 Node 模块级
@@ -48,16 +56,24 @@ func NewRefreshRunner(deps RefreshDeps) *RefreshRunner {
 		precheck:      deps.Precheck,
 		precheckBatch: batch,
 		concurrency:   deps.Concurrency,
+		ingest:        deps.IngestGate,
 	}
 }
 
 // Run 是 runAccountQualityRefresh 的移植：
+// 0) ingest 排干门控（Node ensureUsageRecordsIngestedBeforeStatsAggregation）
 // 1) 读取 accountQualityWindowMinutes
 // 2) 刷新质量统计并按 offset 拉取失败候选
 // 3) offset 回绕规则：候选数 < 批大小时归零，否则前移
 // 4) 候选逐个入队（去重跳过）
 // 5) 有刷新/删除/候选时清网关运行时缓存并打点 info 日志
 func (r *RefreshRunner) Run(ctx context.Context) error {
+	if r.ingest == nil {
+		return errors.New("account-quality-refresh 未注入 ingest 排干门控（Node ensureUsageRecordsIngestedBeforeStatsAggregation 必填依赖）")
+	}
+	if err := r.ingest.EnsureUsageRecordsIngested(ctx); err != nil {
+		return err
+	}
 	windowMinutes := bounded(r.settings("accountQualityWindowMinutes", AccountQualityWindowMinMinutes, AccountQualityWindowMaxMinutes), AccountQualityWindowMinMinutes, AccountQualityWindowMaxMinutes)
 	result, err := r.store.RefreshFromUsage(ctx, RefreshInput{
 		WindowMinutes: windowMinutes,

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -55,7 +56,7 @@ func RequestContextMiddleware(trustProxyCount int) func(http.Handler) http.Handl
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := &RequestContext{
-				TraceID:   normalizeTraceID(r.Header.Get("traceparent")),
+				TraceID:   normalizeTraceID(r),
 				RequestID: newUUID(),
 				ClientIP:  ExtractClientIP(r, trustProxyCount),
 				Method:    r.Method,
@@ -65,25 +66,86 @@ func RequestContextMiddleware(trustProxyCount int) func(http.Handler) http.Handl
 			if ctx.TraceID == "" {
 				ctx.TraceID = newUUID()
 			}
+			// requestContextMiddleware sets x-trace-id on every response
+			// before the chain descends, so success, business errors and
+			// gateway errors all carry the trace back to the client.
+			w.Header().Set("X-Trace-Id", ctx.TraceID)
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, ctx)))
 		})
 	}
 }
 
-func normalizeTraceID(traceparent string) string {
-	// traceparent: version-traceid-parentid-flags (trace id = 32 hex chars)
-	parts := strings.Split(strings.TrimSpace(traceparent), "-")
-	if len(parts) < 3 {
+// normalizeTraceID mirrors request-context.ts normalizeTraceId: strict
+// traceparent parsing first, then the first legal x-trace-id, then
+// x-correlation-id. An empty result lets the caller generate a UUID.
+func normalizeTraceID(r *http.Request) string {
+	if traceParent := ParseTraceParent(r.Header.Get("Traceparent")); traceParent != "" {
+		return traceParent
+	}
+	if traceID := normalizeHeaderID(r.Header.Get("X-Trace-Id")); traceID != "" {
+		return traceID
+	}
+	return normalizeHeaderID(r.Header.Get("X-Correlation-Id"))
+}
+
+// traceParentPattern mirrors the strict four-segment traceparent grammar of
+// request-context.ts parseTraceParent (version-traceid-parentid-flags with
+// 2/32/16/2 hex characters).
+var traceParentPattern = regexp.MustCompile(`^([\da-fA-F]{2})-([\da-fA-F]{32})-([\da-fA-F]{16})-([\da-fA-F]{2})$`)
+
+// ParseTraceParent mirrors request-context.ts parseTraceParent: version ff,
+// all-zero trace ids and all-zero parent ids are rejected; a valid trace id
+// is returned lowercased.
+func ParseTraceParent(value string) string {
+	if value == "" {
 		return ""
 	}
-	traceID := strings.ToLower(parts[1])
-	if len(traceID) != 32 {
+	match := traceParentPattern.FindStringSubmatch(strings.TrimSpace(value))
+	if match == nil {
 		return ""
 	}
-	if _, err := hex.DecodeString(traceID); err != nil {
+	if strings.ToLower(match[1]) == "ff" {
 		return ""
 	}
-	return traceID
+	if isAllZeroHex(match[2]) || isAllZeroHex(match[3]) {
+		return ""
+	}
+	return strings.ToLower(match[2])
+}
+
+func isAllZeroHex(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char != '0' {
+			return false
+		}
+	}
+	return true
+}
+
+// headerIDPattern mirrors normalizeHeaderId's character set.
+var headerIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
+
+// normalizeHeaderID mirrors request-context.ts normalizeHeaderId: the first
+// non-empty comma value, trimmed, at most 128 characters of
+// [A-Za-z0-9._:-].
+func normalizeHeaderID(value string) string {
+	text := firstHeaderValue(value)
+	if text == "" || len(text) > 128 || !headerIDPattern.MatchString(text) {
+		return ""
+	}
+	return text
+}
+
+func firstHeaderValue(value string) string {
+	for _, item := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // ExtractClientIP mirrors extractClientIp: with trusted proxies, req.ip is

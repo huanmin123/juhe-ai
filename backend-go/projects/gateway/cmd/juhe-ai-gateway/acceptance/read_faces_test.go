@@ -93,9 +93,11 @@ func TestAcceptanceReadFaces(t *testing.T) {
 		client.do(http.MethodPatch, "/__aisys__/api/proxies/"+proxyID, map[string]any{
 			"expectedUpdatedAt": dataString(created, "updatedAt"), "host": "127.0.0.3",
 		}, wantStatus(http.StatusConflict))
-		// 删除 → 空体 2xx（Go kernel 对空体写实测 200，与 accounts remove /
-		// announcements delete 同一先例；再删 → 404）。
-		client.do(http.MethodDelete, "/__aisys__/api/proxies/"+proxyID, nil, wantStatus(http.StatusOK))
+		// 删除 → Node res.status(204).send()（proxies.routes.ts:278）；空体
+		// 显式 204，kernel 修复后如实转发（再删 → 404）。历史 kernel 对
+		// 「只写状态不写体」的响应从不转发状态、由 net/http 兜底 200，验收
+		// 曾把该意外行为冻结为契约；BUG-0154 修复后恢复 Node 204。
+		client.do(http.MethodDelete, "/__aisys__/api/proxies/"+proxyID, nil, wantStatus(http.StatusNoContent))
 		client.do(http.MethodDelete, "/__aisys__/api/proxies/"+proxyID, nil, wantStatus(http.StatusNotFound))
 		// schema 失败 → 400 代理参数无效（经 localizer 保留中文）。
 		client.do(http.MethodPost, "/__aisys__/api/proxies", map[string]any{

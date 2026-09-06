@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -111,11 +112,13 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 	// Node's list route reads the filter directly (no scope-query parsing):
 	// a blank systemAccountId is simply ignored.
 	query := r.URL.Query()
+	pageValue, pageSet := jsQueryInteger(query.Get("page"))
+	pageSizeValue, pageSizeSet := jsQueryInteger(query.Get("pageSize"))
 	options := ListOptions{
-		PageSet:         queryHasInteger(query.Get("page")),
-		Page:            queryInteger(query.Get("page")),
-		PageSizeSet:     queryHasInteger(query.Get("pageSize")),
-		PageSize:        queryInteger(query.Get("pageSize")),
+		PageSet:         pageSet,
+		Page:            pageValue,
+		PageSizeSet:     pageSizeSet,
+		PageSize:        pageSizeValue,
 		Keyword:         strings.TrimSpace(query.Get("keyword")),
 		Status:          apiKeyStatusQueryValue(query.Get("status")),
 		RouteStrategyID: strings.TrimSpace(query.Get("routeStrategyId")),
@@ -600,8 +603,10 @@ func createBody(body map[string]any) (CreateInput, string) {
 		if !isString {
 			return CreateInput{}, "API Key 参数无效"
 		}
-		if len([]rune(strings.TrimSpace(text))) > 200 {
-			return CreateInput{}, "API Key 说明不能超过 200 个字符"
+		// z.string().trim().max(200): the cap counts UTF-16 code units and the
+		// issue message is the zod default the create route renders.
+		if utf16Length(strings.TrimSpace(text)) > 200 {
+			return CreateInput{}, "String must contain at most 200 character(s)"
 		}
 		input.Description = &text
 	}
@@ -671,18 +676,99 @@ func apiKeyStatusQueryValue(value string) string {
 	}
 }
 
-// queryHasInteger/queryInteger mirror integerQueryValue: blank or non-integer
-// text counts as absent.
-func queryHasInteger(raw string) bool {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return false
-	}
-	_, err := strconv.Atoi(trimmed)
-	return err == nil
+// jsTrim trims the ECMAScript Whitespace set (String.prototype.trim) — note
+// it is NOT identical to Go's unicode.IsSpace (e.g. U+0085 is JS-significant).
+func jsTrim(text string) string {
+	return strings.TrimFunc(text, func(r rune) bool {
+		if r <= 0x20 {
+			return r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r' || r == ' '
+		}
+		switch r {
+		case 0x00a0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
+			return true
+		}
+		return r >= 0x2000 && r <= 0x200a
+	})
 }
 
-func queryInteger(raw string) int {
-	value, _ := strconv.Atoi(strings.TrimSpace(raw))
-	return value
+// jsNumber mirrors the Number(string) conversion (ECMA-262 StringToNumber):
+// radix prefixes without sign, exact "Infinity" spellings, decimal literals
+// (including "5.", ".5", exponents), everything else NaN.
+func jsNumber(text string) (float64, bool) {
+	switch text {
+	case "Infinity", "+Infinity":
+		return math.Inf(1), true
+	case "-Infinity":
+		return math.Inf(-1), true
+	}
+	if len(text) > 1 && text[0] == '0' {
+		var base, digits string
+		switch lower := strings.ToLower(text); lower[1] {
+		case 'x':
+			base, digits = "0123456789abcdef", text[2:]
+		case 'o':
+			base, digits = "01234567", text[2:]
+		case 'b':
+			base, digits = "01", text[2:]
+		}
+		if base != "" {
+			if digits == "" {
+				return 0, false
+			}
+			value, err := strconv.ParseInt(digits, len(base), 64)
+			if err != nil {
+				if errors.Is(err, strconv.ErrRange) {
+					// JS keeps rounding huge radix literals into finite
+					// integers; the saturating value stays on the same side
+					// of every downstream clamp.
+					return float64(math.MaxInt64), true
+				}
+				return 0, false
+			}
+			return float64(value), true
+		}
+	}
+	if strings.ContainsAny(text, "_") {
+		return 0, false
+	}
+	// Reject the "inf"/"infinity"/"nan" spellings strconv accepts but JS
+	// Number() does not (exact Infinity forms were handled above).
+	lower := strings.ToLower(text)
+	if strings.ContainsAny(lower, "in") {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		if errors.Is(err, strconv.ErrRange) {
+			// Overflow → ±Infinity (integer check then rejects it).
+			return value, true
+		}
+		return 0, false
+	}
+	return value, true
+}
+
+// jsQueryInteger mirrors integerQueryValue: JS Number(text) + Number.isInteger.
+// "1e2" → 100 and "1.0" → 1 are valid; blank, NaN, ±Infinity and fractional
+// results count as absent.
+func jsQueryInteger(raw string) (int, bool) {
+	trimmed := jsTrim(raw)
+	if trimmed == "" {
+		return 0, false
+	}
+	value, ok := jsNumber(trimmed)
+	if !ok || math.IsInf(value, 0) || value != math.Trunc(value) {
+		return 0, false
+	}
+	// Saturate beyond the int range; the downstream 1..window clamps make the
+	// saturated value behave exactly like Node's huge finite integers.
+	const maxInt64 = float64(math.MaxInt64)
+	const minInt64 = -maxInt64
+	if value >= maxInt64 {
+		return math.MaxInt64, true
+	}
+	if value <= minInt64 {
+		return math.MinInt64, true
+	}
+	return int(value), true
 }

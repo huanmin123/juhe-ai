@@ -17,7 +17,7 @@ func TestGroupOptionsAndEditBasicLocksIn(t *testing.T) {
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-opt-1', ?, 'Alpha 选项组', 'openai', NULL, 1, 1, 'personal', ?, ?)`, adminID, now, now)
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES ('grp-opt-2', ?, 'Beta 选项组', 'gemini', '第二个', 0, 0, 'high_concurrency', '{"concurrencyLimit":9}', ?, ?)`, adminID, now, now)
+		VALUES ('grp-opt-2', ?, 'Beta 选项组', 'gemini', '第二个', 0, 0, 'high_concurrency', ?, ?, ?)`, adminID, storedPolicyJSON(t, map[string]any{"clientIpConcurrencyLimit": 9}), now, now)
 
 	// purpose=select renders {id,name} pairs only.
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/groups/options?purpose=select", "")
@@ -57,7 +57,7 @@ func TestGroupOptionsAndEditBasicLocksIn(t *testing.T) {
 		t.Fatalf("type/access mismatch: %v", summary)
 	}
 	policy := summary["schedulingPolicy"].(map[string]any)
-	if policy["concurrencyLimit"].(float64) != 9 {
+	if policy["clientIpConcurrencyLimit"].(float64) != 9 {
 		t.Fatalf("scheduling policy mismatch: %v", policy)
 	}
 	permissions := summary["permissions"].(map[string]any)

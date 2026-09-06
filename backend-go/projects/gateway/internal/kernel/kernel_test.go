@@ -169,9 +169,13 @@ func TestCompressionThresholdAndSkips(t *testing.T) {
 	k := newTestKernel(t, nil)
 	large := strings.Repeat("juhe", 512) // 2048 bytes
 	k.RegisterFunc("GET /large", func(w http.ResponseWriter, r *http.Request) {
+		// Node compression.filter: a response without Content-Type is never
+		// compressible, so the golden declares text/plain like res.send.
+		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte(large))
 	})
 	k.RegisterFunc("GET /small", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("tiny"))
 	})
 	k.RegisterFunc("GET /stream", func(w http.ResponseWriter, r *http.Request) {

@@ -799,7 +799,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// maintenance reset endpoint reaches the gateway runtime surfaces
 		// through this bridge. With the chain disabled the port stays nil and
 		// the endpoint keeps its self-contained degraded contract.
-		accountStore.SetRuntimeResetEffects(newAccountsRuntimeResetBridge(composed, settingValue, chainServices))
+		resetBridge, resetBridgeErr := newAccountsRuntimeResetBridge(composed, settingValue, chainServices, cfg.Secret)
+		if resetBridgeErr != nil {
+			return nil, fmt.Errorf("compose accounts runtime reset bridge: %w", resetBridgeErr)
+		}
+		accountStore.SetRuntimeResetEffects(resetBridge)
 		// Shutdown order is LIFO: services registered first close last, after
 		// the chain drained its usage buffer.
 		composed.shutdowns = append(composed.shutdowns, chainServices.Close)

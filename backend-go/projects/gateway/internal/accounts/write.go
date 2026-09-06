@@ -18,6 +18,53 @@ type ModelMapping struct {
 	Enabled                *bool  `json:"enabled,omitempty"`
 }
 
+// Endpoint family enums of accountModelMappingSchema: an unknown value fails
+// the create/PATCH schema parse (400) instead of persisting an unmappable row.
+var (
+	accountSourceEndpointFamilies = map[string]bool{
+		"chat_completions": true, "responses": true, "messages": true,
+		"generate_content": true, "stream_generate_content": true,
+	}
+	accountUpstreamEndpointFamilies = map[string]bool{
+		"chat_completions": true, "responses": true, "messages": true,
+		"generate_content": true,
+	}
+)
+
+// normalizeModelMappingBody mirrors accountModelMappingSchema.parse: the four
+// trimmed string fields are required and the endpoint families are strict
+// enums. The message matches the route-family 400 copy.
+func normalizeModelMappingBody(object map[string]any) (ModelMapping, bool) {
+	mapping := ModelMapping{
+		SourceModel:            strings.TrimSpace(textString(object["sourceModel"])),
+		SourceEndpointFamily:   strings.TrimSpace(textString(object["sourceEndpointFamily"])),
+		UpstreamModel:          strings.TrimSpace(textString(object["upstreamModel"])),
+		UpstreamEndpointFamily: strings.TrimSpace(textString(object["upstreamEndpointFamily"])),
+	}
+	if mapping.SourceModel == "" || mapping.UpstreamModel == "" ||
+		mapping.SourceEndpointFamily == "" || mapping.UpstreamEndpointFamily == "" {
+		return ModelMapping{}, false
+	}
+	if !accountSourceEndpointFamilies[mapping.SourceEndpointFamily] ||
+		!accountUpstreamEndpointFamilies[mapping.UpstreamEndpointFamily] {
+		return ModelMapping{}, false
+	}
+	if enabled, ok := object["enabled"].(bool); ok {
+		mapping.Enabled = &enabled
+	} else if value, exists := object["enabled"]; exists && value != nil {
+		return ModelMapping{}, false
+	}
+	// strict(): unknown keys fail the parse.
+	for key := range object {
+		switch key {
+		case "sourceModel", "sourceEndpointFamily", "upstreamModel", "upstreamEndpointFamily", "enabled":
+		default:
+			return ModelMapping{}, false
+		}
+	}
+	return mapping, true
+}
+
 var accountHealthCheckEndpointModes = map[string]bool{
 	"images_json": true, "chat_json": true, "chat_sse": true,
 	"responses_json": true, "responses_sse": true,
@@ -81,7 +128,14 @@ type CreateInput struct {
 	AvailabilitySchedule      any
 	Notes                     *string
 	BalanceQueryEnabled       bool
-	BalanceQueryConfig        any
+	// BalanceQueryConfigCanonical carries the normalized config JSON (the
+	// create body parser already ran normalizeAccountBalanceConfig, exactly
+	// like the Node route); nil means the request did not include a config.
+	BalanceQueryConfigCanonical *string
+	// TemporaryUnavailableContinuousProbeEnabled mirrors the
+	// normalizeOptionalBooleanInput tri-state: nil = not provided (defaults
+	// to enabled), false persists the explicit opt-out.
+	TemporaryUnavailableContinuousProbeEnabled *bool
 }
 
 // providerProfile mirrors requireEnabledProviderProtocolProfileInClientAsync.
@@ -328,6 +382,15 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// Node accounts.routes.ts dispatches the initial probe right after the
+	// create transaction succeeds and before the 201 is rendered. A nil
+	// effects port keeps the create self-contained (tests); the probe reason
+	// mirrors Node's 'activation'.
+	if result.InitialHealthCheckRequired {
+		if effects := s.runtimeResetEffectsOrNil(); effects != nil {
+			effects.DispatchAccountHealthCheck(result.ID, "activation")
+		}
+	}
 	return result, nil
 }
 
@@ -558,18 +621,25 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		}
 	}
 
-	// Balance query columns (probe routes are a companion slice; the write
-	// keeps the columns contract-complete).
-	balanceQueryEnabled := 0
+	// Balance query columns: the body parser already normalized the config
+	// and validated the capability boundary (Node accounts.routes.ts
+	// validateAccountBalanceCapability + normalizeAccountBalanceConfig); the
+	// write keeps the normalized JSON contract-complete.
+	balanceQueryEnabledInt := 0
 	balanceQueryConfigJSON := "{}"
 	if input.BalanceQueryEnabled {
-		if input.BalanceQueryConfig == nil {
+		if input.BalanceQueryConfigCanonical == nil {
 			return nil, &ValidationError{Message: "开启上游余额查询时必须选择查询类型"}
 		}
-		balanceQueryEnabled = 1
-		if raw, err := json.Marshal(input.BalanceQueryConfig); err == nil {
-			balanceQueryConfigJSON = string(raw)
-		}
+		balanceQueryEnabledInt = 1
+		balanceQueryConfigJSON = *input.BalanceQueryConfigCanonical
+	}
+
+	// Temporary-unavailable continuous probe switch: absent = enabled (1),
+	// explicit false persists 0 (normalizeOptionalBooleanInput fallback true).
+	temporaryProbeEnabled := 1
+	if input.TemporaryUnavailableContinuousProbeEnabled != nil && !*input.TemporaryUnavailableContinuousProbeEnabled {
+		temporaryProbeEnabled = 0
 	}
 
 	// Tags.
@@ -594,15 +664,17 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable,
 		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message, health_check_model, health_check_endpoint_mode,
-		 balance_query_enabled, balance_query_config_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		 balance_query_enabled, balance_query_config_json, temporary_unavailable_continuous_probe_enabled,
+		 created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, systemAccountID, providerCode, profile.id, profile.protocolCode, profile.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit,
 		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), "openai_standard", boolInt(schedulable),
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage, healthCheckModel, healthCheckEndpointMode,
-		balanceQueryEnabled, balanceQueryConfigJSON, nowISO, nowISO); err != nil {
+		balanceQueryEnabledInt, balanceQueryConfigJSON, temporaryProbeEnabled,
+		nowISO, nowISO); err != nil {
 		if duplicate := duplicateAccountNameError(err, strings.TrimSpace(input.Name)); duplicate != nil {
 			return nil, duplicate
 		}
@@ -628,9 +700,19 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if _, err := s.replaceAccountTags(ctx, tx, id, systemAccountID, tagNames, nowISO); err != nil {
 		return nil, err
 	}
+	// dispatchInitialAccountHealthCheck condition (Node
+	// account-health-check-dispatch.service.ts): a pending_test account always
+	// probes once; a freshly saved active single-Key API Key account without
+	// balance query probes once so the balance detector can classify it.
+	initialHealthCheck := nextStatus == "pending_test" ||
+		(nextStatus == "active" && accountType == "api_key" &&
+			EffectiveAccountApiKeyCount(credentials) == 1 &&
+			balanceQueryEnabledInt != 1 &&
+			balanceQueryConfigJSON == "{}")
 	return &CreateResult{
 		ID: id, Status: nextStatus, ConfigRevision: 1, DispatchRevision: 1,
 		OwnerSystemAccountID: systemAccountID, Name: strings.TrimSpace(input.Name),
+		InitialHealthCheckRequired: initialHealthCheck,
 	}, nil
 }
 
@@ -644,6 +726,10 @@ type CreateResult struct {
 	DispatchRevision     int64  `json:"dispatchRevision"`
 	OwnerSystemAccountID string `json:"-"`
 	Name                 string `json:"-"`
+	// InitialHealthCheckRequired mirrors dispatchInitialAccountHealthCheck's
+	// activation condition; the Create caller dispatches the probe after the
+	// commit (reason='activation').
+	InitialHealthCheckRequired bool `json:"-"`
 }
 
 func isAccountExpired(accountExpiresAt string, now time.Time) bool {
@@ -811,6 +897,17 @@ func anySliceOrNil(values []string) any {
 	if len(values) == 0 {
 		return nil
 	}
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
+// stringSliceToAny adapts an ID slice for IN (...) placeholder lists; unlike
+// anySliceOrNil it keeps an empty slice as an empty (never nil) driver slice,
+// which is what the delete/tombstone clauses rely on.
+func stringSliceToAny(values []string) []any {
 	out := make([]any, 0, len(values))
 	for _, value := range values {
 		out = append(out, value)

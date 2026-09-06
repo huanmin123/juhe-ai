@@ -90,11 +90,15 @@ func newTestEnv(t *testing.T) *testEnv {
 		`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, deleted_at TEXT, created_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique ON groups(system_account_id, provider_code, name)`,
-		`CREATE TABLE IF NOT EXISTS group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id))`,
+		`CREATE TABLE IF NOT EXISTS group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, account_authorization_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id))`,
 		`CREATE TABLE IF NOT EXISTS group_authorization_settings (authorization_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		// Real resource_authorizations shape (Node business-schema.ts, same
 		// DDL the authz slice tests use).
 		`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
+		// Sources read by the list/detail authorization summary (Node
+		// authorization-read-loaders.ts).
+		`CREATE TABLE IF NOT EXISTS resource_authorization_sources (id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL, source_type TEXT NOT NULL, source_team_id TEXT, status TEXT NOT NULL, activated_at TEXT, ended_at TEXT, ended_reason TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS system_teams (id TEXT PRIMARY KEY, name TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (group_id TEXT PRIMARY KEY, reason TEXT, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE IF NOT EXISTS route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
@@ -233,6 +237,39 @@ func (e *testEnv) bindRouteStrategy(t *testing.T, strategyID, ownerID, groupID, 
 
 func boolPtr(v bool) *bool { return &v }
 
+// storedPolicyJSON builds a full strict stored scheduling policy document
+// (the shape Node parseGroupSchedulingPolicyJson demands on read: every
+// stored key present, only stored keys present).
+func storedPolicyJSON(t *testing.T, overrides map[string]any) string {
+	t.Helper()
+	policy := map[string]any{
+		"mode":                            "balanced_fast",
+		"defaultSoftConcurrency":          5000,
+		"fastFirstEnabled":                true,
+		"fallbackOnQueueEnabled":          true,
+		"breakAffinityOnSoftLimit":        true,
+		"breakAffinityOnQueueWaitMs":      0,
+		"slowRequestThresholdMs":          30_000,
+		"firstOutputSlowThresholdMs":      15_000,
+		"recentTimeoutWindowSeconds":      120,
+		"recentTimeoutPenaltyThreshold":   2,
+		"maxQueueWaitMs":                  60_000,
+		"maxQueueSize":                    5000,
+		"perApiKeyQueueLimit":             5000,
+		"clientIpConcurrencyLimit":        0,
+		"clientIpConcurrencyOverflowMode": "reject",
+		"imageLaneMaxConcurrency":         0,
+	}
+	for key, value := range overrides {
+		policy[key] = value
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 func dataMap(t *testing.T, payload map[string]any) map[string]any {
 	t.Helper()
 	data, ok := payload["data"].(map[string]any)
@@ -257,11 +294,20 @@ func TestGroupAdminLifecycle(t *testing.T) {
 	if created["name"] != "alpha" || created["providerCode"] != "openai" ||
 		created["isDefault"] != false || created["canEdit"] != true || created["canDelete"] != true ||
 		created["groupType"] != "personal" || created["accessType"] != "owner" ||
-		created["memberCount"] != float64(0) || created["ownerSystemAccountId"] != adminID {
+		created["ownerSystemAccountId"] != adminID || created["canReturn"] != false {
 		t.Fatalf("create payload: %v", created)
 	}
-	if created["schedulingPolicy"] != nil {
-		t.Fatalf("personal group must not carry a scheduling policy: %v", created["schedulingPolicy"])
+	// The create list-item projection carries the eight counter accountStats
+	// only (no todayUsage/usage keys) and no memberCount/accountIds.
+	createStats := created["accountStats"].(map[string]any)
+	if len(createStats) != 8 || createStats["currentConcurrency"] != float64(0) {
+		t.Fatalf("create accountStats: %v", createStats)
+	}
+	if _, present := created["memberCount"]; present {
+		t.Fatalf("create payload must not carry memberCount: %v", created)
+	}
+	if _, present := created["schedulingPolicy"]; present {
+		t.Fatalf("personal group list item must omit schedulingPolicy: %v", created["schedulingPolicy"])
 	}
 
 	// Idempotent create → 409 (dedup guard).
@@ -331,19 +377,23 @@ func TestGroupAdminLifecycle(t *testing.T) {
 	env.bindAccount(t, adminID, alphaID, "acc-2", "active")
 	code, detail := env.do(t, http.MethodGet, "/__aisys__/api/groups/"+alphaID, "")
 	detailData := dataMap(t, detail)
-	if code != 200 || detailData["memberCount"] != float64(2) {
-		t.Fatalf("detail members: %d %v", code, detail)
+	if code != 200 {
+		t.Fatalf("detail: %d %v", code, detail)
 	}
 	accountIDs := detailData["accountIds"].([]any)
 	if len(accountIDs) != 2 || accountIDs[0] != "acc-1" {
 		t.Fatalf("accountIds: %v", accountIDs)
 	}
-	code, listed := env.do(t, http.MethodGet, "/__aisys__/api/groups", "")
-	for _, item := range dataMap(t, listed)["items"].([]any) {
-		itemMap := item.(map[string]any)
-		if itemMap["id"] == alphaID && itemMap["memberCount"] != float64(2) {
-			t.Fatalf("list memberCount: %v", itemMap)
-		}
+	// The owner summary overrides accountStats.total with the member count
+	// (Node buildGroupSummaries includeAccountIds branch).
+	if detailData["accountStats"].(map[string]any)["total"] != float64(2) {
+		t.Fatalf("detail accountStats.total: %v", detailData["accountStats"])
+	}
+	if _, present := detailData["memberCount"]; present {
+		t.Fatalf("detail payload must not carry memberCount: %v", detailData)
+	}
+	if detailData["permissions"].(map[string]any)["canDelete"] != true {
+		t.Fatalf("owner permissions: %v", detailData["permissions"])
 	}
 
 	// Optimistic locking.
@@ -603,8 +653,31 @@ func TestGroupPermissionMatrixAnonymousAndValidation(t *testing.T) {
 	}
 	code, badPolicy := env.do(t, http.MethodPost, "/__aisys__/api/groups",
 		`{"name":"policy-broken","providerCode":"openai","groupType":"high_concurrency","schedulingPolicy":{"defaultSoftConcurrency":0}}`)
-	if code != http.StatusBadRequest || !strings.Contains(badPolicy["message"].(string), "defaultSoftConcurrency") {
+	if code != http.StatusBadRequest || badPolicy["message"] != "分组参数无效" {
 		t.Fatalf("bad policy: %d %v", code, badPolicy)
+	}
+	// Route-level schema rejects null optional fields and null/float/unknown
+	// schedulingPolicy sub-keys exactly like the Node zod schema (BUG-0163
+	// null/子字段主张)。
+	code, nullDescription := env.do(t, http.MethodPost, "/__aisys__/api/groups",
+		`{"name":"null-desc","providerCode":"openai","description":null}`)
+	if code != http.StatusBadRequest || nullDescription["message"] != "分组参数无效" {
+		t.Fatalf("null description: %d %v", code, nullDescription)
+	}
+	code, nullSubKey := env.do(t, http.MethodPost, "/__aisys__/api/groups",
+		`{"name":"null-policy","providerCode":"openai","groupType":"high_concurrency","schedulingPolicy":{"defaultSoftConcurrency":null}}`)
+	if code != http.StatusBadRequest || nullSubKey["message"] != "分组参数无效" {
+		t.Fatalf("null policy sub-key: %d %v", code, nullSubKey)
+	}
+	unknownSubKey := `{"name":"unknown-policy","providerCode":"openai","groupType":"high_concurrency","schedulingPolicy":{"bogusKey":1}}`
+	code, unknownPolicy := env.do(t, http.MethodPost, "/__aisys__/api/groups", unknownSubKey)
+	if code != http.StatusBadRequest || unknownPolicy["message"] != "分组参数无效" {
+		t.Fatalf("unknown policy sub-key: %d %v", code, unknownPolicy)
+	}
+	code, nullEnabledPatch := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+createdID,
+		`{"expectedUpdatedAt":"2020-01-01T00:00:00.000Z","enabled":null}`)
+	if code != http.StatusBadRequest || nullEnabledPatch["message"] != "分组参数无效" {
+		t.Fatalf("null enabled patch: %d %v", code, nullEnabledPatch)
 	}
 
 	// Detail 404 for unknown ids on both surfaces.

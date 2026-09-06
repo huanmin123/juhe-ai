@@ -35,7 +35,7 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 	// per-grantee settings row disabling it (settings.enabled=0) and
 	// overriding group_type back to personal.
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES ('grp-auth', ?, 'Auth 授权组', 'anthropic', 1, 1, 'high_concurrency', '{"concurrencyLimit":7}', ?, ?)`, ownerID, now, now)
+		VALUES ('grp-auth', ?, 'Auth 授权组', 'anthropic', 1, 1, 'high_concurrency', ?, ?, ?)`, ownerID, storedPolicyJSON(t, map[string]any{"imageLaneMaxConcurrency": 7}), now, now)
 	// An enabled grant with a past expiry: still listed (the status guard is
 	// the only read filter) but cannot bind to an API key.
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
@@ -138,7 +138,8 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 	}
 	// The settings row carries a newer updated_at → wins the COALESCE.
 	env.exec(t, `UPDATE group_authorization_settings SET enabled = 1, group_type = 'high_concurrency',
-		scheduling_policy_json = '{"concurrencyLimit":9}', updated_at = ? WHERE authorization_id = 'authz-1'`, later)
+		scheduling_policy_json = ?, updated_at = ? WHERE authorization_id = 'authz-1'`,
+		storedPolicyJSON(t, map[string]any{"maxQueueWaitMs": 90_000}), later)
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/my-groups/grp-auth/edit-basic", "")
 	if code != http.StatusOK {
 		t.Fatalf("authorized edit-basic after override: %d %v", code, payload)
@@ -148,8 +149,8 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 		t.Fatalf("authorized edit override restore mismatch: %v", edit)
 	}
 	policy := edit["schedulingPolicy"].(map[string]any)
-	if policy["concurrencyLimit"].(float64) != 9 {
-		t.Fatalf("authorized edit policy override mismatch: %v", edit)
+	if policy["maxQueueWaitMs"].(float64) != 90_000 {
+		t.Fatalf("authorized edit policy override mismatch: %v", policy)
 	}
 	// A grantee-untouched field falls back to the group column: name.
 	if edit["name"] != "Auth 授权组" || edit["providerCode"] != "anthropic" {

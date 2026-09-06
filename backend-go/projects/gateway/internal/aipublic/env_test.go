@@ -128,6 +128,12 @@ var aipublicSchema = []string{
 		cooldown_retest_observation_started_at TEXT,
 		cooldown_retest_last_at TEXT,
 		cooldown_retest_last_status_code INTEGER,
+		last_health_check_at TEXT,
+		last_health_success_at TEXT,
+		last_health_check_status_code INTEGER,
+		last_health_check_error_code TEXT,
+		last_health_check_error_message TEXT,
+		last_health_check_trace_id TEXT,
 		temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
 		next_health_check_at TEXT,
 		balance_query_enabled INTEGER NOT NULL DEFAULT 0,
@@ -174,6 +180,16 @@ var aipublicSchema = []string{
 	`CREATE TABLE IF NOT EXISTS account_name_search_documents (
 		account_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, normalized_name TEXT NOT NULL, updated_at TEXT NOT NULL
 	)`,
+	// Health-input tombstone tables the delete path writes in the same
+	// transaction (accounts.Delete enqueueDeletedAccountHealthTombstones;
+	// Node account-delete-cleanup.repository.ts:259-275).
+	`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (account_id TEXT PRIMARY KEY, current_version INTEGER NOT NULL CHECK (current_version >= 1), reserved_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (event_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, input_version INTEGER NOT NULL CHECK (input_version >= 1), event_kind TEXT NOT NULL CHECK (event_kind IN ('snapshot', 'tombstone')), reason TEXT NOT NULL, config_revision INTEGER NOT NULL CHECK (config_revision >= 1), dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1), status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'published', 'failed', 'superseded')), claim_token TEXT, claimed_until TEXT, attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0), available_at TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (account_id, input_version))`,
+	// Authorization chain tables the delete path revokes in-transaction
+	// (accounts.Delete revokeAccountAuthorizationsForDeletedResource; Node
+	// account-delete-cleanup.repository.ts:145-148).
+	`CREATE TABLE IF NOT EXISTS resource_authorization_sources (id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL, source_type TEXT NOT NULL, source_team_id TEXT, status TEXT NOT NULL DEFAULT 'active', activated_at TEXT, ended_at TEXT, ended_reason TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS resource_authorization_grants (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS account_lock_states (
 		account_id TEXT PRIMARY KEY,
 		enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),

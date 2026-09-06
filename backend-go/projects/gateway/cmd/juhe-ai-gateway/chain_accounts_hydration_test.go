@@ -179,7 +179,9 @@ func TestChainAccountsSelectorHydratesFullSecret(t *testing.T) {
 	if diagnostics == nil {
 		t.Fatal("diagnostics missing")
 	}
-	if diagnostics.FinalLimit != 20 || diagnostics.ScanLimit != 200 || diagnostics.HydrationBatchCount != 1 {
+	// scan = final * 2 (Node openai-account-selector.types.ts:208
+	// gatewayDispatchAccountCandidateScanLimit = limit * 2).
+	if diagnostics.FinalLimit != 20 || diagnostics.ScanLimit != 40 || diagnostics.HydrationBatchCount != 1 {
 		t.Fatalf("diagnostics limits = %+v", diagnostics)
 	}
 	if diagnostics.CandidateRowCount != 2 || diagnostics.EligibleRowCount != 2 || diagnostics.FinalAccountCount != 2 {

@@ -109,10 +109,22 @@ func (k *Kernel) rootHandler() http.Handler {
 	return prefixMiddleware(k.opts.ManagementPrefix, ManagementSecurityHeadersMiddleware)(compressed)
 }
 
+// mountPathMatch mirrors Express app.use(prefix) layer matching: the mount
+// hits the exact prefix or any deeper path, but never an adjacent path that
+// merely extends the prefix text (/__aisys__/apix must not match
+// /__aisys__/api). Like Express, matching runs on the raw (escaped) request
+// path so an encoded %2F inside a segment stays within that segment.
+func mountPathMatch(requestPath, prefix string) bool {
+	if prefix == "" || prefix == "/" {
+		return true
+	}
+	return requestPath == prefix || strings.HasPrefix(requestPath, prefix+"/")
+}
+
 func prefixMiddleware(prefix string, middleware func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.URL.Path, prefix) {
+			if mountPathMatch(r.URL.EscapedPath(), prefix) {
 				middleware(next).ServeHTTP(w, r)
 				return
 			}
@@ -134,7 +146,7 @@ func noStoreMiddleware(next http.Handler) http.Handler {
 func bodyLimitMiddleware(prefix string, limit int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.URL.Path, prefix) && r.Body != nil {
+			if mountPathMatch(r.URL.EscapedPath(), prefix) && r.Body != nil {
 				r.Body = http.MaxBytesReader(w, r.Body, limit)
 			}
 			next.ServeHTTP(w, r)
@@ -145,10 +157,16 @@ func bodyLimitMiddleware(prefix string, limit int64) func(http.Handler) http.Han
 var errBodyTooLarge = errors.New("request body too large")
 
 // DecodeJSON parses the request body into target, mirroring express.json()
-// plus handleJsonBodyError: an empty body leaves target untouched; an
-// oversized body writes 413 {"message":"请求体过大"}; malformed JSON writes
-// 400 {"message":"请求体无效"}.
+// plus handleJsonBodyError: like the Node parser it only consumes bodies
+// whose media type is exactly application/json and that actually carry a
+// body (type-is hasBody / shouldParse); other requests leave target
+// untouched like Express' skipped parser. An empty body leaves target
+// untouched; an oversized body writes 413 {"message":"请求体过大"}; malformed
+// JSON writes 400 {"message":"请求体无效"}.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
+	if !jsonBodyMediaType(r.Header) || !hasRequestBody(r) {
+		return true
+	}
 	body, err := readAll(r)
 	if err != nil {
 		w.Header().Set("Cache-Control", "no-store")
@@ -232,6 +250,14 @@ func (m *methodContractWriter) MarkedUpstream() bool {
 		return marker.MarkedUpstream()
 	}
 	return false
+}
+
+// Flush forwards the flusher capability so streaming handlers below the
+// compression layer can push bytes on the identity path.
+func (m *methodContractWriter) Flush() {
+	if flusher, ok := m.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 // NotFoundHandler returns the API 404 JSON handler for catch-all mounting.

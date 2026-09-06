@@ -15,10 +15,11 @@ import (
 // summary map, so the hydration join (rowKey → item.Usage) and the zero
 // degradation arm can both be asserted.
 type fakeUsageSource struct {
-	mu      sync.Mutex
-	scopes  []UsageScope
-	summary map[string]ListUsageSummary
-	err     error
+	mu            sync.Mutex
+	scopes        []UsageScope
+	summary       map[string]ListUsageSummary
+	fullSummaries map[string]AccountUsageSummary
+	err           error
 }
 
 func (f *fakeUsageSource) ApiKeyListUsageSummaries(_ context.Context, scopes []UsageScope) (map[string]ListUsageSummary, error) {
@@ -29,6 +30,16 @@ func (f *fakeUsageSource) ApiKeyListUsageSummaries(_ context.Context, scopes []U
 		return nil, f.err
 	}
 	return f.summary, nil
+}
+
+func (f *fakeUsageSource) ApiKeyUsageSummaries(_ context.Context, scopes []UsageScope) (map[string]AccountUsageSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scopes = append(f.scopes, scopes...)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.fullSummaries, nil
 }
 
 func (f *fakeUsageSource) recorded() []UsageScope {
@@ -86,18 +97,15 @@ func TestApiKeyListUsageHydrationLocksIn(t *testing.T) {
 		t.Fatalf("missing usage must degrade to zero, got %v", usage)
 	}
 
-	// Source errors degrade too (J5 stats availability is advisory).
+	// Source errors FAIL the list (Node: only the missing-resource SQLite arm
+	// degrades inside the loader; every other error propagates out of
+	// loadApiKeyListUsageSummariesForScopesAsync).
 	source.mu.Lock()
 	source.err = fmt.Errorf("stats database unavailable")
 	source.mu.Unlock()
 	status, payload = env.do(t, http.MethodGet, "/__aisys__/api/api-keys", "")
-	if status != http.StatusOK {
-		t.Fatalf("usage source error must not fail the list: %d %v", status, payload)
-	}
-	items = dataMap(t, payload)["items"].([]any)
-	usage = items[0].(map[string]any)["usage"].(map[string]any)
-	if usage["requestCount"].(float64) != 0 {
-		t.Fatalf("degraded usage must stay zero, got %v", usage)
+	if status != http.StatusInternalServerError {
+		t.Fatalf("usage source error must fail the list: %d %v", status, payload)
 	}
 }
 
@@ -116,13 +124,22 @@ func newStatsDB(t *testing.T) *sql.DB {
 		request_count INTEGER NOT NULL DEFAULT 0,
 		input_tokens INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
-		total_cost_usd REAL NOT NULL DEFAULT 0
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER,
+		cache_write_1h_tokens INTEGER,
+		cache_write_cost_usd REAL,
+		thinking_tokens INTEGER,
+		input_image_tokens INTEGER,
+		output_image_tokens INTEGER,
+		total_cost_usd REAL NOT NULL DEFAULT 0,
+		last_used_at TEXT
 	)`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd)
-		VALUES ('sysacc_1', 'api_key', 'key_1', 3, 10, 20, 1.5)`)
+	_, err = db.Exec(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, thinking_tokens, total_cost_usd, last_used_at)
+		VALUES ('sysacc_1', 'api_key', 'key_1', 3, 10, 20, 4, 0.25, 5, 1.5, '2026-09-01T08:30:00.000Z')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,5 +195,80 @@ func TestStatsUsageSourceSQLLocksIn(t *testing.T) {
 	}
 	if len(degraded) != 0 {
 		t.Fatalf("degraded source must return an empty map, got %v", degraded)
+	}
+	// PostgreSQL has no missing-resource arm: every error fails the read.
+	pgSource, err := NewStatsUsageSource(newEmptyStatsDB(t), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pgSource.ApiKeyListUsageSummaries(ctx, []UsageScope{{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"}}); err == nil {
+		t.Fatal("PostgreSQL source errors must propagate")
+	}
+	if _, err := pgSource.ApiKeyUsageSummaries(ctx, []UsageScope{{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"}}); err == nil {
+		t.Fatal("PostgreSQL full-summary errors must propagate")
+	}
+}
+
+// TestStatsUsageSourceFullSummaryLocksIn drives the detail-projection aggregate
+// (Node usageSummaryFromAggregate): full counters, required
+// cache_read_cost_usd, canonicalized last_used_at and the zero fallback.
+func TestStatsUsageSourceFullSummaryLocksIn(t *testing.T) {
+	source, err := NewStatsUsageSource(newStatsDB(t), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	summaries, err := source.ApiKeyUsageSummaries(ctx, []UsageScope{
+		{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"},
+		{RowKey: "key_missing", SystemAccountID: "sysacc_1", ScopeID: "key_missing"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := summaries["key_1"]
+	if got.RequestCount != 3 || got.InputTokens != 10 || got.OutputTokens != 20 || got.TotalTokens != 30 ||
+		got.CacheReadTokens != 4 || got.CacheReadCost != 0.25 || got.ThinkingTokens != 5 || got.TotalCost != 1.5 {
+		t.Fatalf("full summary mismatch: %+v", got)
+	}
+	if got.LastUsedAt == nil || *got.LastUsedAt != "2026-09-01T08:30:00.000Z" {
+		t.Fatalf("last used at: %v", got.LastUsedAt)
+	}
+	// Missing stats rows fall back to the zero summary with lastUsedAt omitted.
+	zero := summaries["key_missing"]
+	if zero != (AccountUsageSummary{}) || zero.LastUsedAt != nil {
+		t.Fatalf("missing row must render the zero summary: %+v", zero)
+	}
+
+	// Detail hydration: FindDetail renders the full summary; a nil source keeps
+	// the all-zero object (never null).
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedDefaultRouteStrategy(t, adminID, "rs-usage-detail")
+	status, payload := env.do(t, http.MethodPost, "/__aisys__/api/api-keys", `{"name":"detail-usage"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("create failed: %d %v", status, payload)
+	}
+	id := dataMap(t, payload)["id"].(string)
+	detailSource := &fakeUsageSource{fullSummaries: map[string]AccountUsageSummary{
+		id: {RequestCount: 9, InputTokens: 11, OutputTokens: 22, TotalTokens: 33, TotalCost: 0.75,
+			CacheReadCost: 0.1},
+	}}
+	env.store.SetUsageSource(detailSource)
+	status, payload = env.do(t, http.MethodGet, "/__aisys__/api/api-keys/"+id, "")
+	if status != http.StatusOK {
+		t.Fatalf("detail failed: %d %v", status, payload)
+	}
+	usage := dataMap(t, payload)["usage"].(map[string]any)
+	if usage["requestCount"].(float64) != 9 || usage["totalTokens"].(float64) != 33 ||
+		usage["inputTokens"].(float64) != 11 || usage["outputTokens"].(float64) != 22 ||
+		usage["cacheReadCost"].(float64) != 0.1 {
+		t.Fatalf("detail usage not hydrated with the full summary: %v", usage)
+	}
+	// Detail source errors fail the detail read like the list.
+	detailSource.mu.Lock()
+	detailSource.err = context.DeadlineExceeded
+	detailSource.mu.Unlock()
+	if status, _ = env.do(t, http.MethodGet, "/__aisys__/api/api-keys/"+id, ""); status != http.StatusInternalServerError {
+		t.Fatalf("detail usage error must fail the read: %d", status)
 	}
 }

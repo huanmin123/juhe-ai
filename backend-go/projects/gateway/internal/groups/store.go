@@ -18,6 +18,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -83,16 +85,39 @@ func (a AccessScope) writeSystemAccountID() (string, error) {
 
 // Store is the dual-mode group persistence.
 type Store struct {
-	db    *sql.DB
-	pg    bool
-	now   func() time.Time
-	newI  func(prefix string) string
-	inval RuntimeInvalidator
+	db        *sql.DB
+	pg        bool
+	now       func() time.Time
+	newI      func(prefix string) string
+	inval     RuntimeInvalidator
+	globalMax int
+}
+
+// StoreOption adjusts optional store collaborators.
+type StoreOption func(*Store)
+
+// WithGlobalConcurrencyMax injects runtimeConfig.concurrency.globalMax
+// (JUHE_AI_CONCURRENCY_GLOBAL_MAX). Values below 1 keep the built-in default.
+func WithGlobalConcurrencyMax(value int) StoreOption {
+	return func(s *Store) {
+		if value >= 1 {
+			s.globalMax = value
+		}
+	}
+}
+
+// globalConcurrencyMax mirrors runtimeConfig.concurrency.globalMax at the
+// DEFAULT policy root (Node reads the runtime config live).
+func (s *Store) globalConcurrencyMax() int {
+	if s.globalMax >= 1 {
+		return s.globalMax
+	}
+	return defaultGlobalConcurrencyMax
 }
 
 // NewStore builds the store; inval may be nil (no-op invalidation until K5
 // wires the bus).
-func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string, inval RuntimeInvalidator) (*Store, error) {
+func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string, inval RuntimeInvalidator, options ...StoreOption) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("groups store requires a database")
 	}
@@ -102,7 +127,11 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string
 	if newID == nil {
 		newID = func(prefix string) string { return randomID(prefix) }
 	}
-	return &Store{db: db, pg: postgres, now: now, newI: newID, inval: inval}, nil
+	store := &Store{db: db, pg: postgres, now: now, newI: newID, inval: inval}
+	for _, option := range options {
+		option(store)
+	}
+	return store, nil
 }
 
 // randomID mirrors Node newId('grp') (random hex suffix).
@@ -169,9 +198,10 @@ func (s *Store) invalidateRuntime(reason string) {
 	}
 }
 
-// AccountStats mirrors the zero-value Node GroupAccountStats projection. The
-// populated variant (juhe_stats.group_account_stats + usage summaries +
-// runtime concurrency) belongs to the J5 stats slice.
+// AccountStats mirrors the Node GroupAccountStats projection
+// (group-account-stats.mapper.ts). The populated variant reads
+// juhe_stats.group_account_stats plus the usage/runtime summaries; until that
+// wiring lands the slice renders the emptyGroupAccountStats shape.
 type AccountStats struct {
 	Total              int `json:"total"`
 	Available          int `json:"available"`
@@ -181,63 +211,132 @@ type AccountStats struct {
 	RateLimited        int `json:"rateLimited"`
 	CurrentConcurrency int `json:"currentConcurrency"`
 	ConcurrencyLimit   int `json:"concurrencyLimit"`
+	// TodayUsage/Usage carry the hydrate/summary shapes; nil (the create
+	// payload) omits the keys exactly like the Node groupCreateListItem.
+	TodayUsage any `json:"todayUsage,omitempty"`
+	Usage      any `json:"usage,omitempty"`
+}
+
+// emptyAccountUsageSummary mirrors emptyAccountUsageSummary
+// (storage/usage-stats-helpers.ts).
+func emptyAccountUsageSummary() map[string]any {
+	return map[string]any{
+		"requestCount":       0,
+		"inputTokens":        0,
+		"outputTokens":       0,
+		"cacheReadTokens":    0,
+		"cacheReadCost":      0,
+		"cacheWriteTokens":   0,
+		"cacheWrite1hTokens": 0,
+		"cacheWriteCost":     0,
+		"thinkingTokens":     0,
+		"inputImageTokens":   0,
+		"outputImageTokens":  0,
+		"totalTokens":        0,
+		"totalCost":          0,
+	}
 }
 
 // emptyAccountStats mirrors emptyGroupAccountStats.
-func emptyAccountStats() AccountStats { return AccountStats{} }
+func emptyAccountStats() AccountStats {
+	return AccountStats{TodayUsage: emptyAccountUsageSummary(), Usage: emptyAccountUsageSummary()}
+}
 
-// ListItem mirrors the owner-view subset of GroupListItem.
+// AuthorizationSourceSummary mirrors ResourceAuthorizationSourceSummary as
+// sanitized for the authorized viewer (sanitizeAuthorizationSourcesForViewer
+// with limited=true: team id, endedAt, revokedBy/revokedAt are dropped and
+// createdBy is blanked).
+type AuthorizationSourceSummary struct {
+	ID             string `json:"id"`
+	AuthorizationID string `json:"authorizationId"`
+	SourceType     string `json:"sourceType"`
+	SourceTeamName *string `json:"sourceTeamName,omitempty"`
+	Status         string `json:"status"`
+	ActivatedAt    *string `json:"activatedAt,omitempty"`
+	EndedReason    *string `json:"endedReason,omitempty"`
+	CreatedBy      string `json:"createdBy"`
+	CreatedAt      string `json:"createdAt"`
+	UpdatedAt      string `json:"updatedAt"`
+}
+
+// AuthorizationSourceSummarySummary mirrors GroupListItem['authorizationSourceSummary'].
+type AuthorizationSourceSummarySummary struct {
+	ActiveSourceCount int      `json:"activeSourceCount"`
+	HasManual         bool     `json:"hasManual"`
+	HasTeam           bool     `json:"hasTeam"`
+	TeamNames         []string `json:"teamNames"`
+}
+
+// ListItem mirrors the Node GroupListItem projection (groups table): no
+// memberCount/accountIds, authorization fields only on authorized rows, and
+// accountStats carrying the hydrate keys (currentConcurrency/todayUsage).
 type ListItem struct {
-	ID                     string       `json:"id"`
-	SystemAccountID        *string      `json:"systemAccountId,omitempty"`
-	SystemAccountName      *string      `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID   string       `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName *string      `json:"ownerSystemAccountName,omitempty"`
-	Name                   string       `json:"name"`
-	ProviderCode           string       `json:"providerCode"`
-	Description            *string      `json:"description,omitempty"`
-	Enabled                bool         `json:"enabled"`
-	IsDefault              bool         `json:"isDefault"`
-	GroupType              string       `json:"groupType"`
-	SchedulingPolicy       any          `json:"schedulingPolicy"`
-	AccessType             string       `json:"accessType"`
-	UpdatedAt              string       `json:"updatedAt"`
-	MemberCount            int          `json:"memberCount"`
-	AccountStats           AccountStats `json:"accountStats"`
-	CanEdit                bool         `json:"canEdit"`
-	CanDelete              bool         `json:"canDelete"`
+	ID                          string                           `json:"id"`
+	SystemAccountID             *string                          `json:"systemAccountId,omitempty"`
+	SystemAccountName           *string                          `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID        string                           `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName      *string                          `json:"ownerSystemAccountName,omitempty"`
+	Name                        string                           `json:"name"`
+	ProviderCode                string                           `json:"providerCode"`
+	Description                 *string                          `json:"description,omitempty"`
+	Enabled                     bool                             `json:"enabled"`
+	IsDefault                   bool                             `json:"isDefault"`
+	GroupType                   string                           `json:"groupType"`
+	AccessType                  string                           `json:"accessType"`
+	GroupAuthorizationID        *string                          `json:"groupAuthorizationId,omitempty"`
+	AuthorizationStatus         *string                          `json:"authorizationStatus,omitempty"`
+	AuthorizationExpiresAt      *string                          `json:"authorizationExpiresAt,omitempty"`
+	AuthorizationSourceSummary  *AuthorizationSourceSummarySummary `json:"authorizationSourceSummary,omitempty"`
+	UpdatedAt                   string                           `json:"updatedAt"`
+	AccountStats                AccountStats                     `json:"accountStats"`
+	CanEdit                     bool                             `json:"canEdit"`
+	CanDelete                   bool                             `json:"canDelete"`
+	CanReturn                   bool                             `json:"canReturn"`
 }
 
-// Detail mirrors the owner-view subset of GroupSummary plus updatedAt (the
-// frontend edit flow reads it from /:id/edit-basic).
+// Detail mirrors the Node GroupSummary projection (findGroupSummary): the
+// authorization view carries the limits document, sanitized sources and the
+// effective permissions; the accountStats numeric projection (juhe_stats +
+// runtime concurrency) is owned by the stats wiring.
 type Detail struct {
-	ID                     string   `json:"id"`
-	SystemAccountID        *string  `json:"systemAccountId,omitempty"`
-	OwnerSystemAccountID   string   `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName *string  `json:"ownerSystemAccountName,omitempty"`
-	Name                   string   `json:"name"`
-	ProviderCode           string   `json:"providerCode"`
-	Description            *string  `json:"description,omitempty"`
-	Enabled                bool     `json:"enabled"`
-	IsDefault              bool     `json:"isDefault"`
-	GroupType              string   `json:"groupType"`
-	SchedulingPolicy       any      `json:"schedulingPolicy"`
-	AccountIDs             []string `json:"accountIds"`
-	MemberCount            int      `json:"memberCount"`
-	AccessType             string   `json:"accessType"`
-	CreatedAt              string   `json:"createdAt"`
-	UpdatedAt              string   `json:"updatedAt"`
-	CanEdit                bool     `json:"canEdit"`
-	CanDelete              bool     `json:"canDelete"`
+	ID                     string                       `json:"id"`
+	SystemAccountID        *string                      `json:"systemAccountId,omitempty"`
+	SystemAccountName      *string                      `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID   string                       `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName *string                      `json:"ownerSystemAccountName,omitempty"`
+	Name                   string                       `json:"name"`
+	ProviderCode           string                       `json:"providerCode"`
+	Description            *string                      `json:"description,omitempty"`
+	Enabled                bool                         `json:"enabled"`
+	IsDefault              bool                         `json:"isDefault"`
+	GroupType              string                       `json:"groupType"`
+	SchedulingPolicy       any                          `json:"schedulingPolicy"`
+	AccountIDs             []string                     `json:"accountIds"`
+	AccountStats           AccountStats                 `json:"accountStats"`
+	AccessType             string                       `json:"accessType"`
+	GroupAuthorizationID   *string                      `json:"groupAuthorizationId,omitempty"`
+	AuthorizationStatus    *string                      `json:"authorizationStatus,omitempty"`
+	AuthorizationExpiresAt *string                      `json:"authorizationExpiresAt,omitempty"`
+	AuthorizationLimits    any                          `json:"authorizationLimits"`
+	AuthorizationSources   []AuthorizationSourceSummary `json:"authorizationSources,omitempty"`
+	Permissions            ResourcePermissions          `json:"permissions"`
+	// UpdatedAt stays a Go-side superset field: the delegated/aipublic faces
+	// read it for optimistic locking (Node clients use /:id/edit-basic).
+	// Known superset deviation of the detail envelope, registered in the
+	// BUG-0163 review notes.
+	UpdatedAt string `json:"updatedAt"`
 }
 
-// ListPageResult mirrors GroupListPageResult.
+// ListPageResult mirrors GroupListPageResult after hydrateGroupListPage:
+// generatedAt stamps the response even when the stats hydration stays on the
+// empty projection.
 type ListPageResult struct {
-	Items    []ListItem `json:"items"`
-	Total    int        `json:"total"`
-	HasMore  bool       `json:"hasMore"`
-	Page     int        `json:"page"`
-	PageSize int        `json:"pageSize"`
+	Items       []ListItem `json:"items"`
+	Total       int        `json:"total"`
+	HasMore     bool       `json:"hasMore"`
+	Page        int        `json:"page"`
+	PageSize    int        `json:"pageSize"`
+	GeneratedAt string     `json:"generatedAt"`
 }
 
 // groupRow is the shared scan target for list/detail/patch locator rows.
@@ -286,6 +385,38 @@ func ownerClause(access AccessScope) (string, []any, bool) {
 	return "g.system_account_id = ?", []any{access.ViewerID}, true
 }
 
+// listPageBounds mirrors query-utils normalizeListPage's window bound:
+// pageUpperBoundForWindow = max(1, floor((1001-1)/pageSize)).
+func listPageBounds(pageSize int) int {
+	if pageSize < 1 {
+		return 1
+	}
+	bound := 1000 / pageSize
+	if bound < 1 {
+		bound = 1
+	}
+	return bound
+}
+
+// normalizeListPageValues mirrors normalizeGroupListOptions +
+// normalizeListPage: pageSize clamps to 1..500 (default 50), page clamps to
+// 1..floor(1000/pageSize) (default 1).
+func normalizeListPageValues(page, pageSize int) (int, int) {
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 500 {
+		pageSize = 500
+	}
+	if page < 1 {
+		page = 1
+	}
+	if bound := listPageBounds(pageSize); page > bound {
+		page = bound
+	}
+	return page, pageSize
+}
+
 // keywordFilter mirrors buildGroupFilter: case-sensitive prefix range over
 // name OR provider_code (textPrefixUpperBound).
 func keywordFilter(keyword string) (string, []any) {
@@ -309,50 +440,144 @@ func textPrefixUpperBound(value string) string {
 	return value + "\uffff"
 }
 
+// accessListRow is the access-aware scan target: a group row plus the
+// access_type/authorization columns of the owner UNION ALL authorized query.
+type accessListRow struct {
+	row                    groupRow
+	accessType             string
+	authorizationID        sql.NullString
+	authorizationStatus    sql.NullString
+	authorizationExpiresAt sql.NullString
+	authorizationLimits    sql.NullString
+}
+
+func scanAccessListRowWithAuth(scan func(...any) error) (accessListRow, error) {
+	var out accessListRow
+	var enabled, isDefault int
+	err := scan(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.providerCode, &out.row.description,
+		&enabled, &isDefault, &out.row.groupType, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
+		&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt, &out.authorizationLimits)
+	if err != nil {
+		return accessListRow{}, err
+	}
+	out.row.enabled = enabled == 1
+	out.row.isDefault = isDefault == 1
+	return out, nil
+}
+
+const ownerAccessColumns = `'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS authorization_limits_json`
+
+// authorizedListArm mirrors the authorized arm of queryGroupRowsForAccess:
+// grantee-scoped runtime rows with the management-list status guard and the
+// per-grantee settings overrides, excluding rows the owner arm returned. The
+// column order matches groupRowColumns + the access columns (description
+// fifth) so the UNION ALL aligns positionally.
+func (s *Store) authorizedListArm() string {
+	return `SELECT g.id, g.system_account_id, g.name, g.provider_code, g.description,
+			CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
+			g.is_default,
+			COALESCE(s.group_type, g.group_type) AS group_type,
+			CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
+				THEN COALESCE(s.scheduling_policy_json, g.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json,
+			g.created_at,
+			COALESCE(s.updated_at, g.updated_at) AS updated_at,
+			'authorized' AS access_type,
+			ra.id AS authorization_id,
+			ra.status AS authorization_status,
+			ra.expires_at AS authorization_expires_at,
+			ra.limits_json AS authorization_limits_json
+		FROM ` + s.table("resource_authorizations") + ` ra
+		INNER JOIN ` + s.table("groups") + ` g ON g.id = ra.resource_id
+		` + s.authorizationSettingsJoin() + `
+		` + authorizedArmWhere
+}
+
 // ListPage mirrors listGroupRowsPageForAccessAsync + listGroupItemsPageAsync
-// (pageSize+1 probe, ORDER BY updated_at DESC, id DESC) with memberCount
-// counted from group_accounts per the M05 slice contract.
+// + hydrateGroupListPage: pageSize+1 probe, ORDER BY updated_at DESC, id DESC,
+// the owner UNION ALL authorized access query and the generatedAt stamp.
+// The accountStats numeric projection (juhe_stats.group_account_stats +
+// usage summaries + runtime concurrency) stays on the empty shape until the
+// stats wiring hands this store its readers.
 func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize int, keyword string) (*ListPageResult, error) {
 	ctx = ensureCtx(ctx)
-	if page < 1 {
-		page = 1
+	page, pageSize = normalizeListPageValues(page, pageSize)
+	owner := access.manageableID()
+	viewer := owner
+	if viewer == "" {
+		viewer = access.ViewerID
 	}
-	if pageSize < 1 {
-		pageSize = 20
-	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
-	clauses := []string{}
-	args := []any{}
-	if clause, clauseArgs, ok := ownerClause(access); ok {
-		if clause != "" {
+
+	var (
+		queryText string
+		queryArgs []any
+	)
+	switch {
+	case owner == "" && access.canAccessAll():
+		// Direct owner query over every row (Node's unscoped admin branch).
+		clauses, args := []string{}, []any{}
+		if clause, clauseArgs := keywordFilter(keyword); clause != "" {
 			clauses = append(clauses, clause)
 			args = append(args, clauseArgs...)
 		}
-	} else {
-		return &ListPageResult{Items: []ListItem{}, Page: page, PageSize: pageSize}, nil
+		where := ""
+		if len(clauses) > 0 {
+			where = " WHERE " + strings.Join(clauses, " AND ")
+		}
+		queryText = `SELECT ` + groupRowColumns + `, ` + ownerAccessColumns + `
+			FROM ` + s.table("groups") + ` g` + where + `
+			ORDER BY g.updated_at DESC, g.id DESC
+			LIMIT ? OFFSET ?`
+		queryArgs = args
+	default:
+		if viewer == "" {
+			return &ListPageResult{Items: []ListItem{}, Page: page, PageSize: pageSize, GeneratedAt: s.nowISO()}, nil
+		}
+		clauses, outerArgs := rowFilter("", "", keyword, nil)
+		outerWhere := ""
+		if len(clauses) > 0 {
+			outerWhere = " WHERE " + strings.Join(clauses, " AND ")
+		}
+		queryText = `SELECT id, system_account_id, name, provider_code, description, enabled, is_default,
+				group_type, scheduling_policy_json, created_at, updated_at,
+				access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json
+			FROM (
+				SELECT ` + groupRowColumns + `, ` + ownerAccessColumns + `
+				FROM ` + s.table("groups") + ` g
+				WHERE g.system_account_id = ?
+				UNION ALL
+				` + s.authorizedListArm() + `
+			) group_rows` + outerWhere + `
+			ORDER BY updated_at DESC, id DESC
+			LIMIT ? OFFSET ?`
+		queryArgs = append([]any{ownerOrViewer(owner, viewer), viewer, ownerOrViewer(owner, viewer)}, outerArgs...)
 	}
-	if clause, clauseArgs := keywordFilter(keyword); clause != "" {
-		clauses = append(clauses, clause)
-		args = append(args, clauseArgs...)
-	}
-	where := ""
-	if len(clauses) > 0 {
-		where = " WHERE " + strings.Join(clauses, " AND ")
-	}
-	args = append(args, pageSize+1, (page-1)*pageSize)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+groupRowColumns+`
-		FROM `+s.table("groups")+` g`+where+`
-		ORDER BY g.updated_at DESC, g.id DESC
-		LIMIT ? OFFSET ?`), args...)
+	queryArgs = append(queryArgs, pageSize+1, (page-1)*pageSize)
+	rows, err := s.db.QueryContext(ctx, s.bind(queryText), queryArgs...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	groups := []groupRow{}
+	groups := []accessListRow{}
+	scan := scanAccessListRowWithAuth
+	if owner == "" && access.canAccessAll() {
+		// The unscoped admin query selects the owner-authorization columns in
+		// the same order as the union output.
+		scan = func(scanFn func(...any) error) (accessListRow, error) {
+			var out accessListRow
+			var enabled, isDefault int
+			err := scanFn(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.providerCode, &out.row.description,
+				&enabled, &isDefault, &out.row.groupType, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
+				&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt, &out.authorizationLimits)
+			if err != nil {
+				return accessListRow{}, err
+			}
+			out.row.enabled = enabled == 1
+			out.row.isDefault = isDefault == 1
+			return out, nil
+		}
+	}
 	for rows.Next() {
-		row, scanErr := scanGroupRow(rows.Scan)
+		row, scanErr := scan(rows.Scan)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -365,31 +590,44 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 	if hasMore {
 		groups = groups[:pageSize]
 	}
-	names, err := s.systemAccountNames(ctx, groupOwnerIDs(groups))
-	if err != nil {
-		return nil, err
+	rows_ := make([]groupRow, 0, len(groups))
+	for _, item := range groups {
+		rows_ = append(rows_, item.row)
 	}
-	counts, err := s.memberCounts(ctx, groupIDs(groups))
-	if err != nil {
-		return nil, err
+	names := map[string]string{}
+	if includeSystemAccountFieldsForList(access, groups) {
+		names, err = s.systemAccountNames(ctx, groupOwnerIDs(rows_))
+		if err != nil {
+			return nil, err
+		}
 	}
 	items := make([]ListItem, 0, len(groups))
-	for _, row := range groups {
-		items = append(items, s.newListItem(row, names, counts[row.id], access.canAccessAll()))
+	for _, item := range groups {
+		listItem, buildErr := s.newListItem(ctx, item, names, access.canAccessAll(), viewer)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		items = append(items, listItem)
 	}
 	total := (page-1)*pageSize + len(items)
 	if hasMore {
 		total++
 	}
-	return &ListPageResult{Items: items, Total: total, HasMore: hasMore, Page: page, PageSize: pageSize}, nil
+	return &ListPageResult{Items: items, Total: total, HasMore: hasMore, Page: page, PageSize: pageSize, GeneratedAt: s.nowISO()}, nil
 }
 
-func groupIDs(rows []groupRow) []string {
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		ids = append(ids, row.id)
+// includeSystemAccountFieldsForList mirrors buildGroupListItems: admin scopes
+// and any authorized row load the account-name map.
+func includeSystemAccountFieldsForList(access AccessScope, rows []accessListRow) bool {
+	if access.canAccessAll() {
+		return true
 	}
-	return ids
+	for _, row := range rows {
+		if row.accessType == "authorized" {
+			return true
+		}
+	}
+	return false
 }
 
 func groupOwnerIDs(rows []groupRow) []string {
@@ -429,13 +667,15 @@ func (s *Store) systemAccountNames(ctx context.Context, ids []string) (map[strin
 	return names, rows.Err()
 }
 
-// memberCounts mirrors the loadGroupAccountIdsByGroupIds predicate
-// (enabled membership joined to non-deleted accounts) aggregated per group.
-func (s *Store) memberCounts(ctx context.Context, groupIDs []string) (map[string]int, error) {
-	counts := map[string]int{}
+// groupAccountIDsByGroupIDs mirrors loadGroupAccountIdsByGroupIds: enabled
+// membership joined to non-deleted accounts, kept only when the account owner
+// equals the group owner or the binding's runtime authorization row is
+// active/paused/expired.
+func (s *Store) groupAccountIDsByGroupIDs(ctx context.Context, groupIDs []string) (map[string][]string, error) {
+	result := map[string][]string{}
 	unique := uniqueStrings(groupIDs)
 	if len(unique) == 0 {
-		return counts, nil
+		return result, nil
 	}
 	placeholders := make([]string, len(unique))
 	args := make([]any, len(unique))
@@ -443,97 +683,314 @@ func (s *Store) memberCounts(ctx context.Context, groupIDs []string) (map[string
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT group_accounts.group_id, COUNT(*)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT group_accounts.group_id, group_accounts.account_id
 		FROM `+s.table("group_accounts")+` group_accounts
+		INNER JOIN `+s.table("groups")+` groups ON groups.id = group_accounts.group_id
 		INNER JOIN `+s.table("accounts")+` accounts ON accounts.id = group_accounts.account_id
+		LEFT JOIN `+s.table("resource_authorizations")+` resource_authorization_rows
+			ON resource_authorization_rows.id = group_accounts.account_authorization_id
 		WHERE group_accounts.enabled = 1
 			AND accounts.deleted_at IS NULL
 			AND group_accounts.group_id IN (`+strings.Join(placeholders, ",")+`)
-		GROUP BY group_accounts.group_id`), args...)
+			AND (
+				accounts.system_account_id = groups.system_account_id
+				OR resource_authorization_rows.status IN ('active', 'paused', 'expired')
+			)
+		ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC, group_accounts.account_id ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	for _, id := range unique {
+		result[id] = []string{}
+	}
 	for rows.Next() {
-		var id string
-		var count int
-		if err := rows.Scan(&id, &count); err != nil {
+		var groupID, accountID string
+		if err := rows.Scan(&groupID, &accountID); err != nil {
 			return nil, err
 		}
-		counts[id] = count
+		result[groupID] = append(result[groupID], accountID)
 	}
-	return counts, rows.Err()
+	return result, rows.Err()
 }
 
 // groupAccountIDs mirrors loadGroupAccountIdsByGroupIds for the owner detail
 // member list.
 func (s *Store) groupAccountIDs(ctx context.Context, groupID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT group_accounts.account_id
-		FROM `+s.table("group_accounts")+` group_accounts
-		INNER JOIN `+s.table("accounts")+` accounts ON accounts.id = group_accounts.account_id
-		WHERE group_accounts.enabled = 1
-			AND accounts.deleted_at IS NULL
-			AND group_accounts.group_id = ?
-		ORDER BY group_accounts.created_at ASC, group_accounts.account_id ASC`), groupID)
+	byGroup, err := s.groupAccountIDsByGroupIDs(ctx, []string{groupID})
+	if err != nil {
+		return nil, err
+	}
+	ids, ok := byGroup[groupID]
+	if !ok {
+		return []string{}, nil
+	}
+	return ids, nil
+}
+
+// canBindAccessRowValues mirrors canBindAuthorizedGroupRowToApiKey for the
+// list/detail projections: enabled && authorization_status='active' && not
+// expired.
+func (s *Store) canBindAccessRowValues(enabled bool, status, expiresAt sql.NullString) (bool, error) {
+	if !enabled {
+		return false, nil
+	}
+	if !status.Valid || status.String != "active" {
+		return false, nil
+	}
+	expired, err := s.authorizationExpired(expiresAt)
+	if err != nil {
+		return false, err
+	}
+	return !expired, nil
+}
+
+// authorizedSourceRow is the resource_authorization_sources scan target
+// (authorization-read-loaders.ts) before viewer sanitization.
+type authorizedSourceRow struct {
+	id             string
+	authorizationID string
+	sourceType     string
+	sourceTeamID   sql.NullString
+	sourceTeamName sql.NullString
+	status         string
+	activatedAt    sql.NullString
+	endedAt        sql.NullString
+	endedReason    sql.NullString
+	createdBy      string
+	createdAt      string
+	revokedBy      sql.NullString
+	revokedAt      sql.NullString
+	updatedAt      string
+}
+
+// authorizationSources mirrors loadResourceAuthorizationSourcesByAuthorizationIds
+// (uncached): one query for the given authorization ids ordered by
+// status/created_at/id.
+func (s *Store) authorizationSources(ctx context.Context, authorizationIDs []string) (map[string][]authorizedSourceRow, error) {
+	result := map[string][]authorizedSourceRow{}
+	unique := uniqueStrings(authorizationIDs)
+	if len(unique) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, len(unique))
+	args := make([]any, len(unique))
+	for i, id := range unique {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT ras.id, ras.authorization_id, ras.source_type, ras.source_team_id,
+			system_teams.name, ras.status, ras.activated_at, ras.ended_at, ras.ended_reason,
+			ras.created_by, ras.created_at, ras.revoked_by, ras.revoked_at, ras.updated_at
+		FROM `+s.table("resource_authorization_sources")+` ras
+		LEFT JOIN `+s.table("system_teams")+` system_teams ON system_teams.id = ras.source_team_id
+		WHERE ras.authorization_id IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY ras.status ASC, ras.created_at ASC, ras.id ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	ids := []string{}
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var row authorizedSourceRow
+		if err := rows.Scan(&row.id, &row.authorizationID, &row.sourceType, &row.sourceTeamID,
+			&row.sourceTeamName, &row.status, &row.activatedAt, &row.endedAt, &row.endedReason,
+			&row.createdBy, &row.createdAt, &row.revokedBy, &row.revokedAt, &row.updatedAt); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		result[row.authorizationID] = append(result[row.authorizationID], row)
 	}
-	return ids, rows.Err()
+	return result, rows.Err()
 }
 
-func (s *Store) newListItem(row groupRow, names map[string]string, memberCount int, includeSystemAccountFields bool) ListItem {
+// summarizeAuthorizationSourcesForViewer mirrors
+// sanitizeAuthorizationSourcesForViewer(limited=true) for the detail payload.
+func sanitizedAuthorizationSources(rows []authorizedSourceRow) []AuthorizationSourceSummary {
+	out := make([]AuthorizationSourceSummary, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, AuthorizationSourceSummary{
+			ID:              row.id,
+			AuthorizationID: row.authorizationID,
+			SourceType:      row.sourceType,
+			SourceTeamName:  nullPtrString(row.sourceTeamName),
+			Status:          row.status,
+			ActivatedAt:     nullPtrString(row.activatedAt),
+			EndedReason:     nullPtrString(row.endedReason),
+			CreatedBy:       "",
+			CreatedAt:       row.createdAt,
+			UpdatedAt:       row.updatedAt,
+		})
+	}
+	return out
+}
+
+// summarizeAuthorizationSources mirrors summarizeGroupAuthorizationSources.
+func summarizeAuthorizationSources(rows []authorizedSourceRow) *AuthorizationSourceSummarySummary {
+	active := []authorizedSourceRow{}
+	for _, row := range rows {
+		if row.status == "active" {
+			active = append(active, row)
+		}
+	}
+	teamNames := []string{}
+	seen := map[string]bool{}
+	for _, row := range active {
+		name := strings.TrimSpace(row.sourceTeamName.String)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		teamNames = append(teamNames, name)
+	}
+	hasManual := false
+	hasTeam := false
+	for _, row := range active {
+		if row.sourceType == "manual" {
+			hasManual = true
+		}
+		if row.sourceType == "team" {
+			hasTeam = true
+		}
+	}
+	for _, row := range rows {
+		if row.sourceType == "team" {
+			hasTeam = true
+		}
+	}
+	return &AuthorizationSourceSummarySummary{
+		ActiveSourceCount: len(active),
+		HasManual:         hasManual,
+		HasTeam:           hasTeam,
+		TeamNames:         teamNames,
+	}
+}
+
+// hasActiveManualSource mirrors hasActiveManualAuthorizationSource.
+func hasActiveManualSource(rows []authorizedSourceRow) bool {
+	for _, row := range rows {
+		if row.sourceType == "manual" && row.status == "active" {
+			return true
+		}
+	}
+	return false
+}
+
+// newListItem mirrors groupListItemFromRow: the authorized view forces
+// isDefault=false, carries the runtime authorization columns plus the source
+// summary, and renders the authorized permissions whenever the row owner
+// differs from the viewer.
+// newListItem mirrors groupListItemFromRow: the list projection validates the
+// stored group type but (like Node) omits schedulingPolicy and does not parse
+// the policy JSON; the authorized view forces isDefault=false, carries the
+// runtime authorization columns plus the source summary, and renders the
+// authorized permissions whenever the row owner differs from the viewer.
+func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[string]string, includeSystemAccountFields bool, viewer string) (ListItem, error) {
+	groupType, err := normalizeStoredGroupType(row.row.groupType)
+	if err != nil {
+		return ListItem{}, err
+	}
+	authorized := row.accessType == "authorized"
+	authorizedView := authorized && row.row.systemAccountID != viewer
+	permissions := ownerPermissions()
+	if authorizedView {
+		canBind, bindErr := s.canBindAccessRowValues(row.row.enabled, row.authorizationStatus, row.authorizationExpiresAt)
+		if bindErr != nil {
+			return ListItem{}, bindErr
+		}
+		permissions = authorizedGroupPermissions(canBind, false)
+	}
 	item := ListItem{
-		ID:                     row.id,
-		OwnerSystemAccountID:   row.systemAccountID,
-		OwnerSystemAccountName: ptrString(names[row.systemAccountID]),
-		Name:                   row.name,
-		ProviderCode:           row.providerCode,
-		Description:            nullPtrString(row.description),
-		Enabled:                row.enabled,
-		IsDefault:              row.isDefault,
-		GroupType:              normalizeGroupTypeStored(row.groupType),
-		SchedulingPolicy:       parseSchedulingPolicy(row.schedulingJSON.String, row.schedulingJSON.Valid, row.groupType),
-		AccessType:             "owner",
-		UpdatedAt:              row.updatedAt,
-		MemberCount:            memberCount,
+		ID:                     row.row.id,
+		OwnerSystemAccountID:   row.row.systemAccountID,
+		OwnerSystemAccountName: ptrString(names[row.row.systemAccountID]),
+		Name:                   row.row.name,
+		ProviderCode:           row.row.providerCode,
+		Description:            nullPtrString(row.row.description),
+		Enabled:                row.row.enabled,
+		IsDefault:              !authorized && row.row.isDefault,
+		GroupType:              groupType,
+		AccessType:             row.accessType,
+		GroupAuthorizationID:   nullPtrString(row.authorizationID),
+		AuthorizationStatus:    nullPtrString(row.authorizationStatus),
+		AuthorizationExpiresAt: nullPtrString(row.authorizationExpiresAt),
+		UpdatedAt:              row.row.updatedAt,
 		AccountStats:           emptyAccountStats(),
-		CanEdit:                !row.isDefault,
-		CanDelete:              !row.isDefault,
+		CanEdit:                !row.row.isDefault && permissions.CanEdit,
+		CanDelete:              !row.row.isDefault && permissions.CanDelete,
+		CanReturn:              authorized && permissions.CanReturnAuthorization,
+	}
+	if authorizedView {
+		sources, sourceErr := s.authorizationSources(ctx, []string{row.authorizationID.String})
+		if sourceErr != nil {
+			return ListItem{}, sourceErr
+		}
+		item.AuthorizationSourceSummary = summarizeAuthorizationSources(sources[row.authorizationID.String])
 	}
 	if includeSystemAccountFields {
-		item.SystemAccountID = ptrString(row.systemAccountID)
+		item.SystemAccountID = ptrString(row.row.systemAccountID)
 		item.SystemAccountName = item.OwnerSystemAccountName
 	}
-	return item
+	return item, nil
 }
 
-// FindDetail mirrors findGroupRowForAccessAsync (owner branch) +
-// findGroupSummaryAsync: nil when the group is missing or not owned by the
-// scope (route renders 404 分组不存在).
+// FindDetail mirrors findGroupRowForAccessAsync + buildGroupSummaries: the
+// admin-unscoped branch reads the direct owner query, every other scope reads
+// the owner UNION ALL authorized rows; the authorized view returns empty
+// accountIds, the limits document, sanitized sources and the effective
+// permissions. nil when the group is missing or invisible (route renders
+// 404 分组不存在).
 func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (*Detail, error) {
 	ctx = ensureCtx(ctx)
-	clause, clauseArgs, ok := ownerClause(access)
-	if !ok {
-		return nil, nil
+	owner := access.manageableID()
+	viewer := owner
+	if viewer == "" {
+		viewer = access.ViewerID
 	}
-	where := ""
-	args := []any{id}
-	if clause != "" {
-		where = " AND " + clause
-		args = append(args, clauseArgs...)
+	var (
+		queryText string
+		queryArgs []any
+	)
+	if owner == "" && access.canAccessAll() {
+		queryText = `SELECT ` + groupRowColumns + `, ` + ownerAccessColumns + `
+			FROM ` + s.table("groups") + ` g WHERE g.id = ? LIMIT 1`
+		queryArgs = []any{id}
+	} else {
+		if viewer == "" {
+			return nil, nil
+		}
+		queryText = `SELECT id, system_account_id, name, provider_code, description, enabled, is_default,
+				group_type, scheduling_policy_json, created_at, updated_at,
+				access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json
+			FROM (
+				SELECT ` + groupRowColumns + `, ` + ownerAccessColumns + `
+				FROM ` + s.table("groups") + ` g
+				WHERE g.id = ? AND g.system_account_id = ?
+				UNION ALL
+				SELECT g.id, g.system_account_id, g.name, g.provider_code, g.description,
+					CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
+					g.is_default,
+					COALESCE(s.group_type, g.group_type) AS group_type,
+					CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
+						THEN COALESCE(s.scheduling_policy_json, g.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json,
+					g.created_at,
+					COALESCE(s.updated_at, g.updated_at) AS updated_at,
+					'authorized' AS access_type,
+					ra.id AS authorization_id,
+					ra.status AS authorization_status,
+					ra.expires_at AS authorization_expires_at,
+					ra.limits_json AS authorization_limits_json
+				FROM ` + s.table("resource_authorizations") + ` ra
+				INNER JOIN ` + s.table("groups") + ` g ON g.id = ra.resource_id
+				` + s.authorizationSettingsJoin() + `
+				WHERE g.id = ?
+					AND ra.resource_type = 'group'
+					AND ra.grantee_system_account_id = ?
+					AND ra.status IN ('active', 'paused', 'expired')
+					AND g.system_account_id <> ?
+			) group_rows LIMIT 1`
+		queryArgs = []any{id, ownerOrViewer(owner, viewer), id, viewer, ownerOrViewer(owner, viewer)}
 	}
-	row, err := scanGroupRow(func(targets ...any) error {
-		return s.db.QueryRowContext(ctx, s.bind(`SELECT `+groupRowColumns+`
-			FROM `+s.table("groups")+` g WHERE g.id = ?`+where+` LIMIT 1`), args...).Scan(targets...)
+	row, err := scanAccessListRowWithAuth(func(targets ...any) error {
+		return s.db.QueryRowContext(ctx, s.bind(queryText), queryArgs...).Scan(targets...)
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -541,46 +998,76 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	if err != nil {
 		return nil, err
 	}
-	names, err := s.systemAccountNames(ctx, []string{row.systemAccountID})
+	groupType, err := normalizeStoredGroupType(row.row.groupType)
 	if err != nil {
 		return nil, err
 	}
-	accountIDs, err := s.groupAccountIDs(ctx, row.id)
+	policy, err := parseStoredSchedulingPolicy(row.row.schedulingJSON.String, row.row.schedulingJSON.Valid, groupType, s.globalConcurrencyMax())
 	if err != nil {
 		return nil, err
+	}
+	names, err := s.systemAccountNames(ctx, []string{row.row.systemAccountID})
+	if err != nil {
+		return nil, err
+	}
+	authorized := row.accessType == "authorized"
+	authorizedView := authorized && row.row.systemAccountID != viewer
+	accountIDs := []string{}
+	accountStats := emptyAccountStats()
+	sourcesByAuthorization := map[string][]authorizedSourceRow{}
+	if !authorized {
+		accountIDs, err = s.groupAccountIDs(ctx, row.row.id)
+		if err != nil {
+			return nil, err
+		}
+		accountStats.Total = len(accountIDs)
+	} else {
+		sourcesByAuthorization, err = s.authorizationSources(ctx, []string{row.authorizationID.String})
+		if err != nil {
+			return nil, err
+		}
+	}
+	limits, err := parseAuthorizationLimitsView(row.authorizationLimits)
+	if err != nil {
+		return nil, err
+	}
+	permissions := ownerPermissions()
+	if authorizedView {
+		canBind, bindErr := s.canBindAccessRowValues(row.row.enabled, row.authorizationStatus, row.authorizationExpiresAt)
+		if bindErr != nil {
+			return nil, bindErr
+		}
+		permissions = authorizedGroupPermissions(canBind, hasActiveManualSource(sourcesByAuthorization[row.authorizationID.String]))
 	}
 	detail := &Detail{
-		ID:                     row.id,
-		OwnerSystemAccountID:   row.systemAccountID,
-		OwnerSystemAccountName: ptrString(names[row.systemAccountID]),
-		Name:                   row.name,
-		ProviderCode:           row.providerCode,
-		Description:            nullPtrString(row.description),
-		Enabled:                row.enabled,
-		IsDefault:              row.isDefault,
-		GroupType:              normalizeGroupTypeStored(row.groupType),
-		SchedulingPolicy:       parseSchedulingPolicy(row.schedulingJSON.String, row.schedulingJSON.Valid, row.groupType),
+		ID:                     row.row.id,
+		OwnerSystemAccountID:   row.row.systemAccountID,
+		OwnerSystemAccountName: ptrString(names[row.row.systemAccountID]),
+		Name:                   row.row.name,
+		ProviderCode:           row.row.providerCode,
+		Description:            nullPtrString(row.row.description),
+		Enabled:                row.row.enabled,
+		IsDefault:              !authorized && row.row.isDefault,
+		GroupType:              groupType,
+		SchedulingPolicy:       policy,
 		AccountIDs:             accountIDs,
-		MemberCount:            len(accountIDs),
-		AccessType:             "owner",
-		CreatedAt:              row.createdAt,
-		UpdatedAt:              row.updatedAt,
-		CanEdit:                !row.isDefault,
-		CanDelete:              !row.isDefault,
+		AccountStats:           accountStats,
+		AccessType:             row.accessType,
+		GroupAuthorizationID:   nullPtrString(row.authorizationID),
+		AuthorizationStatus:    nullPtrString(row.authorizationStatus),
+		AuthorizationExpiresAt: nullPtrString(row.authorizationExpiresAt),
+		AuthorizationLimits:    limits,
+		Permissions:            permissions,
+		UpdatedAt:              row.row.updatedAt,
+	}
+	if authorizedView {
+		detail.AuthorizationSources = sanitizedAuthorizationSources(sourcesByAuthorization[row.authorizationID.String])
 	}
 	if access.canAccessAll() {
-		detail.SystemAccountID = ptrString(row.systemAccountID)
+		detail.SystemAccountID = ptrString(row.row.systemAccountID)
+		detail.SystemAccountName = detail.OwnerSystemAccountName
 	}
 	return detail, nil
-}
-
-// normalizeGroupTypeStored repairs legacy rows defensively on read (Node
-// normalizeGroupType with a personal fallback instead of a throw).
-func normalizeGroupTypeStored(value string) string {
-	if value == GroupTypeHighConcurrency || value == GroupTypePersonal {
-		return value
-	}
-	return GroupTypePersonal
 }
 
 // MutationInput is the normalized create/patch payload; nil pointers mean
@@ -621,7 +1108,7 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	if err != nil {
 		return nil, err
 	}
-	policyJSON, err := schedulingPolicyJSON(groupType, input.SchedulingPolicy)
+	policyJSON, err := schedulingPolicyJSON(groupType, input.SchedulingPolicy, s.globalConcurrencyMax())
 	if err != nil {
 		return nil, err
 	}
@@ -651,27 +1138,35 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	}
 	// Node invalidateGroupLookupCache + notifyGatewayRuntimeCacheInvalidation.
 	s.invalidateRuntime("group_created")
+	// groupCreateListItem: the 201 payload is the GroupListItem shape whose
+	// accountStats carries only the seven counters plus currentConcurrency
+	// (no todayUsage/usage keys) and whose ownerSystemAccountName mirrors the
+	// group's systemAccountName (admin scopes only).
+	ownerName := s.lookupName(ctx, ownerID)
+	if !access.canAccessAll() {
+		ownerName = nil
+	}
 	item := &ListItem{
 		ID:                     id,
 		SystemAccountID:        nil,
 		OwnerSystemAccountID:   ownerID,
-		OwnerSystemAccountName: s.lookupName(ctx, ownerID),
+		OwnerSystemAccountName: ownerName,
 		Name:                   name,
 		ProviderCode:           providerCode,
 		Description:            description,
 		Enabled:                enabled,
 		IsDefault:              false,
 		GroupType:              groupType,
-		SchedulingPolicy:       parseSchedulingPolicy(policyValue.String, policyValue.Valid, groupType),
 		AccessType:             "owner",
 		UpdatedAt:              now,
-		MemberCount:            0,
-		AccountStats:           emptyAccountStats(),
+		AccountStats:           AccountStats{},
 		CanEdit:                true,
 		CanDelete:              true,
+		CanReturn:              false,
 	}
 	if access.canAccessAll() {
 		item.SystemAccountID = ptrString(ownerID)
+		item.SystemAccountName = ownerName
 	}
 	return item, nil
 }
@@ -837,7 +1332,12 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	hasGroupTypeInput := input.GroupType != nil
 	hasSchedulingPolicyInput := input.SchedulingPolicy != nil
 	if hasGroupTypeInput || hasSchedulingPolicyInput {
-		beforeGroupType := normalizeGroupTypeStored(current.groupType)
+		beforeGroupType, typeErr := normalizeStoredGroupType(current.groupType)
+		if typeErr != nil {
+			// Node buildGroupPatchPlan throws through the patch route's 400
+			// branch (分组类型无效).
+			return nil, &ValidationError{Message: typeErr.Error()}
+		}
 		afterGroupType := beforeGroupType
 		if hasGroupTypeInput {
 			normalized, typeErr := normalizeGroupType(input.GroupType)
@@ -855,29 +1355,63 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		if hasSchedulingPolicyInput {
 			policyInput = input.SchedulingPolicy
 		}
-		afterJSON, policyErr := schedulingPolicyJSON(afterGroupType, policyInput)
-		if policyErr != nil {
-			return nil, policyErr
+		// Node compares the parsed policy objects (isDeepStrictEqual), so a
+		// stored JSON differing only in key order or whitespace is a no-op.
+		canonicalPolicy := func(value any) string {
+			if value == nil {
+				return "null"
+			}
+			encoded, marshalErr := json.Marshal(value)
+			if marshalErr != nil {
+				return fmt.Sprint(value)
+			}
+			return string(encoded)
+		}
+		parseCurrentPolicy := func() (any, error) {
+			parsed, parseErr := parseStoredSchedulingPolicy(current.schedulingJSON.String, current.schedulingJSON.Valid, beforeGroupType, s.globalConcurrencyMax())
+			if parseErr != nil {
+				return nil, &ValidationError{Message: parseErr.Error()}
+			}
+			return parsed, nil
 		}
 		if beforeGroupType != afterGroupType {
 			// Node: group-type transitions reset the stored policy to the
 			// defaults (plus writable input) unconditionally.
+			afterJSON, policyErr := schedulingPolicyJSON(afterGroupType, policyInput, s.globalConcurrencyMax())
+			if policyErr != nil {
+				return nil, policyErr
+			}
 			assignments = append(assignments, "scheduling_policy_json = ?")
 			updateArgs = append(updateArgs, policyJSONString(afterJSON))
 			if hasSchedulingPolicyInput {
-				addChange("schedulingPolicy",
-					policyText(current.schedulingJSON, beforeGroupType),
-					policyText(policyJSONString(afterJSON), afterGroupType))
+				beforePolicy, beforeErr := parseCurrentPolicy()
+				if beforeErr != nil {
+					return nil, beforeErr
+				}
+				afterPolicy, afterErr := parseStoredSchedulingPolicy(string(afterJSON), true, afterGroupType, s.globalConcurrencyMax())
+				if afterErr != nil {
+					return nil, &ValidationError{Message: afterErr.Error()}
+				}
+				addChange("schedulingPolicy", canonicalPolicy(beforePolicy), canonicalPolicy(afterPolicy))
 			}
 		} else if hasSchedulingPolicyInput {
-			changed := policyText(current.schedulingJSON, beforeGroupType) != policyText(policyJSONString(afterJSON), afterGroupType)
-			if changed {
+			beforePolicy, beforeErr := parseCurrentPolicy()
+			if beforeErr != nil {
+				return nil, beforeErr
+			}
+			afterJSON, policyErr := schedulingPolicyJSON(afterGroupType, policyInput, s.globalConcurrencyMax())
+			if policyErr != nil {
+				return nil, policyErr
+			}
+			afterPolicy, afterErr := parseStoredSchedulingPolicy(string(afterJSON), true, afterGroupType, s.globalConcurrencyMax())
+			if afterErr != nil {
+				return nil, &ValidationError{Message: afterErr.Error()}
+			}
+			if canonicalPolicy(beforePolicy) != canonicalPolicy(afterPolicy) {
 				assignments = append(assignments, "scheduling_policy_json = ?")
 				updateArgs = append(updateArgs, policyJSONString(afterJSON))
 			}
-			addChange("schedulingPolicy",
-				policyText(current.schedulingJSON, beforeGroupType),
-				policyText(policyJSONString(afterJSON), afterGroupType))
+			addChange("schedulingPolicy", canonicalPolicy(beforePolicy), canonicalPolicy(afterPolicy))
 		}
 	}
 
@@ -1000,13 +1534,14 @@ type DeleteResult struct {
 	AffectedRouteStrategies []RouteStrategyChange
 }
 
-// RouteStrategyChange mirrors DeletedGroupRouteStrategyChange.
+// RouteStrategyChange mirrors DeletedGroupRouteStrategyChange (the delete
+// audit metadata sample rows).
 type RouteStrategyChange struct {
-	RouteStrategyID      string
-	RouteStrategyName    string
-	RemovedGroupID       string
-	RemovedGroupName     string
-	RemovedBindingStatus string
+	RouteStrategyID      string  `json:"routeStrategyId"`
+	RouteStrategyName    string  `json:"routeStrategyName"`
+	RemovedGroupID       string  `json:"removedGroupId"`
+	RemovedGroupName     string  `json:"removedGroupName,omitempty"`
+	RemovedBindingStatus *string `json:"removedBindingStatus,omitempty"`
 }
 
 // Delete mirrors deleteGroupAsync: default-group refusal, route-strategy
@@ -1071,7 +1606,7 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	if err := s.markStatsDirty(ctx, []string{id}, "group_deleted"); err != nil {
+	if err := s.refreshStatsAfterWrite(ctx, []string{id}, "group_deleted"); err != nil {
 		return nil, err
 	}
 	// Node invalidateGroupLookupCache + invalidateGroupAccountIdsCache.
@@ -1171,35 +1706,56 @@ func (s *Store) assertRouteStrategiesCanLoseGroupAvailability(ctx context.Contex
 
 	changes := make([]RouteStrategyChange, 0, len(candidates))
 	for _, item := range candidates {
-		changes = append(changes, RouteStrategyChange{
-			RouteStrategyID:      item.id,
-			RouteStrategyName:    item.name,
-			RemovedGroupID:       groupID,
-			RemovedGroupName:     groupName,
-			RemovedBindingStatus: item.bindingStatus,
-		})
+		change := RouteStrategyChange{
+			RouteStrategyID:   item.id,
+			RouteStrategyName: item.name,
+			RemovedGroupID:    groupID,
+			RemovedGroupName:  groupName,
+		}
+		if item.bindingStatus != "" {
+			bindingStatus := item.bindingStatus
+			change.RemovedBindingStatus = &bindingStatus
+		}
+		changes = append(changes, change)
 	}
 	return changes, nil
 }
 
 // activeBindingCountsExcludingGroup mirrors
-// loadActiveRouteStrategyGroupCountExcludingGroup (owner-owned bindings).
+// loadActiveRouteStrategyGroupCountExcludingGroup: besides the owner's own
+// enabled bindings it also counts groups the strategy's owning account holds
+// through an active resource_authorizations row (not expired) whose
+// authorization settings keep it enabled.
 func (s *Store) activeBindingCountsExcludingGroup(ctx context.Context, q queryer, groupID string, strategyIDs []string) (map[string]int, error) {
 	counts := map[string]int{}
 	if len(strategyIDs) == 0 {
 		return counts, nil
 	}
 	placeholders := make([]string, len(strategyIDs))
-	args := []any{groupID}
+	args := []any{s.nowISO(), groupID}
 	for i, id := range strategyIDs {
 		placeholders[i] = "?"
 		args = append(args, id)
 	}
 	rows, err := q.QueryContext(ctx, s.bind(`SELECT route_strategy_groups.route_strategy_id, COUNT(*)
 		FROM `+s.table("route_strategy_groups")+` route_strategy_groups
-		INNER JOIN `+s.table("groups")+` groups ON groups.id = route_strategy_groups.group_id AND groups.enabled = 1
+		INNER JOIN `+s.table("groups")+` groups
+			ON groups.id = route_strategy_groups.group_id AND groups.enabled = 1
+		LEFT JOIN `+s.table("resource_authorizations")+` group_authorization
+			ON group_authorization.resource_type = 'group'
+			AND group_authorization.resource_id = groups.id
+			AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
+			AND group_authorization.status = 'active'
+			AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+		LEFT JOIN `+s.table("group_authorization_settings")+` group_authorization_settings
+			ON group_authorization_settings.authorization_id = group_authorization.id
+			AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
+			AND group_authorization_settings.group_id = groups.id
 		WHERE route_strategy_groups.status = 'active'
-			AND groups.system_account_id = route_strategy_groups.system_account_id
+			AND (
+				groups.system_account_id = route_strategy_groups.system_account_id
+				OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
+			)
 			AND route_strategy_groups.group_id <> ?
 			AND route_strategy_groups.route_strategy_id IN (`+strings.Join(placeholders, ",")+`)
 		GROUP BY route_strategy_groups.route_strategy_id`), args...)
@@ -1216,6 +1772,26 @@ func (s *Store) activeBindingCountsExcludingGroup(ctx context.Context, q queryer
 		counts[id] = count
 	}
 	return counts, rows.Err()
+}
+
+// refreshStatsAfterWrite mirrors refreshGroupAccountStatsAfterWrite: SQLite
+// marks the dirty rows synchronously (a failure fails the request), while
+// PostgreSQL hands the write to a background task whose failure only logs
+// postgres_group_account_stats_dirty_mark_failed — the committed business
+// write never turns into a 500 because the stats database hiccupped.
+func (s *Store) refreshStatsAfterWrite(ctx context.Context, groupIDs []string, reason string) error {
+	if !s.pg {
+		return s.markStatsDirty(ctx, groupIDs, reason)
+	}
+	go func() {
+		if err := s.markStatsDirty(context.Background(), groupIDs, reason); err != nil {
+			slog.Error("PostgreSQL 分组账户统计脏标记写入失败",
+				"event", "postgres_group_account_stats_dirty_mark_failed",
+				"reason", reason,
+				"error", err)
+		}
+	}()
+	return nil
 }
 
 // markStatsDirty mirrors markGroupAccountStatsDirty /
@@ -1343,14 +1919,4 @@ func derefOrEmpty(value *string) string {
 		return ""
 	}
 	return *value
-}
-
-func policyText(raw sql.NullString, groupType string) string {
-	if groupType != GroupTypeHighConcurrency {
-		return ""
-	}
-	if !raw.Valid {
-		return ""
-	}
-	return raw.String
 }

@@ -129,23 +129,31 @@ func parseMutationFields(body map[string]any, requireName bool) (MutationInput, 
 		if !ok {
 			return input, invalidMutationMessage
 		}
-		if len([]rune(strings.TrimSpace(text))) > 200 {
+		if utf16CodeUnits(strings.TrimSpace(text)) > 200 {
 			return input, "策略路由说明不能超过 200 个字符"
 		}
 		input.HasDescription = true
 		input.Description = &text
 	} else if present {
-		// explicit null
+		// explicit null (nullable in the zod schema)
 		input.HasDescription = true
 	}
-	if raw, present := body["mode"]; present && raw != nil {
+	// mode/status are .optional() but not .nullable(): an explicit null is a
+	// schema failure, not an omitted field.
+	if raw, present := body["mode"]; present {
+		if raw == nil {
+			return input, invalidMutationMessage
+		}
 		text, ok := raw.(string)
 		if !ok || !IsRouteStrategyMode(text) {
 			return input, invalidMutationMessage
 		}
 		input.Mode = &text
 	}
-	if raw, present := body["status"]; present && raw != nil {
+	if raw, present := body["status"]; present {
+		if raw == nil {
+			return input, invalidMutationMessage
+		}
 		text, ok := raw.(string)
 		if !ok || (text != "active" && text != "disabled") {
 			return input, invalidMutationMessage
@@ -220,30 +228,44 @@ func parseBindingItem(item any, index int) (BindingInput, string) {
 		return BindingInput{}, "策略路由分组无效"
 	}
 	input.GroupID = rawGroupID
-	if raw, present := record["priority"]; present && raw != nil {
+	// Binding item fields are .optional() but not .nullable(): explicit null
+	// is a schema failure, not an omitted field.
+	if raw, present := record["priority"]; present {
+		if raw == nil {
+			return BindingInput{}, invalidMutationMessage
+		}
 		number, ok := raw.(float64)
 		if !ok || number != float64(int64(number)) || number < 1 {
 			return BindingInput{}, "策略路由分组优先级必须是大于 0 的整数"
 		}
 		priority := int(number)
 		input.Priority = &priority
+		input.priorityProvided = true
 	} else {
 		fallback := index + 1
 		input.Priority = &fallback
 	}
-	if raw, present := record["weight"]; present && raw != nil {
+	if raw, present := record["weight"]; present {
+		if raw == nil {
+			return BindingInput{}, "分组权重必须是数字"
+		}
 		weight, problem := parseBindingWeight(raw)
 		if problem != "" {
 			return BindingInput{}, problem
 		}
 		input.Weight = &weight
+		input.weightProvided = true
 	}
-	if raw, present := record["status"]; present && raw != nil {
+	if raw, present := record["status"]; present {
+		if raw == nil {
+			return BindingInput{}, invalidMutationMessage
+		}
 		text, ok := raw.(string)
 		if !ok || (text != "active" && text != "disabled") {
 			return BindingInput{}, "策略路由分组绑定状态无效"
 		}
 		input.Status = text
+		input.statusProvided = true
 	}
 	return input, ""
 }

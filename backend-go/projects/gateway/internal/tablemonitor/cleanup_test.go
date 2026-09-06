@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -111,6 +112,10 @@ func postCleanup(t *testing.T, deps *Deps, body map[string]any, actor string) *h
 	}
 	request := httptest.NewRequest(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup", strings.NewReader(string(raw)))
 	request.Header.Set("Content-Type", "application/json")
+	// Node express.json only parses bodies announced by content-length /
+	// transfer-encoding (type-is hasBody); the direct ServeHTTP call must
+	// declare the length the wire would carry.
+	request.Header.Set("Content-Length", strconv.Itoa(len(raw)))
 	if actor != "" {
 		request = request.WithContext(authsys.WithAuthContext(request.Context(), &authsys.AuthContext{SystemAccountID: actor, Role: "admin"}))
 	}

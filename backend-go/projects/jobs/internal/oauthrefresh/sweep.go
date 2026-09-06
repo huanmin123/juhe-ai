@@ -10,12 +10,20 @@ import (
 const MaxAuthorizationExpirySweepBatchSize = 20
 
 // GrantFinalizer receives each grant flipped to expired inside the sweep
-// transaction's semantics (Node syncResourceAuthorizationGrantRuntimeAsync:
-// user-grant/team-member runtime sync, quota window scope bindings and the
-// account-health-jobs input fanout). The jobs process wires platform-owned
-// implementations; nil keeps the sweep's narrow ownership (grant expiry only).
+// transaction (the Node syncResourceAuthorizationGrantRuntimeAsync call
+// position: resource-authorization-write.repository.ts:953-962). Node's
+// downstream effects are runtime sync (user-grant/team-member projection),
+// quota window scope bindings and the account-health-jobs input fanout — all
+// transaction-local writes. The Go jobs process owns the outbox fanout
+// (Store.EnqueueAccountHealthInputsForAuthorizationSourceTx); the runtime
+// projection + quota scope bindings stay gateway-owned (gateway
+// internal/authz sync chain, not importable here) and are registered as a
+// durable handoff gap in the jobregistry GoBinding, not silently dropped.
+// The *sql.Tx parameter keeps finalizer writes atomic with the sweep exactly
+// like the Node in-transaction call shape (same-module precedent:
+// cleanuprepo enqueueTombstoneOutboxTx).
 type GrantFinalizer interface {
-	FinalizeExpiredGrant(ctx context.Context, grant ResourceAuthorizationGrant, actor string) error
+	FinalizeExpiredGrant(ctx context.Context, tx *sql.Tx, grant ResourceAuthorizationGrant, actor string) error
 }
 
 // ResourceAuthorizationGrant mirrors ResourceAuthorizationGrantRow (the
@@ -121,7 +129,7 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 			grant.Status = "expired"
 			grant.RevokedAt = nextRevokedAt
 			grant.UpdatedAt = now
-			if err := finalizer.FinalizeExpiredGrant(ctx, grant, actor); err != nil {
+			if err := finalizer.FinalizeExpiredGrant(ctx, tx, grant, actor); err != nil {
 				return SweepResult{}, err
 			}
 		}
@@ -133,9 +141,9 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 }
 
 // FinalizerFunc adapts a function to GrantFinalizer.
-type FinalizerFunc func(ctx context.Context, grant ResourceAuthorizationGrant, actor string) error
+type FinalizerFunc func(ctx context.Context, tx *sql.Tx, grant ResourceAuthorizationGrant, actor string) error
 
 // FinalizeExpiredGrant implements GrantFinalizer.
-func (f FinalizerFunc) FinalizeExpiredGrant(ctx context.Context, grant ResourceAuthorizationGrant, actor string) error {
-	return f(ctx, grant, actor)
+func (f FinalizerFunc) FinalizeExpiredGrant(ctx context.Context, tx *sql.Tx, grant ResourceAuthorizationGrant, actor string) error {
+	return f(ctx, tx, grant, actor)
 }

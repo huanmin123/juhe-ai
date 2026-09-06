@@ -112,28 +112,28 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"stats:usage_rank_snapshots"},
 			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages(rank 核心阶段)",
+			GoBinding: "WindowRefresher.RunStages(rank 阶段集合按 databaseDriver 分叉（T6b，冻结清单 §4.1）：PG 分支剔除 ai_performance_summary_windows（由独立 job 承担）；默认/SQLite 分支并入该 stage），组合根 rankSnapshotCoreStages(postgres) 消费",
 		},
 		{
 			JobName: "ai-performance-summary-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"stats:ai_performance_summary_windows", "stats:ai_performance_summary_dirty_system_accounts"},
 			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages([ai_performance_summary_windows])",
+			GoBinding: "WindowRefresher.RunStages([ai_performance_summary_windows])；仅 PG 分支注册（T6b 已落 ModeConstraint.PostgresOnly），默认/SQLite 分支该 stage 并入 usage-rank-snapshots-refresh（Node background-jobs.ts:310），执行语义按 stage 幂等",
 		},
 		{
 			JobName: "usage-overview-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"stats:usage_overview_summary_windows", "stats:usage_overview_trend_windows"},
 			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages([usage_overview_windows])",
+			GoBinding: "WindowRefresher.RunStages([usage_overview_windows])；interval 按 databaseDriver 分叉（T6b 已落 ModeConstraint.SQLiteInterval）：PG=5min（Node :294 usageOverviewWindowRefreshIntervalMs）、SQLite=30min（Node :312 usageRankSnapshotRefreshIntervalMs）",
 		},
 		{
 			JobName: "usage-scope-range-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
 			Hotspot: true, SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"stats:usage_scope_range_windows"},
 			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages([usage_scope_range_windows])",
+			GoBinding: "WindowRefresher.RunStages([usage_scope_range_windows])；仅默认/SQLite 分支注册（T6b 已落 ModeConstraint.SQLiteOnly），PG 高性能分支跳过并打 background_cold_range_window_refresh_disabled（Node :296-300，冻结清单 §4.1 不得回退）",
 		},
 		{
 			JobName: "authorization-usage-range-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
@@ -187,9 +187,9 @@ func ScheduledEntries() []Entry {
 		{
 			JobName: "resource-authorization-expiry-sweep", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"business:resource_authorizations"},
+			Writes:   []string{"business:resource_authorizations", "business:account_health_jobs_input_outbox", "business:account_health_jobs_input_versions", "business:group_account_stats_dirty"},
 			GoStatus: GoWired, GoPackage: "oauthrefresh",
-			GoBinding: "Store.RunAuthorizationExpirySweep（GrantFinalizer 适配器由组合根提供）",
+			GoBinding: "Store.RunAuthorizationExpirySweep + 组合根 GrantFinalizer（authorizationGrantHealthFanout：事务内 J1 输入 fanout，kind=snapshot/reason=authorization_grant_changed）+ expired>0 后 markAllGroupAccountStatsDirty('authorization_expired')（对齐 Node refreshAfterResourceAuthorizationBusinessWriteAsync）。T6d 冻结交接：grant 翻转后的 runtime 投影（resource_authorizations 行 + effective source 重算）与 quota 窗口 scope bindings 属 gateway authz sync 域（gateway internal/authz，jobs 不可 import，且无既有 jobs→gateway 交接表消费端，不新建死表面）；Go gateway 读路径以 expires_at > now 门禁兜底（chain_accounts activeResourceAuthorization*），待 gateway 侧接入 authz 交接消费时收敛",
 		},
 		{
 			JobName: "account-quality-refresh", Category: CategoryScheduled, Kind: "stats", DefaultRole: "stats-worker",
@@ -245,7 +245,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:account_list_availability_projections", "business:account_list_availability_projection_tags", "business:account_list_availability_dirty"},
 			GoStatus: GoPartial, GoPackage: "opsjobs + circuitstore",
-			GoBinding: "RunListAvailabilityMaintenance 已迁移；ListAvailabilityRepo（17 方法，runtime dependency fail-closed 状态机/dirty claim 围栏/tombstone 删除/重放退避）与 overlay Redis 对账（account-concurrency-v2 同键 Lua）已由 circuitstore 提供；仍缺 LoadItems 物化载荷来源（ProjectionItem payload/AccountListItem 由网关域组装，jobs 无等价实现），组合根保持登记 disabled",
+			GoBinding: "RunListAvailabilityMaintenance 已迁移；ListAvailabilityRepo（17 方法，runtime dependency fail-closed 状态机/dirty claim 围栏/tombstone 删除/重放退避）与 overlay Redis 对账（account-concurrency-v2 同键 Lua）已由 circuitstore 提供；仍缺 LoadItems 物化载荷来源（ProjectionItem payload/AccountListItem 由网关域组装，jobs 无等价实现），组合根保持登记 disabled。T6b 冻结依据（未落代码）：accountListAvailabilityProjectionEnabled env 默认 false、interval=accountListAvailabilityProjectionIntervalMs（env 1s..60s 默认 1s）、batchSize=100(1..100)/maxBatchesPerRun=200(1..400)/workerConcurrency=4(1..8)——接线时按 Node background-jobs.ts:334-336 消费",
 		},
 		{
 			JobName: "account-circuit-recovery", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
@@ -259,7 +259,7 @@ func ScheduledEntries() []Entry {
 			Hotspot: true, SingleOwner: true, LeaseRequired: false,
 			Writes:   []string{"runtime:key_model_memory"},
 			GoStatus: GoEquivalent, GoPackage: "keymodelrecovery",
-			GoBinding: "Runner 已由 jobs 组件装配（自有扫描循环，lease-free）",
+			GoBinding: "Runner 已由 jobs 组件装配（自有扫描循环，lease-free）。T6b 冻结依据：Node 仅在 runtimeStateDriver !== 'redis' 注册该 job（background-jobs.ts:366），Go runtime-state 键空间随 JUHE_AI_REDIS_STATE_URL 归一，driver 分支由接线层承担，注册表不建 driver 字段",
 		},
 		{
 			JobName: "data-retention-cleanup", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ingest-worker",

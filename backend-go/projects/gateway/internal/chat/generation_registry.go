@@ -41,6 +41,20 @@ func hubIdentityKey(identity GenerationIdentity) string {
 
 // Start mirrors start; only one runner per conversation id.
 func (h *GenerationHub) Start(runner *ChatGenerationRunner) bool {
+	if !h.Register(runner) {
+		return false
+	}
+	return h.Launch(runner)
+}
+
+// Register claims the conversation slot for the runner (the map-registration
+// half of Node start()) without launching the generation goroutine. The
+// stream route registers first, attaches the SSE subscriber next and only
+// then Launches: Node's single-threaded event loop guarantees the subscribe
+// happens before the runner publishes anything, and Go needs the explicit
+// ordering to keep that observable contract (a subscriber never misses
+// content_block events that precede its attachment).
+func (h *GenerationHub) Register(runner *ChatGenerationRunner) bool {
 	h.mu.Lock()
 	if h.shuttingDown {
 		h.mu.Unlock()
@@ -55,6 +69,12 @@ func (h *GenerationHub) Start(runner *ChatGenerationRunner) bool {
 	h.removeTerminalKeyLocked(key)
 	h.runners[runner.Identity.ConversationID] = runner
 	h.mu.Unlock()
+	return true
+}
+
+// Launch starts the registered runner's generation goroutine (the second
+// half of Node start()); a runner that cannot start releases the slot again.
+func (h *GenerationHub) Launch(runner *ChatGenerationRunner) bool {
 	started := runner.Start(func() {
 		h.rememberTerminalSnapshot(runner)
 		h.deleteIfMatches(runner)

@@ -70,6 +70,15 @@ func (l *localizeWriter) MarkUpstream()        { l.preserveUpstream = true }
 func (l *localizeWriter) MarkedUpstream() bool { return l.preserveUpstream }
 func (l *localizeWriter) StatusCode() int      { return l.status }
 
+// Flush forwards the underlying flusher so streaming handlers keep their
+// first-byte timing on the identity path too (Node installs res.flush for
+// every response, compressed or not).
+func (l *localizeWriter) Flush() {
+	if flusher, ok := l.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // WriteOK writes the {data, message} success envelope with status 200.
 func WriteOK(w http.ResponseWriter, data any, message string) {
 	writeJSON(w, http.StatusOK, apiResponse{Data: data, Message: message}, upstreamMarked(w))

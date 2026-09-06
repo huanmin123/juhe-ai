@@ -1,13 +1,15 @@
 // usage.go closes the M07 deferral "usage 渲染 (J5)": the api-keys list rows
-// now hydrate their per-key usage summary exactly like Node
+// hydrate their per-key usage summary exactly like Node
 // loadApiKeyListUsageSummariesForScopes (backend/src/storage/
 // usage-summary-loaders.ts) — a single VALUES-join read against the stats
-// database usage_stats_totals table scoped to scope_type='api_key'.
+// database usage_stats_totals table scoped to scope_type='api_key' — and the
+// detail projection loads the full AccountUsageSummary aggregate.
 //
-// Degradation: the stats database is owned by the J5 slice and may not exist
-// yet in a Go-only deployment. A nil UsageSource (or a missing stats table)
-// renders the zero summary — the same empty map the Node read-worker path
-// returns when the stats database is absent — instead of failing the list.
+// Degradation: a nil UsageSource (stats slice not wired) renders the zero
+// summaries. A wired source may only degrade on the missing-resource SQLite
+// arm of isMissingSqliteStatsReadError ("no such table" / "unable to open
+// database file"); every other error — and every PostgreSQL error — fails
+// the read exactly like Node's throw.
 package apikeys
 
 import (
@@ -24,10 +26,14 @@ type UsageScope struct {
 	ScopeID         string
 }
 
-// UsageSource is the stats-database read port for the list usage hydration.
-// Implementations must be safe for concurrent use.
+// UsageSource is the stats-database read port: the bounded three-field
+// summaries for list rows and the full AccountUsageSummary aggregate for the
+// detail projection (Node loadApiKeyListUsageSummariesForScopesAsync /
+// loadApiKeyUsageSummariesForScopesAsync). Implementations must be safe for
+// concurrent use.
 type UsageSource interface {
 	ApiKeyListUsageSummaries(ctx context.Context, scopes []UsageScope) (map[string]ListUsageSummary, error)
+	ApiKeyUsageSummaries(ctx context.Context, scopes []UsageScope) (map[string]AccountUsageSummary, error)
 }
 
 // SetUsageSource wires the J5 stats reader; nil (the default) keeps the
@@ -56,30 +62,53 @@ func uniqueUsageScopes(scopes []UsageScope) []UsageScope {
 }
 
 // hydrateListUsage fills each item's usage from the UsageSource. Missing map
-// entries and a nil source both degrade to the zero summary (Node
-// `usage.get(row.id) ?? emptyApiKeyListUsageSummary`). Source errors are
-// degraded too: the usage column is advisory data and the J5 slice owns its
-// availability.
-func (s *Store) hydrateListUsage(ctx context.Context, items []ListItem, records []apiKeyRow) {
+// entries degrade to the zero summary (Node
+// `usage.get(row.id) ?? emptyApiKeyListUsageSummary`); a nil source degrades
+// the whole pass. Source errors FAIL the list (Node: PostgreSQL errors and
+// non-missing SQLite errors propagate out of
+// loadApiKeyListUsageSummariesForScopesAsync — only missing-resource SQLite
+// reads degrade inside the source).
+func (s *Store) hydrateListUsage(ctx context.Context, items []ListItem, records []apiKeyRow) error {
 	if len(items) == 0 || len(items) != len(records) {
-		return
+		return nil
 	}
 	if s.usage == nil {
-		return
+		return nil
 	}
 	scopes := make([]UsageScope, 0, len(records))
 	for _, row := range records {
 		scopes = append(scopes, UsageScope{RowKey: row.id, SystemAccountID: row.systemAccountID, ScopeID: row.id})
 	}
 	summaries, err := s.usage.ApiKeyListUsageSummaries(ctx, scopes)
-	if err != nil || len(summaries) == 0 {
-		return
+	if err != nil {
+		return err
 	}
 	for index := range items {
 		if summary, ok := summaries[items[index].ID]; ok {
 			items[index].Usage = summary
 		}
 	}
+	return nil
+}
+
+// hydrateDetailUsage mirrors the detail projection's usage load
+// (loadApiKeyUsageSummariesForScopesAsync over {systemAccountId, scopeId}):
+// a missing entry keeps the zero AccountUsageSummary, source errors fail the
+// read.
+func (s *Store) hydrateDetailUsage(ctx context.Context, item *ListItem, systemAccountID string) error {
+	if s.usage == nil {
+		return nil
+	}
+	summaries, err := s.usage.ApiKeyUsageSummaries(ctx, []UsageScope{{
+		RowKey: item.ID, SystemAccountID: systemAccountID, ScopeID: item.ID,
+	}})
+	if err != nil {
+		return err
+	}
+	if summary, ok := summaries[item.ID]; ok {
+		item.Usage = summary
+	}
+	return nil
 }
 
 // StatsUsageSource is the default UsageSource over a stats-database handle
@@ -154,7 +183,7 @@ func (s *StatsUsageSource) ApiKeyListUsageSummaries(ctx context.Context, scopes 
   `)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		if isMissingStatsTableError(err) {
+		if degradeOnMissingStats(s.pg, err) {
 			return map[string]ListUsageSummary{}, nil
 		}
 		return nil, err
@@ -183,10 +212,153 @@ func (s *StatsUsageSource) ApiKeyListUsageSummaries(ctx context.Context, scopes 
 	return summaries, nil
 }
 
-// isMissingStatsTableError mirrors the degradation arm of
-// isMissingSqliteStatsReadError: a stats database that has not been
-// provisioned yet renders zero usage instead of failing the list.
-func isMissingStatsTableError(err error) bool {
+// ApiKeyUsageSummaries mirrors loadApiKeyUsageSummariesForScopesAsync
+// (usage_stats_totals aggregate without a stat date): the full
+// AccountUsageSummary projection detail routes render. Scopes are grouped by
+// owner and chunked at 400 like Node's chunkValues.
+func (s *StatsUsageSource) ApiKeyUsageSummaries(ctx context.Context, scopes []UsageScope) (map[string]AccountUsageSummary, error) {
+	normalized := uniqueUsageScopes(scopes)
+	if len(normalized) == 0 {
+		return map[string]AccountUsageSummary{}, nil
+	}
+	ownerOrder := []string{}
+	scopesByOwner := map[string][]UsageScope{}
+	for _, scope := range normalized {
+		if _, seen := scopesByOwner[scope.SystemAccountID]; !seen {
+			ownerOrder = append(ownerOrder, scope.SystemAccountID)
+		}
+		scopesByOwner[scope.SystemAccountID] = append(scopesByOwner[scope.SystemAccountID], scope)
+	}
+	summaries := make(map[string]AccountUsageSummary, len(normalized))
+	for _, ownerID := range ownerOrder {
+		for _, chunk := range chunkUsageScopes(scopesByOwner[ownerID], 400) {
+			placeholders := make([]string, len(chunk))
+			args := make([]any, 0, len(chunk)+1)
+			args = append(args, ownerID)
+			for index, scope := range chunk {
+				placeholders[index] = s.dialectPlaceholder(len(args) + 1)
+				args = append(args, scope.ScopeID)
+			}
+			query := s.bind(`
+    SELECT scope_id,
+      COALESCE(request_count, 0) AS request_count,
+      COALESCE(input_tokens, 0) AS input_tokens,
+      COALESCE(output_tokens, 0) AS output_tokens,
+      COALESCE(cache_read_tokens, 0) AS cache_read_tokens,
+      cache_read_cost_usd,
+      COALESCE(cache_write_tokens, 0) AS cache_write_tokens,
+      COALESCE(cache_write_1h_tokens, 0) AS cache_write_1h_tokens,
+      COALESCE(cache_write_cost_usd, 0) AS cache_write_cost_usd,
+      COALESCE(thinking_tokens, 0) AS thinking_tokens,
+      COALESCE(input_image_tokens, 0) AS input_image_tokens,
+      COALESCE(output_image_tokens, 0) AS output_image_tokens,
+      COALESCE(total_cost_usd, 0) AS total_cost,
+      last_used_at
+    FROM ` + s.table("usage_stats_totals") + `
+    WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id IN (` + strings.Join(placeholders, ", ") + `)
+  `)
+			rows, err := s.db.QueryContext(ctx, query, args...)
+			if err != nil {
+				if degradeOnMissingStats(s.pg, err) {
+					continue
+				}
+				return nil, err
+			}
+			if err := collectUsageSummaryRows(rows, summaries); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return summaries, nil
+}
+
+// chunkUsageScopes mirrors chunkValues' 400-item chunking.
+func chunkUsageScopes(scopes []UsageScope, size int) [][]UsageScope {
+	chunks := make([][]UsageScope, 0, (len(scopes)+size-1)/size)
+	for start := 0; start < len(scopes); start += size {
+		end := start + size
+		if end > len(scopes) {
+			end = len(scopes)
+		}
+		chunks = append(chunks, scopes[start:end])
+	}
+	return chunks
+}
+
+// collectUsageSummaryRows renders the aggregate rows through Node's
+// usageSummaryFromAggregate semantics: optional token counters default to 0,
+// cache_read_cost_usd is REQUIRED, last_used_at is canonicalized when present.
+func collectUsageSummaryRows(rows *sql.Rows, summaries map[string]AccountUsageSummary) error {
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			scopeID            string
+			requestCount       sql.NullFloat64
+			inputTokens        sql.NullFloat64
+			outputTokens       sql.NullFloat64
+			cacheReadTokens    sql.NullFloat64
+			cacheReadCost      sql.NullFloat64
+			cacheWriteTokens   sql.NullFloat64
+			cacheWrite1hTokens sql.NullFloat64
+			cacheWriteCost     sql.NullFloat64
+			thinkingTokens     sql.NullFloat64
+			inputImageTokens   sql.NullFloat64
+			outputImageTokens  sql.NullFloat64
+			totalCost          sql.NullFloat64
+			lastUsedAt         sql.NullString
+		)
+		if err := rows.Scan(&scopeID, &requestCount, &inputTokens, &outputTokens, &cacheReadTokens,
+			&cacheReadCost, &cacheWriteTokens, &cacheWrite1hTokens, &cacheWriteCost, &thinkingTokens,
+			&inputImageTokens, &outputImageTokens, &totalCost, &lastUsedAt); err != nil {
+			return err
+		}
+		summary := AccountUsageSummary{
+			RequestCount:       int(requestCount.Float64),
+			InputTokens:        int(inputTokens.Float64),
+			OutputTokens:       int(outputTokens.Float64),
+			CacheReadTokens:    int(cacheReadTokens.Float64),
+			CacheWriteTokens:   int(cacheWriteTokens.Float64),
+			CacheWrite1hTokens: int(cacheWrite1hTokens.Float64),
+			CacheWriteCost:     cacheWriteCost.Float64,
+			ThinkingTokens:     int(thinkingTokens.Float64),
+			InputImageTokens:   int(inputImageTokens.Float64),
+			OutputImageTokens:  int(outputImageTokens.Float64),
+			TotalTokens:        int(inputTokens.Float64 + outputTokens.Float64),
+			TotalCost:          totalCost.Float64,
+		}
+		if !cacheReadCost.Valid {
+			return errors.New("统计聚合字段 cache_read_cost_usd 必须是数字")
+		}
+		summary.CacheReadCost = cacheReadCost.Float64
+		if lastUsedAt.Valid && lastUsedAt.String != "" {
+			canonical, ok := canonicalRFC3339(lastUsedAt.String)
+			if !ok {
+				return errors.New("统计聚合 last_used_at必须是带 Z 或数值 offset 的 RFC3339 时间")
+			}
+			summary.LastUsedAt = &canonical
+		}
+		summaries[scopeID] = summary
+	}
+	return rows.Err()
+}
+
+// dialectPlaceholder renders the next positional placeholder ($N on
+// PostgreSQL, ? on SQLite).
+func (s *StatsUsageSource) dialectPlaceholder(index int) string {
+	if !s.pg {
+		return "?"
+	}
+	return "$" + itoa(index)
+}
+
+// degradeOnMissingStats mirrors isMissingSqliteStatsReadError's
+// missing-resource arm: only SQLite "no such table" / "unable to open
+// database file" failures degrade to empty usage. Every other error — and
+// every PostgreSQL error (Node has no catch on the PG path) — fails the read.
+func degradeOnMissingStats(pg bool, err error) bool {
+	if pg {
+		return false
+	}
 	message := err.Error()
-	return strings.Contains(message, "no such table:") || strings.Contains(message, "no such schema") || strings.Contains(message, "does not exist")
+	return strings.Contains(message, "no such table:") || strings.Contains(message, "unable to open database file")
 }

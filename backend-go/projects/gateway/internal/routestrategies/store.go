@@ -35,21 +35,22 @@ type GroupBinding struct {
 
 // ListItem mirrors CompleteRouteStrategyListItem (list + create response).
 type ListItem struct {
-	ID                   string                `json:"id"`
-	SystemAccountID      *string               `json:"systemAccountId,omitempty"`
-	SystemAccountName    *string               `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID string                `json:"-"`
-	Name                 string                `json:"name"`
-	Description          *string               `json:"description,omitempty"`
-	Mode                 string                `json:"mode"`
-	Status               string                `json:"status"`
-	IsDefault            bool                  `json:"isDefault"`
-	NormalRoutingConfig  *NormalRoutingConfig  `json:"normalRoutingConfig,omitempty"`
-	BindingCount         int                   `json:"bindingCount"`
-	APIKeyCount          int                   `json:"apiKeyCount"`
-	GroupBindingPreview  []GroupBindingPreview `json:"groupBindingPreview"`
-	CreatedAt            string                `json:"createdAt"`
-	UpdatedAt            string                `json:"updatedAt"`
+	ID                   string                 `json:"id"`
+	SystemAccountID      *string                `json:"systemAccountId,omitempty"`
+	SystemAccountName    *string                `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID string                 `json:"-"`
+	Name                 string                 `json:"name"`
+	Description          *string                `json:"description,omitempty"`
+	Mode                 string                 `json:"mode"`
+	Status               string                 `json:"status"`
+	IsDefault            bool                   `json:"isDefault"`
+	NormalRoutingConfig  *NormalRoutingConfig   `json:"normalRoutingConfig,omitempty"`
+	BindingCount         int                    `json:"bindingCount"`
+	APIKeyCount          int                    `json:"apiKeyCount"`
+	GroupBindingPreview  []GroupBindingPreview  `json:"groupBindingPreview"`
+	CreatedAt            string                 `json:"createdAt"`
+	UpdatedAt            string                 `json:"updatedAt"`
+	SpeedFirstLatency    *SpeedFirstRuntimeSummary `json:"speedFirstLatencyRuntime,omitempty"`
 }
 
 // Detail mirrors RouteStrategySummary (GET /{id} response).
@@ -139,14 +140,19 @@ func ownerClause(access AccessScope, column string) (string, []any, bool) {
 	return "", nil, true
 }
 
-// keywordFilter mirrors buildRouteStrategyFilters: case-sensitive name prefix
-// range (textPrefixUpperBound).
-func keywordFilter(keyword string) (string, []any) {
+// keywordFilter mirrors buildRouteStrategyFiltersForClient: case-sensitive
+// name prefix range (textPrefixUpperBound). The PostgreSQL branch pins the
+// comparison to the `C` collation exactly like the source; SQLite keeps the
+// unadorned range.
+func (s *Store) keywordFilter(keyword string) (string, []any) {
 	text := strings.TrimSpace(keyword)
 	if text == "" {
 		return "", nil
 	}
 	upper := textPrefixUpperBound(text)
+	if s.pg {
+		return `(route_strategies.name COLLATE "C" >= ? AND route_strategies.name COLLATE "C" < ?)`, []any{text, upper}
+	}
 	return "(route_strategies.name >= ? AND route_strategies.name < ?)", []any{text, upper}
 }
 
@@ -186,7 +192,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	} else {
 		return s.emptyPage(page, pageSize), nil
 	}
-	if clause, clauseArgs := keywordFilter(options.Keyword); clause != "" {
+	if clause, clauseArgs := s.keywordFilter(options.Keyword); clause != "" {
 		clauses = append(clauses, clause)
 		args = append(args, clauseArgs...)
 	}
@@ -254,7 +260,11 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		return nil, err
 	}
 	for _, row := range strategies {
-		result.Items = append(result.Items, newListItem(row, names, bindingCounts[row.id], apiKeyCounts[row.id], previews[row.id], access.canAccessAll()))
+		item, itemErr := newListItem(row, names, bindingCounts[row.id], apiKeyCounts[row.id], previews[row.id], access.canAccessAll())
+		if itemErr != nil {
+			return nil, itemErr
+		}
+		result.Items = append(result.Items, item)
 	}
 	return result, nil
 }
@@ -382,22 +392,12 @@ func (s *Store) bindingSnapshot(ctx context.Context, ids []string) (map[string]i
 	}
 	keyRows.Close()
 
+	// Preview rows read through the shared binding projection (authorization
+	// joins included, `expires_at > now` bound first like the source).
+	args := append([]any{s.nowISO()}, countArgs...)
 	previewRows, err := s.db.QueryContext(ctx, s.bind(`SELECT
-		route_strategy_groups.id,
-		route_strategy_groups.route_strategy_id,
-		route_strategy_groups.group_id,
-		route_strategy_groups.priority,
-		route_strategy_groups.weight,
-		route_strategy_groups.status,
-		groups.name AS group_name,
-		groups.provider_code,
-		CASE
-			WHEN groups.id IS NULL THEN 0
-			WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN groups.enabled
-			ELSE 0
-		END AS group_enabled
-	FROM `+s.table("route_strategy_groups")+` route_strategy_groups
-	LEFT JOIN `+s.table("groups")+` groups ON groups.id = route_strategy_groups.group_id
+		`+s.bindingRowColumns()+`
+	`+s.bindingRowFrom()+`
 	WHERE route_strategy_groups.id IN (
 		SELECT ranked.id
 		FROM (
@@ -414,11 +414,7 @@ func (s *Store) bindingSnapshot(ctx context.Context, ids []string) (map[string]i
 		) ranked
 		WHERE ranked.row_number <= 3
 	)
-	ORDER BY route_strategy_groups.route_strategy_id ASC,
-		CASE WHEN route_strategy_groups.status = 'active' THEN 0 ELSE 1 END ASC,
-		route_strategy_groups.priority ASC,
-		route_strategy_groups.created_at ASC,
-		route_strategy_groups.id ASC`), countArgs...)
+	`+bindingRowOrder), args...)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -460,16 +456,28 @@ func previewsFromBindings(bindings []GroupBinding, limit int) []GroupBindingPrev
 	return out
 }
 
-func newListItem(row strategyRow, names map[string]string, bindingCount, apiKeyCount int, previews []GroupBindingPreview, includeOwner bool) ListItem {
+func newListItem(row strategyRow, names map[string]string, bindingCount, apiKeyCount int, previews []GroupBindingPreview, includeOwner bool) (ListItem, error) {
+	mode, modeErr := normalizeStoredMode(row.mode)
+	if modeErr != nil {
+		return ListItem{}, modeErr
+	}
+	status, statusErr := normalizeStoredStatus(row.status, "active")
+	if statusErr != nil {
+		return ListItem{}, statusErr
+	}
+	normal, _, configErr := parseStoredConfig(row.configJSON)
+	if configErr != nil {
+		return ListItem{}, configErr
+	}
 	item := ListItem{
 		ID:                   row.id,
 		OwnerSystemAccountID: row.systemAccountID,
 		Name:                 row.name,
 		Description:          nullPtrString(row.description),
-		Mode:                 row.mode,
-		Status:               row.status,
+		Mode:                 mode,
+		Status:               status,
 		IsDefault:            row.isDefault,
-		NormalRoutingConfig:  listItemNormalConfig(row),
+		NormalRoutingConfig:  normalConfigForMode(mode, normal),
 		BindingCount:         bindingCount,
 		APIKeyCount:          apiKeyCount,
 		GroupBindingPreview:  previews,
@@ -480,20 +488,7 @@ func newListItem(row strategyRow, names map[string]string, bindingCount, apiKeyC
 		item.SystemAccountID = ptrString(row.systemAccountID)
 		item.SystemAccountName = ptrString(names[row.systemAccountID])
 	}
-	return item
-}
-
-// listItemNormalConfig mirrors routeStrategyListItemFromRow: normal mode
-// renders the stored config or the cost_first default.
-func listItemNormalConfig(row strategyRow) *NormalRoutingConfig {
-	if row.mode != ModeNormal {
-		return nil
-	}
-	normal, _, err := parseStoredConfig(row.configJSON)
-	if err != nil || normal == nil {
-		return &NormalRoutingConfig{SchedulingPreference: defaultNormalSchedulingPreference}
-	}
-	return normal
+	return item, nil
 }
 
 // FindDetail mirrors findRouteStrategySummaryAsync: nil when the strategy is
@@ -530,24 +525,36 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	if err != nil {
 		return nil, err
 	}
-	return s.newDetail(ctx, row, bindings[row.id], access), nil
+	detail, err := s.newDetail(ctx, row, bindings[row.id], access)
+	if err != nil {
+		return nil, err
+	}
+	return detail, nil
 }
 
-func (s *Store) newDetail(ctx context.Context, row strategyRow, bindings []GroupBinding, access AccessScope) *Detail {
+func (s *Store) newDetail(ctx context.Context, row strategyRow, bindings []GroupBinding, access AccessScope) (*Detail, error) {
+	mode, modeErr := normalizeStoredMode(row.mode)
+	if modeErr != nil {
+		return nil, modeErr
+	}
+	status, statusErr := normalizeStoredStatus(row.status, "active")
+	if statusErr != nil {
+		return nil, statusErr
+	}
 	normal, hybrid, err := parseStoredConfig(row.configJSON)
 	if err != nil {
-		normal, hybrid = nil, nil
+		return nil, err
 	}
 	detail := &Detail{
 		ID:                   row.id,
 		OwnerSystemAccountID: row.systemAccountID,
 		Name:                 row.name,
 		Description:          nullPtrString(row.description),
-		Mode:                 row.mode,
-		Status:               row.status,
+		Mode:                 mode,
+		Status:               status,
 		IsDefault:            row.isDefault,
-		NormalRoutingConfig:  normalConfigForMode(row.mode, normal),
-		HybridRoutingConfig:  hybridConfigForMode(row.mode, hybrid),
+		NormalRoutingConfig:  normalConfigForMode(mode, normal),
+		HybridRoutingConfig:  hybridConfigForMode(mode, hybrid),
 		GroupBindings:        bindings,
 		APIKeyCount:          row.apiKeyCount,
 		CreatedAt:            row.createdAt,
@@ -560,7 +567,7 @@ func (s *Store) newDetail(ctx context.Context, row strategyRow, bindings []Group
 		detail.SystemAccountID = ptrString(row.systemAccountID)
 		detail.SystemAccountName = s.lookupName(ensureCtx(ctx), row.systemAccountID)
 	}
-	return detail
+	return detail, nil
 }
 
 // normalConfigForMode renders normalRoutingConfig for mode normal (default
@@ -589,4 +596,214 @@ func (s *Store) lookupName(ctx context.Context, id string) *string {
 		return nil
 	}
 	return ptrString(names[id])
+}
+
+// OptionSummary mirrors RouteStrategyOptionSummary (GET /options response).
+type OptionSummary struct {
+	ID                string `json:"id"`
+	SystemAccountID   *string `json:"systemAccountId,omitempty"`
+	SystemAccountName *string `json:"systemAccountName,omitempty"`
+	Name              string `json:"name"`
+	Mode              string `json:"mode"`
+	Status            string `json:"status"`
+	IsDefault         bool   `json:"isDefault"`
+}
+
+// OptionsQuery mirrors RouteStrategyOptionListOptions after the route-level
+// query parsing (ids deduped/capped, keyword trimmed, limit clamped).
+type OptionsQuery struct {
+	IDs        []string
+	Keyword    string
+	Limit      int
+	ActiveOnly bool
+}
+
+// ListOptionsPage mirrors listRouteStrategyOptionsAsync: owner-scoped option
+// summaries ordered is_default DESC, updated_at DESC, name ASC, id ASC.
+func (s *Store) ListOptionsPage(ctx context.Context, access AccessScope, query OptionsQuery) ([]OptionSummary, error) {
+	ctx = ensureCtx(ctx)
+	limit := query.Limit
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	clauses := []string{}
+	args := []any{}
+	if clause, clauseArgs, ok := ownerClause(access, "route_strategies.system_account_id"); ok {
+		if clause != "" {
+			clauses = append(clauses, clause)
+			args = append(args, clauseArgs...)
+		}
+	} else {
+		return []OptionSummary{}, nil
+	}
+	if len(query.IDs) > 0 {
+		placeholders := make([]string, len(query.IDs))
+		for i, id := range query.IDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		clauses = append(clauses, "route_strategies.id IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if clause, clauseArgs := s.keywordFilter(query.Keyword); clause != "" {
+		clauses = append(clauses, clause)
+		args = append(args, clauseArgs...)
+	}
+	if query.ActiveOnly {
+		clauses = append(clauses, "route_strategies.status = 'active'")
+	}
+	where := ""
+	if len(clauses) > 0 {
+		where = " WHERE " + strings.Join(clauses, " AND ")
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT route_strategies.id, route_strategies.system_account_id, route_strategies.name,
+		route_strategies.mode, route_strategies.status, route_strategies.is_default
+		FROM `+s.table("route_strategies")+` route_strategies`+where+`
+		ORDER BY route_strategies.is_default DESC, route_strategies.updated_at DESC, route_strategies.name ASC, route_strategies.id ASC
+		LIMIT ?`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var accountIDs []string
+	type optionRow struct {
+		id, systemAccountID, name, mode, status string
+		isDefault                               bool
+	}
+	parsed := []optionRow{}
+	for rows.Next() {
+		row := optionRow{}
+		var isDefault int
+		if err := rows.Scan(&row.id, &row.systemAccountID, &row.name, &row.mode, &row.status, &isDefault); err != nil {
+			return nil, err
+		}
+		row.isDefault = isDefault == 1
+		// routeStrategyOptionsFromRowsAsync normalizes mode/status per row and
+		// fails the whole read on unknown stored values.
+		mode, modeErr := normalizeStoredMode(row.mode)
+		if modeErr != nil {
+			return nil, modeErr
+		}
+		row.mode = mode
+		status, statusErr := normalizeStoredStatus(row.status, "active")
+		if statusErr != nil {
+			return nil, statusErr
+		}
+		row.status = status
+		parsed = append(parsed, row)
+		accountIDs = append(accountIDs, row.systemAccountID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	names := map[string]string{}
+	if access.canAccessAll() {
+		names, err = s.systemAccountNames(ctx, accountIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	options := make([]OptionSummary, 0, len(parsed))
+	for _, row := range parsed {
+		summary := OptionSummary{
+			ID:        row.id,
+			Name:      row.name,
+			Mode:      row.mode,
+			Status:    row.status,
+			IsDefault: row.isDefault,
+		}
+		if access.canAccessAll() {
+			summary.SystemAccountID = ptrString(row.systemAccountID)
+			if name := names[row.systemAccountID]; name != "" {
+				summary.SystemAccountName = ptrString(name)
+			}
+		}
+		options = append(options, summary)
+	}
+	return options, nil
+}
+
+// EditBasicDetail mirrors RouteStrategyEditBasicDetail (GET /:id/edit-basic).
+type EditBasicDetail struct {
+	ID                  string               `json:"id"`
+	SystemAccountID     *string              `json:"systemAccountId,omitempty"`
+	Name                string               `json:"name"`
+	Description         *string              `json:"description,omitempty"`
+	Mode                string               `json:"mode"`
+	Status              string               `json:"status"`
+	IsDefault           bool                 `json:"isDefault"`
+	NormalRoutingConfig *NormalRoutingConfig `json:"normalRoutingConfig,omitempty"`
+	HybridRoutingConfig *HybridRoutingConfig `json:"hybridRoutingConfig,omitempty"`
+	GroupBindings       []GroupBinding       `json:"groupBindings"`
+	UpdatedAt           string               `json:"updatedAt"`
+}
+
+// FindEditBasic mirrors findRouteStrategyEditBasicDetailAsync: nil when the
+// strategy is missing or not owned by the scope (route renders 404).
+func (s *Store) FindEditBasic(ctx context.Context, id string, access AccessScope) (*EditBasicDetail, error) {
+	ctx = ensureCtx(ctx)
+	clause, clauseArgs, ok := ownerClause(access, "route_strategies.system_account_id")
+	if !ok {
+		return nil, nil
+	}
+	where := ""
+	args := []any{id}
+	if clause != "" {
+		where = " AND " + clause
+		args = append(args, clauseArgs...)
+	}
+	var rowID, systemAccountID, name, mode, status, updatedAt string
+	var description sql.NullString
+	var configJSON sql.NullString
+	var isDefault int
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT route_strategies.id, route_strategies.system_account_id, route_strategies.name,
+		route_strategies.description, route_strategies.mode, route_strategies.status, route_strategies.is_default,
+		route_strategies.config_json, route_strategies.updated_at
+		FROM `+s.table("route_strategies")+` route_strategies
+		WHERE route_strategies.id = ?`+where+` LIMIT 1`), args...).
+		Scan(&rowID, &systemAccountID, &name, &description, &mode, &status, &isDefault, &configJSON, &updatedAt)
+	if isNoRows(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	normalizedMode, modeErr := normalizeStoredMode(mode)
+	if modeErr != nil {
+		return nil, modeErr
+	}
+	normalizedStatus, statusErr := normalizeStoredStatus(status, "active")
+	if statusErr != nil {
+		return nil, statusErr
+	}
+	normal, hybrid, configErr := parseStoredConfig(configJSON)
+	if configErr != nil {
+		return nil, configErr
+	}
+	bindings, err := s.loadBindings(ctx, s.db, []string{rowID})
+	if err != nil {
+		return nil, err
+	}
+	detail := &EditBasicDetail{
+		ID:                  rowID,
+		Name:                name,
+		Description:         nullPtrString(description),
+		Mode:                normalizedMode,
+		Status:              normalizedStatus,
+		IsDefault:           isDefault == 1,
+		NormalRoutingConfig: normalConfigForMode(normalizedMode, normal),
+		HybridRoutingConfig: hybridConfigForMode(normalizedMode, hybrid),
+		GroupBindings:       bindings[rowID],
+		UpdatedAt:           updatedAt,
+	}
+	if detail.GroupBindings == nil {
+		detail.GroupBindings = []GroupBinding{}
+	}
+	if access.canAccessAll() {
+		detail.SystemAccountID = ptrString(systemAccountID)
+	}
+	return detail, nil
 }

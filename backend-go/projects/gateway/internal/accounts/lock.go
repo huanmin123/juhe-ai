@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 )
 
 // Lock family mirrors storage/account-lock.repository.ts +
@@ -57,6 +58,9 @@ type accountLockRow struct {
 	deadlineAt     sql.NullString
 	originalStatus sql.NullString
 	provenance     sql.NullString
+	nextRetryAtMs  sql.NullInt64
+	leaseID        sql.NullString
+	leaseUntilMs   sql.NullInt64
 	generation     int64
 	updatedAt      string
 }
@@ -65,11 +69,13 @@ func (s *Store) findAccountLockState(ctx context.Context, q queryer, accountID s
 	var row accountLockRow
 	err := q.QueryRowContext(ctx, s.bind(`SELECT account_id, enabled, lock_state,
 			lock_death_timeout_seconds, lock_retry_interval_seconds, incident_id,
-			incident_started_at, deadline_at, original_status, provenance, generation, updated_at
+			incident_started_at, deadline_at, original_status, provenance,
+			next_retry_at_ms, lease_id, lease_until_ms, generation, updated_at
 		FROM `+s.table("account_lock_states")+` WHERE account_id = ?`), accountID).
 		Scan(&row.accountID, &row.enabled, &row.lockState, &row.deathTimeout,
 			&row.retryInterval, &row.incidentID, &row.incidentStart, &row.deadlineAt,
-			&row.originalStatus, &row.provenance, &row.generation, &row.updatedAt)
+			&row.originalStatus, &row.provenance, &row.nextRetryAtMs, &row.leaseID,
+			&row.leaseUntilMs, &row.generation, &row.updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -166,6 +172,12 @@ func (s *Store) SetLock(ctx context.Context, input SetLockInput, access AccessSc
 	// still ENGAGED keeps the incident bookkeeping and stays ENGAGED.
 	preserveIncident := input.Enabled && previous != nil &&
 		previous.enabled == 1 && previous.lockState == "ENGAGED"
+	// Node account-lock.repository.ts setAccountLockAsync: the retry lease
+	// only survives when the incident is preserved AND neither lock config
+	// field actually changed; any config change releases the lease.
+	retryConfigChanged := previous != nil && previous.retryInterval != interval
+	deathConfigChanged := previous != nil && previous.deathTimeout != timeout
+	preserveLease := preserveIncident && !retryConfigChanged && !deathConfigChanged
 	nextState := "LOCKED_IDLE"
 	if !input.Enabled {
 		nextState = "UNLOCKED"
@@ -182,17 +194,33 @@ func (s *Store) SetLock(ctx context.Context, input SetLockInput, access AccessSc
 	}
 	now := isoMillis(s.now())
 	var incidentID, incidentStart, deadlineAt, originalStatus, provenance any
+	var nextRetryAtMs, leaseID, leaseUntilMs any
 	if preserveIncident {
 		incidentID = previous.incidentID
 		incidentStart = previous.incidentStart
 		deadlineAt = previous.deadlineAt
 		originalStatus = previous.originalStatus
 		provenance = previous.provenance
+		// A changed death timeout recomputes the deadline from the original
+		// incident start (Node: incidentStartedAt + timeout, ISO output).
+		if deathConfigChanged && previous.incidentStart.Valid && strings.TrimSpace(previous.incidentStart.String) != "" {
+			parsedStart, err := time.Parse(time.RFC3339Nano, previous.incidentStart.String)
+			if err != nil {
+				return nil, &ValidationError{Message: "时间必须是有效时间字符串"}
+			}
+			deadlineAt = isoMillis(parsedStart.Add(time.Duration(timeout) * time.Second))
+		}
+	}
+	if preserveLease {
+		nextRetryAtMs = previous.nextRetryAtMs
+		leaseID = previous.leaseID
+		leaseUntilMs = previous.leaseUntilMs
 	}
 	upsert, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_lock_states")+`
 		(account_id, enabled, lock_state, lock_death_timeout_seconds, lock_retry_interval_seconds,
-		 incident_id, incident_started_at, deadline_at, original_status, provenance, generation, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 incident_id, incident_started_at, deadline_at, original_status, provenance,
+		 next_retry_at_ms, lease_id, lease_until_ms, generation, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(account_id) DO UPDATE SET
 			enabled = excluded.enabled,
 			lock_state = excluded.lock_state,
@@ -203,14 +231,15 @@ func (s *Store) SetLock(ctx context.Context, input SetLockInput, access AccessSc
 			deadline_at = excluded.deadline_at,
 			original_status = excluded.original_status,
 			provenance = excluded.provenance,
-			next_retry_at_ms = NULL,
-			lease_id = NULL,
-			lease_until_ms = NULL,
+			next_retry_at_ms = excluded.next_retry_at_ms,
+			lease_id = excluded.lease_id,
+			lease_until_ms = excluded.lease_until_ms,
 			generation = excluded.generation,
 			updated_at = excluded.updated_at
 		WHERE `+lockStateTableRef(s.pg)+`.generation = ?`),
 		id, boolInt(input.Enabled), nextState, timeout, interval,
 		incidentID, incidentStart, deadlineAt, originalStatus, provenance,
+		nextRetryAtMs, leaseID, leaseUntilMs,
 		generation, now, previousGeneration)
 	if err != nil {
 		return nil, err

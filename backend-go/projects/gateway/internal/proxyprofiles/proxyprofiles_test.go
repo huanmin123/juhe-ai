@@ -276,6 +276,10 @@ func TestProxyCreateRouteWritesOperationLog(t *testing.T) {
 	fixture := newProxyFixture(t)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies", strings.NewReader(`{"name":"代理X","type":"socks5","host":"h","port":1080,"enabled":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	// express.json 只解析声明了 content-length/transfer-encoding 的请求体
+	// (type-is hasBody)；直连 ServeHTTP 时须补上 wire 会携带的长度。
+	request.Header.Set("Content-Length", strconv.Itoa(len(`{"name":"代理X","type":"socks5","host":"h","port":1080,"enabled":true}`)))
 	request = request.WithContext(authsys.WithAuthContext(request.Context(), fixture.auth("")))
 	createHandler(recorder, request, fixture.store, fixture.sink)
 	if recorder.Code != http.StatusCreated {
@@ -304,6 +308,10 @@ func TestProxyCreateRouteWritesOperationLog(t *testing.T) {
 	// 带密码创建 → After「已变更」。
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies", strings.NewReader(`{"name":"代理Y","type":"http","host":"h2","port":8080,"password":"secret"}`))
+	request.Header.Set("Content-Type", "application/json")
+	// express.json 只解析声明了 content-length/transfer-encoding 的请求体
+	// (type-is hasBody)；直连 ServeHTTP 时须补上 wire 会携带的长度。
+	request.Header.Set("Content-Length", strconv.Itoa(len(`{"name":"代理Y","type":"http","host":"h2","port":8080,"password":"secret"}`)))
 	request = request.WithContext(authsys.WithAuthContext(request.Context(), fixture.auth("")))
 	createHandler(recorder, request, fixture.store, fixture.sink)
 	if recorder.Code != http.StatusCreated {
@@ -321,6 +329,10 @@ func TestProxyCreateRouteWritesOperationLog(t *testing.T) {
 	// schema 失败 → 400 代理参数无效。
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies", strings.NewReader(`{"name":"代理X","unknown":1}`))
+	request.Header.Set("Content-Type", "application/json")
+	// express.json 只解析声明了 content-length/transfer-encoding 的请求体
+	// (type-is hasBody)；直连 ServeHTTP 时须补上 wire 会携带的长度。
+	request.Header.Set("Content-Length", strconv.Itoa(len(`{"name":"代理X","unknown":1}`)))
 	request = request.WithContext(authsys.WithAuthContext(request.Context(), fixture.auth("")))
 	createHandler(recorder, request, fixture.store, fixture.sink)
 	if recorder.Code != http.StatusBadRequest {

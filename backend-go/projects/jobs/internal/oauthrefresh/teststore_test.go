@@ -63,6 +63,8 @@ CREATE TABLE accounts (
 	health_check_model TEXT,
 	health_check_endpoint_mode TEXT,
 	config_revision INTEGER NOT NULL DEFAULT 1,
+	dispatch_revision INTEGER NOT NULL DEFAULT 1,
+	authorization_instance_source_account_id TEXT,
 	oauth_access_token_expires_at TEXT,
 	oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
 	availability_schedule_json TEXT,
@@ -94,6 +96,29 @@ CREATE TABLE account_quality_enforcements (
 	account_id TEXT NOT NULL,
 	state TEXT NOT NULL,
 	action TEXT NOT NULL
+);
+CREATE TABLE account_health_jobs_input_versions (
+	account_id TEXT PRIMARY KEY,
+	current_version INTEGER NOT NULL CHECK (current_version >= 1),
+	reserved_at TEXT NOT NULL
+);
+CREATE TABLE account_health_jobs_input_outbox (
+	event_id TEXT PRIMARY KEY,
+	account_id TEXT NOT NULL,
+	input_version INTEGER NOT NULL CHECK (input_version >= 1),
+	event_kind TEXT NOT NULL CHECK (event_kind IN ('snapshot', 'tombstone')),
+	reason TEXT NOT NULL,
+	config_revision INTEGER NOT NULL CHECK (config_revision >= 1),
+	dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
+	status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'published', 'failed', 'superseded')),
+	claim_token TEXT,
+	claimed_until TEXT,
+	attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+	available_at TEXT NOT NULL,
+	last_error TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (account_id, input_version)
 );
 CREATE TABLE resource_authorization_grants (
 	id TEXT PRIMARY KEY,

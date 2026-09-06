@@ -74,7 +74,7 @@ func newChainFixture(t *testing.T) *chainFixture {
 	if err != nil {
 		t.Fatalf("create sql read models: %v", err)
 	}
-	selector, err := newChainAccountsSelectorWithStats(db, statsDB, false, "chain-test-secret", time.Now)
+	selector, err := newChainAccountsSelectorWithStats(db, statsDB, false, "chain-test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -997,7 +997,7 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 		}
 	}
 
-	selector, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now)
+	selector, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -1015,4 +1015,73 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 	if _, exists := mappings["acc_missing"]; exists {
 		t.Fatalf("unknown account must not map: %+v", mappings)
 	}
+}
+
+// T6c：dispatch 候选窗口 limit 是运行配置（Node
+// gatewayDispatchAccountCandidateLimit = runtimeConfig.gateway.
+// dispatchAccountCandidateLimit，默认 concurrency.globalMax；scan = final*2），
+// 查询 LIMIT、hydration 批上限与诊断全部消费注入值，不再是固定常量。
+func TestChainAccountsSelectorConsumesDispatchCandidateLimit(t *testing.T) {
+	db := seedChainSelectorDB(t)
+	defer db.Close()
+	selector, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now, 7)
+	if err != nil {
+		t.Fatalf("create selector: %v", err)
+	}
+	if selector.candidateFinalLimit != 7 || selector.candidateScanLimit != 14 {
+		t.Fatalf("limit=%d scan=%d, want 7/14", selector.candidateFinalLimit, selector.candidateScanLimit)
+	}
+	result, err := selector.ListOpenAIAccountsForGroupResult(context.Background(), "grp-limit", "sys_admin", gatewayruntimecache.OpenAIAccountsForGroupOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if result.Diagnostics == nil {
+		t.Fatal("diagnostics 缺失")
+	}
+	if result.Diagnostics.FinalLimit != 7 || result.Diagnostics.ScanLimit != 14 {
+		t.Fatalf("diagnostics final=%d scan=%d, want 7/14",
+			result.Diagnostics.FinalLimit, result.Diagnostics.ScanLimit)
+	}
+	// Node integerConfig 边界：越界 limit 构造失败（1..50000）。
+	if _, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now, 0); err == nil {
+		t.Fatal("limit=0 必须构造失败")
+	}
+	if _, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now, 50001); err == nil {
+		t.Fatal("limit=50001 必须构造失败")
+	}
+}
+
+// seedChainSelectorDB 建候选窗口查询所需的最小业务表（与 chainCandidateFrom
+// 对齐：group_accounts + accounts 自连接 + stats 质量表省略——共享 db 句柄）。
+func seedChainSelectorDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "chain-limit.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT, name TEXT, type TEXT, status TEXT, schedulable INTEGER, concurrency_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER, client_compatibility TEXT, config_revision INTEGER, dispatch_revision INTEGER, credentials_encrypted TEXT, proxy_profile_id TEXT, cooldown_until TEXT, last_error_message TEXT, last_error_code TEXT, stream_failure_count INTEGER, stream_failure_window_started_at TEXT, account_expires_at TEXT, health_check_model TEXT, health_check_endpoint_mode TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, deleted_at TEXT)`,
+		`CREATE TABLE group_accounts (account_id TEXT, system_account_id TEXT, group_id TEXT, account_authorization_id TEXT, local_priority INTEGER, local_super_priority_enabled INTEGER, local_fallback_enabled INTEGER, enabled INTEGER, created_at TEXT)`,
+		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT, created_at TEXT)`,
+		`CREATE TABLE account_model_mappings (account_id TEXT, source_model TEXT, source_endpoint_family TEXT, upstream_model TEXT, upstream_endpoint_family TEXT, enabled INTEGER)`,
+		`CREATE TABLE account_api_key_runtime_states (account_id TEXT, key_fingerprint TEXT, key_index INTEGER, status TEXT, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT)`,
+		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT, host TEXT, port INTEGER, username TEXT, password_encrypted TEXT, enabled INTEGER)`,
+		`CREATE TABLE account_quality_scores (account_id TEXT PRIMARY KEY, quality_score REAL, quality_state TEXT, ewma_first_token_ms REAL, last_sample_at TEXT)`,
+		`INSERT INTO groups VALUES ('grp-limit', 'sys_admin', 'openai', 1, 'personal', NULL)`,
+	}
+	now := "2026-01-01T00:00:00.000Z"
+	// 9 个候选超出 final limit 7，验证 hydration 上限消费注入值。
+	for i := 0; i < 9; i++ {
+		id := string(rune('a'+i)) + "-limit-acc"
+		statements = append(statements,
+			`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at) VALUES ('`+id+`', 'sys_admin', 'openai', '`+id+`', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`,
+			`INSERT INTO group_accounts VALUES ('`+id+`', 'sys_admin', 'grp-limit', NULL, 0, 0, 0, 1, '`+now+`')`)
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed %q: %v", statement[:40], err)
+		}
+	}
+	return db
 }

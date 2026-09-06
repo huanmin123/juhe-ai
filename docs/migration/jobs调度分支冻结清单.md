@@ -75,37 +75,50 @@
 权威表：`backend-go/projects/jobs/internal/jobregistry/schedule.go`（`schedules()`）；
 注册门禁：`worker_assembly.go scheduleWiredJob` 只注册 `GoStatus = GoWired` 的 job；
 设置间隔映射：`jobregistry.SettingsIntervalJobNames()`。
+T6b 后模式分叉权威表：`jobregistry.ModeConstraints()` +
+`ResolveScheduleForDriver(jobName, settings, databaseDriver)`
+（`usage-overview-windows-refresh` SQLite=30min / PG=5min、
+`usage-scope-range-windows-refresh` 仅默认/SQLite 分支（PG 分支打
+`background_cold_range_window_refresh_disabled`）、
+`ai-performance-summary-windows-refresh` 仅 PG 分支）；stage 集合分叉由组合根
+`rankSnapshotCoreStages(postgres)` 消费。
 
 | job | Node 两分支参数 | Go `schedules()` | 判定 |
 | --- | --- | --- | --- |
 | system-metrics-sample / usage-stats-aggregation / client-ip-stats-aggregation / group-account-stats-refresh / usage-hot-window-refresh / usage-stats-consistency-check / account-quality-refresh | 见 2.1 | 与 Node 一致；设置驱动间隔经 `SettingsIntervalJobNames` | 一致 |
-| usage-rank-snapshots-refresh | stage 集合按模式分叉（PG 剔除 ai_performance_summary_windows） | 单一注册，无 stage 分叉字段 | **差异（模式分叉未建模）**：Go 的窗口刷新任务闭包自带 stage 语义，见第 4 节处置 |
-| ai-performance-summary-windows-refresh | 仅 PG 分支注册 | GoWired，参数与 Node PG 分支一致 | **差异（SQLite 模式多注册）**：Go SQLite 模式下该 job 独立运行，等价于 Node 把该 stage 并入 usage-rank-snapshots-refresh；执行语义按 stage 幂等，重复刷新无害，但注册面不同 |
+| usage-rank-snapshots-refresh | stage 集合按模式分叉（PG 剔除 ai_performance_summary_windows） | 单一注册；stage 集合经 `rankSnapshotCoreStages(postgres)` 按模式消费（T6b） | 一致（T6b 落地） |
+| ai-performance-summary-windows-refresh | 仅 PG 分支注册 | `ModeConstraint.PostgresOnly`：仅 PG 分支注册；SQLite 分支 stage 并入 usage-rank-snapshots-refresh（T6b） | 一致（T6b 落地） |
 | system-metrics-trend-windows-refresh / authorization-usage-range-windows-refresh | 两分支一致 | 与 Node 一致 | 一致 |
-| usage-overview-windows-refresh | interval 按模式 5min（PG）/ 30min（SQLite） | 固定 5min（`schedule.go` `usage-overview-windows-refresh`） | **差异（模式分叉未建模）**：Go SQLite 模式用 5min，比 Node SQLite 的 30min 更频繁（刷新更及时、开销更大），语义方向安全 |
-| usage-scope-range-windows-refresh | 仅默认/SQLite 分支注册；PG 分支跳过并打 `background_cold_range_window_refresh_disabled` | GoWired，固定注册（interval 6h） | **差异（PG 高性能模式多注册）**：Go PG 模式下会运行 Node 明确跳过的冷历史范围窗口重刷；行为是刷新而非破坏，但违背 Node 的 PG 性能取舍 |
+| usage-overview-windows-refresh | interval 按模式 5min（PG）/ 30min（SQLite） | `ModeConstraint.SQLiteInterval`：PG 5min / SQLite 30min（T6b） | 一致（T6b 落地） |
+| usage-scope-range-windows-refresh | 仅默认/SQLite 分支注册；PG 分支跳过并打 `background_cold_range_window_refresh_disabled` | `ModeConstraint.SQLiteOnly`：PG 分支不注册并打同款事件（T6b） | 一致（T6b 落地） |
 | account-balance-refresh / account-balance-auto-detect-recovery | `accountBalanceNodeOwnerEnabled()` 分支注册 | refresh = GoEquivalent（Go owner 承担）、auto-detect-recovery = GoWired | 等价映射：Go owner 模式即 Node `:328-330` 的 drained 分支终态；`scheduleWiredJob` 门禁保证非 GoWired 不注册 |
-| account-list-availability-projection-maintenance | env 开关默认 false，interval env 可变（1s..60s） | GoPartial，interval 固定 1s | **差异（开关与可变间隔未建模）**：Go 未接 `..._ENABLED` env 与 `..._INTERVAL_MS`；当前靠 GoStatus=GoPartial 不进入调度 |
-| key-model-memory-recovery | 仅非 Redis runtime-state driver 注册；jitter 明确 false | GoEquivalent，参数一致（PassiveJitter 未设 = false ✓），无 driver 分支字段 | 等价映射：Go 侧该能力归属 `internal/keymodelrecovery`，driver 分支由接线层承担 |
+| account-list-availability-projection-maintenance | env 开关默认 false，interval env 可变（1s..60s） | GoPartial，interval 固定 1s | **差异（开关与可变间隔未建模）**：Go 未接 `..._ENABLED` env 与 `..._INTERVAL_MS`；当前靠 GoStatus=GoPartial 不进入调度，冻结依据登记在 GoBinding |
+| key-model-memory-recovery | 仅非 Redis runtime-state driver 注册；jitter 明确 false | GoEquivalent，参数一致（PassiveJitter 未设 = false ✓），无 driver 分支字段 | 等价映射：Go 侧该能力归属 `internal/keymodelrecovery`，driver 分支由接线层承担，冻结依据登记在 GoBinding |
 
 ## 4. 冻结处置与遗留项
 
 1. **冻结点（不得回退）**：
    - `usage-overview-windows-refresh` 的 PG 分支 interval 必须是 5min（`:294`），
      `usageRankSnapshotRefreshIntervalMs`（30min）只属于默认分支与
-     usage-rank/system-metrics-trend 两个 job。
+     usage-rank/system-metrics-trend 两个 job。**T6b 已落**
+     `ModeConstraint.SQLiteInterval`。
    - `usage-scope-range-windows-refresh` 只在默认/SQLite 模式注册；PG 高性能模式的
      预期行为是跳过 + `background_cold_range_window_refresh_disabled` 日志。
+     **T6b 已落** `ModeConstraint.SQLiteOnly` + 组合根同款事件日志。
    - `accountListAvailabilityProjectionEnabled` 默认 false。
    - `key-model-memory-recovery` 仅非 Redis runtime-state driver；`passiveJitter=false`。
    - `usage-rank-snapshots-refresh` 的 PG stage 集合必须剔除
-     `ai_performance_summary_windows`（由独立 job 承担）。
-2. **Go 侧遗留（需组合根/注册表后续处理，本清单不实施）**：
-   - `schedules()` 缺少按 `databaseDriver` 的模式分叉：`usage-overview-windows-refresh`
-     在 SQLite 模式应为 30min、`usage-scope-range-windows-refresh` 在 PG 模式应跳过并打
-     `background_cold_range_window_refresh_disabled`、
-     `ai-performance-summary-windows-refresh` 在 SQLite 模式不注册。
-   - `account-list-availability-projection-maintenance` 的 env 开关与可变 interval 未接。
-   - `key-model-memory-recovery` 的 runtime-state driver 分支未在注册表建模。
+     `ai_performance_summary_windows`（由独立 job 承担）。**T6b 已落**
+     `rankSnapshotCoreStages(postgres)` + `ModeConstraint.PostgresOnly`。
+2. **Go 侧遗留（T6b 处置结果）**：
+   - ~~`schedules()` 缺少按 `databaseDriver` 的模式分叉~~ **已落地**：
+     `jobregistry.ModeConstraints()` + `ResolveScheduleForDriver` +
+     组合根 `scheduleWiredJob`/窗口任务分支消费（usage-overview SQLite=30min、
+     usage-scope-range PG 跳过+事件、ai-performance SQLite 不注册+stage 并入）。
+   - `account-list-availability-projection-maintenance` 的 env 开关与可变 interval
+     未接（GoPartial 不进调度，冻结依据登记在 GoBinding，接线时按
+     Node `:334-336` 消费）。
+   - `key-model-memory-recovery` 的 runtime-state driver 分支未在注册表建模
+     （GoEquivalent 自有循环，冻结依据登记在 GoBinding）。
 3. 本清单与 `internal/jobregistry/registry.go` 的 `GoStatus` 共同构成调度面验收输入；
    修改 `schedules()` 或 `worker_assembly.go` 家族装配时必须对照第 2、3 节复核。

@@ -100,7 +100,7 @@ func TestSweepBatchLimitAndFinalizer(t *testing.T) {
 		seedGrantRow(t, db, grantID(i), "active", isoMillis(clock.time().Add(-timeHour)), "", "")
 	}
 	finalized := []string{}
-	finalizer := FinalizerFunc(func(_ context.Context, grant ResourceAuthorizationGrant, actor string) error {
+	finalizer := FinalizerFunc(func(_ context.Context, _ *sql.Tx, grant ResourceAuthorizationGrant, actor string) error {
 		finalized = append(finalized, grant.ID+"|"+actor+"|"+grant.Status)
 		return nil
 	})
@@ -158,7 +158,7 @@ func TestSweepActorFallsBackToCreator(t *testing.T) {
 	store, db, clock := newSweepStore(t)
 	seedGrantRow(t, db, "g-actor", "active", isoMillis(clock.time().Add(-timeHour)), "", "creator-1")
 	seen := ""
-	finalizer := FinalizerFunc(func(_ context.Context, grant ResourceAuthorizationGrant, actor string) error {
+	finalizer := FinalizerFunc(func(_ context.Context, _ *sql.Tx, grant ResourceAuthorizationGrant, actor string) error {
 		seen = actor
 		return nil
 	})

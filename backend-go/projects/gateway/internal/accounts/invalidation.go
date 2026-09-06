@@ -88,6 +88,13 @@ func (s *Store) finishPatchSideEffects(result *PatchResult) {
 			runtimeAffected = true
 		}
 	}
+	// Node gatewayRuntimeAffected also fires on groupChanged and
+	// credentialsChanged directly
+	// (account-management-patch.repository.ts:898-900); the credentials arm
+	// already lands through the "credentials" field entry above.
+	if result.GroupChanged {
+		runtimeAffected = true
+	}
 	if lookupAffected {
 		if err := s.invalidator.InvalidateAccountLookup(result.ID); err != nil {
 			slog.Warn("账户编辑已提交，但账户 lookup 缓存失效失败",

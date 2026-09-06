@@ -101,8 +101,9 @@ func TestListGroupsEmptyAndPaged(t *testing.T) {
 		if r.status != http.StatusOK {
 			t.Fatalf("status = %d (body %s)", r.status, r.raw)
 		}
-		// groups.Store defaults: page 1, pageSize 20.
-		assertListEnvelope(t, r, 0, false, 1, 20, 0)
+		// groups.Store defaults: page 1, pageSize 50 (Node
+		// group-read.repository.ts defaultGroupListPageSize = 50).
+		assertListEnvelope(t, r, 0, false, 1, 50, 0)
 	})
 
 	t.Run("paging", func(t *testing.T) {
@@ -119,7 +120,7 @@ func TestListGroupsEmptyAndPaged(t *testing.T) {
 
 		// Non-positive or non-numeric paging falls back to the store defaults.
 		r = f.env.do(http.MethodGet, Prefix+"/groups?page=abc&pageSize=-1", "", f.token)
-		assertListEnvelope(t, r, 3, false, 1, 20, 3)
+		assertListEnvelope(t, r, 3, false, 1, 50, 3)
 	})
 
 	t.Run("dto_shape", func(t *testing.T) {
@@ -136,7 +137,7 @@ func TestListGroupsEmptyAndPaged(t *testing.T) {
 		other := f.otherOwner()
 		f.env.seedGroup("grp-other", other, "bob-group", "openai", "personal", true)
 		r := f.env.do(http.MethodGet, Prefix+"/groups", "", f.token)
-		assertListEnvelope(t, r, 0, false, 1, 20, 0)
+		assertListEnvelope(t, r, 0, false, 1, 50, 0)
 	})
 }
 

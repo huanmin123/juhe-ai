@@ -150,7 +150,8 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 				return nil, patchTypeIssue("string", value)
 			}
 			trimmed := strings.TrimSpace(text)
-			if len([]rune(trimmed)) > 200 {
+			// zod's max(200) counts UTF-16 code units (JavaScript .length).
+			if utf16Length(trimmed) > 200 {
 				return nil, "String must contain at most 200 character(s)"
 			}
 			if trimmed == "" {
@@ -368,7 +369,10 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 	if input.HasDescription {
 		nextDescription := sql.NullString{}
 		if input.Description != nil {
-			if len([]rune(*input.Description)) > 200 {
+			// Store-layer guard (UTF-16 units): Node's
+			// normalizeOptionalApiKeyDescription enforces the same cap with
+			// this message for any non-route caller.
+			if utf16Length(*input.Description) > 200 {
 				return nil, &ValidationError{Message: "API Key 说明不能超过 200 个字符"}
 			}
 			nextDescription = sql.NullString{String: *input.Description, Valid: true}
@@ -436,11 +440,13 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 
 	var effectiveSchedule *AvailabilitySchedule
 	if input.HasSchedule {
-		currentSchedule, err := ParseScheduleJSON(scheduleJSON.String)
+		// Stored-row parse failures surface as plain errors (500) exactly like
+		// Node's raw parse/normalize throws inside patchApiKeyAsync.
+		currentSchedule, err := s.parseScheduleJSON(scheduleJSON.String)
 		if err != nil {
 			return nil, err
 		}
-		schedule, err := NormalizeSchedule(input.AvailabilitySchedule)
+		schedule, err := normalizeScheduleWithDefault(input.AvailabilitySchedule, s.defaultScheduleTimezone)
 		if err != nil {
 			return nil, err
 		}
