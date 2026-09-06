@@ -132,6 +132,15 @@ type Store struct {
 	// SetDeletedResourceGrantRevoker wires it; a nil port (and the PG
 	// dialect) keeps the bulk revoke arm verbatim.
 	deletedGrantRevoker DeletedResourceGrantRevoker
+	// balanceSnapshotCleaner is the post-commit balance snapshot cleanup port
+	// (balance_snapshot_cleanup.go). Nil until SetBalanceSnapshotCleaner
+	// wires it; a nil port keeps PATCH cache/snapshot silent.
+	balanceSnapshotCleaner BalanceSnapshotCleaner
+	// runtimeCooldownSettings is the narrow settings port behind the
+	// rate_limited re-arm of the edit-path runtime-state normalization
+	// (patch_runtime_state.go). Nil until SetRuntimeCooldownSettings wires
+	// it; a nil port falls back to the Node schema default (2 minutes).
+	runtimeCooldownSettings RuntimeCooldownSettings
 }
 
 // NewStore builds the store.

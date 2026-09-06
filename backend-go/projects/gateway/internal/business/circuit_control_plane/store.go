@@ -862,7 +862,9 @@ func (s *Store) ListForRebuild(ctx context.Context, nowMS, afterUpdatedMS int64,
 		return RebuildPage{}, err
 	}
 	now := nowMS
-	q := "SELECT " + incidentColumns + " FROM " + s.table("account_circuit_incidents") + " i WHERE (i.state<>'CLOSED' OR i.retained_until_ms>?) AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + s.table("accounts") + " a WHERE a.id=i.account_id) AND (i.updated_at_ms>? OR (i.updated_at_ms=? AND i.circuit_scope_key>?)) ORDER BY i.updated_at_ms,i.circuit_scope_key LIMIT ?"
+	// 归档 listAccountCircuitIncidentsForRebuildInClient：dispatch_revision 必须仍
+	// 等于未删除账户的当前值（deleted_at IS NULL 围栏），已删账户的迟到 incident 不回放。
+	q := "SELECT " + incidentColumns + " FROM " + s.table("account_circuit_incidents") + " i WHERE (i.state<>'CLOSED' OR i.retained_until_ms>?) AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + s.table("accounts") + " a WHERE a.id=i.account_id AND a.deleted_at IS NULL) AND (i.updated_at_ms>? OR (i.updated_at_ms=? AND i.circuit_scope_key>?)) ORDER BY i.updated_at_ms,i.circuit_scope_key LIMIT ?"
 	page, err := s.listIncidents(ctx, q, now, afterUpdatedMS, afterUpdatedMS, afterScope, limit)
 	if err != nil {
 		return RebuildPage{}, err
@@ -902,7 +904,9 @@ func (s *Store) ListByRuntimeKeys(ctx context.Context, keys []string, includeRet
 		condition = "(i.state<>'CLOSED' OR i.retained_until_ms>?)"
 		args = append(args, now)
 	}
-	q := "SELECT " + incidentColumns + " FROM " + s.table("account_circuit_incidents") + " i WHERE i.account_runtime_key IN (" + ph + ") AND " + condition + " AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + s.table("accounts") + " a WHERE a.id=i.account_id) ORDER BY i.account_runtime_key,i.updated_at_ms,i.circuit_scope_key"
+	// 归档 listAccountCircuitIncidentsByRuntimeKeysInClient：同 deleted_at IS NULL
+	// 账户围栏，已删账户不返回摘要。
+	q := "SELECT " + incidentColumns + " FROM " + s.table("account_circuit_incidents") + " i WHERE i.account_runtime_key IN (" + ph + ") AND " + condition + " AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + s.table("accounts") + " a WHERE a.id=i.account_id AND a.deleted_at IS NULL) ORDER BY i.account_runtime_key,i.updated_at_ms,i.circuit_scope_key"
 	rows, err := s.db.QueryContext(ctx, s.bind(q), args...)
 	if err != nil {
 		return nil, err
@@ -935,7 +939,9 @@ func (s *Store) ListProjectionGaps(ctx context.Context, afterAccountID string, a
 	}
 	accounts := s.table("accounts")
 	incidents := s.table("account_circuit_incidents")
-	rows, err := s.db.QueryContext(ctx, s.bind("SELECT id,dispatch_revision,circuit_projection_revision FROM "+accounts+" WHERE circuit_projection_revision<dispatch_revision AND id>? ORDER BY id LIMIT ?"), afterAccountID, limit)
+	// 归档 listAccountCircuitProjectionGapsInClient：dispatch 缺口只统计未删除
+	// 账户（deleted_at IS NULL），incident 缺口的账户子查询同围栏。
+	rows, err := s.db.QueryContext(ctx, s.bind("SELECT id,dispatch_revision,circuit_projection_revision FROM "+accounts+" WHERE deleted_at IS NULL AND circuit_projection_revision<dispatch_revision AND id>? ORDER BY id LIMIT ?"), afterAccountID, limit)
 	if err != nil {
 		return ProjectionGaps{}, err
 	}
@@ -955,7 +961,7 @@ func (s *Store) ListProjectionGaps(ctx context.Context, afterAccountID string, a
 	if err = rows.Close(); err != nil {
 		return gaps, err
 	}
-	q := "SELECT " + incidentColumns + " FROM " + incidents + " i WHERE i.projected_ledger_revision<i.ledger_revision AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + accounts + " a WHERE a.id=i.account_id) AND (i.updated_at_ms>? OR (i.updated_at_ms=? AND i.circuit_scope_key>?)) ORDER BY i.updated_at_ms,i.circuit_scope_key LIMIT ?"
+	q := "SELECT " + incidentColumns + " FROM " + incidents + " i WHERE i.projected_ledger_revision<i.ledger_revision AND i.dispatch_revision=(SELECT a.dispatch_revision FROM " + accounts + " a WHERE a.id=i.account_id AND a.deleted_at IS NULL) AND (i.updated_at_ms>? OR (i.updated_at_ms=? AND i.circuit_scope_key>?)) ORDER BY i.updated_at_ms,i.circuit_scope_key LIMIT ?"
 	page, err := s.listIncidents(ctx, q, afterUpdatedMS, afterUpdatedMS, afterScope, limit)
 	if err != nil {
 		return gaps, err

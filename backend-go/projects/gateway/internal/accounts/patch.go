@@ -35,6 +35,10 @@ type PatchResult struct {
 	// it feeds the gateway runtime invalidation condition
 	// (gatewayRuntimeAffected: groupChanged || credentialsChanged || ...).
 	GroupChanged bool `json:"-"`
+	// BalanceIdentityChanged mirrors balanceIdentityChanged (归档
+	// :744-761)：余额查询身份（开关/配置/Key 指纹/base URL/代理）发生变化，
+	// 提交后触发余额快照旧代次清理端口。
+	BalanceIdentityChanged bool `json:"-"`
 }
 
 // PatchInput is the validated basic-edit payload: the account-edit-basic
@@ -97,6 +101,8 @@ func accountPatchChangeLabel(field string) string {
 		return "凭据"
 	case "status":
 		return "状态"
+	case "runtimeState":
+		return "运行状态"
 	case "concurrencyLimit":
 		return "并发限制"
 	case "priority":
@@ -181,6 +187,11 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		lastErrorMessage          sql.NullString
 		lastErrorTraceID          sql.NullString
 		cooldownUntil             sql.NullString
+		cooldownRetestCount       int
+		cooldownRetestObservation sql.NullString
+		cooldownRetestGeneration  sql.NullString
+		cooldownRetestLastAt      sql.NullString
+		cooldownRetestLastCode    sql.NullInt64
 		healthCheckModel          string
 		healthCheckEndpointMode   string
 		providerCode              string
@@ -210,7 +221,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			accounts.schedulable, accounts.availability_schedule_json, accounts.account_expires_at,
 			accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
-			accounts.cooldown_until, accounts.health_check_model, accounts.health_check_endpoint_mode,
+			accounts.cooldown_until, accounts.cooldown_retest_failure_count,
+			accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_generation,
+			accounts.cooldown_retest_last_at, accounts.cooldown_retest_last_status_code,
+			accounts.health_check_model, accounts.health_check_endpoint_mode,
 			accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code,
 			accounts.protocol_version, accounts.client_compatibility, accounts.proxy_profile_id,
 			accounts.balance_query_enabled, accounts.balance_query_config_json,
@@ -230,6 +244,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.priority, &row.superPriorityEnabled, &row.fallbackEnabled, &row.schedulable,
 		&row.availabilitySchedule, &row.accountExpiresAt, &row.lastErrorCode,
 		&row.lastErrorMessage, &row.lastErrorTraceID, &row.cooldownUntil,
+		&row.cooldownRetestCount, &row.cooldownRetestObservation, &row.cooldownRetestGeneration,
+		&row.cooldownRetestLastAt, &row.cooldownRetestLastCode,
 		&row.healthCheckModel, &row.healthCheckEndpointMode, &row.providerCode,
 		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion,
 		&row.clientCompatibility, &row.proxyProfileID, &row.balanceQueryEnabled,
@@ -268,22 +284,55 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// the post-commit configuration probe.
 	credentialsChanged := false
 	endpointModesChanged := false
+	// balanceIdentityChangedFlag 供提交后的余额快照清理端口使用（缺口 2）。
+	balanceIdentityChangedFlag := false
+	// 连接面拆分（归档 :556-579）：connectionChanged 在凭据/代理两段之后按
+	// proxyChanged || baseURLChanged || (apiKeyMembershipChanged &&
+	// !retainedActiveAPIKey) 组装，见下方状态机分支。
+	proxyChanged := false
+	baseURLChanged := false
+	apiKeyMembershipChanged := false
+	retainedActiveAPIKey := false
 	connectionChanged := false
 	supportedModelsChanged := false
 	modelMappingsChanged := false
 	healthCheckModelChanged := false
 	healthCheckEndpointModeChanged := false
 
+	// 运行态列族单赋值通道：Node 的 mainColumns Map 对同一列后写覆盖先写
+	// （runtime-state 归一化先落，bounded recovery 臂随后覆盖）。Go 的
+	// sets 是平铺列表，这里用 order+map 复刻"同列仅保留最后一次赋值"。
+	runtimeColumnClauses := map[string]string{}
+	runtimeColumnArgs := map[string][]any{}
+	runtimeColumnOrder := []string{}
+	setRuntimeColumn := func(column string, value any) {
+		if _, seen := runtimeColumnClauses[column]; !seen {
+			runtimeColumnOrder = append(runtimeColumnOrder, column)
+		}
+		if value == nil {
+			runtimeColumnClauses[column] = column + " = NULL"
+			runtimeColumnArgs[column] = nil
+			return
+		}
+		runtimeColumnClauses[column] = column + " = ?"
+		runtimeColumnArgs[column] = []any{value}
+	}
+
 	if input.ClearFailureState {
 		addChange("clearFailureState", false, true)
-		sets = append(sets,
-			"last_error_code = NULL", "last_error_message = NULL", "last_error_trace_id = NULL",
-			"cooldown_until = NULL", "health_check_failure_count = 0", "health_check_failure_started_at = NULL",
-			"cooldown_retest_failure_count = 0", "cooldown_retest_observation_started_at = NULL",
-			// 归档 patchAccountFailureStateInTransaction：观察起点清空时代际同步
-			// 清空；悬挂代际会让 jobs direct input 把候选判为 cooldown fence 无效。
-			"cooldown_retest_generation = NULL",
-			"cooldown_retest_last_at = NULL", "cooldown_retest_last_status_code = NULL")
+		setRuntimeColumn("last_error_code", nil)
+		setRuntimeColumn("last_error_message", nil)
+		setRuntimeColumn("last_error_trace_id", nil)
+		setRuntimeColumn("cooldown_until", nil)
+		setRuntimeColumn("health_check_failure_count", 0)
+		setRuntimeColumn("health_check_failure_started_at", nil)
+		setRuntimeColumn("cooldown_retest_failure_count", 0)
+		setRuntimeColumn("cooldown_retest_observation_started_at", nil)
+		// 归档 patchAccountFailureStateInTransaction：观察起点清空时代际同步
+		// 清空；悬挂代际会让 jobs direct input 把候选判为 cooldown fence 无效。
+		setRuntimeColumn("cooldown_retest_generation", nil)
+		setRuntimeColumn("cooldown_retest_last_at", nil)
+		setRuntimeColumn("cooldown_retest_last_status_code", nil)
 	}
 
 	if input.Name != nil {
@@ -316,10 +365,11 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if !accountStatusValues[*input.Status] {
 			return nil, &ValidationError{Message: "账户状态无效"}
 		}
-		if *input.Status != row.status {
-			addChange("status", row.status, *input.Status)
-			sets = append(sets, "status = ?")
-			setArgs = append(setArgs, *input.Status)
+		// 归档 assertStatusMutationAllowed：编辑面只接受 active/pending_test/
+		// disabled、同值改写，以及 active → temporary_unavailable 的人工隔离；
+		// 状态列写入在连接组装后的状态机分支统一处理。
+		if err := assertStatusMutationAllowed(row.status, *input.Status); err != nil {
+			return nil, err
 		}
 	}
 	if input.ConcurrencyLimit != nil {
@@ -364,14 +414,14 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			setArgs = append(setArgs, next)
 		}
 	}
-	if input.Schedulable != nil {
-		next := boolInt(*input.Schedulable)
-		if next != row.schedulable {
-			addChange("schedulable", row.schedulable == 1, *input.Schedulable)
-			sets = append(sets, "schedulable = ?")
-			setArgs = append(setArgs, next)
-		}
-	}
+	// schedulable 的写入移到状态机分支（归档 :596-600 的 nextSchedulable
+	// 归一化：过期/强制关调度状态压为 false，其余状态变化恢复 true）。
+	// 归档 :583-590 的状态机输入：过期时间变化、时间计划变化与其派生状态。
+	// 无过期输入时 nextExpiresAt 取行内现值（启用守卫按现值判断）。
+	nextExpiresAt := row.accountExpiresAt
+	expiresAtChanged := false
+	var nextSchedule *AvailabilitySchedule
+	scheduleChanged := false
 	if input.AccountExpiresAtPresent {
 		var next sql.NullString
 		if input.AccountExpiresAt != nil && strings.TrimSpace(*input.AccountExpiresAt) != "" {
@@ -381,7 +431,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			}
 			next = sql.NullString{String: canonical, Valid: true}
 		}
+		nextExpiresAt = next
 		if next.Valid != row.accountExpiresAt.Valid || next.String != row.accountExpiresAt.String {
+			expiresAtChanged = true
 			addChange("accountExpiresAt", nullPtrString(row.accountExpiresAt), nullPtrString(next))
 			sets = append(sets, "account_expires_at = ?")
 			setArgs = append(setArgs, next)
@@ -392,11 +444,13 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err != nil {
 			return nil, err
 		}
+		nextSchedule = schedule
 		var next sql.NullString
 		if raw, ok := ScheduleJSON(schedule); ok {
 			next = sql.NullString{String: raw, Valid: true}
 		}
 		if next.Valid != row.availabilitySchedule.Valid || next.String != row.availabilitySchedule.String {
+			scheduleChanged = true
 			addChange("availabilitySchedule", parseScheduleOrNull(row.availabilitySchedule), schedule)
 			sets = append(sets, "availability_schedule_json = ?", "availability_schedule_next_check_at = ?")
 			setArgs = append(setArgs, next, scheduleNextCheckArg(schedule, now))
@@ -430,7 +484,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 				}
 				next = sql.NullString{String: *requested, Valid: true}
 			}
-			connectionChanged = true
+			proxyChanged = true
 			addChange("proxyProfileId", nullPtrString(current), nullPtrString(next))
 			sets = append(sets, "proxy_profile_id = ?")
 			setArgs = append(setArgs, next)
@@ -554,10 +608,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			credentialsChanged = true
 			nextCredentials = normalized
 			if credentialValueJSONText(current["base_url"]) != credentialValueJSONText(normalized["base_url"]) {
-				connectionChanged = true
+				baseURLChanged = true
 			}
 			if !accountApiKeyPoolMembershipEqual(current, normalized) {
-				connectionChanged = true
+				apiKeyMembershipChanged = true
 			}
 			if credentialValueJSONText(current["supported_endpoint_modes"]) != credentialValueJSONText(normalized["supported_endpoint_modes"]) {
 				endpointModesChanged = true
@@ -655,6 +709,118 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
+	// 连接面组装 + 状态机（归档 account-management-patch.repository.ts
+	// :556-637）：connectionChanged = 代理切换 || base_url 变化 || (Key 池
+	// 成员轮换且没有保留的活跃 Key)。当连接变化、没有显式 status 输入且调度
+	// 后状态不是 disabled 时，账户被推入 pending_test 等待后台健康检查；
+	// status/schedulable 随后驱动 nextRuntimeState 归一化（缺口登记的
+	// 冷却/错误态归一化分支链）。
+	if apiKeyMembershipChanged && !baseURLChanged && !proxyChanged &&
+		row.status == "active" && row.schedulable == 1 {
+		poolCredentials := currentCredentials
+		if credentialsChanged {
+			poolCredentials = nextCredentials
+		}
+		if isAccountAPIKeyPoolIsolationEnabled(row.providerCode, row.protocolCode,
+			row.protocolVersion, row.accountType, poolCredentials) {
+			retained, err := s.hasRetainedActiveAccountAPIKeyState(ctx, tx, row.id,
+				currentCredentials, poolCredentials)
+			if err != nil {
+				return nil, err
+			}
+			retainedActiveAPIKey = retained
+		}
+	}
+	connectionChanged = proxyChanged || baseURLChanged ||
+		(apiKeyMembershipChanged && !retainedActiveAPIKey)
+
+	hasStatusInput := input.Status != nil
+	requestedStatus := row.status
+	if hasStatusInput {
+		requestedStatus = *input.Status
+	}
+	requestedSchedulable := row.schedulable == 1
+	if input.Schedulable != nil {
+		requestedSchedulable = *input.Schedulable
+	}
+	expiredByPackage := expiresAtChanged && isAccountExpired(nextExpiresAt.String, now)
+	scheduledStatus := requestedStatus
+	if expiredByPackage {
+		scheduledStatus = "disabled"
+	} else if scheduleChanged {
+		// 归档 accountStatusForScheduleMutation：active/disabled 请求才会被
+		// 时间计划派生状态覆盖，其余状态原样保留。
+		if override, ok := ScheduleStatus(nextSchedule, now); ok &&
+			(requestedStatus == "active" || requestedStatus == "disabled") {
+			scheduledStatus = override
+		}
+	}
+	nextStatus := scheduledStatus
+	if connectionChanged && scheduledStatus != "disabled" && !hasStatusInput {
+		nextStatus = "pending_test"
+	}
+	statusChanged := row.status != nextStatus
+	nextSchedulable := requestedSchedulable
+	if expiredByPackage || (statusChanged && accountStatusForcesSchedulableOff(nextStatus)) {
+		nextSchedulable = false
+	} else if statusChanged && nextStatus != "disabled" {
+		nextSchedulable = true
+	}
+	explicitActivationRequested := hasStatusInput && requestedStatus == "active" &&
+		(row.status != "active" || row.schedulable != 1)
+	explicitSchedulingEnableRequested := input.Schedulable != nil && requestedSchedulable &&
+		row.schedulable != 1
+	enablesAccount := explicitActivationRequested || explicitSchedulingEnableRequested ||
+		(row.status != "active" && nextStatus == "active") ||
+		(row.schedulable != 1 && nextSchedulable)
+	if enablesAccount && isAccountExpired(nextExpiresAt.String, now) {
+		return nil, &ValidationError{Message: "账户套餐已到期，不能启用或参与调度"}
+	}
+	if statusChanged {
+		addChange("status", row.status, nextStatus)
+		sets = append(sets, "status = ?")
+		setArgs = append(setArgs, nextStatus)
+	}
+	if boolInt(nextSchedulable) != row.schedulable {
+		addChange("schedulable", row.schedulable == 1, nextSchedulable)
+		sets = append(sets, "schedulable = ?")
+		setArgs = append(setArgs, boolInt(nextSchedulable))
+	}
+
+	// 运行态归一化（归档 nextRuntimeState :619-637 + :1736-1845）：状态变化、
+	// 连接变化或套餐过期都会按目标状态重写冷却/错误/重试观察列族；
+	// hasStatusInput 传 statusChanged（与归档一致，同值改写不触发归一化）。
+	runtimeStateMayChange := statusChanged || connectionChanged || expiredByPackage
+	if runtimeStateMayChange {
+		before := patchRuntimeStateBefore{
+			status:                       row.status,
+			cooldownUntil:                row.cooldownUntil,
+			lastErrorCode:                row.lastErrorCode,
+			lastErrorMessage:             row.lastErrorMessage,
+			lastErrorTraceID:             row.lastErrorTraceID,
+			cooldownRetestFailureCount:   row.cooldownRetestCount,
+			cooldownRetestObservation:    row.cooldownRetestObservation,
+			cooldownRetestGeneration:     row.cooldownRetestGeneration,
+			cooldownRetestLastAt:         row.cooldownRetestLastAt,
+			cooldownRetestLastStatusCode: row.cooldownRetestLastCode,
+		}
+		state := s.nextRuntimeState(before, patchRuntimeStateInput{
+			nextStatus:        nextStatus,
+			hasStatusInput:    statusChanged,
+			connectionChanged: connectionChanged,
+			expiredByPackage:  expiredByPackage,
+			now:               now,
+		})
+		runtimeColumnsBefore := len(runtimeColumnOrder)
+		applyRuntimeStateColumns(setRuntimeColumn, before, state)
+		// 归档 :630-636：派生列确实变化且 status/schedulable 都没变时，
+		// 以 runtimeState 变更项披露这次归一化。
+		if len(runtimeColumnOrder) > runtimeColumnsBefore &&
+			!changesHaveField(changes, "status") && !changesHaveField(changes, "schedulable") {
+			addChange("runtimeState", "需归一化", "已归一化")
+		}
+	}
+
 	// Temporary-unavailable continuous probe switch (Node
 	// :643-694): absent keeps the current flag; turning it off while the
 	// account sits in temporary_unavailable arms the bounded recovery window.
@@ -685,17 +851,16 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 				// boundedRecoveryActivated / restartBoundedRecoveryObservation）：
 				// bounded recovery 观察窗口重启时写入新生成代际，替代旧的
 				// 无条件 NULL——丢失代际会让 jobs 侧冷却恢复候选无法通过
-				// fence 认领，恢复任务无法续跑。
-				sets = append(sets,
-					"cooldown_retest_failure_count = 0",
-					"cooldown_retest_observation_started_at = ?",
-					"cooldown_retest_generation = ?",
-					"cooldown_retest_last_at = NULL",
-					"cooldown_retest_last_status_code = NULL")
-				setArgs = append(setArgs, nowISO, boundedRecoveryGeneration)
+				// fence 认领，恢复任务无法续跑。经 setRuntimeColumn 落列，
+				// 覆盖同请求里 runtime-state 归一化先写的同名列（Node Map
+				// 后写覆盖语义）。
+				setRuntimeColumn("cooldown_retest_failure_count", 0)
+				setRuntimeColumn("cooldown_retest_observation_started_at", nowISO)
+				setRuntimeColumn("cooldown_retest_generation", boundedRecoveryGeneration)
+				setRuntimeColumn("cooldown_retest_last_at", nil)
+				setRuntimeColumn("cooldown_retest_last_status_code", nil)
 				if cooldown := initialCooldownUntilForStatus("temporary_unavailable", now); cooldown != "" {
-					sets = append(sets, "cooldown_until = ?")
-					setArgs = append(setArgs, cooldown)
+					setRuntimeColumn("cooldown_until", cooldown)
 				}
 			}
 		}
@@ -704,7 +869,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// Balance query (Node :712-773): any balance-relevant change revalidates
 	// the capability boundary, writes the enabled flag plus the normalized
 	// config and refreshes the next-refresh generation when the balance
-	// identity changed.
+	// identity changed. Node rides nextCredentials, falling back to the
+	// decrypted current credentials (accountManagementPatchNeedsCredentials
+	// 含 balance 字段)，所以余额相关的 PATCH 在无凭据输入时也要解密现凭据，
+	// 否则启用查询会被"至少一个有效的 API Key"误拒。
 	if input.BalanceQueryEnabled != nil || input.BalanceQueryConfigPresent || credentialsChanged {
 		requestedEnabled := row.balanceQueryEnabled == 1
 		if input.BalanceQueryEnabled != nil {
@@ -714,6 +882,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		_ = haveCredentials
 		if credentialsChanged {
 			currentCredentialsForBalance = nextCredentials
+		} else if len(currentCredentialsForBalance) == 0 {
+			decrypted := Credentials{}
+			if err := DecryptJSON(s.secret, row.credentialsEncrypted, &decrypted); err != nil {
+				return nil, err
+			}
+			currentCredentialsForBalance = decrypted
 		}
 		authorizedInstance := row.authorizationID.Valid && strings.TrimSpace(row.authorizationID.String) != ""
 		enabled, err := ValidateAccountBalanceCapability(BalanceCapabilityInput{
@@ -758,6 +932,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			s.balanceIdentityValue(enabled, nextBalanceConfig, row.providerCode,
 				row.accountType, currentCredentialsForBalance, nextProxyValue),
 		)
+		if identityChanged {
+			balanceIdentityChangedFlag = true
+		}
 		if enabled != (row.balanceQueryEnabled == 1) {
 			addChange("balanceQueryEnabled", row.balanceQueryEnabled == 1, enabled)
 			sets = append(sets, "balance_query_enabled = ?")
@@ -881,15 +1058,24 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 
 	result := &PatchResult{
-		ID:                   row.id,
-		ConfigRevision:       row.configRevision,
-		ChangedFields:        []string{},
-		Name:                 row.name,
-		OwnerSystemAccountID: row.systemAccountID,
-		Changes:              changes,
+		ID:                    row.id,
+		ConfigRevision:        row.configRevision,
+		ChangedFields:         []string{},
+		Name:                  row.name,
+		OwnerSystemAccountID:  row.systemAccountID,
+		Changes:               changes,
+		BalanceIdentityChanged: balanceIdentityChangedFlag,
 	}
 	if len(changes) == 0 {
 		return result, nil
+	}
+	// 运行态列族在所有写段之后统一并入 SET（Node mainColumns 在 CAS
+	// UPDATE 前组装完毕；同列多次赋值只保留最后一次）。
+	for _, column := range runtimeColumnOrder {
+		sets = append(sets, runtimeColumnClauses[column])
+		if runtimeColumnArgs[column] != nil {
+			setArgs = append(setArgs, runtimeColumnArgs[column]...)
+		}
 	}
 	// config_revision = config_revision + 1 with the CAS guard re-checked.
 	sets = append(sets, "config_revision = config_revision + 1", "updated_at = ?")
@@ -942,6 +1128,18 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	// 余额快照旧代次清理（归档 accounts.routes.ts:355-364：balanceIdentityChanged
+	// 时调用 cleanupAccountBalanceSnapshotAfterSave）。Node 的
+	// balanceAutoDisabledForMultipleApiKeys 在归档 validateAccountBalanceCapability
+	// 里恒为 false，reason 恒为 balance_configuration_changed；端口未装配
+	// （nil）时静默跳过，保持本包自包含。
+	if result.BalanceIdentityChanged && s.balanceSnapshotCleaner != nil {
+		s.balanceSnapshotCleaner.CleanupBalanceSnapshotAfterSave(BalanceSnapshotCleanupRequest{
+			AccountID:      result.ID,
+			ConfigRevision: result.ConfigRevision,
+			Reason:         BalanceSnapshotCleanupReasonConfigurationChanged,
+		})
 	}
 	// Post-commit invalidation (T2 audit; Node
 	// account-management-patch.repository.ts:1877-1896): conditional lookup

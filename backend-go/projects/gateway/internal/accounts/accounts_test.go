@@ -231,6 +231,18 @@ var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS account_name_search_documents (
 		account_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, normalized_name TEXT NOT NULL, updated_at TEXT NOT NULL
 	)`,
+	// PATCH 连接面 retained-active-Key 精确化（归档
+	// hasRetainedActiveAccountApiKeyInClient）读取的运行态表；列集镜像
+	// maintenance/internal/schema/sqlite_schema.go 的同名表子集。
+	`CREATE TABLE IF NOT EXISTS account_api_key_runtime_states (
+		id TEXT PRIMARY KEY,
+		system_account_id TEXT NOT NULL,
+		account_id TEXT NOT NULL,
+		key_fingerprint TEXT NOT NULL,
+		key_index INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'active',
+		updated_at TEXT NOT NULL
+	)`,
 	`CREATE TABLE IF NOT EXISTS account_lock_states (
 		account_id TEXT PRIMARY KEY,
 		enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),

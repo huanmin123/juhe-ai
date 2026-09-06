@@ -42,6 +42,19 @@ type GatewayUpstreamResponse struct {
 func (r *GatewayUpstreamResponse) Status() int { return r.status }
 
 // OK mirrors response.ok.
+//
+// SSE 形态裁决（V1 维持，归档对照）：非 2xx 上游响应是终态完整响应——即使
+// content-type 为 text/event-stream 也走 non-stream 失败面（失败体捕获 /
+// return_response / 耗尽 503），不改写为网关 SSE 事件。归档 routes.ts
+// shouldHandleAsStream = upstreamResponse.ok && ...（约 1549-1556 行）及其
+// 注释明确禁止把 provider 错误体替换为 gateway event。「上游流式响应在输出
+// 前失败，请重试」（GatewayStreamClientRetryMessage，归档 responses.ts:190）
+// 的 protocol_error_event SSE 写出只属于已提交 SSE 流的失败终态化（归档
+// stream.ts / finalization.ts；Go 见 gatewayresponse
+// finalizeNonStreamResponseAfterSseHeartbeat 与
+// BuildGatewayStreamFailureEventForProtocol），对非 2xx 上游响应不适用；
+// 审查小项「非 2xx+SSE 改写 protocol_error_event」据此书面登记为不实现，
+// 非流式 V1 裁定即归档 Node 契约。
 func (r *GatewayUpstreamResponse) OK() bool { return r.status >= 200 && r.status < 300 }
 
 // ContentType mirrors response.headers.get('content-type').

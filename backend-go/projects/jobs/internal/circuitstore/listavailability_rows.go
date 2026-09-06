@@ -895,14 +895,15 @@ func nullableInt(value sql.NullInt64) *int {
 }
 
 // loadAccountTags 对齐 loadAccountTagsByAccountIdsAsync（PG/SQLite 同 SQL，
-// order name ASC, id ASC）。
+// order name ASC, id ASC）。行形状经 accountTagSummaryFromRow 输出完整
+// AccountTagSummary JSON（id/name/accountCount/createdAt/updatedAt）；SELECT
+// 与 Node 一致载入五列（id, system_account_id, name, created_at, updated_at），
+// system_account_id 仅随行载入不进输出（Node 同）。
 //
-// D4 登记（常驻审查第五轮）：此处投影表物化的 tags 形状是 {id,name} 子集，
-// Node account-tags.repository.ts 载入五字段（id, system_account_id, name,
-// created_at, updated_at）并经 accountTagSummaryFromRow 输出完整
-// AccountTagSummary；Go gateway 的账户读取面迁移到该投影表之前，必须先把
-// 缺失的三列补进本查询与行形状，否则 gateway 列表 JSON 的 tags 字段会比
-// Node 少字段。
+// D4 登记（常驻审查第五轮）已清偿：本查询曾只物化 {id,name} 子集，现按
+// 归档 account-tags.repository.ts 补齐五列与完整 AccountTagSummary 形状。
+// account_count 不在该查询 SELECT 内，accountTagSummaryFromRow 的
+// Number(row.account_count ?? 0) 恒为 0，故 accountCount 恒写 0。
 func (l *ProjectionItemLoader) loadAccountTags(ctx context.Context, accountIDs []string) (map[string][]map[string]any, error) {
 	output := map[string][]map[string]any{}
 	if len(accountIDs) == 0 {
@@ -914,7 +915,8 @@ func (l *ProjectionItemLoader) loadAccountTags(ctx context.Context, accountIDs [
 	}
 	query := `
       SELECT account_tag_bindings.account_id,
-        account_tags.id, account_tags.name
+        account_tags.id, account_tags.system_account_id, account_tags.name,
+        account_tags.created_at, account_tags.updated_at
       FROM ` + l.table("account_tag_bindings") + ` account_tag_bindings
       INNER JOIN ` + l.table("account_tags") + ` account_tags
         ON account_tags.id = account_tag_bindings.tag_id
@@ -926,11 +928,17 @@ func (l *ProjectionItemLoader) loadAccountTags(ctx context.Context, accountIDs [
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var accountID, tagID, tagName string
-		if err := rows.Scan(&accountID, &tagID, &tagName); err != nil {
+		var accountID, tagID, tagSystemAccountID, tagName, createdAt, updatedAt string
+		if err := rows.Scan(&accountID, &tagID, &tagSystemAccountID, &tagName, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
-		output[accountID] = append(output[accountID], map[string]any{"id": tagID, "name": tagName})
+		output[accountID] = append(output[accountID], map[string]any{
+			"id":           tagID,
+			"name":         tagName,
+			"accountCount": 0,
+			"createdAt":    createdAt,
+			"updatedAt":    updatedAt,
+		})
 	}
 	return output, rows.Err()
 }

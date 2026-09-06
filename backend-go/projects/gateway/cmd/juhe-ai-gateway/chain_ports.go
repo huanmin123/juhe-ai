@@ -241,6 +241,12 @@ const chainFailureKindOpaqueHTTP = "opaque_http"
 // member of the Node failureKind union (failure-dispatch.ts:162).
 const chainFailureKindCompatibilityRecovery = "compatibility_recovery"
 
+// chainErrorPolicyRuleSourceSystem mirrors the 'system' member of the
+// accountErrorPolicyDecision ruleSource union (chain_error_policy.go writes
+// the literal): a system-quota decision is stronger evidence than the
+// fixed-model probe, so the request-failure health-check dispatch stays off.
+const chainErrorPolicyRuleSourceSystem = "system"
+
 // chainFailureErrorBodyCaptureBytes mirrors upstreamErrorBodyCaptureBytes
 // (upstream/body.ts): the bounded failure-body capture feeding retry
 // diagnostics and usage records.
@@ -265,11 +271,11 @@ const chainFailureErrorBodyCaptureBytes = 256 * 1024
 // account after recording; the engine owns the rethrow contracts around the
 // aborted branch. The codex encrypted-content compatibility recovery
 // (retry_with_compatibility_recovery) runs on the mounted gatewaycodex
-// recovery helper and the engine's semantic-retry bridge; the deep branches
-// that still need collaborators this slice does not mount stay registered
-// gaps: the request-failure health-check dispatch
-// (Node dispatchRequestFailureHealthCheck) and the source-avoidance
-// availability probe (records land, the activation probe stays degraded).
+// recovery helper and the engine's semantic-retry bridge. The request-failure
+// health-check dispatch (Node dispatchRequestFailureHealthCheck) and the
+// source-avoidance availability probe (turn-availability-probe.service.ts)
+// mount through chain_request_failure_health.go / chain_turn_probe_store.go;
+// an unwired dispatch bridge keeps both on the explicit logged degradation.
 type chainFailureDispatcher struct {
 	usage    *gatewayusage.Service
 	affinity gatewaydispatch.SessionAffinityPort
@@ -283,6 +289,10 @@ type chainFailureDispatcher struct {
 	// avoidanceProbe dispatches the activation availability probe; nil keeps
 	// the short avoidance without an early probe clear (logged once).
 	avoidanceProbe *gatewaycodex.TurnAvoidanceProbeService
+	// healthDispatch is the request-failure account health-check port
+	// (failure-dispatch.ts:404/571); nil keeps the dispatch degraded (logged
+	// once).
+	healthDispatch *chainRequestFailureHealthDispatcher
 	// policy 决策服务（nil → 默认时钟 + 池隔离关闭的实例）；effects 是显式
 	// 策略决策的状态写侧窄口（nil → 显式降级实现，首次使用记录一条日志）。
 	// 见 chain_error_policy.go / chain_error_policy_effects.go。
@@ -496,6 +506,15 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	if decision != nil {
 		failureKind = gatewaydispatch.FailureKindExplicitPolicy
 	}
+	// failure-dispatch.ts:399-405: a complete gateway HTTP failure is
+	// independent evidence that this account needs the fixed-model
+	// availability confirmation — except when a system-quota decision made
+	// the stronger call (its probe must not compete with the explicit error
+	// state). The request-level throttle keeps retry_next candidate replays
+	// and the transport branch from double firing.
+	if decision == nil || decision.RuleSource != chainErrorPolicyRuleSourceSystem {
+		d.dispatchRequestFailureHealthCheck(ctx, input.Req, input.UsageContext.TrafficSource, input.Account.ID)
+	}
 	result := gatewaydispatch.FailedUpstreamResponseResult{
 		Action:           gatewaydispatch.FailedResponseActionSkipAccount,
 		FailureKind:      failureKind,
@@ -567,6 +586,10 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 		}
 	}
 	d.forgetSessionAffinity(ctx, input.SessionAffinityKey, input.Account.ID)
+	// failure-dispatch.ts:571: the transport failure is independent evidence
+	// for the fixed-model availability confirmation (before the source
+	// avoidance record; the downstream-closed branch does not dispatch).
+	d.dispatchRequestFailureHealthCheck(ctx, input.Req, input.UsageContext.TrafficSource, input.Account.ID)
 	// failure-dispatch.ts:572-579: the transport-failure branch schedules the
 	// client-source avoidance record after the affinity forget (the Node
 	// downstream-closed branch does not record; neither does the failed-
@@ -740,6 +763,19 @@ func (d *chainFailureDispatcher) IsOpaqueUpstreamFailoverAllowed(_ *gatewaypreau
 	// failure-dispatch.ts:73-79: opaque HTTP failures may not retry a sibling
 	// API Key; account-level failover is the failed-response path's decision.
 	return false
+}
+
+// dispatchRequestFailureHealthCheck mirrors dispatchRequestFailureAccountHealthCheck:
+// the gateway-traffic gate and the per-request throttle live inside the
+// dispatcher; an unwired port degrades with one process-level log line.
+func (d *chainFailureDispatcher) dispatchRequestFailureHealthCheck(_ context.Context, req *gatewaypreauth.GatewayRequest, trafficSource, accountID string) {
+	if d.healthDispatch == nil {
+		if trafficSource == gatewayTrafficSource {
+			slogOnceWarn("gateway.response.requestFailureHealthCheckDispatch", "请求失败健康检查派发未装配，跳过派发")
+		}
+		return
+	}
+	d.healthDispatch.DispatchRequestFailureAccountHealthCheck(req, trafficSource, accountID)
 }
 
 func (d *chainFailureDispatcher) forgetSessionAffinity(ctx context.Context, sessionAffinityKey, accountID string) {

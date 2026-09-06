@@ -900,6 +900,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// 状态变更 / system quota 归因（Node decideAccountErrorPolicy 接线）。
 			AccountErrorPolicy:        errorPolicyService,
 			AccountErrorPolicyEffects: errorPolicyBridge,
+			// 失败派发链：request-failure 健康检查派发桥目标 + turn-retry
+			// Redis 状态驱动（StateClient 为 nil 时适配器返回 nil，链条保持
+			// memory 驱动——见 chain_request_failure_health.go /
+			// chain_turn_retry_redis.go）。
+			JobsInternalURL:     cfg.JobsInternalURL,
+			TurnRetryStateStore: newChainTurnRetryRedisStateStoreOrNil(chainServices.StateClient, cfg.RedisNamespace),
 		})
 		if chainAssembleErr != nil {
 			chainServices.Close()

@@ -201,6 +201,73 @@ func TestIncidentCASAccountNotFoundTerminal(t *testing.T) {
 	}
 }
 
+// TestListAccountSubqueriesFenceDeletedAccounts 对齐归档
+// listAccountCircuitIncidentsForRebuildInClient /
+// listAccountCircuitIncidentsByRuntimeKeysInClient /
+// listAccountCircuitProjectionGapsInClient 的 deleted_at IS NULL 账户围栏：
+// 已删账户的迟到 incident 不回放、不进运行态摘要，也不进入投影缺口
+// （含 retained closed 分支，围栏仍生效）。
+func TestListAccountSubqueriesFenceDeletedAccounts(t *testing.T) {
+	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision,deleted_at) VALUES ('a-deleted',3,0,'2020-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	retained := int64(999_999)
+	insertIncident := func(scope, accountID, state string, dispatch, ledger, projected, updated int64, retainedUntil *int64) {
+		t.Helper()
+		_, err := db.Exec(`INSERT INTO account_circuit_incidents (
+      circuit_scope_key, account_id, account_runtime_key, scope_kind, incident_id,
+      child_incident_ids_json, state, generation, dispatch_revision, ledger_revision,
+      projected_ledger_revision, transition_id, cooldown_observation_generation,
+      upstream_attempt_observed, backoff_level, consecutive_failures,
+      confirmation_failures_required, confirmation_failure_evidence_keys_json,
+      recovering_successes, retained_until_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, 'account', ?, '[]', ?, 1, ?, ?, ?, ?, 0, 0, 0, 0, 1, '[]', 0, ?, ?, ?)`,
+			scope, accountID, accountID, "inc-"+scope, state, dispatch, ledger, projected, "tr-"+scope,
+			retainedUntil, updated, updated)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertIncident("scope-live", "a1", "OPEN", 1, 1, 0, 100, nil)
+	insertIncident("scope-deleted", "a-deleted", "OPEN", 3, 3, 2, 101, nil)
+	insertIncident("scope-deleted-closed", "a-deleted", "CLOSED", 3, 3, 3, 102, &retained)
+
+	ctx := context.Background()
+	rebuild, err := s.ListForRebuild(ctx, 1000, 0, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rebuild.Items) != 1 || rebuild.Items[0].CircuitScopeKey != "scope-live" {
+		t.Fatalf("rebuild 必须只回放未删账户 incident: %+v", rebuild.Items)
+	}
+	byKeys, err := s.ListByRuntimeKeys(ctx, []string{"a1", "a-deleted"}, false, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byKeys) != 1 || byKeys[0].CircuitScopeKey != "scope-live" {
+		t.Fatalf("runtime-key 摘要必须只含未删账户 incident: %+v", byKeys)
+	}
+	// retained closed 分支：状态过滤器会放行已删账户的 CLOSED 行，围栏必须仍排除。
+	byKeysRetained, err := s.ListByRuntimeKeys(ctx, []string{"a1", "a-deleted"}, true, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byKeysRetained) != 1 || byKeysRetained[0].CircuitScopeKey != "scope-live" {
+		t.Fatalf("retained closed 分支也必须排除已删账户: %+v", byKeysRetained)
+	}
+	gaps, err := s.ListProjectionGaps(ctx, "", 0, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps.Dispatch) != 1 || gaps.Dispatch[0].AccountID != "a1" {
+		t.Fatalf("dispatch 缺口必须只含未删账户: %+v", gaps.Dispatch)
+	}
+	if len(gaps.Incidents) != 1 || gaps.Incidents[0].CircuitScopeKey != "scope-live" {
+		t.Fatalf("incident 缺口必须只含未删账户: %+v", gaps.Incidents)
+	}
+}
+
 func TestKeyModelIncidentRoundTripsAndRequiresCompleteIdentity(t *testing.T) {
 	s, _ := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	incidentID := "key-model-incident"

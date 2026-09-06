@@ -296,6 +296,57 @@ func TestProjectionItemLoaderFailClosedOnRuntimeSource(t *testing.T) {
 	}
 }
 
+// TestProjectionItemLoaderTagsAccountTagSummaryShape 对齐归档
+// loadAccountTagsByAccountIdsAsync + accountTagSummaryFromRow（D4 清偿）：
+// 投影 payload 的 tags 是完整 AccountTagSummary 形状
+// （id/name/accountCount/createdAt/updatedAt），按 name ASC, id ASC 排序；
+// accountCount 恒为 0（Node load 查询不带 account_count）。
+func TestProjectionItemLoaderTagsAccountTagSummaryShape(t *testing.T) {
+	db := newLoaderTestDB(t)
+	seedOwnerAccount(t, db)
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(query, args...); err != nil {
+			t.Fatalf("seed tags: %v\n%s", err, query)
+		}
+	}
+	exec(`INSERT INTO account_tags (id, system_account_id, name, created_at, updated_at) VALUES
+		('tag-2', 'sys-1', 'beta', '2026-01-01T00:00:00.000Z', '2026-01-03T00:00:00.000Z'),
+		('tag-1', 'sys-1', 'alpha', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`)
+	exec(`INSERT INTO account_tag_bindings (account_id, system_account_id, tag_id) VALUES
+		('acct-1', 'sys-1', 'tag-1'),
+		('acct-1', 'sys-1', 'tag-2')`)
+	loader := newTestLoader(db, stubConcurrency{}, stubRuntime{})
+	items, err := loader.LoadItems(context.Background(), "sys-1", []string{"acct-1"})
+	if err != nil {
+		t.Fatalf("LoadItems: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items 长度 = %d, 期望 1", len(items))
+	}
+	tags, ok := items[0].Payload["tags"].([]map[string]any)
+	if !ok || len(tags) != 2 {
+		t.Fatalf("payload tags 应为两个完整 AccountTagSummary: %v", items[0].Payload["tags"])
+	}
+	first := tags[0]
+	if first["id"] != "tag-1" || first["name"] != "alpha" {
+		t.Fatalf("tags 应按 name ASC 排序并携带 id/name: %v", first)
+	}
+	if first["accountCount"] != 0 {
+		t.Fatalf("accountCount 应恒为 0: %v", first["accountCount"])
+	}
+	if first["createdAt"] != "2026-01-01T00:00:00.000Z" || first["updatedAt"] != "2026-01-02T00:00:00.000Z" {
+		t.Fatalf("createdAt/updatedAt 应随行载入: %v", first)
+	}
+	if tags[1]["id"] != "tag-2" || tags[1]["name"] != "beta" || tags[1]["createdAt"] != "2026-01-01T00:00:00.000Z" {
+		t.Fatalf("第二个 tag 形状不符: %v", tags[1])
+	}
+	// payloadTagIDs 仍从完整形状提取 id。
+	if len(items[0].TagIDs) != 2 || items[0].TagIDs[0] != "tag-1" || items[0].TagIDs[1] != "tag-2" {
+		t.Fatalf("TagIDs 提取不符: %v", items[0].TagIDs)
+	}
+}
+
 func TestAccountFilterStatusesClassification(t *testing.T) {
 	available := effectiveAvailability{available: true, status: "available"}
 	if got := accountFilterStatuses("active", &available, false); len(got) != 1 || got[0] != "active" {

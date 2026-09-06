@@ -121,6 +121,13 @@ type chainRuntimeDeps struct {
 	// 装配在 compose.go 的链条运行服务段（newChainErrorPolicyEffectsBridge）。
 	AccountErrorPolicy        *chainErrorPolicyService
 	AccountErrorPolicyEffects chainAccountErrorPolicyEffects
+
+	// 失败派发链装配（chain_request_failure_health.go / chain_turn_probe_store.go /
+	// chain_turn_retry_redis.go）：jobs internal-api loopback 目标 + Redis 驱动的
+	// turn-retry 状态存储（nil → memory 驱动，Node runtimeStateDriver !== 'redis'
+	// 分叉）。
+	JobsInternalURL     string
+	TurnRetryStateStore gatewaycodex.TurnRetryStateStore
 }
 
 // sessionIdentityServices bundles the G14 services with their secret.
@@ -240,7 +247,22 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// there is no HMAC secret, so no source scope can be derived and the
 	// avoidance stays off — exactly the Node missing-source-key semantics.
 	codexClientStrategy := &gatewaycodex.ClientStrategyDeps{CompactionExpected: gatewaycodex.CodexCompactionExpectedForRequest}
+	// 失败派发链（failure-dispatch.ts:404/571 request-failure health-check
+	// 派发 + turn-availability-probe 激活探活）：桥以 jobs internal-api
+	// loopback HMAC 为目标；baseURL 或 secret 缺失时派发按 input_unavailable
+	// 拒绝（Node input_unavailable 分叉），探活装配随 secret 分叉。
+	var chainHealthDispatch *chainRequestFailureHealthDispatcher
+	secret := ""
+	if deps.Identity != nil {
+		secret = deps.Identity.Secret
+	}
+	if strings.TrimSpace(deps.JobsInternalURL) != "" && strings.TrimSpace(secret) != "" {
+		chainHealthDispatch = newChainRequestFailureHealthDispatcher(deps.JobsInternalURL, secret, nil)
+	} else {
+		slogOnceWarn("gateway.response.requestFailureHealthCheckDispatch", "健康检查派发桥缺少 jobs internal-api 目标或签名密钥，按 input_unavailable 拒绝")
+	}
 	var chainTurnRetry *gatewaycodex.TurnRetryService
+	var chainTurnAvoidanceProbe *gatewaycodex.TurnAvoidanceProbeService
 	if deps.Identity != nil && strings.TrimSpace(deps.Identity.Secret) != "" {
 		codexClientStrategy.Source = &gatewaycodex.SourceIdentityResolver{
 			Secret:  deps.Identity.Secret,
@@ -250,13 +272,23 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 			Secret: deps.Identity.Secret,
 			Clock:  clock,
 			Logger: slogWarnLogger{inner: logger},
+			// 装配 3：Redis 驱动（runtimeStateDriver==='redis'）；nil 保持
+			// memory 驱动（键空间 juhe-ai:<ns>:state:gateway-codex-turn-retry:）。
+			Store: deps.TurnRetryStateStore,
 		}
+		// 装配 2：gatewaycircuit.ProbeCoordinator 桥接（memory probe-state
+		// store，Node memory driver 语义；gatewaycircuit 的 Redis store 待其
+		// 自身工作包落地后切换）。healthDispatch 为 nil 时探活派发按
+		// input_unavailable 拒绝并结算 fence（turnprobe 契约）。
+		chainTurnAvoidanceProbe = newChainTurnAvoidanceProbeService(chainTurnRetry, clock, chainHealthDispatch)
 	}
 	engine := gatewaydispatch.NewEngine(newChainProviderDriver(), &chainFailureDispatcher{
 		usage:          usageService,
 		affinity:       sessionAffinity,
 		clientStrategy: codexClientStrategy,
 		turnRetry:      chainTurnRetry,
+		avoidanceProbe: chainTurnAvoidanceProbe,
+		healthDispatch: chainHealthDispatch,
 		policy:         deps.AccountErrorPolicy,
 		effects:        deps.AccountErrorPolicyEffects,
 	})
