@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	redis "github.com/redis/go-redis/v9"
@@ -657,7 +658,17 @@ func encodeJSON(value any) string {
 func decodeStrict(encoded string, dst any) error {
 	decoder := json.NewDecoder(strings.NewReader(encoded))
 	decoder.UseNumber()
-	return decoder.Decode(dst)
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func redisStringResult(raw any) (string, bool) {
