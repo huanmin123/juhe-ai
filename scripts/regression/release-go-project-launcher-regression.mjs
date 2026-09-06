@@ -27,6 +27,7 @@ assertLauncherRejectsMissingJ1InputDirectory()
 assertLauncherRejectsSqliteJ2Store()
 assertLauncherForwardsProjectScopedPaths()
 assertLauncherForwardsGatewayOwnershipGates()
+assertLauncherForwardsGatewayJobsOrigins()
 assertLauncherForwardsJ2PathsAndOwner()
 assertLauncherForwardsGoRuntimeMetricsConfig()
 
@@ -160,6 +161,26 @@ function assertLauncherForwardsGatewayOwnershipGates() {
     assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_POSTGRES_URL, 'postgres://business-owner')
     assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_SYSTEM_API_ENABLED, 'true')
     assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_CHAIN_ENABLED, 'true')
+  } finally {
+    gateway.cleanup()
+  }
+}
+
+function assertLauncherForwardsGatewayJobsOrigins() {
+  const gateway = runLauncher('gateway', {
+    JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
+    JUHE_AI_AUDIT_LOG_INPUT_SECRET: 'release-audit-input-secret-with-32-bytes',
+    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner',
+    JUHE_AI_OPERATION_LOG_INPUT_SECRET: 'release-operation-input-secret-32-bytes'
+  }, [
+    'JUHE_AI_DATABASE_DRIVER=sqlite',
+    'JUHE_AI_GO_RUNTIME_METRICS_URL=http://127.0.0.1:4305',
+    'JUHE_AI_JOBS_INTERNAL_URL=http://127.0.0.1:4306'
+  ].join('\n'))
+  try {
+    assert.equal(gateway.status, 0, `gateway jobs-origin launcher failed: ${gateway.output}`)
+    assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_URL, 'http://127.0.0.1:4305')
+    assert.equal(gateway.childEnvironment.JUHE_AI_JOBS_INTERNAL_URL, 'http://127.0.0.1:4306')
   } finally {
     gateway.cleanup()
   }
