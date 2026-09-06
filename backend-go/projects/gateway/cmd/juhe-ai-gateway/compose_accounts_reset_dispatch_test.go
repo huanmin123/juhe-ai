@@ -150,3 +150,35 @@ func TestAccountsRuntimeResetBridgeDispatchRejectedKeepsReset(t *testing.T) {
 		t.Fatal("inert bridge blocked the reset")
 	}
 }
+
+func TestAccountsRuntimeResetBridgeDispatchIsFireAndForget(t *testing.T) {
+	composed := newResetDispatchComposition(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	defer close(release)
+
+	resetEffects := newResetDispatchBridge(t, composed, server)
+	returned := make(chan struct{})
+	go func() {
+		resetEffects.DispatchAccountHealthCheck(resetDispatchTestAccountID, "configuration")
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("health-check dispatch waited for the jobs response")
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("health-check dispatch never reached the jobs stub")
+	}
+}

@@ -1237,7 +1237,7 @@ func TestChainErrorPolicyAccountRulePriorityAndActions(t *testing.T) {
 	rateLimited := errorPolicyAccount(map[string]any{
 		"error_handling_rules": []any{map[string]any{
 			"enabled": true, "name": "两小时限流", "priority": float64(1), "action": "rate_limited",
-			"error_codes":  []any{"rate_limit_exceeded"},
+			"error_codes":    []any{"rate_limit_exceeded"},
 			"reset_strategy": "duration", "duration_hours": float64(2),
 		}},
 	})
@@ -2345,5 +2345,47 @@ func TestChainFailureDispatcherStructuredFailureWarnings(t *testing.T) {
 		if !strings.Contains(captured, fragment) {
 			t.Fatalf("structured failure warnings missing %q, got:\n%s", fragment, captured)
 		}
+	}
+}
+
+// 负例（第八轮审查建议）：keyScoped 决策 + AccountStateMutationEnabled=false
+// 双条件（Node failure-dispatch.ts:348 的 mutationEnabled!==false 门）——
+// Key 级记录跳过、账户级状态写跳过、audit 归因保留。
+func TestChainFailureDispatcherKeyScopedMutationDisabledSkipsBothWrites(t *testing.T) {
+	fingerprint := "fp_neg"
+	response := failureDispatchUpstreamResponse(t, http.StatusPaymentRequired, "application/json", `{"error":{"code":"insufficient_quota","message":"insufficient quota"}}`)
+	sink := &failureDispatchAuditSink{}
+	effects := &recordingErrorPolicyEffects{}
+	dispatcher := &chainFailureDispatcher{
+		policy: newFixedErrorPolicyService(func(candidate gatewaydispatch.AccountCandidate) bool {
+			return candidate.SelectedAPIKeyFingerprint != nil
+		}),
+		effects: effects,
+	}
+
+	input := gatewayFailedResponseInput(response, sink, "gateway")
+	input.Account = gatewaydispatch.AccountCandidate{
+		ID: "acc_neg", Name: "账户负例", Type: "api_key", ProviderCode: "openai",
+		APIKeys:                   []string{"key-a", "key-b"},
+		SelectedAPIKeyFingerprint: &fingerprint,
+	}
+	input.AccountStateMutationEnabled = false
+	input.Settings = gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30}
+	result, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle keyScoped mutation-disabled failure: %v", err)
+	}
+	if result.FailureKind != gatewaydispatch.FailureKindExplicitPolicy {
+		t.Fatalf("failureKind=%s want explicit_policy (决策仍归因)", result.FailureKind)
+	}
+	if effects.applyCalls != 0 {
+		t.Fatalf("mutation disabled must skip account-level state: applyCalls = %d", effects.applyCalls)
+	}
+	if effects.recordCalls != 0 {
+		t.Fatalf("mutation disabled must skip key-scoped record: recordCalls = %d", effects.recordCalls)
+	}
+	// 归档 :382 的 audit 归因块也在 mutation 门内：禁用时 metadata 同样省略。
+	if policyMetadata := sink.metadataByLabel("account_error_policy_matched"); policyMetadata != nil {
+		t.Fatalf("mutation disabled must skip audit attribution: %+v", policyMetadata.metadata)
 	}
 }

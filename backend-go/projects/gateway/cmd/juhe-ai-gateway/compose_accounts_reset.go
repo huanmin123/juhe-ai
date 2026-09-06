@@ -233,16 +233,21 @@ func (b *accountsRuntimeResetBridge) ClearAPIKeyTransientFailure(ctx context.Con
 // internal-api service). Fire-and-forget: a rejected dispatch (jobs absent,
 // non-202, empty bridge target) logs a warning and the reset continues.
 func (b *accountsRuntimeResetBridge) DispatchAccountHealthCheck(accountID, reason string) {
-	outcome := b.health.dispatch(accountID, reason, "", nil)
-	if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
-		slog.Warn("runtime-reset 健康检查派发未受理",
-			"event", "account_health_check_dispatch_rejected",
-			"accountId", accountID, "reason", reason, "decisionCode", outcome.DecisionCode)
-		return
-	}
-	slog.Info("runtime-reset 健康检查派发已受理",
-		"event", "account_health_check_dispatched",
-		"accountId", accountID, "reason", reason, "targetRole", outcome.TargetRole)
+	// Node dispatchAccountHealthCheck starts publication asynchronously and
+	// returns to the account write/reset path immediately. Keep that boundary:
+	// jobs availability must not add the bridge timeout to a committed request.
+	go func() {
+		outcome := b.health.dispatch(accountID, reason, "", nil)
+		if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
+			slog.Warn("runtime-reset 健康检查派发未受理",
+				"event", "account_health_check_dispatch_rejected",
+				"accountId", accountID, "reason", reason, "decisionCode", outcome.DecisionCode)
+			return
+		}
+		slog.Info("runtime-reset 健康检查派发已受理",
+			"event", "account_health_check_dispatched",
+			"accountId", accountID, "reason", reason, "targetRole", outcome.TargetRole)
+	}()
 }
 
 // AuthorizationQuotaExceeded bridges the quota gate: the authorization-scoped
