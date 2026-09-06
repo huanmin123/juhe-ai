@@ -1,6 +1,7 @@
 package internalapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // internal-api 派发接口，逐字节对齐 Node
@@ -266,9 +268,16 @@ func hasValidSignature(r *http.Request, secret string, rawBody []byte) bool {
 }
 
 func parseTaskID(rawBody []byte) (string, bool) {
+	if !utf8.Valid(rawBody) {
+		return "", false
+	}
 	var parsed any
-	decoder := json.NewDecoder(strings.NewReader(string(rawBody)))
+	decoder := json.NewDecoder(bytes.NewReader(rawBody))
 	if err := decoder.Decode(&parsed); err != nil {
+		return "", false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return "", false
 	}
 	record, ok := parsed.(map[string]any)

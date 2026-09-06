@@ -203,6 +203,20 @@ func TestAccountTestDispatchRequestMatrix(t *testing.T) {
 		{"无效 JSON 无签名 → 401", http.MethodPost, "/__aiinternal__/v1/account-test/dispatch", map[string]string{
 			"Content-Type": "application/json",
 		}, []byte("{invalid"), http.StatusUnauthorized, "认证失败"},
+		{"尾随 JSON 值 + 有效签名 → 400 请求参数无效", http.MethodPost, "/__aiinternal__/v1/account-test/dispatch", func() map[string]string {
+			body := append(validBody("task-1"), []byte(` {}`)...)
+			return map[string]string{
+				"Content-Type":        "application/json",
+				"X-Juhe-Ai-Signature": signBody(testSecret, body),
+			}
+		}(), append(validBody("task-1"), []byte(` {}`)...), http.StatusBadRequest, "请求参数无效"},
+		{"非法 UTF-8 + 有效签名 → 400 请求参数无效", http.MethodPost, "/__aiinternal__/v1/account-test/dispatch", func() map[string]string {
+			body := append(validBody("task-1"), byte(0xff))
+			return map[string]string{
+				"Content-Type":        "application/json",
+				"X-Juhe-Ai-Signature": signBody(testSecret, body),
+			}
+		}(), append(validBody("task-1"), byte(0xff)), http.StatusBadRequest, "请求参数无效"},
 		{"taskId 缺失", http.MethodPost, "/__aiinternal__/v1/account-test/dispatch", authHeadersJSON(`{"version":1}`), []byte(`{"version":1}`), http.StatusBadRequest, "请求参数无效"},
 		{"多一个字段", http.MethodPost, "/__aiinternal__/v1/account-test/dispatch", authHeadersJSON(`{"version":1,"taskId":"a","extra":true}`), []byte(`{"version":1,"taskId":"a","extra":true}`), http.StatusBadRequest, "请求参数无效"},
 		{"version 非 1", http.MethodPost, "/__aiinternal__/v1/account-test/dispatch", authHeadersJSON(`{"version":2,"taskId":"a"}`), []byte(`{"version":2,"taskId":"a"}`), http.StatusBadRequest, "请求参数无效"},
