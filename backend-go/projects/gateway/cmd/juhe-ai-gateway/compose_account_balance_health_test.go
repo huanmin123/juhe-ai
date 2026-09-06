@@ -116,6 +116,7 @@ func TestAccountBalanceGoOwnerHealthMatrix(t *testing.T) {
 		{name: "active peer standby payload keeps owner contract", ownerModeEnv: "", projectorOK: true, status: 200, body: standbyPayload, wantReady: false},
 		{name: "active http 500", ownerModeEnv: "", projectorOK: true, status: 500, body: readyPayload, wantReady: false},
 		{name: "active invalid json", ownerModeEnv: "", projectorOK: true, status: 200, body: "not-json", wantReady: false},
+		{name: "active trailing JSON", ownerModeEnv: "", projectorOK: true, status: 200, body: readyPayload + " {}", wantReady: false},
 		{name: "active fetch error", ownerModeEnv: "", projectorOK: true, failFetch: true, wantReady: false},
 		{name: "standby peer standby payload ready", ownerModeEnv: "standby", projectorOK: true, status: 200, body: standbyPayload, wantReady: true, wantOwnerMode: "standby"},
 		{name: "standby wrong peer ownerMode refuses ready", ownerModeEnv: "standby", projectorOK: true, status: 200, body: activeOwnerPayload, wantReady: false, wantOwnerMode: "standby"},

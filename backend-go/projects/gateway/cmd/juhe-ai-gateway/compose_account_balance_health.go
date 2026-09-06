@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -130,7 +131,12 @@ func accountBalanceGoOwnerHealth(getenv func(string) string, deps accountBalance
 	}
 	defer response.Body.Close()
 	var payload map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+	decoder := json.NewDecoder(response.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		return notReady()
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return notReady()
 	}
 	ok := response.StatusCode >= 200 && response.StatusCode < 300
