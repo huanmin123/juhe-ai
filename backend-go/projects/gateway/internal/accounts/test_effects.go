@@ -38,6 +38,15 @@ func (s *Store) SetTestDispatchEffects(effects TestDispatchEffects) {
 	s.testEffects = effects
 }
 
+// TestDispatchEffects exposes the wired port for composition-root
+// effectiveness assertions (装配断线零容忍：组合根测试用它断言端口已接线).
+func (s *Store) TestDispatchEffects() TestDispatchEffects {
+	if s == nil {
+		return nil
+	}
+	return s.testEffects
+}
+
 // SetTestDispatchEffects is the Deps-level alias so composition roots can set
 // the field and let Mount wire it, mirroring the Authorized reader precedent.
 func (d *Deps) wireTestEffects() {

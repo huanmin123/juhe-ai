@@ -481,3 +481,36 @@ func testEnvelope(t *testing.T, secret, plaintext string) string {
 	tag := encoded[len(encoded)-gcm.Overhead():]
 	return "v1:" + base64.RawURLEncoding.EncodeToString(iv) + ":" + base64.RawURLEncoding.EncodeToString(tag) + ":" + base64.RawURLEncoding.EncodeToString(ciphertext)
 }
+
+// 回归测试（审查发现 #2）：OAuth（含 codex responses 的 oauth 形态）探针保持
+// 官方客户端纯流式 Accept（memory-gateway-http.ts:56 isOAuth →
+// 'text/event-stream'）；API-key 探针走双 accept。
+func TestBuildProbeRequestOAuthAcceptHeader(t *testing.T) {
+	base, _ := url.Parse("https://upstream.test")
+	oauthInput := Input{
+		AccountID:     "acc-oauth",
+		Type:          "oauth",
+		Provider:      "openai",
+		EndpointMode:  "responses_sse",
+		HealthModel:   "gpt-test",
+		ClientCompatibility: "codex_responses",
+	}
+	request, err := buildProbeRequest(context.Background(), base, oauthInput, "oauth-token")
+	if err != nil {
+		t.Fatalf("build oauth probe request: %v", err)
+	}
+	if got := request.Header.Get("Accept"); got != "text/event-stream" {
+		t.Fatalf("oauth codex responses accept = %q, want pure text/event-stream", got)
+	}
+
+	apiKeyInput := oauthInput
+	apiKeyInput.Type = "api_key"
+	apiKeyInput.ClientCompatibility = ""
+	request, err = buildProbeRequest(context.Background(), base, apiKeyInput, "sk-test")
+	if err != nil {
+		t.Fatalf("build api-key probe request: %v", err)
+	}
+	if got := request.Header.Get("Accept"); got != "application/json, text/event-stream" {
+		t.Fatalf("api-key responses accept = %q, want dual accept", got)
+	}
+}

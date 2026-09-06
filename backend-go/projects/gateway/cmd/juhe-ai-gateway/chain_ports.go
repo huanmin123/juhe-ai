@@ -485,11 +485,13 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 
 	// failure-dispatch.ts:392-396: an explicit retry_next / keyScoped decision
 	// authorizes the same-account key rotation regardless of the pre-commit
-	// deferral; only the automatic path is deferred while the dispatcher owns
-	// a bounded retry of the same physical credential.
+	// deferral; the automatic path additionally requires the absence of an
+	// explicit decision — a cooldown/disable decision changes account-level
+	// state and never rotates, even when the deferral is unset.
 	hasAlternativeAccountAPIKeys := input.Account.SelectedAPIKeyFingerprint != nil && len(input.Account.APIKeys) > 1
 	explicitRotation := decision != nil && (decision.Action == decisionActionRetryNext || decision.KeyScoped)
-	sameAccountKeyRotation := hasAlternativeAccountAPIKeys && (explicitRotation || !input.DeferAutomaticSameAccountKeyRotation)
+	automaticRotation := decision == nil && !input.DeferAutomaticSameAccountKeyRotation
+	sameAccountKeyRotation := hasAlternativeAccountAPIKeys && (explicitRotation || automaticRotation)
 	failureKind := chainFailureKindOpaqueHTTP
 	if decision != nil {
 		failureKind = gatewaydispatch.FailureKindExplicitPolicy

@@ -55,13 +55,21 @@ type Store interface {
 	Close() error
 }
 type sqlStore struct {
-	db          *sql.DB
-	businessDB  *sql.DB
-	mode        Mode
-	writeMu     sync.Mutex
-	schemaMu    sync.Mutex
-	schemaReady bool
-	pool        *pgpool.Handle
+	db         *sql.DB
+	businessDB *sql.DB
+	// businessFallbackDB 是业务库本体的只读兜底句柄（SQLite 模式，组合根
+	// 经 Config.BusinessDatabasePath 传入）：镜像文件是静态同步产物时，
+	// 运行期新建/改名的系统账户名字解析在这里兜底。与镜像同文件时为 nil
+	// 且 businessFallbackSameFile 置位（复用 businessDB 句柄）；
+	// ownsBusinessFallback 标记是否需要关闭独立句柄。
+	businessFallbackDB       *sql.DB
+	businessFallbackSameFile bool
+	ownsBusinessFallback     bool
+	mode                     Mode
+	writeMu                  sync.Mutex
+	schemaMu                 sync.Mutex
+	schemaReady              bool
+	pool                     *pgpool.Handle
 }
 
 func OpenStore(cfg Config) (Store, error) {
@@ -88,7 +96,24 @@ func OpenStore(cfg Config) (Store, error) {
 			_ = db.Close()
 			return nil, err
 		}
-		return &sqlStore{db: db, businessDB: businessDB, mode: cfg.Mode}, nil
+		store := &sqlStore{db: db, businessDB: businessDB, mode: cfg.Mode}
+		// 业务库兜底句柄（F4 镜像运行期同步选型：consumer 侧读业务库）。
+		// 镜像文件与业务库同文件时复用 businessDB，不重复打开。
+		if strings.TrimSpace(cfg.BusinessDatabasePath) != "" {
+			if sameSQLiteFile(cfg.BusinessSettingsPath, cfg.BusinessDatabasePath) {
+				store.businessFallbackSameFile = true
+			} else {
+				fallback, fallbackErr := openSQLiteReadOnly(cfg.BusinessDatabasePath)
+				if fallbackErr != nil {
+					_ = businessDB.Close()
+					_ = db.Close()
+					return nil, fallbackErr
+				}
+				store.businessFallbackDB = fallback
+				store.ownsBusinessFallback = true
+			}
+		}
+		return store, nil
 	}
 	maxOpen := cfg.PostgresMaxOpenConns
 	if maxOpen == 0 {
@@ -214,6 +239,9 @@ func configureSQLite(db *sql.DB) error {
 	return nil
 }
 func (s *sqlStore) Close() error {
+	if s.businessFallbackDB != nil && s.ownsBusinessFallback {
+		_ = s.businessFallbackDB.Close()
+	}
 	if s.businessDB != nil {
 		_ = s.businessDB.Close()
 	}
@@ -221,6 +249,25 @@ func (s *sqlStore) Close() error {
 		return s.pool.Close()
 	}
 	return s.db.Close()
+}
+
+// sameSQLiteFile 复用 ensureDistinctSQLitePaths 的规范化规则比较两个 SQLite
+// 路径是否指向同一文件（大小写/符号链接/相对路径鲁棒）。
+func sameSQLiteFile(left, right string) bool {
+	canonical := func(path string) string {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return filepath.Clean(path)
+		}
+		if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+			return filepath.Clean(resolved)
+		}
+		return filepath.Clean(abs)
+	}
+	if left == "" || right == "" {
+		return false
+	}
+	return canonical(left) == canonical(right)
 }
 
 func openSQLiteReadOnly(path string) (*sql.DB, error) {
@@ -1120,6 +1167,43 @@ func (s *sqlStore) accountNames(ctx context.Context, ids []string) (map[string]s
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate F4 system account names: %w", err)
+	}
+	// 业务库兜底（consumer 侧读业务库）：镜像为静态同步产物时，运行期新建/
+	// 改名的账户不在镜像里；对仍未解析的 id 用业务库本体句柄补一次。镜像
+	// 与业务库同文件时 businessFallbackSameFile 置位——主查询已读实时数据，
+	// 兜底查询只会原样重复，直接跳过。
+	fallback := s.businessFallbackDB
+	if fallback != nil {
+		missing := make([]string, 0, len(unique))
+		for _, id := range unique {
+			if result[id] == "\x00" {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			placeholders := strings.TrimRight(strings.Repeat("?,", len(missing)), ",")
+			fallbackArgs := make([]any, len(missing))
+			for index := range missing {
+				fallbackArgs[index] = missing[index]
+			}
+			fallbackRows, fallbackErr := fallback.QueryContext(ctx, "SELECT id,COALESCE(NULLIF(display_name,''),NULLIF(username,''),id) FROM system_accounts WHERE id IN ("+placeholders+")", fallbackArgs...)
+			if fallbackErr != nil {
+				return nil, fmt.Errorf("read F4 system account names from business fallback: %w", fallbackErr)
+			}
+			for fallbackRows.Next() {
+				var id, name string
+				if err := fallbackRows.Scan(&id, &name); err != nil {
+					fallbackRows.Close()
+					return nil, fmt.Errorf("scan F4 system account name from business fallback: %w", fallbackErr)
+				}
+				result[id] = name
+			}
+			if err := fallbackRows.Err(); err != nil {
+				fallbackRows.Close()
+				return nil, fmt.Errorf("iterate F4 system account names from business fallback: %w", fallbackErr)
+			}
+			fallbackRows.Close()
+		}
 	}
 	for _, id := range unique {
 		if result[id] == "\x00" {

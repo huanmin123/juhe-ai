@@ -335,12 +335,10 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		applyCodexProbeHeaders(request, *codexIdentity, input)
 	}
 	if input.EndpointMode == "responses_sse" || input.EndpointMode == "chat_sse" || input.EndpointMode == "messages_sse" || input.EndpointMode == "generate_content_sse" || input.EndpointMode == "interactions_sse" || codeAssist {
-		// Codex 官方客户端走双 accept；OAuth（openai/google）保持官方客户端
-		// 纯流式头；API-key/google_oauth 探针与手动网关诊断同为双 accept
-		// （合并 master 与 prod-account-recovery-hotfix 两侧实现）。
-		if codexIdentity != nil {
-			request.Header.Set("Accept", "application/json, text/event-stream")
-		} else if input.Type == "oauth" || codeAssist {
+		// 对照归档 memory-gateway-http.ts:56 手动测试请求：OAuth（含 codex
+		// responses 的 oauth 形态）保持官方客户端纯流式头；API-key 探针与
+		// 手动网关诊断同为双 accept。
+		if input.Type == "oauth" || codeAssist {
 			request.Header.Set("Accept", "text/event-stream")
 		} else {
 			request.Header.Set("Accept", "application/json, text/event-stream")

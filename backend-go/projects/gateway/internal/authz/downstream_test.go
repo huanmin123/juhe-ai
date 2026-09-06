@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // seedPhysicalAccount inserts the grantable physical account row backing an
@@ -526,5 +527,59 @@ func TestQuotaBindingUpsertReplacesStaleSource(t *testing.T) {
 	// Node); the revoke above already consumed the only expected epoch.
 	if rows := countOutboxRows(t, f); len(rows) != 1 {
 		t.Fatalf("revive must not fanout: %+v", rows)
+	}
+}
+
+// 回归测试（第六轮常驻审查发现 #3）：team 级联的 runtime 刷新必须传归档
+// 显式 options（write-state.repository.ts:966-971，reason
+// 'authorization_revoked' + preserveExpiredWhenNoActiveSource=false）——
+// 已过期 runtime 终态落 'revoked' 而非停留 'expired'，revoked_reason 覆写
+// 为 'authorization_revoked'。
+func TestRevokeTeamGrantSourcesExpiredRuntimeLandsRevoked(t *testing.T) {
+	f := newFixture(t)
+	now := f.now.UTC().Format(time.RFC3339Nano)
+	// 直接种子 team grant + runtime + team source（fixture 无 grantee_team_id
+	// 列且 Create 需 system_teams 校验；被测函数只消费这三行的关系）。
+	runtimeID := "ra_team_exp"
+	// authz fixture 的 resource_authorizations 缺 grantee_team_id 列（生产
+	// schema 有），team 用例补列。
+	if _, err := f.db.Exec(`ALTER TABLE resource_authorizations ADD COLUMN grantee_team_id TEXT`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
+		grantee_system_account_id, grantee_team_id, status, effective_source_type, effective_source_team_id,
+		expires_at, created_by, created_at, updated_at)
+		VALUES ('ra_team_exp', 'account', 'acc-exp', 'owner', '', 'team-exp', 'expired', 'team', 'team-exp',
+		?, 'owner', ?, ?)`, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO resource_authorization_sources (id, authorization_id, source_type, source_team_id,
+		status, created_by, created_at, updated_at)
+		VALUES ('ras_team_exp', ?, 'team', 'team-exp', 'active', 'owner', ?, ?)`, runtimeID, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := f.store.revokeTeamGrantSources(context.Background(), tx, "account", "acc-exp", "team-exp", "owner", now); err != nil {
+		t.Fatalf("revoke team grant sources: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var status, revokedReason string
+	if err := f.db.QueryRow(`SELECT status, COALESCE(revoked_reason, '') FROM resource_authorizations WHERE id = ?`, runtimeID).
+		Scan(&status, &revokedReason); err != nil {
+		t.Fatal(err)
+	}
+	if status != StatusRevoked {
+		t.Fatalf("expired runtime must land 'revoked' after team revoke, got %q", status)
+	}
+	if revokedReason != "authorization_revoked" {
+		t.Fatalf("revoked_reason = %q, want 'authorization_revoked' (archive write-state:966-971)", revokedReason)
 	}
 }

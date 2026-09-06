@@ -380,6 +380,14 @@ func main() {
 		if err != nil {
 			fail(fmt.Errorf("load F4 operation-log input config: %w", err))
 		}
+		// F4 镜像运行期同步选型（consumer 侧读业务库兜底）：SQLite 模式把
+		// 业务库本体路径交给 F4 store，镜像缺失运行期新建/改名账户时名字
+		// 解析兜底到业务库（部署契约里镜像路径常直接指向业务库文件，此时
+		// store 复用句柄不重复打开）。PostgreSQL 模式直读 juhe_business，
+		// 无镜像概念。
+		if operationConfig.Mode == operationlog.ModeSQLite {
+			operationConfig.BusinessDatabasePath = runtimeCfg.BusinessDatabasePath
+		}
 		operationStore, err = operationlog.OpenStore(operationConfig)
 		if err != nil {
 			fail(fmt.Errorf("open F4 operation-log store: %w", err))
@@ -498,6 +506,13 @@ func main() {
 			fail(fmt.Errorf("compose gateway system api: %w", err))
 		}
 		defer composed.Shutdown()
+		// T6d gateway-side consumption: re-project the runtime rows and quota
+		// scope bindings the jobs expiry sweep cannot touch (jobregistry
+		// GoBinding freeze). Best-effort compensator: failures never stop the
+		// owner, so the component is not health-gated.
+		if composed.AuthzStore != nil {
+			components = append(components, newAuthzExpiryRuntimeSyncComponent(composed.AuthzStore))
+		}
 		mainListener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", runtimeCfg.Host, runtimeCfg.Port))
 		if err != nil {
 			fail(fmt.Errorf("listen gateway system api endpoint %s:%d: %w", runtimeCfg.Host, runtimeCfg.Port, err))

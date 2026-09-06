@@ -658,12 +658,25 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// Temporary-unavailable continuous probe switch (Node
 	// :643-694): absent keeps the current flag; turning it off while the
 	// account sits in temporary_unavailable arms the bounded recovery window.
+	probeSwitchNext := 0
+	probeSwitchChanged := false
+	boundedRecoveryActivated := false
+	boundedRecoveryGeneration := ""
 	if input.TemporaryUnavailableContinuousProbeEnabled != nil {
 		next := 0
 		if *input.TemporaryUnavailableContinuousProbeEnabled {
 			next = 1
 		}
 		if next != row.temporaryProbeEnabled {
+			probeSwitchChanged = true
+			probeSwitchNext = next
+			// Node boundedRecoveryActivated = current && !next（与来源账户
+			// 自身状态无关；实例 UPDATE 的 CASE WHEN 按每行自己的 status 判定）。
+			boundedRecoveryActivated = row.temporaryProbeEnabled == 1 && next == 0
+			boundedRecoveryGeneration = ""
+			if boundedRecoveryActivated {
+				boundedRecoveryGeneration = newCooldownGeneration()
+			}
 			addChange("temporaryUnavailableContinuousProbeEnabled", row.temporaryProbeEnabled == 1, *input.TemporaryUnavailableContinuousProbeEnabled)
 			sets = append(sets, "temporary_unavailable_continuous_probe_enabled = ?")
 			setArgs = append(setArgs, next)
@@ -679,7 +692,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 					"cooldown_retest_generation = ?",
 					"cooldown_retest_last_at = NULL",
 					"cooldown_retest_last_status_code = NULL")
-				setArgs = append(setArgs, nowISO, newCooldownGeneration())
+				setArgs = append(setArgs, nowISO, boundedRecoveryGeneration)
 				if cooldown := initialCooldownUntilForStatus("temporary_unavailable", now); cooldown != "" {
 					sets = append(sets, "cooldown_until = ?")
 					setArgs = append(setArgs, cooldown)
@@ -894,6 +907,23 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if affected, _ := exec.RowsAffected(); affected != 1 {
 		return nil, &RevisionConflictError{Message: RevisionConflictMessage}
 	}
+	// 授权实例探活开关传播链（归档 account-management-patch.repository.ts
+	// :805-843 continuousProbeChanged 臂）：来源账户翻转
+	// temporaryUnavailableContinuousProbeEnabled 时，同一事务内对每个授权
+	// 实例（authorization_instance_source_account_id = 来源 id）跟进同款
+	// UPDATE——开关值跟随、config_revision +1，且 bounded recovery 激活时
+	// 对 temporary_unavailable 实例重置冷却重试观察窗口（CASE WHEN 逐字段
+	// 移植；非 temporary_unavailable 实例的冷却列保持原值）。归档侧还将
+	// 实例 id 归入 renamedAuthorizationInstanceIds 驱动事后 per-instance
+	// lookup 缓存失效——Go lookup 失效通道是登记过的 no-op hook
+	// （invalidation.go），网关运行时缓存经来源账户已翻转的
+	// gatewayRuntimeAffected 整面失效，无需额外通道。
+	if probeSwitchChanged {
+		if err := s.propagateProbeSwitchToAuthorizationInstances(ctx, tx, row.id, probeSwitchNext,
+			boundedRecoveryActivated, boundedRecoveryGeneration, now, nowISO); err != nil {
+			return nil, err
+		}
+	}
 	for _, change := range changes {
 		result.ChangedFields = append(result.ChangedFields, change.Field)
 	}
@@ -918,6 +948,82 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// flush + gateway runtime invalidation, best-effort.
 	s.finishPatchSideEffects(result)
 	return result, nil
+}
+
+// propagateProbeSwitchToAuthorizationInstances mirrors the Node
+// continuousProbeChanged arm (:805-843): lock the authorization instances of
+// the source account (Postgres FOR UPDATE), then fan the switch across them
+// in the same transaction — flag follows the source, config_revision bumps,
+// and an activated bounded recovery window resets the cooldown-retry
+// observation fields for temporary_unavailable instances only (CASE WHEN
+// keeps other statuses untouched).
+func (s *Store) propagateProbeSwitchToAuthorizationInstances(ctx context.Context, tx *sql.Tx, sourceAccountID string, next int, activated bool, generation string, now time.Time, nowISO string) error {
+	lockSuffix := ""
+	if s.pg {
+		lockSuffix = " FOR UPDATE"
+	}
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id FROM `+s.table("accounts")+`
+		WHERE authorization_instance_source_account_id = ?
+			AND deleted_at IS NULL
+		ORDER BY id ASC`+lockSuffix), sourceAccountID)
+	if err != nil {
+		return err
+	}
+	instanceIDs := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		instanceIDs = append(instanceIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(instanceIDs) == 0 {
+		return nil
+	}
+	activatedFlag := 0
+	if activated {
+		activatedFlag = 1
+	}
+	observationStarted := any(nil)
+	if activated {
+		observationStarted = nowISO
+	}
+	cooldownGeneration := any(nil)
+	if activated && generation != "" {
+		cooldownGeneration = generation
+	}
+	cooldownUntil := any(nil)
+	if activated {
+		if cooldown := initialCooldownUntilForStatus("temporary_unavailable", now); cooldown != "" {
+			cooldownUntil = cooldown
+		}
+	}
+	_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("accounts")+` SET
+		temporary_unavailable_continuous_probe_enabled = ?,
+		config_revision = config_revision + 1,
+		cooldown_retest_failure_count = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN 0 ELSE cooldown_retest_failure_count END,
+		cooldown_retest_observation_started_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_observation_started_at END,
+		cooldown_retest_generation = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_generation END,
+		cooldown_retest_last_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_at END,
+		cooldown_retest_last_status_code = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_status_code END,
+		cooldown_until = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_until END,
+		updated_at = ?
+		WHERE authorization_instance_source_account_id = ?
+			AND deleted_at IS NULL`),
+		next,
+		activatedFlag, activatedFlag, observationStarted,
+		activatedFlag, cooldownGeneration,
+		activatedFlag,
+		activatedFlag,
+		activatedFlag, cooldownUntil,
+		nowISO,
+		sourceAccountID)
+	return err
 }
 
 func scheduleNextCheckArg(schedule *AvailabilitySchedule, now time.Time) sql.NullString {

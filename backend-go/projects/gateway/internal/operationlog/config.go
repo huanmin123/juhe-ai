@@ -18,6 +18,12 @@ type Config struct {
 	Mode                 Mode
 	DatabasePath         string
 	BusinessSettingsPath string
+	// BusinessDatabasePath 是业务库本体路径（组合根从 JUHE_AI_BUSINESS_DATABASE_PATH
+	// 传入）：SQLite 模式下当镜像文件落后于业务库（运行期新建/改名的系统账户）
+	// 时，F4 读模型用它兜底解析 actor 显示名。部署契约通常把
+	// JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH 直接指向业务库文件，此时
+	// 兜底句柄与镜像句柄同文件，store 会复用而不重复打开。
+	BusinessDatabasePath string
 	SQLiteIsolationPaths []string
 	UsageShardRoot       string
 	PostgresURL          string

@@ -93,6 +93,14 @@ type runtimeConfig struct {
 	// server that the /stats/system-metrics/go-runtime-trend route proxies
 	// (Node JUHE_AI_GO_RUNTIME_METRICS_URL, default http://127.0.0.1:3305).
 	GoRuntimeMetricsURL string
+	// JobsInternalURL is the loopback origin of the Go jobs internal-api
+	// surface (the same jobs health listener that serves /health and
+	// /__aisys__/metrics; jobs JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS default
+	// 127.0.0.1:3305). The manual account test dispatch bridge posts
+	// HMAC-signed tasks to POST /__aiinternal__/v1/account-test/dispatch
+	// here (JUHE_AI_JOBS_INTERNAL_URL; the default mirrors the jobs
+	// listener default like GoRuntimeMetricsURL).
+	JobsInternalURL string
 	// AccountHealthOutcomeSQLitePath is the J1 jobs outcome store the ai-health
 	// reads merge (Node JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH).
 	AccountHealthOutcomeSQLitePath string
@@ -360,6 +368,11 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.GoRuntimeMetricsURL = strings.TrimSpace(getenv("JUHE_AI_GO_RUNTIME_METRICS_URL"))
 	if cfg.GoRuntimeMetricsURL == "" {
 		cfg.GoRuntimeMetricsURL = "http://127.0.0.1:3305"
+	}
+	// jobs internal-api loopback origin（默认与 jobs health 监听默认值一致）。
+	cfg.JobsInternalURL = strings.TrimSpace(getenv("JUHE_AI_JOBS_INTERNAL_URL"))
+	if cfg.JobsInternalURL == "" {
+		cfg.JobsInternalURL = "http://127.0.0.1:3305"
 	}
 	cfg.AccountHealthOutcomeSQLitePath = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH"))
 	cfg.AccountHealthOutcomePostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL"))

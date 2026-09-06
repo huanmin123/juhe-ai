@@ -223,7 +223,10 @@ func (s *Store) syncTeamGrantRuntime(ctx context.Context, tx *sql.Tx, grant *gra
 
 // revokeTeamGrantSources mirrors revokeTeamGrantSourcesAsync (:1392-1433):
 // revoke the active team sources of one team+resource pair and refresh each
-// affected runtime row with the default (preserve-expired) options.
+// affected runtime row. The archive passes explicit options on this path
+// (write-state.repository.ts:966-971): noActiveSourceReason
+// 'authorization_revoked' and preserveExpiredWhenNoActiveSource=false — an
+// expired runtime must land on 'revoked', not stay 'expired'.
 func (s *Store) revokeTeamGrantSources(ctx context.Context, tx *sql.Tx, resourceType, resourceID, teamID, actor, now string) error {
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT ras.authorization_id
 		FROM `+s.table("resource_authorization_sources")+` ras
@@ -268,7 +271,11 @@ func (s *Store) revokeTeamGrantSources(ctx context.Context, tx *sql.Tx, resource
 				AND status = 'active'`), now, actor, now, now, runtimeID, teamID); err != nil {
 			return err
 		}
-		if err := s.refreshEffectiveSource(ctx, tx, runtimeID, actor, now, refreshOptions{}); err != nil {
+		noActiveSourcePreserveExpired := false
+		if err := s.refreshEffectiveSource(ctx, tx, runtimeID, actor, now, refreshOptions{
+			noActiveSourceReason:              "authorization_revoked",
+			preserveExpiredWhenNoActiveSource: &noActiveSourcePreserveExpired,
+		}); err != nil {
 			return err
 		}
 	}

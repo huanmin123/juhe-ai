@@ -157,6 +157,9 @@ type composition struct {
 
 	producer       *operationlog.Producer
 	operationStore operationlog.Store
+	// AuthzStore retains the authorization store so main can attach the
+	// T6d gateway-side expiry reconciliation component (compose_authz_expiry_sync.go).
+	AuthzStore *authz.Store
 
 	shutdowns []func()
 }
@@ -479,6 +482,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create authorization store: %w", err)
 	}
+	composed.AuthzStore = authzStore
 	teamStore, err := systemteams.NewStore(composed.db, composed.pgDialect, time.Now, authzStore)
 	if err != nil {
 		return nil, fmt.Errorf("create system-teams store: %w", err)
@@ -538,6 +542,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// runtime sync only through this composition-root port; PostgreSQL keeps
 	// its existing bulk transaction path inside accounts.Delete.
 	accountStore.SetDeletedResourceGrantRevoker(authzStore)
+	// 手动账号测试派发装配（test_effects.go）：POST /accounts/{id}/test 的
+	// worker 派发经 jobs internal-api loopback（HMAC 签名，见
+	// compose_account_test_dispatch.go）。jobs 缺席时桥接返回 false，路由
+	// 落 Node worker-unavailable 契约（任务置败 + 503）——与 nil 端口降级
+	// 契约一致，组合根不因 jobs 缺席而失败。
+	accountStore.SetTestDispatchEffects(newJobsAccountTestDispatchBridge(cfg.JobsInternalURL, cfg.Secret, nil))
 	announcementStore, err := announcements.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID)
 	if err != nil {
 		return nil, fmt.Errorf("create announcement store: %w", err)

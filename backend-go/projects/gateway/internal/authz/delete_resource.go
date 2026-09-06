@@ -44,10 +44,11 @@ import (
 // quota scope bindings stay untouched — the documented dialect difference
 // against the PostgreSQL bulk arm, which drops the whole resource's bindings
 // (including terminal grants'). The team cascade reuses the shared
-// syncGrantRuntime projection (sync.go), whose team-source refresh keeps the
-// default preserve-expired options of the async chain; the manual-source and
-// terminal semantics of the direct-grant path are byte-identical between the
-// archived sync and async variants.
+// syncGrantRuntime projection (sync.go); its team-source refresh passes the
+// archive explicit options (write-state.repository.ts:966-971 — reason
+// 'authorization_revoked', preserveExpiredWhenNoActiveSource=false), and the
+// manual-source and terminal semantics of the direct-grant path are
+// byte-identical between the archived sync and async variants.
 func (s *Store) RevokeGrantsForResourceDeleted(ctx context.Context, tx *sql.Tx, resourceType, resourceID, actor, now string) error {
 	ctx = ensureCtx(ctx)
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT `+grantColumns+`
