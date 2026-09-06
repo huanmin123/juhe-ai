@@ -165,15 +165,19 @@ func RequestUpstream(ctx context.Context, upstreamURL string, options UpstreamRe
 	}
 
 	// requestCtx mirrors the Node request handle: timers destroy it, the
-	// signal aborts it, and response headers stop the timers.
+	// signal aborts it, and response headers stop the timers. The cancel is
+	// NOT deferred: on success the response body outlives this function
+	// (streaming/large bodies read past the transport buffer), so the cancel
+	// transfers to the body closer (Node destroys the request handle only at
+	// response end, not at headers).
 	requestCtx, requestCancel := context.WithCancel(signal)
-	defer requestCancel()
 
 	state := &upstreamRequestState{}
 
 	headers := upstreamRequestHeaders(options.Header, options.Body)
 	httpRequest, err := http.NewRequestWithContext(requestCtx, options.Method, safeURL.String(), bodyReader(options.Body))
 	if err != nil {
+		requestCancel()
 		releaseSlot()
 		return nil, err
 	}
@@ -249,6 +253,7 @@ func RequestUpstream(ctx context.Context, upstreamURL string, options UpstreamRe
 	upstreamStarted := true
 	response, err := client.Do(httpRequest)
 	if err != nil {
+		requestCancel()
 		releaseSlot()
 		if signal.Err() != nil {
 			return nil, &UpstreamRequestAbortedError{Message: "请求已取消", UpstreamRequestStarted: true}
@@ -278,13 +283,16 @@ func RequestUpstream(ctx context.Context, upstreamURL string, options UpstreamRe
 	decoded, decodeErr := decodeUpstreamResponseBody(body, response.Header.Get("Content-Encoding"))
 	if decodeErr != nil {
 		_ = body.Close()
+		requestCancel()
 		releaseSlot()
 		return nil, decodeErr
 	}
+	// Node keeps the request handle alive for the whole response stream and
+	// destroys it at response end: the cancel moves into the body closer.
 	return &GatewayUpstreamResponse{
 		status: response.StatusCode,
 		Header: response.Header,
-		Body:   newSlotReleasingBody(decoded, releaseSlot),
+		Body:   newSlotReleasingBodyWithCancel(decoded, releaseSlot, requestCancel),
 	}, nil
 }
 
@@ -462,21 +470,33 @@ type slotReleasingBody struct {
 	reader   io.ReadCloser
 	released atomic.Bool
 	release  func()
+	cancel   func()
 }
 
 func newSlotReleasingBody(reader io.ReadCloser, release func()) io.ReadCloser {
 	return &slotReleasingBody{reader: reader, release: release}
 }
 
+// newSlotReleasingBodyWithCancel additionally cancels the upstream request
+// context once the body is released (EOF or Close). Node destroys the request
+// handle at response end; without this the context would leak for the whole
+// body stream lifetime.
+func newSlotReleasingBodyWithCancel(reader io.ReadCloser, release func(), cancel func()) io.ReadCloser {
+	return &slotReleasingBody{reader: reader, release: release, cancel: cancel}
+}
+
 func (b *slotReleasingBody) Read(p []byte) (int, error) {
 	n, err := b.reader.Read(p)
 	if err == io.EOF {
+		// Fully drained: Node destroys the request handle at response end.
+		b.cancelOnce()
 		b.releaseOnce()
 	}
 	return n, err
 }
 
 func (b *slotReleasingBody) Close() error {
+	b.cancelOnce()
 	b.releaseOnce()
 	return b.reader.Close()
 }
@@ -484,6 +504,12 @@ func (b *slotReleasingBody) Close() error {
 func (b *slotReleasingBody) releaseOnce() {
 	if b.released.CompareAndSwap(false, true) && b.release != nil {
 		b.release()
+	}
+}
+
+func (b *slotReleasingBody) cancelOnce() {
+	if b.cancel != nil {
+		b.cancel()
 	}
 }
 

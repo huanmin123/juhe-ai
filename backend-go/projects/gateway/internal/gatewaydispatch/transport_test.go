@@ -1,12 +1,14 @@
 package gatewaydispatch
 
 import (
+	"bufio"
 	"compress/gzip"
 	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -436,4 +438,73 @@ func gzipBytes(t *testing.T, payload []byte) []byte {
 	_, _ = writer.Write(payload)
 	_ = writer.Close()
 	return buffer.Bytes()
+}
+
+// 回归测试（P0）：响应体必须在 RequestUpstream 返回后仍可完整读取。
+// 历史缺陷：defer requestCancel() 在返回时取消请求上下文，超过传输内部
+// 缓冲（~4KB）的响应体在后续 Read 时报 context canceled——大响应与长
+// SSE 流被截断。Node 语义是 headers 到达只停定时器，request handle 在
+// 响应结束时销毁（body Close/EOF）。
+func TestRequestUpstreamLargeBodyReadableAfterReturn(t *testing.T) {
+	const payloadSize = 64 * 1024
+	payload := strings.Repeat("x", payloadSize)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-big","content":"`+payload+`"}`)
+	}))
+	defer server.Close()
+
+	response, err := RequestUpstream(context.Background(), server.URL+"/v1/chat/completions", UpstreamRequestOptions{
+		Method: http.MethodPost,
+		Header: http.Header{"Content-Type": []string{"application/json"}},
+		Body:   []byte(`{"model":"gpt-test"}`),
+	}, TransportDeps{})
+	if err != nil {
+		t.Fatalf("RequestUpstream: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("large body must read fully after return: %v", err)
+	}
+	_ = response.Body.Close()
+	if len(body) != len(`{"id":"chatcmpl-big","content":"`+payload+`"}`) {
+		t.Fatalf("body truncated: got %d bytes", len(body))
+	}
+}
+
+// SSE 长流同理：RequestUpstream 返回后事件流必须继续可读。
+func TestRequestUpstreamSSEStreamReadableAfterReturn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for i := 0; i < 40; i++ {
+			_, _ = io.WriteString(w, "data: {\"chunk\":"+strconv.Itoa(i)+",\"pad\":\""+strings.Repeat("y", 512)+"\"}\n\n")
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	response, err := RequestUpstream(context.Background(), server.URL+"/v1/chat/completions", UpstreamRequestOptions{
+		Method: http.MethodPost,
+		Header: http.Header{"Content-Type": []string{"application/json"}},
+		Body:   []byte(`{"model":"gpt-test","stream":true}`),
+	}, TransportDeps{})
+	if err != nil {
+		t.Fatalf("RequestUpstream: %v", err)
+	}
+	reader := bufio.NewReader(response.Body)
+	events := 0
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		if strings.HasPrefix(line, "data: ") {
+			events++
+		}
+	}
+	_ = response.Body.Close()
+	if events != 40 {
+		t.Fatalf("stream truncated after return: got %d events, want 40", events)
+	}
 }
