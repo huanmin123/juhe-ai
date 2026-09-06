@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -65,6 +66,9 @@ type workerAssembly struct {
 	// manualTestQueue 由 wireManualTestFamily 装配（worker_manualtest.go）；
 	// nil 表示本族 disabled，派发回调保持 503 不可用语义。
 	manualTestQueue *opsjobs.ManualTestQueue
+	// healthFenceSettler 预设健康检查派发的 source fence 结算（worker_health_dispatch.go
+	// 测试注入点；nil 时按 Redis 配置实时构造 ProbeStateStore）。
+	healthFenceSettler internalapi.SourceFenceSettler
 	// wiredTasks 记录已注册（含租约包裹）的任务闭包，供测试/运维入口
 	// 单轮执行；生产调度仍只经 scheduler。
 	wiredTasks map[string]jobsched.Task
@@ -648,15 +652,30 @@ func (l slogWriterLogger) Error(msg string, fields map[string]any) {
 	l.logger.Error(msg, "fields", fields)
 }
 
-// wireDispatchHandler 把 internalapi 账户测试派发/取消 handler 挂到 loopback
-// mux（由 main 的 jobsHTTPHandler 消费）；手动测试族未接线时派发回调返回
-// false（503 服务暂不可用，任务留在 queued 由 queued-max-wait sweep 收口），
-// 不伪造受理。
+// wireDispatchHandler 把 internalapi loopback handler 挂到 mux（由 main 的
+// jobsHTTPHandler 消费）；手动测试族未接线时派发回调返回 false（503 服务暂
+// 不可用，任务留在 queued 由 queued-max-wait sweep 收口），不伪造受理。
+// 路由面：账户测试派发/取消（Node 移植契约）+ 账户健康检查派发（网关桥
+// chain_request_failure_health.go 的对端，worker_health_dispatch.go 装配）。
 func (a *workerAssembly) wireDispatchHandler() {
 	if !a.config.InternalAPIEnabled || a.config.Secret == "" {
 		return
 	}
-	a.dispatchHandler = internalapi.NewAccountTestDispatchHandler(a.manualTestDispatchOptions(a.config.Secret))
+	a.dispatchHandler = a.internalAPIHandler(a.config.Secret)
+}
+
+// internalAPIHandler 组合 /__aiinternal__ 内部路由：健康检查派发精确匹配
+// 自有路径，其余路径（含未知路径 404）交给账户测试派发 handler。
+func (a *workerAssembly) internalAPIHandler(secret string) http.Handler {
+	accountTest := internalapi.NewAccountTestDispatchHandler(a.manualTestDispatchOptions(secret))
+	health := internalapi.NewHealthCheckDispatchHandler(a.healthCheckDispatchOptions(os.Getenv))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == internalapi.FullHealthCheckDispatchPath() {
+			health.ServeHTTP(w, r)
+			return
+		}
+		accountTest.ServeHTTP(w, r)
+	})
 }
 
 // scheduleWiredJob 按注册表登记的调度参数注册一个 GoWired 任务，并统一

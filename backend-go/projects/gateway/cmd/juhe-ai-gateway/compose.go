@@ -538,6 +538,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// gateway runtime cache through the K5 bus post-commit (batch edit,
 	// management patch, soft delete; Node invalidateGatewayRuntimeAfterBusinessWrite).
 	accountStore.SetCacheInvalidator(accountsBusInvalidator{bus: bus})
+	// 余额快照旧代次清理装配（缺口 5，归档 accounts.routes.ts:355-364 +
+	// account-balance-snapshot-cleanup.service.ts:220-224）：PATCH 均衡身份
+	// 变化后的旧 relay_balance 快照删除经本 store 句柄执行（PG 走 juhe_stats
+	// schema 限定，SQLite 共享文件直名，同 M11 快照读取面）。
+	accountStore.SetBalanceSnapshotCleaner(accounts.NewStoreBalanceSnapshotCleaner(accountStore))
 	// SQLite account deletion performs the Node per-grant authorization
 	// runtime sync only through this composition-root port; PostgreSQL keeps
 	// its existing bulk transaction path inside accounts.Delete.
@@ -900,6 +905,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// 状态变更 / system quota 归因（Node decideAccountErrorPolicy 接线）。
 			AccountErrorPolicy:        errorPolicyService,
 			AccountErrorPolicyEffects: errorPolicyBridge,
+			// 失败观察代际捕获：进程内 API-Key 失败 guard 直连（Node
+			// captureGatewayAccountApiKeyFailureObservation，failure-dispatch.ts
+			// :421-434 挂起失败观察代际）。
+			AccountAPIKeyObservation: chainServices.AccountAPIKeyGuard,
 			// 失败派发链：request-failure 健康检查派发桥目标 + turn-retry
 			// Redis 状态驱动（StateClient 为 nil 时适配器返回 nil，链条保持
 			// memory 驱动——见 chain_request_failure_health.go /

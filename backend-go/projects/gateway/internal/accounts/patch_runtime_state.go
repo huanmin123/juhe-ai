@@ -242,9 +242,9 @@ func applyRuntimeStateColumns(setColumn func(column string, value any), before p
 // runtimeMutationInitialCooldownUntil mirrors initialCooldownUntilForStatus
 // (account-runtime-mutation-helpers.ts:37-48): temporary_unavailable arms the
 // 3-second initial backoff, rate_limited the defaultTemporaryUnschedulableMinutes
-// window. (The pre-existing initialCooldownUntilForStatus in patch.go keeps
-// its committed bounded-recovery duration; this helper is the archive-faithful
-// runtime-mutation shape for the edit-path normalization.)
+// window. patch.go 的同名函数（bounded-recovery 两个臂使用）已对齐同一 3 秒
+// 初始退避；本函数额外覆盖编辑路径状态机需要的 rate_limited 分支并返回
+// sql.NullString 形状。
 func (s *Store) runtimeMutationInitialCooldownUntil(status string, now time.Time) sql.NullString {
 	switch status {
 	case "temporary_unavailable":

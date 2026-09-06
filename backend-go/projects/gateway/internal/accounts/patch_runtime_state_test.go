@@ -429,3 +429,156 @@ func TestPatchBalanceSnapshotCleanupPort(t *testing.T) {
 		t.Fatalf("unwired store must not touch the wired cleaner: %v", cleaner.requests)
 	}
 }
+
+// TestPatchProxySwitchRevalidatesBalanceIdentity mirrors the archive
+// balanceRelevant gate (account-management-patch.repository.ts:712-717,
+// :741-751): a pure proxy switch is balance-relevant because the proxy is part
+// of the balance identity — the capability boundary is re-validated and an
+// enabled account's balance_query_next_refresh_at is advanced to the save
+// instant, which also fires the post-commit snapshot cleanup port.
+func TestPatchProxySwitchRevalidatesBalanceIdentity(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+	seedEnabledProxyProfile(t, env, adminID, "proxy-balance-1")
+	cleaner := &recordingBalanceSnapshotCleaner{}
+	env.store.SetBalanceSnapshotCleaner(cleaner)
+
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt",
+		"name":"proxy-balance","type":"api_key",
+		"credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
+		"supportedModels":["gpt-4o-mini"],"status":"active","balanceQueryEnabled":true,
+		"balanceQueryConfig":{"adapter":"builtin","preferredBuiltinAdapter":"sub2api"}}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, payload)
+	}
+	id := dataMap(t, payload)["id"].(string)
+	// Seed an existing refresh schedule so the advance is observable.
+	env.exec(t, `UPDATE accounts SET balance_query_next_refresh_at = '2030-01-01T00:00:00.000Z' WHERE id = ?`, id)
+
+	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
+		`{"expectedConfigRevision":1,"proxyProfileId":"proxy-balance-1"}`)
+	if code != http.StatusOK {
+		t.Fatalf("proxy patch: %d %v", code, patched)
+	}
+
+	// Capability revalidation kept the enabled query + normalized config…
+	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND balance_query_enabled = 1
+		AND balance_query_config_json LIKE '%sub2api%'`, id) != 1 {
+		t.Fatal("pure proxy switch must keep the enabled balance query with its config")
+	}
+	// …advanced the refresh schedule to the save instant…
+	var nextRefreshAt string
+	if err := env.db.QueryRow(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`, id).Scan(&nextRefreshAt); err != nil {
+		t.Fatal(err)
+	}
+	if nextRefreshAt == "" || nextRefreshAt == "2030-01-01T00:00:00.000Z" {
+		t.Fatalf("pure proxy switch must advance balance_query_next_refresh_at, got %q", nextRefreshAt)
+	}
+	// …and flagged the identity change for the post-commit cleanup port.
+	if len(cleaner.requests) != 1 {
+		t.Fatalf("pure proxy switch must invoke the cleanup port once, got %v", cleaner.requests)
+	}
+	if request := cleaner.requests[0]; request.AccountID != id || request.ConfigRevision != 2 ||
+		request.Reason != BalanceSnapshotCleanupReasonConfigurationChanged {
+		t.Fatalf("cleanup request mismatch: %+v", request)
+	}
+}
+
+
+// TestStoreBalanceSnapshotCleanerDeletesSupersededSnapshots（缺口 5，归档
+// account-balance-snapshot-cleanup.service.ts:220-224 +
+// account-balance.repository.ts:887-905）：组合根默认清理器按保存时刻
+// （updatedBefore，`updated_at <= ?`）删除被取代的旧 relay_balance 快照，
+// 未来代次与其他账户的快照保留；完整 PATCH 链（balanceIdentityChanged →
+// 端口 → 异步删除）同样生效。
+func TestStoreBalanceSnapshotCleanerDeletesSupersededSnapshots(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+	env.exec(t, `CREATE TABLE IF NOT EXISTS account_usage_snapshots (
+		system_account_id TEXT NOT NULL,
+		account_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		source TEXT NOT NULL DEFAULT 'upstream_api',
+		snapshot_json TEXT NOT NULL,
+		refresh_status TEXT NOT NULL DEFAULT 'pending',
+		last_attempt_at TEXT,
+		last_success_at TEXT,
+		next_refresh_after TEXT,
+		last_error_message TEXT,
+		updated_at TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (system_account_id, account_id, kind)
+	)`)
+
+	fixedNow := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	cleaner := NewStoreBalanceSnapshotCleaner(env.store)
+	cleaner.SetClockForTest(func() time.Time { return fixedNow })
+
+	insertSnapshot := func(t *testing.T, accountID, updatedAt string) {
+		t.Helper()
+		env.exec(t, `INSERT INTO account_usage_snapshots (system_account_id, account_id, kind, snapshot_json, next_refresh_after, updated_at, created_at)
+			VALUES (?, ?, 'relay_balance', '{"configRevision":1}', '2026-09-01T00:00:00.000Z', ?, ?)`,
+			adminID, accountID, updatedAt, updatedAt)
+	}
+	insertSnapshot(t, "acc-stale", "2026-09-01T00:00:00.000Z")
+	insertSnapshot(t, "acc-future", "2030-01-01T00:00:00.000Z")
+	insertSnapshot(t, "acc-untouched", "2026-09-01T00:00:00.000Z")
+
+	// 直接调用：只删目标账户的过期代次（异步执行，轮询等待）。
+	cleaner.CleanupBalanceSnapshotAfterSave(BalanceSnapshotCleanupRequest{
+		AccountID:      "acc-stale",
+		ConfigRevision: 2,
+		Reason:         BalanceSnapshotCleanupReasonConfigurationChanged,
+	})
+	waitForSnapshotDeletion(t, env, "acc-stale")
+	if env.count(t, `SELECT COUNT(*) FROM account_usage_snapshots WHERE account_id = 'acc-future'`) != 1 {
+		t.Fatal("newer-generation snapshot (updated_at > updatedBefore) must survive")
+	}
+	if env.count(t, `SELECT COUNT(*) FROM account_usage_snapshots WHERE account_id = 'acc-untouched'`) != 1 {
+		t.Fatal("other accounts' snapshots must survive")
+	}
+
+	// 完整 PATCH 链：余额身份变化 → 端口 → 异步删除。
+	env.store.SetBalanceSnapshotCleaner(cleaner)
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt",
+		"name":"snapshot-cleanup","type":"api_key",
+		"credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
+		"supportedModels":["gpt-4o-mini"],"status":"active","balanceQueryEnabled":true,
+		"balanceQueryConfig":{"adapter":"builtin","preferredBuiltinAdapter":"sub2api"}}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, payload)
+	}
+	id := dataMap(t, payload)["id"].(string)
+	insertSnapshot(t, id, "2026-09-01T00:00:00.000Z")
+
+	// 固定时钟在保存时刻之后拨回真实时钟，保证 updatedBefore 覆盖旧行；
+	// 异步删除以轮询等待。
+	cleaner.SetClockForTest(func() time.Time { return time.Now().Add(time.Hour) })
+	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
+		`{"expectedConfigRevision":1,"balanceQueryEnabled":false}`)
+	if code != http.StatusOK {
+		t.Fatalf("disable patch: %d %v", code, patched)
+	}
+
+	// 异步删除以轮询等待。
+	waitForSnapshotDeletion(t, env, id)
+}
+
+// waitForSnapshotDeletion polls until the account's relay_balance snapshot is
+// gone (the cleaner executes fire-and-forget).
+func waitForSnapshotDeletion(t *testing.T, env *testEnv, accountID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		remaining := env.count(t, `SELECT COUNT(*) FROM account_usage_snapshots WHERE account_id = ?`, accountID)
+		if remaining == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("superseded snapshot must be deleted asynchronously after the identity change")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

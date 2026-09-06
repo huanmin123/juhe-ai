@@ -266,6 +266,15 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if row.configRevision != input.ExpectedConfigRevision {
 		return nil, &RevisionConflictError{Message: RevisionConflictMessage}
 	}
+	// 归档 patchAccountFailureStateInTransaction（account-management-patch
+	// .repository.ts:1116-1119）：clearFailureState=true 是独立的重新检查/
+	// 异常恢复命令，只允许伴随 expectedConfigRevision（以及 Go 编辑面不存在的
+	// 内部 runtimeResetRequireUnlocked 栅栏），与任何字段修改混交时以归档
+	// 文案拒绝（ValidationError → 400，与归档普通 Error → badRequest(400)
+	// 一致）。放在 revision CAS 之后对齐归档顺序：过期版本先返回 409。
+	if input.ClearFailureState && patchHasMixedEditField(input) {
+		return nil, &ValidationError{Message: "重新检查或异常恢复不能与账户字段修改同时提交"}
+	}
 
 	now := s.now()
 	nowISO := isoMillis(now)
@@ -869,11 +878,15 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// Balance query (Node :712-773): any balance-relevant change revalidates
 	// the capability boundary, writes the enabled flag plus the normalized
 	// config and refreshes the next-refresh generation when the balance
-	// identity changed. Node rides nextCredentials, falling back to the
-	// decrypted current credentials (accountManagementPatchNeedsCredentials
-	// 含 balance 字段)，所以余额相关的 PATCH 在无凭据输入时也要解密现凭据，
-	// 否则启用查询会被"至少一个有效的 API Key"误拒。
-	if input.BalanceQueryEnabled != nil || input.BalanceQueryConfigPresent || credentialsChanged {
+	// identity changed. balanceRelevant（归档 :712-717）还包括代理切换
+	// （currentProxyProfileId !== nextProxyProfileId → proxyChanged）：代理
+	// 属于余额身份的一部分（identity 比较含 proxyProfileId），纯代理切换也要
+	// 重验能力边界并把启用账户的 next_refresh_at 提前到当下。Node rides
+	// nextCredentials, falling back to the decrypted current credentials
+	// (accountManagementPatchNeedsCredentials 含 balance 字段)，所以余额相关
+	// 的 PATCH 在无凭据输入时也要解密现凭据，否则启用查询会被"至少一个有效
+	// 的 API Key"误拒。
+	if input.BalanceQueryEnabled != nil || input.BalanceQueryConfigPresent || credentialsChanged || proxyChanged {
 		requestedEnabled := row.balanceQueryEnabled == 1
 		if input.BalanceQueryEnabled != nil {
 			requestedEnabled = *input.BalanceQueryEnabled
@@ -1366,12 +1379,47 @@ func credentialValueJSONText(value any) string {
 	return string(raw)
 }
 
-// initialCooldownUntilForStatus mirrors initialCooldownUntilForStatus for the
-// statuses the basic-edit surface can reach: temporary_unavailable re-arms the
-// standard runtime cooldown window (5 minutes, runtime.ts default).
+// patchHasMixedEditField mirrors the archive mixed-commit allowlist
+// (account-management-patch.repository.ts:1116-1119): every editable field
+// beyond expectedConfigRevision/clearFailureState counts as a mixed commit.
+// The third whitelisted key runtimeResetRequireUnlocked is an internal
+// runtime-reset fence that never appears on the Go edit surface (the Go
+// runtime-reset path does not route through Store.Patch).
+func patchHasMixedEditField(input PatchInput) bool {
+	return input.Name != nil ||
+		input.Notes != nil ||
+		input.Status != nil ||
+		input.ConcurrencyLimit != nil ||
+		input.Priority != nil ||
+		input.SuperPriorityEnabled != nil ||
+		input.FallbackEnabled != nil ||
+		input.Schedulable != nil ||
+		input.CredentialsPresent ||
+		input.SupportedModelsPresent ||
+		input.HealthCheckModel != nil ||
+		input.HealthCheckEndpointMode != nil ||
+		input.TagsPresent ||
+		input.AccountExpiresAtPresent ||
+		input.AvailabilitySchedulePresent ||
+		input.ModelMappingsPresent ||
+		input.ProxyProfileIDPresent ||
+		input.GroupIDPresent ||
+		input.BalanceQueryEnabled != nil ||
+		input.BalanceQueryConfigPresent ||
+		input.TemporaryUnavailableContinuousProbeEnabled != nil
+}
+
+// initialCooldownUntilForStatus mirrors initialCooldownUntilForStatus
+// (account-runtime-mutation-helpers.ts:36-55): temporary_unavailable arms the
+// bounded-recovery initial backoff of 3 seconds
+// (temporaryUnavailableInitialBackoffSeconds = 3，与冷却重试退避表首项一致：
+// 归档 JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_BACKOFF_MS 默认 [3s, 5s, ...] / Go jobs
+// opsjobs.CircuitBackoffMS[0] = 3s)。仅被两个 bounded-recovery 臂使用（归档
+// :664 来源账户观察窗口重启、:837 授权实例传播 CASE WHEN），两处在归档中都是
+// 3 秒初始退避，非 5 分钟标准冷却语义。
 func initialCooldownUntilForStatus(status string, now time.Time) string {
 	if status == "temporary_unavailable" {
-		return isoMillis(now.Add(5 * time.Minute))
+		return isoMillis(now.Add(3 * time.Second))
 	}
 	return ""
 }

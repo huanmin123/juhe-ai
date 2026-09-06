@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -298,6 +299,25 @@ type chainFailureDispatcher struct {
 	// 见 chain_error_policy.go / chain_error_policy_effects.go。
 	policy  *chainErrorPolicyService
 	effects chainAccountErrorPolicyEffects
+	// apiKeyObservation 捕获进程内 API-Key 失败观察代际（Node
+	// captureGatewayAccountApiKeyFailureObservation，
+	// account-api-key-failure-guard.service.ts:92-101）；生产装配为
+	// chainRuntimeServices.AccountAPIKeyGuard。nil 时挂起失败不带代际——
+	// 记录侧 guard 会把空代际按 stale 观察拒绝，不会误占 fence。
+	apiKeyObservation chainAPIKeyObservationPort
+	// codexUsageHeaders 是 codex 用量响应头的失败面持久化窄口（Node
+	// persistOpenAICodexHeadersIfNeeded，failure-dispatch.ts:340-344）。
+	// gatewaycodex.PersistOpenAICodexHeadersIfNeeded 对 nil 派发器静默返回
+	// （gatewaycodex 包契约：不合格账户与无 codex 头静默跳过）；gateway→jobs
+	// 的 record-maintenance 快照通道仍在建（注册遗留项），组合根暂持 nil。
+	codexUsageHeaders gatewaycodex.CodexUsageHeadersDispatcher
+}
+
+// chainAPIKeyObservationPort 是 AccountAPIKeyFailureGuard.CaptureFailureObservation
+// 的窄口投影（gatewaydispatch.AccountCandidate 即
+// gatewayruntimecache.OpenAIAccountSecret 的类型别名，无需适配层）。
+type chainAPIKeyObservationPort interface {
+	CaptureFailureObservation(account gatewayruntimecache.OpenAIAccountSecret) *int64
 }
 
 func (d *chainFailureDispatcher) errorPolicyOf() *chainErrorPolicyService {
@@ -358,6 +378,31 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 			"event", "gateway_upstream_retry_error_body_read_failed",
 			"accountId", input.Account.ID, "statusCode", statusCode, "error", readErr.Error())
 	}
+
+	// failure-dispatch.ts:229-254: the structured failed-response warning.
+	// Node classifies with the phase only (no status/error code inputs), so
+	// metricReasonClass stays the phase default; the account-probe debug
+	// demotion is unreachable here — the branches above already returned for
+	// every non-gateway traffic source.
+	failureObservation := gatewayresponse.ClassifyGatewayUpstreamFailure(gatewayresponse.GatewayUpstreamFailureClassificationInput{
+		Phase: "upstream_response",
+	})
+	slog.Warn("上游返回非成功状态",
+		"event", "gateway_upstream_response_failed",
+		"accountId", input.Account.ID,
+		"accountType", input.Account.Type,
+		"upstreamUrl", chainSanitizedUpstreamURL(input.UpstreamURL),
+		"attemptIndex", input.AttemptIndex,
+		"auditAttemptIndex", input.AuditAttemptIndex,
+		"statusCode", statusCode,
+		"contentType", responseContentTypeOf(input.Response),
+		"elapsedMs", time.Now().UnixMilli()-input.AttemptStartedAt,
+		"responseBodyBytes", len(bodyText),
+		"responseBodyTruncated", truncated,
+		"failureClass", failureObservation.FailureClass,
+		"metricReasonClass", failureObservation.MetricReasonClass,
+		"classificationReason", failureObservation.ClassificationReason,
+		"trafficSource", trafficSource)
 
 	// failure-dispatch.ts:219-227: parseFailureBodyFacts + decideAccountErrorPolicy
 	// run right after the bounded capture — the explicit account error policy
@@ -441,6 +486,19 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 			skipped["reason"] = recovery.Reason
 		}
 		input.AuditCapture.AddGatewayMetadata("codex_encrypted_content_recovery_skipped", skipped)
+	}
+
+	// failure-dispatch.ts:339-344: the codex usage headers persist on the
+	// failure face too — an eligible OAuth codex account with codex headers
+	// dispatches the side effect with the gateway_error source rewrite. nil
+	// dispatcher stays silent inside the helper (gatewaycodex contract).
+	if input.AccountStateMutationEnabled {
+		codexHeadersSource := trafficSource
+		if trafficSource == gatewayTrafficSource {
+			codexHeadersSource = "gateway_error"
+		}
+		gatewaycodex.PersistOpenAICodexHeadersIfNeeded(ctx, input.Account, policyHeader,
+			codexHeadersSource, gatewaycodex.SystemClock{}, d.codexUsageHeaders)
 	}
 
 	// failure-dispatch.ts:346: forget the session affinity before the policy
@@ -528,12 +586,17 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	if sameAccountKeyRotation && input.AccountStateMutationEnabled &&
 		(decision == nil || !decision.KeyScoped) &&
 		input.Account.SelectedAPIKeyFingerprint != nil && !input.Account.APIKeyRuntimeStateDisabled {
+		// failure-dispatch.ts:421-434: the pending Key failure carries the
+		// process-local observation epoch captured at failure time — the
+		// confirmed-rotation recorder only accepts a non-stale observation
+		// (account-api-key-failure-guard.service.ts:92-101).
 		result.PendingApiKeyFailure = &gatewaydispatch.PendingAccountApiKeyFailure{
-			Account:         input.Account,
-			Status:          "temporary_unavailable",
-			StatusCode:      statusCode,
-			ErrorMessage:    upstreamErrorSummary,
-			MutationContext: map[string]any{"authority": "confirmed_same_account_key_rotation", "trafficSource": gatewayTrafficSource},
+			Account:          input.Account,
+			Status:           "temporary_unavailable",
+			StatusCode:       statusCode,
+			ErrorMessage:     upstreamErrorSummary,
+			MutationContext:  map[string]any{"authority": "confirmed_same_account_key_rotation", "trafficSource": gatewayTrafficSource},
+			ObservationEpoch: chainObservationEpochOf(d.apiKeyObservation, input.Account),
 		}
 	}
 	return result, nil
@@ -558,6 +621,29 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 	// failure-dispatch.ts:519-591: the transport-failure branch.
 	message := formatUpstreamRequestErrorMessage(input.Error)
 	lastAttempt := transportFailureAttemptOf(input, message, formatUpstreamRequestTransportFailureKind(input.Error, input.LastAttempt))
+	// failure-dispatch.ts:522-542: the structured transport-failure warning.
+	// Node classifies with the phase only, so the metric reason class is the
+	// fixed transport default; errorCode degrades to "" for Go error values
+	// without a code surface.
+	requestFailureObservation := gatewayresponse.ClassifyGatewayUpstreamFailure(gatewayresponse.GatewayUpstreamFailureClassificationInput{
+		Phase: "upstream_request",
+	})
+	slog.Warn("网关请求上游失败",
+		"event", "gateway_upstream_request_failed",
+		"accountId", input.Account.ID,
+		"accountType", input.Account.Type,
+		"upstreamUrl", chainSanitizedUpstreamURL(input.UpstreamURL),
+		"attemptIndex", input.AttemptIndex,
+		"auditAttemptIndex", input.AuditAttemptIndex,
+		"elapsedMs", time.Now().UnixMilli()-input.AttemptStartedAt,
+		"stream", gatewaydispatch.IsEffectiveOpenAIStreamRequest(input.Req, chainUpstreamHeaderAccountOf(input.Account)),
+		"errorName", upstreamRequestErrorName(input.Error),
+		"errorCode", upstreamRequestErrorCode(input.Error),
+		"errorMessage", message,
+		"failureClass", requestFailureObservation.FailureClass,
+		"metricReasonClass", requestFailureObservation.MetricReasonClass,
+		"classificationReason", requestFailureObservation.ClassificationReason,
+		"trafficSource", input.UsageContext.TrafficSource)
 	if input.AuditAttemptID != "" {
 		input.AuditCapture.CompleteAttempt(input.AuditAttemptID, gatewaydispatch.CompleteAttemptInput{
 			Success:      false,
@@ -712,6 +798,67 @@ func upstreamRequestErrorName(err error) string {
 		name = name[index+1:]
 	}
 	return name
+}
+
+// upstreamRequestErrorCode mirrors the Node
+// `objectStringProperty(error, 'code')` diagnostic: Go error values expose a
+// code only through the optional ErrorCode surface, anything else degrades to
+// the empty string.
+func upstreamRequestErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	if coded, ok := err.(interface{ ErrorCode() string }); ok {
+		return coded.ErrorCode()
+	}
+	return ""
+}
+
+// chainSanitizedUpstreamURL mirrors
+// sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'.
+func chainSanitizedUpstreamURL(upstreamURL string) string {
+	sanitized := strings.TrimSpace(upstreamURL)
+	if sanitized == "" {
+		return "unknown"
+	}
+	return sanitized
+}
+
+// responseContentTypeOf mirrors response.headers.get('content-type').
+func responseContentTypeOf(response *gatewaydispatch.GatewayUpstreamResponse) string {
+	if response == nil || response.Header == nil {
+		return ""
+	}
+	return response.Header.Get("Content-Type")
+}
+
+// chainUpstreamHeaderAccountOf projects the dispatch candidate onto the
+// stream-detection account shape (gatewaydispatch headerAccountOf).
+func chainUpstreamHeaderAccountOf(account gatewaydispatch.AccountCandidate) *gatewaydispatch.UpstreamHeaderAccount {
+	return &gatewaydispatch.UpstreamHeaderAccount{
+		ID:                        account.ID,
+		APIKey:                    account.APIKey,
+		Type:                      account.Type,
+		ProviderCode:              account.ProviderCode,
+		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
+		ProtocolCode:              account.ProtocolCode,
+		ProtocolVersion:           account.ProtocolVersion,
+		Credentials:               account.Credentials,
+	}
+}
+
+// chainObservationEpochOf captures the process-local failure observation epoch
+// and renders it in the pending-failure string form (decimal int64); a nil
+// port or an unavailable epoch keeps it empty.
+func chainObservationEpochOf(port chainAPIKeyObservationPort, account gatewaydispatch.AccountCandidate) string {
+	if port == nil {
+		return ""
+	}
+	epoch := port.CaptureFailureObservation(account)
+	if epoch == nil {
+		return ""
+	}
+	return strconv.FormatInt(*epoch, 10)
 }
 
 // recordDownstreamClosedRequestError mirrors the recording half of the Node

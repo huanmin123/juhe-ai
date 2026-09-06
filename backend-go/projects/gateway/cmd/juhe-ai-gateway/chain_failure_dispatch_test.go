@@ -15,16 +15,19 @@ package main
 //     耗尽出口固定文案。
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1756,5 +1759,260 @@ func TestGatewayChain402InsufficientQuotaCooldownsAccount(t *testing.T) {
 	}
 	if cooldownUntil == "" {
 		t.Fatal("cooldown_until must be persisted")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 第七轮审查修复：失败观察代际 / codex usage headers 失败面 / 结构化失败警告
+// ---------------------------------------------------------------------------
+
+// fakeChainAPIKeyObservation implements chainAPIKeyObservationPort with a
+// deterministic epoch sequence.
+type fakeChainAPIKeyObservation struct {
+	accounts []string
+	epoch    int64
+}
+
+func (f *fakeChainAPIKeyObservation) CaptureFailureObservation(account gatewayruntimecache.OpenAIAccountSecret) *int64 {
+	f.accounts = append(f.accounts, account.ID)
+	f.epoch++
+	epoch := f.epoch
+	return &epoch
+}
+
+// unavailableChainAPIKeyObservation mirrors the process-local state being
+// unusable (the guard renders nil).
+type unavailableChainAPIKeyObservation struct{}
+
+func (unavailableChainAPIKeyObservation) CaptureFailureObservation(gatewayruntimecache.OpenAIAccountSecret) *int64 {
+	return nil
+}
+
+// fakeChainCodexHeadersDispatcher captures the codex usage-header dispatch.
+type fakeChainCodexHeadersDispatcher struct {
+	mu         sync.Mutex
+	accountIDs []string
+	sources    []string
+}
+
+func (d *fakeChainCodexHeadersDispatcher) PersistOpenAICodexUsageHeaders(_ context.Context, accountID string, _ http.Header, source string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.accountIDs = append(d.accountIDs, accountID)
+	d.sources = append(d.sources, source)
+}
+
+// failureDispatchUpstreamResponseWithHeaders performs the in-process upstream
+// request with extra response headers (the codex usage headers ride here).
+func failureDispatchUpstreamResponseWithHeaders(t *testing.T, status int, contentType, body string, extra http.Header) *gatewaydispatch.GatewayUpstreamResponse {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for name, values := range extra {
+			for _, value := range values {
+				w.Header().Add(name, value)
+			}
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	response, err := gatewaydispatch.RequestUpstream(context.Background(), server.URL+"/v1/chat/completions",
+		gatewaydispatch.UpstreamRequestOptions{
+			Method: http.MethodPost,
+			Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body:   []byte(`{}`),
+		}, gatewaydispatch.TransportDeps{})
+	if err != nil {
+		t.Fatalf("request upstream: %v", err)
+	}
+	return response
+}
+
+// TestChainFailureDispatcherPendingFailureObservationEpoch（缺口 B，归档
+// failure-dispatch.ts:421-434）：确认换 Key 的挂起失败必须携带失败时刻捕获的
+// 进程内观察代际；端口缺席或代际不可用时留空（记录侧 guard 按 stale 拒绝，
+// 不误占 fence）。
+func TestChainFailureDispatcherPendingFailureObservationEpoch(t *testing.T) {
+	fingerprint := "fp_epoch"
+	account := gatewaydispatch.AccountCandidate{
+		ID: "acc_epoch", Name: "账户一",
+		APIKeys:                   []string{"key-a", "key-b"},
+		SelectedAPIKeyFingerprint: &fingerprint,
+	}
+	response := failureDispatchUpstreamResponse(t, http.StatusTooManyRequests, "application/json", `{"error":{"message":"rate limited"}}`)
+	sink := &failureDispatchAuditSink{}
+
+	observation := &fakeChainAPIKeyObservation{}
+	dispatcher := newFailureDispatcherForTest(nil)
+	dispatcher.apiKeyObservation = observation
+
+	input := gatewayFailedResponseInput(response, sink, "gateway")
+	input.Account = account
+	input.AccountStateMutationEnabled = true
+	result, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle failed upstream response: %v", err)
+	}
+	if result.PendingApiKeyFailure == nil {
+		t.Fatal("pending api key failure must be captured for confirmation")
+	}
+	if result.PendingApiKeyFailure.ObservationEpoch != "1" {
+		t.Fatalf("observation epoch = %q want %q", result.PendingApiKeyFailure.ObservationEpoch, "1")
+	}
+	if len(observation.accounts) != 1 || observation.accounts[0] != "acc_epoch" {
+		t.Fatalf("observation capture accounts = %v", observation.accounts)
+	}
+
+	// 端口缺席：挂起失败保留，代际留空。
+	plain := newFailureDispatcherForTest(nil)
+	plainResult, err := plain.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle nil-port failure: %v", err)
+	}
+	if plainResult.PendingApiKeyFailure == nil || plainResult.PendingApiKeyFailure.ObservationEpoch != "" {
+		t.Fatalf("nil-port pending failure wrong: %+v", plainResult.PendingApiKeyFailure)
+	}
+
+	// 代际不可用（进程本地状态不可用）：同样留空。
+	unavailable := newFailureDispatcherForTest(nil)
+	unavailable.apiKeyObservation = unavailableChainAPIKeyObservation{}
+	unavailableResult, err := unavailable.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("handle unavailable-epoch failure: %v", err)
+	}
+	if unavailableResult.PendingApiKeyFailure == nil || unavailableResult.PendingApiKeyFailure.ObservationEpoch != "" {
+		t.Fatalf("unavailable-epoch pending failure wrong: %+v", unavailableResult.PendingApiKeyFailure)
+	}
+}
+
+// TestChainFailureDispatcherCodexUsageHeadersFailureFace（缺口 C，归档
+// failure-dispatch.ts:340-344）：失败面在 mutationEnabled ≠ false 时对
+// OAuth codex 账户派发用量响应头持久化；非 codex 账户与状态变更关闭的
+// 请求保持静默。
+func TestChainFailureDispatcherCodexUsageHeadersFailureFace(t *testing.T) {
+	codexHeaders := http.Header{
+		"X-Codex-Primary-Used-Percent": []string{"37"},
+	}
+	response := failureDispatchUpstreamResponseWithHeaders(t, http.StatusTooManyRequests, "application/json",
+		`{"error":{"message":"rate limited"}}`, codexHeaders)
+	sink := &failureDispatchAuditSink{}
+	codexDispatcher := &fakeChainCodexHeadersDispatcher{}
+	dispatcher := newFailureDispatcherForTest(nil)
+	dispatcher.codexUsageHeaders = codexDispatcher
+
+	input := gatewayFailedResponseInput(response, sink, "gateway")
+	input.Account = gatewaydispatch.AccountCandidate{
+		ID: "acc_codex", Name: "codex 账户",
+		Type: "oauth", ProtocolCode: "openai", ProtocolVersion: "v1",
+	}
+	input.AccountStateMutationEnabled = true
+	if _, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input); err != nil {
+		t.Fatalf("handle failed upstream response: %v", err)
+	}
+	codexDispatcher.mu.Lock()
+	calls := len(codexDispatcher.accountIDs)
+	sources := append([]string{}, codexDispatcher.sources...)
+	codexDispatcher.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("codex header dispatch calls = %d want 1", calls)
+	}
+	if sources[0] != "gateway_error" {
+		t.Fatalf("codex header source = %q want gateway_error", sources[0])
+	}
+
+	// 状态变更关闭：失败面不派发。
+	codexDispatcher2 := &fakeChainCodexHeadersDispatcher{}
+	dispatcher2 := newFailureDispatcherForTest(nil)
+	dispatcher2.codexUsageHeaders = codexDispatcher2
+	input2 := gatewayFailedResponseInput(response, sink, "gateway")
+	input2.Account = input.Account
+	input2.AccountStateMutationEnabled = false
+	if _, err := dispatcher2.HandleFailedUpstreamResponse(context.Background(), input2); err != nil {
+		t.Fatalf("handle mutation-disabled failure: %v", err)
+	}
+	codexDispatcher2.mu.Lock()
+	disabledCalls := len(codexDispatcher2.accountIDs)
+	codexDispatcher2.mu.Unlock()
+	if disabledCalls != 0 {
+		t.Fatalf("mutation-disabled failure must not dispatch codex headers, got %d", disabledCalls)
+	}
+
+	// 非 OAuth 账户：不派发（gatewaycodex 账户资格门）。
+	codexDispatcher3 := &fakeChainCodexHeadersDispatcher{}
+	dispatcher3 := newFailureDispatcherForTest(nil)
+	dispatcher3.codexUsageHeaders = codexDispatcher3
+	input3 := gatewayFailedResponseInput(response, sink, "gateway")
+	input3.Account = gatewaydispatch.AccountCandidate{
+		ID: "acc_apikey", Name: "api key 账户",
+		Type: "api_key", ProtocolCode: "openai", ProtocolVersion: "v1",
+	}
+	input3.AccountStateMutationEnabled = true
+	if _, err := dispatcher3.HandleFailedUpstreamResponse(context.Background(), input3); err != nil {
+		t.Fatalf("handle api-key failure: %v", err)
+	}
+	codexDispatcher3.mu.Lock()
+	apiKeyCalls := len(codexDispatcher3.accountIDs)
+	codexDispatcher3.mu.Unlock()
+	if apiKeyCalls != 0 {
+		t.Fatalf("api-key account must not dispatch codex headers, got %d", apiKeyCalls)
+	}
+}
+
+// captureSlogWarnings redirects the default slog logger into a buffer for the
+// duration of the test.
+func captureSlogWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buffer bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buffer, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &buffer
+}
+
+// TestChainFailureDispatcherStructuredFailureWarnings（缺口 D，归档
+// failure-dispatch.ts:240-254 / :524-542）：失败响应与传输失败分支各记录一条
+// 结构化 warn，字段集对照归档（phase-only 分类保留 Node 的 metric reason
+// 缺省）。
+func TestChainFailureDispatcherStructuredFailureWarnings(t *testing.T) {
+	logs := captureSlogWarnings(t)
+
+	// 失败响应分支。
+	response := failureDispatchUpstreamResponse(t, http.StatusTooManyRequests, "application/json", `{"error":{"message":"rate limited"}}`)
+	sink := &failureDispatchAuditSink{}
+	dispatcher := newFailureDispatcherForTest(nil)
+	input := gatewayFailedResponseInput(response, sink, "gateway")
+	if _, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input); err != nil {
+		t.Fatalf("handle failed upstream response: %v", err)
+	}
+
+	// 传输失败分支。
+	errorSink := &failureDispatchAuditSink{}
+	if _, err := dispatcher.HandleUpstreamRequestError(context.Background(),
+		upstreamRequestErrorInput(errors.New("连接被重置"), errorSink, nil)); err != nil {
+		t.Fatalf("handle upstream request error: %v", err)
+	}
+
+	captured := logs.String()
+	for _, fragment := range []string{
+		"event=gateway_upstream_response_failed",
+		"accountId=acc_1",
+		"statusCode=429",
+		"contentType=application/json",
+		"responseBodyTruncated=false",
+		"failureClass=opaque_upstream_response",
+		"metricReasonClass=unknown",
+		"classificationReason=opaque_upstream_response_failure",
+		"trafficSource=gateway",
+		"event=gateway_upstream_request_failed",
+		"failureClass=transport",
+		"metricReasonClass=transport",
+		"classificationReason=upstream_transport_failure",
+		"stream=false",
+		"errorMessage=连接被重置",
+	} {
+		if !strings.Contains(captured, fragment) {
+			t.Fatalf("structured failure warnings missing %q, got:\n%s", fragment, captured)
+		}
 	}
 }

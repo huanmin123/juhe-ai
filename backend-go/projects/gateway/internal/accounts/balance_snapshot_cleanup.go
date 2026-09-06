@@ -1,5 +1,11 @@
 package accounts
 
+import (
+	"context"
+	"log/slog"
+	"time"
+)
+
 // 账户保存后的余额快照旧代次清理端口（Node→Go 迁移缺口登记项 2）。
 //
 // 归档依据 backend/src/modules/accounts/：
@@ -48,4 +54,64 @@ type BalanceSnapshotCleaner interface {
 // keeps the patch path snapshot-silent).
 func (s *Store) SetBalanceSnapshotCleaner(cleaner BalanceSnapshotCleaner) {
 	s.balanceSnapshotCleaner = cleaner
+}
+
+// StoreBalanceSnapshotCleaner is the store-backed BalanceSnapshotCleaner: the
+// composition-root default that executes the archived deletion against the
+// account store's own database surface (PostgreSQL schema-qualified
+// juhe_stats.account_usage_snapshots via statsTable, bare table on the shared
+// SQLite file — the same dual-mode face the M11 snapshot read uses).
+//
+// Node surrounds the deletion with a bounded retry queue
+// (sequenceRetryPolicy [250,1000,1000]ms × 3) plus the read-side isSuppressed
+// suppression map; the Go gateway keeps the single best-effort attempt with an
+// observable warn on failure (retry/suppression residual logged at the
+// registered migration-gap entry).
+type StoreBalanceSnapshotCleaner struct {
+	store *Store
+	// now seeds updatedBefore (Node item.updatedBefore = now() at enqueue
+	// time); overridable for deterministic tests.
+	now func() time.Time
+}
+
+// NewStoreBalanceSnapshotCleaner builds the store-backed cleaner.
+func NewStoreBalanceSnapshotCleaner(store *Store) *StoreBalanceSnapshotCleaner {
+	return &StoreBalanceSnapshotCleaner{store: store, now: time.Now}
+}
+
+// SetClockForTest overrides the updatedBefore clock (tests only).
+func (c *StoreBalanceSnapshotCleaner) SetClockForTest(now func() time.Time) {
+	c.now = now
+}
+
+// CleanupBalanceSnapshotAfterSave implements BalanceSnapshotCleaner: the
+// deletion runs fire-and-forget on its own context so the PATCH response path
+// stays non-blocking (the Node enqueue contract); failures log a warn and are
+// otherwise dropped.
+func (c *StoreBalanceSnapshotCleaner) CleanupBalanceSnapshotAfterSave(request BalanceSnapshotCleanupRequest) {
+	if c == nil || c.store == nil {
+		return
+	}
+	go func() {
+		if err := c.deleteSupersededSnapshot(context.Background(), request); err != nil {
+			slog.Warn("AI 账户保存已提交，余额旧快照清理失败",
+				"event", "account_balance_snapshot_cleanup_failed",
+				"accountId", request.AccountID,
+				"configRevision", request.ConfigRevision,
+				"cleanupReason", request.Reason,
+				"error", err.Error())
+		}
+	}()
+}
+
+// deleteSupersededSnapshot mirrors deleteAccountBalanceSnapshotAsync
+// (account-balance.repository.ts:887-905): drop the superseded relay_balance
+// snapshot rows last refreshed at or before the save instant.
+func (c *StoreBalanceSnapshotCleaner) deleteSupersededSnapshot(ctx context.Context, request BalanceSnapshotCleanupRequest) error {
+	updatedBefore := isoMillis(c.now())
+	_, err := c.store.db.ExecContext(ctx, c.store.bind(`DELETE FROM `+c.store.statsTable("account_usage_snapshots")+`
+		WHERE account_id = ?
+			AND kind = 'relay_balance'
+			AND updated_at <= ?`), request.AccountID, updatedBefore)
+	return err
 }

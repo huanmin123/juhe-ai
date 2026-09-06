@@ -122,6 +122,16 @@ type chainRuntimeDeps struct {
 	AccountErrorPolicy        *chainErrorPolicyService
 	AccountErrorPolicyEffects chainAccountErrorPolicyEffects
 
+	// 失败观察代际捕获（failure-dispatch.ts:421-434
+	// captureGatewayAccountApiKeyFailureObservation；optional：nil 时挂起
+	// Key 失败不带代际）。生产装配为 chainRuntimeServices.AccountAPIKeyGuard。
+	AccountAPIKeyObservation chainAPIKeyObservationPort
+
+	// codex 用量响应头失败面派发（failure-dispatch.ts:340-344；optional：
+	// gateway→jobs record-maintenance 快照通道在建，组合根暂持 nil，
+	// gatewaycodex 对 nil 派发器静默跳过）。
+	CodexUsageHeadersDispatcher gatewaycodex.CodexUsageHeadersDispatcher
+
 	// 失败派发链装配（chain_request_failure_health.go / chain_turn_probe_store.go /
 	// chain_turn_retry_redis.go）：jobs internal-api loopback 目标 + Redis 驱动的
 	// turn-retry 状态存储（nil → memory 驱动，Node runtimeStateDriver !== 'redis'
@@ -283,14 +293,16 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		chainTurnAvoidanceProbe = newChainTurnAvoidanceProbeService(chainTurnRetry, clock, chainHealthDispatch)
 	}
 	engine := gatewaydispatch.NewEngine(newChainProviderDriver(), &chainFailureDispatcher{
-		usage:          usageService,
-		affinity:       sessionAffinity,
-		clientStrategy: codexClientStrategy,
-		turnRetry:      chainTurnRetry,
-		avoidanceProbe: chainTurnAvoidanceProbe,
-		healthDispatch: chainHealthDispatch,
-		policy:         deps.AccountErrorPolicy,
-		effects:        deps.AccountErrorPolicyEffects,
+		usage:             usageService,
+		affinity:          sessionAffinity,
+		clientStrategy:    codexClientStrategy,
+		turnRetry:         chainTurnRetry,
+		avoidanceProbe:    chainTurnAvoidanceProbe,
+		healthDispatch:    chainHealthDispatch,
+		policy:            deps.AccountErrorPolicy,
+		effects:           deps.AccountErrorPolicyEffects,
+		apiKeyObservation: deps.AccountAPIKeyObservation,
+		codexUsageHeaders: deps.CodexUsageHeadersDispatcher,
 	})
 	engine.Clock = clock
 	engine.Affinity = sessionAffinity

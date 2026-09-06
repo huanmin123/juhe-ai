@@ -237,7 +237,10 @@ func readRawBody(r *http.Request) ([]byte, error) {
 	return rawBody, nil
 }
 
-func hasValidSignature(r *http.Request, secret string, rawBody []byte) bool {
+// hasValidSignatureWithDomain 校验 `v1=<hex>` 签名（常量时间比较）。
+// signatureDomain 是含尾部 \n 的签名域分隔符；账户测试面与账户健康检查面
+// 各自持有独立域（对齐网关桥 chain_request_failure_health.go 的域常量）。
+func hasValidSignatureWithDomain(r *http.Request, secret string, rawBody []byte, signatureDomain string) bool {
 	signature := r.Header.Get(signatureHeader)
 	if signature == "" {
 		return false
@@ -246,14 +249,20 @@ func hasValidSignature(r *http.Request, secret string, rawBody []byte) bool {
 	if match == nil {
 		return false
 	}
-	expected := CreateAccountTestDispatchSignature(secret, rawBody)
-	expectedBytes, _ := hex.DecodeString(expected[3:])
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(signatureDomain))
+	_, _ = mac.Write(rawBody)
+	expectedBytes := mac.Sum(nil)
 	providedBytes, err := hex.DecodeString(match[1])
 	if err != nil {
 		return false
 	}
 	// timingSafeEqual 常量时间比较（crypto/hmac）。
 	return hmac.Equal(providedBytes, expectedBytes)
+}
+
+func hasValidSignature(r *http.Request, secret string, rawBody []byte) bool {
+	return hasValidSignatureWithDomain(r, secret, rawBody, AccountTestDispatchSignatureDomain)
 }
 
 func parseTaskID(rawBody []byte) (string, bool) {
