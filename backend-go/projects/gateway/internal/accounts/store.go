@@ -127,6 +127,11 @@ type Store struct {
 	// it; a nil port keeps both catalog assertions no-ops (self-contained
 	// slice behavior for tests and isolated deployments).
 	modelCatalog AccountModelCatalogReader
+	// deletedGrantRevoker is the SQLite delete-arm port into the authz
+	// per-grant runtime sync domain (delete.go). Nil until
+	// SetDeletedResourceGrantRevoker wires it; a nil port (and the PG
+	// dialect) keeps the bulk revoke arm verbatim.
+	deletedGrantRevoker DeletedResourceGrantRevoker
 }
 
 // NewStore builds the store.

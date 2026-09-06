@@ -45,6 +45,15 @@ type Runner interface {
 	RunOnce(ctx context.Context, job retention.RecordMaintenanceJob) (map[string]any, error)
 }
 
+// SnapshotUpsertBatchRunner 是 Runner 的可选批量扩展：把连续
+// account_usage_snapshot_upsert 任务段合并为一次 stats-writer 往返
+// （Node record-maintenance-queue.service.ts:846-869 的 collect/process
+// 合并语义；D5）。retention.RecordMaintenanceRunner 已实现；未实现该接口的
+// Runner（测试 Mock）回落逐行执行。
+type SnapshotUpsertBatchRunner interface {
+	RunAccountUsageSnapshotUpserts(ctx context.Context, jobs []retention.RecordMaintenanceJob) (map[string]any, error)
+}
+
 // Drainer 轮询交接表并执行任务。
 type Drainer struct {
 	Store  *Store
@@ -85,9 +94,10 @@ func (d *Drainer) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// DrainOnce 排空当前表内任务：逐行 RunOnce → 成功按 id 删行；任一行失败
-// 记录 record_maintenance_queue_flush_failed 并中止本轮（该行与后续行保留，
-// 由调用方按固定退避重试）。返回本轮成功执行并删除的行数。
+// DrainOnce 排空当前表内任务：逐行 RunOnce（连续 account_usage_snapshot_upsert
+// 段合并为一次批量执行）→ 成功按 id 删行；任一行失败记录
+// record_maintenance_queue_flush_failed 并中止本轮（该行与后续行保留，由调用
+// 方按固定退避重试）。返回本轮成功执行并删除的行数。
 func (d *Drainer) DrainOnce(ctx context.Context) (int, error) {
 	processed := 0
 	for {
@@ -101,20 +111,83 @@ func (d *Drainer) DrainOnce(ctx context.Context) (int, error) {
 		if len(jobs) == 0 {
 			return processed, nil
 		}
-		for _, job := range jobs {
-			if _, err := d.Runner.RunOnce(ctx, job); err != nil {
-				d.logFlushFailure(job, err)
-				return processed, err
-			}
-			if err := d.Store.Delete(ctx, job.ID); err != nil {
-				// 执行成功但删行失败：行保留会被重复执行（幂等），按失败
-				// 退避重试。
-				d.logFlushFailure(job, err)
-				return processed, err
-			}
-			processed++
+		settled, err := d.runBatch(ctx, jobs)
+		processed += settled
+		if err != nil {
+			return processed, err
 		}
 	}
+}
+
+// runBatch 执行一个批次的任务，对照 Node flush 循环（record-maintenance-queue
+// .service.ts:291-324）：遇到 account_usage_snapshot_upsert 时收集从当前下标
+// 开始的连续任务段，一次批量执行、成功后整段删行（Node
+// removeRecordMaintenanceJobsFromHead(snapshotJobs.length)）；失败保留段首行
+// 与后续行（head-of-line）。返回已执行并删除的行数。
+func (d *Drainer) runBatch(ctx context.Context, jobs []retention.RecordMaintenanceJob) (int, error) {
+	processed := 0
+	for index := 0; index < len(jobs); {
+		job := jobs[index]
+		if job.Type == retention.JobTypeAccountUsageSnapshotUpsert {
+			run := collectAccountUsageSnapshotJobs(jobs, index)
+			if err := d.runSnapshotUpsertRun(ctx, run); err != nil {
+				// Node 失败日志携带段首任务的 type/id。
+				d.logFlushFailure(job, err)
+				return processed, err
+			}
+			for _, item := range run {
+				if err := d.Store.Delete(ctx, item.ID); err != nil {
+					// 执行成功但删行失败：行保留会被重复执行（幂等），按失败
+					// 退避重试。
+					d.logFlushFailure(item, err)
+					return processed, err
+				}
+				processed++
+			}
+			index += len(run)
+			continue
+		}
+		if _, err := d.Runner.RunOnce(ctx, job); err != nil {
+			d.logFlushFailure(job, err)
+			return processed, err
+		}
+		if err := d.Store.Delete(ctx, job.ID); err != nil {
+			d.logFlushFailure(job, err)
+			return processed, err
+		}
+		processed++
+		index++
+	}
+	return processed, nil
+}
+
+// collectAccountUsageSnapshotJobs mirrors collectAccountUsageSnapshotJobs
+// （record-maintenance-queue.service.ts:846-857）：从 startIndex 开始的连续
+// account_usage_snapshot_upsert 任务段。
+func collectAccountUsageSnapshotJobs(jobs []retention.RecordMaintenanceJob, startIndex int) []retention.RecordMaintenanceJob {
+	run := make([]retention.RecordMaintenanceJob, 0, len(jobs)-startIndex)
+	for index := startIndex; index < len(jobs); index++ {
+		if jobs[index].Type != retention.JobTypeAccountUsageSnapshotUpsert {
+			break
+		}
+		run = append(run, jobs[index])
+	}
+	return run
+}
+
+// runSnapshotUpsertRun 执行一个快照任务段：Runner 实现批量扩展时一次往返
+// 写入整段；否则逐行执行保持既有 Mock 行为。
+func (d *Drainer) runSnapshotUpsertRun(ctx context.Context, run []retention.RecordMaintenanceJob) error {
+	if batchRunner, ok := d.Runner.(SnapshotUpsertBatchRunner); ok {
+		_, err := batchRunner.RunAccountUsageSnapshotUpserts(ctx, run)
+		return err
+	}
+	for _, job := range run {
+		if _, err := d.Runner.RunOnce(ctx, job); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DrainShutdown 停机排空：最多 maxBatches 个批次、retryOnFailure=false
@@ -137,18 +210,11 @@ func (d *Drainer) DrainShutdown(maxBatches int) int {
 			cancel()
 			return processed
 		}
-		for _, job := range jobs {
-			if _, err := d.Runner.RunOnce(ctx, job); err != nil {
-				d.logFlushFailure(job, err)
-				cancel()
-				return processed
-			}
-			if err := d.Store.Delete(ctx, job.ID); err != nil {
-				d.logFlushFailure(job, err)
-				cancel()
-				return processed
-			}
-			processed++
+		settled, runErr := d.runBatch(ctx, jobs)
+		processed += settled
+		if runErr != nil {
+			cancel()
+			return processed
 		}
 		cancel()
 	}

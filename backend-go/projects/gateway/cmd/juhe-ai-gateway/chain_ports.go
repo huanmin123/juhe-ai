@@ -11,8 +11,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -225,45 +228,184 @@ func (a usageDispatchAdapter) RecordGatewayFailure(input gatewayresponse.Failure
 	})
 }
 
-// chainFailureDispatcher is the composition-root FailureDispatcher: failed
-// upstream responses / request errors record the attempt and skip the
-// account so the candidate loop continues; the deep branches
-// (compatibility recovery, account-state mutation) activate when the G16
-// failure-dispatch slice is injected here.
+// ---------------------------------------------------------------------------
+// G16 failure dispatch (response/failure-dispatch.ts)
+// ---------------------------------------------------------------------------
+
+// chainFailureKindOpaqueHTTP mirrors the 'opaque_http' member of the Node
+// failureKind union (only the explicit-policy member has a Go constant).
+const chainFailureKindOpaqueHTTP = "opaque_http"
+
+// chainFailureErrorBodyCaptureBytes mirrors upstreamErrorBodyCaptureBytes
+// (upstream/body.ts): the bounded failure-body capture feeding retry
+// diagnostics and usage records.
+const chainFailureErrorBodyCaptureBytes = 256 * 1024
+
+// chainFailureDispatcher is the composition-root FailureDispatcher: the
+// handleFailedUpstreamResponse / handleUpstreamRequestError decision tree of
+// the archived response/failure-dispatch.ts.
+//
+//	traffic source        | failed-response decision
+//	----------------------+-----------------------------------------------------
+//	account diagnostic    | return_response — diagnostics observe the
+//	                      | provider's actual terminal response; the response
+//	                      | layer's ok gate (routes.ts:1550) renders a non-2xx
+//	                      | + SSE body as the non-stream error contract
+//	non-gateway (hybrid)  | forget session affinity + return_response
+//	gateway               | bounded body capture + audit complete + usage
+//	                      | record + skip_account (candidate failover) with
+//	                      | the same-account key-rotation facts
+//
+// Request errors (transport failures / downstream closes) always skip the
+// account after recording; the engine owns the rethrow contracts around the
+// aborted branch. The deep branches that need collaborators this slice does
+// not mount stay registered gaps: codex encrypted-content compatibility
+// recovery (retry_with_compatibility_recovery) and the account error policy
+// service (explicit_policy failureKind / keyScoped policy actions / request
+// failure health-check dispatch).
 type chainFailureDispatcher struct {
-	usage *gatewayusage.Service
+	usage    *gatewayusage.Service
+	affinity gatewaydispatch.SessionAffinityPort
 }
 
 func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Context, input gatewaydispatch.FailedUpstreamResponseInput) (gatewaydispatch.FailedUpstreamResponseResult, error) {
+	trafficSource := input.UsageContext.TrafficSource
+	// failure-dispatch.ts:198-200: account diagnostics must observe the
+	// provider's actual terminal HTTP response — generic gateway takeover
+	// would hide the sampled status sequence.
+	if gatewayusage.IsAccountDiagnosticTrafficSource(trafficSource) {
+		return gatewaydispatch.FailedUpstreamResponseResult{
+			Action:   gatewaydispatch.FailedResponseActionReturnResponse,
+			Response: input.Response,
+		}, nil
+	}
+	// failure-dispatch.ts:204-210: non-gateway traffic observes its actual
+	// response; customer gateway traffic follows the candidate failover.
+	if trafficSource != gatewayTrafficSource {
+		d.forgetSessionAffinity(ctx, input.SessionAffinityKey, input.Account.ID)
+		return gatewaydispatch.FailedUpstreamResponseResult{
+			Action:   gatewaydispatch.FailedResponseActionReturnResponse,
+			Response: input.Response,
+		}, nil
+	}
+
+	// Gateway candidate-failover branch (failure-dispatch.ts:212-436).
+	statusCode := 0
+	hasStatus := false
+	if input.Response != nil {
+		statusCode = input.Response.Status()
+		hasStatus = true
+	}
+	bodyText, truncated, readErr := readUpstreamFailureBody(ctx, input.Response, chainFailureErrorBodyCaptureBytes)
+	if input.Response != nil {
+		// The skip path discards the response; the body must not leak.
+		_ = input.Response.Body.Close()
+	}
+	if truncated {
+		slog.Warn("上游失败响应体超过网关捕获上限，已截断用于重试诊断",
+			"event", "gateway_upstream_retry_error_body_truncated",
+			"accountId", input.Account.ID, "statusCode", statusCode)
+	} else if readErr != nil {
+		// The failure decision (status is already known) does not depend on
+		// the body capture; the read failure only costs the diagnostics.
+		slog.Debug("上游失败响应体读取失败，跳过重试诊断捕获",
+			"event", "gateway_upstream_retry_error_body_read_failed",
+			"accountId", input.Account.ID, "statusCode", statusCode, "error", readErr.Error())
+	}
+
+	lastAttempt := failedResponseAttemptOf(input, bodyText)
+	if input.AuditAttemptID != "" {
+		input.AuditCapture.CompleteAttempt(input.AuditAttemptID, gatewaydispatch.CompleteAttemptInput{
+			Success:      false,
+			ErrorPhase:   "upstream_response",
+			ErrorMessage: bodyText,
+		})
+	} else {
+		input.AuditCapture.RecordFailedDispatchAttempt(gatewaydispatch.FailedDispatchAttemptInput{
+			Account:                   input.Account,
+			AttemptIndex:              input.AuditAttemptIndex,
+			UpstreamURL:               input.UpstreamURL,
+			Method:                    requestMethodOf(input.Req),
+			StartedAtMs:               input.AttemptStartedAt,
+			ErrorPhase:                "upstream_response",
+			ErrorMessage:              bodyText,
+			RequestForModelAccounting: input.Req,
+		})
+	}
 	if d.usage != nil {
-		lastAttemptMessage := ""
-		if input.LastAttempt != nil {
-			lastAttemptMessage = input.LastAttempt.Message
-		}
-		statusCode := 0
-		hasStatus := false
-		if input.Response != nil {
-			statusCode = input.Response.Status()
-			hasStatus = true
-		}
 		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(input.UsageContext), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
 			UpstreamURL:  input.UpstreamURL,
 			StartedAtMs:  input.AttemptStartedAt,
 			StatusCode:   statusPointer(hasStatus, statusCode),
-			ErrorMessage: lastAttemptMessage,
+			Headers:      usageFailureHeadersOf(input.Response),
+			BodyText:     bodyText,
+			ErrorMessage: lastAttempt.Message,
 		}); err != nil {
 			return gatewaydispatch.FailedUpstreamResponseResult{}, err
 		}
 	}
-	return gatewaydispatch.FailedUpstreamResponseResult{Action: gatewaydispatch.FailedResponseActionSkipAccount, LastAttempt: input.LastAttempt}, nil
+
+	// failure-dispatch.ts:392-396: without an explicit policy decision only
+	// the automatic same-account key rotation can apply, and a pre-commit
+	// transient response defers it (the dispatcher owns a bounded retry of
+	// the same physical credential).
+	hasAlternativeAccountAPIKeys := input.Account.SelectedAPIKeyFingerprint != nil && len(input.Account.APIKeys) > 1
+	sameAccountKeyRotation := hasAlternativeAccountAPIKeys && !input.DeferAutomaticSameAccountKeyRotation
+	result := gatewaydispatch.FailedUpstreamResponseResult{
+		Action:           gatewaydispatch.FailedResponseActionSkipAccount,
+		FailureKind:      chainFailureKindOpaqueHTTP,
+		LastAttempt:      lastAttempt,
+		KeyScopedFailure: sameAccountKeyRotation,
+	}
+	if sameAccountKeyRotation && input.AccountStateMutationEnabled &&
+		input.Account.SelectedAPIKeyFingerprint != nil && !input.Account.APIKeyRuntimeStateDisabled {
+		result.PendingApiKeyFailure = &gatewaydispatch.PendingAccountApiKeyFailure{
+			Account:    input.Account,
+			Status:     "temporary_unavailable",
+			StatusCode: statusCode,
+		}
+	}
+	return result, nil
 }
 
 func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context, input gatewaydispatch.UpstreamRequestErrorInput) (gatewaydispatch.UpstreamRequestErrorResult, error) {
-	if d.usage != nil {
-		message := ""
-		if input.Error != nil {
-			message = input.Error.Error()
+	// failure-dispatch.ts:478-517: the downstream-closed branch records the
+	// attempt with the fixed downstream attribution. The Go engine only calls
+	// this port once shouldRecordAbortedUpstreamAttempt(err) held, which is
+	// the Node recording condition, so the branch is unconditional here.
+	if gatewaydispatch.IsUpstreamRequestAbortedError(input.Error) {
+		if err := d.recordDownstreamClosedRequestError(ctx, input); err != nil {
+			return gatewaydispatch.UpstreamRequestErrorResult{}, err
 		}
+		return gatewaydispatch.UpstreamRequestErrorResult{
+			Action:           gatewaydispatch.FailedResponseActionSkipAccount,
+			LastAttempt:      downstreamClosedAttemptOf(input),
+			KeyScopedFailure: false,
+		}, nil
+	}
+
+	// failure-dispatch.ts:519-591: the transport-failure branch.
+	message := formatUpstreamRequestErrorMessage(input.Error)
+	lastAttempt := transportFailureAttemptOf(input, message, formatUpstreamRequestTransportFailureKind(input.Error, input.LastAttempt))
+	if input.AuditAttemptID != "" {
+		input.AuditCapture.CompleteAttempt(input.AuditAttemptID, gatewaydispatch.CompleteAttemptInput{
+			Success:      false,
+			ErrorPhase:   "upstream_request",
+			ErrorMessage: message,
+		})
+	} else {
+		input.AuditCapture.RecordFailedDispatchAttempt(gatewaydispatch.FailedDispatchAttemptInput{
+			Account:                   input.Account,
+			AttemptIndex:              input.AuditAttemptIndex,
+			UpstreamURL:               input.UpstreamURL,
+			Method:                    requestMethodOf(input.Req),
+			StartedAtMs:               input.AttemptStartedAt,
+			ErrorPhase:                "upstream_request",
+			ErrorMessage:              message,
+			RequestForModelAccounting: input.Req,
+		})
+	}
+	if d.usage != nil {
 		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(input.UsageContext), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
 			UpstreamURL:  input.UpstreamURL,
 			StartedAtMs:  input.AttemptStartedAt,
@@ -272,11 +414,239 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 			return gatewaydispatch.UpstreamRequestErrorResult{}, err
 		}
 	}
-	return gatewaydispatch.UpstreamRequestErrorResult{Action: gatewaydispatch.FailedResponseActionSkipAccount, LastAttempt: input.LastAttempt}, nil
+	d.forgetSessionAffinity(ctx, input.SessionAffinityKey, input.Account.ID)
+	return gatewaydispatch.UpstreamRequestErrorResult{
+		Action:           gatewaydispatch.FailedResponseActionSkipAccount,
+		LastAttempt:      lastAttempt,
+		KeyScopedFailure: false,
+	}, nil
+}
+
+// recordDownstreamClosedRequestError mirrors the recording half of the Node
+// downstream-closed branch: usage carries the fixed downstream attribution,
+// the audit attempt closes with the downstream phase.
+func (d *chainFailureDispatcher) recordDownstreamClosedRequestError(ctx context.Context, input gatewaydispatch.UpstreamRequestErrorInput) error {
+	lastAttempt := input.LastAttempt
+	statusCode := 0
+	hasStatus := false
+	if lastAttempt != nil && lastAttempt.AccountID == input.Account.ID &&
+		lastAttempt.UpstreamURL == input.UpstreamURL && lastAttempt.HasStatus {
+		statusCode = lastAttempt.Status
+		hasStatus = true
+	}
+	if d.usage != nil {
+		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(input.UsageContext), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
+			UpstreamURL:        input.UpstreamURL,
+			StartedAtMs:        input.AttemptStartedAt,
+			StatusCode:         statusPointer(hasStatus, statusCode),
+			ErrorMessage:       gatewayresponse.DownstreamConnectionClosedMessage,
+			FailureAttribution: gatewayusage.FailureAttributionDownstreamClosed,
+		}); err != nil {
+			return err
+		}
+	}
+	if input.AuditAttemptID != "" {
+		input.AuditCapture.CompleteAttempt(input.AuditAttemptID, gatewaydispatch.CompleteAttemptInput{
+			Success:      false,
+			ErrorPhase:   "downstream",
+			ErrorMessage: gatewayresponse.DownstreamConnectionClosedMessage,
+		})
+	} else {
+		input.AuditCapture.RecordFailedDispatchAttempt(gatewaydispatch.FailedDispatchAttemptInput{
+			Account:                   input.Account,
+			AttemptIndex:              input.AuditAttemptIndex,
+			UpstreamURL:               input.UpstreamURL,
+			Method:                    requestMethodOf(input.Req),
+			StartedAtMs:               input.AttemptStartedAt,
+			ErrorPhase:                "downstream",
+			ErrorMessage:              gatewayresponse.DownstreamConnectionClosedMessage,
+			RequestForModelAccounting: input.Req,
+		})
+	}
+	d.forgetSessionAffinity(ctx, input.SessionAffinityKey, input.Account.ID)
+	return nil
 }
 
 func (d *chainFailureDispatcher) IsOpaqueUpstreamFailoverAllowed(_ *gatewaypreauth.GatewayRequest) bool {
-	return true
+	// failure-dispatch.ts:73-79: opaque HTTP failures may not retry a sibling
+	// API Key; account-level failover is the failed-response path's decision.
+	return false
+}
+
+func (d *chainFailureDispatcher) forgetSessionAffinity(ctx context.Context, sessionAffinityKey, accountID string) {
+	if d.affinity == nil || sessionAffinityKey == "" || accountID == "" {
+		return
+	}
+	_ = d.affinity.ForgetAsync(ctx, sessionAffinityKey, accountID)
+}
+
+// readUpstreamFailureBody mirrors readUpstreamBodyForPolicyInspection's
+// bounded capture: at most maxBytes are kept for diagnostics, a further byte
+// marks the read truncated.
+func readUpstreamFailureBody(ctx context.Context, response *gatewaydispatch.GatewayUpstreamResponse, maxBytes int64) (string, bool, error) {
+	if response == nil || response.Body == nil {
+		return "", false, nil
+	}
+	if ctx.Err() != nil {
+		return "", false, ctx.Err()
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil {
+		return "", false, err
+	}
+	if int64(len(data)) > maxBytes {
+		return string(data[:maxBytes]), true, nil
+	}
+	return string(data), false, nil
+}
+
+// failedResponseAttemptOf rebuilds the Node lastAttempt for a failed
+// response: the previous attempt facts (when present) with the provider
+// fields overridden and the response facts attached.
+func failedResponseAttemptOf(input gatewaydispatch.FailedUpstreamResponseInput, bodyText string) *gatewaydispatch.UpstreamAttempt {
+	attempt := &gatewaydispatch.UpstreamAttempt{}
+	if input.LastAttempt != nil {
+		copied := *input.LastAttempt
+		attempt = &copied
+	}
+	attempt.AccountID = input.Account.ID
+	attempt.AccountName = input.Account.Name
+	attempt.ProviderCode = input.Account.ProviderCode
+	attempt.ProviderProtocolProfileID = input.Account.ProviderProtocolProfileID
+	attempt.ProtocolCode = input.Account.ProtocolCode
+	attempt.ProtocolVersion = input.Account.ProtocolVersion
+	attempt.UpstreamURL = input.UpstreamURL
+	if input.Response != nil {
+		attempt.Status = input.Response.Status()
+		attempt.HasStatus = true
+	}
+	attempt.ResponseHeaders = responseHeadersOf(input.Response)
+	attempt.ResponseBodyText = bodyText
+	attempt.ParsedResponseBody = parsedFailureBodyOf(input.Response, bodyText)
+	return attempt
+}
+
+// downstreamClosedAttemptOf mirrors the Node rebuilt lastAttempt of the
+// downstream-closed branch.
+func downstreamClosedAttemptOf(input gatewaydispatch.UpstreamRequestErrorInput) *gatewaydispatch.UpstreamAttempt {
+	attempt := &gatewaydispatch.UpstreamAttempt{
+		AccountID:                 input.Account.ID,
+		AccountName:               input.Account.Name,
+		ProviderCode:              input.Account.ProviderCode,
+		ProviderProtocolProfileID: input.Account.ProviderProtocolProfileID,
+		ProtocolCode:              input.Account.ProtocolCode,
+		ProtocolVersion:           input.Account.ProtocolVersion,
+		UpstreamURL:               input.UpstreamURL,
+		Message:                   gatewayresponse.DownstreamConnectionClosedMessage,
+	}
+	if input.LastAttempt != nil && input.LastAttempt.AccountID == input.Account.ID &&
+		input.LastAttempt.UpstreamURL == input.UpstreamURL && input.LastAttempt.HasStatus {
+		attempt.Status = input.LastAttempt.Status
+		attempt.HasStatus = true
+	}
+	return attempt
+}
+
+// transportFailureAttemptOf mirrors the Node lastAttempt of the
+// transport-failure branch: previous facts carried over, message + transport
+// failure kind attached.
+func transportFailureAttemptOf(input gatewaydispatch.UpstreamRequestErrorInput, message, transportFailureKind string) *gatewaydispatch.UpstreamAttempt {
+	attempt := &gatewaydispatch.UpstreamAttempt{}
+	if input.LastAttempt != nil {
+		copied := *input.LastAttempt
+		attempt = &copied
+	}
+	attempt.AccountID = input.Account.ID
+	attempt.AccountName = input.Account.Name
+	attempt.ProviderCode = input.Account.ProviderCode
+	attempt.ProviderProtocolProfileID = input.Account.ProviderProtocolProfileID
+	attempt.ProtocolCode = input.Account.ProtocolCode
+	attempt.ProtocolVersion = input.Account.ProtocolVersion
+	attempt.UpstreamURL = input.UpstreamURL
+	attempt.Message = message
+	attempt.TransportFailureKind = transportFailureKind
+	return attempt
+}
+
+// formatUpstreamRequestErrorMessage mirrors formatUpstreamRequestErrorMessage.
+func formatUpstreamRequestErrorMessage(err error) string {
+	if err != nil {
+		if message := strings.TrimSpace(err.Error()); message != "" {
+			return message
+		}
+	}
+	return "请求失败"
+}
+
+// formatUpstreamRequestTransportFailureKind mirrors upstreamRequestFailureKind:
+// the diagnostic joins the error type name (Node error.name) with the
+// message; timeout diagnostics win, otherwise an unproven response start is a
+// connection failure and a started one degrades to read_incomplete.
+func formatUpstreamRequestTransportFailureKind(err error, previousAttempt *gatewaydispatch.UpstreamAttempt) string {
+	diagnostic := ""
+	if err != nil {
+		diagnostic = strings.ToLower(fmt.Sprintf("%T %s", err, err.Error()))
+	}
+	if strings.Contains(diagnostic, "timeout") || strings.Contains(diagnostic, "timedout") ||
+		strings.Contains(diagnostic, "timed out") || strings.Contains(diagnostic, "etimedout") ||
+		strings.Contains(diagnostic, "超时") {
+		return gatewaydispatch.TransportFailureKindTimeout
+	}
+	if previousAttempt == nil || !previousAttempt.HasStatus {
+		return gatewaydispatch.TransportFailureKindConnection
+	}
+	return gatewaydispatch.TransportFailureKindReadIncomplete
+}
+
+// responseHeadersOf mirrors headersToObject: lowercased names, values joined.
+func responseHeadersOf(response *gatewaydispatch.GatewayUpstreamResponse) map[string]string {
+	if response == nil || response.Header == nil {
+		return nil
+	}
+	headers := make(map[string]string, len(response.Header))
+	for name, values := range response.Header {
+		if len(values) == 0 {
+			continue
+		}
+		headers[strings.ToLower(name)] = strings.Join(values, ", ")
+	}
+	return headers
+}
+
+// usageFailureHeadersOf projects the response headers onto the usage record.
+func usageFailureHeadersOf(response *gatewaydispatch.GatewayUpstreamResponse) map[string]any {
+	headers := responseHeadersOf(response)
+	if headers == nil {
+		return nil
+	}
+	projected := make(map[string]any, len(headers))
+	for name, value := range headers {
+		projected[name] = value
+	}
+	return projected
+}
+
+// parsedFailureBodyOf mirrors parseFailureBodyFacts' parsedResponseBody
+// attachment: the JSON value only when the failure body parsed as valid JSON.
+func parsedFailureBodyOf(response *gatewaydispatch.GatewayUpstreamResponse, bodyText string) map[string]any {
+	if response == nil || bodyText == "" {
+		return nil
+	}
+	parsed := gatewayresponse.ParseGatewayNonStreamJsonBody(bodyText, true, response.Header)
+	if parsed.Status != gatewayresponse.NonStreamJSONStatusValid {
+		return nil
+	}
+	if value, ok := parsed.Value.(map[string]any); ok {
+		return value
+	}
+	return nil
+}
+
+func requestMethodOf(req *gatewaypreauth.GatewayRequest) string {
+	if req == nil {
+		return ""
+	}
+	return req.MethodUpper()
 }
 
 func statusPointer(has bool, value int) *int {

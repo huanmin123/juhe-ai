@@ -328,11 +328,6 @@ func RunListAvailabilityMaintenance(ctx context.Context, opts ListAvailabilityOp
 	if workerConcurrency == 0 {
 		workerConcurrency = listAvailabilityDefaultWorkerConcurrency
 	}
-	if !driverPostgres {
-		// Node：SQLite 单 writer，批量维护 worker 并发固定为 1
-		// （workerConcurrency 仅在 PostgreSQL SKIP LOCKED 路径生效）。
-		workerConcurrency = 1
-	}
 	concurrency, err := boundedProjectionWorkerConcurrency(workerConcurrency)
 	if err != nil {
 		return ListAvailabilityMaintenanceResult{}, err

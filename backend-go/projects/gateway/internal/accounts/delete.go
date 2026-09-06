@@ -143,10 +143,18 @@ func (s *Store) Delete(ctx context.Context, accountID string, access AccessScope
 // alive while another source stands, per-grant quota re-sync and health
 // fanout. Both arms still terminate at 'revoked' — the 'returned' states in
 // the archived file belong to revokeAuthorizationInstanceForDeletedAccount,
-// which no archived delete flow calls. This store mirrors the PG async arm;
-// the SQLite per-grant runtime sync domain is a resource-authorization
-// migration slice of its own and stays untouched here.
+// which no archived delete flow calls. This store mirrors the PG async arm
+// verbatim; the wired SQLite mode (DeletedResourceGrantRevoker) hands the
+// per-grant runtime sync domain to the authz slice instead
+// (authz.Store.RevokeGrantsForResourceDeleted).
 func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Context, tx *sql.Tx, accountID, actor, deletedAt string) error {
+	// SQLite arm: the wired per-grant runtime sync domain (Node
+	// account-delete-cleanup.repository.ts:479-492). The bulk arm below stays
+	// the PostgreSQL path and the unwired fallback, so existing fixtures and
+	// the PG dialect keep the exact bulk semantics.
+	if !s.pg && s.deletedGrantRevoker != nil {
+		return s.deletedGrantRevoker.RevokeGrantsForResourceDeleted(ctx, tx, "account", accountID, actor, deletedAt)
+	}
 	var authorizationIDs []string
 	authRows, err := tx.QueryContext(ctx, s.bind(`SELECT id
 		FROM `+s.table("resource_authorizations")+`
@@ -219,6 +227,23 @@ func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Contex
 			AND status <> 'returned'`),
 		append([]any{actor, deletedAt, deletedAt, deletedAt}, authArgs...)...)
 	return err
+}
+
+// DeletedResourceGrantRevoker is the narrow port into the authz per-grant
+// runtime sync domain for the SQLite delete arm (authz.Store.
+// RevokeGrantsForResourceDeleted): the revocation of one resource's live
+// grants, the manual-source-scoped runtime revoke, the team cascade, the
+// per-grant quota re-sync and the health fanout all land in the authz slice
+// inside the caller's transaction. The composition root wires the authz
+// store; unwired stores keep the bulk arm below verbatim.
+type DeletedResourceGrantRevoker interface {
+	RevokeGrantsForResourceDeleted(ctx context.Context, tx *sql.Tx, resourceType, resourceID, actor, now string) error
+}
+
+// SetDeletedResourceGrantRevoker wires the port (composition-root handover;
+// the production bridge passes the authz store directly).
+func (s *Store) SetDeletedResourceGrantRevoker(revoker DeletedResourceGrantRevoker) {
+	s.deletedGrantRevoker = revoker
 }
 
 // accountHealthTombstoneProviderCodes / Types mirror the health-capable

@@ -896,6 +896,13 @@ func nullableInt(value sql.NullInt64) *int {
 
 // loadAccountTags 对齐 loadAccountTagsByAccountIdsAsync（PG/SQLite 同 SQL，
 // order name ASC, id ASC）。
+//
+// D4 登记（常驻审查第五轮）：此处投影表物化的 tags 形状是 {id,name} 子集，
+// Node account-tags.repository.ts 载入五字段（id, system_account_id, name,
+// created_at, updated_at）并经 accountTagSummaryFromRow 输出完整
+// AccountTagSummary；Go gateway 的账户读取面迁移到该投影表之前，必须先把
+// 缺失的三列补进本查询与行形状，否则 gateway 列表 JSON 的 tags 字段会比
+// Node 少字段。
 func (l *ProjectionItemLoader) loadAccountTags(ctx context.Context, accountIDs []string) (map[string][]map[string]any, error) {
 	output := map[string][]map[string]any{}
 	if len(accountIDs) == 0 {

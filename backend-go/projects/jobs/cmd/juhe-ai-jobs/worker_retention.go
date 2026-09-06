@@ -324,6 +324,15 @@ func (f *retentionFamily) runMaintenanceOnce(ctx context.Context, job retention.
 	return f.runner.RunOnce(ctx, job)
 }
 
+// runMaintenanceSnapshotUpserts 是批量入口的同一互斥面：连续
+// account_usage_snapshot_upsert 段一次 stats-writer 往返（D5，Node
+// record-maintenance-queue.service.ts:846-869 合并语义）。
+func (f *retentionFamily) runMaintenanceSnapshotUpserts(ctx context.Context, jobs []retention.RecordMaintenanceJob) (map[string]any, error) {
+	f.runMu.Lock()
+	defer f.runMu.Unlock()
+	return f.runner.RunAccountUsageSnapshotUpserts(ctx, jobs)
+}
+
 func (f *retentionFamily) retentionStats() *cleanuprepo.StatsRetentionStore {
 	return f.retentionStatsStore
 }

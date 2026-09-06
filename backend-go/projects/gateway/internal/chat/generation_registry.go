@@ -9,8 +9,6 @@ import (
 // one runner per conversation, terminal snapshots remembered for
 // submissions/attach resolution, cooperative shutdown.
 
-type hubKey struct{ ownerID, conversationID, turnID string }
-
 type GenerationHub struct {
 	mu                    sync.Mutex
 	runners               map[string]*ChatGenerationRunner
@@ -263,5 +261,3 @@ drained:
 		h.deleteIfMatches(runner)
 	}
 }
-
-var _ = hubKey{}

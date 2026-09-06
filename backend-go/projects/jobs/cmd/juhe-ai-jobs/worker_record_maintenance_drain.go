@@ -38,6 +38,13 @@ func (r familyTableDrainRunner) RunOnce(ctx context.Context, job retention.Recor
 	return r.family.runMaintenanceOnce(ctx, job)
 }
 
+// RunAccountUsageSnapshotUpserts 实现 recordmaintenance.SnapshotUpsertBatchRunner：
+// 连续 account_usage_snapshot_upsert 段合并为一次 stats-writer 往返
+// （record-maintenance-queue.service.ts:846-869 合并语义；D5）。
+func (r familyTableDrainRunner) RunAccountUsageSnapshotUpserts(ctx context.Context, jobs []retention.RecordMaintenanceJob) (map[string]any, error) {
+	return r.family.runMaintenanceSnapshotUpserts(ctx, jobs)
+}
+
 func (a *workerAssembly) wireRecordMaintenanceTableDrain(family *retentionFamily, business *cleanuprepo.DB, dataset *cleanuprepo.DB) error {
 	var db *sql.DB
 	if family.postgres {

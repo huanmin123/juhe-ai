@@ -222,9 +222,13 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	}
 
 	// ---- dispatch engine + provider driver (adapter 2) ----
-	engine := gatewaydispatch.NewEngine(newChainProviderDriver(), &chainFailureDispatcher{usage: usageService})
+	// The failure dispatcher shares the engine's session-affinity port: the
+	// Node dispatcher forgets the account's session affinity on its failure
+	// branches (failure-dispatch.ts:208/346/570).
+	sessionAffinity := newLocalSessionAffinity()
+	engine := gatewaydispatch.NewEngine(newChainProviderDriver(), &chainFailureDispatcher{usage: usageService, affinity: sessionAffinity})
 	engine.Clock = clock
-	engine.Affinity = newLocalSessionAffinity()
+	engine.Affinity = sessionAffinity
 	engine.Latency = &degradedLatency{}
 	engine.ProxyHealth = &degradedProxyHealth{}
 	engine.HotQuality = &degradedHotQuality{}

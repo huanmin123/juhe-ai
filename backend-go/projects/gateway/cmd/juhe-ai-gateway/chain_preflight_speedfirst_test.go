@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,12 +69,17 @@ type capturedWarnLine struct {
 // chainCapturedObservability records the request-stage lines and warn events
 // the gate and the image preflight emit.
 type chainCapturedObservability struct {
+	// mu guards the captured slices: the speed-first admission gate logs from
+	// the queued goroutine and the test goroutine concurrently.
+	mu     sync.Mutex
 	stages []capturedSpeedFirstStage
 	warns  []capturedWarnLine
 }
 
 func (o *chainCapturedObservability) Logger() gatewaypreauth.Logger { return o }
 func (o *chainCapturedObservability) Warn(event string, fields map[string]any, message string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.warns = append(o.warns, capturedWarnLine{event: event, fields: fields, message: message})
 }
 func (o *chainCapturedObservability) TraceID() string { return "trace_chain_test" }
@@ -82,7 +88,17 @@ func (o *chainCapturedObservability) CreateTraceID() string {
 }
 func (o *chainCapturedObservability) SanitizeURLForLog(value string) string { return value }
 func (o *chainCapturedObservability) LogRequestStage(stage string, fields map[string]any, outcome string, _ time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.stages = append(o.stages, capturedSpeedFirstStage{stage: stage, fields: fields, outcome: outcome})
+}
+
+// snapshotStages copies the captured stages under the lock: assertions may
+// run while an admitted request still logs from its queue goroutine.
+func (o *chainCapturedObservability) snapshotStages() []capturedSpeedFirstStage {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]capturedSpeedFirstStage(nil), o.stages...)
 }
 
 func newChainSpeedFirstGateForTest(obs *chainCapturedObservability) *chainSpeedFirstBodyAdmissionGate {
@@ -190,7 +206,7 @@ func TestChainSpeedFirstBodyAdmissionGateSkipsNonApplicable(t *testing.T) {
 				t.Fatalf("pass-through must not write a response, status=%d", recorder.Code)
 			}
 			found := false
-			for _, stage := range obs.stages {
+			for _, stage := range obs.snapshotStages() {
 				if stage.stage == "body.speed_first_admission" && stage.outcome == "skipped" {
 					found = true
 					if stage.fields["admissionMode"] != "speed_first_high_concurrency" || stage.fields["applicable"] != false {
@@ -199,7 +215,7 @@ func TestChainSpeedFirstBodyAdmissionGateSkipsNonApplicable(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Fatalf("missing body.speed_first_admission skipped stage: %+v", obs.stages)
+				t.Fatalf("missing body.speed_first_admission skipped stage: %+v", obs.snapshotStages())
 			}
 		})
 	}
@@ -227,13 +243,13 @@ func TestChainSpeedFirstBodyAdmissionGateAcquiresAndReleases(t *testing.T) {
 		t.Fatalf("snapshot = %+v, want one active lease", snapshot)
 	}
 	success := false
-	for _, stage := range obs.stages {
+	for _, stage := range obs.snapshotStages() {
 		if stage.outcome == "success" && stage.fields["acquired"] == true && stage.fields["capacity"] == 2 {
 			success = true
 		}
 	}
 	if !success {
-		t.Fatalf("missing success stage: %+v", obs.stages)
+		t.Fatalf("missing success stage: %+v", obs.snapshotStages())
 	}
 
 	// Release is idempotent (Node res finish/close listeners both firing).
@@ -315,13 +331,13 @@ queued:
 		t.Fatalf("connection=%q want close", connection)
 	}
 	expectedFailure := false
-	for _, stage := range obs.stages {
+	for _, stage := range obs.snapshotStages() {
 		if stage.outcome == "expected_failure" && stage.fields["failureReason"] == "speed_first_body_admission_queue_full" {
 			expectedFailure = true
 		}
 	}
 	if !expectedFailure {
-		t.Fatalf("missing queue_full expected_failure stage: %+v", obs.stages)
+		t.Fatalf("missing queue_full expected_failure stage: %+v", obs.snapshotStages())
 	}
 
 	// Request B times out of the queue with the same 429 contract.
@@ -339,13 +355,13 @@ queued:
 		t.Fatalf("B body=%q want %q", body, speedFirstBusyJSON)
 	}
 	bTimedOut := false
-	for _, stage := range obs.stages {
+	for _, stage := range obs.snapshotStages() {
 		if stage.outcome == "expected_failure" && stage.fields["failureReason"] == "speed_first_body_admission_timeout" {
 			bTimedOut = true
 		}
 	}
 	if !bTimedOut {
-		t.Fatalf("missing timeout expected_failure stage: %+v", obs.stages)
+		t.Fatalf("missing timeout expected_failure stage: %+v", obs.snapshotStages())
 	}
 }
 

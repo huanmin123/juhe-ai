@@ -43,9 +43,35 @@ func DecryptDraft(secret string, envelope string) (*DraftSnapshot, error) {
 	return normalizeDraftSnapshot(parsed), nil
 }
 
-// normalizeDraftSnapshot 对齐 normalizeAccountTestDraftSnapshot：必填字段缺失
-// 或 credentials 非对象返回 nil（回退保存账户路径）。clientCompatibility 只做
-// 非空校验（枚举校验属 gateway 写入口；worker 侧信封由 gateway 规范化写入）。
+// isValidDraftClientCompatibility 对齐 Node accountClientCompatibility
+// （account-test-tasks.repository.ts:1672-1675）：openai_standard |
+// codex_responses 之外一律作废。
+func isValidDraftClientCompatibility(value string) bool {
+	return value == "openai_standard" || value == "codex_responses"
+}
+
+// isValidDraftHealthCheckEndpointMode 对齐 Node
+// accountHealthCheckEndpointModeValue / ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES
+// （account-test-tasks.repository.ts:1774-1779、
+// domain/account-health-check-endpoint-mode.ts）。
+func isValidDraftHealthCheckEndpointMode(value string) bool {
+	switch value {
+	case "images_json",
+		"chat_json", "chat_sse",
+		"responses_json", "responses_sse",
+		"messages_json", "messages_sse",
+		"generate_content_json", "generate_content_sse",
+		"interactions_json", "interactions_sse":
+		return true
+	}
+	return false
+}
+
+// normalizeDraftSnapshot 对齐 normalizeAccountTestDraftSnapshot：必填字段缺失、
+// credentials 非对象，或 clientCompatibility / healthCheckEndpointMode 不在
+// Node 枚举内（accountClientCompatibility /
+// accountHealthCheckEndpointModeValue 归一为 undefined）返回 nil——整份草稿
+// 作废，任务回退保存账户测试路径（D3：worker 侧信封枚举校验）。
 func normalizeDraftSnapshot(value any) *DraftSnapshot {
 	record, ok := value.(map[string]any)
 	if !ok {
@@ -81,8 +107,11 @@ func normalizeDraftSnapshot(value any) *DraftSnapshot {
 	}
 	if draft.ID == "" || draft.OwnerSystemAccountID == "" || draft.GroupID == "" ||
 		draft.ProviderCode == "" || draft.Name == "" || draft.Type == "" ||
-		draft.ClientCompatibility == "" || draft.HealthCheckModel == "" ||
-		draft.HealthCheckEndpointMode == "" || draft.Credentials == nil {
+		draft.HealthCheckModel == "" || draft.Credentials == nil {
+		return nil
+	}
+	if !isValidDraftClientCompatibility(draft.ClientCompatibility) ||
+		!isValidDraftHealthCheckEndpointMode(draft.HealthCheckEndpointMode) {
 		return nil
 	}
 	return draft

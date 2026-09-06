@@ -453,6 +453,41 @@ func TestLoadRuntimeConfigDriverTriState(t *testing.T) {
 	}
 }
 
+// TestLoadRuntimeConfigConcurrencyGlobalMaxBound pins the D2 fix: the Node
+// integerConfig('JUHE_AI_CONCURRENCY_GLOBAL_MAX', 5_000, 1, 50_000) bound —
+// values above 50000 must fail at startup (runtime.ts:410).
+func TestLoadRuntimeConfigConcurrencyGlobalMaxBound(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "juhe-ai.sqlite3")
+	env := func(value string) func(string) string {
+		return func(key string) string {
+			if key == "JUHE_AI_CONCURRENCY_GLOBAL_MAX" {
+				return value
+			}
+			if key == "JUHE_AI_DATABASE_PATH" {
+				return databasePath
+			}
+			return ""
+		}
+	}
+
+	cfg, err := loadRuntimeConfig(env("50000"))
+	if err != nil {
+		t.Fatalf("upper bound value must parse: %v", err)
+	}
+	if cfg.ConcurrencyGlobalMax != 50000 {
+		t.Fatalf("ConcurrencyGlobalMax = %d want 50000", cfg.ConcurrencyGlobalMax)
+	}
+	if _, err := loadRuntimeConfig(env("50001")); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须在 1-50000 范围内") {
+		t.Fatalf("value above 50000 must fail with the integerConfig copy, got %v", err)
+	}
+	if _, err := loadRuntimeConfig(env("0")); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须在 1-50000 范围内") {
+		t.Fatalf("value below 1 must fail with the integerConfig copy, got %v", err)
+	}
+	if _, err := loadRuntimeConfig(env("abc")); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须配置为整数") {
+		t.Fatalf("non-integer must fail with the integerConfig copy, got %v", err)
+	}
+}
+
 func TestBusinessOwnerGateFailsClosed(t *testing.T) {
 	cfg := composeTestConfig(t)
 	if err := cfg.businessOwnerGate(); err != nil {

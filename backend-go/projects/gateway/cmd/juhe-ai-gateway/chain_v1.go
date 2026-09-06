@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
@@ -255,7 +256,10 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 }
 
 // handleUpstreamResponse mirrors handleStreamUpstreamResponse /
-// handleNonStreamUpstreamResponse + finalizeHandledUpstreamResponse.
+// handleNonStreamUpstreamResponse + finalizeHandledUpstreamResponse. It
+// returns the handling result so the dispatch loop can consume a
+// RetryUpstream verdict (Node routes.ts:1899); the zero result means the
+// request settled inside this method.
 func (c *gatewayChain) handleUpstreamResponse(
 	req *gatewaypreauth.GatewayRequest,
 	res *gatewaypreauth.TrackingWriter,
@@ -265,7 +269,7 @@ func (c *gatewayChain) handleUpstreamResponse(
 	startedAt int64,
 	settings gatewayruntimecache.GatewaySettings,
 	budgets requestBudgets,
-) {
+) gatewayresponse.UpstreamResponseHandlingResult {
 	ctx := req.HTTP.Context()
 	commitState := &gatewayresponse.DownstreamCommitState{}
 	upstream := dispatched.Response
@@ -328,9 +332,16 @@ func (c *gatewayChain) handleUpstreamResponse(
 				gatewaypreauth.GatewayErrorPayloadOf("上游暂时不可用，请重试", "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode),
 				gatewaypreauth.SendGatewayErrorOptions{Protocol: clientErrorProtocol(req)})
 		}
-		return
+		return gatewayresponse.UpstreamResponseHandlingResult{}
+	}
+	if handling.RetryUpstream {
+		// Node consumes the retry verdict before the finalize-usage path
+		// (routes.ts:1899 vs finalizeHandledUpstreamResponse): a retrying
+		// attempt records no completion usage.
+		return handling
 	}
 	gatewayresponse.FinalizeHandledUpstreamResponse(*input, handling)
+	return handling
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +373,14 @@ type v1DispatchLoop struct {
 	// hands it to the fallback candidate window as excludedAccountIds
 	// (routes.ts:625).
 	exhaustedAccounts map[string]struct{}
+	// streamRetryExcludedAccounts is the per-group stream server-retry
+	// exclusion set (Node streamServerRetryExcludedAccountIds, routes.ts:540):
+	// accounts the response layer's RetryUpstream verdict asked to avoid.
+	// switchToFallbackGroup resets it on a group switch (routes.ts:652).
+	streamRetryExcludedAccounts map[string]struct{}
+	// streamServerRetryCount mirrors Node streamServerRetryCount (routes.ts:
+	// 541) for the stream_server_retry_dispatch audit metadata.
+	streamServerRetryCount int
 }
 
 // v1FallbackSwitch mirrors the switchToFallbackGroup return union
@@ -388,9 +407,14 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			RouteCoordinationBudget:  l.budgets.coordination,
 			RequestAttemptTracker:    l.budgets.tracker,
 		}
+		// Node dispatches streamRetryDispatchAccounts(accounts,
+		// streamServerRetryExcludedAccountIds) (routes.ts:942): the accounts a
+		// previous response-layer RetryUpstream verdict excluded never re-enter
+		// the candidate window of the current group.
+		dispatchAccounts := streamRetryDispatchAccounts(current.Accounts, l.streamRetryExcludedAccounts)
 		dispatched, dispatchErr := l.c.engine.FetchFirstAvailableUpstream(ctx, gatewaydispatch.FetchFirstAvailableUpstreamArgs{
 			Req:                             l.req,
-			Accounts:                        current.Accounts,
+			Accounts:                        dispatchAccounts,
 			Settings:                        current.ActiveGatewaySettings,
 			UsageContext:                    current.UsageContext,
 			AuditCapture:                    l.c.engineAuditCapture(l.auditCapture),
@@ -412,13 +436,132 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 		})
 		if dispatchErr == nil {
 			// ---- response piping + finalization (response/finalization.ts) ----
-			l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets)
-			return
+			handling := l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets)
+			if !handling.RetryUpstream {
+				return
+			}
+			// D1: the response layer asked for a server-side account switch
+			// (Node routes.ts:1899 `if (handledResponse.retryUpstream)`); the
+			// loop continues on the remaining candidates or settles the
+			// exhausted exit — never an empty 200.
+			if l.settleResponseStreamServerRetry(ctx, dispatched, handling) {
+				return
+			}
+			continue
 		}
 		if l.settleDispatchError(ctx, dispatchErr) {
 			return
 		}
 	}
+}
+
+// settleResponseStreamServerRetry mirrors the Node retryUpstream consumption
+// (routes.ts:1899-2398) for the reasons the Go response layer produces
+// (response_inspection / pre_commit_stream_failure). The deep per-branch
+// server-retry loops that stay engine-internal in Go (speed-first cutover,
+// codex encrypted-content recovery, account-lock lease carry, hybrid quality)
+// never reach this method, and the same-account retry reservation
+// (routes.ts:2245-2300) is a Node dispatch-loop nicety the Go chain does not
+// carry: the verdict rotates to the next account instead. Returns true when
+// the request settled (terminal response rendered) and false when the loop
+// should re-dispatch on the remaining candidates.
+func (l *v1DispatchLoop) settleResponseStreamServerRetry(
+	ctx context.Context,
+	dispatched gatewaydispatch.UpstreamDispatchResult,
+	handling gatewayresponse.UpstreamResponseHandlingResult,
+) bool {
+	// A RetryUpstream verdict is a pre-commit decision (the response layer only
+	// produces it while canRetryUpstream); a writable-ended downstream can no
+	// longer take a different account's response.
+	if writableEndedOf(l.res) {
+		return true
+	}
+	current := l.current
+	accountID := dispatched.Account.ID
+	// Node 2301-2307: a policy-requested exclusion puts the current account
+	// into the per-group stream-retry excluded set.
+	policyRequestedAccountExclusion := handling.ExcludeCurrentAccount
+	if policyRequestedAccountExclusion {
+		if l.streamRetryExcludedAccounts == nil {
+			l.streamRetryExcludedAccounts = map[string]struct{}{}
+		}
+		l.streamRetryExcludedAccounts[accountID] = struct{}{}
+	}
+	l.streamServerRetryCount++
+	remaining := streamRetryDispatchAccounts(current.Accounts, l.streamRetryExcludedAccounts)
+	l.auditCapture.AddGatewayMetadata("stream_server_retry_dispatch", map[string]any{
+		"retryReason":                     handling.RetryReason,
+		"retryCount":                      l.streamServerRetryCount,
+		"candidateCount":                  len(current.Accounts),
+		"remainingCandidateCount":         len(remaining),
+		"elapsedMs":                       l.c.preauth.NowMs() - l.startedAt,
+		"accountId":                       accountID,
+		"excludedAccountIds":              stringSetKeys(l.streamRetryExcludedAccounts),
+		"excludeCurrentAccount":           handling.ExcludeCurrentAccount,
+		"currentRequestAccountExcluded":   policyRequestedAccountExclusion,
+		"policyRequestedAccountExclusion": policyRequestedAccountExclusion,
+		"errorCode":                       handling.ErrorCode,
+	})
+	if handling.ResponseInspection != nil {
+		l.auditCapture.AddGatewayMetadata("stream_server_retry_policy", map[string]any{
+			"policyId":      handling.ResponseInspection.PolicyID,
+			"policyName":    handling.ResponseInspection.PolicyName,
+			"accountSwitch": handling.ResponseInspection.AccountSwitch,
+			"retryEnabled":  handling.ResponseInspection.RetryEnabled,
+		})
+	}
+	// Node 2326-2356: a response-inspection retry that does not change the
+	// dispatch (no account exclusion) stops with the exhausted contract.
+	if handling.RetryReason == gatewayresponse.StreamServerRetryResponseInspection &&
+		handling.ResponseInspection != nil && !policyRequestedAccountExclusion {
+		l.auditCapture.AddGatewayMetadata("response_inspection_server_retry_stopped", map[string]any{
+			"reason":        "no_dispatch_change",
+			"accountId":     accountID,
+			"policyId":      handling.ResponseInspection.PolicyID,
+			"policyName":    handling.ResponseInspection.PolicyName,
+			"accountSwitch": handling.ResponseInspection.AccountSwitch,
+			"retryEnabled":  handling.ResponseInspection.RetryEnabled,
+			"errorCode":     handling.ErrorCode,
+		})
+		l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
+			message:        handling.Message,
+			usageContext:   current.UsageContext,
+			clientStrategy: &current.ClientStrategy,
+		})
+		return true
+	}
+	if len(remaining) == 0 {
+		// Node 2362-2366: the group's candidate window is empty — the excluded
+		// accounts join the request-level exhausted set and the fallback group
+		// gets its chance before the exhausted exit.
+		for accountID := range l.streamRetryExcludedAccounts {
+			if l.exhaustedAccounts == nil {
+				l.exhaustedAccounts = map[string]struct{}{}
+			}
+			l.exhaustedAccounts[accountID] = struct{}{}
+		}
+		fallbackReason := streamServerRetryFallbackReason(handling.RetryReason)
+		switch fallback, fallbackErr := l.switchToFallbackGroup(ctx, fallbackReason); {
+		case fallbackErr != nil:
+			// Node: the switch error propagates to the top-level catch.
+			l.renderUnexpectedDispatchFailure(fallbackErr)
+			return true
+		case fallback == v1FallbackCompleted:
+			return true
+		case fallback == v1FallbackSwitched:
+			return false
+		}
+		// Node 2386-2397: no fallback switch → the stream server-retry
+		// exhausted contract (503, recordUsage:false), never an empty 200.
+		l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
+			message:        handling.Message,
+			usageContext:   current.UsageContext,
+			clientStrategy: &current.ClientStrategy,
+		})
+		return true
+	}
+	// Node 2398: candidates remain — continue the dispatch loop.
+	return false
 }
 
 // settleDispatchError maps one dispatch-loop error onto the Node error
@@ -781,6 +924,11 @@ func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason strin
 	// reservation; those lifecycle ports stay engine-internal in Go. The
 	// per-group retry resets ride on the fresh DispatchContext.
 	l.current = next
+	// Node 652-657: a switched fallback resets the per-group stream server-
+	// retry bookkeeping (streamServerRetryExcludedAccountIds /
+	// streamServerRetryCount).
+	l.streamRetryExcludedAccounts = map[string]struct{}{}
+	l.streamServerRetryCount = 0
 	return v1FallbackSwitched, nil
 }
 
@@ -922,6 +1070,46 @@ func (l *v1DispatchLoop) finalizeRouteAction(action *gatewaypreauth.RouteAction)
 func shouldHandleOpenAIUpstreamResponseAsStreamWithStatus(status int, contentType string, streamRequest bool) bool {
 	return status >= http.StatusOK && status < http.StatusMultipleChoices &&
 		gatewayresponse.ShouldHandleOpenAIUpstreamResponseAsStream(contentType, streamRequest)
+}
+
+// streamRetryDispatchAccounts mirrors streamRetryDispatchAccounts
+// (routes.ts:2855-2860): the candidate window minus the stream server-retry
+// exclusions.
+func streamRetryDispatchAccounts(accounts []gatewaydispatch.AccountCandidate, excluded map[string]struct{}) []gatewaydispatch.AccountCandidate {
+	if len(excluded) == 0 {
+		return accounts
+	}
+	remaining := make([]gatewaydispatch.AccountCandidate, 0, len(accounts))
+	for _, account := range accounts {
+		if _, isExcluded := excluded[account.ID]; isExcluded {
+			continue
+		}
+		remaining = append(remaining, account)
+	}
+	return remaining
+}
+
+// streamServerRetryFallbackReason mirrors streamServerRetryFallbackReason
+// (routes.ts:2845-2853).
+func streamServerRetryFallbackReason(retryReason string) string {
+	switch retryReason {
+	case gatewayresponse.StreamServerRetryResponseInspection:
+		return "response_inspection_server_retry_exhausted"
+	case gatewayresponse.StreamServerRetryUpstreamProtocolFailure:
+		return "upstream_protocol_server_retry_exhausted"
+	}
+	return "stream_server_retry_exhausted"
+}
+
+// stringSetKeys returns the set members in sorted order (Node spreads the Set
+// in insertion order; the Go audit metadata keeps a deterministic form).
+func stringSetKeys(set map[string]struct{}) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // classifyGatewayDispatchExhaustion mirrors

@@ -12,8 +12,8 @@ import (
 // Import source adapters mirror account-import-source-adapters.ts: the
 // third-party shapes (Sub2API exports, NewAPI/One-API channel dumps and
 // CLIProxyAPI configs) are rewritten into the native import document before
-// planning. YAML CLIProxyAPI configs stay with the companion slice — JSON
-// input is accepted (JSON is a YAML subset for these flat configs).
+// planning. CLIProxyAPI string input decodes through YAML (JSON is a YAML
+// subset) via parseCpaInput in import_source_yaml.go.
 
 type importSourceMode = string
 
@@ -370,13 +370,12 @@ func adaptChannelSource(input any, mode string, state *adapterState) {
 }
 
 func adaptCLIProxyAPI(input any, state *adapterState) {
-	parsed, err := parseSourceJSON(input, "CLIProxyAPI")
-	if err != nil {
-		addSourceMessage(state, "CLIProxyAPI 导入内容必须是有效 JSON（YAML 导入暂未支持）")
+	parsed, ok := parseCpaInput(input, state)
+	if !ok {
 		return
 	}
-	root, ok := parsed.(map[string]any)
-	if !ok {
+	root, recordOK := parsed.(map[string]any)
+	if !recordOK {
 		addSourceMessage(state, "来源导入内容必须是对象")
 		return
 	}

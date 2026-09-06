@@ -303,6 +303,26 @@ func (r *RecordMaintenanceRunner) RunOnce(ctx context.Context, input RecordMaint
 	}
 }
 
+// RunAccountUsageSnapshotUpserts executes a consecutive
+// account_usage_snapshot_upsert run with ONE stats-writer round trip (Node
+// record-maintenance-queue.service.ts:846-868, the flush loop's
+// collectAccountUsageSnapshotJobs + processAccountUsageSnapshotUpsertJobs
+// pairing; D5). Every job of the run is normalized exactly like RunOnce.
+func (r *RecordMaintenanceRunner) RunAccountUsageSnapshotUpserts(ctx context.Context, jobs []RecordMaintenanceJob) (map[string]any, error) {
+	normalized := make([]RecordMaintenanceJob, 0, len(jobs))
+	for _, job := range jobs {
+		item, err := NormalizeRecordMaintenanceJob(job, clockNow(r.Clock))
+		if err != nil {
+			return nil, err
+		}
+		normalized = append(normalized, item)
+	}
+	if err := r.processAccountUsageSnapshotUpsertJobs(ctx, normalized); err != nil {
+		return nil, err
+	}
+	return map[string]any{"upsertedCount": len(normalized)}, nil
+}
+
 func (r *RecordMaintenanceRunner) relatedRecords() RelatedRecordCleaner {
 	if r.Executor.RelatedRecords == nil {
 		return missingRelatedRecords{}

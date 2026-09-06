@@ -364,10 +364,15 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.AccountHealthOutcomeSQLitePath = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH"))
 	cfg.AccountHealthOutcomePostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL"))
 	cfg.ConcurrencyGlobalMax = 5000
+	// Node integerConfig('JUHE_AI_CONCURRENCY_GLOBAL_MAX', 5_000, 1, 50_000)
+	// （runtime.ts:410）：非整数/越界启动报错，上限 50000 对齐 integerConfig。
 	if raw := strings.TrimSpace(getenv("JUHE_AI_CONCURRENCY_GLOBAL_MAX")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 {
-			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须是正整数: %q", raw)
+		if err != nil {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须配置为整数: %q", raw)
+		}
+		if parsed < 1 || parsed > 50000 {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须在 1-50000 范围内: %d", parsed)
 		}
 		cfg.ConcurrencyGlobalMax = parsed
 	}
