@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -351,6 +352,20 @@ func TestParseOpenAICodexUsageHeaders(t *testing.T) {
 		}
 		if job.Snapshot["codex_7d_used_percent"] != float64(80) {
 			t.Fatalf("7d payload = %#v", job.Snapshot)
+		}
+		updatedAt, ok := job.Snapshot["codex_usage_updated_at"].(string)
+		if !ok {
+			t.Fatalf("updatedAt = %#v, want Node toISOString string", job.Snapshot["codex_usage_updated_at"])
+		}
+		if _, err := time.Parse("2006-01-02T15:04:05.000Z", updatedAt); err != nil {
+			t.Fatalf("updatedAt = %q, want Node toISOString millisecond shape", updatedAt)
+		}
+		resetAt, ok := job.Snapshot["codex_5h_reset_at"].(string)
+		if !ok {
+			t.Fatalf("5h resetAt = %#v, want Node toISOString string", job.Snapshot["codex_5h_reset_at"])
+		}
+		if _, err := time.Parse("2006-01-02T15:04:05.000Z", resetAt); err != nil {
+			t.Fatalf("5h resetAt = %q, want Node toISOString millisecond shape", resetAt)
 		}
 	})
 	t.Run("no data", func(t *testing.T) {

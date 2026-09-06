@@ -13,31 +13,31 @@ import (
 
 // OpenAICodexUsageSnapshot mirrors OpenAICodexUsageSnapshot.
 type OpenAICodexUsageSnapshot struct {
-	PrimaryUsedPercent         *float64
-	PrimaryResetAfterSeconds   *int64
-	PrimaryWindowMinutes       *int64
-	SecondaryUsedPercent       *float64
-	SecondaryResetAfterSeconds *int64
-	SecondaryWindowMinutes     *int64
+	PrimaryUsedPercent          *float64
+	PrimaryResetAfterSeconds    *int64
+	PrimaryWindowMinutes        *int64
+	SecondaryUsedPercent        *float64
+	SecondaryResetAfterSeconds  *int64
+	SecondaryWindowMinutes      *int64
 	PrimaryOverSecondaryPercent *float64
-	UpdatedAt                  string
+	UpdatedAt                   string
 }
 
 // NormalizedCodexLimits mirrors NormalizedCodexLimits.
 type NormalizedCodexLimits struct {
-	Used5hPercent    *float64
-	Reset5hSeconds   *int64
-	Window5hMinutes  *int64
-	Used7dPercent    *float64
-	Reset7dSeconds   *int64
-	Window7dMinutes  *int64
+	Used5hPercent   *float64
+	Reset5hSeconds  *int64
+	Window5hMinutes *int64
+	Used7dPercent   *float64
+	Reset7dSeconds  *int64
+	Window7dMinutes *int64
 }
 
 // codexWindowCandidate mirrors the local candidate type.
 type codexWindowCandidate struct {
-	usedPercent      *float64
+	usedPercent       *float64
 	resetAfterSeconds *int64
-	windowMinutes    *int64
+	windowMinutes     *int64
 }
 
 // RecordMaintenanceJob mirrors the job envelope the queue port receives.
@@ -61,7 +61,8 @@ func ParseOpenAICodexUsageHeaders(headers http.Header) *OpenAICodexUsageSnapshot
 	if headers == nil {
 		return nil
 	}
-	snapshot := &OpenAICodexUsageSnapshot{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	// Node Date#toISOString() always emits UTC with millisecond precision.
+	snapshot := &OpenAICodexUsageSnapshot{UpdatedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z")}
 	hasData := false
 	assign := func(key string, apply func(value float64)) {
 		value := numberHeader(headers, key)
@@ -136,7 +137,9 @@ func buildOpenAICodexUsageSnapshotPayload(snapshot OpenAICodexUsageSnapshot, fal
 		baseTime = &fallbackNow
 	}
 	payload := map[string]any{
-		"codex_usage_updated_at": baseTime.UTC().Format(time.RFC3339),
+		// Keep the persisted payload byte-shape aligned with Node
+		// Date#toISOString(), including the mandatory three millisecond digits.
+		"codex_usage_updated_at": baseTime.UTC().Format("2006-01-02T15:04:05.000Z"),
 	}
 	if source != "" {
 		payload["source"] = source
@@ -276,7 +279,7 @@ func resetAtFromSeconds(baseTime time.Time, seconds *int64) string {
 		return ""
 	}
 	reset := baseTime.Add(time.Duration(maxInt64(0, *seconds)) * time.Second)
-	return reset.UTC().Format(time.RFC3339)
+	return reset.UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
 func parseIsoDate(value string) *time.Time {
