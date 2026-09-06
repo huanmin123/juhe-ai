@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"unicode"
 
@@ -248,8 +249,12 @@ func looksLikeEncryptedContentDecryptionFailure(value string) bool {
 
 func parseJSONRecord(value string) map[string]any {
 	var parsed any
-	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder := json.NewDecoder(bytes.NewReader([]byte(value)))
 	if err := decoder.Decode(&parsed); err != nil {
+		return nil
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil
 	}
 	record, ok := parsed.(map[string]any)
@@ -263,6 +268,10 @@ func parseJSONObjectBody(body []byte) (map[string]any, bool) {
 	var parsed any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(&parsed); err != nil {
+		return nil, false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, false
 	}
 	record, ok := parsed.(map[string]any)
