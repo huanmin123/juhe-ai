@@ -244,7 +244,9 @@ func (e *fingerprintError) Error() string { return e.message }
 
 // MutationGuardMiddleware mirrors mutationGuard: safe methods pass through,
 // fingerprint failures 400, duplicate claims 409 with the status-specific
-// message, completion follows the response outcome.
+// message, completion follows the response outcome, and a client disconnect
+// before the response finished writing settles the claim as failed
+// (mutation-guard.middleware.ts res.once('close') arm).
 func MutationGuardMiddleware(options MutationGuardOptions) func(http.Handler) http.Handler {
 	store := options.Store
 	if store == nil {
@@ -319,26 +321,81 @@ func MutationGuardMiddleware(options MutationGuardOptions) func(http.Handler) ht
 				local = newLocalizeWriter(w)
 				w = local
 			}
+			// Node arms res.once('close') next: a connection that closes
+			// before the response finished writing (writableEnded === false)
+			// settles the claim as 'failed' regardless of the handler
+			// outcome (mutation-guard.middleware.ts:70-74) — the client saw
+			// nothing and will retry. Go watches the request context: net/http
+			// cancels it exactly when the client connection goes away.
+			var completeMu sync.Mutex
+			completed := false
+			serveReturned := false
+			complete := func(status DedupStatus) {
+				completeMu.Lock()
+				defer completeMu.Unlock()
+				if completed {
+					return
+				}
+				completed = true
+				store.Complete(key, status, options.SucceededTTL, options.FailedTTL)
+			}
+			serveDone := make(chan struct{})
+			if done := r.Context().Done(); done != nil {
+				go func() {
+					select {
+					case <-done:
+						completeMu.Lock()
+						ended := completed || serveReturned
+						completeMu.Unlock()
+						// writableEnded === false: the response never finished
+						// writing, so the Node close arm applies. A handler
+						// that already returned completed its response the
+						// way finish does and owns the classification.
+						if !ended {
+							complete(DedupFailed)
+						}
+					case <-serveDone:
+					}
+				}()
+			}
 			next.ServeHTTP(w, r)
+			completeMu.Lock()
+			serveReturned = true
+			completeMu.Unlock()
+			close(serveDone)
+			// Node reads res.statusCode at 'finish'; the guard only reaches
+			// that arm when the response actually ended. A request whose
+			// context died without any written response byte takes the
+			// res.once('close') arm instead and settles as failed no matter
+			// how the handler stack returned.
 			status := http.StatusOK
+			responseWritten := false
 			if local != nil {
 				status = local.status
+				responseWritten = local.status != 0
 			} else {
 				lw := ResponseWriterFromContext(r.Context())
 				if recorder, ok := w.(interface{ recordedStatus() (int, bool) }); ok {
 					if recorded, recordedOK := recorder.recordedStatus(); recordedOK {
 						status = recorded
+						responseWritten = true
 					} else if lw.wroteHeader {
 						status = lw.status
+						responseWritten = true
 					}
 				} else if lw.wroteHeader {
 					status = lw.status
+					responseWritten = true
 				}
 			}
 			if status == 0 {
 				status = http.StatusOK
 			}
-			store.Complete(key, statusFromCode(status), options.SucceededTTL, options.FailedTTL)
+			if r.Context().Err() != nil && !responseWritten {
+				complete(DedupFailed)
+				return
+			}
+			complete(statusFromCode(status))
 		})
 	}
 }

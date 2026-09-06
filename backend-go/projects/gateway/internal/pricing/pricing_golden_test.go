@@ -115,6 +115,56 @@ func TestFindProviderModelPricingVendorToken(t *testing.T) {
 	}
 }
 
+// TestFindRawProviderModelPricingDuplicateNameShutdownGivesUpLayer pins the
+// 审查 #7 semantics: each lookup layer is models.find(byName) FIRST and the
+// shutdown check applies to that first same-named row only (model-pricing
+// .service.ts:169-181). A shutdown first row gives the layer up even when a
+// later duplicate row is live — the lookup must never rescan past the first
+// same-named row.
+func TestFindRawProviderModelPricingDuplicateNameShutdownGivesUpLayer(t *testing.T) {
+	entry := &providerEntry{
+		providerID: "openai-compatible",
+		rawModels: []rawModel{
+			{Model: "dup-model", ShutdownDate: "2026-01-01", InputCostPerToken: perToken(1)},
+			{Model: "dup-model", InputCostPerToken: perToken(2)}, // later live duplicate must not answer
+			{Model: "fallback", ShutdownDate: "2026-01-01", InputCostPerToken: perToken(3)},
+			{Model: "fallback", InputCostPerToken: perToken(4)}, // same rule at the candidate layer
+		},
+	}
+
+	// Exact layer: the first dup-model row is shutdown, so the layer gives
+	// up; no candidate names a live row and the canonical alias is a no-op —
+	// the whole lookup resolves to undefined.
+	if got := findRawProviderModelPricing(entry, "dup-model", "2026-06-01"); got != nil {
+		t.Fatalf("shutdown first duplicate must give the exact layer up, got %q", got.Model)
+	}
+	// Before the shutdown day the first row answers.
+	before := findRawProviderModelPricing(entry, "dup-model", "2025-12-31")
+	if before == nil || before.InputCostPerToken == nil || *before.InputCostPerToken != 1/1e6 {
+		t.Fatalf("pre-shutdown first row must answer, got %+v", before)
+	}
+
+	// Candidate layer (date-suffix candidate "fallback"): its first row is
+	// shutdown, the candidate gives up instead of rescanning to the live
+	// duplicate.
+	if got := findRawProviderModelPricing(entry, "fallback-2026-02-02", "2026-06-01"); got != nil {
+		t.Fatalf("shutdown candidate duplicate must give the candidate layer up, got %q", got.Model)
+	}
+
+	// Canonical-alias layer: gpt-5.6 -> gpt-5.6-sol with a shutdown first
+	// dup and a live later dup must stay undefined.
+	aliasEntry := &providerEntry{
+		providerID: "openai-compatible",
+		rawModels: []rawModel{
+			{Model: "gpt-5.6-sol", ShutdownDate: "2026-01-01"},
+			{Model: "gpt-5.6-sol"},
+		},
+	}
+	if got := findRawProviderModelPricing(aliasEntry, "gpt-5.6", "2026-06-01"); got != nil {
+		t.Fatalf("shutdown canonical-alias duplicate must stay undefined, got %q", got.Model)
+	}
+}
+
 func TestFindProviderModelPricingUnavailableAndUnknown(t *testing.T) {
 	if got := FindProviderModelPricing("openai", "chatgpt-4o-latest"); got != nil {
 		t.Fatalf("chatgpt-4o-latest is unavailable, got %v", got.Model)

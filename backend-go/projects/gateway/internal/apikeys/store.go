@@ -162,6 +162,24 @@ func (s *Store) SetDatasetDB(db *sql.DB) { s.datasetDB = db }
 // SetCleanupSubmitter wires the maintenance-job enqueue port.
 func (s *Store) SetCleanupSubmitter(submitter CleanupSubmitter) { s.cleanupSubmitter = submitter }
 
+// RegisterCleanupTarget (re-)registers the deleted-key cleanup target at the
+// dataset placement: the juhe_dataset schema over the business handle on
+// PostgreSQL, the wired dataset handle on SQLite. The composition-root
+// CleanupSubmitter adapter uses it as the durable maintenance handoff — the
+// Go jobs scheduler drains api_key_record_cleanup_targets
+// (api-key-record-cleanup-retry), the Node submitApiKeyRelatedCleanupAsync
+// enqueue equivalent. Idempotent upsert; a nil dataset handle on SQLite keeps
+// the degradation observable instead of silent.
+func (s *Store) RegisterCleanupTarget(ctx context.Context, apiKeyID, systemAccountID string) error {
+	if s.pg {
+		return s.insertCleanupTarget(ctx, s.db, apiKeyID, systemAccountID, isoMillis(s.now()))
+	}
+	if s.datasetDB == nil {
+		return errors.New("api keys dataset 数据库未接入，清理目标未登记")
+	}
+	return s.insertCleanupTarget(ctx, s.datasetDB, apiKeyID, systemAccountID, isoMillis(s.now()))
+}
+
 // defaultScheduleTimezone mirrors defaultScheduleTimezone: the
 // system_settings usageStatsTimezone value when readable and valid, otherwise
 // the deployment timezone (usageStatsTimezone throw → DEFAULT catch).

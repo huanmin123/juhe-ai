@@ -16,6 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
@@ -73,6 +74,7 @@ type testEnv struct {
 	sink   *recordingSink
 	inval  *recordingInvalidator
 	db     *sql.DB
+	authz  *authz.Store
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -102,6 +104,9 @@ func newTestEnv(t *testing.T) *testEnv {
 		`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (group_id TEXT PRIMARY KEY, reason TEXT, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE IF NOT EXISTS route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		// Return-authorization route surfaces (the authz return domain reads
+		// and writes these tables through internal/authz).
+		`CREATE TABLE IF NOT EXISTS resource_authorization_grants (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -128,12 +133,16 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	authzStore, err := authz.NewStore(db, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	deps.MountAuth(k, "lax", false)
-	(&Deps{Store: store, Auth: deps, Sink: sink}).Mount(k)
+	(&Deps{Store: store, Auth: deps, Sink: sink, Authz: authzStore}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, inval: invalidator, db: db}
+	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, inval: invalidator, db: db, authz: authzStore}
 }
 
 func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]any) {

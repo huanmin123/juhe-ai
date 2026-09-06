@@ -72,6 +72,19 @@ func (s *OperationLogProducerSink) Record(entry OperationLogEntry, r *http.Reque
 	if len(entry.Metadata) > 0 {
 		input.Metadata = append(json.RawMessage(nil), entry.Metadata...)
 	}
+	if entry.StatusCode != nil {
+		statusCode := *entry.StatusCode
+		input.StatusCode = &statusCode
+	}
+	for _, target := range entry.Targets {
+		input.Targets = append(input.Targets, operationlog.Target{
+			TargetType:                 target.TargetType,
+			TargetID:                   target.TargetID,
+			TargetName:                 target.TargetName,
+			TargetOwnerSystemAccountID: target.TargetOwnerSystemAccountID,
+			Relation:                   target.Relation,
+		})
+	}
 	if trace := kernel.Context(r).TraceID; trace != "" {
 		input.TraceID = trace
 	}
@@ -82,8 +95,8 @@ func (s *OperationLogProducerSink) Record(entry OperationLogEntry, r *http.Reque
 		input.Changes = append(input.Changes, operationlog.Change{
 			Field:     change.Field,
 			Label:     change.Label,
-			Before:    change.Before,
-			After:     change.After,
+			Before:    changeValue(change.BeforeValue, change.Before),
+			After:     changeValue(change.AfterValue, change.After),
 			Sensitive: change.Sensitive,
 		})
 	}
@@ -112,3 +125,44 @@ func (s *OperationLogProducerSink) Record(entry OperationLogEntry, r *http.Reque
 var _ OperationLogSink = (*OperationLogProducerSink)(nil)
 
 var _ = context.Background
+
+// maxCompositeChangeValueRender mirrors normalizeSafeValue's JSON.stringify
+// 500-unit cap (operation-log.service.ts) for objects/arrays handed in via
+// the M05/M07 value fields.
+const maxCompositeChangeValueRender = 500
+
+// changeValue renders a change value for the F4 Input: a non-nil native value
+// wins over its string sibling, composite values (objects/arrays) flatten to
+// JSON text exactly like Node normalizeSafeValue (native null/number/boolean
+// pass through untouched), and an empty string collapses to nil so the
+// omitempty contract keeps the property absent.
+func changeValue(value any, text string) any {
+	if value != nil {
+		switch typed := value.(type) {
+		case json.RawMessage:
+			// Callers that need byte-exact object rendering (Node
+			// JSON.stringify keeps insertion order) pass pre-encoded JSON.
+			return truncateChangeRender(string(typed))
+		case map[string]any, []any:
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return truncateChangeRender(fmt.Sprintf("%v", value))
+			}
+			return truncateChangeRender(string(encoded))
+		default:
+			return value
+		}
+	}
+	if text == "" {
+		return nil
+	}
+	return text
+}
+
+func truncateChangeRender(text string) string {
+	runes := []rune(text)
+	if len(runes) > maxCompositeChangeValueRender {
+		return string(runes[:maxCompositeChangeValueRender])
+	}
+	return text
+}

@@ -19,6 +19,9 @@ type Deps struct {
 	Auth       *authsys.Deps
 	Sink       authsys.OperationLogSink
 	Authorized AuthorizedAccountReader
+	// TestDispatch is the manual-test dispatch port (test_effects.go); Mount
+	// injects it into the store, so composition roots only set the field.
+	TestDispatch TestDispatchEffects
 }
 
 // Mount wires the accounts route family: admin surface on /accounts
@@ -58,6 +61,16 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 
 	// Runtime-reset family (维护者 6f9739e96, account-detail.routes.ts).
 	d.mountRuntimeResetRoutes(k, prefix)
+
+	// Account test diagnostic family (account-test-dispatch.routes.ts +
+	// account-test-session.routes.ts + account-test-status.routes.ts; the
+	// Node routers mount on the shared accounts surface, so both surfaces
+	// expose it).
+	d.wireTestEffects()
+	d.mountTestRoutes(k)
+
+	// M11 advanced/balance/traffic/return/dispatch/group family.
+	d.mountM11Routes(k, prefix)
 
 	// Self surface (forceSelfAccessScope).
 	k.Register("GET "+prefix+"/my-accounts", self(d.listHandler(true)))

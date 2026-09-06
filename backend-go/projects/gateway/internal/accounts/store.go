@@ -109,6 +109,18 @@ type Store struct {
 	// until SetRuntimeResetEffects wires it; a nil port keeps the endpoint
 	// self-contained (tests) and reports the runtime surfaces unavailable.
 	runtimeEffects RuntimeResetEffects
+	// testEffects is the manual-test dispatch port (test_effects.go). Nil
+	// until SetTestDispatchEffects wires it; a nil port keeps the diagnostic
+	// family self-contained (tests) and renders dispatch unavailable.
+	testEffects TestDispatchEffects
+	// m11 advanced/balance/traffic/return ports (nil until wired via the
+	// matching setters; each keeps its endpoint self-contained with the Node
+	// failure shapes).
+	apiKeyRuntimeDetails   APIKeyRuntimeDetailsReader
+	balanceRefresher       ManualBalanceRefresher
+	modelCatalogRefresher  ModelCatalogRefresher
+	returner               AuthorizationGrantReturner
+	trafficRuntimeMigrator TrafficRuntimeMigrator
 }
 
 // NewStore builds the store.

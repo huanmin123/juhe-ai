@@ -128,10 +128,24 @@ func (s *Store) Delete(ctx context.Context, accountID string, access AccessScope
 // (account-delete-cleanup.repository.ts:420-492): the authorization rows of
 // the deleted account resource (resource_type='account') lose their quota
 // scope bindings first, then grants, sources and authorizations flip to the
-// revoked terminal state inside the caller's transaction. The Node
-// SQLite-only per-grant runtime sync domain (syncResourceAuthorizationGrantRuntime)
-// is a resource-authorization migration slice of its own and stays untouched
-// here; the durable authorization state lands identically in both dialects.
+// 'revoked' terminal state inside the caller's transaction.
+//
+// The Node dialects do NOT land identically here. The PG async arm
+// bulk-writes this exact shape: grants 'revoked' (COALESCE-preserving),
+// sources 'revoked' with ended_reason='account_deleted' (active/superseded),
+// authorizations 'revoked' unconditionally with the effective source nulled
+// and revoked_reason='account_deleted', quota scope bindings deleted
+// outright. The SQLite sync arm instead walks the account's grants one by
+// one through the resource-authorization runtime-sync domain
+// (revokeResourceAuthorizationGrant → syncResourceAuthorizationGrantRuntime):
+// manual-source-scoped updates with ended_reason='authorization_revoked', a
+// conditional terminal refresh that can leave the runtime authorization
+// alive while another source stands, per-grant quota re-sync and health
+// fanout. Both arms still terminate at 'revoked' — the 'returned' states in
+// the archived file belong to revokeAuthorizationInstanceForDeletedAccount,
+// which no archived delete flow calls. This store mirrors the PG async arm;
+// the SQLite per-grant runtime sync domain is a resource-authorization
+// migration slice of its own and stays untouched here.
 func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Context, tx *sql.Tx, accountID, actor, deletedAt string) error {
 	var authorizationIDs []string
 	authRows, err := tx.QueryContext(ctx, s.bind(`SELECT id

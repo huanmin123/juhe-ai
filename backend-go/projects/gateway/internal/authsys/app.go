@@ -13,13 +13,21 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
-// OperationLogChange mirrors OperationLogChange (operation-log-types.ts).
+// OperationLogChange mirrors OperationLogChange (operation-log-types.ts),
+// whose before/after are `unknown`. Before/After keep the historical string
+// contract every existing caller compiles against; BeforeValue/AfterValue
+// carry the native JSON forms Node normalizeSafeValue passes through
+// (null/number/boolean stay native, objects/arrays flatten to JSON text at
+// the sink boundary, M05/M07 handover extension). A non-nil value field wins
+// over its string sibling when the sink renders the change.
 type OperationLogChange struct {
-	Field     string `json:"field"`
-	Label     string `json:"label"`
-	Before    string `json:"before,omitempty"`
-	After     string `json:"after,omitempty"`
-	Sensitive bool   `json:"sensitive,omitempty"`
+	Field       string
+	Label       string
+	Before      string
+	After       string
+	BeforeValue any
+	AfterValue  any
+	Sensitive   bool
 }
 
 // OperationLogEntry mirrors the subset of OperationLogRecordInput the auth
@@ -49,8 +57,27 @@ type OperationLogEntry struct {
 	DetailLevel                   string
 	VisibilityScope               string
 	Metadata                      json.RawMessage
-	Changes                       []OperationLogChange
-	Viewers                       []OperationLogViewer
+	// StatusCode mirrors OperationLogInput.statusCode (Node fills it for the
+	// routes that know the outcome before the response is written, e.g. the
+	// api-keys create 201 / refresh-patch 200 / validation-cache-failure 500 /
+	// delete 204 forms). nil keeps the pre-extension contract (SQL NULL).
+	StatusCode *int
+	// Targets mirrors OperationLogInput.targets (Node multi-target audit
+	// records: groups delete route-strategy samples, authorization return
+	// owner/grantee pairs). nil keeps the F4 primary-target normalization.
+	Targets []OperationLogTarget
+	Changes []OperationLogChange
+	Viewers []OperationLogViewer
+}
+
+// OperationLogTarget mirrors OperationLogTargetInput
+// (storage/operation-log-types.ts).
+type OperationLogTarget struct {
+	TargetType                 string
+	TargetID                   string
+	TargetName                 string
+	TargetOwnerSystemAccountID string
+	Relation                   string
 }
 
 // OperationLogSink receives operation log entries; K4 binds the F4 producer.

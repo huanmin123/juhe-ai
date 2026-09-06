@@ -117,7 +117,7 @@ type testEnv struct {
 	store  *Store
 }
 
-func newTestEnv(t *testing.T) *testEnv {
+func newTestEnv(t *testing.T, wrapInvalidator ...func(CacheInvalidator) CacheInvalidator) *testEnv {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:apikeys-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
 	if err != nil {
@@ -193,7 +193,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, false, testSecret, nil, nil, invalidator)
+	var storeInvalidator CacheInvalidator = invalidator
+	for _, wrap := range wrapInvalidator {
+		storeInvalidator = wrap(storeInvalidator)
+	}
+	store, err := NewStore(db, false, testSecret, nil, nil, storeInvalidator)
 	if err != nil {
 		t.Fatal(err)
 	}

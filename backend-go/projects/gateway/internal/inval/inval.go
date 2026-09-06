@@ -1,10 +1,19 @@
 // Package inval implements the Go gateway cache invalidation bus, mirroring
 // Node shared/gateway-cache-invalidation.ts: named topics, version bumps,
-// subscriber notification with 1-second coalescing, and an optional Redis
-// shared-version store so multi-instance deployments observe each other's
-// invalidations. Cache services subscribe per topic
-// (gateway_runtime_cache, gateway_api_key_validation_cache,
-// authorization_quota_cache, api_key_quota_cache, settings:*).
+// subscriber notification, and an optional Redis shared-version store so
+// multi-instance deployments observe each other's invalidations. Cache
+// services subscribe per topic (gateway_runtime_cache,
+// gateway_api_key_validation_cache, authorization_quota_cache,
+// api_key_quota_cache, settings:*).
+//
+// Losslessness (审查 #3): in the archive the local invalidator set runs for
+// every notify call and nothing is dropped — the 1s throttle lives only in
+// the Redis sync coordinator (createGatewayCacheInvalidationSyncCoordinator,
+// gateway-cache-invalidation.ts:86-134) and merges on the tail edge via the
+// requestedRound counter. The Go bus has no drop-throttle either: every
+// Invalidate bumps, publishes to the shared store and notifies the local
+// handlers, so two invalidations of one topic inside a 1s window both take
+// effect.
 //
 // Shared-version protocol (T2 audit decision): the Go bus keeps the int64
 // monotonic protocol and does NOT implement the archived Node format
@@ -59,25 +68,33 @@ type SharedStore interface {
 type Bus struct {
 	mu        sync.RWMutex
 	versions  map[string]int64
-	handlers  map[string][]Handler
-	throttle  map[string]time.Time
+	handlers  map[string][]*subscription
 	now       func() time.Time
 	shared    SharedStore
-	coalesce  time.Duration
 	bgContext context.Context
 }
 
-// New creates the bus; coalesce defaults to 1s (Node invalidation throttle).
+// subscription pins one handler registration so Unsubscribe can remove it by
+// identity (Go funcs are not comparable; the archive keeps invalidators in a
+// Set and deletes the registered handler — gateway-cache-invalidation.ts:146-
+// 174).
+type subscription struct {
+	handler Handler
+}
+
+// New creates the bus; the clock parameter is retained for tests and
+// diagnostics. There is deliberately no drop-throttle: the archive runs the
+// local invalidator set on every notify and only the Redis sync coordinator
+// (which the Go bus inlines as the shared publish below) throttles, with
+// lossless tail-edge merging.
 func New(now func() time.Time) *Bus {
 	if now == nil {
 		now = time.Now
 	}
 	return &Bus{
 		versions:  map[string]int64{},
-		handlers:  map[string][]Handler{},
-		throttle:  map[string]time.Time{},
+		handlers:  map[string][]*subscription{},
 		now:       now,
-		coalesce:  1 * time.Second,
 		bgContext: context.Background(),
 	}
 }
@@ -89,47 +106,48 @@ func (b *Bus) SetSharedStore(store SharedStore) {
 	b.shared = store
 }
 
-// Subscribe registers a handler for a topic. Returns an unsubscribe func.
+// Subscribe registers a handler for a topic. Returns an unsubscribe func that
+// removes exactly this registration (the archived register* helpers delete
+// the registered handler from their Set).
 func (b *Bus) Subscribe(topic string, handler Handler) (unsubscribe func()) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.handlers[topic] = append(b.handlers[topic], handler)
+	sub := &subscription{handler: handler}
+	b.handlers[topic] = append(b.handlers[topic], sub)
+	b.mu.Unlock()
 	return func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		list := b.handlers[topic]
-		for i, h := range list {
-			if h == nil {
-				continue
+		for i, candidate := range list {
+			if candidate == sub {
+				b.handlers[topic] = append(list[:i], list[i+1:]...)
+				break
 			}
-			// compare by identity is not possible for funcs; leave unsubscribe
-			// semantics to slice rebuild by value equality of topic only.
-			_ = list[i]
 		}
 	}
 }
 
 // Invalidate bumps the topic version (reason recorded for diagnostics) and
-// notifies subscribers. Concurrent invalidations coalesce within the
-// throttle window: a bump while another is in flight waits and re-checks
-// (Node 1s throttle semantics).
+// notifies subscribers. Every call takes effect: the local handler set runs
+// for each Invalidate like the archived notify* helpers, with no 1s
+// drop-window (a second invalidation of the same topic inside a second must
+// not be swallowed).
 //
 // With a shared store wired the bump publishes monotonically across
 // instances: the proposal (local+1) goes to PublishVersion, the effective
 // stored version is adopted back onto the local counter, and only then do
 // the local handlers run (same ordering as the Node publish-then-notify
 // path, so a handler-triggered read can never observe a not-yet-published
-// version).
+// version). Like the archive's publishGatewayCacheInvalidationToRuntimeState
+// every call publishes — one Redis write per invalidation, no coalescing.
 func (b *Bus) Invalidate(topic, reason string) {
 	b.mu.Lock()
-	if last := b.throttle[topic]; b.now().Sub(last) < b.coalesce {
-		b.mu.Unlock()
-		return
-	}
-	b.throttle[topic] = b.now()
 	b.versions[topic]++
 	version := b.versions[topic]
-	handlers := append([]Handler(nil), b.handlers[topic]...)
+	handlers := make([]Handler, 0, len(b.handlers[topic]))
+	for _, sub := range b.handlers[topic] {
+		handlers = append(handlers, sub.handler)
+	}
 	b.mu.Unlock()
 
 	if b.shared != nil {

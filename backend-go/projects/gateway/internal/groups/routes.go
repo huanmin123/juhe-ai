@@ -10,14 +10,18 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
-// Deps bundles the M05 slice collaborators.
+// Deps bundles the M05 slice collaborators. Authz carries the authorization
+// return domain the return-authorization route mounts through (Node
+// returnGroupAuthorizationForGranteeAsync, exported via internal/authz).
 type Deps struct {
 	Store *Store
 	Auth  *authsys.Deps
 	Sink  authsys.OperationLogSink
+	Authz *authz.Store
 }
 
 // Mount wires the groups route family: admin surface on /groups and the
@@ -49,6 +53,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 		d.editBasic(w, r, adminScope(r))
 	})))
 	k.Register("POST "+prefix+"/groups", d.mountGuardedCreate(false))
+	k.Register("POST "+prefix+"/groups/{id}/return-authorization", d.mountGuardedReturnAuthorization(false))
 	k.Register("PATCH "+prefix+"/groups/{id}", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.patch(w, r, adminScope(r))
 	})))
@@ -79,6 +84,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 		d.editBasic(w, r, selfScope(r))
 	})))
 	k.Register("POST "+prefix+"/my-groups", d.mountGuardedCreate(true))
+	k.Register("POST "+prefix+"/my-groups/{id}/return-authorization", d.mountGuardedReturnAuthorization(true))
 	k.Register("PATCH "+prefix+"/my-groups/{id}", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.patch(w, r, selfScope(r))
 	})))
@@ -275,7 +281,9 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 					{Field: "name", Label: "名称", After: item.Name},
 					{Field: "providerCode", Label: "供应商", After: item.ProviderCode},
 					{Field: "groupType", Label: "分组类型", After: item.GroupType},
-					{Field: "enabled", Label: "启用状态", After: boolText(item.Enabled)},
+					// safeChange('enabled', '启用状态', undefined, group.enabled):
+					// normalizeSafeValue keeps booleans native.
+					{Field: "enabled", Label: "启用状态", AfterValue: item.Enabled},
 				},
 				Viewers: []authsys.OperationLogViewer{
 					{SystemAccountID: item.OwnerSystemAccountID, Reason: "resource_owner"},
@@ -448,7 +456,9 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 	}
 	if d.Sink != nil {
 		changes := []authsys.OperationLogChange{
-			{Field: "deleted", Label: "删除状态", After: "true"},
+			// safeChange('deleted', '删除状态', false, true):
+			// normalizeSafeValue keeps booleans native.
+			{Field: "deleted", Label: "删除状态", BeforeValue: false, AfterValue: true},
 		}
 		if len(result.AffectedRouteStrategies) > 0 {
 			changes = append(changes, authsys.OperationLogChange{
@@ -457,6 +467,7 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 			})
 		}
 		var metadata json.RawMessage
+		var targets []authsys.OperationLogTarget
 		if len(result.AffectedRouteStrategies) > 0 {
 			sample := result.AffectedRouteStrategies
 			if len(sample) > 20 {
@@ -468,6 +479,18 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 			})
 			if marshalErr == nil {
 				metadata = document
+			}
+			// Node delete log targets (groups.routes.ts): the affected route
+			// strategies ride as relation=affected target rows (owner-scoped).
+			targets = make([]authsys.OperationLogTarget, 0, len(sample))
+			for _, route := range sample {
+				targets = append(targets, authsys.OperationLogTarget{
+					TargetType:                 "route_strategy",
+					TargetID:                   route.RouteStrategyID,
+					TargetName:                 route.RouteStrategyName,
+					TargetOwnerSystemAccountID: result.OwnerSystemAccountID,
+					Relation:                   "affected",
+				})
 			}
 		}
 		d.Sink.Record(authsys.OperationLogEntry{
@@ -486,6 +509,7 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 			Summary:                       "删除分组：" + resourceName,
 			Changes:                       changes,
 			Metadata:                      metadata,
+			Targets:                       targets,
 			Viewers: []authsys.OperationLogViewer{
 				{SystemAccountID: result.OwnerSystemAccountID, Reason: "resource_owner"},
 			},
@@ -572,4 +596,126 @@ func summarizeAffectedRouteStrategies(changes []RouteStrategyChange) string {
 		return joined + "；另有 " + itoa(len(changes)-3) + " 个策略路由受影响"
 	}
 	return joined
+}
+
+// granteeUserID mirrors userVisibleSystemAccountId (storage/access-scope.ts):
+// the admin scope filter when present, otherwise the caller. The groups
+// return-authorization route resolves the runtime authorization for this
+// account.
+func (a AccessScope) granteeUserID() string {
+	if a.IsAdmin && a.FilterID != "" {
+		return a.FilterID
+	}
+	return a.ViewerID
+}
+
+// scopeQueryOK mirrors parseRequestScopeQuery: an explicit systemAccountId
+// query value must survive trimming (request-scope-query.ts: '系统账号 ID 不
+// 能为空' on the 400 render).
+func scopeQueryOK(r *http.Request) bool {
+	values := r.URL.Query()["systemAccountId"]
+	if len(values) == 0 {
+		return true
+	}
+	return strings.TrimSpace(values[0]) != ""
+}
+
+// mountGuardedReturnAuthorization mounts POST /{id}/return-authorization
+// (groups.routes.ts:352-405, both prefixes): the default mutation guard over
+// groups.return_authorization, the scope-query gate, the authz return domain
+// and the verbatim 404/204 contract with the authorizations return audit
+// record (owner + grantee targets, authorization_owner/authorization_grantee
+// viewers).
+func (d *Deps) mountGuardedReturnAuthorization(selfOnly bool) http.Handler {
+	guard := kernel.MutationGuardMiddleware(kernel.MutationGuardOptions{
+		OperationKey: "groups.return_authorization",
+		Actor:        actorResolver,
+		Scope: func(r *http.Request) (any, error) {
+			return strings.TrimSpace(r.URL.Query().Get("systemAccountId")), nil
+		},
+		Fingerprint: func(r *http.Request) (any, error) {
+			return map[string]any{
+				"groupId": strings.TrimSpace(r.PathValue("id")),
+				"grantee": strings.TrimSpace(r.URL.Query().Get("systemAccountId")),
+			}, nil
+		},
+	})
+	handler := guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := authsys.AuthContextFrom(r)
+		if auth == nil {
+			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+			return
+		}
+		if !scopeQueryOK(r) {
+			kernel.WriteBadRequest(w, "系统账号 ID 不能为空")
+			return
+		}
+		if d.Authz == nil {
+			kernel.WriteError(w, http.StatusInternalServerError, "归还授权分组失败")
+			return
+		}
+		access := selfScope(r)
+		if !selfOnly {
+			access = adminScope(r)
+		}
+		authorization, err := d.Authz.ReturnGroupForGrantee(r.Context(), r.PathValue("id"), access.granteeUserID(), auth.SystemAccountID)
+		if err != nil {
+			// Node's catch renders 400 with the error message; Go maps the
+			// non-domain (store) failure onto the 500 contract like the other
+			// families while keeping the Node fallback text.
+			kernel.WriteError(w, http.StatusInternalServerError, "归还授权分组失败")
+			return
+		}
+		if authorization == nil {
+			kernel.WriteError(w, http.StatusNotFound, "授权分组不存在或不可归还")
+			return
+		}
+		resourceName := authorization.ResourceName
+		if d.Sink != nil {
+			d.Sink.Record(authsys.OperationLogEntry{
+				ActorSystemAccountID:          auth.SystemAccountID,
+				ActorUsername:                 auth.Username,
+				ActorDisplayName:              auth.DisplayName,
+				ActorRole:                     auth.Role,
+				OperationScopeSystemAccountID: authorization.GranteeSystemAccountID,
+				Mode:                          operationMode(access),
+				Module:                        "authorizations",
+				Action:                        "return",
+				OperationKey:                  "groups.return_authorization",
+				ResourceType:                  "authorization",
+				ResourceID:                    authorization.ID,
+				ResourceName:                  resourceName,
+				Summary:                       "归还授权分组：" + resourceName,
+				// safeChange('returned', '归还授权分组', false, true):
+				// normalizeSafeValue keeps booleans native.
+				Changes: []authsys.OperationLogChange{
+					{Field: "returned", Label: "归还授权分组", BeforeValue: false, AfterValue: true},
+				},
+				Targets: []authsys.OperationLogTarget{
+					{
+						TargetType:                 authorization.ResourceType,
+						TargetID:                   authorization.ResourceID,
+						TargetName:                 resourceName,
+						TargetOwnerSystemAccountID: authorization.ResourceOwnerSystemAccountID,
+						Relation:                   "owner",
+					},
+					{
+						TargetType:                 "system_account",
+						TargetID:                   authorization.GranteeSystemAccountID,
+						TargetOwnerSystemAccountID: authorization.GranteeSystemAccountID,
+						Relation:                   "grantee",
+					},
+				},
+				Viewers: []authsys.OperationLogViewer{
+					{SystemAccountID: authorization.ResourceOwnerSystemAccountID, Reason: "authorization_owner"},
+					{SystemAccountID: authorization.GranteeSystemAccountID, Reason: "authorization_grantee"},
+				},
+			}, r)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if selfOnly {
+		return d.Auth.RequireSession(true)(handler)
+	}
+	return d.Auth.RequireAdmin(handler)
 }

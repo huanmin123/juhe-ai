@@ -1,9 +1,9 @@
 package inval
 
 import (
-	"sync/atomic"
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -26,7 +26,10 @@ func TestInvalidateBumpsVersionAndNotifies(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("first invalidation must notify, calls=%d", calls)
 	}
-	clock.advance(2 * time.Second) // past the 1s coalesce window
+	// The bus is lossless: no drop-window exists, so timing between calls is
+	// irrelevant to delivery (archived notify* helpers run the invalidator
+	// set on every call).
+	clock.advance(2 * time.Second)
 	bus.Invalidate(TopicGatewayRuntime, "settings_updated")
 	if calls != 2 {
 		t.Fatalf("second invalidation must notify, calls=%d", calls)
@@ -36,23 +39,63 @@ func TestInvalidateBumpsVersionAndNotifies(t *testing.T) {
 	}
 }
 
-func TestThrottleCoalescesWithinOneSecond(t *testing.T) {
+// TestTwoInvalidationsInsideOneSecondBothTakeEffect pins the 审查 #3 fix: the
+// archived local invalidators run for every notify call and the 1s throttle
+// exists only in the Redis sync coordinator, so two invalidations of one
+// topic inside a 1s window must both bump, both publish and both notify.
+func TestTwoInvalidationsInsideOneSecondBothTakeEffect(t *testing.T) {
 	clock := newFakeClock(time.Unix(1000, 0))
+	shared := &fakeShared{versions: map[string]int64{}}
 	bus := New(clock.Now)
-	calls := 0
-	bus.Subscribe(TopicAuthorizationQuota, func(topic, reason string) { calls++ })
+	bus.SetSharedStore(shared)
+	reasons := []string{}
+	bus.Subscribe(TopicAuthorizationQuota, func(topic, reason string) { reasons = append(reasons, reason) })
 
-	bus.Invalidate(TopicAuthorizationQuota, "a")
-	clock.advance(500 * time.Millisecond)
-	bus.Invalidate(TopicAuthorizationQuota, "b") // coalesced away
-	if calls != 1 {
-		t.Fatalf("coalesced invalidation leaked: %d calls", calls)
+	bus.Invalidate(TopicAuthorizationQuota, "grant_changed a")
+	clock.advance(400 * time.Millisecond) // still inside the archived 1s sync window
+	bus.Invalidate(TopicAuthorizationQuota, "grant_changed b")
+
+	if len(reasons) != 2 {
+		t.Fatalf("both invalidations must notify, got %v", reasons)
+	}
+	if reasons[0] != "grant_changed a" || reasons[1] != "grant_changed b" {
+		t.Fatalf("reasons = %v", reasons)
+	}
+	if got := bus.Version(TopicAuthorizationQuota); got != 2 {
+		t.Fatalf("version = %d, want 2 (no bump dropped)", got)
+	}
+	if got := shared.snapshot(TopicAuthorizationQuota); got != 2 {
+		t.Fatalf("shared version = %d, want 2 (no publish dropped)", got)
+	}
+}
+
+// TestSubscribeUnsubscribeRemovesExactlyOneHandler pins the 审查 #6 fix:
+// unsubscribe removes exactly the returned registration (the archived
+// register* helpers delete the registered handler from their Set), so a
+// second same-shaped handler keeps receiving invalidations and a double
+// unsubscribe is a no-op.
+func TestSubscribeUnsubscribeRemovesExactlyOneHandler(t *testing.T) {
+	bus := New(nil)
+	firstCalls, secondCalls := 0, 0
+	first := bus.Subscribe(TopicGatewayRuntime, func(topic, reason string) { firstCalls++ })
+	bus.Subscribe(TopicGatewayRuntime, func(topic, reason string) { secondCalls++ })
+
+	bus.Invalidate(TopicGatewayRuntime, "a")
+	if firstCalls != 1 || secondCalls != 1 {
+		t.Fatalf("after subscribe: first=%d second=%d, want 1/1", firstCalls, secondCalls)
 	}
 
-	clock.advance(2 * time.Second)
-	bus.Invalidate(TopicAuthorizationQuota, "c")
-	if calls != 2 {
-		t.Fatalf("post-throttle invalidation missing: %d calls", calls)
+	first()
+	first() // double unsubscribe must be a no-op
+	bus.Invalidate(TopicGatewayRuntime, "b")
+	if firstCalls != 1 {
+		t.Fatalf("unsubscribed handler must not fire again, first=%d", firstCalls)
+	}
+	if secondCalls != 2 {
+		t.Fatalf("remaining handler must keep firing, second=%d", secondCalls)
+	}
+	if bus.Version(TopicGatewayRuntime) != 2 {
+		t.Fatalf("version = %d, want 2 (unsubscribe must not swallow bumps)", bus.Version(TopicGatewayRuntime))
 	}
 }
 

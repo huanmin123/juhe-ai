@@ -172,6 +172,126 @@ func TestOperationLogProducerSinkDeferredFieldsLockedIn(t *testing.T) {
 	}
 }
 
+// TestOperationLogProducerSinkHandoverFields locks in the M05/M07 sink
+// extension: statusCode / targets / native change values reach the F4 Input
+// untouched (Node OperationLogInput.statusCode, .targets and the
+// normalizeSafeValue unknown forms), while the unset shapes keep the
+// pre-extension contract.
+func TestOperationLogProducerSinkHandoverFields(t *testing.T) {
+	store := &sinkFakeStore{}
+	sink := &OperationLogProducerSink{Producer: operationlog.NewProducer(store, operationlog.OwnerLease{}, operationlog.Config{InstanceID: "test"}, nil)}
+
+	status := 204
+	sink.Record(OperationLogEntry{
+		ActorSystemAccountID: "sysacc_admin",
+		ActorRole:            "admin",
+		Mode:                 "admin",
+		Module:               "api_keys",
+		Action:               "delete",
+		OperationKey:         "api_keys.delete",
+		ResourceType:         "api_key",
+		ResourceID:           "key_1",
+		Summary:              "删除 API Key：key_1",
+		StatusCode:           &status,
+		Changes: []OperationLogChange{{
+			Field: "deleted", Label: "删除状态", BeforeValue: false, AfterValue: true,
+		}},
+	}, httptest.NewRequest(http.MethodDelete, "/__aisys__/api/api-keys/key_1", nil))
+
+	// Object/array change values flatten to JSON text exactly like Node
+	// normalizeSafeValue (native null/number/boolean stay native).
+	sink.Record(OperationLogEntry{
+		ActorSystemAccountID: "sysacc_admin",
+		ActorRole:            "admin",
+		Mode:                 "admin",
+		Module:               "groups",
+		Action:               "create",
+		OperationKey:         "groups.create",
+		ResourceType:         "group",
+		Summary:              "创建分组",
+		Changes: []OperationLogChange{{
+			Field: "schedulingPolicy", Label: "调度策略",
+			// Pre-encoded JSON keeps the Node insertion order byte-exact.
+			AfterValue: json.RawMessage(`{"mode":"fast_first","maxQueueSize":120}`),
+		}},
+		Targets: []OperationLogTarget{
+			{TargetType: "route_strategy", TargetID: "rs_1", TargetName: "默认策略", TargetOwnerSystemAccountID: "sysacc_admin", Relation: "affected"},
+			{TargetType: "system_account", TargetID: "sysacc_user", TargetOwnerSystemAccountID: "sysacc_user", Relation: "grantee"},
+		},
+	}, httptest.NewRequest(http.MethodPost, "/__aisys__/api/groups", nil))
+
+	// Legacy entry without the handover fields: StatusCode and Targets stay at
+	// their zero contracts (nil → SQL NULL / primary-target normalization).
+	sink.Record(OperationLogEntry{
+		ActorSystemAccountID: "sysacc_admin",
+		ActorRole:            "admin",
+		Module:               "announcements",
+		Action:               "create",
+		OperationKey:         "announcements.create",
+		ResourceType:         "announcement",
+		Summary:              "发布公告",
+	}, httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", nil))
+
+	inputs := waitForSinkInputs(t, store, 3)
+	if len(inputs) < 3 {
+		t.Fatalf("expected 3 persisted entries, got %d", len(inputs))
+	}
+	deleted := findSinkInputByModule(inputs, "api_keys")
+	if deleted == nil {
+		t.Fatalf("api_keys entry not persisted, got %d entries", len(inputs))
+	}
+	if deleted.StatusCode == nil || *deleted.StatusCode != 204 {
+		t.Fatalf("statusCode not passed through: %v", deleted.StatusCode)
+	}
+	if len(deleted.Changes) != 1 {
+		t.Fatalf("unexpected change count: %+v", deleted.Changes)
+	}
+	if deleted.Changes[0].Before != false || deleted.Changes[0].After != true {
+		t.Fatalf("native boolean change values must stay native: before=%v(%T) after=%v(%T)",
+			deleted.Changes[0].Before, deleted.Changes[0].Before, deleted.Changes[0].After, deleted.Changes[0].After)
+	}
+
+	groups := findSinkInputByModule(inputs, "groups")
+	if groups == nil {
+		t.Fatalf("groups entry not persisted, got %d entries", len(inputs))
+	}
+	if len(groups.Targets) != 2 {
+		t.Fatalf("targets not passed through: %+v", groups.Targets)
+	}
+	if groups.Targets[0].TargetType != "route_strategy" || groups.Targets[0].TargetID != "rs_1" ||
+		groups.Targets[0].TargetName != "默认策略" || groups.Targets[0].Relation != "affected" ||
+		groups.Targets[0].TargetOwnerSystemAccountID != "sysacc_admin" {
+		t.Fatalf("route_strategy target drift: %+v", groups.Targets[0])
+	}
+	if groups.Targets[1].TargetType != "system_account" || groups.Targets[1].TargetID != "sysacc_user" ||
+		groups.Targets[1].Relation != "grantee" {
+		t.Fatalf("grantee target drift: %+v", groups.Targets[1])
+	}
+	if len(groups.Changes) != 1 {
+		t.Fatalf("unexpected groups change count: %+v", groups.Changes)
+	}
+	encoded, err := json.Marshal(groups.Changes[0].After)
+	if err != nil {
+		t.Fatalf("marshal change after: %v", err)
+	}
+	// normalizeSafeValue flattens objects to JSON text (a string, not an
+	// object) — the same double serialization Node applies.
+	if string(encoded) != `"{\"mode\":\"fast_first\",\"maxQueueSize\":120}"` {
+		t.Fatalf("object change value must flatten to JSON text, got %s", encoded)
+	}
+
+	legacy := findSinkInputByModule(inputs, "announcements")
+	if legacy == nil {
+		t.Fatalf("announcements entry not persisted, got %d entries", len(inputs))
+	}
+	if legacy.StatusCode != nil {
+		t.Fatalf("legacy statusCode must stay nil, got %v", *legacy.StatusCode)
+	}
+	if legacy.Targets != nil {
+		t.Fatalf("legacy targets must stay nil, got %+v", legacy.Targets)
+	}
+}
+
 // TestProducerSinkGeneratesOperationLogIDs is the X05 regression for the
 // management-plane operation log path: Node recordOperationLog defaults the
 // entry id (newId('oplog')) before dispatch; the Go sink must do the same or

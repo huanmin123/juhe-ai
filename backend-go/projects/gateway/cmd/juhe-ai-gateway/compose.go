@@ -483,7 +483,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create system-teams store: %w", err)
 	}
-	groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
+	// WithGlobalConcurrencyMax carries the parsed JUHE_AI_CONCURRENCY_GLOBAL_MAX
+	// into the DEFAULT scheduling-policy projection (Node reads
+	// runtimeConfig.concurrency.globalMax live; the store default stays 5000).
+	groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus, groups.WithGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax))
 	if err != nil {
 		return nil, fmt.Errorf("create groups store: %w", err)
 	}
@@ -494,6 +497,34 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	apiKeyStore, err := apikeys.NewStore(composed.db, composed.pgDialect, cfg.Secret, time.Now, newCompositionID, apikeys.BusInvalidator{Bus: bus})
 	if err != nil {
 		return nil, fmt.Errorf("create api-key store: %w", err)
+	}
+	// M07 handover closures: the list/detail usage projection reads the stats
+	// database through the StatsUsageSource (zero summaries stay the nil-source
+	// degradation), and the delete-transaction cleanup handoff reaches the
+	// dataset placement. PostgreSQL registers the target in-transaction through
+	// the shared juhe_dataset schema; SQLite needs the writable dataset file
+	// handle Node opens for registerDeletedApiKeyRecordCleanupTarget.
+	usageSource, err := apikeys.NewStatsUsageSource(composed.statsDB, composed.pgDialect)
+	if err != nil {
+		return nil, fmt.Errorf("create api-key stats usage source: %w", err)
+	}
+	apiKeyStore.SetUsageSource(usageSource)
+	apiKeyStore.SetCleanupSubmitter(apiKeyCleanupSubmitter{store: apiKeyStore})
+	if !composed.pgDialect {
+		if cfg.DatasetDatabasePath == "" {
+			return nil, errors.New("sqlite 模式缺少 JUHE_AI_DATASET_DATABASE_PATH，无法登记 API Key 删除清理目标")
+		}
+		apiKeyDatasetDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.DatasetDatabasePath))
+		if err != nil {
+			return nil, fmt.Errorf("open api-key cleanup dataset sqlite database: %w", err)
+		}
+		apiKeyDatasetDB.SetMaxOpenConns(1)
+		if err := configureSQLiteConnection(apiKeyDatasetDB); err != nil {
+			_ = apiKeyDatasetDB.Close()
+			return nil, fmt.Errorf("configure api-key cleanup dataset sqlite database: %w", err)
+		}
+		apiKeyStore.SetDatasetDB(apiKeyDatasetDB)
+		composed.shutdowns = append(composed.shutdowns, func() { _ = apiKeyDatasetDB.Close() })
 	}
 	accountStore, err := accounts.NewStore(composed.db, composed.pgDialect, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
@@ -660,7 +691,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// The authorization family (M04) plus its X04 authorization-options
 	// surface mount through authzDeps below.
 	(&settings.Deps{Store: settingsStore, Auth: authDeps, Sink: sink}).Mount(kern)
-	(&groups.Deps{Store: groupsStore, Auth: authDeps, Sink: sink}).Mount(kern)
+	// The groups family mounts the M05 return-authorization route through the
+	// authz return domain (Node returnGroupAuthorizationForGranteeAsync).
+	(&groups.Deps{Store: groupsStore, Auth: authDeps, Sink: sink, Authz: authzStore}).Mount(kern)
 	(&routestrategies.Deps{Store: routeStrategyStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&apikeys.Deps{Store: apiKeyStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&accounts.Deps{Store: accountStore, Auth: authDeps, Sink: sink}).Mount(kern)
@@ -956,6 +989,18 @@ func settingsTimezone(read SettingValueFunc) ipstats.TimezoneSource {
 	return func(context.Context) (string, error) {
 		return read("usageStatsTimezone")
 	}
+}
+
+// apiKeyCleanupSubmitter adapts the apikeys after-commit maintenance handoff
+// onto the durable dataset target row: the Go jobs scheduler drains
+// api_key_record_cleanup_targets (api-key-record-cleanup-retry), the Go
+// equivalent of Node's record-maintenance enqueue plus background retry pass.
+// Errors never fail the delete — the store surfaces them as
+// DeleteResult.CleanupSubmitError (Node catch-and-continue).
+type apiKeyCleanupSubmitter struct{ store *apikeys.Store }
+
+func (s apiKeyCleanupSubmitter) SubmitAPIKeyRelatedCleanup(ctx context.Context, apiKeyID, systemAccountID string) error {
+	return s.store.RegisterCleanupTarget(ctx, apiKeyID, systemAccountID)
 }
 
 // devAutoLoginResolver wires the development auto-login account into the help

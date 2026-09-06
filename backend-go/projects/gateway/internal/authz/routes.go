@@ -153,8 +153,10 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	})))
 	k.Register("POST "+prefix+"/authorizations", d.RequireAdmin(
 		kernel.MutationGuardMiddleware(kernel.MutationGuardOptions{
-			OperationKey:  "authorizations.create",
-			SucceededTTL:  0,
+			OperationKey: "authorizations.create",
+			// Node succeededTtlMs: 0 (authorizations.routes.ts:219) = success is
+			// immediately retryable; failures keep the default 10s window.
+			SucceededTTL:  kernel.DedupNoRetention,
 			FailedTTL:     0,
 			ProcessingTTL: authorizationsProcessingTTL,
 			Scope: func(r *http.Request) (any, error) {

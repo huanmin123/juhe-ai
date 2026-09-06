@@ -148,41 +148,70 @@ func firstHeaderValue(value string) string {
 	return ""
 }
 
-// ExtractClientIP mirrors extractClientIp: with trusted proxies, req.ip is
-// express' remote-address resolution; Go equivalent takes the last trusted
-// X-Forwarded-For entry when trustProxyCount > 0.
+// ExtractClientIP mirrors extractClientIp (shared/request-context.ts:456):
+// normalizeClientIp(req.ip) ?? normalizeClientIp(req.socket.remoteAddress).
+// The chain is IPv4-only and an empty result carries the Node undefined
+// semantics. req.ip is the Express trust-proxy resolution: with
+// trustProxyCount trusted hops the X-Forwarded-For entry at
+// len(parts)-trustProxyCount answers; fewer entries than trusted hops cannot
+// identify an untrusted client, so the socket address answers instead of the
+// client-controlled first entry (防伪造: a direct caller forging a short XFF
+// chain must not pick its own leftmost value).
 func ExtractClientIP(r *http.Request, trustProxyCount int) string {
 	remote := normalizeClientIP(r.RemoteAddr)
 	if trustProxyCount > 0 {
 		forwarded := r.Header.Get("x-forwarded-for")
 		if forwarded != "" {
 			parts := strings.Split(forwarded, ",")
-			index := len(parts) - trustProxyCount
-			if index < 0 {
-				index = 0
-			}
-			if candidate := normalizeClientIP(strings.TrimSpace(parts[index])); candidate != "" {
-				return candidate
+			if len(parts) >= trustProxyCount {
+				index := len(parts) - trustProxyCount
+				if candidate := normalizeClientIP(strings.TrimSpace(parts[index])); candidate != "" {
+					return candidate
+				}
 			}
 		}
 	}
 	return remote
 }
 
+// ipv4WithPortPattern mirrors the Node /^\d{1,3}(?:\.\d{1,3}){3}:\d+$/ check.
+var ipv4WithPortPattern = regexp.MustCompile(`^\d{1,3}(?:\.\d{1,3}){3}:\d+$`)
+
+// normalizeClientIP mirrors the Node helper (shared/request-context.ts:716):
+// trim, strip [..] brackets, strip a ":port" suffix from dotted-quad text,
+// strip the "::ffff:" mapped-address prefix, and keep only IPv4 results
+// (isIP(ip) === 4); everything else — including IPv6 — normalizes to "",
+// exactly like the Node undefined.
 func normalizeClientIP(value string) string {
 	if value == "" {
 		return ""
 	}
-	host, _, err := net.SplitHostPort(value)
-	if err != nil {
-		host = value
-	}
-	host = strings.Trim(host, "[]")
-	ip := net.ParseIP(host)
-	if ip == nil {
+	ip := strings.TrimSpace(value)
+	if ip == "" {
 		return ""
 	}
-	return ip.String()
+	if strings.HasPrefix(ip, "[") {
+		end := strings.Index(ip, "]")
+		if end > 0 {
+			ip = ip[1:end]
+		}
+	}
+	if ipv4WithPortPattern.MatchString(ip) {
+		ip = ip[:strings.LastIndex(ip, ":")]
+	}
+	if strings.HasPrefix(ip, "::ffff:") {
+		ip = ip[len("::ffff:"):]
+	}
+	if !isIPv4Text(ip) {
+		return ""
+	}
+	return ip
+}
+
+// isIPv4Text mirrors isIP(ip) === 4: dotted-quad only.
+func isIPv4Text(value string) bool {
+	parsed := net.ParseIP(value)
+	return parsed != nil && parsed.To4() != nil && !strings.Contains(value, ":")
 }
 
 func newUUID() string {

@@ -96,12 +96,18 @@ func scopeQueryOK(r *http.Request) bool {
 	return strings.TrimSpace(values[0]) != ""
 }
 
+// operationMode mirrors operation-log.service.ts operationMode.
 func operationMode(access AccessScope) string {
 	if access.IsAdmin {
 		return "admin"
 	}
 	return "self"
 }
+
+// operationStatusCode pins the Node statusCode value on the log entries that
+// know the response outcome before it is written (api-keys create 201,
+// refresh/patch validation-cache-failure 500 else 200, delete 500 else 204).
+func operationStatusCode(status int) *int { return &status }
 
 func setNoStoreHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -270,6 +276,7 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 				ResourceID:                    result.ID,
 				ResourceName:                  meta.Name,
 				Summary:                       "创建 API Key：" + meta.Name,
+				StatusCode:                    operationStatusCode(http.StatusCreated),
 				Changes: []authsys.OperationLogChange{
 					{Field: "name", Label: "名称", After: meta.Name},
 					{Field: "status", Label: "状态", After: meta.Status},
@@ -328,6 +335,13 @@ func (d *Deps) mountGuardedRefresh(selfOnly bool) http.Handler {
 			return
 		}
 		if d.Sink != nil {
+			// Node stamps statusCode before the response outcome lands
+			// (api-keys.routes.ts:122): the validation-cache failure 500s, the
+			// normal path answers 200.
+			statusCode := http.StatusOK
+			if outcome.ValidationCacheError != nil {
+				statusCode = http.StatusInternalServerError
+			}
 			d.Sink.Record(authsys.OperationLogEntry{
 				ActorSystemAccountID:          auth.SystemAccountID,
 				ActorUsername:                 auth.Username,
@@ -342,6 +356,7 @@ func (d *Deps) mountGuardedRefresh(selfOnly bool) http.Handler {
 				ResourceID:                    outcome.Result.ID,
 				ResourceName:                  outcome.ResourceName,
 				Summary:                       "刷新 API Key 密钥：" + outcome.ResourceName,
+				StatusCode:                    operationStatusCode(statusCode),
 				Changes: []authsys.OperationLogChange{
 					{Field: "key", Label: "密钥标识", Before: "已设置", After: "已变更", Sensitive: true},
 				},
@@ -474,6 +489,13 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope)
 		return
 	}
 	if d.Sink != nil && len(outcome.Result.ChangedFields) > 0 {
+		// Node stamps statusCode before the response outcome lands
+		// (api-keys.routes.ts:262): the validation-cache failure 500s, the
+		// normal path answers 200.
+		statusCode := http.StatusOK
+		if outcome.ValidationCacheError != nil {
+			statusCode = http.StatusInternalServerError
+		}
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID:          auth.SystemAccountID,
 			ActorUsername:                 auth.Username,
@@ -488,6 +510,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope)
 			ResourceID:                    outcome.Result.ID,
 			ResourceName:                  outcome.ResourceName,
 			Summary:                       "更新 API Key：" + outcome.ResourceName,
+			StatusCode:                    operationStatusCode(statusCode),
 			Changes:                       diffSafePatchChanges(outcome.Before, outcome.After),
 			Viewers: []authsys.OperationLogViewer{
 				{SystemAccountID: outcome.OwnerSystemAccountID, Reason: "resource_owner"},
@@ -525,6 +548,13 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 		resourceName = r.PathValue("id")
 	}
 	if d.Sink != nil {
+		// Node stamps statusCode before the response outcome lands
+		// (api-keys.routes.ts:319): the validation-cache failure 500s, the
+		// normal path answers 204.
+		statusCode := http.StatusNoContent
+		if result.ValidationCacheError != nil {
+			statusCode = http.StatusInternalServerError
+		}
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID:          auth.SystemAccountID,
 			ActorUsername:                 auth.Username,
@@ -539,8 +569,11 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 			ResourceID:                    r.PathValue("id"),
 			ResourceName:                  resourceName,
 			Summary:                       "删除 API Key：" + resourceName,
+			StatusCode:                    operationStatusCode(statusCode),
+			// safeChange('deleted', '删除状态', false, true): normalizeSafeValue
+			// keeps booleans native.
 			Changes: []authsys.OperationLogChange{
-				{Field: "deleted", Label: "删除状态", Before: "false", After: "true"},
+				{Field: "deleted", Label: "删除状态", BeforeValue: false, AfterValue: true},
 			},
 			Viewers: []authsys.OperationLogViewer{
 				{SystemAccountID: result.OwnerSystemAccountID, Reason: "resource_owner"},

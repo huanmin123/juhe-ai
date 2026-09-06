@@ -74,7 +74,11 @@ func FindProviderModelPricingAsOf(providerCode string, model string, asOfDate st
 }
 
 // findRawProviderModelPricing mirrors findProviderModelPricing
-// (model-pricing.service.ts:158-185) over the driver's raw rows.
+// (model-pricing.service.ts:158-185) over the driver's raw rows. Each layer
+// is `models.find(byName)` FIRST and the shutdown check applies to that
+// first same-named row only: when the first row named X is already shutdown
+// the layer gives up (Node never rescans later duplicate rows), and the
+// lookup moves to the next candidate layer.
 func findRawProviderModelPricing(entry *providerEntry, normalized string, asOfDate string) *rawModel {
 	if normalized == "" {
 		return nil
@@ -83,32 +87,36 @@ func findRawProviderModelPricing(entry *providerEntry, normalized string, asOfDa
 		return nil
 	}
 
-	for index := range entry.rawModels {
-		item := &entry.rawModels[index]
-		if normalizeWhitespace(item.Model) == normalized && !hasModelShutdown(item, asOfDate) {
-			return item
-		}
+	if match := firstNamedRawRow(entry, normalized); match != nil && !hasModelShutdown(match, asOfDate) {
+		return match
 	}
 
 	for _, candidate := range entry.buildModelCandidates(normalized) {
 		normalizedCandidate := canonicalOpenAIModelAlias(candidate)
-		for index := range entry.rawModels {
-			item := &entry.rawModels[index]
-			if normalizeWhitespace(item.Model) == normalizedCandidate && !hasModelShutdown(item, asOfDate) {
-				return item
-			}
+		if match := firstNamedRawRow(entry, normalizedCandidate); match != nil && !hasModelShutdown(match, asOfDate) {
+			return match
 		}
 	}
 
 	if canonicalAlias := canonicalOpenAIModelAlias(normalized); canonicalAlias != normalized {
-		for index := range entry.rawModels {
-			item := &entry.rawModels[index]
-			if normalizeWhitespace(item.Model) == canonicalAlias && !hasModelShutdown(item, asOfDate) {
-				return item
-			}
+		if match := firstNamedRawRow(entry, canonicalAlias); match != nil && !hasModelShutdown(match, asOfDate) {
+			return match
 		}
 	}
 
+	return nil
+}
+
+// firstNamedRawRow mirrors the Node models.find((item) =>
+// normalizeModel(item.model) === name): the first same-named snapshot row
+// decides the layer outcome.
+func firstNamedRawRow(entry *providerEntry, name string) *rawModel {
+	for index := range entry.rawModels {
+		item := &entry.rawModels[index]
+		if normalizeWhitespace(item.Model) == name {
+			return item
+		}
+	}
 	return nil
 }
 
