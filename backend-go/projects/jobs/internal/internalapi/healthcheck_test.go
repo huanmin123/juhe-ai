@@ -101,27 +101,9 @@ func TestDispatchAccountHealthCheckOutcomeMatrix(t *testing.T) {
 			t.Fatal("范围外账户不得发布 request 文件")
 		}
 	})
-	t.Run("revision 不一致 → 视为无冻结 input → queued + fence unknown", func(t *testing.T) {
-		options, _ := testHealthOptions(t, &fakeBoundary{
-			account:      account,
-			inputVersion: 2,
-			revisions:    HealthCheckRevisions{ConfigRevision: 3, DispatchRevision: 8},
-			ok:           true,
-		})
-		settled := ""
-		options.SettleSourceFence = func(_ context.Context, _ HealthCheckSourceFence, state string) error {
-			settled = state
-			return nil
-		}
-		fence := &HealthCheckSourceFence{StateKey: "sk", AccountID: "acc-1", SourceGeneration: 1, SourceFenceID: "sf", RuntimeKey: "acc-1", ProbeGeneration: 2, ConfigRevision: 4}
-		outcome, err := DispatchAccountHealthCheckWithOutcome(context.Background(), "acc-1", "gateway_failure", "", fence, nil, options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if outcome.Outcome != "queued" || settled != "unknown" {
-			t.Fatalf("outcome=%+v settled=%q", outcome, settled)
-		}
-	})
+	// 审查轮换七 #5：revisions/account 的 config_revision 在唯一生产 Boundary
+	// （worker_health_dispatch.go）读自同一列，自比较恒假，该分支及对应的
+	// 「revision 不一致」子用例已删除。
 	t.Run("boundary 错误上抛", func(t *testing.T) {
 		options, _ := testHealthOptions(t, &fakeBoundary{err: errors.New("db down")})
 		if _, err := DispatchAccountHealthCheckWithOutcome(context.Background(), "acc-1", "manual_retry", "", nil, nil, options); err == nil {

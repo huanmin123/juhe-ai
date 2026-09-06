@@ -16,6 +16,11 @@
 
 可选预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 启动前执行幂等的 `backend-go/juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径或 PostgreSQL `--dsn`），`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。`JUHE_AI_OWNER_LOCK_ENABLED=true` 会被拒绝（owner lock 尚无 Go server 包装）。
 
+可选运行变量（均有缺省值，常规单机部署无需设置）：
+
+- `JUHE_AI_JOBS_INTERNAL_URL`：gateway 进程回调 jobs internal-api 派发面的 loopback origin，默认 `http://127.0.0.1:3305`（与 jobs 健康监听缺省端口一致）。手动账户测试派发（`POST /__aiinternal__/v1/account-test/dispatch`）、请求失败链账户健康检查派发（`POST /__aiinternal__/v1/account-health-check/dispatch`）与账户余额健康裁决都经过它；jobs 健康监听端口变更时必须同步修改。
+- `JUHE_AI_BLUE_GREEN_OWNER_MODE`：Go 进程蓝绿 owner 模式，合法值 `active` / `standby` / `drain`（大小写不敏感），缺省 `active`。gateway 与 jobs 启动时各自校验，非法值启动失败；仅 `active` 持有 owner 工作，`standby` / `drain` 供蓝绿切换窗口把候补/下线槽排除出 owner 判定（含账户余额健康对对端 ownerMode 的裁决）。
+
 详见 `docs/migration/部署go-only双轨开关.md`（源码仓库内）。
 
 

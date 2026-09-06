@@ -308,8 +308,8 @@ type chainFailureDispatcher struct {
 	// codexUsageHeaders 是 codex 用量响应头的失败面持久化窄口（Node
 	// persistOpenAICodexHeadersIfNeeded，failure-dispatch.ts:340-344）。
 	// gatewaycodex.PersistOpenAICodexHeadersIfNeeded 对 nil 派发器静默返回
-	// （gatewaycodex 包契约：不合格账户与无 codex 头静默跳过）；gateway→jobs
-	// 的 record-maintenance 快照通道仍在建（注册遗留项），组合根暂持 nil。
+	// （gatewaycodex 包契约：不合格账户与无 codex 头静默跳过）；生产装配为
+	// compose_codex_usage_headers.go 的 record_maintenance_jobs 快照通道。
 	codexUsageHeaders gatewaycodex.CodexUsageHeadersDispatcher
 }
 
@@ -415,7 +415,7 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 		// Node: 读取侧规则归一是同一严格校验，抛出同步异常并按请求错误处理。
 		return gatewaydispatch.FailedUpstreamResponseResult{}, decisionErr
 	}
-	failurePayload := failureProtocolPayloadOf(bodyText, policyHeader, parsedFailureBody)
+	failurePayload := failureProtocolPayloadOf(parsedFailureBody)
 	upstreamErrorSummary := accountErrorPayloadSummary(failurePayload)
 
 	lastAttempt := failedResponseAttemptOf(input, bodyText, parsedFailureBody)
@@ -507,6 +507,10 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 
 	// failure-dispatch.ts:348-367: the keyScoped system-quota decision records
 	// the Key-scoped failure directly (rate_limited + quota recovery code).
+	// account-api-key-effects.service.ts:141-171: the write failure is
+	// caught-and-warned (gateway_account_api_key_failure_side_effect_failed) —
+	// the request keeps its skip_account candidate failover instead of
+	// aborting the attempt on a bookkeeping error.
 	if decision != nil && decision.KeyScoped && input.AccountStateMutationEnabled {
 		if err := d.errorPolicyEffectsOf().RecordKeyScopedQuotaFailure(ctx, input.Account, *decision, chainErrorPolicyFailureInput{
 			StatusCode:                   statusCode,
@@ -517,7 +521,12 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 			TraceID:                      input.UsageContext.TraceID,
 			AttemptStartedAtMs:           input.AttemptStartedAt,
 		}); err != nil {
-			return gatewaydispatch.FailedUpstreamResponseResult{}, err
+			slog.Warn("账户内 API Key 失败运行态写入失败",
+				"event", "gateway_account_api_key_failure_side_effect_failed",
+				"accountId", input.Account.ID,
+				"selectedApiKeyFingerprint", stringValueOf(input.Account.SelectedAPIKeyFingerprint),
+				"source", "system_quota_policy",
+				"error", err)
 		}
 	}
 
@@ -1103,14 +1112,16 @@ func responseHTTPHeaderOf(response *gatewaydispatch.GatewayUpstreamResponse) htt
 	return response.Header
 }
 
-// failureProtocolPayloadOf mirrors parseFailureBodyFacts' errorPayload: the
-// protocol-aware projection of the parsed JSON body (falls back to parsing
-// the captured text when the body did not parse as JSON).
-func failureProtocolPayloadOf(bodyText string, header http.Header, parsedBody map[string]any) gatewayproto.ErrorPayload {
+// failureProtocolPayloadOf mirrors parseFailureBodyFacts' errorPayload
+// (failure-dispatch.ts:439-447): the protocol-aware projection of the parsed
+// JSON body; a body that did not parse as valid JSON keeps the payload empty
+// ({} in Node) — decision and usage both see the empty payload and must not
+// re-parse the captured text.
+func failureProtocolPayloadOf(parsedBody map[string]any) gatewayproto.ErrorPayload {
 	if parsedBody != nil {
 		return gatewayopenai.ParseErrorPayloadFromJSONValue(parsedBody)
 	}
-	return gatewayopenai.ParseErrorPayload(bodyText, header)
+	return gatewayproto.ErrorPayload{}
 }
 
 // usageErrorPayloadOf mirrors recordFailedUpstreamAttempt's errorPayload

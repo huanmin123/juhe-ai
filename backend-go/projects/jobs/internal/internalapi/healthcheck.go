@@ -117,12 +117,15 @@ func DispatchAccountHealthCheckWithOutcome(ctx context.Context, accountID, reaso
 		return HealthCheckDispatchOutcome{}, errors.New("账户健康检查派发依赖未初始化")
 	}
 	requestID := HealthCheckProbeRequestIDPrefix + newUUID()
-	account, inputVersion, revisions, ok, err := options.Boundary.CurrentProbeInput(ctx, normalizedID)
+	account, inputVersion, _, ok, err := options.Boundary.CurrentProbeInput(ctx, normalizedID)
 	if err != nil {
 		return HealthCheckDispatchOutcome{}, err
 	}
-	if !ok || inputVersion < 1 || revisions.ConfigRevision != account.ConfigRevision {
+	if !ok || inputVersion < 1 {
 		// 冻结 J1 范围之外的账户：跳过请求发布，仍结算 source fence。
+		// （account/revisions 的 config_revision 在唯一生产 Boundary
+		// worker_health_dispatch.go 中读自同一列，二者恒等；比较属死条件，
+		// 已删除。）
 		if sourceFence != nil && options.SettleSourceFence != nil {
 			if settleErr := options.SettleSourceFence(ctx, *sourceFence, "unknown"); settleErr != nil {
 				return HealthCheckDispatchOutcome{}, settleErr

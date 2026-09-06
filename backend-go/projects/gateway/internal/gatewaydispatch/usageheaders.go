@@ -89,12 +89,21 @@ func ParseOpenAICodexUsageHeaders(headers http.Header) *OpenAICodexUsageSnapshot
 // builds the maintenance job and enqueues it through the port; returns false
 // when there is nothing to persist.
 func PersistOpenAICodexUsageHeaders(queue RecordMaintenanceQueue, accountID string, headers http.Header, source string) bool {
-	job := buildOpenAICodexUsageRecordMaintenanceJob(accountID, headers, source)
+	job := BuildOpenAICodexUsageRecordMaintenanceJob(accountID, headers, source)
 	if job == nil {
 		return false
 	}
 	queue.EnqueueRecordMaintenanceJob(*job)
 	return true
+}
+
+// BuildOpenAICodexUsageRecordMaintenanceJob mirrors
+// buildOpenAICodexUsageRecordMaintenanceJob (usage.service.ts:74-87): parse
+// the codex headers, project the snapshot payload and normalize the job
+// envelope for the record-maintenance channel; nil when the headers carry no
+// codex usage data.
+func BuildOpenAICodexUsageRecordMaintenanceJob(accountID string, headers http.Header, source string) *RecordMaintenanceJob {
+	return buildOpenAICodexUsageRecordMaintenanceJob(accountID, headers, source)
 }
 
 func buildOpenAICodexUsageRecordMaintenanceJob(accountID string, headers http.Header, source string) *RecordMaintenanceJob {

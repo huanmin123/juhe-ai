@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -167,5 +168,51 @@ func TestWorkerRecordMaintenanceTableDrainRetainsRowOnFailure(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	if count := handoffRowCount(t, dir); count != 1 {
 		t.Fatalf("执行失败的交接行必须保留等待重试，实际 %d", count)
+	}
+}
+
+// 组合根级旧表升级：交接表由旧版（契约 v1，6 列）先行建出时，assembly 的
+// EnsureSchema 必须加法式补齐 v2 快照列（account_id/kind/source/
+// snapshot_json/updated_at），既有 drain 语义不受影响。
+func TestWorkerRecordMaintenanceTableDrainUpgradesLegacySchema(t *testing.T) {
+	dir := t.TempDir()
+	seedRecordMaintenanceDrain(t, dir)
+	seedHandoffRow(t, dir, "recmaint_1757000000000_0badcafe")
+	drainTestAssembly(t, dir)
+
+	// EnsureSchema 在 buildWorkerAssembly 内同步完成：升级列即刻可见。
+	business := openTestSQLite(t, filepath.Join(dir, "business.sqlite3"))
+	rows, err := business.Query(`PRAGMA table_info(record_maintenance_jobs)`)
+	if err != nil {
+		t.Fatalf("pragma table_info: %v", err)
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, columnType string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan pragma row: %v", err)
+		}
+		columns[name] = true
+	}
+	rows.Close()
+	for _, column := range []string{"account_id", "kind", "source", "snapshot_json", "updated_at"} {
+		if !columns[column] {
+			t.Fatalf("v2 列 %s 未被 assembly 升级补齐", column)
+		}
+	}
+
+	// 既有清理行照常被 drain 消费（交接表清空为完成信号）。
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if count := handoffRowCount(t, dir); count == 0 {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("record_maintenance_jobs 未被 drain：%d", handoffRowCount(t, dir))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

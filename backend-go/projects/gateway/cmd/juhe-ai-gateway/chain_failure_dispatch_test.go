@@ -36,6 +36,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
@@ -1081,10 +1082,17 @@ func errorPolicyAccount(credentials map[string]any) gatewaydispatch.AccountCandi
 	return gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "账户一", Type: "api_key", ProviderCode: "openai", Credentials: credentials}
 }
 
-// errorPolicyDecide 便捷入口：status + 失败体 → 决策。
+// errorPolicyDecide 便捷入口：status + 失败体 → 决策。失败体事实与生产面
+// parseFailureBodyFacts 同构（JSON 体带载荷投影，非 JSON 体载荷为空）。
 func errorPolicyDecide(t *testing.T, service *chainErrorPolicyService, account gatewaydispatch.AccountCandidate, status int, body string) *accountErrorPolicyDecision {
 	t.Helper()
-	decision, err := service.Decide(account, status, nil, body, nil, gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30})
+	var parsedBody map[string]any
+	if parsed := gatewayresponse.ParseGatewayNonStreamJsonBody(body, true, nil); parsed.Status == gatewayresponse.NonStreamJSONStatusValid {
+		if mapped, ok := parsed.Value.(map[string]any); ok {
+			parsedBody = mapped
+		}
+	}
+	decision, err := service.Decide(account, status, nil, body, parsedBody, gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30})
 	if err != nil {
 		t.Fatalf("decide: %v", err)
 	}
@@ -1315,6 +1323,7 @@ func newErrorPolicyEffectsFixture(t *testing.T) *errorPolicyEffectsFixture {
 			name TEXT NOT NULL DEFAULT '账户', type TEXT NOT NULL DEFAULT 'api_key',
 			status TEXT NOT NULL DEFAULT 'active', schedulable INTEGER NOT NULL DEFAULT 1,
 			config_revision INTEGER NOT NULL DEFAULT 1,
+			dispatch_revision INTEGER NOT NULL DEFAULT 1, last_health_success_at TEXT,
 			credentials_encrypted TEXT, cooldown_until TEXT,
 			last_error_code TEXT, last_error_message TEXT, last_error_trace_id TEXT,
 			cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
@@ -1589,6 +1598,235 @@ func TestChainErrorPolicyEffectsKeyScopedQuotaRecord(t *testing.T) {
 	}
 	if cooldownUntil != "2026-09-01T11:00:00.000Z" {
 		t.Fatalf("key cooldown_until = %q", cooldownUntil)
+	}
+}
+
+// TestChainErrorPolicyEffectsRuntimeFailureObservationFence：决策时刻陈旧观察
+// 围栏（Node account-runtime-mutation.repository.ts:2296-2325，
+// account-error-policy.service.ts:607-615）—— SQL 追加
+// dispatch_revision = 快照 AND last_health_success_at < observedAt AND
+// updated_at <= observedAt，updated_at 以 CASE 保留较新值；候选快照缺
+// dispatchRevision 时不设围栏（Node guard undefined → 普通赋值）。
+func TestChainErrorPolicyEffectsRuntimeFailureObservationFence(t *testing.T) {
+	fixture := newErrorPolicyEffectsFixture(t)
+	observedAt := fixedErrorPolicyClock().UTC().Format(rfc3339MillisUTC)
+	candidateWithRevision := func(id string, revision int64) gatewaydispatch.AccountCandidate {
+		account := errorPolicyAccount(nil)
+		account.ID = id
+		account.DispatchRevision = &revision
+		return account
+	}
+	assertActive := func(t *testing.T, id string) {
+		t.Helper()
+		if row := fixture.accountRow(t, id); row["status"] != "active" {
+			t.Fatalf("%s must stay active, row = %+v", id, row)
+		}
+	}
+
+	// 1) 围栏放行：行 revision 与快照一致、无健康成功、updated_at 较旧 →
+	//    冷却写入且 updated_at 归位到观察时刻。
+	fixture.seedAccount(t, "acc_ok", "active", 1)
+	if _, err := fixture.db.Exec(`UPDATE accounts SET updated_at = '2026-08-31T00:00:00.000Z' WHERE id = 'acc_ok'`); err != nil {
+		t.Fatalf("seed updated_at: %v", err)
+	}
+	changed, _, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		candidateWithRevision("acc_ok", 1), systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{})
+	if err != nil || !changed {
+		t.Fatalf("fenced cooldown must apply: changed=%v err=%v", changed, err)
+	}
+	row := fixture.accountRow(t, "acc_ok")
+	if row["status"] != "rate_limited" {
+		t.Fatalf("cooled row = %+v", row)
+	}
+	var updatedAt string
+	if err := fixture.db.QueryRow(`SELECT updated_at FROM accounts WHERE id = 'acc_ok'`).Scan(&updatedAt); err != nil {
+		t.Fatalf("read updated_at: %v", err)
+	}
+	if updatedAt != observedAt {
+		t.Fatalf("updated_at = %q want the observation instant %q", updatedAt, observedAt)
+	}
+
+	// 2) 决策后账户被重新派发（dispatch_revision 前进）→ 拒绝写入。
+	fixture.seedAccount(t, "acc_redis", "active", 1)
+	if _, err := fixture.db.Exec(`UPDATE accounts SET dispatch_revision = 2 WHERE id = 'acc_redis'`); err != nil {
+		t.Fatalf("seed dispatch revision: %v", err)
+	}
+	changed, _, err = fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		candidateWithRevision("acc_redis", 1), systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{})
+	if err != nil || changed {
+		t.Fatalf("stale dispatch_revision write must be fenced: changed=%v err=%v", changed, err)
+	}
+	assertActive(t, "acc_redis")
+
+	// 3) 决策之后有健康成功（last_health_success_at == observedAt，严格 <）
+	//    → 拒绝写入。
+	fixture.seedAccount(t, "acc_health", "active", 1)
+	if _, err := fixture.db.Exec(`UPDATE accounts SET last_health_success_at = ? WHERE id = 'acc_health'`, observedAt); err != nil {
+		t.Fatalf("seed health success: %v", err)
+	}
+	changed, _, err = fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		candidateWithRevision("acc_health", 1), systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{})
+	if err != nil || changed {
+		t.Fatalf("health success at observedAt must fence the failure write: changed=%v err=%v", changed, err)
+	}
+	assertActive(t, "acc_health")
+
+	// 4) 决策之后其他写者已更新行（updated_at > observedAt）→ 拒绝写入。
+	fixture.seedAccount(t, "acc_writer", "active", 1)
+	if _, err := fixture.db.Exec(`UPDATE accounts SET updated_at = ? WHERE id = 'acc_writer'`,
+		fixedErrorPolicyClock().Add(time.Millisecond).UTC().Format(rfc3339MillisUTC)); err != nil {
+		t.Fatalf("seed newer updated_at: %v", err)
+	}
+	changed, _, err = fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		candidateWithRevision("acc_writer", 1), systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{})
+	if err != nil || changed {
+		t.Fatalf("newer updated_at must fence the failure write: changed=%v err=%v", changed, err)
+	}
+	assertActive(t, "acc_writer")
+
+	// 5) disable 写线同围栏：健康成功不晚于决策时不短路，晚于决策时拒绝。
+	fixture.seedAccount(t, "acc_dis_ok", "active", 1)
+	disable := accountErrorPolicyDecision{Action: decisionActionDisable, RuleName: "上游崩溃禁用", RuleSource: "account"}
+	fifth := candidateWithRevision("acc_dis_ok", 1)
+	if changed, _, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		fifth, disable, chainErrorPolicyFailureInput{}); err != nil || !changed {
+		t.Fatalf("fenced disable must apply without health success: changed=%v err=%v", changed, err)
+	}
+	fixture.seedAccount(t, "acc_dis_fenced", "active", 1)
+	if _, err := fixture.db.Exec(`UPDATE accounts SET last_health_success_at = ? WHERE id = 'acc_dis_fenced'`, observedAt); err != nil {
+		t.Fatalf("seed fenced health success: %v", err)
+	}
+	fenced := candidateWithRevision("acc_dis_fenced", 1)
+	if changed, _, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		fenced, disable, chainErrorPolicyFailureInput{}); err != nil || changed {
+		t.Fatalf("health success must fence the disable write: changed=%v err=%v", changed, err)
+	}
+	assertActive(t, "acc_dis_fenced")
+
+	// 6) 候选无 dispatchRevision 快照（Node guard undefined）→ 不设围栏，
+	//    健康成功列不拦截，updated_at 普通赋值。
+	fixture.seedAccount(t, "acc_noguard", "active", 1)
+	if _, err := fixture.db.Exec(`UPDATE accounts SET last_health_success_at = ? WHERE id = 'acc_noguard'`, observedAt); err != nil {
+		t.Fatalf("seed health success: %v", err)
+	}
+	noGuard := errorPolicyAccount(nil)
+	noGuard.ID = "acc_noguard"
+	if changed, _, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		noGuard, systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{}); err != nil || !changed {
+		t.Fatalf("unguarded cooldown must apply: changed=%v err=%v", changed, err)
+	}
+
+	// 7) 过期分支同样带围栏：健康成功晚于决策时不自动停用。
+	fixture.seedAccount(t, "acc_exp", "active", 1)
+	if _, err := fixture.db.Exec(`UPDATE accounts SET account_expires_at = '2026-08-01T00:00:00.000Z', last_health_success_at = ? WHERE id = 'acc_exp'`, observedAt); err != nil {
+		t.Fatalf("seed expired account: %v", err)
+	}
+	expired := candidateWithRevision("acc_exp", 1)
+	if changed, _, err := fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
+		expired, systemQuotaDecisionOf("generic"), chainErrorPolicyFailureInput{}); err != nil || changed {
+		t.Fatalf("expired-branch write must honor the fence: changed=%v err=%v", changed, err)
+	}
+	assertActive(t, "acc_exp")
+}
+
+// failingKeyScopedEffects 注入 Key 级失败写入错误（#2 catch-warn 契约验证）。
+type failingKeyScopedEffects struct {
+	recordErr error
+	recorded  int
+}
+
+func (f *failingKeyScopedEffects) ApplyAccountErrorPolicyDecision(context.Context, gatewaydispatch.AccountCandidate, accountErrorPolicyDecision, chainErrorPolicyFailureInput) (bool, string, error) {
+	return false, "", nil
+}
+
+func (f *failingKeyScopedEffects) RecordKeyScopedQuotaFailure(context.Context, gatewaydispatch.AccountCandidate, accountErrorPolicyDecision, chainErrorPolicyFailureInput) error {
+	f.recorded++
+	return f.recordErr
+}
+
+// TestChainFailureDispatcherKeyScopedWriteFailureContinues：Key 级失败写入
+// 失败按 Node account-api-key-effects.service.ts:141-171 的 catch-warn 语义
+// 处理 —— 不中止当前尝试，请求继续 skip_account 候选故障转移。
+func TestChainFailureDispatcherKeyScopedWriteFailureContinues(t *testing.T) {
+	response := failureDispatchUpstreamResponse(t, http.StatusPaymentRequired, "application/json",
+		`{"error":{"code":"insufficient_quota","message":"insufficient quota"}}`)
+	fingerprint := "fp_keyscoped"
+	account := errorPolicyAccount(nil)
+	account.APIKeys = []string{"key-a", "key-b"}
+	account.SelectedAPIKeyFingerprint = &fingerprint
+
+	effects := &failingKeyScopedEffects{recordErr: errors.New("key-state write down")}
+	dispatcher := &chainFailureDispatcher{
+		policy: newFixedErrorPolicyService(func(candidate gatewaydispatch.AccountCandidate) bool {
+			return candidate.SelectedAPIKeyFingerprint != nil
+		}),
+		effects: effects,
+	}
+	input := gatewayFailedResponseInput(response, &failureDispatchAuditSink{}, "gateway")
+	input.Account = account
+	input.AccountStateMutationEnabled = true
+	result, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("key-scoped write failure must not abort the attempt: %v", err)
+	}
+	if effects.recorded != 1 {
+		t.Fatalf("key-scoped record attempts = %d want 1", effects.recorded)
+	}
+	if result.Action != gatewaydispatch.FailedResponseActionSkipAccount {
+		t.Fatalf("action=%s want skip_account", result.Action)
+	}
+	if result.FailureKind != gatewaydispatch.FailureKindExplicitPolicy {
+		t.Fatalf("failureKind=%s want explicit_policy", result.FailureKind)
+	}
+	if !result.KeyScopedFailure {
+		t.Fatal("keyScoped decision must still authorize the same-account key rotation")
+	}
+}
+
+// TestChainErrorPolicyNonJSONBodyKeepsEmptyPayload：非 JSON 失败体的
+// errorPayload 恒空（Node failure-dispatch.ts:439-447）—— 决策与 usage 都
+// 不再从捕获文本重解析结构化 code/type；error_codes 维度不命中，keywords /
+// status_codes 维度仍按 bodyText 与状态码生效。
+func TestChainErrorPolicyNonJSONBodyKeepsEmptyPayload(t *testing.T) {
+	service := newFixedErrorPolicyService(nil)
+	const body = `upstream said: {"code":"quota_exceeded_custom"}`
+
+	codeRule := errorPolicyAccount(map[string]any{
+		"error_handling_rules": []any{map[string]any{
+			"enabled": true, "name": "额度码", "priority": float64(1), "action": "retry_next",
+			"error_codes": []any{"quota_exceeded_custom"},
+		}},
+	})
+	if decision := errorPolicyDecide(t, service, codeRule, http.StatusTooManyRequests, body); decision != nil {
+		t.Fatalf("non-JSON body must not feed error_codes matching: %+v", decision)
+	}
+
+	keywordRule := errorPolicyAccount(map[string]any{
+		"error_handling_rules": []any{map[string]any{
+			"enabled": true, "name": "文本关键字", "priority": float64(1), "action": "retry_next",
+			"keywords": []any{"quota_exceeded_custom"},
+		}},
+	})
+	if decision := errorPolicyDecide(t, service, keywordRule, http.StatusTooManyRequests, body); decision == nil {
+		t.Fatal("keyword dimension must still match the raw body text")
+	}
+
+	statusRule := errorPolicyAccount(map[string]any{
+		"error_handling_rules": []any{map[string]any{
+			"enabled": true, "name": "状态码", "priority": float64(1), "action": "error_disabled",
+			"status_codes": []any{float64(429)},
+		}},
+	})
+	if decision := errorPolicyDecide(t, service, statusRule, http.StatusTooManyRequests, body); decision == nil || decision.Action != decisionActionDisable {
+		t.Fatalf("status-code dimension must keep matching: %+v", decision)
+	}
+
+	if payload := failureProtocolPayloadOf(nil); payload.HasEvidence() {
+		t.Fatalf("non-JSON payload must stay empty: %+v", payload)
+	}
+	parsed := map[string]any{"code": "rate_limit_exceeded"}
+	if payload := failureProtocolPayloadOf(parsed); !payload.HasEvidence() || payload.Code != "rate_limit_exceeded" {
+		t.Fatalf("json payload projection = %+v", payload)
 	}
 }
 

@@ -175,13 +175,15 @@ func (s *chainErrorPolicyService) Decide(
 	return nil, nil
 }
 
-// errorPayloadOf 镜像 parseFailureBodyFacts → parseErrorPayload：JSON 体走
-// 协议载荷投影（当前链只挂 OpenAI 协议族），否则按文本 + 响应头解析。
+// errorPayloadOf 镜像 decideAccountErrorPolicy 的 bodyFacts 载荷读取：调用面
+// （failure-dispatch.ts:219-227 → parseFailureBodyFacts:439-447）恒传入
+// errorPayload——JSON 体是协议载荷投影，非 JSON 体是空对象（不回读文本）。
+// Go 的 parsedBody 为 nil 即非 JSON 体，同样返回空载荷，不做文本重解析。
 func (s *chainErrorPolicyService) errorPayloadOf(bodyText string, header http.Header, parsedBody map[string]any) gatewayproto.ErrorPayload {
 	if parsedBody != nil {
 		return gatewayopenai.ParseErrorPayloadFromJSONValue(parsedBody)
 	}
-	return gatewayopenai.ParseErrorPayload(bodyText, header)
+	return gatewayproto.ErrorPayload{}
 }
 
 // systemQuotaDecision 镜像 decideAccountErrorPolicy 的系统额度分支：显式

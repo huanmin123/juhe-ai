@@ -226,11 +226,15 @@ func (b *chainErrorPolicyEffectsBridge) ApplyAccountErrorPolicyDecision(ctx cont
 	if decision.Action == decisionActionRetryNext {
 		return false, account.Status, nil
 	}
+	// Node 观察围栏的 observedAt 是决策时刻（applyAccountErrorHandlingWithCacheInvalidation
+	// 入队时捕获的 new Date()，account-effects.ts:36）；Go 同步桥在同一时点捕获。
+	observedAt := b.now()
+	guard := runtimeFailureObservationGuardOf(account, observedAt)
 	reason := explicitAccountErrorPolicyReason(account, input, decision)
 	failureCode := explicitPolicyFailureCode(decision)
 	binding := authorizedBindingTargetOf(account)
 	if decision.Action == decisionActionDisable {
-		changed, err := b.markDisabledByFailure(ctx, account, reason, binding)
+		changed, err := b.markDisabledByFailure(ctx, account, reason, binding, guard)
 		if err != nil {
 			return false, "", err
 		}
@@ -239,7 +243,7 @@ func (b *chainErrorPolicyEffectsBridge) ApplyAccountErrorPolicyDecision(ctx cont
 		}
 		return false, account.Status, nil
 	}
-	changed, err := b.markCooldown(ctx, account, decision, reason, failureCode, input.TraceID, binding)
+	changed, err := b.markCooldown(ctx, account, decision, reason, failureCode, input.TraceID, binding, guard)
 	if err != nil {
 		return false, "", err
 	}
@@ -315,6 +319,73 @@ func stringValueOf(value *string) string {
 // accounts 运行态写侧（account-runtime-mutation.repository.ts 投影）
 // ---------------------------------------------------------------------------
 
+// runtimeFailureObservationGuard 镜像 AccountRuntimeFailureObservationGuard
+// （repository.ts:955-958）：决策时刻的陈旧观察围栏输入。
+type runtimeFailureObservationGuard struct {
+	ExpectedDispatchRevision int64
+	ObservedAt               string
+}
+
+// runtimeFailureObservationGuardOf 镜像 accountRuntimeFailureObservationGuard
+// （account-error-policy.service.ts:607-615）：dispatch revision 取决策时刻的
+// 候选快照（Gateway candidate 的 dispatchRevision），observedAt 取决策时刻；
+// 任一缺失（revision < 1）时不设围栏，updated_at 回落普通 nowISO 写入。
+func runtimeFailureObservationGuardOf(account gatewaydispatch.AccountCandidate, observedAt time.Time) *runtimeFailureObservationGuard {
+	if account.DispatchRevision == nil || *account.DispatchRevision < 1 {
+		return nil
+	}
+	return &runtimeFailureObservationGuard{
+		ExpectedDispatchRevision: *account.DispatchRevision,
+		ObservedAt:               observedAt.UTC().Format(rfc3339MillisUTC),
+	}
+}
+
+// runtimeFailureObservationGuardSQL 镜像
+// accountRuntimeFailureObservationGuardSql（repository.ts:2296-2303）：行上的
+// dispatch_revision 必须仍等于决策快照，且决策之后没有健康成功（
+// last_health_success_at）或其他写者（updated_at）。
+func runtimeFailureObservationGuardSQL(guard *runtimeFailureObservationGuard) string {
+	if guard == nil {
+		return ""
+	}
+	return `
+		  AND dispatch_revision = ?
+		  AND (last_health_success_at IS NULL OR last_health_success_at < ?)
+		  AND (updated_at IS NULL OR updated_at <= ?)`
+}
+
+// runtimeFailureObservationGuardParams 镜像
+// accountRuntimeFailureObservationGuardParams（repository.ts:2305-2312，
+// revision 下限截断为 1）。
+func runtimeFailureObservationGuardParams(guard *runtimeFailureObservationGuard) []any {
+	if guard == nil {
+		return nil
+	}
+	revision := guard.ExpectedDispatchRevision
+	if revision < 1 {
+		revision = 1
+	}
+	return []any{revision, guard.ObservedAt, guard.ObservedAt}
+}
+
+// runtimeFailureUpdatedAtSQL 镜像 accountRuntimeFailureUpdatedAtSql
+// （repository.ts:2314-2318）：有围栏时较新值保留，无围栏时普通赋值。
+func runtimeFailureUpdatedAtSQL(guard *runtimeFailureObservationGuard) string {
+	if guard == nil {
+		return "?"
+	}
+	return "CASE WHEN updated_at IS NULL OR updated_at < ? THEN ? ELSE updated_at END"
+}
+
+// runtimeFailureUpdatedAtParams 镜像 accountRuntimeFailureUpdatedAtParams
+// （repository.ts:2320-2325）。
+func runtimeFailureUpdatedAtParams(guard *runtimeFailureObservationGuard, fallback string) []any {
+	if guard == nil {
+		return []any{fallback}
+	}
+	return []any{guard.ObservedAt, guard.ObservedAt}
+}
+
 // hardUnavailable 状态判定（Node isHardUnavailableAccountStatus）。
 func isHardUnavailableAccountStatus(status string) bool {
 	return status == "disabled" || status == "pending_test" || status == "error" || status == "quality_isolated"
@@ -354,13 +425,23 @@ func isAccountExpired(accountExpiresAt sql.NullString, now time.Time) bool {
 
 // markCooldown 镜像 markAccountCooldownAsync / markAuthorizedAccountBindingCooldownByContextAsync
 // 的持久语义：硬不可用短路、套餐过期自动停用分支、状态 + config_revision
-// 守卫、系统 quota 通用码的冷却优先级围栏、流失败计数复位、重测代次刷新。
+// 守卫、运行态失败观察围栏（runtimeFailureObservationGuard）、系统 quota
+// 通用码的冷却优先级围栏、流失败计数复位、重测代次刷新。
+//
+// #7 裁决（省略登记，不静默）：Node 在冷却落库事务内追加
+// enqueueRuntimeAccountHealthInputAsync（repository.ts:2584/2662，J1 快照
+// 输入 outbox + 授权源 fanout）。Go 拓扑中 account_health_jobs_input_outbox
+// 只有写方（jobs oauthrefresh fanout / 账户删除清理），全 Go 侧没有消费者；
+// J1 输入由 jobs accounthealth 的 PG direct input reader 按冻结业务事实
+// （冷却列）自主调度发现。此处再写 outbox 会产出无消费者的死表面，
+// 故省略该入队；冷却后快速探活的时延差由 direct input 调度周期吸收。
 func (b *chainErrorPolicyEffectsBridge) markCooldown(
 	ctx context.Context,
 	account gatewaydispatch.AccountCandidate,
 	decision accountErrorPolicyDecision,
 	reason, failureCode, traceID string,
 	binding *authorizedBindingTarget,
+	guard *runtimeFailureObservationGuard,
 ) (bool, error) {
 	current, err := b.loadAccountRuntimeRow(ctx, account.ID)
 	if err != nil || current == nil {
@@ -372,7 +453,9 @@ func (b *chainErrorPolicyEffectsBridge) markCooldown(
 	now := b.now()
 	nowISO := now.UTC().Format(rfc3339MillisUTC)
 	if isAccountExpired(current.AccountExpiresAt, now) {
-		// Node 过期分支：直接停用并固定 account_expired 错误码。
+		// Node 过期分支：直接停用并固定 account_expired 错误码（updated_at
+		// 保持普通 nowIso 写入，观察围栏只在 WHERE 生效，对齐
+		// repository.ts:2565 的普通赋值）。
 		query := `UPDATE ` + b.table("accounts") + `
 			SET status = 'disabled',
 			    schedulable = 0,
@@ -387,9 +470,11 @@ func (b *chainErrorPolicyEffectsBridge) markCooldown(
 			    stream_failure_count = 0,
 			    stream_failure_window_started_at = NULL,
 			    updated_at = ?
-			WHERE id = ? AND deleted_at IS NULL AND status = ? AND COALESCE(config_revision, 1) = ?` + b.bindingGuardSQL(binding)
-		result, err := b.db.ExecContext(ctx, b.bind(query),
-			"账户套餐已过期，已自动停用", nowISO, account.ID, current.Status, current.ConfigRevision)
+			WHERE id = ? AND deleted_at IS NULL AND status = ? AND COALESCE(config_revision, 1) = ?` + b.bindingGuardSQL(binding) + runtimeFailureObservationGuardSQL(guard)
+		params := []any{"账户套餐已过期，已自动停用", nowISO, account.ID, current.Status, current.ConfigRevision}
+		params = append(params, bindingGuardParams(binding)...)
+		params = append(params, runtimeFailureObservationGuardParams(guard)...)
+		result, err := b.db.ExecContext(ctx, b.bind(query), params...)
 		if err != nil {
 			return false, err
 		}
@@ -433,7 +518,13 @@ func (b *chainErrorPolicyEffectsBridge) markCooldown(
 	}
 	generation := "cooldown:" + newUUIDv4()
 
-	fencing := b.systemQuotaCooldownPrioritySQL(failureCode, nowISO)
+	// Node systemQuotaCooldownPriorityParams 的参考时间取
+	// runtimeFailureGuard?.observedAt ?? cooldownNow（repository.ts:2614-2617）。
+	priorityReferenceAt := nowISO
+	if guard != nil {
+		priorityReferenceAt = guard.ObservedAt
+	}
+	fencing := b.systemQuotaCooldownPrioritySQL(failureCode, priorityReferenceAt)
 	query := `UPDATE ` + b.table("accounts") + `
 		SET status = ?,
 		    schedulable = 1,
@@ -448,17 +539,19 @@ func (b *chainErrorPolicyEffectsBridge) markCooldown(
 		    cooldown_retest_last_status_code = NULL,
 		    stream_failure_count = 0,
 		    stream_failure_window_started_at = NULL,
-		    updated_at = ?
+		    updated_at = ` + runtimeFailureUpdatedAtSQL(guard) + `
 		WHERE id = ?
 		  AND deleted_at IS NULL
 		  AND status = ?
-		  AND COALESCE(config_revision, 1) = ?` + fencing + b.bindingGuardSQL(binding)
+		  AND COALESCE(config_revision, 1) = ?` + fencing + runtimeFailureObservationGuardSQL(guard) + b.bindingGuardSQL(binding)
 	params := []any{
 		cooldownStatus, cooldownUntil, errorCode, errorMessage, traceIDValue,
-		observationStartedAt, generation, nowISO,
-		account.ID, current.Status, current.ConfigRevision,
+		observationStartedAt, generation,
 	}
-	params = append(params, systemQuotaCooldownPriorityParams(failureCode, nowISO)...)
+	params = append(params, runtimeFailureUpdatedAtParams(guard, nowISO)...)
+	params = append(params, account.ID, current.Status, current.ConfigRevision)
+	params = append(params, systemQuotaCooldownPriorityParams(failureCode, priorityReferenceAt)...)
+	params = append(params, runtimeFailureObservationGuardParams(guard)...)
 	params = append(params, bindingGuardParams(binding)...)
 	result, err := b.db.ExecContext(ctx, b.bind(query), params...)
 	if err != nil {
@@ -473,14 +566,16 @@ func (b *chainErrorPolicyEffectsBridge) markCooldown(
 
 // markDisabledByFailure 镜像 markAccountDisabledByFailureAsync（plain：
 // markAccountException 'upstream_failure' 语义：error/disabled 短路 + 状态与
-// config_revision 围栏）与 markAuthorizedAccountBindingDisabledByFailureAsync
-// （绑定变体：无预读，SQL 以 status <> 'disabled' 守卫）。两者都写
+// config_revision 围栏 + 运行态失败观察围栏）与
+// markAuthorizedAccountBindingDisabledByFailureAsync（绑定变体：无预读，SQL
+// 以 status <> 'disabled' 守卫 + 运行态失败观察围栏）。两者都写
 // status='error' + schedulable=0。
 func (b *chainErrorPolicyEffectsBridge) markDisabledByFailure(
 	ctx context.Context,
 	account gatewaydispatch.AccountCandidate,
 	reason string,
 	binding *authorizedBindingTarget,
+	guard *runtimeFailureObservationGuard,
 ) (bool, error) {
 	nowISO := b.now().UTC().Format(rfc3339MillisUTC)
 	errorMessage := sql.NullString{}
@@ -503,14 +598,17 @@ func (b *chainErrorPolicyEffectsBridge) markDisabledByFailure(
 			    cooldown_retest_last_status_code = NULL,
 			    stream_failure_count = 0,
 			    stream_failure_window_started_at = NULL,
-			    updated_at = ?
+			    updated_at = ` + runtimeFailureUpdatedAtSQL(guard) + `
 			WHERE id = ?
 			  AND system_account_id = ?
 			  AND authorization_instance_authorization_id = ?
 			  AND deleted_at IS NULL
-			  AND status <> 'disabled'` + b.bindingExistsSQL(binding)
-		params = append(params, errorMessage, nowISO,
+			  AND status <> 'disabled'` + runtimeFailureObservationGuardSQL(guard) + b.bindingExistsSQL(binding)
+		params = append(params, errorMessage)
+		params = append(params, runtimeFailureUpdatedAtParams(guard, nowISO)...)
+		params = append(params,
 			binding.AccountID, binding.SystemAccountID, binding.AccountAuthorizationID)
+		params = append(params, runtimeFailureObservationGuardParams(guard)...)
 		params = append(params, bindingExistsParams(binding)...)
 	} else {
 		current, err := b.loadAccountRuntimeRow(ctx, account.ID)
@@ -535,12 +633,15 @@ func (b *chainErrorPolicyEffectsBridge) markDisabledByFailure(
 			    cooldown_retest_last_status_code = NULL,
 			    stream_failure_count = 0,
 			    stream_failure_window_started_at = NULL,
-			    updated_at = ?
+			    updated_at = ` + runtimeFailureUpdatedAtSQL(guard) + `
 			WHERE id = ?
 			  AND deleted_at IS NULL
 			  AND status = ?
-			  AND COALESCE(config_revision, 1) = ?`
-		params = append(params, errorMessage, nowISO, account.ID, current.Status, current.ConfigRevision)
+			  AND COALESCE(config_revision, 1) = ?` + runtimeFailureObservationGuardSQL(guard)
+		params = append(params, errorMessage)
+		params = append(params, runtimeFailureUpdatedAtParams(guard, nowISO)...)
+		params = append(params, account.ID, current.Status, current.ConfigRevision)
+		params = append(params, runtimeFailureObservationGuardParams(guard)...)
 	}
 	result, err := b.db.ExecContext(ctx, b.bind(query), params...)
 	if err != nil {

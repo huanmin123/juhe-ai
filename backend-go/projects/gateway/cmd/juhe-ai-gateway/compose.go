@@ -915,6 +915,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// chain_turn_retry_redis.go）。
 			JobsInternalURL:     cfg.JobsInternalURL,
 			TurnRetryStateStore: newChainTurnRetryRedisStateStoreOrNil(chainServices.StateClient, cfg.RedisNamespace),
+			// Codex 用量响应头持久化（compose_codex_usage_headers.go）：
+			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道。
+			CodexUsageHeadersDispatcher: newCodexUsageHeadersChannelDispatcher(recordMaintenanceDispatch),
 		})
 		if chainAssembleErr != nil {
 			chainServices.Close()

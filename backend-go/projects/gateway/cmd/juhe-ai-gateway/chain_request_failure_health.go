@@ -19,14 +19,13 @@ package main
 // HMAC-SHA256 over "juhe-ai:account-health-check-dispatch:v1\n" + raw body,
 // X-Juhe-Ai-Signature: v1=<hex>, loopback-only on the jobs side.
 //
-// Registered gap (logged, not silent): the Go jobs process has not mounted
-// this health-check internal route yet (jobs internal/internalapi dispatch.go
-// carries only the account-test pair). Until that route lands, every dispatch
-// observes the jobs 404 → the bridge returns rejected → the dispatch is
-// skipped and warned exactly like the unavailable-worker path of the
-// account-test bridge. The wire contract below already mirrors the J1
+// Consumption landed (审查轮换七 aeb10ef8a): the jobs process now mounts the
+// matching internal route (jobs internal/internalapi healthdispatch.go,
+// POST /__aiinternal__/v1/account-health-check/dispatch, assembled by
+// worker_health_dispatch.go; 404→rejected is retained only as the
+// degraded-worker fallback). The wire contract below mirrors the J1
 // projection (jobs internalapi.HealthCheckSourceFence / the source_fence
-// payload field names) so the route can adopt it without a gateway change.
+// payload field names) and is consumed unchanged by that route.
 
 import (
 	"bytes"
@@ -49,8 +48,8 @@ import (
 )
 
 // chainHealthDispatchSignatureDomain mirrors the bridge signature domain
-// (compose_account_test_dispatch.go pattern; the jobs-side verification
-// reuses the same domain once the route mounts).
+// (compose_account_test_dispatch.go pattern; the jobs-side verification in
+// internal/internalapi reuses the same domain on the mounted route).
 const chainHealthDispatchSignatureDomain = "juhe-ai:account-health-check-dispatch:v1\n"
 
 // chainHealthDispatchPath is the loopback route the bridge posts to
