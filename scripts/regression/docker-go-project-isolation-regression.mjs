@@ -35,6 +35,7 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
   assert.match(gateway, /ports:/u, 'standalone gateway must publish the public HTTP port')
   assert.match(gateway, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:/u, 'standalone gateway must own F3')
   assert.match(gateway, /JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, 'standalone gateway must own F4')
+  assert.match(gateway, /JUHE_AI_SECRET: \$\{JUHE_AI_SECRET:\?JUHE_AI_SECRET is required\}/u, 'standalone gateway must reject a missing shared runtime secret before startup')
   assert.doesNotMatch(gateway, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:|JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, 'standalone gateway must not receive F1/F2 ownership')
   assert.match(gateway, /JUHE_AI_RUNTIME_LOG_DATABASE_PATH:/u, 'standalone gateway must receive the F1 source path for F3/F4 SQLite isolation checks')
   assert.match(gateway, /JUHE_AI_TABLE_MONITOR_DATABASE_PATH:/u, 'standalone gateway must receive the F2 source path for F3/F4 SQLite isolation checks')

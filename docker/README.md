@@ -19,7 +19,7 @@
 ```bash
 cd docker
 cp .env.example .env
-# 在 .env 填写 Harbor digest 镜像引用，以及稳定的 JUHE_AI_AUDIT_LOG_INPUT_SECRET 与 JUHE_AI_OPERATION_LOG_INPUT_SECRET；production 至少 32 位，不能使用 JUHE_AI_SECRET。
+# 在 .env 填写 Harbor digest 镜像引用、稳定的 JUHE_AI_SECRET，以及彼此独立的 JUHE_AI_AUDIT_LOG_INPUT_SECRET 与 JUHE_AI_OPERATION_LOG_INPUT_SECRET；production 均至少 32 位，F3/F4 密钥不能使用 JUHE_AI_SECRET。
 docker compose config --quiet
 docker compose up -d --build --wait
 ```
@@ -59,7 +59,7 @@ cp .env.example .env
 JUHE_AI_PUBLIC_BIND=127.0.0.1
 JUHE_AI_PUBLIC_PORT=3000
 JUHE_AI_PUBLIC_ORIGIN=https://ai.example.com
-JUHE_AI_SECRET=
+JUHE_AI_SECRET=replace-with-a-stable-random-secret
 JUHE_AI_COOKIE_SECURE=true
 JUHE_AI_TRUST_PROXY=true
 ```
@@ -100,7 +100,7 @@ juhe-ai-account-health-inputs -> /app/backend/account-health-inputs
 juhe-ai-go-runtime-metrics-data -> /app/backend/go-runtime-metrics-data
 ```
 
-业务库、数据集目录库、使用记录目录库、统计库、usage shard、F1/F2/F3/F4 专用事实、自动生成的密钥和日志都会保留在 volume 中。生产环境不要执行 `docker compose down -v`。
+业务库、数据集目录库、使用记录目录库、统计库、usage shard、F1/F2/F3/F4 专用事实和日志都会保留在 volume 中。生产环境不要执行 `docker compose down -v`。
 
 ## 验证
 
