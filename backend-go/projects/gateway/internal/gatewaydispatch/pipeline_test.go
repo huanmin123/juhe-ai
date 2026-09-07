@@ -196,6 +196,14 @@ func TestFilterCandidatesModelMappingRank(t *testing.T) {
 	}
 }
 
+func TestFilterCandidatesModelMatchIgnoresCase(t *testing.T) {
+	accounts := []AccountCandidate{{ID: "direct", SupportedModels: []string{"gpt-4o"}}}
+	result := FilterGatewayAccountsByRequestedModel(accounts, " GPT-4O ", gatewayrouting.EndpointFamilyChatCompletions)
+	if result.DirectMatchedCount != 1 || len(result.Accounts) != 1 {
+		t.Fatalf("case-insensitive direct match failed: %+v", result)
+	}
+}
+
 func TestPrepareDispatchAccountsReady(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
 	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
@@ -211,7 +219,7 @@ func TestPrepareDispatchAccountsReady(t *testing.T) {
 		GroupAccess:      gatewayruntimecache.GroupUsageAccessMetadata{},
 		SystemAccountID:  "system-1",
 		APIKeyID:         "apikey-1",
-		GroupID:          "group-1",
+		GroupID:           "group-1",
 		ClientStrategy:   gatewaypreauth.ClientStrategyContext{},
 		RequestLane:      "text",
 		ServerRetryBudget: gatewaypreauth.NewServerRetryBudget(5_000, gatewaypreauth.SystemClock{}),

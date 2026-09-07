@@ -1400,10 +1400,10 @@ func normalizeBatchModelMappings(value any) ([]ModelMapping, error) {
 		if !batchMappingSourceFamilies[mapping.SourceEndpointFamily] || !batchMappingUpstreamFamilies[mapping.UpstreamEndpointFamily] {
 			return nil, &ValidationError{Message: batchFieldsPrompt}
 		}
-		if mapping.SourceModel == mapping.UpstreamModel && mapping.SourceEndpointFamily == mapping.UpstreamEndpointFamily {
+		if strings.EqualFold(mapping.SourceModel, mapping.UpstreamModel) && mapping.SourceEndpointFamily == mapping.UpstreamEndpointFamily {
 			continue
 		}
-		sourceKey := mapping.SourceEndpointFamily + "\n" + mapping.SourceModel
+		sourceKey := mapping.SourceEndpointFamily + "\n" + strings.ToLower(mapping.SourceModel)
 		if seenSources[sourceKey] {
 			return nil, &ValidationError{Message: "账户 modelMappings 不能重复配置同一个 sourceModel 和 sourceEndpointFamily：" + mapping.SourceModel + " / " + mapping.SourceEndpointFamily}
 		}
@@ -1434,7 +1434,7 @@ func assertMappingUpstreamsAllowed(mappings []ModelMapping, supportedModels []st
 	for _, model := range supportedModels {
 		trimmed := strings.TrimSpace(model)
 		if trimmed != "" {
-			supported[trimmed] = true
+			supported[strings.ToLower(trimmed)] = true
 		}
 	}
 	if len(supported) == 0 || len(mappings) == 0 {
@@ -1442,7 +1442,7 @@ func assertMappingUpstreamsAllowed(mappings []ModelMapping, supportedModels []st
 	}
 	invalid := []string{}
 	for _, mapping := range mappings {
-		if !supported[strings.TrimSpace(mapping.UpstreamModel)] {
+		if !supported[strings.ToLower(strings.TrimSpace(mapping.UpstreamModel))] {
 			invalid = append(invalid, strings.TrimSpace(mapping.UpstreamModel))
 		}
 	}

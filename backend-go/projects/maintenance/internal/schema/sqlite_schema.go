@@ -1579,6 +1579,21 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_unique
       ON custom_provider_models(provider_code, model)
       WHERE scope = 'global';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_lower_unique
+      ON custom_provider_models(provider_code, system_account_id, lower(model))
+      WHERE scope = 'personal';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_lower_unique
+      ON custom_provider_models(provider_code, lower(model))
+      WHERE scope = 'global';
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_model_catalog_lower_unique
+      ON provider_model_catalog(provider_code, lower(model));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_supported_models_lower_unique
+      ON account_supported_models(account_id, lower(model));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_model_mappings_source_lower_unique
+      ON account_model_mappings(account_id, lower(source_model), source_endpoint_family);
     CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
       ON custom_provider_models(provider_code, status, catalog_visible, scope, system_account_id, model);
     CREATE INDEX IF NOT EXISTS idx_provider_default_health_check_models_model

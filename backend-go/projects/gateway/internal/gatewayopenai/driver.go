@@ -125,12 +125,12 @@ func (d *Driver) BuildUpstreamRequest(input gatewayproto.BuildUpstreamRequestInp
 	body := input.Body
 	upstreamModel := requestedModel
 	if input.ModelMapping != nil {
-		transformed, err := buildModelMappedJSONBody(root, input.Body, input.ModelMapping.UpstreamModel)
+		upstreamModel = strings.ToLower(strings.TrimSpace(input.ModelMapping.UpstreamModel))
+		transformed, err := buildModelMappedJSONBody(root, input.Body, upstreamModel)
 		if err != nil {
 			return nil, err
 		}
 		body = transformed
-		upstreamModel = input.ModelMapping.UpstreamModel
 	}
 
 	upstreamPathAndQuery := input.ClientPathAndQuery

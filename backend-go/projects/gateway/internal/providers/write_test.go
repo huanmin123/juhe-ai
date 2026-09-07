@@ -132,6 +132,14 @@ func TestProvidersCreateCustomModel(t *testing.T) {
 	if dataMap(t, again)["id"] != data["id"] || dataMap(t, again)["inputUsdPer1M"] != float64(3) {
 		t.Fatalf("duplicate create must upsert the scoped row: %v", again)
 	}
+	code, caseVariant := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models", `{"model":"MY-MODEL","inputUsdPer1M":4}`)
+	if code != http.StatusCreated {
+		t.Fatalf("case-insensitive duplicate create: %d %v", code, caseVariant)
+	}
+	caseVariantData := dataMap(t, caseVariant)
+	if caseVariantData["id"] != data["id"] || caseVariantData["model"] != "my-model" || caseVariantData["inputUsdPer1M"] != float64(4) {
+		t.Fatalf("case-insensitive duplicate must update the canonical row: %v", caseVariant)
+	}
 
 	// Anonymous callers stay 401.
 	clearSession(t, env)

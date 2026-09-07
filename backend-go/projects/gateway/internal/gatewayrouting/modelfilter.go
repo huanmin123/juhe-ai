@@ -23,23 +23,23 @@ const (
 // GatewayAccountModelPriority mirrors GatewayAccountModelPriority: the
 // per-account model rank map produced alongside the filtered accounts.
 type GatewayAccountModelPriority struct {
-	RequestedModel        string
-	SourceEndpointFamily  string
-	RankByAccountID       map[string]int
+	RequestedModel       string
+	SourceEndpointFamily string
+	RankByAccountID      map[string]int
 }
 
 // GatewayModelAccountFilterResult mirrors GatewayModelAccountFilterResult.
 type GatewayModelAccountFilterResult struct {
-	Accounts                   []UpstreamAccount
-	SkippedCount               int
-	LimitedAccountCount        int
+	Accounts                    []UpstreamAccount
+	SkippedCount                int
+	LimitedAccountCount         int
 	InvalidModelConstraintCount int
-	DirectMatchedCount         int
-	MappingMatchedCount        int
-	RequestedModel             string
-	SourceEndpointFamily       string
-	ModelPriority              GatewayAccountModelPriority
-	Reason                     string
+	DirectMatchedCount          int
+	MappingMatchedCount         int
+	RequestedModel              string
+	SourceEndpointFamily        string
+	ModelPriority               GatewayAccountModelPriority
+	Reason                      string
 }
 
 // FilterAccountsByRequestedModel mirrors filterGatewayAccountsByRequestedModel
@@ -150,12 +150,7 @@ func isMappingAllowedBySupportedModels(upstreamModel string, supportedModels []s
 	if len(supportedModels) == 0 {
 		return false
 	}
-	for _, model := range supportedModels {
-		if model == upstreamModel {
-			return true
-		}
-	}
-	return false
+	return gatewayopenai.CanonicalModel(upstreamModel, supportedModels) != ""
 }
 
 // resolveGatewayAccountModelMatch mirrors resolveGatewayAccountModelMatch:
@@ -164,12 +159,7 @@ func resolveGatewayAccountModelMatch(requestedModel string, supportedModels []st
 	if requestedModel == "" {
 		return false
 	}
-	for _, model := range supportedModels {
-		if model == requestedModel {
-			return true
-		}
-	}
-	return false
+	return gatewayopenai.CanonicalModel(requestedModel, supportedModels) != ""
 }
 
 // GatewayModelFilterFailureMessage mirrors gatewayModelFilterFailureMessage

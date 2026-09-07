@@ -65,6 +65,22 @@ func normalizeModelMappingBody(object map[string]any) (ModelMapping, bool) {
 	return mapping, true
 }
 
+func validateModelMappingsUnique(mappings []ModelMapping) bool {
+	seen := map[string]bool{}
+	for _, mapping := range mappings {
+		if strings.EqualFold(mapping.SourceModel, mapping.UpstreamModel) &&
+			mapping.SourceEndpointFamily == mapping.UpstreamEndpointFamily {
+			continue
+		}
+		key := mapping.SourceEndpointFamily + "\n" + strings.ToLower(strings.TrimSpace(mapping.SourceModel))
+		if seen[key] {
+			return false
+		}
+		seen[key] = true
+	}
+	return true
+}
+
 var accountHealthCheckEndpointModes = map[string]bool{
 	"images_json": true, "chat_json": true, "chat_sse": true,
 	"responses_json": true, "responses_sse": true,
@@ -318,10 +334,11 @@ func normalizeSupportedModelsInput(value any) ([]string, error) {
 			return nil, &ValidationError{Message: "账户支持模型必须是字符串数组"}
 		}
 		model := strings.TrimSpace(text)
-		if model == "" || seen[model] {
+		key := strings.ToLower(model)
+		if model == "" || seen[key] {
 			continue
 		}
-		seen[model] = true
+		seen[key] = true
 		output = append(output, model)
 	}
 	return output, nil
@@ -343,8 +360,8 @@ func normalizedHealthCheckModel(value string, supportedModels []string) (string,
 		return "", &ValidationError{Message: "账户检查模型不能为空"}
 	}
 	for _, candidate := range supportedModels {
-		if candidate == model {
-			return model, nil
+		if strings.EqualFold(strings.TrimSpace(candidate), model) {
+			return strings.TrimSpace(candidate), nil
 		}
 	}
 	return "", &ValidationError{Message: "账户检查模型必须属于账户支持模型"}

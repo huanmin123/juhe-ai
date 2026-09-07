@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 )
 
 // Transport plumbing ported from chat-transport.ts, chat-tools.ts,
@@ -160,7 +162,7 @@ func chatTransportAccountSupportsProtocol(account ChatTransportAccount, model st
 		if item.Enabled != nil && !*item.Enabled {
 			continue
 		}
-		if item.SourceModel == model && (item.SourceEndpointFamily == "" || item.SourceEndpointFamily == string(protocol)) {
+		if gatewayopenai.ModelsEqual(item.SourceModel, model) && (item.SourceEndpointFamily == "" || item.SourceEndpointFamily == string(protocol)) {
 			mapping = item
 			break
 		}
@@ -172,12 +174,7 @@ func chatTransportAccountSupportsProtocol(account ChatTransportAccount, model st
 			routedModel = mapping.UpstreamModel
 		}
 		found := false
-		for _, candidate := range supportedModels {
-			if candidate == routedModel {
-				found = true
-				break
-			}
-		}
+		found = gatewayopenai.CanonicalModel(routedModel, supportedModels) != ""
 		if !found {
 			return false
 		}

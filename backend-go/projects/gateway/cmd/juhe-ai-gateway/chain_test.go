@@ -22,6 +22,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -458,6 +459,24 @@ func TestChainProviderDriverBuildsUpstreamRequests(t *testing.T) {
 	}
 	if parts.Headers.Get("Cookie") != "" {
 		t.Fatalf("downstream cookie leaked upstream")
+	}
+	caseRequest := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"GPT-TEST","messages":[]}`))
+	caseReq := gatewaypreauth.NewGatewayRequest(caseRequest)
+	caseRaw := []byte(`{"model":"GPT-TEST","messages":[]}`)
+	caseReq.Body = &gatewaybody.Request{RawBody: caseRaw, State: gatewaybody.CreateBodyState(gatewaybody.BodyStateInput{
+		RawBody: caseRaw, ContentType: "application/json", JSONParseStatus: gatewaybody.JSONParseStatusParsed,
+		ParsedBody: map[string]any{"model": "GPT-TEST", "messages": []any{}},
+	})}
+	caseAccount := withSupportedModels(account, "gpt-test")
+	if !driver.AccountSupportsGatewayRequest(caseReq, caseAccount, "") {
+		t.Fatal("case-insensitive supported model must pass the capability gate")
+	}
+	caseParts, err := driver.BuildGatewayUpstreamRequestParts(context.Background(), caseReq, caseAccount, gatewaydispatch.UsageIdentity{}, "")
+	if err != nil {
+		t.Fatalf("build case-normalized parts: %v", err)
+	}
+	if !strings.Contains(string(caseParts.Body), `"model":"gpt-test"`) {
+		t.Fatalf("upstream body must use configured model spelling: %s", caseParts.Body)
 	}
 	// Capability: the seeded model is supported, an unknown model is not.
 	if !driver.AccountSupportsGatewayRequest(req, withSupportedModels(account, "gpt-test"), "") {

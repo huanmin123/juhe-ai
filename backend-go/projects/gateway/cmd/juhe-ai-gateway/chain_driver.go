@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -104,6 +105,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 	}
 	if isCodexOAuthAccount(account) {
 		parts, err := gatewaydispatch.BuildOpenAIOAuthCodexRequestParts(req, req.HTTP.Header, codexAccountOf(account), codexIdentityOf(account), gatewaydispatch.OpenAIOAuthCodexRequestOptions{
+			ModelOverride:        canonicalAccountModel(req, account),
 			SanitizeCodexHistory: true,
 		})
 		if err != nil {
@@ -124,7 +126,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 			ModelMapping: &gatewayproto.ResolvedModelMapping{
 				SourceModel:            mapping.SourceModel,
 				SourceEndpointFamily:   mapping.SourceEndpointFamily,
-				UpstreamModel:          mapping.UpstreamModel,
+				UpstreamModel:          strings.ToLower(strings.TrimSpace(mapping.UpstreamModel)),
 				UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
 				RuntimeSource:          mapping.RuntimeSource,
 				RuntimeRouteRuleID:     mapping.RuntimeRouteRuleID,
@@ -138,8 +140,56 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 			headers = headers.Clone()
 			headers.Set("Accept", "text/event-stream")
 		}
+	} else if canonical := canonicalAccountModel(req, account); canonical != "" {
+		requestedModel, _ := gatewaypreauth.RequestModel(req)
+		if strings.TrimSpace(requestedModel) != canonical {
+			body = canonicalizeModelBody(body, req.ParsedJSONObjectBody(), canonical)
+		}
 	}
 	return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
+}
+
+// canonicalAccountModel returns the configured account spelling for a
+// case-insensitive direct model match. An empty result means the account has
+// no explicit supported-model constraint or the request model was unavailable.
+func canonicalAccountModel(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) string {
+	if req == nil {
+		return ""
+	}
+	requestedModel, ok := gatewaypreauth.RequestModel(req)
+	if !ok {
+		return ""
+	}
+	canonical := gatewayopenai.CanonicalModel(requestedModel, account.SupportedModels)
+	if canonical == "" {
+		return ""
+	}
+	// Upstream model IDs are normalized to lowercase. Avoid reserializing an
+	// already canonical request body, which can matter for opaque payloads.
+	return strings.ToLower(canonical)
+}
+
+func canonicalizeModelBody(raw []byte, parsed any, canonical string) []byte {
+	root, ok := parsed.(map[string]any)
+	if !ok && len(raw) > 0 {
+		var decoded any
+		if err := json.Unmarshal(raw, &decoded); err == nil {
+			root, ok = decoded.(map[string]any)
+		}
+	}
+	if !ok || canonical == "" {
+		return raw
+	}
+	next := make(map[string]any, len(root)+1)
+	for key, value := range root {
+		next[key] = value
+	}
+	next["model"] = canonical
+	encoded, err := json.Marshal(next)
+	if err != nil {
+		return raw
+	}
+	return encoded
 }
 
 // AccountSupportsGatewayRequest mirrors accountSupportsGatewayRequest: the
@@ -193,7 +243,7 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 		// supportedModels null semantics).
 		return ""
 	}
-	if containsTrimmed(account.SupportedModels, requestedModel) {
+	if gatewayopenai.CanonicalModel(requestedModel, account.SupportedModels) != "" {
 		return ""
 	}
 	if d.resolveAccountModelMapping(account, req, requestClientCompatibility) != nil {
@@ -337,7 +387,7 @@ func openAIModelMappingsOf(mappings []gatewayruntimecache.AccountModelMapping) [
 func containsTrimmed(values []string, target string) bool {
 	target = strings.TrimSpace(target)
 	for _, value := range values {
-		if strings.TrimSpace(value) == target {
+		if gatewayopenai.ModelsEqual(value, target) {
 			return true
 		}
 	}

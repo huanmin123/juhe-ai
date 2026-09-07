@@ -730,10 +730,10 @@ func importModelMappingsField(record map[string]any, key, label string, messages
 			*messages = append(*messages, label+"条目必须包含 sourceModel、sourceEndpointFamily、upstreamModel 和 upstreamEndpointFamily")
 			return nil
 		}
-		if sourceModel == upstreamModel && sourceFamily == upstreamFamily {
+		if strings.EqualFold(sourceModel, upstreamModel) && sourceFamily == upstreamFamily {
 			continue
 		}
-		sourceKey := sourceFamily + "\n" + sourceModel
+		sourceKey := sourceFamily + "\n" + strings.ToLower(sourceModel)
 		if seenSources[sourceKey] {
 			*messages = append(*messages, label+"不能重复配置同一个 sourceModel 和 sourceEndpointFamily："+sourceModel+" / "+sourceFamily)
 			return nil

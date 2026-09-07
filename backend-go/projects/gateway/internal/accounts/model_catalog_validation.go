@@ -155,11 +155,11 @@ func assertAccountGptRequestOverridesSupportedByCatalog(input accountGptRequestO
 	}
 	catalogByModel := map[string]AccountModelCatalogFact{}
 	for _, item := range input.Catalog {
-		catalogByModel[strings.TrimSpace(item.Model)] = item
+		catalogByModel[strings.ToLower(strings.TrimSpace(item.Model))] = item
 	}
 	modelItems := []AccountModelCatalogFact{}
 	for _, model := range supportedModels {
-		if item, ok := catalogByModel[model]; ok {
+		if item, ok := catalogByModel[strings.ToLower(model)]; ok {
 			modelItems = append(modelItems, item)
 		}
 	}
@@ -251,10 +251,11 @@ func uniqueTextListInOrder(values []string) []string {
 	seen := map[string]bool{}
 	for _, value := range values {
 		normalized := strings.TrimSpace(value)
-		if normalized == "" || seen[normalized] {
+		key := strings.ToLower(normalized)
+		if normalized == "" || seen[key] {
 			continue
 		}
-		seen[normalized] = true
+		seen[key] = true
 		output = append(output, normalized)
 	}
 	return output
@@ -287,21 +288,21 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 	pool := map[string]bool{}
 	familyPools := map[string]map[string]bool{}
 	for _, item := range catalog {
-		pool[item.Model] = true
+		pool[strings.ToLower(strings.TrimSpace(item.Model))] = true
 		for _, family := range item.SupportedAPIProtocols {
 			if familyPools[family] == nil {
 				familyPools[family] = map[string]bool{}
 			}
-			familyPools[family][item.Model] = true
+			familyPools[family][strings.ToLower(strings.TrimSpace(item.Model))] = true
 		}
 	}
 	invalidSourceModels := []string{}
 	invalidUpstreamModels := []string{}
 	for _, mapping := range mappings {
-		if !pool[mapping.SourceModel] {
+		if !pool[strings.ToLower(strings.TrimSpace(mapping.SourceModel))] {
 			invalidSourceModels = append(invalidSourceModels, mapping.SourceModel)
 		}
-		if !pool[mapping.UpstreamModel] {
+		if !pool[strings.ToLower(strings.TrimSpace(mapping.UpstreamModel))] {
 			invalidUpstreamModels = append(invalidUpstreamModels, mapping.UpstreamModel)
 		}
 	}
@@ -313,7 +314,7 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 	}
 	invalidUpstreamProtocolModels := []string{}
 	for _, mapping := range mappings {
-		if !familyPools[mapping.UpstreamEndpointFamily][mapping.UpstreamModel] {
+		if !familyPools[mapping.UpstreamEndpointFamily][strings.ToLower(strings.TrimSpace(mapping.UpstreamModel))] {
 			invalidUpstreamProtocolModels = append(invalidUpstreamProtocolModels, mapping.UpstreamModel)
 		}
 	}

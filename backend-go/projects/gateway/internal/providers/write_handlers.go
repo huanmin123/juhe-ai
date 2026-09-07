@@ -612,7 +612,7 @@ func (d *Deps) validateDefaultHealthCheckModelSelection(ctx context.Context, pro
 		return "", "", err
 	}
 	for index := range activeCatalog {
-		if strings.TrimSpace(activeCatalog[index].Model) != model {
+		if !strings.EqualFold(strings.TrimSpace(activeCatalog[index].Model), model) {
 			continue
 		}
 		if !isProviderModelUsableForAccountTest(&activeCatalog[index]) {
@@ -626,7 +626,7 @@ func (d *Deps) validateDefaultHealthCheckModelSelection(ctx context.Context, pro
 		return "", "", err
 	}
 	for index := range inactiveCatalog {
-		if strings.TrimSpace(inactiveCatalog[index].Model) != model {
+		if !strings.EqualFold(strings.TrimSpace(inactiveCatalog[index].Model), model) {
 			continue
 		}
 		if !isProviderModelUsableForAccountTest(&inactiveCatalog[index]) {

@@ -938,6 +938,9 @@ func createBody(body map[string]any) (CreateInput, string) {
 		if len(input.ModelMappings) > 500 {
 			return CreateInput{}, "账户参数无效"
 		}
+		if !validateModelMappingsUnique(input.ModelMappings) {
+			return CreateInput{}, "账户参数无效"
+		}
 	}
 	if value, exists := body["tags"]; exists && value != nil {
 		if _, ok := value.([]any); !ok {
@@ -1232,6 +1235,9 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			input.ModelMappings = append(input.ModelMappings, mapping)
 		}
 		if len(input.ModelMappings) > 500 {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		if !validateModelMappingsUnique(input.ModelMappings) {
 			return PatchInput{}, "账户更新参数无效"
 		}
 		input.ModelMappingsPresent = true

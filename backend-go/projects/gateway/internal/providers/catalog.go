@@ -466,7 +466,7 @@ func (s *Store) listCustomModelRows(ctx context.Context, providerCodes []string,
 		clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
 	}
 	if modelFilter != "" {
-		clauses = append(clauses, "model = ?")
+		clauses = append(clauses, "lower(model) = lower(?)")
 		args = append(args, modelFilter)
 	}
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, provider_code, model, scope, system_account_id, status,
@@ -1152,7 +1152,7 @@ func (s *Store) findBuiltInTestCatalogItems(ctx context.Context, providerCodes [
 			default_reasoning_effort
 		FROM `+s.table("provider_model_catalog")+`
 		WHERE provider_code IN (`+placeholders(len(codes))+`)
-			AND model = ?
+			AND lower(model) = lower(?)
 			AND status = 'active'
 			AND catalog_visible = 1
 			AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+s.todayText()+`)

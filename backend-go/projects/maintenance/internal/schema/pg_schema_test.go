@@ -23,12 +23,12 @@ import (
 
 // goldenPostgresSchemaStatementCount is the number of statements produced by
 // collectPostgresSchemaStatements() in backend/src/storage/postgres-schema.ts.
-const goldenPostgresSchemaStatementCount = 614
+const goldenPostgresSchemaStatementCount = 619
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      318,
+	"juhe_business":      323,
 	"juhe_chat":          36,
 	"juhe_dataset":       7,
 	"juhe_usage":         48,

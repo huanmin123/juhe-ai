@@ -2943,6 +2943,38 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
+		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_lower_unique
+      ON custom_provider_models(provider_code, system_account_id, lower(model))
+      WHERE scope = 'personal'`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_lower_unique
+      ON custom_provider_models(provider_code, lower(model))
+      WHERE scope = 'global'`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_model_catalog_lower_unique
+      ON provider_model_catalog(provider_code, lower(model))`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_account_supported_models_lower_unique
+      ON account_supported_models(account_id, lower(model))`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_account_model_mappings_source_lower_unique
+      ON account_model_mappings(account_id, lower(source_model), source_endpoint_family)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
 		SQL: `CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
       ON custom_provider_models(provider_code, status, catalog_visible, scope, system_account_id, model)`,
 	},

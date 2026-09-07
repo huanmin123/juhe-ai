@@ -179,9 +179,9 @@ func FilterGatewayAccountsByRequestedModel(
 		RequestedModel:              requestedModelOut,
 		SourceEndpointFamily:        sourceEndpointFamily,
 		ModelPriority: &gatewayrouting.GatewayAccountModelPriority{
-			RequestedModel:      requestedModelOut,
+			RequestedModel:       requestedModelOut,
 			SourceEndpointFamily: sourceEndpointFamily,
-			RankByAccountID:     rankByAccountID,
+			RankByAccountID:      rankByAccountID,
 		},
 	}
 	if skippedCount > 0 && len(filtered) == 0 {
@@ -243,24 +243,14 @@ func isMappingAllowedBySupportedModels(upstreamModel string, supportedModels []s
 	if len(supportedModels) == 0 {
 		return false
 	}
-	for _, model := range supportedModels {
-		if model == upstreamModel {
-			return true
-		}
-	}
-	return false
+	return gatewayopenai.CanonicalModel(upstreamModel, supportedModels) != ""
 }
 
 func resolveGatewayAccountModelMatch(requestedModel string, supportedModels []string) bool {
 	if requestedModel == "" {
 		return false
 	}
-	for _, model := range supportedModels {
-		if model == requestedModel {
-			return true
-		}
-	}
-	return false
+	return gatewayopenai.CanonicalModel(requestedModel, supportedModels) != ""
 }
 
 // resolveAccountModelMapping adapts gatewayopenai.ResolveAccountModelMapping
