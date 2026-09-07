@@ -1,3 +1,6 @@
+# 2026-09-08 二次伪迁移第一轮完成注记：landed/eliminated 文件已移入 ../../migration-backup-1/
+# （见 migration-backup-1/SHA256SUMS）；本文件剩余条目对应留在 migration-backup 的
+# partial/missing 文件（第二轮修复队列），其余条目因文件移出而失效。
 7ee07cf7b3b5786a69c9ed109b6aada4ff56fdc8d64c345df74d5c69c67652a2 *backend/.env.capacity.example
 4a05018ca9beb7f5ebb5646237b3c7f38b42785357e6957ce95eb6a15b7f5aaf *backend/.env.example
 f14efd260aeb7370ad08c0bf745ce3dfa191b412578c93be368c75c33ad60d8e *backend/.env.performance.example
