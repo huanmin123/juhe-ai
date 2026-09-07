@@ -1033,3 +1033,53 @@ func (env *routeEnv) doWithHeader(method, path, owner, key, value string) routeR
 	_ = json.Unmarshal(payload, &parsed)
 	return routeResponse{status: response.StatusCode, body: payload, jsonMap: parsed}
 }
+
+// TestChatEnvIntOrDefault 验证 chat 包 env 整数解析的默认/覆盖/越界语义
+// （对齐 Node runtime.ts integerConfig：越界 fail-fast，不静默 clamp）。
+func TestChatEnvIntOrDefault(t *testing.T) {
+	const name = "JUHE_AI_CHAT_TEST_INT"
+
+	t.Setenv(name, "")
+	if got := chatEnvIntOrDefault(name, 42, 1, 100); got != 42 {
+		t.Fatalf("unset env fallback: %d", got)
+	}
+	t.Setenv(name, "77")
+	if got := chatEnvIntOrDefault(name, 42, 1, 100); got != 77 {
+		t.Fatalf("env override: %d", got)
+	}
+	for _, raw := range []string{"0", "101", "abc", "3.5"} {
+		t.Setenv(name, raw)
+		if func() (panicked bool) {
+			defer func() {
+				if recover() != nil {
+					panicked = true
+				}
+			}()
+			chatEnvIntOrDefault(name, 42, 1, 100)
+			return false
+		}() {
+			continue
+		}
+		t.Fatalf("env %q 必须触发 fail-fast", raw)
+	}
+}
+
+// TestChatEnvBackedDefaults 验证两个 chat env 默认档位恢复为 Node 基线值：
+// maxConversationsPerUser 50（JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER）、
+// upstreamSseMaxEvents 65536（JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS）。
+func TestChatEnvBackedDefaults(t *testing.T) {
+	if defaultMaxConversationsPerUser != 50 {
+		t.Fatalf("defaultMaxConversationsPerUser: %d", defaultMaxConversationsPerUser)
+	}
+	if defaultMaxSSEEvents != 65536 {
+		t.Fatalf("defaultMaxSSEEvents: %d", defaultMaxSSEEvents)
+	}
+	deps := &Deps{}
+	if got := deps.maxConversationsPerUser(); got != 50 {
+		t.Fatalf("deps fallback maxConversationsPerUser: %d", got)
+	}
+	deps.MaxConversationsPerUserInt = func() int { return 30 }
+	if got := deps.maxConversationsPerUser(); got != 30 {
+		t.Fatalf("injected maxConversationsPerUser must keep priority: %d", got)
+	}
+}

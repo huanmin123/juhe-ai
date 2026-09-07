@@ -579,8 +579,18 @@ type TerminalMutation struct {
 	CurrentUpdatedAt string
 }
 
-// Revoke mirrors revokeResourceAuthorizationMutationAsync (:506-545).
+// Revoke mirrors revokeResourceAuthorizationMutationAsync (:506-545) without
+// an owner filter (unscoped administrator contract).
 func (s *Store) Revoke(ctx context.Context, id, expectedUpdatedAt, actor string) (*TerminalMutation, error) {
+	return s.RevokeForOwner(ctx, id, expectedUpdatedAt, actor, "")
+}
+
+// RevokeForOwner applies the Node revoke owner filter
+// (revokeResourceAuthorizationMutationSqlite :516-525 / Postgres :556-564):
+// the grant lookup adds `AND resource_owner_system_account_id = ?` when an
+// administrator selects ?systemAccountId, so a grant outside the scope is
+// reported as not_found before the CAS decision.
+func (s *Store) RevokeForOwner(ctx context.Context, id, expectedUpdatedAt, actor, ownerScope string) (*TerminalMutation, error) {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -592,6 +602,9 @@ func (s *Store) Revoke(ctx context.Context, id, expectedUpdatedAt, actor string)
 		return nil, err
 	}
 	if grant == nil {
+		return &TerminalMutation{Status: "not_found"}, nil
+	}
+	if ownerScope != "" && grant.OwnerID != ownerScope {
 		return &TerminalMutation{Status: "not_found"}, nil
 	}
 	// Claim #11 (Node :527-534): the CAS conflict decision comes before the

@@ -30,6 +30,8 @@ package inval
 
 import (
 	"context"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -163,8 +165,24 @@ func (b *Bus) Invalidate(topic, reason string) {
 		}
 	}
 	for _, handler := range handlers {
-		handler(topic, reason)
+		notifySafely(topic, reason, handler)
 	}
+}
+
+// notifySafely isolates one subscriber's panic (审查 #8 / BUG-0158): a broken
+// cache subscriber must neither crash the gateway process nor prevent the
+// remaining handlers of this invalidation — or any later invalidation — from
+// running. The recovered panic is logged with its stack and dropped; the bus
+// has no channel to report it to the publisher, mirroring how the archived
+// notify* helpers run every invalidator independently.
+func notifySafely(topic, reason string, handler Handler) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Default().Warn("inval 缓存失效订阅者 panic 已隔离",
+				"topic", topic, "reason", reason, "panic", recovered, "stack", string(debug.Stack()))
+		}
+	}()
+	handler(topic, reason)
 }
 
 // Version returns the current local version for a topic.

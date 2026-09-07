@@ -3,6 +3,7 @@ package authsys
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -337,4 +338,174 @@ func TestProducerSinkGeneratesOperationLogIDs(t *testing.T) {
 		}
 		seen[input.ID] = true
 	}
+}
+
+// sinkSpyLogger records the invalid-MaxChanges drop reports so the failure
+// path is asserted without touching the global default slog logger.
+type sinkSpyLogger struct {
+	mu    sync.Mutex
+	calls [][]any
+}
+
+func (l *sinkSpyLogger) Warn(msg string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, append([]any{msg}, args...))
+}
+
+func (l *sinkSpyLogger) Error(msg string, args ...any) {}
+
+func (l *sinkSpyLogger) recorded() [][]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([][]any(nil), l.calls...)
+}
+
+func sinkBoundaryEntry(module string, changeCount int) OperationLogEntry {
+	changes := make([]OperationLogChange, changeCount)
+	for i := range changes {
+		changes[i] = OperationLogChange{Field: fmt.Sprintf("field_%02d", i), Label: "边界", After: "after"}
+	}
+	return OperationLogEntry{
+		ActorSystemAccountID: "sysacc_admin",
+		ActorRole:            "admin",
+		Mode:                 "admin",
+		Module:               module,
+		Action:               "update",
+		OperationKey:         module + ".update",
+		ResourceType:         "boundary",
+		Summary:              "MaxChanges 边界",
+		Changes:              changes,
+	}
+}
+
+// assertSinkDropReport asserts one warn drop report carrying the original
+// Node-shaped range error and the configured value (key/value arg pairs).
+func assertSinkDropReport(t *testing.T, logger *sinkSpyLogger, configured int) {
+	t.Helper()
+	calls := logger.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 drop report, got %d", len(calls))
+	}
+	call := calls[0]
+	if call[0] != "F4 operation log entry dropped: invalid max changes" {
+		t.Fatalf("drop report message drift: %v", call[0])
+	}
+	foundError, foundConfigured := false, false
+	for i := 1; i+1 < len(call); i += 2 {
+		key, _ := call[i].(string)
+		switch key {
+		case "error":
+			foundError = true
+			if got, _ := call[i+1].(error); got == nil || got.Error() != "系统设置 operationLogMaxChangesPerRecord 必须在 1 到 500 之间" {
+				t.Fatalf("drop report error drift: %v", call[i+1])
+			}
+		case "configured":
+			foundConfigured = true
+			if got, _ := call[i+1].(int); got != configured {
+				t.Fatalf("drop report configured drift: %v", call[i+1])
+			}
+		}
+	}
+	if !foundError || !foundConfigured {
+		t.Fatalf("drop report must carry the original error and the configured value: %v", call)
+	}
+}
+
+// TestOperationLogProducerSinkMaxChangesBoundaries locks in the Node
+// operation-log.service.ts:272-280 contract through the Go sink: the zero
+// value stays the unconfigured default of 500 (existing composition
+// contract), the 1..500 boundaries keep the truncate-with-marker behavior,
+// and an explicitly invalid configuration (negative / above the cap) drops
+// the whole entry with a logged original error instead of silently clamping.
+func TestOperationLogProducerSinkMaxChangesBoundaries(t *testing.T) {
+	newSink := func(t *testing.T, maxChanges int, logger SinkLogger) (*OperationLogProducerSink, *sinkFakeStore) {
+		t.Helper()
+		store := &sinkFakeStore{}
+		producer := operationlog.NewProducer(store, operationlog.OwnerLease{}, operationlog.Config{InstanceID: "boundary"}, nil)
+		return &OperationLogProducerSink{Producer: producer, MaxChanges: maxChanges, Logger: logger}, store
+	}
+
+	t.Run("zero keeps the unconfigured default 500", func(t *testing.T) {
+		sink, store := newSink(t, 0, &sinkSpyLogger{})
+		sink.Record(sinkBoundaryEntry("mc_default", 501), httptest.NewRequest(http.MethodPost, "/x", nil))
+		inputs := waitForSinkInputs(t, store, 1)
+		if len(inputs) != 1 {
+			t.Fatalf("expected 1 persisted entry, got %d", len(inputs))
+		}
+		changes := inputs[0].Changes
+		if len(changes) != 501 {
+			t.Fatalf("default 500 truncation drift: %d changes", len(changes))
+		}
+		last := changes[500]
+		if last.Field != "__truncated__" || last.After != "还有 1 项变更未展开" {
+			t.Fatalf("truncation marker drift: %+v", last)
+		}
+	})
+
+	t.Run("boundary 500 exactly keeps every change", func(t *testing.T) {
+		sink, store := newSink(t, 500, &sinkSpyLogger{})
+		sink.Record(sinkBoundaryEntry("mc_edge_exact", 500), httptest.NewRequest(http.MethodPost, "/x", nil))
+		inputs := waitForSinkInputs(t, store, 1)
+		if len(inputs) != 1 {
+			t.Fatalf("expected 1 persisted entry, got %d", len(inputs))
+		}
+		if len(inputs[0].Changes) != 500 {
+			t.Fatalf("boundary 500 must not truncate: %d changes", len(inputs[0].Changes))
+		}
+		for _, change := range inputs[0].Changes {
+			if change.Field == "__truncated__" {
+				t.Fatalf("boundary 500 must not carry a truncation marker: %+v", change)
+			}
+		}
+	})
+
+	t.Run("boundary 500 with one extra truncates", func(t *testing.T) {
+		sink, store := newSink(t, 500, &sinkSpyLogger{})
+		sink.Record(sinkBoundaryEntry("mc_edge_overflow", 501), httptest.NewRequest(http.MethodPost, "/x", nil))
+		inputs := waitForSinkInputs(t, store, 1)
+		if len(inputs) != 1 {
+			t.Fatalf("expected 1 persisted entry, got %d", len(inputs))
+		}
+		changes := inputs[0].Changes
+		if len(changes) != 501 || changes[500].Field != "__truncated__" {
+			t.Fatalf("boundary 500 truncation drift: %d changes", len(changes))
+		}
+	})
+
+	t.Run("boundary 1 truncates to a single change plus marker", func(t *testing.T) {
+		sink, store := newSink(t, 1, &sinkSpyLogger{})
+		sink.Record(sinkBoundaryEntry("mc_min", 2), httptest.NewRequest(http.MethodPost, "/x", nil))
+		inputs := waitForSinkInputs(t, store, 1)
+		if len(inputs) != 1 {
+			t.Fatalf("expected 1 persisted entry, got %d", len(inputs))
+		}
+		changes := inputs[0].Changes
+		if len(changes) != 2 || changes[0].Field != "field_00" || changes[1].Field != "__truncated__" {
+			t.Fatalf("boundary 1 truncation drift: %+v", changes)
+		}
+	})
+
+	// The negative and over-cap cases must take the drop path: the entry is
+	// discarded synchronously before Producer.Record, so nothing can reach the
+	// store and the drop report is the only observable trace.
+	t.Run("negative drops the entry and reports", func(t *testing.T) {
+		logger := &sinkSpyLogger{}
+		sink, store := newSink(t, -1, logger)
+		sink.Record(sinkBoundaryEntry("mc_negative", 2), httptest.NewRequest(http.MethodPost, "/x", nil))
+		if inputs := store.recorded(); len(inputs) != 0 {
+			t.Fatalf("negative MaxChanges must drop the entry, got %d persisted", len(inputs))
+		}
+		assertSinkDropReport(t, logger, -1)
+	})
+
+	t.Run("501 drops the entry and reports", func(t *testing.T) {
+		logger := &sinkSpyLogger{}
+		sink, store := newSink(t, 501, logger)
+		sink.Record(sinkBoundaryEntry("mc_over", 2), httptest.NewRequest(http.MethodPost, "/x", nil))
+		if inputs := store.recorded(); len(inputs) != 0 {
+			t.Fatalf("MaxChanges 501 must drop the entry, got %d persisted", len(inputs))
+		}
+		assertSinkDropReport(t, logger, 501)
+	})
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -25,17 +24,6 @@ func (d *Deps) RequireAdmin(next http.Handler) http.Handler { return d.Auth.Requ
 
 func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
 	return d.Auth.RequireSession(touch)
-}
-
-func parseIntOr(raw string, fallback int) int {
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 1 {
-		return fallback
-	}
-	return value
 }
 
 // normalizeMutationVersion mirrors rfc3339InstantSchema('授权配置版本格式不正确')
@@ -139,10 +127,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 		d.find(w, r, true)
 	})))
 	k.Register("DELETE "+prefix+"/my-authorizations/{id}/return", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d.returnValue(w, r)
-	})))
-	k.Register("GET "+prefix+"/my-authorizations/{id}/usage", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d.usage(w, r)
+		d.returnValue(w, r, true)
 	})))
 
 	k.Register("GET "+prefix+"/authorizations", d.RequireAdminAuthz(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -188,6 +173,10 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("PATCH "+prefix+"/authorizations/{id}/expire", d.RequireAdminAuthz(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.patch(w, r, true)
 	})))
+
+	// Usage read family: 8 aggregate endpoints + the per-id usage detail and
+	// the admin return surface (usage_routes.go).
+	d.mountUsageRoutes(k, prefix+"/authorizations", prefix+"/my-authorizations")
 }
 
 // RequireAdminAuthz combines session + admin role (authsys.RequireAdmin).
@@ -209,26 +198,53 @@ func (d *Deps) RequireSelf(next http.Handler) http.Handler {
 }
 
 func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
-	// Claim #12: the query schema validates direction for both surfaces
-	// (authorizations.routes.ts:45), but only the self list forwards it to the
-	// read filters (:153-159); the admin list silently ignores it.
-	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
-	if direction != "" && direction != "all" && direction != "outbound" && direction != "inbound" {
-		kernel.WriteBadRequest(w, "查询参数不合法")
+	// The list query schema (authorizationsQuerySchema :37-52) validates every
+	// declared key before the read; it is a plain (non-strict) object, so
+	// unknown keys are stripped. parseOrBadRequest renders the first issue.
+	parser := newQueryParser(r)
+	// keyword has trim + max(120) but no min(1): a blank keyword stays valid
+	// and simply does not filter.
+	keyword := ""
+	if parser.present("keyword") {
+		keyword = strings.TrimSpace(parser.query.Get("keyword"))
+		if len([]rune(keyword)) > 120 {
+			parser.fail("搜索关键字最多 120 个字符")
+		}
+	}
+	resourceType, _ := parser.enum("resourceType", "account", "group")
+	resourceID, _ := parser.text("resourceId", "授权资源 ID 不能为空")
+	resourceOwnerID, _ := parser.text("resourceOwnerSystemAccountId", "资源归属用户 ID 不能为空")
+	granteeID, _ := parser.text("granteeSystemAccountId", "被授权用户 ID 不能为空")
+	teamID, _ := parser.text("teamId", "团队 ID 不能为空")
+	status, _ := parser.enum("status", "active", "paused", "expired", "revoked", "returned", "all")
+	direction, _ := parser.enum("direction", "all", "outbound", "inbound")
+	sourceType, _ := parser.enum("sourceType", "all", "manual", "team")
+	// systemAccountId/startDate/endDate keep their validation (the scope
+	// account flows through accessFor; the list route discards the values like
+	// the Node `void startDate`).
+	_, _ = parser.text("systemAccountId", "系统账号 ID 不能为空")
+	_, _ = parser.date("startDate", "开始日期格式应为 YYYY-MM-DD")
+	_, _ = parser.date("endDate", "结束日期格式应为 YYYY-MM-DD")
+	page, _ := parser.int("page", "页码必须大于 0", 0, "")
+	pageSize, _ := parser.int("pageSize", "每页数量必须大于 0", 500, "每页最多 500 条")
+	if !parser.writeBadRequest(w, "查询参数不合法") {
 		return
 	}
 	access := d.accessFor(r, selfOnly)
 	filters := Filters{
-		ResourceType:                 r.URL.Query().Get("resourceType"),
-		ResourceID:                   r.URL.Query().Get("resourceId"),
-		ResourceOwnerSystemAccountID: r.URL.Query().Get("resourceOwnerSystemAccountId"),
-		GranteeSystemAccountID:       r.URL.Query().Get("granteeSystemAccountId"),
-		TeamID:                       r.URL.Query().Get("teamId"),
-		Status:                       orDefault(r.URL.Query().Get("status"), "all"),
-		SourceType:                   orDefault(r.URL.Query().Get("sourceType"), "all"),
-		Keyword:                      r.URL.Query().Get("keyword"),
+		ResourceType:                 resourceType,
+		ResourceID:                   resourceID,
+		ResourceOwnerSystemAccountID: resourceOwnerID,
+		GranteeSystemAccountID:       granteeID,
+		TeamID:                       teamID,
+		Status:                       status,
+		SourceType:                   sourceType,
+		Keyword:                      keyword,
 		IsAdmin:                      access.IsAdmin,
 	}
+	// Claim #12: the query schema validates direction for both surfaces
+	// (authorizations.routes.ts:45), but only the self list forwards it to the
+	// read filters (:153-159); the admin list silently ignores it.
 	if selfOnly && (direction == "outbound" || direction == "inbound") {
 		filters.Direction = direction
 	}
@@ -241,9 +257,13 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 		// Admin scope filter: viewer acts as that account.
 		filters.ViewerSystemAccountID = access.FilterID
 	}
-	page := parseIntOr(r.URL.Query().Get("page"), 1)
-	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), 50)
-	items, total, hasMore, err := d.Store.ListPage(r.Context(), filters, page, pageSize)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	items, total, hasMore, err := d.Store.ListItemsPage(r.Context(), filters, page, pageSize, access)
 	if err != nil {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
@@ -307,7 +327,11 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt     *string         `json:"expiresAt"`
 		Limits        json.RawMessage `json:"limits"`
 	}
-	if !kernel.DecodeJSON(w, r, &body) {
+	// createAuthorizationSchema is a strict object (authorizations.routes.ts:106).
+	if !decodeStrictJSON(w, r, &body, map[string]bool{
+		"resourceType": true, "resourceId": true, "granteeType": true, "granteeId": true,
+		"targetGroupId": true, "remark": true, "expiresAt": true, "limits": true,
+	}) {
 		return
 	}
 	if body.ResourceType == nil || body.ResourceID == nil || body.GranteeType == nil || body.GranteeID == nil ||
@@ -416,7 +440,7 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
 	}
-	if !kernel.DecodeJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body, map[string]bool{"expectedUpdatedAt": true}) {
 		return
 	}
 	// Claim #5: the shared mutation version schema validates and canonicalizes
@@ -426,7 +450,11 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
 		return
 	}
-	mutation, err := d.Store.Revoke(r.Context(), r.PathValue("id"), version, auth.SystemAccountID)
+	// Node :401 passes getRequestAccessScope(query.systemAccountId) into the
+	// revoke mutation; the store filters resource_owner_system_account_id by
+	// the administrator scope and reports out-of-scope grants as not_found.
+	access := d.accessFor(r, false)
+	mutation, err := d.Store.RevokeForOwner(r.Context(), r.PathValue("id"), version, auth.SystemAccountID, access.FilterID)
 	if err != nil {
 		kernel.WriteBadRequest(w, "回收授权失败")
 		return
@@ -460,7 +488,13 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 	}, "")
 }
 
-func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request) {
+// returnValue serves both the my-* surface (selfOnly, grantee pinned to the
+// viewer) and the admin /authorizations surface. Node resolves the grantee
+// through userVisibleSystemAccountId(access) (return.repository.ts:121/:166):
+// an admin ?systemAccountId filter nominates that account, everything else
+// pins the viewer. The my-* middleware downgrades the role, so the operation
+// log mode follows operationMode(requestAccess) ('admin' vs 'self').
+func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	auth := authsys.AuthContextFrom(r)
 	if auth == nil {
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
@@ -469,7 +503,7 @@ func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
 	}
-	if !kernel.DecodeJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body, map[string]bool{"expectedUpdatedAt": true}) {
 		return
 	}
 	version, ok := normalizeMutationVersion(body.ExpectedUpdatedAt)
@@ -477,7 +511,16 @@ func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "授权配置版本格式不正确")
 		return
 	}
-	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), version, auth.SystemAccountID)
+	access := d.accessFor(r, selfOnly)
+	granteeID := access.ViewerID
+	if access.FilterID != "" {
+		granteeID = access.FilterID
+	}
+	if granteeID == "" {
+		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
+		return
+	}
+	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), version, granteeID)
 	if err != nil {
 		kernel.WriteBadRequest(w, "归还授权使用权失败")
 		return
@@ -492,10 +535,14 @@ func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	case "updated":
+		mode := "self"
+		if !selfOnly && authsys.IsAdminRole(auth.Role) {
+			mode = "admin"
+		}
 		if d.Sink != nil {
 			d.Sink.Record(authsys.OperationLogEntry{
 				ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
-				Mode: "self", Module: "authorizations", Action: "return",
+				Mode: mode, Module: "authorizations", Action: "return",
 				OperationKey: "authorizations.return", ResourceType: "authorization",
 				ResourceID: mutation.Result.ID,
 				Summary:    "归还授权使用权：" + mutation.Result.ResourceID,
@@ -520,7 +567,17 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		ExpiresAt         json.RawMessage `json:"expiresAt"`
 		Limits            json.RawMessage `json:"limits"`
 	}
-	if !kernel.DecodeJSON(w, r, &body) {
+	// Both the update and expire schemas are strict objects
+	// (authorizations.routes.ts:131/:142); the expire surface does not declare
+	// a status key, so an expire request carrying status fails with the zod
+	// unrecognized-keys message before the presence refine.
+	allowedKeys := map[string]bool{
+		"expectedUpdatedAt": true, "status": true, "expiresAt": true, "limits": true,
+	}
+	if expireOnly {
+		allowedKeys = map[string]bool{"expectedUpdatedAt": true, "expiresAt": true, "limits": true}
+	}
+	if !decodeStrictJSON(w, r, &body, allowedKeys) {
 		return
 	}
 	// Claim #5: PATCH/expire share the version schema
@@ -533,13 +590,9 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 	hasStatus := rawJSONPresent(body.Status)
 	hasExpiresAt := len(bytes.TrimSpace(body.ExpiresAt)) > 0
 	hasLimits := len(bytes.TrimSpace(body.Limits)) > 0
-	// The expire schema is strict (authorizations.routes.ts:135-144): a status
-	// key is rejected on the /expire surface before the presence refine, like
-	// the Node strict-object parse failure.
-	if expireOnly && hasStatus {
-		kernel.WriteBadRequest(w, "修改授权参数不合法")
-		return
-	}
+	// The expire surface rejects a status key inside decodeStrictJSON above
+	// (the strict expire schema has no status key), so no separate guard is
+	// needed here.
 	// Presence refine (authorizations.routes.ts:131-133 / :142-144).
 	contentPresent := hasExpiresAt || hasLimits
 	if !expireOnly {
@@ -615,21 +668,6 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		"expiresAt": outcome.Result.ExpiresAt, "limits": outcome.Limits,
 		"updatedAt": outcome.Result.UpdatedAt,
 	}, "")
-}
-
-// usage is the J5-dependent read; the shape is served with usage omitted
-// until the J5 stats slice wires the window loaders (documented deferral).
-func (d *Deps) usage(w http.ResponseWriter, r *http.Request) {
-	summary, err := d.Store.Find(r.Context(), r.PathValue("id"))
-	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
-		return
-	}
-	if summary == nil {
-		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
-		return
-	}
-	kernel.WriteJSON(w, http.StatusOK, map[string]any{"data": summary})
 }
 
 func orDefault(value, fallback string) string {

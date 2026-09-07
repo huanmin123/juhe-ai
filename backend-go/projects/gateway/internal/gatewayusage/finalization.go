@@ -114,7 +114,8 @@ type FinalizationDispatch struct {
 
 // NewFinalizationDispatch wires the pipeline over the recorder port. maxItems /
 // maxConcurrency <= 0 fall back to the Node defaults
-// (usageFinalizationMaxItems 2048, concurrency.globalMax 32).
+// (usageFinalizationMaxItems 2048, concurrency.globalMax 5000 via
+// JUHE_AI_CONCURRENCY_GLOBAL_MAX).
 func NewFinalizationDispatch(recorder UsageRecorder, overflow DispatchOverflowSpool, maxItems int, maxConcurrency int) *FinalizationDispatch {
 	queue := NewGatewayUsageFinalizationQueue(maxItems, maxConcurrency)
 	return &FinalizationDispatch{
@@ -187,10 +188,15 @@ type GatewayUsageFinalizationQueue struct {
 	wg                sync.WaitGroup
 }
 
-// gatewayUsageFinalizationDefaults mirror the Node runtime defaults.
+// gatewayUsageFinalizationDefaults mirror the Node runtime defaults
+// (failure-finalization.service.ts: gatewayUsageFinalizationMaxConcurrency =
+// runtimeConfig.concurrency.globalMax, i.e. JUHE_AI_CONCURRENCY_GLOBAL_MAX
+// default 5000). maxItems stays 2048: it is the queued-tasks memory bound,
+// not a throughput limit. Node 的 5000=globalMax 是全进程共享 governor 预算；
+// Go 此处为收尾队列独占上限，实际 DB 写并发仍受 PG 池封顶。
 const (
-	defaultUsageFinalizationMaxItems       = 2048
-	defaultUsageFinalizationMaxConcurrency = 32
+	defaultUsageFinalizationMaxItems        = 2048
+	defaultUsageFinalizationMaxConcurrency = 5000
 )
 
 // NewGatewayUsageFinalizationQueue builds the queue.

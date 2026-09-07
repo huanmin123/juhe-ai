@@ -39,6 +39,18 @@ import (
 // edit (mirrors the authsys SetCacheInvalidator pattern). Compose wiring is a
 // registered handover of docs/bug/问题-0172 T1: a nil port keeps the batch
 // self-contained (tests, and production until the wiring wave lands).
+//
+// The delete-path channels (BUG-0162 invalidation slice,
+// account-delete-cleanup.repository.ts:149-158,163-172) ride the same port:
+//
+//	InvalidateGroupAccountIds                → invalidateGroupAccountIdsCache
+//	                                           (group-read-loaders.ts:223)
+//	ClearResourceAuthorizationLookupCaches   → clearResourceAuthorizationLookupCaches
+//	                                           (authorization-read-loaders.ts:299)
+//	InvalidateAuthorizationQuota             → notifyAuthorizationQuotaCacheInvalidation
+//	                                           (the quota arm of
+//	                                           invalidateAuthorizationRuntimeAfterBusinessWrite,
+//	                                           account-delete-cleanup.repository.ts:56-59)
 type CacheInvalidator interface {
 	// InvalidateAccountLookup mirrors Node invalidateAccountLookupCache
 	// (repository-lookups.ts:473): flush the per-account lookup cache entry.
@@ -48,6 +60,21 @@ type CacheInvalidator interface {
 	// (account-runtime-mutation-helpers.ts:72): one whole-surface runtime
 	// invalidation per committed batch.
 	InvalidateGatewayRuntime(reason string) error
+	// InvalidateGroupAccountIds mirrors Node invalidateGroupAccountIdsCache:
+	// the whole-surface group-account-ids cache flush. groups.Store folds the
+	// same Node call into its GatewayRuntime bus notification
+	// (store.go:1612), so the composition adapter follows that precedent.
+	InvalidateGroupAccountIds() error
+	// ClearResourceAuthorizationLookupCaches mirrors Node
+	// clearResourceAuthorizationLookupCaches: the authorization stats/sources
+	// lookup caches flush (process-local + shared cache in Node; a documented
+	// hook until the Go authz read slice grows the caches, same pattern as
+	// InvalidateAccountLookup).
+	ClearResourceAuthorizationLookupCaches() error
+	// InvalidateAuthorizationQuota mirrors Node
+	// notifyAuthorizationQuotaCacheInvalidation: the authorization quota
+	// snapshot invalidation (inval.TopicAuthorizationQuota).
+	InvalidateAuthorizationQuota(reason string) error
 }
 
 // SetCacheInvalidator wires the post-commit invalidation channels (compose

@@ -22,6 +22,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
+	groupdirtycursor "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/group_dirty_cursor"
 	businesssettings "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/delegated"
@@ -160,6 +161,9 @@ type composition struct {
 	// AuthzStore retains the authorization store so main can attach the
 	// T6d gateway-side expiry reconciliation component (compose_authz_expiry_sync.go).
 	AuthzStore *authz.Store
+	// teamStore retains the system-teams store so the assembly tests can drive
+	// the committed-write side effects directly (the routes family shares it).
+	teamStore *systemteams.Store
 
 	shutdowns []func()
 }
@@ -482,11 +486,46 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create authorization store: %w", err)
 	}
+	// The authorization usage window reads (usage reads family) live in the
+	// stats database: SQLite mode must inject the dedicated stats file handle
+	// (same split as settingsStore.SetStatsDatabase above; Node
+	// getStatsDatabase()), otherwise statsQueryDB falls back to the business
+	// handle and every usage read misses the table in the six-database split.
+	// PostgreSQL qualifies juhe_stats over the shared business pool and never
+	// needs the handle. The usageStatsTimezone source keeps the in-package
+	// default (system_settings read over the business handle — the same table
+	// the settings store persists; AttachTimezoneSource stays nil-safe).
+	if !composed.pgDialect {
+		authzStore.AttachStatsDatabase(composed.statsDB)
+	}
 	composed.AuthzStore = authzStore
-	teamStore, err := systemteams.NewStore(composed.db, composed.pgDialect, time.Now, authzStore)
+	// C9 committed-write side effects (Node refreshGroupAccountStatsAfterWriteAsync
+	// + invalidateAuthorizationRuntimeAfterBusinessWrite,
+	// system-team.repository.ts:1483-1494): both dialects mark the
+	// group-account-stats dirty row through the groupdirtycursor store (its
+	// owner gate mirrors the business handoff evidence validated above), and
+	// the gateway runtime / authorization quota caches invalidate through the
+	// K5 bus — *inval.Bus satisfies the RuntimeInvalidator port directly, the
+	// same adapter shape as accountsBusInvalidator below without translation.
+	groupStatsDirtyMode := groupdirtycursor.SQLite
+	if composed.pgDialect {
+		groupStatsDirtyMode = groupdirtycursor.Postgres
+	}
+	groupStatsDirtyMarker, err := groupdirtycursor.NewStore(composed.db, groupStatsDirtyMode, businessSchema,
+		groupdirtycursor.OwnerGate{
+			Confirmed:         ownerGate.Confirmed,
+			SchemaReady:       ownerGate.SchemaReady,
+			NodeWriterStopped: ownerGate.NodeWriterStopped,
+		})
+	if err != nil {
+		return nil, fmt.Errorf("create group-stats dirty marker store: %w", err)
+	}
+	teamStore, err := systemteams.NewStore(composed.db, composed.pgDialect, time.Now, authzStore,
+		systemteams.WithSideEffects(groupStatsDirtyMarker, bus))
 	if err != nil {
 		return nil, fmt.Errorf("create system-teams store: %w", err)
 	}
+	composed.teamStore = teamStore
 	// WithGlobalConcurrencyMax carries the parsed JUHE_AI_CONCURRENCY_GLOBAL_MAX
 	// into the DEFAULT scheduling-policy projection (Node reads
 	// runtimeConfig.concurrency.globalMax live; the store default stays 5000).
@@ -606,7 +645,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	producer := operationlog.NewProducer(operationStore, operationLease.Lease(), operationlog.Config{OwnerLease: operationLease.TTL()}, producerLogger{})
 	composed.producer = producer
 	composed.operationStore = operationStore
-	sink := &authsys.OperationLogProducerSink{Producer: producer, MaxChanges: 100}
+	// Logger rides the same slog-backed producerLogger as the producer drop
+	// reports (an invalid MaxChanges configuration drops the entry with a
+	// logged original error, Node logOperationLogFailure semantics).
+	sink := &authsys.OperationLogProducerSink{Producer: producer, MaxChanges: 100, Logger: producerLogger{}}
 
 	// Auth captcha / login-guard drivers switch on the runtime-state driver
 	// (BUG-0171.4): memory keeps the process-local modelcheckauth services,
@@ -1143,6 +1185,39 @@ func (a accountsBusInvalidator) InvalidateGatewayRuntime(reason string) error {
 		return errors.New("cache invalidation bus is not wired")
 	}
 	a.bus.Invalidate(inval.TopicGatewayRuntime, reason)
+	return nil
+}
+
+// InvalidateGroupAccountIds mirrors the delete-path
+// invalidateGroupAccountIdsCache channel (BUG-0162 invalidation slice).
+// groups.Store folds the same Node call into its GatewayRuntime bus
+// notification, so the adapter publishes the delete reason onto the shared
+// runtime topic.
+func (a accountsBusInvalidator) InvalidateGroupAccountIds() error {
+	if a.bus == nil {
+		return errors.New("cache invalidation bus is not wired")
+	}
+	a.bus.Invalidate(inval.TopicGatewayRuntime, "account_deleted_group_account_ids")
+	return nil
+}
+
+// ClearResourceAuthorizationLookupCaches mirrors the delete-path
+// clearResourceAuthorizationLookupCaches channel. The Go authz read slice has
+// no process-local lookup caches yet, so the channel stays a documented no-op
+// until that cache exists (same pattern as InvalidateAccountLookup).
+func (a accountsBusInvalidator) ClearResourceAuthorizationLookupCaches() error {
+	return nil
+}
+
+// InvalidateAuthorizationQuota mirrors the
+// notifyAuthorizationQuotaCacheInvalidation arm of
+// invalidateAuthorizationRuntimeAfterBusinessWrite: the authorization quota
+// snapshot invalidation rides the shared authorization quota topic.
+func (a accountsBusInvalidator) InvalidateAuthorizationQuota(reason string) error {
+	if a.bus == nil {
+		return errors.New("cache invalidation bus is not wired")
+	}
+	a.bus.Invalidate(inval.TopicAuthorizationQuota, reason)
 	return nil
 }
 

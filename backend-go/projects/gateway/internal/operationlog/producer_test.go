@@ -2,10 +2,13 @@ package operationlog
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 func TestSafeChangeSensitiveRedaction(t *testing.T) {
@@ -24,6 +27,38 @@ func TestSafeChangeSensitiveRedaction(t *testing.T) {
 	}
 }
 
+// TestSafeChangeSensitiveClearedValueShowsUnset pins the BUG-0157 Node
+// alignment (operation-log.service.ts:186-187): a sensitive after/before that
+// is undefined, null or '' must show 未设置, never a fixed 已变更/已设置.
+func TestSafeChangeSensitiveClearedValueShowsUnset(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     any
+		wantLabel string
+	}{
+		{"nil value", nil, "未设置"},
+		{"empty string", "", "未设置"},
+		{"replacement value", "new-secret", "已变更"},
+		{"non-empty string", " ", "已变更"},
+	}
+	for _, testCase := range cases {
+		after := SafeChange("token", "访问令牌", "old-secret", testCase.value, true).After
+		if after != testCase.wantLabel {
+			t.Fatalf("%s: sensitive after = %v, want %s", testCase.name, after, testCase.wantLabel)
+		}
+	}
+	for _, testCase := range cases {
+		wantBefore := testCase.wantLabel
+		if wantBefore == "已变更" {
+			wantBefore = "已设置"
+		}
+		before := SafeChange("token", "访问令牌", testCase.value, "new-secret", true).Before
+		if before != wantBefore {
+			t.Fatalf("%s: sensitive before = %v, want %s", testCase.name, before, wantBefore)
+		}
+	}
+}
+
 func TestSafeChangeStringTruncation(t *testing.T) {
 	long := strings.Repeat("x", 300)
 	change := SafeChange("displayName", "用户名称", long, "short", false)
@@ -36,6 +71,120 @@ func TestSafeChangeStringTruncation(t *testing.T) {
 	if change.After != "short" {
 		t.Fatalf("after = %v", change.After)
 	}
+}
+
+// TestSafeChangePreservesNativeScalarTypes pins the BUG-0157 normalizeSafeValue
+// alignment (operation-log.service.ts:222-229): null, numbers and booleans
+// keep their native type instead of being stringified, and only strings are
+// ellipsis-truncated.
+func TestSafeChangePreservesNativeScalarTypes(t *testing.T) {
+	change := SafeChange("enabled", "启用", "启用", false, false)
+	if change.After != false {
+		t.Fatalf("boolean after must stay native false, got %v (%T)", change.After, change.After)
+	}
+	change = SafeChange("maxCount", "上限", json.Number("10"), 3, false)
+	if change.After != 3 {
+		t.Fatalf("integer after must stay native 3, got %v (%T)", change.After, change.After)
+	}
+	change = SafeChange("ratio", "比例", 0.5, 3.14, false)
+	if change.After != 3.14 {
+		t.Fatalf("float after must stay native 3.14, got %v (%T)", change.After, change.After)
+	}
+	change = SafeChange("memo", "备注", nil, nil, false)
+	if change.Before != nil || change.After != nil {
+		t.Fatalf("nil must stay nil, got before=%v (%T) after=%v (%T)", change.Before, change.Before, change.After, change.After)
+	}
+	encoded, err := json.Marshal(change)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Node undefined → the JSON field disappears; Go nil omits it likewise.
+	if want := `{"field":"memo","label":"备注"}`; string(encoded) != want {
+		t.Fatalf("nil change JSON = %s, want %s", encoded, want)
+	}
+	if encoded, err = json.Marshal(SafeChange("enabled", "启用", "禁用", true, false)); err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"field":"enabled","label":"启用","before":"禁用","after":true}`; string(encoded) != want {
+		t.Fatalf("boolean change JSON = %s, want %s", encoded, want)
+	}
+}
+
+// TestSafeChangeStructuredTruncationMatchesNode pins the remaining BUG-0157
+// branch (operation-log.service.ts:233-238): structured values are
+// JSON-serialized and hard-cut at 500 characters without an appended ellipsis.
+func TestSafeChangeStructuredTruncationMatchesNode(t *testing.T) {
+	change := SafeChange("config", "配置", nil, map[string]any{"a": 1}, false)
+	if change.After != `{"a":1}` {
+		t.Fatalf("short structured after = %v, want compact JSON", change.After)
+	}
+	long := map[string]any{"v": strings.Repeat("x", 600)}
+	change = SafeChange("config", "配置", nil, long, false)
+	encoded := change.After.(string)
+	if len(encoded) != 500 {
+		t.Fatalf("structured truncation length = %d, want 500", len(encoded))
+	}
+	if strings.HasSuffix(encoded, "...") {
+		t.Fatal("structured truncation must not append an ellipsis")
+	}
+}
+
+// TestSafeChangeStringTruncationValidUTF8 pins the UTF-16 code-unit cut
+// (operation-log.service.ts:224 value.length/slice semantics, implemented via
+// truncateUTF16Units): multi-byte characters never split mid-rune, so the
+// truncated value is always valid UTF-8, and astral runes (emoji) count as two
+// units like Node's String.length.
+func TestSafeChangeStringTruncationValidUTF8(t *testing.T) {
+	// 250 个中文（每个 1 个 UTF-16 unit、3 个 UTF-8 字节）→ 截到 200 units + "..."。
+	chinese := strings.Repeat("中", 250)
+	truncated := normalizeSafeValue(chinese).(string)
+	if !utf8.ValidString(truncated) {
+		t.Fatal("truncated Chinese value must stay valid UTF-8")
+	}
+	if want := strings.Repeat("中", 200) + "..."; truncated != want {
+		t.Fatalf("Chinese truncation wrong: units=%d", utf16LengthUnits(truncated))
+	}
+
+	// 250 个 emoji（每个 astral rune = 2 个 UTF-16 units）→ 500 units，截到
+	// 100 个 emoji + "..."，绝不切出半个 surrogate pair。
+	emoji := strings.Repeat("\U0001F600", 250)
+	truncated = normalizeSafeValue(emoji).(string)
+	if !utf8.ValidString(truncated) {
+		t.Fatal("truncated emoji value must stay valid UTF-8")
+	}
+	if want := strings.Repeat("\U0001F600", 100) + "..."; truncated != want {
+		t.Fatalf("emoji truncation wrong: got %d runes", len([]rune(truncated)))
+	}
+
+	// 恰好 200 units 不截断；201 units 在 rune 边界截断。
+	boundary := strings.Repeat("中", 200)
+	if got := normalizeSafeValue(boundary).(string); got != boundary {
+		t.Fatal("exactly 200 units must not truncate")
+	}
+	mixed := strings.Repeat("x", 199) + "\U0001F600"
+	truncated = normalizeSafeValue(mixed).(string)
+	if !utf8.ValidString(truncated) {
+		t.Fatal("mixed truncation must stay valid UTF-8")
+	}
+	if want := strings.Repeat("x", 199) + "..."; truncated != want {
+		t.Fatalf("mixed truncation must cut before the astral rune, got %q", truncated)
+	}
+
+	// 结构化 JSON 分支：截断到 500 units 且保持合法 UTF-8。
+	long := map[string]any{"v": strings.Repeat("x", 600)}
+	encoded := normalizeSafeValue(long).(string)
+	if len(encoded) != 500 || !utf8.ValidString(encoded) {
+		t.Fatalf("structured truncation must stay 500 valid bytes, got %d", len(encoded))
+	}
+}
+
+// utf16LengthUnits counts UTF-16 code units for assertions (String.length).
+func utf16LengthUnits(value string) int {
+	units := 0
+	for _, symbol := range value {
+		units += utf16.RuneLen(symbol)
+	}
+	return units
 }
 
 func TestProducerPersistsAndSwallowsErrors(t *testing.T) {

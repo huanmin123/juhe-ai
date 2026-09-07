@@ -1144,9 +1144,9 @@ func TestAuthorizationRouteInputContract(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.SetPathValue("id", created.Item.ID)
 		req = req.WithContext(adminContext)
-		rec := httptest.NewRecorder()
+		rec := newUpstreamRecorder()
 		deps.patch(rec, req, expireOnly)
-		return rec
+		return rec.ResponseRecorder
 	}
 	if rec := patchRequest(false, `{"expectedUpdatedAt":"nope","status":"paused"}`); rec.Code != http.StatusBadRequest ||
 		!strings.Contains(rec.Body.String(), "授权配置版本格式不正确") {
@@ -1160,8 +1160,11 @@ func TestAuthorizationRouteInputContract(t *testing.T) {
 		!strings.Contains(rec.Body.String(), "请提供要修改的授权内容") {
 		t.Fatalf("no-content response = %d %s", rec.Code, rec.Body.String())
 	}
+	// The expire schema is a strict object without a status key
+	// (authorizations.routes.ts:135-144): the zod unrecognized-keys message is
+	// returned verbatim, not the localized fallback.
 	if rec := patchRequest(true, `{"expectedUpdatedAt":"2027-01-01T00:00:00Z","status":"paused"}`); rec.Code != http.StatusBadRequest ||
-		!strings.Contains(rec.Body.String(), "修改授权参数不合法") {
+		!strings.Contains(rec.Body.String(), "Unrecognized key(s) in object: 'status'") {
 		t.Fatalf("expire-with-status response = %d %s", rec.Code, rec.Body.String())
 	}
 	// Valid version + explicit null expiry clears through the route.
@@ -1181,6 +1184,21 @@ func TestAuthorizationRouteInputContract(t *testing.T) {
 	if revokeRec.Code != http.StatusBadRequest || !strings.Contains(revokeRec.Body.String(), "授权配置版本格式不正确") {
 		t.Fatalf("revoke invalid version response = %d %s", revokeRec.Code, revokeRec.Body.String())
 	}
+}
+
+// upstreamRecorder mimics the kernel localizeWriter: it carries the
+// UpstreamMarker so handler code that preserves verbatim zod messages behaves
+// exactly as behind the real kernel chain.
+type upstreamRecorder struct {
+	*httptest.ResponseRecorder
+	marked bool
+}
+
+func (r *upstreamRecorder) MarkUpstream()        { r.marked = true }
+func (r *upstreamRecorder) MarkedUpstream() bool { return r.marked }
+
+func newUpstreamRecorder() *upstreamRecorder {
+	return &upstreamRecorder{ResponseRecorder: httptest.NewRecorder()}
 }
 
 func assertRuntime(t *testing.T, f *fixture, grantee, resourceID, status, effectiveType, revokedReason string) {

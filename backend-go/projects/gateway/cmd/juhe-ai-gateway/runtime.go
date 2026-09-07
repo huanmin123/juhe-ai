@@ -2,32 +2,49 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+)
+
+// Node runtime.ts:399-400: the default development secret and the minimum
+// production secret length used by assertProductionSecret.
+const (
+	defaultRuntimeSecret          = "juhe-ai-dev-secret-change-me"
+	minimumProductionSecretLength = 32
 )
 
 // runtimeConfig mirrors the env conventions of the Node composition root
 // (backend/src/config/runtime.ts) for the scope the Go gateway composition
-// consumes: runtime mode, storage drivers (sqlite/postgres, memory/redis,
-// memory/redis_stream), dual-mode database paths, Redis URLs + namespace,
-// secret, cookie/oidc/trust-proxy HTTP security and the composition gates.
+// consumes: runtime mode, storage drivers (sqlite/postgres, memory/redis),
+// dual-mode database paths, Redis URLs + namespace, secret, cookie/cors/
+// oidc/trust-proxy HTTP security and the composition gates.
 //
-// Validation mirrors the Node fail-fast contract: an enabled redis/queue
-// driver without its URL, an enabled OIDC without issuer/secret, a
-// none-cookie without secure, or an enabled composition without the business
-// owner handoff gates exits at startup instead of serving a partial owner.
+// Validation mirrors the Node fail-fast contract: an enabled redis driver
+// without its URL, an enabled OIDC without issuer/secret, a none-cookie
+// without secure, a production process without a strong secret or an explicit
+// CORS origin allowlist, or an enabled composition without the business owner
+// handoff gates exits at startup instead of serving a partial owner.
+//
+// The production signal for every HTTP security gate is the normalized
+// NODE_ENV (Node isProductionRuntime, runtime.ts:979-980); the same-process
+// operationlog/config.go and auditlog/input_server.go compositions read
+// NODE_ENV too. JUHE_AI_NODE_ENV only overrides the chat tool environment
+// (falling back to NODE_ENV when unset) and carries no production semantics;
+// ownermode and JUHE_AI_DEPLOY_MODE carry none either.
 type runtimeConfig struct {
 	RuntimeMode        string // "standalone" | "performance"
 	DatabaseDriver     string // "sqlite" | "postgres"
 	CacheDriver        string // "memory" | "redis"
 	RuntimeStateDriver string // "memory" | "redis"
-	QueueDriver        string // "memory" | "redis_stream"
 
 	PostgresURL    string
 	RedisCacheURL  string
 	RedisStateURL  string
-	RedisQueueURL  string
 	RedisNamespace string
 	Secret         string
 
@@ -59,6 +76,13 @@ type runtimeConfig struct {
 	CookieSecure   bool
 	CookieSameSite string
 	TrustProxy     string
+
+	// HTTP security CORS slice (Node runtimeConfig.httpSecurity.cors,
+	// JUHE_AI_ALLOWED_ORIGINS): non-production without explicit origins keeps
+	// the local-dev allow-any contract; production must pin the exact admin
+	// frontend origins and refuses '*'.
+	CORSAllowedOrigins []string
+	CORSAllowAnyOrigin bool
 
 	CaptchaDisabled            bool
 	DevAutoLoginUsername       string
@@ -158,14 +182,73 @@ func envBoolTrue(value string) bool {
 	return strings.EqualFold(strings.TrimSpace(value), "true")
 }
 
+// strictEnvBool mirrors Node strictBooleanConfig (runtime.ts:1575-1582):
+// true/1/yes/on -> true and false/0/no/off -> false (case-insensitive), any
+// other non-empty value fails fast at startup, and an empty value keeps the
+// caller's fallback.
+func strictEnvBool(name, raw string, fallback bool) (bool, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return fallback, nil
+	}
+	switch value {
+	case "true", "1", "yes", "on":
+		return true, nil
+	case "false", "0", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s 只能配置为 true/false/1/0/yes/no/on/off: %q", name, raw)
+	}
+}
+
+// parseTruncatedInt mirrors Node numberConfig (runtime.ts:1384-1395): the raw
+// value must parse as a finite number, Math.trunc applies before the range
+// check, so "10.5" is accepted as 10 while a non-number fails fast with its
+// own message.
+func parseTruncatedInt(name, raw string, min, max int) (int, error) {
+	number, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+		return 0, fmt.Errorf("%s 必须配置为数字: %q", name, raw)
+	}
+	truncated := int(math.Trunc(number))
+	if truncated < min || truncated > max {
+		return 0, fmt.Errorf("%s 必须在 %d 到 %d 之间: %q", name, min, max, raw)
+	}
+	return truncated, nil
+}
+
+// productionRuntime mirrors Node isProductionRuntime (runtime.ts:979-980):
+// the normalized NODE_ENV is the single production signal for every HTTP
+// security gate — secret strength (runtime.ts:949-960), the cookie secure
+// default (runtime.ts:1521), the dev auto-login disable (development.ts) and
+// the CORS allowlist requirement (runtime.ts:1519-1557). JUHE_AI_NODE_ENV is
+// not a production signal (it only overrides the chat tool environment below);
+// ownermode and JUHE_AI_DEPLOY_MODE carry no production semantics in this
+// codebase.
+func productionRuntime(getenv func(string) string) bool {
+	return strings.ToLower(strings.TrimSpace(getenv("NODE_ENV"))) == "production"
+}
+
 func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg := runtimeConfig{}
+
+	// ChatToolEnvironment keeps the explicit JUHE_AI_NODE_ENV override and
+	// falls back to NODE_ENV when unset (the same variable the single
+	// production signal reads, Node runtime.ts:532 nodeEnv); the
+	// production/test/development validation stays further down.
+	cfg.ChatToolEnvironment = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_NODE_ENV")))
+	if cfg.ChatToolEnvironment == "" {
+		cfg.ChatToolEnvironment = strings.ToLower(strings.TrimSpace(getenv("NODE_ENV")))
+	}
+	production := productionRuntime(getenv)
+	if cfg.ChatToolEnvironment == "" {
+		cfg.ChatToolEnvironment = "development"
+	}
 
 	performanceHints := hasAnyRawConfig(getenv,
 		"JUHE_AI_POSTGRES_URL",
 		"JUHE_AI_REDIS_CACHE_URL",
-		"JUHE_AI_REDIS_STATE_URL",
-		"JUHE_AI_REDIS_QUEUE_URL")
+		"JUHE_AI_REDIS_STATE_URL")
 	cfg.RuntimeMode = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_MODE")))
 	if cfg.RuntimeMode == "" {
 		if performanceHints {
@@ -214,36 +297,29 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		return runtimeConfig{}, fmt.Errorf("JUHE_AI_RUNTIME_STATE_DRIVER 必须为 memory 或 redis: %q", cfg.RuntimeStateDriver)
 	}
 
-	cfg.QueueDriver = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_QUEUE_DRIVER")))
-	if cfg.QueueDriver == "" {
-		if cfg.RuntimeMode == "performance" {
-			cfg.QueueDriver = "redis_stream"
-		} else {
-			cfg.QueueDriver = "memory"
-		}
-	}
-	if cfg.QueueDriver != "memory" && cfg.QueueDriver != "redis_stream" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_QUEUE_DRIVER 必须为 memory 或 redis_stream: %q", cfg.QueueDriver)
-	}
-
 	cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	cfg.RedisCacheURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_CACHE_URL"))
 	cfg.RedisStateURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
-	cfg.RedisQueueURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_QUEUE_URL"))
+	// JUHE_AI_QUEUE_DRIVER / JUHE_AI_REDIS_QUEUE_URL are deliberately not read
+	// anywhere in the Go gateway or jobs projects (dead Node-era config): the
+	// queue URL had no consumer and its performance-mode mandatory check only
+	// forced deployments to configure a value that was never used.
 	if cfg.CacheDriver == "redis" && cfg.RedisCacheURL == "" {
 		return runtimeConfig{}, fmt.Errorf("JUHE_AI_CACHE_DRIVER=redis 时缺少 JUHE_AI_REDIS_CACHE_URL")
 	}
 	if cfg.RuntimeStateDriver == "redis" && cfg.RedisStateURL == "" {
 		return runtimeConfig{}, fmt.Errorf("JUHE_AI_RUNTIME_STATE_DRIVER=redis 时缺少 JUHE_AI_REDIS_STATE_URL")
 	}
-	if cfg.QueueDriver == "redis_stream" && cfg.RedisQueueURL == "" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_QUEUE_DRIVER=redis_stream 时缺少 JUHE_AI_REDIS_QUEUE_URL")
-	}
 	if cfg.DatabaseDriver == "postgres" && cfg.PostgresURL == "" {
 		return runtimeConfig{}, fmt.Errorf("JUHE_AI_DATABASE_DRIVER=postgres 时缺少 JUHE_AI_POSTGRES_URL")
 	}
 
 	cfg.Secret = strings.TrimSpace(getenv("JUHE_AI_SECRET"))
+	// Node assertProductionSecret (runtime.ts:949-960): production refuses the
+	// default development secret and any secret shorter than 32 characters.
+	if production && (cfg.Secret == defaultRuntimeSecret || len(cfg.Secret) < minimumProductionSecretLength) {
+		return runtimeConfig{}, fmt.Errorf("JUHE_AI_SECRET 在生产环境必须配置为至少 %d 位的稳定随机密钥，不能使用默认开发密钥或过短密钥", minimumProductionSecretLength)
+	}
 	cfg.RedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
 
 	cfg.DatabasePath = strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH"))
@@ -290,12 +366,11 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		cfg.ChatRetentionDays = retentionDays
 	}
 	cfg.ChatDiagnosticToolEnabled = envBoolTrue(getenv("JUHE_AI_CHAT_DIAGNOSTIC_TOOL_ENABLED"))
-	cfg.ChatToolEnvironment = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_NODE_ENV")))
-	if cfg.ChatToolEnvironment == "" {
-		cfg.ChatToolEnvironment = "development"
-	}
+	// ChatToolEnvironment was normalized at the top of this function
+	// (JUHE_AI_NODE_ENV with the NODE_ENV fallback); only the value validation
+	// stays here.
 	if cfg.ChatToolEnvironment != "production" && cfg.ChatToolEnvironment != "test" && cfg.ChatToolEnvironment != "development" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_NODE_ENV 必须是 production、test 或 development: %q", cfg.ChatToolEnvironment)
+		return runtimeConfig{}, fmt.Errorf("JUHE_AI_NODE_ENV（未设置时回落 NODE_ENV）必须是 production、test 或 development: %q", cfg.ChatToolEnvironment)
 	}
 
 	cfg.Host = strings.TrimSpace(getenv("JUHE_AI_HOST"))
@@ -311,7 +386,65 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		cfg.Port = port
 	}
 
-	cfg.CookieSecure = envBoolTrue(getenv("JUHE_AI_COOKIE_SECURE"))
+	// Node httpSecurityConfig (runtime.ts:1519-1557): the CORS allowlist and
+	// the cookie secure default are production-aware (see the production
+	// signal at the top of this function); an explicit env value keeps the
+	// existing override precedence.
+	var allowedOrigins []string
+	{
+		rawValue := strings.TrimSpace(getenv("JUHE_AI_ALLOWED_ORIGINS"))
+		parts := strings.Split(rawValue, ",")
+		trimmed := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if part = strings.TrimSpace(part); part != "" {
+				trimmed = append(trimmed, part)
+			}
+		}
+		hasWildcard := false
+		for _, part := range trimmed {
+			if part == "*" {
+				hasWildcard = true
+				break
+			}
+		}
+		seen := map[string]bool{}
+		for _, part := range trimmed {
+			if part == "*" {
+				continue
+			}
+			origin, originErr := normalizeAllowedOrigin("JUHE_AI_ALLOWED_ORIGINS", part)
+			if originErr != nil {
+				return runtimeConfig{}, originErr
+			}
+			if !seen[origin] {
+				seen[origin] = true
+				allowedOrigins = append(allowedOrigins, origin)
+			}
+		}
+		if hasWildcard {
+			// Node allowedOriginsConfig: '*' keeps the local-dev reflection
+			// contract outside production and is refused in production.
+			if production {
+				return runtimeConfig{}, fmt.Errorf("JUHE_AI_ALLOWED_ORIGINS 不允许配置 *；需要逐项填写完整后台前端 Origin")
+			}
+			allowedOrigins = nil
+		} else if production && len(allowedOrigins) == 0 {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_ALLOWED_ORIGINS 在生产环境必须显式配置后台前端 Origin，不能继续反射任意跨域来源")
+		}
+		cfg.CORSAllowedOrigins = allowedOrigins
+		// Node runtime.ts:1525: allowAnyOrigin = !production && allowedOrigins.length === 0.
+		cfg.CORSAllowAnyOrigin = !production && len(allowedOrigins) == 0
+	}
+
+	// Node strictBooleanConfig('JUHE_AI_COOKIE_SECURE', production)
+	// (runtime.ts:1521,1575-1582): production defaults Secure on; an explicit
+	// true/1/yes/on or false/0/no/off value overrides it and any other
+	// non-empty value fails fast at startup.
+	cookieSecure, secureErr := strictEnvBool("JUHE_AI_COOKIE_SECURE", getenv("JUHE_AI_COOKIE_SECURE"), production)
+	if secureErr != nil {
+		return runtimeConfig{}, secureErr
+	}
+	cfg.CookieSecure = cookieSecure
 	cfg.CookieSameSite = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_COOKIE_SAME_SITE")))
 	if cfg.CookieSameSite == "" {
 		cfg.CookieSameSite = "lax"
@@ -326,6 +459,12 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 
 	cfg.CaptchaDisabled = envBoolTrue(getenv("JUHE_AI_AUTH_CAPTCHA_DISABLED"))
 	cfg.DevAutoLoginUsername = strings.TrimSpace(getenv("JUHE_AI_DEV_AUTO_LOGIN_USERNAME"))
+	// Node development.ts assertDevelopmentAutoLoginConfig: the development
+	// auto-login must never be enabled under the production signal; the
+	// non-production local isolated dev instance keeps working.
+	if production && cfg.DevAutoLoginUsername != "" {
+		return runtimeConfig{}, fmt.Errorf("JUHE_AI_DEV_AUTO_LOGIN_USERNAME 不能在 NODE_ENV=production 时启用")
+	}
 	cfg.TemporaryAccessIPAllowlist = commaList(getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST"))
 
 	cfg.OIDCEnabled = envBoolTrue(getenv("JUHE_AI_OIDC_ENABLED"))
@@ -405,19 +544,32 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	}
 	cfg.FrontendDistPath = strings.TrimSpace(getenv("JUHE_AI_FRONTEND_DIST_PATH"))
 
-	// Runtime-logs grep surface: Node numberConfig clamps instead of failing.
+	// Runtime-logs grep surface: Node numberConfig (runtime.ts:891-892,
+	// 'JUHE_AI_LOG_MAX_FILES', 500, 1, 500 / 'JUHE_AI_LOG_RETENTION_DAYS',
+	// 30, 1, 30) fails fast on a non-number or out-of-range value instead of
+	// clamping it silently; the value truncates before the range check
+	// (Math.trunc, runtime.ts:1391), so "10.5" passes as 10. Defaults stay
+	// 500/30.
 	cfg.LogDir = strings.TrimSpace(getenv("JUHE_AI_LOG_DIR"))
 	cfg.LogFileEnabled = true
 	if raw := strings.TrimSpace(getenv("JUHE_AI_LOG_FILE_ENABLED")); raw != "" {
 		cfg.LogFileEnabled = envBoolTrue(raw)
 	}
 	cfg.LogMaxFiles = 500
-	if parsed, err := strconv.Atoi(strings.TrimSpace(getenv("JUHE_AI_LOG_MAX_FILES"))); err == nil {
-		cfg.LogMaxFiles = min(max(parsed, 1), 500)
+	if raw := strings.TrimSpace(getenv("JUHE_AI_LOG_MAX_FILES")); raw != "" {
+		parsed, parsedErr := parseTruncatedInt("JUHE_AI_LOG_MAX_FILES", raw, 1, 500)
+		if parsedErr != nil {
+			return runtimeConfig{}, parsedErr
+		}
+		cfg.LogMaxFiles = parsed
 	}
 	cfg.LogRetentionDays = 30
-	if parsed, err := strconv.Atoi(strings.TrimSpace(getenv("JUHE_AI_LOG_RETENTION_DAYS"))); err == nil {
-		cfg.LogRetentionDays = min(max(parsed, 1), 30)
+	if raw := strings.TrimSpace(getenv("JUHE_AI_LOG_RETENTION_DAYS")); raw != "" {
+		parsed, parsedErr := parseTruncatedInt("JUHE_AI_LOG_RETENTION_DAYS", raw, 1, 30)
+		if parsedErr != nil {
+			return runtimeConfig{}, parsedErr
+		}
+		cfg.LogRetentionDays = parsed
 	}
 
 	cfg.BusinessOwner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER")))
@@ -466,4 +618,37 @@ func (c *runtimeConfig) businessOwnerGate() error {
 		return fmt.Errorf("sqlite 模式缺少 JUHE_AI_BUSINESS_DATABASE_PATH")
 	}
 	return nil
+}
+
+// normalizeAllowedOrigin mirrors Node normalizeAllowedOrigin
+// (runtime.ts:1559-1573): a configured entry must be a bare http/https origin
+// — no path, query, fragment or userinfo — and canonicalizes to the
+// lowercased scheme/host with the default port dropped (Node URL.origin).
+func normalizeAllowedOrigin(name, value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" {
+		return "", fmt.Errorf("%s 包含无效 Origin：%s", name, value)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("%s 只允许 http 或 https Origin：%s", name, value)
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", fmt.Errorf("%s 只能填写 Origin，不要包含路径、查询、片段或用户名密码：%s", name, value)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		return scheme + "://" + net.JoinHostPort(host, port), nil
+	}
+	return scheme + "://" + host, nil
+}
+
+// corsPolicy projects the parsed JUHE_AI_ALLOWED_ORIGINS slice onto the
+// kernel CORSPolicy consumed by the management-surface CORS middleware.
+func (c *runtimeConfig) corsPolicy() kernel.CORSPolicy {
+	return kernel.CORSPolicy{AllowAnyOrigin: c.CORSAllowAnyOrigin, AllowedOrigins: c.CORSAllowedOrigins}
 }

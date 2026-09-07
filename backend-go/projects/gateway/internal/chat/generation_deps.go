@@ -2,7 +2,10 @@ package chat
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -24,12 +27,39 @@ func (d *Deps) traceID(r *http.Request) string {
 	return d.TraceID(r)
 }
 
+// chatEnvIntOrDefault resolves an integer env override with the Node
+// integerConfig semantics (runtime.ts): unset/empty keeps the fallback; a
+// non-integer or out-of-range value fails fast instead of being clamped away.
+// Node throws at startup; here the package-level callers evaluate the value
+// once at init, so the panic keeps the same "bad config never serves traffic"
+// contract without routing the env through the composition root.
+func chatEnvIntOrDefault(name string, fallback, min, max int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		panic(fmt.Sprintf("%s 必须配置为整数: %q", name, raw))
+	}
+	if value < min || value > max {
+		panic(fmt.Sprintf("%s 必须在 %d-%d 范围内: %d", name, min, max, value))
+	}
+	return value
+}
+
+// defaultMaxConversationsPerUser mirrors runtimeConfig.chat.maxConversationsPerUser
+// (JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER, default 50, range 1..1000;
+// runtime.ts:687). The original Go fallback of 30 was a migration artifact
+// that silently dropped the Node env override.
+var defaultMaxConversationsPerUser = chatEnvIntOrDefault("JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER", 50, 1, 1000)
+
 // maxConversationsPerUser mirrors runtimeConfig.chat.maxConversationsPerUser.
 func (d *Deps) maxConversationsPerUser() int {
 	if d.MaxConversationsPerUserInt != nil {
 		return d.MaxConversationsPerUserInt()
 	}
-	return 30
+	return defaultMaxConversationsPerUser
 }
 
 // requireOwnedApiKey mirrors requireOwnedApiKey.

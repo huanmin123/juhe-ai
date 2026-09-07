@@ -55,11 +55,17 @@ func sprintf(format string, args ...any) string {
 	return fmt.Sprintf(format, args...)
 }
 
-// Store is the dual-mode authorization persistence.
+// Store is the dual-mode authorization persistence. The optional stats handle
+// backs the usage window reads (PostgreSQL shares the business pool; SQLite
+// needs the dedicated stats file injected through AttachStatsDatabase), and
+// the optional timezone source resolves the usageStatsTimezone system setting
+// (Node usageStatsTimezoneAsync).
 type Store struct {
-	db  *sql.DB
-	pg  bool
-	now func() time.Time
+	db       *sql.DB
+	pg       bool
+	now      func() time.Time
+	stats    *sql.DB
+	timezone func(ctx context.Context) (string, error)
 }
 
 func NewStore(db *sql.DB, postgres bool, now func() time.Time) (*Store, error) {
@@ -70,6 +76,17 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time) (*Store, error) {
 		now = time.Now
 	}
 	return &Store{db: db, pg: postgres, now: now}, nil
+}
+
+// AttachStatsDatabase injects the SQLite stats database handle used by the
+// usage window reads; PostgreSQL mode shares the business pool and never
+// needs this call.
+func (s *Store) AttachStatsDatabase(db *sql.DB) { s.stats = db }
+
+// AttachTimezoneSource injects the usageStatsTimezone resolver (compose
+// wiring); nil keeps the default system_settings read of the business handle.
+func (s *Store) AttachTimezoneSource(source func(ctx context.Context) (string, error)) {
+	s.timezone = source
 }
 
 func (s *Store) table(name string) string {
@@ -316,6 +333,46 @@ func (s *Store) ListPage(ctx context.Context, filters Filters, page, pageSize in
 	if pageSize > 500 {
 		pageSize = 500
 	}
+	rows, total, hasMore, err := s.queryGrantRowsPage(ctx, filters, page, pageSize)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	items = make([]Summary, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, row.summary())
+	}
+	return items, total, hasMore, nil
+}
+
+// ListItemsPage mirrors listResourceAuthorizationSummariesPageAsync with the
+// ResourceAuthorizationListItem projection (the shape the HTTP list returns;
+// resourceAuthorizationListItems :706-741).
+func (s *Store) ListItemsPage(ctx context.Context, filters Filters, page, pageSize int, access accessInfo) (items []ListItem, total int, hasMore bool, err error) {
+	ctx = ensureCtx(ctx)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 500 {
+		pageSize = 500
+	}
+	rows, total, hasMore, err := s.queryGrantRowsPage(ctx, filters, page, pageSize)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	items, err = s.buildListItems(ctx, rows, access)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return items, total, hasMore, nil
+}
+
+// queryGrantRowsPage loads the ordered grant page (pageSize+1 probe) and
+// computes the paged upper bound shared by both projections.
+func (s *Store) queryGrantRowsPage(ctx context.Context, filters Filters, page, pageSize int) ([]grantRow, int, bool, error) {
+	ctx = ensureCtx(ctx)
 	where, args := s.buildFilters(filters)
 	query := `SELECT ` + grantColumns + ` FROM ` + s.table("resource_authorization_grants") + ` g
 		WHERE ` + where + ` ORDER BY g.created_at DESC, g.id DESC LIMIT ? OFFSET ?`
@@ -324,22 +381,22 @@ func (s *Store) ListPage(ctx context.Context, filters Filters, page, pageSize in
 		return nil, 0, false, err
 	}
 	defer rows.Close()
-	items = []Summary{}
+	var items []grantRow
 	for rows.Next() {
 		row, scanErr := s.scanGrant(rows)
 		if scanErr != nil {
 			return nil, 0, false, scanErr
 		}
-		items = append(items, row.summary())
+		items = append(items, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, false, err
 	}
-	hasMore = len(items) > pageSize
+	hasMore := len(items) > pageSize
 	if hasMore {
 		items = items[:pageSize]
 	}
-	total = (page-1)*pageSize + len(items)
+	total := (page-1)*pageSize + len(items)
 	if hasMore {
 		total++
 	}

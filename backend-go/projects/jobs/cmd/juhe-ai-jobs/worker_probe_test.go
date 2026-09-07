@@ -165,18 +165,35 @@ func TestProbeFamilyWiringFlipsThreeJobs(t *testing.T) {
 }
 
 // TestProbeFamilyConfigDefaults 验证探针族 env 约定。
+// TestProbeFamilyConfigDefaults 验证探针族 env 约定与放宽后的默认档位
+// （ProbeConcurrency 512/上限 5096、PG 池 50、codex 分片 16，env 仍可覆盖）。
 func TestProbeFamilyConfigDefaults(t *testing.T) {
 	env := probeWorkerTestEnv(t)
+	delete(env, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT")
 	config, err := loadWorkerConfig(getenvFrom(env))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.ProbeEnabled || config.ProbeConcurrency != 8 {
+	if !config.ProbeEnabled || config.ProbeConcurrency != 512 {
 		t.Fatalf("probe defaults: enabled=%v concurrency=%d", config.ProbeEnabled, config.ProbeConcurrency)
+	}
+	if config.PostgresMaxOpenConns != 50 || config.PostgresMaxIdleConns != 50 {
+		t.Fatalf("postgres pool defaults: open=%d idle=%d", config.PostgresMaxOpenConns, config.PostgresMaxIdleConns)
+	}
+	if config.CodexContextStateShardCount != 16 {
+		t.Fatalf("codex context shard count default: %d", config.CodexContextStateShardCount)
 	}
 	env["JUHE_AI_JOBS_PROBE_CONCURRENCY"] = "0"
 	if _, err := loadWorkerConfig(getenvFrom(env)); err == nil {
-		t.Fatal("并发必须介于 1..256")
+		t.Fatal("并发必须介于 1..5096")
+	}
+	env["JUHE_AI_JOBS_PROBE_CONCURRENCY"] = "5097"
+	if _, err := loadWorkerConfig(getenvFrom(env)); err == nil {
+		t.Fatal("并发上限 5096 必须拒绝 5097")
+	}
+	env["JUHE_AI_JOBS_PROBE_CONCURRENCY"] = "5096"
+	if config, err = loadWorkerConfig(getenvFrom(env)); err != nil || config.ProbeConcurrency != 5096 {
+		t.Fatalf("concurrency upper bound override: %v %d", err, config.ProbeConcurrency)
 	}
 	env["JUHE_AI_JOBS_PROBE_CONCURRENCY"] = "4"
 	config, err = loadWorkerConfig(getenvFrom(env))

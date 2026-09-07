@@ -32,12 +32,11 @@ func composeTestConfig(t *testing.T) runtimeConfig {
 		t.Fatalf("create codex context shard root: %v", err)
 	}
 	return runtimeConfig{
-		RuntimeMode:                 "standalone",
-		DatabaseDriver:              "sqlite",
-		CacheDriver:                 "memory",
-		RuntimeStateDriver:          "memory",
-		QueueDriver:                 "memory",
-		Secret:                      "compose-test-secret",
+		RuntimeMode:        "standalone",
+		DatabaseDriver:     "sqlite",
+		CacheDriver:        "memory",
+		RuntimeStateDriver: "memory",
+		Secret:             "compose-test-secret",
 		// Node runtime.ts:770: dispatchAccountCandidateLimit =
 		// integerConfig(..., globalConcurrencyMax, 1, 50_000) — the load path
 		// always provides the default (globalMax 5000); the hand-built config
@@ -415,7 +414,7 @@ func TestLoadRuntimeConfigDriverTriState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("standalone defaults: %v", err)
 	}
-	if cfg.RuntimeMode != "standalone" || cfg.DatabaseDriver != "sqlite" || cfg.CacheDriver != "memory" || cfg.RuntimeStateDriver != "memory" || cfg.QueueDriver != "memory" {
+	if cfg.RuntimeMode != "standalone" || cfg.DatabaseDriver != "sqlite" || cfg.CacheDriver != "memory" || cfg.RuntimeStateDriver != "memory" {
 		t.Fatalf("standalone defaults wrong: %#v", cfg)
 	}
 
@@ -426,14 +425,13 @@ func TestLoadRuntimeConfigDriverTriState(t *testing.T) {
 		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
 		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
 		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
-		"JUHE_AI_REDIS_QUEUE_URL": "redis://127.0.0.1:6379/2",
 		"JUHE_AI_DATABASE_DRIVER": "sqlite",
 	}
 	cfg, err = loadRuntimeConfig(func(key string) string { return performance[key] })
 	if err != nil {
 		t.Fatalf("performance hints: %v", err)
 	}
-	if cfg.RuntimeMode != "performance" || cfg.CacheDriver != "redis" || cfg.RuntimeStateDriver != "redis" || cfg.QueueDriver != "redis_stream" {
+	if cfg.RuntimeMode != "performance" || cfg.CacheDriver != "redis" || cfg.RuntimeStateDriver != "redis" {
 		t.Fatalf("performance defaults wrong: %#v", cfg)
 	}
 	performance["JUHE_AI_RUNTIME_STATE_DRIVER"] = "redis"

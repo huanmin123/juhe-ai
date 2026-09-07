@@ -25,6 +25,7 @@ import (
 	gatewaydispatch "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/gateway_dispatch"
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	sessionretention "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/session_retention"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
@@ -34,6 +35,13 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
+
+// corsSurfacePrefixes scopes the CORS middleware to the Node system-api app
+// mount prefixes (system-api-app.ts): the management face /__aisys__ (the SPA
+// plus /__aisys__/api), the public /__aipublic__ family and the delegated
+// /__aidelegated__/v1 surface. The /v1 gateway chain (browser-less API-key
+// clients) is intentionally outside the CORS surface.
+var corsSurfacePrefixes = []string{"/__aisys__", "/__aipublic__", "/__aidelegated__/v1"}
 
 func main() {
 	version := flag.Bool("version", false, "print the gateway project contract version")
@@ -518,7 +526,17 @@ func main() {
 			fail(fmt.Errorf("listen gateway system api endpoint %s:%d: %w", runtimeCfg.Host, runtimeCfg.Port, err))
 		}
 		defer mainListener.Close()
-		mainServer = &http.Server{Handler: composed.Kernel, ReadHeaderTimeout: 30 * time.Second}
+		// The CORS middleware guards the management surface on the main
+		// JUHE_AI_HOST:JUHE_AI_PORT listener. This is a deliberate Go-side
+		// hardening addition (the archived Node chain defined the origin
+		// contract but never mounted CORS; see kernel.CORSMiddleware and the
+		// from-scratch review report §7-D12). Requests without an Origin
+		// header and the whole /v1 gateway chain stay byte-for-byte unchanged;
+		// the middleware itself never rejects a request.
+		mainServer = &http.Server{
+			Handler:           kernel.CORSMiddleware(runtimeCfg.corsPolicy(), corsSurfacePrefixes...)(composed.Kernel),
+			ReadHeaderTimeout: 30 * time.Second,
+		}
 		mainServeErr = make(chan error, 1)
 		go func() { mainServeErr <- mainServer.Serve(mainListener) }()
 		logger.Info("gateway system api composed",

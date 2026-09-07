@@ -862,3 +862,17 @@ func completedAttemptInput(trace string) RecordCompletedUpstreamAttemptInput {
 		Model:           "gpt-requested",
 	}
 }
+
+// TestFinalizationDefaultsMirrorNodeConcurrencyGlobalMax 验证收尾队列默认档位：
+// maxItems 2048（内存保护保留）与 maxConcurrency 5000（Node
+// failure-finalization.service.ts 的 runtimeConfig.concurrency.globalMax）。
+func TestFinalizationDefaultsMirrorNodeConcurrencyGlobalMax(t *testing.T) {
+	queue := NewGatewayUsageFinalizationQueue(0, 0)
+	runtime := queue.Runtime()
+	if runtime.MaxItems != 2048 {
+		t.Fatalf("default maxItems: %d", runtime.MaxItems)
+	}
+	if runtime.MaxConcurrency != 5000 {
+		t.Fatalf("default maxConcurrency: %d", runtime.MaxConcurrency)
+	}
+}

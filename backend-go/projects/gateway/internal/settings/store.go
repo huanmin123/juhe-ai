@@ -4,10 +4,10 @@
 // and system-api-app.ts. The slice covers the full systemSettingKeys
 // whitelist read (GET /settings, requireAdmin), the strict-key PATCH with
 // per-key value validation and the online usageStatsTimezone guard, the
-// login-free GET /settings/public global-brand subset and the
-// settings:system snapshot provider for later ratelimit/jobs wiring.
-// The /settings/global brand write family and the /settings/sections/:key
-// endpoints remain on the Node side (brand slice).
+// login-free GET /settings/public global-brand subset, the
+// settings:system snapshot provider for later ratelimit/jobs wiring, the
+// /settings/global brand family and the /settings/sections/:key management
+// sections (managementSettingsSectionCatalog).
 package settings
 
 import (
@@ -210,6 +210,107 @@ var compatibleSystemSettingDefaults = map[string]int{
 // GET /settings/public (Node listPublicGlobalSettings).
 var GlobalSettingKeys = []string{"appName", "appIcon"}
 
+var globalSettingKeySet = func() map[string]bool {
+	set := make(map[string]bool, len(GlobalSettingKeys))
+	for _, key := range GlobalSettingKeys {
+		set[key] = true
+	}
+	return set
+}()
+
+// Settings section storage domains (managementSettingsSectionCatalog.domain).
+const (
+	settingsSectionDomainGlobal = "global"
+	settingsSectionDomainSystem = "system"
+)
+
+// ManagementSettingsSection mirrors one managementSettingsSectionCatalog
+// entry: the storage domain plus the exact setting key list served and
+// accepted for the section.
+type ManagementSettingsSection struct {
+	Domain string
+	Keys   []string
+}
+
+// ManagementSettingsSectionCatalog mirrors managementSettingsSectionCatalog
+// (settings.repository.ts): the seven management sections and their key
+// lists. brand lives in global_settings, everything else in system_settings.
+var ManagementSettingsSectionCatalog = map[string]ManagementSettingsSection{
+	"brand": {Domain: settingsSectionDomainGlobal, Keys: GlobalSettingKeys},
+	"gateway-core": {Domain: settingsSectionDomainSystem, Keys: []string{
+		"gatewayTextRawBodyLimitMegabytes",
+		"accountCircuitConfirmationFailuresRequired",
+		"defaultTemporaryUnschedulableMinutes",
+		"temporaryUnschedulableRetryIntervalSeconds",
+		"temporaryUnschedulableRetryAttempts",
+		"textFirstResponseTimeoutSeconds",
+		"textStreamIdleTimeoutSeconds",
+		"textUncommittedAttemptMaxLifetimeSeconds",
+		"imageFirstResponseTimeoutSeconds",
+		"imageStreamIdleTimeoutSeconds",
+		"imageUncommittedAttemptMaxLifetimeSeconds",
+		"imageRequestWallTimeoutSeconds",
+		"chatImageGenerationTotalTimeoutSeconds",
+		"noAvailableAccountWaitTimeoutSeconds",
+	}},
+	"user-request-limit": {Domain: settingsSectionDomainSystem, Keys: []string{
+		"gatewayUserRequestLimitPerMinute",
+		"gatewayUserRequestLimitPerDay",
+		"gatewayUserRequestLimitPerWeek",
+		"gatewayUserRequestLimitPerMonth",
+		"userAiAccountLimit",
+	}},
+	"account-health": {Domain: settingsSectionDomainSystem, Keys: []string{
+		"accountHealthCheckIntervalHours",
+		"accountHealthCheckJitterMinutes",
+		"accountHealthCheckFailureThreshold",
+	}},
+	"api-rate-limit": {Domain: settingsSectionDomainSystem, Keys: []string{
+		"systemApiRateLimitIpReadPerMinute",
+		"systemApiRateLimitIpReadBurstPer10Seconds",
+		"systemApiRateLimitIpWritePerMinute",
+		"systemApiRateLimitIpWriteBurstPer10Seconds",
+		"systemApiRateLimitUserReadPerMinute",
+		"systemApiRateLimitUserWritePerMinute",
+	}},
+	"cooldown-retest": {Domain: settingsSectionDomainSystem, Keys: []string{
+		"cooldownAccountRetestMaxBackoffHours",
+	}},
+	"data-retention": {Domain: settingsSectionDomainSystem, Keys: []string{
+		"usageRecordRetentionDays",
+		"runtimeLogIndexRetentionDays",
+		"publicApiLogRetentionDays",
+	}},
+}
+
+// ManagementSettingsSectionKeys mirrors the managementSettingsSectionCatalog
+// insertion order for deterministic iteration.
+var ManagementSettingsSectionKeys = []string{
+	"brand",
+	"gateway-core",
+	"user-request-limit",
+	"account-health",
+	"api-rate-limit",
+	"cooldown-retest",
+	"data-retention",
+}
+
+// UnknownSettingsSectionError mirrors InvalidSettingsSectionError
+// (settings.routes.ts): the GET section route renders it as 400 while every
+// other failure takes next(error) — the generic 500.
+type UnknownSettingsSectionError struct{ Key string }
+
+func (e *UnknownSettingsSectionError) Error() string { return "未知设置分区：" + e.Key }
+
+// resolveSettingsSection mirrors parseSectionKey: only catalog keys pass.
+func resolveSettingsSection(value string) (ManagementSettingsSection, error) {
+	section, ok := ManagementSettingsSectionCatalog[value]
+	if !ok {
+		return ManagementSettingsSection{}, &UnknownSettingsSectionError{Key: value}
+	}
+	return section, nil
+}
+
 // usageStatsDataTables mirrors the usageStatsDataExists probe list.
 var usageStatsDataTables = []string{
 	"usage_stats_totals",
@@ -245,9 +346,11 @@ type Store struct {
 	// behavior.
 	statsDB *sql.DB
 
-	mu       sync.Mutex
-	cached   map[string]any
-	cachedAt time.Time
+	mu             sync.Mutex
+	cached         map[string]any
+	cachedAt       time.Time
+	globalCached   map[string]any
+	globalCachedAt time.Time
 }
 
 // NewStore builds the store; inval may be nil (no-op invalidation until K5
@@ -385,7 +488,7 @@ func (s *Store) loadFromDatabase(ctx context.Context) (map[string]any, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	applyCompatibleSystemSettingDefaults(settings)
+	applyCompatibleSystemSettingDefaults(settings, SystemSettingKeys)
 	assertAllSettingsPresent(settings, SystemSettingKeys, "系统设置")
 	return settings, nil
 }
@@ -413,32 +516,7 @@ func (s *Store) Update(ctx context.Context, input map[string]any) (map[string]an
 	if err := s.assertUsageStatsTimezoneUpdateAllowed(ctx, normalized); err != nil {
 		return nil, err
 	}
-	keys := make([]string, 0, len(normalized))
-	for key := range normalized {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	nowISO := s.now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	for _, key := range keys {
-		valueJSON, marshalErr := json.Marshal(normalized[key])
-		if marshalErr != nil {
-			return nil, marshalErr
-		}
-		if _, execErr := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("system_settings")+`
-			(system_account_id, key, value_json, updated_at)
-			VALUES (?, ?, ?, ?)
-			ON CONFLICT(system_account_id, key) DO UPDATE SET
-				value_json = excluded.value_json,
-				updated_at = excluded.updated_at`), SystemSettingsAccountID, key, string(valueJSON), nowISO); execErr != nil {
-			return nil, execErr
-		}
-	}
-	if err := tx.Commit(); err != nil {
+	if err := s.upsertSystemSettings(ctx, normalized); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -449,6 +527,40 @@ func (s *Store) Update(ctx context.Context, input map[string]any) (map[string]an
 	if s.inval != nil {
 		s.inval.Invalidate(TopicGatewayRuntime, settingsUpdatedReason)
 	}
+	return s.refreshSystemCache(ctx)
+}
+
+// upsertSystemSettings persists normalized system settings in a single
+// transaction (the updateSettingsAsync / updateManagementSettingsSectionAsync
+// system branch upsert).
+func (s *Store) upsertSystemSettings(ctx context.Context, normalized map[string]any) error {
+	keys := sortedKeys(normalized)
+	nowISO := s.now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, key := range keys {
+		valueJSON, marshalErr := json.Marshal(normalized[key])
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if _, execErr := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("system_settings")+`
+			(system_account_id, key, value_json, updated_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(system_account_id, key) DO UPDATE SET
+				value_json = excluded.value_json,
+				updated_at = excluded.updated_at`), SystemSettingsAccountID, key, string(valueJSON), nowISO); execErr != nil {
+			return execErr
+		}
+	}
+	return tx.Commit()
+}
+
+// refreshSystemCache mirrors refreshSystemSettingsCacheAfterSectionWrite's
+// reload step: load the fresh snapshot and refill the 60s app cache.
+func (s *Store) refreshSystemCache(ctx context.Context) (map[string]any, error) {
 	settings, err := s.loadFromDatabase(ctx)
 	if err != nil {
 		return nil, err
@@ -460,11 +572,48 @@ func (s *Store) Update(ctx context.Context, input map[string]any) (map[string]an
 	return copySettings(settings), nil
 }
 
-// LoadPublic mirrors listPublicGlobalSettingsAsync: the login-free brand
-// subset (appName, appIcon) from global_settings. Read per request; the
-// settings:global cache belongs to the brand write slice.
+func sortedKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// LoadPublic mirrors listPublicGlobalSettingsAsync: pickGlobalSettings over
+// listGlobalSettingsAsync — the cached global read projected to the same
+// appName/appIcon pair (the key lists are identical, so the projection is
+// the identity).
 func (s *Store) LoadPublic(ctx context.Context) (map[string]any, error) {
+	return s.LoadGlobal(ctx)
+}
+
+// LoadGlobal mirrors listGlobalSettingsAsync: the global brand pair behind
+// the 60s settings:global app cache. Per-key normalization and the
+// all-keys-present assertion apply; a stored anomaly renders as the generic
+// 500.
+func (s *Store) LoadGlobal(ctx context.Context) (map[string]any, error) {
 	ctx = ensureCtx(ctx)
+	s.mu.Lock()
+	if s.globalCached != nil && s.now().Sub(s.globalCachedAt) < settingsCacheTTL {
+		cached := s.globalCached
+		s.mu.Unlock()
+		return copySettings(cached), nil
+	}
+	s.mu.Unlock()
+	settings, err := s.loadGlobalFromDatabase(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.globalCached = settings
+	s.globalCachedAt = s.now()
+	s.mu.Unlock()
+	return copySettings(settings), nil
+}
+
+func (s *Store) loadGlobalFromDatabase(ctx context.Context) (map[string]any, error) {
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT key, value_json FROM `+s.table("global_settings")+`
 		WHERE key IN (`+placeholders(len(GlobalSettingKeys))+`)
 		ORDER BY key ASC`), queryArgs(GlobalSettingKeys, "")...)
@@ -493,6 +642,191 @@ func (s *Store) LoadPublic(ctx context.Context) (map[string]any, error) {
 	}
 	assertAllSettingsPresent(settings, GlobalSettingKeys, "全局设置")
 	return settings, nil
+}
+
+// UpdateGlobal mirrors updateGlobalSettingsAsync: strict global whitelist +
+// non-empty-string validation, a single upsert transaction, then the global
+// cache refresh and the fresh full global snapshot. Node issues no gateway
+// runtime invalidation for global writes.
+func (s *Store) UpdateGlobal(ctx context.Context, input map[string]any) (map[string]any, error) {
+	ctx = ensureCtx(ctx)
+	normalized, err := normalizeGlobalSettingsInput(input)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.upsertGlobalSettings(ctx, normalized); err != nil {
+		return nil, err
+	}
+	return s.refreshGlobalCache(ctx)
+}
+
+// upsertGlobalSettings persists normalized global settings in a single
+// transaction (updateGlobalSettingsAsync / updateManagementSettingsSectionAsync
+// global branch upsert).
+func (s *Store) upsertGlobalSettings(ctx context.Context, normalized map[string]any) error {
+	keys := sortedKeys(normalized)
+	nowISO := s.now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, key := range keys {
+		valueJSON, marshalErr := json.Marshal(normalized[key])
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if _, execErr := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("global_settings")+`
+			(key, value_json, updated_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT(key) DO UPDATE SET
+				value_json = excluded.value_json,
+				updated_at = excluded.updated_at`), key, string(valueJSON), nowISO); execErr != nil {
+			return execErr
+		}
+	}
+	return tx.Commit()
+}
+
+// refreshGlobalCache mirrors refreshGlobalSettingsCacheAfterSectionWrite:
+// clear + reload the settings:global snapshot.
+func (s *Store) refreshGlobalCache(ctx context.Context) (map[string]any, error) {
+	settings, err := s.loadGlobalFromDatabase(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.globalCached = settings
+	s.globalCachedAt = s.now()
+	s.mu.Unlock()
+	return copySettings(settings), nil
+}
+
+// LoadSection mirrors getManagementSettingsSectionAsync: the section catalog
+// drives the table (global_settings vs system_settings), per-key
+// normalization, the compatible system defaults (section keys only) and the
+// per-section presence assertion. No snapshot cache — Node reads the section
+// projection directly from the database.
+func (s *Store) LoadSection(ctx context.Context, sectionKey string) (map[string]any, error) {
+	ctx = ensureCtx(ctx)
+	section, err := resolveSettingsSection(sectionKey)
+	if err != nil {
+		return nil, err
+	}
+	var rows *sql.Rows
+	if section.Domain == settingsSectionDomainGlobal {
+		rows, err = s.db.QueryContext(ctx, s.bind(`SELECT key, value_json FROM `+s.table("global_settings")+`
+			WHERE key IN (`+placeholders(len(section.Keys))+`)
+			ORDER BY key ASC`), queryArgs(section.Keys, "")...)
+	} else {
+		rows, err = s.db.QueryContext(ctx, s.bind(`SELECT key, value_json FROM `+s.table("system_settings")+`
+			WHERE system_account_id = ? AND key IN (`+placeholders(len(section.Keys))+`)
+			ORDER BY key ASC`), queryArgs(section.Keys, SystemSettingsAccountID)...)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := map[string]any{}
+	for rows.Next() {
+		var key, valueJSON string
+		if err := rows.Scan(&key, &valueJSON); err != nil {
+			return nil, err
+		}
+		var value any
+		if err := json.Unmarshal([]byte(valueJSON), &value); err != nil {
+			return nil, err
+		}
+		normalized, err := normalizeSectionSetting(section, key, value)
+		if err != nil {
+			return nil, err
+		}
+		values[key] = normalized
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if section.Domain == settingsSectionDomainSystem {
+		applyCompatibleSystemSettingDefaults(values, section.Keys)
+	}
+	if err := assertAllSettingsPresent(values, section.Keys, sectionKey+" 设置"); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+// UpdateSection mirrors updateManagementSettingsSectionAsync: the section
+// whitelist rejects unknown and prototype-polluting keys, per-key validation
+// runs per domain, the online usageStatsTimezone guard applies to system
+// sections, a single upsert transaction persists the values and the write
+// refreshes the domain cache — system sections additionally fire the gateway
+// runtime invalidation (Node notifyGatewayRuntimeCacheInvalidation). The
+// Node account-health branch also enqueues account health jobs input
+// snapshots inside the transaction; that outbox family has no gateway-side
+// port yet, so the write stays settings-only (documented gap).
+func (s *Store) UpdateSection(ctx context.Context, sectionKey string, input map[string]any) (map[string]any, error) {
+	ctx = ensureCtx(ctx)
+	section, err := resolveSettingsSection(sectionKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(input) == 0 {
+		return nil, &ValidationError{Message: "设置更新不能为空"}
+	}
+	allowed := make(map[string]bool, len(section.Keys))
+	for _, key := range section.Keys {
+		allowed[key] = true
+	}
+	for key := range input {
+		if !allowed[key] || key == "__proto__" || key == "constructor" || key == "prototype" {
+			return nil, &ValidationError{Message: sectionKey + " 包含不允许的字段"}
+		}
+	}
+	normalized := make(map[string]any, len(input))
+	for key, value := range input {
+		value, err := normalizeSectionSetting(section, key, value)
+		if err != nil {
+			return nil, err
+		}
+		normalized[key] = value
+	}
+	if section.Domain == settingsSectionDomainSystem {
+		if err := s.assertUsageStatsTimezoneUpdateAllowed(ctx, normalized); err != nil {
+			return nil, err
+		}
+	}
+	if section.Domain == settingsSectionDomainGlobal {
+		if err := s.upsertGlobalSettings(ctx, normalized); err != nil {
+			return nil, err
+		}
+		if _, err := s.refreshGlobalCache(ctx); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.upsertSystemSettings(ctx, normalized); err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		s.cached = nil
+		s.cachedAt = time.Time{}
+		s.mu.Unlock()
+		if s.inval != nil {
+			s.inval.Invalidate(TopicGatewayRuntime, settingsUpdatedReason)
+		}
+		if _, err := s.refreshSystemCache(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return s.LoadSection(ctx, sectionKey)
+}
+
+// normalizeSectionSetting dispatches the per-domain validator for section
+// reads and writes (updateManagementSettingsSectionAsync).
+func normalizeSectionSetting(section ManagementSettingsSection, key string, value any) (any, error) {
+	if section.Domain == settingsSectionDomainGlobal {
+		return normalizeGlobalSetting(key, value)
+	}
+	return normalizeSystemSetting(key, value)
 }
 
 // normalizeSystemSettingsInput mirrors normalizeSystemSettingsInput: every
@@ -536,13 +870,35 @@ func normalizeSystemSetting(key string, value any) (any, error) {
 	return number, nil
 }
 
-// normalizeGlobalSetting mirrors normalizeGlobalSetting + nonEmptyStringSetting.
+// normalizeGlobalSetting mirrors normalizeGlobalSetting + nonEmptyStringSetting:
+// unknown keys are rejected before the non-empty-string validation.
 func normalizeGlobalSetting(key string, value any) (any, error) {
+	if !globalSettingKeySet[key] {
+		return nil, &ValidationError{Message: "未知全局设置字段：" + key}
+	}
 	text, ok := value.(string)
 	if !ok || strings.TrimSpace(text) == "" {
 		return nil, &ValidationError{Message: key + " 必须是非空字符串"}
 	}
 	return strings.TrimSpace(text), nil
+}
+
+// normalizeGlobalSettingsInput mirrors normalizeGlobalSettingsInput: every
+// entry must be a whitelisted global key with a non-empty string value; an
+// empty update is rejected.
+func normalizeGlobalSettingsInput(input map[string]any) (map[string]any, error) {
+	output := map[string]any{}
+	for key, value := range input {
+		normalized, err := normalizeGlobalSetting(key, value)
+		if err != nil {
+			return nil, err
+		}
+		output[key] = normalized
+	}
+	if len(output) == 0 {
+		return nil, &ValidationError{Message: "全局设置更新不能为空"}
+	}
+	return output, nil
 }
 
 // normalizeUsageStatsTimezone mirrors usage-stats-helpers.normalizeUsageStatsTimezone.
@@ -558,13 +914,17 @@ func normalizeUsageStatsTimezone(value any) (string, error) {
 	return timezone, nil
 }
 
-// applyCompatibleSystemSettingDefaults mirrors applyCompatibleSystemSettingDefaults.
-func applyCompatibleSystemSettingDefaults(settings map[string]any) {
-	for key, fallback := range compatibleSystemSettingDefaults {
+// applyCompatibleSystemSettingDefaults mirrors applyCompatibleSystemSettingDefaults:
+// legacy databases may miss these rows and the loader fills them in for the
+// requested key list only.
+func applyCompatibleSystemSettingDefaults(settings map[string]any, keys []string) {
+	for _, key := range keys {
 		if _, ok := settings[key]; ok {
 			continue
 		}
-		settings[key] = float64(fallback)
+		if fallback, ok := compatibleSystemSettingDefaults[key]; ok {
+			settings[key] = float64(fallback)
+		}
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,8 +54,11 @@ type AllowlistFunc func(ctx context.Context, clientIP string) bool
 
 // Store is the fixed-window counter backend (memory or redis).
 type Store interface {
-	// Check inspects all buckets atomically and commits when all allow.
-	Check(ctx context.Context, nowMs int64, buckets []BucketInput) (allowed bool, retryAfter int, bucketName string, limit int)
+	// Check inspects all buckets atomically and commits when all allow. A
+	// non-nil backendErr reports a storage failure (Node lets the error escape
+	// the limiter into the system error handler -> 500); it must not be
+	// conflated with a rate-limit denial.
+	Check(ctx context.Context, nowMs int64, buckets []BucketInput) (allowed bool, retryAfter int, bucketName string, limit int, backendErr error)
 }
 
 type BucketInput struct {
@@ -84,7 +88,7 @@ func NewMemoryStore(now func() time.Time) *MemoryStore {
 	return &MemoryStore{entries: map[string]memoryEntry{}, now: now}
 }
 
-func (s *MemoryStore) Check(ctx context.Context, nowMs int64, buckets []BucketInput) (bool, int, string, int) {
+func (s *MemoryStore) Check(ctx context.Context, nowMs int64, buckets []BucketInput) (bool, int, string, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanup(nowMs)
@@ -99,7 +103,13 @@ func (s *MemoryStore) Check(ctx context.Context, nowMs int64, buckets []BucketIn
 		if bucket.Limit <= 0 {
 			continue
 		}
-		current, exists := s.entries[bucket.Key]
+		// BUG-0156: Node keeps three independent Maps (ipMinuteStore,
+		// ipBurstStore, userMinuteStore, system-api-rate-limit.middleware.ts
+		// :65-67), so the same `ip:class` key must not collide across
+		// windows. Composing StoreName into the single Go map gives each
+		// bucket the same isolation as redisFixedWindowKey(storeName, key).
+		key := memoryWindowKey(bucket.StoreName, bucket.Key)
+		current, exists := s.entries[key]
 		var count int
 		var resetAt int64
 		if exists && current.resetAtMs > nowMs {
@@ -113,15 +123,19 @@ func (s *MemoryStore) Check(ctx context.Context, nowMs int64, buckets []BucketIn
 			if retry < 1 {
 				retry = 1
 			}
-			return false, retry, bucket.StoreName, bucket.Limit
+			return false, retry, bucket.StoreName, bucket.Limit, nil
 		}
-		pendings = append(pendings, pending{bucket.Key, count + 1, resetAt})
+		pendings = append(pendings, pending{key, count + 1, resetAt})
 	}
 	for _, p := range pendings {
 		s.entries[p.key] = memoryEntry{count: p.count, resetAtMs: p.resetAt}
 		s.trim(nowMs)
 	}
-	return true, 0, "", 0
+	return true, 0, "", 0, nil
+}
+
+func memoryWindowKey(storeName, key string) string {
+	return storeName + "\x00" + key
 }
 
 func (s *MemoryStore) cleanup(nowMs int64) {
@@ -229,7 +243,9 @@ func (l *Limiter) authenticatedRateLimit(w http.ResponseWriter, r *http.Request,
 func (l *Limiter) load(w http.ResponseWriter, r *http.Request) (Settings, bool) {
 	settings, err := l.Settings(r.Context())
 	if err != nil {
-		http.Error(w, `{"message":"服务器内部错误"}`, 500)
+		// Node respondRateLimitFailure (system-api-rate-limit.middleware.ts
+		// :335-343): JSON 500 {"message":"服务器内部错误"} — never text/plain.
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return Settings{}, false
 	}
 	return settings, true
@@ -243,7 +259,16 @@ func (l *Limiter) allowlisted(r *http.Request) bool {
 }
 
 func (l *Limiter) check(w http.ResponseWriter, r *http.Request, buckets []BucketInput, scope string, class MethodClass) bool {
-	allowed, retryAfter, _, _ := l.Store.Check(r.Context(), time.Now().UnixMilli(), buckets)
+	allowed, retryAfter, _, _, backendErr := l.Store.Check(r.Context(), time.Now().UnixMilli(), buckets)
+	if backendErr != nil {
+		// BUG-0156: Node awaits the Redis eval inside the middleware and lets
+		// the error escape into the system error handler
+		// (system-api-rate-limit.middleware.ts:213, handleSystemApiError
+		// system-api-app.ts:315): 500 {"message":"服务器内部错误"} without
+		// Retry-After. A storage failure is never a rate-limit denial.
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return false
+	}
 	if !allowed {
 		if retryAfter < 1 {
 			retryAfter = 1
@@ -255,13 +280,38 @@ func (l *Limiter) check(w http.ResponseWriter, r *http.Request, buckets []Bucket
 	return true
 }
 
+// BUG-0156: Node classifies rate-limit read/write via the DB access mode
+// (methodClassFor, system-api-rate-limit.middleware.ts:345-351, fed by the
+// explicit rule table in system-api-db-access.ts:23-73). Auditing every POST
+// rule: auth/login, auth/logout, auth/change-password, accounts/import/confirm
+// and accounts/export are all 'write' (already covered by the method default),
+// so the only POST that Node counts into the read buckets is the import
+// preview (:70). noDb/longRead rules and every unmarked route are GET/HEAD or
+// fall back to the method default, which the switch below already mirrors.
+var readOnlyPostPathRe = regexp.MustCompile(`^/(?:my-)?accounts/import/preview/?$`)
+
+const systemAPIPrefix = "/__aisys__/api"
+
 func methodClassFor(r *http.Request) MethodClass {
+	if r.Method == http.MethodPost && readOnlyPostPathRe.MatchString(trimSystemAPIPrefix(r.URL.Path)) {
+		return MethodClassRead
+	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return MethodClassRead
 	default:
 		return MethodClassWrite
 	}
+}
+
+// trimSystemAPIPrefix mirrors Node normalizeSystemApiPath
+// (system-api-db-access.ts:233-242): rules match against the path relative to
+// the system API prefix.
+func trimSystemAPIPrefix(path string) string {
+	if strings.HasPrefix(path, systemAPIPrefix+"/") {
+		return path[len(systemAPIPrefix):]
+	}
+	return path
 }
 
 func clientIPKey(r *http.Request) string {
@@ -349,9 +399,9 @@ end
 return {1, 0, '', 0}
 `
 
-func (s *RedisStore) Check(ctx context.Context, nowMs int64, buckets []BucketInput) (bool, int, string, int) {
+func (s *RedisStore) Check(ctx context.Context, nowMs int64, buckets []BucketInput) (bool, int, string, int, error) {
 	if len(buckets) == 0 {
-		return true, 0, "", 0
+		return true, 0, "", 0, nil
 	}
 	keys := make([]string, len(buckets))
 	args := []any{nowMs, len(buckets)}
@@ -361,21 +411,26 @@ func (s *RedisStore) Check(ctx context.Context, nowMs int64, buckets []BucketInp
 	}
 	result, err := s.Client.Eval(ctx, redisFixedWindowScript, keys, args...)
 	if err != nil {
-		return false, 1, "redis_error", 0
+		// Node awaits the eval and lets connection/script failures escape into
+		// the system error handler (500) — see Limiter.check.
+		return false, 0, "", 0, err
 	}
 	values, ok := result.([]any)
 	if !ok {
-		return false, 1, "redis_error", 0
+		// A resolved non-array frame maps to a 1-second denial in Node
+		// (redisFixedWindowRateLimitResult,
+		// system-api-rate-limit.middleware.ts:403-411) — a 429, not a 500.
+		return false, 1, "", 0, nil
 	}
 	if numeric(values[0]) == 1 {
-		return true, 0, "", 0
+		return true, 0, "", 0, nil
 	}
 	retry := int(numeric(values[1]))
 	if retry < 1 {
 		retry = 1
 	}
 	name, _ := values[2].(string)
-	return false, retry, name, int(numeric(values[3]))
+	return false, retry, name, int(numeric(values[3])), nil
 }
 
 func redisFixedWindowKey(storeName, key string) string {

@@ -435,3 +435,32 @@ func TestTeamLifecycleWithAuthorizationCascade(t *testing.T) {
 		t.Fatalf("history item: %v", first)
 	}
 }
+
+// TestKeywordPredicateDialectArms locks in the querySystemTeamRowsAsync
+// keyword arms (system-team.repository.ts:916-926): PostgreSQL pins bytewise
+// ordering with COLLATE "C" on both range ends plus starts_with() so the
+// range scan and the prefix predicate agree under the database default
+// collation; SQLite keeps the bare range pair. Both arms share the
+// systemTeamTextPrefixUpperBound upper bound, and the PG arm rides the
+// shared ? → $n placeholder binding.
+func TestKeywordPredicateDialectArms(t *testing.T) {
+	sqliteClause, sqliteArgs := (&Store{}).keywordPredicate("al")
+	if sqliteClause != "(t.name >= ? AND t.name < ?)" {
+		t.Fatalf("sqlite keyword clause drift: %q", sqliteClause)
+	}
+	if len(sqliteArgs) != 2 || sqliteArgs[0] != "al" || sqliteArgs[1] != "am" {
+		t.Fatalf("sqlite keyword args drift: %#v", sqliteArgs)
+	}
+
+	pg := &Store{pg: true}
+	pgClause, pgArgs := pg.keywordPredicate("al")
+	if pgClause != `(t.name COLLATE "C" >= ? AND t.name COLLATE "C" < ? AND starts_with(t.name, ?))` {
+		t.Fatalf("postgres keyword clause drift: %q", pgClause)
+	}
+	if len(pgArgs) != 3 || pgArgs[0] != "al" || pgArgs[1] != "am" || pgArgs[2] != "al" {
+		t.Fatalf("postgres keyword args drift: %#v", pgArgs)
+	}
+	if bound := pg.bind(pgClause); bound != `(t.name COLLATE "C" >= $1 AND t.name COLLATE "C" < $2 AND starts_with(t.name, $3))` {
+		t.Fatalf("postgres placeholder binding drift: %q", bound)
+	}
+}

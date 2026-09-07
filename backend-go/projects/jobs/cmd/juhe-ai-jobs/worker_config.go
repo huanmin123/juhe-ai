@@ -76,10 +76,15 @@ type workerConfig struct {
 	ProbeEnabled         bool
 	ManualTestEnabled    bool
 
-	// ProbeConcurrency 限制探针族在途上游诊断请求与队列并发（Node
-	// globalSharedQueueConcurrency 取进程内 governor 全局上限；jobs 独立进程
-	// 取保守默认 8，JUHE_AI_JOBS_PROBE_CONCURRENCY 可调）。手动账号测试队列
-	// 并发沿用同一约定。
+	// ProbeConcurrency 限制探针族在途上游诊断请求与队列并发。Node 侧对应
+	// globalSharedQueueConcurrency 取 runtimeConfig.concurrency.globalMax
+	// （runtime.ts:410，JUHE_AI_CONCURRENCY_GLOBAL_MAX 默认 5000）。Go 默认
+	// 512 不是 Node 5000 的直译，而是沿用 jobs 内 J1/J2 家族既有档位
+	// （accounthealth/config.go 的 default*Concurrency=512、
+	// accountbalance/runtime_config.go 的 defaultAccountBalanceConcurrency=512，
+	// 两家族 env 上限均为 5096）；本项 env JUHE_AI_JOBS_PROBE_CONCURRENCY
+	// 同样可上调到 5096（下方校验），也可下调。手动账号测试队列并发沿用
+	// 同一约定。
 	ProbeConcurrency int
 
 	// ManualTestRefillMaxBatchSize 等对齐 Node runtimeConfig.background 的
@@ -154,10 +159,16 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		InstanceID:                               "juhe-ai-jobs",
 		WorkerRole:                               "worker",
 		WorkerReplicaIdx:                         0,
-		PostgresMaxOpenConns:                     8,
-		PostgresMaxIdleConns:                     8,
+		PostgresMaxOpenConns:                     50,
+		PostgresMaxIdleConns:                     50,
 		UsageShardCount:                          16,
-		CodexContextStateShardCount:              4,
+		// CodexContextStateShardCount 对齐 Node runtime.ts:694
+		// （JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 默认 16，1..256）与 gateway
+		// 组合根 runtime.go 的同款默认：codex context 状态写入按 key 哈希路由到
+		// 每分片独立 SQLite 文件（WAL），写并发上限等于分片数，不是单写者串行
+		// 设计；原默认 4 会把写入吞吐压到 1/4，且与 gateway 默认 16 不一致会让
+		// retention 清理漏掉 gateway 写出的分片文件。
+		CodexContextStateShardCount:              16,
 		ChatRetentionDays:                        3,
 		RecordMaintenanceQueueMaxItems:           5000,
 		RecordMaintenanceQueueMaxMb:              32,
@@ -171,7 +182,9 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		BalanceDetectEnabled:                     true,
 		ProbeEnabled:                             true,
 		ManualTestEnabled:                        true,
-		ProbeConcurrency:                         8,
+		// 默认 512：jobs 内 J1/J2 家族既有档位（非 Node globalMax 5000 直译，
+		// 见 ProbeConcurrency 字段注释）。
+		ProbeConcurrency: 512,
 		ManualTestRefillMaxBatchSize:             1_000,
 		ManualTestQueuedSweepBatchSize:           500,
 		ManualTestQueuedMaxWaitMS:                10 * 60_000,
@@ -287,8 +300,11 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if err != nil {
 		return config, err
 	}
-	if config.ProbeConcurrency < 1 || config.ProbeConcurrency > 256 {
-		return config, fmt.Errorf("JUHE_AI_JOBS_PROBE_CONCURRENCY 必须介于 1 和 256 之间")
+	// 上限 5096 与 J1/J2 家族既有档位一致（accounthealth maxJ1Concurrency /
+	// accountbalance maxAccountBalanceWorkItems）；Node globalMax 5000 只是
+	// 参照基线，不是这里的硬上限。
+	if config.ProbeConcurrency < 1 || config.ProbeConcurrency > 5096 {
+		return config, fmt.Errorf("JUHE_AI_JOBS_PROBE_CONCURRENCY 必须介于 1 和 5096 之间")
 	}
 	refillMaxBatchSize, err := workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_TEST_REFILL_MAX_BATCH_SIZE", config.ManualTestRefillMaxBatchSize)
 	if err != nil {

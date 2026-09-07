@@ -32,9 +32,14 @@ type OpenAIChatSseResult struct {
 }
 
 const (
-	sseMaxEventBytes    = 64 * 1024
-	defaultMaxSSEEvents = 65536
+	sseMaxEventBytes = 64 * 1024
 )
+
+// defaultMaxSSEEvents mirrors runtimeConfig.chat.upstreamSseMaxEvents
+// (JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS, default 65536, range 2048..262144;
+// runtime.ts:689). Resolved once at package init with the same fail-fast
+// contract as Node's startup integerConfig.
+var defaultMaxSSEEvents = chatEnvIntOrDefault("JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS", 65536, 2_048, 262_144)
 
 // CollectOpenAIChatSse mirrors collectOpenAIChatSse over a byte stream.
 func CollectOpenAIChatSse(stream io.Reader, maxContentBytes int, onDelta func(delta string), maxEvents int) (OpenAIChatSseResult, error) {

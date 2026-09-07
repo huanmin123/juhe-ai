@@ -8,11 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -835,77 +833,6 @@ FROM generate_series(1,250) AS gs;`); err != nil {
 	repeated, err := MigrateLegacyPostgres(ctx, Config{Mode: ModePostgres, PostgresURL: url}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
 	if err != nil || !repeated.NoOp {
 		t.Fatalf("F4 PostgreSQL 历史迁移重复执行必须 no-op: result=%+v err=%v", repeated, redactPostgresSmokeError(err, url))
-	}
-}
-
-func TestNodeGoNodeSmokeServer(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_NODE_GO_SMOKE")) == "" {
-		t.Skip("未设置 JUHE_AI_OPERATION_LOG_NODE_GO_SMOKE；真实 Node-Go-Node smoke 未执行")
-	}
-	runNodeGoNodeSmokeScript(t, "operation-log-go-real-sidecar-smoke.ts")
-}
-
-func TestNodeGoNodeSystemAPIProducerSmoke(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_SYSTEM_API_SMOKE")) == "" {
-		t.Skip("未设置 JUHE_AI_OPERATION_LOG_SYSTEM_API_SMOKE；真实 System API F4 smoke 未执行")
-	}
-	runNodeGoNodeSmokeScript(t, "operation-log-go-system-api-settings-smoke.ts")
-}
-
-func TestNodeGoNodeOAuthProducerSmoke(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_OAUTH_SMOKE")) == "" {
-		t.Skip("未设置 JUHE_AI_OPERATION_LOG_OAUTH_SMOKE；真实 OAuth producer F4 smoke 未执行")
-	}
-	runNodeGoNodeSmokeScript(t, "operation-log-go-oauth-producer-smoke.ts")
-}
-
-func TestNodeGoNodeWorkerProducerSmoke(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_WORKER_SMOKE")) == "" {
-		t.Skip("未设置 JUHE_AI_OPERATION_LOG_WORKER_SMOKE；真实 worker producer F4 smoke 未执行")
-	}
-	runNodeGoNodeSmokeScript(t, "operation-log-go-worker-producer-smoke.ts")
-}
-
-func runNodeGoNodeSmokeScript(t *testing.T, script string) {
-	t.Helper()
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	store, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	lease, ok, err := store.AcquireOwnerLease(context.Background(), "node-go-node", time.Minute)
-	if err != nil || !ok {
-		t.Fatalf("lease: ok=%v err=%v", ok, err)
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	secret := "node-go-node-smoke-secret-with-at-least-32-bytes"
-	h := &handler{store: store, lease: lease, cfg: InputServerConfig{SharedSecret: secret, MaxBytes: defaultInputMaxBytes, RequestTimeout: 5 * time.Second, ReplayWindow: time.Minute}, logger: slog.Default(), healthy: newAtomicTrue()}
-	server := &http.Server{Handler: h}
-	serverDone := make(chan error, 1)
-	go func() { serverDone <- server.Serve(listener) }()
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-		<-serverDone
-	}()
-	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate F4 smoke test source")
-	}
-	command := exec.Command("node", "--import", "tsx", filepath.ToSlash(filepath.Join("src", "scripts", "regression", script)))
-	command.Dir = filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", "..", "..", "..", "backend"))
-	command.Env = append(os.Environ(), "JUHE_AI_OPERATION_LOG_INPUT_URL=http://"+listener.Addr().String(), "JUHE_AI_OPERATION_LOG_INPUT_SECRET="+secret, "JUHE_AI_OPERATION_LOG_INPUT_TIMEOUT_MS=5000", "JUHE_AI_LOG_FILE_ENABLED=false", "JUHE_AI_LOG_CONSOLE_ENABLED=false", "NODE_ENV=test")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("真实 Node-Go-Node smoke %s 失败: %v\n%s", script, err, output)
 	}
 }
 

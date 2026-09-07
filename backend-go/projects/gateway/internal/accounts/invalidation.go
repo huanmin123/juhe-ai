@@ -70,6 +70,25 @@ const accountPatchRuntimeInvalidationReason = "account_management_patch"
 // accountDeleteRuntimeInvalidationReason mirrors the Node reason string.
 const accountDeleteRuntimeInvalidationReason = "account_deleted"
 
+// groupAccountStatsDirtyAll mirrors GROUP_ACCOUNT_STATS_DIRTY_ALL
+// (group-account-stats-cache.repository.ts:16): the single full-refresh dirty
+// marker row the stats worker consumes as "rebuild every group".
+const groupAccountStatsDirtyAll = "__all__"
+
+// markAllGroupStatsDirty mirrors markAllGroupAccountStatsDirty
+// (group-account-stats-cache.repository.ts:49-51, reached through
+// refreshGroupAccountStatsAfterWrite({all:true})): one __all__ upsert covers
+// every group's next refresh, same statement shape as markBatchGroupStatsDirty.
+func (s *Store) markAllGroupStatsDirty(ctx context.Context, reason string) error {
+	ctx = ensureCtx(ctx)
+	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("group_account_stats_dirty")+` (group_id, reason, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(group_id) DO UPDATE SET
+			reason = excluded.reason,
+			updated_at = excluded.updated_at`), groupAccountStatsDirtyAll, reason, isoMillis(s.now()))
+	return err
+}
+
 // finishPatchSideEffects mirrors applyAccountPatchPostCommitEffects' sync arm:
 // per-account lookup flush and the conditional gateway runtime invalidation,
 // best-effort — a channel failure is logged and never reported to the client
@@ -111,12 +130,25 @@ func (s *Store) finishPatchSideEffects(result *PatchResult) {
 	}
 }
 
-// finishDeleteSideEffects mirrors the owner-mode delete post-commit tail
-// (account-delete-cleanup.repository.ts:197-201): one lookup flush per
-// deleted account (the soft delete takes the authorization instances with it)
-// plus one whole-surface runtime invalidation.
+// finishDeleteSideEffects mirrors the post-commit invalidation tail of the
+// Node delete flow (account-delete-cleanup.repository.ts:149-158 SQLite /
+// :163-172 PG async): the SQLite arm opens with the whole-surface group stats
+// dirty marker (refreshGroupAccountStatsAfterWrite({all:true}); the PG async
+// arm runs no stats refresh), then one lookup flush per deleted account (the
+// soft delete takes the authorization instances with it), the
+// group-account-ids and resource-authorization lookup cache flushes, the
+// whole-surface runtime invalidation and the authorization quota invalidation
+// (invalidateAuthorizationRuntimeAfterBusinessWrite = gateway runtime +
+// authorization quota). Every step is best-effort — a failure is logged and
+// never reported to the client (the Node warn channels).
 func (s *Store) finishDeleteSideEffects(ctx context.Context, accountIDs []string) {
-	_ = ctx
+	if !s.pg {
+		if err := s.markAllGroupStatsDirty(ctx, accountDeleteRuntimeInvalidationReason); err != nil {
+			slog.Warn("账户删除已提交，但分组账户统计全量脏标记失败",
+				"event", "account_delete_stats_refresh_failed",
+				"accountCount", len(accountIDs), "error", err)
+		}
+	}
 	if s.invalidator == nil {
 		return
 	}
@@ -127,9 +159,30 @@ func (s *Store) finishDeleteSideEffects(ctx context.Context, accountIDs []string
 				"accountId", accountID, "error", err)
 		}
 	}
+	// invalidateGroupAccountIdsCache +
+	// clearResourceAuthorizationLookupCaches
+	// (account-delete-cleanup.repository.ts:154-155,169-170).
+	if err := s.invalidator.InvalidateGroupAccountIds(); err != nil {
+		slog.Warn("账户删除已提交，但分组账户 ID 缓存失效失败",
+			"event", "account_delete_group_account_ids_invalidation_failed",
+			"accountCount", len(accountIDs), "error", err)
+	}
+	if err := s.invalidator.ClearResourceAuthorizationLookupCaches(); err != nil {
+		slog.Warn("账户删除已提交，但资源授权 lookup 缓存清理失败",
+			"event", "account_delete_authorization_lookup_invalidation_failed",
+			"accountCount", len(accountIDs), "error", err)
+	}
 	if err := s.invalidator.InvalidateGatewayRuntime(accountDeleteRuntimeInvalidationReason); err != nil {
 		slog.Warn("账户删除已提交，但网关运行时缓存失效失败",
 			"event", "account_delete_runtime_invalidation_failed",
+			"accountCount", len(accountIDs), "error", err)
+	}
+	// invalidateAuthorizationRuntimeAfterBusinessWrite('account_deleted')
+	// (:56-59,157,202): the gateway-runtime arm above plus the authorization
+	// quota invalidation.
+	if err := s.invalidator.InvalidateAuthorizationQuota(accountDeleteRuntimeInvalidationReason); err != nil {
+		slog.Warn("账户删除已提交，但授权额度缓存失效失败",
+			"event", "account_delete_authorization_quota_invalidation_failed",
 			"accountCount", len(accountIDs), "error", err)
 	}
 }

@@ -212,59 +212,165 @@ func (s *Store) MarkRead(ctx context.Context, systemAccountID string, announceme
 	return ReadResult{ReadAt: readAt, Count: count}, nil
 }
 
-// AdminListItem mirrors AnnouncementListItem (editVersion = updated_at).
+// AdminListItem mirrors AnnouncementListItem: the management list projection
+// with SQL-computed contentPreview/contentTruncated, the updated actor
+// display name, and revision = updated_at (announcements.repository.ts
+// announcementListItem).
 type AdminListItem struct {
-	ID          string  `json:"id"`
-	Title       string  `json:"title"`
-	Level       string  `json:"level"`
-	Status      string  `json:"status"`
-	PublishedAt *string `json:"publishedAt,omitempty"`
-	CreatedAt   string  `json:"createdAt"`
-	UpdatedAt   string  `json:"updatedAt"`
-	EditVersion string  `json:"editVersion"`
+	ID               string  `json:"id"`
+	Title            string  `json:"title"`
+	ContentPreview   string  `json:"contentPreview"`
+	ContentTruncated bool    `json:"contentTruncated"`
+	Level            string  `json:"level"`
+	Status           string  `json:"status"`
+	UpdatedByName    *string `json:"updatedByName,omitempty"`
+	PublishedAt      *string `json:"publishedAt,omitempty"`
+	Revision         string  `json:"revision"`
 }
 
-// ListPage mirrors listAnnouncementsPageAsync (pageSize+1 probe).
-func (s *Store) ListPage(ctx context.Context, page, pageSize int) (items []AdminListItem, hasMore bool, err error) {
-	ctx = ensureCtx(ctx)
+// AdminListResult mirrors AnnouncementListResult (normalized pagination
+// metadata, same key set as the Node repository result).
+type AdminListResult struct {
+	Items    []AdminListItem `json:"items"`
+	Total    int             `json:"total"`
+	HasMore  bool            `json:"hasMore"`
+	Page     int             `json:"page"`
+	PageSize int             `json:"pageSize"`
+}
+
+const (
+	// defaultAnnouncementPageSize mirrors defaultAnnouncementPageSize (50,
+	// not 20).
+	defaultAnnouncementPageSize = 50
+	// maxAnnouncementPageSize mirrors maxAnnouncementPageSize.
+	maxAnnouncementPageSize = 100
+	// listWindowRows mirrors query-utils defaultListWindowRows: the list is
+	// served from a 1001-row window, capping the normalized page at
+	// floor((windowRows-1)/pageSize).
+	listWindowRows = 1001
+	// announcementPreviewLimit mirrors the 240-char preview cut in
+	// announcementListSelectColumns.
+	announcementPreviewLimit = 240
+)
+
+// pageUpperBoundForWindow mirrors query-utils pageUpperBoundForWindow.
+func pageUpperBoundForWindow(pageSize int) int {
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	bound := (listWindowRows - 1) / pageSize
+	if bound < 1 {
+		bound = 1
+	}
+	return bound
+}
+
+// normalizeListPage mirrors query-utils normalizeListPage: a validated page
+// clamps into the window bound, anything else falls back to page 1.
+func normalizeListPage(page *int, pageSize int) int {
+	if page == nil || *page < 1 {
+		return 1
+	}
+	bound := pageUpperBoundForWindow(pageSize)
+	if *page > bound {
+		return bound
+	}
+	return *page
+}
+
+// normalizeListOptions mirrors normalizeAnnouncementListOptions: pageSize
+// defaults to 50 and clamps to 1..100 before the page window is derived.
+func normalizeListOptions(page, pageSize *int) (int, int) {
+	size := defaultAnnouncementPageSize
+	if pageSize != nil {
+		size = *pageSize
+		if size < 1 {
+			size = 1
+		}
+		if size > maxAnnouncementPageSize {
+			size = maxAnnouncementPageSize
+		}
+	}
+	return normalizeListPage(page, size), size
+}
+
+// pagedTotalUpperBound mirrors query-utils pagedTotalUpperBound.
+func pagedTotalUpperBound(page, pageSize, itemCount int, hasMore bool) int {
 	if page < 1 {
 		page = 1
 	}
-	if pageSize < 1 {
-		pageSize = 20
+	if pageSize < 0 {
+		pageSize = 0
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	if itemCount < 0 {
+		itemCount = 0
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT a.id, a.title, a.level, a.status, a.published_at, a.created_at, a.updated_at
+	total := (page-1)*pageSize + itemCount
+	if hasMore {
+		total++
+	}
+	return total
+}
+
+// ListPage mirrors listAnnouncementsPageAsync: pageSize+1 probe, windowed
+// page normalization, preview truncation in SQL, updated-actor join, and
+// total/hasMore computed from the normalized values.
+func (s *Store) ListPage(ctx context.Context, page, pageSize *int) (AdminListResult, error) {
+	ctx = ensureCtx(ctx)
+	normalizedPage, normalizedPageSize := normalizeListOptions(page, pageSize)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT a.id, a.title,
+			CASE WHEN length(a.content) > ? THEN substr(a.content, 1, ?) || '...' ELSE a.content END AS content_preview,
+			CASE WHEN length(a.content) > ? THEN 1 ELSE 0 END AS content_truncated,
+			a.level, a.status, updated_actor.display_name AS updated_by_name,
+			a.published_at, a.updated_at
 		FROM `+s.table("announcements")+` a
+		LEFT JOIN `+s.table("system_accounts")+` updated_actor ON updated_actor.id = a.updated_by
 		ORDER BY a.updated_at DESC, a.created_at DESC, a.id DESC
-		LIMIT ? OFFSET ?`), pageSize+1, (page-1)*pageSize)
+		LIMIT ? OFFSET ?`),
+		announcementPreviewLimit, announcementPreviewLimit, announcementPreviewLimit,
+		normalizedPageSize+1, (normalizedPage-1)*normalizedPageSize)
 	if err != nil {
-		return nil, false, err
+		return AdminListResult{}, err
 	}
 	defer rows.Close()
-	items = []AdminListItem{}
+	items := []AdminListItem{}
 	for rows.Next() {
 		var item AdminListItem
-		var publishedAt sql.NullString
-		if err := rows.Scan(&item.ID, &item.Title, &item.Level, &item.Status, &publishedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
-			return nil, false, err
+		var truncated int
+		var updatedByName, publishedAt sql.NullString
+		if err := rows.Scan(&item.ID, &item.Title, &item.ContentPreview, &truncated,
+			&item.Level, &item.Status, &updatedByName, &publishedAt, &item.Revision); err != nil {
+			return AdminListResult{}, err
 		}
-		if publishedAt.Valid {
-			item.PublishedAt = &publishedAt.String
-		}
-		item.EditVersion = item.UpdatedAt
+		item.ContentTruncated = truncated == 1
+		item.UpdatedByName = nullStringPtr(updatedByName)
+		item.PublishedAt = nullStringPtr(publishedAt)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, err
+		return AdminListResult{}, err
 	}
-	hasMore = len(items) > pageSize
+	hasMore := len(items) > normalizedPageSize
 	if hasMore {
-		items = items[:pageSize]
+		items = items[:normalizedPageSize]
 	}
-	return items, hasMore, nil
+	return AdminListResult{
+		Items:    items,
+		Total:    pagedTotalUpperBound(normalizedPage, normalizedPageSize, len(items), hasMore),
+		HasMore:  hasMore,
+		Page:     normalizedPage,
+		PageSize: normalizedPageSize,
+	}, nil
+}
+
+// nullStringPtr renders a nullable column as the omitted-when-null JSON
+// contract (Node `row.x ?? undefined`).
+func nullStringPtr(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	text := value.String
+	return &text
 }
 
 // EditDetail mirrors AnnouncementEditDetail.
@@ -374,21 +480,53 @@ func (s *Store) Create(ctx context.Context, input MutationInput, actorSystemAcco
 	}
 	revision := s.now().UTC().Format(time.RFC3339Nano)
 	id := s.newI("ann")
+	// announcement-management-write.repository.ts writes published_at =
+	// revision only for published creates and never puts booleans into the
+	// time columns; created_at and updated_at both carry the revision.
+	var publishedAt any
+	if status == "published" {
+		publishedAt = revision
+	}
 	_, err = s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("announcements")+`
 		(id, title, content, level, status, created_by, updated_by, published_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, title, content, level, status, actorSystemAccountID, actorSystemAccountID,
-		status == "published", status == "published", revision, revision)
+		publishedAt, revision, revision)
 	if err != nil {
 		return MutationReceipt{}, err
 	}
 	return MutationReceipt{ID: id, Revision: revision}, nil
 }
 
+// MutationState mirrors AnnouncementMutationState (the logged before/after
+// projection). Content is present only when the patch carried it (Node
+// includeContent), and PublishedAt/Revision back the publish diff fields.
+type MutationState struct {
+	ID          string
+	Title       string
+	Content     *string
+	Level       string
+	Status      string
+	PublishedAt *string
+	Revision    string
+}
+
+// MutationOutcome mirrors AnnouncementManagementMutationOutcome: the receipt
+// plus the before/after logged state and the changed flag so the route can
+// mirror Node's log-only-when-changed semantics.
+type MutationOutcome struct {
+	Receipt MutationReceipt
+	Before  MutationState
+	After   MutationState
+	Changed bool
+}
+
 // Patch mirrors patchAnnouncementForManagementAsync: FOR UPDATE (pg),
-// expectedRevision compare, only-changed columns, published transition clears
-// read state, nextRevision monotonic.
-func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expectedRevision, actorSystemAccountID string) (*MutationReceipt, error) {
+// expectedRevision compare, changed-columns only (content included via the
+// includeContent read), published transition clears read state, nextRevision
+// monotonic. An input that changes nothing is a no-op that returns the
+// current revision without bumping it.
+func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expectedRevision, actorSystemAccountID string) (*MutationOutcome, error) {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -396,90 +534,115 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	}
 	defer tx.Rollback()
 
+	// Node reads content only when the patch carries it
+	// (findAnnouncementMutationRow includeContent).
 	columns := "id, title, level, status, published_at, updated_at"
-	rows := tx.QueryRowContext(ctx, s.bind(`SELECT `+columns+` FROM `+s.table("announcements")+` WHERE id = ?`), id)
-	var current struct {
-		id, title, level, status string
-		publishedAt              sql.NullString
-		revision                 string
+	var current MutationState
+	var contentNull, publishedAtNull sql.NullString
+	dest := []any{&current.ID, &current.Title, &current.Level, &current.Status, &publishedAtNull, &current.Revision}
+	if input.Content != nil {
+		columns = "id, title, content, level, status, published_at, updated_at"
+		dest = []any{&current.ID, &current.Title, &contentNull, &current.Level, &current.Status, &publishedAtNull, &current.Revision}
 	}
-	if err := rows.Scan(&current.id, &current.title, &current.level, &current.status, &current.publishedAt, &current.revision); err != nil {
+	rows := tx.QueryRowContext(ctx, s.bind(`SELECT `+columns+` FROM `+s.table("announcements")+` WHERE id = ?`), id)
+	if err := rows.Scan(dest...); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	current.PublishedAt = nullStringPtr(publishedAtNull)
+	if input.Content != nil {
+		// content is NOT NULL; mirror Node's `row.content ?? undefined`.
+		content := contentNull.String
+		current.Content = &content
+	}
+	before := current
+
 	expected := strings.TrimSpace(expectedRevision)
-	if expected == "" || current.revision != expected {
-		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: current.revision}
+	if expected == "" || current.Revision != expected {
+		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: current.Revision}
 	}
 
 	assignments := []string{}
 	args := []any{}
-	next := map[string]string{"title": current.title, "level": current.level, "status": current.status}
 	if input.Title != nil {
 		title, err := normalizeText(*input.Title)
 		if err != nil {
 			return nil, err
 		}
-		if title != current.title {
+		if title != current.Title {
 			assignments = append(assignments, "title = ?")
 			args = append(args, title)
+			current.Title = title
 		}
-		next["title"] = title
 	}
 	if input.Content != nil {
 		content, err := normalizeText(*input.Content)
 		if err != nil {
 			return nil, err
 		}
-		assignments = append(assignments, "content = ?")
-		args = append(args, content)
+		// Node addChangedAssignment: same content is a no-op column.
+		if current.Content == nil || content != *current.Content {
+			assignments = append(assignments, "content = ?")
+			args = append(args, content)
+		}
+		current.Content = &content
 	}
 	if input.Level != nil {
-		level, err := normalizeLevel(input.Level, current.level)
+		level, err := normalizeLevel(input.Level, current.Level)
 		if err != nil {
 			return nil, err
 		}
-		if level != current.level {
+		if level != current.Level {
 			assignments = append(assignments, "level = ?")
 			args = append(args, level)
+			current.Level = level
 		}
-		next["level"] = level
 	}
 	becamePublished := false
 	if input.Status != nil {
-		status, err := normalizeStatus(input.Status, current.status)
+		status, err := normalizeStatus(input.Status, current.Status)
 		if err != nil {
 			return nil, err
 		}
-		if status != current.status {
+		if status != current.Status {
 			assignments = append(assignments, "status = ?")
 			args = append(args, status)
 			becamePublished = status == "published"
+			current.Status = status
 		}
-		next["status"] = status
 	}
 
 	if len(assignments) == 0 {
-		receipt := MutationReceipt{ID: current.id, Revision: current.revision}
-		return &receipt, nil
+		// No-op: the receipt carries the unchanged revision (Node changed:
+		// false, after: current).
+		return &MutationOutcome{
+			Receipt: MutationReceipt{ID: before.ID, Revision: before.Revision},
+			Before:  before,
+			After:   before,
+			Changed: false,
+		}, nil
 	}
 
-	revision := nextRevision(current.revision, s.now())
+	revision := nextRevision(before.Revision, s.now())
+	after := current
+	after.Revision = revision
 	if becamePublished {
 		assignments = append(assignments, "published_at = ?")
 		args = append(args, revision)
+		publishedAt := revision
+		after.PublishedAt = &publishedAt
 	}
 	assignments = append(assignments, "updated_by = ?", "updated_at = ?")
 	args = append(args, actorSystemAccountID, revision)
-	args = append(args, id, current.revision)
+	args = append(args, id, before.Revision)
 	result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("announcements")+` SET `+strings.Join(assignments, ", ")+` WHERE id = ? AND updated_at = ?`), args...)
 	if err != nil {
 		return nil, err
 	}
 	if affected, _ := result.RowsAffected(); affected != 1 {
-		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: current.revision}
+		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: before.Revision}
 	}
 	if becamePublished {
 		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("announcement_reads")+` WHERE announcement_id = ?`), id); err != nil {
@@ -489,38 +652,55 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &MutationReceipt{ID: id, Revision: revision}, nil
+	return &MutationOutcome{
+		Receipt: MutationReceipt{ID: id, Revision: revision},
+		Before:  before,
+		After:   after,
+		Changed: true,
+	}, nil
 }
 
-// Delete mirrors deleteAnnouncementForManagementAsync.
-func (s *Store) Delete(ctx context.Context, id, expectedRevision string) (*MutationReceipt, error) {
+// DeleteOutcome mirrors the delete AnnouncementManagementMutationOutcome:
+// the receipt plus the pre-delete logged state for the operation log.
+type DeleteOutcome struct {
+	Receipt MutationReceipt
+	Before  MutationState
+}
+
+// Delete mirrors deleteAnnouncementForManagementAsync: expectedRevision
+// compare then a guarded DELETE; the outcome carries the before state.
+func (s *Store) Delete(ctx context.Context, id, expectedRevision string) (*DeleteOutcome, error) {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	var revision string
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT updated_at FROM `+s.table("announcements")+` WHERE id = ?`), id).Scan(&revision)
+	var before MutationState
+	var publishedAtNull sql.NullString
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT id, title, level, status, published_at, updated_at
+		FROM `+s.table("announcements")+` WHERE id = ?`), id).
+		Scan(&before.ID, &before.Title, &before.Level, &before.Status, &publishedAtNull, &before.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	before.PublishedAt = nullStringPtr(publishedAtNull)
 	expected := strings.TrimSpace(expectedRevision)
-	if expected == "" || revision != expected {
-		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: revision}
+	if expected == "" || before.Revision != expected {
+		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: before.Revision}
 	}
-	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("announcements")+` WHERE id = ? AND updated_at = ?`), id, revision)
+	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("announcements")+` WHERE id = ? AND updated_at = ?`), id, before.Revision)
 	if err != nil {
 		return nil, err
 	}
 	if affected, _ := result.RowsAffected(); affected != 1 {
-		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: revision}
+		return nil, &ConflictError{Message: "公告已被其他操作更新，请刷新后重试", CurrentRevision: before.Revision}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &MutationReceipt{ID: id, Revision: revision}, nil
+	return &DeleteOutcome{Receipt: MutationReceipt{ID: id, Revision: before.Revision}, Before: before}, nil
 }

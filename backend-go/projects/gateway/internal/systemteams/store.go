@@ -231,8 +231,9 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 		args = append(args, scopedID)
 	}
 	if keyword != "" {
-		clauses = append(clauses, "(t.name >= ? AND t.name < ?)")
-		args = append(args, keyword, keywordUpperBound(keyword))
+		clause, clauseArgs := s.keywordPredicate(keyword)
+		clauses = append(clauses, clause)
+		args = append(args, clauseArgs...)
 	}
 	where := strings.Join(clauses, " AND ")
 	query := `SELECT t.id, t.name, COALESCE(t.description,''), t.status, t.created_at, t.updated_at,
@@ -583,6 +584,21 @@ func (s *Store) Create(ctx context.Context, name string, description *string, st
 		ID: id, Name: normalizedName, Description: normalizedDescription, Status: normalizedStatus,
 		MemberCount: 0, CreatedAt: now, UpdatedAt: now, EditVersion: now,
 	}, nil
+}
+
+// keywordPredicate mirrors querySystemTeamRowsAsync's keyword arms
+// (system-team.repository.ts:916-926): PostgreSQL pins bytewise comparison on
+// both range ends with COLLATE "C" and adds starts_with() so the range scan
+// and the prefix predicate agree under the database default collation; SQLite
+// keeps the bare range pair (BINARY is the default collation there). The
+// upper bound stays systemTeamTextPrefixUpperBound (keywordUpperBound) in both
+// arms.
+func (s *Store) keywordPredicate(keyword string) (string, []any) {
+	if s.pg {
+		return `(t.name COLLATE "C" >= ? AND t.name COLLATE "C" < ? AND starts_with(t.name, ?))`,
+			[]any{keyword, keywordUpperBound(keyword), keyword}
+	}
+	return "(t.name >= ? AND t.name < ?)", []any{keyword, keywordUpperBound(keyword)}
 }
 
 // keywordUpperBound mirrors systemTeamTextPrefixUpperBound (:1496-1504).

@@ -216,6 +216,39 @@ func TestConcurrentPublishStaysMonotonic(t *testing.T) {
 	}
 }
 
+// TestPanicInHandlerIsolatedFromOtherHandlersAndLaterInvalidations pins the
+// BUG-0158 fix: a panicking subscriber must neither crash the process nor
+// block the other handlers of the same topic, and later Invalidate calls must
+// still reach every subscriber with an intact version counter.
+func TestPanicInHandlerIsolatedFromOtherHandlersAndLaterInvalidations(t *testing.T) {
+	bus := New(nil)
+	panicCalls, normalCalls := 0, 0
+	bus.Subscribe(TopicGatewayRuntime, func(topic, reason string) {
+		panicCalls++
+		panic("boom from handler: " + reason)
+	})
+	bus.Subscribe(TopicGatewayRuntime, func(topic, reason string) {
+		normalCalls++
+	})
+
+	// First invalidation: the panic is recovered, the healthy handler on the
+	// same topic still runs.
+	bus.Invalidate(TopicGatewayRuntime, "first")
+	if panicCalls != 1 || normalCalls != 1 {
+		t.Fatalf("after first invalidation: panic=%d normal=%d, want 1/1", panicCalls, normalCalls)
+	}
+
+	// A later invalidation must reach both handlers again — the panicking
+	// subscription is neither removed nor does it poison the bus.
+	bus.Invalidate(TopicGatewayRuntime, "second")
+	if panicCalls != 2 || normalCalls != 2 {
+		t.Fatalf("after second invalidation: panic=%d normal=%d, want 2/2", panicCalls, normalCalls)
+	}
+	if bus.Version(TopicGatewayRuntime) != 2 {
+		t.Fatalf("version = %d, want 2 (panic must not swallow bumps)", bus.Version(TopicGatewayRuntime))
+	}
+}
+
 type fakeClock struct {
 	now atomic.Int64 // unix nanoseconds
 }

@@ -3,8 +3,6 @@ package accounts
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -893,16 +891,14 @@ func isMaskedAPIKey(value string) bool {
 		normalized == "<redacted>" || normalized == "[redacted]" || normalized == "masked"
 }
 
-// safeSourceBaseURL mirrors the safeBaseUrl adapter hook: the strict SSRF
-// policy (DNS allowlists) belongs to the platform request layer, so the
-// adapter performs the structural check only.
+// safeSourceBaseURL mirrors the safeBaseUrl adapter hook
+// (account-import-source-adapters.ts:580-588): the full write-path upstream
+// security policy (assertSafeUpstreamBaseUrl → assertSafeUpstreamBaseURL,
+// upstream_base_url.go) rejects loopback/private/reserved targets unless the
+// runtime config allows or allowlists the origin, and every rejection counts
+// one ignored field before the caller skips the record.
 func safeSourceBaseURL(value string, state *adapterState) bool {
-	parsed, err := url.Parse(value)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		state.source.IgnoredFields++
-		return false
-	}
-	if _, err := strconv.Atoi(parsed.Port()); parsed.Port() != "" && err != nil {
+	if err := assertSafeUpstreamBaseURL(value); err != nil {
 		state.source.IgnoredFields++
 		return false
 	}

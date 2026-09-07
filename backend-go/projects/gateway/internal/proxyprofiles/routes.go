@@ -2,13 +2,15 @@ package proxyprofiles
 
 // HTTP surface of the proxy family (Node proxies.routes.ts):
 //
-//	GET    /__aisys__/api/proxies/options   (requireAuth)
-//	GET    /__aisys__/api/proxies           (requireAdmin)
-//	POST   /__aisys__/api/proxies           (requireAdmin + mutation guard)
-//	PATCH  /__aisys__/api/proxies/{id}      (requireAdmin)
-//	DELETE /__aisys__/api/proxies/{id}      (requireAdmin)
+//	GET    /__aisys__/api/proxies/options        (requireAuth)
+//	GET    /__aisys__/api/proxies                (requireAdmin)
+//	POST   /__aisys__/api/proxies                (requireAdmin + mutation guard)
+//	PATCH  /__aisys__/api/proxies/{id}           (requireAdmin)
+//	DELETE /__aisys__/api/proxies/{id}           (requireAdmin)
+//	POST   /__aisys__/api/proxies/{id}/test      (requireAdmin; J3a manual report)
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -53,6 +55,9 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 	})))
 	k.Register("DELETE "+prefix+"/proxies/{id}", deps.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		deleteHandler(w, r, store, sink)
+	})))
+	k.Register("POST "+prefix+"/proxies/{id}/test", deps.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		testHandler(w, r, store, sink)
 	})))
 }
 
@@ -475,6 +480,115 @@ func deleteHandler(w http.ResponseWriter, r *http.Request, store *Store, sink au
 		}, r)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// POST /{id}/test (J3a manual report; probe.go holds the probe semantics)
+// ---------------------------------------------------------------------------
+
+// testHandler mirrors the archived Node manual test route (J3a cutover
+// proxies-manual-test.route.ts): admin gate via Mount, diagnostic slot 503 +
+// Retry-After, 404 before and after the run, bounded probe, proxies.test F4
+// operation log, then 200 {data: report}. Execution errors surface as 502
+// like the Node bridge/jobs management contract. Test-state writeback stays
+// exclusive to the jobs outcome projector, so the log changes describe the
+// fresh report against the persisted before-state, exactly what the Node
+// route diffed.
+func testHandler(w http.ResponseWriter, r *http.Request, store *Store, sink authsys.OperationLogSink) {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	releaseSlot, acquired := tryAcquireProxyTestSlot()
+	if !acquired {
+		w.Header().Set("Retry-After", proxyTestSlotRetryAfter)
+		kernel.WriteError(w, http.StatusServiceUnavailable, proxyTestSlotBusyMessage)
+		return
+	}
+	defer releaseSlot()
+	ctx, cancel := context.WithTimeout(r.Context(), proxyTestDeadline())
+	defer cancel()
+	snapshot, err := store.LoadProxyTestSnapshot(ctx, r.PathValue("id"))
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if snapshot == nil {
+		kernel.WriteJSON(w, http.StatusNotFound, map[string]string{"message": "代理不存在"})
+		return
+	}
+	report, runErr := store.runProxyTest(ctx, snapshot, store.now())
+	if runErr != nil {
+		kernel.WriteError(w, http.StatusBadGateway, runErr.Error())
+		return
+	}
+	exists, err := store.ProxyTestExists(ctx, snapshot.ProxyID)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if !exists {
+		kernel.WriteJSON(w, http.StatusNotFound, map[string]string{"message": "代理不存在"})
+		return
+	}
+	if sink != nil {
+		sink.Record(authsys.OperationLogEntry{
+			ActorSystemAccountID: auth.SystemAccountID,
+			ActorUsername:        auth.Username,
+			ActorDisplayName:     auth.DisplayName,
+			ActorRole:            auth.Role,
+			Mode:                 "admin",
+			Module:               "proxies",
+			Action:               "test",
+			OperationKey:         "proxies.test",
+			ResourceType:         "proxy",
+			ResourceID:           report.ProxyID,
+			ResourceName:         report.ProxyName,
+			Summary:              "检测代理：" + report.ProxyName,
+			VisibilityScope:      "admin_only",
+			Changes:              proxyTestChanges(snapshot.Before, report),
+		}, r)
+	}
+	kernel.WriteOK(w, report, "")
+}
+
+// proxyTestChanges mirrors the Node route diffSafeFields: the six persisted
+// test columns diffed against the fresh report values (JSON text identity).
+func proxyTestChanges(before proxyTestBeforeState, report proxyTestReport) []authsys.OperationLogChange {
+	pairs := []struct {
+		field, label  string
+		before, after any
+	}{
+		{"testStatus", "检测状态", normalizeTestStatus(before.Status), report.Status},
+		{"latencyMs", "延迟", int64OrNil(before.LatencyMS), int64OrNil(report.BaseLatencyMS)},
+		{"outboundIp", "出口 IP", textOrNil(before.OutboundIP), stringOrNil(report.OutboundIP)},
+		{"outboundRegion", "出口地区", textOrNil(before.OutboundRegion), stringOrNil(report.OutboundRegion)},
+		{"lastTestMessage", "检测消息", textOrNil(before.Message), report.Message},
+		{"lastTestedAt", "检测时间", textOrNil(before.TestedAt), report.TestedAt},
+	}
+	changes := []authsys.OperationLogChange{}
+	for _, pair := range pairs {
+		if comparableValue(pair.before) == comparableValue(pair.after) {
+			continue
+		}
+		changes = append(changes, safeChange(pair.field, pair.label, pair.before, pair.after))
+	}
+	return changes
+}
+
+func int64OrNil(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func stringOrNil(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 // ---------------------------------------------------------------------------

@@ -62,6 +62,9 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	// Runtime-reset family (维护者 6f9739e96, account-detail.routes.ts).
 	d.mountRuntimeResetRoutes(k, prefix)
 
+	// API Key runtime pool revalidate (BUG-0162, account-detail.routes.ts).
+	d.mountAPIKeyRuntimeRevalidateRoutes(k, prefix)
+
 	// Account test diagnostic family (account-test-dispatch.routes.ts +
 	// account-test-session.routes.ts + account-test-status.routes.ts; the
 	// Node routers mount on the shared accounts surface, so both surfaces

@@ -32,6 +32,12 @@ func (f *fakeBatchInvalidator) InvalidateGatewayRuntime(reason string) error {
 	return f.runtimeErr
 }
 
+func (f *fakeBatchInvalidator) InvalidateGroupAccountIds() error { return nil }
+
+func (f *fakeBatchInvalidator) ClearResourceAuthorizationLookupCaches() error { return nil }
+
+func (f *fakeBatchInvalidator) InvalidateAuthorizationQuota(_ string) error { return nil }
+
 func (f *fakeBatchInvalidator) snapshot() ([]string, []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

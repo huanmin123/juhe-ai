@@ -19,7 +19,8 @@ const (
 	maxMessageBytes             = 192 * 1024
 	maxInternalChatRequestBytes = 21 * 1024 * 1024
 	streamStorageQuotaBytes     = 2 * 1024 * 1024 * 1024
-	defaultUpstreamSSEMaxEvents = 65536
+	// 上游 SSE 事件上限默认值见 gateway_sse.go 的 defaultMaxSSEEvents
+	// （JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS，env 可覆盖）。
 )
 
 type streamMessageBody struct {

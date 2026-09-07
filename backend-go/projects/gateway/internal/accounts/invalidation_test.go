@@ -9,9 +9,12 @@ import (
 // recordingInvalidator captures the post-commit invalidation channels so the
 // write-path tests can assert topic + reason parity with the Node archive.
 type recordingInvalidator struct {
-	mu             sync.Mutex
-	lookups        []string
-	runtimeReasons []string
+	mu              sync.Mutex
+	lookups         []string
+	runtimeReasons  []string
+	groupIdsFlushes int
+	authzLookups    int
+	quotaReasons    []string
 }
 
 func (r *recordingInvalidator) InvalidateAccountLookup(accountID string) error {
@@ -28,10 +31,37 @@ func (r *recordingInvalidator) InvalidateGatewayRuntime(reason string) error {
 	return nil
 }
 
+func (r *recordingInvalidator) InvalidateGroupAccountIds() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.groupIdsFlushes++
+	return nil
+}
+
+func (r *recordingInvalidator) ClearResourceAuthorizationLookupCaches() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authzLookups++
+	return nil
+}
+
+func (r *recordingInvalidator) InvalidateAuthorizationQuota(reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.quotaReasons = append(r.quotaReasons, reason)
+	return nil
+}
+
 func (r *recordingInvalidator) snapshot() (lookups []string, reasons []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string{}, r.lookups...), append([]string{}, r.runtimeReasons...)
+}
+
+func (r *recordingInvalidator) deleteSnapshot() (groupIdsFlushes, authzLookups int, quotaReasons []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.groupIdsFlushes, r.authzLookups, append([]string{}, r.quotaReasons...)
 }
 
 func stringPtr(value string) *string { return &value }
@@ -94,9 +124,11 @@ func TestPatchInvalidationChannels(t *testing.T) {
 }
 
 // TestDeleteInvalidationChannels mirrors the Node owner-mode delete tail
-// (account-delete-cleanup.repository.ts:197-201): one lookup flush per soft
-// deleted account (parent + authorization instances) plus one whole-surface
-// runtime invalidation with the 'account_deleted' reason.
+// (account-delete-cleanup.repository.ts:149-158): the SQLite arm's __all__
+// group stats dirty marker, one lookup flush per soft deleted account (parent
+// + authorization instances), the group-account-ids and resource-authorization
+// lookup flushes, plus one whole-surface runtime invalidation and the
+// authorization quota invalidation, both with the 'account_deleted' reason.
 func TestDeleteInvalidationChannels(t *testing.T) {
 	env := newTestEnv(t)
 	invalidator := &recordingInvalidator{}
@@ -115,5 +147,20 @@ func TestDeleteInvalidationChannels(t *testing.T) {
 	}
 	if len(reasons) != 1 || reasons[0] != "account_deleted" {
 		t.Fatalf("runtime reasons = %v, want [account_deleted]", reasons)
+	}
+	groupIdsFlushes, authzLookups, quotaReasons := invalidator.deleteSnapshot()
+	if groupIdsFlushes != 1 {
+		t.Fatalf("group-account-ids flushes = %d, want 1", groupIdsFlushes)
+	}
+	if authzLookups != 1 {
+		t.Fatalf("resource-authorization lookup clears = %d, want 1", authzLookups)
+	}
+	if len(quotaReasons) != 1 || quotaReasons[0] != "account_deleted" {
+		t.Fatalf("quota reasons = %v, want [account_deleted]", quotaReasons)
+	}
+	// refreshGroupAccountStatsAfterWrite({all:true, reason:'account_deleted'})
+	// lands the single __all__ dirty row (markAllGroupAccountStatsDirty).
+	if got := env.queryCell(t, `SELECT reason FROM group_account_stats_dirty WHERE group_id = '__all__'`); got != "account_deleted" {
+		t.Fatalf("__all__ dirty row reason = %q, want account_deleted", got)
 	}
 }
