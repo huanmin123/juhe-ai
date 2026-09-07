@@ -75,6 +75,7 @@ func (h *testDB) seedSchema(t *testing.T) {
       last_error_code TEXT,
       last_error_message TEXT,
       credentials_encrypted TEXT NOT NULL DEFAULT '{}',
+      proxy_profile_id TEXT,
       authorization_instance_authorization_id TEXT,
       authorization_instance_source_account_id TEXT,
       authorization_instance_owner_system_account_id TEXT,
@@ -92,6 +93,7 @@ func (h *testDB) seedSchema(t *testing.T) {
       deleted_at TEXT,
       updated_at TEXT NOT NULL DEFAULT ''
     )`)
+	h.exec(t, `CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1)`)
 	h.exec(t, `
     CREATE TABLE account_supported_models (
       account_id TEXT NOT NULL,

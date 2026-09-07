@@ -66,6 +66,7 @@ type View struct {
 	// NormalizeEndpointModes 是 credentials.supported_endpoint_modes 归一化后的
 	// 支持集合（由仓储层按协议归一化注入）。
 	NormalizeEndpointModes map[EndpointMode]bool
+	ProxyURL               string
 }
 
 // Options 组装探针服务。
@@ -417,6 +418,20 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 		} else {
 			httpReq.Header.Set("x-api-key", apiKey)
 		}
+		if view.Type == "oauth" {
+			httpReq.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
+			httpReq.Header.Set("user-agent", "claude-cli/2.1.161 (external, cli)")
+			httpReq.Header.Set("x-stainless-lang", "js")
+			httpReq.Header.Set("x-stainless-package-version", "0.94.0")
+			httpReq.Header.Set("x-stainless-os", "Linux")
+			httpReq.Header.Set("x-stainless-arch", "arm64")
+			httpReq.Header.Set("x-stainless-runtime", "node")
+			httpReq.Header.Set("x-stainless-runtime-version", "v24.3.0")
+			httpReq.Header.Set("x-stainless-retry-count", "0")
+			httpReq.Header.Set("x-stainless-timeout", "600")
+			httpReq.Header.Set("x-app", "cli")
+			httpReq.Header.Set("anthropic-dangerous-direct-browser-access", "true")
+		}
 	case ProtocolGemini:
 		if view.Type == "google_oauth" {
 			httpReq.Header.Set("authorization", "Bearer "+apiKey)
@@ -444,6 +459,20 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 			httpReq.Header.Set("x-goog-user-project", quotaProject)
 		}
 	}
+	if view.ClientCompatibility == "codex_responses" && (endpointMode == ModeResponsesJSON || endpointMode == ModeResponsesSSE) {
+		sessionID := newUUID()
+		threadID := sessionID
+		turnID := newUUID()
+		windowID := threadID + ":0"
+		httpReq.Header.Set("originator", "Codex Desktop")
+		httpReq.Header.Set("user-agent", "Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)")
+		httpReq.Header.Set("session-id", sessionID)
+		httpReq.Header.Set("thread-id", threadID)
+		httpReq.Header.Set("x-client-request-id", sessionID)
+		httpReq.Header.Set("x-codex-beta-features", "remote_compaction_v2")
+		httpReq.Header.Set("x-codex-window-id", windowID)
+		httpReq.Header.Set("x-codex-turn-metadata", fmt.Sprintf(`{"installation_id":%q,"session_id":%q,"thread_id":%q,"turn_id":%q,"window_id":%q,"request_kind":"turn","thread_source":"user","sandbox":"none"}`, newUUID(), sessionID, threadID, turnID, windowID))
+	}
 	httpReq.Header.Set("content-length", fmt.Sprintf("%d", len(request.body)))
 	if isStream {
 		if view.Type == "oauth" || view.Type == "google_oauth" {
@@ -454,7 +483,15 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	}
 
 	startedAt := s.now()
-	response, readErr := s.readUpstream(ctx, httpReq, timeout, &firstByteAt)
+	client := s.client
+	if strings.TrimSpace(view.ProxyURL) != "" {
+		var err error
+		client, err = upstreamhttp.SharedClient(view.ProxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+		if err != nil {
+			return nil, err
+		}
+	}
+	response, readErr := s.readUpstreamWithClient(ctx, client, httpReq, timeout, &firstByteAt)
 	durationMS := s.now().Sub(startedAt).Milliseconds()
 	firstTokenMS := int64(0)
 	if !firstByteAt.IsZero() {
@@ -510,10 +547,14 @@ type upstreamResponse struct {
 // Node accountTestResponsePreviewBytes 一致）。返回 (nil, err) 表示 HTTP
 // framing 未完成；返回 (response, err) 表示 framing 完成但读取中断。
 func (s *Service) readUpstream(ctx context.Context, req *http.Request, timeout time.Duration, firstByteAt *time.Time) (*upstreamResponse, error) {
+	return s.readUpstreamWithClient(ctx, s.client, req, timeout, firstByteAt)
+}
+
+func (s *Service) readUpstreamWithClient(ctx context.Context, client *http.Client, req *http.Request, timeout time.Duration, firstByteAt *time.Time) (*upstreamResponse, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req = req.WithContext(attemptCtx)
-	response, err := s.client.Do(req)
+	response, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -770,11 +811,14 @@ func hasImagesSuccessEvidence(context responseContext) bool {
 	if record == nil {
 		return false
 	}
-	if arrayValue(record["data"]) != nil && len(arrayValue(record["data"])) > 0 {
-		return true
-	}
-	if _, hasCreated := record["created"]; hasCreated {
-		return true
+	for _, item := range arrayValue(record["data"]) {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(stringValue(entry["b64_json"])) != "" || strings.TrimSpace(stringValue(entry["url"])) != "" {
+			return true
+		}
 	}
 	return false
 }
@@ -953,11 +997,28 @@ func buildTestRequest(view *View, mode EndpointMode, model string, challenge Out
 			method = "streamGenerateContent"
 			query = "?alt=sse"
 		}
-		return &testRequest{
+		request := &testRequest{
 			path:  "/v1beta/" + geminiModelPath(model) + ":" + method + query,
 			body:  body,
 			model: model,
-		}, nil
+		}
+		if view.Type == "google_oauth" && (credentialText(view.Credentials, "oauth_type") == "code_assist" || credentialText(view.Credentials, "oauth_type") == "google_one") {
+			project := credentialText(view.Credentials, "project_id")
+			if project == "" {
+				return nil, errors.New("Gemini Code Assist / Google One 缺少 project_id")
+			}
+			var wrapped map[string]any
+			if err := json.Unmarshal(body, &wrapped); err != nil {
+				return nil, err
+			}
+			request.path = "/v1internal:streamGenerateContent?alt=sse"
+			request.body, err = json.Marshal(map[string]any{"model": model, "project": project, "request": wrapped})
+			if err != nil {
+				return nil, err
+			}
+			request.headers = map[string]string{"user-agent": "GeminiCLI/0.1.5 (Windows; AMD64)"}
+		}
+		return request, nil
 	default:
 		stream := mode.streaming()
 		var body []byte
@@ -978,7 +1039,11 @@ func buildTestRequest(view *View, mode EndpointMode, model string, challenge Out
 				return nil, err
 			}
 		}
-		return &testRequest{path: path, body: body, model: model}, nil
+		request := &testRequest{path: path, body: body, model: model}
+		if view.Type == "oauth" && view.ProviderProtocolProfileID == "profile_gpt_openai_v1" && (mode == ModeResponsesJSON || mode == ModeResponsesSSE) {
+			request.path = strings.TrimPrefix(request.path, "/v1")
+		}
+		return request, nil
 	}
 }
 
@@ -1042,6 +1107,14 @@ func buildUpstreamURL(view *View, pathAndQuery string) (string, error) {
 		}
 		parsed.Path = strings.ReplaceAll(basePath+stripTrailingSlashPath(suffixPath), "//", "/")
 		return parsed.String(), nil
+	}
+	if view.Type == "oauth" && view.ProviderProtocolProfileID == "profile_gpt_openai_v1" {
+		codexBase, err := url.Parse("https://chatgpt.com/backend-api/codex")
+		if err != nil {
+			return "", err
+		}
+		codexBase.Path = strings.TrimRight(codexBase.Path, "/") + openAIPathSuffix(pathAndQuery)
+		return codexBase.String(), nil
 	}
 	if isAnthropicProtocol(view) {
 		return parsed.String() + pathAndQuery, nil

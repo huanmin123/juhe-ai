@@ -9,6 +9,32 @@ import (
 	"time"
 )
 
+func TestProbeTimeoutLadder(t *testing.T) {
+	tests := []struct {
+		name string
+		in   time.Duration
+		want []time.Duration
+	}{
+		{"default", 65 * time.Second, []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second}},
+		{"short", 5 * time.Second, []time.Duration{5 * time.Second}},
+		{"mid", 15 * time.Second, []time.Duration{10 * time.Second, 15 * time.Second}},
+		{"long", 25 * time.Second, []time.Duration{10 * time.Second, 20 * time.Second, 25 * time.Second}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := probeTimeoutLadder(test.in)
+			if len(got) != len(test.want) {
+				t.Fatalf("got=%v want=%v", got, test.want)
+			}
+			for i := range got {
+				if got[i] != test.want[i] {
+					t.Fatalf("got=%v want=%v", got, test.want)
+				}
+			}
+		})
+	}
+}
+
 func TestExecuteInputProbeUsesKeyPoolCursorAndReportsWinner(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

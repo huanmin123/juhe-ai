@@ -49,21 +49,46 @@ func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, inpu
 	for offset := 0; offset < len(input.APIKeys); offset++ {
 		index := (start + offset) % len(input.APIKeys)
 		key := input.APIKeys[index]
-		result := ProbeOpenAI(ctx, input, key.Credential, options)
-		if result.Outcome == OutcomeSuccess {
-			next := (index + 1) % len(input.APIKeys)
-			if err := saveProbeKeyCursor(ctx, store, lease, input.AccountID, input.KeySetFingerprint, next); err != nil {
-				return Outcome{}, fmt.Errorf("保存 API Key probe cursor 失败: %w", err)
+		for _, timeout := range probeTimeoutLadder(options.Timeout) {
+			attemptOptions := options
+			attemptOptions.Timeout = timeout
+			result := ProbeOpenAI(ctx, input, key.Credential, attemptOptions)
+			if result.Outcome == OutcomeSuccess {
+				next := (index + 1) % len(input.APIKeys)
+				if err := saveProbeKeyCursor(ctx, store, lease, input.AccountID, input.KeySetFingerprint, next); err != nil {
+					return Outcome{}, fmt.Errorf("保存 API Key probe cursor 失败: %w", err)
+				}
+				return newOutcome(input, request, result, &index, now(options)), nil
 			}
-			return newOutcome(input, request, result, &index, now(options)), nil
+			last = result
+			if result.ErrorCode != "upstream_timeout" {
+				break
+			}
 		}
-		last = result
 	}
 	next := (start + 1) % len(input.APIKeys)
 	if err := saveProbeKeyCursor(ctx, store, lease, input.AccountID, input.KeySetFingerprint, next); err != nil {
 		return Outcome{}, fmt.Errorf("保存 API Key probe cursor 失败: %w", err)
 	}
 	return newOutcome(input, request, last, nil, now(options)), nil
+}
+
+func probeTimeoutLadder(configured time.Duration) []time.Duration {
+	const (
+		first  = 10 * time.Second
+		second = 20 * time.Second
+		third  = 30 * time.Second
+	)
+	if configured <= 0 || configured >= third {
+		return []time.Duration{first, second, third}
+	}
+	if configured <= first {
+		return []time.Duration{configured}
+	}
+	if configured <= second {
+		return []time.Duration{first, configured}
+	}
+	return []time.Duration{first, second, configured}
 }
 
 func saveProbeKeyCursor(ctx context.Context, store *Store, lease OwnerLease, accountID, fingerprint string, nextIndex int) error {

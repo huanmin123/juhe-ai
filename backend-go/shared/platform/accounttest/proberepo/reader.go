@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -438,9 +441,11 @@ type CandidateAccount struct {
 	AccountOwnerSystemAccountID string
 	CredentialSourceAccountID   string
 	ProviderCode                string
+	ProviderProtocolProfileID   string
 	ProtocolCode                string
 	ProtocolVersion             string
 	ClientCompatibility         string
+	ProxyURL                    string
 	// BaseURL 取自凭据 base_url（探针上游地址）。
 	BaseURL     string
 	Credentials map[string]any
@@ -484,40 +489,44 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	}
 	query := fmt.Sprintf(`
     SELECT a.id, a.system_account_id, a.name, a.type, a.status, a.provider_code,
-      a.protocol_code, a.protocol_version, a.client_compatibility,
-      a.config_revision, a.dispatch_revision, a.credentials_encrypted,
+	  a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.client_compatibility,
+	      a.config_revision, a.dispatch_revision, a.credentials_encrypted, a.proxy_profile_id,
       a.authorization_instance_authorization_id, a.authorization_instance_source_account_id,
       a.authorization_instance_owner_system_account_id,
-      src.id AS resource_account_id, src.provider_code AS resource_provider_code,
-      src.protocol_code AS resource_protocol_code, src.protocol_version AS resource_protocol_version,
+	  src.id AS resource_account_id, src.provider_code AS resource_provider_code,
+	  src.provider_protocol_profile_id AS resource_profile_id, src.protocol_code AS resource_protocol_code, src.protocol_version AS resource_protocol_version,
+	  src.client_compatibility AS resource_client_compatibility,
       src.type AS resource_type, src.status AS resource_status,
-      src.credentials_encrypted AS resource_credentials_encrypted
+	      src.credentials_encrypted AS resource_credentials_encrypted, src.proxy_profile_id AS resource_proxy_profile_id
     FROM %s a
     LEFT JOIN %s src ON src.id = a.authorization_instance_source_account_id AND src.deleted_at IS NULL
     WHERE a.id = ? AND a.provider_code = ? AND a.deleted_at IS NULL
     LIMIT 1
   `, s.table("accounts"), s.table("accounts"))
 	var (
-		id, systemID, name, accountType, status   sql.NullString
-		provider, protocolCode, protocolVersion   sql.NullString
-		clientCompatibility                       sql.NullString
-		credentials                               sql.NullString
-		authzID, sourceID, authzOwner             sql.NullString
-		resourceAccountID, resourceProvider       sql.NullString
-		resourceProtocol, resourceProtocolVersion sql.NullString
-		resourceType, resourceStatus              sql.NullString
-		resourceCredentials                       sql.NullString
-		configRevision, dispatchRevision          sql.NullInt64
+		id, systemID, name, accountType, status                sql.NullString
+		provider, profileID, protocolCode, protocolVersion     sql.NullString
+		clientCompatibility                                    sql.NullString
+		credentials                                            sql.NullString
+		proxyProfileID                                         sql.NullString
+		authzID, sourceID, authzOwner                          sql.NullString
+		resourceAccountID, resourceProvider, resourceProfileID sql.NullString
+		resourceProtocol, resourceProtocolVersion              sql.NullString
+		resourceClientCompatibility                            sql.NullString
+		resourceType, resourceStatus                           sql.NullString
+		resourceCredentials                                    sql.NullString
+		resourceProxyProfileID                                 sql.NullString
+		configRevision, dispatchRevision                       sql.NullInt64
 	)
 	row := s.db.QueryRowContext(ctx, query, accountID, providerCode)
 	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &provider,
-		&protocolCode, &protocolVersion, &clientCompatibility,
-		&configRevision, &dispatchRevision, &credentials,
+		&profileID, &protocolCode, &protocolVersion, &clientCompatibility,
+		&configRevision, &dispatchRevision, &credentials, &proxyProfileID,
 		&authzID, &sourceID, &authzOwner,
-		&resourceAccountID, &resourceProvider,
-		&resourceProtocol, &resourceProtocolVersion,
+		&resourceAccountID, &resourceProvider, &resourceProfileID,
+		&resourceProtocol, &resourceProtocolVersion, &resourceClientCompatibility,
 		&resourceType, &resourceStatus,
-		&resourceCredentials); err != nil {
+		&resourceCredentials, &resourceProxyProfileID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -556,6 +565,14 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	if resourceProviderValue == "" {
 		resourceProviderValue = provider.String
 	}
+	resourceProfileValue := resourceProfileID.String
+	if resourceProfileValue == "" {
+		resourceProfileValue = profileID.String
+	}
+	resourceClientCompatibilityValue := resourceClientCompatibility.String
+	if resourceClientCompatibilityValue == "" {
+		resourceClientCompatibilityValue = clientCompatibility.String
+	}
 	resourceProtocolValue := resourceProtocol.String
 	if resourceProtocolValue == "" {
 		resourceProtocolValue = protocolCode.String
@@ -567,6 +584,14 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	credentialsMap, err := s.DecryptCredentials(resourceCredentialsText)
 	if err != nil {
 		return nil, nil
+	}
+	resolvedProxyProfileID := proxyProfileID.String
+	if resourceAccountID.String != "" {
+		resolvedProxyProfileID = resourceProxyProfileID.String
+	}
+	proxyURL, err := s.loadProxyURL(ctx, resolvedProxyProfileID)
+	if err != nil {
+		return nil, err
 	}
 	entries := s.AccountAPIKeyEntries(credentialsMap)
 	selectedKey := ""
@@ -601,9 +626,11 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		AccountOwnerSystemAccountID: accessOwner,
 		CredentialSourceAccountID:   resourceAccountID.String,
 		ProviderCode:                resourceProviderValue,
+		ProviderProtocolProfileID:   resourceProfileValue,
 		ProtocolCode:                resourceProtocolValue,
 		ProtocolVersion:             resourceProtocolVersionValue,
-		ClientCompatibility:         clientCompatibility.String,
+		ClientCompatibility:         resourceClientCompatibilityValue,
+		ProxyURL:                    proxyURL,
 		BaseURL:                     textCredential(credentialsMap, "base_url"),
 		Credentials:                 credentialsMap,
 		APIKeys:                     apiKeys,
@@ -809,7 +836,7 @@ func (s *Store) LoadProbeView(ctx context.Context, req accountquality.ProbeReque
 		ProviderCode:              candidate.ProviderCode,
 		ProtocolCode:              candidate.ProtocolCode,
 		ProtocolVersion:           candidate.ProtocolVersion,
-		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
+		ProviderProtocolProfileID: candidate.ProviderProtocolProfileID,
 		ClientCompatibility:       candidate.ClientCompatibility,
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
@@ -819,6 +846,7 @@ func (s *Store) LoadProbeView(ctx context.Context, req accountquality.ProbeReque
 		SelectedAPIKey:            candidate.SelectedAPIKey,
 		QuotaRecoveryPolicy:       candidate.QuotaRecoveryPolicy,
 		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.Credentials),
+		ProxyURL:                  candidate.ProxyURL,
 	}
 	entries := make([]accountprobe.KeyEntry, 0, len(candidate.APIKeyEntries))
 	for _, entry := range candidate.APIKeyEntries {
@@ -846,7 +874,7 @@ func AssembleProbeView(account *AccountForTestView, candidate *CandidateAccount)
 		ProviderCode:              candidate.ProviderCode,
 		ProtocolCode:              candidate.ProtocolCode,
 		ProtocolVersion:           candidate.ProtocolVersion,
-		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
+		ProviderProtocolProfileID: candidate.ProviderProtocolProfileID,
 		ClientCompatibility:       candidate.ClientCompatibility,
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
@@ -856,6 +884,7 @@ func AssembleProbeView(account *AccountForTestView, candidate *CandidateAccount)
 		SelectedAPIKey:            candidate.SelectedAPIKey,
 		QuotaRecoveryPolicy:       candidate.QuotaRecoveryPolicy,
 		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.Credentials),
+		ProxyURL:                  candidate.ProxyURL,
 		APIKeyEntries:             candidateKeyEntries(candidate),
 	}
 }
@@ -867,6 +896,46 @@ func candidateKeyEntries(candidate *CandidateAccount) []accountprobe.KeyEntry {
 		entries = append(entries, accountprobe.KeyEntry{Key: entry.Key, Fingerprint: entry.Fingerprint, Index: entry.Index})
 	}
 	return entries
+}
+
+func (s *Store) loadProxyURL(ctx context.Context, profileID string) (string, error) {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return "", nil
+	}
+	query := fmt.Sprintf(`SELECT type, host, port, username, password_encrypted, enabled FROM %s WHERE id = ? LIMIT 1`, s.table("proxy_profiles"))
+	var proxyType, host, username, passwordEnvelope sql.NullString
+	var port sql.NullInt64
+	var enabled sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, query, profileID).Scan(&proxyType, &host, &port, &username, &passwordEnvelope, &enabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("代理 profile %s 不存在", profileID)
+		}
+		return "", err
+	}
+	if enabled.Int64 != 1 || strings.TrimSpace(host.String) == "" || port.Int64 < 1 || port.Int64 > 65535 {
+		return "", fmt.Errorf("代理 profile %s 不可用", profileID)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(proxyType.String))
+	if scheme == "socks5" {
+		scheme = "socks5h"
+	}
+	if scheme != "http" && scheme != "https" && scheme != "socks5h" {
+		return "", fmt.Errorf("代理 profile %s 协议不受支持", profileID)
+	}
+	proxyURL := &url.URL{Scheme: scheme, Host: net.JoinHostPort(host.String, strconv.FormatInt(port.Int64, 10))}
+	if strings.TrimSpace(username.String) != "" {
+		password, err := s.DecryptCredentials(passwordEnvelope.String)
+		if err != nil {
+			return "", fmt.Errorf("代理 profile %s 密码不可用", profileID)
+		}
+		secret, ok := password["password"].(string)
+		if !ok {
+			return "", fmt.Errorf("代理 profile %s 密码缺失", profileID)
+		}
+		proxyURL.User = url.UserPassword(username.String, secret)
+	}
+	return proxyURL.String(), nil
 }
 
 // LoadAccountMetadataByIds 实现 accountquality.BusinessLookup
