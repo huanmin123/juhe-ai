@@ -25,8 +25,13 @@ const (
 	EndpointModeInteractionsSSE     = "interactions_sse"
 )
 
-// interactionResourcePathPattern 对齐 geminiInteractionResourcePathMatch。
-var interactionResourcePathPattern = regexp.MustCompile(`(?i)^/interactions/([^/]+)(?:/cancel)?$`)
+// interactionResourcePathPattern 对齐 geminiEndpointFamilyFromPath 的
+// interactions 族匹配（gemini-endpoint-modes.ts:120
+// /^\/interactions(?:\/[^/]+(?:\/cancel)?)?$/）：接受裸 /interactions（create）、
+// /interactions/{id} 与 /interactions/{id}/cancel 三形态。affinity 侧的
+// resource 匹配（affinity.go interactionResourcePathMatch）要求捕获组非空，
+// 裸路径不会误判为资源请求。
+var interactionResourcePathPattern = regexp.MustCompile(`(?i)^/interactions(?:/([^/]+)(?:/cancel)?)?$`)
 
 // ModelCatalogItem 是协议层需要的模型目录最小投影。
 type ModelCatalogItem struct {

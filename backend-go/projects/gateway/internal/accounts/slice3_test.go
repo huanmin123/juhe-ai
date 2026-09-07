@@ -545,10 +545,13 @@ func TestRuntimeResetOwnerAccount(t *testing.T) {
 		FROM accounts WHERE id = ?`, id).Scan(&status, &lastErrorCode, &configRevision, &dispatchRevision, &cooldownUntil); err != nil {
 		t.Fatal(err)
 	}
-	if status != "pending_test" || lastErrorCode != "" || configRevision != 2 || dispatchRevision != 2 || cooldownUntil != nil {
+	// Create chain (BUG-0174 M-8) baseline dispatch 2 + the reset dispatch
+	// fence = 3; config CAS 1 → 2.
+	if status != "pending_test" || lastErrorCode != "" || configRevision != 2 || dispatchRevision != 3 || cooldownUntil != nil {
 		t.Fatalf("reset row state: %s %s %d %d %v", status, lastErrorCode, configRevision, dispatchRevision, cooldownUntil)
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = '`+id+`'`) != 1 {
+	// One create-chain outbox row plus the reset fence row.
+	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = '`+id+`'`) != 2 {
 		t.Fatal("dispatch fence outbox row missing")
 	}
 

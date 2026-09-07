@@ -115,10 +115,27 @@ type chainRuntimeDeps struct {
 	RouteDiagnostics    hybridRouteDiagnostics
 
 	// Suppression / degradation / locks (optional; disabled implementations
-	// below keep the attempt loop defined).
+	// below keep the attempt loop defined). AccountLocks 生产装配为
+	// chain_account_locks.go 的 SQL 运行面（BUG-0174 B-2）；nil 仅保留给
+	// 显式关闭开关（compose.go JUHE_AI_ACCOUNT_LOCKS_DISABLED），落到
+	// disabledAccountLocks 的「视为未锁」降级。
 	Suppression  gatewaydispatch.SuppressionPort
 	Degradation  gatewaydispatch.DegradationPort
 	AccountLocks gatewaydispatch.AccountLocks
+
+	// EngineSecret 是注入 dispatch 引擎的 JUHE_AI_SECRET
+	//（gatewaydispatch.EngineConfig.Secret，B-1 BUG-0174）：必须与水合层
+	// chainAccountsSelector.secret（chain_runtime.go
+	// newChainAccountsSelectorWithStats 的 cfg.Secret）同源，dispatch 产出的
+	// SelectedAPIKeyFingerprint 指纹才能与 account_api_key_runtime_states 及
+	// 探活池命中。
+	EngineSecret string
+
+	// KeyRotation 是账户 API Key 轮转计数器（gatewaydispatch.Engine.
+	// KeyRotation，B-3 BUG-0174）：生产装配为
+	// chain_apikey_rotation_redis.go 的 Redis 计数器（StateClient 同源）；
+	// nil 时引擎回落包级进程内计数器。
+	KeyRotation gatewaydispatch.APIKeyRotationCounter
 
 	// 显式账户错误策略（chain_error_policy*.go）：决策服务 + 状态写侧窄口
 	// （optional；nil 时派发器保留决策事实，状态变更加显式降级日志）。生产
@@ -301,6 +318,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		apiKeyObservation: deps.AccountAPIKeyObservation,
 		codexUsageHeaders: deps.CodexUsageHeadersDispatcher,
 	})
+	// B-1（BUG-0174）波1遗留接线：dispatch 的 Key 指纹密钥与水合层同源
+	//（chain_runtime.go newChainAccountsSelectorWithStats 的 cfg.Secret）。
+	engine.Config.Secret = deps.EngineSecret
+	// B-3（BUG-0174）波1遗留接线：Redis 轮转计数器（nil 保持进程内回退）。
+	engine.KeyRotation = deps.KeyRotation
 	engine.Clock = clock
 	engine.Affinity = sessionAffinity
 	engine.Latency = &degradedLatency{}

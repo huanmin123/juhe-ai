@@ -379,9 +379,15 @@ type groupReference struct {
 // Create mirrors createAccountInClientAsync (owner-mode core): provider
 // profile check, group binding resolution, sealed credentials with fingerprint
 // and mask, schedule-aware initial status, supported models / mappings / tags
-// / name search terms writes. config_revision and dispatch_revision start at
-// the schema defaults (1 / 1); the circuit outbox transition family is owned
-// by the J1 companion slice.
+// / name search terms writes, then the in-transaction tail of the archive
+// create (repositories.ts:2412-2432): the dispatch revision family advance
+// plus the J1 snapshot health-input outbox row for the health-capable
+// gpt/openai accounts (BUG-0174 M-8; the direct_input_reader candidate SQL
+// hard-joins account_health_jobs_input_versions, so the version row the
+// snapshot reserves is what makes a new account visible to probing). The
+// committed tail (repositories.ts:2440-2443) lands after the commit through
+// finishCreateSideEffects; the initial activation probe stays the committed
+// caller below, exactly like the Node route layer.
 func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScope) (*CreateResult, error) {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -399,6 +405,10 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// Post-commit invalidation tail (repositories.ts:2440-2443): the group
+	// stats dirty marker plus the lookup / group-account-ids / gateway
+	// runtime flushes, best-effort.
+	s.finishCreateSideEffects(ctx, result)
 	// Node accounts.routes.ts dispatches the initial probe right after the
 	// create transaction succeeds and before the 201 is rendered. A nil
 	// effects port keeps the create self-contained (tests); the probe reason
@@ -702,6 +712,24 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		nextCheckAt = sql.NullString{String: rawNextCheck, Valid: true}
 	}
 
+	// Creation limit assertion (repositories.ts:2342,2470-2508): the last
+	// check before the INSERT, inside the same transaction, so a concurrent
+	// create cannot slip past the counted limit.
+	if err := s.assertAiAccountCreationLimit(ctx, tx, systemAccountID); err != nil {
+		return nil, err
+	}
+
+	// Balance / stream-failure seed columns (repositories.ts:2348-2349,2384-2388):
+	// stream_failure_count starts at 0 with no window; an enabled balance
+	// query seeds the next refresh at the creation instant (Node
+	// accountBalanceWriteValues: nextRefreshAt = decision.enabled ? now),
+	// disabled stays NULL — direct_input_reader treats a NULL refresh-at as
+	// the recovery-arm candidate, so the NULL must not leak into enabled rows.
+	balanceNextRefreshAt := sql.NullString{}
+	if balanceQueryEnabledInt == 1 {
+		balanceNextRefreshAt = sql.NullString{String: nowISO, Valid: true}
+	}
+
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("accounts")+`
 		(id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 		 name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
@@ -710,8 +738,9 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message, health_check_model, health_check_endpoint_mode,
 		 balance_query_enabled, balance_query_config_json, temporary_unavailable_continuous_probe_enabled,
+		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, systemAccountID, providerCode, profile.id, profile.protocolCode, profile.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit,
@@ -719,6 +748,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage, healthCheckModel, healthCheckEndpointMode,
 		balanceQueryEnabledInt, balanceQueryConfigJSON, temporaryProbeEnabled,
+		0, sql.NullString{}, balanceNextRefreshAt,
 		nowISO, nowISO); err != nil {
 		if duplicate := duplicateAccountNameError(err, strings.TrimSpace(input.Name)); duplicate != nil {
 			return nil, duplicate
@@ -745,6 +775,39 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if _, err := s.replaceAccountTags(ctx, tx, id, systemAccountID, tagNames, nowISO); err != nil {
 		return nil, err
 	}
+	// Dispatch revision family advance (repositories.ts:2412-2417): the fresh
+	// row has no authorization source, so the family is the account itself;
+	// the advance bumps dispatch_revision and lands the pending
+	// dispatch_revision_changed circuit outbox row (the shared batch/delete
+	// implementation, account-circuit-control-plane.repository.ts:428+).
+	if err := s.advanceBatchDispatchRevisionFamily(ctx, tx, batchDispatchRevision{
+		accountID:    id,
+		transitionID: s.newI("dispatch"),
+		nowMS:        now.UnixMilli(),
+	}); err != nil {
+		return nil, err
+	}
+	// Read the post-advance revision pair back (repositories.ts:2419-2423).
+	// The row was just inserted in this transaction, so the scan cannot miss;
+	// the missing-row branch keeps the archive J1 copy verbatim.
+	var configRevision, dispatchRevision int64
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT config_revision, dispatch_revision FROM `+s.table("accounts")+`
+		WHERE id = ?`), id).Scan(&configRevision, &dispatchRevision); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("J1 input outbox 找不到新建账户")
+		}
+		return nil, err
+	}
+	// J1 snapshot outbox (repositories.ts:2418-2432): health-capable
+	// gpt/openai api_key/oauth accounts reserve input version 1 and land the
+	// pending snapshot intent (reason 'account_created') in the same
+	// transaction, which is what puts the new account into the probe
+	// candidate join.
+	if (providerCode == "gpt" || providerCode == "openai") && (accountType == "api_key" || accountType == "oauth") {
+		if err := s.reserveAndEnqueueAccountHealthSnapshot(ctx, tx, id, configRevision, dispatchRevision, nowISO); err != nil {
+			return nil, err
+		}
+	}
 	// dispatchInitialAccountHealthCheck condition (Node
 	// account-health-check-dispatch.service.ts): a pending_test account always
 	// probes once; a freshly saved active single-Key API Key account without
@@ -755,15 +818,17 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 			balanceQueryEnabledInt != 1 &&
 			balanceQueryConfigJSON == "{}")
 	return &CreateResult{
-		ID: id, Status: nextStatus, ConfigRevision: 1, DispatchRevision: 1,
+		ID: id, Status: nextStatus, ConfigRevision: configRevision, DispatchRevision: dispatchRevision,
 		OwnerSystemAccountID: systemAccountID, Name: strings.TrimSpace(input.Name),
+		GroupID: group.id,
 		InitialHealthCheckRequired: initialHealthCheck,
 	}, nil
 }
 
 // CreateResult mirrors the create response payload plus the fields the
-// operation log needs. configRevision/dispatchRevision document the initialized
-// revision pair (schema defaults 1/1).
+// operation log needs. configRevision/dispatchRevision carry the real
+// post-advance revision pair read back in the create transaction (the
+// dispatch family advance bumps the schema default 1 to 2).
 type CreateResult struct {
 	ID                   string `json:"id"`
 	Status               string `json:"status"`
@@ -771,6 +836,9 @@ type CreateResult struct {
 	DispatchRevision     int64  `json:"dispatchRevision"`
 	OwnerSystemAccountID string `json:"-"`
 	Name                 string `json:"-"`
+	// GroupID is the bound group (the post-commit group stats dirty marker
+	// and the group-account-ids flush target).
+	GroupID string `json:"-"`
 	// InitialHealthCheckRequired mirrors dispatchInitialAccountHealthCheck's
 	// activation condition; the Create caller dispatches the probe after the
 	// commit (reason='activation').
@@ -783,6 +851,129 @@ func isAccountExpired(accountExpiresAt string, now time.Time) bool {
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, accountExpiresAt)
 	return err == nil && parsed.UnixMilli() <= now.UnixMilli()
+}
+
+// AiAccountCreationLimitSettings is the narrow settings port behind the
+// creation limit (Node effectiveAiAccountCreationLimit's settings fallback:
+// settingsRepository.getSettings().userAiAccountLimit, repositories.ts:2493).
+// The composition adapter wraps the settings store's effective snapshot; nil
+// keeps the schema default below (RuntimeCooldownSettings pattern).
+type AiAccountCreationLimitSettings interface {
+	// UserAiAccountLimit returns the effective userAiAccountLimit setting
+	// (already normalized by the settings store's per-key validation).
+	UserAiAccountLimit(ctx context.Context) (int64, error)
+}
+
+// SetAiAccountLimitSettings wires the settings port (compose handover; nil
+// keeps the Node schema default).
+func (s *Store) SetAiAccountLimitSettings(settings AiAccountCreationLimitSettings) {
+	s.aiAccountLimitSettings = settings
+}
+
+// defaultUserAiAccountLimit mirrors the userAiAccountLimit schema default
+// (settings defaults: Node defaults.ts / Go settings store default 100).
+const defaultUserAiAccountLimit = 100
+
+// assertAiAccountCreationLimit mirrors
+// assertAiAccountCreationLimitInClientTransaction (repositories.ts:2470-2491):
+// the owner's ai_account_limit override (NULL falls back to the
+// userAiAccountLimit setting) gates the count of live owner-owned base
+// accounts (deleted_at IS NULL, authorization instances excluded); 0 means
+// unlimited. The PostgreSQL arm locks the owner row (LIMIT 1 FOR UPDATE);
+// SQLite serializes through the single-writer transaction via forUpdate.
+func (s *Store) assertAiAccountCreationLimit(ctx context.Context, q queryer, systemAccountID string) error {
+	var ownerLimit sql.NullInt64
+	// A missing owner row falls through to the setting (Node owner = undefined
+	// → owner?.ai_account_limit = undefined).
+	err := q.QueryRowContext(ctx, s.bind(`SELECT ai_account_limit FROM `+s.table("system_accounts")+`
+		WHERE id = ?
+		LIMIT 1`+s.forUpdate()), systemAccountID).Scan(&ownerLimit)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	limit, err := s.effectiveAiAccountCreationLimit(ctx, ownerLimit)
+	if err != nil {
+		return err
+	}
+	if limit == 0 {
+		return nil
+	}
+	var count int64
+	if err := q.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM `+s.table("accounts")+`
+		WHERE system_account_id = ?
+			AND deleted_at IS NULL
+			AND authorization_instance_authorization_id IS NULL`), systemAccountID).Scan(&count); err != nil {
+		return err
+	}
+	if count >= limit {
+		return &ValidationError{Message: "AI 账户数量已达到限制（" + itoa64(limit) + "）"}
+	}
+	return nil
+}
+
+// effectiveAiAccountCreationLimit mirrors effectiveAiAccountCreationLimit
+// (repositories.ts:2493-2499): the owner override wins, the setting is the
+// fallback, and only the integer range [0, 1000000] is valid.
+func (s *Store) effectiveAiAccountCreationLimit(ctx context.Context, ownerOverride sql.NullInt64) (int64, error) {
+	if ownerOverride.Valid {
+		if ownerOverride.Int64 < 0 || ownerOverride.Int64 > 1_000_000 {
+			return 0, &ValidationError{Message: "AI 账户数量限制配置无效"}
+		}
+		return ownerOverride.Int64, nil
+	}
+	if s.aiAccountLimitSettings != nil {
+		value, err := s.aiAccountLimitSettings.UserAiAccountLimit(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if value < 0 || value > 1_000_000 {
+			return 0, &ValidationError{Message: "AI 账户数量限制配置无效"}
+		}
+		return value, nil
+	}
+	return defaultUserAiAccountLimit, nil
+}
+
+// reserveAndEnqueueAccountHealthSnapshot mirrors
+// reserveAndEnqueueAccountHealthJobsInputInTransaction(Async) for the create
+// path (account-health-jobs-input-outbox.repository.ts:41-72,90-125): bump
+// account_health_jobs_input_versions (or seed it at 1), then insert the
+// pending snapshot intent keyed by the reserved version. The statement shape
+// and column set match the sibling tombstone writer in delete.go and the
+// authz grant fanout (downstream.go); now is the caller's transaction
+// timestamp, and the reservation must stay inside the create transaction so
+// the epoch can never commit without its durable publish intent.
+func (s *Store) reserveAndEnqueueAccountHealthSnapshot(ctx context.Context, tx *sql.Tx, accountID string, configRevision, dispatchRevision int64, now string) error {
+	normalized := strings.TrimSpace(accountID)
+	if normalized == "" {
+		return errors.New("J1 snapshot version 缺少 account ID")
+	}
+	var currentVersion sql.NullInt64
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT current_version FROM `+s.table("account_health_jobs_input_versions")+`
+		WHERE account_id = ?`), normalized).Scan(&currentVersion)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	nextVersion := int64(1)
+	if err == nil && currentVersion.Valid {
+		nextVersion = currentVersion.Int64 + 1
+		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_health_jobs_input_versions")+`
+			SET current_version = ?, reserved_at = ? WHERE account_id = ?`), nextVersion, now, normalized); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_health_jobs_input_versions")+`
+			(account_id, current_version, reserved_at) VALUES (?, ?, ?)`), normalized, nextVersion, now); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_health_jobs_input_outbox")+`
+		(event_id, account_id, input_version, event_kind, reason,
+		 config_revision, dispatch_revision, status, available_at,
+		 created_at, updated_at)
+		VALUES (?, ?, ?, 'snapshot', 'account_created', ?, ?, 'pending', ?, ?, ?)`),
+		s.newI("acchev"), normalized, nextVersion, configRevision, dispatchRevision, now, now, now)
+	return err
 }
 
 func (s *Store) groupOwnerAndProvider(ctx context.Context, q queryer, groupID string) (*groupReference, error) {

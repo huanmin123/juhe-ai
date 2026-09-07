@@ -32,6 +32,13 @@ type EngineConfig struct {
 	// (gateway/dispatch/upstream-dispatch.ts:305-306), not config/runtime.ts.
 	KeyModelForegroundQueueWaitMs int64
 	KeyModelForegroundQueuePollMs int64
+	// Secret 是 JUHE_AI_SECRET（Node runtimeConfig.secret）：账户 API Key
+	// 指纹 HMAC-SHA256(secret, key) 的密钥（B-1，BUG-0174）。组合根接线前为
+	// 空串；Node createHmac 对空 key 正常计算，空值不产生空串快捷路径，但
+	// 组合根必须与水合层（chainAccountsSelector.secret）注入同一 secret，
+	// dispatch 产出的 SelectedAPIKeyFingerprint 才能与
+	// account_api_key_runtime_states 及探活池命中。
+	Secret string
 }
 
 // DefaultEngineConfig mirrors the Node runtime defaults: the retry budget,
@@ -93,6 +100,10 @@ type Engine struct {
 	APIKeyEffects         APIKeyEffectsPort
 	AccountState          AccountStateMutations
 	CodexBridge           CodexBridgePort
+	// KeyRotation 轮转计数器端口（Node Redis 账户 Key 轮换计数器，
+	// account-api-key-rotation.ts:269-299；B-3，BUG-0174）。nil 时回落包级
+	// 进程内计数器 defaultAPIKeyRotationCounter；组合根下一波接 Redis 实现。
+	KeyRotation APIKeyRotationCounter
 	// SessionIdentity mirrors getGatewaySessionIdentity
 	// (session-identity/index.ts, G14).
 	SessionIdentity func(req *gatewaypreauth.GatewayRequest) SessionIdentityView
@@ -113,6 +124,16 @@ func NewEngine(driver ProviderDriver, failureDispatcher FailureDispatcher) *Engi
 
 // CandidatePipelineOf returns the pipeline facade for this engine.
 func (e *Engine) CandidatePipelineOf() *CandidatePipeline { return NewCandidatePipeline(e) }
+
+// keyRotationOf returns the injected rotation counter; the package-level
+// in-process counter is the fallback while the composition root has not
+// wired a Redis implementation.
+func (e *Engine) keyRotationOf() APIKeyRotationCounter {
+	if e.KeyRotation != nil {
+		return e.KeyRotation
+	}
+	return defaultAPIKeyRotationCounter
+}
 
 // auditCaptureOf adapts the frozen G05 capture context into the dispatch
 // capture: the frozen context wins when it implements the attempt-level

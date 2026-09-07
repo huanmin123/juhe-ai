@@ -141,6 +141,11 @@ type Store struct {
 	// (patch_runtime_state.go). Nil until SetRuntimeCooldownSettings wires
 	// it; a nil port falls back to the Node schema default (2 minutes).
 	runtimeCooldownSettings RuntimeCooldownSettings
+	// aiAccountLimitSettings is the narrow settings port behind the creation
+	// limit assertion (write.go, BUG-0174 M-8). Nil until
+	// SetAiAccountLimitSettings wires it; a nil port falls back to the Node
+	// schema default (100).
+	aiAccountLimitSettings AiAccountCreationLimitSettings
 }
 
 // NewStore builds the store.

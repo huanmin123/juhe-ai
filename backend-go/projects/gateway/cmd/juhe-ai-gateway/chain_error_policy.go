@@ -63,14 +63,14 @@ const systemQuotaRuleName = "上游额度不足"
 
 // accountErrorPolicyDecision 镜像 AccountErrorPolicyDecision。
 type accountErrorPolicyDecision struct {
-	Action                 string // 'retry_next' | 'cooldown' | 'disable'
-	RuleName               string
-	RuleID                 string
-	RuleSource             string // 'system' | 'account'
-	CooldownUntil          string
-	CooldownStatus         string // 'rate_limited' | 'temporary_unavailable'
-	KeyScoped              bool
-	QuotaRecoveryMode      string // '' | 'generic' | 'explicit_reset'
+	Action                  string // 'retry_next' | 'cooldown' | 'disable'
+	RuleName                string
+	RuleID                  string
+	RuleSource              string // 'system' | 'account'
+	CooldownUntil           string
+	CooldownStatus          string // 'rate_limited' | 'temporary_unavailable'
+	KeyScoped               bool
+	QuotaRecoveryMode       string // '' | 'generic' | 'explicit_reset'
 	QuotaRecoveryHintSource string // '' | 'reset_at' | 'retry_after' | 'provider_header'
 }
 
@@ -240,14 +240,14 @@ func (s *chainErrorPolicyService) systemQuotaDecision(
 		cooldownUntil = until
 	}
 	return &accountErrorPolicyDecision{
-		Action:                 decisionActionCooldown,
-		RuleID:                 systemInsufficientQuotaRuleID,
-		RuleName:               systemQuotaRuleName,
-		RuleSource:             "system",
-		CooldownStatus:         cooldownStatusRateLimited,
-		CooldownUntil:          cooldownUntil,
-		KeyScoped:              keyScoped,
-		QuotaRecoveryMode:      recoveryMode,
+		Action:                  decisionActionCooldown,
+		RuleID:                  systemInsufficientQuotaRuleID,
+		RuleName:                systemQuotaRuleName,
+		RuleSource:              "system",
+		CooldownStatus:          cooldownStatusRateLimited,
+		CooldownUntil:           cooldownUntil,
+		KeyScoped:               keyScoped,
+		QuotaRecoveryMode:       recoveryMode,
 		QuotaRecoveryHintSource: hintSource,
 	}, nil
 }
@@ -820,7 +820,7 @@ func accountErrorRuleCooldownUntil(rule accountErrorHandlingRule, now time.Time,
 		}
 	}
 	intervalMs := max64(1, target.UnixMilli()-now.UnixMilli())
-	return time.UnixMilli(target.UnixMilli()+passiveScheduleDeterministicOffsetMs(intervalMs, seed)).UTC().Format(rfc3339MillisUTC)
+	return time.UnixMilli(target.UnixMilli() + passiveScheduleDeterministicOffsetMs(intervalMs, seed)).UTC().Format(rfc3339MillisUTC)
 }
 
 func max64(left, right int64) int64 {
@@ -1000,7 +1000,7 @@ func quotaRecoveryCooldownUntil(policy map[string]any, accountType, seed string,
 		return "", err
 	}
 	intervalMs := max64(1, boundary.UnixMilli()-now.UnixMilli())
-	return time.UnixMilli(boundary.UnixMilli()+passiveScheduleDeterministicOffsetMs(intervalMs, seed)).UTC().Format(rfc3339MillisUTC), nil
+	return time.UnixMilli(boundary.UnixMilli() + passiveScheduleDeterministicOffsetMs(intervalMs, seed)).UTC().Format(rfc3339MillisUTC), nil
 }
 
 // quotaRecoveryScheduleForAccount 镜像 quotaRecoveryScheduleForAccount：

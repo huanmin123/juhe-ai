@@ -137,9 +137,9 @@ func explicitPolicyFailureCode(decision accountErrorPolicyDecision) string {
 
 // authorizedBindingTargetOf 镜像 authorizedAccountBindingRuntimeTarget。
 type authorizedBindingTarget struct {
-	AccountID             string
-	SystemAccountID       string
-	GroupID               string
+	AccountID              string
+	SystemAccountID        string
+	GroupID                string
 	AccountAuthorizationID string
 }
 
@@ -154,9 +154,9 @@ func authorizedBindingTargetOf(account gatewaydispatch.AccountCandidate) *author
 		return nil
 	}
 	return &authorizedBindingTarget{
-		AccountID:             account.ID,
-		SystemAccountID:       *account.BindingSystemAccountID,
-		GroupID:               *account.BoundGroupID,
+		AccountID:              account.ID,
+		SystemAccountID:        *account.BindingSystemAccountID,
+		GroupID:                *account.BoundGroupID,
 		AccountAuthorizationID: *account.AccountAuthorizationID,
 	}
 }
@@ -270,16 +270,16 @@ func (b *chainErrorPolicyEffectsBridge) RecordKeyScopedQuotaFailure(ctx context.
 		observedAt = time.UnixMilli(input.AttemptStartedAtMs).UTC().Format(rfc3339MillisUTC)
 	}
 	_, err := b.keyStates.RecordFailure(ctx, accountkeystates.FailureInput{
-		Account:          accountKeyTargetOf(account),
-		Status:           "rate_limited",
-		StatusCode:       input.StatusCode,
-		ErrorCode:        quotaRecoveryErrorCode(mode),
-		ErrorMessage:     input.UpstreamErrorSummary,
-		TraceID:          input.TraceID,
-		CooldownUntil:    decision.CooldownUntil,
+		Account:           accountKeyTargetOf(account),
+		Status:            "rate_limited",
+		StatusCode:        input.StatusCode,
+		ErrorCode:         quotaRecoveryErrorCode(mode),
+		ErrorMessage:      input.UpstreamErrorSummary,
+		TraceID:           input.TraceID,
+		CooldownUntil:     decision.CooldownUntil,
 		QuotaRecoveryMode: mode,
-		ObservedAt:       observedAt,
-		Expected:         accountkeystates.ExpectedProbeState{AccountConfigRevision: account.ConfigRevision},
+		ObservedAt:        observedAt,
+		Expected:          accountkeystates.ExpectedProbeState{AccountConfigRevision: account.ConfigRevision},
 	})
 	return err
 }
@@ -393,8 +393,8 @@ func isHardUnavailableAccountStatus(status string) bool {
 
 // accountRuntimeRow 镜像 findAccountSummaryAsync 的写侧守卫投影。
 type accountRuntimeRow struct {
-	Status          string
-	ConfigRevision  int64
+	Status           string
+	ConfigRevision   int64
 	AccountExpiresAt sql.NullString
 }
 

@@ -3,6 +3,7 @@ package gatewayresponse
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayanthropic"
@@ -189,8 +190,11 @@ func anthropicErrorPayloadToProto(payload gatewayanthropic.ErrorPayload) gateway
 	return gatewayproto.ErrorPayload{Code: payload.Code, Type: payload.Type, Message: payload.Message}
 }
 
-// parseGeminiErrorPayload 是 gemini 包缺失的解析面（G04 未冻结）；按 Gemini
-// 错误包络 {error:{code,message,status}} 直接解析。
+// parseGeminiErrorPayload 对齐 gemini-v1beta/error-payload.ts
+// parseGeminiErrorPayload + _shared/error-payload.ts
+// parseJsonObjectErrorPayload：仅解析 JSON 负载（Content-Type 含 json 或文本
+// 以 { 开头）；error 信封缺失时回退根对象；数值 code/status 转字符串
+// （如 429 → "429"）；message 走 Node 别名集并允许一层嵌套对象（BUG-0174 M-6）。
 func parseGeminiErrorPayload(bodyText string, header http.Header) gatewayproto.ErrorPayload {
 	contentType := ""
 	if header != nil {
@@ -203,45 +207,114 @@ func parseGeminiErrorPayload(bodyText string, header http.Header) gatewayproto.E
 	if !strings.Contains(strings.ToLower(contentType), "json") && !strings.HasPrefix(trimmed, "{") {
 		return gatewayproto.ErrorPayload{}
 	}
-	var parsed struct {
-		Error struct {
-			Code    any `json:"code"`
-			Message any `json:"message"`
-			Status  any `json:"status"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+	var value any
+	if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
 		return gatewayproto.ErrorPayload{}
 	}
-	return gatewayproto.ErrorPayload{
-		Code:    anyToString(parsed.Error.Code),
-		Message: anyToString(parsed.Error.Message),
-		Type:    anyToString(parsed.Error.Status),
+	payload, errorObject, ok := geminiJSONObjectErrorPayload(value)
+	if !ok {
+		return gatewayproto.ErrorPayload{}
 	}
-}
-
-func anyToString(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	default:
-		return ""
-	}
+	return geminiErrorPayloadFromParsed(payload, errorObject)
 }
 
 // parseGeminiErrorPayloadFromValue 对齐 parseGeminiErrorPayloadFromJsonValue。
 func parseGeminiErrorPayloadFromValue(value any) gatewayproto.ErrorPayload {
+	payload, errorObject, ok := geminiJSONObjectErrorPayload(value)
+	if !ok {
+		return gatewayproto.ErrorPayload{}
+	}
+	return geminiErrorPayloadFromParsed(payload, errorObject)
+}
+
+// geminiJSONObjectErrorPayload 对齐 _shared/error-payload.ts
+// jsonObjectErrorPayload：根对象缺少 error 信封时以根对象充当 error 读取面。
+func geminiJSONObjectErrorPayload(value any) (payload, errorObject map[string]any, ok bool) {
 	root, ok := value.(map[string]any)
 	if !ok {
-		return gatewayproto.ErrorPayload{}
+		return nil, nil, false
 	}
-	errorObject, ok := root["error"].(map[string]any)
-	if !ok {
-		return gatewayproto.ErrorPayload{}
+	if child, childOk := root["error"].(map[string]any); childOk {
+		return root, child, true
+	}
+	return root, root, true
+}
+
+// geminiErrorPayloadFromParsed 对齐 geminiErrorPayloadFromParsed
+// （gemini-v1beta/error-payload.ts:18-27）：status 取 error.status 或根
+// status；code 取 error.code / 根 code，皆缺省时回退 status；type 恒为
+// status；message 走别名集（error 侧优先于根侧）。
+func geminiErrorPayloadFromParsed(payload, errorObject map[string]any) gatewayproto.ErrorPayload {
+	status := firstGeminiStringErrorField(errorObject["status"], payload["status"])
+	code := firstGeminiErrorFieldText(errorObject["code"], payload["code"])
+	if code == "" {
+		code = status
 	}
 	return gatewayproto.ErrorPayload{
-		Code:    anyToString(errorObject["code"]),
-		Message: anyToString(errorObject["message"]),
-		Type:    anyToString(errorObject["status"]),
+		Code: code,
+		Type: status,
+		Message: firstGeminiErrorFieldText(
+			errorObject["message"], errorObject["msg"], errorObject["error_message"],
+			errorObject["error_description"], errorObject["detail"],
+			payload["message"], payload["msg"], payload["error_message"],
+			payload["error_description"], payload["detail"],
+		),
 	}
+}
+
+// geminiStringErrorField 对齐 stringErrorField：字符串 trim 后非空才有效；
+// 数字与布尔转字符串（JSON 数值经 encoding/json 解码为 float64，429 → "429"）。
+func geminiStringErrorField(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		text := strings.TrimSpace(typed)
+		return text, text != ""
+	case float64:
+		if typed == float64(int64(typed)) {
+			return strconv.FormatInt(int64(typed), 10), true
+		}
+		return strconv.FormatFloat(typed, 'g', -1, 64), true
+	case bool:
+		return strconv.FormatBool(typed), true
+	default:
+		return "", false
+	}
+}
+
+// firstGeminiStringErrorField 返回第一个有效的 stringErrorField 值。
+func firstGeminiStringErrorField(values ...any) string {
+	for _, value := range values {
+		if text, ok := geminiStringErrorField(value); ok {
+			return text
+		}
+	}
+	return ""
+}
+
+// firstGeminiErrorFieldText 对齐 firstErrorFieldText：取第一个非空文本，
+// 缺失时对嵌套对象递归别名集。
+func firstGeminiErrorFieldText(values ...any) string {
+	for _, value := range values {
+		if text := geminiErrorFieldText(value); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// geminiErrorFieldText 对齐 errorFieldText：标量直接取值，对象递归
+// message/msg/error_message/error_description/detail/reason/code/type。
+func geminiErrorFieldText(value any) string {
+	if text, ok := geminiStringErrorField(value); ok {
+		return text
+	}
+	record, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	return firstGeminiErrorFieldText(
+		record["message"], record["msg"], record["error_message"],
+		record["error_description"], record["detail"], record["reason"],
+		record["code"], record["type"],
+	)
 }

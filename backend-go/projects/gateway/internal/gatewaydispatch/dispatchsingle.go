@@ -56,13 +56,16 @@ type dispatchSingleAccountInput struct {
 	createAccountLockLeaseRelease        func(scheduleNextRetry bool) func(bool) bool
 }
 
-// dispatchResultKind mirrors the loop control outcomes.
+// dispatchResultKind carries the loop control outcomes. M-2（BUG-0174）: the
+// former dispatchResultSkipRestOfCycle is retired — a single-account terminal
+// skip never abandons the remaining candidates (Node upstream-dispatch.ts:619
+// for-of has no skip-rest-of-cycle; a skip only ends the account's own
+// API-key rotation do/while).
 type dispatchResultKind int
 
 const (
 	dispatchResultContinue dispatchResultKind = iota
 	dispatchResultSelected
-	dispatchResultSkipRestOfCycle
 )
 
 // dispatchSingleAccount executes the candidate loop body for one account.
@@ -180,6 +183,11 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 	accountApiKeyAttemptCount := 0
 	previousSelectedApiKeyFingerprint := ""
 	reacquireConcurrencyForNextKey := false
+	// keyModelForegroundWaitStartedAtMs mirrors keyModelForegroundWaitStartedAtMs
+	// (upstream-dispatch.ts:850): the busy wait window starts on the first busy
+	// rejection of this account and is cleared once an attempt is admitted or
+	// disabled again. 0 means unset.
+	keyModelForegroundWaitStartedAtMs := int64(0)
 	retryAccountApiKey := false
 	skipAccount := false
 	var accountScopedResult *UpstreamDispatchResult
@@ -373,24 +381,27 @@ rotationLoop:
 		usageContext.EffectiveReasoningEffort = requestParts.EffectiveReasoningEffort
 
 		kind, stop, loopErr := e.runUpstreamAttemptLoop(ctx, upstreamAttemptLoopContext{
-			in:                         &in,
-			account:                    account,
-			headers:                    headers,
-			body:                       body,
-			upstreamUrls:               upstreamUrls,
-			effectiveServiceTier:       effectiveServiceTier,
-			excludedApiKeyFingerprints: excludedApiKeyFingerprints,
-			accountApiKeyAttemptCount:  &accountApiKeyAttemptCount,
-			concurrencySlot:            &concurrencySlot,
-			halfOpenLease:              halfOpenLease,
-			keepConcurrencySlotRef:     &keepConcurrencySlot,
-			pendingApiKeyFailuresRef:   &pendingAccountApiKeyFailures,
-			retryAccountApiKeyRef:      &retryAccountApiKey,
-			skipAccountRef:             &skipAccount,
-			resultRef:                  &accountScopedResult,
-			usageContext:               usageContext,
-			auditCapture:               auditCapture,
-			signal:                     signal,
+			in:                                   &in,
+			account:                              account,
+			headers:                              headers,
+			body:                                 body,
+			upstreamUrls:                         upstreamUrls,
+			effectiveServiceTier:                 effectiveServiceTier,
+			excludedApiKeyFingerprints:           excludedApiKeyFingerprints,
+			accountApiKeyAttemptCount:            &accountApiKeyAttemptCount,
+			concurrencySlot:                      &concurrencySlot,
+			halfOpenLease:                        halfOpenLease,
+			keepConcurrencySlotRef:               &keepConcurrencySlot,
+			pendingApiKeyFailuresRef:             &pendingAccountApiKeyFailures,
+			retryAccountApiKeyRef:                &retryAccountApiKey,
+			skipAccountRef:                       &skipAccount,
+			resultRef:                            &accountScopedResult,
+			reacquireConcurrencyRef:              &reacquireConcurrencyForNextKey,
+			previousSelectedFingerprintRef:       &previousSelectedApiKeyFingerprint,
+			keyModelForegroundWaitStartedAtMsRef: &keyModelForegroundWaitStartedAtMs,
+			usageContext:                         usageContext,
+			auditCapture:                         auditCapture,
+			signal:                               signal,
 		})
 		if loopErr != nil {
 			releaseTransientState()
@@ -420,9 +431,44 @@ rotationLoop:
 	if accountScopedResult != nil {
 		return dispatchResultSelected, accountScopedResult, nil
 	}
-	if retryAccountApiKey || skipAccount {
-		return dispatchResultSkipRestOfCycle, nil, nil
-	}
+	// M-2（BUG-0174）: a single-account terminal skip continues the cycle with
+	// the next candidate (Node upstream-dispatch.ts:619 for-of). skipAccount
+	// is true exactly when this account's rotation loop ended through one of
+	// the per-account terminals; retryAccountApiKey is always false here (the
+	// rotation loop continues itself on retry). Whole-cycle termination is
+	// only ever returned as an error above.
+	//
+	// 终端路径归类（对照归档 upstream-dispatch.ts，单账户跳过 vs 整组终止）：
+	// 单账户跳过（skipAccount，只结束本账户 Key 轮换 do/while，同周期继续
+	// 其余候选）：
+	//   - :894  无上游 URL（break）
+	//   - :918  请求级 Key 尝试安全上限（failedAccountIds + break）
+	//   - :967  Key 池不可用（failedAccountIds + break）
+	//   - :1048 账户级 guidance（failedAccountIds + continue → do/while 退出）
+	//   - :1087-1089 准备失败 skip_account（failedAccountIds + continue → 退出）
+	//   - :1275-1276 attempt 去重拒绝（skipAccount + break）
+	//   - :1543-1547 响应失败 skip（账户锁跨账户阻断或默认；skipAccount + break）
+	//   - :1650-1651 attempt 内账户级 guidance（skipAccount + break）
+	//   - :1816-1823 传输失败 skip_account（skipAccount + break）
+	//   - :1839-1840 其余传输失败终局（skipAccount + break）
+	// 整组终止（Node throw → Go 以 error 返回 loopErr，FetchFirstAvailableUpstream
+	// 直接向上传播）：
+	//   - :620 请求中止 throwIfRequestAborted
+	//   - :782-791 并发获取错误
+	//   - :1050-1057 准备 rethrow：中止 / 非账户级 guidance / local protocol /
+	//     非账户级 adapter / 非账户级 validation
+	//   - :1099 墙钟预算断言错误
+	//   - :1549-1551 GatewayRequestWallBudgetExhaustedError
+	//   - :1653-1665 非账户级 guidance/local/validation/adapter
+	//   - :1666-1703 first-byte deadline：wall_precommit → 墙钟耗尽；否则
+	//     NormalRouteFirstByteCutoverError
+	//   - :1704-1725 中止后记录 + rethrow
+	//   - :1726-1758 未证实的传输失败 rethrow
+	// 继续 Key 轮换（do/while 条件真，非跳过）：
+	//   - :1092-1095 准备失败可换 Key（retryAccountApiKey=true）
+	//   - :1228 / :1251 key-model busy/blocked/state_unavailable
+	//   - :1521-1522 响应失败换 Key
+	//   - :1836-1837 传输失败换 Key
 	return dispatchResultContinue, nil, nil
 }
 
@@ -457,7 +503,10 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 			if err := e.assertGatewayRequestWallBudgetAvailableForAttempt(in.coordination.GatewayRequestWallBudget, in.coordination.RequestAttemptTracker, auditCapture, reserveMs); err != nil {
 				return attemptLoopExhausted, attemptStopNone, err
 			}
-			accountRuntimeKey := gatewayAccountRuntimeKey(c.account)
+			accountRuntimeKey, keyErr := gatewayAccountRuntimeKey(c.account)
+			if keyErr != nil {
+				return attemptLoopExhausted, attemptStopNone, keyErr
+			}
 			protocolModelKey, keyErr := gatewayrouting.GatewayAttemptProtocolModelKey(accountRuntimeKey, c.account.ProtocolCode, c.account.ProtocolVersion, requestModelOrEmpty(in.args.Req))
 			if keyErr != nil {
 				return attemptLoopExhausted, attemptStopNone, keyErr
@@ -526,8 +575,10 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 						FailureBudget: in.keyModelFailureBudget,
 					})
 					if prepErr != nil {
+						// upstream-dispatch.ts:1240-1242: release the slot and let
+						// the rotation loop re-acquire it for the next key.
 						c.concurrencySlot.Release()
-						reacquireNote()
+						*c.reacquireConcurrencyRef = true
 						*in.lastAttempt = keyModelUnavailableAttempt(c.account, "state_unavailable")
 						*c.retryAccountApiKeyRef = true
 						return attemptLoopRetryKey, attemptStopNone, nil
@@ -537,17 +588,43 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				if preparation.Status == gatewayaccounteffects.AttemptPreparationBusy ||
 					preparation.Status == gatewayaccounteffects.AttemptPreparationBlocked {
 					if c.account.SelectedAPIKeyFingerprint != nil {
+						// upstream-dispatch.ts:1168-1175: admission rejection
+						// committed no upstream request, so it must not consume
+						// the same-account key attempt budget.
 						if *c.accountApiKeyAttemptCount > 0 {
 							*c.accountApiKeyAttemptCount--
 						}
 						if preparation.Status == gatewayaccounteffects.AttemptPreparationBlocked {
+							// The physical key is unavailable for this attempt;
+							// mark it tried before rotating (upstream-dispatch.ts:1180-1181).
 							c.excludedApiKeyFingerprints[*c.account.SelectedAPIKeyFingerprint] = struct{}{}
 						} else {
-							delete(c.excludedApiKeyFingerprints, *c.account.SelectedAPIKeyFingerprint)
+							// M-3（BUG-0174）busy 等待窗（upstream-dispatch.ts:1183-1194）:
+							// busy 是容量而非健康。在本账户 1200ms 前台窗内且 wall
+							// budget 充足时保留该 Key（下一轮可再选它），超窗剔除。
+							nowMs := NowMs()
+							if *c.keyModelForegroundWaitStartedAtMsRef == 0 {
+								*c.keyModelForegroundWaitStartedAtMsRef = nowMs
+							}
+							waitRemainingMs := e.Config.KeyModelForegroundQueueWaitMs -
+								(nowMs - *c.keyModelForegroundWaitStartedAtMsRef)
+							requestRemainingMs := in.coordination.GatewayRequestWallBudget.RemainingMs(nowMs) -
+								gatewayrouting.DefaultGatewayFinalResponseReserveMs
+							if waitRemainingMs > 0 && requestRemainingMs > 0 {
+								delete(c.excludedApiKeyFingerprints, *c.account.SelectedAPIKeyFingerprint)
+							} else {
+								c.excludedApiKeyFingerprints[*c.account.SelectedAPIKeyFingerprint] = struct{}{}
+							}
 						}
+						// upstream-dispatch.ts:1196: busy/blocked also advances
+						// the continue-after cursor so the next selection starts
+						// after this key.
+						*c.previousSelectedFingerprintRef = *c.account.SelectedAPIKeyFingerprint
 					}
+					// upstream-dispatch.ts:1198-1199: release the slot and let
+					// the rotation loop re-acquire it for the next key attempt.
 					c.concurrencySlot.Release()
-					reacquireNote()
+					*c.reacquireConcurrencyRef = true
 					*in.lastAttempt = keyModelUnavailableAttempt(c.account, string(preparation.Status))
 					auditCapture.AddGatewayMetadata("key_model_foreground_dispatch_skip", map[string]any{
 						"accountId":      c.account.ID,
@@ -558,8 +635,23 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 					})
 					*c.retryAccountApiKeyRef = true
 					if preparation.Status == gatewayaccounteffects.AttemptPreparationBusy {
-						if err := waitForDelayMs(signal, e.Config.KeyModelForegroundQueuePollMs); err != nil {
-							return attemptLoopExhausted, attemptStopNone, &UpstreamRequestAbortedError{Message: "请求已取消"}
+						// M-3（BUG-0174）等待时长对齐 upstream-dispatch.ts:1219-1226:
+						// min(poll, 窗口余量, wall 余量-最终响应预留)，非恒 poll。
+						elapsedMs := int64(0)
+						if startedAtMs := *c.keyModelForegroundWaitStartedAtMsRef; startedAtMs != 0 {
+							elapsedMs = NowMs() - startedAtMs
+						}
+						waitMs := minInt64(
+							e.Config.KeyModelForegroundQueuePollMs,
+							minInt64(
+								maxInt64(0, e.Config.KeyModelForegroundQueueWaitMs-elapsedMs),
+								maxInt64(0, in.coordination.GatewayRequestWallBudget.RemainingMs(NowMs())-gatewayrouting.DefaultGatewayFinalResponseReserveMs),
+							),
+						)
+						if waitMs > 0 {
+							if err := waitForDelayMs(signal, waitMs); err != nil {
+								return attemptLoopExhausted, attemptStopNone, &UpstreamRequestAbortedError{Message: "请求已取消"}
+							}
 						}
 					}
 					return attemptLoopRetryKey, attemptStopNone, nil
@@ -567,6 +659,9 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				if preparation.Status == gatewayaccounteffects.AttemptPreparationAdmitted {
 					keyModelAttempt = preparation.Attempt
 				}
+				// upstream-dispatch.ts:1231: a non-busy admission closes the
+				// account's foreground wait window.
+				*c.keyModelForegroundWaitStartedAtMsRef = 0
 				if keyModelAttempt != nil && in.accountCircuitAttempt != nil {
 					_, _ = in.accountCircuitAttempt.ReportUnknown(ctx)
 					in.accountCircuitAttempt = nil
@@ -750,10 +845,6 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 	return attemptLoopExhausted, attemptStopNone, nil
 }
 
-// reacquireNote mirrors reacquireConcurrencyForNextKey = true (the outer
-// rotation loop re-acquires the slot before the next key attempt).
-func reacquireNote() {}
-
 // upstreamAttemptLoopContext carries the loop state.
 type upstreamAttemptLoopContext struct {
 	in                         *dispatchSingleAccountInput
@@ -771,9 +862,21 @@ type upstreamAttemptLoopContext struct {
 	retryAccountApiKeyRef      *bool
 	skipAccountRef             *bool
 	resultRef                  **UpstreamDispatchResult
-	usageContext               *gatewaypreauth.GatewayFailureUsageContext
-	auditCapture               AuditCapture
-	signal                     context.Context
+	// reacquireConcurrencyRef mirrors reacquireConcurrencyForNextKey
+	// (upstream-dispatch.ts:849): set when the key-model admission path
+	// released the slot so the outer rotation loop re-acquires it before the
+	// next key attempt.
+	reacquireConcurrencyRef *bool
+	// previousSelectedFingerprintRef mirrors previousSelectedApiKeyFingerprint
+	// (upstream-dispatch.ts:848); the key-model busy/blocked branch advances
+	// the continue-after cursor too (upstream-dispatch.ts:1196).
+	previousSelectedFingerprintRef *string
+	// keyModelForegroundWaitStartedAtMsRef mirrors
+	// keyModelForegroundWaitStartedAtMs (upstream-dispatch.ts:850); 0 = unset.
+	keyModelForegroundWaitStartedAtMsRef *int64
+	usageContext                         *gatewaypreauth.GatewayFailureUsageContext
+	auditCapture                         AuditCapture
+	signal                               context.Context
 }
 
 // responseKind / stop tags for handleUpstreamAttemptResponse.

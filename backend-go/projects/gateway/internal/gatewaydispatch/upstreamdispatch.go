@@ -356,7 +356,11 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 		confirmationRuntimeKey := args.AccountCircuitConfirmation.AccountRuntimeKey
 		filtered := make([]AccountCandidate, 0, len(dispatchAccounts))
 		for _, account := range dispatchAccounts {
-			if gatewayAccountRuntimeKey(account) == confirmationRuntimeKey {
+			accountKey, keyErr := gatewayAccountRuntimeKey(account)
+			if keyErr != nil {
+				return UpstreamDispatchResult{}, keyErr
+			}
+			if accountKey == confirmationRuntimeKey {
 				filtered = append(filtered, account)
 			}
 		}
@@ -392,10 +396,14 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 			attemptedFingerprints[fingerprint] = struct{}{}
 		}
 		for _, account := range dispatchAccounts {
+			accountRuntimeKey, keyErr := gatewayAccountRuntimeKey(account)
+			if keyErr != nil {
+				return UpstreamDispatchResult{}, keyErr
+			}
 			registration, regErr := requestAttemptTracker.CanAttemptAccount(gatewayrouting.CanAttemptAccountInput{
-				AccountRuntimeKey:     gatewayAccountRuntimeKey(account),
+				AccountRuntimeKey:     accountRuntimeKey,
 				PhysicalCredentialKey: accountPhysicalCredentialKey(account),
-				MatchingConfirmation:  args.AccountCircuitConfirmation != nil && args.AccountCircuitConfirmation.AccountRuntimeKey == gatewayAccountRuntimeKey(account),
+				MatchingConfirmation:  args.AccountCircuitConfirmation != nil && args.AccountCircuitConfirmation.AccountRuntimeKey == accountRuntimeKey,
 				SemanticRetryID:       semanticRetryID,
 			})
 			if regErr != nil {
@@ -655,7 +663,6 @@ codexTurnReversalPass:
 	for len(dispatchAccounts) > 0 {
 		cycleRecoverableAccountIDs = map[string]struct{}{}
 		capacityLimitFailures = nil
-		skipRestOfCycle := false
 
 		for _, originalAccount := range dispatchAccounts {
 			if err := throwIfRequestAborted(signal); err != nil {
@@ -732,18 +739,17 @@ codexTurnReversalPass:
 			if loopErr != nil {
 				return UpstreamDispatchResult{}, loopErr
 			}
-			switch kind {
-			case dispatchResultSelected:
+			// M-2（BUG-0174）: a single-account terminal skip only ends that
+			// account's API-key rotation do/while (upstream-dispatch.ts:619-1859);
+			// the candidate for-of loop continues with the next account. There
+			// is no "skip rest of cycle" concept in Node — whole-cycle
+			// termination happens exclusively through thrown errors (loopErr)
+			// or the post-cycle recoverable-wait logic below.
+			if kind == dispatchResultSelected {
 				return *singleResult, nil
-			case dispatchResultSkipRestOfCycle:
-				skipRestOfCycle = true
 			}
 			_ = accountCircuitAttemptTransferred
-			if skipRestOfCycle {
-				break
-			}
 		}
-		_ = skipRestOfCycle
 
 		if len(capacityLimitFailures) > 0 && args.GroupSchedulingPolicy != nil {
 			queueWaitStartedAtMs := NowMs()
@@ -1173,15 +1179,34 @@ func accountPhysicalCredentialKey(account AccountCandidate) string {
 }
 
 // gatewayAccountRuntimeKey mirrors gatewayAccountRuntimeKey
-// (runtime/account-runtime-keys.ts).
-func gatewayAccountRuntimeKey(account AccountCandidate) string {
-	return strings.Join([]string{
-		account.SystemAccountID,
-		account.AccountOwnerSystemAccountID,
-		account.ProviderCode,
-		account.ProviderProtocolProfileID,
-		account.ID,
-	}, ":")
+// (runtime/account-runtime-keys.ts) via the shared gatewaycircuit contract:
+// a bare account keys as `id`, an authorized binding keys as
+// `id:authorized:system:group:authz`. M-9（BUG-0174）: the previous five-part
+// `system:owner:provider:profile:id` composite is retired so dispatch
+// identities match gatewaycircuit confirmations (and the Node baseline);
+// per-authorized-binding attempt identity therefore distinguishes bindings
+// of the same account. Authorized accounts missing the binding context
+// return the Node error ('授权账户运行态键缺少绑定上下文').
+func gatewayAccountRuntimeKey(account AccountCandidate) (string, error) {
+	bindingSystemAccountID := ""
+	if account.BindingSystemAccountID != nil {
+		bindingSystemAccountID = *account.BindingSystemAccountID
+	}
+	boundGroupID := ""
+	if account.BoundGroupID != nil {
+		boundGroupID = *account.BoundGroupID
+	}
+	authorizationID := ""
+	if account.AccountAuthorizationID != nil {
+		authorizationID = *account.AccountAuthorizationID
+	}
+	return gatewaycircuit.GatewayAccountRuntimeKey(gatewaycircuit.SuppressibleGatewayAccount{
+		ID:                     account.ID,
+		AccountAccessType:      account.AccountAccessType,
+		BindingSystemAccountID: bindingSystemAccountID,
+		BoundGroupID:           boundGroupID,
+		AccountAuthorizationID: authorizationID,
+	})
 }
 
 // gatewayAccountDispatchPriorityTier adapts the gatewayproxyhealth tier.

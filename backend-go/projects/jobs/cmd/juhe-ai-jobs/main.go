@@ -389,6 +389,7 @@ func main() {
 	// 的 pending 堆积由保留期删除兜底。装配失败降级 warn（等同原派发能力未
 	// 装配的语义），不阻塞启动。
 	var probeOutboxPruner *healthProbeOutboxPruner
+	var healthOutcomeProjector *accounthealth.OutcomeProjector
 	if worker != nil {
 		face, faceErr := worker.wireHealthProbeOutboxFace(os.Getenv)
 		if faceErr != nil {
@@ -399,6 +400,16 @@ func main() {
 				accountHealthRunner.SetProbeRequestDrain(face.drain)
 			}
 			probeOutboxPruner = face.pruner
+		}
+		// J1 outcome → 业务账户投影面（BUG-0174 M-1）：独立组件恢复
+		// 「探活成功→账户回归轮换」闭环；J1 未启用或 env 关闭时缺席，装配
+		// 失败降级 warn（outcome 仅停留 juhe_jobs 审计面），不阻塞启动。
+		projector, projectorErr := worker.wireHealthOutcomeProjector(os.Getenv, accountHealthStore)
+		if projectorErr != nil {
+			logger.Warn("J1 outcome 投影面装配失败；outcome 仅停留 juhe_jobs 审计面",
+				"event", "account_health_projection_assembly_failed", "error", projectorErr.Error())
+		} else {
+			healthOutcomeProjector = projector
 		}
 	}
 
@@ -489,6 +500,14 @@ func main() {
 				}
 				return closeErr
 			},
+		})
+	}
+	if healthOutcomeProjector != nil {
+		// 独立于 J1 runCycle（归档投影运行时即独立轮询循环）；业务库句柄的
+		// 关闭由 worker 组件 Close（closeStores）承担，本组件无独立 Close。
+		components = append(components, supervisor.Component{
+			Name: "J1 outcome projection",
+			Run:  healthOutcomeProjector.Run,
 		})
 	}
 	if modelRecoveryRunner != nil {

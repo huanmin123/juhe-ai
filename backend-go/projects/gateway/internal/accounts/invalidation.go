@@ -70,6 +70,10 @@ const accountPatchRuntimeInvalidationReason = "account_management_patch"
 // accountDeleteRuntimeInvalidationReason mirrors the Node reason string.
 const accountDeleteRuntimeInvalidationReason = "account_deleted"
 
+// accountCreateRuntimeInvalidationReason mirrors the Node reason string of
+// the create tail (repositories.ts:2443).
+const accountCreateRuntimeInvalidationReason = "account_created"
+
 // groupAccountStatsDirtyAll mirrors GROUP_ACCOUNT_STATS_DIRTY_ALL
 // (group-account-stats-cache.repository.ts:16): the single full-refresh dirty
 // marker row the stats worker consumes as "rebuild every group".
@@ -184,6 +188,66 @@ func (s *Store) finishDeleteSideEffects(ctx context.Context, accountIDs []string
 		slog.Warn("账户删除已提交，但授权额度缓存失效失败",
 			"event", "account_delete_authorization_quota_invalidation_failed",
 			"accountCount", len(accountIDs), "error", err)
+	}
+}
+
+// markCreateGroupStatsDirty mirrors refreshGroupAccountStatsAfterWrite's
+// groupIds arm for the create tail (repositories.ts:2440 →
+// group-account-stats-write-invalidation.ts:43-45 →
+// group-account-stats-cache.repository.ts:61-74): one dirty-marker upsert for
+// the bound group (mark, never recompute; the same statement shape as
+// markBatchGroupStatsDirty / markAllGroupStatsDirty).
+func (s *Store) markCreateGroupStatsDirty(ctx context.Context, groupID, reason string) error {
+	ctx = ensureCtx(ctx)
+	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("group_account_stats_dirty")+` (group_id, reason, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(group_id) DO UPDATE SET
+			reason = excluded.reason,
+			updated_at = excluded.updated_at`), groupID, reason, isoMillis(s.now()))
+	return err
+}
+
+// finishCreateSideEffects mirrors the post-commit tail of createAccountAsync
+// (repositories.ts:2440-2443): the group stats dirty marker for the bound
+// group, the per-account lookup flush, the group-account-ids cache flush and
+// one whole-surface runtime invalidation with the 'account_created' reason.
+// Every step is best-effort — a failure is logged and never reported to the
+// client (the Node warn channels). The stats dirty marker rides the SQLite
+// arm only (the delete-path dialect split); the Postgres background dirty
+// writer stays a compose wiring handover of the stats slice.
+func (s *Store) finishCreateSideEffects(ctx context.Context, result *CreateResult) {
+	if result == nil {
+		return
+	}
+	if !s.pg {
+		if err := s.markCreateGroupStatsDirty(ctx, result.GroupID, accountCreateRuntimeInvalidationReason); err != nil {
+			slog.Warn("账户创建已提交，但分组账户统计脏标记失败",
+				"event", "account_create_stats_refresh_failed",
+				"accountId", result.ID, "groupId", result.GroupID, "error", err)
+		}
+	}
+	if s.invalidator == nil {
+		return
+	}
+	if err := s.invalidator.InvalidateAccountLookup(result.ID); err != nil {
+		slog.Warn("账户创建已提交，但账户 lookup 缓存失效失败",
+			"event", "account_create_lookup_invalidation_failed",
+			"accountId", result.ID, "error", err)
+	}
+	// invalidateGroupAccountIdsCache(groupId) (repositories.ts:2442): the
+	// Node cache is whole-surface, so the port stays parameterless (same as
+	// the delete arm).
+	if err := s.invalidator.InvalidateGroupAccountIds(); err != nil {
+		slog.Warn("账户创建已提交，但分组账户 ID 缓存失效失败",
+			"event", "account_create_group_account_ids_invalidation_failed",
+			"accountId", result.ID, "groupId", result.GroupID, "error", err)
+	}
+	// invalidateGatewayRuntimeAfterBusinessWrite('account_created')
+	// (repositories.ts:2443).
+	if err := s.invalidator.InvalidateGatewayRuntime(accountCreateRuntimeInvalidationReason); err != nil {
+		slog.Warn("账户创建已提交，但网关运行时缓存失效失败",
+			"event", "account_create_runtime_invalidation_failed",
+			"accountId", result.ID, "error", err)
 	}
 }
 

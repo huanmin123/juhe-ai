@@ -101,15 +101,17 @@ func TestAccountBatchUpdatePostCommitEffects(t *testing.T) {
 	batchID := dataMap(t, updated)["batchId"].(string)
 
 	// In-transaction dispatch advance: every changed account bumps its
-	// dispatch revision and lands one outbox row with the Node contract.
+	// dispatch revision and lands one outbox row with the Node contract. The
+	// create chain (BUG-0174 M-8) already advanced the fresh rows to 2, so
+	// the batch lands on 3.
 	for _, id := range ids {
-		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "2" {
+		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "3" {
 			t.Fatalf("dispatch_revision after proxy batch for %s: %v", id, revision)
 		}
 		if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = ?
 			AND event_type = 'dispatch_revision_changed' AND projection_key = 'account_circuit_runtime_v1'
 			AND dedupe_key = ? AND transition_id = ? AND account_runtime_key = ?
-			AND dispatch_revision = 2 AND status = 'pending' AND attempt_count = 0
+			AND dispatch_revision = 3 AND status = 'pending' AND attempt_count = 0
 			AND circuit_scope_key IS NULL AND incident_id IS NULL AND generation IS NULL
 			AND ledger_revision IS NULL AND available_at_ms > 0`, id,
 			"dispatch:"+batchID+":"+id, batchID+":"+id, id) != 1 {
@@ -154,15 +156,17 @@ func TestAccountBatchUpdateDispatchGatedByProxyChange(t *testing.T) {
 		t.Fatalf("notes batch: %d %v", code, updated)
 	}
 	for _, id := range ids {
-		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "1" {
+		// The create chain (BUG-0174 M-8) advanced the fresh rows to 2; the
+		// notes-only batch must leave that baseline untouched.
+		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "2" {
 			t.Fatalf("non-proxy batch must not advance %s: %v", id, revision)
 		}
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 0 {
-		t.Fatal("non-proxy batch must not write outbox rows")
+	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 2 {
+		t.Fatal("non-proxy batch must not write outbox rows beyond the two create-chain rows")
 	}
-	if env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty`) != 0 {
-		t.Fatal("notes-only batch must not mark group stats dirty")
+	if env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty`) != 1 {
+		t.Fatal("notes-only batch must not mark group stats dirty beyond the create-chain marker")
 	}
 	lookups, reasons := fake.snapshot()
 	if len(lookups) != 2 || len(reasons) != 0 {
@@ -190,11 +194,14 @@ func TestAccountBatchUpdateDispatchGatedByProxyChange(t *testing.T) {
 		}
 	}
 	for _, id := range ids {
-		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "2" {
+		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "3" {
 			t.Fatalf("dispatch_revision after re-run for %s: %v", id, revision)
 		}
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 2 {
+	// The no-op re-run must not write additional outbox rows on top of the
+	// two create-chain rows plus the two first-round batch rows
+	// (BUG-0174 M-8).
+	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 4 {
 		t.Fatal("re-run must not write additional outbox rows")
 	}
 }
@@ -222,11 +229,15 @@ func TestAccountBatchUpdateAdvancesDispatchFamily(t *testing.T) {
 	}
 	batchID := dataMap(t, updated)["batchId"].(string)
 
-	// Root, sibling root and the instance all advance to revision 2.
-	for _, id := range []string{ids[0], ids[1], "acc-authz-inst"} {
-		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "2" {
+	// Root and sibling root carry the create-chain advance (2) plus the batch
+	// bump (3); the directly inserted instance starts at 1 and lands on 2.
+	for _, id := range ids {
+		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "3" {
 			t.Fatalf("family member %s dispatch_revision: %v", id, revision)
 		}
+	}
+	if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = 'acc-authz-inst'`); revision != "2" {
+		t.Fatalf("family member acc-authz-inst dispatch_revision: %v", revision)
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = ? AND transition_id = ?`,
 		ids[0], batchID+":"+ids[0]) != 1 {
@@ -262,14 +273,16 @@ func TestAccountBatchUpdateInvalidatorFailureKeepsOK(t *testing.T) {
 		t.Fatalf("failing invalidator must still be called: lookups=%v reasons=%v", lookups, reasons)
 	}
 	for _, id := range ids {
-		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "2" {
+		// Create chain (BUG-0174 M-8) baseline 2 + one batch bump = 3.
+		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "3" {
 			t.Fatalf("dispatch_revision for %s: %v", id, revision)
 		}
 		if proxy := env.queryCell(t, `SELECT proxy_profile_id FROM accounts WHERE id = ?`, id); proxy != "pp-1" {
 			t.Fatalf("proxy write for %s: %v", id, proxy)
 		}
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 2 {
+	// Two create-chain rows plus two batch rows.
+	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 4 {
 		t.Fatal("outbox rows must survive invalidator failure")
 	}
 }
@@ -291,18 +304,22 @@ func TestAccountBatchUpdateDispatchRollsBackWithBatch(t *testing.T) {
 		t.Fatalf("stale batch: %d %v", code, conflict)
 	}
 	for _, id := range ids {
-		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "1" {
+		// The batch rolled back, so the rows keep the create-chain baseline
+		// (BUG-0174 M-8: creation itself advances the family to 2).
+		if revision := env.queryCell(t, `SELECT dispatch_revision FROM accounts WHERE id = ?`, id); revision != "2" {
 			t.Fatalf("rollback must restore dispatch_revision for %s: %v", id, revision)
 		}
 		if proxy := env.queryCell(t, `SELECT proxy_profile_id FROM accounts WHERE id = ?`, id); proxy != "" {
 			t.Fatalf("rollback must restore proxy for %s: %v", id, proxy)
 		}
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 0 {
-		t.Fatal("rollback must remove outbox rows")
+	// Only the two create-chain outbox rows survive the rollback.
+	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 2 {
+		t.Fatal("rollback must remove the batch outbox rows")
 	}
-	if env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty`) != 0 {
-		t.Fatal("aborted batch must not mark stats dirty")
+	// Only the create-chain stats dirty marker survives.
+	if env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty`) != 1 {
+		t.Fatal("aborted batch must not mark stats dirty beyond the create-chain marker")
 	}
 }
 

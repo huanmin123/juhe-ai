@@ -472,7 +472,9 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 	if created["status"] != "active" || created["configRevision"] != float64(1) {
 		t.Fatalf("create payload: %v", created)
 	}
-	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND config_revision = 1 AND dispatch_revision = 1
+	// The create transaction lands the dispatch family advance (BUG-0174 M-8,
+	// repositories.ts:2412-2417), so dispatch_revision starts at 2.
+	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND config_revision = 1 AND dispatch_revision = 2
 		AND status = 'active' AND schedulable = 1 AND system_account_id = ?`, id, adminID) != 1 {
 		t.Fatal("create row contract violated")
 	}

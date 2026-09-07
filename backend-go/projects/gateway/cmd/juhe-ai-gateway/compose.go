@@ -27,6 +27,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/delegated"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/helpweb"
@@ -591,6 +592,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// gateway runtime cache through the K5 bus post-commit (batch edit,
 	// management patch, soft delete; Node invalidateGatewayRuntimeAfterBusinessWrite).
 	accountStore.SetCacheInvalidator(accountsBusInvalidator{bus: bus})
+	// BUG-0174 M-8：创建上限的 settings 兜底端口（Node repositories.ts:2493
+	// effectiveAiAccountCreationLimit 的 settingsRepository.getSettings 回退）。
+	accountStore.SetAiAccountLimitSettings(aiAccountLimitSettingsAdapter{settings: settingsStore})
 	// 余额快照旧代次清理装配（缺口 5，归档 accounts.routes.ts:355-364 +
 	// account-balance-snapshot-cleanup.service.ts:220-224）：PATCH 均衡身份
 	// 变化后的旧 relay_balance 快照删除经本 store 句柄执行（PG 走 juhe_stats
@@ -969,6 +973,24 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if errorPolicyBridgeErr != nil {
 			return nil, fmt.Errorf("compose account error policy effects bridge: %w", errorPolicyBridgeErr)
 		}
+		// ENGAGED 锁运行链装配（BUG-0174 B-2，chain_account_locks.go）：默认
+		// 注入 SQL 运行面（四操作 + 重试租约族 + 结算写 temporary_unavailable/
+		// cooldown 后的 account_lock_deadline 失效通知）。nil 只保留给显式
+		// 关闭开关 JUHE_AI_ACCOUNT_LOCKS_DISABLED=true——关闭时链条回落
+		// chain_ports.go disabledAccountLocks（账户视为未锁），而非默认降级。
+		var accountLockPort gatewaydispatch.AccountLocks
+		if !chainAccountLocksDisabledViaEnv(os.Getenv) {
+			locks, locksErr := newChainAccountLocks(composed.db, composed.pgDialect, func(reason string) {
+				if composed.Bus != nil {
+					composed.Bus.Invalidate(inval.TopicGatewayRuntime, reason)
+				}
+			})
+			if locksErr != nil {
+				chainServices.Close()
+				return nil, fmt.Errorf("compose gateway account locks port: %w", locksErr)
+			}
+			accountLockPort = locks
+		}
 		// Shutdown order is LIFO: services registered first close last, after
 		// the chain drained its usage buffer.
 		composed.shutdowns = append(composed.shutdowns, chainServices.Close)
@@ -1019,6 +1041,16 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// chain_turn_retry_redis.go）。
 			HealthProbeOutbox:   healthProbeOutbox,
 			TurnRetryStateStore: newChainTurnRetryRedisStateStoreOrNil(chainServices.StateClient, cfg.RedisNamespace),
+			// ENGAGED 锁运行链（BUG-0174 B-2）：真实 SQL 运行面；显式关闭时为
+			// nil → disabledAccountLocks（视为未锁）。
+			AccountLocks: accountLockPort,
+			// B-1（BUG-0174）：dispatch Key 指纹密钥与水合层同源——
+			// chain_runtime.go newChainAccountsSelectorWithStats(..., cfg.Secret, ...)
+			// 是同一来源。
+			EngineSecret: cfg.Secret,
+			// B-3（BUG-0174）：账户 API Key 轮转 Redis 计数器（StateClient 为
+			// nil 时返回 nil，引擎保持进程内计数器回退）。
+			KeyRotation: newChainAPIKeyRotationCounterOrNil(chainServices.StateClient),
 			// Codex 用量响应头持久化（compose_codex_usage_headers.go）：
 			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道。
 			CodexUsageHeadersDispatcher: newCodexUsageHeadersChannelDispatcher(recordMaintenanceDispatch),
@@ -1430,3 +1462,32 @@ func configureSQLiteConnection(db *sql.DB) error {
 	}
 	return nil
 }
+
+// aiAccountLimitSettingsAdapter adapts the settings store snapshot to the
+// accounts creation-limit port (userAiAccountLimit; the settings store's Load
+// already merges the schema default 100 and per-key bounds).
+type aiAccountLimitSettingsAdapter struct {
+	settings *settings.Store
+}
+
+func (a aiAccountLimitSettingsAdapter) UserAiAccountLimit(ctx context.Context) (int64, error) {
+	snapshot, err := a.settings.Load(ctx)
+	if err != nil {
+		return 0, err
+	}
+	switch value := snapshot["userAiAccountLimit"].(type) {
+	case float64:
+		return int64(value), nil
+	case int64:
+		return value, nil
+	case int:
+		return int64(value), nil
+	default:
+		// Missing key keeps the schema default (accounts.write.go
+		// defaultUserAiAccountLimit); 0 must stay reserved for explicit
+		// "unlimited" configuration only.
+		return 100, nil
+	}
+}
+
+var _ accounts.AiAccountCreationLimitSettings = aiAccountLimitSettingsAdapter{}

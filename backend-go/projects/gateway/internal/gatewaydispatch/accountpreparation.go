@@ -2,6 +2,9 @@ package gatewaydispatch
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -174,8 +177,8 @@ func (e *Engine) SelectAccountApiKeyForDispatch(ctx context.Context, account Acc
 		accountID = trimString(*account.CredentialSourceAccountID)
 	}
 	credentials := accountApiKeySelectionCredentials(account)
-	apiKeyEntries := accountApiKeyEntries(credentials)
-	apiKeyPoolIsolationEnabled := isAccountApiKeyPoolIsolationEnabled(account, credentials)
+	apiKeyEntries := accountApiKeyEntries(e.Config.Secret, credentials)
+	apiKeyPoolIsolationEnabled := isAccountApiKeyPoolIsolationEnabled(account, apiKeyEntries)
 	fixedFingerprint := ""
 	if account.SelectedAPIKeyFingerprint != nil {
 		fixedFingerprint = trimString(*account.SelectedAPIKeyFingerprint)
@@ -204,13 +207,14 @@ func (e *Engine) SelectAccountApiKeyForDispatch(ctx context.Context, account Acc
 	}
 
 	runtimeStates := append(append([]gatewayruntimecache.AccountAPIKeyRuntimeSelectionState{}, account.APIKeyRuntimeStates...), transientStates...)
-	selected, err := selectAccountRuntimeApiKeyEntry(apiKeySelectionInput{
-		AccountID:               accountID,
-		credentials:             credentials,
-		ExcludeFingerprints:     options.ExcludeFingerprints,
+	selected, err := selectAccountRuntimeApiKeyEntry(ctx, apiKeySelectionInput{
+		AccountID:                accountID,
+		credentials:              credentials,
+		ExcludeFingerprints:      options.ExcludeFingerprints,
 		ContinueAfterFingerprint: options.ContinueAfterFingerprint,
-		RuntimeStates:           runtimeStates,
-		entries:                 apiKeyEntries,
+		RuntimeStates:            runtimeStates,
+		entries:                  apiKeyEntries,
+		counter:                  e.keyRotationOf(),
 	})
 	if err != nil {
 		return AccountCandidate{}, false, err
@@ -254,27 +258,38 @@ type apiKeyEntry struct {
 	key         string
 	fingerprint string
 	index       int
+	weight      int
 }
 
-func accountApiKeyEntries(credentials map[string]any) []apiKeyEntry {
-	// storage/account-api-key-rotation.ts accountApiKeyEntries: api_keys
-	// array with stable fingerprints (sha256 of the key text); a bare
-	// api_key contributes a single entry.
-	raw, ok := credentials["api_keys"].([]any)
-	if !ok {
-		single, ok := credentials["api_key"].(string)
-		if !ok || single == "" {
-			return nil
-		}
-		return []apiKeyEntry{{key: single, fingerprint: apiKeyFingerprint(single), index: 0}}
+// accountApiKeyEntries mirrors accountApiKeyEntries（归档 :117-139）：
+// api_keys 池优先（空数组也回落单 api_key），Key 去空白、按去空白文本去重
+// 并保留原始 index，weight 取 api_key_weights[index]（normalizeApiKeyWeight）。
+func accountApiKeyEntries(secret string, credentials map[string]any) []apiKeyEntry {
+	var rawKeys []any
+	if list, ok := credentials["api_keys"].([]any); ok && len(list) > 0 {
+		rawKeys = list
+	} else {
+		rawKeys = []any{credentials["api_key"]}
 	}
-	entries := make([]apiKeyEntry, 0, len(raw))
-	for index, item := range raw {
-		key, ok := item.(string)
-		if !ok || key == "" {
+	weights, _ := credentials["api_key_weights"].([]any)
+	entries := make([]apiKeyEntry, 0, len(rawKeys))
+	seen := map[string]bool{}
+	for index, value := range rawKeys {
+		text, ok := value.(string)
+		if !ok {
 			continue
 		}
-		entries = append(entries, apiKeyEntry{key: key, fingerprint: apiKeyFingerprint(key), index: index})
+		key := strings.TrimSpace(text)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		entries = append(entries, apiKeyEntry{
+			key:         key,
+			fingerprint: apiKeyFingerprint(secret, key),
+			index:       index,
+			weight:      normalizeAPIKeyWeight(credentialListValue(weights, index)),
+		})
 	}
 	return entries
 }
@@ -287,11 +302,56 @@ func apiKeyEntryFingerprints(entries []apiKeyEntry) []string {
 	return fingerprints
 }
 
-func apiKeyFingerprint(key string) string {
-	// storage/account-api-key-rotation.ts fingerprintKeyApiKey: sha256 hex of
-	// the key text.
-	digest := sha256HexBytes([]byte(key))
-	return digest
+// apiKeyFingerprint 等价 fingerprintAccountApiKey（归档 :173-175，
+// createHmac('sha256', runtimeConfig.secret).update(key).digest('hex')），
+// 与 accountkeystates.FingerprintAPIKey 逐字节一致（B-1，BUG-0174：原先误用
+// 裸 sha256，dispatch 产出的 SelectedAPIKeyFingerprint 与探活/DB Key 状态池
+// 必 miss）。Node createHmac 以空 key 正常计算，secret 未注入（空串）时同样
+// 不走空串快捷路径；组合根必须与水合层（chainAccountsSelector.secret）注入
+// 同一 JUHE_AI_SECRET。
+func apiKeyFingerprint(secret, key string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(key))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// normalizeAPIKeyWeight mirrors normalizeApiKeyWeight（归档 :235-237）：
+// 1..100 的整数保持，其余（含小数）回落 1。
+func normalizeAPIKeyWeight(value any) int {
+	number, ok := credentialFloatValue(value)
+	if !ok {
+		return 1
+	}
+	if number == float64(int64(number)) && number >= 1 && number <= 100 {
+		return int(number)
+	}
+	return 1
+}
+
+// credentialFloatValue narrows the JSON-decoded credential numbers
+//（等价 accountkeystates.asFloat 的取值面）。
+func credentialFloatValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	}
+	return 0, false
+}
+
+func credentialListValue(values []any, index int) any {
+	if index >= 0 && index < len(values) {
+		return values[index]
+	}
+	return nil
 }
 
 func accountApiKeySelectionCredentials(account AccountCandidate) map[string]any {
@@ -310,18 +370,38 @@ func accountApiKeySelectionCredentials(account AccountCandidate) map[string]any 
 	return credentials
 }
 
-func isAccountApiKeyPoolIsolationEnabled(account AccountCandidate, credentials map[string]any) bool {
-	// storage/account-api-key-rotation.ts isAccountApiKeyPoolIsolationEnabled:
-	// gpt-provider OpenAI protocol OAuth/api_key accounts with a configured
-	// pool isolate the selected key per request.
-	if _, ok := credentials["api_keys"]; !ok {
+// isAccountApiKeyPoolIsolationEnabled mirrors isAccountApiKeyPoolIsolationEnabled
+// （归档 :141-155）：仅 api_key 类型 + 受支持 provider/protocol + 池内有效
+// Key 数 > 1 时按请求隔离所选 Key。entries 由调用方预算（避免重复 HMAC），
+// 计数语义等价 accountApiKeyEntries(credentials).length（去空白去重后）。
+//
+// M-7（BUG-0174）：废弃旧 dispatch 版「gpt vendor + openai 协议 + 含 OAuth」
+// 判据，对齐 accounts/patch_runtime_state.go isAccountAPIKeyPoolIsolationEnabled
+// 与 cmd/juhe-ai-gateway/chain_accounts_secret.go
+// chainAccountAPIKeyPoolIsolationEnabled（后两处本波不改；cmd 版额外放行
+// xai/hybrid，偏差披露见该文件）。三处为同源副本，未抽公共函数的原因：
+// 允许修改面仅 gatewaydispatch（accounts/cmd/shared 均在本波边界外）。
+func isAccountApiKeyPoolIsolationEnabled(account AccountCandidate, entries []apiKeyEntry) bool {
+	if account.Type != "api_key" {
 		return false
 	}
-	if account.Type == "oauth" {
-		return IsGptVendorCode(account.ProviderCode) && isOpenAIProtocolProfileWith(account.ProtocolCode, account.ProtocolVersion)
+	if !isAccountAPIKeyPoolProviderSupported(account.ProviderCode, account.ProtocolCode, account.ProtocolVersion) {
+		return false
 	}
-	return account.Type == "api_key" && IsGptVendorCode(account.ProviderCode) &&
-		isOpenAIProtocolProfileWith(account.ProtocolCode, account.ProtocolVersion)
+	return len(entries) > 1
+}
+
+// isAccountAPIKeyPoolProviderSupported mirrors
+// isAccountApiKeyPoolProviderSupported（归档 :157-171）：openai-compatible
+// 供应商码族（openai/gpt）、deepseek、glm、gemini、anthropic 供应商，或
+// anthropic 协议 profile（protocolCode=anthropic 且 protocolVersion=v1）。
+func isAccountAPIKeyPoolProviderSupported(providerCode, protocolCode, protocolVersion string) bool {
+	switch normalizeProviderToken(providerCode) {
+	case "openai", "gpt", "deepseek", "glm", "gemini", "anthropic":
+		return true
+	}
+	return normalizeProviderToken(protocolCode) == "anthropic" &&
+		normalizeProviderToken(protocolVersion) == "v1"
 }
 
 func accountWithSelectedApiKey(
@@ -350,7 +430,7 @@ func accountWithSelectedApiKey(
 	return account
 }
 
-// apiKeySelectionInput mirrors selectAccountRuntimeApiKeyEntryAsync's input.
+// apiKeySelectionInput mirrors selectAccountRuntimeApiKeyEntry's input.
 type apiKeySelectionInput struct {
 	AccountID                string
 	credentials              map[string]any
@@ -358,75 +438,13 @@ type apiKeySelectionInput struct {
 	ContinueAfterFingerprint string
 	RuntimeStates            []gatewayruntimecache.AccountAPIKeyRuntimeSelectionState
 	entries                  []apiKeyEntry
+	counter                  APIKeyRotationCounter
 }
 
 type selectedApiKeyEntry struct {
 	key         string
 	fingerprint string
 	index       int
-}
-
-// selectAccountRuntimeApiKeyEntry mirrors
-// selectAccountRuntimeApiKeyEntryAsync: prefer the persisted selection, then
-// recovery states, then the next non-excluded entry.
-func selectAccountRuntimeApiKeyEntry(input apiKeySelectionInput) (*selectedApiKeyEntry, error) {
-	excluded := input.ExcludeFingerprints
-	if excluded == nil {
-		excluded = map[string]struct{}{}
-	}
-	stateByFingerprint := make(map[string]gatewayruntimecache.AccountAPIKeyRuntimeSelectionState, len(input.RuntimeStates))
-	for _, state := range input.RuntimeStates {
-		stateByFingerprint[state.Fingerprint] = state
-	}
-
-	ordered := make([]apiKeyEntry, 0, len(input.entries))
-	if input.ContinueAfterFingerprint != "" {
-		afterIndex := -1
-		for index, entry := range input.entries {
-			if entry.fingerprint == input.ContinueAfterFingerprint {
-				afterIndex = index
-				break
-			}
-		}
-		for index := afterIndex + 1; index < len(input.entries); index++ {
-			ordered = append(ordered, input.entries[index])
-		}
-		for index := 0; index <= afterIndex; index++ {
-			ordered = append(ordered, input.entries[index])
-		}
-	} else {
-		ordered = append(ordered, input.entries...)
-	}
-
-	var healthy *selectedApiKeyEntry
-	var recovery *selectedApiKeyEntry
-	for _, entry := range ordered {
-		if _, isExcluded := excluded[entry.fingerprint]; isExcluded {
-			continue
-		}
-		state, hasState := stateByFingerprint[entry.fingerprint]
-		if hasState && state.Disabled {
-			continue
-		}
-		cooldownActive := false
-		if hasState && state.CooldownUntil != nil {
-			cooldownActive = cooldownUntilActive(*state.CooldownUntil)
-		}
-		candidate := &selectedApiKeyEntry{key: entry.key, fingerprint: entry.fingerprint, index: entry.index}
-		if cooldownActive {
-			if recovery == nil {
-				recovery = candidate
-			}
-			continue
-		}
-		if healthy == nil {
-			healthy = candidate
-		}
-	}
-	if healthy != nil {
-		return healthy, nil
-	}
-	return recovery, nil
 }
 
 func cooldownUntilActive(cooldownUntil string) bool {

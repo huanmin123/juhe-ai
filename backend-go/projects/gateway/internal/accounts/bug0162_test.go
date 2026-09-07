@@ -179,8 +179,10 @@ func TestBug0162DeleteEnqueuesHealthTombstone(t *testing.T) {
 		AND config_revision = 3 AND dispatch_revision = 4 AND status = 'pending'`, id) != 1 {
 		t.Fatal("health-capable account must receive one tombstone outbox row")
 	}
+	// The create chain (BUG-0174 M-8) reserved epoch 1 with the creation
+	// snapshot, so the delete tombstone fences at epoch 2.
 	if env.count(t, `SELECT COUNT(*) FROM account_health_jobs_input_versions WHERE account_id = ?
-		AND current_version = 1`, id) != 1 {
+		AND current_version = 2`, id) != 1 {
 		t.Fatal("health input epoch must be reserved")
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_health_jobs_input_outbox WHERE account_id = 'acc-custom'`) != 0 {
