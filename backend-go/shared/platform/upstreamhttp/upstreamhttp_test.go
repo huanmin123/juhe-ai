@@ -20,6 +20,31 @@ func TestReadBoundedRejectsOverflow(t *testing.T) {
 	}
 }
 
+func TestReadBoundedPartialKeepsBytesOnReadError(t *testing.T) {
+	reader := &tailErrorReader{body: "data: {\"ok\":true}\n\n", err: io.ErrUnexpectedEOF}
+	body, err := ReadBoundedPartial(reader, 1024)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err=%v", err)
+	}
+	if string(body) != "data: {\"ok\":true}\n\n" {
+		t.Fatalf("body=%q", body)
+	}
+}
+
+type tailErrorReader struct {
+	body string
+	err  error
+}
+
+func (r *tailErrorReader) Read(p []byte) (int, error) {
+	if r.body == "" {
+		return 0, r.err
+	}
+	n := copy(p, r.body)
+	r.body = r.body[n:]
+	return n, nil
+}
+
 func TestReadAndDrainBoundedRetainsPrefixAndConsumesSuffix(t *testing.T) {
 	reader := &trackingReader{reader: strings.NewReader("123456")}
 	body, err := ReadAndDrainBounded(reader, 4)
