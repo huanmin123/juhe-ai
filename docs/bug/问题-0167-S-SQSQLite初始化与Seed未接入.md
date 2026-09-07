@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0167
-- 状态：待修复
+- 状态：已修复（2026-09-06 复核确认 CLI 入口存在：--ensure-schema/--seed/--driver/--dsn，见文末状态同步）
 - 严重程度：P1
 - 发现时间：2026-09-04
 - 发现方式：自查（已提交 Git 历史审计）
@@ -31,3 +31,7 @@
 - 修改点：在 maintenance 中提供显式、幂等、可审计的 SQLite schema/seed 命令，并接入 gateway/jobs 启动 preflight；覆盖 fresh/restart/partial failure。
 - 当前验证：仅包内 schema 测试通过，未执行 fresh CLI/启动验证。
 - 结论：S-SQ 不是完整 schema owner 迁移，不能标记 archived。
+
+### 2026-09-06 从头复查状态同步
+
+- 复核确认：cmd/juhe-ai-maintenance/main.go:60-72 提供 --ensure-schema/--seed（sqlite/postgres 双 driver），storage_bootstrap.go 接管初始化；项目 AGENTS.md 的隔离实例流程（--ensure-schema/--seed）即基于此入口。

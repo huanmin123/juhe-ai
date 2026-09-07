@@ -1,34 +1,35 @@
 # Bug 记录目录
 
-- [BUG-0171](问题-0171-K2会话接口与多实例状态契约偏离.md)：K2 多实例 CAPTCHA/登录防护仍偏离 Node；profile settings、会话回执、错误映射、cookie、Bearer 与登录保护维度已修复；总体待修复。
+- [BUG-0173](问题-0173-Go运行时生产安全门禁缺失与信号错位.md)：Go 运行时缺 5 项生产安全门禁且死配置强制无效队列 URL；首次实现信号错读 JUHE_AI_NODE_ENV 被复审拦截，已统一为 NODE_ENV 并对齐 Node 解析语义（2026-09-06）；已修复。
+- [BUG-0171](问题-0171-K2会话接口与多实例状态契约偏离.md)：K2 会话五子项含多实例 Redis 态已全部落地（2026-09-06 复核）；残留 login-guard fail-open 语义裁决与真实多实例回放；已修复（附残留登记）。
 - [BUG-0170](问题-0170-K2系统账户创建与管理结果不等价.md)：K2 系统账户创建遗漏默认资源，且 null、日志、缓存和校验结果仍偏离 Node；options 与 PATCH 非 nullable 回执切片已修复；待修复。
-- [BUG-0169](问题-0169-K2认证高权限令牌与所有权门禁缺失.md)：K2 临时令牌白名单/参数契约及管理 API 的 `super_admin` 角色治理已修复；仍缺 owner gate 与 PostgreSQL 超级管理员并发不变量；待修复。
+- [BUG-0169](问题-0169-K2认证高权限令牌与所有权门禁缺失.md)：临时令牌 allowlist/参数契约、super_admin 治理、OwnerGate、PG 并发不变量四子项全部落地（2026-09-06 复核）；残留启动 CheckContract 未接 compose（有兜底）；已修复（附残留登记）。
 
-- [BUG-0168](问题-0168-S-PGSchema与默认Seed迁移不完整.md)：S-PG 缺少生产初始化入口并遗漏多类 Node 默认 seed，fresh/upgrade 结果不等价；待修复。
-- [BUG-0167](问题-0167-S-SQSQLite初始化与Seed未接入.md)：S-SQ 仅新增 DDL，未接入 SQLite schema/seed 生产入口，无法独立初始化 fresh 库；待修复。
+- [BUG-0168](问题-0168-S-PGSchema与默认Seed迁移不完整.md)：PG ensure-schema/--seed CLI 入口与默认 seed 补全已确认落地（2026-09-06 复核）；已修复。
+- [BUG-0167](问题-0167-S-SQSQLite初始化与Seed未接入.md)：SQLite schema/seed 生产入口（maintenance --ensure-schema/--seed）已确认存在（2026-09-06 复核）；已修复。
 
-- [BUG-0166](问题-0166-M03系统团队迁移权限状态与副作用偏离.md)：M03 系统团队遗漏 DTO/排序/历史/scope、授权 fanout、级联来源与缓存副作用；待修复。
-- [BUG-0165](问题-0165-M04授权迁移权限与数据副作用偏离.md)：M04 授权存在越权 scope、账号资源写入失败、端点/校验/DTO/幂等及副作用遗漏；创建 owner scope、owner fanout、owner-only 团队、active 上限、相同 active 幂等创建、terminal revival 及创建 expiry 契约子项已修复，其他写操作 scope、PATCH 校验与其余缺口仍待修复。
+- [BUG-0166](问题-0166-M03系统团队迁移权限状态与副作用偏离.md)：2026-09-06 补副作用生产接线与 PG keyword 语义，两子缺陷此前已修；已修复。
+- [BUG-0165](问题-0165-M04授权迁移权限与数据副作用偏离.md)：2026-09-06 实现窗口读层+8 条 usage 聚合+管理面 return/usage+revoke owner scope+strict 校验+列表投影并接线；修复中（剩余 rich summary 字段与 PG 集成验证）。
 
-- [BUG-0164](问题-0164-M06路由策略迁移遗漏端点与失效副作用.md)：M06 路由策略遗漏 options/edit/runtime/authorized 端点，并缺少 speed-first 与 API Key validation 失效；待修复。
-- [BUG-0163](问题-0163-M05分组迁移遗漏端点统计与约束.md)：M05 分组遗漏多个前端端点、authorized/统计投影，且分页和 null 校验偏离 Node；待修复。
+- [BUG-0164](问题-0164-M06路由策略迁移遗漏端点与失效副作用.md)：本包已修复（2026-09-05 审查即修复波次），移交项见文末处置记录。
+- [BUG-0163](问题-0163-M05分组迁移遗漏端点统计与约束.md)：已修复（groups 包内，2026-09-06）；4 项跨包主张登记移交（见文末裁决）。
 
-- [BUG-0162](问题-0162-M08账户迁移遗漏端点与运行态副作用.md)：M08 账户迁移仅覆盖核心 CRUD，遗漏大量 Node/前端端点及删除、锁定、凭据和运行态副作用；待修复。
+- [BUG-0162](问题-0162-M08账户迁移遗漏端点与运行态副作用.md)：2026-09-06 修复 revalidate/删除失效/导入 SSRF；修复中（balance-refresh 与 model-catalog 生产端口接线待跨进程桥设计裁决）。
 - [BUG-0161](问题-0161-M07APIKey迁移缺少更新与用量契约.md)：M07 API Key 缺少 PATCH、真实 usage 与必需 validation cache 失效；待修复。
 
-- [BUG-0160](问题-0160-K7Mock上游未记录模型与流式字段.md)：K7 mock upstream 未记录 `Model`/`StreamField`，16 场景无法验证关键请求契约；待修复。
+- [BUG-0160](问题-0160-K7Mock上游未记录模型与流式字段.md)：复核确认全部子项已消除（2026-09-06）；已修复。
 - [BUG-0159](问题-0159-K6Legacybridge前缀翻转缺少并发保护.md)：K6 legacybridge 前缀注册/删除与请求遍历共享 slice 无并发保护；已关闭（X01 随 legacybridge 包整体删除失效，非代码修复）。
-- [BUG-0158](问题-0158-K5缓存失效总线丢通知且注销失效.md)：K5 订阅注销无效且同 topic 1 秒内的本地失效通知被丢弃；待修复。
-- [BUG-0157](问题-0157-K4操作日志清洗结果偏离Node.md)：K4 敏感字段和长结构化 changes 的清洗结果偏离 Node；待修复。
-- [BUG-0156](问题-0156-K3内存限流双桶键冲突.md)：K3 内存限流未区分分钟与突发桶，两个窗口相互覆盖；待修复。
+- [BUG-0158](问题-0158-K5缓存失效总线丢通知且注销失效.md)：注销/节流此前已修，2026-09-06 补 handler panic 隔离；已修复。
+- [BUG-0157](问题-0157-K4操作日志清洗结果偏离Node.md)：2026-09-06 SafeChange 对齐 Node + sink MaxChanges 校验；已修复（DetailLevel 分布未验证已登记）。
+- [BUG-0156](问题-0156-K3内存限流双桶键冲突.md)：2026-09-06 四子项清零（双桶键/JSON 500/Redis 错误映射/只读 POST 规则）；已修复。
 
 - [BUG-0155](问题-0155-M04授权去重ProcessingTTL单位错误.md)：M04 Go 授权去重 `ProcessingTTL` 曾将纳秒常量误作 120ms，现已修正为与 Node 等价的 120s；M04 其他迁移缺口仍待修复。
 
 - [BUG-0154](问题-0154-K1-GoHTTP内核横切契约偏离.md)：K1 Go HTTP 内核在压缩协商/缓冲、trace、安全头、body parser 与 mutation 去重时序上偏离 Node 契约；17 项已按 Node 锁定依赖实测修复并建立 golden；cmd/acceptance 全量回归待并行迁移批次落定后重跑。
 
-- [BUG-0153](问题-0153-M01公告迁移端点与数据契约偏离.md)：M01 公告 Go 实现未接入 gateway，并遗漏公开端点、管理投影、严格校验、时间字段、revision、副作用等 Node/前端契约；待修复。
+- [BUG-0153](问题-0153-M01公告迁移端点与数据契约偏离.md)：2026-09-06 全子项清零（公开面三路由/投影/Create 错位/no-op/严格校验/日志/分页）；已修复。
 
-- [BUG-0152](问题-0152-Go管理迁移未接入唯一入口导致K2路由失效.md)：K2 摘除 Node `/auth` 与 `/system-accounts` 挂载后，Go `authsys` 未接入唯一 gateway 入口，导致正式系统 API 没有生产 owner；待修复。
+- [BUG-0152](问题-0152-Go管理迁移未接入唯一入口导致K2路由失效.md)：2026-09-06 复核确认 Go 已挂载唯一入口，前端调用面静态对齐；已修复（残留归档 manifest 簿记）。
 
 - [BUG-0151](问题-0151-Go健康探活关闭HTTP2导致代理链误报上游连接失败.md)：Go J1 在自定义 SOCKS5H 拨号器上关闭 HTTP/2，导致代理链返回的 HTTP/2 SETTINGS 被误判为上游连接失败；现已将 J1/J2/J3a 上游 transport 与 SOCKS5 握手收口到 `shared/platform/upstreamhttp`，完成隔离生产凭据和 Go 全项目复查，待生产发布。
 

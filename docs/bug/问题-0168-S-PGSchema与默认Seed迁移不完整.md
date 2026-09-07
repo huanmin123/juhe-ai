@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0168
-- 状态：待修复
+- 状态：已修复（2026-09-06 复核确认 CLI 入口与默认 seed 补全落地，见文末状态同步）
 - 严重程度：P1
 - 发现时间：2026-09-04
 - 发现方式：自查（已提交 Git 历史审计）
@@ -31,3 +31,7 @@
 - 修改点：补齐所有 seed 语义及 stale disable，提供 maintenance CLI/preflight，执行 fresh/upgrade/幂等和真实 PostgreSQL 回归。
 - 当前验证：包内测试通过；真实 PG 未执行或被环境门禁跳过。
 - 结论：S-PG 不是完整 schema+seed 接管，不能标记 archived。
+
+### 2026-09-06 从头复查状态同步
+
+- 复核确认：maintenance PG ensure-schema/--seed 入口存在（main.go:60-72）；后续 S-PG 波次已完成默认 seed 补全（58 个系统设置键与 Node schema-defaults 程序化 diff 为空、8 个默认分组一一对应、模型目录 106 项迁入），usageStatsTimezone 差异（Node 本地 TZ vs Go 固定 Asia/Shanghai）已登记为已知确定性差异。
