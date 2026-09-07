@@ -420,12 +420,19 @@ func seedNewerAdapterSnapshot(t *testing.T, refresher *gatewayManualBalanceRefre
 	}
 	defer func() { _ = store.ReleaseAccountLease(context.Background(), owner, account) }()
 	now := time.Now().UTC()
-	return store.AppendOutcome(ctx, owner, account, platformaccountbalance.Outcome{
+	inserted, err := store.AppendOutcome(ctx, owner, account, platformaccountbalance.Outcome{
 		OutcomeID: "seed-outcome", RequestID: "seed-request", AccountID: "acct-adapter",
 		SystemAccountID: "sys-adapter", InputVersion: 2, ConfigRevision: 1,
 		Trigger: platformaccountbalance.TriggerPeriodic, ObservedAt: now,
 		Snapshot: platformaccountbalance.Snapshot{Status: platformaccountbalance.StatusFresh, RemainingUSD: "9.99"},
 	})
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		return fmt.Errorf("seeder outcome must insert")
+	}
+	return nil
 }
 
 // cannedJSONDoer is the injectable HTTPDoer standing in for the upstream
@@ -439,6 +446,12 @@ func (d *cannedJSONDoer) Do(*http.Request) (*http.Response, error) {
 		Header:     http.Header{},
 	}, nil
 }
+
+// seedCatalogRefreshDraftFixtures prepares the provider/profile rows the draft
+// pipeline requires and returns the admin's default gpt group ID (created by
+// the auth default-resource ensurer, accounts accounts_test.go testProviderDDL
+// / testProfileDDL 的组合根等价物).
+func seedCatalogRefreshDraftFixtures(t *testing.T, db *sql.DB, adminID string) string {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	statements := []struct {
