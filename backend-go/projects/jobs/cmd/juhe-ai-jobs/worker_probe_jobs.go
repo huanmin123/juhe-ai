@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -61,7 +60,6 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 
 	probeService, err := accountprobe.NewService(accountprobe.Options{
 		Source:      store,
-		Client:      &http.Client{},
 		Secret:      a.config.Secret,
 		Concurrency: a.config.ProbeConcurrency,
 	})

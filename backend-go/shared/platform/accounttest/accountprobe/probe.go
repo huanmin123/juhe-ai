@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // 诊断分级超时（Node accountDiagnosticRetryTimeoutMs = [10_000, 20_000, 30_000]）。
@@ -49,6 +51,7 @@ type View struct {
 	// ProviderProtocolProfileID 为协议档案 ID（手动测试结果信封消费；
 	// 探针请求构造不使用）。
 	ProviderProtocolProfileID string
+	ClientCompatibility       string
 	// HealthCheckModel / HealthCheckEndpointMode 来自账户行。
 	HealthCheckModel        string
 	HealthCheckEndpointMode string
@@ -99,7 +102,11 @@ func NewService(options Options) (*Service, error) {
 	}
 	client := options.Client
 	if client == nil {
-		client = &http.Client{}
+		var err error
+		client, err = upstreamhttp.SharedClient("", upstreamhttp.TransportOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("创建账户探针受控 HTTP client 失败: %w", err)
+		}
 	}
 	var slots chan struct{}
 	if options.Concurrency > 0 {
@@ -400,9 +407,33 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	for name, value := range request.headers {
 		httpReq.Header.Set(name, value)
 	}
-	// buildUpstreamHeaders：统一 Bearer 认证。
-	httpReq.Header.Set("authorization", "Bearer "+apiKey)
+	// 认证头必须按协议与账户类型构造，不能让手动探针把所有上游都
+	// 伪装成 OpenAI Bearer。
+	switch protocol {
+	case ProtocolAnthropic:
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
+		if view.Type == "oauth" || view.ProviderProtocolProfileID == "profile_glm_coding_anthropic_v1" {
+			httpReq.Header.Set("authorization", "Bearer "+apiKey)
+		} else {
+			httpReq.Header.Set("x-api-key", apiKey)
+		}
+	case ProtocolGemini:
+		if view.Type == "google_oauth" {
+			httpReq.Header.Set("authorization", "Bearer "+apiKey)
+		} else {
+			httpReq.Header.Set("x-goog-api-key", apiKey)
+		}
+	default:
+		httpReq.Header.Set("authorization", "Bearer "+apiKey)
+	}
 	httpReq.Header.Set("content-length", fmt.Sprintf("%d", len(request.body)))
+	if isStream {
+		if view.Type == "oauth" || view.Type == "google_oauth" {
+			httpReq.Header.Set("accept", "text/event-stream")
+		} else {
+			httpReq.Header.Set("accept", "application/json, text/event-stream")
+		}
+	}
 
 	startedAt := s.now()
 	response, readErr := s.readUpstream(ctx, httpReq, timeout, &firstByteAt)
@@ -417,9 +448,14 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 		attempt.Evidence.UpstreamCompleted = readErr == nil
 		attempt.Evidence.UpstreamStatus = response.status
 		if readErr != nil {
-			// HTTP framing 完成但读取响应体中断 → read_incomplete 证据。
-			attempt.Evidence.TransportFailureKind = accountquality.TransportFailureRead
-			attempt.Evidence.TimedOut = false
+			// 已读内容具备完整协议和输出证据时，人工测试与自动探针
+			// 必须共享同一裁决；尾部传输错误不能覆盖语义成功。
+			if attempt.Result.Success {
+				attempt.Evidence.UpstreamCompleted = true
+			} else {
+				attempt.Evidence.TransportFailureKind = accountquality.TransportFailureRead
+				attempt.Evidence.TimedOut = false
+			}
 		}
 		attempt.Result.TraceID = newTraceID()
 		attempt.Result.DurationMs = durationMS
@@ -907,8 +943,53 @@ func buildTestRequest(view *View, mode EndpointMode, model string, challenge Out
 		if err != nil {
 			return nil, err
 		}
+		if view.ClientCompatibility == "codex_responses" && (mode == ModeResponsesJSON || mode == ModeResponsesSSE) {
+			body, err = applyCodexCompatibilityPayload(body)
+			if err != nil {
+				return nil, err
+			}
+		}
 		return &testRequest{path: path, body: body, model: model}, nil
 	}
+}
+
+func applyCodexCompatibilityPayload(raw []byte) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("编码 Codex 兼容探针请求失败: %w", err)
+	}
+	sessionID := newUUID()
+	installationID := newUUID()
+	turnID := newUUID()
+	windowID := sessionID + ":0"
+	metadata := map[string]any{
+		"installation_id": installationID,
+		"session_id":      sessionID,
+		"thread_id":       sessionID,
+		"turn_id":         turnID,
+		"window_id":       windowID,
+		"request_kind":    "turn",
+		"thread_source":   "user",
+		"sandbox":         "none",
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, err
+	}
+	body["store"] = false
+	body["include"] = []string{"reasoning.encrypted_content"}
+	body["reasoning"] = map[string]any{"context": "all_turns"}
+	body["parallel_tool_calls"] = false
+	body["prompt_cache_key"] = sessionID
+	body["client_metadata"] = map[string]any{
+		"x-codex-window-id":       windowID,
+		"turn_id":                 turnID,
+		"session_id":              sessionID,
+		"x-codex-turn-metadata":   string(metadataJSON),
+		"x-codex-installation-id": installationID,
+		"thread_id":               sessionID,
+	}
+	return json.Marshal(body)
 }
 
 // buildUpstreamURL 等价各协议 buildUpstreamUrl：

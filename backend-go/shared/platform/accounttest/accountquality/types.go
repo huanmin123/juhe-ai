@@ -175,6 +175,11 @@ const (
 // 说明：Node evidence.diagnosticTimeoutExhausted 允许 undefined（按 true 处理），
 // 但两个队列的实际调用方总是传显式布尔值，Go 端以 bool 直传，语义一致。
 func AutomaticProbeOutcome(result ProbeResult, evidence ProbeEvidence) ProbeOutcome {
+	// 读取尾部发生 EOF/UnexpectedEOF 但响应已经通过完整协议和输出
+	// 证据校验时，人工测试与自动探针必须得到相同的成功结论。
+	if result.Success && evidence.TransportFailureKind == TransportFailureRead {
+		return OutcomeCompleteSuccess
+	}
 	// transportProbeOutcomeFromAccountTestResult：
 	if evidence.Canceled {
 		return OutcomeProbeTaskFailure // unknown/canceled

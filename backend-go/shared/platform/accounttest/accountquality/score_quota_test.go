@@ -94,6 +94,16 @@ func TestAutomaticProbeOutcome(t *testing.T) {
 	}
 }
 
+func TestAutomaticProbeOutcomeAcceptsCompleteSemanticResponseWithReadTailError(t *testing.T) {
+	got := AutomaticProbeOutcome(
+		ProbeResult{Success: true},
+		ProbeEvidence{HasRealUpstreamAttempt: true, TransportFailureKind: TransportFailureRead},
+	)
+	if got != OutcomeCompleteSuccess {
+		t.Fatalf("outcome=%q", got)
+	}
+}
+
 func TestSystemInsufficientQuotaRuleMatches(t *testing.T) {
 	cases := []struct {
 		name       string

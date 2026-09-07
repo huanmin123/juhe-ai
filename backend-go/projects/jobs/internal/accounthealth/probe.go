@@ -70,15 +70,18 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxBodyBytes
 	}
-	body, err := upstreamhttp.ReadBounded(response.Body, maxBytes)
-	if err != nil {
-		return responseReadFailure(err)
-	}
+	body, readErr := upstreamhttp.ReadBoundedPartial(response.Body, maxBytes)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return neutral(response.StatusCode, "upstream_http_status", "上游返回非成功状态")
 	}
 	if err := verifyResponse(input, body); err != nil {
+		if readErr != nil {
+			return responseReadFailure(readErr)
+		}
 		return neutral(response.StatusCode, "upstream_protocol_invalid", "上游响应未满足探活语义")
+	}
+	if errors.Is(readErr, upstreamhttp.ErrResponseBodyTooLarge) {
+		return responseReadFailure(readErr)
 	}
 	return ProbeResult{Outcome: OutcomeSuccess, StatusCode: response.StatusCode}
 }

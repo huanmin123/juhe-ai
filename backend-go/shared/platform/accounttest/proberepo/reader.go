@@ -29,6 +29,7 @@ type AccountForTestView struct {
 	accountquality.AccountForTest
 	ProviderCode              string
 	ProviderProtocolProfileID string
+	ClientCompatibility       string
 	ProtocolVersion           string
 	HealthCheckModel          string
 	HealthCheckEndpointMode   string
@@ -178,6 +179,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 	}
 	view.ProviderCode = providerCode.String
 	view.ProviderProtocolProfileID = protocolProfile.String
+	view.ClientCompatibility = clientCompatibility.String
 	view.ProtocolVersion = protocolVersion.String
 	view.HealthCheckModel = healthModel.String
 	view.HealthCheckEndpointMode = healthMode.String
@@ -438,6 +440,7 @@ type CandidateAccount struct {
 	ProviderCode                string
 	ProtocolCode                string
 	ProtocolVersion             string
+	ClientCompatibility         string
 	// BaseURL 取自凭据 base_url（探针上游地址）。
 	BaseURL     string
 	Credentials map[string]any
@@ -600,6 +603,7 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		ProviderCode:                resourceProviderValue,
 		ProtocolCode:                resourceProtocolValue,
 		ProtocolVersion:             resourceProtocolVersionValue,
+		ClientCompatibility:         clientCompatibility.String,
 		BaseURL:                     textCredential(credentialsMap, "base_url"),
 		Credentials:                 credentialsMap,
 		APIKeys:                     apiKeys,
@@ -806,6 +810,7 @@ func (s *Store) LoadProbeView(ctx context.Context, req accountquality.ProbeReque
 		ProtocolCode:              candidate.ProtocolCode,
 		ProtocolVersion:           candidate.ProtocolVersion,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
+		ClientCompatibility:       candidate.ClientCompatibility,
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		SupportedModels:           account.SupportedModels,
@@ -842,6 +847,7 @@ func AssembleProbeView(account *AccountForTestView, candidate *CandidateAccount)
 		ProtocolCode:              candidate.ProtocolCode,
 		ProtocolVersion:           candidate.ProtocolVersion,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
+		ClientCompatibility:       candidate.ClientCompatibility,
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		SupportedModels:           account.SupportedModels,
