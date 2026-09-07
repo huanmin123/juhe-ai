@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -175,7 +174,6 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 	}
 	probeService, err := accountprobe.NewService(accountprobe.Options{
 		Source:      savedStore,
-		Client:      &http.Client{},
 		Secret:      cfg.Secret,
 		Concurrency: env.ProbeConcurrency,
 	})

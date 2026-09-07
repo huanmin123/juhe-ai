@@ -254,6 +254,7 @@ func draftView(secret string, draft *DraftSnapshot, modelOverride, endpointModeO
 		ProtocolCode:              draft.ProtocolCode,
 		ProtocolVersion:           draft.ProtocolVersion,
 		ProviderProtocolProfileID: draft.ProviderProtocolProfileID,
+		ClientCompatibility:       draft.ClientCompatibility,
 		HealthCheckModel:          healthModel,
 		HealthCheckEndpointMode:   healthMode,
 		SupportedModels:           draft.SupportedModels,

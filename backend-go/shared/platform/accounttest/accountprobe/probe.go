@@ -425,6 +425,24 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 		}
 	default:
 		httpReq.Header.Set("authorization", "Bearer "+apiKey)
+		if view.Type == "oauth" && (view.ProviderProtocolProfileID == "" || view.ProviderProtocolProfileID == "profile_gpt_openai_v1") {
+			httpReq.Header.Set("openai-beta", "responses=experimental")
+			if accountID := credentialText(view.Credentials, "account_id"); accountID != "" {
+				httpReq.Header.Set("chatgpt-account-id", accountID)
+			} else if accountID := credentialText(view.Credentials, "chatgpt_user_id"); accountID != "" {
+				httpReq.Header.Set("chatgpt-account-id", accountID)
+			}
+		}
+		if view.ProviderProtocolProfileID == "profile_xai_openai_v1" && view.Type == "oauth" && strings.EqualFold(httpReq.URL.Hostname(), "cli-chat-proxy.grok.com") {
+			httpReq.Header.Set("user-agent", "xai-grok-workspace/0.2.93")
+			httpReq.Header.Set("x-xai-token-auth", "xai-grok-cli")
+			httpReq.Header.Set("x-grok-client-version", "0.2.93")
+		}
+	}
+	if protocol == ProtocolGemini && view.Type == "google_oauth" {
+		if quotaProject := credentialText(view.Credentials, "quota_project_id"); quotaProject != "" {
+			httpReq.Header.Set("x-goog-user-project", quotaProject)
+		}
 	}
 	httpReq.Header.Set("content-length", fmt.Sprintf("%d", len(request.body)))
 	if isStream {
@@ -778,6 +796,17 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func credentialText(credentials map[string]any, key string) string {
+	if credentials == nil {
+		return ""
+	}
+	value, ok := credentials[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 // quotaResponseHeaders 等价 limitedQuotaResponseHeaders 的白名单。
