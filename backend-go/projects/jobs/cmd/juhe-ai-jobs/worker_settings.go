@@ -12,7 +12,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsverify"
 )

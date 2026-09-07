@@ -369,8 +369,6 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 
 	mainPort := freePort(t)
 	healthPort := freePort(t)
-	f4Port := freePort(t)
-	f3Port := freePort(t)
 	fixture.baseURL = fmt.Sprintf("http://127.0.0.1:%d", mainPort)
 	fixture.healthURL = fmt.Sprintf("http://127.0.0.1:%d", healthPort)
 	secret := randomHex(t, 16)
@@ -425,14 +423,10 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		"JUHE_AI_AUDIT_LOG_DATABASE_PATH":              filepath.Join(root, "storage", "audit.sqlite3"),
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":             filepath.Join(root, "storage", "audit-blobs"),
 		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH":     filepath.Join(root, "storage", "audit-business-settings.sqlite3"),
-		"JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS":       fmt.Sprintf("127.0.0.1:%d", f3Port),
-		"JUHE_AI_AUDIT_LOG_INPUT_SECRET":               randomHex(t, 16),
 		"JUHE_AI_OPERATION_LOG_STORE":                  "sqlite",
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":            "acceptance-gateway",
 		"JUHE_AI_OPERATION_LOG_DATABASE_PATH":          filepath.Join(root, "storage", "operation-log.sqlite3"),
 		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "storage", "oplog-business-settings.sqlite3"),
-		"JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS":   fmt.Sprintf("127.0.0.1:%d", f4Port),
-		"JUHE_AI_OPERATION_LOG_INPUT_SECRET":           randomHex(t, 16),
 		"JUHE_AI_USAGE_SHARD_ROOT":                     usageShardRoot,
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":       codexRoot,
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT":      "1",

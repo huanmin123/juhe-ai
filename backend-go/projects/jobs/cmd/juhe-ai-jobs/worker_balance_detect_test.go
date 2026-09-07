@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )

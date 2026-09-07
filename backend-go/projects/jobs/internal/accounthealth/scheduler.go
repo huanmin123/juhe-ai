@@ -26,6 +26,9 @@ type Runner struct {
 	store             *Store
 	logger            *slog.Logger
 	directInputReader directInputLoader
+	// probeDrain 是 account_health_probe_request_outbox 的消费面（去跨进程
+	// 战役第二刀接入；nil 表示通道未装配，runCycle 跳过 drain）。
+	probeDrain *ProbeRequestDrain
 
 	mu     sync.RWMutex
 	status RunnerStatus
@@ -227,6 +230,13 @@ func (r *Runner) runOwned(parent context.Context, lease OwnerLease) error {
 func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 	now := r.cfg.Now().UTC()
 	r.setScan(now)
+	// Outbox drain first: gateway-published probe requests (the removed
+	// loopback dispatch bridge's replacement) must not wait behind this
+	// cycle's scheduled batch — the drain keeps the old bridge's latency
+	// shape (one scan interval between publish and probe).
+	if err := r.drainProbeRequestOutbox(ctx, lease); err != nil {
+		return err
+	}
 	var err error
 	var inputs []Input
 	if r.directInputReader != nil {

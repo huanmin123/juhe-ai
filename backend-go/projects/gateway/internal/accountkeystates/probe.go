@@ -20,9 +20,9 @@ import (
 //   - deferAccountApiKeyRuntimeProbe(Async)           → DeferProbe；
 //   - accountApiKeyRuntimeTarget                      → ResolveTarget。
 //
-// 与 jobs 侧 backend-go-jobs/internal/proberepo/mutation.go 同表同键、SQL
-// 同源（同一批 CAS 围栏）；jobs 承担后台 claim/探针写，本包承担网关侧被动
-// 失败/成功登记与 defer，读写互通不冲突。
+// 与 jobs 探针族使用的共享 backend-go-platform/accounttest/proberepo
+// （mutation.go）同表同键、SQL 同源（同一批 CAS 围栏）；jobs 承担后台
+// claim/探针写，本包承担网关侧被动失败/成功登记与 defer，读写互通不冲突。
 //
 // 方言取材：PostgreSQL 分支取 Node *Async 变体（UPDATE ... AS current_state
 // 别名 + ::timestamptz cast），SQLite 分支取同步变体（julianday 比较）。

@@ -69,9 +69,15 @@ try {
     'JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3',
     'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=./data/codex-context/state-shards',
     'JUHE_AI_AUDIT_LOG_INSTANCE_ID=dev-audit-log',
+    // 去跨进程战役第四刀回归注入：历史 .env 残留的 F3/F4 loopback input env
+    // 必须被 dev 启动器显式 drop，不得进入 Go 子进程。
     'JUHE_AI_AUDIT_LOG_INPUT_SECRET=dev-audit-log-input-secret-with-32-bytes',
+    'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303',
+    'JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303',
     'JUHE_AI_OPERATION_LOG_INSTANCE_ID=dev-operation-log',
-    'JUHE_AI_OPERATION_LOG_INPUT_SECRET=dev-operation-log-input-secret-with-32-bytes'
+    'JUHE_AI_OPERATION_LOG_INPUT_SECRET=dev-operation-log-input-secret-with-32-bytes',
+    'JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3304',
+    'JUHE_AI_OPERATION_LOG_INPUT_URL=http://127.0.0.1:3304'
   ].join('\n'))
 
   writeFileSync(modulePath, buildTestableModule(readFileSync(sourcePath, 'utf8'), fixtureRoot))
@@ -90,13 +96,17 @@ try {
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_STORE, 'sqlite')
   assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID, 'dev-go-jobs-runtime-log')
   assert.equal(sidecarEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID, 'dev-go-jobs-table-monitor')
-  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3304')
   assert.equal(sidecarEnv.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3305')
   assert.equal(sidecarEnv.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3306')
   assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID, 'dev-audit-log')
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID, 'dev-operation-log')
-  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3304')
-  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_URL, 'http://127.0.0.1:3304')
+  // 去跨进程战役第四刀：F3/F4 loopback input env 必须显式 drop（不得转发）。
+  assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, undefined, 'the removed audit input listen address must not be forwarded')
+  assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET, undefined, 'the removed audit input secret must not be forwarded')
+  assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_INPUT_URL, undefined, 'the removed audit input URL must not be forwarded')
+  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, undefined, 'the removed operation input listen address must not be forwarded')
+  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET, undefined, 'the removed operation input secret must not be forwarded')
+  assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_URL, undefined, 'the removed operation input URL must not be forwarded')
   assert.equal(sidecarEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, join(fixtureDevDataRoot, 'data', 'table-monitor.sqlite3'))
   assert.equal(sidecarEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, join(fixtureDevDataRoot, 'data', 'juhe-ai-usage-catalog.sqlite3'))
   assert.equal(sidecarEnv.JUHE_AI_STATS_DATABASE_PATH, join(fixtureDevDataRoot, 'data', 'juhe-ai-stats.sqlite3'))
@@ -115,20 +125,15 @@ try {
   assert.equal(postgresEnv.JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL, 'postgres://dev.example/juhe_ai')
 
   delete process.env.JUHE_AI_AUDIT_LOG_INSTANCE_ID
-  delete process.env.JUHE_AI_AUDIT_LOG_INPUT_SECRET
   delete process.env.JUHE_AI_OPERATION_LOG_INSTANCE_ID
-  delete process.env.JUHE_AI_OPERATION_LOG_INPUT_SECRET
   writeFileSync(join(fixtureRoot, '.env'), readFileSync(join(fixtureRoot, '.env'), 'utf8')
     .replace(/^JUHE_AI_AUDIT_LOG_INSTANCE_ID=.*(?:\r?\n|$)/mu, '')
-    .replace(/^JUHE_AI_AUDIT_LOG_INPUT_SECRET=.*(?:\r?\n|$)/mu, '')
-    .replace(/^JUHE_AI_OPERATION_LOG_INSTANCE_ID=.*(?:\r?\n|$)/mu, '')
-    .replace(/^JUHE_AI_OPERATION_LOG_INPUT_SECRET=.*(?:\r?\n|$)/mu, ''))
+    .replace(/^JUHE_AI_OPERATION_LOG_INSTANCE_ID=.*(?:\r?\n|$)/mu, ''))
   const generatedEnv = module.resolveGoProjectEnv()
   assert.equal(generatedEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID, `dev-go-gateway-audit-log-pid-${process.pid}`)
   assert.equal(generatedEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID, `dev-go-gateway-operation-log-pid-${process.pid}`)
-  assert.match(generatedEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET, /^[a-f0-9]{64}$/u)
-  assert.match(generatedEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET, /^[a-f0-9]{64}$/u)
-  assert.notEqual(generatedEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET, generatedEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET)
+  assert.equal(generatedEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET, undefined, 'dev startup must not generate audit input secrets anymore')
+  assert.equal(generatedEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET, undefined, 'dev startup must not generate operation input secrets anymore')
 } finally {
   for (const [key, value] of previousEnvironment) {
     if (value === undefined) delete process.env[key]

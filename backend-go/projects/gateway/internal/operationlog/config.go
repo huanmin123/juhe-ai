@@ -2,7 +2,6 @@ package operationlog
 
 import (
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -35,15 +34,6 @@ type Config struct {
 	RetentionDays        int
 	RetentionBatchSize   int
 }
-type InputServerConfig struct {
-	ListenAddress  string
-	SharedSecret   string
-	MaxBytes       int64
-	RequestTimeout time.Duration
-	ReplayWindow   time.Duration
-}
-
-const defaultInputMaxBytes int64 = 4 << 20
 
 const (
 	defaultOwnerLease           = 30 * time.Second
@@ -55,12 +45,10 @@ const (
 
 func LoadConfig(getenv func(string) string) (Config, error) {
 	modeRaw := strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_STORE"))
-	listen := strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS"))
-	if modeRaw == "" && listen == "" {
+	if modeRaw == "" {
+		// F4 store 未显式启用（去跨进程战役第四刀起不再依赖 loopback input
+		// listener 地址判定启用）：保持默认关闭。
 		return Config{}, nil
-	}
-	if modeRaw == "" || listen == "" {
-		return Config{}, fmt.Errorf("F4 operation log store and input listener must be configured together")
 	}
 	postgresURL := strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_POSTGRES_URL"))
 	ownerLease, err := durationOrDefault("JUHE_AI_OPERATION_LOG_OWNER_LEASE", getenv("JUHE_AI_OPERATION_LOG_OWNER_LEASE"), defaultOwnerLease)
@@ -178,34 +166,6 @@ func validateUsageShardIsolation(operationDatabasePath, usageShardRoot string) e
 		if same {
 			return fmt.Errorf("JUHE_AI_OPERATION_LOG_DATABASE_PATH must not share a SQLite file with JUHE_AI_USAGE_SHARD_ROOT")
 		}
-	}
-	return nil
-}
-func LoadInputServerConfig(getenv func(string) string) (InputServerConfig, error) {
-	cfg := InputServerConfig{ListenAddress: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS")), SharedSecret: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_INPUT_SECRET")), MaxBytes: defaultInputMaxBytes, RequestTimeout: 5 * time.Second, ReplayWindow: 5 * time.Minute}
-	if err := validateLoopbackAddress(cfg.ListenAddress); err != nil {
-		return InputServerConfig{}, err
-	}
-	if cfg.SharedSecret == "" {
-		return InputServerConfig{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_INPUT_SECRET is required")
-	}
-	if strings.EqualFold(getenv("NODE_ENV"), "production") && len(cfg.SharedSecret) < 32 {
-		return InputServerConfig{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_INPUT_SECRET must be at least 32 characters in production")
-	}
-	return cfg, nil
-}
-func validateLoopbackAddress(address string) error {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil || port == "" {
-		return fmt.Errorf("input listener must be loopback IP:port")
-	}
-	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("input listener port invalid")
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("input listener must be loopback")
 	}
 	return nil
 }

@@ -66,10 +66,14 @@ type chainRuntimeDeps struct {
 	Logger *slog.Logger
 	// AuditLogEnabled mirrors readAuditLogSettings().enabled.
 	AuditLogEnabled func() bool
-	// AuditInputURL is the F3 loopback audit input server base
-	// (http://127.0.0.1:<port>); finalized captures POST to
-	// /__aiinternal__/v1/audit-captures.
-	AuditInputURL string
+	// AuditDispatch carries the in-process F3 audit producer adapter
+	// (去跨进程战役第四刀: the loopback audit input URL/POST is gone; the
+	// producer persists finalized dropped captures directly). Nil adapters
+	// keep the retired empty-target degrade branch (silent drop).
+	AuditDispatch gatewaypreauth.AuditDispatcher
+	// AuditUsageDispatch carries the same producer behind the usage-face
+	// audit port (gatewayusage.AuditDispatcher). Nil degrades identically.
+	AuditUsageDispatch gatewayusage.AuditDispatcher
 	// SpoolDirectory enables the durable usage-record spool.
 	SpoolDirectory string
 	// QueueDefaults carries the concurrency.globalMax derived DEFAULT
@@ -134,10 +138,10 @@ type chainRuntimeDeps struct {
 	CodexUsageHeadersDispatcher gatewaycodex.CodexUsageHeadersDispatcher
 
 	// 失败派发链装配（chain_request_failure_health.go / chain_turn_probe_store.go /
-	// chain_turn_retry_redis.go）：jobs internal-api loopback 目标 + Redis 驱动的
-	// turn-retry 状态存储（nil → memory 驱动，Node runtimeStateDriver !== 'redis'
-	// 分叉）。
-	JobsInternalURL     string
+	// chain_turn_retry_redis.go）：健康检查派发的进程内 outbox writer（常驻，
+	// 无 HTTP 目标）+ Redis 驱动的 turn-retry 状态存储（nil → memory 驱动，
+	// Node runtimeStateDriver !== 'redis' 分叉）。
+	HealthProbeOutbox   *chainProbeRequestOutboxWriter
 	TurnRetryStateStore gatewaycodex.TurnRetryStateStore
 }
 
@@ -259,19 +263,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// avoidance stays off — exactly the Node missing-source-key semantics.
 	codexClientStrategy := &gatewaycodex.ClientStrategyDeps{CompactionExpected: gatewaycodex.CodexCompactionExpectedForRequest}
 	// 失败派发链（failure-dispatch.ts:404/571 request-failure health-check
-	// 派发 + turn-availability-probe 激活探活）：桥以 jobs internal-api
-	// loopback HMAC 为目标；baseURL 或 secret 缺失时派发按 input_unavailable
-	// 拒绝（Node input_unavailable 分叉），探活装配随 secret 分叉。
-	var chainHealthDispatch *chainRequestFailureHealthDispatcher
-	secret := ""
-	if deps.Identity != nil {
-		secret = deps.Identity.Secret
-	}
-	if strings.TrimSpace(deps.JobsInternalURL) != "" && strings.TrimSpace(secret) != "" {
-		chainHealthDispatch = newChainRequestFailureHealthDispatcher(deps.JobsInternalURL, secret, nil)
-	} else {
-		slogOnceWarn("gateway.response.requestFailureHealthCheckDispatch", "健康检查派发桥缺少 jobs internal-api 目标或签名密钥，按 input_unavailable 拒绝")
-	}
+	// 派发 + turn-availability-probe 激活探活）：派发经进程内 DB outbox
+	// （account_health_probe_request_outbox，chain_request_failure_health.go）
+	// 常驻写入，没有跨进程 HTTP 可达性门；outbox writer 未装配（或 deadline
+	// env 非法）时派发按 input_unavailable 拒绝（Node input_unavailable 分叉）。
+	chainHealthDispatch := newChainRequestFailureHealthDispatcher(deps.HealthProbeOutbox)
 	var chainTurnRetry *gatewaycodex.TurnRetryService
 	var chainTurnAvoidanceProbe *gatewaycodex.TurnAvoidanceProbeService
 	if deps.Identity != nil && strings.TrimSpace(deps.Identity.Secret) != "" {
@@ -365,7 +361,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		Codex:              chainCodexBridgePreflight(deps.CodexBridge),
 		Recoverable:        deps.Recoverable,
 		AuditSettings:      auditSettingsAdapter{enabled: deps.AuditLogEnabled},
-		AuditDispatch:      auditDispatchAdapter{target: deps.AuditInputURL, logger: logger},
+		AuditDispatch:      deps.AuditDispatch,
 	})
 	if err != nil {
 		recorder.Close()
@@ -385,7 +381,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		},
 		finalizationUsage:  recorder,
 		auditSettings:      auditSettingsSourceAdapter{enabled: deps.AuditLogEnabled},
-		auditDispatcher:    auditUsageDispatcher{target: deps.AuditInputURL, logger: logger},
+		auditDispatcher:    deps.AuditUsageDispatch,
 		usageModelResolver: usageModelResolverAdapter{},
 	}
 

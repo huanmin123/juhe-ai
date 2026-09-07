@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/speedfirstrepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/circuitstore"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 )
 
 // wireListProjectionFamily 把 account-list-availability-projection-maintenance
@@ -44,7 +45,7 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 			"缺 JUHE_AI_REDIS_STATE_URL（账户并发与运行态可用性为 Redis 单实现，jobs 与 Node/Go 网关共用键空间，无 Redis 时不得落库复制）")
 		return nil
 	}
-	if !proberepo.ValidSpeedFirstNamespace(a.config.RedisNamespace) {
+	if !speedfirstrepo.ValidSpeedFirstNamespace(a.config.RedisNamespace) {
 		a.registerDisabledJob(jobName,
 			"JUHE_AI_REDIS_NAMESPACE 非法（须匹配 ^[A-Za-z0-9_.:-]{1,64}$），运行态键空间不可定位")
 		return nil

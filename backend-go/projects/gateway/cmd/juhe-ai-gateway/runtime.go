@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
 
 // Node runtime.ts:399-400: the default development secret and the minimum
@@ -104,27 +105,30 @@ type runtimeConfig struct {
 	ChainEnabled bool
 
 	// Chain collaborator config: the audit capture switch (Node
-	// runtimeConfig.auditLog.enabled, JUHE_AI_AUDIT_LOG_ENABLED default true),
-	// the F3 loopback audit input server base URL (derived from
-	// JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS) and the durable usage-record
-	// spool directory (JUHE_AI_USAGE_SPOOL_DIRECTORY).
+	// runtimeConfig.auditLog.enabled, JUHE_AI_AUDIT_LOG_ENABLED default true)
+	// and the durable usage-record spool directory
+	// (JUHE_AI_USAGE_SPOOL_DIRECTORY). The F3 loopback audit input URL
+	// (derived from JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS) is deleted since
+	// 去跨进程战役第四刀 — chain audit dispatch goes through the in-process
+	// producer.
 	AuditLogEnabled     bool
-	AuditInputURL       string
 	UsageSpoolDirectory string
 
 	// Read-face collaborators (X04 404 项补齐):
-	// GoRuntimeMetricsURL is the loopback origin of the Go jobs metrics
-	// server that the /stats/system-metrics/go-runtime-trend route proxies
-	// (Node JUHE_AI_GO_RUNTIME_METRICS_URL, default http://127.0.0.1:3305).
-	GoRuntimeMetricsURL string
-	// JobsInternalURL is the loopback origin of the Go jobs internal-api
-	// surface (the same jobs health listener that serves /health and
-	// /__aisys__/metrics; jobs JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS default
-	// 127.0.0.1:3305). The manual account test dispatch bridge posts
-	// HMAC-signed tasks to POST /__aiinternal__/v1/account-test/dispatch
-	// here (JUHE_AI_JOBS_INTERNAL_URL; the default mirrors the jobs
-	// listener default like GoRuntimeMetricsURL).
-	JobsInternalURL string
+	// GoRuntimeMetrics is the shared sampler/store env family
+	// (JUHE_AI_GO_RUNTIME_METRICS_*): the gateway self-samples its Go runtime
+	// (role default gateway) and serves the go-runtime-trend route by querying
+	// the same store in-process. Disabled (default) keeps the route on the
+	// empty-items degradation.
+	GoRuntimeMetrics gometrics.Config
+	// AccountHealthProbeDeadlineMS is the probe deadline window the gateway
+	// writes into every account_health_probe_request_outbox row
+	// (JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS, the same env
+	// the old jobs-side publisher read: Node integerConfig default 65000,
+	// range [1000, 600000]). An invalid value keeps the outbox writer inert
+	// (0 → dispatches report input_unavailable), matching the old
+	// jobs-side missing-assembly semantics.
+	AccountHealthProbeDeadlineMS int64
 	// AccountHealthOutcomeSQLitePath is the J1 jobs outcome store the ai-health
 	// reads merge (Node JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH).
 	AccountHealthOutcomeSQLitePath string
@@ -491,27 +495,30 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	if raw := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_ENABLED")); raw != "" {
 		cfg.AuditLogEnabled = envBoolTrue(raw)
 	}
-	auditInputAddress := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS"))
-	if auditInputAddress != "" {
-		host, port, err := net.SplitHostPort(auditInputAddress)
-		if err != nil {
-			return runtimeConfig{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS 必须是 host:port: %q", auditInputAddress)
-		}
-		if host == "" || host == "0.0.0.0" || host == "::" {
-			host = "127.0.0.1"
-		}
-		cfg.AuditInputURL = "http://" + net.JoinHostPort(host, port)
-	}
 	cfg.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
 
-	cfg.GoRuntimeMetricsURL = strings.TrimSpace(getenv("JUHE_AI_GO_RUNTIME_METRICS_URL"))
-	if cfg.GoRuntimeMetricsURL == "" {
-		cfg.GoRuntimeMetricsURL = "http://127.0.0.1:3305"
+	// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标并直接查库提供
+	// go-runtime-trend（同名 JUHE_AI_GO_RUNTIME_METRICS_* env 家族，role 默认
+	// gateway；原跨进程 metrics 代理 env 已删除）。默认关闭，关闭时采样器不
+	// 装配、路由回空 items。
+	goRuntimeMetrics, err := gometrics.LoadConfig(getenv, "gateway")
+	if err != nil {
+		return runtimeConfig{}, fmt.Errorf("load Go runtime metrics config: %w", err)
 	}
-	// jobs internal-api loopback origin（默认与 jobs health 监听默认值一致）。
-	cfg.JobsInternalURL = strings.TrimSpace(getenv("JUHE_AI_JOBS_INTERNAL_URL"))
-	if cfg.JobsInternalURL == "" {
-		cfg.JobsInternalURL = "http://127.0.0.1:3305"
+	cfg.GoRuntimeMetrics = goRuntimeMetrics
+	// 健康检查派发 outbox 行的探针 deadline 窗口（原 jobs 侧发布器读取的同名
+	// env；默认 65000、范围 [1000, 600000] 对齐 Node integerConfig。非法值按
+	// 0 处理：outbox writer 保持 inert，派发显式 input_unavailable，不阻塞
+	// 启动——与原 jobs 装配失败即 503 的降级语义一致）。
+	cfg.AccountHealthProbeDeadlineMS = 65_000
+	if raw := strings.TrimSpace(getenv("JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1_000 || parsed > 10*60_000 {
+			slogOnceWarn("gateway.runtime.accountHealthProbeDeadline", "JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS 必须是 [1000, 600000] 内的整数，健康检查派发保持 input_unavailable")
+			cfg.AccountHealthProbeDeadlineMS = 0
+		} else {
+			cfg.AccountHealthProbeDeadlineMS = parsed
+		}
 	}
 	cfg.AccountHealthOutcomeSQLitePath = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH"))
 	cfg.AccountHealthOutcomePostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL"))

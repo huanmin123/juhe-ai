@@ -26,8 +26,10 @@ func getenvWith(values map[string]string) func(string) string {
 
 func goOwnerEnv(values map[string]string) map[string]string {
 	merged := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":    "go",
-		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL": "http://127.0.0.1:3305/account-balance/manual",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
+		// 去跨进程战役第四刀：/account-balance/manual 手动桥已删除；健康探测
+		// env 保留 jobs 基址语义（探针把 path 替换为 /health）。
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL": "http://127.0.0.1:3305/health",
 	}
 	for key, value := range values {
 		merged[key] = value
@@ -188,13 +190,13 @@ func TestAccountBalanceGoOwnerHealthEarlyExitReportsOwnerMode(t *testing.T) {
 // ownermode.Load gate).
 func TestResolveAccountBalanceOwnerMode(t *testing.T) {
 	cases := map[string]ownermode.Mode{
-		"":           ownermode.Active,
-		"active":     ownermode.Active,
-		"standby":    ownermode.Standby,
-		"drain":      ownermode.Drain,
-		" standby ":  ownermode.Standby,
-		"STANDBY":    ownermode.Active,
-		"weird":      ownermode.Active,
+		"":          ownermode.Active,
+		"active":    ownermode.Active,
+		"standby":   ownermode.Standby,
+		"drain":     ownermode.Drain,
+		" standby ": ownermode.Standby,
+		"STANDBY":   ownermode.Active,
+		"weird":     ownermode.Active,
 	}
 	for value, want := range cases {
 		if got := resolveAccountBalanceOwnerMode(getenvWith(map[string]string{
@@ -205,9 +207,10 @@ func TestResolveAccountBalanceOwnerMode(t *testing.T) {
 	}
 }
 
-// TestAccountBalanceGoOwnerHealthProbesJobsOrigin mirrors the archived URL
-// assertion: the probe reads the Go jobs /health from the manual-bridge
-// origin (path replaced, not appended) through the default transport.
+// TestAccountBalanceGoOwnerHealthProbesJobsOrigin pins the URL assertion: the
+// probe reads the Go jobs /health from the configured jobs base URL origin
+// (path replaced, not appended) through the default transport. The fixture
+// exercises the path-replacement branch with a non-/health path.
 func TestAccountBalanceGoOwnerHealthProbesJobsOrigin(t *testing.T) {
 	var probedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -217,7 +220,7 @@ func TestAccountBalanceGoOwnerHealthProbesJobsOrigin(t *testing.T) {
 	}))
 	defer server.Close()
 	health := accountBalanceGoOwnerHealth(getenvWith(goOwnerEnv(map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL": server.URL + "/account-balance/manual",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL": server.URL + "/jobs-origin",
 	})), accountBalanceHealthDeps{})
 	if !health.Ready {
 		t.Fatalf("jobs origin probe not ready: %s", mustJSONString(t, health))

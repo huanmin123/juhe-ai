@@ -8,7 +8,6 @@ package main
 // first use — degraded wiring is observable, never silent.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1659,20 +1658,23 @@ func (a codexPreflightAdapter) ApplyChatBridgeCompactPreflight(_ context.Context
 // ---------------------------------------------------------------------------
 
 // auditDispatchAdapter implements gatewaypreauth.AuditDispatcher: finalized
-// dropped captures POST to the F3 audit input server (Node
-// dispatchAuditLogToGo).
+// dropped captures go straight to the in-process F3 audit producer (Node
+// dispatchAuditLogToGo; the loopback HMAC POST to the retired F3 input server
+// is deleted since 去跨进程战役第四刀 — and that POST never carried the
+// mandatory HMAC signature, so chain audit capture silently lost every entry
+// with a 401; the producer is the defect fix that makes the write path live).
 type auditDispatchAdapter struct {
-	target string
-	logger *slog.Logger
-	client *http.Client
+	producer *auditlog.Producer
 }
 
+// nilProducerAdapter keeps the retired target=="" degrade branch: a missing
+// producer (test / degraded assembly) silently drops the capture.
 func (a auditDispatchAdapter) Dispatch(input gatewaypreauth.DispatchedAuditLogInput) {
-	if a.target == "" {
+	if a.producer == nil {
 		return
 	}
 	status := input.FinalStatusCode
-	payload := auditlog.AuditLogInput{
+	a.producer.Capture(auditlog.AuditLogInput{
 		ID:              input.ID,
 		LifecycleStatus: auditlog.LifecycleStatus(input.LifecycleStatus),
 		TraceID:         input.TraceID,
@@ -1693,63 +1695,32 @@ func (a auditDispatchAdapter) Dispatch(input gatewaypreauth.DispatchedAuditLogIn
 		CaptureStatus:   auditlog.AuditCaptureStatus(input.CaptureStatus),
 		StartedAt:       input.StartedAt,
 		EndedAt:         input.EndedAt,
-	}
-	a.post(auditlog.AuditInputPath, payload)
+	})
 }
 
-func (a auditDispatchAdapter) post(path string, payload any) {
-	client := a.client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	request, err := http.NewRequest(http.MethodPost, a.target+path, bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	request.Header.Set("Content-Type", "application/json")
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	response, err := client.Do(request.WithContext(ctx))
-	if err != nil {
-		return
-	}
-	_ = response.Body.Close()
-}
-
-// auditUsageDispatcher implements gatewayusage.AuditDispatcher with the same
-// input-server target.
+// auditUsageDispatcher implements gatewayusage.AuditDispatcher against the
+// in-process F3 producer. The retired wire hop serialized the usage DTO to
+// JSON and decoded it into the auditlog DTO at the input server; the same
+// JSON round-trip is kept verbatim so the wire contract (including its type
+// coercions, e.g. durationMs int → *int64) stays byte-for-byte equivalent.
 type auditUsageDispatcher struct {
-	target string
-	logger *slog.Logger
-	client *http.Client
+	producer *auditlog.Producer
 }
 
-func (d auditUsageDispatcher) DispatchAuditLog(ctx gatewayusage.Ctx, input gatewayusage.AuditLogInput) {
-	if d.target == "" {
+func (d auditUsageDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gatewayusage.AuditLogInput) {
+	if d.producer == nil {
 		return
 	}
-	client := d.client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	body, err := json.Marshal(input)
+	encoded, err := json.Marshal(input)
 	if err != nil {
+		// The retired HTTP hop dropped the capture on a marshal error too.
 		return
 	}
-	request, err := http.NewRequest(http.MethodPost, d.target+auditlog.AuditInputPath, bytes.NewReader(body))
-	if err != nil {
+	var decoded auditlog.AuditLogInput
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		return
 	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := client.Do(request.WithContext(ctx))
-	if err != nil {
-		return
-	}
-	_ = response.Body.Close()
+	d.producer.Capture(decoded)
 }
 
 // auditSettingsSourceAdapter implements gatewayusage.AuditLogSettingsSource.

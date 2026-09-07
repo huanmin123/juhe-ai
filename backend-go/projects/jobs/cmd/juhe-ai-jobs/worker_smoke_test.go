@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -190,41 +188,21 @@ func TestWorkerHealthExposesWorkerFields(t *testing.T) {
 	}
 }
 
-// TestWorkerDispatchHandlerMounted 验证 internalapi 派发 handler 挂载后
-// 拒绝无签名请求；未接 ManualTestQueue 适配器时合法请求保持 503 诚实语义。
-func TestWorkerDispatchHandlerMounted(t *testing.T) {
-	config, err := loadWorkerConfig(getenvFrom(workerSmokeTestEnv(t)))
-	if err != nil {
-		t.Fatalf("loadWorkerConfig: %v", err)
-	}
-	assembly, err := buildWorkerAssembly(config, nil)
-	if err != nil {
-		t.Fatalf("buildWorkerAssembly: %v", err)
-	}
-	defer assembly.closeStores()
-	if assembly.dispatchHandler == nil {
-		t.Fatal("dispatch handler must be mounted when secret configured")
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	server := &http.Server{Handler: assembly.dispatchHandler, ReadHeaderTimeout: 2 * time.Second}
-	go func() { _ = server.Serve(listener) }()
-	defer server.Close()
-
-	request, err := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+"/__aiinternal__/v1/account-test/dispatch", bytes.NewBufferString(`{"taskId":"t-1"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("dispatch without signature must be 401, got %d", response.StatusCode)
+// TestInternalDispatchRouteAbsent 验证 /__aiinternal__ 派发路由在 jobs 健康
+// 监听 mux 上整体消失（去跨进程战役第二刀：账户健康检查派发改走 DB outbox
+// 通道，jobs 不再持有任何 /__aiinternal__ handler）。
+func TestInternalDispatchRouteAbsent(t *testing.T) {
+	handler := jobsHTTPHandler(ownermode.Active, &atomic.Bool{}, func() bool { return true },
+		false, func() bool { return true }, false, func() bool { return true })
+	for _, path := range []string{
+		"/__aiinternal__/v1/account-health-check/dispatch",
+		"/__aiinternal__/v1/account-test/dispatch",
+		"/__aiinternal__",
+	} {
+		record := httptest.NewRecorder()
+		handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, path, nil))
+		if record.Code != http.StatusNotFound {
+			t.Fatalf("%s must be gone (404), got %d", path, record.Code)
+		}
 	}
 }

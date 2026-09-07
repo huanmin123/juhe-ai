@@ -24,11 +24,11 @@ package main
 //	ClearAPIKeyTransientFailure          → gatewayaccounteffects
 //	                                       AccountAPIKeyFailureGuard.ClearTransientFailure
 //	                                       (generation CAS)
-//	DispatchAccountHealthCheck           → the request-failure health bridge
-//	                                       (chain_request_failure_health.go):
-//	                                       POST {JobsInternalURL}/__aiinternal__/
-//	                                       v1/account-health-check/dispatch,
-//	                                       HMAC-SHA256 signed (Node
+//	DispatchAccountHealthCheck           → the request-failure health outbox
+//	                                       writer (chain_request_failure_health.go):
+//	                                       one account_health_probe_request_outbox
+//	                                       row per dispatch, written in-process
+//	                                       (jobs J1 Runner drains; Node
 //	                                       dispatchAccountHealthCheck,
 //	                                       internal-api service); fire-and-forget
 //	                                       — a rejected dispatch logs and the
@@ -70,9 +70,9 @@ import (
 // composed runtime collaborators. Every collaborator is already non-nil (the
 // chain runtime construction fail-fasts otherwise); the accountkeystates store
 // fails fast on a missing business handle / runtime secret. healthDispatch is
-// the jobs internal-api health-check bridge (an inert empty-URL bridge keeps
+// the in-process probe-request outbox writer (an inert nil-DB writer keeps
 // the dispatch on its logged skip contract).
-func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices, secret string, healthDispatch *chainJobsHealthDispatchBridge) (accounts.RuntimeResetEffects, error) {
+func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices, secret string, healthDispatch *chainProbeRequestOutboxWriter) (accounts.RuntimeResetEffects, error) {
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
 		DB:       composed.db,
 		Postgres: composed.pgDialect,
@@ -111,7 +111,7 @@ type accountsRuntimeResetBridge struct {
 	guard     *gatewayaccounteffects.AccountAPIKeyFailureGuard
 	stats     *gatewayquota.StatsStore
 	keyStates *accountkeystates.Store
-	health    *chainJobsHealthDispatchBridge
+	health    *chainProbeRequestOutboxWriter
 	now       func() time.Time
 
 	// transientGenerations remembers the opaque Redis CAS generation strings
@@ -227,17 +227,16 @@ func (b *accountsRuntimeResetBridge) ClearAPIKeyTransientFailure(ctx context.Con
 }
 
 // DispatchAccountHealthCheck bridges the reset/activation health-check
-// dispatch over the jobs internal-api loopback: the same HMAC-signed endpoint
-// the request-failure health bridge posts to (chain_request_failure_health.go →
-// jobs internal/internalapi/healthdispatch.go; Node dispatchAccountHealthCheck,
-// internal-api service). Fire-and-forget: a rejected dispatch (jobs absent,
-// non-202, empty bridge target) logs a warning and the reset continues.
+// dispatch over the in-process probe-request outbox (chain_request_failure_health.go
+// → account_health_probe_request_outbox; jobs J1 Runner drains pending rows).
+// Fire-and-forget: a rejected dispatch (inert writer, insert failure) logs a
+// warning and the reset continues.
 func (b *accountsRuntimeResetBridge) DispatchAccountHealthCheck(accountID, reason string) {
 	// Node dispatchAccountHealthCheck starts publication asynchronously and
 	// returns to the account write/reset path immediately. Keep that boundary:
-	// jobs availability must not add the bridge timeout to a committed request.
+	// the outbox insert must not add latency to a committed request.
 	go func() {
-		outcome := b.health.dispatch(accountID, reason, "", nil)
+		outcome := b.health.EnqueueProbeRequest(context.Background(), accountID, reason, "", nil)
 		if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
 			slog.Warn("runtime-reset 健康检查派发未受理",
 				"event", "account_health_check_dispatch_rejected",

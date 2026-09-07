@@ -1,20 +1,16 @@
 package main
 
 // accounts RuntimeResetEffects.DispatchAccountHealthCheck 接线断言：生产装配把
-// reset/激活面的健康检查派发接到 chain_request_failure_health.go 的 HMAC 桥
-// （POST {JobsInternalURL}/__aiinternal__/v1/account-health-check/dispatch，
-// 消费端 jobs internal/internalapi/healthdispatch.go；Node
-// dispatchAccountHealthCheck，internal-api service）。本文件用 httptest 假
-// jobs 端点断言：wire 契约（version/accountId/reason + 签名头）、受理与拒绝
-// 两条路径（fire-and-forget，派发拒绝不中断 reset），以及空目标桥的 inert
-// 降级契约。
+// reset/激活面的健康检查派发接到 chain_request_failure_health.go 的进程内
+// outbox writer（account_health_probe_request_outbox 行；消费端 jobs J1
+// Runner drain；Node dispatchAccountHealthCheck，internal-api service）。本
+// 文件用临时 SQLite 业务库断言：行契约（accountId/reason 投影 + pending 可
+// 消费状态）、受理与 inert 降级两条路径（fire-and-forget，派发拒绝不中断
+// reset），以及派发的异步边界（不阻塞 reset 调用方）。
 
 import (
+	"context"
 	"database/sql"
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -41,58 +37,53 @@ func newResetDispatchComposition(t *testing.T) *composition {
 }
 
 // newResetDispatchBridge 走生产同款构造：newAccountsRuntimeResetBridge +
-// newChainJobsHealthDispatchBridge（HMAC 桥指向 httptest 目标）。
-func newResetDispatchBridge(t *testing.T, composed *composition, server *httptest.Server) accounts.RuntimeResetEffects {
+// 进程内 probe-request outbox writer（与 chain 装配共用同一 DDL ensure 路径）。
+func newResetDispatchBridge(t *testing.T, composed *composition) (accounts.RuntimeResetEffects, *chainProbeRequestOutboxWriter) {
 	t.Helper()
-	client := server.Client()
-	client.Timeout = 5 * time.Second
-	resetEffects, err := newAccountsRuntimeResetBridge(composed, nil, &chainRuntimeServices{}, resetDispatchTestSecret,
-		newChainJobsHealthDispatchBridge(server.URL, resetDispatchTestSecret, client))
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "probe-outbox.sqlite3")) + "?_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open outbox sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	writer := newChainProbeRequestOutboxWriter(db, false, 65_000)
+	// 生产对等：与 chain 装配同一条 ensure 路径已在进程启动早期完成建表；
+	// 测试在派发 goroutine 之前主动 ensure，避免行查询与建表竞速。
+	if err := writer.ensureSchema(context.Background()); err != nil {
+		t.Fatalf("ensure outbox schema: %v", err)
+	}
+	resetEffects, err := newAccountsRuntimeResetBridge(composed, nil, &chainRuntimeServices{}, resetDispatchTestSecret, writer)
 	if err != nil {
 		t.Fatalf("assemble runtime reset bridge: %v", err)
 	}
-	return resetEffects
+	return resetEffects, writer
 }
 
-func TestAccountsRuntimeResetBridgeDispatchesSignedHealthCheck(t *testing.T) {
-	composed := newResetDispatchComposition(t)
-	dispatched := make(chan chainHealthDispatchRequest, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != chainHealthDispatchPath {
-			t.Errorf("unexpected bridge request: %s %s", r.Method, r.URL.Path)
-			http.NotFound(w, r)
-			return
+// resetDispatchRows 返回 outbox 全部行的 (accountID, reason) 投影。
+func resetDispatchRows(t *testing.T, writer *chainProbeRequestOutboxWriter) [][2]string {
+	t.Helper()
+	rows, err := writer.db.Query(`SELECT account_id, reason FROM account_health_probe_request_outbox ORDER BY created_at, request_id`)
+	if err != nil {
+		t.Fatalf("query outbox rows: %v", err)
+	}
+	defer rows.Close()
+	out := [][2]string{}
+	for rows.Next() {
+		var pair [2]string
+		if err := rows.Scan(&pair[0], &pair[1]); err != nil {
+			t.Fatal(err)
 		}
-		rawBody, err := io.ReadAll(io.LimitReader(r.Body, 4096))
-		if err != nil {
-			t.Errorf("read bridge body: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if got := r.Header.Get("X-Juhe-Ai-Signature"); got != signChainHealthDispatch(resetDispatchTestSecret, rawBody) {
-			t.Errorf("signature mismatch: %s", got)
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		var payload chainHealthDispatchRequest
-		if err := json.Unmarshal(rawBody, &payload); err != nil {
-			t.Errorf("decode bridge payload: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if payload.Version != 1 || payload.AccountID != resetDispatchTestAccountID || payload.Reason == "" {
-			t.Errorf("wire payload mismatch: %+v", payload)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"outcome":"queued","decisionCode":"queued"}`))
-		dispatched <- payload
-	}))
-	defer server.Close()
+		out = append(out, pair)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
-	resetEffects := newResetDispatchBridge(t, composed, server)
+func TestAccountsRuntimeResetBridgeDispatchesHealthCheckRow(t *testing.T) {
+	composed := newResetDispatchComposition(t)
+	resetEffects, writer := newResetDispatchBridge(t, composed)
 	// 管理面接线同款：write.go 激活 / runtime_reset.go reset / routes.go PATCH
 	// 都经 SetRuntimeResetEffects 后的该端口派发。
 	accountStore, err := accounts.NewStore(composed.db, false, resetDispatchTestSecret, time.Now, newCompositionID)
@@ -102,40 +93,28 @@ func TestAccountsRuntimeResetBridgeDispatchesSignedHealthCheck(t *testing.T) {
 	accountStore.SetRuntimeResetEffects(resetEffects)
 
 	resetEffects.DispatchAccountHealthCheck(resetDispatchTestAccountID, "activation")
-	select {
-	case payload := <-dispatched:
-		if payload.Reason != "activation" || payload.TraceID != "" || payload.SourceFence != nil {
-			t.Fatalf("unexpected dispatched payload: %+v", payload)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if rows := resetDispatchRows(t, writer); len(rows) == 1 {
+			if rows[0][0] != resetDispatchTestAccountID || rows[0][1] != "activation" {
+				t.Fatalf("unexpected dispatched row: %+v", rows[0])
+			}
+			break
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("health-check dispatch never reached the jobs internalapi stub")
+		if time.Now().After(deadline) {
+			t.Fatal("health-check dispatch never landed in the outbox")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
 func TestAccountsRuntimeResetBridgeDispatchRejectedKeepsReset(t *testing.T) {
 	composed := newResetDispatchComposition(t)
-	attempts := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_ = r.Body.Close()
-		attempts <- struct{}{}
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	resetEffects := newResetDispatchBridge(t, composed, server)
-	// 非 202 → 派发拒绝：fire-and-forget，端口不 panic、不向调用方传错。
-	resetEffects.DispatchAccountHealthCheck(resetDispatchTestAccountID, "manual_reset")
-	select {
-	case <-attempts:
-	case <-time.After(5 * time.Second):
-		t.Fatal("bridge never attempted the dispatch")
-	}
-
-	// 空目标桥（chain 关闭/手工装配未接 jobs）：inert 契约——立即返回、
-	// 不触网络、reset 继续。
+	// inert writer（chain 关闭/缺业务库句柄的装配形态）：派发按
+	// input_unavailable 拒绝——fire-and-forget，端口不 panic、不向调用方传
+	// 错、不写行，reset 继续。
 	inert, err := newAccountsRuntimeResetBridge(composed, nil, &chainRuntimeServices{}, resetDispatchTestSecret,
-		newChainJobsHealthDispatchBridge("", "", nil))
+		newChainProbeRequestOutboxWriter(nil, false, 65_000))
 	if err != nil {
 		t.Fatalf("assemble inert reset bridge: %v", err)
 	}
@@ -153,19 +132,7 @@ func TestAccountsRuntimeResetBridgeDispatchRejectedKeepsReset(t *testing.T) {
 
 func TestAccountsRuntimeResetBridgeDispatchIsFireAndForget(t *testing.T) {
 	composed := newResetDispatchComposition(t)
-	started := make(chan struct{})
-	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_ = r.Body.Close()
-		close(started)
-		<-release
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	defer server.Close()
-	defer close(release)
-
-	resetEffects := newResetDispatchBridge(t, composed, server)
+	resetEffects, writer := newResetDispatchBridge(t, composed)
 	returned := make(chan struct{})
 	go func() {
 		resetEffects.DispatchAccountHealthCheck(resetDispatchTestAccountID, "configuration")
@@ -174,11 +141,19 @@ func TestAccountsRuntimeResetBridgeDispatchIsFireAndForget(t *testing.T) {
 	select {
 	case <-returned:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("health-check dispatch waited for the jobs response")
+		t.Fatal("health-check dispatch blocked the reset caller")
 	}
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("health-check dispatch never reached the jobs stub")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if rows := resetDispatchRows(t, writer); len(rows) == 1 {
+			if rows[0][1] != "configuration" {
+				t.Fatalf("unexpected dispatched row: %+v", rows[0])
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("health-check dispatch never landed in the outbox")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

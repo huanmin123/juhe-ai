@@ -317,7 +317,12 @@ var (
 type BalanceRefreshCandidate struct {
 	ID                  string
 	SystemAccountID     string
+	ProviderCode        string
+	Type                string
+	Status              string
+	Schedulable         bool
 	ConfigRevision      int64
+	DispatchRevision    int64
 	CredentialsEnvelope string
 	ConfigJSON          string
 	NextRefreshAt       sql.NullString
@@ -325,12 +330,16 @@ type BalanceRefreshCandidate struct {
 }
 
 // FindBalanceManualRefreshCandidate mirrors
-// findAccountBalanceManualRefreshCandidateAsync.
+// findAccountBalanceManualRefreshCandidateAsync (the SELECT column set follows
+// the archived Node repository account-balance.repository.ts:315-334, the row
+// mapping :938-971; dispatch_revision is the manual InputVersion fence).
 func (s *Store) FindBalanceManualRefreshCandidate(ctx context.Context, accountID string) (*BalanceRefreshCandidate, error) {
 	ctx = ensureCtx(ctx)
 	var row BalanceRefreshCandidate
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, config_revision,
-			credentials_encrypted, balance_query_config_json, balance_query_next_refresh_at, proxy_profile_id
+	var schedulable int
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, provider_code, type, status, schedulable,
+			config_revision, dispatch_revision, credentials_encrypted, balance_query_config_json,
+			balance_query_next_refresh_at, proxy_profile_id
 		FROM `+s.table("accounts")+`
 		WHERE id = ?
 			AND type = 'api_key'
@@ -338,14 +347,16 @@ func (s *Store) FindBalanceManualRefreshCandidate(ctx context.Context, accountID
 			AND deleted_at IS NULL
 			AND authorization_instance_authorization_id IS NULL
 		LIMIT 1`), strings.TrimSpace(accountID)).Scan(
-		&row.ID, &row.SystemAccountID, &row.ConfigRevision,
-		&row.CredentialsEnvelope, &row.ConfigJSON, &row.NextRefreshAt, &row.ProxyProfileID)
+		&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.Type, &row.Status, &schedulable,
+		&row.ConfigRevision, &row.DispatchRevision, &row.CredentialsEnvelope, &row.ConfigJSON,
+		&row.NextRefreshAt, &row.ProxyProfileID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	row.Schedulable = schedulable != 0
 	return &row, nil
 }
 
@@ -387,6 +398,10 @@ func (s *Store) SetManualBalanceRefresher(refresher ManualBalanceRefresher) {
 	s.balanceRefresher = refresher
 }
 
+// BalanceRefresherPort exposes the wired manual balance refresher for the
+// composition-root tests (nil when the port was left unwired).
+func (s *Store) BalanceRefresherPort() ManualBalanceRefresher { return s.balanceRefresher }
+
 // ModelCatalogRefresher is the narrow execution port of
 // refreshAccountDraftModelCatalogAsync (the live upstream model discovery).
 type ModelCatalogRefresher interface {
@@ -399,16 +414,24 @@ type ModelCatalogDiscoveryInput struct {
 	OwnerSystemAccountID string
 	ProviderCode         string
 	ProviderProfileID    string
-	AccountType          string
-	Credentials          Credentials
-	ProxyProfileID       *string
-	SupportedModels      []string
+	// ProtocolCode is the provider protocol profile protocol the upstream
+	// models request rides (openai / anthropic / gemini path + header shape).
+	ProtocolCode     string
+	AccountType      string
+	Credentials      Credentials
+	ProxyProfileID   *string
+	HealthCheckModel string
+	SupportedModels  []string
 }
 
 // SetModelCatalogRefresher wires the port (composition-root handover).
 func (s *Store) SetModelCatalogRefresher(refresher ModelCatalogRefresher) {
 	s.modelCatalogRefresher = refresher
 }
+
+// ModelCatalogRefresherPort exposes the wired model catalog refresher for the
+// composition-root tests (nil when the port was left unwired).
+func (s *Store) ModelCatalogRefresherPort() ModelCatalogRefresher { return s.modelCatalogRefresher }
 
 // balanceDraftRow is the draft-test account projection (the strict body
 // account plus the group/provider resolution).

@@ -1,9 +1,6 @@
 package statreads
 
 import (
-	"context"
-	"encoding/json"
-	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -13,6 +10,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
 
 // System-metrics read family (Node system-metrics.repository.ts
@@ -24,8 +22,6 @@ import (
 const (
 	processEventLoopPeakWindowMS    = int64(24 * 60 * 60 * 1000)
 	processEventLoopLatestFreshness = int64(2 * 60 * 1000)
-	goRuntimeTrendRequestTimeout    = 2500 * time.Millisecond
-	goRuntimeTrendPayloadMaxItems   = 24*90 + 1
 )
 
 // systemMetricsTrendHandler mirrors GET /system-metrics/trend.
@@ -315,9 +311,25 @@ func (d *Deps) buildProcessEventLoopTrendPeakStatus(rows []Row) []processEventLo
 	return statuses
 }
 
-// goRuntimeTrendHandler mirrors GET /system-metrics/go-runtime-trend: proxy to
-// the Go jobs metrics server loopback origin with the same 503 degradation
-// and payload validation as Node.
+// goRuntimeTrendRoles is the role family the trend exports. Every Go process
+// self-samples into the shared store (去跨进程战役第三刀), so the read side
+// merges the fixed gateway+jobs role list; each item keeps its own
+// service/role fields and the outer envelope carries the aggregate marker.
+var goRuntimeTrendRoles = []string{"gateway", "jobs"}
+
+// goRuntimeTrendAggregateRole marks the merged two-role envelope. The
+// frontend never consumes the outer role field (it renders items directly),
+// so the aggregate keeps the shape honest without a per-role split.
+const goRuntimeTrendAggregateRole = "gateway+jobs"
+
+// goRuntimeTrendMaxRange clamps the query window to the store's 90-day
+// hourly-trend bound instead of failing the request.
+const goRuntimeTrendMaxRange = 90 * 24 * time.Hour
+
+// goRuntimeTrendHandler mirrors GET /system-metrics/go-runtime-trend: an
+// in-process Store.QueryTrend over the shared go_runtime_metrics_hourly
+// windows (gateway + jobs roles). Store disabled or no data answers 200 with
+// empty items; only a real query failure surfaces as a read error.
 func (d *Deps) goRuntimeTrendHandler(w http.ResponseWriter, r *http.Request) {
 	startDate, endDate, badRequest := parseUsageOverviewQuery(r.URL.Query())
 	if badRequest != "" {
@@ -326,122 +338,43 @@ func (d *Deps) goRuntimeTrendHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	rng, err := d.normalizeSystemMetricsDateRange(r.Context(), startDate, endDate)
 	if err != nil {
-		writeGoRuntimeUnavailable(w)
+		d.writeReadError(w, err)
 		return
 	}
 	location, err := d.timezoneLocation(r.Context())
 	if err != nil {
-		writeGoRuntimeUnavailable(w)
+		d.writeReadError(w, err)
 		return
 	}
-	from := startOfZonedDateKeyIso(rng.StartDate, location)
-	to := startOfZonedDateKeyIso(nextCalendarDateKey(rng.EndDate), location)
-	if from == "" || to == "" {
+	from, fromErr := time.Parse(time.RFC3339, startOfZonedDateKeyIso(rng.StartDate, location))
+	to, toErr := time.Parse(time.RFC3339, startOfZonedDateKeyIso(nextCalendarDateKey(rng.EndDate), location))
+	if fromErr != nil || toErr != nil || !from.Before(to) {
 		kernel.WriteBadRequest(w, "Go 运行时指标日期范围无法解析")
 		return
 	}
-	if d.GoRuntimeMetricsURL == "" {
-		writeGoRuntimeUnavailable(w)
-		return
+	if to.Sub(from) > goRuntimeTrendMaxRange {
+		from = to.Add(-goRuntimeTrendMaxRange)
 	}
-	endpoint, err := url.Parse(strings.TrimRight(d.GoRuntimeMetricsURL, "/") + "/__aisys__/api/stats/go-runtime-trend")
-	if err != nil {
-		writeGoRuntimeUnavailable(w)
-		return
-	}
-	query := endpoint.Query()
-	query.Set("from", from)
-	query.Set("to", to)
-	endpoint.RawQuery = query.Encode()
-	ctx, cancel := context.WithTimeout(r.Context(), goRuntimeTrendRequestTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-	if err != nil {
-		writeGoRuntimeUnavailable(w)
-		return
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		if isTimeout(err) {
-			kernel.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "Go 运行时指标请求超时"})
-			return
+	items := []gometrics.WindowAggregate{}
+	if d.GoRuntimeMetrics != nil {
+		for _, role := range goRuntimeTrendRoles {
+			rows, queryErr := d.GoRuntimeMetrics.QueryTrend(r.Context(), d.GoRuntimeMetricsService, role, from, to)
+			if queryErr != nil {
+				d.writeReadError(w, queryErr)
+				return
+			}
+			items = append(items, rows...)
 		}
-		writeGoRuntimeUnavailable(w)
-		return
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		writeGoRuntimeUnavailable(w)
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
-	if err != nil {
-		writeGoRuntimeUnavailable(w)
-		return
-	}
-	var payload goRuntimeTrendPayload
-	if err := json.Unmarshal(body, &payload); err != nil || !validGoRuntimePayload(&payload) {
-		kernel.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "Go 运行时指标响应无效"})
-		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	kernel.WriteOK(w, map[string]any{
 		"runtimeKind": "go",
-		"service":     payload.Service,
-		"role":        payload.Role,
+		"service":     d.GoRuntimeMetricsService,
+		"role":        goRuntimeTrendAggregateRole,
 		"timezone":    location.String(),
 		"range":       rng,
-		"items":       payload.Items,
+		"items":       items,
 	}, "")
-}
-
-func writeGoRuntimeUnavailable(w http.ResponseWriter) {
-	kernel.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "Go 运行时指标暂不可用"})
-}
-
-// isTimeout mirrors the Node AbortError/TimeoutError branch.
-func isTimeout(err error) bool {
-	type timeouter interface{ Timeout() bool }
-	if typed, ok := err.(timeouter); ok && typed.Timeout() {
-		return true
-	}
-	return strings.Contains(err.Error(), "context deadline exceeded") ||
-		strings.Contains(err.Error(), "Client.Timeout")
-}
-
-func validGoRuntimePayload(payload *goRuntimeTrendPayload) bool {
-	if payload.RuntimeKind != "go" || payload.Service == "" || payload.Role == "" {
-		return false
-	}
-	return len(payload.Items) <= goRuntimeTrendPayloadMaxItems
-}
-
-// goRuntimeTrendPayload mirrors goRuntimeTrendPayloadSchema (items validated
-// structurally; unknown item fields are tolerated by json.Unmarshal).
-type goRuntimeTrendPayload struct {
-	RuntimeKind string               `json:"runtimeKind"`
-	Service     string               `json:"service"`
-	Role        string               `json:"role"`
-	Items       []goRuntimeTrendItem `json:"items"`
-}
-
-type goRuntimeTrendItem struct {
-	WindowStart       string  `json:"windowStart"`
-	WindowEnd         string  `json:"windowEnd"`
-	Service           string  `json:"service"`
-	Role              string  `json:"role"`
-	RuntimeKind       string  `json:"runtimeKind"`
-	SampleCount       int64   `json:"sampleCount"`
-	GoroutinesAvg     float64 `json:"goroutinesAvg"`
-	GoroutinesMax     float64 `json:"goroutinesMax"`
-	HeapAllocBytesAvg float64 `json:"heapAllocBytesAvg"`
-	HeapAllocBytesMax float64 `json:"heapAllocBytesMax"`
-	HeapLiveBytesAvg  float64 `json:"heapLiveBytesAvg"`
-	HeapLiveBytesMax  float64 `json:"heapLiveBytesMax"`
-	HeapObjectsAvg    float64 `json:"heapObjectsAvg"`
-	HeapObjectsMax    float64 `json:"heapObjectsMax"`
-	ThreadsAvg        float64 `json:"threadsAvg"`
-	ThreadsMax        float64 `json:"threadsMax"`
 }
 
 // ---------------------------------------------------------------------------

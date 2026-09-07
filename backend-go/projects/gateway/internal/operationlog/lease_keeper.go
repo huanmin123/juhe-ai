@@ -8,22 +8,22 @@ import (
 )
 
 // LeaseKeeper holds the single-row F4 persistence owner lease
-// (f4-operation-log-persistence) on behalf of ONE process. The in-process
-// producer (management-plane writes, compose.go) and the F4 input server
-// (Node-origin dispatches) share the same lease so the two writers of one
-// process can never fence each other out: the lease row has a single
-// owner_id/fence_token, and any second acquisition would permanently fence
-// the first holder (BUG: producer self-destructed via a zero-TTL renew and
-// the sidecar then took the row over).
+// (f4-operation-log-persistence) on behalf of ONE process. Every F4 writer of
+// this process — the in-process producer (management-plane writes, compose.go)
+// and the resident retention owner (retention.go) — shares the same lease so
+// the writers of one process can never fence each other out: the lease row has
+// a single owner_id/fence_token, and any second acquisition would permanently
+// fence the first holder (BUG: producer self-destructed via a zero-TTL renew
+// and the sidecar then took the row over).
 //
 // Lifecycle: StartLeaseKeeper acquires once; renewal runs on a ticker at
-// ttl/3 (the previous RunInputServer cadence). A transient renewal error
-// keeps the lease valid until ttl elapses, so the next tick retries; a
-// rejected renewal (expired or taken over) is terminal — the keeper records
+// ttl/3 (the retired listener-era cadence). A transient renewal error keeps
+// the lease valid until ttl elapses, so the next tick retries; a rejected
+// renewal (expired or taken over) is terminal — the keeper records
 // ErrOwnerLeaseLost, closes Lost, and stops renewing. Recovery from a lost
 // fence is a process restart (fresh acquisition, fresh fence token); the
-// sidecar retries via its supervisor boundary until then and stays
-// not-ready, never silently writing with a stale fence.
+// owner component surfaces the lost fence to its supervisor boundary and
+// stays not-ready, never silently writing with a stale fence.
 type LeaseKeeper struct {
 	store Store
 	owner string

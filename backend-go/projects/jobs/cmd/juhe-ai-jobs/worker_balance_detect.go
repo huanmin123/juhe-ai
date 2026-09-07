@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"

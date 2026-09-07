@@ -13,27 +13,14 @@ import (
 const (
 	cryptoTestSecret = "test-secret"
 	// vector1Plaintext == {"access_token":"at-1","refresh_token":"rt-1"}
-	vector1IV       = "000102030405060708090a0b"
 	vector1Envelope = "v1:AAECAwQFBgcICQoL:zWv4xl18RW7m8C0BPN8Wkw:PLur9vS-VeeayjC7eOdBWV-yXzQNY2pRXJbSO0pqfEHhBp-qolESZKwaVWIUBQ"
-	vector1Plain    = `{"access_token":"at-1","refresh_token":"rt-1"}`
 	// vector2 exercises unicode keys/values and nested objects.
-	vector2IV       = "0b0a09080706050403020100"
 	vector2Envelope = "v1:CwoJCAcGBQQDAgEA:9HJBuC-9cxSitL_JefC6BA:WqJxMfoxN3TZpx1gWD2VZsQLOVbDDqOcZ4sA7S_LFU_g6JXUUHrB3CwijuVO"
 )
 
-func TestEncryptJSONWithFixedIVMatchesNodeEnvelope(t *testing.T) {
-	plain := []byte(vector1Plain)
-	// The Node script sealed with hex IV 000102030405060708090a0b, rendered as
-	// base64url inside the envelope.
-	iv := mustDecodeBase64URL(t, "AAECAwQFBgcICQoL")
-	sealed, err := sealJSONWithIV(cryptoTestSecret, plain, iv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sealed != vector1Envelope {
-		t.Fatalf("Go seal != Node envelope:\n got %s\nwant %s", sealed, vector1Envelope)
-	}
-}
+// 加密封实（seal 侧 golden 向量、sealJSONWithIV 确定性写入）随实现迁移至共享
+// backend-go-platform/accountcrypto 包的 crypto_test.go；本文件保留
+// oauthrefresh 调用面的解密/往返/篡改回归（经共享实现的薄委托执行）。
 
 func TestDecryptJSONReadsNodeEnvelope(t *testing.T) {
 	var credentials map[string]any

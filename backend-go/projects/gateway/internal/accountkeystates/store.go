@@ -3,10 +3,10 @@
 //
 //   - 运行态选择状态读面（loadAccountApiKeyRuntimeStatesByAccountIdsAsync /
 //     loadAccountApiKeyRuntimeStatesForAccountInClient）；
-//   - 探针候选 claim + record success/failure + defer probe（与 jobs 侧
-//     backend-go-jobs/internal/proberepo 同表同键、SQL 同源：jobs 承担后台
-//     claim/探针写，本包承担网关侧被动失败/成功登记与重校验触发；两条写路径
-//     共享同一组 CAS 围栏，读写互通不冲突）；
+//   - 探针候选 claim + record success/failure + defer probe（与 jobs 探针族
+//     使用的共享 backend-go-platform/accounttest/proberepo 同表同键、SQL 同源：
+//     jobs 承担后台 claim/探针写，本包承担网关侧被动失败/成功登记与重校验
+//     触发；两条写路径共享同一组 CAS 围栏，读写互通不冲突）；
 //   - 池 summaries + allUnavailable 判定
 //     （loadAccountApiKeyRuntimeSummariesByAccountIdsAsync）；
 //   - 池重校验触发（revalidateAccountApiKeyRuntimePoolAsync，runtime-reset 端口的

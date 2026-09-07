@@ -8,6 +8,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
 
 // GLOBALStats* mirror usage-stats-types.ts GLOBAL_STATS_SYSTEM_ACCOUNT_ID /
@@ -34,10 +35,16 @@ type Deps struct {
 	// only); the shard walk for /usage-records reads the registered files
 	// through it. Nil disables shard discovery (empty results).
 	UsageCatalog DB
-	// GoRuntimeMetricsURL is the loopback origin of the Go jobs metrics
-	// server (Node runtimeConfig.goRuntimeMetricsUrl, default
-	// http://127.0.0.1:3305); the go-runtime-trend route proxies it.
-	GoRuntimeMetricsURL string
+	// GoRuntimeMetrics is the in-process Go runtime metrics store (the shared
+	// platform gometrics Store over the same go_runtime_metrics_* tables the
+	// gateway and jobs samplers persist into). Nil keeps the go-runtime-trend
+	// route on the empty-items 200 degradation (store disabled by default) —
+	// the former jobs trend HTTP proxy is gone (去跨进程战役第三刀).
+	GoRuntimeMetrics *gometrics.Store
+	// GoRuntimeMetricsService is the service label the trend query filters on
+	// (the samplers' configured service, default juhe-ai). Roles are the fixed
+	// gateway+jobs family; every item keeps its own service/role fields.
+	GoRuntimeMetricsService string
 	// HealthOutcomes optionally points at the J1 account-health outcome
 	// store (Node runtimeConfig.accountHealthJobs.outcomeSqlitePath); nil
 	// keeps the merge absent exactly like an unconfigured Node source.

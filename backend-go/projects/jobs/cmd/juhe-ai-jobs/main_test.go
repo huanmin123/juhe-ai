@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/gometricsstore"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/internalapi"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
@@ -53,19 +51,18 @@ func TestListenLoopbackUsesValidatedAddress(t *testing.T) {
 	}
 }
 
-func TestMatchesAccountBalanceManualSecret(t *testing.T) {
-	const secret = "0123456789abcdef0123456789abcdef"
-	request := httptest.NewRequest(http.MethodPost, "/account-balance/manual", nil)
-	if matchesAccountBalanceManualSecret(request, secret) {
-		t.Fatal("manual bridge accepted missing bearer secret")
-	}
-	request.Header.Set("Authorization", "Bearer wrong")
-	if matchesAccountBalanceManualSecret(request, secret) {
-		t.Fatal("manual bridge accepted wrong bearer secret")
-	}
-	request.Header.Set("Authorization", "Bearer "+secret)
-	if !matchesAccountBalanceManualSecret(request, secret) {
-		t.Fatal("manual bridge rejected configured bearer secret")
+// TestRetiredAccountBalanceManualBridgeStaysGone 是去跨进程战役第四刀的回归：
+// Node 时代的手动触发桥（/account-balance/manual，唯一消费方是已删除的
+// Node 手动入口）在 jobs 健康监听上必须保持 404，且不再要求任何 Bearer
+// secret 配置。
+func TestRetiredAccountBalanceManualBridgeStaysGone(t *testing.T) {
+	var running atomic.Bool
+	running.Store(true)
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true })
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, "/account-balance/manual", nil))
+	if record.Code != http.StatusNotFound {
+		t.Fatalf("retired J2 manual bridge status=%d body=%s", record.Code, record.Body.String())
 	}
 }
 
@@ -152,7 +149,7 @@ func TestHealthUsesAtomicProxyLatencySnapshot(t *testing.T) {
 func TestJobsHTTPHandlerDoesNotExposeRetiredProxyLatencyBridge(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "")
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true })
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", nil))
 	if record.Code != http.StatusNotFound {
@@ -162,7 +159,7 @@ func TestJobsHTTPHandlerDoesNotExposeRetiredProxyLatencyBridge(t *testing.T) {
 
 func TestJobsHTTPHandlerExposesGoRuntimeMetrics(t *testing.T) {
 	var running atomic.Bool
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "")
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true })
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/__aisys__/metrics", nil))
 	if record.Code != http.StatusOK || !strings.Contains(record.Body.String(), `runtimeKind="go"`) {
@@ -170,28 +167,38 @@ func TestJobsHTTPHandlerExposesGoRuntimeMetrics(t *testing.T) {
 	}
 }
 
+// TestJobsHTTPHandlerDoesNotExposeGoRuntimeTrend is the 去跨进程战役第三刀
+// regression: the TrendHandler route disappears from the jobs health listener
+// together with the gometricsstore package; the trend read moves in-process
+// into the gateway statreads store query.
+func TestJobsHTTPHandlerDoesNotExposeGoRuntimeTrend(t *testing.T) {
+	var running atomic.Bool
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true })
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/__aisys__/api/stats/go-runtime-trend?from=2026-09-01T00:00:00Z&to=2026-09-02T00:00:00Z", nil))
+	if record.Code != http.StatusNotFound {
+		t.Fatalf("retired go-runtime-trend route status=%d body=%s", record.Code, record.Body.String())
+	}
+}
+
 // TestJobsHTTPHandlerForwardsWorkerFieldsToHealth is the X05 defect-4
 // regression: the goMetrics slots must not shift the worker fields inside the
 // healthHandler variadic layout — /health must report workerEnabled=true, the
-// worker readiness gate and the worker snapshot, while the internal dispatch
-// handler still mounts.
+// worker readiness gate and the worker snapshot, while the /__aiinternal__
+// dispatch route stays gone (去跨进程战役第二刀：健康检查派发改走 DB outbox).
 func TestJobsHTTPHandlerForwardsWorkerFieldsToHealth(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	dispatch := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		response.WriteHeader(http.StatusNoContent)
-	})
 	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true },
 		false, func() bool { return true },
-		false, func() bool { return true }, nil, "",
+		false, func() bool { return true },
 		false, func() bool { return true },
 		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
 		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
 		false, func() bool { return true },
-		gometrics.New("juhe-ai", "jobs"), (*gometricsstore.Sampler)(nil),
+		gometrics.New("juhe-ai", "jobs"), (*gometrics.Sampler)(nil),
 		true, func() bool { return false },
-		func() map[string]any { return map[string]any{"wiredJobs": []string{"account-balance-refresh"}} },
-		dispatch)
+		func() map[string]any { return map[string]any{"wiredJobs": []string{"account-balance-refresh"}} })
 
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
@@ -216,10 +223,12 @@ func TestJobsHTTPHandlerForwardsWorkerFieldsToHealth(t *testing.T) {
 		t.Fatalf("worker snapshot must reach /health: %#v", payload["worker"])
 	}
 
-	// The internalapi dispatch handler still mounts from slot 11.
+	// The /__aiinternal__ route family must be gone entirely: the health-check
+	// dispatch rides the DB outbox channel now, and the jobs health listener
+	// serves only /health and the /__aisys__/ surface.
 	dispatchRecord := httptest.NewRecorder()
-	handler.ServeHTTP(dispatchRecord, httptest.NewRequest(http.MethodPost, internalapi.AccountTestDispatchInternalPrefix+"/v1/account-test/dispatch", nil))
-	if dispatchRecord.Code == http.StatusNotFound {
-		t.Fatalf("worker dispatch handler missing from the health mux: %d", dispatchRecord.Code)
+	handler.ServeHTTP(dispatchRecord, httptest.NewRequest(http.MethodPost, "/__aiinternal__/v1/account-health-check/dispatch", nil))
+	if dispatchRecord.Code != http.StatusNotFound {
+		t.Fatalf("/__aiinternal__ dispatch route must be gone (404), got %d", dispatchRecord.Code)
 	}
 }

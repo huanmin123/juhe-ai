@@ -7,11 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountprobe"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountquality"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/speedfirstrepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 )
 
 // wireProbeFamily 把探针依赖族的三个任务翻转为 GoWired：
@@ -82,7 +83,7 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 			return err
 		}
 		statsConfig.Mode = accountquality.StatsPostgres
-		statsConfig.PostgresPool = handle
+		statsConfig.PostgresDB = handle.DB()
 	} else {
 		statsConfig.Mode = accountquality.StatsSQLite
 		statsConfig.DatabasePath = a.config.StatsSQLitePath
@@ -152,7 +153,7 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 	}
 
 	// ---- normal-route-speed-first-recovery-probe ----
-	redisConfig := proberepo.SpeedFirstRedisConfig{
+	redisConfig := speedfirstrepo.SpeedFirstRedisConfig{
 		URL:       a.config.RedisStateURL,
 		Namespace: a.config.RedisNamespace,
 		Enabled:   a.config.RedisStateURL != "",
@@ -162,12 +163,12 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 			"缺 JUHE_AI_REDIS_STATE_URL（速度优先降级运行态为 Redis 单实现，jobs 与 Node 网关共用键空间，无 Redis 时不得落库复制）")
 		return nil
 	}
-	if !proberepo.ValidSpeedFirstNamespace(redisConfig.Namespace) {
+	if !speedfirstrepo.ValidSpeedFirstNamespace(redisConfig.Namespace) {
 		a.registerDisabledJob("normal-route-speed-first-recovery-probe",
 			"JUHE_AI_REDIS_NAMESPACE 非法（须匹配 ^[A-Za-z0-9_.:-]{1,64}$），速度优先降级运行态键空间不可定位")
 		return nil
 	}
-	speedFirstStore, err := proberepo.OpenSpeedFirstStore(redisConfig, nil)
+	speedFirstStore, err := speedfirstrepo.OpenSpeedFirstStore(redisConfig, nil)
 	if err != nil {
 		return err
 	}

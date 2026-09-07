@@ -6,12 +6,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountprobe"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/speedfirstrepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/circuitstore"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 )
 
 // wireCircuitFamily 把账户电路族的两个任务翻转为 GoWired：
@@ -36,7 +37,7 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 		registerDisabled("account-circuit-recovery", "同 account-circuit-control-plane-maintenance：缺 JUHE_AI_REDIS_STATE_URL")
 		return nil
 	}
-	if !proberepo.ValidSpeedFirstNamespace(a.config.RedisNamespace) {
+	if !speedfirstrepo.ValidSpeedFirstNamespace(a.config.RedisNamespace) {
 		registerDisabled("account-circuit-control-plane-maintenance",
 			"JUHE_AI_REDIS_NAMESPACE 非法（须匹配 ^[A-Za-z0-9_.:-]{1,64}$），账户电路运行态键空间不可定位")
 		registerDisabled("account-circuit-recovery", "同 account-circuit-control-plane-maintenance：JUHE_AI_REDIS_NAMESPACE 非法")

@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,10 +19,8 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/gometricsstore"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/internalapi"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/keymodelrecovery"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckruntime"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
@@ -382,11 +378,22 @@ func main() {
 	}
 	workerReady := func() bool { return true }
 	workerStatus := func() map[string]any { return nil }
-	var workerDispatch http.Handler
 	if worker != nil {
 		workerReady = worker.ready
 		workerStatus = worker.statusPayload
-		workerDispatch = worker.dispatchHandler
+	}
+	// 健康检查派发 outbox 消费面（去跨进程战役第二刀）：J1 runner 是唯一
+	// 探测者，worker 业务库提供 boundary/outbox 读侧（worker_health_probe_outbox.go）。
+	// J1 未启用时 drain 保持未装配；装配失败降级 warn（等同原派发能力未
+	// 装配的语义），outbox 行保持 pending，不阻塞启动。
+	if accountHealthRunner != nil && worker != nil {
+		drain, drainErr := worker.wireHealthProbeOutboxDrain(os.Getenv)
+		if drainErr != nil {
+			logger.Warn("账户健康探针 outbox 消费面装配失败；outbox 行保持 pending",
+				"event", "account_health_probe_outbox_assembly_failed", "error", drainErr.Error())
+		} else if drain != nil {
+			accountHealthRunner.SetProbeRequestDrain(drain)
+		}
 	}
 
 	listener, err := listenLoopback(*healthAddress)
@@ -395,24 +402,27 @@ func main() {
 	}
 	defer listener.Close()
 	tableRunner := tablemonitor.NewRunner(cfg, store, logger)
-	goMetricsConfig, err := gometricsstore.LoadConfig(os.Getenv)
+	// go-runtime-metrics 采样器来自共享 platform/gometrics（去跨进程战役第三
+	// 刀：Sampler/config 迁入共享包，gateway 进程内自采样 role=gateway，jobs
+	// 继续自采样 role=jobs；跨进程 trend HTTP 面已删除）。
+	goMetricsConfig, err := gometrics.LoadConfig(os.Getenv, "jobs")
 	if err != nil {
 		fail(fmt.Errorf("load Go runtime metrics config: %w", err))
 	}
 	goMetricsCollector := gometrics.New(goMetricsConfig.Service, goMetricsConfig.Role)
 	var goMetricsStore *gometrics.Store
 	var goMetricsDB *sql.DB
-	var goMetricsSampler *gometricsstore.Sampler
+	var goMetricsSampler *gometrics.Sampler
 	if goMetricsConfig.Enabled {
-		goMetricsStore, goMetricsDB, err = gometricsstore.OpenStore(goMetricsConfig)
+		goMetricsStore, goMetricsDB, err = gometrics.OpenStore(goMetricsConfig)
 		if err != nil {
 			fail(fmt.Errorf("open Go runtime metrics store: %w", err))
 		}
-		if err := gometricsstore.EnsureReady(context.Background(), goMetricsStore); err != nil {
+		if err := gometrics.EnsureReady(context.Background(), goMetricsStore); err != nil {
 			_ = goMetricsDB.Close()
 			fail(fmt.Errorf("verify Go runtime metrics schema: %w", err))
 		}
-		goMetricsSampler, err = gometricsstore.NewSampler(goMetricsCollector, goMetricsStore, goMetricsConfig.Interval)
+		goMetricsSampler, err = gometrics.NewSampler(goMetricsCollector, goMetricsStore, goMetricsConfig.Interval)
 		if err != nil {
 			_ = goMetricsDB.Close()
 			fail(fmt.Errorf("initialize Go runtime metrics sampler: %w", err))
@@ -546,7 +556,7 @@ func main() {
 	}
 	j3bReady := func() bool { return true }
 	healthServer := &http.Server{
-		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
+		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
 			if j3Runner == nil {
 				return proxylatency.RunnerStatus{}
 			}
@@ -557,7 +567,7 @@ func main() {
 			}
 			return j3Runner.Snapshot()
 		}, false, j3bReady, goMetricsCollector, goMetricsSampler,
-			workerCfg.Enabled, workerReady, workerStatus, workerDispatch),
+			workerCfg.Enabled, workerReady, workerStatus),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -674,136 +684,41 @@ func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
 	})
 }
 
-func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string, j3 ...any) http.Handler {
+func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, j3 ...any) http.Handler {
 	mux := http.NewServeMux()
 	goCollector := gometrics.New("juhe-ai", "jobs")
-	var goSampler *gometricsstore.Sampler
 	if len(j3) > 6 {
 		if collector, ok := j3[6].(*gometrics.Collector); ok && collector != nil {
 			goCollector = collector
 		}
-		if len(j3) > 7 {
-			if sampler, ok := j3[7].(*gometricsstore.Sampler); ok {
-				goSampler = sampler
-			}
-		}
 	}
-	_ = goSampler
 	mux.Handle("/__aisys__/metrics", goCollector.Handler())
-	if goSampler != nil {
-		mux.Handle("/__aisys__/api/stats/go-runtime-trend", goSampler.TrendHandler())
-	}
-	// worker 侧 internalapi 派发 handler（loopback 专用，见 worker_assembly.go）。
-	if len(j3) > 11 {
-		if dispatch, ok := j3[11].(http.Handler); ok && dispatch != nil {
-			mux.Handle(internalapi.AccountTestDispatchInternalPrefix+"/", dispatch)
-		}
-	}
+	// 去跨进程战役第三刀：/__aisys__/api/stats/go-runtime-trend 路由已删除
+	// （TrendHandler 随 gometricsstore 包一起消失；trend 读取改由 gateway
+	// 进程内直查共享 Store）。j3[7] 的 *gometrics.Sampler 槽位保留占位，避免
+	// 后续 worker 槽位漂移。
+	// 去跨进程战役第四刀：/account-balance/manual 手动桥已删除（Node 时代
+	// 的手动触发入口，全仓无生产调用方；J2 余额刷新走周期调度与恢复扫描）。
+	// 健康监听只剩 /health 与 /__aisys__/metrics（健康探测属编排语义，
+	// gateway 蓝绿 readiness 探测与 Prometheus 抓取仍依赖，保留）。
+	// 去跨进程战役第二刀：/__aiinternal__ 路由整体消失（原账户测试派发与
+	// 账户健康检查派发 handler 已删除；健康检查派发改走 DB outbox 通道，
+	// 见 worker_health_probe_outbox.go）。
 	// readinessArgs mirrors the healthHandler j2 layout:
 	// [accountBalanceEnabled, accountBalanceReady, proxyLatencyEnabled,
 	// proxyLatencyReady, proxyLatencyStatus, proxyLatencySnapshot,
 	// modelCheckEnabled, modelCheckReady, workerEnabled, workerReady,
-	// workerStatus]. The goMetrics slots (j3[6]/j3[7]) and the worker dispatch
-	// handler (j3[11]) are jobsHTTPHandler-only surface and must NOT leak into
-	// the readiness args — a leaked *gometrics.Collector would shift the
-	// worker fields into the wrong slots and /health would always report
-	// workerEnabled=false with no worker snapshot (X05 defect).
+	// workerStatus]. The goMetrics slots (j3[6]/j3[7]) are jobsHTTPHandler-only
+	// surface and must NOT leak into the readiness args — a leaked
+	// *gometrics.Collector would shift the worker fields into the wrong slots
+	// and /health would always report workerEnabled=false with no worker
+	// snapshot (X05 defect).
 	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3[:min(len(j3), 6)]...)
 	if len(j3) > 8 {
 		readinessArgs = append(readinessArgs, j3[8:min(len(j3), 11)]...)
 	}
 	mux.Handle("/health", healthHandler(ownerMode, runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
-	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || accountBalanceService == nil {
-			http.NotFound(response, request)
-			return
-		}
-		if !matchesAccountBalanceManualSecret(request, accountBalanceManualSecret) {
-			response.Header().Set("WWW-Authenticate", `Bearer realm="juhe-ai-jobs"`)
-			http.Error(response, "J2 manual bridge 未授权", http.StatusUnauthorized)
-			return
-		}
-		request.Body = http.MaxBytesReader(response, request.Body, 512<<10)
-		var envelope struct {
-			Input accountbalance.Input `json:"input"`
-		}
-		decoder := json.NewDecoder(request.Body)
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&envelope); err != nil {
-			http.Error(response, "J2 manual input 无效", http.StatusBadRequest)
-			return
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); err != io.EOF {
-			http.Error(response, "J2 manual input 不得包含尾随 JSON", http.StatusBadRequest)
-			return
-		}
-		if envelope.Input.Trigger == "" {
-			envelope.Input.Trigger = accountbalance.TriggerManual
-		}
-		record, _, err := accountBalanceService.RunManual(request.Context(), envelope.Input)
-		if err != nil {
-			status := http.StatusBadGateway
-			if errors.Is(err, accountbalance.ErrAccountLeaseHeld) {
-				status = http.StatusConflict
-			}
-			if errors.Is(err, accountbalance.ErrOutcomeStale) {
-				response.Header().Set("Content-Type", "application/json")
-				response.WriteHeader(http.StatusConflict)
-				_ = json.NewEncoder(response).Encode(manualHandoverResult(envelope.Input, accountbalance.Snapshot{Status: accountbalance.StatusPending}, envelope.Input.NextRefreshAt, false, "stale"))
-				return
-			}
-			http.Error(response, err.Error(), status)
-			return
-		}
-		response.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(response).Encode(manualHandoverResult(envelope.Input, record.Snapshot, record.NextRefreshAt, true, manualOutcome(record.Snapshot.Status)))
-	})
 	return mux
-}
-
-func matchesAccountBalanceManualSecret(request *http.Request, expected string) bool {
-	if request == nil || len(expected) < 32 {
-		return false
-	}
-	const prefix = "Bearer "
-	provided := request.Header.Get("Authorization")
-	if len(provided) < len(prefix) || provided[:len(prefix)] != prefix {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(provided[len(prefix):]), []byte(expected)) == 1
-}
-
-func manualHandoverResult(input accountbalance.Input, snapshot accountbalance.Snapshot, nextRefreshAfter *time.Time, committed bool, outcome string) map[string]any {
-	result := map[string]any{
-		"schemaVersion":    1,
-		"job":              "account-balance-refresh",
-		"accountId":        input.AccountID,
-		"systemAccountId":  input.SystemAccountID,
-		"configRevision":   input.ConfigRevision,
-		"nextRefreshAfter": nextRefreshAfter,
-		"outcome":          outcome,
-		"committed":        committed,
-		"snapshot":         snapshot,
-	}
-	if input.Trigger != accountbalance.TriggerManual {
-		result["expectedNextRefreshAt"] = input.NextRefreshAt
-	}
-	return map[string]any{
-		"schemaVersion": 1,
-		"job":           "account-balance-refresh",
-		"result":        result,
-	}
-}
-
-func manualOutcome(status accountbalance.Status) string {
-	if status == accountbalance.StatusUnsupported {
-		return "unsupported"
-	}
-	if status == accountbalance.StatusFresh || status == accountbalance.StatusUnlimited {
-		return "refreshed"
-	}
-	return "failed"
 }
 
 func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, j2 ...any) http.Handler {

@@ -324,9 +324,9 @@ func TestComposeSystemAPIServesGatewayChain(t *testing.T) {
 	cfg.ChainEnabled = true
 	store := openComposeOperationStore(t)
 	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditConfig)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
 	if err != nil {
 		t.Fatalf("compose system api with chain: %v", err)
 	}
@@ -854,7 +854,6 @@ func chainSmokeDeps(t *testing.T, fixture *chainFixture, clock gatewaypreauth.Cl
 		Cache:           fixture.cache,
 		Clock:           clock,
 		AuditLogEnabled: func() bool { return false },
-		AuditInputURL:   "",
 		SpoolDirectory:  spoolDir,
 		Circuits:        circuits,
 		IPPolicy:        policyCache,

@@ -394,9 +394,11 @@ func (d *Deps) modelCatalogRefresh(selfOnly bool) http.HandlerFunc {
 			OwnerSystemAccountID: draft.ownerID,
 			ProviderCode:         draft.providerCode,
 			ProviderProfileID:    draft.providerProfile.id,
+			ProtocolCode:         draft.providerProfile.protocolCode,
 			AccountType:          textString(accountInput["type"]),
 			Credentials:          draft.credentials,
 			ProxyProfileID:       draft.proxyProfileID,
+			HealthCheckModel:     draft.healthCheckModel,
 			SupportedModels:      draft.supportedModels,
 		})
 		if err != nil {

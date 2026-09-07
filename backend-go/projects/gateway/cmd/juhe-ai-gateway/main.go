@@ -353,10 +353,6 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load F3 audit-log config: %w", err))
 	}
-	auditInputConfig, err := auditlog.LoadInputServerConfig(os.Getenv)
-	if err != nil {
-		fail(fmt.Errorf("load F3 audit input config: %w", err))
-	}
 	if auditConfig.Mode == auditlog.ModePostgres {
 		auditConfig.PostgresPool, err = postgresPools.Acquire(auditConfig.PostgresURL, "gateway-store", auditConfig.PostgresMaxOpenConns, auditConfig.PostgresMaxIdleConns)
 		if err != nil {
@@ -371,22 +367,36 @@ func main() {
 	if err := auditStore.EnsureSchema(context.Background()); err != nil {
 		fail(fmt.Errorf("initialize F3 audit-log schema: %w", err))
 	}
+	// The F3 persistence lease is acquired once per process and shared by
+	// the in-process audit producer (chain dispatch, compose.go) and the
+	// resident owner (retention): both writers must fence under the same
+	// owner_id/fence_token, otherwise a second holder would permanently fence
+	// the first one out. 去跨进程战役第四刀：loopback F3 input server 删除，
+	// producer 是唯一的链审计写入口。
+	auditLease, ok, keeperErr := auditlog.StartLeaseKeeper(context.Background(), auditStore, auditConfig.InstanceID, auditConfig.OwnerLease, logger)
+	if keeperErr != nil {
+		fail(fmt.Errorf("acquire F3 audit owner lease: %w", keeperErr))
+	}
+	if !ok {
+		fail(errors.New("F3 audit owner lease held by another owner process"))
+	}
+	// Registered ahead of auditStore.Close so the LIFO defer order releases
+	// the lease first and closes the store handle last.
+	defer auditLease.Close()
+	// The F3 producer is the process-wide chain audit sink; it shares the
+	// audit lease above and only extends it per record.
+	auditProducer := auditlog.NewProducer(auditStore, auditLease.Lease(), auditConfig, producerLogger{})
 	operationConfig, err := operationlog.LoadConfig(os.Getenv)
 	if err != nil {
 		fail(fmt.Errorf("load F4 operation-log config: %w", err))
 	}
 	var operationStore operationlog.Store
-	var operationInputConfig operationlog.InputServerConfig
 	if operationConfig.Enabled {
 		if operationConfig.Mode == operationlog.ModePostgres {
 			operationConfig.PostgresPool, err = postgresPools.Acquire(operationConfig.PostgresURL, "gateway-store", operationConfig.PostgresMaxOpenConns, operationConfig.PostgresMaxIdleConns)
 			if err != nil {
 				fail(fmt.Errorf("open shared F4 PostgreSQL pool: %w", err))
 			}
-		}
-		operationInputConfig, err = operationlog.LoadInputServerConfig(os.Getenv)
-		if err != nil {
-			fail(fmt.Errorf("load F4 operation-log input config: %w", err))
 		}
 		// F4 镜像运行期同步选型（consumer 侧读业务库兜底）：SQLite 模式把
 		// 业务库本体路径交给 F4 store，镜像缺失运行期新建/改名账户时名字
@@ -409,10 +419,12 @@ func main() {
 	var auditRunning atomic.Bool
 	var operationRunning atomic.Bool
 	var j3bRunning atomic.Bool
-	// The F4 persistence lease is acquired once per process and shared by the
-	// input-server sidecar and the system-api producer: both writers must
-	// fence under the same owner_id/fence_token, otherwise the second holder
-	// (sidecar or producer) would permanently fence the first one out.
+	// The F4 persistence lease is acquired once per process and shared by
+	// the in-process producer (management-plane writes, compose.go) and the
+	// resident owner (retention): both writers must fence under the same
+	// owner_id/fence_token, otherwise the second holder would permanently
+	// fence the first one out. 去跨进程战役第四刀：loopback F4 input server
+	// 删除，producer 是本进程唯一写入方。
 	var operationLease *operationlog.LeaseKeeper
 	if runtimeCfg.SystemAPIEnabled && operationConfig.Enabled {
 		keeper, ok, keeperErr := operationlog.StartLeaseKeeper(context.Background(), operationStore, operationConfig.InstanceID, operationConfig.OwnerLease, logger)
@@ -441,11 +453,15 @@ func main() {
 	}
 	components := []supervisor.Component{
 		{
+			// F3 resident owner (去跨进程战役第四刀)：loopback input server
+			// 删除后组件只承载 retention 节拍；owner lease 续租循环迁移到
+			// 共享的 auditlog.LeaseKeeper（原 RunInputServer 节拍不变：
+			// OwnerLease/3、最低 1s），retention 节拍与失败语义不变。
 			Name: "F3 audit-log-owner",
 			Run: func(runCtx context.Context) error {
 				auditRunning.Store(true)
 				defer auditRunning.Store(false)
-				return auditlog.RunInputServer(runCtx, auditStore, auditConfig, auditInputConfig, logger)
+				return auditlog.RunOwner(runCtx, auditStore, auditLease, auditConfig, logger)
 			},
 			Close: auditStore.Close,
 		},
@@ -470,16 +486,30 @@ func main() {
 	}
 	if operationConfig.Enabled {
 		components = append(components, supervisor.Component{
+			// F4 resident owner (去跨进程战役第四刀)：loopback input server
+			// 删除后组件只承载 retention 节拍（原 RunInputServerSharedLease
+			// select 循环中的 retention ticker 迁移到 operationlog.RunOwner，
+			// 节拍/失败语义不变）；进程内 producer 是本进程唯一写入方。
 			Name: "F4 operation-log-owner",
 			Run: func(runCtx context.Context) error {
 				operationRunning.Store(true)
 				defer operationRunning.Store(false)
-				if operationLease != nil {
-					// System api composition is active: share the process-wide
-					// lease keeper (single fence for sidecar + producer).
-					return operationlog.RunInputServerSharedLease(runCtx, operationStore, operationConfig, operationInputConfig, logger, operationLease)
+				keeper := operationLease
+				if keeper == nil {
+					// F4 runs without the system-api composition: the
+					// component owns a private lease (the retired
+					// RunInputServer semantics) instead of the shared one.
+					owned, ok, keeperErr := operationlog.StartLeaseKeeper(runCtx, operationStore, operationConfig.InstanceID, operationConfig.OwnerLease, logger)
+					if keeperErr != nil {
+						return fmt.Errorf("acquire F4 operation-log owner lease: %w", keeperErr)
+					}
+					if !ok {
+						return errors.New("F4 operation log owner lease held by another owner process")
+					}
+					defer owned.Close()
+					keeper = owned
 				}
-				return operationlog.RunInputServer(runCtx, operationStore, operationConfig, operationInputConfig, logger)
+				return operationlog.RunOwner(runCtx, operationStore, keeper, operationConfig, logger)
 			},
 			Close: func() error {
 				// Release the shared lease while the store handle is still
@@ -508,8 +538,9 @@ func main() {
 	var mainServeErr chan error
 	if runtimeCfg.SystemAPIEnabled {
 		// X04: the F3 audit config backs the audit-logs read face (dataset
-		// handle pool, hot-search and payload-blob roots).
-		composed, err = composeSystemAPI(runtimeCfg, postgresPools, operationStore, operationLease, auditConfig)
+		// handle pool, hot-search and payload-blob roots); the in-process
+		// producer built above is the chain audit write face.
+		composed, err = composeSystemAPI(runtimeCfg, postgresPools, operationStore, operationLease, auditProducer, auditConfig)
 		if err != nil {
 			fail(fmt.Errorf("compose gateway system api: %w", err))
 		}
@@ -520,6 +551,15 @@ func main() {
 		// owner, so the component is not health-gated.
 		if composed.AuthzStore != nil {
 			components = append(components, newAuthzExpiryRuntimeSyncComponent(composed.AuthzStore))
+		}
+		// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标（role 默认
+		// gateway，读 jobs+gateway 同一份共享 trend 库）。store 未启用（默认）
+		// 时组合根不装配采样器；store 句柄由 composed.Shutdown 关闭。
+		if composed.GoRuntimeSampler != nil {
+			components = append(components, supervisor.Component{
+				Name: "Go runtime metrics sampler",
+				Run:  composed.GoRuntimeSampler.Run,
+			})
 		}
 		mainListener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", runtimeCfg.Host, runtimeCfg.Port))
 		if err != nil {

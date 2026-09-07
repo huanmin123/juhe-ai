@@ -41,7 +41,6 @@ func retentionTestConfig(dir string) workerConfig {
 		OAuthEnabled:                   false,
 		TaskRunsEnabled:                false,
 		UsageWriterEnabled:             false,
-		InternalAPIEnabled:             false,
 		BalanceDetectEnabled:           false,
 		DrainTimeout:                   time.Second,
 		RecordMaintenanceQueueMaxItems: 100,

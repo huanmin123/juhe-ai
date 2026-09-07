@@ -55,7 +55,7 @@ func assertKeeperLeaseValid(t *testing.T, store Store, lease OwnerLease, ttl tim
 }
 
 // TestLeaseKeeperSharedByProducerPersistsManagementLogs is the defect-1
-// regression: the system-api producer and the F4 input server share one
+// regression: the system-api producer and the F4 resident owner share one
 // LeaseKeeper (single owner_id/fence_token); producer records persist and the
 // lease stays live instead of being self-destructed by a zero-TTL renew.
 func TestLeaseKeeperSharedByProducerPersistsManagementLogs(t *testing.T) {
@@ -108,13 +108,13 @@ func TestLeaseKeeperCloseReleasesLease(t *testing.T) {
 	_ = lease
 }
 
-// TestRunInputServerSharedLeaseRejectsNilKeeper pins the shared-lease entry
-// contract: without a keeper the composed process must fail fast instead of
-// silently serving unfenced writes.
-func TestRunInputServerSharedLeaseRejectsNilKeeper(t *testing.T) {
+// TestRunOwnerRejectsNilKeeper pins the shared-lease entry contract: without
+// a keeper the resident owner must fail fast instead of silently serving
+// unfenced retention.
+func TestRunOwnerRejectsNilKeeper(t *testing.T) {
 	store := openKeeperTestStore(t)
-	err := RunInputServerSharedLease(context.Background(), store, Config{OwnerLease: time.Minute}, InputServerConfig{ListenAddress: "127.0.0.1:0"}, nil, nil)
+	err := RunOwner(context.Background(), store, nil, Config{OwnerLease: time.Minute}, nil)
 	if err == nil {
-		t.Fatal("shared-lease server must refuse a nil keeper")
+		t.Fatal("resident owner must refuse a nil keeper")
 	}
 }

@@ -7,20 +7,17 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"os"
 	"sync/atomic"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accountprobe"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/internalapi"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsverify"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
@@ -63,20 +60,12 @@ type workerAssembly struct {
 	// 电路族（worker_circuit_jobs.go）的恢复目标解析复用。
 	probeRepoStore      *proberepo.Store
 	circuitProbeService *accountprobe.Service
-	// manualTestQueue 由 wireManualTestFamily 装配（worker_manualtest.go）；
-	// nil 表示本族 disabled，派发回调保持 503 不可用语义。
-	manualTestQueue *opsjobs.ManualTestQueue
-	// healthFenceSettler 预设健康检查派发的 source fence 结算（worker_health_dispatch.go
-	// 测试注入点；nil 时按 Redis 配置实时构造 ProbeStateStore）。
-	healthFenceSettler internalapi.SourceFenceSettler
 	// wiredTasks 记录已注册（含租约包裹）的任务闭包，供测试/运维入口
 	// 单轮执行；生产调度仍只经 scheduler。
 	wiredTasks map[string]jobsched.Task
 	// disabledJobs 是注册表已收录但依赖未齐、本轮不调度的 scheduled job
 	// 清单（见 worker_partial_jobs.go）。
 	disabledJobs []disabledJob
-
-	dispatchHandler http.Handler
 }
 
 // staticSettings 以 Node DEFAULT_SYSTEM_SETTINGS 为默认值解析任务设置；
@@ -175,7 +164,6 @@ func buildWorkerAssembly(config workerConfig, logger *slog.Logger) (*workerAssem
 		assembly.closeStores()
 		return nil, err
 	}
-	assembly.wireDispatchHandler()
 	return assembly, nil
 }
 
@@ -207,9 +195,6 @@ func (a *workerAssembly) wireFamilies(ctx context.Context) error {
 		return err
 	}
 	if err := a.wireProbeFamily(ctx); err != nil {
-		return err
-	}
-	if err := a.wireManualTestFamily(ctx); err != nil {
 		return err
 	}
 	registerDisabledJobsStartup(a, a.logger)
@@ -652,32 +637,6 @@ func (l slogWriterLogger) Error(msg string, fields map[string]any) {
 	l.logger.Error(msg, "fields", fields)
 }
 
-// wireDispatchHandler 把 internalapi loopback handler 挂到 mux（由 main 的
-// jobsHTTPHandler 消费）；手动测试族未接线时派发回调返回 false（503 服务暂
-// 不可用，任务留在 queued 由 queued-max-wait sweep 收口），不伪造受理。
-// 路由面：账户测试派发/取消（Node 移植契约）+ 账户健康检查派发（网关桥
-// chain_request_failure_health.go 的对端，worker_health_dispatch.go 装配）。
-func (a *workerAssembly) wireDispatchHandler() {
-	if !a.config.InternalAPIEnabled || a.config.Secret == "" {
-		return
-	}
-	a.dispatchHandler = a.internalAPIHandler(a.config.Secret)
-}
-
-// internalAPIHandler 组合 /__aiinternal__ 内部路由：健康检查派发精确匹配
-// 自有路径，其余路径（含未知路径 404）交给账户测试派发 handler。
-func (a *workerAssembly) internalAPIHandler(secret string) http.Handler {
-	accountTest := internalapi.NewAccountTestDispatchHandler(a.manualTestDispatchOptions(secret))
-	health := internalapi.NewHealthCheckDispatchHandler(a.healthCheckDispatchOptions(os.Getenv))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == internalapi.FullHealthCheckDispatchPath() {
-			health.ServeHTTP(w, r)
-			return
-		}
-		accountTest.ServeHTTP(w, r)
-	})
-}
-
 // scheduleWiredJob 按注册表登记的调度参数注册一个 GoWired 任务，并统一
 // 包裹 postgres 租约（对齐 Node runWithPostgresScheduledLease 只在
 // driver=postgres 生效的语义）。非 GoWired 名称一律拒绝注册。调度参数经
@@ -825,10 +784,6 @@ func (a *workerAssembly) components() []supervisor.Component {
 			},
 		})
 	}
-	if a.manualTestQueue != nil {
-		name, run := manualTestQueueComponent(a.manualTestQueue, a.config.DrainTimeout, a.logger)
-		components = append(components, supervisor.Component{Name: name, Run: run})
-	}
 	return components
 }
 
@@ -848,14 +803,12 @@ func (a *workerAssembly) statusPayload() map[string]any {
 		snapshots = a.scheduler.Snapshots()
 	}
 	return map[string]any{
-		"workerEnabled":         a.config.Enabled,
-		"workerDriver":          a.config.Driver,
-		"workerWiredJobs":       a.wiredJobs,
-		"workerRegisteredTodo":  registeredNotWired,
-		"workerDisabledJobs":    a.disabledJobs,
-		"workerUsageWriter":     a.writer != nil,
-		"workerDispatchMounted": a.dispatchHandler != nil,
-		"workerManualTestQueue": a.manualTestQueue != nil,
-		"workerJobs":            snapshots,
+		"workerEnabled":        a.config.Enabled,
+		"workerDriver":         a.config.Driver,
+		"workerWiredJobs":      a.wiredJobs,
+		"workerRegisteredTodo": registeredNotWired,
+		"workerDisabledJobs":   a.disabledJobs,
+		"workerUsageWriter":    a.writer != nil,
+		"workerJobs":           snapshots,
 	}
 }

@@ -244,7 +244,7 @@ if (-not (Test-Path -LiteralPath 'backend/.env')) {
     New-Item -ItemType File -Force 'backend/.env' | Out-Null
     Write-Host 'Created empty backend/.env (go-only release ships no backend/.env.example).'
   }
-  Write-Host 'Configure all JUHE_AI_*_INSTANCE_ID values and F3/F4 input secrets before production use.'
+  Write-Host 'Configure all JUHE_AI_*_INSTANCE_ID values before production use.'
 }
 Ensure-DeploymentDefaults
 New-Item -ItemType Directory -Force 'backend/data' | Out-Null
@@ -252,8 +252,10 @@ $deployMode = Get-DeployMode
 
 $hostValue = if ($env:JUHE_AI_HOST) { $env:JUHE_AI_HOST } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_HOST' -Fallback '127.0.0.1' }
 $portValue = if ($env:JUHE_AI_PORT) { $env:JUHE_AI_PORT } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_PORT' -Fallback '3000' }
-$env:JUHE_AI_AUDIT_LOG_INPUT_URL = if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }
-$env:JUHE_AI_OPERATION_LOG_INPUT_URL = if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }
+
+# 去跨进程战役第四刀：JUHE_AI_AUDIT_LOG_INPUT_URL / JUHE_AI_OPERATION_LOG_INPUT_URL
+# 与 F3/F4 loopback input 健康轮询一并删除（F3/F4 ingest 监听器已进程内化，
+# gateway 不再监听 3303/3304，写入走进程内 producer）。
 
 Write-Host "Starting juhe-ai at http://${hostValue}:${portValue} (deploy mode: ${deployMode}; go-only: the Go gateway owns the main HTTP entry, Go jobs owns F1/F2)"
 $ownerLockEnabled = if ($env:JUHE_AI_OWNER_LOCK_ENABLED) { $env:JUHE_AI_OWNER_LOCK_ENABLED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_ENABLED' -Fallback 'false' }
@@ -277,10 +279,6 @@ try {
   $jobsHealthUrl = if ($env:JUHE_AI_JOBS_HEALTH_URL) { $env:JUHE_AI_JOBS_HEALTH_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_JOBS_HEALTH_URL' -Fallback 'http://127.0.0.1:3305' }
   $goGateway = Start-GoProject -AppDirectory $appDir -Project gateway -HealthUrl $gatewayHealthUrl
   $goJobs = Start-GoProject -AppDirectory $appDir -Project jobs -HealthUrl $jobsHealthUrl
-  $auditInputUrl = (if ($env:JUHE_AI_AUDIT_LOG_INPUT_URL) { $env:JUHE_AI_AUDIT_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_AUDIT_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3303' }).TrimEnd('/')
-  $operationInputUrl = (if ($env:JUHE_AI_OPERATION_LOG_INPUT_URL) { $env:JUHE_AI_OPERATION_LOG_INPUT_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OPERATION_LOG_INPUT_URL' -Fallback 'http://127.0.0.1:3304' }).TrimEnd('/')
-  Wait-HttpStatus -Process $goGateway.Process -Url "$auditInputUrl/__aiinternal__/health" -ExpectedStatus 204 -Description 'juhe-ai-go-gateway F3'
-  Wait-HttpStatus -Process $goGateway.Process -Url "$operationInputUrl/__aiinternal__/v1/operation-logs/health" -ExpectedStatus 204 -Description 'juhe-ai-go-gateway F4'
   Wait-HttpStatus -Process $goGateway.Process -Url "http://${hostValue}:${portValue}/__aisys__/api/health" -ExpectedStatus 200 -Description 'juhe-ai-go-gateway system API'
   Write-Host "Started juhe-ai-go-gateway (PID $($goGateway.Process.Id)) and juhe-ai-go-jobs (PID $($goJobs.Process.Id))."
   while (-not $goGateway.Process.HasExited -and -not $goJobs.Process.HasExited) {

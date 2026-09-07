@@ -1,7 +1,8 @@
 // Producer mirrors Node operation-log.service.ts recordOperationLogAsync:
 // fire-and-forget persistence with best-effort error logging, plus the
-// safeChange sensitive-field redaction contract. The in-process producer
-// replaces the Node HMAC loopback input server for Go-owned slices.
+// safeChange sensitive-field redaction contract. Since 去跨进程战役第四刀 it
+// is the only F4 write path (the loopback HMAC input server is deleted; the
+// authsys management-plane sink and every other writer go through here).
 package operationlog
 
 import (
@@ -12,7 +13,8 @@ import (
 )
 
 // Producer persists operation logs directly through the store with a held
-// owner lease (mirroring RunInputServer's lease lifecycle, minus HTTP).
+// owner lease (the process-wide LeaseKeeper owns the renewal lifecycle; the
+// producer only extends the same lease per record).
 type Producer struct {
 	store Store
 	lease OwnerLease
@@ -31,9 +33,8 @@ func (p *Producer) warn(msg string, args ...any) {
 	}
 }
 
-// StartProducer acquires the owner lease; the lease renewal lifecycle stays
-// owned by RunInputServer-style callers. Producers created via NewProducer
-// share an already-held lease.
+// NewProducer binds the producer to an already-held lease shared with the
+// resident F4 owner component (retention).
 func NewProducer(store Store, lease OwnerLease, cfg Config, log slogLogger) *Producer {
 	return &Producer{store: store, lease: lease, cfg: cfg, log: log}
 }

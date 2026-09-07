@@ -109,9 +109,11 @@ func openComposeOperationLease(t *testing.T, store operationlog.Store) *operatio
 
 // openComposeAuditSources prepares the X04 logreads audit inputs: the F3
 // config (dataset file, hot-search and payload-blob roots) plus a provisioned
-// F3 schema, mirroring what main does before composeSystemAPI. The returned
-// closer releases the F3 store (the composition itself only reads it).
-func openComposeAuditSources(t *testing.T, root string) (auditlog.Config, func()) {
+// F3 schema, mirroring what main does before composeSystemAPI. It also starts
+// the shared F3 lease keeper and the in-process audit producer the
+// composition requires (去跨进程战役第四刀). The returned closer releases the
+// producer lease and the F3 store.
+func openComposeAuditSources(t *testing.T, root string) (auditlog.Config, *auditlog.Producer, func()) {
 	t.Helper()
 	config := auditlog.Config{
 		Mode:                 auditlog.ModeSQLite,
@@ -132,7 +134,16 @@ func openComposeAuditSources(t *testing.T, root string) (auditlog.Config, func()
 		_ = store.Close()
 		t.Fatalf("ensure F3 audit schema: %v", err)
 	}
-	return config, func() { _ = store.Close() }
+	keeper, ok, err := auditlog.StartLeaseKeeper(context.Background(), store, config.InstanceID, 30*time.Second, nil)
+	if err != nil || !ok {
+		_ = store.Close()
+		t.Fatalf("start F3 audit lease keeper: ok=%v err=%v", ok, err)
+	}
+	producer := auditlog.NewProducer(store, keeper.Lease(), config, producerLogger{})
+	return config, producer, func() {
+		keeper.Close()
+		_ = store.Close()
+	}
 }
 
 // createRuntimeLogDataset provisions the F1-jobs-owned runtime-log file with
@@ -163,9 +174,9 @@ func TestComposeSystemAPIMountsKernelContract(t *testing.T) {
 	cfg := composeTestConfig(t)
 	store := openComposeOperationStore(t)
 	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditConfig)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -261,9 +272,9 @@ func TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers(t *testing.T) {
 
 	store := openComposeOperationStore(t)
 	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditConfig)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -505,9 +516,9 @@ func TestComposeSystemAPIMountsLogReadFamilies(t *testing.T) {
 	cfg := composeTestConfig(t)
 	store := openComposeOperationStore(t)
 	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditConfig)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}

@@ -71,10 +71,8 @@ type workerConfig struct {
 	OAuthEnabled         bool
 	TaskRunsEnabled      bool
 	UsageWriterEnabled   bool
-	InternalAPIEnabled   bool
 	BalanceDetectEnabled bool
 	ProbeEnabled         bool
-	ManualTestEnabled    bool
 
 	// ProbeConcurrency 限制探针族在途上游诊断请求与队列并发。Node 侧对应
 	// globalSharedQueueConcurrency 取 runtimeConfig.concurrency.globalMax
@@ -84,17 +82,9 @@ type workerConfig struct {
 	// accountbalance/runtime_config.go 的 defaultAccountBalanceConcurrency=512，
 	// 两家族 env 上限均为 5096）；本项 env JUHE_AI_JOBS_PROBE_CONCURRENCY
 	// 同样可上调到 5096（下方校验），也可下调。手动账号测试队列并发沿用
-	// 同一约定。
+	// 同一约定（该队列已随去跨进程战役移交 gateway 装配，gateway 侧读取
+	// 同名 env 与默认值）。
 	ProbeConcurrency int
-
-	// ManualTestRefillMaxBatchSize 等对齐 Node runtimeConfig.background 的
-	// accountTestRefillMaxBatchSize / accountTestQueuedSweepBatchSize /
-	// accountTestQueuedMaxWaitMs / accountTestRunningStaleMs（同名 env 与
-	// 默认值；见 loadWorkerConfig）。
-	ManualTestRefillMaxBatchSize   int
-	ManualTestQueuedSweepBatchSize int
-	ManualTestQueuedMaxWaitMS      int64
-	ManualTestRunningStaleMS       int64
 
 	// 账户列表可用性投影维护（Node runtimeConfig.background
 	// accountListAvailabilityProjection* 同名 env、默认值与边界）：
@@ -178,17 +168,11 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		OAuthEnabled:                             true,
 		TaskRunsEnabled:                          true,
 		UsageWriterEnabled:                       true,
-		InternalAPIEnabled:                       true,
 		BalanceDetectEnabled:                     true,
 		ProbeEnabled:                             true,
-		ManualTestEnabled:                        true,
 		// 默认 512：jobs 内 J1/J2 家族既有档位（非 Node globalMax 5000 直译，
 		// 见 ProbeConcurrency 字段注释）。
 		ProbeConcurrency: 512,
-		ManualTestRefillMaxBatchSize:             1_000,
-		ManualTestQueuedSweepBatchSize:           500,
-		ManualTestQueuedMaxWaitMS:                10 * 60_000,
-		ManualTestRunningStaleMS:                 10 * 60_000,
 		ListProjectionIntervalMS:                 1_000,
 		ListProjectionBatchSize:                  100,
 		ListProjectionMaxBatchesPerRun:           200,
@@ -285,11 +269,9 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		{"JUHE_AI_JOBS_OAUTH_ENABLED", &config.OAuthEnabled, true},
 		{"JUHE_AI_JOBS_TASK_RUNS_ENABLED", &config.TaskRunsEnabled, true},
 		{"JUHE_AI_JOBS_USAGE_WRITER_ENABLED", &config.UsageWriterEnabled, true},
-		{"JUHE_AI_JOBS_INTERNAL_API_ENABLED", &config.InternalAPIEnabled, true},
 		{"JUHE_AI_JOBS_BALANCE_DETECT_ENABLED", &config.BalanceDetectEnabled, true},
 		{"JUHE_AI_JOBS_RETENTION_ENABLED", &config.RetentionEnabled, true},
 		{"JUHE_AI_JOBS_PROBE_ENABLED", &config.ProbeEnabled, true},
-		{"JUHE_AI_JOBS_MANUAL_TEST_ENABLED", &config.ManualTestEnabled, true},
 	} {
 		*toggle.target, err = workerEnvBool(getenv, toggle.name, toggle.fallback)
 		if err != nil {
@@ -306,38 +288,8 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if config.ProbeConcurrency < 1 || config.ProbeConcurrency > 5096 {
 		return config, fmt.Errorf("JUHE_AI_JOBS_PROBE_CONCURRENCY 必须介于 1 和 5096 之间")
 	}
-	refillMaxBatchSize, err := workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_TEST_REFILL_MAX_BATCH_SIZE", config.ManualTestRefillMaxBatchSize)
-	if err != nil {
-		return config, err
-	}
-	if refillMaxBatchSize < 1 || refillMaxBatchSize > 100_000 {
-		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_TEST_REFILL_MAX_BATCH_SIZE 必须介于 1 和 100000 之间")
-	}
-	config.ManualTestRefillMaxBatchSize = refillMaxBatchSize
-	queuedSweepBatchSize, err := workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_SWEEP_BATCH_SIZE", config.ManualTestQueuedSweepBatchSize)
-	if err != nil {
-		return config, err
-	}
-	if queuedSweepBatchSize < 1 || queuedSweepBatchSize > 100_000 {
-		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_SWEEP_BATCH_SIZE 必须介于 1 和 100000 之间")
-	}
-	config.ManualTestQueuedSweepBatchSize = queuedSweepBatchSize
-	queuedMaxWaitMS, err := workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_MAX_WAIT_MS", int(config.ManualTestQueuedMaxWaitMS))
-	if err != nil {
-		return config, err
-	}
-	if queuedMaxWaitMS < 1_000 || queuedMaxWaitMS > 24*60*60_000 {
-		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_MAX_WAIT_MS 必须介于 1000 和 86400000 之间")
-	}
-	config.ManualTestQueuedMaxWaitMS = int64(queuedMaxWaitMS)
-	runningStaleMS, err := workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_TEST_RUNNING_STALE_MS", int(config.ManualTestRunningStaleMS))
-	if err != nil {
-		return config, err
-	}
-	if runningStaleMS < 60_000 || runningStaleMS > 60*60_000 {
-		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_TEST_RUNNING_STALE_MS 必须介于 60000 和 3600000 之间")
-	}
-	config.ManualTestRunningStaleMS = int64(runningStaleMS)
+	// 手动账号测试队列 env（JUHE_AI_BACKGROUND_ACCOUNT_TEST_*）已随队列
+	// 执行权移交 gateway 组合根，jobs 不再读取。
 	config.ListProjectionEnabled, err = workerEnvBool(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED", false)
 	if err != nil {
 		return config, err
@@ -433,12 +385,9 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		if config.ProbeEnabled && config.BusinessSQLitePath == "" {
 			return config, fmt.Errorf("启用 JUHE_AI_JOBS_PROBE_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH")
 		}
-		if config.ManualTestEnabled && config.BusinessSQLitePath == "" {
-			return config, fmt.Errorf("启用 JUHE_AI_JOBS_MANUAL_TEST_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH")
-		}
 	}
-	if (config.ProbeEnabled || config.ManualTestEnabled) && config.Secret == "" {
-		return config, fmt.Errorf("启用探针或手动测试族后必须配置 JUHE_AI_SECRET（凭据解密与 Key 指纹不可用）")
+	if config.ProbeEnabled && config.Secret == "" {
+		return config, fmt.Errorf("启用探针族后必须配置 JUHE_AI_SECRET（凭据解密与 Key 指纹不可用）")
 	}
 	return config, nil
 }

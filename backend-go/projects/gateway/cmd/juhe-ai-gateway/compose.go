@@ -50,6 +50,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/systemteams"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/tablemonitor"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/uibootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
 
 // Mount matrix (Node system-api-app.ts / db-service.ts app.use prefix -> Go
@@ -158,9 +159,19 @@ type composition struct {
 
 	producer       *operationlog.Producer
 	operationStore operationlog.Store
+	// auditProducer is the in-process F3 audit sink (去跨进程战役第四刀):
+	// chain dispatch adapters persist through it instead of POSTing to the
+	// retired loopback input server. main owns the shared audit lease.
+	auditProducer *auditlog.Producer
 	// AuthzStore retains the authorization store so main can attach the
 	// T6d gateway-side expiry reconciliation component (compose_authz_expiry_sync.go).
 	AuthzStore *authz.Store
+	// GoRuntimeSampler is the in-process Go runtime metrics sampler
+	// (shared platform/gometrics; role default gateway). main runs it as a
+	// supervisor component; the opened store handle is closed via shutdowns.
+	// Nil when the store env family is disabled (default) — the
+	// go-runtime-trend route then serves empty items.
+	GoRuntimeSampler *gometrics.Sampler
 	// teamStore retains the system-teams store so the assembly tests can drive
 	// the committed-write side effects directly (the routes family shares it).
 	teamStore *systemteams.Store
@@ -233,12 +244,15 @@ func settingsString(value any) string {
 // Callers must prove the business owner gates first (businessOwnerGate plus
 // cutover evidence verification); this function fails fast on any incomplete
 // wiring instead of serving a partial surface.
-func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operationStore operationlog.Store, operationLease *operationlog.LeaseKeeper, auditConfig auditlog.Config) (*composition, error) {
+func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operationStore operationlog.Store, operationLease *operationlog.LeaseKeeper, auditProducer *auditlog.Producer, auditConfig auditlog.Config) (*composition, error) {
 	if operationStore == nil {
 		return nil, errors.New("系统 API 组合根要求 F4 操作日志 store 已启用（JUHE_AI_OPERATION_LOG_* 配置）")
 	}
 	if operationLease == nil {
-		return nil, errors.New("系统 API 组合根要求 F4 共享租约持有者（main 已与 F4 input server 共享同一 owner lease）")
+		return nil, errors.New("系统 API 组合根要求 F4 共享租约持有者（main 已让 producer 与 resident owner 共用同一 owner lease）")
+	}
+	if auditProducer == nil {
+		return nil, errors.New("系统 API 组合根要求 F3 审计进程内 producer（main 已基于共享 audit lease 构造）")
 	}
 
 	composed := &composition{pgDialect: cfg.DatabaseDriver == "postgres"}
@@ -586,12 +600,14 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// runtime sync only through this composition-root port; PostgreSQL keeps
 	// its existing bulk transaction path inside accounts.Delete.
 	accountStore.SetDeletedResourceGrantRevoker(authzStore)
-	// 手动账号测试派发装配（test_effects.go）：POST /accounts/{id}/test 的
-	// worker 派发经 jobs internal-api loopback（HMAC 签名，见
-	// compose_account_test_dispatch.go）。jobs 缺席时桥接返回 false，路由
-	// 落 Node worker-unavailable 契约（任务置败 + 503）——与 nil 端口降级
-	// 契约一致，组合根不因 jobs 缺席而失败。
-	accountStore.SetTestDispatchEffects(newJobsAccountTestDispatchBridge(cfg.JobsInternalURL, cfg.Secret, nil))
+	// 手动账号测试执行链装配（去跨进程战役：原 jobs internal-api loopback
+	// HTTP 桥删除，执行链抽为共享 backend-go-platform/accounttest 包后在
+	// gateway 进程内装配单持有者队列，见 compose_account_test_local.go）。
+	// 契约表缺失时按 nil 端口降级，路由落 Node worker-unavailable 契约
+	// （任务置败 + 503），组合根不因降级而失败。
+	if err := wireInProcessAccountTestDispatch(composed, cfg, accountStore); err != nil {
+		return nil, fmt.Errorf("wire in-process account test dispatch: %w", err)
+	}
 	announcementStore, err := announcements.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID)
 	if err != nil {
 		return nil, fmt.Errorf("create announcement store: %w", err)
@@ -603,6 +619,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	providerStore, err := providers.NewStore(composed.db, composed.pgDialect, time.Now)
 	if err != nil {
 		return nil, fmt.Errorf("create provider store: %w", err)
+	}
+	// BUG-0162 第五刀：余额手动刷新 + 模型目录刷新两个执行端口的进程内装配
+	// （去跨进程战役：原 Node jobs /account-balance/manual HTTP 桥已随第四刀
+	// 删除；上游 /models 拉取此前在 Go 侧无实现）。SQLite 模式余额端口保持
+	// nil（路由维持 500/降级快照契约），契约表缺失按 nil 端口降级并告警。
+	if err := wireInProcessBalanceAndCatalogRefresh(composed, cfg, accountStore, providerStore); err != nil {
+		return nil, fmt.Errorf("wire in-process balance and catalog refresh: %w", err)
 	}
 	ipStatsStore, err := ipstats.NewStore(composed.statsDB, composed.pgDialect, time.Now, newCompositionID, bus, settingsTimezone(settingValue))
 	if err != nil {
@@ -645,6 +668,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	producer := operationlog.NewProducer(operationStore, operationLease.Lease(), operationlog.Config{OwnerLease: operationLease.TTL()}, producerLogger{})
 	composed.producer = producer
 	composed.operationStore = operationStore
+	// F3 chain audit sink (去跨进程战役第四刀): main 构造的进程内 producer
+	// 持有共享 audit lease；chain 两个 dispatch 适配器直接 Capture，不再有
+	// loopback POST 面。
+	composed.auditProducer = auditProducer
 	// Logger rides the same slog-backed producerLogger as the producer drop
 	// reports (an invalid MaxChanges configuration drops the entry with a
 	// logged original error, Node logOperationLogFailure semantics).
@@ -812,6 +839,29 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		Dispatch: recordMaintenanceDispatch,
 		Sink:     sink,
 	}).Mount(kern, authDeps)
+	// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标，并把共享 Store
+	// 直接交给 statreads 的 go-runtime-trend 读侧（不再代理 jobs 的 trend
+	// HTTP 面）。store 未启用（默认）时既不打开句柄也不装配采样器。
+	var goRuntimeStore *gometrics.Store
+	if cfg.GoRuntimeMetrics.Enabled {
+		openedStore, goRuntimeDB, openErr := gometrics.OpenStore(cfg.GoRuntimeMetrics)
+		if openErr != nil {
+			return nil, fmt.Errorf("open Go runtime metrics store: %w", openErr)
+		}
+		if err := gometrics.EnsureReady(context.Background(), openedStore); err != nil {
+			_ = goRuntimeDB.Close()
+			return nil, fmt.Errorf("verify Go runtime metrics schema: %w", err)
+		}
+		sampler, samplerErr := gometrics.NewSampler(gometrics.New(cfg.GoRuntimeMetrics.Service, cfg.GoRuntimeMetrics.Role), openedStore, cfg.GoRuntimeMetrics.Interval)
+		if samplerErr != nil {
+			_ = goRuntimeDB.Close()
+			return nil, fmt.Errorf("initialize Go runtime metrics sampler: %w", samplerErr)
+		}
+		sampler.Retention = time.Duration(cfg.GoRuntimeMetrics.RetentionDays) * 24 * time.Hour
+		composed.shutdowns = append(composed.shutdowns, func() { _ = goRuntimeDB.Close() })
+		goRuntimeStore = openedStore
+		composed.GoRuntimeSampler = sampler
+	}
 	var healthOutcomes *statreads.HealthOutcomeSource
 	if cfg.AccountHealthOutcomeSQLitePath != "" {
 		healthOutcomes = &statreads.HealthOutcomeSource{SQLitePath: cfg.AccountHealthOutcomeSQLitePath}
@@ -824,16 +874,17 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// standalone-mode source. Mirrors Node readPostgresOutcomesForAccounts.
 	healthOutcomes.PostgresURL = cfg.AccountHealthOutcomePostgresURL
 	(&statreads.Deps{
-		Business:            composed.db,
-		Stats:               composed.statsDB,
-		UsageCatalog:        usageCatalogDB,
-		PGDialect:           composed.pgDialect,
-		Auth:                authDeps,
-		Now:                 time.Now,
-		Timezone:            statreads.NewSystemSettingsTimezoneSource(composed.db, composed.pgDialect),
-		GoRuntimeMetricsURL: cfg.GoRuntimeMetricsURL,
-		HealthOutcomes:      healthOutcomes,
-		RuntimeMode:         cfg.RuntimeMode,
+		Business:                composed.db,
+		Stats:                   composed.statsDB,
+		UsageCatalog:            usageCatalogDB,
+		PGDialect:               composed.pgDialect,
+		Auth:                    authDeps,
+		Now:                     time.Now,
+		Timezone:                statreads.NewSystemSettingsTimezoneSource(composed.db, composed.pgDialect),
+		GoRuntimeMetrics:        goRuntimeStore,
+		GoRuntimeMetricsService: cfg.GoRuntimeMetrics.Service,
+		HealthOutcomes:          healthOutcomes,
+		RuntimeMode:             cfg.RuntimeMode,
 	}).Mount(kern)
 	// X04: the /__aisys__/help static help center, session-gated like the Node
 	// web layer (requireHelpSession + role redirects over dist/help).
@@ -884,6 +935,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if spoolDirectory == "" && cfg.StatsDatabasePath != "" {
 			spoolDirectory = filepath.Join(filepath.Dir(cfg.StatsDatabasePath), "usage-record-spool")
 		}
+		// 健康检查派发的进程内 DB outbox writer（account_health_probe_request_outbox，
+		// chain_request_failure_health.go）：请求失败链与 runtime-reset/激活面的
+		// 探针派发都落这张常驻交接表，jobs J1 Runner 每周期 drain。deadline env
+		// 非法时 writer 为 inert（dispatch 显式 input_unavailable）。
+		healthProbeOutbox := newChainProbeRequestOutboxWriter(composed.db, composed.pgDialect, cfg.AccountHealthProbeDeadlineMS)
 		services, chainErr := composeChainRuntimeServices(composed, cfg, settingValue)
 		if chainErr != nil {
 			return nil, fmt.Errorf("compose gateway chain runtime services: %w", chainErr)
@@ -892,11 +948,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// Runtime-reset port assembly (compose_accounts_reset.go): the
 		// maintenance reset endpoint reaches the gateway runtime surfaces
 		// through this bridge, and reset/activation health-check dispatches
-		// ride the jobs internal-api HMAC bridge (the request-failure
-		// health-dispatch endpoint). With the chain disabled the port stays
-		// nil and the endpoint keeps its self-contained degraded contract.
-		resetBridge, resetBridgeErr := newAccountsRuntimeResetBridge(composed, settingValue, chainServices, cfg.Secret,
-			newChainJobsHealthDispatchBridge(cfg.JobsInternalURL, cfg.Secret, nil))
+		// ride the same in-process probe-request outbox row. With the chain
+		// disabled the port stays nil and the endpoint keeps its
+		// self-contained degraded contract.
+		resetBridge, resetBridgeErr := newAccountsRuntimeResetBridge(composed, settingValue, chainServices, cfg.Secret, healthProbeOutbox)
 		if resetBridgeErr != nil {
 			return nil, fmt.Errorf("compose accounts runtime reset bridge: %w", resetBridgeErr)
 		}
@@ -921,7 +976,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			Cache:           chainServices.Cache,
 			Clock:           gatewaypreauth.SystemClock{},
 			AuditLogEnabled: func() bool { return cfg.AuditLogEnabled },
-			AuditInputURL:   cfg.AuditInputURL,
+			// 去跨进程战役第四刀：审计派发走进程内 F3 producer（原 loopback
+			// input URL/POST 面，且从未携带强制 HMAC 签名头 → 现网审计派发
+			// 全部 401 被吞）。nil 适配器保留空目标降级分支。
+			AuditDispatch:      auditDispatchAdapter{producer: auditProducer},
+			AuditUsageDispatch: auditUsageDispatcher{producer: auditProducer},
 			QueueDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
 				MaxQueueSize:        cfg.ConcurrencyGlobalMax,
 				PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
@@ -954,11 +1013,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// captureGatewayAccountApiKeyFailureObservation，failure-dispatch.ts
 			// :421-434 挂起失败观察代际）。
 			AccountAPIKeyObservation: chainServices.AccountAPIKeyGuard,
-			// 失败派发链：request-failure 健康检查派发桥目标 + turn-retry
-			// Redis 状态驱动（StateClient 为 nil 时适配器返回 nil，链条保持
-			// memory 驱动——见 chain_request_failure_health.go /
+			// 失败派发链：request-failure 健康检查派发的进程内 outbox writer +
+			// turn-retry Redis 状态驱动（StateClient 为 nil 时适配器返回 nil，
+			// 链条保持 memory 驱动——见 chain_request_failure_health.go /
 			// chain_turn_retry_redis.go）。
-			JobsInternalURL:     cfg.JobsInternalURL,
+			HealthProbeOutbox:   healthProbeOutbox,
 			TurnRetryStateStore: newChainTurnRetryRedisStateStoreOrNil(chainServices.StateClient, cfg.RedisNamespace),
 			// Codex 用量响应头持久化（compose_codex_usage_headers.go）：
 			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道。
@@ -998,7 +1057,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if chainServices.RateLimitStore != nil {
 			limiter.Store = chainServices.RateLimitStore
 		}
-		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditDispatch", cfg.AuditInputURL != "", "chatFamily", "mounted")
+		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditDispatch", auditProducer != nil, "chatFamily", "mounted")
 	}
 
 	// X04: the /__aipublic__ externally maintained legacy family mounts after

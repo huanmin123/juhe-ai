@@ -21,8 +21,12 @@ import (
 
 // accountBalanceJobsOwnerEnv / accountBalanceJobsHTTPURLEnv keep the archived
 // Node env names verbatim (JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER is read by
-// accountBalanceGoOwnerEnabled; the manual-bridge origin doubles as the health
-// origin exactly like Node `new URL('/health', endpoint)`).
+// accountBalanceGoOwnerEnabled). The configured URL is the jobs origin; the
+// probe replaces its path with /health exactly like Node
+// `new URL('/health', endpoint)`. The retired /account-balance/manual manual
+// bridge the URL used to point at is deleted (去跨进程战役第四刀); the env
+// survives as the blue/green health-probe origin (orchestration semantics,
+// not business IPC).
 const (
 	accountBalanceJobsOwnerEnv   = "JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER"
 	accountBalanceJobsHTTPURLEnv = "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_URL"

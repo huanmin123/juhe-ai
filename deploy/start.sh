@@ -272,7 +272,7 @@ if [ ! -f backend/.env ]; then
     : > backend/.env
     echo 'Created empty backend/.env (go-only release ships no backend/.env.example).'
   fi
-  echo 'Configure all JUHE_AI_*_INSTANCE_ID values and F3/F4 input secrets before production use.'
+  echo 'Configure all JUHE_AI_*_INSTANCE_ID values before production use.'
 fi
 
 ensure_deployment_defaults
@@ -282,8 +282,10 @@ DEPLOY_MODE="$(resolve_deploy_mode)" || exit 1
 
 HOST="${JUHE_AI_HOST:-$(read_dotenv_value JUHE_AI_HOST '127.0.0.1')}"
 PORT="${JUHE_AI_PORT:-$(read_dotenv_value JUHE_AI_PORT '3000')}"
-export JUHE_AI_AUDIT_LOG_INPUT_URL="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
-export JUHE_AI_OPERATION_LOG_INPUT_URL="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
+
+# 去跨进程战役第四刀：JUHE_AI_AUDIT_LOG_INPUT_URL / JUHE_AI_OPERATION_LOG_INPUT_URL
+# 与 F3/F4 loopback input 健康轮询一并删除（F3/F4 ingest 监听器已进程内化，
+# gateway 不再监听 3303/3304，写入走进程内 producer）。
 
 echo "Starting juhe-ai at http://${HOST}:${PORT} (deploy mode: ${DEPLOY_MODE}; go-only: the Go gateway owns the main HTTP entry, Go jobs owns F1/F2)"
 OWNER_LOCK_ENABLED="${JUHE_AI_OWNER_LOCK_ENABLED:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_ENABLED false)}"
@@ -314,10 +316,6 @@ gateway_health_url="${JUHE_AI_GATEWAY_HEALTH_URL:-$(read_dotenv_value JUHE_AI_GA
 jobs_health_url="${JUHE_AI_JOBS_HEALTH_URL:-$(read_dotenv_value JUHE_AI_JOBS_HEALTH_URL 'http://127.0.0.1:3305')}"
 go_gateway_pid="$(start_go_project gateway "$gateway_health_url")"
 go_jobs_pid="$(start_go_project jobs "$jobs_health_url")"
-audit_input_url="${JUHE_AI_AUDIT_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_AUDIT_LOG_INPUT_URL 'http://127.0.0.1:3303')}"
-operation_input_url="${JUHE_AI_OPERATION_LOG_INPUT_URL:-$(read_dotenv_value JUHE_AI_OPERATION_LOG_INPUT_URL 'http://127.0.0.1:3304')}"
-wait_for_http_status "$go_gateway_pid" "${audit_input_url%/}/__aiinternal__/health" 204 'juhe-ai-go-gateway F3'
-wait_for_http_status "$go_gateway_pid" "${operation_input_url%/}/__aiinternal__/v1/operation-logs/health" 204 'juhe-ai-go-gateway F4'
 wait_for_http_status "$go_gateway_pid" "http://${HOST}:${PORT}/__aisys__/api/health" 200 'juhe-ai-go-gateway system API'
 echo "Started juhe-ai-go-gateway (PID $go_gateway_pid) and juhe-ai-go-jobs (PID $go_jobs_pid)."
 

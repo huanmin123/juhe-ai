@@ -25,9 +25,9 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	cfg := composeTestConfig(t)
 	store := openComposeOperationStore(t)
 	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditConfig)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -35,11 +35,12 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	seedSystemSettings(t, composed.DB)
 
 	// 生产同款桥接：guard 为 memory 驱动（与 chain_runtime.go 的非 redis 路径一致）；
-	// 派发桥目标为空（本测试未接 jobs internalapi），健康检查派发按 inert 契约跳过。
+	// outbox writer 为 inert（本测试未接业务库 outbox 表），健康检查派发按
+	// inert 契约跳过。
 	guard := gatewayaccounteffects.NewAccountAPIKeyFailureGuard(
 		gatewayaccounteffects.SideEffectsConfig{RuntimeStateDriver: cfg.RuntimeStateDriver},
 		gatewayaccounteffects.SystemClock{}, nil, nil)
-	resetEffects, err := newAccountsRuntimeResetBridge(composed, settingsValueReader(composed.settingsStore), &chainRuntimeServices{AccountAPIKeyGuard: guard}, cfg.Secret, newChainJobsHealthDispatchBridge("", "", nil))
+	resetEffects, err := newAccountsRuntimeResetBridge(composed, settingsValueReader(composed.settingsStore), &chainRuntimeServices{AccountAPIKeyGuard: guard}, cfg.Secret, newChainProbeRequestOutboxWriter(nil, false, 65_000))
 	if err != nil {
 		t.Fatalf("assemble runtime reset bridge: %v", err)
 	}
@@ -159,8 +160,8 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 		t.Fatalf("dirty reason: %s", reason)
 	}
 
-	// 派发桥目标为空（未接 jobs internalapi）→ 派发按 input_unavailable 拒绝：
-	// 不 panic、不阻塞 reset（生产装配见 compose_accounts_reset_dispatch_test.go）。
+	// outbox writer 为 inert（未接业务库 outbox 表）→ 派发按 input_unavailable
+	// 拒绝：不 panic、不阻塞 reset（生产装配见 compose_accounts_reset_dispatch_test.go）。
 	resetEffects.DispatchAccountHealthCheck(accountID, "e2e-skip")
 
 	// 直连端口语义：非池账户 / 缺账户回落。

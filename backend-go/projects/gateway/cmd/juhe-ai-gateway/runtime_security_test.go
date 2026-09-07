@@ -76,6 +76,35 @@ func TestLoadRuntimeConfigProductionSecretGate(t *testing.T) {
 	}
 }
 
+// TestLoadRuntimeConfigAccountHealthProbeDeadline：健康检查派发 outbox 行的
+// 探针 deadline 窗口（去跨进程战役第二刀迁到 gateway 的同名 env）——默认
+// 65000、合法值投影、非法值按 0 处理保持写侧 input_unavailable 降级。
+func TestLoadRuntimeConfigAccountHealthProbeDeadline(t *testing.T) {
+	env := developmentSecurityEnv(t)
+	cfg, err := loadRuntimeConfigEnv(t, env)
+	if err != nil {
+		t.Fatalf("base config: %v", err)
+	}
+	if cfg.AccountHealthProbeDeadlineMS != 65_000 {
+		t.Fatalf("default deadline = %d want 65000", cfg.AccountHealthProbeDeadlineMS)
+	}
+	env["JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS"] = "30000"
+	cfg, err = loadRuntimeConfigEnv(t, env)
+	if err != nil || cfg.AccountHealthProbeDeadlineMS != 30_000 {
+		t.Fatalf("valid override = %d, %v", cfg.AccountHealthProbeDeadlineMS, err)
+	}
+	for _, raw := range []string{"abc", "999", "600001"} {
+		env["JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS"] = raw
+		cfg, err = loadRuntimeConfigEnv(t, env)
+		if err != nil {
+			t.Fatalf("invalid value %q must not fail startup: %v", raw, err)
+		}
+		if cfg.AccountHealthProbeDeadlineMS != 0 {
+			t.Fatalf("invalid value %q must keep the writer inert, got %d", raw, cfg.AccountHealthProbeDeadlineMS)
+		}
+	}
+}
+
 func TestLoadRuntimeConfigProductionSignalReadsNodeEnv(t *testing.T) {
 	// JUHE_AI_NODE_ENV 未设 + NODE_ENV=production → 全部生产门禁生效
 	// （Node isProductionRuntime 只读 NODE_ENV，runtime.ts:979-980）。

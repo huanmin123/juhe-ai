@@ -1,5 +1,4 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -200,16 +199,11 @@ function resolveGoProjectEnv() {
     childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID,
     `dev-go-gateway-audit-log-pid-${process.pid}`
   )
-  const secret = firstConfiguredValue(
-    childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET,
-    randomBytes(32).toString('hex')
-  )
-  const listenAddress = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3303')
-  const inputPort = listenAddress.slice(listenAddress.lastIndexOf(':') + 1)
   childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instanceID
-  childEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS = listenAddress
-  childEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET = secret
-  childEnv.JUHE_AI_AUDIT_LOG_INPUT_URL = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_INPUT_URL, `http://127.0.0.1:${inputPort}`)
+  // 去跨进程战役第四刀：F3/F4 loopback input listener（3303/3304）已删除，
+  // JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS/_SECRET/_URL 与
+  // JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS/_SECRET/_URL 不再注入；
+  // 审计/操作日志写入走 gateway 进程内 producer（见文件头 drop 清单）。
   childEnv.JUHE_AI_AUDIT_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai-audit-log.sqlite3'))
   childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, resolve(devDataRoot, 'audit-payload-blobs'))
   childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, resolve(devDataRoot, 'audit-hot-search'))
@@ -218,16 +212,7 @@ function resolveGoProjectEnv() {
     childEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID,
     `dev-go-gateway-operation-log-pid-${process.pid}`
   )
-  const operationSecret = firstConfiguredValue(
-    childEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET,
-    randomBytes(32).toString('hex')
-  )
-  const operationListenAddress = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3304')
-  const operationInputPort = operationListenAddress.slice(operationListenAddress.lastIndexOf(':') + 1)
   childEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID = operationInstanceID
-  childEnv.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS = operationListenAddress
-  childEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET = operationSecret
-  childEnv.JUHE_AI_OPERATION_LOG_INPUT_URL = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_INPUT_URL, `http://127.0.0.1:${operationInputPort}`)
   childEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai-operation-log.sqlite3'))
   childEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH = resolveBackendPath(childEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH || resolve(devDataRoot, 'juhe-ai.sqlite3'))
   childEnv.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS = firstConfiguredValue(childEnv.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3305')
@@ -248,8 +233,23 @@ function resolveGoProjectEnv() {
   if (childEnv.JUHE_AI_OPERATION_LOG_STORE === 'postgres' && !childEnv.JUHE_AI_OPERATION_LOG_POSTGRES_URL) {
     childEnv.JUHE_AI_OPERATION_LOG_POSTGRES_URL = childEnv.JUHE_AI_POSTGRES_URL ?? ''
   }
+  // 去跨进程战役第四刀：即使残留在历史 .env 或父进程环境中，已删除的
+  // F3/F4 loopback input env 也不得进入 Go 子进程（gateway 进程内 producer
+  // 独占写入，监听器 3303/3304 已不存在）。
+  for (const name of removedInputServerEnvNames) delete childEnv[name]
   return childEnv
 }
+
+const removedInputServerEnvNames = [
+  'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS',
+  'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
+  'JUHE_AI_AUDIT_LOG_INPUT_URL',
+  'JUHE_AI_AUDIT_LOG_INPUT_MAX_BYTES',
+  'JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT',
+  'JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS',
+  'JUHE_AI_OPERATION_LOG_INPUT_SECRET',
+  'JUHE_AI_OPERATION_LOG_INPUT_URL'
+]
 
 function resolveBackendPath(value, fallback) {
   const configuredValue = value?.trim()

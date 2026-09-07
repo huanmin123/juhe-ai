@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
@@ -49,6 +51,25 @@ func (b *businessDB) table(name string) string {
 		return "juhe_business." + name
 	}
 	return name
+}
+
+// bind 在 PostgreSQL 方言下把 ? 占位符改写为 $n（对齐 oauthrefresh.Store.bind
+// 与被删 healthDispatchBoundary.bind 的约定）。
+func (b *businessDB) bind(query string) string {
+	if !b.postgres {
+		return query
+	}
+	var out strings.Builder
+	index := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			out.WriteString("$" + strconv.Itoa(index))
+			index++
+			continue
+		}
+		out.WriteByte(query[i])
+	}
+	return out.String()
 }
 
 // statsTable 限定统计表名（对应 account-quality/balance 的 stats 库约定）。

@@ -18,7 +18,7 @@
 
 可选运行变量（均有缺省值，常规单机部署无需设置）：
 
-- `JUHE_AI_JOBS_INTERNAL_URL`：gateway 进程回调 jobs internal-api 派发面的 loopback origin，默认 `http://127.0.0.1:3305`（与 jobs 健康监听缺省端口一致）。手动账户测试派发（`POST /__aiinternal__/v1/account-test/dispatch`）、请求失败链账户健康检查派发（`POST /__aiinternal__/v1/account-health-check/dispatch`）与账户余额健康裁决都经过它；jobs 健康监听端口变更时必须同步修改。
+- `JUHE_AI_JOBS_INTERNAL_URL` 已删除（去跨进程战役第二刀）：gateway 与 jobs 之间不再有任何 HTTP 互调，账户健康检查派发改走业务库 `account_health_probe_request_outbox` 通道（gateway 写行、jobs J1 Runner 消费），`/__aiinternal__` 路由已整体下线；手动账户测试派发此前已在 gateway 进程内执行。启动脚本不再转发该变量，配置它不会生效。
 - `JUHE_AI_BLUE_GREEN_OWNER_MODE`：Go 进程蓝绿 owner 模式，合法值 `active` / `standby` / `drain`（大小写不敏感），缺省 `active`。gateway 与 jobs 启动时各自校验，非法值启动失败；仅 `active` 持有 owner 工作，`standby` / `drain` 供蓝绿切换窗口把候补/下线槽排除出 owner 判定（含账户余额健康对对端 ownerMode 的裁决）。
 
 详见 `docs/migration/部署go-only双轨开关.md`（源码仓库内）。

@@ -12,33 +12,34 @@ package main
 //   - dispatchAccountHealthCheck(accountId, 'request_failure') publishes the
 //     J1 probe request fact (internal-api service, fire-and-forget).
 //
-// Go two-process topology: the gateway process cannot import the jobs
-// internal-api package (mirrors the compose_account_test_dispatch.go module
-// boundary), so the publish rides the same loopback HMAC bridge pattern:
-// POST {JobsInternalURL}/__aiinternal__/v1/account-health-check/dispatch,
-// HMAC-SHA256 over "juhe-ai:account-health-check-dispatch:v1\n" + raw body,
-// X-Juhe-Ai-Signature: v1=<hex>, loopback-only on the jobs side.
+// Go two-process topology (去跨进程战役第二刀)：the gateway process cannot
+// import the jobs internal-api package (module boundary), and Go processes
+// never call each other over HTTP, so the publish rides the same durable
+// channel pattern as record_maintenance_jobs：the gateway writes one
+// account_health_probe_request_outbox row per dispatch (DB outbox, in-process
+// INSERT, no network hop) and the jobs J1 Runner drains pending rows at the
+// head of every runCycle. The loopback HMAC dispatch bridge (its own
+// signature-domain constant and route) was removed with this slice; the wire
+// payload semantics survive unchanged as row columns
+// (version collapsed to the schema, accountId/reason/traceId/sourceFence).
 //
-// Consumption landed (审查轮换七 aeb10ef8a): the jobs process now mounts the
-// matching internal route (jobs internal/internalapi healthdispatch.go,
-// POST /__aiinternal__/v1/account-health-check/dispatch, assembled by
-// worker_health_dispatch.go; 404→rejected is retained only as the
-// degraded-worker fallback). The wire contract below mirrors the J1
-// projection (jobs internalapi.HealthCheckSourceFence / the source_fence
-// payload field names) and is consumed unchanged by that route.
+// Row contract (the J1 projection the old bridge carried verbatim):
+//   - request_id is the idempotency key (j1-<uuid>, jobs HasRequest dedupes);
+//   - source_fence is the snake_case narrow projection (jobs
+//     HealthCheckSourceFence / the J1 request-file source_fence field names),
+//     empty string meaning no fence → mutate_account on the jobs side;
+//   - deadline_at = now + JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS
+//     (the same env the old jobs-side publisher read; same default 65000 and
+//     [1000, 600000] range), written by the gateway so consumption needs no
+//     second read of the env.
 
 import (
-	"bytes"
-	"container/list"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"container/list"
+	"database/sql"
 	"encoding/json"
-	"errors"
-	"io"
+	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -47,40 +48,110 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
 
-// chainHealthDispatchSignatureDomain mirrors the bridge signature domain
-// (compose_account_test_dispatch.go pattern; the jobs-side verification in
-// internal/internalapi reuses the same domain on the mounted route).
-const chainHealthDispatchSignatureDomain = "juhe-ai:account-health-check-dispatch:v1\n"
+// chainProbeRequestOutboxTableName 是 gateway 写入、jobs J1 Runner 消费的
+// probe_request outbox 交接表（record_maintenance_jobs 先例：Go-owned 交接
+// 关系不占用生产 migration catalog，两侧各自运行时幂等建表）。
+const chainProbeRequestOutboxTableName = "account_health_probe_request_outbox"
 
-// chainHealthDispatchPath is the loopback route the bridge posts to
-// (/__aiinternal__ prefix + v1 route, mirroring the account-test pair).
-const chainHealthDispatchPath = "/__aiinternal__/v1/account-health-check/dispatch"
+// chainProbeRequestOutboxSchema 与 jobs cmd 侧 worker_health_probe_outbox.go
+// 的 healthProbeOutboxSchema 逐字一致（CREATE IF NOT EXISTS 幂等）。
+const chainProbeRequestOutboxSchema = `CREATE TABLE IF NOT EXISTS account_health_probe_request_outbox (
+  request_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  trace_id TEXT NOT NULL DEFAULT '',
+  source_fence TEXT NOT NULL DEFAULT '',
+  deadline_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'consumed')),
+  consumed_at TEXT,
+  available_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK ((status = 'consumed' AND consumed_at IS NOT NULL) OR (status = 'pending' AND consumed_at IS NULL))
+)`
+
+const chainProbeRequestOutboxIndex = `CREATE INDEX IF NOT EXISTS idx_account_health_probe_request_outbox_pending
+  ON account_health_probe_request_outbox(status, available_at, created_at, request_id)`
+
+// chainProbeRequestOutboxTimeFormat 是 outbox 行时间列的固定书写格式（UTC、
+// 固定 9 位小数）：字典序与时间序一致，jobs 消费侧按 status/available_at 做
+// 文本比较与稳定排序；time.RFC3339Nano 可直接解析。
+const chainProbeRequestOutboxTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 // chainRequestFailureReason mirrors AccountHealthCheckTriggerReason
 // 'request_failure' — the only reason this port dispatches.
 const chainRequestFailureReason = "request_failure"
 
-// chainJobsHealthDispatchBridge posts one signed health-check dispatch to the
-// jobs internal-api loopback origin.
-type chainJobsHealthDispatchBridge struct {
-	baseURL string
-	secret  string
-	client  *http.Client
+// chainProbeRequestOutboxWriter persists one health-check probe request row
+// per dispatch (the in-process replacement of the removed loopback HMAC
+// bridge). A nil writer or a nil DB keeps the dispatcher inert (dispatch
+// reports input_unavailable without touching the database), which is the
+// degraded contract for hand-assembled tests.
+type chainProbeRequestOutboxWriter struct {
+	db         *sql.DB
+	pg         bool
+	deadlineMS int64
+	now        func() time.Time
+
+	mu        sync.Mutex
+	ensured   bool
+	ensureErr error
 }
 
-// chainHealthDispatchRequest is the wire body: version + accountId + reason,
-// with the optional sourceFence projection of the probe envelope.
-type chainHealthDispatchRequest struct {
-	Version     int                             `json:"version"`
-	AccountID   string                          `json:"accountId"`
-	Reason      string                          `json:"reason"`
-	TraceID     string                          `json:"traceId,omitempty"`
-	SourceFence *chainHealthDispatchSourceFence `json:"sourceFence,omitempty"`
+// newChainProbeRequestOutboxWriter builds the durable probe-request writer;
+// deadlineMS <= 0 keeps the writer inert (input_unavailable), matching the
+// old bridge's missing-assembly contract.
+func newChainProbeRequestOutboxWriter(db *sql.DB, pgDialect bool, probeDeadlineMS int64) *chainProbeRequestOutboxWriter {
+	return &chainProbeRequestOutboxWriter{db: db, pg: pgDialect, deadlineMS: probeDeadlineMS, now: time.Now}
 }
 
-// chainHealthDispatchSourceFence mirrors the jobs internalapi
-// HealthCheckSourceFence narrow projection (snake_case, matching the J1
-// request-file source_fence field names).
+func (w *chainProbeRequestOutboxWriter) table() string {
+	if w != nil && w.pg {
+		return "juhe_business." + chainProbeRequestOutboxTableName
+	}
+	return chainProbeRequestOutboxTableName
+}
+
+func (w *chainProbeRequestOutboxWriter) bind(query string) string {
+	if w == nil || !w.pg {
+		return query
+	}
+	var out strings.Builder
+	index := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			out.WriteString("$" + fmt.Sprint(index))
+			index++
+			continue
+		}
+		out.WriteByte(query[i])
+	}
+	return out.String()
+}
+
+// ensureSchema 幂等建表 + 建索引（全新 Go-owned 交接表，无旧表补列；
+// record_maintenance_jobs DurableDispatch.ensureSchema 同款 once 缓存）。
+func (w *chainProbeRequestOutboxWriter) ensureSchema(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.ensured {
+		return w.ensureErr
+	}
+	if _, err := w.db.ExecContext(ctx, w.bind(chainProbeRequestOutboxSchema)); err != nil {
+		w.ensureErr = err
+		return w.ensureErr
+	}
+	if _, err := w.db.ExecContext(ctx, w.bind(chainProbeRequestOutboxIndex)); err != nil {
+		w.ensureErr = err
+		return w.ensureErr
+	}
+	w.ensured = true
+	return nil
+}
+
+// chainHealthDispatchSourceFence mirrors the J1 request-file source_fence
+// narrow projection (snake_case); it marshals straight into the outbox row's
+// source_fence JSON column.
 type chainHealthDispatchSourceFence struct {
 	StateKey         string `json:"state_key"`
 	AccountID        string `json:"account_id"`
@@ -91,66 +162,45 @@ type chainHealthDispatchSourceFence struct {
 	ConfigRevision   int64  `json:"config_revision"`
 }
 
-// signChainHealthDispatch mirrors the account-test bridge signature scheme
-// byte-for-byte over the health-check domain.
-func signChainHealthDispatch(secret string, rawBody []byte) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(chainHealthDispatchSignatureDomain))
-	_, _ = mac.Write(rawBody)
-	return "v1=" + hex.EncodeToString(mac.Sum(nil))
-}
-
-// dispatchOutcome mirrors the Node AccountHealthCheckDispatchOutcome pair
-// (outcome queued|rejected + decisionCode queued|dispatch_rejected|
-// input_unavailable) collapsed onto the boolean + reason the probe service
-// consumes.
-func (b *chainJobsHealthDispatchBridge) dispatch(accountID, reason, traceID string, sourceFence *chainHealthDispatchSourceFence) gatewaycodex.HealthCheckDispatchOutcome {
+// EnqueueProbeRequest mirrors the old bridge dispatch(): normalize + validate
+// the account, project the fence and insert the row in-process. The insert is
+// the entire fire-and-forget publish (no network, no HTTP timeout): the jobs
+// drain absorbs delivery, and an insert failure degrades to the same
+// rejected + warn contract the non-202 bridge responses produced.
+func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequest(ctx context.Context, accountID, reason, traceID string, sourceFence *chainHealthDispatchSourceFence) gatewaycodex.HealthCheckDispatchOutcome {
 	normalizedID := strings.TrimSpace(accountID)
 	if normalizedID == "" {
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "dispatch_rejected"}
 	}
-	if b == nil || strings.TrimSpace(b.baseURL) == "" || strings.TrimSpace(b.secret) == "" {
+	if w == nil || w.db == nil || w.deadlineMS <= 0 {
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
 	}
-	payload := chainHealthDispatchRequest{
-		Version:     1,
-		AccountID:   normalizedID,
-		Reason:      strings.TrimSpace(reason),
-		TraceID:     strings.TrimSpace(traceID),
-		SourceFence: sourceFence,
-	}
-	rawBody, err := json.Marshal(payload)
-	if err != nil {
-		slog.Warn("健康检查派发请求体编码失败", "event", "account_health_check_dispatch_encode_failed", "error", err)
-		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "dispatch_rejected"}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(b.baseURL, "/")+chainHealthDispatchPath, bytes.NewReader(rawBody))
-	if err != nil {
-		slog.Warn("健康检查派发请求构造失败", "event", "account_health_check_dispatch_unavailable", "error", err)
-		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "dispatch_rejected"}
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Juhe-Ai-Signature", signChainHealthDispatch(b.secret, rawBody))
-	client := b.client
-	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			slog.Warn("健康检查派发未送达 jobs internal-api",
-				"event", "account_health_check_dispatch_unavailable", "accountId", normalizedID, "error", err)
+	fenceJSON := ""
+	if sourceFence != nil {
+		encoded, err := json.Marshal(sourceFence)
+		if err != nil {
+			slog.Warn("健康检查派发 source fence 编码失败", "event", "account_health_check_dispatch_encode_failed", "error", err)
+			return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "dispatch_rejected"}
 		}
-		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "dispatch_rejected"}
+		fenceJSON = string(encoded)
 	}
-	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-	if response.StatusCode != http.StatusAccepted {
-		slog.Warn("jobs internal-api 拒绝健康检查派发",
-			"event", "account_health_check_dispatch_rejected",
-			"accountId", normalizedID, "statusCode", response.StatusCode)
+	requestID := "j1-" + gatewaycodex.RandomUUID()
+	now := w.now().UTC()
+	deadline := now.Add(time.Duration(w.deadlineMS) * time.Millisecond)
+	if err := w.ensureSchema(ctx); err != nil {
+		slog.Warn("健康检查派发 outbox 建表失败",
+			"event", "account_health_check_dispatch_unavailable", "accountId", normalizedID, "error", err)
+		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
+	}
+	_, err := w.db.ExecContext(ctx, w.bind(`INSERT INTO `+w.table()+`
+		(request_id, account_id, reason, trace_id, source_fence, deadline_at, status, consumed_at, available_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`),
+		requestID, normalizedID, strings.TrimSpace(reason), strings.TrimSpace(traceID), fenceJSON,
+		deadline.Format(chainProbeRequestOutboxTimeFormat), now.Format(chainProbeRequestOutboxTimeFormat),
+		now.Format(chainProbeRequestOutboxTimeFormat), now.Format(chainProbeRequestOutboxTimeFormat))
+	if err != nil {
+		slog.Warn("健康检查派发写入 outbox 失败",
+			"event", "account_health_check_dispatch_unavailable", "accountId", normalizedID, "error", err)
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "dispatch_rejected"}
 	}
 	return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchQueued, DecisionCode: "queued", TargetRole: "go-jobs"}
@@ -209,40 +259,29 @@ func (m *chainRequestDispatchMarks) mark(req *gatewaypreauth.GatewayRequest) {
 
 // chainRequestFailureHealthDispatcher is the port of
 // dispatchRequestFailureAccountHealthCheck: the gateway-traffic gate, the
-// per-request throttle and the bridge publish in the Node order.
+// per-request throttle and the outbox publish in the Node order.
 type chainRequestFailureHealthDispatcher struct {
-	bridge *chainJobsHealthDispatchBridge
+	outbox *chainProbeRequestOutboxWriter
 	marks  *chainRequestDispatchMarks
 }
 
-func newChainRequestFailureHealthDispatcher(baseURL, secret string, client *http.Client) *chainRequestFailureHealthDispatcher {
+// newChainRequestFailureHealthDispatcher assembles the dispatcher over the
+// shared probe-request outbox writer. The writer is process-resident: unlike
+// the removed HTTP bridge there is no reachability gate, so a nil writer is
+// the only inert shape (hand-assembled tests).
+func newChainRequestFailureHealthDispatcher(outbox *chainProbeRequestOutboxWriter) *chainRequestFailureHealthDispatcher {
 	return &chainRequestFailureHealthDispatcher{
-		bridge: newChainJobsHealthDispatchBridge(baseURL, secret, client),
+		outbox: outbox,
 		marks:  newChainRequestDispatchMarks(4096),
-	}
-}
-
-// newChainJobsHealthDispatchBridge assembles the health-check dispatch bridge
-// over a jobs internal-api loopback origin (the same HMAC contract the
-// request-failure dispatcher publishes through). A nil client installs the
-// 5s-timeout transport client; an empty baseURL/secret keeps the bridge inert
-// (dispatch reports input_unavailable without touching the network), which is
-// the degraded contract for hand-assembled tests and the chain-disabled
-// composition.
-func newChainJobsHealthDispatchBridge(baseURL, secret string, client *http.Client) *chainJobsHealthDispatchBridge {
-	return &chainJobsHealthDispatchBridge{
-		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		secret:  secret,
-		client:  client,
 	}
 }
 
 // DispatchRequestFailureAccountHealthCheck mirrors
 // dispatchRequestFailureAccountHealthCheck(req, trafficSource, accountId):
 // non-gateway traffic and an already-dispatched request both return false
-// without touching the bridge; a queued dispatch marks the request.
+// without touching the writer; a queued dispatch marks the request.
 func (d *chainRequestFailureHealthDispatcher) DispatchRequestFailureAccountHealthCheck(req *gatewaypreauth.GatewayRequest, trafficSource, accountID string) bool {
-	if d == nil || d.bridge == nil {
+	if d == nil {
 		return false
 	}
 	if trafficSource != gatewayTrafficSource {
@@ -251,7 +290,7 @@ func (d *chainRequestFailureHealthDispatcher) DispatchRequestFailureAccountHealt
 	if d.marks.marked(req) {
 		return false
 	}
-	outcome := d.bridge.dispatch(accountID, chainRequestFailureReason, "", nil)
+	outcome := d.dispatch(accountID, chainRequestFailureReason, "", nil)
 	if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
 		return false
 	}
@@ -259,12 +298,22 @@ func (d *chainRequestFailureHealthDispatcher) DispatchRequestFailureAccountHealt
 	return true
 }
 
+// dispatch publishes one probe request through the outbox writer. The publish
+// is fire-and-forget (Node dispatchAccountHealthCheck)：the request context
+// dies with the response, the outbox insert must not.
+func (d *chainRequestFailureHealthDispatcher) dispatch(accountID, reason, traceID string, sourceFence *chainHealthDispatchSourceFence) gatewaycodex.HealthCheckDispatchOutcome {
+	if d == nil {
+		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
+	}
+	return d.outbox.EnqueueProbeRequest(context.Background(), accountID, reason, traceID, sourceFence)
+}
+
 // dispatchWithOutcome adapts the dispatcher onto the
 // gatewaycodex.AccountHealthCheckDispatchFunc seam (the
 // TurnAvoidanceProbeService DefaultDispatch): the probe envelope carries the
 // source fence so the jobs worker settles the exact registered fence.
 func (d *chainRequestFailureHealthDispatcher) dispatchWithOutcome(accountID, reason, traceID string, sourceFence *gatewaycodex.SourceProbeFence) gatewaycodex.HealthCheckDispatchOutcome {
-	if d == nil || d.bridge == nil {
+	if d == nil {
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
 	}
 	var fence *chainHealthDispatchSourceFence
@@ -279,5 +328,5 @@ func (d *chainRequestFailureHealthDispatcher) dispatchWithOutcome(accountID, rea
 			ConfigRevision:   sourceFence.ConfigRevision,
 		}
 	}
-	return d.bridge.dispatch(accountID, reason, traceID, fence)
+	return d.dispatch(accountID, reason, traceID, fence)
 }

@@ -1,5 +1,7 @@
-// Package auditlog owns the F3 persistence foundation only.  It deliberately
-// does not start an HTTP listener or connect Node capture to this package.
+// Package auditlog owns the F3 persistence foundation, the in-process
+// producer (the chain audit sink; the loopback HMAC input server is deleted
+// since 去跨进程战役第四刀) and the resident owner component (lease renewal +
+// retention cadence).
 package auditlog
 
 import (

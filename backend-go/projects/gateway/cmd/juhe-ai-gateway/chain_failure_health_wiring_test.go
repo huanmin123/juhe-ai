@@ -1,21 +1,23 @@
 package main
 
-// 生效断言测试：失败派发链的三件登记装配——request-failure 健康检查派发桥
-// （failure-dispatch.ts:404/571）、TurnAvoidanceProbeService 桥接装配
+// 生效断言测试：失败派发链的三件登记装配——request-failure 健康检查派发
+// outbox 通道（failure-dispatch.ts:404/571；去跨进程战役第二刀：原 loopback
+// HMAC 桥已删，派发落 account_health_probe_request_outbox 行，jobs J1 Runner
+// drain）、TurnAvoidanceProbeService 桥接装配
 // （turn-availability-probe.service.ts + gatewaycircuit.ProbeCoordinator）、
 // TurnRetryService 的 Redis 状态驱动（runtime-state-store.ts
 // 'gateway-codex-turn-retry' 键空间）。逐条对照归档语义，装配断线即失败。
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
+	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
@@ -24,103 +26,187 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
-// 装配 1：jobs internal-api 健康检查派发桥
+// 装配 1：健康检查派发 DB outbox（account_health_probe_request_outbox）
 // ---------------------------------------------------------------------------
 
-type healthDispatchStub struct {
-	server   *httptest.Server
-	requests int32
-	bodies   []string
-	mu       sync.Mutex
-	status   int32
+type healthOutboxFixture struct {
+	db     *sql.DB
+	writer *chainProbeRequestOutboxWriter
 }
 
-// newHealthDispatchStub 起一个 jobs internal-api 替身；status 决定响应码
-// （202 = 派发接受，404 = 端点未挂载的生产现状）。
-func newHealthDispatchStub(t *testing.T, status int) *healthDispatchStub {
+// newHealthOutboxFixture 在临时 SQLite 文件上构造 writer（与生产 SQLite 模式
+// 同一驱动、同一 DDL ensure 路径）。
+func newHealthOutboxFixture(t *testing.T, deadlineMS int64) *healthOutboxFixture {
 	t.Helper()
-	stub := &healthDispatchStub{status: int32(status)}
-	stub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&stub.requests, 1)
-		raw, _ := io.ReadAll(r.Body)
-		stub.mu.Lock()
-		stub.bodies = append(stub.bodies, string(raw))
-		stub.mu.Unlock()
-		if r.URL.Path != chainHealthDispatchPath {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if signChainHealthDispatch("unit-secret", raw) != r.Header.Get("X-Juhe-Ai-Signature") {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.WriteHeader(int(atomic.LoadInt32(&stub.status)))
-	}))
-	t.Cleanup(stub.server.Close)
-	return stub
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "probe-outbox.sqlite3")) + "?_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open outbox sqlite: %v", err)
+	}
+	// 单连接：测试串行执行，固定句柄消除连接池对 SQLite 文件的重复打开。
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	writer := newChainProbeRequestOutboxWriter(db, false, deadlineMS)
+	return &healthOutboxFixture{db: db, writer: writer}
 }
 
-func (s *healthDispatchStub) dispatcher() *chainRequestFailureHealthDispatcher {
-	return newChainRequestFailureHealthDispatcher(s.server.URL, "unit-secret", s.server.Client())
+func (f *healthOutboxFixture) dispatcher() *chainRequestFailureHealthDispatcher {
+	return newChainRequestFailureHealthDispatcher(f.writer)
 }
 
-func (s *healthDispatchStub) count() int { return int(atomic.LoadInt32(&s.requests)) }
-
-func (s *healthDispatchStub) lastBody(t *testing.T) map[string]any {
+func (f *healthOutboxFixture) dispatch(t *testing.T, req *gatewaypreauth.GatewayRequest, trafficSource, accountID string) bool {
 	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.bodies) == 0 {
-		t.Fatal("no dispatch body captured")
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(s.bodies[len(s.bodies)-1]), &payload); err != nil {
-		t.Fatalf("decode dispatch body: %v", err)
-	}
-	return payload
+	return f.dispatcher().DispatchRequestFailureAccountHealthCheck(req, trafficSource, accountID)
 }
 
-// TestChainJobsHealthDispatchBridgeWire：桥的 wire 契约——路径、HMAC 签名、
-// payload（version/accountId/reason）与 202→queued / 非 202→rejected。
-func TestChainJobsHealthDispatchBridgeWire(t *testing.T) {
-	stub := newHealthDispatchStub(t, http.StatusAccepted)
-	dispatcher := stub.dispatcher()
+// rows 返回全部 outbox 行（自然序），行键为列名。
+func (f *healthOutboxFixture) rows(t *testing.T) []map[string]any {
+	t.Helper()
+	result, err := f.db.Query(`SELECT request_id, account_id, reason, trace_id, source_fence, deadline_at, status, consumed_at, available_at, created_at
+		FROM account_health_probe_request_outbox ORDER BY created_at, request_id`)
+	if err != nil {
+		t.Fatalf("query outbox rows: %v", err)
+	}
+	defer result.Close()
+	out := []map[string]any{}
+	columns, err := result.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for result.Next() {
+		values := make([]any, len(columns))
+		pointers := make([]any, len(columns))
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		if err := result.Scan(pointers...); err != nil {
+			t.Fatal(err)
+		}
+		row := map[string]any{}
+		for i, name := range columns {
+			row[name] = values[i]
+		}
+		out = append(out, row)
+	}
+	if err := result.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
-	if !dispatcher.DispatchRequestFailureAccountHealthCheck(nil, gatewayTrafficSource, "acc_1") {
-		t.Fatal("accepted dispatch must report dispatched")
+func (f *healthOutboxFixture) count(t *testing.T) int {
+	t.Helper()
+	return len(f.rows(t))
+}
+
+func (f *healthOutboxFixture) lastRow(t *testing.T) map[string]any {
+	t.Helper()
+	rows := f.rows(t)
+	if len(rows) == 0 {
+		t.Fatal("no outbox row captured")
 	}
-	payload := stub.lastBody(t)
-	if payload["version"] != float64(1) || payload["accountId"] != "acc_1" || payload["reason"] != chainRequestFailureReason {
-		t.Fatalf("dispatch payload = %#v", payload)
+	return rows[len(rows)-1]
+}
+
+// TestChainProbeRequestOutboxWire：outbox 通道的行契约——幂等键、账户/reason
+// 投影、deadline 窗口（同 env 同默认同范围）、pending 可消费状态、inert
+// writer（缺 DB 或非法 deadline）按 input_unavailable 拒绝。
+func TestChainProbeRequestOutboxWire(t *testing.T) {
+	fixture := newHealthOutboxFixture(t, 65_000)
+
+	outcome := fixture.writer.EnqueueProbeRequest(context.Background(), "acc_1", chainRequestFailureReason, "", nil)
+	if outcome.Outcome != gatewaycodex.HealthDispatchQueued || outcome.DecisionCode != "queued" || outcome.TargetRole != "go-jobs" {
+		t.Fatalf("dispatch outcome = %#v", outcome)
 	}
-	if stub.count() != 1 {
-		t.Fatalf("dispatch posts = %d want 1", stub.count())
+	row := fixture.lastRow(t)
+	if row["account_id"] != "acc_1" || row["reason"] != chainRequestFailureReason {
+		t.Fatalf("outbox row = %#v", row)
+	}
+	if row["request_id"] == "" || !strings.HasPrefix(row["request_id"].(string), "j1-") {
+		t.Fatalf("request id must be the j1- idempotency key: %#v", row["request_id"])
+	}
+	if row["status"] != "pending" || row["consumed_at"] != nil {
+		t.Fatalf("row must be immediately consumable (pending): %#v", row)
+	}
+	deadline, err := time.Parse(time.RFC3339Nano, row["deadline_at"].(string))
+	if err != nil {
+		t.Fatalf("parse deadline_at: %v", err)
+	}
+	created, err := time.Parse(time.RFC3339Nano, row["created_at"].(string))
+	if err != nil {
+		t.Fatalf("parse created_at: %v", err)
+	}
+	if elapsed := deadline.Sub(created); elapsed != 65_000*time.Millisecond {
+		t.Fatalf("deadline window = %s want 65s (the shared env default)", elapsed)
 	}
 
-	// 生产现状（jobs 端点未挂载 → 404）：派发按不可用拒绝并如实返回 false。
-	rejecting := newHealthDispatchStub(t, http.StatusNotFound)
-	if rejecting.dispatcher().DispatchRequestFailureAccountHealthCheck(nil, gatewayTrafficSource, "acc_1") {
-		t.Fatal("rejected dispatch must report not dispatched")
+	// trace_id 投影（dispatchWithOutcome 的 wire 契约延续）。
+	if _, err := fixture.db.Exec(`INSERT INTO account_health_probe_request_outbox
+		(request_id, account_id, reason, trace_id, source_fence, deadline_at, status, consumed_at, available_at, created_at, updated_at)
+		VALUES ('j1-seed', 'acc_1', 'x', '', '', '2026-01-01T00:00:00.000000000Z', 'pending', NULL, '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z')`); err != nil {
+		t.Fatalf("seed second row: %v", err)
+	}
+	withTrace := fixture.dispatcher().dispatchWithOutcome("acc_1", "probe_timeout", "trace-7", nil)
+	if withTrace.Outcome != gatewaycodex.HealthDispatchQueued {
+		t.Fatalf("trace dispatch outcome = %#v", withTrace)
+	}
+	traceRow := fixture.lastRow(t)
+	if traceRow["trace_id"] != "trace-7" {
+		t.Fatalf("trace id projection = %#v", traceRow["trace_id"])
 	}
 
-	// 空账户 ID → dispatch_rejected（Node dispatch_rejected 分叉）。
-	empty := newHealthDispatchStub(t, http.StatusAccepted)
-	if empty.dispatcher().DispatchRequestFailureAccountHealthCheck(nil, gatewayTrafficSource, "  ") {
-		t.Fatal("empty account id must be rejected")
+	// inert writer：缺 DB（nil 句柄）与非法 deadline 都保持 input_unavailable，
+	// 不写行（原桥缺装配/超时的显式降级契约）。
+	var nilDBWriter *chainProbeRequestOutboxWriter
+	if got := nilDBWriter.EnqueueProbeRequest(context.Background(), "acc_1", "request_failure", "", nil); got.Outcome != gatewaycodex.HealthDispatchRejected || got.DecisionCode != "input_unavailable" {
+		t.Fatalf("nil-db writer outcome = %#v", got)
 	}
-	if empty.count() != 0 {
-		t.Fatalf("rejected dispatch must not post, posts=%d", empty.count())
+	if got := newChainProbeRequestOutboxWriter(fixture.db, false, 0).EnqueueProbeRequest(context.Background(), "acc_1", "request_failure", "", nil); got.Outcome != gatewaycodex.HealthDispatchRejected || got.DecisionCode != "input_unavailable" {
+		t.Fatalf("zero-deadline writer outcome = %#v", got)
+	}
+
+	// 空账户 ID → dispatch_rejected（Node dispatch_rejected 分叉）。ensure 后
+	// 派发不写行。
+	empty := newHealthOutboxFixture(t, 65_000)
+	if err := empty.writer.ensureSchema(context.Background()); err != nil {
+		t.Fatalf("ensure empty fixture schema: %v", err)
+	}
+	if got := empty.writer.EnqueueProbeRequest(context.Background(), "  ", chainRequestFailureReason, "", nil); got.Outcome != gatewaycodex.HealthDispatchRejected || got.DecisionCode != "dispatch_rejected" {
+		t.Fatalf("empty account id outcome = %#v", got)
+	}
+	if empty.count(t) != 0 {
+		t.Fatalf("rejected dispatch must not write rows, rows=%d", empty.count(t))
+	}
+}
+
+// TestChainProbeRequestOutboxEnsureSchemaIdempotent：双侧幂等建表契约——同一
+// 句柄重复 ensure（gateway 先到、jobs 后到的同 DDL 幂等收敛）必须无错。
+func TestChainProbeRequestOutboxEnsureSchemaIdempotent(t *testing.T) {
+	fixture := newHealthOutboxFixture(t, 65_000)
+	ctx := context.Background()
+	if err := fixture.writer.ensureSchema(ctx); err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+	if err := fixture.writer.ensureSchema(ctx); err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+	if _, err := fixture.db.Exec(chainProbeRequestOutboxSchema); err != nil {
+		t.Fatalf("re-run create: %v", err)
+	}
+	if _, err := fixture.db.Exec(chainProbeRequestOutboxIndex); err != nil {
+		t.Fatalf("re-run index: %v", err)
 	}
 }
 
 // TestChainRequestFailureHealthDispatcherThrottle：请求级去重（Node Symbol
 // 标记语义）——同一请求只派发一次，rejected 不消耗标记，非 gateway 流量不派发。
 func TestChainRequestFailureHealthDispatcherThrottle(t *testing.T) {
-	stub := newHealthDispatchStub(t, http.StatusAccepted)
-	dispatcher := stub.dispatcher()
+	fixture := newHealthOutboxFixture(t, 65_000)
+	dispatcher := fixture.dispatcher()
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil))
 
 	if !dispatcher.DispatchRequestFailureAccountHealthCheck(req, gatewayTrafficSource, "acc_1") {
@@ -129,8 +215,8 @@ func TestChainRequestFailureHealthDispatcherThrottle(t *testing.T) {
 	if dispatcher.DispatchRequestFailureAccountHealthCheck(req, gatewayTrafficSource, "acc_1") {
 		t.Fatal("second dispatch on the same request must be throttled")
 	}
-	if stub.count() != 1 {
-		t.Fatalf("posts = %d want 1 (per-request throttle)", stub.count())
+	if rows := fixture.count(t); rows != 1 {
+		t.Fatalf("rows = %d want 1 (per-request throttle)", rows)
 	}
 
 	// 非 gateway 流量：不派发、不标记。
@@ -138,15 +224,15 @@ func TestChainRequestFailureHealthDispatcherThrottle(t *testing.T) {
 	if dispatcher.DispatchRequestFailureAccountHealthCheck(other, "account_diagnostic", "acc_1") {
 		t.Fatal("non-gateway traffic must not dispatch")
 	}
-	if stub.count() != 1 {
-		t.Fatalf("non-gateway posts leaked: %d", stub.count())
+	if rows := fixture.count(t); rows != 1 {
+		t.Fatalf("non-gateway rows leaked: %d", rows)
 	}
 	// 同一请求后续 gateway 失败仍可派发（标记只由成功派发写入）。
 	if !dispatcher.DispatchRequestFailureAccountHealthCheck(other, gatewayTrafficSource, "acc_1") {
 		t.Fatal("gateway dispatch after a skipped non-gateway call must go through")
 	}
-	if stub.count() != 2 {
-		t.Fatalf("posts = %d want 2", stub.count())
+	if rows := fixture.count(t); rows != 2 {
+		t.Fatalf("rows = %d want 2", rows)
 	}
 }
 
@@ -155,31 +241,31 @@ func TestChainRequestFailureHealthDispatcherThrottle(t *testing.T) {
 // quota 决策除外）都经请求级节流派发一次。
 func TestChainFailureDispatcherDispatchesRequestFailureHealthCheck(t *testing.T) {
 	// 传输失败分支：gateway 流量派发一次。
-	stub := newHealthDispatchStub(t, http.StatusAccepted)
+	fixture := newHealthOutboxFixture(t, 65_000)
 	sink := &failureDispatchAuditSink{}
-	dispatcher := &chainFailureDispatcher{healthDispatch: stub.dispatcher()}
+	dispatcher := &chainFailureDispatcher{healthDispatch: fixture.dispatcher()}
 	input := avoidanceRecordRequestInput(t, sink, "gateway")
 	if _, err := dispatcher.HandleUpstreamRequestError(context.Background(), input); err != nil {
 		t.Fatalf("transport failure: %v", err)
 	}
-	if stub.count() != 1 {
-		t.Fatalf("transport branch posts = %d want 1", stub.count())
+	if rows := fixture.count(t); rows != 1 {
+		t.Fatalf("transport branch rows = %d want 1", rows)
 	}
-	if payload := stub.lastBody(t); payload["reason"] != chainRequestFailureReason {
-		t.Fatalf("reason = %#v", payload["reason"])
+	if row := fixture.lastRow(t); row["reason"] != chainRequestFailureReason {
+		t.Fatalf("reason = %#v", row["reason"])
 	}
 
 	// 同一请求的第二次失败（候选切换）被请求级节流吸收。
 	if _, err := dispatcher.HandleUpstreamRequestError(context.Background(), input); err != nil {
 		t.Fatalf("second transport failure: %v", err)
 	}
-	if stub.count() != 1 {
-		t.Fatalf("per-request throttle failed: posts = %d", stub.count())
+	if rows := fixture.count(t); rows != 1 {
+		t.Fatalf("per-request throttle failed: rows = %d", rows)
 	}
 
 	// failed-response 分支：无显式决策（500 普通失败）→ 派发。
-	failedStub := newHealthDispatchStub(t, http.StatusAccepted)
-	failedDispatcher := &chainFailureDispatcher{healthDispatch: failedStub.dispatcher()}
+	failedFixture := newHealthOutboxFixture(t, 65_000)
+	failedDispatcher := &chainFailureDispatcher{healthDispatch: failedFixture.dispatcher()}
 	opaque := gatewayFailedResponseInput(
 		failureDispatchUpstreamResponse(t, http.StatusInternalServerError, "application/json", `{"error":{"message":"boom"}}`),
 		&failureDispatchAuditSink{}, "gateway")
@@ -187,14 +273,17 @@ func TestChainFailureDispatcherDispatchesRequestFailureHealthCheck(t *testing.T)
 	if _, err := failedDispatcher.HandleFailedUpstreamResponse(context.Background(), opaque); err != nil {
 		t.Fatalf("opaque failure: %v", err)
 	}
-	if failedStub.count() != 1 {
-		t.Fatalf("failed-response branch posts = %d want 1", failedStub.count())
+	if rows := failedFixture.count(t); rows != 1 {
+		t.Fatalf("failed-response branch rows = %d want 1", rows)
 	}
 
 	// system quota 决策（402 + insufficient_quota）→ 不派发：探活不得与
 	// 显式错误状态竞争（failure-dispatch.ts:396-404 注释）。
-	systemStub := newHealthDispatchStub(t, http.StatusAccepted)
-	systemDispatcher := &chainFailureDispatcher{policy: newFixedErrorPolicyService(nil), healthDispatch: systemStub.dispatcher()}
+	systemFixture := newHealthOutboxFixture(t, 65_000)
+	if err := systemFixture.writer.ensureSchema(context.Background()); err != nil {
+		t.Fatalf("ensure system fixture schema: %v", err)
+	}
+	systemDispatcher := &chainFailureDispatcher{policy: newFixedErrorPolicyService(nil), healthDispatch: systemFixture.dispatcher()}
 	systemInput := gatewayFailedResponseInput(
 		failureDispatchUpstreamResponse(t, http.StatusPaymentRequired, "application/json",
 			`{"error":{"code":"insufficient_quota","message":"insufficient quota"}}`),
@@ -204,8 +293,8 @@ func TestChainFailureDispatcherDispatchesRequestFailureHealthCheck(t *testing.T)
 	if _, err := systemDispatcher.HandleFailedUpstreamResponse(context.Background(), systemInput); err != nil {
 		t.Fatalf("system quota failure: %v", err)
 	}
-	if systemStub.count() != 0 {
-		t.Fatalf("system-quota decision must not dispatch, posts = %d", systemStub.count())
+	if rows := systemFixture.count(t); rows != 0 {
+		t.Fatalf("system-quota decision must not dispatch, rows = %d", rows)
 	}
 }
 
@@ -214,11 +303,11 @@ func TestChainFailureDispatcherDispatchesRequestFailureHealthCheck(t *testing.T)
 // ---------------------------------------------------------------------------
 
 // TestChainTurnAvoidanceProbeServiceRunsProbe：装配后的探活服务真实走通
-// Acquire → dispatch(source fence) → settle 契约——派发桥收到带 source_fence
-// 的 payload，协调器进入 dispatch-pending 的 owner 态。
+// Acquire → dispatch(source fence) → settle 契约——outbox 行携带 source_fence
+// JSON 窄投影，协调器进入 dispatch-pending 的 owner 态。
 func TestChainTurnAvoidanceProbeServiceRunsProbe(t *testing.T) {
-	stub := newHealthDispatchStub(t, http.StatusAccepted)
-	dispatcher := stub.dispatcher()
+	fixture := newHealthOutboxFixture(t, 65_000)
+	dispatcher := fixture.dispatcher()
 	turnRetry := &gatewaycodex.TurnRetryService{Secret: "unit-secret"}
 	probe := newChainTurnAvoidanceProbeService(turnRetry, gatewaypreauth.SystemClock{}, dispatcher)
 	if probe.Coordinator == nil || probe.TurnRetry == nil || probe.DefaultDispatch == nil {
@@ -242,22 +331,26 @@ func TestChainTurnAvoidanceProbeServiceRunsProbe(t *testing.T) {
 	if result.Disposition != "owner" {
 		t.Fatalf("disposition = %s want owner", result.Disposition)
 	}
-	if stub.count() != 1 {
-		t.Fatalf("probe dispatch posts = %d want 1", stub.count())
+	if rows := fixture.count(t); rows != 1 {
+		t.Fatalf("probe dispatch rows = %d want 1", rows)
 	}
-	payload := stub.lastBody(t)
-	fence, _ := payload["sourceFence"].(map[string]any)
-	if fence == nil || fence["state_key"] != "src-key" || fence["account_id"] != "acc_1" {
-		t.Fatalf("probe payload source fence missing: %#v", payload)
+	row := fixture.lastRow(t)
+	if row["reason"] != chainRequestFailureReason {
+		t.Fatalf("probe reason = %#v", row["reason"])
 	}
-	if payload["reason"] != chainRequestFailureReason {
-		t.Fatalf("probe reason = %#v", payload["reason"])
+	fenceText, _ := row["source_fence"].(string)
+	var fence map[string]any
+	if err := json.Unmarshal([]byte(fenceText), &fence); err != nil {
+		t.Fatalf("decode source fence %q: %v", fenceText, err)
+	}
+	if fence["state_key"] != "src-key" || fence["account_id"] != "acc_1" {
+		t.Fatalf("probe row source fence missing: %#v", fence)
 	}
 
-	// 派发被拒（jobs 404 的生产现状）→ probe_task_failure 结算（Node 契约：
-	// 快速拒绝必须结算 fence，不能搁浅 generation）。
-	rejecting := newHealthDispatchStub(t, http.StatusNotFound)
-	rejectingProbe := newChainTurnAvoidanceProbeService(turnRetry, gatewaypreauth.SystemClock{}, rejecting.dispatcher())
+	// 派发被拒（inert writer 的生产降级形态）→ probe_task_failure 结算
+	// （Node 契约：快速拒绝必须结算 fence，不能搁浅 generation）。
+	rejecting := newChainRequestFailureHealthDispatcher(newChainProbeRequestOutboxWriter(nil, false, 65_000))
+	rejectingProbe := newChainTurnAvoidanceProbeService(turnRetry, gatewaypreauth.SystemClock{}, rejecting)
 	rejected, err := rejectingProbe.RunCodexTurnAvoidanceAvailabilityProbe(context.Background(), gatewaycodex.CodexTurnAvoidanceProbeInput{
 		Account:  gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1"},
 		Strategy: strategy,
@@ -447,11 +540,11 @@ func TestChainTurnRetryRedisStateStoreRoundTrip(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestComposeGatewayChainWiresFailureDispatchCollaborators：composeGatewayChain
-// 在 deps 齐备时把三件协作器挂进失败派发器——健康检查桥、探活服务（含协调器
-// 与默认派发）、turn-retry 的 Redis 状态驱动。
+// 在 deps 齐备时把三件协作器挂进失败派发器——健康检查 outbox writer、探活
+// 服务（含协调器与默认派发）、turn-retry 的 Redis 状态驱动。
 func TestComposeGatewayChainWiresFailureDispatchCollaborators(t *testing.T) {
 	fixture := newChainFixture(t)
-	stub := newHealthDispatchStub(t, http.StatusAccepted)
+	outbox := newHealthOutboxFixture(t, 65_000)
 	redisServer := miniredis.RunT(t)
 	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { _ = redisClient.Close() })
@@ -462,7 +555,7 @@ func TestComposeGatewayChainWiresFailureDispatchCollaborators(t *testing.T) {
 
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, "")
 	deps.Identity = &sessionIdentityServices{Secret: "unit-secret"}
-	deps.JobsInternalURL = stub.server.URL
+	deps.HealthProbeOutbox = outbox.writer
 	deps.TurnRetryStateStore = turnRetryStore
 	chain, shutdown, assembleErr := composeGatewayChain(deps)
 	if assembleErr != nil {
@@ -474,8 +567,8 @@ func TestComposeGatewayChainWiresFailureDispatchCollaborators(t *testing.T) {
 	if !ok {
 		t.Fatalf("failure dispatcher type = %T", chain.engine.FailureDispatcher)
 	}
-	if dispatcher.healthDispatch == nil {
-		t.Fatal("request-failure health dispatch bridge missing")
+	if dispatcher.healthDispatch == nil || dispatcher.healthDispatch.outbox != outbox.writer {
+		t.Fatal("request-failure health outbox writer not mounted")
 	}
 	if dispatcher.avoidanceProbe == nil {
 		t.Fatal("turn avoidance probe service missing")
@@ -490,8 +583,8 @@ func TestComposeGatewayChainWiresFailureDispatchCollaborators(t *testing.T) {
 		t.Fatal("turn retry redis state store not mounted")
 	}
 
-	// 缺 URL 的装配保持显式降级：派发端口为 nil，探活服务仍装配（派发按
-	// input_unavailable 拒绝）。
+	// 缺 writer 的装配保持显式降级：派发端口常驻但 writer 为 nil（派发按
+	// input_unavailable 拒绝），探活服务仍装配。
 	degradedDeps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, "")
 	degradedDeps.Identity = &sessionIdentityServices{Secret: "unit-secret"}
 	degradedChain, degradedShutdown, degradedErr := composeGatewayChain(degradedDeps)
@@ -500,8 +593,8 @@ func TestComposeGatewayChainWiresFailureDispatchCollaborators(t *testing.T) {
 	}
 	defer degradedShutdown()
 	degradedDispatcher := degradedChain.engine.FailureDispatcher.(*chainFailureDispatcher)
-	if degradedDispatcher.healthDispatch != nil {
-		t.Fatal("health dispatch must stay unwired without the jobs target")
+	if degradedDispatcher.healthDispatch == nil || degradedDispatcher.healthDispatch.outbox != nil {
+		t.Fatal("health dispatch must stay inert without the outbox writer")
 	}
 	if degradedDispatcher.avoidanceProbe == nil {
 		t.Fatal("avoidance probe must stay assembled for the fence-settlement contract")

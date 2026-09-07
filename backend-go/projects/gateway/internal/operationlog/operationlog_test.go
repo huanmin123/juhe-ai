@@ -7,14 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -145,22 +141,6 @@ func TestSQLiteListRejectsInvalidAbsoluteTimesAndCanonicalizesOffsets(t *testing
 	}
 }
 
-func TestHTTPListRejectsInvalidAbsoluteTimesWithBadRequest(t *testing.T) {
-	store := &requestContextStore{list: func(context.Context) error {
-		return fmt.Errorf("wrapped: %w", ErrInvalidListTime)
-	}}
-	h := &handler{store: store, cfg: InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second, ReplayWindow: time.Minute}, logger: slog.Default(), healthy: newAtomicTrue()}
-	body := []byte(`{"options":{"startAt":"2026-08-13T00:00:00"}}`)
-	request := httptest.NewRequest(http.MethodPost, ListPath, bytes.NewReader(body))
-	request.RemoteAddr = "127.0.0.1:1"
-	signRequest(request, "test-secret", body, time.Now().UTC(), "list-invalid-time")
-	response := httptest.NewRecorder()
-	h.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("invalid list time status=%d, want 400", response.Code)
-	}
-}
-
 func TestLoadConfigRejectsUsageShardPhysicalOverlap(t *testing.T) {
 	root := t.TempDir()
 	shardRoot := filepath.Join(root, "usage-shards")
@@ -173,7 +153,6 @@ func TestLoadConfigRejectsUsageShardPhysicalOverlap(t *testing.T) {
 	}
 	base := map[string]string{
 		"JUHE_AI_OPERATION_LOG_STORE":                  "sqlite",
-		"JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS":   "127.0.0.1:3304",
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":            "f4-test",
 		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "business.sqlite3"),
 		"JUHE_AI_USAGE_SHARD_ROOT":                     shardRoot,
@@ -226,7 +205,6 @@ func TestLoadConfigAppliesBoundedRuntimeSettings(t *testing.T) {
 	root := t.TempDir()
 	values := map[string]string{
 		"JUHE_AI_OPERATION_LOG_STORE":                  "sqlite",
-		"JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS":   "127.0.0.1:3304",
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":            "f4-config",
 		"JUHE_AI_OPERATION_LOG_DATABASE_PATH":          filepath.Join(root, "operation.sqlite3"),
 		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "business.sqlite3"),
@@ -251,152 +229,6 @@ func TestLoadConfigAppliesBoundedRuntimeSettings(t *testing.T) {
 	values["JUHE_AI_OPERATION_LOG_OWNER_LEASE"] = "4s"
 	if _, err = LoadConfig(func(key string) string { return values[key] }); err == nil {
 		t.Fatal("short F4 owner lease must fail")
-	}
-}
-
-func TestHTTPBusinessFailureKeepsListenerHealthy(t *testing.T) {
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	cfg := Config{Enabled: true, InstanceID: "test-http-owner", Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business}
-	store, err := OpenStore(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	lease, ok, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, time.Minute)
-	if err != nil || !ok {
-		t.Fatalf("lease: ok=%v err=%v", ok, err)
-	}
-	h := &handler{store: store, lease: lease, cfg: InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second}, logger: slog.Default(), healthy: newAtomicTrue()}
-	badBody, _ := json.Marshal(envelope{SchemaVersion: 1, OperationLog: Input{ID: "bad", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}})
-	bad := httptest.NewRequest(http.MethodPost, InputPath, bytes.NewReader(badBody))
-	bad.RemoteAddr = "127.0.0.1:1"
-	signRequest(bad, "test-secret", badBody, time.Now().UTC(), "bad-request")
-	badResponse := httptest.NewRecorder()
-	h.ServeHTTP(badResponse, bad)
-	if badResponse.Code != http.StatusInternalServerError {
-		t.Fatalf("business failure status=%d", badResponse.Code)
-	}
-	if !h.healthy.Load() {
-		t.Fatal("business failure must not mark listener unhealthy")
-	}
-	valid := Input{ID: "good", ActorSystemAccountID: "actor", ActorRole: "user", Module: "accounts", Action: "update", OperationKey: "accounts.update", ResourceType: "account", Summary: "good", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	validBody, _ := json.Marshal(envelope{SchemaVersion: 1, OperationLog: valid})
-	invalidSignature := httptest.NewRequest(http.MethodPost, InputPath, bytes.NewReader(validBody))
-	invalidSignature.RemoteAddr = "127.0.0.1:1"
-	invalidSignature.Header.Set("Content-Type", "application/json")
-	invalidSignature.Header.Set(TimestampHeader, time.Now().UTC().Format(time.RFC3339Nano))
-	invalidSignature.Header.Set(NonceHeader, "invalid-signature")
-	invalidSignature.Header.Set(SignatureHeader, "v1=invalid")
-	invalidResponse := httptest.NewRecorder()
-	h.ServeHTTP(invalidResponse, invalidSignature)
-	if invalidResponse.Code != http.StatusUnauthorized || !h.healthy.Load() {
-		t.Fatalf("signature rejection status=%d healthy=%v", invalidResponse.Code, h.healthy.Load())
-	}
-	validRequest := httptest.NewRequest(http.MethodPost, InputPath, bytes.NewReader(validBody))
-	validRequest.RemoteAddr = "127.0.0.1:1"
-	signRequest(validRequest, "test-secret", validBody, time.Now().UTC(), "valid-request")
-	validResponse := httptest.NewRecorder()
-	h.ServeHTTP(validResponse, validRequest)
-	if validResponse.Code != http.StatusNoContent {
-		t.Fatalf("subsequent valid request status=%d", validResponse.Code)
-	}
-}
-
-func TestHTTPLeaseLossSignalsComponentRestart(t *testing.T) {
-	fatal := make(chan error, 1)
-	h := &handler{cfg: InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes}, logger: slog.Default(), healthy: newAtomicTrue(), fatal: fatal, store: &leaseLostStore{}, lease: OwnerLease{OwnerID: "lost", FenceToken: 1}}
-	body, _ := json.Marshal(envelope{SchemaVersion: 1, OperationLog: Input{ID: "lease-lost", ActorSystemAccountID: "actor", ActorRole: "user", Module: "accounts", Action: "update", OperationKey: "accounts.update", ResourceType: "account", Summary: "lost", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}})
-	request := httptest.NewRequest(http.MethodPost, InputPath, bytes.NewReader(body))
-	request.RemoteAddr = "127.0.0.1:1"
-	signRequest(request, "test-secret", body, time.Now().UTC(), "lease-lost")
-	response := httptest.NewRecorder()
-	h.ServeHTTP(response, request)
-	if response.Code != http.StatusServiceUnavailable || h.healthy.Load() {
-		t.Fatalf("lease loss status=%d healthy=%v", response.Code, h.healthy.Load())
-	}
-	select {
-	case err := <-fatal:
-		if !errors.Is(err, ErrOwnerLeaseLost) {
-			t.Fatalf("fatal=%v", err)
-		}
-	default:
-		t.Fatal("lease loss must notify the component loop")
-	}
-}
-
-func TestHTTPRejectsExpiredAndReplayedSignedRequests(t *testing.T) {
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	store, err := OpenStore(Config{Enabled: true, InstanceID: "replay", Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	lease, ok, err := store.AcquireOwnerLease(context.Background(), "replay", time.Minute)
-	if err != nil || !ok {
-		t.Fatal(err)
-	}
-	h := &handler{store: store, lease: lease, cfg: InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second, ReplayWindow: time.Minute}, logger: slog.Default(), healthy: newAtomicTrue()}
-	valid := Input{ID: "replay", ActorSystemAccountID: "actor", ActorRole: "user", Module: "accounts", Action: "update", OperationKey: "accounts.update", ResourceType: "account", Summary: "good", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	body, _ := json.Marshal(envelope{SchemaVersion: 1, OperationLog: valid})
-	expired := httptest.NewRequest(http.MethodPost, InputPath, bytes.NewReader(body))
-	expired.RemoteAddr = "127.0.0.1:1"
-	signRequest(expired, "test-secret", body, time.Now().UTC().Add(-2*time.Minute), "expired")
-	expiredResponse := httptest.NewRecorder()
-	h.ServeHTTP(expiredResponse, expired)
-	if expiredResponse.Code != http.StatusUnauthorized {
-		t.Fatal("expired request must be rejected")
-	}
-	first := httptest.NewRequest(http.MethodPost, InputPath, bytes.NewReader(body))
-	first.RemoteAddr = "127.0.0.1:1"
-	signRequest(first, "test-secret", body, time.Now().UTC(), "same-nonce")
-	firstResponse := httptest.NewRecorder()
-	h.ServeHTTP(firstResponse, first)
-	if firstResponse.Code != http.StatusNoContent {
-		t.Fatalf("first request status=%d", firstResponse.Code)
-	}
-	second := httptest.NewRequest(http.MethodPost, InputPath, bytes.NewReader(body))
-	second.RemoteAddr = "127.0.0.1:1"
-	signRequest(second, "test-secret", body, time.Now().UTC(), "same-nonce")
-	secondResponse := httptest.NewRecorder()
-	h.ServeHTTP(secondResponse, second)
-	if secondResponse.Code != http.StatusUnauthorized {
-		t.Fatalf("replay status=%d", secondResponse.Code)
-	}
-}
-
-func TestHTTPHandlersInheritRequestContext(t *testing.T) {
-	assertCanceled := func(ctx context.Context) error {
-		if !errors.Is(ctx.Err(), context.Canceled) {
-			t.Errorf("store context must inherit canceled request context: %v", ctx.Err())
-		}
-		return ctx.Err()
-	}
-	store := &requestContextStore{persist: assertCanceled, list: assertCanceled, detail: assertCanceled}
-	h := &handler{store: store, cfg: InputServerConfig{SharedSecret: "test-secret", MaxBytes: defaultInputMaxBytes, RequestTimeout: time.Second, ReplayWindow: time.Minute}, logger: slog.Default(), healthy: newAtomicTrue()}
-	inputBody, _ := json.Marshal(envelope{SchemaVersion: 1, OperationLog: Input{ID: "context-write"}})
-	for _, test := range []struct {
-		path  string
-		body  []byte
-		nonce string
-	}{
-		{InputPath, inputBody, "context-write"},
-		{ListPath, []byte(`{"options":{}}`), "context-list"},
-		{DetailPath + "context-detail", []byte(`{}`), "context-detail"},
-	} {
-		requestCtx, cancel := context.WithCancel(context.Background())
-		cancel()
-		request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewReader(test.body)).WithContext(requestCtx)
-		request.RemoteAddr = "127.0.0.1:1"
-		signRequest(request, "test-secret", test.body, time.Now().UTC(), test.nonce)
-		response := httptest.NewRecorder()
-		h.ServeHTTP(response, request)
-		if response.Code != http.StatusInternalServerError {
-			t.Fatalf("%s canceled request status=%d", test.path, response.Code)
-		}
 	}
 }
 
@@ -917,49 +749,4 @@ func TestInvalidMetadataIsARecordFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid metadata must be rejected as a single-record failure")
 	}
-}
-
-type requestContextStore struct {
-	persist func(context.Context) error
-	list    func(context.Context) error
-	detail  func(context.Context) error
-}
-
-type leaseLostStore struct{ requestContextStore }
-
-func (*leaseLostStore) Persist(context.Context, OwnerLease, Input) (bool, error) {
-	return false, ErrOwnerLeaseLost
-}
-
-func (*requestContextStore) EnsureSchema(context.Context) error { return nil }
-func (*requestContextStore) AcquireOwnerLease(context.Context, string, time.Duration) (OwnerLease, bool, error) {
-	return OwnerLease{}, true, nil
-}
-func (*requestContextStore) RenewOwnerLease(context.Context, OwnerLease, time.Duration) (bool, error) {
-	return true, nil
-}
-func (*requestContextStore) ReleaseOwnerLease(context.Context, OwnerLease) error { return nil }
-func (s *requestContextStore) Persist(ctx context.Context, _ OwnerLease, _ Input) (bool, error) {
-	return false, s.persist(ctx)
-}
-func (s *requestContextStore) List(ctx context.Context, _ ListOptions) (ListResult, error) {
-	return ListResult{}, s.list(ctx)
-}
-func (s *requestContextStore) Detail(ctx context.Context, _, _ string) (DetailSupplement, bool, error) {
-	return DetailSupplement{}, false, s.detail(ctx)
-}
-func (*requestContextStore) CleanupRetention(context.Context, OwnerLease, time.Time, int) (int64, error) {
-	return 0, nil
-}
-func (*requestContextStore) RetentionDays(context.Context, int) (int, error) { return 365, nil }
-func (*requestContextStore) Close() error                                    { return nil }
-
-func newAtomicTrue() *atomic.Bool { value := &atomic.Bool{}; value.Store(true); return value }
-
-func signRequest(request *http.Request, secret string, body []byte, timestamp time.Time, nonce string) {
-	value := timestamp.Format(time.RFC3339Nano)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(TimestampHeader, value)
-	request.Header.Set(NonceHeader, nonce)
-	request.Header.Set(SignatureHeader, SignInput(secret, value, nonce, body))
 }

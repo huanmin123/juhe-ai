@@ -76,7 +76,9 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:/u, `${mode} jobs must receive the J1 owner declaration`)
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:/u, `${mode} jobs must receive the J1 signed-request directory`)
   assert.doesNotMatch(jobs, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:|JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, `${mode} jobs must not receive F3/F4 ownership`)
-  assert.match(node, /JUHE_AI_AUDIT_LOG_INPUT_URL:|JUHE_AI_OPERATION_LOG_INPUT_URL:/u, `${mode} Node must retain loopback producer URLs`)
+  // 去跨进程战役第四刀：F3/F4 loopback input URL 随监听器删除，Compose 不
+  // 得再向任何服务注入该 env（不得存在）。
+  assert.doesNotMatch(node, /JUHE_AI_AUDIT_LOG_INPUT_URL:|JUHE_AI_OPERATION_LOG_INPUT_URL:/u, `${mode} Node must not receive the deleted F3/F4 loopback input URLs`)
   assert.match(node, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL:/u, 'performance Node must receive the J1 jobs outcome read URL')
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_STORE: \$\{JUHE_AI_ACCOUNT_HEALTH_STORE:-postgres\}/u, 'performance jobs must default J1 store to PostgreSQL')
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE: \$\{JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE:-postgres\}/u, 'performance jobs must default J1 input to read-only PostgreSQL')

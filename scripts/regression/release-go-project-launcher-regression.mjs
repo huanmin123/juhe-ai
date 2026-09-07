@@ -99,9 +99,7 @@ function assertLauncherForwardsProjectScopedPaths() {
   ].join('\n'))
   const gateway = runLauncher('gateway', {
     JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
-    JUHE_AI_AUDIT_LOG_INPUT_SECRET: 'release-audit-input-secret-with-32-bytes',
-    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner',
-    JUHE_AI_OPERATION_LOG_INPUT_SECRET: 'release-operation-input-secret-32-bytes'
+    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
@@ -125,7 +123,12 @@ function assertLauncherForwardsProjectScopedPaths() {
     assert.equal(gateway.childEnvironment.JUHE_AI_AUDIT_LOG_DATABASE_PATH, join(gateway.backendRoot, 'data', 'audit-log.sqlite3'))
     assert.equal(gateway.childEnvironment.JUHE_AI_OPERATION_LOG_DATABASE_PATH, join(gateway.backendRoot, 'data', 'operation-log.sqlite3'))
     assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3306')
-    assert.equal(gateway.childEnvironment.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, '127.0.0.1:3304')
+    // 去跨进程战役第四刀：loopback input listen 地址随 F3/F4 监听器删除，
+    // launcher 不得再生成或转发该 env。
+    assert.equal(gateway.childEnvironment.JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS, undefined,
+      'the removed F4 input listen address must not be forwarded to the gateway child')
+    assert.equal(gateway.childEnvironment.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, undefined,
+      'the removed F3 input listen address must not be forwarded to the gateway child')
   } finally {
     jobs.cleanup()
     gateway.cleanup()
@@ -135,9 +138,7 @@ function assertLauncherForwardsProjectScopedPaths() {
 function assertLauncherForwardsGatewayOwnershipGates() {
   const gateway = runLauncher('gateway', {
     JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
-    JUHE_AI_AUDIT_LOG_INPUT_SECRET: 'release-audit-input-secret-with-32-bytes',
-    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner',
-    JUHE_AI_OPERATION_LOG_INPUT_SECRET: 'release-operation-input-secret-32-bytes'
+    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_BUSINESS_OWNER=gateway',
@@ -171,18 +172,42 @@ function assertLauncherForwardsGatewayOwnershipGates() {
 function assertLauncherForwardsGatewayJobsOrigins() {
   const gateway = runLauncher('gateway', {
     JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
-    JUHE_AI_AUDIT_LOG_INPUT_SECRET: 'release-audit-input-secret-with-32-bytes',
-    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner',
-    JUHE_AI_OPERATION_LOG_INPUT_SECRET: 'release-operation-input-secret-32-bytes'
+    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
+    'JUHE_AI_GO_RUNTIME_METRICS_STORE=sqlite',
+    'JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH=./data/go-runtime-metrics.sqlite3',
+    // 去跨进程战役第二刀：健康检查派发改走 DB outbox，launcher 不得再转发
+    // 已删除的 JUHE_AI_JOBS_INTERNAL_URL（该 env 进入 gateway 子进程即为缺陷）。
+    'JUHE_AI_JOBS_INTERNAL_URL=http://127.0.0.1:4306',
+    // 去跨进程战役第三刀：gateway 进程内自采样并直查共享 trend 库，跨进程
+    // metrics URL 已删除，launcher 不得再转发（该 env 进入 gateway 子进程
+    // 即为缺陷）。
     'JUHE_AI_GO_RUNTIME_METRICS_URL=http://127.0.0.1:4305',
-    'JUHE_AI_JOBS_INTERNAL_URL=http://127.0.0.1:4306'
+    // 去跨进程战役第四刀：F3/F4 loopback ingest 监听器（3303/3304）与 J2
+    // 手动桥已删除，历史 input env 进入子进程即为缺陷。
+    'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303',
+    'JUHE_AI_AUDIT_LOG_INPUT_SECRET=release-audit-input-secret-with-32-bytes',
+    'JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303',
+    'JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3304',
+    'JUHE_AI_OPERATION_LOG_INPUT_SECRET=release-operation-input-secret-32-bytes',
+    'JUHE_AI_OPERATION_LOG_INPUT_URL=http://127.0.0.1:3304'
   ].join('\n'))
   try {
     assert.equal(gateway.status, 0, `gateway jobs-origin launcher failed: ${gateway.output}`)
-    assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_URL, 'http://127.0.0.1:4305')
-    assert.equal(gateway.childEnvironment.JUHE_AI_JOBS_INTERNAL_URL, 'http://127.0.0.1:4306')
+    assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_STORE, 'sqlite')
+    assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH, './data/go-runtime-metrics.sqlite3')
+    assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_URL, undefined,
+      'the removed JUHE_AI_GO_RUNTIME_METRICS_URL must not be forwarded to the gateway child')
+    assert.equal(gateway.childEnvironment.JUHE_AI_JOBS_INTERNAL_URL, undefined,
+      'the removed JUHE_AI_JOBS_INTERNAL_URL must not be forwarded to the gateway child')
+    for (const name of [
+      'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_AUDIT_LOG_INPUT_SECRET', 'JUHE_AI_AUDIT_LOG_INPUT_URL',
+      'JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS', 'JUHE_AI_OPERATION_LOG_INPUT_SECRET', 'JUHE_AI_OPERATION_LOG_INPUT_URL'
+    ]) {
+      assert.equal(gateway.childEnvironment[name], undefined,
+        `the removed F3/F4 loopback input env ${name} must not be forwarded to the gateway child`)
+    }
   } finally {
     gateway.cleanup()
   }
@@ -191,9 +216,7 @@ function assertLauncherForwardsGatewayJobsOrigins() {
 function assertLauncherForwardsGatewayRuntimeConfig() {
   const gateway = runLauncher('gateway', {
     JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
-    JUHE_AI_AUDIT_LOG_INPUT_SECRET: 'release-audit-input-secret-with-32-bytes',
-    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner',
-    JUHE_AI_OPERATION_LOG_INPUT_SECRET: 'release-operation-input-secret-32-bytes'
+    JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_HOST=127.0.0.1',
@@ -242,6 +265,8 @@ function assertLauncherForwardsJ2PathsAndOwner() {
     JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL: 'postgres://j2-store',
     JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL: 'postgres://j2-input',
     JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET: 'j2-credential-secret',
+    // 去跨进程战役第四刀回归注入：历史 env 残留的 J2 手动桥 secret 必须被
+    // launcher 显式 drop，不得进入 jobs 子进程。
     JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET: 'j2-manual-bridge-secret-0123456789',
     JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE: '3',
     JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET: '40s'
@@ -256,7 +281,8 @@ function assertLauncherForwardsJ2PathsAndOwner() {
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_OWNER_ID, 'j2-owner')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL, 'postgres://j2-store')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL, 'postgres://j2-input')
-    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET, 'j2-manual-bridge-secret-0123456789')
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET, undefined,
+      'the removed J2 manual-bridge secret must not be forwarded to the jobs child')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE, '3')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET, '40s')
   } finally {

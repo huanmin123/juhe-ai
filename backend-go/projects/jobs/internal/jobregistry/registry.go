@@ -68,8 +68,9 @@ func ScheduledEntries() []Entry {
 			Hotspot: true, SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes: []string{"stats:system_metrics_samples", "stats:process_event_loop_samples"},
 			// Node 采样写 stats 库 system_metrics_samples；Go 采样器写
-			// go-runtime-metrics（gometricsstore），是 F 系列确定的等价接管。
-			GoStatus: GoEquivalent, GoPackage: "gometricsstore",
+			// go-runtime-metrics（共享 platform/gometrics Sampler），是 F 系列
+			// 确定的等价接管。
+			GoStatus: GoEquivalent, GoPackage: "platform/gometrics",
 			GoBinding: "由 jobs 组件 Go runtime metrics sampler 等价接管（自有 ticker）",
 		},
 		{
@@ -304,9 +305,9 @@ func QueueEntries() []Entry {
 		{JobName: "background_worker_record_maintenance", Category: CategoryIPCQueue, Kind: "maintenance", DefaultRole: "ingest-worker",
 			Writes: []string{"dataset:*", "stats:*", "usage-shards:usage_records"}, GoStatus: GoWired, GoPackage: "cleanuprepo + retention + recordmaintenance",
 			GoBinding: "recordmaintenance runner + cleanuprepo 执行器 + 组合根本地队列 flush 循环 + record_maintenance_jobs 交接表 drain（gateway cleanup POST 落行：ORDER BY created_at、成功删行、失败保留；Redis Stream/IPC 按 Go 总设计消灭）。通道已扩展 v2 契约：record_maintenance_jobs 在既有 6 清理列上加快照列 account_id/kind/source/snapshot_json/updated_at（清理行与快照行互斥填充各自列组，gateway/jobs 两侧按列名幂等 ALTER ADD），gateway tablemonitor.DurableDispatch 快照行投递（含 codex 用量响应头快照通道 compose_codex_usage_headers.go），jobs drain 读 v2 列并把 account_usage_snapshot_upsert 连续段合并为一次批量 upsert"},
-		batch("background_worker_account_test_tasks", []string{"business:account_test_tasks"}, GoWired, "opsjobs + manualtestrepo + manualtest + accountprobe",
-			"ManualTestQueue + manualtestrepo 双模仓储 + manualtest 执行器（draft v1 信封解密 → accountprobe.ManualDiagnostics 分级诊断 → result_json 信封写回 → 取消响应）全链路接线；internalapi loopback 派发回调接 DispatchAccountTestTask，族 disabled 时派发保持 503 不可用语义"),
-		control("background_worker_account_test_cancel", "ops-worker", GoWired, "ManualTestQueue.CancelLocal 已随手动测试族执行器接线（internalapi loopback POST /v1/account-test/cancel 扩展路由，对齐 Node worker IPC background_worker_account_test_cancel 的取消语义；DB 侧 cancel_requested 标记与会话取消语义在 manualtestrepo 覆盖）"),
+		batch("background_worker_account_test_tasks", []string{"business:account_test_tasks"}, GoOwnedElsewhere, "gateway（共享 backend-go-platform/accounttest）",
+			"去跨进程战役：手动测试执行链（shared accounttest 的 ManualTestQueue + manualtestrepo + manualtest + accountprobe）随 gateway 进程内装配单持有者运行，jobs 不再 sweep，internalapi 账户测试派发/取消路由已删除"),
+		control("background_worker_account_test_cancel", "ops-worker", GoOwnedElsewhere, "取消随执行权移交 gateway 进程内队列（ManualTestQueue.CancelLocal 进程内适配器；jobs internalapi 取消路由已删除，DB 侧 cancel_requested 语义不变）"),
 		control("background_worker_codex_source_fence_settled", "ops-worker", GoWired, "fence settlement 已由 circuitstore.ProbeStateStore 提供（gateway-availability-probe-coordinator 同键 Lua 子集：get/acquireGenerationRun/commitGenerationRun + source fence CAS 结算，等价 Node worker→gateway IPC 的 settleDispatchedAvailabilityProbeBySourceFence）；J1/J3 durable outcome 生产者在 jobs 侧落地后直接调用该结算入口"),
 		control("background_worker_status_request", "worker-control", GoEliminatedByDesign, "Node worker IPC 控制面在 Go 单进程侧消灭"),
 		control("background_worker_ready", "worker-control", GoEliminatedByDesign, "由 jobs /health readiness 取代"),
@@ -327,8 +328,8 @@ func QueueEntries() []Entry {
 			Writes: []string{"server:gateway_quota_snapshot_cache"}, GoStatus: GoOwnedElsewhere, GoPackage: "gateway",
 			GoBinding: "gateway 配额快照缓存归 gateway"},
 		{JobName: "manual-account-test-queue", Category: CategoryLocalQueue, Kind: "probe", DefaultRole: "ops-worker",
-			Writes: []string{"business:account_test_tasks"}, GoStatus: GoWired, GoPackage: "opsjobs + manualtestrepo + manualtest + accountprobe",
-			GoBinding: "ManualTestQueue 引擎 + manualtestrepo 双模仓储 + manualtest 执行器全链路接线：组合根长驻组件（Start 启动维护 + sweep + Run 消费），诊断经 accountprobe.ManualDiagnostics（Key 池 / 单凭据分级）"},
+			Writes: []string{"business:account_test_tasks"}, GoStatus: GoOwnedElsewhere, GoPackage: "gateway（共享 backend-go-platform/accounttest）",
+			GoBinding: "ManualTestQueue 引擎 + manualtestrepo 双模仓储 + manualtest 执行器全链路随 gateway 组合根长驻（Start 启动维护 + sweep + Run 消费），诊断经 accountprobe.ManualDiagnostics（Key 池 / 单凭据分级）；jobs 不再运行本队列"},
 		{JobName: "account-api-key-cooldown-retest-queue", Category: CategoryLocalQueue, Kind: "probe", DefaultRole: "ops-worker",
 			Hotspot: true, LeaseRequired: true, Writes: []string{"business:account_api_key_runtime_states", "usage-shards:usage_records"},
 			GoStatus: GoWired, GoPackage: "accountquality + proberepo + accountprobe", GoBinding: "CooldownRetestRunner 队列随组合根探针家族接线执行"},
