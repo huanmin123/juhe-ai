@@ -17,12 +17,14 @@ import (
 //     幂等、行内 deadline、mutate_account=(source_fence==nil)、
 //     request_failure_health 防抖豁免、AppendOutcome）。
 //
-// claim / consumed 策略：jobs 是唯一消费者（store 的 owner lease 是唯一防双
+// claim / 出队策略：jobs 是唯一消费者（store 的 owner lease 是唯一防双
 // 跑机制），claim 是普通 SELECT（不加锁），处理成功后按
-// `UPDATE ... SET status='consumed' WHERE request_id = ? AND status = 'pending'`
-// 幂等落 consumed。进程在处理中途崩溃时行保持 pending，下一周期重跑：
-// HasRequest 幂等防重复 outcome，fence 结算幂等，consumed 覆盖无副作用。
-// 逐行失败不阻塞其余行（记录 firstErr，行保持 pending 下周期重试）。
+// `DELETE ... WHERE request_id = ? AND status = 'pending'` 幂等出队（业务库
+// 实现沿用 record_maintenance_jobs 的成功后删行先例，outbox 不是审计面，
+// 幂等键在本包 account_health_outcomes.HasRequest）。进程在处理中途崩溃时
+// 行保持 pending，下一周期重跑：HasRequest 幂等防重复 outcome，fence 结算
+// 幂等。逐行失败不阻塞其余行（记录 firstErr，行保持 pending 下周期重试，
+// 长期滞留由业务库侧保留期清理兜底）。
 
 // ProbeOutboxRow 是 outbox probe_request 行的窄投影。
 type ProbeOutboxRow struct {
@@ -39,8 +41,9 @@ type ProbeRequestOutboxStore interface {
 	// ClaimPendingProbeRequests 返回 pending 且 available_at 已到的行（最多
 	// limit 行，按 created_at、request_id 稳定排序）。不改行状态。
 	ClaimPendingProbeRequests(ctx context.Context, limit int, now time.Time) ([]ProbeOutboxRow, error)
-	// CompleteProbeRequest 把行幂等置为 consumed；返回是否发生了本次置位
-	// （行已被并发/先前处理置位时返回 false 且不视为错误）。
+	// CompleteProbeRequest 把行幂等出队（处理成功即删行；业务库实现沿用
+	// record_maintenance_jobs 先例）；返回是否发生了本次删除（行已被并发/
+	// 先前处理删除时返回 false 且不视为错误）。
 	CompleteProbeRequest(ctx context.Context, requestID string, now time.Time) (bool, error)
 }
 
@@ -112,7 +115,7 @@ func (r *Runner) drainProbeRequestOutbox(ctx context.Context, lease OwnerLease) 
 // （internalapi.DispatchAccountHealthCheckWithOutcome）：boundary 读 → 范围外
 // 结算 fence=unknown → 范围内组装显式请求走 runExplicitRequest 全链。
 // 收敛语义：确定性行损坏（字段缺失、fence 与当前 config revision 不一致、
-// deadline 缺失）记 warn 后按已处理收敛（返回 nil，调用方置 consumed）——
+// deadline 缺失）记 warn 后按已处理收敛（返回 nil，调用方删行出队）——
 // 这些失败重试永远不会成功，保持 pending 只会形成毒丸；瞬态错误（业务库 /
 // Redis / 探针执行错误）返回 err，行保持 pending 下周期重试。
 func (r *Runner) consumeProbeOutboxRow(ctx context.Context, lease OwnerLease, row ProbeOutboxRow, now time.Time) error {

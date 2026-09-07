@@ -212,7 +212,8 @@ func TestDrainProbeOutboxInScopeRunsExplicitRequest(t *testing.T) {
 		t.Fatalf("explicit request outcome = %#v", state)
 	}
 
-	// 幂等回放：同一行再次入队（模拟消费前崩溃重启）→ HasRequest 短路，
+	// 幂等回放：同一行再次入队（模拟消费前崩溃重启；真实业务库 store 的
+	// complete 处理成功即删行，重放行可再次 claim）→ HasRequest 短路，
 	// 不再发探针、不重复写 outcome。
 	outbox.pending = append(outbox.pending, ProbeOutboxRow{
 		RequestID: "j1-in-scope",
@@ -228,6 +229,15 @@ func TestDrainProbeOutboxInScopeRunsExplicitRequest(t *testing.T) {
 	mu.Unlock()
 	if hits != 1 {
 		t.Fatalf("replay must not re-probe, hits = %d", hits)
+	}
+	// HasRequest 幂等键拦截重放：outcome 恰好一行，删行出队不产生部分/重复
+	// outcome。
+	var outcomeCount int
+	if err := runner.store.db.QueryRow(`SELECT COUNT(*) FROM account_health_outcomes WHERE request_id = 'j1-in-scope'`).Scan(&outcomeCount); err != nil {
+		t.Fatal(err)
+	}
+	if outcomeCount != 1 {
+		t.Fatalf("replay outcomes for j1-in-scope = %d want exactly 1", outcomeCount)
 	}
 }
 

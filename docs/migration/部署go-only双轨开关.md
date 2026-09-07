@@ -24,7 +24,7 @@ go-only 是唯一受支持的部署拓扑：
    - `JUHE_AI_OWNER_LOCK_ENABLED=true` 拒绝启动（owner lock 的 server 包装只覆盖过 Node 进程，无 Go 等价物；补齐前禁止静默失去部署保护）；
    - `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED` 配置为非 `true` 值时拒绝启动（gateway 必须拥有主入口）。
 3. 可选维护预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 时执行幂等的 `backend-go/juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径组装 `--paths`，PostgreSQL 用 `--dsn "$JUHE_AI_POSTGRES_URL"`）；`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。
-4. 启动 `juhe-ai-go-gateway`（owner health `3306 /health` 200、F3 `3303 /__aiinternal__/health` 与 F4 `3304 /__aiinternal__/v1/operation-logs/health` 204、业务端口 `/__aisys__/api/health` 200），随后启动 `juhe-ai-go-jobs`（owner health `3305 /health` 200）。
+4. 启动 `juhe-ai-go-gateway`（owner health `3306 /health` 200、业务端口 `/__aisys__/api/health` 200），随后启动 `juhe-ai-go-jobs`（owner health `3305 /health` 200）。F3/F4 的 `3303/3304` ingest 监听器与 `/__aiinternal__/` 路由已随去跨进程战役删除（审计/操作日志为 gateway 进程内直写），启动验证不再包含它们。
 5. 监控仅覆盖两个 Go 进程；任一退出即结束本次启动并清理其余进程。PID 与日志位置不变：`backend/runtime/juhe-ai-{gateway,jobs}.pid`（Windows 为 `juhe-ai-go-{gateway,jobs}.pid`）与 `backend/logs/juhe-ai-{gateway,jobs}.log`。
 
 `node` 仍为运行时依赖：`scripts/start-go-project.mjs` 是 Go 二进制的 detached 启动器与健康探测组装器；去 Node 化（纯 Go launcher）留待后续评估。
@@ -32,7 +32,7 @@ go-only 是唯一受支持的部署拓扑：
 ## 3. Docker
 
 - `docker/compose.yml` 即终态 go-only 拓扑（原 `compose.go-only.yml` 已并入本文件并删除，避免双文件漂移）：`gateway`（主入口，发布 `${JUHE_AI_PUBLIC_BIND}:${JUHE_AI_PUBLIC_PORT}`）+ `jobs`（`depends_on: gateway: service_healthy`）。
-- 卷语义：`juhe-ai-data` 对 gateway 读写（system API 是业务库唯一 writer），对 jobs 只读；F3/F4 input listener 仍只绑容器内 loopback，不使用 `network_mode: service:<Node>`。
+- 卷语义：`juhe-ai-data` 对 gateway 读写（system API 是业务库唯一 writer），对 jobs 只读；F3/F4 已为 gateway 进程内写入（无 input listener）；jobs 进程仅暴露 `/health` 与 `/__aisys__/metrics`。
 - 启动：`cd docker && docker compose config --quiet && docker compose up -d --build --wait`；`.env` 必填项与原先相同（`JUHE_AI_GO_IMAGE`、`JUHE_AI_GO_*_RUNTIME_IMAGE`、F3/F4 input secret、各 owner ID）。`.env.example` 已移除 `JUHE_AI_NODE_IMAGE`、`JUHE_AI_IMAGE` 与 `JUHE_AI_USAGE_STATS_TIMEZONE`（Go 时区来自 settings 库）。
 - `docker/Dockerfile`、`docker/Dockerfile.builder`、`docker/entrypoint.sh`（Node 镜像与构建器）已删除；`docker/compose.performance.yml` 是 hybrid 遗留形态的参考，其 `juhe-ai` 服务在本仓库当前状态不可构建，go-only 高性能变体仍是 X03 平台侧待办。
 
@@ -57,7 +57,7 @@ go-only 是唯一受支持的部署拓扑：
 
 | 环境变量 | 说明 | 已收录于 |
 | --- | --- | --- |
-| `JUHE_AI_JOBS_INTERNAL_URL` | gateway 回调 jobs internal-api 派发面的 loopback origin，默认 `http://127.0.0.1:3305`；手动账户测试派发（`/v1/account-test/dispatch`）、请求失败链与 runtime-reset/激活面的账户健康检查派发（`/v1/account-health-check/dispatch`）与账户余额健康裁决都经过它 | `deploy/README.md`（完整说明） |
+| `JUHE_AI_JOBS_INTERNAL_URL` | **已删除**（去跨进程战役）：gateway 与 jobs 之间不再有任何业务 HTTP 互调——手动账户测试在 gateway 进程内执行，健康检查派发改走业务库 `account_health_probe_request_outbox` 通道，`/__aiinternal__/` 路由整体下线；配置该变量不会生效，launcher 主动剥离 | `deploy/README.md`（删除登记） |
 | `JUHE_AI_BLUE_GREEN_OWNER_MODE` | Go 进程蓝绿 owner 模式，`active` / `standby` / `drain`（缺省 `active`，非法值启动失败）；仅 `active` 参与 owner 判定 | `deploy/README.md`（完整说明） |
 | `JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL` | gateway ai-health 读面合并 jobs J1 durable outcome 的 PostgreSQL outcome 库（jobs `JUHE_AI_JOBS_OUTCOME_POSTGRES_URL` 的对端）；性能拓扑使用，留空时只读 SQLite outcome（`JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH`） | 本节（新增） |
 | `JUHE_AI_CONCURRENCY_GLOBAL_MAX` | Node `concurrency.globalMax` 对应项，默认 `5000`、范围 1..50000；高并发调度策略默认队列上限（全局队列与每 API Key 队列界限）与派发候选窗口默认值来源 | 本节（新增） |

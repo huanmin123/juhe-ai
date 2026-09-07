@@ -64,19 +64,11 @@ JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3
 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs
 JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=./data/audit-hot-search
 JUHE_AI_AUDIT_LOG_POSTGRES_URL=
-JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3303
-JUHE_AI_AUDIT_LOG_INPUT_URL=http://127.0.0.1:3303
-JUHE_AI_AUDIT_LOG_INPUT_SECRET=替换为稳定的高熵密钥，production 至少 32 位
-JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT_MS=7000
 JUHE_AI_OPERATION_LOG_INSTANCE_ID=juhe-ai-go-gateway-operation-log
 JUHE_AI_OPERATION_LOG_STORE=sqlite
 JUHE_AI_OPERATION_LOG_DATABASE_PATH=./data/juhe-ai-operation-log.sqlite3
 JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH=./data/juhe-ai.sqlite3
 JUHE_AI_OPERATION_LOG_POSTGRES_URL=
-JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS=127.0.0.1:3304
-JUHE_AI_OPERATION_LOG_INPUT_URL=http://127.0.0.1:3304
-JUHE_AI_OPERATION_LOG_INPUT_SECRET=替换为另一把稳定的高熵密钥，production 至少 32 位
-JUHE_AI_OPERATION_LOG_INPUT_TIMEOUT_MS=7000
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
 JUHE_AI_USAGE_SHARD_COUNT=16
 JUHE_AI_SECRET=可留空由启动脚本首次生成，或换成自己保存的强随机密钥
@@ -84,15 +76,17 @@ JUHE_AI_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 JUHE_AI_OAUTH_PROXY_URL=
 ```
 
-新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 是两把不同密钥，不能留示例文字、不能相互复用或回退到 `JUHE_AI_SECRET`，并须在安全的密码管理或受限 env 中保存。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`；Go F3 原始审计事实、payload/blob 与 hot-search 分别使用上述 F3 专用路径；Go F4 操作日志事实库在 `JUHE_AI_OPERATION_LOG_DATABASE_PATH`，只读业务设置来自 `JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH`。八个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
+新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。F3 审计与 F4 操作日志已完全进程内写入（去跨进程战役第四刀），不存在独立的输入端点密钥；审计派发、操作日志写入与 `JUHE_AI_SECRET` 派生的 owner lease 全部在 gateway 进程内完成。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`；Go F3 原始审计事实、payload/blob 与 hot-search 分别使用上述 F3 专用路径；Go F4 操作日志事实库在 `JUHE_AI_OPERATION_LOG_DATABASE_PATH`，只读业务设置来自 `JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH`。八个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
 
 发布包启动器会为 Go 子进程设置 `TZ=UTC`。所有 API、异步任务、日志事件和回执中的绝对时间只接受或输出 RFC3339 的 `Z` 或明确数字 offset，绝不以本机时区或上海裸时间表达。管理页面按浏览器本地时区展示；排班、可用时段和统计日界线等业务日历只使用显式 IANA timezone（在管理后台「系统设置」中配置，持久化于 `system_settings`）。
 
-启动脚本先启动 `juhe-ai-go-gateway` 并等待 owner health `3306 /health` 返回 `200`，再确认 F3 `3303 /__aiinternal__/health` 与 F4 `3304 /__aiinternal__/v1/operation-logs/health` 返回 `204`，然后确认业务端口 `/__aisys__/api/health` 返回 `200`；随后启动 `juhe-ai-go-jobs` 并确认 `3305 /health` 返回 `200`。F1、F2、F3、F4 各自拥有 Store、schema 和 owner lease，且 owner ID 必须在 `backend/.env` 或更高优先级环境中显式配置且稳定；启动脚本绝不生成或改写这些标识。普通单条/单轮错误只记录并交给下一轮处理；租约丢失、启动预检失败、外部停止或 OOM/runtime fatal 等不可恢复故障只结束所属 Go 项目并交由服务管理器恢复。PID 与日志分别位于 `backend/runtime/juhe-ai-{gateway,jobs}.pid`（Windows 为 `juhe-ai-go-{gateway,jobs}.pid`）和 `backend/logs/juhe-ai-{gateway,jobs}.log`。
+启动脚本先启动 `juhe-ai-go-gateway` 并等待 owner health `3306 /health` 返回 `200`，然后确认业务端口 `/__aisys__/api/health` 返回 `200`；随后启动 `juhe-ai-go-jobs` 并确认 `3305 /health` 返回 `200`。F1、F2、F3、F4 各自拥有 Store、schema 和 owner lease，且 owner ID 必须在 `backend/.env` 或更高优先级环境中显式配置且稳定；启动脚本绝不生成或改写这些标识。普通单条/单轮错误只记录并交给下一轮处理；租约丢失、启动预检失败、外部停止或 OOM/runtime fatal 等不可恢复故障只结束所属 Go 项目并交由服务管理器恢复。PID 与日志分别位于 `backend/runtime/juhe-ai-{gateway,jobs}.pid`（Windows 为 `juhe-ai-go-{gateway,jobs}.pid`）和 `backend/logs/juhe-ai-{gateway,jobs}.log`。
 
 F1 是运行日志索引、cursor、facet 与保留清理的唯一 writer；F2 是表监控采样、快照写入和保留清理的唯一 owner；F3 是原始审计持久化、payload/blob、hot-search 与保留的唯一 writer；F4 是操作日志写入、读取、摘要索引与保留的唯一 owner。gateway 的 system API 组合根直接读写业务库，是业务库唯一 writer。SQLite 的 F1/F2/F3/F4 路径必须物理隔离；PostgreSQL 下各功能优先使用各自 `JUHE_AI_*_POSTGRES_URL`，留空时才回退 `JUHE_AI_POSTGRES_URL`。
 
-`JUHE_AI_AUDIT_LOG_INPUT_SECRET` 与 `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 分别是 gateway 进程内 F3、F4 loopback HMAC 输入端点的显式密钥，不能省略、互用或回退到 `JUHE_AI_SECRET`，且在 production 至少 32 位。两组 `*_INPUT_LISTEN_ADDRESS` 与 `*_INPUT_URL` 必须各自指向同一 loopback 端口。F3/F4 输入 RPC 的默认超时均为 `7000ms`，但业务提交后的 producer 采用 fire-and-forget，不等待 `204`；可分别用对应 `*_INPUT_TIMEOUT_MS` 在 `1000..60000` 毫秒内调整。
+F3/F4 的 ingest HTTP 监听器已随去跨进程战役删除：审计与操作日志由 gateway 进程内 producer 直写各自身份库，不再存在 loopback 输入端点、密钥或超时配置；历史 `.env` 中残留的 `*_INPUT_*` 变量不会被读取。
+
+容量提示（去跨进程战役）：手动账户测试探针与余额手动查询已改在 gateway 进程内执行，`JUHE_AI_JOBS_PROBE_CONCURRENCY`（默认 512、上限 5096）等并发预算随执行权一并转移至 gateway，与 /v1 链路并发叠加时按宿主 FD/连接容量核对；健康检查派发改走业务库 `account_health_probe_request_outbox` 通道，其行由 jobs 消费后删除，并按 `JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_RETENTION_DAYS`（默认 7 天）做与 J1 启停无关的保留期清理。
 
 ### 空 PostgreSQL 库的首次初始化
 
@@ -113,8 +107,6 @@ pwsh .\start.ps1
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
 Invoke-WebRequest http://127.0.0.1:3000/__aisys__/
-Invoke-WebRequest http://127.0.0.1:3303/__aiinternal__/health
-Invoke-WebRequest http://127.0.0.1:3304/__aiinternal__/v1/operation-logs/health
 Get-Content .\backend\logs\juhe-ai-go-gateway.log -Tail 100
 Get-Content .\backend\logs\juhe-ai-go-jobs.log -Tail 100
 ```
@@ -126,13 +118,11 @@ bash ./start.sh
 curl -i http://127.0.0.1:3000/__aisys__/health
 curl -i http://127.0.0.1:3000/__aisys__/api/health
 curl -I http://127.0.0.1:3000/__aisys__/
-curl -i http://127.0.0.1:3303/__aiinternal__/health
-curl -i http://127.0.0.1:3304/__aiinternal__/v1/operation-logs/health
 tail -n 100 ./backend/logs/juhe-ai-go-gateway.log
 tail -n 100 ./backend/logs/juhe-ai-go-jobs.log
 ```
 
-上例使用默认 F3/F4 端口；如变更对应 `*_INPUT_LISTEN_ADDRESS`，health URL 也必须相应变更。上述 HTTP health 只证明 listener 可用，发布验收仍须确认 F1/F2 数据新鲜，并发起一次可审计业务请求后在管理员审计与操作日志详情中读回同一记录，证明业务提交 -> F3/F4 -> 管理读面的完整链路。
+发布验收仍须确认 F1/F2 数据新鲜，并发起一次可审计业务请求后在管理员审计与操作日志详情中读回同一记录，证明业务提交 -> 进程内 F3/F4 -> 管理读面的完整链路。
 
 ## 备份
 

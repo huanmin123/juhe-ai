@@ -382,17 +382,23 @@ func main() {
 		workerReady = worker.ready
 		workerStatus = worker.statusPayload
 	}
-	// 健康检查派发 outbox 消费面（去跨进程战役第二刀）：J1 runner 是唯一
-	// 探测者，worker 业务库提供 boundary/outbox 读侧（worker_health_probe_outbox.go）。
-	// J1 未启用时 drain 保持未装配；装配失败降级 warn（等同原派发能力未
-	// 装配的语义），outbox 行保持 pending，不阻塞启动。
-	if accountHealthRunner != nil && worker != nil {
-		drain, drainErr := worker.wireHealthProbeOutboxDrain(os.Getenv)
-		if drainErr != nil {
+	// 健康检查派发 outbox 消费与清理面（去跨进程战役第二刀）：J1 runner 是
+	// 唯一探测者，worker 业务库提供 boundary/outbox 读侧
+	// （worker_health_probe_outbox.go）。drain 仍受 J1 门控（J1 未启用时不
+	// 消费，gateway 行保持 pending）；prune 组件独立于 J1 常驻，J1 关闭部署
+	// 的 pending 堆积由保留期删除兜底。装配失败降级 warn（等同原派发能力未
+	// 装配的语义），不阻塞启动。
+	var probeOutboxPruner *healthProbeOutboxPruner
+	if worker != nil {
+		face, faceErr := worker.wireHealthProbeOutboxFace(os.Getenv)
+		if faceErr != nil {
 			logger.Warn("账户健康探针 outbox 消费面装配失败；outbox 行保持 pending",
-				"event", "account_health_probe_outbox_assembly_failed", "error", drainErr.Error())
-		} else if drain != nil {
-			accountHealthRunner.SetProbeRequestDrain(drain)
+				"event", "account_health_probe_outbox_assembly_failed", "error", faceErr.Error())
+		} else {
+			if face.drain != nil && accountHealthRunner != nil {
+				accountHealthRunner.SetProbeRequestDrain(face.drain)
+			}
+			probeOutboxPruner = face.pruner
 		}
 	}
 
@@ -446,6 +452,14 @@ func main() {
 			Run:   tableRunner.Run,
 			Close: store.Close,
 		},
+	}
+	if probeOutboxPruner != nil {
+		// 业务库句柄的关闭由 worker 组件 Close（closeStores）承担；
+		// supervisor 保证所有组件 Run 停止后才调用 Close。
+		components = append(components, supervisor.Component{
+			Name: "account-health probe-outbox prune",
+			Run:  probeOutboxPruner.Run,
+		})
 	}
 	if goMetricsSampler != nil {
 		components = append(components, supervisor.Component{
