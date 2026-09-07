@@ -467,7 +467,7 @@ func TestChainProviderDriverBuildsUpstreamRequests(t *testing.T) {
 		RawBody: caseRaw, ContentType: "application/json", JSONParseStatus: gatewaybody.JSONParseStatusParsed,
 		ParsedBody: map[string]any{"model": "GPT-TEST", "messages": []any{}},
 	})}
-	caseAccount := withSupportedModels(account, "gpt-test")
+	caseAccount := withSupportedModels(account, "GPT-TEST")
 	if !driver.AccountSupportsGatewayRequest(caseReq, caseAccount, "") {
 		t.Fatal("case-insensitive supported model must pass the capability gate")
 	}
@@ -475,7 +475,7 @@ func TestChainProviderDriverBuildsUpstreamRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build case-normalized parts: %v", err)
 	}
-	if !strings.Contains(string(caseParts.Body), `"model":"gpt-test"`) {
+	if !strings.Contains(string(caseParts.Body), `"model":"GPT-TEST"`) {
 		t.Fatalf("upstream body must use configured model spelling: %s", caseParts.Body)
 	}
 	// Capability: the seeded model is supported, an unknown model is not.

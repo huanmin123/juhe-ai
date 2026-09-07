@@ -126,7 +126,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 			ModelMapping: &gatewayproto.ResolvedModelMapping{
 				SourceModel:            mapping.SourceModel,
 				SourceEndpointFamily:   mapping.SourceEndpointFamily,
-				UpstreamModel:          strings.ToLower(strings.TrimSpace(mapping.UpstreamModel)),
+				UpstreamModel:          strings.TrimSpace(mapping.UpstreamModel),
 				UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
 				RuntimeSource:          mapping.RuntimeSource,
 				RuntimeRouteRuleID:     mapping.RuntimeRouteRuleID,
@@ -142,7 +142,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 		}
 	} else if canonical := canonicalAccountModel(req, account); canonical != "" {
 		requestedModel, _ := gatewaypreauth.RequestModel(req)
-		if strings.TrimSpace(requestedModel) != canonical {
+		if requestedModel != canonical {
 			body = canonicalizeModelBody(body, req.ParsedJSONObjectBody(), canonical)
 		}
 	}
@@ -164,9 +164,7 @@ func canonicalAccountModel(req *gatewaypreauth.GatewayRequest, account gatewaydi
 	if canonical == "" {
 		return ""
 	}
-	// Upstream model IDs are normalized to lowercase. Avoid reserializing an
-	// already canonical request body, which can matter for opaque payloads.
-	return strings.ToLower(canonical)
+	return canonical
 }
 
 func canonicalizeModelBody(raw []byte, parsed any, canonical string) []byte {

@@ -19,7 +19,7 @@
 ```bash
 cd docker
 cp .env.example .env
-# 在 .env 填写 Harbor digest 镜像引用、稳定的 JUHE_AI_SECRET，以及彼此独立的 JUHE_AI_AUDIT_LOG_INPUT_SECRET 与 JUHE_AI_OPERATION_LOG_INPUT_SECRET；production 均至少 32 位，F3/F4 密钥不能使用 JUHE_AI_SECRET。
+# 在 .env 填写 Harbor digest 镜像引用与稳定的 JUHE_AI_SECRET（production 至少 32 位）。F3/F4 ingest 已随去跨进程战役删除（审计/操作日志为 gateway 进程内直写），不存在独立的 INPUT 密钥；历史 .env 残留的 *_INPUT_* 变量不会被读取。
 docker compose config --quiet
 docker compose up -d --build --wait
 ```
@@ -79,8 +79,7 @@ JUHE_AI_TRUST_PROXY=false
 - `JUHE_AI_PUBLIC_BIND` 是宿主机绑定地址；宿主机 Caddy/HTTPS 反代建议 `127.0.0.1`，直接局域网 HTTP 临时验证才用 `0.0.0.0`。
 - `JUHE_AI_PUBLIC_PORT` 是宿主机端口，默认 `3000`。
 - `JUHE_AI_SECRET` 是业务库敏感字段（OAuth token、上游 API Key、代理密码等）的加密密钥，Docker go-only 下必须显式配置；迁移旧数据时必须填写旧密钥，否则敏感字段无法解密。
-- `JUHE_AI_AUDIT_LOG_INPUT_SECRET` 必须显式填写为独立、稳定的高熵值；不能复用或回退 `JUHE_AI_SECRET`，production 至少 32 位。它同时提供给 gateway 内 F3 loopback HMAC 输入端点。
-- `JUHE_AI_OPERATION_LOG_INPUT_SECRET` 必须显式填写为独立、稳定的高熵值；不能复用、回退或与 F3 secret 共用，production 至少 32 位。它同时提供给 gateway 内 F4 loopback HMAC 输入端点。
+- F3/F4 ingest 监听器已删除：审计与操作日志由 gateway 进程内 producer 直写，无需（也不再读取）任何 INPUT 密钥/地址变量。
 - 直接 HTTP 访问时保持 `JUHE_AI_COOKIE_SECURE=false` 和 `JUHE_AI_TRUST_PROXY=false`；HTTPS 反向代理后改为 `true`，并确保容器端口只被 Caddy 或可信入口访问。
 - `JUHE_AI_GO_IMAGE` 与两个 `JUHE_AI_GO_*_RUNTIME_IMAGE` 必须是 Harbor 内网的不可变 digest 引用；不得填 Docker Hub 或镜像加速器地址。
 
