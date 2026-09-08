@@ -7,7 +7,7 @@ package proxyprofiles
 //	POST   /__aisys__/api/proxies                (requireAdmin + mutation guard)
 //	PATCH  /__aisys__/api/proxies/{id}           (requireAdmin)
 //	DELETE /__aisys__/api/proxies/{id}           (requireAdmin)
-//	POST   /__aisys__/api/proxies/{id}/test      (requireAdmin; J3a manual report)
+//	POST   /__aisys__/api/proxies/{id}/test      (jobs J3a management owner)
 
 import (
 	"context"
@@ -55,9 +55,6 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 	})))
 	k.Register("DELETE "+prefix+"/proxies/{id}", deps.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		deleteHandler(w, r, store, sink)
-	})))
-	k.Register("POST "+prefix+"/proxies/{id}/test", deps.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		testHandler(w, r, store, sink)
 	})))
 }
 

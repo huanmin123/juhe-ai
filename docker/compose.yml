@@ -9,8 +9,8 @@
 # 拓扑要点：
 # - 没有 Node 容器；juhe-ai-go-gateway 以 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true
 #   绑定 JUHE_AI_HOST:JUHE_AI_PORT 成为唯一 HTTP 入口（Web/管理 API）。
-# - gateway 对业务库卷为读写（system API 的唯一 business writer）；
-#   jobs 对业务库卷只读，只写自己的 F1/F2/J1 专用输出。
+# - gateway 对业务库卷为读写（system API 的业务写入者）；jobs 也需对该卷
+#   写入 J1 outbox 的消费删除，其他 F1/F2/J1 专用库仍使用各自卷。
 # - jobs 与 gateway 之间没有 loopback 依赖，不使用
 #   network_mode: service:<Node>；F3/F4 input listener 仍只绑定容器内 loopback。
 services:
@@ -35,15 +35,15 @@ services:
       JUHE_AI_PORT: ${JUHE_AI_PORT:-3000}
       # Go-only 模式的主入口开关；显式设 false 属于配置错误，健康检查会失败。
       JUHE_AI_GATEWAY_SYSTEM_API_ENABLED: ${JUHE_AI_GATEWAY_SYSTEM_API_ENABLED:-true}
-      # Go-only 部署：网关链默认开启，业务 owner 证据由启动前 preflight 脚本
-      # (juhe-ai-maintenance --ensure-schema) 自动生成，无需手动提供 handoff。
-      JUHE_AI_GATEWAY_CHAIN_ENABLED: ${JUHE_AI_GATEWAY_CHAIN_ENABLED:-true}
-      JUHE_AI_BUSINESS_OWNER: ${JUHE_AI_BUSINESS_OWNER:-gateway}
-      JUHE_AI_BUSINESS_HANDOFF_CONFIRMED: ${JUHE_AI_BUSINESS_HANDOFF_CONFIRMED:-true}
-      JUHE_AI_BUSINESS_NODE_WRITER_STOPPED: ${JUHE_AI_BUSINESS_NODE_WRITER_STOPPED:-true}
-      JUHE_AI_BUSINESS_SCHEMA_READY: ${JUHE_AI_BUSINESS_SCHEMA_READY:-true}
-      JUHE_AI_BUSINESS_OWNER_EPOCH: ${JUHE_AI_BUSINESS_OWNER_EPOCH:-go-only-compose}
-      JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH: ${JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH:-/app/backend/data/cutover-evidence.json}
+      # 业务 owner handoff/evidence 必须由部署前切换流程显式提供；maintenance
+      # ensure-schema 不会伪造 cutover proof，Compose 不能用默认布尔值冒充证据。
+      JUHE_AI_GATEWAY_CHAIN_ENABLED: ${JUHE_AI_GATEWAY_CHAIN_ENABLED:-false}
+      JUHE_AI_BUSINESS_OWNER: ${JUHE_AI_BUSINESS_OWNER:?JUHE_AI_BUSINESS_OWNER is required}
+      JUHE_AI_BUSINESS_HANDOFF_CONFIRMED: ${JUHE_AI_BUSINESS_HANDOFF_CONFIRMED:?JUHE_AI_BUSINESS_HANDOFF_CONFIRMED is required}
+      JUHE_AI_BUSINESS_NODE_WRITER_STOPPED: ${JUHE_AI_BUSINESS_NODE_WRITER_STOPPED:?JUHE_AI_BUSINESS_NODE_WRITER_STOPPED is required}
+      JUHE_AI_BUSINESS_SCHEMA_READY: ${JUHE_AI_BUSINESS_SCHEMA_READY:?JUHE_AI_BUSINESS_SCHEMA_READY is required}
+      JUHE_AI_BUSINESS_OWNER_EPOCH: ${JUHE_AI_BUSINESS_OWNER_EPOCH:?JUHE_AI_BUSINESS_OWNER_EPOCH is required}
+      JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH: ${JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH:?JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH is required}
       JUHE_AI_BUSINESS_DATABASE_PATH: ${JUHE_AI_BUSINESS_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}
       JUHE_AI_BUSINESS_POSTGRES_URL: ${JUHE_AI_BUSINESS_POSTGRES_URL:-}
       JUHE_AI_DATABASE_DRIVER: ${JUHE_AI_DATABASE_DRIVER:-sqlite}
@@ -69,6 +69,7 @@ services:
       JUHE_AI_COOKIE_SECURE: ${JUHE_AI_COOKIE_SECURE:-false}
       JUHE_AI_COOKIE_SAME_SITE: ${JUHE_AI_COOKIE_SAME_SITE:-lax}
       JUHE_AI_TRUST_PROXY: ${JUHE_AI_TRUST_PROXY:-false}
+      JUHE_AI_FRONTEND_DIST_PATH: ${JUHE_AI_FRONTEND_DIST_PATH:-/app/frontend/dist}
       JUHE_AI_DATABASE_PATH: ${JUHE_AI_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}
       JUHE_AI_CHAT_DATABASE_PATH: ${JUHE_AI_CHAT_DATABASE_PATH:-/app/backend/data/juhe-ai-chat.sqlite3}
       JUHE_AI_DATASET_DATABASE_PATH: ${JUHE_AI_DATASET_DATABASE_PATH:-/app/backend/data/juhe-ai-dataset.sqlite3}
@@ -173,7 +174,9 @@ services:
       JUHE_AI_LOG_DIR: ${JUHE_AI_LOG_DIR:-/app/backend/logs}
       JUHE_AI_LOG_FILE_ENABLED: ${JUHE_AI_LOG_FILE_ENABLED:-true}
     volumes:
-      - juhe-ai-data:/app/backend/data:ro
+      # J1 outbox rows are written by gateway and consumed/deleted by jobs;
+      # jobs therefore needs the same SQLite volume read-write.
+      - juhe-ai-data:/app/backend/data
       - juhe-ai-go-runtime-metrics-data:/app/backend/go-runtime-metrics-data
       - juhe-ai-runtime-log-data:/app/backend/runtime-log-data
       - juhe-ai-table-monitor-data:/app/backend/table-monitor-data

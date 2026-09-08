@@ -78,11 +78,20 @@ func TestMountSPA(t *testing.T) {
 			path:       systemPrefix + "/health",
 			wantStatus: 404,
 		},
+		{
+			name:       "non GET methods do not enter SPA fallback",
+			path:       systemPrefix + "/groups/page/1",
+			wantStatus: 404,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			method := http.MethodGet
+			if tc.name == "non GET methods do not enter SPA fallback" {
+				method = http.MethodPost
+			}
+			req := httptest.NewRequest(method, tc.path, nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != tc.wantStatus {

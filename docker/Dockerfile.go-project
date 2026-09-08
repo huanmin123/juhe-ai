@@ -10,6 +10,7 @@ ENV GOPROXY=${GO_PROXY}
 WORKDIR /source
 
 COPY backend-go ./backend-go
+COPY frontend/dist ./frontend/dist
 RUN --mount=type=cache,id=juhe-ai-go-mod,target=/go/pkg/mod \
   --mount=type=cache,id=juhe-ai-go-build,target=/root/.cache/go-build \
   test -n "$GO_PROJECT" \
@@ -36,9 +37,11 @@ WORKDIR /app
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/juhe-ai-go-${GO_PROJECT} /usr/local/bin/juhe-ai-go-project
 COPY --from=build /out/juhe-ai-go-project-healthcheck /usr/local/bin/juhe-ai-go-project-healthcheck
+COPY --from=build /source/frontend/dist /app/frontend/dist
 
 RUN test -x /usr/local/bin/juhe-ai-go-project \
   && test -x /usr/local/bin/juhe-ai-go-project-healthcheck \
+  && test -f /app/frontend/dist/index.html \
   && mkdir -p /app/backend/data /app/backend/runtime-log-data /app/backend/table-monitor-data /app/backend/audit-log-data /app/backend/operation-log-data /app/backend/logs
 
 ENTRYPOINT ["/usr/local/bin/juhe-ai-go-project"]

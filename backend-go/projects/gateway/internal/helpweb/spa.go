@@ -64,6 +64,10 @@ var noCacheBasenames = map[string]bool{
 // ServeHTTP implements http.Handler. API and health paths fall through to the
 // kernel (next(w, r) equivalent: the mux continues to more specific routes).
 func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
 	// Node server.ts:298 — /health and /api/* fall through to the API routes.
 	if r.URL.Path == systemPrefix+"/health" ||
 		r.URL.Path == systemAPIPrefix ||

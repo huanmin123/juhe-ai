@@ -35,6 +35,7 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
   assert.match(gateway, /ports:/u, 'standalone gateway must publish the public HTTP port')
   assert.match(gateway, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:/u, 'standalone gateway must own F3')
   assert.match(gateway, /JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, 'standalone gateway must own F4')
+  assert.match(gateway, /JUHE_AI_FRONTEND_DIST_PATH: \$\{JUHE_AI_FRONTEND_DIST_PATH:-\/app\/frontend\/dist\}/u, 'standalone gateway must point at the packaged management SPA')
   assert.match(gateway, /JUHE_AI_SECRET: \$\{JUHE_AI_SECRET:\?JUHE_AI_SECRET is required\}/u, 'standalone gateway must reject a missing shared runtime secret before startup')
   assert.doesNotMatch(gateway, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:|JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, 'standalone gateway must not receive F1/F2 ownership')
   assert.match(gateway, /JUHE_AI_RUNTIME_LOG_DATABASE_PATH:/u, 'standalone gateway must receive the F1 source path for F3/F4 SQLite isolation checks')
@@ -53,7 +54,9 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:/u, 'standalone jobs must receive the J1 signed-request directory')
   assert.match(jobs, /juhe-ai-account-health-data:\/app\/backend\/account-health-data\s*$/mu, 'standalone jobs must own the J1 SQLite store volume')
   assert.match(jobs, /juhe-ai-account-health-inputs:\/app\/backend\/account-health-inputs\s*$/mu, 'standalone jobs must consume J1 signed requests from the shared directory')
-  assert.match(jobs, /- juhe-ai-data:\/app\/backend\/data:ro/u, 'standalone jobs must keep the business database volume read-only')
+  // Health-probe outbox rows are consumed/deleted by jobs, so the shared
+  // SQLite business volume must be writable by both Go owners.
+  assert.match(jobs, /- juhe-ai-data:\/app\/backend\/data\s*$/mu, 'standalone jobs must write the health-probe outbox on the business volume')
   assert.doesNotMatch(jobs, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:|JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, 'standalone jobs must not receive F3/F4 ownership')
 }
 
@@ -89,6 +92,8 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
 assert.match(projectDockerfile, /GO_PROJECT/u, 'Go project Dockerfile must select one project at build time')
 assert.match(projectDockerfile, /projects\/\$GO_PROJECT/u, 'Go project Dockerfile must build the selected independent module')
 assert.doesNotMatch(projectDockerfile, /juhe-ai-go-sidecar/u, 'Dockerfile must not retain the deleted monolithic sidecar')
+assert.match(projectDockerfile, /COPY frontend\/dist \.\/frontend\/dist/u, 'Go project Dockerfile must include the packaged frontend dist')
+assert.match(projectDockerfile, /COPY --from=build \/source\/frontend\/dist \/app\/frontend\/dist/u, 'Go project runtime must expose the packaged frontend dist')
 
 console.log('Docker Go project isolation regression passed')
 
