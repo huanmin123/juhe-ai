@@ -17,7 +17,7 @@ import (
 
 func TestResolveCredentialMaterialUsesSupportedModeAndConfiguredBaseURL(t *testing.T) {
 	const secret = "model-check-reader-credential-secret"
-	ciphertext, err := accounthealth.EncryptV1Envelope(secret, []byte(`{"api_keys":["key-a"],"base_url":"https://provider.example/v1/","supported_endpoint_modes":["responses_json"]}`))
+	ciphertext, err := accounthealth.EncryptV1Envelope(secret, []byte(`{"api_keys":["key-a"],"base_url":"https://provider.example/v1/","oauth_type":"code_assist","supported_endpoint_modes":["responses_json"]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,8 +27,8 @@ func TestResolveCredentialMaterialUsesSupportedModeAndConfiguredBaseURL(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if material.baseURL != "https://provider.example/v1" {
-		t.Fatalf("baseURL=%q", material.baseURL)
+	if material.baseURL != "https://provider.example/v1" || material.oauthType != "code_assist" {
+		t.Fatalf("material=%+v", material)
 	}
 	if _, err := resolveCredentialMaterial(secret, postgresCandidate{
 		providerCode: "openai", profileID: "profile_openai_openai_v1", credentialType: "api_key", endpointMode: "chat_json", credentialsEncrypted: ciphertext,

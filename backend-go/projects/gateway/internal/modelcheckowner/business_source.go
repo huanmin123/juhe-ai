@@ -21,6 +21,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -307,6 +308,7 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 			headers.Set("chatgpt-account-id", material.ChatGPTAccountID)
 		}
 	}
+	applySystemIdentity(headers, provider, profileID, credentialType, material.OAuthType, baseURL)
 	if profile.Protocol == modelcheckprofile.ProtocolGeminiNative && credentialType == "google_oauth" {
 		if material.QuotaProjectID != "" {
 			headers.Set("x-goog-user-project", material.QuotaProjectID)
@@ -424,6 +426,7 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 			headers.Set("chatgpt-account-id", material.ChatGPTAccountID)
 		}
 	}
+	applySystemIdentity(headers, provider, profileID, credentialType, material.OAuthType, baseURL)
 	if profile.Protocol == modelcheckprofile.ProtocolGeminiNative && credentialType == "google_oauth" {
 		if material.QuotaProjectID != "" {
 			headers.Set("x-goog-user-project", material.QuotaProjectID)
@@ -907,6 +910,7 @@ type accountCredentialMaterial struct {
 	BaseURL                string
 	ChatGPTAccountID       string
 	QuotaProjectID         string
+	OAuthType              string
 	SupportedEndpointModes []string
 	EndpointModesPresent   bool
 }
@@ -980,6 +984,13 @@ func decryptAccountCredentialMaterial(secret, envelope, credentialType string) (
 			return accountCredentialMaterial{}, errors.New("J3b Business credential quota_project_id is invalid")
 		}
 		material.QuotaProjectID = strings.TrimSpace(value)
+	}
+	if raw, ok := fields["oauth_type"]; ok {
+		value, ok := raw.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return accountCredentialMaterial{}, errors.New("J3b Business credential oauth_type is invalid")
+		}
+		material.OAuthType = strings.TrimSpace(value)
 	}
 	if raw, ok := fields["supported_endpoint_modes"]; ok {
 		modes, err := parseCredentialEndpointModes(raw)
@@ -1147,23 +1158,6 @@ func credentialHeaders(providerCode, profileID string, protocol modelcheckprofil
 			headers.Set("Authorization", "Bearer "+token)
 		}
 		headers.Set("anthropic-version", "2023-06-01")
-		if providerCode == "anthropic" && credentialType == "oauth" {
-			headers.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
-			// The Node provider driver sends OAuth traffic with the Claude CLI
-			// identity headers. Keep this narrow to Anthropic OAuth; GLM/DeepSeek
-			// Anthropic-compatible API keys must not inherit the subscription lane.
-			headers.Set("user-agent", "claude-cli/2.1.161 (external, cli)")
-			headers.Set("x-stainless-lang", "js")
-			headers.Set("x-stainless-package-version", "0.94.0")
-			headers.Set("x-stainless-os", "Linux")
-			headers.Set("x-stainless-arch", "arm64")
-			headers.Set("x-stainless-runtime", "node")
-			headers.Set("x-stainless-runtime-version", "v24.3.0")
-			headers.Set("x-stainless-retry-count", "0")
-			headers.Set("x-stainless-timeout", "600")
-			headers.Set("x-app", "cli")
-			headers.Set("anthropic-dangerous-direct-browser-access", "true")
-		}
 	case modelcheckprofile.ProtocolGeminiNative:
 		if profileID != "" && profileID != "profile_gemini_native_v1beta" {
 			return nil, errors.New("J3b Business Gemini native profile is unsupported")
@@ -1188,6 +1182,20 @@ func credentialHeaders(providerCode, profileID string, protocol modelcheckprofil
 		headers.Set("Authorization", "Bearer "+token)
 	}
 	return headers, nil
+}
+
+func applySystemIdentity(headers http.Header, providerCode, profileID, credentialType, oauthType, baseURL string) {
+	hostname := ""
+	if parsed, err := url.Parse(strings.TrimSpace(baseURL)); err == nil {
+		hostname = parsed.Hostname()
+	}
+	upstreamidentity.ApplySystemClientHeaders(headers, upstreamidentity.Input{
+		ProviderCode:              providerCode,
+		ProviderProtocolProfileID: profileID,
+		CredentialType:            credentialType,
+		OAuthType:                 oauthType,
+		UpstreamHostname:          hostname,
+	})
 }
 
 func openAIOAuthCodexAdapter(providerCode, profileID, credentialType string, protocol modelcheckprofile.Protocol, endpointMode string) (string, error) {

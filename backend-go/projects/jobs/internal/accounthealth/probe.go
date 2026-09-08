@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 const (
@@ -297,20 +298,6 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		} else {
 			request.Header.Set("x-api-key", token)
 		}
-		if input.Type == "oauth" {
-			request.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
-			request.Header.Set("User-Agent", "claude-cli/2.1.161 (external, cli)")
-			request.Header.Set("x-stainless-lang", "js")
-			request.Header.Set("x-stainless-package-version", "0.94.0")
-			request.Header.Set("x-stainless-os", "Linux")
-			request.Header.Set("x-stainless-arch", "arm64")
-			request.Header.Set("x-stainless-runtime", "node")
-			request.Header.Set("x-stainless-runtime-version", "v24.3.0")
-			request.Header.Set("x-stainless-retry-count", "0")
-			request.Header.Set("x-stainless-timeout", "600")
-			request.Header.Set("x-app", "cli")
-			request.Header.Set("anthropic-dangerous-direct-browser-access", "true")
-		}
 	case "gemini":
 		if input.Type == "google_oauth" {
 			request.Header.Set("Authorization", "Bearer "+token)
@@ -323,17 +310,15 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		if input.EndpointMode == "interactions_json" || input.EndpointMode == "interactions_sse" {
 			request.Header.Set("api-revision", "2026-05-20")
 		}
-		if codeAssist {
-			request.Header.Set("User-Agent", "GeminiCLI/0.1.5 (Windows; AMD64)")
-		}
 	default:
 		request.Header.Set("Authorization", "Bearer "+token)
-		if input.ProtocolProfileID == "profile_xai_openai_v1" && input.Type == "oauth" && strings.EqualFold(request.URL.Hostname(), "cli-chat-proxy.grok.com") {
-			request.Header.Set("User-Agent", "xai-grok-workspace/0.2.93")
-			request.Header.Set("x-xai-token-auth", "xai-grok-cli")
-			request.Header.Set("x-grok-client-version", "0.2.93")
-		}
 	}
+	upstreamidentity.ApplySystemClientHeaders(request.Header, upstreamidentity.Input{
+		ProviderProtocolProfileID: input.ProtocolProfileID,
+		CredentialType:            input.Type,
+		OAuthType:                 input.OAuthType,
+		UpstreamHostname:          request.URL.Hostname(),
+	})
 	if codexIdentity != nil {
 		applyCodexProbeHeaders(request, *codexIdentity, input)
 	}

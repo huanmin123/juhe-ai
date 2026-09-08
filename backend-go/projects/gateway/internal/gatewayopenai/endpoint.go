@@ -90,13 +90,25 @@ func IsModelsRequest(method, originalPathAndQuery string) bool {
 
 // BuildUpstreamURL mirrors buildUpstreamUrl: normalize the account base URL
 // (always /v1-suffixed) and append the version-stripped path + query.
+// For gemini-openai-chat v1beta accounts (base URL ends with /v1beta/openai),
+// the client's /v1 prefix is stripped instead of appending another /v1.
 func BuildUpstreamURL(baseURL, pathAndQuery string) string {
 	normalizedBase := strings.TrimSpace(baseURL)
 	normalizedBase = strings.TrimRight(normalizedBase, "/")
-	if !strings.HasSuffix(normalizedBase, "/v1") {
-		normalizedBase += "/v1"
+	// D-152: gemini-openai-chat v1beta profiles end with /v1beta/openai
+	if !geminiOpenAIChatBaseUrlOwnsOpenAIPath(normalizedBase) {
+		if !strings.HasSuffix(normalizedBase, "/v1") {
+			normalizedBase += "/v1"
+		}
 	}
 	return normalizedBase + upstreamPathSuffix(pathAndQuery)
+}
+
+// geminiOpenAIChatBaseUrlOwnsOpenAIPath returns true if the base URL ends
+// with /v1beta/openai (gemini-openai-chat v1beta profile base URL).
+func geminiOpenAIChatBaseUrlOwnsOpenAIPath(baseURL string) bool {
+	normalized := strings.ToLower(strings.TrimRight(baseURL, "/"))
+	return strings.HasSuffix(normalized, "/v1beta/openai")
 }
 
 func upstreamPathSuffix(pathAndQuery string) string {

@@ -52,7 +52,7 @@ func TestResolverUsesProtocolSpecificOAuthHeaders(t *testing.T) {
 		AccountID: "gemini-account", ConfigRevision: "1", Provider: "gemini", ProtocolProfileID: "profile_gemini_native_v1beta", ProtocolProfileRevision: "v1beta",
 		EndpointFingerprint: "endpoint-fp", CredentialEnvelopeRef: "credential-ref", ProxyConfigurationVersion: "direct",
 		CredentialType: "google_oauth", Credential: accounthealth.CredentialEnvelope{Kind: "oauth_access", Ciphertext: credential}, Protocol: modelcheckprofile.ProtocolGeminiNative,
-		Model: "gemini-3.5-flash", Prompt: "Reply with exactly: OK-MODEL-CHECK", Endpoint: "https://example.test", OAuthQuotaProjectID: "quota-project",
+		Model: "gemini-3.5-flash", Prompt: "Reply with exactly: OK-MODEL-CHECK", Endpoint: "https://example.test", OAuthQuotaProjectID: "quota-project", OAuthType: "code_assist",
 	}}, secret)
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestResolverUsesProtocolSpecificOAuthHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Headers.Get("Authorization") != "Bearer oauth-token" || target.Headers.Get("x-goog-user-project") != "quota-project" || target.Headers.Get("x-goog-api-key") != "" {
+	if target.Headers.Get("Authorization") != "Bearer oauth-token" || target.Headers.Get("x-goog-user-project") != "quota-project" || target.Headers.Get("x-goog-api-key") != "" || target.Headers.Get("User-Agent") != "GeminiCLI/0.1.5 (Windows; AMD64)" {
 		t.Fatalf("unexpected Gemini headers: %#v", target.Headers)
 	}
 }
@@ -87,6 +87,30 @@ func TestResolverUsesFirstConfiguredAPIKeyWhenCredentialStoresAPIPool(t *testing
 	}
 	if got := target.Headers.Get("Authorization"); got != "Bearer first-key" {
 		t.Fatalf("Authorization=%q", got)
+	}
+}
+
+func TestResolverUsesGLMCodingIdentityAndAnthropicBearer(t *testing.T) {
+	const secret = "resolver-glm-secret"
+	credential, err := accounthealth.EncryptV1Envelope(secret, []byte(`{"api_key":"glm-key"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := New([]Snapshot{{
+		AccountID: "glm-account", ConfigRevision: "1", Provider: "glm", ProtocolProfileID: "profile_glm_coding_anthropic_v1", ProtocolProfileRevision: "v1",
+		EndpointFingerprint: "endpoint-fp", CredentialEnvelopeRef: "credential-ref", ProxyConfigurationVersion: "direct",
+		CredentialType: "api_key", Credential: accounthealth.CredentialEnvelope{Kind: "api_key", Ciphertext: credential}, Protocol: modelcheckprofile.ProtocolAnthropic,
+		Model: "glm-5.3", Prompt: "Reply with exactly: OK-MODEL-CHECK", Endpoint: "https://upstream.test",
+	}}, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := resolver.Resolve(context.Background(), resolutionRequest(snapshotFor("glm-account", "1", "profile_glm_coding_anthropic_v1", "v1", "glm-5.3")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Headers.Get("Authorization") != "Bearer glm-key" || target.Headers.Get("x-api-key") != "" || target.Headers.Get("User-Agent") != "ZCode/3.11.2" || target.Headers.Get("HTTP-Referer") != "https://zcode.z.ai" {
+		t.Fatalf("GLM Coding resolver headers=%v", target.Headers)
 	}
 }
 

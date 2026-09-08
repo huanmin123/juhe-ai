@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckinput"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // Snapshot is the J3b-owned, credential-encrypted target captured at input
@@ -42,6 +44,7 @@ type Snapshot struct {
 	CredentialType            string
 	Credential                accounthealth.CredentialEnvelope
 	OAuthQuotaProjectID       string
+	OAuthType                 string
 	Proxy                     *accounthealth.CredentialEnvelope
 	Timeout                   time.Duration
 	MaxResponseBytes          int64
@@ -188,7 +191,8 @@ func authHeader(input Snapshot, token string) http.Header {
 	switch input.Protocol {
 	case modelcheckprofile.ProtocolAnthropic:
 		header.Set("anthropic-version", "2023-06-01")
-		if input.CredentialType == "oauth" {
+		if input.CredentialType == "oauth" ||
+			(strings.EqualFold(strings.TrimSpace(input.Provider), "glm") && input.ProtocolProfileID == upstreamidentity.ProfileGLMCodingAnthropicV1) {
 			header.Set("Authorization", "Bearer "+token)
 		} else {
 			header.Set("x-api-key", token)
@@ -205,6 +209,17 @@ func authHeader(input Snapshot, token string) http.Header {
 	default:
 		header.Set("Authorization", "Bearer "+token)
 	}
+	hostname := ""
+	if parsed, err := url.Parse(strings.TrimSpace(input.Endpoint)); err == nil {
+		hostname = parsed.Hostname()
+	}
+	upstreamidentity.ApplySystemClientHeaders(header, upstreamidentity.Input{
+		ProviderCode:              input.Provider,
+		ProviderProtocolProfileID: input.ProtocolProfileID,
+		CredentialType:            input.CredentialType,
+		OAuthType:                 input.OAuthType,
+		UpstreamHostname:          hostname,
+	})
 	return header
 }
 

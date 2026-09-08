@@ -178,6 +178,8 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - 探针模型严格读取账户 `healthCheckModel`，必须属于账户 `supportedModels` 并能按协议档案发起最小文本请求。
 - 探针请求使用协议档案、endpoint modes 和模型协议能力解析出的最小 payload 与 endpoint。
 - 探针链路仍走账号自己的供应商、协议档案、Base URL、代理和凭据。
+- 探针属于系统主动请求，没有真实下游客户端画像；请求构造必须按精确 `provider_protocol_profile_id` 应用渠道身份。GLM Coding 两个档案使用 ZCode 的已确认静态头，Anthropic OAuth、Gemini Code Assist、Grok OAuth 和 GPT/Codex 在各自支持的请求形态使用已有官方客户端适配器。其余没有精确客户端身份的 API Key 请求，在没有已有 `User-Agent` 时只补已从 OpenCode 1.18.5 观测到的静态 `User-Agent: opencode/1.18.5` 作为兼容兜底；这不是完整 OpenCode 身份。动态签名、设备、会话、项目、请求和 PoW 字段不得凭空生成。
+- 人工测试、J1 探活和 J3b 模型检测共享该身份策略；模型目录刷新只复用适用于 `GET /models` 的静态身份与鉴权。GPT/Codex Responses 身份不套用到模型目录，因为该接口不走 Codex Responses 适配。所有这些规则只补系统请求，不覆盖普通网关转发中的真实下游 `User-Agent`；本地 `x-juhe-client-profile` 等内部标记不得泄漏到上游。
 - 探针使用 `traffic_source = runtime_recovery_probe`；执行器不自行修改状态，由运行态恢复策略根据 `purpose` 和 generation 决定是否清理或升级。
 - 检查模型缺失、不可见、不属于支持模型或请求形态不匹配时，记录“检查模型配置异常”并停止本轮，不猜测其他模型，也不把该配置错误升级为账户不可用。
 

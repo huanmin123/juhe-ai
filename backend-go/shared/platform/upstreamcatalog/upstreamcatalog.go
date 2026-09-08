@@ -11,9 +11,9 @@
 //	gemini    -> {base}/v1beta/models
 //	otherwise -> {base}/v1/models   (openai and anthropic both use /v1/models)
 //
-// Auth headers follow the upstream protocol conventions: Bearer for
-// OpenAI-compatible bases, x-api-key (+ anthropic-version) for anthropic and
-// x-goog-api-key for gemini. The response may use either catalog shape:
+// Auth headers follow the upstream protocol conventions, with exact profile
+// identities supplied by FetchOptions for system-generated requests. The
+// response may use either catalog shape:
 // {data:[{id}]} or {models:[{name:"models/<id>"}]} (the gemini listing).
 package upstreamcatalog
 
@@ -24,10 +24,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // DefaultFetchTimeout bounds one upstream models request (Node
@@ -54,8 +56,16 @@ type FetchOptions struct {
 	// ProtocolCode is the provider protocol profile protocol ("openai",
 	// "anthropic", "gemini", ...). Unknown codes use the /v1/models shape.
 	ProtocolCode string
-	// Credential is the plaintext upstream API key (single key).
+	// Credential is the plaintext upstream API key or access token.
 	Credential string
+	// ProviderCode and ProviderProtocolProfileID select an exact system-request
+	// identity. Empty values mean no exact profile identity; API-key requests may
+	// still receive the shared static fallback User-Agent.
+	ProviderCode              string
+	ProviderProtocolProfileID string
+	CredentialType            string
+	OAuthType                 string
+	OAuthQuotaProjectID       string
 	// ProxyURL is the optional raw proxy URL ("" = direct).
 	ProxyURL string
 	// Doer overrides the shared HTTP client (tests).
@@ -105,18 +115,42 @@ func upstreamModelsURL(baseURL, protocolCode string) (string, error) {
 // requestHeadersForProtocol mirrors the upstream auth conventions the gateway
 // adapters apply: Bearer for OpenAI-compatible bases, x-api-key +
 // anthropic-version for anthropic, x-goog-api-key for gemini.
-func requestHeadersForProtocol(protocolCode, credential string) http.Header {
+func requestHeadersForProtocol(options FetchOptions, credential string) http.Header {
 	header := http.Header{}
 	header.Set("Accept", "application/json")
-	switch strings.ToLower(strings.TrimSpace(protocolCode)) {
+	switch strings.ToLower(strings.TrimSpace(options.ProtocolCode)) {
 	case "anthropic":
-		header.Set("x-api-key", credential)
+		providerCode := strings.ToLower(strings.TrimSpace(options.ProviderCode))
+		if strings.EqualFold(strings.TrimSpace(options.CredentialType), "oauth") ||
+			((providerCode == "" || providerCode == "glm") && options.ProviderProtocolProfileID == upstreamidentity.ProfileGLMCodingAnthropicV1) {
+			header.Set("Authorization", "Bearer "+credential)
+		} else {
+			header.Set("x-api-key", credential)
+		}
 		header.Set("anthropic-version", "2023-06-01")
 	case "gemini":
-		header.Set("x-goog-api-key", credential)
+		if strings.EqualFold(strings.TrimSpace(options.CredentialType), "google_oauth") {
+			header.Set("Authorization", "Bearer "+credential)
+			if project := strings.TrimSpace(options.OAuthQuotaProjectID); project != "" {
+				header.Set("x-goog-user-project", project)
+			}
+		} else {
+			header.Set("x-goog-api-key", credential)
+		}
 	default:
 		header.Set("Authorization", "Bearer "+credential)
 	}
+	hostname := ""
+	if parsed, err := url.Parse(strings.TrimSpace(options.BaseURL)); err == nil {
+		hostname = parsed.Hostname()
+	}
+	upstreamidentity.ApplySystemClientHeaders(header, upstreamidentity.Input{
+		ProviderCode:              options.ProviderCode,
+		ProviderProtocolProfileID: options.ProviderProtocolProfileID,
+		CredentialType:            options.CredentialType,
+		OAuthType:                 options.OAuthType,
+		UpstreamHostname:          hostname,
+	})
 	return header
 }
 
@@ -155,7 +189,7 @@ func FetchUpstreamModelIDs(ctx context.Context, options FetchOptions) ([]string,
 	if err != nil {
 		return nil, errors.New("获取上游模型目录失败：请求构造失败")
 	}
-	for key, values := range requestHeadersForProtocol(options.ProtocolCode, credential) {
+	for key, values := range requestHeadersForProtocol(options, credential) {
 		for _, value := range values {
 			request.Header.Set(key, value)
 		}

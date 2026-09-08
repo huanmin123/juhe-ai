@@ -232,6 +232,7 @@ func (r *PostgresReader) loadCandidateWithQuery(ctx context.Context, tx *sql.Tx,
 		Proxy:               proxy,
 		ProxyVersion:        proxyVersion,
 		OAuthQuotaProjectID: material.quotaProjectID,
+		OAuthType:           material.oauthType,
 		SupportedModels:     supportedModels,
 		ModelMappings:       mappings,
 	}, nil
@@ -257,6 +258,7 @@ type postgresCandidate struct {
 type credentialMaterial struct {
 	baseURL        string
 	quotaProjectID string
+	oauthType      string
 }
 
 func resolveCredentialMaterial(secret string, candidate postgresCandidate) (credentialMaterial, error) {
@@ -278,7 +280,11 @@ func resolveCredentialMaterial(secret string, candidate postgresCandidate) (cred
 	if strings.TrimSpace(baseURL) == "" {
 		return credentialMaterial{}, errors.New("model check account base URL is unavailable")
 	}
-	return credentialMaterial{baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), quotaProjectID: credentialString(fields, "quota_project_id")}, nil
+	return credentialMaterial{
+		baseURL:        strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		quotaProjectID: credentialString(fields, "quota_project_id"),
+		oauthType:      credentialString(fields, "oauth_type"),
+	}, nil
 }
 
 func credentialSupportsEndpointMode(fields map[string]json.RawMessage, endpointMode string) bool {

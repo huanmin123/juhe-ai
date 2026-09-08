@@ -218,6 +218,8 @@ var testSchema = []string{
 		cooldown_retest_last_at TEXT,
 		cooldown_retest_last_status_code INTEGER,
 		temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
+		stream_failure_count INTEGER NOT NULL DEFAULT 0,
+		stream_failure_window_started_at TEXT,
 		next_health_check_at TEXT,
 		balance_query_enabled INTEGER NOT NULL DEFAULT 0,
 		balance_query_next_refresh_at TEXT,
@@ -300,16 +302,25 @@ var testSchema = []string{
 		available_at_ms INTEGER NOT NULL,
 		claim_token TEXT,
 		claimed_by TEXT,
-		claim_until_ms INTEGER,
-		attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-		last_error_class TEXT,
-		acknowledged_at_ms INTEGER,
-		created_at_ms INTEGER NOT NULL,
-		updated_at_ms INTEGER NOT NULL,
-		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-		UNIQUE (projection_key, dedupe_key)
-	)`,
-}
+claim_until_ms INTEGER,
+			attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+			last_error_class TEXT,
+			acknowledged_at_ms INTEGER,
+			created_at_ms INTEGER NOT NULL,
+			updated_at_ms INTEGER NOT NULL,
+			FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+			UNIQUE (projection_key, dedupe_key)
+		)`,
+		// Missing from oauthmgmt test schema but required by accounts store CREATE.
+		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (account_id TEXT PRIMARY KEY, current_version INTEGER NOT NULL CHECK (current_version >= 1), reserved_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (event_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, input_version INTEGER NOT NULL CHECK (input_version >= 1), event_kind TEXT NOT NULL CHECK (event_kind IN ('snapshot', 'tombstone')), reason TEXT NOT NULL, config_revision INTEGER NOT NULL CHECK (config_revision >= 1), dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1), status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'published', 'failed', 'superseded')), claim_token TEXT, claimed_until TEXT, attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0), available_at TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (account_id, input_version))`,
+		// Batch-edit side effects: stats dirty marker (Node business-schema.ts:553-584).
+		`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (
+			group_id TEXT PRIMARY KEY,
+			reason TEXT,
+			updated_at TEXT NOT NULL
+		)`,
+	}
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
@@ -984,7 +995,7 @@ func TestGeminiOAuthCapabilitiesAndFamily(t *testing.T) {
 	if credentials["access_token"] != "gem-access-2" || credentials["base_url"] != "https://cloudcode-pa.googleapis.com" {
 		t.Fatalf("gemini rotated credentials: %v", credentials)
 	}
-	if !env.sink.has("gemini_oauth.create_account") || !env.sink.has("gemini_oauth.refresh_token") {
-		t.Fatalf("gemini logs: %v", env.sink.actions())
-	}
+if !env.sink.has("gemini_oauth.create_account") || !env.sink.has("gemini_oauth.refresh_token") {
+			t.Fatalf("gemini logs: %v", env.sink.actions())
+		}
 }

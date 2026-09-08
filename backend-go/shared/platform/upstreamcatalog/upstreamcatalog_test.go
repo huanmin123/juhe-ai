@@ -38,11 +38,12 @@ func (n *nopCloser) Read(p []byte) (int, error) { return n.s.Read(p) }
 func (n *nopCloser) Close() error               { return nil }
 
 func TestFetchOpenAIModelsPathAndBearerHeader(t *testing.T) {
-	var gotPath, gotAuth, gotAccept string
+	var gotPath, gotAuth, gotAccept, gotUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotAccept = r.Header.Get("Accept")
+		gotUserAgent = r.Header.Get("User-Agent")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"},{"id":"gpt-4o"}]}`))
 	}))
@@ -52,10 +53,11 @@ func TestFetchOpenAIModelsPathAndBearerHeader(t *testing.T) {
 	}}
 	_ = doer
 	ids, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
-		BaseURL:      server.URL + "/v1",
-		ProtocolCode: "openai",
-		Credential:   "sk-test",
-		Doer:         server.Client(),
+		BaseURL:        server.URL + "/v1",
+		ProtocolCode:   "openai",
+		Credential:     "sk-test",
+		CredentialType: "api_key",
+		Doer:           server.Client(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +70,9 @@ func TestFetchOpenAIModelsPathAndBearerHeader(t *testing.T) {
 	}
 	if gotAccept != "application/json" {
 		t.Fatalf("Accept = %q", gotAccept)
+	}
+	if gotUserAgent != "opencode/1.18.5" {
+		t.Fatalf("User-Agent = %q, want OpenCode fallback", gotUserAgent)
 	}
 	if len(ids) != 2 || ids[0] != "gpt-4o" || ids[1] != "gpt-4o-mini" {
 		t.Fatalf("ids = %v (must dedupe and keep order)", ids)
@@ -87,19 +92,21 @@ func newServerAwareDoer(serverURL string) func(*http.Request) (*http.Response, e
 }
 
 func TestFetchAnthropicModelsUsesXAPIKeyHeader(t *testing.T) {
-	var gotPath, gotAPIKey, gotVersion string
+	var gotPath, gotAPIKey, gotVersion, gotUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAPIKey = r.Header.Get("x-api-key")
 		gotVersion = r.Header.Get("anthropic-version")
+		gotUserAgent = r.Header.Get("User-Agent")
 		_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-4"}]}`))
 	}))
 	defer server.Close()
 	ids, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
-		BaseURL:      server.URL,
-		ProtocolCode: "anthropic",
-		Credential:   "ak-key",
-		Doer:         server.Client(),
+		BaseURL:        server.URL,
+		ProtocolCode:   "anthropic",
+		Credential:     "ak-key",
+		CredentialType: "api_key",
+		Doer:           server.Client(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -110,25 +117,30 @@ func TestFetchAnthropicModelsUsesXAPIKeyHeader(t *testing.T) {
 	if gotAPIKey != "ak-key" || gotVersion == "" {
 		t.Fatalf("x-api-key=%q anthropic-version=%q", gotAPIKey, gotVersion)
 	}
+	if gotUserAgent != "opencode/1.18.5" {
+		t.Fatalf("User-Agent = %q, want OpenCode fallback", gotUserAgent)
+	}
 	if len(ids) != 1 || ids[0] != "claude-sonnet-4" {
 		t.Fatalf("ids = %v", ids)
 	}
 }
 
 func TestFetchGeminiModelsUsesV1BetaAndGoogKeyHeader(t *testing.T) {
-	var gotPath, gotKey string
+	var gotPath, gotKey, gotUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotKey = r.Header.Get("x-goog-api-key")
+		gotUserAgent = r.Header.Get("User-Agent")
 		_, _ = w.Write([]byte(`{"models":[{"name":"models/gemini-2.0-flash"},{"name":"models/gemini-1.5-flash"}]}`))
 	}))
 	defer server.Close()
 	// Host-only base: the /v1beta root must be appended.
 	ids, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
-		BaseURL:      server.URL,
-		ProtocolCode: "gemini",
-		Credential:   "g-key",
-		Doer:         server.Client(),
+		BaseURL:        server.URL,
+		ProtocolCode:   "gemini",
+		Credential:     "g-key",
+		CredentialType: "api_key",
+		Doer:           server.Client(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +150,9 @@ func TestFetchGeminiModelsUsesV1BetaAndGoogKeyHeader(t *testing.T) {
 	}
 	if gotKey != "g-key" {
 		t.Fatalf("x-goog-api-key = %q", gotKey)
+	}
+	if gotUserAgent != "opencode/1.18.5" {
+		t.Fatalf("User-Agent = %q, want OpenCode fallback", gotUserAgent)
 	}
 	if len(ids) != 2 || ids[0] != "gemini-2.0-flash" {
 		t.Fatalf("ids = %v", ids)
@@ -161,6 +176,60 @@ func TestFetchGeminiBaseWithVersionRootKeepsSingleRoot(t *testing.T) {
 	}
 	if gotPath != "/v1beta/models" {
 		t.Fatalf("path = %s, want /v1beta/models", gotPath)
+	}
+}
+
+func TestFetchGLMCodingModelsUsesProfileAuthAndZCodeIdentity(t *testing.T) {
+	cases := []struct {
+		name        string
+		protocol    string
+		profileID   string
+		wantAuth    string
+		wantAPIKey  string
+		wantVersion string
+	}{
+		{name: "openai", protocol: "openai", profileID: "profile_glm_coding_openai_v1", wantAuth: "Bearer glm-key"},
+		{name: "anthropic", protocol: "anthropic", profileID: "profile_glm_coding_anthropic_v1", wantAuth: "Bearer glm-key", wantVersion: "2023-06-01"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != tc.wantAuth || r.Header.Get("x-api-key") != tc.wantAPIKey || r.Header.Get("anthropic-version") != tc.wantVersion {
+					t.Errorf("auth headers=%v", r.Header)
+				}
+				if r.Header.Get("User-Agent") != "ZCode/3.11.2" || r.Header.Get("HTTP-Referer") != "https://zcode.z.ai" || r.Header.Get("X-ZCode-App-Version") != "3.11.2" {
+					t.Errorf("ZCode identity headers=%v", r.Header)
+				}
+				_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.3"}]}`))
+			}))
+			defer server.Close()
+			ids, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
+				BaseURL: server.URL, ProtocolCode: tc.protocol, Credential: "glm-key", ProviderCode: "glm",
+				ProviderProtocolProfileID: tc.profileID, CredentialType: "api_key", Doer: server.Client(),
+			})
+			if err != nil || len(ids) != 1 || ids[0] != "glm-5.3" {
+				t.Fatalf("ids=%v err=%v", ids, err)
+			}
+		})
+	}
+}
+
+func TestFetchGLMGeneralModelsDoesNotImpersonateZCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("User-Agent") == "ZCode/3.11.2" || r.Header.Get("X-ZCode-App-Version") != "" {
+			t.Errorf("GLM General must remain protocol-neutral: %v", r.Header)
+		}
+		if r.Header.Get("User-Agent") != "opencode/1.18.5" {
+			t.Errorf("GLM General system request should use OpenCode fallback UA: %v", r.Header)
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+	if _, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
+		BaseURL: server.URL, ProtocolCode: "openai", Credential: "glm-key", ProviderCode: "glm",
+		ProviderProtocolProfileID: "profile_glm_general_openai_v1", CredentialType: "api_key", Doer: server.Client(),
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

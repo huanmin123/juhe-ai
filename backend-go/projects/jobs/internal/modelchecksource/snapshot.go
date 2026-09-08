@@ -54,6 +54,7 @@ type Candidate struct {
 	Proxy               *accounthealth.CredentialEnvelope
 	ProxyVersion        string
 	OAuthQuotaProjectID string
+	OAuthType           string
 	SupportedModels     []string
 	ModelMappings       []ModelMapping
 	Timeout             time.Duration
@@ -152,6 +153,7 @@ func Freeze(request Request, candidate Candidate, identitySecret string) (Frozen
 			CredentialType:            strings.TrimSpace(candidate.CredentialType),
 			Credential:                candidate.Credential,
 			OAuthQuotaProjectID:       strings.TrimSpace(candidate.OAuthQuotaProjectID),
+			OAuthType:                 strings.TrimSpace(candidate.OAuthType),
 			Proxy:                     candidate.Proxy,
 			Timeout:                   candidate.Timeout,
 			MaxResponseBytes:          candidate.MaxResponseBytes,

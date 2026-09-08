@@ -488,11 +488,11 @@ func testEnvelope(t *testing.T, secret, plaintext string) string {
 func TestBuildProbeRequestOAuthAcceptHeader(t *testing.T) {
 	base, _ := url.Parse("https://upstream.test")
 	oauthInput := Input{
-		AccountID:     "acc-oauth",
-		Type:          "oauth",
-		Provider:      "openai",
-		EndpointMode:  "responses_sse",
-		HealthModel:   "gpt-test",
+		AccountID:           "acc-oauth",
+		Type:                "oauth",
+		Provider:            "openai",
+		EndpointMode:        "responses_sse",
+		HealthModel:         "gpt-test",
 		ClientCompatibility: "codex_responses",
 	}
 	request, err := buildProbeRequest(context.Background(), base, oauthInput, "oauth-token")
@@ -512,5 +512,38 @@ func TestBuildProbeRequestOAuthAcceptHeader(t *testing.T) {
 	}
 	if got := request.Header.Get("Accept"); got != "application/json, text/event-stream" {
 		t.Fatalf("api-key responses accept = %q, want dual accept", got)
+	}
+	if got := request.Header.Get("User-Agent"); got != "opencode/1.18.5" {
+		t.Fatalf("generic API-key probe User-Agent = %q, want OpenCode fallback", got)
+	}
+}
+
+func TestBuildProbeRequestGLMCodingUsesZCodeIdentityForBothProtocols(t *testing.T) {
+	base, _ := url.Parse("https://upstream.test")
+	cases := []struct {
+		name       string
+		profileID  string
+		provider   string
+		mode       string
+		wantAuth   string
+		wantAPIKey string
+	}{
+		{name: "openai", profileID: "profile_glm_coding_openai_v1", provider: "openai", mode: "chat_json", wantAuth: "Bearer glm-key"},
+		{name: "anthropic", profileID: "profile_glm_coding_anthropic_v1", provider: "anthropic", mode: "messages_json", wantAuth: "Bearer glm-key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := Input{Type: "api_key", Provider: tc.provider, ProtocolProfileID: tc.profileID, EndpointMode: tc.mode, HealthModel: "glm-5.3"}
+			request, err := buildProbeRequest(context.Background(), base, input, "glm-key")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.Header.Get("Authorization") != tc.wantAuth || request.Header.Get("x-api-key") != tc.wantAPIKey {
+				t.Fatalf("auth headers=%v", request.Header)
+			}
+			if request.Header.Get("User-Agent") != "ZCode/3.11.2" || request.Header.Get("HTTP-Referer") != "https://zcode.z.ai" || request.Header.Get("X-Title") != "Z Code@electron" {
+				t.Fatalf("ZCode identity headers=%v", request.Header)
+			}
+		})
 	}
 }

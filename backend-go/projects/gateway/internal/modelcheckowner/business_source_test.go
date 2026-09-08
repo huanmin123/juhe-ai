@@ -560,6 +560,7 @@ func TestCredentialHeadersFollowProtocolAndType(t *testing.T) {
 		})
 	}
 	anthropicOAuthHeaders, err := credentialHeaders("anthropic", "profile_anthropic_anthropic_v1", modelcheckprofile.ProtocolAnthropic, "anthropic", "oauth", "key")
+	applySystemIdentity(anthropicOAuthHeaders, "anthropic", "profile_anthropic_anthropic_v1", "oauth", "", "https://api.anthropic.com")
 	if err != nil || anthropicOAuthHeaders.Get("anthropic-beta") != "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14" {
 		t.Fatalf("Anthropic OAuth beta headers=%v err=%v", anthropicOAuthHeaders, err)
 	}
@@ -582,11 +583,22 @@ func TestCredentialHeadersFollowProtocolAndType(t *testing.T) {
 		t.Fatal("google_oauth must be rejected for Anthropic protocol")
 	}
 	glmHeaders, err := credentialHeaders("glm", "profile_glm_coding_anthropic_v1", modelcheckprofile.ProtocolAnthropic, "anthropic", "api_key", "key")
+	applySystemIdentity(glmHeaders, "glm", "profile_glm_coding_anthropic_v1", "api_key", "", "https://open.bigmodel.cn/api/anthropic")
 	if err != nil || glmHeaders.Get("Authorization") != "Bearer key" || glmHeaders.Get("x-api-key") != "" {
 		t.Fatalf("GLM Coding Anthropic API key headers=%v err=%v", glmHeaders, err)
 	}
-	if glmHeaders.Get("anthropic-beta") != "" || glmHeaders.Get("user-agent") != "" {
-		t.Fatalf("GLM Coding API key must not inherit Anthropic OAuth headers=%v", glmHeaders)
+	if glmHeaders.Get("anthropic-beta") != "" || glmHeaders.Get("user-agent") != "ZCode/3.11.2" || glmHeaders.Get("HTTP-Referer") != "https://zcode.z.ai" {
+		t.Fatalf("GLM Coding API key must use ZCode without Anthropic OAuth headers=%v", glmHeaders)
+	}
+	glmOpenAIHeaders, err := credentialHeaders("glm", "profile_glm_coding_openai_v1", modelcheckprofile.ProtocolOpenAIChat, "openai", "api_key", "key")
+	applySystemIdentity(glmOpenAIHeaders, "glm", "profile_glm_coding_openai_v1", "api_key", "", "https://open.bigmodel.cn/api/coding/paas/v4")
+	if err != nil || glmOpenAIHeaders.Get("Authorization") != "Bearer key" || glmOpenAIHeaders.Get("user-agent") != "ZCode/3.11.2" {
+		t.Fatalf("GLM Coding OpenAI headers=%v err=%v", glmOpenAIHeaders, err)
+	}
+	genericHeaders, err := credentialHeaders("hybrid", "profile_hybrid_openai_chat_v1", modelcheckprofile.ProtocolOpenAIChat, "openai", "api_key", "key")
+	applySystemIdentity(genericHeaders, "hybrid", "profile_hybrid_openai_chat_v1", "api_key", "", "https://upstream.test/v1")
+	if err != nil || genericHeaders.Get("Authorization") != "Bearer key" || genericHeaders.Get("User-Agent") != "opencode/1.18.5" {
+		t.Fatalf("hybrid system API-key headers=%v err=%v", genericHeaders, err)
 	}
 }
 

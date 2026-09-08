@@ -60,10 +60,11 @@ func newTestService(t *testing.T, source CandidateSource) *Service {
 // TestProbeChatJSONSuccess 验证 OpenAI chat_json 完整成功路径：
 // finish_reason + 输出包含预期令牌 → success；证据 framing_complete。
 func TestProbeChatJSONSuccess(t *testing.T) {
-	var seenPath, seenAuth string
+	var seenPath, seenAuth, seenUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenPath = r.URL.Path
 		seenAuth = r.Header.Get("authorization")
+		seenUserAgent = r.Header.Get("User-Agent")
 		body, _ := io.ReadAll(r.Body)
 		var payload map[string]any
 		if err := json.Unmarshal(body, &payload); err != nil {
@@ -91,6 +92,9 @@ func TestProbeChatJSONSuccess(t *testing.T) {
 	if seenAuth != "Bearer sk-test" {
 		t.Fatalf("authorization=%q", seenAuth)
 	}
+	if seenUserAgent != "opencode/1.18.5" {
+		t.Fatalf("generic system probe User-Agent=%q", seenUserAgent)
+	}
 	if !observation.Result.Success {
 		t.Fatalf("success=%v message=%q", observation.Result.Success, observation.Result.Message)
 	}
@@ -99,6 +103,61 @@ func TestProbeChatJSONSuccess(t *testing.T) {
 	}
 	if outcome := accountquality.AutomaticProbeOutcome(observation.Result, observation.Evidence); outcome != accountquality.OutcomeCompleteSuccess {
 		t.Fatalf("outcome=%s", outcome)
+	}
+}
+
+func TestProbeGLMCodingUsesZCodeIdentityAndDoesNotLeakInternalProfile(t *testing.T) {
+	var captured http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Header.Clone()
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	view := probeView(server.URL)
+	view.ProviderCode = "glm"
+	view.ProviderProtocolProfileID = "profile_glm_coding_openai_v1"
+	observation, err := newTestService(t, &fakeSource{view: view}).Probe(context.Background(), accountquality.ProbeRequest{
+		AccountID: "acc-1", GroupID: "group-1", SystemAccountID: "sys-1", Full: true,
+	})
+	if err != nil || !observation.Result.Success {
+		t.Fatalf("GLM Coding probe observation=%+v err=%v", observation, err)
+	}
+	if captured.Get("User-Agent") != "ZCode/3.11.2" || captured.Get("HTTP-Referer") != "https://zcode.z.ai" || captured.Get("X-ZCode-App-Version") != "3.11.2" || captured.Get("X-Title") != "Z Code@electron" {
+		t.Fatalf("GLM Coding identity headers=%v", captured)
+	}
+	if captured.Get(clientProfileHeader) != "" {
+		t.Fatalf("internal client profile leaked upstream: %v", captured)
+	}
+}
+
+func TestProbeGLMCodingAnthropicUsesBearerAndZCodeIdentity(t *testing.T) {
+	var captured http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Header.Clone()
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"juhe"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+
+	view := probeView(server.URL)
+	view.ProviderCode = "glm"
+	view.ProviderProtocolProfileID = "profile_glm_coding_anthropic_v1"
+	view.ProtocolCode = "anthropic"
+	view.HealthCheckEndpointMode = string(ModeMessagesJSON)
+	view.NormalizeEndpointModes = map[EndpointMode]bool{ModeMessagesJSON: true}
+	observation, err := newTestService(t, &fakeSource{view: view}).Probe(context.Background(), accountquality.ProbeRequest{
+		AccountID: "acc-1", GroupID: "group-1", SystemAccountID: "sys-1", Full: true,
+	})
+	if err != nil || !observation.Result.Success {
+		t.Fatalf("GLM Coding Anthropic probe observation=%+v err=%v", observation, err)
+	}
+	if captured.Get("Authorization") != "Bearer sk-test" || captured.Get("x-api-key") != "" || captured.Get("User-Agent") != "ZCode/3.11.2" {
+		t.Fatalf("GLM Coding Anthropic headers=%v", captured)
+	}
+	if captured.Get(clientProfileHeader) != "" {
+		t.Fatalf("internal client profile leaked upstream: %v", captured)
 	}
 }
 
@@ -230,7 +289,9 @@ func TestProbeGeminiGenerateContent(t *testing.T) {
 
 // TestProbeChatSSEStreaming 验证流式 chat_sse 的完成证据解析与首字计时。
 func TestProbeChatSSEStreaming(t *testing.T) {
+	var captured http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Header.Clone()
 		w.Header().Set("content-type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"juhe\"}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
@@ -239,6 +300,8 @@ func TestProbeChatSSEStreaming(t *testing.T) {
 	defer server.Close()
 
 	view := probeView(server.URL)
+	view.ProviderCode = "glm"
+	view.ProviderProtocolProfileID = "profile_glm_coding_openai_v1"
 	view.HealthCheckEndpointMode = string(ModeChatSSE)
 	source := &fakeSource{view: view}
 	service := newTestService(t, source)
@@ -253,6 +316,9 @@ func TestProbeChatSSEStreaming(t *testing.T) {
 	}
 	if observation.Result.FirstTokenMS < 0 {
 		t.Fatalf("firstTokenMs=%d", observation.Result.FirstTokenMS)
+	}
+	if captured.Get("User-Agent") != "ZCode/3.11.2" || captured.Get("HTTP-Referer") != "https://zcode.z.ai" {
+		t.Fatalf("GLM Coding SSE identity headers=%v", captured)
 	}
 }
 

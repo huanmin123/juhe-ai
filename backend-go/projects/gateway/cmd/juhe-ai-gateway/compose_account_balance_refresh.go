@@ -393,10 +393,15 @@ func (r *gatewayModelCatalogRefresher) RefreshDraftModelCatalog(ctx context.Cont
 	catalogs := make([][]string, 0, len(apiKeys))
 	for _, key := range apiKeys {
 		ids, err := upstreamcatalog.FetchUpstreamModelIDs(ctx, upstreamcatalog.FetchOptions{
-			BaseURL:      baseURL,
-			ProtocolCode: input.ProtocolCode,
-			Credential:   key,
-			ProxyURL:     proxyURL,
+			BaseURL:                   baseURL,
+			ProtocolCode:              input.ProtocolCode,
+			Credential:                key,
+			ProviderCode:              input.ProviderCode,
+			ProviderProtocolProfileID: input.ProviderProfileID,
+			CredentialType:            input.AccountType,
+			OAuthType:                 textFromCredentials(input.Credentials["oauth_type"]),
+			OAuthQuotaProjectID:       textFromCredentials(input.Credentials["quota_project_id"]),
+			ProxyURL:                  proxyURL,
 		})
 		if err != nil {
 			return nil, err

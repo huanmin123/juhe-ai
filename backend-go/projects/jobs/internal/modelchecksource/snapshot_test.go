@@ -11,12 +11,16 @@ import (
 func TestFreezeBuildsSeparatedDurableAndExecutionSnapshots(t *testing.T) {
 	candidate := validCandidate()
 	candidate.Credential = accounthealth.CredentialEnvelope{Kind: "api_key", Ciphertext: "encrypted-api-key"}
+	candidate.OAuthType = " code_assist "
 	frozen, err := Freeze(Request{SystemAccountID: "system-1", AccountID: "account-1", Model: "gpt-5.6-sol"}, candidate, "source-test-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if frozen.DurableAccount.MappedUpstreamModel != "gpt-5.6-sol" || frozen.Execution.Model != "gpt-5.6-sol" || frozen.Execution.Credential.Ciphertext != "encrypted-api-key" {
 		t.Fatalf("frozen=%#v", frozen)
+	}
+	if frozen.Execution.OAuthType != "code_assist" {
+		t.Fatalf("execution OAuthType=%q", frozen.Execution.OAuthType)
 	}
 	encoded, err := json.Marshal(frozen.DurableAccount)
 	if err != nil {

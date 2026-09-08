@@ -16,6 +16,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // 诊断分级超时（Node accountDiagnosticRetryTimeoutMs = [10_000, 20_000, 30_000]）。
@@ -48,8 +49,7 @@ type View struct {
 	ProviderCode    string
 	ProtocolCode    string
 	ProtocolVersion string
-	// ProviderProtocolProfileID 为协议档案 ID（手动测试结果信封消费；
-	// 探针请求构造不使用）。
+	// ProviderProtocolProfileID 为协议档案 ID，同时约束系统请求的上游身份。
 	ProviderProtocolProfileID string
 	ClientCompatibility       string
 	// HealthCheckModel / HealthCheckEndpointMode 来自账户行。
@@ -406,6 +406,9 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	httpReq.Header.Set("accept", accept)
 	httpReq.Header.Set("content-type", "application/json")
 	for name, value := range request.headers {
+		if strings.EqualFold(name, clientProfileHeader) {
+			continue
+		}
 		httpReq.Header.Set(name, value)
 	}
 	// 认证头必须按协议与账户类型构造，不能让手动探针把所有上游都
@@ -417,20 +420,6 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 			httpReq.Header.Set("authorization", "Bearer "+apiKey)
 		} else {
 			httpReq.Header.Set("x-api-key", apiKey)
-		}
-		if view.Type == "oauth" {
-			httpReq.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
-			httpReq.Header.Set("user-agent", "claude-cli/2.1.161 (external, cli)")
-			httpReq.Header.Set("x-stainless-lang", "js")
-			httpReq.Header.Set("x-stainless-package-version", "0.94.0")
-			httpReq.Header.Set("x-stainless-os", "Linux")
-			httpReq.Header.Set("x-stainless-arch", "arm64")
-			httpReq.Header.Set("x-stainless-runtime", "node")
-			httpReq.Header.Set("x-stainless-runtime-version", "v24.3.0")
-			httpReq.Header.Set("x-stainless-retry-count", "0")
-			httpReq.Header.Set("x-stainless-timeout", "600")
-			httpReq.Header.Set("x-app", "cli")
-			httpReq.Header.Set("anthropic-dangerous-direct-browser-access", "true")
 		}
 	case ProtocolGemini:
 		if view.Type == "google_oauth" {
@@ -448,17 +437,19 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 				httpReq.Header.Set("chatgpt-account-id", accountID)
 			}
 		}
-		if view.ProviderProtocolProfileID == "profile_xai_openai_v1" && view.Type == "oauth" && strings.EqualFold(httpReq.URL.Hostname(), "cli-chat-proxy.grok.com") {
-			httpReq.Header.Set("user-agent", "xai-grok-workspace/0.2.93")
-			httpReq.Header.Set("x-xai-token-auth", "xai-grok-cli")
-			httpReq.Header.Set("x-grok-client-version", "0.2.93")
-		}
 	}
 	if protocol == ProtocolGemini && view.Type == "google_oauth" {
 		if quotaProject := credentialText(view.Credentials, "quota_project_id"); quotaProject != "" {
 			httpReq.Header.Set("x-goog-user-project", quotaProject)
 		}
 	}
+	upstreamidentity.ApplySystemClientHeaders(httpReq.Header, upstreamidentity.Input{
+		ProviderCode:              view.ProviderCode,
+		ProviderProtocolProfileID: view.ProviderProtocolProfileID,
+		CredentialType:            view.Type,
+		OAuthType:                 credentialText(view.Credentials, "oauth_type"),
+		UpstreamHostname:          httpReq.URL.Hostname(),
+	})
 	if view.ClientCompatibility == "codex_responses" && (endpointMode == ModeResponsesJSON || endpointMode == ModeResponsesSSE) {
 		sessionID := newUUID()
 		threadID := sessionID
@@ -1016,7 +1007,6 @@ func buildTestRequest(view *View, mode EndpointMode, model string, challenge Out
 			if err != nil {
 				return nil, err
 			}
-			request.headers = map[string]string{"user-agent": "GeminiCLI/0.1.5 (Windows; AMD64)"}
 		}
 		return request, nil
 	default:

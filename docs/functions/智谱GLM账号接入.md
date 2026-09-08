@@ -103,6 +103,10 @@ GLM OpenAI v1 档案复用 OpenAI v1 Chat Completions 协议适配器，但有�
 - 不从账号配置生成 `OpenAI-Organization`、`OpenAI-Project` 或 GPT / Codex 专属 header。
 - Coding Plan 面向指定工具和产品环境；网关不应无故覆盖客户端 `User-Agent`。在安全过滤之后，尽量保留工具侧用于官方识别的普通请求形态，避免影响套餐额度识别。
 
+系统主动请求（人工账户测试、J1 后台探活、J3b 主动模型检测和受控模型目录刷新）与普通网关转发是两个边界：系统请求没有真实下游客户端画像，因此由 `provider_protocol_profile_id` 选择最小的静态渠道身份。`profile_glm_coding_openai_v1` 和 `profile_glm_coding_anthropic_v1` 使用从 ZCode 3.11.2 模型请求确认的静态头：`User-Agent: ZCode/3.11.2`、`HTTP-Referer: https://zcode.z.ai`、`X-ZCode-App-Version: 3.11.2`、`X-Title: Z Code@electron`。没有精确客户端身份的 API Key 请求，在没有已有 `User-Agent` 时只补从 OpenCode 1.18.5 观测到的 `User-Agent: opencode/1.18.5` 作为兼容兜底；它不是完整 OpenCode 身份，也不把该通用兜底当作 GLM Coding 专属身份。`OpenCode` 的 `x-opencode-*`、session、project、request、client 以及其他动态安全字段不生成。不生成 ZCode 的 `X-Client-Ts`、`X-Client-Sig`、`X-Client-Nonce`、`X-Device-Mid`、`X-Session-Id`、`X-Client-Pow` 等动态安全字段，也不把 ZCode 身份应用到 `profile_glm_general_openai_v1`。
+
+普通网关请求仍保留真实调用方的客户端身份，不能全局覆盖成 ZCode 或 OpenCode；探针使用的内部 `x-juhe-client-profile` 只用于本地构造，不得发送到智谱上游。其他已有精确客户端绑定档案（GPT/Codex、Anthropic OAuth、Gemini Code Assist、Grok OAuth）只在各自支持的请求形态沿用适配器身份；例如 GPT/Codex Responses 身份不套用到 `GET /models`。OpenCode 的 UA-only 兜底只用于系统主动请求，不伪装完整官方 CLI 会话。
+
 ## Codex Responses 到 Chat 桥接
 
 GLM Coding Plan 当前需要支持 Codex 客户端时，Codex 客户端只发送 OpenAI Responses 协议。智谱和 vsllm 的 GLM Chat 上游没有验证到可直接承接 `/v1/responses`，因此该能力必须通过普通 GLM OpenAI v1 账户的模型别名显式表达：下游仍看见 Responses SSE，账号真实上游调用 GLM Chat Completions SSE。API Key 和策略路由层不再保存 `responses -> chat_completions` 显式规则。
