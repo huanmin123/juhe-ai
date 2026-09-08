@@ -202,6 +202,7 @@ func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNames
 			RedisURL:  redisStateURL,
 			Namespace: redisNamespace,
 			Name:      "gateway-account-circuits",
+			Capacity:  10_000,
 		})
 		if storeErr != nil {
 			return nil, nil, fmt.Errorf("create gateway account circuit redis store: %w", storeErr)
