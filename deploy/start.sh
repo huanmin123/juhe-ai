@@ -4,19 +4,12 @@ set -euo pipefail
 # X01/X03 go-only 终态：本脚本是唯一的启动路径。Node Web/API 已物理归档到
 # migration-backup/node/final-archive/（X02），legacybridge 反代已删除，
 # 不再提供 hybrid / node 部署模式；历史值会被 fail-closed 拒绝。
+# 本脚本不依赖 Node.js：所有操作用纯 shell + curl 实现。
 
 APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 cd "$APP_DIR"
 export TZ=UTC
-export NODE_ENV="${NODE_ENV:-production}"
 export JUHE_AI_LOG_CONSOLE_ENABLED="${JUHE_AI_LOG_CONSOLE_ENABLED:-false}"
-
-if ! command -v node >/dev/null 2>&1; then
-  echo 'Node.js LTS is required. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) before running this script.' >&2
-  exit 1
-fi
-
-GO_PROJECT_START_SCRIPT='scripts/start-go-project.mjs'
 go_gateway_pid=''
 go_jobs_pid=''
 go_gateway_pid_file='backend/runtime/juhe-ai-gateway.pid'
@@ -57,13 +50,13 @@ set_dotenv_value() {
 }
 
 generate_secret() {
-  # 32 bytes from the OS CSPRNG as 64 hex chars; identical shape to the
-  # previous node-only implementation so existing deployments see no change.
+  # 32 bytes from the OS CSPRNG as 64 hex chars.
   random_hex="$(od -An -tx1 -N32 /dev/urandom 2>/dev/null | tr -d ' \n' || true)"
   if [ "${#random_hex}" -eq 64 ]; then
     printf '%s' "$random_hex"
   else
-    node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+    echo "Cannot generate secret: od/urandom unavailable." >&2
+    return 1
   fi
 }
 
@@ -146,10 +139,7 @@ wait_for_http_status() {
   description="$4"
   attempts=0
   while kill -0 "$process_id" 2>/dev/null && [ "$attempts" -lt 60 ]; do
-    if node --input-type=module -e '
-const response = await fetch(process.argv[1])
-process.exit(response.status === Number(process.argv[2]) ? 0 : 1)
-' "$url" "$expected_status" >/dev/null 2>&1; then
+    if curl -s -o /dev/null -w '%{http_code}' "$url" 2>/dev/null | grep -q "^${expected_status}$"; then
       return 0
     fi
     sleep 1
@@ -173,20 +163,15 @@ start_go_project() {
     echo "Go $project binary not found or not executable: $binary. Rebuild the release package for this Unix platform." >&2
     return 1
   fi
-  if [ ! -f "$APP_DIR/$GO_PROJECT_START_SCRIPT" ]; then
-    echo "Go project launcher not found: $APP_DIR/$GO_PROJECT_START_SCRIPT. Rebuild the release package." >&2
-    return 1
-  fi
   mkdir -p backend/runtime backend/logs
   existing_pid="$(go_project_process "$pid_path" "juhe-ai-$project" || true)"
   if [ -n "$existing_pid" ]; then
     echo "juhe-ai-go-$project is already running (PID $existing_pid); stop the existing release before starting another one." >&2
     return 1
   fi
-  go_project_pid="$(node "$APP_DIR/$GO_PROJECT_START_SCRIPT" "$project" "$binary" "$APP_DIR/backend" "$APP_DIR/$log_path")"
-  case "$go_project_pid" in
-    ''|*[!0-9]*) echo "juhe-ai-go-$project returned an invalid PID: $go_project_pid" >&2; return 1 ;;
-  esac
+  # Launch the Go binary directly with nohup (no Node .mjs launcher needed).
+  nohup "$binary" >> "$log_path" 2>&1 &
+  go_project_pid=$!
   printf '%s' "$go_project_pid" > "$pid_path"
   if ! go_project_process "$pid_path" "juhe-ai-$project" >/dev/null; then
     [ -f "$log_path" ] && tail -n 20 "$log_path" >&2

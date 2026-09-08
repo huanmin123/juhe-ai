@@ -159,12 +159,6 @@ services:
     image: ${JUHE_AI_IMAGE:-juhe-ai:local}
     container_name: ${JUHE_AI_CONTAINER_NAME:-juhe-ai-performance}
     restart: unless-stopped
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      args:
-        NODE_RUNTIME_IMAGE: ${JUHE_AI_NODE_IMAGE:?JUHE_AI_NODE_IMAGE must be a Harbor digest image reference}
-        PNPM_VERSION: ${JUHE_AI_PNPM_VERSION:-10.32.1}
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -178,7 +172,6 @@ services:
       - "${JUHE_AI_PUBLIC_BIND:-127.0.0.1}:${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
     environment:
       TZ: UTC
-      NODE_ENV: ${NODE_ENV:-production}
       JUHE_AI_USAGE_STATS_TIMEZONE: ${JUHE_AI_USAGE_STATS_TIMEZONE:-UTC}
       JUHE_AI_HOST: ${JUHE_AI_HOST:-0.0.0.0}
       JUHE_AI_PORT: ${JUHE_AI_PORT:-3000}

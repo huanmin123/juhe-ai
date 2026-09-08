@@ -489,7 +489,9 @@ func (s *Store) loadFromDatabase(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	applyCompatibleSystemSettingDefaults(settings, SystemSettingKeys)
-	assertAllSettingsPresent(settings, SystemSettingKeys, "系统设置")
+	if err := assertAllSettingsPresent(settings, SystemSettingKeys, "系统设置"); err != nil {
+		return nil, err
+	}
 	return settings, nil
 }
 
@@ -640,7 +642,9 @@ func (s *Store) loadGlobalFromDatabase(ctx context.Context) (map[string]any, err
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	assertAllSettingsPresent(settings, GlobalSettingKeys, "全局设置")
+	if err := assertAllSettingsPresent(settings, GlobalSettingKeys, "全局设置"); err != nil {
+		return nil, err
+	}
 	return settings, nil
 }
 

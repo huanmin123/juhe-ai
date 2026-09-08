@@ -340,15 +340,16 @@ func comparableValue(value any) string {
 }
 
 // safeChangeText mirrors normalizeSafeValue for the value shapes settings
-// carry (strings, JSON integers): strings stay verbatim (200-char clamp),
-// everything else renders as its JSON text.
+// carry (strings, JSON integers): strings stay verbatim (200-rune clamp,
+// Unicode-safe), everything else renders as its JSON text.
 func safeChangeText(value any) string {
 	if value == nil {
 		return ""
 	}
 	if text, ok := value.(string); ok {
-		if len(text) > 200 {
-			return text[:200] + "..."
+		runes := []rune(text)
+		if len(runes) > 200 {
+			return string(runes[:200]) + "..."
 		}
 		return text
 	}

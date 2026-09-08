@@ -376,6 +376,17 @@ func main() {
 			fail(fmt.Errorf("assemble jobs worker: %w", err))
 		}
 	}
+	// P1-3：J1 探针 outbox 消费面独立于 J-A~J-F worker 开关。当
+	// ACCOUNT_HEALTH_ENABLED=true 但 WORKER_ENABLED=false 时仍需装配 outbox
+	// drain/prune（gateway 写入的 pending 行必须被消费或清理）。
+	if worker == nil && accountHealthConfig.Enabled {
+		worker, err = buildWorkerAssembly(workerCfg, logger)
+		if err != nil {
+			fail(fmt.Errorf("assemble jobs minimal assembly for health outbox: %w", err))
+		}
+		logger.Info("worker 调度器关闭但账户健康已启用：装配最小 assembly 以承载 outbox 消费面",
+			"event", "jobs_minimal_assembly_for_outbox")
+	}
 	workerReady := func() bool { return true }
 	workerStatus := func() map[string]any { return nil }
 	if worker != nil {

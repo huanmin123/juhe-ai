@@ -306,7 +306,10 @@ func (s *Store) proxyTestURL(snapshot *proxyTestSnapshot) (string, error) {
 		if err := apikeys.DecryptJSON(s.secret, snapshot.PasswordEncrypted, &envelope); err != nil {
 			return "", err
 		}
-		password, _ := envelope.Password.(string)
+		password, ok := envelope.Password.(string)
+		if !ok || password == "" {
+			return "", errors.New("代理密码凭据无效或为空")
+		}
 		proxyURL.User = url.UserPassword(snapshot.ProxyUsername, password)
 	} else if snapshot.ProxyUsername != "" {
 		proxyURL.User = url.User(snapshot.ProxyUsername)
