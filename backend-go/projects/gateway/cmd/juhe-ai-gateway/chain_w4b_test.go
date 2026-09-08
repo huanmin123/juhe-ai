@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -25,7 +24,7 @@ import (
 
 func TestExtractAPIKeyQuotaRecoveryHintRecursesIntoArrays(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	resetAt := float64(1767225600000) // 2026-01-01T01:00:00Z
+	resetAt := float64(1767229200000) // 2026-01-01T01:00:00Z（未来时刻）
 	body := `{"error":{"errors":[{"type":"quota_exceeded","reset_at":` + formatFloat(resetAt) + `}]}}`
 	hint := extractAPIKeyQuotaRecoveryHint(body, nil, now)
 	if hint == nil {
@@ -60,7 +59,7 @@ func formatFloat(value float64) string {
 // ---------------------------------------------------------------------------
 
 type w4bSpyKeyWriter struct {
-	failures []gatewayaccounteffects.AccountAPIKeyFailureWrite
+	failures  []gatewayaccounteffects.AccountAPIKeyFailureWrite
 	successes []gatewayaccounteffects.AccountAPIKeySuccessWrite
 }
 
@@ -101,11 +100,11 @@ func TestChainAPIKeyEffectsPortRecordFailureReachesWriter(t *testing.T) {
 		t.Fatal("observation epoch must be captured")
 	}
 	err := port.RecordFailure(context.Background(), w4bAccount(), gatewaydispatch.RecordAPIKeyFailureInput{
-		Status:        "temporary_unavailable",
-		StatusCode:    503,
-		ErrorMessage:  "upstream exploded",
-		TraceID:       "trace-1",
-		MutationContext: map[string]any{"authority": "confirmed_same_account_key_rotation", "trafficSource": "gateway"},
+		Status:           "temporary_unavailable",
+		StatusCode:       503,
+		ErrorMessage:     "upstream exploded",
+		TraceID:          "trace-1",
+		MutationContext:  map[string]any{"authority": "confirmed_same_account_key_rotation", "trafficSource": "gateway"},
 		ObservationEpoch: epoch,
 		TrafficSource:    "gateway",
 		Source:           "same_account_api_key_rotation_confirmed",
@@ -126,10 +125,10 @@ func TestChainAPIKeyEffectsPortRecordFailureReachesWriter(t *testing.T) {
 	if write.Input.TraceID == nil || *write.Input.TraceID != "trace-1" {
 		t.Errorf("traceId = %+v", write.Input.TraceID)
 	}
-	if write.Input.MutationContext.Authority != gatewayaccounteffects.MutationAuthorityConfirmedSameAccountKeyRotation {
-		t.Errorf("mutation authority = %s", write.Input.MutationContext.Authority)
+	if write.MutationContext.Authority != gatewayaccounteffects.MutationAuthorityConfirmedSameAccountKeyRotation {
+		t.Errorf("mutation authority = %s", write.MutationContext.Authority)
 	}
-	if write.Input.ObservationEpoch == "" {
+	if write.Input.ObservedAt == "" {
 		t.Error("observedAt must carry the attempt start instant")
 	}
 }
@@ -180,7 +179,7 @@ func TestChainAPIKeyObservationEpochRoundTrip(t *testing.T) {
 func TestChainRuntimeCachePortTransientStatesFolding(t *testing.T) {
 	_, _, guard := w4bKeyEffectsFixture()
 	account := w4bAccount()
-	if err := guard.RecordTransientFailure(context.Background(), account, gatewayaccounteffects.APIKeyStatusRateLimited); err != nil {
+	if _, err := guard.RecordTransientFailure(context.Background(), account, gatewayaccounteffects.APIKeyStatusRateLimited); err != nil {
 		t.Fatalf("transient failure (memory driver no-op): %v", err)
 	}
 	// memory 驱动：先注入进程内屏蔽再读取。
@@ -273,7 +272,6 @@ func TestChainLatencyDegradationPortOrdersAndRecords(t *testing.T) {
 		t.Fatalf("plain order = %+v err %v", order, err)
 	}
 	// 两次慢采样触发降级。
-	deadline := int64(5_000)
 	if _, err := port.RecordFirstByteSlowAsync(context.Background(), slow, scope, config, "慢采样 1"); err != nil {
 		t.Fatalf("slow 1: %v", err)
 	}
@@ -336,7 +334,7 @@ func (s *w4bInnerSuppression) ResolveLocalSuppressionFilter(ctx context.Context,
 
 func TestChainConfiguredPolicyAvoidanceSuppressionFiltersAndMerges(t *testing.T) {
 	avoidance := gatewayaccounteffects.NewConfiguredPolicyAvoidanceService(
-		gatewayaccounteffects.NewConfiguredPolicyAvoidanceMemoryStoreForTest(),
+		gatewayproxyhealth.NewMemoryRuntimeStateStore(nil),
 		nil, nil, gatewayaccounteffects.SystemClock{},
 	)
 	seconds := int64(300)

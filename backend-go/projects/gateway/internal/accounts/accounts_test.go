@@ -380,8 +380,10 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 		id = existing.ID
 	}
 	if id == "" {
+		mustChange := false
 		created, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{
 			Username: username, DisplayName: username + "_name", Password: password, Role: role,
+			MustChangePassword: &mustChange,
 		})
 		if err != nil {
 			t.Fatal(err)

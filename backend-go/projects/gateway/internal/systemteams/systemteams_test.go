@@ -54,6 +54,8 @@ type statsSpy struct {
 	reasons []string
 }
 
+
+var mustChangeFalse = false
 func (s *statsSpy) MarkAllGroupAccountStatsDirty(_ context.Context, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,9 +183,8 @@ func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]a
 func (e *testEnv) login(t *testing.T, username, password, role string) string {
 	t.Helper()
 	e.user = username
-	if _, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{
+	if _, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 		Username: username, DisplayName: username + "_name", Password: password, Role: role,
-		MustChangePassword: boolPtr(false),
 	}); err != nil {
 		t.Fatal(err)
 	}

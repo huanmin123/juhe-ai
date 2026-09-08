@@ -22,6 +22,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
+
+var mustChangeFalse = false
 func intPtr(v int) *int { return &v }
 
 func errorsAs(err error, target any) bool { return errors.As(err, target) }
@@ -192,9 +194,8 @@ func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]a
 
 func (e *testEnv) login(t *testing.T, username, password, role string) string {
 	t.Helper()
-	created, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{
+	created, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 		Username: username, DisplayName: username + "_name", Password: password, Role: role,
-		MustChangePassword: boolPtr(false),
 	})
 	if err != nil {
 		t.Fatal(err)

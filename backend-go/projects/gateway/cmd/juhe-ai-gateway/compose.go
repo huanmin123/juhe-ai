@@ -598,6 +598,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// gateway runtime cache through the K5 bus post-commit (batch edit,
 	// management patch, soft delete; Node invalidateGatewayRuntimeAfterBusinessWrite).
 	accountStore.SetCacheInvalidator(accountsBusInvalidator{bus: bus})
+	// D-126 账户列表 usage 注水（W4-C）：totals 从 usage_stats_totals、
+	// statDate 从 usage_stats_daily 读，-nil source 保持零值降级。
+	accountUsageSource, err := accounts.NewStatsUsageSource(composed.statsDB, composed.pgDialect)
+	if err != nil {
+		return nil, fmt.Errorf("create account stats usage source: %w", err)
+	}
+	accountStore.SetUsageSource(accountUsageSource)
 	// BUG-0174 M-8：创建上限的 settings 兜底端口（Node repositories.ts:2493
 	// effectiveAiAccountCreationLimit 的 settingsRepository.getSettings 回退）。
 	accountStore.SetAiAccountLimitSettings(aiAccountLimitSettingsAdapter{settings: settingsStore})

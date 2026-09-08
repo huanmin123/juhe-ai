@@ -20,6 +20,8 @@ import (
 var hotSearchPinnedNow = time.Date(2026, 6, 3, 13, 0, 0, 0, time.UTC)
 
 // pinAuditHotClock pins the concrete audit reader clock.
+
+
 func pinAuditHotClock(audit AuditLogReader, runtime RuntimeLogReader, public PublicApiLogReader) {
 	_, _ = runtime, public
 	concrete, ok := audit.(*auditLogSQLReader)
@@ -252,9 +254,8 @@ func TestAuditLogReadsPayloadDetail(t *testing.T) {
 	}
 
 	// Non-admin callers are denied; anonymous callers are unauthorized.
-	if _, err := env.accounts.Create(context.Background(), authsys.CreateInput{
+	if _, err := env.accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 		Username: "viewer", DisplayName: "viewer_name", Password: "viewer-password-123", Role: "user",
-		MustChangePassword: boolPtr(false),
 	}); err != nil {
 		t.Fatal(err)
 	}

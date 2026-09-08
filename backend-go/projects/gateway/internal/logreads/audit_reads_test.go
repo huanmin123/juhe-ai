@@ -44,6 +44,8 @@ type readsTestEnv struct {
 // newReadsTestEnv builds the env over the given dataset DDL. The optional
 // mutate hook runs after the readers are constructed and before Mount (used
 // to pin the runtime reader clock).
+
+
 func newReadsTestEnv(t *testing.T, datasetDDL []string, mutate func(audit AuditLogReader, runtime RuntimeLogReader, public PublicApiLogReader), login bool) *readsTestEnv {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:logreads-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
@@ -99,9 +101,8 @@ func newReadsTestEnv(t *testing.T, datasetDDL []string, mutate func(audit AuditL
 	t.Cleanup(server.Close)
 	env := &readsTestEnv{server: server, db: db, jar: map[string]string{}, accounts: accounts, hotDir: hotDir, blobDir: blobDir, logDir: logDir, grep: grep}
 	if login {
-		if _, err := accounts.Create(context.Background(), authsys.CreateInput{
+		if _, err := accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 			Username: "admin", DisplayName: "admin_name", Password: "admin-password-123", Role: "admin",
-			MustChangePassword: boolPtr(false),
 		}); err != nil {
 			t.Fatal(err)
 		}

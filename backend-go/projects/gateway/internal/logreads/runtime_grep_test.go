@@ -19,6 +19,8 @@ import (
 // grepPinnedNow pins the grep window clock.
 var grepPinnedNow = time.Date(2026, 6, 3, 13, 0, 0, 0, time.UTC)
 
+
+var mustChangeFalse = false
 func pinGrepClock(env *readsTestEnv) {
 	env.grep.Now = func() time.Time { return grepPinnedNow }
 }
@@ -193,9 +195,8 @@ func TestRuntimeLogGrepFamily(t *testing.T) {
 	if code != http.StatusUnauthorized {
 		t.Fatalf("anonymous grep: %d %v", code, payload)
 	}
-	if _, err := env.accounts.Create(context.Background(), authsys.CreateInput{
+	if _, err := env.accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 		Username: "grep-viewer", DisplayName: "grep-viewer_name", Password: "grep-viewer-password-123", Role: "user",
-		MustChangePassword: boolPtr(false),
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -32,6 +32,8 @@ type recordingSink struct {
 	entries []authsys.OperationLogEntry
 }
 
+
+var mustChangeFalse = false
 func (s *recordingSink) Record(entry authsys.OperationLogEntry, _ *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -256,9 +258,8 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 		id = existing.ID
 	}
 	if id == "" {
-		created, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{
+		created, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 			Username: username, DisplayName: username + "_name", Password: password, Role: role,
-			MustChangePassword: boolPtr(false),
 		})
 		if err != nil {
 			t.Fatal(err)

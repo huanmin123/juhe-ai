@@ -91,6 +91,8 @@ type testEnv struct {
 	providersDeps *Deps
 }
 
+
+var mustChangeFalse = false
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:providers-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
@@ -172,7 +174,7 @@ func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]a
 func (e *testEnv) login(t *testing.T, username, password, role string) string {
 	t.Helper()
 	if existing, err := e.deps.Accounts.FindByUsername(context.Background(), username); err != nil || existing.ID == "" {
-		if _, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{
+		if _, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 			Username: username, DisplayName: username + "_name", Password: password, Role: role,
 		}); err != nil {
 			t.Fatal(err)
@@ -330,7 +332,7 @@ func (e *testEnv) requireAccount(t *testing.T, username, password, role string) 
 	if existing, err := e.deps.Accounts.FindByUsername(context.Background(), username); err == nil && existing.ID != "" {
 		return existing.ID
 	}
-	if _, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{
+	if _, err := e.deps.Accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 		Username: username, DisplayName: username + "_name", Password: password, Role: role,
 	}); err != nil {
 		t.Fatal(err)
