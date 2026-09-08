@@ -7,6 +7,10 @@ import type { Request, Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GEMINI_PROTOCOL_CODE,
+  GEMINI_PROTOCOL_VERSION,
+  GEMINI_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
@@ -18,7 +22,8 @@ import {
   filterGatewayAccountsByRequestedModel,
   gatewayModelFilterFailureMessage
 } from '../../modules/gateway/dispatch/model-filter.js'
-import { buildPreparedUpstreamRequestParts } from '../../modules/gateway/dispatch/account-preparation.js'
+import { buildPreparedUpstreamRequestParts, requestWithCanonicalDirectModel } from '../../modules/gateway/dispatch/account-preparation.js'
+import { buildGatewayUpstreamUrlsForAccount } from '../../modules/providers/drivers/registry.js'
 import { filterOpenAIGatewayRequestCandidateAccounts } from '../../modules/gateway/dispatch/candidate-filter.js'
 import { markGatewayUpstreamModelsProbe } from '../../modules/gateway/request/upstream-models-probe.js'
 import type { GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
@@ -114,6 +119,37 @@ assert.equal(
   '客户请求模型大小写不同时，上游请求必须使用账户配置中的规范模型名'
 )
 assert.equal(mixedCaseRequest.body.model, 'GPT-5.5', '规范化上游请求不得修改原始客户请求')
+
+const geminiNativeAccount = {
+  ...account('gemini-native-case', ['gemini-2.5-pro']),
+  providerCode: GEMINI_PROVIDER_CODE,
+  providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  protocolCode: GEMINI_PROTOCOL_CODE,
+  protocolVersion: GEMINI_PROTOCOL_VERSION,
+  baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+  apiKey: 'gemini-case'
+} as UpstreamAccount
+const geminiNativeBody = { contents: [{ role: 'user', parts: [{ text: 'ok' }] }] }
+const geminiNativeRequest = {
+  method: 'POST',
+  path: '/v1beta/models/GEMINI-2.5-PRO:generateContent',
+  originalUrl: '/v1beta/models/GEMINI-2.5-PRO:generateContent?alt=sse',
+  url: '/v1beta/models/GEMINI-2.5-PRO:generateContent?alt=sse',
+  headers: { 'content-type': 'application/json' },
+  body: geminiNativeBody,
+  rawBody: Buffer.from(JSON.stringify(geminiNativeBody), 'utf8'),
+  gatewayParsedJsonBodyAvailable: true,
+  gatewayParsedJsonBody: geminiNativeBody
+} as unknown as Request & GatewayRawBodyRequest
+const canonicalGeminiRequest = requestWithCanonicalDirectModel(geminiNativeRequest, geminiNativeAccount)
+assert.equal(canonicalGeminiRequest.originalUrl, '/v1beta/models/gemini-2.5-pro:generateContent?alt=sse', 'Gemini 原生请求应规范化 URL 模型名')
+assert.deepEqual(canonicalGeminiRequest.body, geminiNativeBody, 'Gemini 原生请求不得额外注入 OpenAI 风格 model 字段')
+assert.equal(geminiNativeRequest.originalUrl, '/v1beta/models/GEMINI-2.5-PRO:generateContent?alt=sse', 'Gemini 规范化不得修改原始客户请求')
+assert.equal(
+  new URL(buildGatewayUpstreamUrlsForAccount(geminiNativeAccount, canonicalGeminiRequest)[0] ?? '').pathname,
+  '/v1beta/models/gemini-2.5-pro:generateContent',
+  'Gemini 上游 URL 应使用规范模型名'
+)
 
 const unrelatedMappingAccount = account('unrelated-mapping', ['gpt-5.5'], [{
   sourceModel: 'GPT-5.5',

@@ -45,6 +45,7 @@ import {
   gatewayRequestEndpointFamily,
   resolveOpenAIRequestModelMapping
 } from '../protocols/openai-v1/model-mapping.js'
+import { isGeminiNativeRequest } from '../protocols/gemini-v1beta/route-helpers.js'
 import { requestModel } from '../request/metadata.js'
 import { preparedUpstreamBodyMetadata } from '../upstream/body-preparation.js'
 import {
@@ -322,11 +323,14 @@ export async function buildPreparedUpstreamRequestParts(
   }
 }
 
-function requestWithCanonicalDirectModel(req: Request, account: UpstreamAccount): Request {
+export function requestWithCanonicalDirectModel(req: Request, account: UpstreamAccount): Request {
   const requested = requestModel(req)
   const canonical = canonicalModel(requested, account.supportedModels)
   if (!requested || !canonical || requested === canonical || resolveOpenAIRequestModelMapping(req, account)) {
     return req
+  }
+  if (isGeminiNativeRequest(req)) {
+    return requestWithCanonicalGeminiModelInPath(req, requested, canonical)
   }
   const clone = Object.create(req) as GatewayRawBodyRequest
   const sourceBody = clone.body !== undefined
@@ -339,6 +343,33 @@ function requestWithCanonicalDirectModel(req: Request, account: UpstreamAccount)
   }
   replaceGatewayJsonBody(clone, { ...(sourceBody as Record<string, unknown>), model: canonical })
   return clone
+}
+
+function requestWithCanonicalGeminiModelInPath(req: Request, requested: string, canonical: string): Request {
+  const originalUrl = canonicalGeminiModelPath(req.originalUrl || req.url || req.path || '', requested, canonical)
+  if (!originalUrl) return req
+  const clone = Object.create(req) as GatewayRawBodyRequest
+  clone.originalUrl = originalUrl
+  clone.url = canonicalGeminiModelPath(req.url || '', requested, canonical) ?? originalUrl
+  Object.defineProperty(clone, 'path', {
+    configurable: true,
+    enumerable: true,
+    value: canonicalGeminiModelPath(req.path || '', requested, canonical) ?? clone.url.split('?', 1)[0]
+  })
+  return clone
+}
+
+function canonicalGeminiModelPath(pathAndQuery: string, requested: string, canonical: string): string | undefined {
+  const match = /^(.*\/models\/)([^/:?#]+)(:(?:generateContent|streamGenerateContent|countTokens|embedContent))(.*)$/i.exec(pathAndQuery)
+  if (!match?.[2]) return undefined
+  let encodedRequested = match[2]
+  try {
+    encodedRequested = decodeURIComponent(encodedRequested)
+  } catch {
+    // Preserve the raw path segment if it was not valid percent-encoding.
+  }
+  if (encodedRequested.toLowerCase() !== requested.toLowerCase()) return undefined
+  return `${match[1]}${encodeURIComponent(canonical)}${match[3]}${match[4]}`
 }
 
 function defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(
