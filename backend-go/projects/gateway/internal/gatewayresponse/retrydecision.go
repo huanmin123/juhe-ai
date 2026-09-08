@@ -14,7 +14,7 @@ const GatewayStreamClientRetryMessage = gatewaypreauth.GatewayStreamClientRetryM
 // serverRetryableSystemDefaultResponseInspectionPolicyIdsPreWrite 对齐
 // stream-retry-decision.ts 的集合（不含 context_window）。
 var serverRetryableSystemDefaultResponseInspectionPolicyIdsPreWrite = map[string]bool{
-	"default_codex_compaction_contract": true,
+	"default_codex_compaction_contract":  true,
 	"default_gemini_cli_retryable_error": true,
 }
 
@@ -35,12 +35,12 @@ var transientPrecommitUpstreamPolicyIds = map[string]bool{
 
 // StreamServerRetryReason 对齐 StreamServerRetryReason union。
 const (
-	StreamServerRetryResponseInspection          = "response_inspection"
-	StreamServerRetryUpstreamProtocolFailure     = "upstream_protocol_failure"
-	StreamServerRetryPreCommitStreamFailure      = "pre_commit_stream_failure"
+	StreamServerRetryResponseInspection            = "response_inspection"
+	StreamServerRetryUpstreamProtocolFailure       = "upstream_protocol_failure"
+	StreamServerRetryPreCommitStreamFailure        = "pre_commit_stream_failure"
 	StreamServerRetryCodexEncryptedContentRecovery = "codex_encrypted_content_recovery"
-	StreamServerRetryNormalRouteFirstByteTimeout = "normal_route_first_byte_timeout"
-	StreamServerRetryHybridQuality               = "hybrid_quality"
+	StreamServerRetryNormalRouteFirstByteTimeout   = "normal_route_first_byte_timeout"
+	StreamServerRetryHybridQuality                 = "hybrid_quality"
 )
 
 // StreamClientFailureCode 对齐 streamClientFailureCode。
@@ -137,7 +137,7 @@ func ShouldRetryPreCommitStreamFailureOnServer(result StreamPipeResult, response
 
 // PreCommitStreamServerRetryErrorCode 对齐 preCommitStreamServerRetryErrorCode。
 // clientStrategyPreCommitProtocolError 由调用方从 client strategy 读出
-//（retryCoordination.preCommitFailureSignal === 'protocol_error_event'）。
+// （retryCoordination.preCommitFailureSignal === 'protocol_error_event'）。
 func PreCommitStreamServerRetryErrorCode(result StreamPipeResult, clientStrategyPreCommitProtocolError bool) string {
 	if clientStrategyPreCommitProtocolError {
 		return gatewayStreamClientRetryErrorCode

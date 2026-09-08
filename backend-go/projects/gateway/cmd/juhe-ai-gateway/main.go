@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -25,6 +26,8 @@ import (
 	gatewaydispatch "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/gateway_dispatch"
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	sessionretention "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/session_retention"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
@@ -588,6 +591,40 @@ func main() {
 		)
 	}
 
+	// W4-B（BUG-0175）D-135：内部网关注册表启动接线（Node
+	// startInternalGatewayRegistryWhenReady，server.ts:561-563——dbService 就绪
+	// 且 HTTP 监听后启动；此处 mainServer 已开始 Serve，supervisor 组件在
+	// health/supervisor 生命周期内发布心跳，ctx 结束时注销 boot id）。
+	// PublisherEnabled 镜像 internalGatewayRegistryPublisherEnabled：
+	// performance 模式 + redis 运行态驱动。ReaderEnabled 是 performance 控制
+	// 面（control/control-replica db-service）的读侧开关——Go 网关进程没有
+	// 对等的内部源点消费面，保持 false（ListEndpoints 返回空集）。
+	if runtimeCfg.SystemAPIEnabled && runtimeCfg.RuntimeMode == "performance" && runtimeCfg.RuntimeStateDriver == "redis" {
+		registry, registryErr := gatewayruntimecache.NewRegistry(gatewayruntimecache.RegistryConfig{
+			RedisURL:         runtimeCfg.RedisStateURL,
+			Namespace:        runtimeCfg.RedisNamespace,
+			Secret:           runtimeCfg.Secret,
+			InstanceID:       newCompositionID("gateway"),
+			Port:             runtimeCfg.Port,
+			PublisherEnabled: true,
+			ReaderEnabled:    false,
+		})
+		if registryErr != nil {
+			fail(fmt.Errorf("create internal gateway registry: %w", registryErr))
+		}
+		components = append(components, supervisor.Component{
+			Name: "Internal gateway registry",
+			Run: func(componentCtx context.Context) error {
+				registry.Start()
+				<-componentCtx.Done()
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer stopCancel()
+				return registry.Stop(stopCtx)
+			},
+			Close: registry.Close,
+		})
+	}
+
 	collector := gometrics.New("juhe-ai", "gateway")
 	healthHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
@@ -605,6 +642,9 @@ func main() {
 		Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			if request.Method == http.MethodGet && request.URL.Path == "/__aisys__/metrics" {
 				collector.Handler().ServeHTTP(response, request)
+				// D-190（BUG-0175）：prometheus HTTP/网关指标族追加在 Go 运行时
+				// 指标之后，同一 text/plain exposition 内完成两次写入。
+				_, _ = io.WriteString(response, gatewayusage.RenderPrometheusMetrics())
 				return
 			}
 			healthHandler.ServeHTTP(response, request)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // Node runtime.ts:399-400: the default development secret and the minimum
@@ -107,12 +108,37 @@ type runtimeConfig struct {
 	// Chain collaborator config: the audit capture switch (Node
 	// runtimeConfig.auditLog.enabled, JUHE_AI_AUDIT_LOG_ENABLED default true)
 	// and the durable usage-record spool directory
-	// (JUHE_AI_USAGE_SPOOL_DIRECTORY). The F3 loopback audit input URL
+	// (JUHE_AI_USAGE_SPOOL_DIRECTORY；兼容旧名 JUHE_AI_USAGE_SPOOL_DIR，
+	// DIRECTORY 优先). The F3 loopback audit input URL
 	// (derived from JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS) is deleted since
 	// 去跨进程战役第四刀 — chain audit dispatch goes through the in-process
 	// producer.
 	AuditLogEnabled     bool
 	UsageSpoolDirectory string
+	// Usage spool capacity knobs (Node runtimeConfig.usageSpool,
+	// runtime.ts:661-666): JUHE_AI_USAGE_SPOOL_MAX_ITEMS [1000, 5_000_000]
+	// default 250_000, JUHE_AI_USAGE_SPOOL_MAX_MB [64, 102_400] default
+	// 4_096, JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE [1, 5_000] default 500,
+	// JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS [100, 60_000] default 1_000.
+	// D-209：Go 曾完全未读取这四个容量 env（chain_compose 硬编码同值默认），
+	// 部署调参静默失效。
+	UsageSpoolMaxItems         int
+	UsageSpoolMaxBytes         int
+	UsageSpoolReplayBatchSize  int
+	UsageSpoolReplayIntervalMs int
+	// UsageFinalizationMaxItems mirrors Node
+	// runtimeConfig.gateway.usageFinalizationMaxItems
+	// (JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS, default 2048,
+	// [1, 1_000_000]). D-147：chain_compose 曾硬传 (0,0) 使该 env 与
+	// JUHE_AI_CONCURRENCY_GLOBAL_MAX 对收尾队列失效。
+	UsageFinalizationMaxItems int
+
+	// UpstreamURLSecurity mirrors Node runtimeConfig.upstreamUrlSecurity
+	// (runtime.ts:1679-1690): JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS
+	// (production refuses it) and the normalized IP-origin keys of
+	// JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST. D-192/D-146：请求期
+	// DNS resolve-all + 钉扎策略的组合根配置。
+	UpstreamURLSecurity UpstreamURLSecurityConfig
 
 	// Read-face collaborators (X04 404 项补齐):
 	// GoRuntimeMetrics is the shared sampler/store env family
@@ -172,6 +198,11 @@ type runtimeConfig struct {
 	BusinessOwnerEpoch          string
 	BusinessCutoverEvidencePath string
 }
+
+// UpstreamURLSecurityConfig mirrors Node runtimeConfig.upstreamUrlSecurity.
+// It aliases the shared transport type so the composition can hand the
+// loaded config straight to the dispatch URL policy.
+type UpstreamURLSecurityConfig = sharedupstreamhttp.URLSecurityConfig
 
 func hasAnyRawConfig(getenv func(string) string, keys ...string) bool {
 	for _, key := range keys {
@@ -459,7 +490,14 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	if cfg.CookieSameSite == "none" && !cfg.CookieSecure {
 		return runtimeConfig{}, fmt.Errorf("JUHE_AI_COOKIE_SAME_SITE=none 时必须启用 JUHE_AI_COOKIE_SECURE=true")
 	}
-	cfg.TrustProxy = strings.TrimSpace(getenv("JUHE_AI_TRUST_PROXY"))
+	// Node trustProxyConfig (runtime.ts:1615-1630): empty keeps false;
+	// true/yes/on、false/no/off（小写）按布尔处理；整数 0-16 是反向代理跳数；
+	// 其余值启动即失败。D-211：Go 曾把非法值静默当 0 且无 16 上限。
+	trustProxy, trustProxyErr := trustProxyConfig("JUHE_AI_TRUST_PROXY", getenv("JUHE_AI_TRUST_PROXY"))
+	if trustProxyErr != nil {
+		return runtimeConfig{}, trustProxyErr
+	}
+	cfg.TrustProxy = trustProxy
 
 	cfg.CaptchaDisabled = envBoolTrue(getenv("JUHE_AI_AUTH_CAPTCHA_DISABLED"))
 	cfg.DevAutoLoginUsername = strings.TrimSpace(getenv("JUHE_AI_DEV_AUTO_LOGIN_USERNAME"))
@@ -469,7 +507,15 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	if production && cfg.DevAutoLoginUsername != "" {
 		return runtimeConfig{}, fmt.Errorf("JUHE_AI_DEV_AUTO_LOGIN_USERNAME 不能在 NODE_ENV=production 时启用")
 	}
-	cfg.TemporaryAccessIPAllowlist = commaList(getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST"))
+	// Node temporaryAccessIpAllowlistConfig (runtime.ts:969-979): each comma
+	// entry strips the ::ffff: prefix and must be a single IPv4/IPv6 address
+	// (no hostnames, CIDR or wildcards); duplicates are dropped. D-211：Go
+	// 曾对非法项零校验直接透传。
+	allowlist, allowlistErr := temporaryAccessIPAllowlistConfig("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST", getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST"))
+	if allowlistErr != nil {
+		return runtimeConfig{}, allowlistErr
+	}
+	cfg.TemporaryAccessIPAllowlist = allowlist
 
 	cfg.OIDCEnabled = envBoolTrue(getenv("JUHE_AI_OIDC_ENABLED"))
 	cfg.OIDCIssuer = strings.TrimSpace(getenv("JUHE_AI_OIDC_ISSUER"))
@@ -495,7 +541,67 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	if raw := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_ENABLED")); raw != "" {
 		cfg.AuditLogEnabled = envBoolTrue(raw)
 	}
+	// D-209：JUHE_AI_USAGE_SPOOL_DIRECTORY 是现行名；高性能部署指南与
+	// install-performance-topology.sh 仍使用旧名 JUHE_AI_USAGE_SPOOL_DIR，
+	// DIRECTORY 未配置时回落旧名（DIRECTORY 优先，两处都配置时旧名静默失效
+	// 与 Node 覆盖语义一致）。
 	cfg.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
+	if cfg.UsageSpoolDirectory == "" {
+		cfg.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIR"))
+	}
+	// Node runtimeConfig.usageSpool（runtime.ts:661-666）四个容量旋钮：
+	// numberConfig 边界与默认值逐一对齐；非数字或越界启动报错（D-209）。
+	cfg.UsageSpoolMaxItems = 250_000
+	if raw := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_MAX_ITEMS")); raw != "" {
+		parsed, parsedErr := parseTruncatedInt("JUHE_AI_USAGE_SPOOL_MAX_ITEMS", raw, 1_000, 5_000_000)
+		if parsedErr != nil {
+			return runtimeConfig{}, parsedErr
+		}
+		cfg.UsageSpoolMaxItems = parsed
+	}
+	cfg.UsageSpoolMaxBytes = 4_096 * 1024 * 1024
+	if raw := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_MAX_MB")); raw != "" {
+		parsed, parsedErr := parseTruncatedInt("JUHE_AI_USAGE_SPOOL_MAX_MB", raw, 64, 102_400)
+		if parsedErr != nil {
+			return runtimeConfig{}, parsedErr
+		}
+		cfg.UsageSpoolMaxBytes = parsed * 1024 * 1024
+	}
+	cfg.UsageSpoolReplayBatchSize = 500
+	if raw := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE")); raw != "" {
+		parsed, parsedErr := parseTruncatedInt("JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE", raw, 1, 5_000)
+		if parsedErr != nil {
+			return runtimeConfig{}, parsedErr
+		}
+		cfg.UsageSpoolReplayBatchSize = parsed
+	}
+	cfg.UsageSpoolReplayIntervalMs = 1_000
+	if raw := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS")); raw != "" {
+		parsed, parsedErr := parseTruncatedInt("JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS", raw, 100, 60_000)
+		if parsedErr != nil {
+			return runtimeConfig{}, parsedErr
+		}
+		cfg.UsageSpoolReplayIntervalMs = parsed
+	}
+	// D-147：usage finalization 队列容量旋钮（Node
+	// runtimeConfig.gateway.usageFinalizationMaxItems，runtime.ts:754，
+	// integerConfig 默认 2048、范围 [1, 1_000_000]）。
+	cfg.UsageFinalizationMaxItems = 2048
+	if raw := strings.TrimSpace(getenv("JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS")); raw != "" {
+		parsed, parsedErr := parseTruncatedInt("JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS", raw, 1, 1_000_000)
+		if parsedErr != nil {
+			return runtimeConfig{}, parsedErr
+		}
+		cfg.UsageFinalizationMaxItems = parsed
+	}
+	// D-192/D-146：上游 URL 安全配置（Node runtimeConfig.upstreamUrlSecurity，
+	// runtime.ts:1679-1712）。allowPrivateBaseUrls 在生产信号下启动即失败；
+	// allowlist 逐项必须为 http/https IP Origin 并归一化 origin key。
+	upstreamSecurity, upstreamSecurityErr := upstreamURLSecurityConfig(production, getenv)
+	if upstreamSecurityErr != nil {
+		return runtimeConfig{}, upstreamSecurityErr
+	}
+	cfg.UpstreamURLSecurity = upstreamSecurity
 
 	// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标并直接查库提供
 	// go-runtime-trend（同名 JUHE_AI_GO_RUNTIME_METRICS_* env 家族，role 默认
@@ -658,4 +764,80 @@ func normalizeAllowedOrigin(name, value string) (string, error) {
 // kernel CORSPolicy consumed by the management-surface CORS middleware.
 func (c *runtimeConfig) corsPolicy() kernel.CORSPolicy {
 	return kernel.CORSPolicy{AllowAnyOrigin: c.CORSAllowAnyOrigin, AllowedOrigins: c.CORSAllowedOrigins}
+}
+
+// trustProxyConfig mirrors Node trustProxyConfig (runtime.ts:1615-1630):
+// empty keeps the disabled default; true/yes/on and false/no/off are the
+// boolean spellings; a non-negative integer up to 16 is the reverse-proxy
+// hop count; anything else fails the startup (D-211).
+func trustProxyConfig(name, raw string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return "", nil
+	}
+	switch value {
+	case "true", "yes", "on":
+		return "true", nil
+	case "false", "no", "off":
+		return "false", nil
+	}
+	numeric, err := strconv.Atoi(value)
+	if err != nil || numeric < 0 || numeric > 16 {
+		return "", fmt.Errorf("%s 只能配置为 true/false 或 0-16 的反向代理跳数: %q", name, raw)
+	}
+	return value, nil
+}
+
+// temporaryAccessIPAllowlistConfig mirrors Node temporaryAccessIpAllowlist
+// config (runtime.ts:969-979): comma-separated single IPv4/IPv6 addresses
+// only (the ::ffff: prefix is stripped, duplicates dropped); any other entry
+// fails the startup (D-211).
+func temporaryAccessIPAllowlistConfig(name, raw string) ([]string, error) {
+	allowlist := make([]string, 0)
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		normalized := strings.TrimPrefix(trimmed, "::ffff:")
+		normalized = strings.TrimPrefix(normalized, "::FFFF:")
+		if net.ParseIP(normalized) == nil {
+			return nil, fmt.Errorf("%s 只能填写逗号分隔的单个 IPv4 或 IPv6 地址，不支持域名、CIDR 或通配符: %q", name, trimmed)
+		}
+		if !seen[normalized] {
+			seen[normalized] = true
+			allowlist = append(allowlist, normalized)
+		}
+	}
+	return allowlist, nil
+}
+
+// upstreamURLSecurityConfig mirrors Node upstreamUrlSecurityConfig
+// (runtime.ts:1679-1712): JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS is a
+// strict boolean refused under the production signal; the private origin
+// allowlist accepts only http/https IP origins and keeps the normalized
+// origin keys (D-192/D-146).
+func upstreamURLSecurityConfig(production bool, getenv func(string) string) (UpstreamURLSecurityConfig, error) {
+	config := UpstreamURLSecurityConfig{PrivateOriginAllowlist: map[string]bool{}}
+	allowPrivate, err := strictEnvBool("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS", getenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS"), false)
+	if err != nil {
+		return config, err
+	}
+	if production && allowPrivate {
+		return config, fmt.Errorf("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS 只能用于本地开发或回归测试，生产环境不能启用")
+	}
+	config.AllowPrivateBaseUrls = allowPrivate
+	for _, part := range strings.Split(getenv("JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST"), ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		originKey, originErr := sharedupstreamhttp.NormalizePrivateUpstreamOrigin("JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST", trimmed)
+		if originErr != nil {
+			return config, originErr
+		}
+		config.PrivateOriginAllowlist[originKey] = true
+	}
+	return config, nil
 }

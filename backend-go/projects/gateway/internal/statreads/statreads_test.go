@@ -559,3 +559,71 @@ var _ = errors.New
 var _ = fmt.Sprintf
 var _ = context.Background
 var _ = url.Values{}
+
+// TestAccountUsageRowAuthorizationProjectionAndNFKCKeyword locks in the
+// BUG-0175 W4-C fixes on the account-usage page read:
+//   - D-31: every row renders the authorization aggregate projection keys
+//     (authorizationUsageAvailable=false, authorizationCount=0,
+//     authorizationTeamCount=0) exactly like the Node windows path
+//     (account-usage.repository.ts:364-366) instead of omitting them.
+//   - D-82: the keyword is NFKC-normalized before the substring matching
+//     (Node normalizeAccountUsageKeyword), so a full-width keyword matches
+//     the canonical account name.
+func TestAccountUsageRowAuthorizationProjectionAndNFKCKeyword(t *testing.T) {
+	fixture := newFixture(t)
+	seed := []string{
+		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
+			VALUES ('global', 'account', 'acct-nfkc', '2026-09-04', 7, 70, 35, 0.7)`,
+		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, status)
+			VALUES ('acct-nfkc', 'GPT账户', 'sys-owner-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
+	}
+	for _, statement := range seed {
+		if _, err := fixture.db.Exec(statement); err != nil {
+			t.Fatalf("seed %v", err)
+		}
+	}
+	// The keyword EXISTS subquery joins group_accounts; the shared fixture
+	// schema does not carry it.
+	if _, err := fixture.db.Exec(`CREATE TABLE group_accounts (account_id TEXT NOT NULL, group_id TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)`); err != nil {
+		t.Fatalf("seed group_accounts: %v", err)
+	}
+	handler := fixture.deps.accountUsageHandler(false)
+
+	// The full-width keyword ＧＰＴ NFKC-normalizes to GPT and matches.
+	recorder := invoke(t, handler, http.MethodGet,
+		"/__aisys__/api/stats/account-usage?keyword=%EF%BC%A7%EF%BC%B0%EF%BC%B4", adminAuth(""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("account-usage keyword not 200: %d %s", recorder.Code, recorder.Body.String())
+	}
+	payload := dataMap(t, decodeBody(t, recorder))
+	rows, ok := payload["rows"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("NFKC keyword must match the account: %#v", payload["rows"])
+	}
+	top := rows[0].(map[string]any)
+	if top["id"] != "acct-nfkc" {
+		t.Fatalf("unexpected row: %#v", top)
+	}
+	if available, ok := top["authorizationUsageAvailable"]; !ok || available != false {
+		t.Fatalf("authorizationUsageAvailable key missing or wrong: %#v", top)
+	}
+	if count, ok := top["authorizationCount"]; !ok || count != float64(0) {
+		t.Fatalf("authorizationCount key missing or wrong: %#v", top)
+	}
+	if teamCount, ok := top["authorizationTeamCount"]; !ok || teamCount != float64(0) {
+		t.Fatalf("authorizationTeamCount key missing or wrong: %#v", top)
+	}
+
+	// The raw (non-NFKC) form never matched before the fix; a keyword with no
+	// candidate still renders an empty page instead of failing.
+	recorder = invoke(t, handler, http.MethodGet,
+		"/__aisys__/api/stats/account-usage?keyword=does-not-exist", adminAuth(""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("account-usage empty keyword not 200: %d %s", recorder.Code, recorder.Body.String())
+	}
+	payload = dataMap(t, decodeBody(t, recorder))
+	if rows, ok = payload["rows"].([]any); !ok || len(rows) != 0 {
+		t.Fatalf("unknown keyword must return empty rows: %#v", payload["rows"])
+	}
+}

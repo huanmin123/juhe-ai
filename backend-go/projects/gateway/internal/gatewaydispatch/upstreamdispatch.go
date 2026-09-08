@@ -36,6 +36,10 @@ type UpstreamDispatchResult struct {
 	ReleaseConcurrency         func()
 	MarkFirstOutput            func()
 	ConfirmSameAccountApiKeyFailures func() error
+	// ConfirmAccountAPIKeySuccess 镜像成功侧结算（D-111，BUG-0175）：
+	// recordGatewayAccountApiKeySuccess 的触发点——协议成功后在链上消费一次，
+	// guard 复位 + Redis 瞬态避让清理 + 合并持久成功写。nil = 效果链未装配。
+	ConfirmAccountAPIKeySuccess func() error
 	ConfirmHalfOpenSuccess     func() bool
 	ReleaseHalfOpenLease       func() bool
 	HotQualityAttempt          *hotQualityAttemptHandle

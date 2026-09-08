@@ -419,10 +419,16 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 
 	lastAttempt := failedResponseAttemptOf(input, bodyText, parsedFailureBody)
 	if input.AuditAttemptID != "" {
+		// D-123（BUG-0175）：失败尝试审计补齐上游响应事实（归档
+		// failure-dispatch.ts:276-283 的 statusCode / responseHeaders /
+		// responseBody）。
 		input.AuditCapture.CompleteAttempt(input.AuditAttemptID, gatewaydispatch.CompleteAttemptInput{
-			Success:      false,
-			ErrorPhase:   "upstream_response",
-			ErrorMessage: bodyText,
+			StatusCode:      statusPointer(hasStatus, statusCode),
+			ResponseHeaders: responseHTTPHeaderOf(input.Response),
+			ResponseBody:    []byte(bodyText),
+			Success:         false,
+			ErrorPhase:      "upstream_response",
+			ErrorMessage:    bodyText,
 		})
 	} else {
 		input.AuditCapture.RecordFailedDispatchAttempt(gatewaydispatch.FailedDispatchAttemptInput{
@@ -1558,12 +1564,48 @@ func (o *slogObservability) CreateTraceID() string {
 
 func (o *slogObservability) SanitizeURLForLog(value string) string { return value }
 
+// gatewayRequestStageLogLevel mirrors gatewayRequestStageLogLevel
+// (shared/logging/runtime-log-policy.ts): unexpected_failure → error,
+// expected_failure / aborted → warn, otherwise the 1s slow-stage threshold
+// splits info (slow) from debug. D-191（BUG-0175）：此前 Go 恒 Info，未复刻
+// 该级别策略。
+const gatewaySlowStageThresholdMs = 1_000
+
+func gatewayRequestStageLogLevel(outcome string, durationMs int64) string {
+	switch outcome {
+	case "unexpected_failure":
+		return "error"
+	case "expected_failure", "aborted":
+		return "warn"
+	}
+	if durationMs >= gatewaySlowStageThresholdMs {
+		return "info"
+	}
+	return "debug"
+}
+
 func (o *slogObservability) LogRequestStage(stage string, fields map[string]any, outcome string, startedAt time.Time) {
-	args := []any{"stage", stage, "outcome", outcome, "durationMs", time.Since(startedAt).Milliseconds()}
+	durationMs := time.Since(startedAt).Milliseconds()
+	args := []any{"event", "gateway.request.stage", "stage", stage, "outcome", outcome, "durationMs", durationMs}
 	for key, value := range fields {
 		args = append(args, key, value)
 	}
-	o.logger.Info("gateway_request_stage", args...)
+	message := "请求阶段完成：" + stage
+	switch level := gatewayRequestStageLogLevel(outcome, durationMs); level {
+	case "error":
+		o.logger.Error("请求阶段未预期失败："+stage, args...)
+	case "warn":
+		if outcome == "expected_failure" {
+			message = "请求阶段预期失败：" + stage
+		} else {
+			message = "请求阶段中断：" + stage
+		}
+		o.logger.Warn(message, args...)
+	case "info":
+		o.logger.Info("请求慢阶段完成："+stage, args...)
+	default:
+		o.logger.Debug(message, args...)
+	}
 }
 
 // slogWarnLogger adapts slog to the preauth Logger (logger.warn contract).

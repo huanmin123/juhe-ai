@@ -25,31 +25,31 @@ type OpenAIOAuthCodexIdentity struct {
 
 // OpenAIOAuthCodexNormalizeInput mirrors OpenAIOAuthCodexNormalizeInput.
 type OpenAIOAuthCodexNormalizeInput struct {
-	InputHeaders                      http.Header
-	Account                           OpenAIOAuthCodexAccount
-	Identity                          OpenAIOAuthCodexIdentity
-	Compact                           bool
-	SanitizeCodexHistory              bool
-	ModelOverride                     string
-	RequestOverrideModelCapabilities  *GptRequestOverrideModelCapabilities
+	InputHeaders                     http.Header
+	Account                          OpenAIOAuthCodexAccount
+	Identity                         OpenAIOAuthCodexIdentity
+	Compact                          bool
+	SanitizeCodexHistory             bool
+	ModelOverride                    string
+	RequestOverrideModelCapabilities *GptRequestOverrideModelCapabilities
 	// ApplyGptAccountRequestOverrides mirrors the injected
 	// providers/drivers/gpt/request-overrides dependency; nil keeps the body
 	// unchanged. Errors of type *GptAccountRequestOverrideError become
 	// account-scoped OpenAIOAuthCodexAdapterError.
-	ApplyGptAccountRequestOverrides   func(body map[string]any, input GptAccountOverrideInput) (map[string]any, error)
+	ApplyGptAccountRequestOverrides func(body map[string]any, input GptAccountOverrideInput) (map[string]any, error)
 }
 
 // GptRequestOverrideModelCapabilities mirrors the capability subset.
 type GptRequestOverrideModelCapabilities struct {
-	SupportedServiceTiers    []string
+	SupportedServiceTiers     []string
 	SupportedReasoningEfforts []string
 }
 
 // GptAccountOverrideInput mirrors applyGptAccountRequestOverrides' input.
 type GptAccountOverrideInput struct {
-	Credentials     map[string]any
-	EndpointFamily  string
-	Compact         bool
+	Credentials       map[string]any
+	EndpointFamily    string
+	Compact           bool
 	ModelCapabilities *GptRequestOverrideModelCapabilities
 }
 
@@ -61,7 +61,7 @@ func (e *GptAccountRequestOverrideError) Error() string { return e.Message }
 // NormalizedCodexBody mirrors NormalizedCodexBody.
 type NormalizedCodexBody struct {
 	// Body is the serialized JSON when SanitizeCodexHistory is off.
-	Body                  string
+	Body string
 	// BodyBytes is the serialized JSON when the history was sanitized (the
 	// sanitizer marks the buffer for the dispatch reuse check).
 	BodyBytes             []byte
@@ -73,9 +73,9 @@ type NormalizedCodexBody struct {
 
 // OpenAIOAuthCodexSessionResolution mirrors the session resolution.
 type OpenAIOAuthCodexSessionResolution struct {
-	SessionID       string
-	ConversationID  string
-	PromptCacheKey  string
+	SessionID      string
+	ConversationID string
+	PromptCacheKey string
 }
 
 // openAIOAuthCodexDroppedFields mirrors openAIOAuthCodexDroppedFields.
@@ -233,13 +233,20 @@ func sanitizeOpenAIOAuthCodexHistory(body map[string]any, accountID string) {
 }
 
 func applyOpenAIOAuthCodexAccountRequestOverrides(body map[string]any, input OpenAIOAuthCodexNormalizeInput) error {
-	if input.ApplyGptAccountRequestOverrides == nil {
+	hook := input.ApplyGptAccountRequestOverrides
+	if hook == nil {
+		// D-151（BUG-0175）：组合根通过 SetGptAccountRequestOverridesHook 注入
+		// 归档 providers/drivers/gpt/request-overrides.ts 的实现；此前该端口
+		// 零赋值，gpt 账户请求覆盖配置可保存但运行时静默无效。
+		hook = gptAccountRequestOverridesHook
+	}
+	if hook == nil {
 		return nil
 	}
-	overridden, err := input.ApplyGptAccountRequestOverrides(body, GptAccountOverrideInput{
-		Credentials:     input.Account.Credentials,
-		EndpointFamily:  "responses",
-		Compact:         input.Compact,
+	overridden, err := hook(body, GptAccountOverrideInput{
+		Credentials:       input.Account.Credentials,
+		EndpointFamily:    "responses",
+		Compact:           input.Compact,
 		ModelCapabilities: input.RequestOverrideModelCapabilities,
 	})
 	if err != nil {

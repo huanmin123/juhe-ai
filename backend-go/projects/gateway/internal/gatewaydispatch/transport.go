@@ -146,6 +146,10 @@ type TransportDeps struct {
 	URLPolicy UpstreamURLPolicy
 	// ClientPool reuses pooled http clients per proxy; nil = shared client.
 	ClientPool *sharedupstreamhttp.ClientPool
+	// DialGuard installs the SSRF validated-dial hook on every transport the
+	// request uses (D-192/D-146); nil = plain dialing. The composition wires
+	// it from the same ResolvedUpstreamURLPolicy that prepares the URL.
+	DialGuard *sharedupstreamhttp.DialGuard
 }
 
 // RequestUpstream mirrors requestUpstream.
@@ -204,9 +208,9 @@ func RequestUpstream(ctx context.Context, upstreamURL string, options UpstreamRe
 	pool := deps.ClientPool
 	var client *http.Client
 	if pool != nil {
-		client, err = pool.Client(options.ProxyURL, sharedupstreamhttp.TransportOptions{})
+		client, err = pool.Client(options.ProxyURL, sharedupstreamhttp.TransportOptions{DialGuard: deps.DialGuard})
 	} else {
-		client, err = sharedupstreamhttp.SharedClient(options.ProxyURL, sharedupstreamhttp.TransportOptions{})
+		client, err = sharedupstreamhttp.SharedClient(options.ProxyURL, sharedupstreamhttp.TransportOptions{DialGuard: deps.DialGuard})
 	}
 	if err != nil {
 		requestCancel()

@@ -15,11 +15,15 @@ import (
 )
 
 const (
-	defaultScanInterval           = 5 * time.Second
-	defaultOwnerLease             = 90 * time.Second
-	defaultProbeTimeout           = 65 * time.Second
-	defaultMaxResponseBytes       = int64(256 * 1024)
-	defaultInputTTL               = 15 * time.Minute
+	defaultScanInterval     = 5 * time.Second
+	defaultOwnerLease       = 90 * time.Second
+	defaultProbeTimeout     = 65 * time.Second
+	defaultMaxResponseBytes = int64(256 * 1024)
+	// defaultInputTTL 对齐 Node runtime.ts:1345（D-208，BUG-0175）：
+	// integerConfig('JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS', 24*60*60_000,
+	// 60_000, 7*24*60*60_000)。Go 曾误取 15 分钟——未显式配置 env 的部署
+	// 过期窗口比 Node 缩短 96%，签名 input 会提前失效。
+	defaultInputTTL               = 24 * time.Hour
 	defaultDirectInputLimit       = 512
 	defaultPostgresPoolSize       = 16
 	defaultPostgresMaxIdleConns   = sqlpool.MaxIdleConns

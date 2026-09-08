@@ -586,3 +586,51 @@ func TestIPStatsMutationGuardDuplicates(t *testing.T) {
 		t.Fatalf("duplicate blacklist should hit the mutation guard: %d %v", code, payload)
 	}
 }
+
+// TestNormalizeRangeAbsoluteClamp locks in the BUG-0175 D-43 fix: the range
+// normalization clamps BOTH ends into the absolute [today-(maxRangeDays-1),
+// today] window (Node normalizeAccountUsageStatsRange,
+// usage-stats-helpers.ts:182-214) instead of anchoring the earliest bound at
+// the requested end, which let historical ranges echo unclamped windows.
+func TestNormalizeRangeAbsoluteClamp(t *testing.T) {
+	location := time.UTC
+	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	today := "2026-09-06"
+	earliest := "2026-08-07" // today - 30
+
+	// Historical range clamps to the absolute window on both ends.
+	got := normalizeRange("2026-01-01", "2026-01-31", now, location)
+	if got.StartDate != earliest || got.EndDate != earliest || got.Days != 1 || got.MaxDays != 31 {
+		t.Fatalf("historical range: %+v", got)
+	}
+	// Partially stale start clamps forward; fresh end stays.
+	got = normalizeRange("2026-01-01", today, now, location)
+	if got.StartDate != earliest || got.EndDate != today || got.Days != 31 {
+		t.Fatalf("stale start range: %+v", got)
+	}
+	// Future dates clamp back to today.
+	got = normalizeRange("2026-09-07", "2026-12-31", now, location)
+	if got.StartDate != today || got.EndDate != today || got.Days != 1 {
+		t.Fatalf("future range: %+v", got)
+	}
+	// Inverted input collapses onto the end.
+	got = normalizeRange("2026-09-06", "2026-09-01", now, location)
+	if got.StartDate != "2026-09-01" || got.EndDate != "2026-09-01" || got.Days != 1 {
+		t.Fatalf("inverted range: %+v", got)
+	}
+	// Start inside the absolute window stays; the trailing length clamp keeps
+	// start within maxRangeDays of the (valid) end.
+	got = normalizeRange("2026-08-01", "2026-08-15", now, location)
+	if got.StartDate != earliest || got.EndDate != "2026-08-15" || got.Days != 9 {
+		t.Fatalf("relative window range: %+v", got)
+	}
+	// Missing/invalid dates fall back to the today key (unchanged fallback).
+	got = normalizeRange("", "", now, location)
+	if got.StartDate != today || got.EndDate != today || got.Days != 1 {
+		t.Fatalf("default range: %+v", got)
+	}
+	got = normalizeRange("not-a-date", "2026-09-05", now, location)
+	if got.StartDate != "2026-09-05" || got.EndDate != "2026-09-05" || got.Days != 1 {
+		t.Fatalf("invalid start range: %+v", got)
+	}
+}

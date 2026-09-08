@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -195,6 +196,23 @@ func (d *Deps) createAccount(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "系统账户参数无效")
 		return
 	}
+	// D-238: the whitespace checks are route-level 400s in Node
+	// (system-accounts.routes.ts mirrors the auth route family), not 409
+	// store errors — keep the messages verbatim from
+	// normalizeRequiredText/normalizeSystemAccountPassword
+	// (system-accounts.repository.ts:1380-1393/:1504-1512).
+	if hasWhitespace(*body.Username) {
+		kernel.WriteBadRequest(w, "用户账户不能包含空格")
+		return
+	}
+	if hasWhitespace(*body.DisplayName) {
+		kernel.WriteBadRequest(w, "用户名称不能包含空格")
+		return
+	}
+	if hasWhitespace(*body.Password) {
+		kernel.WriteBadRequest(w, "登录密码不能包含空格")
+		return
+	}
 	// createSchema description: z.string().trim().max(200).nullable().optional()
 	// (system-accounts.routes.ts:34); the trimmed value flows downstream.
 	description, ok := normalizeDescriptionInput(body.Description)
@@ -266,8 +284,14 @@ func (d *Deps) patchAccount(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var conflict *ConflictError
 		var validation *ValidationError
+		var badRequest *BadRequestError
 		if errors.As(err, &conflict) {
 			kernel.WriteError(w, http.StatusConflict, conflict.Message)
+			return
+		}
+		if errors.As(err, &badRequest) {
+			// D-238: route-level whitespace validations stay 400.
+			kernel.WriteBadRequest(w, badRequest.Message)
 			return
 		}
 		if errors.As(err, &validation) {
@@ -440,6 +464,25 @@ func intPtrText(value *int) string {
 
 func parsePatchInput(body map[string]any) (PatchInput, error) {
 	input := PatchInput{}
+	// Node assertKnownInputKeys (system-accounts.repository.ts:642,:1518-1523)
+	// rejects unknown keys with '系统账户更新参数包含未知字段：…' instead of
+	// silently ignoring them (D-103).
+	allowedKeys := map[string]bool{
+		"expectedUpdatedAt": true,
+		"displayName":       true, "description": true, "password": true, "role": true,
+		"status": true, "mustChangePassword": true, "imageGenerationEnabled": true,
+		"aiAccountLimit": true, "requestLimits": true,
+	}
+	var unknown []string
+	for key := range body {
+		if !allowedKeys[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return PatchInput{}, &ValidationError{Message: "系统账户更新参数包含未知字段：" + strings.Join(unknown, "、")}
+	}
 	expected, ok := body["expectedUpdatedAt"].(string)
 	if !ok || expected == "" {
 		return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
@@ -455,6 +498,10 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 		if !isString || text == "" {
 			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
 		}
+		// NOTE: no whitespace check here. Node validates displayName inside
+		// the patch transaction AFTER the optimistic-concurrency comparison
+		// (repository.ts:661-663 CAS precede :678 normalizeRequiredText), so a
+		// stale version wins with 409; the store-level check maps to 400.
 		input.DisplayName = &text
 		mutating++
 	}
@@ -484,6 +531,10 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 		// (system-accounts.routes.ts:48).
 		if utf16Length(text) < 4 {
 			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
+		}
+		// D-238: whitespace is a route-level 400 (see createAccount).
+		if hasWhitespace(text) {
+			return PatchInput{}, &BadRequestError{Message: "登录密码不能包含空格"}
 		}
 		input.Password = &text
 		mutating++

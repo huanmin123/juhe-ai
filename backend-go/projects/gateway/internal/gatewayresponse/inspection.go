@@ -13,8 +13,8 @@ import (
 
 // ResponseInspectionPolicySource 对齐 union。
 const (
-	PolicySourceAccount      = "account"
-	PolicySourceManagement   = "management"
+	PolicySourceAccount       = "account"
+	PolicySourceManagement    = "management"
 	PolicySourceSystemDefault = "system_default"
 )
 
@@ -38,53 +38,53 @@ type RuntimeResponseInspectionPolicy struct {
 	Action       string
 	// ExecutionMode / DataHandling / RetryEnabled / AccountSwitch / AccountState
 	// 由 responseInspectionPolicyActionRuntime 展开（这里直接承载）。
-	ExecutionMode  string
-	DataHandling   string
-	RetryEnabled   bool
-	AccountSwitch  string
-	AccountState   string
+	ExecutionMode string
+	DataHandling  string
+	RetryEnabled  bool
+	AccountSwitch string
+	AccountState  string
 }
 
 // ResponseInspectionRuntimeContext 对齐 ResponseInspectionRuntimeContext。
 type ResponseInspectionRuntimeContext struct {
-	ClientProfile             string
+	ClientProfile              string
 	AccountClientCompatibility string
-	CodexCompactionExpected   bool
+	CodexCompactionExpected    bool
 }
 
 // ResponseInspectionDecision 对齐 ResponseInspectionDecision。
 type ResponseInspectionDecision struct {
-	Reason               string // 'configured_response_policy' | 'before_downstream_write_response_failure'
-	Action               string // 'client_retry' | 'discard_event' | 'discard_response' | 'replace_with_failure' | 'dry_run'
-	Transport            string // 'json' | 'sse'
-	TriggerPhase         string // 'before_downstream_write' | 'after_downstream_write'
-	EndpointFamily       gatewayproto.ResponseEndpointFamily
-	FrameType            string
-	UpstreamEventType    string
-	UpstreamErrorCode    string
-	UpstreamErrorType    string
-	UpstreamErrorMessage string
-	FinishReason         string
-	ClientProfile        string
+	Reason                  string // 'configured_response_policy' | 'before_downstream_write_response_failure'
+	Action                  string // 'client_retry' | 'discard_event' | 'discard_response' | 'replace_with_failure' | 'dry_run'
+	Transport               string // 'json' | 'sse'
+	TriggerPhase            string // 'before_downstream_write' | 'after_downstream_write'
+	EndpointFamily          gatewayproto.ResponseEndpointFamily
+	FrameType               string
+	UpstreamEventType       string
+	UpstreamErrorCode       string
+	UpstreamErrorType       string
+	UpstreamErrorMessage    string
+	FinishReason            string
+	ClientProfile           string
 	CodexCompactionExpected bool
-	RewriteErrorCode     string
-	RewriteMessage       string
-	DownstreamWritten    bool
-	PolicyID             string
-	PolicyName           string
-	PolicySource         string
-	ReplayAuthority      string // '' | 'explicit_user_policy' | 'system_default_retry_next_account'
-	PolicyScopeType      string
-	PolicyProtocolCode   string
-	PolicyProviderCode   string
-	ExecutionMode        string
-	DataHandling         string
-	RetryEnabled         bool
-	AccountSwitch        string
-	AccountState         string
-	MatchedField         string
-	MatchedValue         string
-	MatchedSnippet       string
+	RewriteErrorCode        string
+	RewriteMessage          string
+	DownstreamWritten       bool
+	PolicyID                string
+	PolicyName              string
+	PolicySource            string
+	ReplayAuthority         string // '' | 'explicit_user_policy' | 'system_default_retry_next_account'
+	PolicyScopeType         string
+	PolicyProtocolCode      string
+	PolicyProviderCode      string
+	ExecutionMode           string
+	DataHandling            string
+	RetryEnabled            bool
+	AccountSwitch           string
+	AccountState            string
+	MatchedField            string
+	MatchedValue            string
+	MatchedSnippet          string
 }
 
 // ResponseInspectionResult 对齐 ResponseInspectionResult。
@@ -130,13 +130,13 @@ func ResolvePolicyRuntime(action string) PolicyRuntime {
 }
 
 // AccountResponseInspectionRule 对齐账户凭据里的 response_inspection_rules 条目
-//（normalizeAccountResponseInspectionRules 的输出形状）。
+// （normalizeAccountResponseInspectionRules 的输出形状）。
 type AccountResponseInspectionRule struct {
-	Name         string
-	Enabled      bool
-	Priority     int
-	Match        gatewayruntimecache.ResponseInspectionPolicyMatch
-	Action       string
+	Name     string
+	Enabled  bool
+	Priority int
+	Match    gatewayruntimecache.ResponseInspectionPolicyMatch
+	Action   string
 }
 
 // ResolveRuntimeResponseInspectionPolicies 对齐

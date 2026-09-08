@@ -28,33 +28,35 @@ type OpenAIAccountView struct {
 	Account gatewayruntimecache.OpenAIAccountSecret
 }
 
-func (v OpenAIAccountView) GetID() string                        { return v.Account.ID }
-func (v OpenAIAccountView) GetName() string                      { return v.Account.Name }
-func (v OpenAIAccountView) GetProviderCode() string              { return v.Account.ProviderCode }
-func (v OpenAIAccountView) GetProviderProtocolProfileID() string { return v.Account.ProviderProtocolProfileID }
-func (v OpenAIAccountView) GetProtocolCode() string              { return v.Account.ProtocolCode }
-func (v OpenAIAccountView) GetProtocolVersion() string           { return v.Account.ProtocolVersion }
-func (v OpenAIAccountView) GetClientCompatibility() string       { return v.Account.ClientCompatibility }
+func (v OpenAIAccountView) GetID() string           { return v.Account.ID }
+func (v OpenAIAccountView) GetName() string         { return v.Account.Name }
+func (v OpenAIAccountView) GetProviderCode() string { return v.Account.ProviderCode }
+func (v OpenAIAccountView) GetProviderProtocolProfileID() string {
+	return v.Account.ProviderProtocolProfileID
+}
+func (v OpenAIAccountView) GetProtocolCode() string        { return v.Account.ProtocolCode }
+func (v OpenAIAccountView) GetProtocolVersion() string     { return v.Account.ProtocolVersion }
+func (v OpenAIAccountView) GetClientCompatibility() string { return v.Account.ClientCompatibility }
 
 // CompletedAttemptInput 对齐 recordCompletedUpstreamAttempt /
 // recordDownstreamClosedUpstreamAttempt 共用的尝试负载（G17）。
 type CompletedAttemptInput struct {
-	UsageContext                    gatewaypreauth.GatewayFailureUsageContext
-	Account                         AccountView
-	StatusCode                      int
-	Success                         bool
-	ProtocolValidatedSuccess        bool
+	UsageContext                        gatewaypreauth.GatewayFailureUsageContext
+	Account                             AccountView
+	StatusCode                          int
+	Success                             bool
+	ProtocolValidatedSuccess            bool
 	AccountAPIKeySuccessAlreadyRecorded bool
-	Stream                          bool
-	FirstTokenMs                    *int64
-	StartedAtMs                     int64
-	CompletedAtMs                   *int64
-	Usage                           gatewayproto.ParsedUsage
-	ErrorCode                       string
-	ErrorMessage                    string
-	FailureAttribution              string
-	RequestSnapshot                 *UsageRequestSnapshotView
-	ResponseSnapshot                *UsageResponseSnapshotView
+	Stream                              bool
+	FirstTokenMs                        *int64
+	StartedAtMs                         int64
+	CompletedAtMs                       *int64
+	Usage                               gatewayproto.ParsedUsage
+	ErrorCode                           string
+	ErrorMessage                        string
+	FailureAttribution                  string
+	RequestSnapshot                     *UsageRequestSnapshotView
+	ResponseSnapshot                    *UsageResponseSnapshotView
 }
 
 // FailedAttemptInput 对齐 recordFailedUpstreamAttempt 的 input。
@@ -108,14 +110,14 @@ type UsageAttemptRecorder interface {
 
 // FailureUsageRecordInput 对齐 recordGatewayFailure 的负载。
 type FailureUsageRecordInput struct {
-	UsageContext        gatewaypreauth.GatewayFailureUsageContext
-	StatusCode          int
-	StartedAtMs         int64
-	CompletedAtMs       int64
-	ResponsePayload     GatewayErrorPayloadCarrier
-	ErrorMessage        string
-	FailureAttribution  string
-	ResponseSnapshot    *UsageResponseSnapshotView
+	UsageContext       gatewaypreauth.GatewayFailureUsageContext
+	StatusCode         int
+	StartedAtMs        int64
+	CompletedAtMs      int64
+	ResponsePayload    GatewayErrorPayloadCarrier
+	ErrorMessage       string
+	FailureAttribution string
+	ResponseSnapshot   *UsageResponseSnapshotView
 }
 
 // GatewayErrorPayloadCarrier 是 errorPayload map 的载体（保留额外键）。
@@ -131,14 +133,14 @@ type FailureUsageRecorder interface {
 
 // ModelsUsageDispatchInput 对齐 dispatchUsageRecord 的 models 快路径负载。
 type ModelsUsageDispatchInput struct {
-	UsageContext     gatewaypreauth.GatewayFailureUsageContext
-	ProviderCode     string
-	UsageSemantic    string
-	Stream           bool
-	StatusCode       int
-	Success          bool
-	FirstTokenMs     int64
-	DurationMs       int64
+	UsageContext  gatewaypreauth.GatewayFailureUsageContext
+	ProviderCode  string
+	UsageSemantic string
+	Stream        bool
+	StatusCode    int
+	Success       bool
+	FirstTokenMs  int64
+	DurationMs    int64
 }
 
 // UsageDispatcher 对齐 dispatchUsageRecord（G17）。
@@ -178,15 +180,15 @@ type AttemptAuditInput struct {
 
 // OmitPayloadBodiesInput 对齐 omitPayloadBodies 的入参。
 type OmitPayloadBodiesInput struct {
-	Label                     string
-	Metadata                  map[string]any
-	PartTypes                 []string
+	Label                      string
+	Metadata                   map[string]any
+	PartTypes                  []string
 	AlreadyOmittedPayloadCount int
 	AlreadyOmittedBodyBytes    int64
 }
 
 // AccountFailureEffects 对齐 runtime/account-effects.ts 的 stream failure 面
-//（G13）。shouldMutateAccount 由 finalization 决策。
+// （G13）。shouldMutateAccount 由 finalization 决策。
 type AccountFailureEffects interface {
 	// HandleStreamFailure 对齐 handleStreamFailure。
 	HandleStreamFailure(account AccountView, message string, errorCode string, context StreamFailureContext, shouldMutateAccount bool) error
@@ -210,6 +212,36 @@ type ModelCatalogLoader interface {
 type HTTPCompletion interface {
 	// Wait 返回完成时刻（ms）；实现负责在响应真正结束后送达。
 	Wait() <-chan int64
+}
+
+// HTTPMetricFailureScopeMarker 对齐 markRequestHttpMetricFailureScope
+// （shared/request-context.ts）：把本次请求的 http metric 失败域标注给指标
+// 中间件。生产装配随 G12/G15 指标面接入；缺省（未 Set）为 no-op，与 Node
+// 无指标上下文时的行为一致。
+type HTTPMetricFailureScopeMarker interface {
+	// MarkFailureScope 对齐 markRequestHttpMetricFailureScope(scope)。
+	MarkFailureScope(scope string)
+}
+
+// httpMetricFailureScopeMarker 是进程级标注口（对齐 request-context 的
+// AsyncLocalStorage 形态在 Go 的最窄近似）：组合根在装配时 Set 一次，
+// 响应层在两处归档触发点调用（downstream-headers.ts:17-19 /
+// failure-response.ts:72-74 / non-stream-json-inspection.ts:287）。
+var httpMetricFailureScopeMarker HTTPMetricFailureScopeMarker
+
+// SetHTTPMetricFailureScopeMarker 装配 http metric 失败域标注口（nil 恢复
+// no-op；仅供组合根与测试使用）。
+func SetHTTPMetricFailureScopeMarker(marker HTTPMetricFailureScopeMarker) {
+	httpMetricFailureScopeMarker = marker
+}
+
+// markHTTPMetricFailureScope 对齐 markRequestHttpMetricFailureScope 的响应层
+// 触发面：未装配时静默跳过（不改变业务行为）。
+func markHTTPMetricFailureScope(scope string) {
+	if httpMetricFailureScopeMarker == nil {
+		return
+	}
+	httpMetricFailureScopeMarker.MarkFailureScope(scope)
 }
 
 // HTTPCompletionObserver 对齐 observeGatewayHttpCompletion。

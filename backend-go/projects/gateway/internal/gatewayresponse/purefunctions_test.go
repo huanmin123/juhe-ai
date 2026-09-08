@@ -56,19 +56,19 @@ func TestResponsesFailureStatusFromCapturedJSON(t *testing.T) {
 func TestBuildGatewayStreamReadPlan(t *testing.T) {
 	base := TimeoutProfile{FirstResponseTimeoutMs: 10_000, IdleTimeoutMs: 5_000, UncommittedAttemptMaxLifetimeMs: 60_000}
 	tests := []struct {
-		name            string
-		profile         TimeoutProfile
-		startedAt       int64
-		now             int64
-		status          StreamReadPlanStatus
-		wantNil         bool
-		wantKind        string
-		wantDeadline    bool
+		name         string
+		profile      TimeoutProfile
+		startedAt    int64
+		now          int64
+		status       StreamReadPlanStatus
+		wantNil      bool
+		wantKind     string
+		wantDeadline bool
 	}{
 		{
-			name:     "timeoutsDisabled 无计划",
-			profile:  TimeoutProfile{TimeoutsDisabled: true},
-			wantNil:  true,
+			name:    "timeoutsDisabled 无计划",
+			profile: TimeoutProfile{TimeoutsDisabled: true},
+			wantNil: true,
 		},
 		{
 			name:      "首块阶段",
@@ -85,8 +85,8 @@ func TestBuildGatewayStreamReadPlan(t *testing.T) {
 			wantKind: "upstream_activity",
 		},
 		{
-			name:    "语义结果窗口最紧（首响应窗口先于 idle 耗尽）",
-			profile: TimeoutProfile{FirstResponseTimeoutMs: 3_000, IdleTimeoutMs: 5_000, UncommittedAttemptMaxLifetimeMs: 60_000},
+			name:      "语义结果窗口最紧（首响应窗口先于 idle 耗尽）",
+			profile:   TimeoutProfile{FirstResponseTimeoutMs: 3_000, IdleTimeoutMs: 5_000, UncommittedAttemptMaxLifetimeMs: 60_000},
 			startedAt: 0, now: 1000,
 			status:   StreamReadPlanStatus{UpstreamChunkReceived: true, LastUpstreamActivityAt: 1000},
 			wantKind: "semantic_result",
@@ -99,15 +99,15 @@ func TestBuildGatewayStreamReadPlan(t *testing.T) {
 			wantKind: "upstream_activity",
 		},
 		{
-			name:    "生命周期最紧",
-			profile: TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 60_000, UncommittedAttemptMaxLifetimeMs: 5_000},
-			status:  StreamReadPlanStatus{WaitingForFirstChunk: true},
+			name:     "生命周期最紧",
+			profile:  TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 60_000, UncommittedAttemptMaxLifetimeMs: 5_000},
+			status:   StreamReadPlanStatus{WaitingForFirstChunk: true},
 			wantKind: "stream_lifetime",
 		},
 		{
-			name:         "deadline 已超",
-			profile:      base,
-			startedAt:    0, now: 11_000,
+			name:      "deadline 已超",
+			profile:   base,
+			startedAt: 0, now: 11_000,
 			status:       StreamReadPlanStatus{WaitingForFirstChunk: true},
 			wantKind:     "first_chunk",
 			wantDeadline: true,
@@ -199,10 +199,10 @@ func TestPreCommitStreamServerRetryErrorCode(t *testing.T) {
 
 func TestTransientPrecommitDecision(t *testing.T) {
 	decision := &ResponseInspectionDecision{
-		PolicySource:     "system_default",
-		PolicyID:         "default_openai_transient_precommit_error",
-		Reason:           "before_downstream_write_response_failure",
-		TriggerPhase:     "before_downstream_write",
+		PolicySource: "system_default",
+		PolicyID:     "default_openai_transient_precommit_error",
+		Reason:       "before_downstream_write_response_failure",
+		TriggerPhase: "before_downstream_write",
 	}
 	if !IsTransientPrecommitUpstreamFailureDecision(decision) {
 		t.Fatal("expected transient precommit decision")
@@ -239,10 +239,10 @@ func TestClassifyGatewayUpstreamFailure(t *testing.T) {
 	status502 := 502
 	status400 := 400
 	tests := []struct {
-		name        string
-		input       GatewayUpstreamFailureClassificationInput
-		wantClass   GatewayUpstreamFailureClass
-		wantReason  GatewayUpstreamFailureMetricReasonClass
+		name       string
+		input      GatewayUpstreamFailureClassificationInput
+		wantClass  GatewayUpstreamFailureClass
+		wantReason GatewayUpstreamFailureMetricReasonClass
 	}{
 		{"请求阶段", GatewayUpstreamFailureClassificationInput{Phase: "upstream_request"}, FailureClassTransport, MetricReasonTransport},
 		{"响应阶段", GatewayUpstreamFailureClassificationInput{Phase: "upstream_response"}, FailureClassOpaqueUpstreamResponse, MetricReasonUnknown},

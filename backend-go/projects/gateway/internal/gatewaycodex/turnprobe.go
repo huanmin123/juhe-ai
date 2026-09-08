@@ -225,7 +225,11 @@ func (s *TurnAvoidanceProbeService) RunCodexTurnAvoidanceAvailabilityProbe(ctx c
 		OwnerToken: coordination.OwnerToken,
 	})
 	if err != nil {
-		return CodexTurnAvoidanceProbeResult{}, err
+		// D-89（BUG-0175）：Node 把 release 之后的 owner 侧流程包进
+		// try/catch（codex-turn-availability-probe.service.ts:69-129）——
+		// 任一协作者错误都结算 probe_task_failure 并保留短期避让，而不是
+		// 把错误直接上抛让 generation 依赖过期兜底。
+		return s.settleOwnerProbeFailure(ctx, input, coordination, nil, false, err)
 	}
 	if !released {
 		if _, err := s.Coordinator.Settle(ctx, gatewaycircuit.SettleProbeInput{
@@ -234,7 +238,7 @@ func (s *TurnAvoidanceProbeService) RunCodexTurnAvoidanceAvailabilityProbe(ctx c
 			OwnerToken: coordination.OwnerToken,
 			Outcome:    ProbeOutcomeUnknown,
 		}); err != nil {
-			return CodexTurnAvoidanceProbeResult{}, err
+			return s.settleOwnerProbeFailure(ctx, input, coordination, nil, false, err)
 		}
 		return CodexTurnAvoidanceProbeResult{Disposition: "owner", Generation: coordination.Generation, Outcome: ProbeOutcomeUnknown}, nil
 	}
@@ -257,9 +261,54 @@ func (s *TurnAvoidanceProbeService) RunCodexTurnAvoidanceAvailabilityProbe(ctx c
 		},
 		Outcome: outcome,
 	}); err != nil {
-		return CodexTurnAvoidanceProbeResult{}, err
+		return s.settleOwnerProbeFailure(ctx, input, coordination, &sourceFence, true, err)
 	}
 	return CodexTurnAvoidanceProbeResult{Disposition: "owner", Generation: coordination.Generation, Outcome: outcome}, nil
+}
+
+// settleOwnerProbeFailure mirrors the Node catch block: a released generation
+// settles through its exact source fence, a not-yet-released one through the
+// owner token — both with probe_task_failure so the short avoidance stands
+// instead of the generation waiting for expiry. The Node catch has no inner
+// guard, so a failing fallback settlement propagates exactly like here.
+func (s *TurnAvoidanceProbeService) settleOwnerProbeFailure(
+	ctx context.Context,
+	input CodexTurnAvoidanceProbeInput,
+	coordination gatewaycircuit.ProbeAcquireResult,
+	sourceFence *SourceProbeFence,
+	releasedForExecution bool,
+	cause error,
+) (CodexTurnAvoidanceProbeResult, error) {
+	if releasedForExecution && sourceFence != nil {
+		if _, err := s.Coordinator.SettleDispatchedBySourceFence(ctx, gatewaycircuit.SettleDispatchedProbeInput{
+			RuntimeKey: coordination.RuntimeKey,
+			Generation: coordination.Generation,
+			SourceFence: gatewaycircuit.ProbeSourceFence{
+				StateKey:         sourceFence.StateKey,
+				AccountID:        sourceFence.AccountID,
+				SourceGeneration: sourceFence.SourceGeneration,
+				SourceFenceID:    sourceFence.SourceFenceID,
+			},
+			Outcome: ProbeOutcomeProbeTaskFailure,
+		}); err != nil {
+			return CodexTurnAvoidanceProbeResult{}, err
+		}
+	} else {
+		if _, err := s.Coordinator.Settle(ctx, gatewaycircuit.SettleProbeInput{
+			RuntimeKey: coordination.RuntimeKey,
+			Generation: coordination.Generation,
+			OwnerToken: coordination.OwnerToken,
+			Outcome:    ProbeOutcomeProbeTaskFailure,
+		}); err != nil {
+			return CodexTurnAvoidanceProbeResult{}, err
+		}
+	}
+	s.warn("gateway_codex_turn_avoidance_probe_failed", map[string]any{
+		"accountId":        input.Account.ID,
+		"sourceGeneration": input.Activation.SourceGeneration,
+		"error":            cause.Error(),
+	}, "Codex turn 避让探活未形成可靠结果，保留短期避让")
+	return CodexTurnAvoidanceProbeResult{Disposition: "owner", Generation: coordination.Generation, Outcome: ProbeOutcomeProbeTaskFailure}, nil
 }
 
 func (s *TurnAvoidanceProbeService) clearReplacedSettledSourceFences(ctx context.Context, coordination gatewaycircuit.ProbeAcquireResult) error {

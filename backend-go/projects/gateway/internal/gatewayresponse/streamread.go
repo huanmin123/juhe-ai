@@ -30,11 +30,11 @@ type streamChunkReadResult struct {
 // pendingRead 对齐 ObservedFirstBytePendingRead：单写入 goroutine 桥接上游
 // future，先记录 settle 时刻再发布结果；即使被放弃也不阻塞、不丢结果。
 type pendingRead struct {
-	ch                chan ChunkResult
-	settled           atomic.Bool
-	settledAt         atomic.Int64
-	closeOnce         sync.Once
-	stop              chan struct{}
+	ch        chan ChunkResult
+	settled   atomic.Bool
+	settledAt atomic.Int64
+	closeOnce sync.Once
+	stop      chan struct{}
 }
 
 func newPendingRead(next <-chan ChunkResult, nowMs func() int64) *pendingRead {

@@ -11,9 +11,9 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
 // ---- mock 上游体 ----
@@ -405,12 +405,12 @@ func TestPipeUpstreamStreamPreCommitKeepsFramingPrivate(t *testing.T) {
 	_ = recorder2
 	options := StreamPipeOptions{
 		RetryBeforeDownstreamWriteUntilOutput: true,
-		NowMs:                          func() int64 { return 1000 },
+		NowMs:                                 func() int64 { return 1000 },
 	}
 	result, err := PipeUpstreamStream(PipeUpstreamStreamInput{
-		UpstreamBody: NewSliceUpstreamBody([]byte(": comment only\n\n"), []byte(failureChunk)),
-		Downstream:   downstream2,
-		TimeoutProfile: TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
+		UpstreamBody:        NewSliceUpstreamBody([]byte(": comment only\n\n"), []byte(failureChunk)),
+		Downstream:          downstream2,
+		TimeoutProfile:      TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
 		StartedAtMs:         1000,
 		HandleStreamFailure: recorder.handle,
 		Options:             options,
@@ -563,24 +563,24 @@ func TestSSEInterceptorInterceptsBeforeDownstreamWrite(t *testing.T) {
 	chunk := "data: {\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"上下文长度超限\"}}\n\n"
 	recorder := &failureRecorder{}
 	interceptor := NewOpenAIStreamInterceptor(OpenAIStreamInterceptorOptions{
-		Policies:      []RuntimeResponseInspectionPolicy{policy},
+		Policies:       []RuntimeResponseInspectionPolicy{policy},
 		EndpointFamily: gatewayproto.EndpointFamilyChatCompletions,
-		Context:       &ResponseInspectionRuntimeContext{ClientProfile: "codex"},
+		Context:        &ResponseInspectionRuntimeContext{ClientProfile: "codex"},
 	})
 	_, interceptorDownstream := newDownstream()
 	result, err := PipeUpstreamStream(PipeUpstreamStreamInput{
-		UpstreamBody: NewSliceUpstreamBody([]byte(chunk)),
-		Downstream:   interceptorDownstream,
-		TimeoutProfile: TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
+		UpstreamBody:        NewSliceUpstreamBody([]byte(chunk)),
+		Downstream:          interceptorDownstream,
+		TimeoutProfile:      TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
 		StartedAtMs:         1000,
 		HandleStreamFailure: recorder.handle,
 		Options: StreamPipeOptions{
 			ClientRetryEnabled:                    true,
 			RetryBeforeDownstreamWriteUntilOutput: true,
-			Interceptor:                    interceptor,
-			ResponseInspectionPolicies:     []RuntimeResponseInspectionPolicy{policy},
-			ResponseInspectionContext:      &ResponseInspectionRuntimeContext{ClientProfile: "codex"},
-			NowMs:                          func() int64 { return 1000 },
+			Interceptor:                           interceptor,
+			ResponseInspectionPolicies:            []RuntimeResponseInspectionPolicy{policy},
+			ResponseInspectionContext:             &ResponseInspectionRuntimeContext{ClientProfile: "codex"},
+			NowMs:                                 func() int64 { return 1000 },
 		},
 	})
 	if err != nil {
@@ -607,9 +607,9 @@ func TestCompressionMiddlewareSSEBypass(t *testing.T) {
 		defer func() { handlerCalled <- struct{}{} }()
 		tracking := gatewaypreauth.NewTrackingWriter(w)
 		_, err := PipeUpstreamStream(PipeUpstreamStreamInput{
-			UpstreamBody: NewSliceUpstreamBody([]byte(chatDeltaChunk), []byte(chatDoneChunk)),
-			Downstream:   StreamDownstream{Res: tracking},
-			TimeoutProfile: TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
+			UpstreamBody:        NewSliceUpstreamBody([]byte(chatDeltaChunk), []byte(chatDoneChunk)),
+			Downstream:          StreamDownstream{Res: tracking},
+			TimeoutProfile:      TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
 			StartedAtMs:         1000,
 			HandleStreamFailure: func(string, string, StreamFailureContext) error { return nil },
 			Options:             StreamPipeOptions{NowMs: func() int64 { return 1000 }},

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,12 +37,20 @@ func ResponseWriterFromContext(ctx context.Context) *localizeWriter {
 }
 
 type RequestContext struct {
-	TraceID   string
-	RequestID string
-	ClientIP  string
-	Method    string
-	Path      string
-	StartedAt time.Time
+	TraceID     string
+	RequestID   string
+	ClientIP    string
+	Method      string
+	Path        string
+	OriginalURL string
+	StartedAt   time.Time
+
+	// D-191（BUG-0175）：请求生命周期事件状态。metricHandle 是经
+	// HTTPMetricHooks.Start 创建的 prometheus 请求句柄（未计量路由为 nil）；
+	// summaryLogged 保证 finish/closed/timing_summary 只发一次。
+	mu            sync.Mutex
+	metricHandle  any
+	summaryLogged bool
 }
 
 // Context returns the request context attached by RequestContextMiddleware.
@@ -55,13 +64,15 @@ func Context(r *http.Request) *RequestContext {
 func RequestContextMiddleware(trustProxyCount int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			startedAt := time.Now()
 			ctx := &RequestContext{
-				TraceID:   normalizeTraceID(r),
-				RequestID: newUUID(),
-				ClientIP:  ExtractClientIP(r, trustProxyCount),
-				Method:    r.Method,
-				Path:      r.URL.Path,
-				StartedAt: time.Now(),
+				TraceID:     normalizeTraceID(r),
+				RequestID:   newUUID(),
+				ClientIP:    ExtractClientIP(r, trustProxyCount),
+				Method:      r.Method,
+				Path:        r.URL.Path,
+				OriginalURL: r.URL.RequestURI(),
+				StartedAt:   startedAt,
 			}
 			if ctx.TraceID == "" {
 				ctx.TraceID = newUUID()
@@ -70,9 +81,72 @@ func RequestContextMiddleware(trustProxyCount int) func(http.Handler) http.Handl
 			// before the chain descends, so success, business errors and
 			// gateway errors all carry the trace back to the client.
 			w.Header().Set("X-Trace-Id", ctx.TraceID)
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, ctx)))
+
+			// startHttpMetricRequest（D-190）：observability 路由返回 nil，
+			// Finish 钩子按 Node 语义对 nil 请求保持 no-op。
+			if hooks := httpMetricHooks.Load(); hooks != nil && hooks.Start != nil {
+				ctx.metricHandle = hooks.Start(ctx.Path, ctx.Method, startedAt.UnixMilli())
+			}
+			emitHTTPRequestStarted(ctx)
+
+			tracking := &statusTrackingWriter{ResponseWriter: w}
+			next.ServeHTTP(tracking, r.WithContext(context.WithValue(r.Context(), ctxKey{}, ctx)))
+			finishRequestObservability(ctx, tracking, r, startedAt)
 		})
 	}
+}
+
+// finishRequestObservability mirrors the res.once('finish'/'close') pair of
+// requestContextMiddleware (request-context.ts:184-189): a handler return
+// with a live request context is the completed contract; a canceled context
+// means the connection dropped before the response settled and renders the
+// closed (aborted) contract instead. Exactly one metric finish / event set
+// runs per request.
+func finishRequestObservability(ctx *RequestContext, tracking *statusTrackingWriter, r *http.Request, startedAt time.Time) {
+	ctx.mu.Lock()
+	alreadyLogged := ctx.summaryLogged
+	ctx.summaryLogged = true
+	ctx.mu.Unlock()
+	if alreadyLogged {
+		return
+	}
+
+	finishedAtMs := time.Now().UnixMilli()
+	statusCode := tracking.statusPointer()
+	hooks := httpMetricHooks.Load()
+	if r.Context().Err() != nil {
+		// logRequestClosed: finishHttpMetricRequest(..., 'aborted') + the
+		// closed warn record (request-context.ts:519-560).
+		if hooks != nil && hooks.Finish != nil {
+			hooks.Finish(ctx.metricHandle, statusCode, "aborted", finishedAtMs, "none")
+		}
+		durationMs := finishedAtMs - startedAt.UnixMilli()
+		emitHTTPRequestClosed(ctx, statusCode, durationMs)
+		// Node logRequestClosed also schedules the aborted timing summary
+		// (request-context.ts:549); the same gateway-route gate applies.
+		if ClassifyGatewayRoutePath(ctx.Path) {
+			emitHTTPRequestTimingSummary(ctx, statusCode, "aborted", durationMs)
+		}
+		return
+	}
+	failureScope := httpMetricFailureScope(statusCode, "completed")
+	if hooks != nil && hooks.Finish != nil {
+		hooks.Finish(ctx.metricHandle, statusCode, "completed", finishedAtMs, failureScope)
+	}
+	emitHTTPRequestCompleted(ctx, statusCode, failureScope, finishedAtMs-startedAt.UnixMilli())
+	// logRequestTimingSummary (request-context.ts:491 setImmediate): Node
+	// emits the summary on the completed path; only gateway-route requests
+	// carry stage summaries, so the summary gates to that route group exactly
+	// like the Node stage-less early return.
+	if ClassifyGatewayRoutePath(ctx.Path) {
+		emitHTTPRequestTimingSummary(ctx, statusCode, resolveRequestSummaryOutcome(statusCode), time.Since(startedAt).Milliseconds())
+	}
+}
+
+// ClassifyGatewayRoutePath reports whether the path belongs to the /v1
+// gateway family (classifyHttpMetricRoute's 'gateway' group).
+func ClassifyGatewayRoutePath(path string) bool {
+	return path == "/" || path == "/v1" || strings.HasPrefix(path, "/v1/")
 }
 
 // normalizeTraceID mirrors request-context.ts normalizeTraceId: strict

@@ -146,6 +146,10 @@ type Store struct {
 	// SetAiAccountLimitSettings wires it; a nil port falls back to the Node
 	// schema default (100).
 	aiAccountLimitSettings AiAccountCreationLimitSettings
+	// usage is the stats-database read port behind the list todayUsage/usage
+	// hydration (list_usage.go, BUG-0175 D-126 账户面). Nil until
+	// SetUsageSource wires it; a nil port keeps the zero summaries.
+	usage UsageSource
 }
 
 // NewStore builds the store.

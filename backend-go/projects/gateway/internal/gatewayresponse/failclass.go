@@ -102,7 +102,7 @@ func classifyMetricReason(input GatewayUpstreamFailureClassificationInput) Gatew
 type GatewayDispatchExhaustionReason string
 
 const (
-	DispatchExhaustionAPIKeyPoolUnavailable      GatewayDispatchExhaustionReason = "api_key_pool_unavailable"
+	DispatchExhaustionAPIKeyPoolUnavailable        GatewayDispatchExhaustionReason = "api_key_pool_unavailable"
 	DispatchExhaustionAllAccountsLocallySuppressed GatewayDispatchExhaustionReason = "all_accounts_locally_suppressed"
 	DispatchExhaustionAccountConcurrencyExhausted  GatewayDispatchExhaustionReason = "account_concurrency_exhausted"
 	DispatchExhaustionUpstreamHTTPError            GatewayDispatchExhaustionReason = "upstream_http_error"
@@ -147,8 +147,8 @@ func ClassifyGatewayDispatchExhaustion(lastAttempt *UpstreamAttemptSummary) Gate
 
 // providerModelCatalogInvalidationReasons 对齐同名 Set。
 var providerModelCatalogInvalidationReasons = map[string]bool{
-	"custom_provider_model_saved":         true,
-	"custom_provider_model_deleted":       true,
+	"custom_provider_model_saved":          true,
+	"custom_provider_model_deleted":        true,
 	"provider_model_configuration_updated": true,
 }
 

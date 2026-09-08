@@ -657,6 +657,11 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	if err := s.hydrateOAuthUsageSnapshots(ctx, items); err != nil {
 		return nil, err
 	}
+	// BUG-0175 D-126 账户面: hydrate todayUsage (daily) / usage (totals) from
+	// the stats source; a nil source keeps the zero summaries.
+	if err := s.hydrateListUsage(ctx, items, records); err != nil {
+		return nil, err
+	}
 	total := (normalized.Page-1)*normalized.PageSize + len(items)
 	if hasMore {
 		total++

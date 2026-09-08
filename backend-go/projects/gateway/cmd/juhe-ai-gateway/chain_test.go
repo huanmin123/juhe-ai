@@ -35,6 +35,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // ---------------------------------------------------------------------------
@@ -642,7 +643,7 @@ func TestChainFinalizationUsageFailedAttemptOmitsAbsentStatusCode(t *testing.T) 
 
 func gatewayusageNewSpool(t *testing.T, dir string, clock gatewaypreauth.Clock) *gatewayusage.UsageRecordSpool {
 	t.Helper()
-	spool := newUsageSpool(dir, clock, nil)
+	spool := newUsageSpool(dir, clock, nil, usageSpoolCapacity{})
 	if spool == nil {
 		t.Fatal("spool missing")
 	}
@@ -874,15 +875,19 @@ func chainSmokeDeps(t *testing.T, fixture *chainFixture, clock gatewaypreauth.Cl
 		Clock:           clock,
 		AuditLogEnabled: func() bool { return false },
 		SpoolDirectory:  spoolDir,
-		Circuits:        circuits,
-		IPPolicy:        policyCache,
-		UserLimits:      userLimits,
-		ModelsRateLimit: modelsRateLimit,
-		APIKeyQuota:     apiKeyQuota,
-		AuthzQuota:      authzQuota,
-		InflightQuota:   inflightQuota,
-		Avoidance:       avoidance,
-		Affinity:        gatewaygemini.NewInteractionAffinity(nil),
+		// 组合测试的上游是 httptest loopback 服务：与 Node 回归显式设置
+		// JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=true 同一约定，测试夹具
+		// 打开 allowPrivate 开关（D-192/D-146 严格策略的生产默认不受影响）。
+		UpstreamURLSecurity: sharedupstreamhttp.URLSecurityConfig{AllowPrivateBaseUrls: true},
+		Circuits:            circuits,
+		IPPolicy:            policyCache,
+		UserLimits:          userLimits,
+		ModelsRateLimit:     modelsRateLimit,
+		APIKeyQuota:         apiKeyQuota,
+		AuthzQuota:          authzQuota,
+		InflightQuota:       inflightQuota,
+		Avoidance:           avoidance,
+		Affinity:            gatewaygemini.NewInteractionAffinity(nil),
 		Recoverable: gatewaycircuit.NewPreAuthRecoverableWait(
 			gatewaycircuit.NewWaitCoordinator(gatewaycircuit.WaitCoordinatorOptions{}),
 			chainTestWaitLogger{t: t},

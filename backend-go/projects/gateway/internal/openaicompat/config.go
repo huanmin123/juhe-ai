@@ -2,16 +2,37 @@ package openaicompat
 
 // Endpoint family constants (mirror gatewayproto/endpoint_families.go).
 const (
-	FamilyChatCompletions      = "chat_completions"
-	FamilyResponses            = "responses"
-	FamilyAnthropicMessages    = "anthropic_messages"
+	FamilyChatCompletions       = "chat_completions"
+	FamilyResponses             = "responses"
+	FamilyAnthropicMessages     = "anthropic_messages"
 	FamilyGeminiGenerateContent = "gemini_generate_content"
-	FamilyGeminiStreamGenerate = "gemini_stream_generate"
+	FamilyGeminiStreamGenerate  = "gemini_stream_generate"
 )
 
+// NormalizeEndpointFamily maps the endpoint-family tokens used across the
+// runtime onto the canonical openaicompat bridge vocabulary. Account model
+// mapping rows store the gatewayopenai/gatewayrouting tokens ("messages",
+// "generate_content", "stream_generate_content"); the bridge table uses the
+// full protocol names. Unknown tokens pass through unchanged.
+func NormalizeEndpointFamily(family string) string {
+	switch family {
+	case "messages":
+		return FamilyAnthropicMessages
+	case "generate_content":
+		return FamilyGeminiGenerateContent
+	case "stream_generate_content":
+		return FamilyGeminiStreamGenerate
+	default:
+		return family
+	}
+}
+
 // IsCrossProtocolBridgeRequired reports whether a model mapping requires
-// cross-protocol bridge conversion (OpenAI <-> Anthropic / Gemini).
+// cross-protocol bridge conversion (OpenAI <-> Anthropic / Gemini). Both the
+// canonical protocol tokens and the stored mapping-row tokens are accepted.
 func IsCrossProtocolBridgeRequired(source, upstream string) bool {
+	source = NormalizeEndpointFamily(source)
+	upstream = NormalizeEndpointFamily(upstream)
 	switch {
 	case source == FamilyChatCompletions && upstream == FamilyAnthropicMessages:
 		return true

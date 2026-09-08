@@ -189,6 +189,15 @@ func TestStatsUsageSourceSQLLocksIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// BUG-0175 D-180: without the SQLite read-worker role the missing-resource
+	// arm never fires — the error fails the read exactly like Node's main
+	// process (isSqliteReadWorkerProcess gate).
+	if _, err := missing.ApiKeyListUsageSummaries(ctx, []UsageScope{{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"}}); err == nil {
+		t.Fatal("non read-worker SQLite missing stats table must fail the read")
+	}
+	// Inside the read-worker process the missing-resource arm degrades to an
+	// empty map.
+	t.Setenv("JUHE_AI_SQLITE_READ_WORKER", "true")
 	degraded, err := missing.ApiKeyListUsageSummaries(ctx, []UsageScope{{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"}})
 	if err != nil {
 		t.Fatalf("missing stats table must degrade, got error: %v", err)

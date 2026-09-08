@@ -201,8 +201,9 @@ func isValidProcessRole(value string) bool {
 	if validProcessRoles[value] {
 		return true
 	}
-	// gateway:* / control:* / control-replica:* families.
-	for _, prefix := range []string{"gateway:", "control:", "control-replica:"} {
+	// gateway:* / control:* / control-replica:* / db-service:* families
+	//（D-102：db-service: 前缀族此前缺位，db-service 副本采样被读侧过滤）。
+	for _, prefix := range []string{"gateway:", "control:", "control-replica:", "db-service:"} {
 		if strings.HasPrefix(value, prefix) && len(value) > len(prefix) {
 			return true
 		}

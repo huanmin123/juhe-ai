@@ -9,16 +9,16 @@ const jsonStringCaptureMaxBytes = 256
 // 文档根节点 status 字段的有界增量扫描。响应可能大到无法整体驻留内存，且供应商
 // 不保证 status 位于大 output 字段之前，因此必须在每个传输分片上运行。
 type ResponsesRootStatusTracker struct {
-	depth          int
-	rootStarted    bool
-	completed      bool
-	failed         bool
-	rootState      string // 'key_or_end' | 'colon' | 'value' | 'after_value'
-	rootKeyIsStatus bool
-	inString       bool
-	stringEscaped  bool
-	stringContext  string // 'key' | 'status_value' | ''
-	stringRaw      []byte
+	depth                  int
+	rootStarted            bool
+	completed              bool
+	failed                 bool
+	rootState              string // 'key_or_end' | 'colon' | 'value' | 'after_value'
+	rootKeyIsStatus        bool
+	inString               bool
+	stringEscaped          bool
+	stringContext          string // 'key' | 'status_value' | ''
+	stringRaw              []byte
 	stringCaptureTruncated bool
 }
 
@@ -229,7 +229,7 @@ func unescapeJSONString(raw string) (string, bool) {
 			if code >= 0xD800 && code <= 0xDBFF && i+6 < len(raw) &&
 				raw[i+1] == '\\' && raw[i+2] == 'u' {
 				if low, ok := parseHex4(raw[i+3 : i+7]); ok && low >= 0xDC00 && low <= 0xDFFF {
-					r = ((rune(code)-0xD800)<<10 | (rune(low)-0xDC00)) + 0x10000
+					r = ((rune(code)-0xD800)<<10 | (rune(low) - 0xDC00)) + 0x10000
 					i += 6
 				}
 			}

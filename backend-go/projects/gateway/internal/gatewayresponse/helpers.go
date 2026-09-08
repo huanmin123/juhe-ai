@@ -21,7 +21,7 @@ var (
 	v1betaPrefixPattern = regexp.MustCompile(`^/v1beta(/|$)`)
 )
 
-// normalizeV1PrefixPath 对齐 `requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'`。
+// normalizeV1PrefixPath 对齐 `requestPath.replace(/^\/v1(?=\/|$)/, ”) || '/'`。
 // Go 不支持 lookahead：仅当前缀后是结尾或 '/' 时剥离，并保留 '/'。
 func normalizeV1PrefixPath(requestPath string) string {
 	if match := v1PrefixPattern.FindStringSubmatchIndex(requestPath); match != nil {
@@ -33,7 +33,7 @@ func normalizeV1PrefixPath(requestPath string) string {
 	return requestPath
 }
 
-// normalizeV1BetaPrefixPath 对齐 `replace(/^\/v1beta(?=\/|$)/, '') || '/'`。
+// normalizeV1BetaPrefixPath 对齐 `replace(/^\/v1beta(?=\/|$)/, ”) || '/'`。
 func normalizeV1BetaPrefixPath(requestPath string) string {
 	if match := v1betaPrefixPattern.FindStringSubmatchIndex(requestPath); match != nil {
 		return "/" + requestPath[match[1]:]

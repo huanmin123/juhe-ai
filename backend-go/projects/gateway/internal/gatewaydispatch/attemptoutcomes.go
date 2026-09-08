@@ -62,6 +62,12 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			ConfirmSameAccountApiKeyFailures: func() error {
 				return e.recordConfirmedSameAccountApiKeyFailures(ctx, confirmFailures, c.account, usageContext)
 			},
+			// D-111（BUG-0175）：成功侧结算随协议成功在链上消费（Node
+			// recordGatewayAccountApiKeySuccess 的成功触发点；nil 端口时为
+			// 中性 no-op）。
+			ConfirmAccountAPIKeySuccess: func() error {
+				return e.recordAccountAPIKeySuccess(ctx, c.account, usageContext)
+			},
 			ConfirmHalfOpenSuccess: func() bool {
 				if !in.automaticAccountStateMutationAllowed {
 					return false

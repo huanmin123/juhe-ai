@@ -26,6 +26,36 @@ func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
 	return d.Auth.RequireSession(touch)
 }
 
+// createFingerprint mirrors the mutation-guard fingerprint of
+// authorizations.routes.ts:221-231; the owner component comes from the
+// ?systemAccountId scope query, which the my-* surface pins to the empty
+// string because forceSelfAccessScope deletes the parameter before the router
+// runs.
+func createFingerprint(r *http.Request, owner string) (any, error) {
+	return map[string]any{
+		"owner":         owner,
+		"resourceType":  kernel.TextField(kernel.BodyField(r, "resourceType")),
+		"resourceId":    kernel.TextField(kernel.BodyField(r, "resourceId")),
+		"granteeType":   kernel.TextField(kernel.BodyField(r, "granteeType")),
+		"granteeId":     kernel.TextField(kernel.BodyField(r, "granteeId")),
+		"targetGroupId": kernel.TextField(kernel.BodyField(r, "targetGroupId")),
+		"remark":        kernel.TextField(kernel.BodyField(r, "remark")),
+		"expiresAt":     kernel.TextField(kernel.BodyField(r, "expiresAt")),
+		"limits":        kernel.BodyField(r, "limits"),
+	}, nil
+}
+
+// writeScopeQueryBadRequest mirrors parseRequestScopeQuery
+// (request-scope-query.ts): ?systemAccountId is optional, but a
+// present-and-blank value fails min(1, '系统账号 ID 不能为空') and renders as
+// 400 '查询参数不合法' (D-216 present-but-empty semantics). Every write route
+// in authorizations.routes.ts runs this validation before its body schema.
+func writeScopeQueryBadRequest(w http.ResponseWriter, r *http.Request) bool {
+	parser := newQueryParser(r)
+	parser.text("systemAccountId", "系统账号 ID 不能为空")
+	return parser.writeBadRequest(w, "查询参数不合法")
+}
+
 // normalizeMutationVersion mirrors rfc3339InstantSchema('授权配置版本格式不正确')
 // (authorizations.routes.ts:33-35, :123-124, :136): the optimistic-lock version
 // must be an absolute RFC3339 instant and is canonicalized to UTC milliseconds
@@ -129,6 +159,34 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("DELETE "+prefix+"/my-authorizations/{id}/return", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.returnValue(w, r, true)
 	})))
+	// D-215: the user-side write surface. Node mounts the same router under
+	// `/my-authorizations` + forceSelfAccessScope (scope-boundary regression
+	// mount :68), so POST create / PATCH update / PATCH expire / DELETE revoke
+	// all serve the my-* prefix with the viewer pinned as owner scope.
+	k.Register("POST "+prefix+"/my-authorizations", d.RequireSelf(
+		kernel.MutationGuardMiddleware(kernel.MutationGuardOptions{
+			OperationKey: "authorizations.create",
+			// Node succeededTtlMs: 0 (authorizations.routes.ts:219) = success is
+			// immediately retryable; failures keep the default 10s window.
+			SucceededTTL:  kernel.DedupNoRetention,
+			FailedTTL:     0,
+			ProcessingTTL: authorizationsProcessingTTL,
+			// forceSelfAccessScope deletes ?systemAccountId before the router
+			// runs, so the dedupe scope and owner fingerprint stay empty on the
+			// my-* surface no matter what the client sent.
+			Scope:       func(*http.Request) (any, error) { return "", nil },
+			Fingerprint: func(r *http.Request) (any, error) { return createFingerprint(r, "") },
+		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			d.create(w, r)
+		})),
+	))
+	k.Register("PATCH "+prefix+"/my-authorizations/{id}", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.patchSelf(w, r, false)
+	})))
+	k.Register("PATCH "+prefix+"/my-authorizations/{id}/expire", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.patchSelf(w, r, true)
+	})))
+	k.Register("DELETE "+prefix+"/my-authorizations/{id}", d.RequireSelf(http.HandlerFunc(d.revokeSelf)))
 
 	k.Register("GET "+prefix+"/authorizations", d.RequireAdminAuthz(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.list(w, r, false)
@@ -148,17 +206,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 				return strings.TrimSpace(r.URL.Query().Get("systemAccountId")), nil
 			},
 			Fingerprint: func(r *http.Request) (any, error) {
-				return map[string]any{
-					"owner":         strings.TrimSpace(r.URL.Query().Get("systemAccountId")),
-					"resourceType":  kernel.TextField(kernel.BodyField(r, "resourceType")),
-					"resourceId":    kernel.TextField(kernel.BodyField(r, "resourceId")),
-					"granteeType":   kernel.TextField(kernel.BodyField(r, "granteeType")),
-					"granteeId":     kernel.TextField(kernel.BodyField(r, "granteeId")),
-					"targetGroupId": kernel.TextField(kernel.BodyField(r, "targetGroupId")),
-					"remark":        kernel.TextField(kernel.BodyField(r, "remark")),
-					"expiresAt":     kernel.TextField(kernel.BodyField(r, "expiresAt")),
-					"limits":        kernel.BodyField(r, "limits"),
-				}, nil
+				return createFingerprint(r, strings.TrimSpace(r.URL.Query().Get("systemAccountId")))
 			},
 		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			d.create(w, r)
@@ -274,6 +322,11 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 }
 
 func (d *Deps) find(w http.ResponseWriter, r *http.Request, selfOnly bool) {
+	// authorizations.routes.ts:286-291: the detail route validates the scope
+	// query before the params schema.
+	if !writeScopeQueryBadRequest(w, r) {
+		return
+	}
 	access := d.accessFor(r, selfOnly)
 	summary, err := d.Store.Find(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -305,6 +358,11 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 	auth := authsys.AuthContextFrom(r)
 	if auth == nil {
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	// authorizations.routes.ts:233-237: the scope query schema runs before the
+	// body schema on both surfaces.
+	if !writeScopeQueryBadRequest(w, r) {
 		return
 	}
 	selfOnly := strings.HasSuffix(r.URL.Path, "/my-authorizations")
@@ -400,6 +458,12 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 				actionSummary = "重新激活资源授权："
 			}
 			summary := actionSummary + result.Item.ResourceID
+			// Node mode = operationMode(requestAccess): the my-* surface runs
+			// under forceSelfAccessScope, so the log degrades to 'self'.
+			mode := "admin"
+			if selfOnly {
+				mode = "self"
+			}
 			if auth != nil {
 				d.Sink.Record(authsys.OperationLogEntry{
 					ActorSystemAccountID:          auth.SystemAccountID,
@@ -407,7 +471,7 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 					ActorDisplayName:              auth.DisplayName,
 					ActorRole:                     auth.Role,
 					OperationScopeSystemAccountID: actor,
-					Mode:                          "admin",
+					Mode:                          mode,
 					Module:                        "authorizations",
 					Action:                        "create",
 					OperationKey:                  "authorizations.create",
@@ -431,10 +495,28 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 	kernel.WriteJSON(w, status, map[string]any{"data": data})
 }
 
+// revoke keeps the unscoped administrator surface (authorizations route
+// family).
 func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
+	d.revokeScoped(w, r, false)
+}
+
+// revokeSelf serves DELETE /my-authorizations/{id}: the viewer is pinned as
+// the owner scope, so a grantee cannot revoke an inbound grant (scope
+// boundary regression :747).
+func (d *Deps) revokeSelf(w http.ResponseWriter, r *http.Request) {
+	d.revokeScoped(w, r, true)
+}
+
+func (d *Deps) revokeScoped(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	auth := authsys.AuthContextFrom(r)
 	if auth == nil {
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	// authorizations.routes.ts:385-389: scope query first, then params, then
+	// the body schema.
+	if !writeScopeQueryBadRequest(w, r) {
 		return
 	}
 	var body struct {
@@ -453,8 +535,14 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 	// Node :401 passes getRequestAccessScope(query.systemAccountId) into the
 	// revoke mutation; the store filters resource_owner_system_account_id by
 	// the administrator scope and reports out-of-scope grants as not_found.
-	access := d.accessFor(r, false)
-	mutation, err := d.Store.RevokeForOwner(r.Context(), r.PathValue("id"), version, auth.SystemAccountID, access.FilterID)
+	// The my-* surface pins the owner scope to the viewer.
+	ownerScope := d.accessFor(r, false).FilterID
+	mode := "admin"
+	if selfOnly {
+		ownerScope = auth.SystemAccountID
+		mode = "self"
+	}
+	mutation, err := d.Store.RevokeForOwner(r.Context(), r.PathValue("id"), version, auth.SystemAccountID, ownerScope)
 	if err != nil {
 		kernel.WriteBadRequest(w, "回收授权失败")
 		return
@@ -470,11 +558,14 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Claim #11: only the updated outcome writes an operation log and it
-	// carries the real previous status (authorizations.routes.ts:410-424).
+	// carries the real previous status (authorizations.routes.ts:410-424). The
+	// log scope follows outcome.context.resourceOwnerSystemAccountId
+	// (authorizations.routes.ts:411).
 	if mutation.Status == "updated" && d.Sink != nil {
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
-			Mode: "admin", Module: "authorizations", Action: "revoke",
+			OperationScopeSystemAccountID: mutation.Result.OwnerID,
+			Mode:                          mode, Module: "authorizations", Action: "revoke",
 			OperationKey: "authorizations.revoke", ResourceType: "authorization",
 			ResourceID: mutation.Result.ID,
 			Summary:    "回收资源授权：" + mutation.Result.ResourceID,
@@ -498,6 +589,11 @@ func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request, selfOnly bool
 	auth := authsys.AuthContextFrom(r)
 	if auth == nil {
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	// authorizations.routes.ts:313-317: the return route validates the scope
+	// query before the params/body schemas.
+	if !writeScopeQueryBadRequest(w, r) {
 		return
 	}
 	var body struct {
@@ -555,10 +651,26 @@ func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request, selfOnly bool
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// patch keeps the administrator surface (update + expire variants).
 func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
+	d.patchScoped(w, r, expireOnly, false)
+}
+
+// patchSelf serves PATCH /my-authorizations/{id} and /expire: the viewer is
+// pinned as the owner scope (Node forceSelfAccessScope), so the log mode
+// degrades to 'self' and inbound grants resolve as not_found.
+func (d *Deps) patchSelf(w http.ResponseWriter, r *http.Request, expireOnly bool) {
+	d.patchScoped(w, r, expireOnly, true)
+}
+
+func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, selfOnly bool) {
 	auth := authsys.AuthContextFrom(r)
 	if auth == nil {
 		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	// authorizations.routes.ts:441-445 / :497-501: scope query first.
+	if !writeScopeQueryBadRequest(w, r) {
 		return
 	}
 	var body struct {
@@ -620,9 +732,16 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 			input.LimitsJSON = &text
 		}
 	}
-	access := d.accessFor(r, false)
+	// The my-* surface pins the owner scope to the viewer; the administrator
+	// surface narrows only when ?systemAccountId selects a scope account.
+	ownerScope := d.accessFor(r, false).FilterID
+	mode := "admin"
+	if selfOnly {
+		ownerScope = auth.SystemAccountID
+		mode = "self"
+	}
 	outcome, err := d.Store.PatchForOwner(r.Context(), r.PathValue("id"), input, version,
-		auth.SystemAccountID, access.FilterID)
+		auth.SystemAccountID, ownerScope)
 	if err != nil {
 		// Node surfaces the domain error message verbatim
 		// (authorizations.routes.ts:492/:548).
@@ -651,11 +770,14 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 		action = "update_expire"
 		summary = "更新授权有效期"
 	}
-	// Node logs only the updated outcome (authorizations.routes.ts:462/:518).
+	// Node logs only the updated outcome (authorizations.routes.ts:462/:518)
+	// with mode = operationMode(requestAccess) and the owner scope
+	// (outcome.context.resourceOwnerSystemAccountId).
 	if outcome.Status == "updated" && d.Sink != nil {
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID: auth.SystemAccountID, ActorRole: auth.Role,
-			Mode: "admin", Module: "authorizations", Action: action,
+			OperationScopeSystemAccountID: outcome.Result.OwnerID,
+			Mode:                          mode, Module: "authorizations", Action: action,
 			OperationKey: "authorizations." + action, ResourceType: "authorization",
 			ResourceID: outcome.Result.ID,
 			Summary:    summary + "：" + outcome.Result.ResourceID,

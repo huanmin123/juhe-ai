@@ -547,29 +547,31 @@ type lastUsedEpochWindow struct {
 	endExclusiveMs int64
 }
 
-// normalizeRange mirrors normalizeAccountUsageStatsRange: missing/invalid
-// dates fall back to the configured-today key, future dates clamp to today,
-// the window clamps to the most recent maxRangeDays days.
+// normalizeRange mirrors normalizeAccountUsageStatsRange
+// (usage-stats-helpers.ts:182-214, same helper the authz port
+// normalizeUsageStatsRange mirrors): missing/invalid dates fall back to the
+// configured-today key, BOTH ends clamp into the absolute window
+// [today-(maxRangeDays-1), today], an inverted range collapses, and the
+// window length clamps to the trailing maxRangeDays days counted from end.
+// BUG-0175 D-43: the previous port anchored the earliest bound at `end`, so
+// historical ranges echoed an unclamped window instead of Node's
+// today-anchored [today-30, today] response range.
 func normalizeRange(startRaw, endRaw string, now time.Time, location *time.Location) Range {
 	todayKey := now.In(location).Format("2006-01-02")
-	end := normalizeDateKey(endRaw, todayKey)
-	if end > todayKey {
-		end = todayKey
+	earliest := addDateKey(todayKey, -(maxRangeDays - 1))
+	end := todayKey
+	if endRaw != "" {
+		end = clampDateKey(normalizeDateKey(endRaw, todayKey), todayKey, earliest)
 	}
-	start := normalizeDateKey(startRaw, todayKey)
-	if start > todayKey {
-		start = todayKey
+	start := todayKey
+	if startRaw != "" {
+		start = clampDateKey(normalizeDateKey(startRaw, todayKey), todayKey, earliest)
 	}
 	if start > end {
 		start = end
 	}
-	endTime := parseDateKeyOrToday(end, todayKey)
-	earliest := endTime.AddDate(0, 0, -(maxRangeDays - 1)).Format("2006-01-02")
-	if start < earliest {
-		start = earliest
-	}
-	if end < earliest {
-		end = earliest
+	if windowStart := addDateKey(end, -(maxRangeDays - 1)); start < windowStart {
+		start = windowStart
 	}
 	return Range{
 		StartDate: start,
@@ -577,6 +579,28 @@ func normalizeRange(startRaw, endRaw string, now time.Time, location *time.Locat
 		Days:      daysBetweenInclusive(start, end, todayKey),
 		MaxDays:   maxRangeDays,
 	}
+}
+
+// addDateKey advances a validated YYYY-MM-DD key by calendar days
+// (nextCalendarDateKey semantics).
+func addDateKey(value string, days int) string {
+	parsed, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return value
+	}
+	return parsed.AddDate(0, 0, days).Format("2006-01-02")
+}
+
+// clampDateKey clamps a validated date key into [earliest, todayKey]
+// (usage-stats-helpers clampCalendarDate).
+func clampDateKey(value, todayKey, earliest string) string {
+	if value > todayKey {
+		return todayKey
+	}
+	if value < earliest {
+		return earliest
+	}
+	return value
 }
 
 func normalizeDateKey(value, fallback string) string {

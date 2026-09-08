@@ -7,11 +7,11 @@ import (
 
 func TestStreamPreCommitSseEvidence(t *testing.T) {
 	tests := []struct {
-		name                          string
-		chunks                        [][]byte
-		wantDataEventObserved         bool
-		wantDataPayloadStarted        bool
-		wantOnlyNonSemanticFraming    bool
+		name                       string
+		chunks                     [][]byte
+		wantDataEventObserved      bool
+		wantDataPayloadStarted     bool
+		wantOnlyNonSemanticFraming bool
 	}{
 		{
 			name:                       "仅注释帧保持私有可丢弃",

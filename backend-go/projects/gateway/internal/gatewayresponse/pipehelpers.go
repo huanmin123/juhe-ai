@@ -188,16 +188,16 @@ func (p *streamPipe) omitBodyCaptureIfImageStream(inspection gatewayproto.Stream
 	p.responseCapture.Clear()
 	p.diagnosticCapture.Clear()
 	fields := map[string]any{
-		"event":              "gateway_stream_body_capture_omitted",
-		"reason":             "image_stream_payload",
-		"elapsedMs":          p.nowMs() - p.startedAt,
-		"chunkIndex":         p.chunkIndex,
-		"totalUpstreamBytes": p.totalUpstreamBytes,
-		"totalResponseBytes": p.totalResponseBytes,
-		"sseEventCount":      inspection.EventCount,
-		"lastSseEventType":   inspection.LastEventType,
+		"event":               "gateway_stream_body_capture_omitted",
+		"reason":              "image_stream_payload",
+		"elapsedMs":           p.nowMs() - p.startedAt,
+		"chunkIndex":          p.chunkIndex,
+		"totalUpstreamBytes":  p.totalUpstreamBytes,
+		"totalResponseBytes":  p.totalResponseBytes,
+		"sseEventCount":       inspection.EventCount,
+		"lastSseEventType":    inspection.LastEventType,
 		"recentSseEventTypes": inspection.RecentEventTypes,
-		"eofPendingFlush":    boolOrNil(eofPendingFlush),
+		"eofPendingFlush":     boolOrNil(eofPendingFlush),
 	}
 	p.logger.Info("gateway_stream_body_capture_omitted", fields, "网关识别到图像流输出，已省略流式响应正文捕获，仅保留元信息")
 }
@@ -222,38 +222,38 @@ func (p *streamPipe) bodyOmissionFor(inspection gatewayproto.StreamInspection) *
 
 // finishArgs 汇总 finishStreamResult 的分支入参。
 type finishArgs struct {
-	completed              bool
-	message                string
-	errorCode              string
-	usage                  gatewayproto.ParsedUsage
-	outputReceived         bool
-	estimatedOutputTokens  int
-	imageOutputReceived    bool
-	responseInspection     *ResponseInspectionDecision
+	completed                  bool
+	message                    string
+	errorCode                  string
+	usage                      gatewayproto.ParsedUsage
+	outputReceived             bool
+	estimatedOutputTokens      int
+	imageOutputReceived        bool
+	responseInspection         *ResponseInspectionDecision
 	passthroughUpstreamFailure bool
-	gatewayLocalFailure    bool
-	transportFailure       *StreamTransportFailure
+	gatewayLocalFailure        bool
+	transportFailure           *StreamTransportFailure
 }
 
 func (p *streamPipe) finishStreamResult(args finishArgs) StreamPipeResult {
 	result := StreamResult(StreamResultInput{
-		Completed:               args.completed,
-		Message:                 args.message,
-		ErrorCode:               args.errorCode,
-		FirstTokenMs:            p.firstTokenMs,
-		Usage:                   args.usage,
-		ResponseCapture:         p.responseCapture,
-		UpstreamCapture:         p.upstreamCapture,
-		DiagnosticCapture:       p.diagnosticCapture,
-		ResponseInspection:      args.responseInspection,
-		OutputReceived:          args.outputReceived,
-		EstimatedOutputTokens:   args.estimatedOutputTokens,
-		ImageOutputReceived:     args.imageOutputReceived,
-		CaptureSuccessPayloads:  p.captureSuccessPayloads,
-		BodyOmission:            p.bodyOmissionFor(gatewayproto.StreamInspection{}),
-		Observations:            p.observations,
-		ObservationOmittedCount: p.observationOmittedCount,
-		DownstreamBytesWritten:  p.downstreamCommit.DownstreamBytesWritten,
+		Completed:                       args.completed,
+		Message:                         args.message,
+		ErrorCode:                       args.errorCode,
+		FirstTokenMs:                    p.firstTokenMs,
+		Usage:                           args.usage,
+		ResponseCapture:                 p.responseCapture,
+		UpstreamCapture:                 p.upstreamCapture,
+		DiagnosticCapture:               p.diagnosticCapture,
+		ResponseInspection:              args.responseInspection,
+		OutputReceived:                  args.outputReceived,
+		EstimatedOutputTokens:           args.estimatedOutputTokens,
+		ImageOutputReceived:             args.imageOutputReceived,
+		CaptureSuccessPayloads:          p.captureSuccessPayloads,
+		BodyOmission:                    p.bodyOmissionFor(gatewayproto.StreamInspection{}),
+		Observations:                    p.observations,
+		ObservationOmittedCount:         p.observationOmittedCount,
+		DownstreamBytesWritten:          p.downstreamCommit.DownstreamBytesWritten,
 		UpstreamResponseBytesWrittenSet: true,
 		UpstreamResponseBytesWritten:    p.totalResponseBytes,
 		TransportCommittedSet:           true,

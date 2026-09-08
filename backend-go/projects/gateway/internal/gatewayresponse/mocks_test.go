@@ -25,7 +25,7 @@ func newMockAuditCapture() *mockAuditCapture {
 	return &mockAuditCapture{captureSuccesses: true}
 }
 
-func (m *mockAuditCapture) BindContext(gatewaypreauth.AuditGatewayContext)       {}
+func (m *mockAuditCapture) BindContext(gatewaypreauth.AuditGatewayContext) {}
 func (m *mockAuditCapture) AddGatewayMetadata(label string, metadata map[string]any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

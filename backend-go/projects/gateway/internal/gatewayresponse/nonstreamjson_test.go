@@ -249,11 +249,11 @@ func TestShouldHandleOpenAIUpstreamResponseAsStream(t *testing.T) {
 
 func TestNormalizeV1PrefixPath(t *testing.T) {
 	tests := map[string]string{
-		"/v1/models":   "/models",
-		"/v1":          "/",
-		"/models":      "/models",
+		"/v1/models":     "/models",
+		"/v1":            "/",
+		"/models":        "/models",
 		"/v1beta/models": "/v1beta/models",
-		"":             "/",
+		"":               "/",
 	}
 	for input, want := range tests {
 		if got := normalizeV1PrefixPath(input); got != want {

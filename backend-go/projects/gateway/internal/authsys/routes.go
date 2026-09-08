@@ -19,12 +19,15 @@ func (d *Deps) MountAuth(k *kernel.Kernel, cookieSameSite string, cookieSecure b
 	k.RegisterFunc("GET "+prefix+"/captcha", d.getCaptcha)
 	k.RegisterFunc("POST "+prefix+"/login", d.postLogin(cookieSameSite, cookieSecure))
 	k.RegisterFunc("POST "+prefix+"/logout", d.postLogout(cookieSameSite, cookieSecure))
-	k.Register("GET "+prefix+"/me", d.RequireSession(false)(http.HandlerFunc(d.getMe)))
-	k.Register("GET "+prefix+"/profile", d.RequireSession(false)(http.HandlerFunc(d.getProfile)))
-	k.Register("PATCH "+prefix+"/me", d.RequireSession(true)(http.HandlerFunc(d.patchMe)))
-	k.Register("POST "+prefix+"/change-password", d.RequireSession(true)(http.HandlerFunc(d.postChangePassword)))
+	// The auth family mirrors requireSessionContext (auth.routes.ts:396):
+	// no global must_change_password gate, so a forced-password-change account
+	// can still read /me and clear the flag via /change-password.
+	k.Register("GET "+prefix+"/me", d.RequireSessionForAuthRoutes(false)(http.HandlerFunc(d.getMe)))
+	k.Register("GET "+prefix+"/profile", d.RequireSessionForAuthRoutes(false)(http.HandlerFunc(d.getProfile)))
+	k.Register("PATCH "+prefix+"/me", d.RequireSessionForAuthRoutes(true)(http.HandlerFunc(d.patchMe)))
+	k.Register("POST "+prefix+"/change-password", d.RequireSessionForAuthRoutes(true)(http.HandlerFunc(d.postChangePassword)))
 	k.RegisterFunc("POST "+prefix+"/temporary-access-tokens", d.postTemporaryAccessToken)
-	k.Register("POST "+prefix+"/temporary-access-tokens/revoke", d.RequireSession(true)(http.HandlerFunc(d.postTemporaryAccessTokenRevoke)))
+	k.Register("POST "+prefix+"/temporary-access-tokens/revoke", d.RequireSessionForAuthRoutes(true)(http.HandlerFunc(d.postTemporaryAccessTokenRevoke)))
 }
 
 func (d *Deps) getCaptcha(w http.ResponseWriter, r *http.Request) {

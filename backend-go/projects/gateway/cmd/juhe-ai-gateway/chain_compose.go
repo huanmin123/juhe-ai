@@ -15,6 +15,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,12 +37,15 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // gatewaybodyLogger adapts the chain slog logger onto the gatewaybody.Logger
@@ -78,6 +83,25 @@ type chainRuntimeDeps struct {
 	AuditUsageDispatch gatewayusage.AuditDispatcher
 	// SpoolDirectory enables the durable usage-record spool.
 	SpoolDirectory string
+	// Usage spool capacity knobs（D-209，Node runtimeConfig.usageSpool：
+	// JUHE_AI_USAGE_SPOOL_MAX_ITEMS / MAX_MB / REPLAY_BATCH_SIZE /
+	// REPLAY_INTERVAL_MS）。<=0 时回落 Node 同值默认。
+	UsageSpoolMaxItems         int
+	UsageSpoolMaxBytes         int
+	UsageSpoolReplayBatchSize  int
+	UsageSpoolReplayIntervalMs int
+	// UsageFinalizationMaxItems 是用量收尾队列容量（D-147，Node
+	// runtimeConfig.gateway.usageFinalizationMaxItems，
+	// JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS 默认 2048）。<=0 回落
+	// 同值默认。
+	UsageFinalizationMaxItems int
+	// ConcurrencyGlobalMax mirrors Node runtimeConfig.concurrency.globalMax
+	//（JUHE_AI_CONCURRENCY_GLOBAL_MAX 默认 5000）：用量收尾队列并发上限与
+	// dispatch 全局并发槽容量同源。
+	ConcurrencyGlobalMax int
+	// UpstreamURLSecurity 是请求期上游 URL 安全配置（D-192/D-146，Node
+	// runtimeConfig.upstreamUrlSecurity）。
+	UpstreamURLSecurity UpstreamURLSecurityConfig
 	// QueueDefaults carries the concurrency.globalMax derived DEFAULT
 	// high-concurrency scheduling bounds (Node runtimeConfig.concurrency.
 	// globalMax, default 5000) for the speed-first body admission gate.
@@ -179,6 +203,21 @@ type chainRuntimeDeps struct {
 	HotQualityFactory gatewaydispatch.HotQualityAttemptLifecycleFactory
 	// WakeRecoverableWaiter 绑定半开租约释放 → 恢复等待者唤醒（D-134）。
 	WakeRecoverableWaiter func(runtimeKey string)
+
+	// ---- W4-B production wiring (BUG-0175: D-111/D-114/D-132)。nil 仅出现
+	// 在组合测试，链条回落既有的显式降级实现。 ----
+	// AccountAPIKeyGuard 是 D-111 瞬态加载的守卫（chainRuntimeCachePort）。
+	AccountAPIKeyGuard *gatewayaccounteffects.AccountAPIKeyFailureGuard
+	// APIKeyEffects 是 D-111 的账户 API Key 效果链 dispatch 端口。
+	APIKeyEffects gatewaydispatch.APIKeyEffectsPort
+	// ConfiguredPolicyAvoidance 是 D-132 的配置策略避让服务（写侧 + 候选
+	// 过滤装饰器 + 响应层副作用）。
+	ConfiguredPolicyAvoidance *gatewayaccounteffects.ConfiguredPolicyAvoidanceService
+	// ProxyHealthService 是 D-132 响应层 avoid_upstream_bucket_ttl 的桶避让
+	// 写侧（具体服务，端口之上的旁路写面）。
+	ProxyHealthService *gatewayproxyhealth.ProxyHealthService
+	// LatencyService 是 D-114 的普通路由速度优先时延降级服务。
+	LatencyService *gatewayproxyhealth.LatencyDegradationService
 }
 
 // sessionIdentityServices bundles the G14 services with their secret.
@@ -236,9 +275,19 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	}
 
 	// ---- usage service + persistence bridge (adapter 5) ----
-	spool := newUsageSpool(deps.SpoolDirectory, clock, logger)
+	spool := newUsageSpool(deps.SpoolDirectory, clock, logger, usageSpoolCapacity{
+		MaxItems:         deps.UsageSpoolMaxItems,
+		MaxBytes:         deps.UsageSpoolMaxBytes,
+		ReplayBatchSize:  deps.UsageSpoolReplayBatchSize,
+		ReplayIntervalMs: deps.UsageSpoolReplayIntervalMs,
+	})
 	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096, Logger: logger}, spool)
-	dispatch := gatewayusage.NewFinalizationDispatch(recorder, spoolOverflow{spool: spool}, 0, 0)
+	// D-147（BUG-0175）：收尾队列容量/并发改由组合根 env 旋钮传入——
+	// JUHE_AI_GATEWAY_USAGE_FINALIZATION_MAX_ITEMS 与
+	// JUHE_AI_CONCURRENCY_GLOBAL_MAX（Node runtimeConfig.gateway.
+	// usageFinalizationMaxItems / concurrency.globalMax）；此前硬传 (0,0)
+	// 使两个 env 对队列失效，只能吃到包级默认。
+	dispatch := gatewayusage.NewFinalizationDispatch(recorder, spoolOverflow{spool: spool}, deps.UsageFinalizationMaxItems, deps.ConcurrencyGlobalMax)
 	dispatch.OverflowEnabled = spool != nil
 	usageService := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
 		WithClock(clock).
@@ -247,7 +296,24 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		// gate is ServiceConfig.SyncPricingAllowed above; the adapter resolves
 		// the catalog row through the same runtime cache and bills through the
 		// shared internal/pricing engine (Node model-catalog.service.ts).
-		WithPricingCatalog(newChainUsagePricingCatalog(deps.Cache))
+		WithPricingCatalog(newChainUsagePricingCatalog(deps.Cache)).
+		// D-190（BUG-0175）：上游失败 prometheus 指标族生产装配——
+		// recordGatewayUpstreamFailureMetric 从此有进程内注册表可写。
+		WithMetrics(gatewayusage.HTTPMetrics{})
+
+	// D-190 / D-191（BUG-0175）：kernel 边界的 HTTP 指标钩子与请求生命周期
+	// 事件汇。事件字段经 slog JSON handler 落成顶层键，运行日志检索
+	// （logreads runtime_grep）按 event/traceId 解析的契约由此恢复。
+	kernel.SetHTTPMetricHooks(&kernel.HTTPMetricHooks{
+		Start: func(path string, method string, startedAtMs int64) any {
+			return gatewayusage.StartHTTPMetricRequest(path, method, startedAtMs)
+		},
+		Finish: func(request any, statusCode *int, outcome string, finishedAtMs int64, failureScope string) {
+			handle, _ := request.(*gatewayusage.HTTPMetricRequest)
+			gatewayusage.FinishHTTPMetricRequest(handle, statusCode, outcome, finishedAtMs, failureScope)
+		},
+	})
+	kernel.SetRequestEventSink(kernel.NewSlogRequestEventSink(logger))
 
 	// ---- response sink (G16) ----
 	// The models fast-path reads the client model catalog through the same
@@ -265,11 +331,21 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	observability := newSlogObservability(logger, clock)
 
 	// ---- body pipeline (request/body-middleware.ts) ----
-	// TextRawBodyLimitMegabytes stays unconfigured: the settings-driven
-	// override rides on the G05 runtime snapshot the preflight reads; the
-	// capture-time provider lands with that slice (default 16 MiB holds).
+	// D-119（BUG-0175）：拒绝记录 Recorder 与文本 lane 的 settings 覆盖装配。
+	// Recorder 落 dropped audit + usage failure（Node recordGatewayBodyRejection，
+	// 413/503/429 拒绝面此前不写任何审计/用量）；TextRawBodyLimitMegabytes 读
+	// 运行时快照（req.gatewayRuntime.settings.gatewayTextRawBodyLimitMegabytes），
+	// 读取失败回落 16 MiB 默认。
+	rejectionRecorder := &chainBodyRejectionRecorder{
+		audit:        deps.AuditDispatch,
+		auditEnabled: deps.AuditLogEnabled,
+		usage:        usageService,
+		clock:        clock,
+	}
 	bodyPipeline := gatewaybody.NewMiddleware(gatewaybody.Config{
-		Logger: gatewaybodyLogger{inner: logger},
+		Logger:                    gatewaybodyLogger{inner: logger},
+		Recorder:                  rejectionRecorder,
+		TextRawBodyLimitMegabytes: chainTextRawBodyLimitOf(deps.Cache),
 	})
 
 	// ---- route resolver (adapter 1) ----
@@ -325,7 +401,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		// input_unavailable 拒绝并结算 fence（turnprobe 契约）。
 		chainTurnAvoidanceProbe = newChainTurnAvoidanceProbeService(chainTurnRetry, clock, chainHealthDispatch)
 	}
-	engine := gatewaydispatch.NewEngine(newChainProviderDriver(), &chainFailureDispatcher{
+	// D-151（BUG-0175）接线：把 runtime cache 的 provider model catalog 适配进
+	// gpt 请求覆盖能力解析（Nil cache 保持能力解析为空，覆盖保持惰性）。
+	engine := gatewaydispatch.NewEngine(newChainProviderDriverWithCache(deps.Cache), &chainFailureDispatcher{
 		usage:             usageService,
 		affinity:          sessionAffinity,
 		clientStrategy:    codexClientStrategy,
@@ -340,11 +418,33 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// B-1（BUG-0174）波1遗留接线：dispatch 的 Key 指纹密钥与水合层同源
 	//（chain_runtime.go newChainAccountsSelectorWithStats 的 cfg.Secret）。
 	engine.Config.Secret = deps.EngineSecret
+	// D-192/D-146（BUG-0175）接线：请求期上游 URL 安全（DNS resolve-all +
+	// 钉扎）与全局并发槽。此前 engine.Transport 保持零值——Governor=Nop、
+	// URLPolicy=Passthrough，UnsafeResolvedUpstreamURLError 有消费端无
+	// producer。容量取 JUHE_AI_CONCURRENCY_GLOBAL_MAX（Node
+	// concurrency.globalMax）；客户端池按代理维度复用 keep-alive 传输。
+	upstreamURLPolicy := gatewaydispatch.NewResolvedUpstreamURLPolicy(deps.UpstreamURLSecurity)
+	upstreamClientPool := sharedupstreamhttp.NewClientPool()
+	engine.Transport = gatewaydispatch.TransportDeps{
+		Governor:   gatewaydispatch.NewBoundedConcurrencyGovernor(deps.ConcurrencyGlobalMax),
+		URLPolicy:  upstreamURLPolicy,
+		ClientPool: upstreamClientPool,
+		DialGuard:  upstreamURLPolicy.Guard(),
+	}
+	// 辅助派发器与主尝试链共用同一 TransportDeps（零值 deps 仅保留给组合
+	// 测试——newChainHybridAuxiliaryDispatcher 不经由此接线时）。
+	wireChainHybridAuxiliaryTransport(deps.HybridAuxiliary, engine.Transport)
 	// B-3（BUG-0174）波1遗留接线：Redis 轮转计数器（nil 保持进程内回退）。
 	engine.KeyRotation = deps.KeyRotation
 	engine.Clock = clock
 	engine.Affinity = sessionAffinity
-	engine.Latency = &degradedLatency{}
+	// W4-B（BUG-0175）D-114 接线：普通路由速度优先时延降级排序端口
+	//（nil 保持 degradedLatency 显式降级——组合测试专用）。
+	if deps.LatencyService != nil {
+		engine.Latency = chainLatencyDegradationPort{service: deps.LatencyService}
+	} else {
+		engine.Latency = &degradedLatency{}
+	}
 	// D-136（BUG-0175）接线：上游桶健康排序 + 失败记录（nil 保持显式降级）。
 	if deps.ProxyHealth != nil {
 		engine.ProxyHealth = deps.ProxyHealth
@@ -390,10 +490,27 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	}
 	engine.Concurrency = newChainConcurrencyStore(deps.ConcurrencyTracker)
 	engine.Cache = newChainRuntimeCachePort(deps.Cache)
+	// W4-B（BUG-0175）D-111 接线：瞬态加载守卫 + API Key 效果链端口
+	//（nil 守卫保持空集降级；nil 端口保持 confirmed-rotation 静默跳过——
+	// 仅组合测试）。
+	if deps.AccountAPIKeyGuard != nil {
+		engine.Cache.(*chainRuntimeCachePort).guard = deps.AccountAPIKeyGuard
+	}
+	if deps.APIKeyEffects != nil {
+		engine.APIKeyEffects = deps.APIKeyEffects
+	}
 	engine.Usage = usageAttemptRecorderAdapter{service: usageService}
 	engine.Suppression = deps.Suppression
 	if engine.Suppression == nil {
 		engine.Suppression = &disabledSuppression{}
+	}
+	// W4-B（BUG-0175）D-132 接线：候选过滤装饰器——配置策略避让先于本地
+	// 屏蔽过滤（Node filterGatewayAccountRuntimeSuppressions 第一步）。
+	if deps.ConfiguredPolicyAvoidance != nil {
+		engine.Suppression = &chainConfiguredPolicyAvoidanceSuppression{
+			inner:     engine.Suppression,
+			avoidance: deps.ConfiguredPolicyAvoidance,
+		}
 	}
 	engine.Degradation = deps.Degradation
 	if engine.Degradation == nil {
@@ -450,11 +567,25 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		speedFirstAdmission: &chainSpeedFirstBodyAdmissionGate{
 			preauth:       preauthService,
 			QueueDefaults: deps.QueueDefaults,
+			// D-119（BUG-0175）：429 背压拒绝面写 dropped audit + usage
+			// failure（Node recordGatewayBodyRejection）；此前 nil 保持静默。
+			Recorder: rejectionRecorder,
 		},
 		finalizationUsage:  recorder,
 		auditSettings:      auditSettingsSourceAdapter{enabled: deps.AuditLogEnabled},
 		auditDispatcher:    deps.AuditUsageDispatch,
 		usageModelResolver: usageModelResolverAdapter{},
+	}
+	// W4-B（BUG-0175）D-132 接线：响应层账户副作用面（配置策略避让 +
+	// 上游桶避让写侧）。nil 服务（组合测试）保持 nil——finalization 对 nil
+	// AccountEffects 已有守卫分支。
+	if deps.ConfiguredPolicyAvoidance != nil && deps.ProxyHealthService != nil && deps.Cache != nil {
+		chain.responseAccountEffects = &chainResponseAccountEffects{
+			avoidance:   deps.ConfiguredPolicyAvoidance,
+			proxyHealth: deps.ProxyHealthService,
+			cache:       deps.Cache,
+			affinity:    sessionAffinity,
+		}
 	}
 
 	shutdown := func() {
@@ -462,6 +593,8 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		if spool != nil {
 			spool.StopReplay()
 		}
+		// D-192/D-146：链条停机时释放上游 keep-alive 传输的空闲连接。
+		upstreamClientPool.CloseIdleConnections()
 	}
 	return chain, shutdown, nil
 }
@@ -477,7 +610,16 @@ func joinChinese(values []string) string {
 	return out
 }
 
-func newUsageSpool(directory string, clock gatewaypreauth.Clock, logger *slog.Logger) *gatewayusage.UsageRecordSpool {
+// usageSpoolCapacity 汇集 Node runtimeConfig.usageSpool 的四个容量旋钮
+// （D-209）；<=0 的字段回落 Node 同值默认。
+type usageSpoolCapacity struct {
+	MaxItems         int
+	MaxBytes         int
+	ReplayBatchSize  int
+	ReplayIntervalMs int
+}
+
+func newUsageSpool(directory string, clock gatewaypreauth.Clock, logger *slog.Logger, capacity usageSpoolCapacity) *gatewayusage.UsageRecordSpool {
 	if directory == "" {
 		return nil
 	}
@@ -486,13 +628,25 @@ func newUsageSpool(directory string, clock gatewaypreauth.Clock, logger *slog.Lo
 	// runtime mode (the Node standalone path enqueues into the jobs-module
 	// usagewriter, which this process cannot import — see chain_usage.go).
 	// Capacity defaults mirror runtimeConfig.usageSpool (JUHE_AI_USAGE_SPOOL_*).
+	if capacity.MaxItems <= 0 {
+		capacity.MaxItems = 250_000
+	}
+	if capacity.MaxBytes <= 0 {
+		capacity.MaxBytes = 4_096 * 1024 * 1024
+	}
+	if capacity.ReplayBatchSize <= 0 {
+		capacity.ReplayBatchSize = 500
+	}
+	if capacity.ReplayIntervalMs <= 0 {
+		capacity.ReplayIntervalMs = 1_000
+	}
 	return gatewayusage.NewUsageRecordSpool(gatewayusage.SpoolConfig{
 		Directory:        directory,
 		InstanceID:       "gateway-chain",
-		MaxItems:         250_000,
-		MaxBytes:         4_096 * 1024 * 1024,
-		ReplayBatchSize:  500,
-		ReplayIntervalMs: 1_000,
+		MaxItems:         capacity.MaxItems,
+		MaxBytes:         capacity.MaxBytes,
+		ReplayBatchSize:  capacity.ReplayBatchSize,
+		ReplayIntervalMs: capacity.ReplayIntervalMs,
 		Enabled:          true,
 	}, clock, slogLogger{inner: logger})
 }
@@ -556,12 +710,24 @@ func hybridAuxiliaryOf(dispatcher hybridAuxiliaryDispatcher) gatewayhybrid.Auxil
 type chainHybridAuxiliaryDispatcher struct {
 	cache  *gatewayruntimecache.Service
 	driver *chainProviderDriver
+	// transport 是与主尝试链同源的 TransportDeps（D-192/D-146）：并发槽 +
+	// URL 安全策略 + 钉扎拨号对辅助派发同样生效。
+	transport gatewaydispatch.TransportDeps
 }
 
 func newChainHybridAuxiliaryDispatcher(cache *gatewayruntimecache.Service) *chainHybridAuxiliaryDispatcher {
 	return &chainHybridAuxiliaryDispatcher{
 		cache:  cache,
 		driver: newChainProviderDriver(),
+	}
+}
+
+// wireChainHybridAuxiliaryTransport 把链条引擎的 TransportDeps 注回辅助派发
+// 器（D-192/D-146：组合根在 engine.Transport 装配完成后调用；非具体类型或
+// nil 引擎保持零值 deps 的测试语义）。
+func wireChainHybridAuxiliaryTransport(dispatcher hybridAuxiliaryDispatcher, transport gatewaydispatch.TransportDeps) {
+	if concrete, ok := dispatcher.(*chainHybridAuxiliaryDispatcher); ok && concrete != nil {
+		concrete.transport = transport
 	}
 }
 
@@ -672,6 +838,8 @@ func (d *chainHybridAuxiliaryDispatcher) DispatchHybridAuxiliaryChatCompletion(c
 			body = transformed.Body
 		}
 		timeoutMs := int64(input.TimeoutMs)
+		// D-192/D-146：辅助派发与主尝试链共用同一 TransportDeps（并发槽 +
+		// URL 安全策略 + 钉扎拨号），此前零值 deps 完全绕过这两层。
 		response, requestErr := gatewaydispatch.RequestUpstream(timeoutCtx, urls[0], gatewaydispatch.UpstreamRequestOptions{
 			Method:    http.MethodPost,
 			Header:    parts.Headers,
@@ -679,7 +847,7 @@ func (d *chainHybridAuxiliaryDispatcher) DispatchHybridAuxiliaryChatCompletion(c
 			ProxyURL:  deref(account.ProxyURL),
 			TimeoutMs: &timeoutMs,
 			Signal:    timeoutCtx,
-		}, gatewaydispatch.TransportDeps{})
+		}, d.transport)
 		if requestErr != nil {
 			message := requestErr.Error()
 			return auxiliaryDispatchFailure(input, input.DispatchErrorCode, firstNonEmptyString(message, input.DispatchErrorMessage), lastAccount, selection.GroupID, true, 0, false, true)
@@ -952,4 +1120,209 @@ func rawMessageString(raw json.RawMessage) string {
 		return ""
 	}
 	return value
+}
+
+// ---------------------------------------------------------------------------
+// body rejection recording（D-119；Node recordGatewayBodyRejection，
+// request/body-middleware.ts:639-711）
+// ---------------------------------------------------------------------------
+
+// chainBodyRejectionRecorder 把 body 拒绝面（413 尺寸 / 503 in-flight 与
+// worker / 429 speed-first 背压）落成 dropped audit + usage failure。审计按
+// 审计设置门控；usage failure 仅在 runtime 快照已解析出 API Key 时写（Node
+// !apiKey early return）。记录失败只告警，不改变原始拒绝响应。
+type chainBodyRejectionRecorder struct {
+	audit        gatewaypreauth.AuditDispatcher
+	auditEnabled func() bool
+	usage        *gatewayusage.Service
+	clock        gatewaypreauth.Clock
+}
+
+var _ gatewaybody.RejectionRecorder = (*chainBodyRejectionRecorder)(nil)
+
+func (r *chainBodyRejectionRecorder) RecordGatewayBodyRejection(req *http.Request, _ *gatewaybody.Request, input gatewaybody.RejectionInput) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Warn("网关请求体拒绝记录写入失败，已保留原始拒绝响应",
+				"event", "gateway_body_rejection_record_failed",
+				"reason", input.Reason,
+				"statusCode", input.StatusCode)
+		}
+	}()
+	requestCtx := kernel.Context(req)
+	traceID := requestCtx.TraceID
+	method := strings.ToUpper(req.Method)
+	if method == "" {
+		method = "UNKNOWN"
+	}
+	originalURL := req.URL.RequestURI()
+	path, queryString, _ := strings.Cut(originalURL, "?")
+	if path == "" {
+		path = req.URL.Path
+	}
+	message := input.ErrorMessage
+	if message == "" {
+		message = input.ResponsePayload.Error.Message
+	}
+	// Node: limitBytes + limitScope 存在时审计消息追加尺寸标注。
+	auditErrorMessage := message
+	if input.LimitBytes > 0 && input.LimitScope != "" {
+		auditErrorMessage = fmt.Sprintf("%s（rawBodyBytes=%d, limitBytes=%d, limitScope=%s）",
+			message, input.RawBodyBytes, input.LimitBytes, input.LimitScope)
+	}
+	r.dispatchDroppedAudit(req, requestCtx, traceID, method, path, queryString, auditErrorMessage, input)
+	if runtime := chainGatewayRuntimeOf(req); runtime != nil && runtime.APIKey != nil {
+		r.recordUsageFailure(requestCtx, req, traceID, message, input, runtime)
+	}
+}
+
+// dispatchDroppedAudit 对齐 dispatchDroppedAuditCapture：审计设置门控 +
+// finalized dropped envelope（reason 'gateway_body_rejected'）。
+func (r *chainBodyRejectionRecorder) dispatchDroppedAudit(req *http.Request, requestCtx *kernel.RequestContext, traceID string, method string, path string, queryString string, auditErrorMessage string, input gatewaybody.RejectionInput) {
+	if r.audit == nil || r.auditEnabled == nil || !r.auditEnabled() {
+		return
+	}
+	timestamp := r.clock.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	r.audit.Dispatch(gatewaypreauth.DispatchedAuditLogInput{
+		ID:              chainNewAuditID(r.clock),
+		LifecycleStatus: "finalized",
+		TraceID:         traceID,
+		TrafficSource:   gatewayTrafficSource,
+		AuditOutcome:    gatewaypreauth.AuditOutcomeGatewayFailed,
+		Success:         false,
+		Method:          method,
+		Path:            path,
+		QueryString:     queryString,
+		ClientIP:        requestCtx.ClientIP,
+		UserAgent:       req.Header.Get("User-Agent"),
+		FinalStatusCode: input.StatusCode,
+		ErrorPhase:      "gateway",
+		ErrorCode:       input.ErrorCode,
+		ErrorMessage:    auditErrorMessage,
+		SampleBucket:    0,
+		SampleReason:    "gateway_body_rejected",
+		CaptureStatus:   "complete",
+		StartedAt:       timestamp,
+		EndedAt:         timestamp,
+	})
+}
+
+// recordUsageFailure 对齐 recordGatewayFailure 的 body 拒绝分支：身份取自
+// runtime 快照（apiKey + groupAccess 元数据），请求快照按 bodyOmission 形态
+// 记录（正文不落库）。
+func (r *chainBodyRejectionRecorder) recordUsageFailure(requestCtx *kernel.RequestContext, req *http.Request, traceID string, message string, input gatewaybody.RejectionInput, runtime *gatewayruntimecache.GatewayRuntime) {
+	if r.usage == nil {
+		return
+	}
+	apiKey := runtime.APIKey
+	var groupFields gatewaypreauth.GroupUsageMetadataFields
+	if runtime.GroupAccess != nil {
+		groupFields = gatewaypreauth.GroupUsageMetadata(*runtime.GroupAccess)
+	}
+	endpoint := strings.ToUpper(req.Method) + " " + pathWithoutQueryOf(req)
+	failureContext := gatewayusage.GatewayFailureUsageContext{
+		GatewayUsageContext: gatewayusage.GatewayUsageContext{
+			TraceID:         traceID,
+			TrafficSource:   gatewayusage.OpenAIGatewayTrafficSource(gatewayTrafficSource),
+			ClientIP:        requestCtx.ClientIP,
+			SystemAccountID: apiKey.SystemAccountID,
+			APIKeyID:        apiKey.ID,
+			GroupID:         apiKey.SelectedGroupID,
+			Endpoint:        endpoint,
+			RequestSnapshot: gatewayusage.UsageRequestSnapshot{
+				Method:      strings.ToUpper(req.Method),
+				Path:        req.URL.Path,
+				OriginalURL: req.URL.RequestURI(),
+				ClientIP:    requestCtx.ClientIP,
+				TraceID:     traceID,
+				Headers:     map[string]any{},
+				BodyOmission: map[string]any{
+					"omitted":      true,
+					"reason":       input.Reason,
+					"message":      message,
+					"rawBodyBytes": input.RawBodyBytes,
+					"statusCode":   input.StatusCode,
+				},
+			},
+		},
+		ProviderCode:              groupFields.ProviderCode,
+		GroupOwnerSystemAccountID: groupFields.GroupOwnerSystemAccountID,
+		GroupAccessType:           groupFields.GroupAccessType,
+	}
+	payload := map[string]any{
+		"error": map[string]any{
+			"message": input.ResponsePayload.Error.Message,
+			"type":    input.ResponsePayload.Error.Type,
+		},
+	}
+	startedAtMs := requestCtx.StartedAt.UnixMilli()
+	_ = r.usage.RecordGatewayFailure(context.Background(), failureContext, gatewayusage.RecordGatewayFailureInput{
+		StatusCode:         input.StatusCode,
+		StartedAtMs:        startedAtMs,
+		ResponsePayload:    payload,
+		ErrorMessage:       message,
+		ErrorCode:          input.ErrorCode,
+		FailureAttribution: gatewayusage.UsageFailureAttribution(input.FailureAttribution),
+	})
+}
+
+func pathWithoutQueryOf(req *http.Request) string {
+	path := req.URL.Path
+	if path == "" {
+		path = strings.SplitN(req.URL.RequestURI(), "?", 2)[0]
+	}
+	return path
+}
+
+// chainGatewayRuntimeKey 携带 preauth 解析的 runtime 快照：body 拒绝记录在
+// body 阶段读取身份（Node req.gatewayRuntime 同源）；gatewaybody 无法引用
+// gatewaypreauth 类型，故以 context 值传递。
+type chainGatewayRuntimeKey struct{}
+
+func chainGatewayRuntimeOf(r *http.Request) *gatewayruntimecache.GatewayRuntime {
+	if r == nil {
+		return nil
+	}
+	runtime, _ := r.Context().Value(chainGatewayRuntimeKey{}).(*gatewayruntimecache.GatewayRuntime)
+	return runtime
+}
+
+// chainTextRawBodyLimitOf 提供捕获期文本 lane 上限 provider：读运行时设置
+// 快照（readCachedGatewaySettings）；快照缺失或未配置时保持 unconfigured
+// （gatewaybody 回落 16 MiB 默认）。
+func chainTextRawBodyLimitOf(cache *gatewayruntimecache.Service) gatewaybody.TextRawBodyLimitProvider {
+	return func() (int, bool) {
+		if cache == nil {
+			return 0, false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		settings, err := cache.ReadCachedGatewaySettings(ctx)
+		if err != nil || settings.GatewayTextRawBodyLimitMegabytes <= 0 {
+			return 0, false
+		}
+		return int(settings.GatewayTextRawBodyLimitMegabytes), true
+	}
+}
+
+// chainNewAuditID mirrors `audit_${Date.now()}_${randomUUID()}`（gateway
+// preauth 的审计 ID 形状，供组合根的 dropped audit 面复用）。
+func chainNewAuditID(clock gatewaypreauth.Clock) string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("audit_%d", clock.Now().UnixMilli())
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	dst := make([]byte, 36)
+	hex.Encode(dst, buf[:4])
+	dst[8] = '-'
+	hex.Encode(dst[9:13], buf[4:6])
+	dst[13] = '-'
+	hex.Encode(dst[14:18], buf[6:8])
+	dst[18] = '-'
+	hex.Encode(dst[19:23], buf[8:10])
+	dst[23] = '-'
+	hex.Encode(dst[24:], buf[10:])
+	return fmt.Sprintf("audit_%d_%s", clock.Now().UnixMilli(), string(dst))
 }

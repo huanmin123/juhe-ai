@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -382,6 +383,55 @@ func parseUpstreamURLParts(value string) (string, string, bool) {
 // EOF 时调用 Finish；观察器绝不改写字节。
 func ObserveUpstreamResponseModelBody(body io.Reader, observation *UpstreamResponseModelObservation) io.Reader {
 	return &observingUpstreamBodyReader{body: body, observation: observation}
+}
+
+// ObserveUpstreamResponseModelBodyPublishing 在观察包装之上追加发布语义
+// （BUG-0175 D-97）：干净 EOF 时先 Finish 再把 observation.Model() 交给
+// publish，提前 Close 时也按已观察状态发布一次。网关链用它把观察到的上游
+// 模型回填进响应快照（Node 的 upstreamResponseModelObservation?.model getter
+// 是使用点惰性求值；Go 的字符串字段在 body 消费完成、usage 记录之前由
+// publish 写入，EOF 发送先于管道完成，存在 happens-before 保证）。
+func ObserveUpstreamResponseModelBodyPublishing(body io.Reader, observation *UpstreamResponseModelObservation, publish func(model string)) io.ReadCloser {
+	return &publishingObservedBodyReader{
+		inner:       &observingUpstreamBodyReader{body: body, observation: observation},
+		observation: observation,
+		publish:     publish,
+	}
+}
+
+type publishingObservedBodyReader struct {
+	inner       io.Reader
+	observation *UpstreamResponseModelObservation
+	publish     func(model string)
+	publishOnce sync.Once
+}
+
+func (reader *publishingObservedBodyReader) Read(p []byte) (int, error) {
+	n, err := reader.inner.Read(p)
+	if err == io.EOF {
+		reader.publishObserved()
+	}
+	return n, err
+}
+
+// Close allows the publishing wrapper to travel behind an io.ReadCloser chain
+// and still publishes when the body is torn down before a clean EOF (Node's
+// getter simply answers with whatever was observed).
+func (reader *publishingObservedBodyReader) Close() error {
+	reader.publishObserved()
+	if closer, ok := reader.inner.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
+func (reader *publishingObservedBodyReader) publishObserved() {
+	reader.publishOnce.Do(func() {
+		if reader.publish == nil || reader.observation == nil {
+			return
+		}
+		reader.publish(reader.observation.Model())
+	})
 }
 
 type observingUpstreamBodyReader struct {

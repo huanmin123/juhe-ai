@@ -141,6 +141,10 @@ func transportKey(rawProxyURL string, options TransportOptions) string {
 	} else {
 		builder.WriteByte('0')
 	}
+	// The guard identity participates in the pool key: two guards must never
+	// share a pooled transport (their validated-dial policies could differ).
+	builder.WriteByte(0)
+	builder.WriteString(options.DialGuard.Key())
 	for _, key := range sortedHeaderKeys(options.ProxyConnectHeader) {
 		builder.WriteByte(0)
 		builder.WriteString(key)

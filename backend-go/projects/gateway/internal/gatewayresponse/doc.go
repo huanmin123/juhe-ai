@@ -1,6 +1,6 @@
 // Package gatewayresponse 是 Node backend/src/modules/gateway/response/ 的
 // Go 迁移（工作包 G16）：上游响应的流式管道、非流式管道、终态 finalization
-//（完成 / 失败 / 中止 / 客户端断开）、响应检查决策、失败分类、usage 快照组装
+// （完成 / 失败 / 中止 / 客户端断开）、响应检查决策、失败分类、usage 快照组装
 // 以及 G05 冻结的 ResponseSink port 的实现。
 //
 // 装配面：

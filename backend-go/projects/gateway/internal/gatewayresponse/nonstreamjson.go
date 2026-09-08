@@ -45,7 +45,7 @@ func ParseGatewayNonStreamJsonBody(bodyText string, hasBodyText bool, header htt
 }
 
 // IsOpenAIJsonResponseContentType 对齐 isOpenAIJsonResponseContentType
-//（responses.ts；Node 在 finalization / non-stream 管道同样使用）。
+// （responses.ts；Node 在 finalization / non-stream 管道同样使用）。
 func IsOpenAIJsonResponseContentType(contentType string) bool {
 	mimeType := responseMimeTypeOf(contentType)
 	return mimeType == "application/json" || strings.HasSuffix(mimeType, "+json")
@@ -85,13 +85,13 @@ func responseMimeTypeOf(contentType string) string {
 }
 
 var binaryApplicationMimeTypes = map[string]bool{
-	"application/pdf":               true,
-	"application/zip":               true,
+	"application/pdf":              true,
+	"application/zip":              true,
 	"application/x-zip-compressed": true,
-	"application/gzip":              true,
-	"application/x-gzip":            true,
-	"application/x-tar":             true,
-	"application/x-7z-compressed":   true,
+	"application/gzip":             true,
+	"application/x-gzip":           true,
+	"application/x-tar":            true,
+	"application/x-7z-compressed":  true,
 }
 
 // ---- 协议校验（non-stream-json-inspection.ts）----
@@ -214,7 +214,7 @@ func ValidateBufferedJsonProtocolResponse(parsedJsonBody GatewayNonStreamJsonBod
 			return protocolStructureFailurePtr("上游 Gemini Interactions JSON 响应结构无效：缺少 id 或 name")
 		}
 	case "unknown":
-		if (strings.Contains(requestPath, "/embeddings") || strings.Contains(requestPath, "/images")) {
+		if strings.Contains(requestPath, "/embeddings") || strings.Contains(requestPath, "/images") {
 			if _, ok := root["data"].([]any); !ok {
 				return protocolStructureFailurePtr("上游 JSON 响应结构无效：data 必须是数组")
 			}

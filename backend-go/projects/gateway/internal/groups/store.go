@@ -255,16 +255,16 @@ func emptyAccountStats() AccountStats {
 // with limited=true: team id, endedAt, revokedBy/revokedAt are dropped and
 // createdBy is blanked).
 type AuthorizationSourceSummary struct {
-	ID             string `json:"id"`
-	AuthorizationID string `json:"authorizationId"`
-	SourceType     string `json:"sourceType"`
-	SourceTeamName *string `json:"sourceTeamName,omitempty"`
-	Status         string `json:"status"`
-	ActivatedAt    *string `json:"activatedAt,omitempty"`
-	EndedReason    *string `json:"endedReason,omitempty"`
-	CreatedBy      string `json:"createdBy"`
-	CreatedAt      string `json:"createdAt"`
-	UpdatedAt      string `json:"updatedAt"`
+	ID              string  `json:"id"`
+	AuthorizationID string  `json:"authorizationId"`
+	SourceType      string  `json:"sourceType"`
+	SourceTeamName  *string `json:"sourceTeamName,omitempty"`
+	Status          string  `json:"status"`
+	ActivatedAt     *string `json:"activatedAt,omitempty"`
+	EndedReason     *string `json:"endedReason,omitempty"`
+	CreatedBy       string  `json:"createdBy"`
+	CreatedAt       string  `json:"createdAt"`
+	UpdatedAt       string  `json:"updatedAt"`
 }
 
 // AuthorizationSourceSummarySummary mirrors GroupListItem['authorizationSourceSummary'].
@@ -279,27 +279,27 @@ type AuthorizationSourceSummarySummary struct {
 // memberCount/accountIds, authorization fields only on authorized rows, and
 // accountStats carrying the hydrate keys (currentConcurrency/todayUsage).
 type ListItem struct {
-	ID                          string                           `json:"id"`
-	SystemAccountID             *string                          `json:"systemAccountId,omitempty"`
-	SystemAccountName           *string                          `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID        string                           `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName      *string                          `json:"ownerSystemAccountName,omitempty"`
-	Name                        string                           `json:"name"`
-	ProviderCode                string                           `json:"providerCode"`
-	Description                 *string                          `json:"description,omitempty"`
-	Enabled                     bool                             `json:"enabled"`
-	IsDefault                   bool                             `json:"isDefault"`
-	GroupType                   string                           `json:"groupType"`
-	AccessType                  string                           `json:"accessType"`
-	GroupAuthorizationID        *string                          `json:"groupAuthorizationId,omitempty"`
-	AuthorizationStatus         *string                          `json:"authorizationStatus,omitempty"`
-	AuthorizationExpiresAt      *string                          `json:"authorizationExpiresAt,omitempty"`
-	AuthorizationSourceSummary  *AuthorizationSourceSummarySummary `json:"authorizationSourceSummary,omitempty"`
-	UpdatedAt                   string                           `json:"updatedAt"`
-	AccountStats                AccountStats                     `json:"accountStats"`
-	CanEdit                     bool                             `json:"canEdit"`
-	CanDelete                   bool                             `json:"canDelete"`
-	CanReturn                   bool                             `json:"canReturn"`
+	ID                         string                             `json:"id"`
+	SystemAccountID            *string                            `json:"systemAccountId,omitempty"`
+	SystemAccountName          *string                            `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID       string                             `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName     *string                            `json:"ownerSystemAccountName,omitempty"`
+	Name                       string                             `json:"name"`
+	ProviderCode               string                             `json:"providerCode"`
+	Description                *string                            `json:"description,omitempty"`
+	Enabled                    bool                               `json:"enabled"`
+	IsDefault                  bool                               `json:"isDefault"`
+	GroupType                  string                             `json:"groupType"`
+	AccessType                 string                             `json:"accessType"`
+	GroupAuthorizationID       *string                            `json:"groupAuthorizationId,omitempty"`
+	AuthorizationStatus        *string                            `json:"authorizationStatus,omitempty"`
+	AuthorizationExpiresAt     *string                            `json:"authorizationExpiresAt,omitempty"`
+	AuthorizationSourceSummary *AuthorizationSourceSummarySummary `json:"authorizationSourceSummary,omitempty"`
+	UpdatedAt                  string                             `json:"updatedAt"`
+	AccountStats               AccountStats                       `json:"accountStats"`
+	CanEdit                    bool                               `json:"canEdit"`
+	CanDelete                  bool                               `json:"canDelete"`
+	CanReturn                  bool                               `json:"canReturn"`
 }
 
 // Detail mirrors the Node GroupSummary projection (findGroupSummary): the
@@ -617,6 +617,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 		}
 		items = append(items, listItem)
 	}
+	s.hydrateListAccountStats(ctx, items)
 	total := (page-1)*pageSize + len(items)
 	if hasMore {
 		total++
@@ -756,20 +757,20 @@ func (s *Store) canBindAccessRowValues(enabled bool, status, expiresAt sql.NullS
 // authorizedSourceRow is the resource_authorization_sources scan target
 // (authorization-read-loaders.ts) before viewer sanitization.
 type authorizedSourceRow struct {
-	id             string
+	id              string
 	authorizationID string
-	sourceType     string
-	sourceTeamID   sql.NullString
-	sourceTeamName sql.NullString
-	status         string
-	activatedAt    sql.NullString
-	endedAt        sql.NullString
-	endedReason    sql.NullString
-	createdBy      string
-	createdAt      string
-	revokedBy      sql.NullString
-	revokedAt      sql.NullString
-	updatedAt      string
+	sourceType      string
+	sourceTeamID    sql.NullString
+	sourceTeamName  sql.NullString
+	status          string
+	activatedAt     sql.NullString
+	endedAt         sql.NullString
+	endedReason     sql.NullString
+	createdBy       string
+	createdAt       string
+	revokedBy       sql.NullString
+	revokedAt       sql.NullString
+	updatedAt       string
 }
 
 // authorizationSources mirrors loadResourceAuthorizationSourcesByAuthorizationIds
@@ -938,6 +939,31 @@ func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[st
 		item.SystemAccountName = item.OwnerSystemAccountName
 	}
 	return item, nil
+}
+
+// hydrateListAccountStats merges the juhe_stats group_account_stats read into
+// the list projection's accountStats (BUG-0175 D-126 分组面，Node
+// buildGroupListItems loads loadGroupAccountStatsByGroupIds for every row,
+// owner and authorized alike). The D-38 FindDetail merge set the precedent:
+// a stats-reader failure keeps the empty projection instead of failing the
+// page, and the reader owns the TodayUsage/Usage payloads.
+func (s *Store) hydrateListAccountStats(ctx context.Context, items []ListItem) {
+	if len(items) == 0 || s.stats == nil {
+		return
+	}
+	groupIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		groupIDs = append(groupIDs, item.ID)
+	}
+	stats, err := s.stats.ReadGroupAccountStats(ctx, groupIDs)
+	if err != nil {
+		return
+	}
+	for index := range items {
+		if groupStats, ok := stats[items[index].ID]; ok {
+			items[index].AccountStats = groupStats
+		}
+	}
 }
 
 // FindDetail mirrors findGroupRowForAccessAsync + buildGroupSummaries: the

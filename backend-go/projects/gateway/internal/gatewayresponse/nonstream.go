@@ -27,24 +27,24 @@ const NonStreamUsageTailCaptureBytes = 256 * 1024
 
 // NonStreamPipeResult 对齐 NonStreamPipeResult 的消费子集。
 type NonStreamPipeResult struct {
-	CapturedBody         []byte
-	CapturedBodyText     string
-	DiagnosticBodyText   string
-	UsageTailText        string
-	FirstByteMs          *int64
-	TransferredBytes     int64
-	CaptureTruncated     bool
-	FullyBuffered        bool
+	CapturedBody            []byte
+	CapturedBodyText        string
+	DiagnosticBodyText      string
+	UsageTailText           string
+	FirstByteMs             *int64
+	TransferredBytes        int64
+	CaptureTruncated        bool
+	FullyBuffered           bool
 	InspectionLimitExceeded bool
 }
 
 // NonStreamPipeInput 对齐 pipeNonStreamUpstreamResponse 的入参子集。
 type NonStreamPipeInput struct {
-	Body            UpstreamBody
-	Downstream      StreamDownstream
-	StartedAtMs     int64
-	CaptureBytes    int
-	CaptureBody     bool
+	Body         UpstreamBody
+	Downstream   StreamDownstream
+	StartedAtMs  int64
+	CaptureBytes int
+	CaptureBody  bool
 	// InspectBytes>0 启用有界整体缓冲（ForInspection 路径）。
 	InspectBytes         int
 	RequireFullyBuffered bool
@@ -366,6 +366,19 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		return input.finalizeBufferedJSONProtocolFailure(failure, parsedForValidation, pipeResult, responseBody, responseBodyText, driver)
 	}
 	if pipeResult.FullyBuffered {
+		// 检查策略主链（D-112）：完整缓冲 JSON 先跑响应检查策略（含 codex
+		// 契约帧），命中时由此收尾（失败改写或服务端换号重试）；未命中回退
+		// 协议校验与原样发送。
+		parsedForInspection := ParseGatewayNonStreamJsonBody(responseBodyText, len(responseBodyText) > 0, input.UpstreamResponse.Header)
+		if handled := input.inspectBufferedGatewayJSONResponse(InspectBufferedGatewayJSONArgs{
+			ResponseBody:              pipeResult.CapturedBody,
+			ResponseBodyText:          responseBodyText,
+			ParsedJSONBody:            parsedForInspection,
+			FirstTokenMs:              pipeResult.FirstByteMs,
+			ProtocolValidationEnabled: protocolValidationEnabled,
+		}); handled != nil {
+			return *handled, nil
+		}
 		if protocolValidationEnabled {
 			parsedForValidation := ParseGatewayNonStreamJsonBody(responseBodyText, len(responseBodyText) > 0, input.UpstreamResponse.Header)
 			if failure := ValidateBufferedJsonProtocolResponse(parsedForValidation, true, false, string(responseEndpointFamily), LowercasedRequestPath(input.Req.PathAndQuery())); failure != nil {
@@ -527,8 +540,9 @@ func (input *HandleUpstreamResponseInput) handleNonStreamPipeError(pipeErr error
 	return UpstreamResponseHandlingResult{}, pipeErr
 }
 
-// finalizeBufferedJsonProtocolFailure 对齐 finalizeBufferedJsonProtocolFailure：
-// 完整但无效的 2xx 是本次尝试的确凿失败，按 502 返回协议诊断。
+// finalizeBufferedJsonProtocolFailure 的 Go 版：完整但无效的 2xx 是本次尝试
+// 的确凿失败，按 502 返回协议诊断。会话亲和遗忘与 http metric 标注对齐
+// non-stream-json-inspection.ts 的 finalizeBufferedJsonProtocolFailure。
 func (input *HandleUpstreamResponseInput) finalizeBufferedJSONProtocolFailure(
 	failure *ProtocolFailure,
 	parsedJsonBody GatewayNonStreamJsonBody,
@@ -547,6 +561,7 @@ func (input *HandleUpstreamResponseInput) finalizeBufferedJSONProtocolFailure(
 		}
 		usage = driver.ExtractUsageFromJSONTextFragment(text, true)
 	}
+	input.forgetSessionAffinityForFailure()
 	input.AuditCapture.CompleteAttempt(input.AuditAttemptID, AttemptAuditInput{
 		StatusCode:      input.UpstreamResponse.Status,
 		ResponseHeaders: input.UpstreamResponse.Header,
@@ -562,7 +577,7 @@ func (input *HandleUpstreamResponseInput) finalizeBufferedJSONProtocolFailure(
 			Account:         input.Account,
 			StatusCode:      input.UpstreamResponse.Status,
 			Success:         false,
-			Stream:          false,
+			Stream:          gatewaypreauth.IsOpenAIStreamRequest(input.Req),
 			FirstTokenMs:    pipeResult.FirstByteMs,
 			StartedAtMs:     input.StartedAtMs,
 			Usage:           usageWithObservedModel(usage, input.UpstreamResponse.UpstreamResponseModel),
@@ -581,21 +596,27 @@ func (input *HandleUpstreamResponseInput) finalizeBufferedJSONProtocolFailure(
 	if input.Deps != nil && input.Deps.AccountEffects != nil {
 		input.Deps.AccountEffects.DispatchRequestFailureAccountHealthCheck(input.UsageContext.TrafficSource, input.Account.GetID())
 	}
+	markHTTPMetricFailureScope("upstream")
 	clientErrorProtocol := gatewaypreauth.GatewayErrorProtocol(driver.ClientErrorProtocol())
 	responsePayload := gatewaypreauth.GatewayErrorPayloadOf(failure.Message, "upstream_response_error", failure.ErrorCode)
 	clientPayload := gatewaypreauth.GatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
 	sendGatewayErrorResponseForSink(input.Downstream.Res, 502, responsePayload, gatewaypreauth.SendGatewayErrorResponseOptions{
 		Protocol: clientErrorProtocol,
 	})
-	input.AuditCapture.Finalize(gatewaypreauth.AuditFinalizeInput{
+	finalizeInput := gatewaypreauth.AuditFinalizeInput{
 		Outcome:          "upstream_failed",
 		Success:          false,
 		StatusCode:       502,
+		ResponseHeaders:  responseHeadersToObject(input.Downstream.Res.Header()),
 		ResponseBody:     marshalClientPayload(clientPayload),
 		ResponsePartType: "gateway_error",
 		ErrorPhase:       "upstream_response",
 		ErrorCode:        failure.ErrorCode,
 		ErrorMessage:     failure.Message,
+	}
+	input.finalizeAuditWithExtras(finalizeInput, AuditFinalizeExtras{
+		AccountID:    input.Account.GetID(),
+		FirstTokenMs: pipeResult.FirstByteMs,
 	})
 	return UpstreamResponseHandlingResult{AlreadyFinalized: true, ErrorCode: failure.ErrorCode}, nil
 }
@@ -795,28 +816,28 @@ func FinalizeHandledUpstreamResponse(input HandleUpstreamResponseInput, result U
 			}
 		} else if !forwardedResponseSuccessful {
 			responseSnapshot = &UsageResponseSnapshotView{
-				UpstreamURL:  input.UpstreamURL,
-				StatusCode:   input.UpstreamResponse.Status,
-				Headers:      headerView(input.UpstreamResponse.Header),
-				BodyText:     result.ResponseBodyText,
+				UpstreamURL: input.UpstreamURL,
+				StatusCode:  input.UpstreamResponse.Status,
+				Headers:     headerView(input.UpstreamResponse.Header),
+				BodyText:    result.ResponseBodyText,
 			}
 		}
 		input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
-			UsageContext:              input.UsageContext,
-			Account:                   input.Account,
-			Stream:                    true,
-			StatusCode:                input.UpstreamResponse.Status,
-			Success:                   forwardedResponseSuccessful,
-			ProtocolValidatedSuccess:  forwardedResponseSuccessful && result.ProtocolValidatedSuccess,
+			UsageContext:                        input.UsageContext,
+			Account:                             input.Account,
+			Stream:                              true,
+			StatusCode:                          input.UpstreamResponse.Status,
+			Success:                             forwardedResponseSuccessful,
+			ProtocolValidatedSuccess:            forwardedResponseSuccessful && result.ProtocolValidatedSuccess,
 			AccountAPIKeySuccessAlreadyRecorded: true,
-			FirstTokenMs:              result.FirstTokenMs,
-			StartedAtMs:               input.StartedAtMs,
-			Usage:                     usageWithObservedModel(result.Usage, observedModel),
-			ErrorCode:                 finalErrorCode,
-			ErrorMessage:              finalErrorMessage,
-			FailureAttribution:        failureAttributionFor(forwardedResponseSuccessful),
-			RequestSnapshot:           requestSnapshot,
-			ResponseSnapshot:          responseSnapshot,
+			FirstTokenMs:                        result.FirstTokenMs,
+			StartedAtMs:                         input.StartedAtMs,
+			Usage:                               usageWithObservedModel(result.Usage, observedModel),
+			ErrorCode:                           finalErrorCode,
+			ErrorMessage:                        finalErrorMessage,
+			FailureAttribution:                  failureAttributionFor(forwardedResponseSuccessful),
+			RequestSnapshot:                     requestSnapshot,
+			ResponseSnapshot:                    responseSnapshot,
 		})
 	}
 	if result.BodyOmission != nil {

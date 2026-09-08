@@ -185,6 +185,14 @@ client_handoff {
 
 任何分组切换都不创建新预算，也不清空本请求已经尝试的协议作用域、运行态账号、物理凭据与 Key 集合。
 
+### 3.5.1 切号时冻结实际上游目标
+
+账户热质量、故障切号和路由 fallback 只能在请求级有效上游目标已经确定后选择后续账号。有效目标由第一次候选完成 mapping、状态恢复、协议 bridge 和上游 request preparation 后产生，至少包含 `providerCode`、`providerProtocolProfileID`、`upstreamModel`、`upstreamEndpointFamily`、精确 `upstreamEndpointMode`（如 `chat_sse` / `responses_sse`）以及可重建的 `contextContract`。
+
+`Responses -> Chat` 的切号语义以转换后的 Chat / canonical 上下文为准，而不是客户端原始 `Responses`。只有网关已经消费内部 `previous_response_id`、compact envelope 和必要的 opaque 状态，形成自包含的 Chat 上下文后，才允许切到其他供应商的 Chat 账号；候选不需要支持客户端 `Responses`，但必须支持相同 Chat 模型、协议族、精确 mode 和上下文序列化。外部原生 `previous_response_id` 或仍需原上游解开的 `encrypted_content` 不能跨到 Chat。
+
+切号候选必须按 `supported_endpoint_modes` 和模型映射 RHS 重新硬过滤：直接支持冻结的 `upstreamModel`，或启用映射 RHS 同时命中冻结模型和协议族；不比较 mapping 左侧、客户端协议或客户端画像。冻结目标为 Chat 时才允许跨供应商；Responses 或其他非 Chat 目标保持同供应商。候选请求从同一份已转换上下文重建，不能复用上一账号最终 body，也不能重新按客户端 source 推导协议。完整契约见 [切号时有效上游目标与上下文迁移设计](切号时有效上游目标与上下文迁移设计.md)。
+
 运行态键与物理凭据键分离：
 
 - `accountRuntimeKey` 保持实例级：自有账户使用 `accountId`；授权实例使用 `accountId + 使用方系统账户 + 本地分组 + 授权 ID`。电路、热质量、半开租约、恢复探针只按该键隔离，禁止跨授权实例共享故障态。

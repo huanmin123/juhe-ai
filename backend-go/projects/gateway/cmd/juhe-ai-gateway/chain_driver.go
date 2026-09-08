@@ -16,12 +16,14 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayanthropic"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
 )
 
 // Protocol codes mirrored from the protocol packages (the preauth re-exports
@@ -38,10 +40,59 @@ type chainProviderDriver struct {
 	// registered; anthropic/gemini expose route helpers rather than the full
 	// G01 driver surface and are handled through their URL builders below).
 	openai *gatewayopenai.Driver
+	// gptOverrideCatalog ports the provider model catalog for the D-151 gpt
+	// request-override capability resolution (nil keeps capabilities
+	// unresolved and the overrides inert).
+	gptOverrideCatalog gatewaydispatch.GptRequestOverrideModelCatalog
 }
 
 func newChainProviderDriver() *chainProviderDriver {
+	// D-151（BUG-0175）：gpt 账户请求覆盖 hook 原先零赋值，配置可保存但运行时
+	// 静默无效。此处把归档 providers/drivers/gpt/request-overrides.ts 的
+	// applyGptAccountRequestOverrides 挂到 normalize 链；能力解析走
+	// gatewaydispatch.ResolveGptRequestOverrideModelCapabilities。
+	gatewaydispatch.SetGptAccountRequestOverridesHook(gatewaydispatch.ApplyGptAccountRequestOverridesBody)
 	return &chainProviderDriver{openai: gatewayopenai.NewDriver()}
+}
+
+// newChainProviderDriverWithCache wires the runtime-cache-backed provider model
+// catalog into the D-151 capability resolution.
+func newChainProviderDriverWithCache(cache *gatewayruntimecache.Service) *chainProviderDriver {
+	driver := newChainProviderDriver()
+	if cache != nil {
+		driver.gptOverrideCatalog = chainGptRequestOverrideModelCatalog{cache: cache}
+	}
+	return driver
+}
+
+// chainGptRequestOverrideModelCatalog adapts *gatewayruntimecache.Service to
+// gatewaydispatch.GptRequestOverrideModelCatalog (Node
+// listCachedProviderModelCatalogAsync includeUnpriced: true).
+type chainGptRequestOverrideModelCatalog struct {
+	cache *gatewayruntimecache.Service
+}
+
+func (a chainGptRequestOverrideModelCatalog) ListGptRequestOverrideModelCatalog(ctx context.Context, providerCode, systemAccountID string, includeUnpriced bool) ([]gatewaydispatch.GptRequestOverrideModelCatalogItem, error) {
+	items, err := a.cache.ListCachedProviderModelCatalogAsync(ctx, gatewayruntimecache.ModelCatalogListOptions{
+		ProviderCode:    providerCode,
+		SystemAccountID: systemAccountID,
+		IncludeUnpriced: includeUnpriced,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]gatewaydispatch.GptRequestOverrideModelCatalogItem, 0, len(items))
+	for _, item := range items {
+		if item.Status != "active" {
+			continue
+		}
+		out = append(out, gatewaydispatch.GptRequestOverrideModelCatalogItem{
+			Model:                     item.Model,
+			SupportedServiceTiers:     item.SupportedServiceTiers,
+			SupportedReasoningEfforts: item.SupportedReasoningEfforts,
+		})
+	}
+	return out, nil
 }
 
 // PrepareGatewayUpstreamAccount mirrors prepareGatewayUpstreamAccount. The
@@ -116,18 +167,46 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 		return d.buildGeminiCodeAssistRequestParts(req, account)
 	}
 	if isCodexOAuthAccount(account) {
+		modelOverride := canonicalAccountModel(req, account)
+		// D-151（BUG-0175）：请求期能力解析 + body 应用。Node
+		// gpt/driver.ts buildUpstreamRequestParts 的 oauth 分支在构造请求前
+		// 先 normalizeGptRequestOverrideCapabilitiesForGateway。
+		requestOverrideCapabilities, err := gatewaydispatch.ResolveGptRequestOverrideModelCapabilities(ctx, account, modelOverride)
+		if err != nil {
+			return gatewaydispatch.PreparedRequestParts{}, err
+		}
 		parts, err := gatewaydispatch.BuildOpenAIOAuthCodexRequestParts(req, req.HTTP.Header, codexAccountOf(account), codexIdentityOf(account), gatewaydispatch.OpenAIOAuthCodexRequestOptions{
-			ModelOverride:        canonicalAccountModel(req, account),
-			SanitizeCodexHistory: true,
+			ModelOverride:                    modelOverride,
+			SanitizeCodexHistory:             true,
+			RequestOverrideModelCapabilities: requestOverrideCapabilities,
 		})
 		if err != nil {
 			return gatewaydispatch.PreparedRequestParts{}, err
 		}
 		return gatewaydispatch.PreparedRequestParts{Headers: parts.Headers, Body: parts.Body}, nil
 	}
+	// D-99（BUG-0175）：openai-v1 api-key-client-compatibility 组合入口。Node
+	// gpt / openai-compatible driver 的 api_key 分支在映射 body 之前先构造
+	// compatibilityBody（codex_responses 客户端 + POST /responses 时把上游
+	// body 规范化为 Codex Responses 形态并强制 SSE）。
+	compatibilityBody, compatErr := d.buildOpenAIClientCompatibilityBody(req, requestClientCompatibility)
+	if compatErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, compatErr
+	}
 	body := clientUpstreamBody(req)
 	headers := upstreamHeadersOf(req, account)
-	if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil {
+	if compatibilityBody != nil {
+		body = compatibilityBody
+		modelOverride := ""
+		if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil {
+			modelOverride = strings.TrimSpace(mapping.UpstreamModel)
+		} else if canonical := canonicalAccountModel(req, account); canonical != "" {
+			modelOverride = canonical
+		} else if requested, ok := gatewaypreauth.RequestModel(req); ok {
+			modelOverride = requested
+		}
+		applyOpenAIClientCompatibilityHeaders(headers, req, modelOverride, true)
+	} else if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil {
 		transformed, err := d.openai.BuildUpstreamRequest(gatewayproto.BuildUpstreamRequestInput{
 			Method:              req.MethodUpper(),
 			ClientPathAndQuery:  req.PathAndQuery(),
@@ -157,6 +236,25 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 		if requestedModel != canonical {
 			body = canonicalizeModelBody(body, req.ParsedJSONObjectBody(), canonical)
 		}
+	}
+	// D-151：api_key 账户的运行时 body 应用（Node applyGptAccountRequestOverrides
+	// 的非 oauth 分支）。端点族取映射上游族，缺省回落请求族；compact 仅出现在
+	// /responses/compact 端点。
+	if endpointFamily := gptRequestOverrideEndpointFamily(req, account, d.resolveAccountModelMapping(account, req, requestClientCompatibility)); endpointFamily != "" {
+		upstreamModel := ""
+		if requested, ok := gatewaypreauth.RequestModel(req); ok {
+			upstreamModel = requested
+		}
+		if canonical := canonicalAccountModel(req, account); canonical != "" {
+			upstreamModel = canonical
+		}
+		overridesBody, err := gatewaydispatch.ApplyGptAccountRequestOverridesToUpstreamBody(
+			ctx, body, account, endpointFamily,
+			gatewaydispatch.IsOpenAIOAuthCodexCompactRequest(req), upstreamModel)
+		if err != nil {
+			return gatewaydispatch.PreparedRequestParts{}, err
+		}
+		body = overridesBody
 	}
 	return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 }
@@ -301,6 +399,17 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 		!strings.EqualFold(account.ClientCompatibility, requestClientCompatibility) {
 		return "client_compatibility_mismatch"
 	}
+	// D-99 eliminated 裁决（Node gpt/driver.ts accountSupportsRequest）：
+	// OAuth 账户只服务 codex_responses 客户端形态，其他客户端兼容类直接淘汰。
+	if account.Type == "oauth" && requestClientCompatibility != "" &&
+		!strings.EqualFold(requestClientCompatibility, "codex_responses") {
+		return "oauth_account_client_compatibility_unsupported"
+	}
+	// D-155（BUG-0175）：SupportedEndpointModes 消费。此前派发链对账户端点
+	// 模式零消费，映射许可表成为唯一放行闸门。
+	if reason := d.endpointModeMismatchReason(req, account, requestClientCompatibility); reason != "" {
+		return reason
+	}
 	requestedModel := ""
 	if req != nil {
 		if model, ok := gatewaypreauth.RequestModel(req); ok {
@@ -324,6 +433,36 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 	return "model_unsupported"
 }
 
+// requestMappingSourceFamilyOf returns the request-side source endpoint family
+// in the stored model-mapping vocabulary (chat_completions / responses /
+// messages / generate_content / stream_generate_content). The gateway dispatch
+// filter resolves mappings with the same vocabulary (dispatch/candfilters.go
+// gatewayRequestEndpointFamily); the previous chat/responses-only view made
+// messages-source bridge mappings unresolvable in the driver chain (D-149).
+func requestMappingSourceFamilyOf(req *gatewaypreauth.GatewayRequest) string {
+	if req == nil {
+		return gatewayopenai.FamilyChatCompletions
+	}
+	path := gatewaypreauth.RequestPathWithoutQuery(req)
+	switch {
+	case strings.Contains(path, "/chat/completions"):
+		return gatewayopenai.FamilyChatCompletions
+	case chainStripGatewayVersionPrefix(path) == "/responses":
+		return gatewayopenai.FamilyResponses
+	case strings.Contains(path, ":generateContent"):
+		return "generate_content"
+	case strings.Contains(path, ":streamGenerateContent"):
+		return "stream_generate_content"
+	case strings.Contains(path, ":countTokens"):
+		return "messages"
+	default:
+		if chainStripGatewayVersionPrefix(path) == "/messages" && req.MethodUpper() == "POST" {
+			return "messages"
+		}
+		return gatewayopenai.FamilyChatCompletions
+	}
+}
+
 // resolveAccountModelMapping resolves the account mapping for the request
 // model through the shared openai resolver (Node resolveOpenAICaccountModelMapping
 // source of truth shared with the routing layer).
@@ -344,11 +483,7 @@ func (d *chainProviderDriver) resolveAccountModelMapping(account gatewaydispatch
 		ProtocolCode:              account.ProtocolCode,
 		ProtocolVersion:           account.ProtocolVersion,
 	}
-	family := gatewayopenai.FamilyChatCompletions
-	if req != nil {
-		family = requestEndpointFamilyOf(req.PathAndQuery())
-	}
-	return gatewayopenai.ResolveAccountModelMapping(runtime, requestedModel, family)
+	return gatewayopenai.ResolveAccountModelMapping(runtime, requestedModel, requestMappingSourceFamilyOf(req))
 }
 
 // upstreamHeadersOf builds the upstream headers: hop-by-hop and gateway
@@ -661,4 +796,353 @@ func containsTrimmed(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// D-99（BUG-0175）：openai-v1 api-key-client-compatibility
+// （gateway/protocols/openai-v1/api-key-client-compatibility.ts 全量移植）。
+// codex_responses 客户端 + POST /responses 的 api_key 账户：上游 body 强制
+// 规范化为 Codex Responses 形态，SSE 强制开启。
+// ---------------------------------------------------------------------------
+
+// shouldForceOpenAICodexResponsesSse mirrors shouldForceOpenAICodexResponsesSse.
+func shouldForceOpenAICodexResponsesSse(req *gatewaypreauth.GatewayRequest, requestClientCompatibility string) bool {
+	return strings.EqualFold(requestClientCompatibility, "codex_responses") &&
+		isOpenAIResponsesPostRequestForCompatibility(req)
+}
+
+// isOpenAIResponsesPostRequest mirrors isOpenAIResponsesPostRequest.
+func isOpenAIResponsesPostRequestForCompatibility(req *gatewaypreauth.GatewayRequest) bool {
+	if req == nil || req.MethodUpper() != "POST" {
+		return false
+	}
+	path := gatewaypreauth.RequestPathWithoutQuery(req)
+	return chainStripGatewayVersionPrefix(path) == "/responses"
+}
+
+// chainStripGatewayVersionPrefix mirrors the Node ^\/v1(?=\/|$) path
+// normalization used by the openai-v1 route helpers.
+func chainStripGatewayVersionPrefix(path string) string {
+	for _, prefix := range []string{"/v1/", "/v1beta/"} {
+		if strings.HasPrefix(path, prefix) {
+			return path[len(prefix)-1:]
+		}
+	}
+	if path == "/v1" || path == "/v1beta" {
+		return "/"
+	}
+	return path
+}
+
+// buildOpenAIClientCompatibilityBody mirrors buildOpenAIClientCompatibilityBody:
+// nil when the request is not a codex_responses /responses POST.
+func (d *chainProviderDriver) buildOpenAIClientCompatibilityBody(req *gatewaypreauth.GatewayRequest, requestClientCompatibility string) ([]byte, error) {
+	if !shouldForceOpenAICodexResponsesSse(req, requestClientCompatibility) {
+		return nil, nil
+	}
+	body, err := parseOpenAIClientCompatibilityJSONObject(req)
+	if err != nil {
+		return nil, err
+	}
+	modelOverride := d.compatibilityModelOverride(req)
+	if modelOverride != "" {
+		body["model"] = modelOverride
+	}
+	applyCodexResponsesCompatibility(body)
+	gatewaydispatch.NormalizeOpenAICodexResponsesLiteBody(body, stringValueOrEmpty(body["model"]), nil)
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("编码 Codex Responses 兼容请求体失败: %w", err)
+	}
+	return encoded, nil
+}
+
+// compatibilityModelOverride mirrors options.modelOverride at the caller: the
+// resolved upstream model wins, otherwise the request model.
+func (d *chainProviderDriver) compatibilityModelOverride(req *gatewaypreauth.GatewayRequest) string {
+	if req == nil {
+		return ""
+	}
+	if requested, ok := gatewaypreauth.RequestModel(req); ok {
+		return strings.TrimSpace(requested)
+	}
+	return ""
+}
+
+func stringValueOrEmpty(value any) string {
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+// parseOpenAIClientCompatibilityJSONObject mirrors
+// parseOpenAIClientCompatibilityJsonBody.
+func parseOpenAIClientCompatibilityJSONObject(req *gatewaypreauth.GatewayRequest) (map[string]any, error) {
+	if req == nil {
+		return map[string]any{}, nil
+	}
+	if parsed := req.ParsedJSONObjectBody(); parsed != nil {
+		object := make(map[string]any, len(parsed))
+		for key, value := range parsed {
+			object[key] = value
+		}
+		return object, nil
+	}
+	if state := req.BodyState(); state != nil && state.JSONParseStatus == gatewaybody.JSONParseStatusInvalidJSON {
+		return nil, fmt.Errorf("Codex Responses 请求形态要求请求体是有效的 JSON 对象")
+	}
+	rawBody := clientUpstreamBody(req)
+	if len(rawBody) == 0 {
+		return map[string]any{}, nil
+	}
+	var parsed any
+	if err := json.Unmarshal(rawBody, &parsed); err != nil {
+		return nil, fmt.Errorf("Codex Responses 请求形态要求请求体是有效的 JSON 对象")
+	}
+	object, ok := parsed.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("Codex Responses 请求形态要求请求体是 JSON 对象")
+	}
+	cloned := make(map[string]any, len(object))
+	for key, value := range object {
+		cloned[key] = value
+	}
+	return cloned, nil
+}
+
+// applyCodexResponsesCompatibility mirrors applyCodexResponsesCompatibility
+// (non-strict account test requests: the gateway path never preserves the
+// output budget).
+func applyCodexResponsesCompatibility(body map[string]any) {
+	if text, ok := body["input"].(string); ok {
+		body["input"] = []any{
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": text},
+				},
+			},
+		}
+	} else if items, ok := body["input"].([]any); ok {
+		body["input"] = normalizeCodexResponsesInputItems(items)
+	}
+	if _, has := body["instructions"]; !has {
+		body["instructions"] = ""
+	}
+	_, toolsIsArray := body["tools"].([]any)
+	if !toolsIsArray {
+		if _, has := body["tools"]; has {
+			body["tools"] = []any{}
+		} else if !codexResponsesInputHasAdditionalTools(body["input"]) {
+			body["tools"] = []any{}
+		}
+	}
+	if _, ok := body["tool_choice"].(string); !ok {
+		if _, ok := body["tool_choice"].(map[string]any); !ok {
+			body["tool_choice"] = "auto"
+		}
+	}
+	gatewaydispatch.NormalizeOpenAICodexBuiltinTools(body)
+	if _, ok := body["parallel_tool_calls"].(bool); !ok {
+		body["parallel_tool_calls"] = true
+	}
+	body["stream"] = true
+	body["store"] = false
+	body["include"] = ensureCodexResponsesReasoningEncryptedContent(body["include"])
+	delete(body, "max_output_tokens")
+	delete(body, "max_completion_tokens")
+	delete(body, "temperature")
+	delete(body, "top_p")
+	delete(body, "context_management")
+	delete(body, "truncation")
+	delete(body, "user")
+}
+
+func codexResponsesInputHasAdditionalTools(value any) bool {
+	items, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range items {
+		if record, ok := item.(map[string]any); ok && record["type"] == "additional_tools" {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureCodexResponsesReasoningEncryptedContent(value any) []any {
+	include := []any{}
+	if items, ok := value.([]any); ok {
+		for _, item := range items {
+			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+				include = append(include, text)
+			}
+		}
+	}
+	for _, item := range include {
+		if text, ok := item.(string); ok && text == "reasoning.encrypted_content" {
+			return include
+		}
+	}
+	return append(include, "reasoning.encrypted_content")
+}
+
+func normalizeCodexResponsesInputItems(items []any) []any {
+	output := make([]any, 0, len(items))
+	for _, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok || record["role"] != "system" {
+			output = append(output, item)
+			continue
+		}
+		converted := make(map[string]any, len(record)+1)
+		for key, value := range record {
+			converted[key] = value
+		}
+		converted["role"] = "developer"
+		output = append(output, converted)
+	}
+	return output
+}
+
+// applyOpenAIClientCompatibilityHeaders mirrors applyOpenAIClientCompatibilityHeaders.
+// forced carries the caller's shouldForceOpenAICodexResponsesSse verdict (the
+// compatibility body path only runs when forced).
+func applyOpenAIClientCompatibilityHeaders(headers http.Header, req *gatewaypreauth.GatewayRequest, modelOverride string, forced bool) {
+	if !forced {
+		return
+	}
+	if headers == nil {
+		return
+	}
+	if gatewaydispatch.IsOpenAICodexClientHeaders(headers) {
+		return
+	}
+	headers.Set("Accept", "text/event-stream")
+	headers.Set("Content-Type", "application/json")
+	if modelOverride == "" {
+		if requested, ok := gatewaypreauth.RequestModel(req); ok {
+			modelOverride = requested
+		}
+	}
+	gatewaydispatch.NormalizeOpenAICodexClientHeaders(headers, modelOverride)
+}
+
+// gptRequestOverrideEndpointFamily mirrors gptRequestOverrideEndpointFamily:
+// the override wire family is the mapping upstream family, falling back to the
+// request family, and limited to chat_completions / responses.
+func gptRequestOverrideEndpointFamily(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate, mapping *gatewayproto.ResolvedModelMapping) string {
+	family := ""
+	if mapping != nil && mapping.UpstreamEndpointFamily != "" {
+		family = mapping.UpstreamEndpointFamily
+	} else {
+		family = requestEndpointFamilyOf(req.PathAndQuery())
+	}
+	switch family {
+	case "chat_completions", "responses":
+		return family
+	default:
+		return ""
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D-155（BUG-0175）：SupportedEndpointModes 派发消费。
+// ---------------------------------------------------------------------------
+
+// endpointModeMismatchReason reports the unsupported-endpoint-mode reason for
+// one account, or "" when the account serves the request shape. Accounts with
+// no explicit mode constraint (nil / empty after runtime normalization) keep
+// the unconstrained default semantics.
+func (d *chainProviderDriver) endpointModeMismatchReason(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate, requestClientCompatibility string) string {
+	if len(account.SupportedEndpointModes) == 0 {
+		return ""
+	}
+	mode, required := d.requiredSupportedEndpointMode(req, account, requestClientCompatibility)
+	if !required {
+		return ""
+	}
+	if mode == "" {
+		// The request shape carries no gated mode: do not filter.
+		return ""
+	}
+	for _, supported := range account.SupportedEndpointModes {
+		if supported == mode {
+			return ""
+		}
+	}
+	return "endpoint_mode_unsupported"
+}
+
+// requiredSupportedEndpointMode computes the endpoint-mode token this request
+// would exercise on the account (bridge mappings remap the vocabulary onto the
+// upstream family, mirroring the Node bridge required-mode helpers). The
+// second result reports whether a mode verdict exists at all; a false value
+// means the account is not filtered by endpoint modes for this request, a
+// true value with an empty mode means the request is outside the protocol
+// surface (e.g. OAuth gpt accounts only carry Responses) and must be
+// eliminated.
+func (d *chainProviderDriver) requiredSupportedEndpointMode(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate, requestClientCompatibility string) (string, bool) {
+	if req == nil {
+		return "", false
+	}
+	stream := gatewaypreauth.RequestStream(req)
+	// codex_responses 客户端的 /responses POST 强制 SSE（D-99），账户必须持有
+	// responses_sse。
+	if strings.EqualFold(requestClientCompatibility, "codex_responses") &&
+		isOpenAIResponsesPostRequestForCompatibility(req) {
+		return gatewaypreauth.EndpointModeResponsesSSE, true
+	}
+	// 跨协议映射把许可词汇表切到上游族（Node
+	// anthropicMessagesChatBridgeRequiredEndpointMode /
+	// geminiGenerateContentChatBridgeRequiredEndpointMode /
+	// codexResponsesChatBridgeRequiredEndpointMode /
+	// openAIToAnthropicBridgeRequiredEndpointMode）。
+	if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil &&
+		mapping.UpstreamEndpointFamily != "" && mapping.UpstreamEndpointFamily != mapping.SourceEndpointFamily {
+		switch openaicompat.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily) {
+		case "chat_completions":
+			if stream || openaicompat.NormalizeEndpointFamily(mapping.SourceEndpointFamily) == "responses" {
+				return gatewaypreauth.EndpointModeChatSSE, true
+			}
+			return gatewaypreauth.EndpointModeChatJSON, true
+		case "anthropic_messages":
+			if stream {
+				return gatewaypreauth.EndpointModeMessagesSSE, true
+			}
+			return gatewaypreauth.EndpointModeMessagesJSON, true
+		case "gemini_generate_content", "gemini_stream_generate":
+			if stream {
+				return gatewaypreauth.EndpointModeGenerateContentSSE, true
+			}
+			return gatewaypreauth.EndpointModeGenerateContentJSON, true
+		default:
+			return "", false
+		}
+	}
+	switch normalizeProtocol(account.ProtocolCode) {
+	case driverProtocolAnthropic:
+		mode := gatewaypreauth.RequestSupportedEndpointMode(req)
+		switch mode {
+		case gatewaypreauth.EndpointModeMessagesJSON, gatewaypreauth.EndpointModeMessagesSSE, gatewaypreauth.EndpointModeMessageTokenCounting:
+			return mode, true
+		default:
+			// Non-anthropic shapes on an anthropic account are rejected by the
+			// protocol surface check above; no additional mode gate.
+			return "", false
+		}
+	case driverProtocolGemini:
+		if geminiAccountUsesCodeAssistRuntime(account) {
+			return gatewaypreauth.EndpointModeGenerateContentSSE, true
+		}
+		return gatewaypreauth.RequestSupportedEndpointMode(req), true
+	default:
+		// openai 协议面：mode 为空（/models 等未闸门形态）不过滤；oauth 账户
+		// 的 chat/images 形态经由账户 responses-only 模式集产生淘汰（Node
+		// accountSupportsOpenAIEndpointMode 语义）。
+		return gatewaypreauth.RequestSupportedEndpointMode(req), true
+	}
 }

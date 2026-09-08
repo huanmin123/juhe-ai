@@ -281,10 +281,9 @@ func keywordUpperBound(prefix string) string {
 	return string(runes)
 }
 
-// Summary is the list/detail item shape (usage included by J5 later). Limits
-// is only populated on the create outcome today (Node echoes the normalized
-// limits on create :2448 and patch :900-910); list/detail DTO parity is a
-// separate pending slice.
+// Summary is the list/detail item shape. Limits is only populated on the
+// create outcome today (Node echoes the normalized limits on create :2448
+// and patch :900-910); list/detail DTO parity is a separate pending slice.
 type Summary struct {
 	ID            string  `json:"id"`
 	ResourceType  string  `json:"resourceType"`
@@ -299,6 +298,14 @@ type Summary struct {
 	Limits        any     `json:"limits,omitempty"`
 	CreatedAt     string  `json:"createdAt"`
 	UpdatedAt     string  `json:"updatedAt"`
+	// Usage mirrors the Node ResourceAuthorizationSummary.usage key
+	// (resource-authorization-read.repository.ts:688/:857): the grant
+	// summaries always render the summary object, and every served route
+	// passes includeUsage:false, so the served projection is the all-zero
+	// summary with lastUsedAt omitted (BUG-0175 D-126 授权面字段缺失).
+	// The per-grant real reads stay on the /usage detail routes
+	// (usage_detail.go).
+	Usage UsageSummary `json:"usage"`
 }
 
 func (g grantRow) summary() Summary {
@@ -306,6 +313,9 @@ func (g grantRow) summary() Summary {
 		ID: g.ID, ResourceType: g.ResourceType, ResourceID: g.ResourceID,
 		OwnerID: g.OwnerID, GranteeType: g.GranteeType, Status: g.Status,
 		CreatedAt: g.CreatedAt, UpdatedAt: g.UpdatedAt,
+		// Node `usage: usage.get(row.id) ?? emptyAccountUsageSummary()` with
+		// includeUsage:false (routes never request the hydration).
+		Usage: UsageSummary{},
 	}
 	if g.GranteeUserID.Valid {
 		v := g.GranteeUserID.String

@@ -27,6 +27,11 @@ type TransportOptions struct {
 	DisableCompression     bool
 	ForceRemoteSOCKS5      bool
 	ProxyConnectHeader     http.Header
+	// DialGuard installs the SSRF validated-dial hook (D-192/D-146): direct
+	// and HTTP(S)-proxy transports resolve and validate the connect target
+	// through the guard before any socket is established. SOCKS dialers keep
+	// their own resolution and ignore the guard.
+	DialGuard *DialGuard
 }
 
 // ParseProxyURL validates a stored proxy URL without contacting it.  Empty
@@ -91,6 +96,12 @@ func NewTransport(rawProxyURL string, options TransportOptions) (*http.Transport
 		// ParseProxyURL currently makes this unreachable. Keep the branch so a
 		// future scheme cannot silently fall back to direct connectivity.
 		return nil, ErrProxySchemeUnsupported
+	}
+	if options.DialGuard != nil && transport.DialContext == nil {
+		// Direct and HTTP(S)-proxy paths both establish their socket through
+		// DialContext, so the guard validates the actual connect target (the
+		// upstream host, or the proxy host when a proxy is configured).
+		transport.DialContext = options.DialGuard.DialContext
 	}
 	return transport, nil
 }

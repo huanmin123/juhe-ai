@@ -7,20 +7,20 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
 var gatewayAccountFixture = gatewayAccountFixtureValue()
 
 func gatewayAccountFixtureValue() gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
-		ID:                "acc-1",
-		Name:              "测试账户",
-		ProviderCode:      "openai",
-		ProtocolCode:      "openai",
-		ProtocolVersion:   "v1",
-		Type:              "api_key",
+		ID:                  "acc-1",
+		Name:                "测试账户",
+		ProviderCode:        "openai",
+		ProtocolCode:        "openai",
+		ProtocolVersion:     "v1",
+		Type:                "api_key",
 		ClientCompatibility: "",
 	}
 }
@@ -30,24 +30,24 @@ func newInputFixture(body UpstreamBody, status int, header map[string]string) (H
 	tracking := gatewaypreauth.NewTrackingWriter(recorder)
 	upstreamHeader := httpHeaderOf(header)
 	input := HandleUpstreamResponseInput{
-		Req: gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat/completions", nil)),
+		Req:        gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat/completions", nil)),
 		Downstream: StreamDownstream{Res: tracking},
-		Account:        accountFixture(),
+		Account:    accountFixture(),
 		UpstreamResponse: &GatewayUpstreamResponse{
 			Status: status,
 			Header: upstreamHeader,
 			Body:   body,
 		},
-		UpstreamURL:          "https://upstream.example/v1/chat/completions",
-		AuditAttemptID:       "attempt-1",
-		AuditCapture:         newMockAuditCapture(),
-		Settings:             gatewayruntimecache.GatewaySettings{},
-		TimeoutProfile:       TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
-		UsageContext:         usageContextFixture(),
-		StartedAtMs:          1000,
-		Signal:               staticSignal(),
+		UpstreamURL:           "https://upstream.example/v1/chat/completions",
+		AuditAttemptID:        "attempt-1",
+		AuditCapture:          newMockAuditCapture(),
+		Settings:              gatewayruntimecache.GatewaySettings{},
+		TimeoutProfile:        TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
+		UsageContext:          usageContextFixture(),
+		StartedAtMs:           1000,
+		Signal:                staticSignal(),
 		DownstreamCommitState: &DownstreamCommitState{},
-		Driver:               NewOpenAIResponseDriver(),
+		Driver:                NewOpenAIResponseDriver(),
 	}
 	return input, recorder
 }

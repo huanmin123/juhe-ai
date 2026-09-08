@@ -15,11 +15,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
@@ -83,6 +85,13 @@ type chainRuntimeServices struct {
 	// (gatewayaccounteffects); the runtime-reset bridge reaches the failure
 	// guard / transient tombstone clears through it.
 	AccountAPIKeyGuard *gatewayaccounteffects.AccountAPIKeyFailureGuard
+	// AccountAPIKeyEffects 是 D-111（BUG-0175 W4-B）的账户 API Key 运行态
+	// 效果链（guard + 瞬态避让 + 合并持久写），经 chainAPIKeyEffectsPort
+	// 挂上 dispatch 的 APIKeyEffectsPort。
+	AccountAPIKeyEffects *gatewayaccounteffects.AccountAPIKeyEffects
+	// ConfiguredPolicyAvoidance 是 D-132（BUG-0175 W4-B）的配置策略账号避让
+	// 写读面（gateway-configured-account-policy-avoidance 键空间）。
+	ConfiguredPolicyAvoidance *gatewayaccounteffects.ConfiguredPolicyAvoidanceService
 
 	// ---- W2-C production wiring (BUG-0175: D-109/D-110/D-131/D-133/
 	// D-134/D-136/D-137/D-129). Every field is driver-forked in
@@ -579,6 +588,58 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		}
 	}
 	services.AccountAPIKeyGuard = gatewayaccounteffects.NewAccountAPIKeyFailureGuard(guardConfig, gatewayaccounteffects.SystemClock{}, nil, guardFactory)
+
+	// ---- W4-B（BUG-0175）：D-111 API Key 效果链 + D-132 配置策略避让 ----
+	// Key 级持久写走 accountkeystates（Node db-service record_account_api_key_*
+	// 的进程内直写），运行态失效经 K5 总线。
+	keyStatesStore, keyStatesErr := accountkeystates.NewStore(accountkeystates.Config{
+		DB:       composed.db,
+		Postgres: composed.pgDialect,
+		Secret:   cfg.Secret,
+		Now:      time.Now,
+		InvalidateRuntimeCache: func(reason string) {
+			if composed.Bus != nil {
+				composed.Bus.Invalidate(inval.TopicGatewayRuntime, reason)
+			}
+		},
+	})
+	if keyStatesErr != nil {
+		return nil, fmt.Errorf("create account api-key effects key states store: %w", keyStatesErr)
+	}
+	services.AccountAPIKeyEffects = gatewayaccounteffects.NewAccountAPIKeyEffects(
+		guardConfig,
+		services.AccountAPIKeyGuard,
+		&chainAccountAPIKeyWriter{keyStates: keyStatesStore},
+		func() {
+			if composed.Bus != nil {
+				composed.Bus.Invalidate(inval.TopicGatewayRuntime, "gateway_account_api_key_runtime")
+			}
+		},
+		gatewayaccounteffects.SystemClock{},
+		gatewayaccounteffects.RealScheduler{},
+		gatewayaccounteffects.SlogLogger(slog.Default()),
+	)
+
+	// D-132：避让状态存储随 runtimeStateDriver 分叉（与 jobs 只读消费同一
+	// `juhe-ai:<ns>:state:gateway-configured-account-policy-avoidance:` 键空间）。
+	var avoidanceStore gatewayaccounteffects.PolicyAvoidanceStateStore = gatewayproxyhealth.NewMemoryRuntimeStateStore(nil)
+	if redisState && stateClient != nil {
+		redisAvoidanceStore, avoidanceErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, gatewayaccounteffects.ConfiguredPolicyAvoidanceStoreName)
+		if avoidanceErr != nil {
+			return nil, fmt.Errorf("create configured policy avoidance runtime state: %w", avoidanceErr)
+		}
+		avoidanceStore = redisAvoidanceStore
+	}
+	services.ConfiguredPolicyAvoidance = gatewayaccounteffects.NewConfiguredPolicyAvoidanceService(
+		avoidanceStore,
+		newChainListAvailabilityDirtyMarker(composed, os.Getenv),
+		func() {
+			if composed.Bus != nil {
+				composed.Bus.Invalidate(inval.TopicGatewayRuntime, "gateway_configured_policy_avoidance")
+			}
+		},
+		gatewayaccounteffects.SystemClock{},
+	)
 
 	// ---- hybrid Redis collaborators (cacheDriver==='redis') ----
 	// Node createSharedJsonCache('gateway:hybrid-scoring-result') +

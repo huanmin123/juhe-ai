@@ -6,7 +6,7 @@ import (
 )
 
 func float64Ptr(v float64) *float64 { return &v }
-func int64Ptr(v int64) *int64    { return &v }
+func int64Ptr(v int64) *int64       { return &v }
 
 func TestBuildOpenAIChatBridgeBody(t *testing.T) {
 	tests := []struct {
@@ -30,8 +30,8 @@ func TestBuildOpenAIChatBridgeBody(t *testing.T) {
 		{
 			name: "with temperature and max_tokens",
 			clientBody: map[string]any{
-				"model":      "gpt-4",
-				"messages":   []any{map[string]any{"role": "user", "content": "hello"}},
+				"model":       "gpt-4",
+				"messages":    []any{map[string]any{"role": "user", "content": "hello"}},
 				"temperature": 0.7,
 				"max_tokens":  1000,
 			},
@@ -67,7 +67,7 @@ func TestBuildOpenAIChatBridgeBody(t *testing.T) {
 					map[string]any{
 						"type": "function",
 						"function": map[string]any{
-							"name": "search_files",
+							"name":        "search_files",
 							"description": "Search files",
 							"parameters": map[string]any{
 								"type": "object",
@@ -141,7 +141,7 @@ func TestBuildAnthropicMessagesBody(t *testing.T) {
 							map[string]any{
 								"id": "call_123",
 								"function": map[string]any{
-									"name": "get_weather",
+									"name":      "get_weather",
 									"arguments": `{"location":"San Francisco"}`,
 								},
 							},
@@ -183,13 +183,13 @@ func TestTransformGeminiGenerateContentToOpenAIChatResponse(t *testing.T) {
 					map[string]any{
 						"content": map[string]any{
 							"text": "Hello from Gemini",
-							"role":  "model",
+							"role": "model",
 						},
 						"finishReason": "FINISH_REASON_UNSPECIFIED",
 					},
 				},
 				"usageMetadata": map[string]any{
-					"promptTokenCount":    100,
+					"promptTokenCount":     100,
 					"candidatesTokenCount": 50,
 					"totalTokenCount":      150,
 				},
@@ -202,6 +202,7 @@ func TestTransformGeminiGenerateContentToOpenAIChatResponse(t *testing.T) {
 			want: map[string]any{
 				"choices": []any{
 					map[string]any{
+						"index": float64(0),
 						"message": map[string]any{
 							"role":    "assistant",
 							"content": "Hello from Gemini",
@@ -234,11 +235,21 @@ func TestTransformGeminiGenerateContentToOpenAIChatResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			result := TransformGeminiGenerateContentToOpenAIChatResponse(tc.response, tc.opts)
 			if tc.want != nil {
-				// Compare JSON output for deep equality
-				resultJSON, _ := json.Marshal(result)
-				wantJSON, _ := json.Marshal(tc.want)
+				// Compare the semantic fields (choices + usage); envelope fields
+				// (id/object/created/model) are time-dependent additions of the
+				// chat.completion shape.
+				resultJSON, _ := json.Marshal(result["choices"])
+				wantJSON, _ := json.Marshal(tc.want["choices"])
 				if string(resultJSON) != string(wantJSON) {
-					t.Errorf("result = %s, want %s", resultJSON, wantJSON)
+					t.Errorf("choices = %s, want %s", resultJSON, wantJSON)
+				}
+				resultJSON, _ = json.Marshal(result["usage"])
+				wantJSON, _ = json.Marshal(tc.want["usage"])
+				if string(resultJSON) != string(wantJSON) {
+					t.Errorf("usage = %s, want %s", resultJSON, wantJSON)
+				}
+				if result["object"] != nil && result["object"] != "chat.completion" {
+					t.Errorf("object = %v, want chat.completion", result["object"])
 				}
 			}
 		})
@@ -300,4 +311,3 @@ func TestIsCrossProtocolBridgeRequired(t *testing.T) {
 		}
 	}
 }
-

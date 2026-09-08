@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -27,17 +28,17 @@ func (r *GatewayUpstreamResponse) OK() bool { return r.Status >= 200 && r.Status
 
 // ClientStrategyView 是 finalization 消费的 client strategy 投影（G18 冻结面）。
 type ClientStrategyView struct {
-	ClientProfile                     string
-	DownstreamProtocol                string
+	ClientProfile      string
+	DownstreamProtocol string
 	// InterpretSemantics 对齐 gatewayClientAllowsUpstreamSemanticInterpretation。
-	InterpretSemantics                bool
+	InterpretSemantics bool
 	// RetryPreCommitProtocolError 对齐
 	// retryCoordination.preCommitFailureSignal === 'protocol_error_event'。
-	RetryPreCommitProtocolError       bool
+	RetryPreCommitProtocolError bool
 	// AllowClientSourceAccountAvoidance 对齐 allowClientSourceAccountAvoidance。
 	AllowClientSourceAccountAvoidance bool
 	// CodexCompactionExpected 对齐 codexCompactionExpected。
-	CodexCompactionExpected           bool
+	CodexCompactionExpected bool
 }
 
 // FinalizationDeps 汇总编排端口；允许 nil（缺省短路，与 Node 的可选依赖一致）。
@@ -50,7 +51,7 @@ type FinalizationDeps struct {
 }
 
 // StreamUsageFallbackHook 对齐 applyGatewayProtocolStreamUsageFallbackForRequest
-//（由 G02-G04 的 driver fallback 装配；缺省恒等）。
+// （由 G02-G04 的 driver fallback 装配；缺省恒等）。
 type StreamUsageFallbackHook func(driver ResponseDriverPort, usage gatewayproto.ParsedUsage, input UsageFallbackInput) (gatewayproto.ParsedUsage, bool, *int, *int)
 
 // UsageFallbackInput 对齐 fallback options。
@@ -63,18 +64,18 @@ type UsageFallbackInput struct {
 
 // HandleUpstreamResponseInput 对齐 HandleUpstreamResponseInput。
 type HandleUpstreamResponseInput struct {
-	Req               *gatewaypreauth.GatewayRequest
-	Downstream        StreamDownstream
-	Account           AccountView
-	UpstreamResponse  *GatewayUpstreamResponse
-	UpstreamURL       string
-	AuditAttemptID    string
-	AuditCapture      AttemptAuditCapture
-	Settings          gatewayruntimecache.GatewaySettings
-	TimeoutProfile    TimeoutProfile
-	UsageContext      gatewaypreauth.GatewayFailureUsageContext
-	StartedAtMs       int64
-	Signal            interface {
+	Req              *gatewaypreauth.GatewayRequest
+	Downstream       StreamDownstream
+	Account          AccountView
+	UpstreamResponse *GatewayUpstreamResponse
+	UpstreamURL      string
+	AuditAttemptID   string
+	AuditCapture     AttemptAuditCapture
+	Settings         gatewayruntimecache.GatewaySettings
+	TimeoutProfile   TimeoutProfile
+	UsageContext     gatewaypreauth.GatewayFailureUsageContext
+	StartedAtMs      int64
+	Signal           interface {
 		Done() <-chan struct{}
 		Err() error
 	}
@@ -224,10 +225,10 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 
 	var codexTurnFailureRemembered bool
 	pipeResult, pipeErr := PipeUpstreamStream(PipeUpstreamStreamInput{
-		UpstreamBody: input.UpstreamResponse.Body,
-		Downstream:   input.Downstream,
+		UpstreamBody:   input.UpstreamResponse.Body,
+		Downstream:     input.Downstream,
 		TimeoutProfile: input.TimeoutProfile,
-		StartedAtMs:  input.StartedAtMs,
+		StartedAtMs:    input.StartedAtMs,
 		HandleStreamFailure: func(message string, errorCode string, context StreamFailureContext) error {
 			if input.Deps != nil && input.Deps.AccountEffects != nil {
 				if err := input.Deps.AccountEffects.HandleStreamFailure(
@@ -245,19 +246,19 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 		},
 		Signal: input.Signal,
 		Options: StreamPipeOptions{
-			ClientRetryEnabled:                   clientStrategy != nil && clientStrategy.RetryPreCommitProtocolError,
-			InterpretProtocolFailures:            clientStrategy == nil || clientStrategy.InterpretSemantics,
-			InterpretProtocolFailuresSet:         true,
+			ClientRetryEnabled:                    clientStrategy != nil && clientStrategy.RetryPreCommitProtocolError,
+			InterpretProtocolFailures:             clientStrategy == nil || clientStrategy.InterpretSemantics,
+			InterpretProtocolFailuresSet:          true,
 			RetryBeforeDownstreamWriteUntilOutput: true,
-			OnFirstOutput:                        input.MarkFirstOutput,
-			CaptureSuccessPayloads:               input.AuditCapture.ShouldCaptureSuccessPayloads(),
-			CaptureSuccessPayloadsSet:            true,
-			FirstByteTimeoutMs:                   timeoutsWithDisabled(input.TimeoutProfile, input.FirstByteTimeoutMs),
-			FirstByteDeadlineMs:                  timeoutsWithDisabled(input.TimeoutProfile, input.FirstByteDeadlineMs),
-			ResponsePrecommitDeadlineAtMs:        timeoutsWithDisabled(input.TimeoutProfile, input.ResponsePrecommitDeadlineAtMs),
-			OnFirstByteDeadline:                  input.OnFirstByteDeadline,
-			OnFirstByteDeadlineSuperseded:        input.OnFirstByteDeadlineSuperseded,
-			ResponseInspectionPolicies:           effectivePolicies,
+			OnFirstOutput:                         input.MarkFirstOutput,
+			CaptureSuccessPayloads:                input.AuditCapture.ShouldCaptureSuccessPayloads(),
+			CaptureSuccessPayloadsSet:             true,
+			FirstByteTimeoutMs:                    timeoutsWithDisabled(input.TimeoutProfile, input.FirstByteTimeoutMs),
+			FirstByteDeadlineMs:                   timeoutsWithDisabled(input.TimeoutProfile, input.FirstByteDeadlineMs),
+			ResponsePrecommitDeadlineAtMs:         timeoutsWithDisabled(input.TimeoutProfile, input.ResponsePrecommitDeadlineAtMs),
+			OnFirstByteDeadline:                   input.OnFirstByteDeadline,
+			OnFirstByteDeadlineSuperseded:         input.OnFirstByteDeadlineSuperseded,
+			ResponseInspectionPolicies:            effectivePolicies,
 			ResponseInspectionContext: &ResponseInspectionRuntimeContext{
 				ClientProfile:              input.clientProfile(),
 				AccountClientCompatibility: input.Account.GetClientCompatibility(),
@@ -322,10 +323,10 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 		usage = fallbackUsage
 		if estimated {
 			logger.Warn("gateway_stream_usage_estimated", map[string]any{
-				"accountId":         input.Account.GetID(),
-				"endpoint":          input.UsageContext.Endpoint,
-				"completed":         pipeResult.Completed,
-				"outputReceived":    pipeResult.OutputReceived,
+				"accountId":             input.Account.GetID(),
+				"endpoint":              input.UsageContext.Endpoint,
+				"completed":             pipeResult.Completed,
+				"outputReceived":        pipeResult.OutputReceived,
 				"estimatedOutputTokens": pipeResult.EstimatedOutputTokens,
 			}, "上游流式响应缺少 usage，网关已按可见输出估算 token 成本")
 		}
@@ -405,18 +406,18 @@ func (input *HandleUpstreamResponseInput) finalizeStreamFailure(pipeResult Strea
 	}
 	if input.Deps != nil && input.Deps.UsageRecords != nil {
 		input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
-			UsageContext:      input.UsageContext,
-			Account:           input.Account,
-			StatusCode:        input.UpstreamResponse.Status,
-			Success:           false,
-			Stream:            true,
-			FirstTokenMs:      pipeResult.FirstTokenMs,
-			StartedAtMs:       input.StartedAtMs,
-			Usage:             usageWithObservedModel(usage, input.UpstreamResponse.UpstreamResponseModel),
-			ErrorCode:         orDefault(errorCode, pipeResult.inspectionUpstreamErrorCode()),
-			RequestSnapshot:   usageRequestSnapshotWithOmission(input.UsageContext, pipeResult.BodyOmission),
-			ResponseSnapshot:  streamFailureResponseSnapshot(input, pipeResult),
-			ErrorMessage:      pipeResult.Message,
+			UsageContext:     input.UsageContext,
+			Account:          input.Account,
+			StatusCode:       input.UpstreamResponse.Status,
+			Success:          false,
+			Stream:           true,
+			FirstTokenMs:     pipeResult.FirstTokenMs,
+			StartedAtMs:      input.StartedAtMs,
+			Usage:            usageWithObservedModel(usage, input.UpstreamResponse.UpstreamResponseModel),
+			ErrorCode:        orDefault(errorCode, pipeResult.inspectionUpstreamErrorCode()),
+			RequestSnapshot:  usageRequestSnapshotWithOmission(input.UsageContext, pipeResult.BodyOmission),
+			ResponseSnapshot: streamFailureResponseSnapshot(input, pipeResult),
+			ErrorMessage:     pipeResult.Message,
 		})
 	}
 
@@ -431,11 +432,11 @@ func (input *HandleUpstreamResponseInput) finalizeStreamFailure(pipeResult Strea
 		ShouldRetryResponseInspectionDecisionOnServer(pipeResult.ResponseInspection, responseState) {
 		clientFacingErrorCode := PreCommitStreamServerRetryErrorCode(pipeResult, preCommitProtocolError)
 		input.AuditCapture.AddGatewayMetadata("response_inspection_server_retry", map[string]any{
-			"policyId":             pipeResult.ResponseInspection.PolicyID,
-			"accountSwitch":        pipeResult.ResponseInspection.AccountSwitch,
-			"errorCode":            orDefault(pipeResult.ResponseInspection.UpstreamErrorCode, pipeResult.ErrorCode),
+			"policyId":              pipeResult.ResponseInspection.PolicyID,
+			"accountSwitch":         pipeResult.ResponseInspection.AccountSwitch,
+			"errorCode":             orDefault(pipeResult.ResponseInspection.UpstreamErrorCode, pipeResult.ErrorCode),
 			"clientFacingErrorCode": clientFacingErrorCode,
-			"accountId":            input.Account.GetID(),
+			"accountId":             input.Account.GetID(),
 		})
 		return UpstreamResponseHandlingResult{
 			RetryUpstream:            true,
@@ -453,12 +454,12 @@ func (input *HandleUpstreamResponseInput) finalizeStreamFailure(pipeResult Strea
 		ShouldRetryPreCommitStreamFailureOnServer(pipeResult, responseState) {
 		clientFacingErrorCode := PreCommitStreamServerRetryErrorCode(pipeResult, preCommitProtocolError)
 		input.AuditCapture.AddGatewayMetadata("pre_commit_stream_server_retry", map[string]any{
-			"errorCode":            pipeResult.ErrorCode,
-			"clientFacingErrorCode": clientFacingErrorCode,
-			"message":              pipeResult.Message,
+			"errorCode":              pipeResult.ErrorCode,
+			"clientFacingErrorCode":  clientFacingErrorCode,
+			"message":                pipeResult.Message,
 			"downstreamBytesWritten": pipeResult.DownstreamBytesWritten,
-			"outputReceived":       pipeResult.OutputReceived,
-			"accountId":            input.Account.GetID(),
+			"outputReceived":         pipeResult.OutputReceived,
+			"accountId":              input.Account.GetID(),
 		})
 		return UpstreamResponseHandlingResult{
 			RetryUpstream:            true,
@@ -580,17 +581,20 @@ func signalAborted(signal interface{ Done() <-chan struct{} }) bool {
 
 func prepareUpstreamResponseForDownstream(downstream StreamDownstream, upstreamResponse *GatewayUpstreamResponse, shouldHandleAsStream bool) {
 	// 对齐 downstream-headers.ts 的 prepareUpstreamResponseForDownstream：headers
-	// 已发送时跳过；流式补齐 content-type 与 no-cache 头。
+	// 已发送时跳过；转发上游响应头（copyResponseHeaders，D-116）；上游失败先
+	// 标注 http metric 失败域；流式补齐 content-type 与 no-cache 头。Go 的
+	// WriteHeader 立即提交响应头，全部头写入必须先于 WriteHeader。
 	if downstream.Res.HeadersSent() {
 		return
 	}
 	if !upstreamResponse.OK() {
-		kernelMarkUpstreamForMetrics(downstream)
+		markHTTPMetricFailureScope("upstream")
 	}
 	header := downstream.Res.Header()
-	status := upstreamResponse.Status
-	if status != 0 {
-		downstream.Res.WriteHeader(status)
+	if upstreamResponse.Header != nil {
+		gatewaydispatch.CopyResponseHeaders(&gatewaydispatch.GatewayUpstreamResponse{Header: upstreamResponse.Header}, func(name, value string) {
+			header.Set(name, value)
+		})
 	}
 	if shouldHandleAsStream && header.Get("content-type") == "" {
 		header.Set("content-type", "text/event-stream; charset=utf-8")
@@ -600,13 +604,15 @@ func prepareUpstreamResponseForDownstream(downstream StreamDownstream, upstreamR
 			header.Set("cache-control", "no-cache, no-transform")
 		}
 		header.Set("x-accel-buffering", "no")
+	}
+	status := upstreamResponse.Status
+	if status != 0 {
+		downstream.Res.WriteHeader(status)
+	}
+	if shouldHandleAsStream {
 		FlushGateway(downstream.Res)
 	}
 }
-
-// kernelMarkUpstreamForMetrics 预留：上游失败的 http metric scope 由 kernel
-// 指标中间件（G12/G15）承接。
-func kernelMarkUpstreamForMetrics(downstream StreamDownstream) {}
 
 func usageWithObservedModel(usage gatewayproto.ParsedUsage, observedModel string) gatewayproto.ParsedUsage {
 	if observedModel != "" {
@@ -678,11 +684,11 @@ func bodyTextForSnapshot(pipeResult StreamPipeResult) string {
 
 func bodyOmissionMetadata(omission *StreamBodyOmissionSummary) map[string]any {
 	metadata := map[string]any{
-		"omitted":            true,
-		"reason":             omission.Reason,
-		"message":            omission.Message,
-		"totalUpstreamBytes": omission.TotalUpstreamBytes,
-		"totalResponseBytes": omission.TotalResponseBytes,
+		"omitted":             true,
+		"reason":              omission.Reason,
+		"message":             omission.Message,
+		"totalUpstreamBytes":  omission.TotalUpstreamBytes,
+		"totalResponseBytes":  omission.TotalResponseBytes,
 		"imageOutputReceived": omission.ImageOutputReceived,
 	}
 	if omission.SseEventCount > 0 {
@@ -697,44 +703,52 @@ func bodyOmissionMetadata(omission *StreamBodyOmissionSummary) map[string]any {
 	return metadata
 }
 
-// inspectionAuditMetadata 对齐 responseInspectionAuditMetadata 的消费子集。
+// inspectionAuditMetadata 对齐 audit/metadata.ts responseInspectionAuditMetadata
+// 的完整 32 字段契约（BUG-0175 D-88：此前的现役接线只有 16 字段子集，缺
+// executionMode / dataHandling / retryEnabled / accountState / policyScopeType
+// 等；完整 port 见 gatewayusage audit_capture.go
+// ResponseInspectionDecisionAuditMetadataInput）。空字符串按 Node
+// JSON.stringify 的 undefined 丢弃语义省略；布尔字段始终写入。
 func inspectionAuditMetadata(decision *ResponseInspectionDecision) map[string]any {
 	metadata := map[string]any{
-		"reason":           decision.Reason,
-		"action":           decision.Action,
-		"transport":        decision.Transport,
-		"triggerPhase":     decision.TriggerPhase,
-		"endpointFamily":   string(decision.EndpointFamily),
-		"frameType":        decision.FrameType,
-		"downstreamWritten": decision.DownstreamWritten,
+		"responsePolicyMatched":         true,
+		"responseInspectionIntercepted": decision.Action != "dry_run",
+		"transport":                     decision.Transport,
+		"frameType":                     decision.FrameType,
+		"triggerPhase":                  decision.TriggerPhase,
+		"codexCompactionExpected":       decision.CodexCompactionExpected,
+		"downstreamWritten":             decision.DownstreamWritten,
+		"retryEnabled":                  decision.RetryEnabled,
 	}
-	if decision.PolicyID != "" {
-		metadata["policyId"] = decision.PolicyID
+	setIfNotEmpty := func(key, value string) {
+		if value != "" {
+			metadata[key] = value
+		}
 	}
-	if decision.PolicyName != "" {
-		metadata["policyName"] = decision.PolicyName
-	}
-	if decision.PolicySource != "" {
-		metadata["policySource"] = decision.PolicySource
-	}
-	if decision.UpstreamErrorCode != "" {
-		metadata["upstreamErrorCode"] = decision.UpstreamErrorCode
-	}
-	if decision.RewriteErrorCode != "" {
-		metadata["rewriteErrorCode"] = decision.RewriteErrorCode
-	}
-	if decision.AccountSwitch != "" {
-		metadata["accountSwitch"] = decision.AccountSwitch
-	}
-	if decision.MatchedField != "" {
-		metadata["matchedField"] = decision.MatchedField
-	}
-	if decision.MatchedValue != "" {
-		metadata["matchedValue"] = decision.MatchedValue
-	}
-	if decision.MatchedSnippet != "" {
-		metadata["matchedSnippet"] = decision.MatchedSnippet
-	}
+	setIfNotEmpty("fallbackReason", decision.Reason)
+	setIfNotEmpty("inspectionAction", decision.Action)
+	setIfNotEmpty("endpointFamily", string(decision.EndpointFamily))
+	setIfNotEmpty("upstreamEventType", decision.UpstreamEventType)
+	setIfNotEmpty("upstreamErrorCode", decision.UpstreamErrorCode)
+	setIfNotEmpty("upstreamErrorType", decision.UpstreamErrorType)
+	setIfNotEmpty("upstreamErrorMessage", decision.UpstreamErrorMessage)
+	setIfNotEmpty("finishReason", decision.FinishReason)
+	setIfNotEmpty("clientProfile", decision.ClientProfile)
+	setIfNotEmpty("rewriteErrorCode", decision.RewriteErrorCode)
+	setIfNotEmpty("rewriteMessage", decision.RewriteMessage)
+	setIfNotEmpty("policyId", decision.PolicyID)
+	setIfNotEmpty("policyName", decision.PolicyName)
+	setIfNotEmpty("policySource", decision.PolicySource)
+	setIfNotEmpty("policyScopeType", decision.PolicyScopeType)
+	setIfNotEmpty("policyProtocolCode", decision.PolicyProtocolCode)
+	setIfNotEmpty("policyProviderCode", decision.PolicyProviderCode)
+	setIfNotEmpty("executionMode", decision.ExecutionMode)
+	setIfNotEmpty("dataHandling", decision.DataHandling)
+	setIfNotEmpty("accountSwitch", decision.AccountSwitch)
+	setIfNotEmpty("accountState", decision.AccountState)
+	setIfNotEmpty("matchedField", decision.MatchedField)
+	setIfNotEmpty("matchedValue", decision.MatchedValue)
+	setIfNotEmpty("matchedSnippet", decision.MatchedSnippet)
 	return metadata
 }
 

@@ -219,12 +219,32 @@ func (s chainAttemptAuditSink) CompleteAttempt(attemptID string, input gatewaydi
 	if s.capture == nil {
 		return
 	}
-	s.capture.CompleteAttempt(attemptID, gatewayusage.CompleteAttemptInput{
+	converted := gatewayusage.CompleteAttemptInput{
 		Success:      input.Success,
 		ErrorPhase:   input.ErrorPhase,
 		ErrorCode:    input.ErrorCode,
 		ErrorMessage: input.ErrorMessage,
-	})
+	}
+	// D-123（BUG-0175）：失败尝试审计透传上游响应事实（statusCode /
+	// responseHeaders / responseBody，failure-dispatch.ts:276-283）。
+	if input.StatusCode != nil {
+		status := *input.StatusCode
+		converted.StatusCode = &status
+	}
+	if input.ResponseHeaders != nil {
+		headers := map[string]any{}
+		for name, values := range input.ResponseHeaders {
+			if len(values) > 0 {
+				headers[name] = values[0]
+			}
+		}
+		converted.ResponseHeaders = headers
+	}
+	if len(input.ResponseBody) > 0 {
+		converted.ResponseBody = input.ResponseBody
+		converted.HasResponseBody = true
+	}
+	s.capture.CompleteAttempt(attemptID, converted)
 }
 
 func (s chainAttemptAuditSink) RecordFailedDispatchAttempt(input gatewaydispatch.FailedDispatchAttemptInput) {

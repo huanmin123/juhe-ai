@@ -16,47 +16,47 @@ type StreamTransportFailure struct {
 // StreamBodyOmissionSummary 对齐 StreamBodyOmissionSummary。
 type StreamBodyOmissionSummary struct {
 	// Reason is 'image_stream_payload' | 'image_json_payload'.
-	Reason             string
-	Message            string
-	TotalUpstreamBytes int64
-	TotalResponseBytes int64
-	SseEventCount      int
-	LastSseEventType   string
+	Reason              string
+	Message             string
+	TotalUpstreamBytes  int64
+	TotalResponseBytes  int64
+	SseEventCount       int
+	LastSseEventType    string
 	RecentSseEventTypes []string
 	ImageOutputReceived bool
-	TerminalReceived   bool
-	FailedReceived     bool
+	TerminalReceived    bool
+	FailedReceived      bool
 }
 
 // StreamPipeResult 对齐 StreamPipeResult。
 type StreamPipeResult struct {
 	Completed bool
 	// ProtocolValidated 仅当协议 inspector 观察到完整且有效的帧序列时为 true。
-	ProtocolValidated     bool
-	Message               string
-	ErrorCode             string
-	FirstTokenMs          *int64
-	Usage                 gatewayproto.ParsedUsage
-	OutputReceived        bool
-	ImageOutputReceived   bool
-	EstimatedOutputTokens int
-	ResponseBodyText      string
-	ResponseResourceId    string
-	AuditResponseBody     []byte
-	AuditUpstreamBody     []byte
+	ProtocolValidated      bool
+	Message                string
+	ErrorCode              string
+	FirstTokenMs           *int64
+	Usage                  gatewayproto.ParsedUsage
+	OutputReceived         bool
+	ImageOutputReceived    bool
+	EstimatedOutputTokens  int
+	ResponseBodyText       string
+	ResponseResourceId     string
+	AuditResponseBody      []byte
+	AuditUpstreamBody      []byte
 	DownstreamBytesWritten int64
 	// UpstreamResponseBytesWritten 是本次上游响应真正转发到下游的字节数。
 	UpstreamResponseBytesWritten int64
-	TransportCommitted    bool
-	SemanticCommitted     bool
-	UncommittedResponseBody []byte
-	ResponseInspection    *ResponseInspectionDecision
+	TransportCommitted           bool
+	SemanticCommitted            bool
+	UncommittedResponseBody      []byte
+	ResponseInspection           *ResponseInspectionDecision
 	// PassthroughUpstreamFailure 表示上游失败终态被刻意原样转发。
-	PassthroughUpstreamFailure bool
-	ResponseInspectionObservations []ResponseInspectionDecision
+	PassthroughUpstreamFailure                bool
+	ResponseInspectionObservations            []ResponseInspectionDecision
 	ResponseInspectionObservationOmittedCount int
-	BodyOmission            *StreamBodyOmissionSummary
-	TransportFailure        *StreamTransportFailure
+	BodyOmission                              *StreamBodyOmissionSummary
+	TransportFailure                          *StreamTransportFailure
 	// GatewayLocalFailure 表示网关本地处理失败且无上游传输归因。
 	GatewayLocalFailure bool
 }
@@ -144,26 +144,26 @@ func StreamResult(input StreamResultInput) StreamPipeResult {
 	auditUpstreamBody := auditUpstreamBodyForResult(input.UpstreamCapture, input.Completed, input.CaptureSuccessPayloads, input.BodyOmission)
 
 	result := StreamPipeResult{
-		Completed:                input.Completed,
-		ProtocolValidated:        input.ProtocolValidated,
-		Message:                  input.Message,
-		ErrorCode:                input.ErrorCode,
-		FirstTokenMs:             input.FirstTokenMs,
-		Usage:                    input.Usage,
-		OutputReceived:           input.OutputReceived,
-		ImageOutputReceived:      input.ImageOutputReceived,
-		EstimatedOutputTokens:    input.EstimatedOutputTokens,
-		ResponseBodyText:         responseBodyText,
-		ResponseResourceId:       input.ResponseResourceId,
-		AuditResponseBody:        auditResponseBody,
-		AuditUpstreamBody:        auditUpstreamBody,
-		DownstreamBytesWritten:   downstreamBytes,
+		Completed:                    input.Completed,
+		ProtocolValidated:            input.ProtocolValidated,
+		Message:                      input.Message,
+		ErrorCode:                    input.ErrorCode,
+		FirstTokenMs:                 input.FirstTokenMs,
+		Usage:                        input.Usage,
+		OutputReceived:               input.OutputReceived,
+		ImageOutputReceived:          input.ImageOutputReceived,
+		EstimatedOutputTokens:        input.EstimatedOutputTokens,
+		ResponseBodyText:             responseBodyText,
+		ResponseResourceId:           input.ResponseResourceId,
+		AuditResponseBody:            auditResponseBody,
+		AuditUpstreamBody:            auditUpstreamBody,
+		DownstreamBytesWritten:       downstreamBytes,
 		UpstreamResponseBytesWritten: upstreamBytes,
-		TransportCommitted:       transportCommitted,
-		SemanticCommitted:        semanticCommitted,
-		UncommittedResponseBody:  input.UncommittedResponseBody,
-		ResponseInspection:       input.ResponseInspection,
-		BodyOmission:             input.BodyOmission,
+		TransportCommitted:           transportCommitted,
+		SemanticCommitted:            semanticCommitted,
+		UncommittedResponseBody:      input.UncommittedResponseBody,
+		ResponseInspection:           input.ResponseInspection,
+		BodyOmission:                 input.BodyOmission,
 	}
 	if input.PassthroughUpstreamFailure {
 		result.PassthroughUpstreamFailure = true

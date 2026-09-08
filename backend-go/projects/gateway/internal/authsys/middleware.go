@@ -147,9 +147,26 @@ func (d *Deps) rateLimitOrWrite(w http.ResponseWriter, r *http.Request, systemAc
 	return d.AuthenticatedRateLimit(w, r, systemAccountID)
 }
 
-// RequireSession mirrors requireSessionContext: token resolution, dev auto
-// login when no token, session lookup, and touch on side-effect requests.
+// RequireSession mirrors requireAuth (auth.middleware.ts:12-64): token
+// resolution, dev auto login when no token, session lookup, touch on
+// side-effect requests, and the global must_change_password 403 gate
+// (auth.middleware.ts:51-54, D-214): every route family behind requireAuth
+// rejects an account that must change its initial password before it can
+// reach any handler.
 func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
+	return d.sessionMiddleware(touch, true)
+}
+
+// RequireSessionForAuthRoutes mirrors requireSessionContext
+// (auth.routes.ts:396): the auth route family itself stays reachable for a
+// must_change_password account so it can read its own flag (GET /auth/me) and
+// clear it (POST /auth/change-password); only PATCH /auth/me gates itself
+// (auth.routes.ts:283-286). There is no global gate here, exactly like Node.
+func (d *Deps) RequireSessionForAuthRoutes(touch bool) func(http.Handler) http.Handler {
+	return d.sessionMiddleware(touch, false)
+}
+
+func (d *Deps) sessionMiddleware(touch, gateMustChangePassword bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookies := ParseCookie(r.Header.Get("Cookie"))
@@ -166,6 +183,16 @@ func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
 					next.ServeHTTP(w, r.WithContext(WithAuthContext(r.Context(), auth)))
 					return
 				}
+				// D-216: with a configured dev auto-login username the Node
+				// developmentAutoLoginContextAsync throws when the account is
+				// missing or inactive (development-auto-login.ts), which lands
+				// as a 500 through next(error) — a server misconfiguration,
+				// not an anonymous request. Only the unconfigured case falls
+				// through to the 401 contract.
+				if d.DevAutoLoginUsername != "" {
+					kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+					return
+				}
 				kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
 				return
 			}
@@ -176,6 +203,14 @@ func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
 					return
 				}
 				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			// Node checks mustChangePassword inside requireAuth after the
+			// session resolution and touch but before the user rate limit
+			// (auth.middleware.ts:51-54 precede the system-api-app rate
+			// limiter), so the gate sits before rateLimitOrWrite here too.
+			if gateMustChangePassword && actor.MustChangePassword {
+				writeMustChange(w)
 				return
 			}
 			if !d.rateLimitOrWrite(w, r, actor.SystemAccountID) {

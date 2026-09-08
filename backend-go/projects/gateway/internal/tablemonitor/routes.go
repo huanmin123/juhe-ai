@@ -12,8 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,7 +36,7 @@ var rfc3339Pattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.
 
 // Cleanup dispatch constants (Node defaultCleanupBatchSize/MaxBatches).
 const (
-	defaultCleanupBatchSize = 5000
+	defaultCleanupBatchSize  = 5000
 	defaultCleanupMaxBatches = 100
 	cleanupOperationKey      = "table_monitor.cleanup_non_business_data"
 )
@@ -109,15 +112,65 @@ type OverviewCache struct {
 	cond           *sync.Cond
 }
 
-// NewOverviewCache builds the default cache with the Node window constants.
+// Window constants of the Node table-monitor.repository.ts module scope.
+const (
+	tableMonitorOverviewMaxStaleMs       = 60 * time.Minute
+	tableMonitorOverviewDefaultFreshMs   = 10 * time.Minute
+	tableMonitorOverviewRefreshBackoffMs = 30 * time.Second
+	envTableMonitorOverviewFreshWindowMs = "JUHE_AI_TABLE_MONITOR_OVERVIEW_FRESH_MS"
+	envTableMonitorOverviewStaleWindowMs = "JUHE_AI_TABLE_MONITOR_OVERVIEW_STALE_MS"
+)
+
+// NewOverviewCache builds the default cache with the Node window constants
+// and the two env window knobs (D-102: JUHE_AI_TABLE_MONITOR_OVERVIEW_FRESH_MS
+// defaults to 10min, JUHE_AI_TABLE_MONITOR_OVERVIEW_STALE_MS defaults to the
+// 60min max; both clamp to [1ms, 60min] and stale >= fresh, mirroring the
+// module-scope Math.min/Math.max chain).
 func NewOverviewCache() *OverviewCache {
+	return NewOverviewCacheWithLookup(os.Getenv)
+}
+
+// NewOverviewCacheWithLookup is the testable window-knob constructor; the
+// lookup stands in for process.env.
+func NewOverviewCacheWithLookup(lookup func(string) string) *OverviewCache {
+	fresh := clampOverviewWindowMs(parsePositiveDurationEnvMs(lookup, envTableMonitorOverviewFreshWindowMs, tableMonitorOverviewDefaultFreshMs))
+	stale := clampOverviewWindowMs(parsePositiveDurationEnvMs(lookup, envTableMonitorOverviewStaleWindowMs, tableMonitorOverviewMaxStaleMs))
+	if stale < fresh {
+		stale = fresh
+	}
 	cache := &OverviewCache{
-		fresh:          10 * time.Minute,
-		stale:          time.Hour,
-		failureBackoff: 30 * time.Second,
+		fresh:          fresh,
+		stale:          stale,
+		failureBackoff: tableMonitorOverviewRefreshBackoffMs,
 	}
 	cache.cond = sync.NewCond(&cache.mu)
 	return cache
+}
+
+// parsePositiveDurationEnvMs mirrors parsePositiveDurationEnv (table-monitor
+// repository): Number(env), finite and > 0 wins, otherwise the fallback.
+func parsePositiveDurationEnvMs(lookup func(string) string, name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(lookup(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
+		return fallback
+	}
+	return time.Duration(value) * time.Millisecond
+}
+
+// clampOverviewWindowMs applies Math.max(1, Math.trunc(value)) and the 60min
+// ceiling.
+func clampOverviewWindowMs(value time.Duration) time.Duration {
+	if value > tableMonitorOverviewMaxStaleMs {
+		return tableMonitorOverviewMaxStaleMs
+	}
+	if value < time.Millisecond {
+		return time.Millisecond
+	}
+	return value
 }
 
 // Zod v3 issue messages: the 400 body is the first issue's message verbatim
@@ -267,6 +320,31 @@ func (errCacheBackoffError) Error() string {
 	return "表监控概览刷新暂不可用，请稍后重试"
 }
 
+// Prewarm mirrors prewarmTableStorageOverview (table-monitor.repository.ts:
+// 255-259): the composition root fires it once at startup so the first admin
+// overview hit is a cache serve instead of a cold scan. Best-effort: a
+// prewarm failure only logs (event table_monitor_overview_prewarm_failed) and
+// leaves no failure-backoff entry (Node rememberFailure:false semantics), so
+// the first real request retries immediately. A nil cache keeps the no-op.
+func (d *Deps) Prewarm(ctx context.Context) {
+	if d == nil || d.Cache == nil || d.Store == nil {
+		return
+	}
+	overview, err := d.Store.LoadOverview(ctx, 1, 10, "")
+	if err != nil {
+		slog.Warn("表监控概览预热失败", "event", "table_monitor_overview_prewarm_failed", "error", err.Error())
+		return
+	}
+	cache := d.Cache
+	now := time.Now()
+	cache.mu.Lock()
+	cache.value = &overview
+	cache.storedAt = now
+	cache.lastRefresh = now
+	cache.cond.Broadcast()
+	cache.mu.Unlock()
+}
+
 func (d *Deps) historyHandler(w http.ResponseWriter, r *http.Request) {
 	values := r.URL.Query()
 	databaseRole := strings.TrimSpace(values.Get("databaseRole"))
@@ -408,7 +486,7 @@ func instantMillis(value string) (int64, bool) {
 }
 
 // coerceOptionalQueryInt mirrors z.coerce.number().int().min(min)[.max(max)]
-// .optional() over the first query value (Number('') === 0 fails the min
+// .optional() over the first query value (Number(”) === 0 fails the min
 // bound; NaN renders the zod invalid_type nan message; non-integers the
 // integer message).
 func coerceOptionalQueryInt(values url.Values, key string, min, max int) (int, bool, string) {

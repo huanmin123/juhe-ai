@@ -104,9 +104,13 @@ type AnthropicResponseDriver struct{}
 // NewAnthropicResponseDriver 构造。
 func NewAnthropicResponseDriver() *AnthropicResponseDriver { return &AnthropicResponseDriver{} }
 
-func (d *AnthropicResponseDriver) ResponseProtocol() string     { return "anthropic_v1" }
-func (d *AnthropicResponseDriver) ClientErrorProtocol() string  { return gatewayanthropic.ClientErrorProtocol }
-func (d *AnthropicResponseDriver) DefaultClientProfile() string { return gatewayanthropic.DefaultClientProfile }
+func (d *AnthropicResponseDriver) ResponseProtocol() string { return "anthropic_v1" }
+func (d *AnthropicResponseDriver) ClientErrorProtocol() string {
+	return gatewayanthropic.ClientErrorProtocol
+}
+func (d *AnthropicResponseDriver) DefaultClientProfile() string {
+	return gatewayanthropic.DefaultClientProfile
+}
 
 func (d *AnthropicResponseDriver) EndpointFamilyForPath(pathAndQuery string) gatewayproto.ResponseEndpointFamily {
 	return gatewayproto.ResponseEndpointFamily(gatewayanthropic.ResponseEndpointFamilyFromPath(pathAndQuery))
@@ -226,7 +230,9 @@ func (g geminiInspectorAdapter) DrainEventSummariesCanEndStream() bool {
 
 type anthropicStreamDriver struct{}
 
-func (anthropicStreamDriver) ClientErrorProtocol() string { return gatewayanthropic.ClientErrorProtocol }
+func (anthropicStreamDriver) ClientErrorProtocol() string {
+	return gatewayanthropic.ClientErrorProtocol
+}
 func (anthropicStreamDriver) NewStreamInspector() gatewayproto.StreamInspector {
 	return anthropicInspectorAdapter{inner: gatewayanthropic.NewStreamInspector()}
 }

@@ -97,7 +97,7 @@ func TestInspectResponseSemanticFramesErrorMatch(t *testing.T) {
 		ID: "default_openai_context_window_error", Source: PolicySourceSystemDefault, Name: "上下文超限",
 		Enabled: true, ExecutionMode: "enforce", DataHandling: "replace_with_failure", RetryEnabled: true,
 		ScopeType: "provider", ProviderCode: "openai", AccountSwitch: "request_next_account",
-		Match:         gatewayruntimecache.ResponseInspectionPolicyMatch{ErrorCodes: []string{"context_length_exceeded"}},
+		Match: gatewayruntimecache.ResponseInspectionPolicyMatch{ErrorCodes: []string{"context_length_exceeded"}},
 	}
 	frames := []gatewayproto.SemanticFrame{
 		{FrameType: gatewayproto.FrameTypeError, Transport: gatewayproto.TransportJSON,

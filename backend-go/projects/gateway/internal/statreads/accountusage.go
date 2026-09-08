@@ -274,6 +274,11 @@ func (d *Deps) accountUsageOverviewPage(r *http.Request, input accountUsagePageI
 			AccessType:             metadata.text("access_type"),
 			RangeUsage:             mapUsageSummaryAggregate(row),
 			DailyUsage:             []accountUsageDailyPoint{},
+			// Node windows path renders the constant authorization fallback
+			// (account-usage.repository.ts:364-366/:454-456).
+			AuthorizationUsageAvailable: false,
+			AuthorizationCount:          0,
+			AuthorizationTeamCount:      0,
 		})
 	}
 	defaultTrendIds, err := d.defaultTrendAccountIds(r, input.Access, overviewRows)
@@ -810,8 +815,16 @@ func (d *Deps) accountUsageFilter(r *http.Request, input accountUsagePageInput, 
 }
 
 // loadAccountUsageKeywordAccountIds mirrors loadAccountUsageKeywordAccountIds
-// (SQLite instr variant, selected-account limit 50).
+// (SQLite instr variant, selected-account limit 50). BUG-0175 D-82: the
+// keyword is NFKC-normalized before the substring matching exactly like the
+// Node PostgreSQL path's normalizeAccountUsageKeyword
+// (`value.normalize('NFKC').trim()`), so full-width variants match their
+// canonical account names.
 func (d *Deps) loadAccountUsageKeywordAccountIds(r *http.Request, scope AccessScope, keyword string, scopeType string) ([]string, error) {
+	keyword = nfkcTrim(keyword)
+	if keyword == "" {
+		return nil, nil
+	}
 	viewerID := scope.scopedID()
 	if viewerID == "" {
 		viewerID = scope.currentID()
@@ -1091,6 +1104,16 @@ type accountUsageStatsRow struct {
 	AccessType             string                   `json:"accessType"`
 	RangeUsage             accountUsageSummary      `json:"rangeUsage"`
 	DailyUsage             []accountUsageDailyPoint `json:"dailyUsage"`
+	// Authorization aggregate projection (BUG-0175 D-31, Node
+	// AccountUsageStatsRow authorizationUsageAvailable/Count/TeamCount). The
+	// windows list read renders the Node-served constant fallback: the grant
+	// stats loader only feeds the non-windows overview path, so the page rows
+	// carry authorizationUsageAvailable=false and zero counts instead of
+	// dropping the keys entirely (the previous omission left the frontend
+	// fields permanently undefined).
+	AuthorizationUsageAvailable bool `json:"authorizationUsageAvailable"`
+	AuthorizationCount          int  `json:"authorizationCount"`
+	AuthorizationTeamCount      int  `json:"authorizationTeamCount"`
 }
 
 type accountUsageStatsTrendOverview struct {

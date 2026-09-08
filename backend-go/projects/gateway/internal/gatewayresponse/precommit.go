@@ -110,16 +110,16 @@ const (
 // StreamPreCommitSseEvidence 对齐 StreamPreCommitSseEvidence：只跟踪标准 SSE
 // 帧；不解释事件名、JSON 载荷、供应商代码、状态码或错误信息。
 type StreamPreCommitSseEvidence struct {
-	DataEventObserved            bool
-	DataPayloadStarted           bool
+	DataEventObserved              bool
+	DataPayloadStarted             bool
 	OnlyNonSemanticFramingObserved bool
 
-	lineKind                  sseLineKind
-	fieldCandidate            []byte
+	lineKind                     sseLineKind
+	fieldCandidate               []byte
 	dataValueCanSkipLeadingSpace bool
-	currentDataLineHasValue   bool
-	currentEventHasData       bool
-	carriageReturnPending     bool
+	currentDataLineHasValue      bool
+	currentEventHasData          bool
+	carriageReturnPending        bool
 }
 
 // NewStreamPreCommitSseEvidence 构造证据机。

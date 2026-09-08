@@ -19,24 +19,24 @@ type UpstreamResponseHandlingResult struct {
 	GatewayLocalFailure bool
 
 	// 重试分支
-	RetryUpstream             bool
-	RetryReason               string // StreamServerRetryReason
-	SameAccountRetryEligible  bool
-	ResponseInspection        *ResponseInspectionDecision
-	ExcludeCurrentAccount     bool
-	Message                   string
-	UncommittedResponseBody   []byte
+	RetryUpstream               bool
+	RetryReason                 string // StreamServerRetryReason
+	SameAccountRetryEligible    bool
+	ResponseInspection          *ResponseInspectionDecision
+	ExcludeCurrentAccount       bool
+	Message                     string
+	UncommittedResponseBody     []byte
 	CompatibilityRecoverySignal string
 
 	// 完成分支
-	Usage                     gatewayproto.ParsedUsage
-	FirstTokenMs              *int64
-	ResponseBodyText          string
-	ResponseResourceId        string
-	BodyOmission              *StreamBodyOmissionSummary
-	ProtocolValidatedSuccess  bool
+	Usage                      gatewayproto.ParsedUsage
+	FirstTokenMs               *int64
+	ResponseBodyText           string
+	ResponseResourceId         string
+	BodyOmission               *StreamBodyOmissionSummary
+	ProtocolValidatedSuccess   bool
 	PassthroughUpstreamFailure bool
-	ErrorPayload              gatewayproto.ErrorPayload
+	ErrorPayload               gatewayproto.ErrorPayload
 	// ErrorPayloadExtra 保留额外键（Node 的 Record<string, unknown>）。
 	ErrorPayloadExtra map[string]any
 }

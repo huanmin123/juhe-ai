@@ -5,12 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/cleanuprepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
@@ -69,7 +72,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		return err
 	}
 
-	timezoneSource := family.timezoneSource(stats)
 	shards := cleanuprepo.NewShardStore(a.config.UsageShardRoot)
 
 	usageRecords := &cleanuprepo.UsageRecordsStore{Catalog: usageCatalog, Stats: stats, Shards: shards}
@@ -79,7 +81,15 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		statsRetention.Checkpoint = func(ctx context.Context) error { return checkpointSQLite(ctx, statsDB) }
 	}
 
-	family.timezone = family.timezoneSource(stats)
+	// D-45（BUG-0175）：数据保留的组合根设置/时区源接真实 system_settings
+	// 读模型（business 库）。此前 timezone 固定 Asia/Shanghai、retention 策略
+	// 固定一套与 DEFAULT_SYSTEM_SETTINGS 不一致的硬编码值（自述临时边界），
+	// 运营改设置完全不生效。
+	retentionSettings := newRetentionSettingsRuntime(business.DB, postgres, a.logger)
+	family.timezone = retentionSettings.location
+	family.usageTimezone = retentionSettings.timezoneName
+	family.retentionSettings = retentionSettings
+
 	family.retentionStatsStore = statsRetention
 	recordCleanup := &cleanuprepo.RecordCleanupStore{
 		Dataset:        dataset,
@@ -88,7 +98,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		Business:       business,
 		Shards:         shards,
 		Now:            family.now,
-		Timezone:       timezoneSource,
+		Timezone:       retentionSettings.location,
 		DerivedWindows: nil,
 		OnDerivedWindowsSkipped: func(reason string) {
 			a.logger.Warn("record cleanup 跳过同步派生窗口刷新", "event", "retention_derived_windows_refresh_skipped", "reason", reason)
@@ -155,7 +165,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		Stats:        stats,
 		Shards:       shards,
 		UsageRecords: usageRecords,
-		Timezone:     timezoneSource,
+		Timezone:     retentionSettings.location,
 	}
 	chatStore := &cleanuprepo.ChatStore{DB: chat, AssetsRoot: a.config.ChatAssetsRoot, Now: family.now}
 
@@ -204,8 +214,8 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		}(), "worker", a.config.WorkerRole)
 	dataRetentionJob.Logger = a.logger
 	dataRetentionJob.Clock = func() time.Time { return family.now() }
-	dataRetentionJob.Settings = family.settingsSource()
-	dataRetentionJob.Timezone = family.usageTimezoneSource()
+	dataRetentionJob.Settings = retentionSettings.settings
+	dataRetentionJob.Timezone = family.usageTimezone
 	dataRetentionJob.PublicApiLogs = publicApiLogs
 	dataRetentionJob.UsageRecords = usageRecords
 	dataRetentionJob.Stats = &familyStatsWriter{family: family}
@@ -298,11 +308,19 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	return nil
 }
 
+// checkpointSQLite 照 Node checkpointSqliteWal（sqlite-maintenance.ts:8-23，
+// D-70，BUG-0175）：PASSIVE checkpoint + PRAGMA optimize。Go 曾用 TRUNCATE——
+// 它会等待所有读事务退出并截断 WAL 文件，把清理循环变成阻塞窗口；PASSIVE
+// 尽力搬移而不等待，WAL 收缩交给优化器建议的时机。返回的行计数不消费（Node
+// 仅用于日志字段，Go 侧保持删除计数日志不变）。
 func checkpointSQLite(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
-	_, err := db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE);")
+	if _, err := db.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE);"); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx, "PRAGMA optimize;")
 	return err
 }
 
@@ -311,7 +329,11 @@ type retentionFamily struct {
 	assembly *workerAssembly
 	postgres bool
 
-	timezone            func(ctx context.Context) (*time.Location, error)
+	timezone func(ctx context.Context) (*time.Location, error)
+	// usageTimezone 是字符串时区源（retention.TimezoneSource，D-45 接真实
+	// system_settings）；retentionSettings 持有 settings/时区共用读模型。
+	usageTimezone       retention.TimezoneSource
+	retentionSettings   *retentionSettingsRuntime
 	retentionStatsStore *cleanuprepo.StatsRetentionStore
 
 	recordCleanup *cleanuprepo.RecordCleanupStore
@@ -351,38 +373,181 @@ func (f *retentionFamily) retentionStats() *cleanuprepo.StatsRetentionStore {
 	return f.retentionStatsStore
 }
 
-func (f *retentionFamily) timezoneSource(stats *cleanuprepo.DB) func(ctx context.Context) (*time.Location, error) {
-	// Node usageStatsTimezone()：设置缺失时 fail closed；组合根暂以默认时区
-	// Asia/Shanghai（Node DEFAULT usageStatsTimezone）解析。
-	return func(ctx context.Context) (*time.Location, error) {
-		return time.LoadLocation("Asia/Shanghai")
+// retentionSettingsRuntime 是数据保留组合根的 system_settings 读模型
+// （D-45，BUG-0175；Node usageStatsTimezoneAsync + getSettingsAsync 的 Go
+// 承接）：
+//   - retention 策略数值经 jobssettings.Source（background-jobs settingsNumber
+//     语义：缺行回落 DEFAULT_SYSTEM_SETTINGS、非法值任务失败；SQLite 缺表 /
+//     PG 读失败按驱动语义回落默认并告警）；数值边界交给 retention.LoadPolicy
+//     fail-closed 校验，这里只要求整数。
+//   - usageStatsTimezone（字符串）沿用同一组失败语义：缺行走
+//     DEFAULT_SYSTEM_SETTINGS 的 "UTC" 种子值；SQLite 缺表 / PG 读失败回落
+//     默认并告警（sqliteBackgroundJobSettingValue /
+//     postgresBackgroundJobSettingValue 等价）；非法 JSON / 非法时区任务
+//     失败。60s 缓存对齐 usageStatsTimezoneCacheTtlMs。
+type retentionSettingsRuntime struct {
+	source *jobssettings.Source
+	db     *sql.DB
+	dbMode jobssettings.Mode
+	warn   jobssettings.WarnFunc
+
+	mu          sync.Mutex
+	tzValue     string
+	tzExpiresAt time.Time
+	tzWarned    bool
+}
+
+// retentionPolicySettingKeys 是 retention.LoadPolicy 消费的设置键
+// （retention/policy.go Setting* 常量的镜像，保持组合根与策略解耦）。
+var retentionPolicySettingKeys = []string{
+	"publicApiLogRetentionDays",
+	"usageRecordRetentionDays",
+	"usageStatsMinuteRetentionHours",
+	"usageStatsHourlyRetentionDays",
+	"usageStatsDailyRetentionDays",
+	"usageStatsWeeklyRetentionWeeks",
+	"usageStatsMonthlyRetentionMonths",
+	"usageRankSnapshotRetentionDays",
+	"systemMetricsRetentionDays",
+	"systemMetricsHourlyRetentionDays",
+}
+
+func newRetentionSettingsRuntime(business *sql.DB, postgres bool, logger *slog.Logger) *retentionSettingsRuntime {
+	mode := jobssettings.SQLite
+	if postgres {
+		mode = jobssettings.Postgres
+	}
+	return &retentionSettingsRuntime{
+		source: jobssettings.NewSource(jobssettings.Options{
+			DB:   business,
+			Mode: mode,
+			Warn: jobssettingsWarn(logger),
+		}),
+		db:     business,
+		dbMode: mode,
+		warn:   jobssettingsWarn(logger),
 	}
 }
 
-func (f *retentionFamily) usageTimezoneSource() retention.TimezoneSource {
-	return func(ctx context.Context) (string, error) {
-		return "Asia/Shanghai", nil
+// settings implements retention.SettingsSource.
+func (r *retentionSettingsRuntime) settings(ctx context.Context) (map[string]any, error) {
+	settings := make(map[string]any, len(retentionPolicySettingKeys))
+	for _, key := range retentionPolicySettingKeys {
+		// 全整数域读取：越界/非法由 retention.LoadPolicy 以 Node 同款错误
+		// fail-closed，这里不做二次边界。
+		value, err := r.source.Number(ctx, key, math.MinInt, math.MaxInt)
+		if err != nil {
+			return nil, err
+		}
+		settings[key] = value
 	}
+	return settings, nil
 }
 
-func (f *retentionFamily) settingsSource() retention.SettingsSource {
-	// Node getSettingsAsync 读 system_settings；jobs 侧暂无设置读模型，
-	// 以 Node DEFAULT_SYSTEM_SETTINGS 的保留策略默认值供策略加载
-	// （与 staticSettings.number 同一边界，接入设置存储时只需替换）。
-	return func(ctx context.Context) (map[string]any, error) {
-		return map[string]any{
-			"publicApiLogRetentionDays":        30,
-			"usageRecordRetentionDays":         90,
-			"usageStatsMinuteRetentionHours":   24,
-			"usageStatsHourlyRetentionDays":    30,
-			"usageStatsDailyRetentionDays":     180,
-			"usageStatsWeeklyRetentionWeeks":   104,
-			"usageStatsMonthlyRetentionMonths": 24,
-			"usageRankSnapshotRetentionDays":   90,
-			"systemMetricsRetentionDays":       7,
-			"systemMetricsHourlyRetentionDays": 30,
-		}, nil
+// timezoneName implements retention.TimezoneSource（usageStatsTimezoneAsync）。
+func (r *retentionSettingsRuntime) timezoneName(ctx context.Context) (string, error) {
+	r.mu.Lock()
+	if r.tzValue != "" && time.Now().Before(r.tzExpiresAt) {
+		value := r.tzValue
+		r.mu.Unlock()
+		return value, nil
 	}
+	r.mu.Unlock()
+
+	timezone, err := r.readTimezoneSetting(ctx)
+	if err != nil {
+		return "", err
+	}
+	if _, locationErr := time.LoadLocation(timezone); locationErr != nil {
+		return "", fmt.Errorf("统计时区不存在：%s", timezone)
+	}
+	r.mu.Lock()
+	r.tzValue = timezone
+	r.tzExpiresAt = time.Now().Add(retentionTimezoneCacheTTL)
+	r.mu.Unlock()
+	return timezone, nil
+}
+
+// retentionTimezoneCacheTTL mirrors usageStatsTimezoneCacheTtlMs
+// (usage-stats-helpers.ts, 60_000).
+const retentionTimezoneCacheTTL = 60 * time.Second
+
+// defaultRetentionTimezone 取 DEFAULT_SYSTEM_SETTINGS 里 usageStatsTimezone
+// 的种子值（Node 播种的是 host timezone；部署配置时区后总是携带显式行，
+// 静态回落 UTC 与 jobssettingsdefaults 同一约定）。
+func defaultRetentionTimezone() string {
+	if value, ok := jobssettings.DefaultSystemSettings["usageStatsTimezone"].(string); ok && value != "" {
+		return value
+	}
+	return "UTC"
+}
+
+// readTimezoneSetting resolves the raw usageStatsTimezone setting with the
+// jobssettings failure semantics.
+func (r *retentionSettingsRuntime) readTimezoneSetting(ctx context.Context) (string, error) {
+	query := `SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`
+	if r.dbMode == jobssettings.Postgres {
+		query = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`
+	}
+	var rawValue sql.NullString
+	readErr := r.db.QueryRowContext(ctx, query).Scan(&rawValue)
+	if readErr == nil || readErr == sql.ErrNoRows {
+		if readErr == nil && rawValue.Valid && strings.TrimSpace(rawValue.String) != "" {
+			var value string
+			if err := json.Unmarshal([]byte(rawValue.String), &value); err != nil {
+				return "", fmt.Errorf("系统设置 usageStatsTimezone 无效: %w", err)
+			}
+			if strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value), nil
+			}
+		}
+		// 缺行走 DEFAULT_SYSTEM_SETTINGS 的种子值（schema 播种保证行存在，
+		// 与 jobssettings.Source 的缺行回落一致）。
+		return defaultRetentionTimezone(), nil
+	}
+	if r.dbMode == jobssettings.Postgres {
+		// postgresBackgroundJobSettingValue：快照刷新失败告警后保持默认。
+		r.warnOnce("background_job_settings_snapshot_refresh_failed",
+			"后台任务系统设置快照刷新失败，将临时使用默认设置", readErr)
+		return defaultRetentionTimezone(), nil
+	}
+	if isMissingSystemSettingsTable(readErr) {
+		// sqliteBackgroundJobSettingValue：启动早期设置表可能尚未初始化——
+		// 一次告警后临时使用默认。
+		r.warnOnce("background_job_settings_table_missing_default",
+			"后台任务启动时系统设置表尚未初始化，将临时使用默认设置", readErr)
+		return defaultRetentionTimezone(), nil
+	}
+	return "", fmt.Errorf("读取 usageStatsTimezone 失败: %w", readErr)
+}
+
+func (r *retentionSettingsRuntime) warnOnce(event, message string, err error) {
+	r.mu.Lock()
+	alreadyWarned := r.tzWarned
+	r.tzWarned = true
+	r.mu.Unlock()
+	if alreadyWarned || r.warn == nil {
+		return
+	}
+	r.warn(event, map[string]any{"error": err.Error()}, message)
+}
+
+func isMissingSystemSettingsTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table: system_settings")
+}
+
+// location 是 *time.Location 视角的同一读模型（statsagg /
+// cleanuprepo 的 StatsTimezone 消费面）。
+func (r *retentionSettingsRuntime) location(ctx context.Context) (*time.Location, error) {
+	timezone, err := r.timezoneName(ctx)
+	if err != nil {
+		return nil, err
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return nil, fmt.Errorf("统计时区不存在：%s", timezone)
+	}
+	return location, nil
 }
 
 // ---- ports 适配 ----

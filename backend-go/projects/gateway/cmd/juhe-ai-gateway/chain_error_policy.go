@@ -1170,19 +1170,29 @@ func parseJSONValueLoose(text string) any {
 }
 
 func findFirstJSONField(value any, names []string) any {
-	obj, ok := value.(map[string]any)
-	if !ok {
-		return nil
-	}
-	for _, name := range names {
-		if child, present := obj[name]; present {
-			return child
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, name := range names {
+			if child, present := typed[name]; present {
+				return child
+			}
 		}
-	}
-	// 字段搜索是存在性语义：递归全部子对象。
-	for _, child := range obj {
-		if found := findFirstJSONField(child, names); found != nil {
-			return found
+		// 字段搜索是存在性语义：递归全部子对象。
+		for _, child := range typed {
+			if found := findFirstJSONField(child, names); found != nil {
+				return found
+			}
+		}
+	case []any:
+		// D-98（BUG-0175）：Node findFirstField 对数组同样递归（JS
+		// Object.values(array) 即元素序列），quota hint 藏在数组元素
+		// （如 errors[].reset_at / data[].quota_reset_at）时必须命中，
+		// 否则显式重置冷却回落 generic 兜底、冷却被拉长。切片按索引
+		// 顺序递归，与 Node 的元素遍历顺序一致。
+		for _, child := range typed {
+			if found := findFirstJSONField(child, names); found != nil {
+				return found
+			}
 		}
 	}
 	return nil

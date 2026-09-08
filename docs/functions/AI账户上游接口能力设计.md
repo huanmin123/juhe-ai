@@ -42,13 +42,43 @@
 - 已停用映射可以保留，之后重新启用能力时再恢复。
 - 运行时只使用已启用且右侧上游能力仍满足的映射。
 
-## 5. 人工测试契约
+## 5. 切号时的有效上游目标
+
+本节只约束已发生切号的请求，不改变初始候选筛选和显式 mapping 的允许矩阵。初始请求可以使用 `sourceModel + sourceEndpointFamily` 解析映射；一旦某个账号完成状态恢复、协议转换和上游请求构造，调度器必须冻结本次请求的有效上游目标，再用该目标筛选后续账号。
+
+冻结目标至少包含：
+
+```text
+providerCode
+providerProtocolProfileID
+upstreamModel
+upstreamEndpointFamily
+upstreamEndpointMode     # 例如 chat_json、chat_sse、responses_json、responses_sse
+contextContract          # 例如 chat_messages_v1、native_responses_v1
+```
+
+`upstreamEndpointMode` 是实际上游采用的精确 JSON / SSE 形态，不是客户端形态的别名。`Responses -> Chat` bridge 当前以 `chat_sse` 作为上游载体；只有 bridge 明确选择并构造 `chat_json` 时，才可形成 `chat_json` 目标。`chat_json` 和 `chat_sse`、`responses_json` 和 `responses_sse` 不能在切号时互换。
+
+切号候选只检查两类账号事实：
+
+1. `supported_endpoint_modes` 是否包含冻结的精确 mode；
+2. `supportedModels` 是否直接支持冻结的 `upstreamModel`，或启用且有效的账号模型别名 RHS 是否同时匹配冻结的 `upstreamModel + upstreamEndpointFamily`。
+
+mapping 左侧 `SourceModel`、`SourceEndpointFamily`、客户端协议和客户端画像不参与切号资格判断；不能复用只按 source 查找的 `ResolveAccountModelMapping`。候选被选中后，provider driver 必须使用已经物化的 `contextContract` 或冻结的 bridge 执行计划重建请求，不能再把原始客户端 body 交给候选账号。
+
+供应商边界固定为：冻结目标是 `chat_completions` 时允许跨供应商，但模型、Chat 协议族、精确 mode 和上下文形态必须一致；冻结目标是 `responses` 或其他非 Chat 协议时必须保持同一供应商，并保持兼容的 provider profile、模型、协议族和 mode。目标缺失或无法证明时不放宽为客户端协议，停止跨账号切换。
+
+`Responses -> Chat` 只有在 `previous_response_id`、网关 compact envelope 和其他可转换状态已由网关状态层消费，并且不存在仍需原上游解开的必需 opaque `encrypted_content`，形成自包含的 Chat / canonical 上下文后，才可以按 Chat 目标跨供应商切号。外部原生 `previous_response_id` 或仍需原上游解开的 opaque `encrypted_content` 不能交给 Chat 候选；只能保持原生 Responses 的同供应商约束，否则受控失败。
+
+完整契约见 [切号时有效上游目标与上下文迁移设计](切号时有效上游目标与上下文迁移设计.md)。
+
+## 6. 人工测试契约
 
 账户列表保持轻量，不返回凭据或完整模型目录。用户打开单账户测试时，前端立即读取当前账户作用域内的 `test-options`，运行按钮在该请求完成前保持禁用；加载失败时必须展示原始错误并阻止提交，不能使用账户中可能过期的请求形态静默测试。
 
 `test-options` 对每个候选模型返回人工测试所需的最小数据 `{ id, name, testEndpointModes }`。其中 `testEndpointModes` 由账户已启用的上游能力和该模型目录 `supportedApiProtocols` 的交集计算，不返回原始凭据或无关模型的完整协议详情。目录确认只支持图片生成的模型，其唯一测试形态为 `images_json`；前端必须同步草稿 `healthCheckEndpointMode` 并显示 `Images API`。切换模型时必须重新取得该模型的可测试形态。新增 / 编辑表单可使用供应商模型选项携带的协议与当前草稿账户能力计算交集，但提交测试时后端仍重新以模型目录验证，不能相信客户端传值。
 
-## 6. 非目标
+## 7. 非目标
 
 - 不新增独立的图片账户能力字段；`images_json` 仅是 `healthCheckEndpointMode` 的精确检查形态，不替代 `credentials.supported_endpoint_modes`。
 - 不新增客户端请求限制配置。
@@ -57,7 +87,7 @@
 - 不把模型目录协议标签改成账户运行时能力事实。
 - 不自动删除与能力冲突的模型映射。
 
-## 7. 验证
+## 8. 验证
 
 - 普通 OpenAI-compatible API Key 显式启用 `responses_sse` 后，可以进入 Codex `/responses` 候选并执行 Codex 请求整理。
 - 未启用目标上游 endpoint mode 的账户仍被候选过滤。

@@ -26,18 +26,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayobs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -60,6 +65,11 @@ type gatewayChain struct {
 	auditSettings       gatewayusage.AuditLogSettingsSource
 	auditDispatcher     gatewayusage.AuditDispatcher
 	usageModelResolver  gatewayusage.UsageModelResolver
+	// responseAccountEffects 是 W4-B（BUG-0175 D-132）的响应层账户副作用
+	// 面（配置策略避让 / 桶避让写侧）；nil 保持 finalization 的缺席守卫。
+	responseAccountEffects gatewayresponse.AccountFailureEffects
+	// speed-first（D-114，routes.ts:542-546）的 per-request 状态在
+	// v1DispatchLoop 上；组合级字段到此为止。
 	// compat answers the openai-compatible files / vector-stores families.
 	// Deliberate Go enhancement over the archived Node server.ts order: the
 	// archived Node mounted these routers AFTER
@@ -113,6 +123,13 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	}
 	if res.HeadersSent() || writableEndedOf(res) {
 		return
+	}
+	// D-119（BUG-0175）recorder hunk：把 runtime 快照挂进请求上下文——
+	// chainBodyRejectionRecorder 在 body 拒绝面读取身份（Node 的
+	// req.gatewayRuntime 同源；gatewaybody 无法引用 gatewaypreauth 类型）。
+	if req.Runtime != nil {
+		r = r.WithContext(context.WithValue(r.Context(), chainGatewayRuntimeKey{}, req.Runtime))
+		req.HTTP = r
 	}
 
 	// ---- body pipeline (rejectGatewayRawBodyByContentLength ->
@@ -256,6 +273,26 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		return
 	}
 	releases.Add(context.ReleaseClientIPConcurrency)
+	// D-120（BUG-0175）SSE 等待心跳装配（preflight.ts:855-860）：等待预算在
+	// BeginNoAvailableWait/PauseNoAvailableWait 边沿起停心跳，长等待期间向
+	// 下游写 SSE 保活块，防止空闲超时断连。非 SSE 下游协议心跳为 nil
+	//（SetWaitObserver(nil) 清除，与 Node setWaitObserver(undefined) 一致）。
+	// 提交状态跨心跳与响应处理共享：心跳标记 transport committed 后，上游若
+	// 返回非流式响应，由 finalizeNonStreamResponseAfterSseHeartbeat 收尾。
+	loop.waitCommitState = &gatewayresponse.DownstreamCommitState{}
+	loop.waitHeartbeat = gatewayresponse.CreateGatewaySseWaitHeartbeat(gatewayresponse.HeartbeatDeps{
+		Res:                res,
+		DownstreamProtocol: context.ClientStrategy.DownstreamProtocol,
+		DownstreamCommit:   loop.waitCommitState,
+		Signal:             ctx,
+	})
+	if loop.waitHeartbeat != nil {
+		serverRetryBudget.SetWaitObserver(&gatewaypreauth.ServerRetryBudgetWaitObserver{
+			OnWaitStarted: loop.waitHeartbeat.Start,
+			OnWaitPaused:  loop.waitHeartbeat.Stop,
+		})
+	}
+	defer loop.stopWaitHeartbeat()
 	c.observability.LogRequestStage("preflight.completed", map[string]any{
 		"traceId":               traceID,
 		"groupId":               context.UsageContext.GroupID,
@@ -283,9 +320,12 @@ func (c *gatewayChain) handleUpstreamResponse(
 	startedAt int64,
 	settings gatewayruntimecache.GatewaySettings,
 	budgets requestBudgets,
+	commitState *gatewayresponse.DownstreamCommitState,
 ) gatewayresponse.UpstreamResponseHandlingResult {
 	ctx := req.HTTP.Context()
-	commitState := &gatewayresponse.DownstreamCommitState{}
+	if commitState == nil {
+		commitState = &gatewayresponse.DownstreamCommitState{}
+	}
 	upstream := dispatched.Response
 	streamRequest := gatewaypreauth.IsOpenAIStreamRequest(req)
 	// Node routes.ts:1550-1553: shouldHandleAsStream = upstreamResponse.ok &&
@@ -295,15 +335,35 @@ func (c *gatewayChain) handleUpstreamResponse(
 	// text/event-stream content type) with a gateway event.
 	handleAsStream := shouldHandleOpenAIUpstreamResponseAsStreamWithStatus(
 		upstream.Status(), upstream.ContentType(), streamRequest)
+	// D-97（BUG-0175）：上游响应模型观察器接线。Go 的响应变换由 driver 切片
+	// 承接（gatewaydispatch 不再做装饰），观察在组合根挂到最终响应体上：
+	// 分片流经观察器，干净 EOF 时把 observation.Model() 发布进响应快照的
+	// UpstreamResponseModel 字段——发布发生在管道收到 EOF 之前（发送先于
+	// 接收），finalization 读取字段时值已就位，与 Node getter 的惰性求值
+	// 时序一致。
+	observedBody := io.Reader(upstream.Body)
+	upstreamModelObservation := gatewayobs.CreateUpstreamResponseModelObservation(gatewayobs.UpstreamResponseModelObserverOptions{
+		Protocol: gatewayobs.UpstreamResponseModelProtocolForRequest(gatewayobs.UpstreamResponseModelRequestInfo{
+			Headers:      upstream.Header,
+			UpstreamURL:  dispatched.UpstreamURL,
+			ProviderCode: dispatched.Account.ProviderCode,
+			ProtocolCode: dispatched.Account.ProtocolCode,
+		}),
+		SSE: gatewaydispatch.IsEffectiveOpenAIStreamRequest(req, chainUpstreamHeaderAccountOf(dispatched.Account)) ||
+			strings.Contains(strings.ToLower(upstream.ContentType()), "text/event-stream"),
+	})
+	responseSnapshot := &gatewayresponse.GatewayUpstreamResponse{
+		Status: upstream.Status(),
+		Header: upstream.Header,
+	}
+	observedBody = gatewayobs.ObserveUpstreamResponseModelBodyPublishing(upstream.Body, upstreamModelObservation,
+		func(model string) { responseSnapshot.UpstreamResponseModel = model })
+	responseSnapshot.Body = gatewayresponse.NewReaderUpstreamBody(ctx, observedBody)
 	input := &gatewayresponse.HandleUpstreamResponseInput{
-		Req:        req,
-		Downstream: gatewayresponse.StreamDownstream{Res: res},
-		Account:    gatewayresponse.OpenAIAccountView{Account: dispatched.Account},
-		UpstreamResponse: &gatewayresponse.GatewayUpstreamResponse{
-			Status: upstream.Status(),
-			Header: upstream.Header,
-			Body:   gatewayresponse.NewReaderUpstreamBody(ctx, upstream.Body),
-		},
+		Req:                        req,
+		Downstream:                 gatewayresponse.StreamDownstream{Res: res},
+		Account:                    gatewayresponse.OpenAIAccountView{Account: dispatched.Account},
+		UpstreamResponse:           responseSnapshot,
 		UpstreamURL:                dispatched.UpstreamURL,
 		AuditAttemptID:             dispatched.AuditAttemptID,
 		AuditCapture:               responseAuditCaptureOf(auditCapture),
@@ -315,12 +375,15 @@ func (c *gatewayChain) handleUpstreamResponse(
 		SessionAffinityKey:         context.SessionAffinityKey,
 		ClientStrategy:             clientStrategyViewOf(context),
 		ResponseInspectionPolicies: context.ResponseInspectionPolicies,
-		MarkFirstOutput:            dispatched.MarkFirstOutput,
+		MarkFirstOutput:            firstOutputMetricMarkOf(dispatched.MarkFirstOutput, startedAt, req.MethodUpper()),
 		DownstreamCommitState:      commitState,
 		Deps: &gatewayresponse.FinalizationDeps{
 			UsageRecords: chainFinalizationUsage{recorder: c.finalizationUsage},
 			Logger:       gatewayResponseLogger{inner: slog.Default()},
 			NowMs:        func() int64 { return c.preauth.NowMs() },
+			// W4-B（BUG-0175）D-132 接线：响应检查的运行态副作用写侧
+			//（avoid_account_ttl / avoid_upstream_bucket_ttl 跨请求落地）。
+			AccountEffects: c.responseAccountEffects,
 		},
 	}
 	if dispatched.ResponsePrecommitDeadlineAtMs != nil {
@@ -395,9 +458,30 @@ type v1DispatchLoop struct {
 	// streamServerRetryCount mirrors Node streamServerRetryCount (routes.ts:
 	// 541) for the stream_server_retry_dispatch audit metadata.
 	streamServerRetryCount int
+	// ---- W4-B（BUG-0175 D-114）speed-first per-request 状态
+	//（routes.ts:542-546 locals）----
+	// speedFirstByteRetryCount 是本请求已执行的速度优先切号次数（上限
+	// maxFirstByteRetriesPerRequest）；组切换时清零（routes.ts:656/787）。
+	speedFirstByteRetryCount int
+	// speedFirstRetryCandidateAccountIds 非空时把候选窗口收窄到保留目标
+	//（routes.ts:921-923）。
+	speedFirstRetryCandidateAccountIds map[string]struct{}
+	// speedFirstCutoverReservation 携带跨次派发的切换预留（目标并发槽）；
+	// 每次派发前取走（routes.ts:1103-1104）。
+	speedFirstCutoverReservation *gatewayhotquality.SpeedFirstCutoverReservation
+	// speedFirstAttachedViews 记录已 attach 到引擎协调器的视图 → 具体预留
+	// 映射：cutover 错误把视图带回循环时据此恢复 TakeForAccount 能力。
+	speedFirstAttachedViews map[*gatewaydispatch.SpeedFirstCutoverReservationView]*gatewayhotquality.SpeedFirstCutoverReservation
+	// speedFirstSlowObservedForAttempt 记录本次尝试的首字慢观察（
+	// routes.ts:1109 闭包写入、2395 响应观测读取，避免重复记录）。
+	speedFirstSlowObservedForAttempt *gatewayproxyhealth.LatencySlowResult
 	// releases 收集每个 DispatchContext 的 client-IP 并发槽释放闭包
 	//（D-109；Node attachClientIpSlotRelease 在组切换时重新 attach）。
 	releases *clientIPSlotReleaseList
+	// waitCommitState / waitHeartbeat 是 D-120 SSE 等待心跳的请求级共享状态：
+	// 心跳写出的 transport-commit 标记必须与响应处理看到的是同一个实例。
+	waitCommitState *gatewayresponse.DownstreamCommitState
+	waitHeartbeat   *gatewayresponse.GatewaySseWaitHeartbeat
 }
 
 // v1FallbackSwitch mirrors the switchToFallbackGroup return union
@@ -410,11 +494,22 @@ const (
 	v1FallbackCompleted v1FallbackSwitch = "completed"
 )
 
+// stopWaitHeartbeat 终止 D-120 等待心跳：请求 handler 返回即下游终态
+//（Node 由 res 的 close/error 监听承载），防止心跳 goroutine 泄漏或在
+// 响应结束后继续写出。
+func (l *v1DispatchLoop) stopWaitHeartbeat() {
+	if l != nil && l.waitHeartbeat != nil {
+		l.waitHeartbeat.Stop()
+	}
+}
+
 // run mirrors the Node while(true) dispatch loop: fetch the first available
 // upstream for the current group context and hand the response to the
 // response layer; classify dispatch errors, switching to the fallback group
 // before rendering the terminal exits.
 func (l *v1DispatchLoop) run(ctx context.Context) {
+	// routes.ts:2643: a leftover cutover reservation releases with the request.
+	defer l.releasePendingSpeedFirstReservation()
 	for {
 		current := l.current
 		coordination := &gatewaydispatch.RequestCoordinationContext{
@@ -424,11 +519,32 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			RouteCoordinationBudget:  l.budgets.coordination,
 			RequestAttemptTracker:    l.budgets.tracker,
 		}
+		// W4-B（BUG-0175）D-114 接线：普通路由首字截止配置与速度优先决策
+		// 闭包（Node normalRouteFirstByteConfig / onNormalRouteFirstByteDeadline，
+		// routes.ts:1272-1273 的 coordination 注入）。
+		coordination.NormalRouteFirstByteConfig = chainFirstByteConfigOf(current.NormalRouteFirstByteConfig)
+		coordination.OnNormalRouteFirstByteDeadline = l.onNormalRouteFirstByteDeadline(ctx, current)
+		// W4-B（BUG-0175）D-114 接线：取走上次切号留下的并发槽预留
+		//（routes.ts:1103-1104 dispatchCutoverReservation）。
+		dispatchReservation := l.speedFirstCutoverReservation
+		l.speedFirstCutoverReservation = nil
+		l.speedFirstSlowObservedForAttempt = nil
 		// Node dispatches streamRetryDispatchAccounts(accounts,
 		// streamServerRetryExcludedAccountIds) (routes.ts:942): the accounts a
 		// previous response-layer RetryUpstream verdict excluded never re-enter
 		// the candidate window of the current group.
 		dispatchAccounts := streamRetryDispatchAccounts(current.Accounts, l.streamRetryExcludedAccounts)
+		// routes.ts:921-923: a speed-first cutover narrows the window to the
+		// reserved target first.
+		if l.speedFirstRetryCandidateAccountIds != nil {
+			narrowed := make([]gatewaydispatch.AccountCandidate, 0, len(l.speedFirstRetryCandidateAccountIds))
+			for _, account := range dispatchAccounts {
+				if _, reserved := l.speedFirstRetryCandidateAccountIds[account.ID]; reserved {
+					narrowed = append(narrowed, account)
+				}
+			}
+			dispatchAccounts = narrowed
+		}
 		dispatched, dispatchErr := l.c.engine.FetchFirstAvailableUpstream(ctx, gatewaydispatch.FetchFirstAvailableUpstreamArgs{
 			Req:                             l.req,
 			Accounts:                        dispatchAccounts,
@@ -450,11 +566,21 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			CodexTurnAvoidedAccountIDs:       current.CodexTurnAvoidedAccountIDs,
 			RequestCoordination:              coordination,
 			WaitForRecoverableFailures:       true,
+			// W4-B（BUG-0175）D-114：速度优先切换预留（Node
+			// preAcquiredConcurrency 参数）。
+			PreAcquiredConcurrency: speedFirstReservationHandleOf(dispatchReservation),
 		})
 		if dispatchErr == nil {
 			// ---- response piping + finalization (response/finalization.ts) ----
-			handling := l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets)
+			handling := l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
 			if !handling.RetryUpstream {
+				// routes.ts:2393-2455: the speed-first response observation
+				// (slow/success sampling) runs once the response completed
+				// without a server-retry verdict.
+				l.observeSpeedFirstResponseOutcome(ctx, current, dispatched, handling)
+				// routes.ts:2478-2486: the final protocol oracle confirms the
+				// pending sibling Key failures + the winning Key success.
+				l.confirmProtocolSuccessSideEffects(ctx, dispatched, handling)
 				return
 			}
 			// D1: the response layer asked for a server-side account switch
@@ -599,6 +725,15 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 // terminal exit rendered) and false when the loop should continue on the
 // switched fallback group.
 func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr error) bool {
+	// W4-B（BUG-0175）D-114：速度优先切号错误（routes.ts:1295-1345）。持有
+	// 切换预留时收窄到保留目标重派；预留缺席/已锁定走耗尽退出。
+	var cutover *gatewaydispatch.NormalRouteFirstByteCutoverError
+	if errors.As(dispatchErr, &cutover) {
+		if l.settleSpeedFirstCutoverError(ctx, cutover) {
+			return true
+		}
+		return false
+	}
 	// Node top-level catch: known errors (downstream closed, agent guidance,
 	// validation / codex adapter, diagnostic timeout/cancel) render their own
 	// contracts before the exhaustion exits.
@@ -662,6 +797,27 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 			// Node 1425-1433: only the non-recoverable failed accounts enter
 			// the exhausted set; recoverable failures stay retryable.
 			l.exhaustDispatchFailedAccounts(attempt)
+			// routes.ts:1432-1452: a narrowed speed-first window whose target
+			// failed falls back to the full candidate window (failed accounts
+			// excluded); an empty window continues to the fallback below.
+			if l.speedFirstRetryCandidateAccountIds != nil {
+				for _, id := range attempt.FailedAccountIDs {
+					if l.streamRetryExcludedAccounts == nil {
+						l.streamRetryExcludedAccounts = map[string]struct{}{}
+					}
+					l.streamRetryExcludedAccounts[id] = struct{}{}
+				}
+				l.speedFirstRetryCandidateAccountIds = nil
+				remainingSpeedFirstAccounts := streamRetryDispatchAccounts(l.current.Accounts, l.streamRetryExcludedAccounts)
+				l.auditCapture.AddGatewayMetadata("normal_route_speed_first_reserved_target_exhausted", map[string]any{
+					"failedAccountIds":      attempt.FailedAccountIDs,
+					"recoverableAccountIds": attempt.RecoverableAccountIDs,
+					"remainingCandidateAccountIds": chainAccountIDsOf(remainingSpeedFirstAccounts),
+				})
+				if len(remainingSpeedFirstAccounts) > 0 {
+					return false
+				}
+			}
 			// Node 1469-1478: try the fallback group before the exhaustion
 			// exit. A switched fallback continues the loop; a completed one
 			// means the fallback preflight settled the request.
@@ -968,10 +1124,691 @@ func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason strin
 	l.current = next
 	// Node 652-657: a switched fallback resets the per-group stream server-
 	// retry bookkeeping (streamServerRetryExcludedAccountIds /
-	// streamServerRetryCount).
+	// streamServerRetryCount) and the W4-B speed-first cutover state
+	// (routes.ts:654-659).
 	l.streamRetryExcludedAccounts = map[string]struct{}{}
 	l.streamServerRetryCount = 0
+	l.resetSpeedFirstState()
 	return v1FallbackSwitched, nil
+}
+
+// releasePendingSpeedFirstReservation 释放请求结束时仍未消费的切号预留。
+func (l *v1DispatchLoop) releasePendingSpeedFirstReservation() {
+	if l.speedFirstCutoverReservation != nil {
+		l.speedFirstCutoverReservation.Release()
+		l.speedFirstCutoverReservation = nil
+	}
+}
+
+// resetSpeedFirstState mirrors the Node group-switch resets (routes.ts:
+// 656-659 / 787-790): retry count, candidate narrowing and the pending
+// cutover reservation (released).
+func (l *v1DispatchLoop) resetSpeedFirstState() {
+	l.speedFirstByteRetryCount = 0
+	l.speedFirstRetryCandidateAccountIds = nil
+	if l.speedFirstCutoverReservation != nil {
+		l.speedFirstCutoverReservation.Release()
+		l.speedFirstCutoverReservation = nil
+	}
+	l.speedFirstSlowObservedForAttempt = nil
+}
+
+// settleSpeedFirstCutoverError 镜像 routes.ts:1295-1345 的
+// NormalRouteFirstByteCutoverError 分支。返回 true = 请求已结算（终端退出或
+// 锁定重派已在引擎预算内完成——Go 侧引擎把同账户重派内化，锁定臂直接按
+// 耗尽退出渲染）；false = 循环继续。
+func (l *v1DispatchLoop) settleSpeedFirstCutoverError(ctx context.Context, cutover *gatewaydispatch.NormalRouteFirstByteCutoverError) bool {
+	current := l.current
+	// routes.ts:1297-1317: a cross-account lock denies the cutover — release
+	// the reservation, un-exclude the slow account and settle the request
+	// through the exhaustion contract (the Node same-account retry reservation
+	// is a dispatch-loop nicety the Go chain does not carry, see the D1 note
+	// on settleResponseStreamServerRetry).
+	if current.UsageContext.TrafficSource == gatewayTrafficSource && l.c.engine.Locks != nil {
+		lockState, err := l.c.engine.Locks.FindStateAsync(ctx, cutover.AccountID)
+		if err == nil && lockState != nil && lockState.BlocksCrossAccount {
+			if view, ok := cutover.CutoverReservation.(*gatewaydispatch.SpeedFirstCutoverReservationView); ok && view != nil {
+				l.releaseCutoverReservation(view)
+			}
+			l.speedFirstRetryCandidateAccountIds = nil
+			delete(l.streamRetryExcludedAccounts, cutover.AccountID)
+			l.exhaustDispatchFailedAccountID(cutover.AccountID)
+			l.renderDispatchExhaustedWithMessage(ctx, cutover.Message, cutover.AccountID, cutover.AccountName)
+			return true
+		}
+	}
+	reservation, _ := cutover.CutoverReservation.(*gatewaydispatch.SpeedFirstCutoverReservationView)
+	targetAccountID := ""
+	if reservation != nil {
+		targetAccountID = reservation.TargetAccountIDValue
+	}
+	if l.streamRetryExcludedAccounts == nil {
+		l.streamRetryExcludedAccounts = map[string]struct{}{}
+	}
+	l.streamRetryExcludedAccounts[cutover.AccountID] = struct{}{}
+	l.speedFirstByteRetryCount++
+	retryAllowed := targetAccountID != ""
+	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_retry_dispatch", map[string]any{
+		"accountId":             cutover.AccountID,
+		"responseHeadersReceived": false,
+		"limitingFactor":        cutover.Deadline.LimitingFactor,
+		"retryCount":            l.speedFirstByteRetryCount,
+		"maxRetries":            chainSpeedFirstMaxRetriesOf(current),
+		"retryAllowed":          retryAllowed,
+		"retryBlockedReason":    map[bool]string{true: "", false: "cutover_not_confirmed"}[retryAllowed],
+		"targetAccountId":       targetAccountID,
+	})
+	if reservation != nil && targetAccountID != "" {
+		// routes.ts:1328-1332: carry the reservation into the next dispatch
+		// and narrow the window to the reserved target.
+		l.speedFirstCutoverReservation = l.attachedConcreteReservationOf(reservation)
+		l.speedFirstRetryCandidateAccountIds = map[string]struct{}{targetAccountID: {}}
+		return false
+	}
+	if reservation != nil {
+		l.releaseCutoverReservation(reservation)
+	}
+	// routes.ts:1334-1345: no reservation — the slow account is exhausted and
+	// the request settles through the fallback/exhaustion contract.
+	l.exhaustDispatchFailedAccountID(cutover.AccountID)
+	switch fallback, fallbackErr := l.switchToFallbackGroup(ctx, "normal_route_speed_first_exhausted"); {
+	case fallbackErr != nil:
+		l.renderUnexpectedDispatchFailure(ctx, fallbackErr)
+		return true
+	case fallback == v1FallbackCompleted:
+		return true
+	case fallback == v1FallbackSwitched:
+		return false
+	}
+	l.renderDispatchExhaustedWithMessage(ctx, cutover.Message, cutover.AccountID, cutover.AccountName)
+	return true
+}
+
+// releaseCutoverReservation 释放引擎预留视图并清空待携带状态。
+func (l *v1DispatchLoop) releaseCutoverReservation(reservation *gatewaydispatch.SpeedFirstCutoverReservationView) {
+	if reservation != nil && reservation.ReleaseFunc != nil {
+		reservation.ReleaseFunc()
+	}
+	l.speedFirstCutoverReservation = nil
+}
+
+// recordAttachedSpeedFirstReservation 记录 attach 成功的视图 → 具体预留映射，
+// 供 cutover 错误把预留接回循环携带状态。
+func (l *v1DispatchLoop) recordAttachedSpeedFirstReservation(view *gatewaydispatch.SpeedFirstCutoverReservationView, reservation *gatewayhotquality.SpeedFirstCutoverReservation) {
+	if view == nil || reservation == nil {
+		return
+	}
+	if l.speedFirstAttachedViews == nil {
+		l.speedFirstAttachedViews = map[*gatewaydispatch.SpeedFirstCutoverReservationView]*gatewayhotquality.SpeedFirstCutoverReservation{}
+	}
+	l.speedFirstAttachedViews[view] = reservation
+}
+
+// attachedConcreteReservationOf 已由 speedFirstAttachedViews 映射实现：视图 →
+// 具体预留恢复 TakeForAccount 能力。
+func (l *v1DispatchLoop) attachedConcreteReservationOf(view *gatewaydispatch.SpeedFirstCutoverReservationView) *gatewayhotquality.SpeedFirstCutoverReservation {
+	if view == nil {
+		return nil
+	}
+	concrete := l.speedFirstAttachedViews[view]
+	delete(l.speedFirstAttachedViews, view)
+	if concrete != nil {
+		return concrete
+	}
+	// 未知视图（不应发生）：至少保留一次确定性释放，不残留并发槽。
+	if view.ReleaseFunc != nil {
+		view.ReleaseFunc()
+	}
+	return nil
+}
+
+// chainSpeedFirstMaxRetriesOf 取单请求切号上限（缺配置 = 0，禁止切号）。
+func chainSpeedFirstMaxRetriesOf(current *gatewaypreauth.DispatchContext) int64 {
+	config := chainSpeedFirstRuntimeConfigOf(current.NormalRouteSpeedFirstConfig)
+	if config == nil {
+		return 0
+	}
+	return config.MaxFirstByteRetriesPerRequest
+}
+
+// chainAccountIDsOf 投影候选 id 列表（审计元数据用）。
+func chainAccountIDsOf(accounts []gatewaydispatch.AccountCandidate) []string {
+	out := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		out = append(out, account.ID)
+	}
+	return out
+}
+
+// exhaustDispatchFailedAccountID 把单个账号加入请求级耗尽集。
+func (l *v1DispatchLoop) exhaustDispatchFailedAccountID(accountID string) {
+	if accountID == "" {
+		return
+	}
+	if l.exhaustedAccounts == nil {
+		l.exhaustedAccounts = make(map[string]struct{})
+	}
+	l.exhaustedAccounts[accountID] = struct{}{}
+}
+
+// renderDispatchExhaustedWithMessage 渲染速度优先耗尽的固定 503 契约
+//（Node UpstreamAttemptError transportFailureKind=timeout 的顶层 catch）。
+func (l *v1DispatchLoop) renderDispatchExhaustedWithMessage(ctx context.Context, message, accountID, accountName string) {
+	l.c.observability.Logger().Warn("gateway_dispatch_exhausted", map[string]any{
+		"event":                "gateway_dispatch_exhausted",
+		"failureReason":        "first_byte_timeout",
+		"lastAttemptAccountId": accountID,
+		"lastAttemptAccountName": accountName,
+		"endpoint":             l.current.UsageContext.Endpoint,
+		"apiKeyId":             l.current.UsageContext.APIKeyID,
+		"groupId":              l.current.UsageContext.GroupID,
+		"trafficSource":        l.current.UsageContext.TrafficSource,
+	}, "网关上游调度已耗尽")
+	l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, l.current, "gateway_failure_response")
+	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+		Req:          l.req,
+		Res:          l.res,
+		AuditCapture: l.auditCapture,
+		UsageContext: l.current.UsageContext,
+		StartedAt:    l.startedAt,
+		StatusCode:   http.StatusServiceUnavailable,
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(
+			"上游暂时不可用，请重试", "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode),
+		Audit: gatewaypreauth.FailureAudit{
+			Outcome:      gatewaypreauth.AuditOutcomeUpstreamFailed,
+			ErrorPhase:   "dispatch",
+			ErrorCode:    gatewaypreauth.GatewayStreamClientRetryErrorCode,
+			ErrorMessage: message,
+		},
+		RecordUsage:  boolPtr(false),
+		FailureScope: "upstream",
+	})
+}
+
+// ---------------------------------------------------------------------------
+// W4-B（BUG-0175 D-114）speed-first 首字截止决策闭包
+// ---------------------------------------------------------------------------
+
+// chainFirstByteConfigOf 把 preauth 的首字截止配置投影为 routing 侧类型
+//（两包同形状；DispatchContext 载 preauth 投影，coordination 消费 routing）。
+func chainFirstByteConfigOf(config *gatewaypreauth.NormalRouteFirstByteRuntimeConfig) *gatewayrouting.NormalRouteFirstByteRuntimeConfig {
+	if config == nil {
+		return nil
+	}
+	return &gatewayrouting.NormalRouteFirstByteRuntimeConfig{
+		SchedulingPreference: config.SchedulingPreference,
+		FirstByteDeadlineMs:  derefInt64Ptr2(config.FirstByteDeadlineMs),
+	}
+}
+
+// speedFirstDecisionsOf 从时延降级端口上取速度优先决策面；组合根未装配
+//（组合测试的 degradedLatency）时返回 nil——决策闭包保持 Node
+// runtime 缺席的 continue 语义。
+func (l *v1DispatchLoop) speedFirstDecisionsOf() chainSpeedFirstDecisions {
+	if decisions, ok := l.c.engine.Latency.(chainSpeedFirstDecisions); ok {
+		return decisions
+	}
+	return nil
+}
+
+// speedFirstLatencyScopeOf 镜像 normalRouteLatencyDegradationScope
+//（routes.ts:1106-1110）：systemAccountId + apiKey 的 routeStrategyId + groupId。
+func (l *v1DispatchLoop) speedFirstLatencyScopeOf(current *gatewaypreauth.DispatchContext) *gatewaydispatch.LatencyScopeInput {
+	routeStrategyID := ""
+	if current.APIKeyRecord != nil {
+		routeStrategyID = current.APIKeyRecord.RouteStrategyID
+	}
+	scope := gatewayproxyhealth.NormalRouteLatencyDegradationScope(
+		current.UsageContext.SystemAccountID, routeStrategyID, current.UsageContext.GroupID)
+	if scope == nil {
+		return nil
+	}
+	return &gatewaydispatch.LatencyScopeInput{
+		SystemAccountID: scope.SystemAccountID,
+		RouteStrategyID: scope.RouteStrategyID,
+		GroupID:         scope.GroupID,
+	}
+}
+
+// speedFirstDeadlineAction mirrors the deadline closure signature the engine
+// coordination context consumes.
+type speedFirstDeadlineAction = gatewaydispatch.FirstByteDeadlineAction
+
+// onNormalRouteFirstByteDeadline 镜像 routes.ts:1111-1250 的
+// onNormalRouteFirstByteDeadline：limiting factor 门、锁检查、慢采样、
+// 剩余候选评估、切换预留、审计元数据。decisionErr 兜底与 Node catch 一致：
+// 释放预留、warn + 审计、继续当前上游。
+func (l *v1DispatchLoop) onNormalRouteFirstByteDeadline(
+	ctx context.Context,
+	current *gatewaypreauth.DispatchContext,
+) func(gatewaydispatch.FirstByteDeadlineDecisionInput, gatewaydispatch.AccountCandidate, gatewayrouting.NormalRouteAttemptFirstByteDeadline, *gatewaydispatch.NormalRouteFirstByteAttemptCoordinator) speedFirstDeadlineAction {
+	return func(_ gatewaydispatch.FirstByteDeadlineDecisionInput, account gatewaydispatch.AccountCandidate, deadline gatewayrouting.NormalRouteAttemptFirstByteDeadline, coordinator *gatewaydispatch.NormalRouteFirstByteAttemptCoordinator) speedFirstDeadlineAction {
+		switch deadline.LimitingFactor {
+		case gatewayrouting.FirstByteLimitingFactorLaneTimeout,
+			gatewayrouting.FirstByteLimitingFactorUncommittedAttempt:
+			return gatewaydispatch.FirstByteDeadlineActionContinue
+		case gatewayrouting.FirstByteLimitingFactorWallPrecommit:
+			return gatewaydispatch.FirstByteDeadlineActionAbort
+		}
+		config := current.NormalRouteSpeedFirstConfig
+		if config == nil {
+			return gatewaydispatch.FirstByteDeadlineActionContinue
+		}
+		decisions := l.speedFirstDecisionsOf()
+		scope := l.speedFirstLatencyScopeOf(current)
+		if decisions == nil || scope == nil {
+			return gatewaydispatch.FirstByteDeadlineActionContinue
+		}
+		action, decisionErr := l.speedFirstDeadlineDecision(ctx, current, account, deadline, coordinator, decisions, scope, config)
+		if decisionErr != nil {
+			coordinator.ReleaseReservation()
+			l.c.observability.Logger().Warn("normal_route_speed_first_local_decision_failed", map[string]any{
+				"event":           "normal_route_speed_first_local_decision_failed",
+				"stage":           "first_byte_cutover",
+				"accountId":       account.ID,
+				"routeStrategyId": scope.RouteStrategyID,
+				"groupId":         scope.GroupID,
+				"error":           decisionErr.Error(),
+			}, "普通路由速度优先本地决策失败，继续当前上游")
+			l.auditCapture.AddGatewayMetadata("normal_route_speed_first_local_decision_failed", map[string]any{
+				"stage":     "first_byte_cutover",
+				"accountId": account.ID,
+			})
+			return gatewaydispatch.FirstByteDeadlineActionContinue
+		}
+		return action
+	}
+}
+
+// speedFirstDeadlineDecision 镜像 Node 决策闭包主体（routes.ts:1119-1240）。
+func (l *v1DispatchLoop) speedFirstDeadlineDecision(
+	ctx context.Context,
+	current *gatewaypreauth.DispatchContext,
+	account gatewaydispatch.AccountCandidate,
+	deadline gatewayrouting.NormalRouteAttemptFirstByteDeadline,
+	coordinator *gatewaydispatch.NormalRouteFirstByteAttemptCoordinator,
+	decisions chainSpeedFirstDecisions,
+	scope *gatewaydispatch.LatencyScopeInput,
+	config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig,
+) (speedFirstDeadlineAction, error) {
+	// routes.ts:1124-1139: a cross-account lock blocks the cutover.
+	if current.UsageContext.TrafficSource == gatewayTrafficSource && l.c.engine.Locks != nil {
+		lockState, err := l.c.engine.Locks.FindStateAsync(ctx, account.ID)
+		if err != nil {
+			return "", err
+		}
+		if lockState != nil && lockState.BlocksCrossAccount {
+			l.auditCapture.AddGatewayMetadata("account_lock_speed_first_cutover_denied", map[string]any{
+				"accountId": account.ID,
+			})
+			return gatewaydispatch.FirstByteDeadlineActionContinue, nil
+		}
+	}
+	alreadyDegraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope)
+	if err != nil {
+		return "", err
+	}
+	slowResult, err := decisions.RecordFirstByteSlowAsync(ctx, account, scope, config,
+		"普通路由速度优先首字观察阈值 "+fmt.Sprintf("%d", deadline.EffectiveDeadlineMs)+"ms 已到达")
+	if err != nil {
+		return "", err
+	}
+	l.speedFirstSlowObservedForAttempt = slowResult
+	nextExcluded := make(map[string]struct{}, len(l.streamRetryExcludedAccounts)+1)
+	for id := range l.streamRetryExcludedAccounts {
+		nextExcluded[id] = struct{}{}
+	}
+	nextExcluded[account.ID] = struct{}{}
+	remainingAccounts, err := l.speedFirstRouteEligibleDispatchAccounts(ctx, current, nextExcluded, scope, decisions)
+	if err != nil {
+		return "", err
+	}
+	remainingCandidateCount := len(remainingAccounts)
+	typedConfig := chainSpeedFirstRuntimeConfigOf(config)
+	maxRetries := int64(0)
+	if typedConfig != nil {
+		maxRetries = typedConfig.MaxFirstByteRetriesPerRequest
+	}
+	degradedForCutover := alreadyDegraded || (slowResult != nil && slowResult.Degraded)
+	preconditionsMet := degradedForCutover &&
+		int64(l.speedFirstByteRetryCount) < maxRetries &&
+		remainingCandidateCount > 0
+	var reservation *gatewayhotquality.SpeedFirstCutoverReservation
+	if preconditionsMet {
+		reservation, err = gatewayhotquality.ReserveSpeedFirstCutoverTarget(ctx, gatewayhotquality.SpeedFirstCutoverReservationInput{
+			SystemAccountID:       scope.SystemAccountID,
+			RouteStrategyID:       scope.RouteStrategyID,
+			GroupID:               scope.GroupID,
+			SlowAccountID:         chainConcurrencyAccountIDOf(account),
+			Targets:               chainCutoverTargetsOf(remainingAccounts),
+			Lane:                  string(current.RequestLane),
+			GroupSchedulingPolicy: chainSchedulingPolicyValueOf(current.GroupSchedulingPolicy),
+			SlotAcquirer:          l.speedFirstSlotAcquirer(current),
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	cutoverAllowed := false
+	if reservation != nil {
+		view := speedFirstReservationViewOf(reservation)
+		if coordinator.AttachReservation(view) {
+			cutoverAllowed = true
+			l.recordAttachedSpeedFirstReservation(view, reservation)
+		}
+	}
+	remainingIDs := make([]string, 0, remainingCandidateCount)
+	for _, candidate := range remainingAccounts {
+		remainingIDs = append(remainingIDs, candidate.ID)
+	}
+	retryBlockedReason := ""
+	if !cutoverAllowed {
+		switch {
+		case remainingCandidateCount <= 0:
+			retryBlockedReason = "no_remaining_candidate"
+		case !degradedForCutover:
+			retryBlockedReason = "slow_observation_not_degraded"
+		case !preconditionsMet:
+			retryBlockedReason = "max_retry_exceeded"
+		default:
+			retryBlockedReason = "target_slot_or_cutover_budget_unavailable"
+		}
+	}
+	slowCount := int64(0)
+	var degradedUntil, nextProbeAt *string
+	degraded := false
+	if slowResult != nil {
+		slowCount = slowResult.SlowCount
+		degraded = slowResult.Degraded
+		degradedUntil = slowResult.DegradedUntil
+		nextProbeAt = slowResult.NextProbeAt
+	}
+	thresholdMs := int64(0)
+	if config.FirstByteDeadlineMs != nil {
+		thresholdMs = *config.FirstByteDeadlineMs
+	}
+	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_slow_observed", map[string]any{
+		"accountId":          account.ID,
+		"accountName":        account.Name,
+		"thresholdMs":        thresholdMs,
+		"observedAt":         "first_byte_deadline",
+		"alreadyDegraded":    alreadyDegraded,
+		"slowCount":          slowCount,
+		"degraded":           degraded,
+		"degradedUntil":      degradedUntil,
+		"nextProbeAt":        nextProbeAt,
+		"cutoverAllowed":     cutoverAllowed,
+		"retryBlockedReason": retryBlockedReason,
+		"retryCount":         l.speedFirstByteRetryCount,
+		"maxRetries":         maxRetries,
+		"remainingCandidateCount":      remainingCandidateCount,
+		"remainingCandidateAccountIds": remainingIDs,
+	})
+	if cutoverAllowed {
+		return gatewaydispatch.FirstByteDeadlineActionAbort, nil
+	}
+	if reservation != nil {
+		// The reservation lost the attach race; release it deterministically.
+		reservation.Release()
+	}
+	return gatewaydispatch.FirstByteDeadlineActionContinue, nil
+}
+
+// speedFirstRouteEligibleDispatchAccounts 镜像 routes.ts:2866-2892：候选窗口
+// 减去排除集、减去已尝试账户、减去已降级账户。
+func (l *v1DispatchLoop) speedFirstRouteEligibleDispatchAccounts(
+	ctx context.Context,
+	current *gatewaypreauth.DispatchContext,
+	excludedAccountIds map[string]struct{},
+	scope *gatewaydispatch.LatencyScopeInput,
+	decisions chainSpeedFirstDecisions,
+) ([]gatewaydispatch.AccountCandidate, error) {
+	remaining := streamRetryDispatchAccounts(current.Accounts, excludedAccountIds)
+	if l.budgets.tracker != nil {
+		eligible := make([]gatewaydispatch.AccountCandidate, 0, len(remaining))
+		for _, account := range remaining {
+			registration, err := l.budgets.tracker.CanAttemptAccount(gatewayrouting.CanAttemptAccountInput{
+				AccountRuntimeKey:     chainRuntimeKeyOfCandidate(account),
+				PhysicalCredentialKey: chainConcurrencyAccountIDOf(account),
+			})
+			if err != nil || !registration.Allowed {
+				continue
+			}
+			eligible = append(eligible, account)
+		}
+		remaining = eligible
+	}
+	if scope == nil || len(remaining) == 0 {
+		return remaining, nil
+	}
+	output := make([]gatewaydispatch.AccountCandidate, 0, len(remaining))
+	for _, account := range remaining {
+		degraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope)
+		if err != nil {
+			return nil, err
+		}
+		if !degraded {
+			output = append(output, account)
+		}
+	}
+	return output, nil
+}
+
+// chainSchedulingPolicyValueOf 解引用调度策略指针（nil = 空 map 语义，
+// gatewayhotquality 内部按缺省处理）。
+func chainSchedulingPolicyValueOf(policy *gatewayruntimecache.GroupSchedulingPolicy) gatewayruntimecache.GroupSchedulingPolicy {
+	if policy == nil {
+		return nil
+	}
+	return *policy
+}
+
+// chainRuntimeKeyOfCandidate 复用引擎的运行态键投影（owner 账户即 ID，
+// 授权账户带绑定上下文）。
+func chainRuntimeKeyOfCandidate(account gatewaydispatch.AccountCandidate) string {
+	if account.AccountAccessType == "account_authorized" &&
+		account.BindingSystemAccountID != nil && account.BoundGroupID != nil && account.AccountAuthorizationID != nil &&
+		*account.BindingSystemAccountID != "" && *account.BoundGroupID != "" && *account.AccountAuthorizationID != "" {
+		return account.ID + ":authorized:" + *account.BindingSystemAccountID + ":" + *account.BoundGroupID + ":" + *account.AccountAuthorizationID
+	}
+	return account.ID
+}
+
+// chainConcurrencyAccountIDOf 镜像 gatewayAccountConcurrencyAccountId：
+// 凭据源账户优先（规范化去空白）。
+func chainConcurrencyAccountIDOf(account gatewaydispatch.AccountCandidate) string {
+	if account.CredentialSourceAccountID != nil {
+		normalized := strings.TrimSpace(*account.CredentialSourceAccountID)
+		if normalized != "" {
+			return normalized
+		}
+	}
+	return account.ID
+}
+
+// chainCutoverTargetsOf 投影切号目标（Node targets 数组）。
+func chainCutoverTargetsOf(accounts []gatewaydispatch.AccountCandidate) []gatewayhotquality.GatewayAccountConcurrencyLimitIdentity {
+	out := make([]gatewayhotquality.GatewayAccountConcurrencyLimitIdentity, 0, len(accounts))
+	for _, account := range accounts {
+		out = append(out, gatewayhotquality.GatewayAccountConcurrencyLimitIdentity{
+			ID:                        account.ID,
+			CredentialSourceAccountID: chainConcurrencyAccountIDOf(account),
+			ConcurrencyLimit:          account.ConcurrencyLimit,
+		})
+	}
+	return out
+}
+
+// speedFirstSlotAcquirer 把引擎的账户并发存储桥成切号预留的槽获取器
+//（Node tryAcquireAccountConcurrencyAsync 共享实现）。
+func (l *v1DispatchLoop) speedFirstSlotAcquirer(current *gatewaypreauth.DispatchContext) gatewayhotquality.SpeedFirstCutoverSlotAcquirer {
+	return func(ctx context.Context, accountID string, concurrencyLimit int, request gatewayhotquality.AccountConcurrencyAcquireRequest) (gatewayhotquality.AccountConcurrencySlot, bool, error) {
+		if l.c.engine.Concurrency == nil {
+			return gatewayhotquality.AccountConcurrencySlot{}, false, nil
+		}
+		options := gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: request.Lane}
+		if request.Lane == gatewayhotquality.AccountConcurrencyLaneImage {
+			imageLimit := gatewayhotquality.EffectiveImageLaneConcurrencyLimit(concurrencyLimit, chainSchedulingPolicyValueOf(current.GroupSchedulingPolicy))
+			options.LaneLimit = &imageLimit
+		}
+		slot, err := l.c.engine.Concurrency.TryAcquireAsync(ctx, accountID, concurrencyLimit, options)
+		if err != nil {
+			return gatewayhotquality.AccountConcurrencySlot{}, false, err
+		}
+		if !slot.Acquired {
+			return gatewayhotquality.AccountConcurrencySlot{}, false, nil
+		}
+		release := slot.Release
+		return gatewayhotquality.AccountConcurrencySlot{
+			Key:     accountID + ":" + request.Lane,
+			Lane:    request.Lane,
+			Release: release,
+		}, true, nil
+	}
+}
+
+// speedFirstReservationViewOf 把热质量预留投影为引擎协调器的预留视图。
+func speedFirstReservationViewOf(reservation *gatewayhotquality.SpeedFirstCutoverReservation) *gatewaydispatch.SpeedFirstCutoverReservationView {
+	if reservation == nil {
+		return nil
+	}
+	return &gatewaydispatch.SpeedFirstCutoverReservationView{
+		TargetAccountIDValue: reservation.TargetAccountID(),
+		ReleaseFunc:          reservation.Release,
+	}
+}
+
+// speedFirstReservationHandleOf 把预留包装成引擎的预占并发句柄
+//（Node preAcquiredConcurrency）。
+func speedFirstReservationHandleOf(reservation *gatewayhotquality.SpeedFirstCutoverReservation) *gatewaydispatch.SpeedFirstCutoverReservationHandle {
+	if reservation == nil {
+		return nil
+	}
+	return &gatewaydispatch.SpeedFirstCutoverReservationHandle{
+		TakeForAccount: func(account gatewaydispatch.AccountCandidate) (gatewaydispatch.ConcurrencySlot, bool) {
+			slot, ok := reservation.TakeForAccount(gatewayhotquality.GatewayAccountConcurrencyLimitIdentity{
+				ID:                        account.ID,
+				CredentialSourceAccountID: chainConcurrencyAccountIDOf(account),
+				ConcurrencyLimit:          account.ConcurrencyLimit,
+			})
+			if !ok {
+				return gatewaydispatch.ConcurrencySlot{}, false
+			}
+			release := slot.Release
+			return gatewaydispatch.ConcurrencySlot{Acquired: true, Release: release}, true
+		},
+	}
+}
+
+// observeSpeedFirstResponseOutcome 镜像 routes.ts:2393-2455 的响应观测：
+// 首字耗时超阈值补记慢采样（同尝试去重），达标则记成功恢复采样。
+func (l *v1DispatchLoop) observeSpeedFirstResponseOutcome(
+	ctx context.Context,
+	current *gatewaypreauth.DispatchContext,
+	dispatched gatewaydispatch.UpstreamDispatchResult,
+	handling gatewayresponse.UpstreamResponseHandlingResult,
+) {
+	config := current.NormalRouteSpeedFirstConfig
+	if config == nil || handling.FirstTokenMs == nil {
+		return
+	}
+	decisions := l.speedFirstDecisionsOf()
+	scope := l.speedFirstLatencyScopeOf(current)
+	if decisions == nil || scope == nil {
+		return
+	}
+	thresholdMs := int64(0)
+	if config.FirstByteDeadlineMs != nil {
+		thresholdMs = *config.FirstByteDeadlineMs
+	}
+	if *handling.FirstTokenMs > thresholdMs {
+		if l.speedFirstSlowObservedForAttempt != nil {
+			return
+		}
+		slowResult, err := decisions.RecordFirstByteSlowAsync(ctx, dispatched.Account, scope, config,
+			"普通路由速度优先首字耗时 "+fmt.Sprintf("%d", *handling.FirstTokenMs)+"ms 超过阈值 "+fmt.Sprintf("%d", thresholdMs)+"ms")
+		if err != nil {
+			l.warnSpeedFirstDecisionFailure(dispatched.Account, scope, "response_observation", err)
+			return
+		}
+		var slowCount int64
+		degraded := false
+		var degradedUntil, nextProbeAt *string
+		if slowResult != nil {
+			slowCount = slowResult.SlowCount
+			degraded = slowResult.Degraded
+			degradedUntil = slowResult.DegradedUntil
+			nextProbeAt = slowResult.NextProbeAt
+		}
+		l.auditCapture.AddGatewayMetadata("normal_route_speed_first_slow_observed", map[string]any{
+			"accountId":     dispatched.Account.ID,
+			"firstTokenMs":  *handling.FirstTokenMs,
+			"thresholdMs":   thresholdMs,
+			"observedAt":    "response_completed",
+			"slowCount":     slowCount,
+			"degraded":      degraded,
+			"degradedUntil": degradedUntil,
+			"nextProbeAt":   nextProbeAt,
+		})
+		return
+	}
+	recoveryResult, err := decisions.RecordFirstByteSuccessAsync(ctx, dispatched.Account, scope, config, *handling.FirstTokenMs)
+	if err != nil {
+		l.warnSpeedFirstDecisionFailure(dispatched.Account, scope, "response_observation", err)
+		return
+	}
+	if recoveryResult != nil {
+		l.auditCapture.AddGatewayMetadata("normal_route_speed_first_recovery_observed", map[string]any{
+			"accountId":                    dispatched.Account.ID,
+			"firstTokenMs":                 *handling.FirstTokenMs,
+			"thresholdMs":                  thresholdMs,
+			"cleared":                      recoveryResult.Cleared,
+			"recoverySuccessCount":         recoveryResult.RecoverySuccessCount,
+			"requiredRecoverySuccessCount": recoveryResult.RequiredRecoverySuccessCount,
+		})
+	}
+}
+
+func (l *v1DispatchLoop) warnSpeedFirstDecisionFailure(account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, stage string, err error) {
+	l.c.observability.Logger().Warn("normal_route_speed_first_local_decision_failed", map[string]any{
+		"event":           "normal_route_speed_first_local_decision_failed",
+		"stage":           stage,
+		"accountId":       account.ID,
+		"routeStrategyId": scope.RouteStrategyID,
+		"groupId":         scope.GroupID,
+		"error":           err.Error(),
+	}, "普通路由速度优先响应观测失败，保留已完成上游响应")
+	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_local_decision_failed", map[string]any{
+		"stage":     stage,
+		"accountId": account.ID,
+	})
+}
+
+// confirmProtocolSuccessSideEffects 镜像 routes.ts:2478-2486 的最终协议
+// 成功结算：挂起的同账户 Key 轮转失败确认 + 胜出 Key 的成功记录（D-111）。
+// 结算错误不改写已提交的下游响应（Node 顶层 catch 同样只记日志）。
+func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, dispatched gatewaydispatch.UpstreamDispatchResult, handling gatewayresponse.UpstreamResponseHandlingResult) {
+	if !handling.ProtocolValidatedSuccess {
+		return
+	}
+	if dispatched.ConfirmSameAccountApiKeyFailures != nil {
+		if err := dispatched.ConfirmSameAccountApiKeyFailures(); err != nil {
+			l.c.observability.Logger().Warn("gateway_account_api_key_rotation_confirm_failed", map[string]any{
+				"event":     "gateway_account_api_key_rotation_confirm_failed",
+				"accountId": dispatched.Account.ID,
+				"error":     err.Error(),
+			}, "已确认同账户 API Key 轮转失败结算未完成")
+		}
+	}
+	if dispatched.ConfirmAccountAPIKeySuccess != nil {
+		if err := dispatched.ConfirmAccountAPIKeySuccess(); err != nil {
+			l.c.observability.Logger().Warn("gateway_account_api_key_success_settlement_failed", map[string]any{
+				"event":     "gateway_account_api_key_success_settlement_failed",
+				"accountId": dispatched.Account.ID,
+				"error":     err.Error(),
+			}, "账户 API Key 成功结算未完成")
+		}
+	}
 }
 
 // fallbackOptions mirrors the option bag Node passes from the current
@@ -1226,6 +2063,22 @@ func shouldHandleOpenAIUpstreamResponseAsStreamWithStatus(status int, contentTyp
 	return status >= http.StatusOK && status < http.StatusMultipleChoices &&
 		gatewayresponse.ShouldHandleOpenAIUpstreamResponseAsStream(contentType, streamRequest)
 }
+
+// firstOutputMetricMarkOf wraps the dispatch first-output slot with the
+// prometheus first-output histogram (D-190; Node routes.ts:1507
+// recordGatewayFirstOutputMetric(Date.now() - requestContext.startedAt,
+// requestContext.method)). The original slot always runs first; a nil slot
+// keeps only the metric record.
+func firstOutputMetricMarkOf(markFirstOutput func(), startedAt int64, method string) func() {
+	return func() {
+		if markFirstOutput != nil {
+			markFirstOutput()
+		}
+		gatewayusage.RecordGatewayFirstOutputMetric(nowMillis()-startedAt, method)
+	}
+}
+
+func nowMillis() int64 { return time.Now().UnixMilli() }
 
 // streamRetryDispatchAccounts mirrors streamRetryDispatchAccounts
 // (routes.ts:2855-2860): the candidate window minus the stream server-retry

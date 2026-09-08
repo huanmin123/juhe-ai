@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
 )
 
 // DriverID mirrors the Node driver id.
@@ -133,22 +133,42 @@ func (d *Driver) BuildUpstreamRequest(input gatewayproto.BuildUpstreamRequestInp
 		}
 		body = transformed
 
-// B-4: Cross-protocol bridge conversion
-			// When mapping to different protocol families (gemini, anthropic), apply bridge
-			upSource := input.ModelMapping.SourceEndpointFamily
-			upUpstream := input.ModelMapping.UpstreamEndpointFamily
-			if openaicompat.IsCrossProtocolBridgeRequired(upSource, upUpstream) {
-			var bridgeRoot map[string]any
-			if err := json.Unmarshal(transformed, &bridgeRoot); err == nil {
-				bridgeOpts := openaicompat.BridgeRequestBodyOptions{
-					ModelOverride:      upstreamModel,
-					TargetPathAndQuery: input.ClientPathAndQuery,
-				}
-				// Rebuild body with bridge transformation
-				if bridgeBody, err := openaicompat.BuildOpenAIChatBridgeBody(bridgeRoot, bridgeOpts); err == nil {
-					body, _ = json.Marshal(bridgeBody)
+		// B-4 (BUG-0175 D-149/D-157): cross-protocol bridge conversion. When the
+		// mapping targets a different protocol family (anthropic messages /
+		// gemini generateContent), rebuild the body through the matching archived
+		// bridge (openai-anthropic-bridge / gemini bridges / anthropic-openai-chat
+		// / codex-responses-chat).
+		sourceFamily := input.ModelMapping.SourceEndpointFamily
+		upstreamFamily := input.ModelMapping.UpstreamEndpointFamily
+		if sourceFamily != "" && upstreamFamily != "" && sourceFamily != upstreamFamily &&
+			openaicompat.IsCrossProtocolBridgeRequired(sourceFamily, upstreamFamily) {
+			bridgeRoot, ok := parsedBody.(map[string]any)
+			if !ok {
+				var decodeErr error
+				bridgeRoot, decodeErr = unmarshalJSONObject(transformed)
+				if decodeErr != nil {
+					return nil, &gatewayproto.BuildUpstreamError{
+						Code:    gatewayproto.ErrCodeModelMappingRequestInvalid,
+						Message: "跨协议模型映射要求请求体是 JSON 对象",
+					}
 				}
 			}
+			bridgeBody, err := openaicompat.BuildBridgeRequestBody(sourceFamily, upstreamFamily, bridgeRoot, openaicompat.BridgeRequestBodyOptions{
+				ModelOverride:      upstreamModel,
+				TargetPathAndQuery: input.ClientPathAndQuery,
+				Stream:             stream,
+			})
+			if err != nil {
+				return nil, bridgeBuildError(err)
+			}
+			encoded, err := json.Marshal(bridgeBody)
+			if err != nil {
+				return nil, &gatewayproto.BuildUpstreamError{
+					Code:    gatewayproto.ErrCodeUnsupportedModelMappingConversion,
+					Message: "跨协议模型映射请求体编码失败",
+				}
+			}
+			body = encoded
 		}
 	}
 
@@ -226,6 +246,42 @@ func parseJSONBodyBytes(body []byte) any {
 		return nil
 	}
 	return value
+}
+
+// unmarshalJSONObject parses a bridge body that must be a JSON object.
+func unmarshalJSONObject(body []byte) (map[string]any, error) {
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return nil, err
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, errBridgeBodyNotObject
+	}
+	return object, nil
+}
+
+var errBridgeBodyNotObject = errBridgeBodyObject{}
+
+type errBridgeBodyObject struct{}
+
+func (errBridgeBodyObject) Error() string { return "bridge body must be a JSON object" }
+
+// bridgeBuildError maps a bridge conversion failure onto the dispatcher error
+// contract: BridgeRequestError surfaces its message under the mapping
+// conversion code (the D-149 raise point), everything else keeps the code.
+func bridgeBuildError(err error) error {
+	bridgeErr, ok := err.(*openaicompat.BridgeRequestError)
+	if !ok {
+		return &gatewayproto.BuildUpstreamError{
+			Code:    gatewayproto.ErrCodeUnsupportedModelMappingConversion,
+			Message: "跨协议模型映射请求转换失败",
+		}
+	}
+	return &gatewayproto.BuildUpstreamError{
+		Code:    gatewayproto.ErrCodeUnsupportedModelMappingConversion,
+		Message: bridgeErr.Message,
+	}
 }
 
 func jsonValid(text string) bool {

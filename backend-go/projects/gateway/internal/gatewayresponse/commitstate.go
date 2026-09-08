@@ -7,10 +7,10 @@ const DownstreamConnectionClosedMessage = "下游连接关闭"
 // DownstreamCommitState 对齐 GatewayDownstreamCommitState：下游提交状态机，
 // 决定失败时能否换号重试（canRetryUpstream）以及终态事件是否允许补发。
 type DownstreamCommitState struct {
-	TransportCommitted                bool
-	SemanticCommitted                 bool
+	TransportCommitted                 bool
+	SemanticCommitted                  bool
 	SuccessfulProtocolTerminalReceived bool
-	DownstreamBytesWritten            int64
+	DownstreamBytesWritten             int64
 }
 
 // MarkTransportCommitted 对齐 markTransportCommitted。

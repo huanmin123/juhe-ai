@@ -9,9 +9,13 @@ package authsys
 
 import (
 	"context"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,6 +35,13 @@ func (e *ConflictError) Error() string { return e.Message }
 type ValidationError struct{ Message string }
 
 func (e *ValidationError) Error() string { return e.Message }
+
+// BadRequestError maps to Node route-level 400 validations (D-238: the
+// system-accounts whitespace checks are 400s, unlike the 409 store-level
+// validation family).
+type BadRequestError struct{ Message string }
+
+func (e *BadRequestError) Error() string { return e.Message }
 
 // AccountSummary mirrors Node SystemAccountSummary (domain/types.ts).
 type AccountSummary struct {
@@ -387,9 +398,13 @@ func (s *AccountStore) ListPage(ctx context.Context, keyword string, page, pageS
 	where := "1=1"
 	args := []any{}
 	if keyword != "" {
-		where = `(lower(username) LIKE ? OR lower(display_name) LIKE ?)`
-		pattern := "%" + strings.ToLower(keyword) + "%"
-		args = append(args, pattern, pattern)
+		// Node buildSystemAccountListKeywordFilter*
+		// (system-accounts.repository.ts:234-247/:249-267): exact match OR
+		// prefix match on username/display_name — not a contains filter
+		// (D-77/D-103).
+		where = `(lower(username) = lower(?) OR lower(username) LIKE lower(?) ESCAPE '\' OR lower(display_name) = lower(?) OR lower(display_name) LIKE lower(?) ESCAPE '\')`
+		prefix := escapeLikePrefix(keyword) + "%"
+		args = append(args, keyword, prefix, keyword, prefix)
 	}
 	if err := s.db.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM `+s.table("system_accounts")+` WHERE `+where), args...).Scan(&total); err != nil {
 		return nil, 0, false, err
@@ -847,7 +862,20 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 			return AccountMutationResult{}, &ValidationError{Message: "用户名称不能为空"}
 		}
 		if hasWhitespace(*input.DisplayName) {
-			return AccountMutationResult{}, &ValidationError{Message: "用户名称不能包含空格"}
+			// Node repository.ts:678 normalizeRequiredText runs after the CAS
+			// comparison and reports the whitespace rejection with a 400
+			// (D-238), not a 409 store error.
+			return AccountMutationResult{}, &BadRequestError{Message: "用户名称不能包含空格"}
+		}
+		// Node repository.ts:680 ensureSystemAccountDisplayNameUniqueAsync:
+		// the uniqueness precheck runs inside the mutation transaction and
+		// reports the concrete '用户名称已存在' 409 instead of falling through
+		// to a storage error with a generic conflict message (D-103).
+		var existingID string
+		if err := tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("system_accounts")+` WHERE lower(display_name)=lower(?) AND id <> ? LIMIT 1`), *input.DisplayName, id).Scan(&existingID); err == nil {
+			return AccountMutationResult{}, &ConflictError{Message: "用户名称已存在"}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return AccountMutationResult{}, err
 		}
 		changes["display_name"] = *input.DisplayName
 		value := *input.DisplayName
@@ -873,11 +901,21 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		if hasWhitespace(*input.Password) {
 			return AccountMutationResult{}, &ValidationError{Message: "登录密码不能包含空格"}
 		}
-		passwordHash, err = modelcheckauth.HashNodePassword(*input.Password)
+		// Node repository.ts:752-760 verifies the submitted password against
+		// the current hash and only rotates on a mismatch: an identical
+		// password produces no assignment, no new version, and no session
+		// revocation (D-103/D-77).
+		same, err := verifyNodePassword(*input.Password, passwordHash)
 		if err != nil {
 			return AccountMutationResult{}, err
 		}
-		passwordChanged = true
+		if !same {
+			passwordHash, err = modelcheckauth.HashNodePassword(*input.Password)
+			if err != nil {
+				return AccountMutationResult{}, err
+			}
+			passwordChanged = true
+		}
 	}
 	role := current.Role
 	if input.Role != nil {
@@ -956,9 +994,19 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 		setIf("status", value)
 	}
 	mustChange := boolInt(current.MustChangePassword)
-	if input.MustChangePassword != nil {
-		// Admin roles force mustChangePassword false (Node effective value).
-		effective := *input.MustChangePassword && !IsAdminRole(role)
+	if input.MustChangePassword != nil || input.Role != nil {
+		// Node repository.ts:713-725: whenever the patch carries
+		// mustChangePassword or role, the effective value re-evaluates with
+		// the NEXT role deciding the admin override. A user->admin promotion
+		// therefore clears a stale must_change_password=1 column instead of
+		// trapping the promoted admin in the forced-password-change loop
+		// (D-77/D-103); current.MustChangePassword already carries the
+		// Node currentValue projection (column && !isAdminRole(currentRole)).
+		requested := current.MustChangePassword
+		if input.MustChangePassword != nil {
+			requested = *input.MustChangePassword
+		}
+		effective := requested && !IsAdminRole(role)
 		if effective != current.MustChangePassword {
 			mustChange = boolInt(effective)
 			setIf("must_change_password", mustChange)
@@ -1074,6 +1122,33 @@ func nowPlusOneMilli(now time.Time, previousRFC3339 string) string {
 		return floor.UTC().Format(time.RFC3339Nano)
 	}
 	return now.UTC().Format(time.RFC3339Nano)
+}
+
+// nodePasswordHashSegments matches the pbkdf2$sha512$120000$salt$digest
+// envelope produced by modelcheckauth.newNodePasswordHash (the Node
+// storage/crypto.ts format).
+var nodePasswordHashSegments = regexp.MustCompile(`^pbkdf2\$sha512\$120000\$([A-Za-z0-9_-]+)\$([A-Za-z0-9_-]+)$`)
+
+// verifyNodePassword mirrors Node verifyPassword (storage/crypto.ts): the
+// candidate is re-derived with the stored parameters and compared in constant
+// time. The PBKDF2 salt is the base64 segment text itself — exactly like
+// newNodePasswordHash passes []byte(salt) — and the digest is the base64
+// decoded raw bytes. A malformed stored hash reports an error instead of
+// silently rotating the password.
+func verifyNodePassword(password, storedHash string) (bool, error) {
+	match := nodePasswordHashSegments.FindStringSubmatch(storedHash)
+	if match == nil {
+		return false, errors.New("stored password hash format is invalid")
+	}
+	expected, err := base64.RawURLEncoding.DecodeString(match[2])
+	if err != nil {
+		return false, errors.New("stored password hash digest is invalid")
+	}
+	derived, err := pbkdf2.Key(sha512.New, password, []byte(match[1]), 120000, len(expected))
+	if err != nil {
+		return false, err
+	}
+	return subtle.ConstantTimeCompare(derived, expected) == 1, nil
 }
 
 // HashNodePassword re-exports the Node-compatible password hash for callers

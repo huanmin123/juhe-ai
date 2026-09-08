@@ -34,9 +34,9 @@ type StreamFailureContext struct {
 // CommittedStreamFailureSignalContext 对齐 CommittedStreamFailureSignalContext。
 type CommittedStreamFailureSignalContext struct {
 	StreamFailureContext
-	Message              string
-	ErrorCode            string
-	SemanticCommitted    bool
+	Message                string
+	ErrorCode              string
+	SemanticCommitted      bool
 	AccountFailureEligible bool
 }
 
@@ -70,9 +70,9 @@ type FirstByteDeadlineHandler func(input FirstByteDeadlineInput) (FirstByteDeadl
 
 // StreamInterceptorSseResult 对齐 ResponseInspectionSseResult（含完整决策）。
 type StreamInterceptorSseResult struct {
-	Chunks        [][]byte
-	Intercepted   *ResponseInspectionDecision
-	Observations  []ResponseInspectionDecision
+	Chunks       [][]byte
+	Intercepted  *ResponseInspectionDecision
+	Observations []ResponseInspectionDecision
 	// PassthroughUpstreamFailure 对齐同名字段（Codex cyber_policy 透传）。
 	PassthroughUpstreamFailure bool
 	PendingEvent               bool
@@ -166,25 +166,25 @@ type StreamPipeOptions struct {
 	OnFirstOutput                func()
 	CaptureSuccessPayloads       bool // 默认 true
 	// CaptureSuccessPayloadsSet=false 表示调用方未显式传 false。
-	CaptureSuccessPayloadsSet        bool
+	CaptureSuccessPayloadsSet             bool
 	RetryBeforeDownstreamWriteUntilOutput bool
-	ResponseInspectionPolicies       []RuntimeResponseInspectionPolicy
-	ResponseInspectionContext        *ResponseInspectionRuntimeContext
-	DownstreamProtocol               string
-	ResponseProtocol                 string
-	EndpointFamily                   gatewayproto.ResponseEndpointFamily
-	FirstByteTimeoutMs               *int64
-	FirstByteDeadlineMs              *int64
-	ResponsePrecommitDeadlineAtMs    *int64
-	OnFirstByteDeadline              FirstByteDeadlineHandler
-	OnFirstByteDeadlineSuperseded    func()
-	PrepareDownstream                func()
-	BeforeDownstreamCommit           func(responseResourceId string) error
-	TransformUpstreamChunk           func(chunk []byte) [][]byte
-	FlushTransformedUpstreamChunks   func() [][]byte
-	DownstreamCommitState            *DownstreamCommitState
-	BeforeCommittedFailureSignal     func(context CommittedStreamFailureSignalContext) error
-	OnIncompleteClientAbort          func(context IncompleteClientAbortContext) error
+	ResponseInspectionPolicies            []RuntimeResponseInspectionPolicy
+	ResponseInspectionContext             *ResponseInspectionRuntimeContext
+	DownstreamProtocol                    string
+	ResponseProtocol                      string
+	EndpointFamily                        gatewayproto.ResponseEndpointFamily
+	FirstByteTimeoutMs                    *int64
+	FirstByteDeadlineMs                   *int64
+	ResponsePrecommitDeadlineAtMs         *int64
+	OnFirstByteDeadline                   FirstByteDeadlineHandler
+	OnFirstByteDeadlineSuperseded         func()
+	PrepareDownstream                     func()
+	BeforeDownstreamCommit                func(responseResourceId string) error
+	TransformUpstreamChunk                func(chunk []byte) [][]byte
+	FlushTransformedUpstreamChunks        func() [][]byte
+	DownstreamCommitState                 *DownstreamCommitState
+	BeforeCommittedFailureSignal          func(context CommittedStreamFailureSignalContext) error
+	OnIncompleteClientAbort               func(context IncompleteClientAbortContext) error
 	// Driver 缺省为 openai 视图（Node responseProtocol ?? 'openai_v1'）。
 	Driver      StreamDriver
 	Interceptor StreamInterceptor
@@ -195,10 +195,10 @@ type StreamPipeOptions struct {
 
 // PipeUpstreamStreamInput 对齐 pipeUpstreamStream 的位置参数。
 type PipeUpstreamStreamInput struct {
-	UpstreamBody      UpstreamBody
-	Downstream        StreamDownstream
-	TimeoutProfile    TimeoutProfile
-	StartedAtMs       int64
+	UpstreamBody        UpstreamBody
+	Downstream          StreamDownstream
+	TimeoutProfile      TimeoutProfile
+	StartedAtMs         int64
 	HandleStreamFailure func(message string, errorCode string, context StreamFailureContext) error
 	// Signal 对齐 AbortSignal：取消即客户端断开/请求中止。
 	Signal interface {

@@ -859,12 +859,16 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create record maintenance dispatch: %w", err)
 	}
-	(&tablemonitor.Deps{
+	tableMonitorDeps := &tablemonitor.Deps{
 		Store:    tableMonitorStore,
 		Cache:    tablemonitor.NewOverviewCache(),
 		Dispatch: recordMaintenanceDispatch,
 		Sink:     sink,
-	}).Mount(kern, authDeps)
+	}
+	tableMonitorDeps.Mount(kern, authDeps)
+	// D-102（BUG-0175）：启动预热对齐 Node prewarmTableStorageOverview——
+	// 首个管理端概览请求命中缓存而非冷扫描；失败仅记日志，不留退避条目。
+	go tableMonitorDeps.Prewarm(context.Background())
 	// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标，并把共享 Store
 	// 直接交给 statreads 的 go-runtime-trend 读侧（不再代理 jobs 的 trend
 	// HTTP 面）。store 未启用（默认）时既不打开句柄也不装配采样器。
@@ -1037,17 +1041,26 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 				MaxQueueSize:        cfg.ConcurrencyGlobalMax,
 				PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
 			},
-			SpoolDirectory:  spoolDirectory,
-			Circuits:        chainServices.Circuits,
-			IPPolicy:        chainServices.IPPolicy,
-			UserLimits:      chainServices.UserLimits,
-			ModelsRateLimit: chainServices.ModelsRateLimit,
-			APIKeyQuota:     chainServices.APIKeyQuota,
-			AuthzQuota:      chainServices.AuthzQuota,
-			InflightQuota:   chainServices.InflightQuota,
-			Avoidance:       chainServices.Avoidance,
-			Affinity:        chainServices.Affinity,
-			Recoverable:     chainServices.Recoverable,
+			SpoolDirectory: spoolDirectory,
+			// D-209 / D-147 / D-192+D-146（BUG-0175）：spool 容量、用量收尾
+			// 队列与全局并发容量、请求期上游 URL 安全配置的组合根传参。
+			UsageSpoolMaxItems:         cfg.UsageSpoolMaxItems,
+			UsageSpoolMaxBytes:         cfg.UsageSpoolMaxBytes,
+			UsageSpoolReplayBatchSize:  cfg.UsageSpoolReplayBatchSize,
+			UsageSpoolReplayIntervalMs: cfg.UsageSpoolReplayIntervalMs,
+			UsageFinalizationMaxItems:  cfg.UsageFinalizationMaxItems,
+			ConcurrencyGlobalMax:       cfg.ConcurrencyGlobalMax,
+			UpstreamURLSecurity:        cfg.UpstreamURLSecurity,
+			Circuits:                   chainServices.Circuits,
+			IPPolicy:                   chainServices.IPPolicy,
+			UserLimits:                 chainServices.UserLimits,
+			ModelsRateLimit:            chainServices.ModelsRateLimit,
+			APIKeyQuota:                chainServices.APIKeyQuota,
+			AuthzQuota:                 chainServices.AuthzQuota,
+			InflightQuota:              chainServices.InflightQuota,
+			Avoidance:                  chainServices.Avoidance,
+			Affinity:                   chainServices.Affinity,
+			Recoverable:                chainServices.Recoverable,
 			// G20 phase-3: hybrid Redis collaborators + the G14 session
 			// identity services (both degrade by driver axes, never nil).
 			HybridScoringCache: chainServices.HybridScoringCache,
@@ -1102,6 +1115,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			WakeRecoverableWaiter: func(runtimeKey string) {
 				gatewaycircuit.DefaultRecoverableWaitCoordinator.NotifyOneForRuntimeKey(runtimeKey)
 			},
+			// W4-B（BUG-0175）生产接线：D-111 API Key 效果链 + D-132 配置
+			// 策略避让 + D-114 时延降级排序（nil 仅出现在组合测试）。
+			AccountAPIKeyGuard:        chainServices.AccountAPIKeyGuard,
+			APIKeyEffects:             chainAPIKeyEffectsPort{effects: chainServices.AccountAPIKeyEffects, guard: chainServices.AccountAPIKeyGuard},
+			ConfiguredPolicyAvoidance: chainServices.ConfiguredPolicyAvoidance,
+			ProxyHealthService:        chainServices.ProxyHealth,
+			LatencyService:            chainServices.LatencyDegradation,
 		})
 		if chainAssembleErr != nil {
 			chainServices.Close()
@@ -1446,16 +1466,23 @@ func ratelimitSettingsProvider(store *settings.Store) ratelimit.SettingsProvider
 	}
 }
 
+// trustProxyCount converts the runtime-validated JUHE_AI_TRUST_PROXY value
+// into the hop count the kernel trusts. loadRuntimeConfig already failed the
+// startup on anything outside true/yes/on、false/no/off、0-16（D-211）；the
+// mapping stays total for the zero-value config used by composition tests.
 func trustProxyCount(raw string) int {
 	value := trimSpace(raw)
-	if value == "" || value == "false" {
+	if value == "" {
 		return 0
 	}
-	if value == "true" {
+	switch strings.ToLower(value) {
+	case "false", "no", "off":
+		return 0
+	case "true", "yes", "on":
 		return 1
 	}
 	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 0 {
+	if err != nil || parsed < 0 || parsed > 16 {
 		return 0
 	}
 	return parsed

@@ -173,6 +173,12 @@ type CompleteAttemptInput struct {
 	ErrorPhase   string
 	ErrorCode    string
 	ErrorMessage string
+	// D-123（BUG-0175）：失败尝试审计补齐上游响应事实（归档
+	// failure-dispatch.ts:276-283 completeAttempt 的 statusCode /
+	// responseHeaders / responseBody）。nil/空保持既有形状。
+	StatusCode      *int
+	ResponseHeaders http.Header
+	ResponseBody    []byte
 }
 
 // FailedDispatchAttemptInput mirrors recordFailedDispatchAttempt's input.
@@ -839,6 +845,10 @@ type APIKeyEffectsPort interface {
 	CaptureFailureObservation(account AccountCandidate) string
 	// RecordFailure mirrors recordGatewayAccountApiKeyFailure.
 	RecordFailure(ctx context.Context, account AccountCandidate, input RecordAPIKeyFailureInput) error
+	// RecordSuccess mirrors recordGatewayAccountApiKeySuccess（D-111，BUG-0175：
+	// 成功侧 guard 复位 + Redis 瞬态避让清理 + 合并持久成功写）。与 Node 一致，
+	// 写失败只记日志不中断请求，实现恒返回 nil。
+	RecordSuccess(ctx context.Context, account AccountCandidate, input RecordAPIKeySuccessInput) error
 }
 
 // RecordAPIKeyFailureInput mirrors the record input.
@@ -855,6 +865,14 @@ type RecordAPIKeyFailureInput struct {
 	ClientIP         string
 	APIKeyID         string
 	Source           string
+}
+
+// RecordAPIKeySuccessInput mirrors recordGatewayAccountApiKeySuccess 的输入
+// 投影（source / trafficSource / mutationContext）。
+type RecordAPIKeySuccessInput struct {
+	Source          string
+	TrafficSource   string
+	MutationContext map[string]any
 }
 
 // KeyModelAdmission mirrors runtime/key-model-attempt.ts

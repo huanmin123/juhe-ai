@@ -9,53 +9,53 @@ import (
 
 // streamPipe 承载 pipeUpstreamStream 的全部状态（Node 闭包变量的结构化版本）。
 type streamPipe struct {
-	input      PipeUpstreamStreamInput
-	body       UpstreamBody
-	downstream StreamDownstream
-	profile    TimeoutProfile
-	startedAt  int64
-	options    StreamPipeOptions
-	driver     StreamDriver
-	inspector  gatewayproto.StreamInspector
+	input       PipeUpstreamStreamInput
+	body        UpstreamBody
+	downstream  StreamDownstream
+	profile     TimeoutProfile
+	startedAt   int64
+	options     StreamPipeOptions
+	driver      StreamDriver
+	inspector   gatewayproto.StreamInspector
 	interceptor StreamInterceptor
-	logger     StreamLogger
-	nowMs      func() int64
+	logger      StreamLogger
+	nowMs       func() int64
 
 	committedProtocolFailureEventEnabled bool
 	interpretProtocolFailures            bool
 	captureSuccessPayloads               bool
 	passthroughUpstreamFailure           bool
 
-	completed           bool
-	parserSkipLogged    bool
+	completed                          bool
+	parserSkipLogged                   bool
 	responseInspectionParserSkipLogged bool
-	firstTokenMs        *int64
-	firstByteDeadlineObserved bool
-	pendingReadDecision *streamFirstByteDeadlineReadDecision
-	waitingForFirstChunk bool
-	lastUpstreamActivityAt int64
-	lastSseEventActivityAt *int64
-	lastSseEventCount   int
-	upstreamChunkReceived bool
-	semanticResultReceived bool
-	responseResourceId  string
-	pendingProtocolEvent bool
-	streamParserSkipped bool
-	protocolTerminalReceived bool
-	chunkIndex          int
-	totalUpstreamBytes  int64
-	totalResponseBytes  int64
-	lastProgressLogAt   int64
-	lastBackpressureLogAt int64
-	terminalEventWritten bool
-	bodyCaptureOmitted  bool
-	downstreamPrepared  bool
-	downstreamCommit    *DownstreamCommitState
-	downstreamCommitPrepared bool
-	preCommitBuffer     *PreCommitBufferState
-	preCommitSseEvidence *StreamPreCommitSseEvidence
-	observations        []ResponseInspectionDecision
-	observationOmittedCount int
+	firstTokenMs                       *int64
+	firstByteDeadlineObserved          bool
+	pendingReadDecision                *streamFirstByteDeadlineReadDecision
+	waitingForFirstChunk               bool
+	lastUpstreamActivityAt             int64
+	lastSseEventActivityAt             *int64
+	lastSseEventCount                  int
+	upstreamChunkReceived              bool
+	semanticResultReceived             bool
+	responseResourceId                 string
+	pendingProtocolEvent               bool
+	streamParserSkipped                bool
+	protocolTerminalReceived           bool
+	chunkIndex                         int
+	totalUpstreamBytes                 int64
+	totalResponseBytes                 int64
+	lastProgressLogAt                  int64
+	lastBackpressureLogAt              int64
+	terminalEventWritten               bool
+	bodyCaptureOmitted                 bool
+	downstreamPrepared                 bool
+	downstreamCommit                   *DownstreamCommitState
+	downstreamCommitPrepared           bool
+	preCommitBuffer                    *PreCommitBufferState
+	preCommitSseEvidence               *StreamPreCommitSseEvidence
+	observations                       []ResponseInspectionDecision
+	observationOmittedCount            int
 
 	responseCapture   *LimitedCapture
 	upstreamCapture   *LimitedCapture
@@ -107,17 +107,17 @@ func newStreamPipe(input PipeUpstreamStreamInput) *streamPipe {
 		captureLimit = StreamAuditCaptureBytes
 	}
 	return &streamPipe{
-		input:                input,
-		body:                 input.UpstreamBody,
-		downstream:           input.Downstream,
-		profile:              input.TimeoutProfile,
-		startedAt:            input.StartedAtMs,
-		options:              options,
-		driver:               driver,
-		inspector:            driver.NewStreamInspector(),
-		interceptor:          options.Interceptor,
-		logger:               logger,
-		nowMs:                nowMs,
+		input:                                input,
+		body:                                 input.UpstreamBody,
+		downstream:                           input.Downstream,
+		profile:                              input.TimeoutProfile,
+		startedAt:                            input.StartedAtMs,
+		options:                              options,
+		driver:                               driver,
+		inspector:                            driver.NewStreamInspector(),
+		interceptor:                          options.Interceptor,
+		logger:                               logger,
+		nowMs:                                nowMs,
 		committedProtocolFailureEventEnabled: signalProtocolEvent,
 		interpretProtocolFailures:            options.InterpretProtocolFailures,
 		captureSuccessPayloads:               options.CaptureSuccessPayloads,

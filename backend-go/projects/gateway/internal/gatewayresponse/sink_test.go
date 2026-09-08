@@ -32,12 +32,12 @@ func TestSinkSendGatewayFailureResponse(t *testing.T) {
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat/completions", nil))
 	recordUsage := true
 	sink.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
-		Req:          req,
-		Res:          tracking,
-		AuditCapture: audit,
-		UsageContext: usageContextFixture(),
-		StartedAt:    1000,
-		StatusCode:   429,
+		Req:             req,
+		Res:             tracking,
+		AuditCapture:    audit,
+		UsageContext:    usageContextFixture(),
+		StartedAt:       1000,
+		StatusCode:      429,
 		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf("请求过于频繁", "rate_limit_exceeded", "rate_limit_exceeded"),
 		Audit: gatewaypreauth.FailureAudit{
 			Outcome:      "gateway_failed",
@@ -108,12 +108,12 @@ func TestSinkSendGatewayFailureResponsePreservesUpstreamMessage(t *testing.T) {
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat/completions", nil))
 	preserve := true
 	sink.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
-		Req:          req,
-		Res:          tracking,
-		AuditCapture: audit,
-		UsageContext: usageContextFixture(),
-		StartedAt:    1000,
-		StatusCode:   502,
+		Req:             req,
+		Res:             tracking,
+		AuditCapture:    audit,
+		UsageContext:    usageContextFixture(),
+		StartedAt:       1000,
+		StatusCode:      502,
 		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf("provider boom", "upstream_error"),
 		Audit: gatewaypreauth.FailureAudit{
 			Outcome:      "upstream_failed",

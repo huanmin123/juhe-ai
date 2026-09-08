@@ -165,6 +165,26 @@ func (e *Engine) recordConfirmedSameAccountApiKeyFailures(
 	return nil
 }
 
+// recordAccountAPIKeySuccess mirrors recordGatewayAccountApiKeySuccess 的
+// 触发面（D-111，BUG-0175）：上游请求成功后对最终选中的 Key 记录成功观察——
+// guard 复位 + Redis 瞬态避让清理 + 合并持久成功写（持久写的授权由
+// gatewayaccounteffects 的 mutation authority 面裁定：网关普通流量不持持久
+// 写权，仅自动探针的 complete_success 授权持久成功）。效果链未装配
+// （APIKeyEffects == nil）或无选中 Key 时保持中性跳过。
+func (e *Engine) recordAccountAPIKeySuccess(
+	ctx context.Context,
+	successAccount AccountCandidate,
+	usageContext *gatewaypreauth.GatewayFailureUsageContext,
+) error {
+	if e.APIKeyEffects == nil || successAccount.SelectedAPIKeyFingerprint == nil {
+		return nil
+	}
+	return e.APIKeyEffects.RecordSuccess(ctx, successAccount, RecordAPIKeySuccessInput{
+		Source:        "upstream_dispatch_success",
+		TrafficSource: usageContext.TrafficSource,
+	})
+}
+
 func accountRuntimeSourceId(account AccountCandidate) string {
 	if account.CredentialSourceAccountID != nil && *account.CredentialSourceAccountID != "" {
 		return *account.CredentialSourceAccountID

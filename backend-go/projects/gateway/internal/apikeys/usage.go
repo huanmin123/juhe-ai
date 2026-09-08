@@ -8,14 +8,16 @@
 // Degradation: a nil UsageSource (stats slice not wired) renders the zero
 // summaries. A wired source may only degrade on the missing-resource SQLite
 // arm of isMissingSqliteStatsReadError ("no such table" / "unable to open
-// database file"); every other error — and every PostgreSQL error — fails
-// the read exactly like Node's throw.
+// database file") — and only inside the SQLite read-worker process
+// (JUHE_AI_SQLITE_READ_WORKER, BUG-0175 D-180); every other error — and every
+// PostgreSQL error — fails the read exactly like Node's throw.
 package apikeys
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"strings"
 )
 
@@ -351,12 +353,23 @@ func (s *StatsUsageSource) dialectPlaceholder(index int) string {
 	return "$" + itoa(index)
 }
 
-// degradeOnMissingStats mirrors isMissingSqliteStatsReadError's
-// missing-resource arm: only SQLite "no such table" / "unable to open
-// database file" failures degrade to empty usage. Every other error — and
-// every PostgreSQL error (Node has no catch on the PG path) — fails the read.
+// sqliteReadWorkerProcess mirrors isSqliteReadWorkerProcess: the SQLite
+// read-worker role flag (JUHE_AI_SQLITE_READ_WORKER === 'true'). The Go
+// gateway runs single-process, so the flag stays unset and every SQLite
+// stats failure fails the read exactly like Node's main process.
+func sqliteReadWorkerProcess() bool {
+	return os.Getenv("JUHE_AI_SQLITE_READ_WORKER") == "true"
+}
+
+// degradeOnMissingStats mirrors isMissingSqliteStatsReadError: the
+// missing-resource arm ("no such table" / "unable to open database file")
+// only degrades inside the SQLite read-worker process. BUG-0175 D-180: the
+// gate previously fired unconditionally, silently zeroing usage on SQLite
+// stats errors the Node main process would have surfaced. Every other error
+// — and every PostgreSQL error (Node has no catch on the PG path) — fails
+// the read.
 func degradeOnMissingStats(pg bool, err error) bool {
-	if pg {
+	if pg || !sqliteReadWorkerProcess() {
 		return false
 	}
 	message := err.Error()

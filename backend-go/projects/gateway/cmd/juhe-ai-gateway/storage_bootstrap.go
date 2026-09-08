@@ -64,6 +64,13 @@ func ensureGatewaySQLiteStoragePreflight(ctx context.Context, cfg runtimeConfig,
 		return fmt.Errorf("sqlite 模式缺少 JUHE_AI_STATS_DATABASE_PATH，无法打开 ip-stats stats 数据库")
 	}
 
+	// D-44（BUG-0175）六库物理身份门禁（Node assertDistinctStoragePaths，
+	// database.ts:331-457）：canonical path（realpath）/ 符号链接 / dev:ino /
+	// nlink=1 逐对核验，任何两个角色指向同一物理 SQLite 文件都拒绝启动。
+	if err := assertDistinctSQLiteStoragePaths(cfg); err != nil {
+		return err
+	}
+
 	ensureFile := func(name, path string, kind bootstrap.SQLiteSchemaKind) error {
 		db, err := bootstrap.OpenSQLiteFile(path)
 		if err != nil {

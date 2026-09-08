@@ -93,17 +93,17 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 		failurePayload := ResponseInspectionFailurePayloadForDecision(decision, p.options.ClientRetryEnabled)
 		if p.shouldFailBeforeDownstreamCommit() {
 			p.logger.Warn("gateway_response_inspected_before_downstream_commit", map[string]any{
-				"elapsedMs":           p.nowMs() - p.startedAt,
-				"chunkCount":          p.chunkIndex,
-				"totalUpstreamBytes":  p.totalUpstreamBytes,
-				"totalResponseBytes":  p.totalResponseBytes,
-				"action":              decision.Action,
-				"reason":              decision.Reason,
-				"upstreamEventType":   decision.UpstreamEventType,
-				"upstreamErrorCode":   decision.UpstreamErrorCode,
-				"rewriteErrorCode":    decision.RewriteErrorCode,
-				"downstreamWritten":   decision.DownstreamWritten,
-				"eofPendingFlush":     true,
+				"elapsedMs":          p.nowMs() - p.startedAt,
+				"chunkCount":         p.chunkIndex,
+				"totalUpstreamBytes": p.totalUpstreamBytes,
+				"totalResponseBytes": p.totalResponseBytes,
+				"action":             decision.Action,
+				"reason":             decision.Reason,
+				"upstreamEventType":  decision.UpstreamEventType,
+				"upstreamErrorCode":  decision.UpstreamErrorCode,
+				"rewriteErrorCode":   decision.RewriteErrorCode,
+				"downstreamWritten":  decision.DownstreamWritten,
+				"eofPendingFlush":    true,
 			}, "网关在 EOF pending 事件下游提交前命中流式失败，交由上层返回当前失败")
 			return p.inspectionFailureResult(decision, latestInspection), nil
 		}
@@ -112,17 +112,17 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 		}
 		p.endResponse()
 		p.logger.Warn("gateway_response_inspected", map[string]any{
-			"elapsedMs":           p.nowMs() - p.startedAt,
-			"chunkCount":          p.chunkIndex,
-			"totalUpstreamBytes":  p.totalUpstreamBytes,
-			"totalResponseBytes":  p.totalResponseBytes,
-			"action":              decision.Action,
-			"reason":              decision.Reason,
-			"upstreamEventType":   decision.UpstreamEventType,
-			"upstreamErrorCode":   decision.UpstreamErrorCode,
-			"rewriteErrorCode":    decision.RewriteErrorCode,
-			"downstreamWritten":   decision.DownstreamWritten,
-			"eofPendingFlush":     true,
+			"elapsedMs":          p.nowMs() - p.startedAt,
+			"chunkCount":         p.chunkIndex,
+			"totalUpstreamBytes": p.totalUpstreamBytes,
+			"totalResponseBytes": p.totalResponseBytes,
+			"action":             decision.Action,
+			"reason":             decision.Reason,
+			"upstreamEventType":  decision.UpstreamEventType,
+			"upstreamErrorCode":  decision.UpstreamErrorCode,
+			"rewriteErrorCode":   decision.RewriteErrorCode,
+			"downstreamWritten":  decision.DownstreamWritten,
+			"eofPendingFlush":    true,
 		}, "网关已在上游 EOF 时命中响应检查策略并结束当前流")
 		return p.inspectionFailureResult(decision, latestInspection), nil
 	}
@@ -157,15 +157,15 @@ func (p *streamPipe) handleInterceptedBeforeWrite(decision *ResponseInspectionDe
 		p.settleStreamFirstByteDeadlineReadDecision(true)
 		p.body.Close()
 		fields := map[string]any{
-			"elapsedMs":         p.nowMs() - p.startedAt,
-			"chunkCount":        p.chunkIndex,
+			"elapsedMs":          p.nowMs() - p.startedAt,
+			"chunkCount":         p.chunkIndex,
 			"totalUpstreamBytes": p.totalUpstreamBytes,
-			"action":            decision.Action,
-			"reason":            decision.Reason,
-			"upstreamEventType": decision.UpstreamEventType,
-			"upstreamErrorCode": decision.UpstreamErrorCode,
-			"rewriteErrorCode":  decision.RewriteErrorCode,
-			"downstreamWritten": decision.DownstreamWritten,
+			"action":             decision.Action,
+			"reason":             decision.Reason,
+			"upstreamEventType":  decision.UpstreamEventType,
+			"upstreamErrorCode":  decision.UpstreamErrorCode,
+			"rewriteErrorCode":   decision.RewriteErrorCode,
+			"downstreamWritten":  decision.DownstreamWritten,
 		}
 		if eofPendingFlush {
 			fields["eofPendingFlush"] = true
@@ -176,15 +176,15 @@ func (p *streamPipe) handleInterceptedBeforeWrite(decision *ResponseInspectionDe
 	p.settleStreamFirstByteDeadlineReadDecision(true)
 	p.body.Close()
 	fields := map[string]any{
-		"elapsedMs":         p.nowMs() - p.startedAt,
-		"chunkCount":        p.chunkIndex,
+		"elapsedMs":          p.nowMs() - p.startedAt,
+		"chunkCount":         p.chunkIndex,
 		"totalUpstreamBytes": p.totalUpstreamBytes,
-		"action":            decision.Action,
-		"reason":            decision.Reason,
-		"policyId":          decision.PolicyID,
-		"policyName":        decision.PolicyName,
-		"accountSwitch":     decision.AccountSwitch,
-		"retryEnabled":      decision.RetryEnabled,
+		"action":             decision.Action,
+		"reason":             decision.Reason,
+		"policyId":           decision.PolicyID,
+		"policyName":         decision.PolicyName,
+		"accountSwitch":      decision.AccountSwitch,
+		"retryEnabled":       decision.RetryEnabled,
 	}
 	message := "网关在写入下游前命中可服务端重试的响应检查策略"
 	if eofPendingFlush {
@@ -204,16 +204,16 @@ func (p *streamPipe) handleInterceptedAfterChunks(decision *ResponseInspectionDe
 	failurePayload := ResponseInspectionFailurePayloadForDecision(decision, p.options.ClientRetryEnabled)
 	if p.shouldFailBeforeDownstreamCommit() {
 		p.logger.Warn("gateway_response_inspected_before_downstream_commit", map[string]any{
-			"elapsedMs":         p.nowMs() - p.startedAt,
-			"chunkCount":        p.chunkIndex,
+			"elapsedMs":          p.nowMs() - p.startedAt,
+			"chunkCount":         p.chunkIndex,
 			"totalUpstreamBytes": p.totalUpstreamBytes,
 			"totalResponseBytes": p.totalResponseBytes,
-			"action":            decision.Action,
-			"reason":            decision.Reason,
-			"upstreamEventType": decision.UpstreamEventType,
-			"upstreamErrorCode": decision.UpstreamErrorCode,
-			"rewriteErrorCode":  decision.RewriteErrorCode,
-			"downstreamWritten": decision.DownstreamWritten,
+			"action":             decision.Action,
+			"reason":             decision.Reason,
+			"upstreamEventType":  decision.UpstreamEventType,
+			"upstreamErrorCode":  decision.UpstreamErrorCode,
+			"rewriteErrorCode":   decision.RewriteErrorCode,
+			"downstreamWritten":  decision.DownstreamWritten,
 		}, "网关在下游提交前命中流式失败，交由上层返回当前失败")
 		return p.inspectionFailureResult(decision, latestInspection), nil, true
 	}
@@ -222,16 +222,16 @@ func (p *streamPipe) handleInterceptedAfterChunks(decision *ResponseInspectionDe
 	}
 	p.endResponse()
 	p.logger.Warn("gateway_response_inspected", map[string]any{
-		"elapsedMs":         p.nowMs() - p.startedAt,
-		"chunkCount":        p.chunkIndex,
+		"elapsedMs":          p.nowMs() - p.startedAt,
+		"chunkCount":         p.chunkIndex,
 		"totalUpstreamBytes": p.totalUpstreamBytes,
 		"totalResponseBytes": p.totalResponseBytes,
-		"action":            decision.Action,
-		"reason":            decision.Reason,
-		"upstreamEventType": decision.UpstreamEventType,
-		"upstreamErrorCode": decision.UpstreamErrorCode,
-		"rewriteErrorCode":  decision.RewriteErrorCode,
-		"downstreamWritten": decision.DownstreamWritten,
+		"action":             decision.Action,
+		"reason":             decision.Reason,
+		"upstreamEventType":  decision.UpstreamEventType,
+		"upstreamErrorCode":  decision.UpstreamErrorCode,
+		"rewriteErrorCode":   decision.RewriteErrorCode,
+		"downstreamWritten":  decision.DownstreamWritten,
 	}, "网关已命中响应检查策略并结束当前流")
 	return p.inspectionFailureResult(decision, latestInspection), nil, true
 }
@@ -240,11 +240,11 @@ func (p *streamPipe) inspectionFailureResult(decision *ResponseInspectionDecisio
 	failurePayload := ResponseInspectionFailurePayloadForDecision(decision, p.options.ClientRetryEnabled)
 	result := p.finishStreamResult(finishArgs{
 		message: failurePayload.Message, errorCode: failurePayload.ErrorCode,
-		usage: latestInspection.Usage,
-		outputReceived: latestInspection.OutputReceived,
+		usage:                 latestInspection.Usage,
+		outputReceived:        latestInspection.OutputReceived,
 		estimatedOutputTokens: latestInspection.EstimatedOutputTokens,
-		imageOutputReceived: latestInspection.ImageOutputReceived,
-		responseInspection: decision,
+		imageOutputReceived:   latestInspection.ImageOutputReceived,
+		responseInspection:    decision,
 	})
 	return &result
 }
@@ -305,9 +305,9 @@ func (p *streamPipe) handleProtocolFailure(latestInspection gatewayproto.StreamI
 	p.logger.Warn(event, fields, logMessage)
 	result := p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: latestInspection.Usage,
-		outputReceived: latestInspection.OutputReceived,
+		outputReceived:        latestInspection.OutputReceived,
 		estimatedOutputTokens: latestInspection.EstimatedOutputTokens,
-		imageOutputReceived: latestInspection.ImageOutputReceived,
+		imageOutputReceived:   latestInspection.ImageOutputReceived,
 	})
 	return &result, nil
 }
@@ -334,9 +334,9 @@ func (p *streamPipe) handlePassthroughTerminal(latestInspection gatewayproto.Str
 	p.logger.Info("gateway_stream_passthrough_upstream_failure_terminal", fields, message)
 	result := p.finishStreamResult(finishArgs{
 		completed: true, message: "已原样转发上游失败终态", usage: latestInspection.Usage,
-		outputReceived: latestInspection.OutputReceived,
-		estimatedOutputTokens: latestInspection.EstimatedOutputTokens,
-		imageOutputReceived: latestInspection.ImageOutputReceived,
+		outputReceived:             latestInspection.OutputReceived,
+		estimatedOutputTokens:      latestInspection.EstimatedOutputTokens,
+		imageOutputReceived:        latestInspection.ImageOutputReceived,
 		passthroughUpstreamFailure: true,
 	})
 	return &result, nil
@@ -365,9 +365,9 @@ func (p *streamPipe) finalizeAfterLoop() (StreamPipeResult, error) {
 		p.endResponse()
 		return p.finishStreamResult(finishArgs{
 			completed: true, message: "已完成", usage: inspection.Usage,
-			outputReceived: inspection.OutputReceived,
+			outputReceived:        inspection.OutputReceived,
 			estimatedOutputTokens: inspection.EstimatedOutputTokens,
-			imageOutputReceived: inspection.ImageOutputReceived,
+			imageOutputReceived:   inspection.ImageOutputReceived,
 		}), nil
 	}
 	if inspection.Skipped && p.preCommitSseEvidence.DataEventObserved {
@@ -397,9 +397,9 @@ func (p *streamPipe) finalizeAfterLoop() (StreamPipeResult, error) {
 	}, "网关流式响应已成功结束")
 	return p.finishStreamResult(finishArgs{
 		completed: true, message: "已完成", usage: inspection.Usage,
-		outputReceived: inspection.OutputReceived,
+		outputReceived:        inspection.OutputReceived,
 		estimatedOutputTokens: inspection.EstimatedOutputTokens,
-		imageOutputReceived: inspection.ImageOutputReceived,
+		imageOutputReceived:   inspection.ImageOutputReceived,
 	}), nil
 }
 
@@ -439,9 +439,9 @@ func (p *streamPipe) finalizeParserSkipped(inspection gatewayproto.StreamInspect
 	}, "网关流式解析已跳过，按原始转发结果结束")
 	return p.finishStreamResult(finishArgs{
 		completed: success, message: message, errorCode: errorCode, usage: inspection.Usage,
-		outputReceived: inspection.OutputReceived,
+		outputReceived:        inspection.OutputReceived,
 		estimatedOutputTokens: inspection.EstimatedOutputTokens,
-		imageOutputReceived: inspection.ImageOutputReceived,
+		imageOutputReceived:   inspection.ImageOutputReceived,
 	}), nil
 }
 
@@ -468,9 +468,9 @@ func (p *streamPipe) finalizeMissingTerminal(inspection gatewayproto.StreamInspe
 		}, "网关在下游提交前发现上游缺少终止事件，交由上层返回当前失败")
 		return p.finishStreamResult(finishArgs{
 			message: message, errorCode: errorCode, usage: inspection.Usage,
-			outputReceived: inspection.OutputReceived,
+			outputReceived:        inspection.OutputReceived,
 			estimatedOutputTokens: inspection.EstimatedOutputTokens,
-			imageOutputReceived: inspection.ImageOutputReceived,
+			imageOutputReceived:   inspection.ImageOutputReceived,
 		}), nil
 	}
 	disposition, err := p.signalCommittedStreamFailure(inspection, true)
@@ -492,9 +492,9 @@ func (p *streamPipe) finalizeMissingTerminal(inspection gatewayproto.StreamInspe
 	}, logMessage)
 	return p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: inspection.Usage,
-		outputReceived: inspection.OutputReceived,
+		outputReceived:        inspection.OutputReceived,
 		estimatedOutputTokens: inspection.EstimatedOutputTokens,
-		imageOutputReceived: inspection.ImageOutputReceived,
+		imageOutputReceived:   inspection.ImageOutputReceived,
 	}), nil
 }
 
@@ -523,9 +523,9 @@ func (p *streamPipe) finalizeIncompleteOrFailed(inspection gatewayproto.StreamIn
 		}, "网关在 EOF pending 收尾后识别到失败，交由上层返回当前失败")
 		return p.finishStreamResult(finishArgs{
 			message: message, errorCode: errorCode, usage: inspection.Usage,
-			outputReceived: inspection.OutputReceived,
+			outputReceived:        inspection.OutputReceived,
 			estimatedOutputTokens: inspection.EstimatedOutputTokens,
-			imageOutputReceived: inspection.ImageOutputReceived,
+			imageOutputReceived:   inspection.ImageOutputReceived,
 		}), nil
 	}
 	disposition, err := p.signalCommittedStreamFailure(inspection, true)
@@ -553,9 +553,9 @@ func (p *streamPipe) finalizeIncompleteOrFailed(inspection gatewayproto.StreamIn
 	}, logMessage)
 	return p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: inspection.Usage,
-		outputReceived: inspection.OutputReceived,
+		outputReceived:        inspection.OutputReceived,
 		estimatedOutputTokens: inspection.EstimatedOutputTokens,
-		imageOutputReceived: inspection.ImageOutputReceived,
+		imageOutputReceived:   inspection.ImageOutputReceived,
 	}), nil
 }
 
@@ -571,25 +571,25 @@ func (p *streamPipe) handlePipeError(loopErr error) (StreamPipeResult, error) {
 		if (p.terminalEventWritten || (inspection.TerminalReceived && p.downstreamCommit.SemanticCommitted)) && !p.interpretedProtocolFailure(inspection) {
 			p.endResponse()
 			p.logger.Info("gateway_stream_client_closed_after_terminal", map[string]any{
-				"elapsedMs":           p.nowMs() - p.startedAt,
-				"chunkCount":          p.chunkIndex,
-				"totalUpstreamBytes":  p.totalUpstreamBytes,
-				"totalResponseBytes":  p.totalResponseBytes,
-				"signalAborted":       p.signalAborted(),
+				"elapsedMs":            p.nowMs() - p.startedAt,
+				"chunkCount":           p.chunkIndex,
+				"totalUpstreamBytes":   p.totalUpstreamBytes,
+				"totalResponseBytes":   p.totalResponseBytes,
+				"signalAborted":        p.signalAborted(),
 				"terminalEventWritten": p.terminalEventWritten,
-				"outputReceived":      inspection.OutputReceived,
-				"outputEventCount":    inspection.OutputEventCount,
-				"sseEventCount":       inspection.EventCount,
-				"sseEventTypeCounts":  inspection.EventTypeCounts,
-				"recentSseEventTypes": inspection.RecentEventTypes,
-				"parserSkipped":       inspection.Skipped,
-				"skipReason":          inspection.SkipReason,
+				"outputReceived":       inspection.OutputReceived,
+				"outputEventCount":     inspection.OutputEventCount,
+				"sseEventCount":        inspection.EventCount,
+				"sseEventTypeCounts":   inspection.EventTypeCounts,
+				"recentSseEventTypes":  inspection.RecentEventTypes,
+				"parserSkipped":        inspection.Skipped,
+				"skipReason":           inspection.SkipReason,
 			}, "客户端在协议终止事件后关闭连接，按成功流式响应收尾")
 			return p.finishStreamResult(finishArgs{
 				completed: true, message: "已完成", usage: inspection.Usage,
-				outputReceived: inspection.OutputReceived,
+				outputReceived:        inspection.OutputReceived,
 				estimatedOutputTokens: inspection.EstimatedOutputTokens,
-				imageOutputReceived: inspection.ImageOutputReceived,
+				imageOutputReceived:   inspection.ImageOutputReceived,
 			}), nil
 		}
 		// 不完整客户端断流的回调（Codex turn 状态记录）。
@@ -651,9 +651,9 @@ func (p *streamPipe) handlePipeError(loopErr error) (StreamPipeResult, error) {
 		}
 		return p.finishStreamResult(finishArgs{
 			message: message, errorCode: deadlineErr.Code(), usage: inspection.Usage,
-			outputReceived: inspection.OutputReceived,
+			outputReceived:        inspection.OutputReceived,
 			estimatedOutputTokens: inspection.EstimatedOutputTokens,
-			imageOutputReceived: inspection.ImageOutputReceived,
+			imageOutputReceived:   inspection.ImageOutputReceived,
 		}), nil
 	}
 
@@ -681,9 +681,9 @@ func (p *streamPipe) handlePipeError(loopErr error) (StreamPipeResult, error) {
 		}, "网关已收到终止事件，忽略终止后的流式异常")
 		return p.finishStreamResult(finishArgs{
 			completed: true, message: "已完成", usage: inspection.Usage,
-			outputReceived: inspection.OutputReceived,
+			outputReceived:        inspection.OutputReceived,
 			estimatedOutputTokens: inspection.EstimatedOutputTokens,
-			imageOutputReceived: inspection.ImageOutputReceived,
+			imageOutputReceived:   inspection.ImageOutputReceived,
 		}), nil
 	}
 	rawMessage := errorDiagnosticMessage(loopErr)
@@ -710,18 +710,18 @@ func (p *streamPipe) handlePipeError(loopErr error) (StreamPipeResult, error) {
 	}
 	if failureBeforeDownstreamCommit {
 		p.logger.Warn("gateway_stream_failure_before_downstream_commit", map[string]any{
-			"message":             message,
-			"errorCode":           errorCode,
-			"totalUpstreamBytes":  p.totalUpstreamBytes,
-			"totalResponseBytes":  p.totalResponseBytes,
+			"message":            message,
+			"errorCode":          errorCode,
+			"totalUpstreamBytes": p.totalUpstreamBytes,
+			"totalResponseBytes": p.totalResponseBytes,
 		}, "网关在下游提交前捕获流式失败，交由上层返回当前失败")
 		result := p.finishStreamResult(finishArgs{
 			message: message, errorCode: errorCode, usage: inspection.Usage,
-			outputReceived: inspection.OutputReceived,
+			outputReceived:        inspection.OutputReceived,
 			estimatedOutputTokens: inspection.EstimatedOutputTokens,
-			imageOutputReceived: inspection.ImageOutputReceived,
-			gatewayLocalFailure: gatewayLocalFailure,
-			transportFailure: transportFailure,
+			imageOutputReceived:   inspection.ImageOutputReceived,
+			gatewayLocalFailure:   gatewayLocalFailure,
+			transportFailure:      transportFailure,
 		})
 		return result, nil
 	}
@@ -745,11 +745,11 @@ func (p *streamPipe) handlePipeError(loopErr error) (StreamPipeResult, error) {
 	}, logMessage)
 	result := p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: inspection.Usage,
-		outputReceived: inspection.OutputReceived,
+		outputReceived:        inspection.OutputReceived,
 		estimatedOutputTokens: inspection.EstimatedOutputTokens,
-		imageOutputReceived: inspection.ImageOutputReceived,
-		gatewayLocalFailure: gatewayLocalFailure,
-		transportFailure: transportFailure,
+		imageOutputReceived:   inspection.ImageOutputReceived,
+		gatewayLocalFailure:   gatewayLocalFailure,
+		transportFailure:      transportFailure,
 	})
 	return result, nil
 }
@@ -795,9 +795,9 @@ func (p *streamPipe) finishTerminalSuccess(inspection gatewayproto.StreamInspect
 		}, "网关在终止事件后解析到失败事件，按失败流式响应收尾")
 		return p.finishStreamResult(finishArgs{
 			message: message, errorCode: errorCode, usage: finalInspection.Usage,
-			outputReceived: finalInspection.OutputReceived,
+			outputReceived:        finalInspection.OutputReceived,
 			estimatedOutputTokens: finalInspection.EstimatedOutputTokens,
-			imageOutputReceived: finalInspection.ImageOutputReceived,
+			imageOutputReceived:   finalInspection.ImageOutputReceived,
 		}), nil
 	}
 	if err := p.ensureBeforeDownstreamCommit(); err != nil {
@@ -823,9 +823,9 @@ func (p *streamPipe) finishTerminalSuccess(inspection gatewayproto.StreamInspect
 	}, "网关已收到协议终止事件并成功结束流式响应")
 	return p.finishStreamResult(finishArgs{
 		completed: true, message: "已完成", usage: finalInspection.Usage,
-		outputReceived: finalInspection.OutputReceived,
+		outputReceived:        finalInspection.OutputReceived,
 		estimatedOutputTokens: finalInspection.EstimatedOutputTokens,
-		imageOutputReceived: finalInspection.ImageOutputReceived,
+		imageOutputReceived:   finalInspection.ImageOutputReceived,
 	}), nil
 }
 

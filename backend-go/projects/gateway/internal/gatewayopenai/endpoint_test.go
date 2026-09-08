@@ -43,6 +43,37 @@ func TestBuildUpstreamURL(t *testing.T) {
 			path: "/v1/chat",
 			want: "https://generativelanguage.googleapis.com/v1beta/openai/chat",
 		},
+		// D-152 补充覆盖（BUG-0175 波4 W4-F）：
+		{
+			name: "gemini-openai-chat v1beta base with already-stripped client path",
+			base: "https://generativelanguage.googleapis.com/v1beta/openai",
+			path: "/chat/completions",
+			want: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+		},
+		{
+			name: "gemini-openai-chat v1beta base matching is case-insensitive",
+			base: "https://generativelanguage.googleapis.com/V1Beta/OpenAI",
+			path: "/v1/chat/completions",
+			want: "https://generativelanguage.googleapis.com/V1Beta/OpenAI/chat/completions",
+		},
+		{
+			name: "gemini v1beta base without /openai suffix keeps standard /v1 append",
+			base: "https://generativelanguage.googleapis.com/v1beta",
+			path: "/v1/chat/completions",
+			want: "https://generativelanguage.googleapis.com/v1beta/v1/chat/completions",
+		},
+		{
+			name: "standard base still strips client /v1 (no double version)",
+			base: "https://api.openai.com",
+			path: "/v1/chat/completions",
+			want: "https://api.openai.com/v1/chat/completions",
+		},
+		{
+			name: "gemini-openai-chat v1beta responses path with query",
+			base: "https://generativelanguage.googleapis.com/v1beta/openai",
+			path: "/v1/responses?a=1",
+			want: "https://generativelanguage.googleapis.com/v1beta/openai/responses?a=1",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

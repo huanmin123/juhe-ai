@@ -1325,3 +1325,34 @@ func decodeListItems(t *testing.T, rec *httptest.ResponseRecorder) []map[string]
 	}
 	return payload.Data.Items
 }
+
+// TestSummaryUsageProjectionKey locks in the BUG-0175 W4-C D-126 授权面
+// fix: the grant summary always renders the usage summary object — the
+// all-zero AccountUsageSummary with lastUsedAt omitted — exactly like the
+// Node includeUsage:false routes (resource-authorization-read.repository.ts
+// :688/:857 render `usage.get(row.id) ?? emptyAccountUsageSummary()`).
+func TestSummaryUsageProjectionKey(t *testing.T) {
+	summary := grantRow{ID: "auth_1", ResourceType: "account", ResourceID: "acc_1",
+		OwnerID: "owner_1", GranteeType: "system_account", Status: "active"}.summary()
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	usage, ok := payload["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage key missing from summary: %s", encoded)
+	}
+	if usage["requestCount"] != float64(0) || usage["totalTokens"] != float64(0) || usage["totalCost"] != float64(0) {
+		t.Fatalf("usage must render the zero summary: %v", usage)
+	}
+	if _, present := usage["lastUsedAt"]; present {
+		t.Fatalf("zero usage must omit lastUsedAt: %v", usage)
+	}
+	if _, present := payload["lastUsedAt"]; present {
+		t.Fatalf("includeUsage:false must omit the summary lastUsedAt: %s", encoded)
+	}
+}
