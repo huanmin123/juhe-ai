@@ -65,6 +65,29 @@ func TestWorkerConfigGatesFailsClosed(t *testing.T) {
 	}
 }
 
+func TestMinimalAssemblyExistsWhenWorkerDisabled(t *testing.T) {
+	config := workerConfig{
+		Driver:             "sqlite",
+		BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3"),
+	}
+	assembly := newWorkerAssembly(config, nil)
+	if assembly == nil || assembly.scheduler == nil {
+		t.Fatal("minimal assembly must allocate its scheduler even when worker is disabled")
+	}
+	defer assembly.closeStores()
+	face, err := assembly.wireHealthProbeOutboxFace(func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("wire health probe outbox face: %v", err)
+	}
+	if face == nil || face.pruner == nil {
+		t.Fatal("minimal assembly must expose the health probe outbox pruner")
+	}
+	var table string
+	if err := assembly.sqliteDBs[0].QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='account_health_probe_request_outbox'").Scan(&table); err != nil {
+		t.Fatalf("health probe outbox schema must be initialized: %v", err)
+	}
+}
+
 // TestWorkerSmokeRunsCycleAndDrains：SQLite 模式启动 → 至少一个任务
 // （background-task-run-reconcile）跑一轮成功 → 干净停机排空。
 // 调度时间语义（jitter/退避/超时/错过间隔）由 jobsched 假时钟单测覆盖。

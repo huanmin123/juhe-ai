@@ -125,11 +125,10 @@ func (a *workerAssembly) addCloser(closer func() error) {
 	a.closers = append(a.closers, closer)
 }
 
-// buildWorkerAssembly 装配 worker 组合根；config.Enabled=false 时返回 nil。
-func buildWorkerAssembly(config workerConfig, logger *slog.Logger) (*workerAssembly, error) {
-	if !config.Enabled {
-		return nil, nil
-	}
+// newWorkerAssembly 创建组合根的公共基础部分。它只分配调度器和底层句柄
+// 关闭器，不会按任务族打开存储或注册任务；因此可供只承载跨组件面的
+// minimal assembly 使用。
+func newWorkerAssembly(config workerConfig, logger *slog.Logger) *workerAssembly {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -164,6 +163,15 @@ func buildWorkerAssembly(config workerConfig, logger *slog.Logger) (*workerAssem
 		assembly.pools = nil
 		return firstErr
 	})
+	return assembly
+}
+
+// buildWorkerAssembly 装配 worker 组合根；config.Enabled=false 时返回 nil。
+func buildWorkerAssembly(config workerConfig, logger *slog.Logger) (*workerAssembly, error) {
+	if !config.Enabled {
+		return nil, nil
+	}
+	assembly := newWorkerAssembly(config, logger)
 	if err := assembly.wireFamilies(context.Background()); err != nil {
 		assembly.closeStores()
 		return nil, err

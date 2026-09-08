@@ -380,10 +380,9 @@ func main() {
 	// ACCOUNT_HEALTH_ENABLED=true 但 WORKER_ENABLED=false 时仍需装配 outbox
 	// drain/prune（gateway 写入的 pending 行必须被消费或清理）。
 	if worker == nil && accountHealthConfig.Enabled {
-		worker, err = buildWorkerAssembly(workerCfg, logger)
-		if err != nil {
-			fail(fmt.Errorf("assemble jobs minimal assembly for health outbox: %w", err))
-		}
+		// buildWorkerAssembly 对 disabled config 按契约返回 nil；这里必须
+		// 使用只创建基础句柄的 minimal assembly，不能再次走 Enabled 门禁。
+		worker = newWorkerAssembly(workerCfg, logger)
 		logger.Info("worker 调度器关闭但账户健康已启用：装配最小 assembly 以承载 outbox 消费面",
 			"event", "jobs_minimal_assembly_for_outbox")
 	}
