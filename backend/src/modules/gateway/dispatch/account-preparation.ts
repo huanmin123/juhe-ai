@@ -40,7 +40,11 @@ import type { UsageServiceTier } from '../usage/service-tier.js'
 import type { UsageReasoningEffort } from '../usage/reasoning-effort.js'
 import { prepareCodexResponsesContextForAccount } from '../codex-responses/chat-bridge-state.js'
 import { sanitizeCodexResponseHistoryItems } from '../codex-responses/request-history-sanitizer.js'
-import { canonicalModel, gatewayRequestEndpointFamily, modelsEqual } from '../protocols/openai-v1/model-mapping.js'
+import {
+  canonicalModel,
+  gatewayRequestEndpointFamily,
+  resolveOpenAIRequestModelMapping
+} from '../protocols/openai-v1/model-mapping.js'
 import { requestModel } from '../request/metadata.js'
 import { preparedUpstreamBodyMetadata } from '../upstream/body-preparation.js'
 import {
@@ -321,9 +325,7 @@ export async function buildPreparedUpstreamRequestParts(
 function requestWithCanonicalDirectModel(req: Request, account: UpstreamAccount): Request {
   const requested = requestModel(req)
   const canonical = canonicalModel(requested, account.supportedModels)
-  if (!requested || !canonical || requested === canonical || account.modelMappings?.some((mapping) => (
-    mapping.enabled !== false && modelsEqual(mapping.sourceModel, requested)
-  ))) {
+  if (!requested || !canonical || requested === canonical || resolveOpenAIRequestModelMapping(req, account)) {
     return req
   }
   const clone = Object.create(req) as GatewayRawBodyRequest

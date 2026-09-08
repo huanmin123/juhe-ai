@@ -115,6 +115,24 @@ assert.equal(
 )
 assert.equal(mixedCaseRequest.body.model, 'GPT-5.5', '规范化上游请求不得修改原始客户请求')
 
+const unrelatedMappingAccount = account('unrelated-mapping', ['gpt-5.5'], [{
+  sourceModel: 'GPT-5.5',
+  sourceEndpointFamily: 'responses',
+  upstreamModel: 'gpt-5.5-responses',
+  upstreamEndpointFamily: 'responses',
+  enabled: true
+}])
+const unrelatedMappingParts = await buildPreparedUpstreamRequestParts(mixedCaseRequest, unrelatedMappingAccount, {
+  systemAccountId: 'sys_model_filter',
+  groupId: 'group_model_filter',
+  trafficSource: 'gateway'
+} as GatewayUsageContext)
+assert.equal(
+  JSON.parse(String(unrelatedMappingParts.body)).model,
+  'gpt-5.5',
+  '其他 endpoint 的同名映射不得阻止当前直连请求规范化模型名'
+)
+
 const mixedCaseMapping = filterGatewayAccountsByRequestedModel([
   account('mixed-case-mapping', ['GPT-5.5-PRIVATE'], [{
     sourceModel: 'GPT-5.5',
