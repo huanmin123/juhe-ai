@@ -764,7 +764,8 @@ func TestGatewayChain429SSEFailureYieldsNonStreamErrorContract(t *testing.T) {
 	}))
 	defer upstream.Close()
 	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
 
@@ -815,7 +816,8 @@ func TestGatewayChain429JSONRetriesSameAccountThenSucceeds(t *testing.T) {
 	}))
 	defer upstream.Close()
 	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
 
@@ -983,7 +985,8 @@ func TestGatewayChainResponsesRecoversRejectedEncryptedContent(t *testing.T) {
 	}))
 	defer upstream.Close()
 	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
 
@@ -2035,7 +2038,8 @@ func TestGatewayChain402InsufficientQuotaCooldownsAccount(t *testing.T) {
 	}))
 	defer upstream.Close()
 	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
 	// 桥写侧需要测试 schema 未包含的运行态列（生产 schema 具备）。

@@ -132,7 +132,7 @@ func TestComposeSystemAPIWiresAuthzUsageStatsReads(t *testing.T) {
 		t.Fatalf("seed authorization usage window row: %v", err)
 	}
 
-	code, payload := fixture.do(http.MethodGet, "/__aisys__/api/authorizations/usage/team-details", "")
+	code, payload := fixture.do(http.MethodGet, "/__aisys__/api/authorizations/usage/team-details?startDate="+startDate+"&endDate="+endDate, "")
 	if code != http.StatusOK {
 		t.Fatalf("authorization team usage rows: %d %v", code, payload)
 	}
