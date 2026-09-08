@@ -403,7 +403,9 @@ Grok OAuth 账户：
 - `providerCode = anthropic` 不接受 `credentials.anthropic_version` 或 `credentials.anthropic_beta`。`anthropic-version` 是客户端请求头，缺省时由网关按协议默认 `2023-06-01` 补齐；`anthropic-beta` 只透传客户端显式 header。
 - `providerCode = glm` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
 - `providerCode = glm` 必须显式填写 `profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1` 或 `profile_glm_coding_anthropic_v1`，分别表示通用 GLM API、GLM Coding OpenAI Chat 和 GLM Coding Anthropic。预览、确认导入和导出都按该字段 round-trip。
+- 智谱官网现另列 OpenAI Response 端点 `https://open.bigmodel.cn/api/v1`；对应目标档案 `profile_glm_coding_openai_responses_v1` 已进入适配方案，但在代码、seed、模型白名单和探针完成前不属于当前可提交导入枚举。实施后必须作为独立 `providerProtocolProfileId` 接受，不能复用 Coding Chat 档案或依赖 `base_url` 猜测。
 - `providerCode = glm` 且 `providerProtocolProfileId = profile_glm_coding_openai_v1` 时，账号只保存真实上游能力 `chat_json`、`chat_sse`；Responses / Codex Responses 桥接由普通账号显式 `responses -> chat_completions` 模型别名处理。
+- `providerCode = glm` 且 `providerProtocolProfileId = profile_glm_coding_openai_responses_v1`（实施后）时，账号只保存经验证的 `responses_json`、`responses_sse`，默认 Base URL 为 `https://open.bigmodel.cn/api/v1`，模型必须在目录中声明 `responses`；不得静默改投 Chat 或把 bridge 当成原生 Responses。
 - `providerCode = glm` 且 `providerProtocolProfileId = profile_glm_coding_anthropic_v1` 时，`credentials.supported_endpoint_modes` 只保存 `messages_json`、`messages_sse`。
 - `providerCode = glm` 的通用 GLM API、GLM Coding OpenAI Chat 和 GLM Coding Anthropic 都要求 `credentials.base_url` 显式填写到对应协议档案可接受的根地址，不能依赖后端猜测。
 - NewAPI / OpenAI-compatible 聚合入口如果只给代理根地址，例如 `https://vsllm.com`，优先按通用 `providerCode = openai` 导入，OpenAI-compatible 档案会拼接 `/v1/chat/completions`；如果按 `providerCode = glm` 专用 OpenAI v1 档案导入，`credentials.base_url` 必须填写到该代理的 OpenAI v1 根，例如 `https://vsllm.com/v1`，不能只填站点根地址。

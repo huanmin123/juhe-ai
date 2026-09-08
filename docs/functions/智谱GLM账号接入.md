@@ -18,6 +18,8 @@
 - GLM Coding Plan 的 Anthropic Messages 端点：官方文档给出 `Anthropic Messages` 协议端点 `https://open.bigmodel.cn/api/anthropic`。该端点已落地为独立 Anthropic v1 协议档案，不混入 OpenAI v1 档案。
 - GLM Coding Plan 的 OpenAI Responses 端点：官方同一张协议表给出 `OpenAI Response` 协议端点 `https://open.bigmodel.cn/api/v1`；[Codex 接入文档](https://docs.bigmodel.cn/cn/coding-plan/tool/codex)进一步要求 `wire_api = "responses"`。官网尚未在接入工具页展开完整 Responses 字段、事件和模型白名单，需按标准协议做 Mock 与最小真实请求核验。
 
+上述三端点证据属于 GLM Coding Plan；不能把 `/api/v1` 反推为通用 GLM API `https://open.bigmodel.cn/api/paas/v4/` 也支持原生 Responses。通用 GLM 档案继续按已验证的 Chat 能力运行，除非智谱另行提供对应官方资料。
+
 结论：
 
 - 智谱官方已公布三种 Coding Plan 接入端点；仓库当前只落地其中 Chat Completions 和 Anthropic Messages，Responses 端点进入“待实现的独立原生档案”，不能把官网事实误写成当前代码已支持。

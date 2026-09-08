@@ -76,7 +76,8 @@
 | --- | --- | --- |
 | GPT、通用 OpenAI-compatible、xAI OpenAI v1 | 当前供应商目录 | Chat -> Chat；Responses -> Responses；Responses -> Chat，具体目标还需账户上游能力 |
 | DeepSeek OpenAI v1 | DeepSeek 目录 | Chat -> Chat；Responses -> Responses；Responses -> Chat |
-| GLM OpenAI Chat | GLM 目录 | Chat -> Chat；Responses -> Chat |
+| GLM OpenAI Chat | GLM 目录 | Chat -> Chat；Responses -> Chat（显式 bridge） |
+| GLM OpenAI Responses（方案目标） | 通过 `responses` 能力白名单的 GLM 目录 | Responses -> Responses；不允许跨供应商/跨 profile 原生换号 |
 | Gemini OpenAI Chat | Gemini 目录 | Chat -> Chat；Responses -> Chat；目标只能是 Chat |
 | Anthropic、DeepSeek Anthropic、GLM Anthropic | 当前供应商目录 | Messages -> Messages |
 | Gemini native | Gemini 目录 | GenerateContent -> GenerateContent；StreamGenerateContent -> GenerateContent |
