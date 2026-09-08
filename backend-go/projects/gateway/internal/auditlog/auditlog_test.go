@@ -644,6 +644,7 @@ func TestLoadConfigRejectsUsageShardSymlinkConflict(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
+	defer os.RemoveAll(conflict)
 	_, err := LoadConfig(func(name string) string { return env[name] })
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_USAGE_SHARD_ROOT") {
 		t.Fatalf("usage shard symlink conflict must fail closed: %v", err)
@@ -688,6 +689,7 @@ func TestLoadConfigRejectsCodexStateShardSymlinks(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
+	defer os.RemoveAll(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"])
 	_, err := LoadConfig(func(name string) string { return env[name] })
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") {
 		t.Fatalf("Codex shard root symlink must fail closed: %v", err)
@@ -702,12 +704,14 @@ func TestLoadConfigRejectsCodexStateShardSymlinks(t *testing.T) {
 	if err := os.WriteFile(target, []byte("audit-db"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "state-000.sqlite3")); err != nil {
+	childSymlink := filepath.Join(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "state-000.sqlite3")
+	if err := os.Symlink(target, childSymlink); err != nil {
 		if symlinkCreationUnavailable(err) {
 			t.Skipf("当前 Windows token 不允许创建 symlink，无法执行 Codex shard symlink 回归: %v", err)
 		}
 		t.Fatal(err)
 	}
+	defer os.RemoveAll(childSymlink)
 	_, err = LoadConfig(func(name string) string { return env[name] })
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") {
 		t.Fatalf("Codex shard symlink must fail closed: %v", err)

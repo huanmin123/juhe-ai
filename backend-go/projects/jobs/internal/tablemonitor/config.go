@@ -298,6 +298,13 @@ func canonicalPath(path string) (string, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("检查路径失败: %w", err)
 	}
+	// On Windows, Lstat can report ERROR_FILE_NOT_FOUND for a dangling
+	// symlink instead of returning the link metadata. Inspect the parent
+	// directory entry in that case; fail closed rather than treating it as a
+	// normal not-yet-created SQLite file.
+	if danglingSQLiteSymlink(abs) {
+		return "", fmt.Errorf("SQLite 路径是悬空符号链接")
+	}
 	parent := filepath.Dir(abs)
 	suffix := []string{filepath.Base(abs)}
 	for {
@@ -327,6 +334,25 @@ func canonicalPath(path string) (string, error) {
 		suffix = append([]string{filepath.Base(parent)}, suffix...)
 		parent = next
 	}
+}
+
+func danglingSQLiteSymlink(path string) bool {
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		return false
+	}
+	base := filepath.Base(path)
+	for _, entry := range entries {
+		if entry.Name() != base {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return true
+		}
+		info, infoErr := entry.Info()
+		return infoErr == nil && info.Mode()&os.ModeSymlink != 0
+	}
+	return false
 }
 
 func equalFilesystemPath(left, right string) bool {
