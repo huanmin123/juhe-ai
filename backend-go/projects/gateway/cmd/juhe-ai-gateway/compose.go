@@ -542,14 +542,19 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		return nil, fmt.Errorf("create system-teams store: %w", err)
 	}
 	composed.teamStore = teamStore
-	// WithGlobalConcurrencyMax carries the parsed JUHE_AI_CONCURRENCY_GLOBAL_MAX
-	// into the DEFAULT scheduling-policy projection (Node reads
-	// runtimeConfig.concurrency.globalMax live; the store default stays 5000).
-	groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus, groups.WithGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax))
-	if err != nil {
-		return nil, fmt.Errorf("create groups store: %w", err)
-	}
-	routeStrategyStore, err := routestrategies.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
+// WithGlobalConcurrencyMax carries the parsed JUHE_AI_CONCURRENCY_GLOBAL_MAX
+		// into the DEFAULT scheduling-policy projection (Node reads
+		// runtimeConfig.concurrency.globalMax live; the store default stays 5000).
+		// D-38: group_account_stats reads from juhe_stats database.
+		groupStatsReader := groups.NewGroupAccountStatsDBReader(composed.statsDB, composed.pgDialect)
+		groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus,
+			groups.WithGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax),
+			groups.WithStatsReader(groupStatsReader),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create groups store: %w", err)
+		}
+		routeStrategyStore, err := routestrategies.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
 	if err != nil {
 		return nil, fmt.Errorf("create route-strategy store: %w", err)
 	}

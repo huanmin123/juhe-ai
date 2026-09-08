@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
 
@@ -131,6 +132,24 @@ func (d *Driver) BuildUpstreamRequest(input gatewayproto.BuildUpstreamRequestInp
 			return nil, err
 		}
 		body = transformed
+
+// B-4: Cross-protocol bridge conversion
+			// When mapping to different protocol families (gemini, anthropic), apply bridge
+			upSource := input.ModelMapping.SourceEndpointFamily
+			upUpstream := input.ModelMapping.UpstreamEndpointFamily
+			if openaicompat.IsCrossProtocolBridgeRequired(upSource, upUpstream) {
+			var bridgeRoot map[string]any
+			if err := json.Unmarshal(transformed, &bridgeRoot); err == nil {
+				bridgeOpts := openaicompat.BridgeRequestBodyOptions{
+					ModelOverride:      upstreamModel,
+					TargetPathAndQuery: input.ClientPathAndQuery,
+				}
+				// Rebuild body with bridge transformation
+				if bridgeBody, err := openaicompat.BuildOpenAIChatBridgeBody(bridgeRoot, bridgeOpts); err == nil {
+					body, _ = json.Marshal(bridgeBody)
+				}
+			}
+		}
 	}
 
 	upstreamPathAndQuery := input.ClientPathAndQuery

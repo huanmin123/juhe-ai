@@ -1,5 +1,48 @@
 package openaicompat
 
+// Endpoint family constants (mirror gatewayproto/endpoint_families.go).
+const (
+	FamilyChatCompletions      = "chat_completions"
+	FamilyResponses            = "responses"
+	FamilyAnthropicMessages    = "anthropic_messages"
+	FamilyGeminiGenerateContent = "gemini_generate_content"
+	FamilyGeminiStreamGenerate = "gemini_stream_generate"
+)
+
+// IsCrossProtocolBridgeRequired reports whether a model mapping requires
+// cross-protocol bridge conversion (OpenAI <-> Anthropic / Gemini).
+func IsCrossProtocolBridgeRequired(source, upstream string) bool {
+	switch {
+	case source == FamilyChatCompletions && upstream == FamilyAnthropicMessages:
+		return true
+	case source == FamilyChatCompletions && upstream == FamilyGeminiGenerateContent:
+		return true
+	case source == FamilyChatCompletions && upstream == FamilyGeminiStreamGenerate:
+		return true
+	case source == FamilyResponses && upstream == FamilyAnthropicMessages:
+		return true
+	case source == FamilyResponses && upstream == FamilyGeminiGenerateContent:
+		return true
+	case source == FamilyResponses && upstream == FamilyGeminiStreamGenerate:
+		return true
+	case source == FamilyAnthropicMessages && upstream == FamilyChatCompletions:
+		return true
+	case source == FamilyAnthropicMessages && upstream == FamilyGeminiGenerateContent:
+		return true
+	case source == FamilyAnthropicMessages && upstream == FamilyGeminiStreamGenerate:
+		return true
+	case source == FamilyGeminiGenerateContent && upstream == FamilyChatCompletions:
+		return true
+	case source == FamilyGeminiStreamGenerate && upstream == FamilyChatCompletions:
+		return true
+	case source == FamilyGeminiGenerateContent && upstream == FamilyAnthropicMessages:
+		return true
+	case source == FamilyGeminiStreamGenerate && upstream == FamilyAnthropicMessages:
+		return true
+	}
+	return false
+}
+
 // Config carries the runtime-config surface the five Node modules read from
 // backend/src/config/runtime.ts. Defaults mirror the Node fallbacks; roots
 // are configurable so deployments (and tests) can isolate the physical

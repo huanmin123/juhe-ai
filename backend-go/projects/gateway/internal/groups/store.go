@@ -91,10 +91,18 @@ type Store struct {
 	newI      func(prefix string) string
 	inval     RuntimeInvalidator
 	globalMax int
+	stats     StatsReader
 }
 
-// StoreOption adjusts optional store collaborators.
+// WithStatsReader injects the stats reader for group_account_stats reads.
 type StoreOption func(*Store)
+
+// WithStatsReaderOption configures the stats reader dependency.
+func WithStatsReader(stats StatsReader) StoreOption {
+	return func(s *Store) {
+		s.stats = stats
+	}
+}
 
 // WithGlobalConcurrencyMax injects runtimeConfig.concurrency.globalMax
 // (JUHE_AI_CONCURRENCY_GLOBAL_MAX). Values below 1 keep the built-in default.
@@ -1025,6 +1033,19 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 		sourcesByAuthorization, err = s.authorizationSources(ctx, []string{row.authorizationID.String})
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	// D-38: Read group_account_stats from juhe_stats database
+	// (the stats slice owns this read). Merge stats into the
+	// projection when available.
+	if s.stats != nil && !authorizedView {
+		groupIDs := []string{row.row.id}
+		if stats, err := s.stats.ReadGroupAccountStats(ctx, groupIDs); err == nil {
+			if gs, ok := stats[row.row.id]; ok {
+				accountStats = gs
+				accountStats.Total = len(accountIDs)
+			}
 		}
 	}
 	limits, err := parseAuthorizationLimitsView(row.authorizationLimits)
