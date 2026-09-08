@@ -930,6 +930,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		DistPath:     cfg.FrontendDistPath,
 		DevAutoLogin: devAutoLoginResolver(authDeps, cfg.DevAutoLoginUsername),
 	}).Mount(kern)
+	// D-207：管理 SPA 静态托管（Node server.ts:272-306）。当前端 dist 目录
+	// 存在 index.html 时在 /__aisys__/ 挂载 express.static 等价面 + SPA
+	// catch-all（/__aisys__/api/* 与 /__aisys__/health 由更具体的路由优先承接）。
+	helpweb.MountSPA(kern, cfg.FrontendDistPath)
 
 	// Public protocol surface (root-level paths, mirroring oauthPublicRouter)
 	// and the delegated API share the protocol rate limiter instance.
