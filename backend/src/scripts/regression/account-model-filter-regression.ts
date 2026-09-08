@@ -85,6 +85,21 @@ assert.equal(matched.directMatchedCount, 1)
 assert.equal(matched.mappingMatchedCount, 0)
 assert.equal(matched.reason, undefined)
 
+const mixedCaseMatched = filterGatewayAccountsByRequestedModel([gpt55Only], 'GPT-5.5')
+assert.deepEqual(mixedCaseMatched.accounts.map((item) => item.id), ['gpt55-only'], '客户请求模型大小写不同仍应命中支持模型账户')
+assert.equal(mixedCaseMatched.directMatchedCount, 1)
+
+const mixedCaseMapping = filterGatewayAccountsByRequestedModel([
+  account('mixed-case-mapping', ['GPT-5.5-PRIVATE'], [{
+    sourceModel: 'GPT-5.5',
+    sourceEndpointFamily: 'chat_completions',
+    upstreamModel: 'GPT-5.5-PRIVATE',
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }])
+], 'gpt-5.5', 'chat_completions')
+assert.deepEqual(mixedCaseMapping.accounts.map((item) => item.id), ['mixed-case-mapping'], '模型映射源模型和上游模型大小写不同仍应命中')
+
 const prioritized = filterGatewayAccountsByRequestedModel([emptySupportedModels, mappedByUpstream, gpt55Only], 'gpt-5.5', 'chat_completions')
 assert.deepEqual(
   prioritized.accounts.map((item) => item.id),

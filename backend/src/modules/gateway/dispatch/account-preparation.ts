@@ -40,7 +40,8 @@ import type { UsageServiceTier } from '../usage/service-tier.js'
 import type { UsageReasoningEffort } from '../usage/reasoning-effort.js'
 import { prepareCodexResponsesContextForAccount } from '../codex-responses/chat-bridge-state.js'
 import { sanitizeCodexResponseHistoryItems } from '../codex-responses/request-history-sanitizer.js'
-import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
+import { canonicalModel, gatewayRequestEndpointFamily, modelsEqual } from '../protocols/openai-v1/model-mapping.js'
+import { requestModel } from '../request/metadata.js'
 import { preparedUpstreamBodyMetadata } from '../upstream/body-preparation.js'
 import {
   gatewaySerializedJsonObject,
@@ -280,7 +281,8 @@ export async function buildPreparedUpstreamRequestParts(
     if (!defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(req, account, context)) {
       sanitizeCodexResponsesHistoryForAccount(req, account, context)
     }
-    const parts = await buildGatewayUpstreamRequestParts(req, account, {
+    const dispatchReq = requestWithCanonicalDirectModel(req, account)
+    const parts = await buildGatewayUpstreamRequestParts(dispatchReq, account, {
       systemAccountId: usageContext.systemAccountId,
       apiKeyId: usageContext.apiKeyId,
       groupId: usageContext.groupId
@@ -314,6 +316,27 @@ export async function buildPreparedUpstreamRequestParts(
     }
     throw error
   }
+}
+
+function requestWithCanonicalDirectModel(req: Request, account: UpstreamAccount): Request {
+  const requested = requestModel(req)
+  const canonical = canonicalModel(requested, account.supportedModels)
+  if (!requested || !canonical || modelsEqual(requested, canonical) || account.modelMappings?.some((mapping) => (
+    mapping.enabled !== false && modelsEqual(mapping.sourceModel, requested)
+  ))) {
+    return req
+  }
+  const clone = Object.create(req) as GatewayRawBodyRequest
+  const sourceBody = clone.body !== undefined
+    ? clone.body
+    : clone.gatewayParsedJsonBodyAvailable
+      ? clone.gatewayParsedJsonBody
+      : undefined
+  if (typeof sourceBody !== 'object' || sourceBody === null || Array.isArray(sourceBody)) {
+    return req
+  }
+  replaceGatewayJsonBody(clone, { ...(sourceBody as Record<string, unknown>), model: canonical })
+  return clone
 }
 
 function defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(
