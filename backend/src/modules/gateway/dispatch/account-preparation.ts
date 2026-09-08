@@ -47,6 +47,7 @@ import {
 } from '../protocols/openai-v1/model-mapping.js'
 import { isGeminiNativeRequest } from '../protocols/gemini-v1beta/route-helpers.js'
 import { requestModel } from '../request/metadata.js'
+import { parseGatewayRequestJsonBody } from '../request/json-parser.js'
 import { preparedUpstreamBodyMetadata } from '../upstream/body-preparation.js'
 import {
   gatewaySerializedJsonObject,
@@ -286,7 +287,7 @@ export async function buildPreparedUpstreamRequestParts(
     if (!defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(req, account, context)) {
       sanitizeCodexResponsesHistoryForAccount(req, account, context)
     }
-    const dispatchReq = requestWithCanonicalDirectModel(req, account)
+    const dispatchReq = await requestWithCanonicalDirectModel(req, account)
     const parts = await buildGatewayUpstreamRequestParts(dispatchReq, account, {
       systemAccountId: usageContext.systemAccountId,
       apiKeyId: usageContext.apiKeyId,
@@ -323,7 +324,7 @@ export async function buildPreparedUpstreamRequestParts(
   }
 }
 
-export function requestWithCanonicalDirectModel(req: Request, account: UpstreamAccount): Request {
+export async function requestWithCanonicalDirectModel(req: Request, account: UpstreamAccount): Promise<Request> {
   const requested = requestModel(req)
   const canonical = canonicalModel(requested, account.supportedModels)
   if (!requested || !canonical || requested === canonical || resolveOpenAIRequestModelMapping(req, account)) {
@@ -333,11 +334,14 @@ export function requestWithCanonicalDirectModel(req: Request, account: UpstreamA
     return requestWithCanonicalGeminiModelInPath(req, requested, canonical)
   }
   const clone = Object.create(req) as GatewayRawBodyRequest
-  const sourceBody = clone.body !== undefined
+  let sourceBody = clone.body !== undefined
     ? clone.body
     : clone.gatewayParsedJsonBodyAvailable
       ? clone.gatewayParsedJsonBody
       : undefined
+  if (sourceBody === undefined && clone.gatewayRequestBody?.isJson) {
+    sourceBody = await parseGatewayRequestJsonBody(clone)
+  }
   if (typeof sourceBody !== 'object' || sourceBody === null || Array.isArray(sourceBody)) {
     return req
   }

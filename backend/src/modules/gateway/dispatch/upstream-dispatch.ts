@@ -685,7 +685,7 @@ export async function fetchFirstAvailableUpstream(
           const preparationStageStartedAt = performance.now()
           try {
             account = await prepareUpstreamAccount(originalAccount, signal)
-            dispatchReq = requestWithCanonicalDirectModel(req, account)
+            dispatchReq = await requestWithCanonicalDirectModel(req, account)
             upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, dispatchReq)
             if (upstreamUrls.length === 0) {
               logRequestStage('upstream.request_prepare', {

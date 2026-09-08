@@ -26,7 +26,7 @@ import { buildPreparedUpstreamRequestParts, requestWithCanonicalDirectModel } fr
 import { buildGatewayUpstreamUrlsForAccount } from '../../modules/providers/drivers/registry.js'
 import { filterOpenAIGatewayRequestCandidateAccounts } from '../../modules/gateway/dispatch/candidate-filter.js'
 import { markGatewayUpstreamModelsProbe } from '../../modules/gateway/request/upstream-models-probe.js'
-import type { GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
+import type { GatewayRawBodyRequest, GatewayRequestBodyState } from '../../modules/gateway/request/body.js'
 import { logger } from '../../shared/logger.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import type { AccountModelMapping } from '../../domain/types.js'
@@ -120,6 +120,27 @@ assert.equal(
 )
 assert.equal(mixedCaseRequest.body.model, 'GPT-5.5', '规范化上游请求不得修改原始客户请求')
 
+const scannedJsonBody = { model: 'GPT-5.5', messages: [{ role: 'user', content: 'ok' }] }
+const scannedJsonRawBody = Buffer.from(JSON.stringify(scannedJsonBody), 'utf8')
+const scannedJsonRequest = {
+  method: 'POST',
+  path: '/chat/completions',
+  originalUrl: '/v1/chat/completions',
+  headers: { 'content-type': 'application/json' },
+  rawBody: scannedJsonRawBody,
+  gatewayRequestBody: {
+    rawBodyBytes: scannedJsonRawBody.length,
+    contentType: 'application/json',
+    isJson: true,
+    jsonParseStatus: 'scanned_json',
+    jsonParseWarningBytes: 0,
+    model: 'GPT-5.5'
+  } satisfies GatewayRequestBodyState
+} as unknown as Request & GatewayRawBodyRequest
+const scannedJsonCanonicalRequest = await requestWithCanonicalDirectModel(scannedJsonRequest, gpt55Only) as GatewayRawBodyRequest
+assert.equal(JSON.parse(String(scannedJsonCanonicalRequest.rawBody)).model, 'gpt-5.5', 'scanned_json 请求也必须规范化上游 body 模型名')
+assert.equal(JSON.parse(String(scannedJsonRequest.rawBody)).model, 'GPT-5.5', 'scanned_json 规范化不得修改原始客户请求')
+
 const geminiNativeAccount = {
   ...account('gemini-native-case', ['gemini-2.5-pro']),
   providerCode: GEMINI_PROVIDER_CODE,
@@ -141,7 +162,7 @@ const geminiNativeRequest = {
   gatewayParsedJsonBodyAvailable: true,
   gatewayParsedJsonBody: geminiNativeBody
 } as unknown as Request & GatewayRawBodyRequest
-const canonicalGeminiRequest = requestWithCanonicalDirectModel(geminiNativeRequest, geminiNativeAccount)
+const canonicalGeminiRequest = await requestWithCanonicalDirectModel(geminiNativeRequest, geminiNativeAccount)
 assert.equal(canonicalGeminiRequest.originalUrl, '/v1beta/models/gemini-2.5-pro:generateContent?alt=sse', 'Gemini 原生请求应规范化 URL 模型名')
 assert.deepEqual(canonicalGeminiRequest.body, geminiNativeBody, 'Gemini 原生请求不得额外注入 OpenAI 风格 model 字段')
 assert.equal(geminiNativeRequest.originalUrl, '/v1beta/models/GEMINI-2.5-PRO:generateContent?alt=sse', 'Gemini 规范化不得修改原始客户请求')
