@@ -10,18 +10,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsverify"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagespooldrain"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -41,6 +42,9 @@ type workerAssembly struct {
 	windows       *statsagg.WindowRefresher
 	oauthStore    *oauthrefresh.Store
 	writer        *usagewriter.Writer
+	// usageSpoolDrain 是 gateway usage spool 交接表 drain（BUG-0175 D-72，
+	// wireUsageWriterFamily 尾部接线；supervisor 组件在 components 注册）。
+	usageSpoolDrain *usagespooldrain.Drainer
 
 	settings workerSettingsSource
 
@@ -581,7 +585,16 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 
 // wireUsageWriterFamily：usagewriter 直接异步写分片（Node Redis Stream /
 // ingest-worker IPC 路径按总设计消灭后的 Go 单路径），启动 flush 循环、
-// 停机排空。
+// 停机排空。BUG-0175 D-72 补齐注入缺口：
+//   - FreezePricing：Node 两条路径都在入队时点冻结定价事实；Go 单路径在
+//     writer 侧冻结（jobs 暂无 C03 catalog 适配器，catalog port 为 nil 时
+//     回落确定性 fallback 快照，读侧契约不变）；
+//   - CatalogSnapshot：镜像 usageRecordPricingSnapshotForWrite 的
+//     `databaseDriver !== 'postgres'` 守卫；
+//   - BusinessDB（仅 SQLite；PG 路径的 last_used_at 副作用在主事务内随
+//     juhe_business schema 同池完成，无需单独句柄）：openBusinessDB 打开
+//     业务库句柄，usagewriter SqliteShardStore 由此回写 accounts.last_used_at
+//     与账户健康副作用（此前 nil = queryOnly 静默跳过，业务库副作用断供）。
 func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	if !a.config.UsageWriterEnabled {
 		return nil
@@ -604,10 +617,16 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 		if catalogDB, err = a.openSQLite(a.config.UsageCatalogSQLitePath, "usage-writer-catalog"); err != nil {
 			return err
 		}
+		business, err := openBusinessDB(a, "usage-writer-business")
+		if err != nil {
+			return err
+		}
+		a.addCloser(business.close)
 		sqliteStore := usagewriter.NewSqliteShardStore(usagewriter.SqliteShardStoreConfig{
 			CatalogDB:  catalogDB,
 			ShardRoot:  a.config.UsageShardRoot,
 			ShardCount: a.config.UsageShardCount,
+			BusinessDB: business.db,
 		})
 		if err := sqliteStore.EnsureCatalogSchema(); err != nil {
 			return fmt.Errorf("initialize usage-writer catalog schema: %w", err)
@@ -615,8 +634,10 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 		store = sqliteStore
 	}
 	writer := usagewriter.NewWriter(usagewriter.Config{
-		ShardCount: a.config.UsageShardCount,
-		ShardRoot:  a.config.UsageShardRoot,
+		ShardCount:      a.config.UsageShardCount,
+		ShardRoot:       a.config.UsageShardRoot,
+		FreezePricing:   true,
+		CatalogSnapshot: !postgres,
 	}, store, nil, usagewriter.WithLogger(slogWriterLogger{logger: a.logger}))
 	a.writer = writer
 	a.addCloser(func() error {
@@ -625,6 +646,34 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 		}
 		return nil
 	})
+	// BUG-0175 D-72：gateway 把 /v1 用量记录写入文件 spool 交接表，jobs 侧
+	// 在此接线唯一的消费方（drain → Enqueue → 分片落库）。
+	return a.wireUsageSpoolDrain()
+}
+
+// wireUsageSpoolDrain 接线 gateway usage spool 交接表 drain（supervisor
+// 组件由 components 提供）。目录取 JUHE_AI_USAGE_SPOOL_DIRECTORY（或
+// sqlite 模式从 stats 库目录的同规则派生，见 worker_config.go）；两者皆空
+// 时（PG 模式未配置 env）交接表无人消费，按组合根约定显式告警登记，不静默。
+func (a *workerAssembly) wireUsageSpoolDrain() error {
+	if !a.config.UsageWriterEnabled || a.writer == nil {
+		return nil
+	}
+	if a.config.UsageSpoolDirectory == "" {
+		a.logger.Warn("usage spool drain 未接线：JUHE_AI_USAGE_SPOOL_DIRECTORY 未配置且无法从 stats 库路径派生，gateway 用量交接文件将无人消费",
+			"event", "usage_record_spool_drain_unwired")
+		return nil
+	}
+	a.usageSpoolDrain = &usagespooldrain.Drainer{
+		Directory: a.config.UsageSpoolDirectory,
+		Enqueuer:  a.writer,
+		Logger:    a.logger,
+	}
+	a.logger.Info("usage spool drain 已接线",
+		"event", "usage_record_spool_drain_wired",
+		"directory", a.config.UsageSpoolDirectory,
+		"batchSize", usagespooldrain.DefaultBatchSize,
+		"flushIntervalMs", usagespooldrain.DefaultFlushIntervalMs)
 	return nil
 }
 
@@ -784,6 +833,18 @@ func (a *workerAssembly) components() []supervisor.Component {
 			},
 		})
 	}
+	if a.usageSpoolDrain != nil {
+		drainer := a.usageSpoolDrain
+		components = append(components, supervisor.Component{
+			// gateway usage spool 交接表 drain（BUG-0175 D-72）：Run 内含
+			// ctx 取消后的有界停机排空；未消费文件持久留待下次启动。
+			Name: "usage-record spool drain",
+			Run: func(runCtx context.Context) error {
+				drainer.Run(runCtx)
+				return nil
+			},
+		})
+	}
 	return components
 }
 
@@ -803,12 +864,13 @@ func (a *workerAssembly) statusPayload() map[string]any {
 		snapshots = a.scheduler.Snapshots()
 	}
 	return map[string]any{
-		"workerEnabled":        a.config.Enabled,
-		"workerDriver":         a.config.Driver,
-		"workerWiredJobs":      a.wiredJobs,
-		"workerRegisteredTodo": registeredNotWired,
-		"workerDisabledJobs":   a.disabledJobs,
-		"workerUsageWriter":    a.writer != nil,
-		"workerJobs":           snapshots,
+		"workerEnabled":         a.config.Enabled,
+		"workerDriver":          a.config.Driver,
+		"workerWiredJobs":       a.wiredJobs,
+		"workerRegisteredTodo":  registeredNotWired,
+		"workerDisabledJobs":    a.disabledJobs,
+		"workerUsageWriter":     a.writer != nil,
+		"workerUsageSpoolDrain": a.usageSpoolDrain != nil,
+		"workerJobs":            snapshots,
 	}
 }

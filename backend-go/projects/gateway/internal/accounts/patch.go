@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -80,9 +81,9 @@ type PatchInput struct {
 	// Balance fields mirror input.balanceQueryEnabled / balanceQueryConfig;
 	// the config arrives already normalized (canonical JSON) from the body
 	// parser, like the Node route.
-	BalanceQueryEnabled            *bool
-	BalanceQueryConfigCanonical    *string
-	BalanceQueryConfigPresent      bool
+	BalanceQueryEnabled                        *bool
+	BalanceQueryConfigCanonical                *string
+	BalanceQueryConfigPresent                  bool
 	TemporaryUnavailableContinuousProbeEnabled *bool
 }
 
@@ -344,6 +345,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		setRuntimeColumn("cooldown_retest_last_status_code", nil)
 	}
 
+	// 授权实例名称级联的目标名与变更标志（归档 :801-805 的 rename 臂在
+	// 事务内读取 row.name !== nextName）。
+	nextName := row.name
+	nameChanged := false
 	if input.Name != nil {
 		name := strings.TrimSpace(*input.Name)
 		if name == "" {
@@ -353,6 +358,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			return nil, &ValidationError{Message: "账户名称不能超过 128 个字符"}
 		}
 		if name != row.name {
+			nextName = name
+			nameChanged = true
 			addChange("name", row.name, name)
 			sets = append(sets, "name = ?")
 			setArgs = append(setArgs, name)
@@ -1071,12 +1078,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 
 	result := &PatchResult{
-		ID:                    row.id,
-		ConfigRevision:        row.configRevision,
-		ChangedFields:         []string{},
-		Name:                  row.name,
-		OwnerSystemAccountID:  row.systemAccountID,
-		Changes:               changes,
+		ID:                     row.id,
+		ConfigRevision:         row.configRevision,
+		ChangedFields:          []string{},
+		Name:                   row.name,
+		OwnerSystemAccountID:   row.systemAccountID,
+		Changes:                changes,
 		BalanceIdentityChanged: balanceIdentityChangedFlag,
 	}
 	if len(changes) == 0 {
@@ -1105,6 +1112,20 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 	if affected, _ := exec.RowsAffected(); affected != 1 {
 		return nil, &RevisionConflictError{Message: RevisionConflictMessage}
+	}
+	// 重命名臂（归档 account-management-patch.repository.ts:801-805）：名称
+	// 变更在同一事务内刷新来源账户的名称搜索词，并把每个授权实例的名称沿
+	// 唯一性阶梯跟进（:1670-1739）。归档侧还把变更实例 id 归入
+	// renamedAuthorizationInstanceIds 驱动事后 per-instance lookup 缓存失效
+	// ——Go lookup 失效通道是登记过的 no-op hook（invalidation.go），网关
+	// 运行时缓存经 finishPatchSideEffects 的来源账户整面失效，无需额外通道。
+	if nameChanged {
+		if err := s.replaceAccountNameSearchTerms(ctx, tx, row.id, row.systemAccountID, nextName, nowISO); err != nil {
+			return nil, err
+		}
+		if _, err := s.syncAuthorizationInstanceNames(ctx, tx, row.id, nextName, nowISO); err != nil {
+			return nil, err
+		}
 	}
 	// 授权实例探活开关传播链（归档 account-management-patch.repository.ts
 	// :805-843 continuousProbeChanged 臂）：来源账户翻转
@@ -1235,6 +1256,127 @@ func (s *Store) propagateProbeSwitchToAuthorizationInstances(ctx context.Context
 		nowISO,
 		sourceAccountID)
 	return err
+}
+
+// syncAuthorizationInstanceNames mirrors syncAuthorizationInstanceNamesInClient
+// (account-management-patch.repository.ts:1670-1708): every live
+// authorization instance of the renamed source account follows the new source
+// name through the uniqueness ladder inside the caller's transaction. The
+// changed ids feed the archived per-instance lookup flush, which Go covers
+// through the source-account-wide invalidation in finishPatchSideEffects.
+func (s *Store) syncAuthorizationInstanceNames(ctx context.Context, tx *sql.Tx, sourceAccountID, sourceName, nowISO string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id, system_account_id, authorization_instance_authorization_id, name
+		FROM `+s.table("accounts")+`
+		WHERE authorization_instance_source_account_id = ?
+			AND deleted_at IS NULL
+		ORDER BY created_at ASC, id ASC`), sourceAccountID)
+	if err != nil {
+		return nil, err
+	}
+	type instanceRow struct {
+		id, systemAccountID, authorizationID, name string
+	}
+	instances := []instanceRow{}
+	for rows.Next() {
+		var row instanceRow
+		var authorizationID, name sql.NullString
+		if err := rows.Scan(&row.id, &row.systemAccountID, &authorizationID, &name); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		row.authorizationID = authorizationID.String
+		row.name = name.String
+		instances = append(instances, row)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	changed := []string{}
+	for _, row := range instances {
+		if row.id == "" || row.systemAccountID == "" || row.authorizationID == "" {
+			continue
+		}
+		nextName, err := s.uniqueAuthorizedInstanceName(ctx, tx, sourceName, row.systemAccountID, row.authorizationID, row.id)
+		if err != nil {
+			return nil, err
+		}
+		if row.name == nextName {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("accounts")+`
+			SET name = ?, updated_at = ? WHERE id = ?`), nextName, nowISO, row.id); err != nil {
+			return nil, err
+		}
+		if err := s.replaceAccountNameSearchTerms(ctx, tx, row.id, row.systemAccountID, nextName, nowISO); err != nil {
+			return nil, err
+		}
+		changed = append(changed, row.id)
+	}
+	return changed, nil
+}
+
+// uniqueAuthorizedInstanceName mirrors uniqueAuthorizedAccountNameInClient
+// (:1710-1739): the trimmed source name (fallback 授权账户), the first six
+// characters of the authorization id tail, then the `-<shortId>` and
+// `-<shortId>-<n>` candidate ladder capped at 1000 before the timestamp
+// fallback.
+func (s *Store) uniqueAuthorizedInstanceName(ctx context.Context, q queryer, sourceName, systemAccountID, authorizationID, exceptAccountID string) (string, error) {
+	baseName := strings.TrimSpace(sourceName)
+	if baseName == "" {
+		baseName = "授权账户"
+	}
+	shortID := authorizationID
+	if idx := strings.LastIndex(authorizationID, "_"); idx >= 0 {
+		shortID = authorizationID[idx+1:]
+	}
+	if len(shortID) > 6 {
+		shortID = shortID[:6]
+	}
+	if shortID == "" {
+		shortID = authorizationID
+		if len(shortID) > 6 {
+			shortID = shortID[len(shortID)-6:]
+		}
+	}
+	candidates := []string{baseName, baseName + "-" + shortID}
+	for _, candidate := range candidates {
+		available, err := s.authorizedInstanceNameAvailable(ctx, q, systemAccountID, candidate, exceptAccountID)
+		if err != nil {
+			return "", err
+		}
+		if available {
+			return candidate, nil
+		}
+	}
+	for index := 2; index <= 1000; index++ {
+		candidate := baseName + "-" + shortID + "-" + strconv.Itoa(index)
+		available, err := s.authorizedInstanceNameAvailable(ctx, q, systemAccountID, candidate, exceptAccountID)
+		if err != nil {
+			return "", err
+		}
+		if available {
+			return candidate, nil
+		}
+	}
+	return baseName + "-" + shortID + "-" + strconv.FormatInt(time.Now().UnixMilli(), 10), nil
+}
+
+// authorizedInstanceNameAvailable mirrors the :1719-1727 availability probe
+// against the partial unique index idx_accounts_owner_name_unique
+// (system_account_id, name) WHERE deleted_at IS NULL.
+func (s *Store) authorizedInstanceNameAvailable(ctx context.Context, q queryer, systemAccountID, name, exceptAccountID string) (bool, error) {
+	var id string
+	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("accounts")+`
+		WHERE system_account_id = ? AND name = ? AND id <> ? AND deleted_at IS NULL
+		LIMIT 1`), systemAccountID, name, exceptAccountID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func scheduleNextCheckArg(schedule *AvailabilitySchedule, now time.Time) sql.NullString {

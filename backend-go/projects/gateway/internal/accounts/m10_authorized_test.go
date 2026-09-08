@@ -469,7 +469,14 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	}
 
 	// Direct user grant: effective_source_type='manual' → the instance renders
-	// canReturnAuthorization=true over the same live source projection.
+	// canReturnAuthorization=true over the same live source projection. The
+	// create-tail provision binds the fresh instance to the grantee's enabled
+	// default group for the instance provider (archived
+	// defaultGroupIdForAuthorizationBinding :397-423), so manual5 needs one
+	// for the drifted claude provider before the grant.
+	now2 := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-manual-default', ?, '手动授权默认分组', 'claude', 1, 1, 'personal', ?, ?)`, manualID, now2, now2)
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
 		ResourceType: "account", ResourceID: "acc-proj-src",
 		GranteeType: "system_account", GranteeID: manualID,
@@ -549,5 +556,59 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	}
 	if _, leaked := items["acc-proj-manual"]; leaked {
 		t.Fatalf("manual grantee instance must stay out of the owner list: %v", items)
+	}
+}
+
+// TestPatchRenameSyncsAuthorizationInstanceNames covers the archived rename
+// arm (account-management-patch.repository.ts:801-805): a source rename
+// refreshes the source name search terms and cascades the new name onto each
+// live authorization instance through the uniqueness ladder (:1670-1739).
+func TestPatchRenameSyncsAuthorizationInstanceNames(t *testing.T) {
+	env, authzStore := newAuthorizedTestEnv(t)
+	ownerID := env.login(t, "owner9", "owner-pass", "super_admin")
+	granteeID := env.login(t, "grantee9", "grantee-pass", "user")
+	env.seedAccount(t, "acc-rename-src", ownerID, "OriginalName", "active")
+
+	// The provision create-tail binds the instance to the grantee's enabled
+	// default group for the instance provider (archived :397-423).
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-rename-default', ?, '授权默认分组', 'gpt', 1, 1, 'personal', ?, ?)`, granteeID, now, now)
+	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
+		ResourceType: "account", ResourceID: "acc-rename-src",
+		GranteeType: "system_account", GranteeID: granteeID,
+	}, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
+		WHERE grantee_system_account_id = ? AND resource_id = 'acc-rename-src'`, granteeID)
+	instanceID := env.queryCell(t, `SELECT id FROM accounts
+		WHERE authorization_instance_authorization_id = ? AND deleted_at IS NULL`, runtimeID)
+	if instanceID == "" {
+		t.Fatal("provisioned instance missing")
+	}
+
+	env.login(t, "owner9", "owner-pass", "super_admin")
+	code, body := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/acc-rename-src", `{"name":"RenamedSource","expectedConfigRevision":1}`)
+	if code != http.StatusOK {
+		t.Fatalf("patch: %d %v", code, body)
+	}
+
+	// Empty grantee namespace: the base-name candidate wins on the instance.
+	if got := env.queryCell(t, `SELECT name FROM accounts WHERE id = ?`, instanceID); got != "RenamedSource" {
+		t.Fatalf("instance name after rename: %q", got)
+	}
+	// Source and instance search terms follow the new name; the old prefix is
+	// gone from both.
+	for _, accountID := range []string{"acc-rename-src", instanceID} {
+		if env.count(t, `SELECT COUNT(*) FROM account_name_search_documents WHERE account_id = ?`, accountID) != 1 {
+			t.Fatalf("search document missing for %s", accountID)
+		}
+		if env.count(t, `SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = ? AND term = 'Ren'`, accountID) != 1 {
+			t.Fatalf("'Ren' term missing for %s", accountID)
+		}
+		if env.count(t, `SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = ? AND term = 'Ori'`, accountID) != 0 {
+			t.Fatalf("stale 'Ori' term kept for %s", accountID)
+		}
 	}
 }

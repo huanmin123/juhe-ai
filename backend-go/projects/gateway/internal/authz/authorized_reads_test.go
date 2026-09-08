@@ -116,7 +116,9 @@ func TestAuthorizedReadableAccountIDsTeamAndDirect(t *testing.T) {
 		t.Fatalf("team member must not read member2 instances: %v", teamIDs)
 	}
 	directIDs := readableKeys(t, f, "member2")
-	if !directIDs["acc-inst-direct"] || !directIDs["acc-inst-direct-legacy"] || len(directIDs) != 2 {
+	// BUG-0175 provisioning adds one real instance for the direct grant on top
+	// of the two seeded rows (stamped + legacy fallback).
+	if !directIDs["acc-inst-direct"] || !directIDs["acc-inst-direct-legacy"] || len(directIDs) != 3 {
 		t.Fatalf("direct grantee readable ids: %v", directIDs)
 	}
 	if directIDs["acc-inst-team"] {

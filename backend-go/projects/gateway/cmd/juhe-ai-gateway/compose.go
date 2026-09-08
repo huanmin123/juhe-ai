@@ -939,6 +939,14 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if spoolDirectory == "" && cfg.StatsDatabasePath != "" {
 			spoolDirectory = filepath.Join(filepath.Dir(cfg.StatsDatabasePath), "usage-record-spool")
 		}
+		// BUG-0175 D-72：spool 是 /v1 用量记录唯一持久投递面（gateway 写入、
+		// jobs usage spool drain 消费）。派生规则只覆盖配置了
+		// JUHE_AI_STATS_DATABASE_PATH 的模式（SQLite 必配、PostgreSQL 可缺），
+		// 目录最终为空时记录只会被静默丢弃，用量链断供且无任何信号——按组合根
+		// 约定启动即失败并具名缺失项，不允许 nil 投递面继续运行。
+		if spoolDirectory == "" {
+			return nil, fmt.Errorf("AI 网关链缺少用量 spool 目录（gateway→jobs 用量交接表，用量记录将无处投递）：设置 JUHE_AI_USAGE_SPOOL_DIRECTORY，或配置 JUHE_AI_STATS_DATABASE_PATH 以派生 <目录>/usage-record-spool")
+		}
 		// 健康检查派发的进程内 DB outbox writer（account_health_probe_request_outbox，
 		// chain_request_failure_health.go）：请求失败链与 runtime-reset/激活面的
 		// 探针派发都落这张常驻交接表，jobs J1 Runner 每周期 drain。deadline env

@@ -257,6 +257,27 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 		return nil, err
 	}
 
+	// BUG-0175 (D-64/D-74): the archived create tail binds every direct user
+	// account grant into the grantee's group through a provisioned instance
+	// account (bindActiveAccountAuthorizationToGranteeGroup via
+	// upsertResourceAuthorizationForUser, resource-authorization-write-state
+	// .repository.ts:218-222). Without it the grantee has no schedulable
+	// instance and the read surfaces (which all join on the
+	// authorization_instance_* columns) stay empty. Team fanout provisioning
+	// stays a separate slice; the archived team path fans the same bind per
+	// member runtime row.
+	if input.ResourceType == "account" && input.GranteeType == "system_account" {
+		if err := s.provisionAuthorizedAccountInstance(ctx, tx, authorizedInstanceProvision{
+			SourceAccountID: input.ResourceID,
+			OwnerID:         ownerID,
+			GranteeID:       input.GranteeID,
+			TargetGroupID:   input.TargetGroupID,
+			GrantExpiresAt:  input.ExpiresAt,
+		}, nowTime, now); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}

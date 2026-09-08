@@ -37,6 +37,7 @@ func TestReconcileExpiredGrantsResyncsRuntimeAndBindings(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	seedPhysicalAccount(t, f, "res-1", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	created, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "res-1",
 		GranteeType: "system_account", GranteeID: "grantee",
@@ -104,7 +105,9 @@ func TestReconcileExpiredGrantsIgnoresOutsideWindowAndLiveGrants(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	seedPhysicalAccount(t, f, "res-1", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	seedPhysicalAccount(t, f, "res-2", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	created, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "res-1",
 		GranteeType: "system_account", GranteeID: "grantee",

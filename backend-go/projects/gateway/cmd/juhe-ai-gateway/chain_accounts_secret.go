@@ -82,7 +82,13 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		return nil, err
 	}
 	entries := chainAccountAPIKeyEntries(s.secret, credentials)
-	apiKey := chainAPIKeyEntriesFirstKey(entries)
+	// BUG-0175 fix: oauth/google_oauth credentials carry access_token /
+	// refresh_token instead of api_key, so the api-key-only lookup dropped
+	// every OAuth account at hydration. Mirror the archive
+	// runtimeCredentialSource (openai-account-selector.repository.ts):
+	// oauth/google_oauth resolve access_token -> refresh_token, api_key types
+	// keep the rotation-pool first key.
+	apiKey := chainRuntimeCredentialSource(resourceType, credentials, chainAPIKeyEntriesFirstKey(entries))
 	if apiKey == "" {
 		return nil, nil
 	}
@@ -175,7 +181,7 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		QualityScore:                     row.QualityScore,
 		QualityState:                     row.QualityState,
 		QualityEwmaFirstTokenMs:          row.QualityFirstTokenMs,
-		BaseURL:                          chainBaseURLOf(credentials),
+		BaseURL:                          chainBaseURLOf(credentials, protocolCode, protocolVersion),
 		APIKey:                           apiKey,
 		APIKeys:                          apiKeys,
 		RefreshToken:                     anyStringPtr(credentials["refresh_token"]),
@@ -373,11 +379,20 @@ func chainCopyRuntimeCredentialValue(input, output map[string]any, key string) {
 	}
 }
 
-func chainBaseURLOf(credentials map[string]any) string {
+// chainBaseURLOf mirrors the archive baseUrl projection
+// (openai-account-selector.repository.ts): credentials.base_url wins, missing
+// or empty base_url falls back to defaultBaseUrlForProtocol.
+func chainBaseURLOf(credentials map[string]any, protocolCode, protocolVersion string) string {
 	if base, ok := credentials["base_url"].(string); ok && base != "" {
 		return base
 	}
-	return ""
+	if chainIsAnthropicProtocolProfile(protocolCode, protocolVersion) {
+		return "https://api.anthropic.com/v1"
+	}
+	if chainIsGeminiProtocolProfile(protocolCode, protocolVersion) {
+		return "https://generativelanguage.googleapis.com"
+	}
+	return "https://api.openai.com/v1"
 }
 
 // ---------------------------------------------------------------------------

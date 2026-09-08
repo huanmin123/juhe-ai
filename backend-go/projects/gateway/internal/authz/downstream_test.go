@@ -11,9 +11,27 @@ import (
 // authorization_id IS NULL).
 func seedPhysicalAccount(t *testing.T, f *fixture, id, ownerID string) {
 	t.Helper()
+	// The provider sits outside the health-fanout whitelist on purpose: the
+	// BUG-0175 create-tail provisioning clones the source provider onto its
+	// instance row, and these tests fan out only the explicitly seeded
+	// whitelist instances.
 	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, type, status,
 		config_revision, dispatch_revision, deleted_at)
-		VALUES (?, ?, 'openai', 'oauth', 'active', 1, 1, NULL)`, id, ownerID); err != nil {
+		VALUES (?, ?, 'unknown_provider', 'oauth', 'active', 1, 1, NULL)`, id, ownerID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedGranteeDefaultGroup satisfies the archived create-tail default-group
+// fallback for account grants created without a target group (BUG-0175
+// provisioning): the binding requires an enabled default group carrying the
+// instance provider.
+func seedGranteeDefaultGroup(t *testing.T, f *fixture, granteeID, providerCode string) {
+	t.Helper()
+	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status,
+		provider_code, enabled, is_default, updated_at)
+		VALUES (?, 'default', ?, 'active', ?, 1, 1, '2026-01-01T00:00:00Z')
+		ON CONFLICT(id) DO NOTHING`, "grp-default-"+granteeID, granteeID, providerCode); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -134,6 +152,7 @@ func TestCreateResyncsQuotaScopeBindingsWithoutHealthFanout(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	seedPhysicalAccount(t, f, "res-1", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	// A team grantee carries a second member so the team binding branch runs.
 	f.seedAccount(t, "member", "active")
 	f.seedTeamWithMember(t, "team-1", "grantee")
@@ -166,7 +185,14 @@ func TestCreateResyncsQuotaScopeBindingsWithoutHealthFanout(t *testing.T) {
 	// Team grant: the direct member row additionally renders the team-scope
 	// binding keyed by the authorization instance account (write.repository
 	// account_authorization_team branch), which requires the instance join.
-	seedDownstreamInstance(t, f, "inst-1", "res-1", "grantee", runtimeID, "openai", "oauth", "")
+	// BUG-0175 provisioning already created that instance during the direct
+	// create above, so the join key comes from the provisioned row.
+	var provisionedInstanceID string
+	if err := f.db.QueryRow(`SELECT id FROM accounts
+		WHERE authorization_instance_source_account_id = 'res-1'
+			AND system_account_id = 'grantee' AND deleted_at IS NULL`).Scan(&provisionedInstanceID); err != nil {
+		t.Fatal(err)
+	}
 	teamResult, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "res-1",
 		GranteeType: "team", GranteeID: "team-1", LimitsJSON: limits,
@@ -187,12 +213,13 @@ func TestCreateResyncsQuotaScopeBindingsWithoutHealthFanout(t *testing.T) {
 			team = &teamBindings[i]
 		}
 	}
-	if team == nil || team.scopeID != "inst-1:team-1" || team.systemAccountID != "grantee" || team.windowHours != 6 {
+	if team == nil || team.scopeID != provisionedInstanceID+":team-1" || team.systemAccountID != "grantee" || team.windowHours != 6 {
 		t.Fatalf("team binding = %+v", teamBindings)
 	}
 
 	// A grant without hourly limits renders no bindings at all.
 	seedPhysicalAccount(t, f, "res-2", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	noLimits, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "res-2",
 		GranteeType: "system_account", GranteeID: "grantee",
@@ -214,6 +241,7 @@ func TestRevokeResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	seedPhysicalAccount(t, f, "res-1", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	limits := hourlyLimits(6)
 	created, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "res-1",
@@ -320,6 +348,7 @@ func TestReturnResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	seedPhysicalAccount(t, f, "res-1", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	limits := hourlyLimits(6)
 	created, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "res-1",
@@ -388,6 +417,7 @@ func TestPatchResyncsBindingsAfterRuntimeSync(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	seedPhysicalAccount(t, f, "res-1", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	limits := hourlyLimits(6)
 	created, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "res-1",
@@ -439,6 +469,7 @@ func TestExpireSweepFansOutHealthInputs(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	seedPhysicalAccount(t, f, "res-1", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	// Seed the grant directly in the past so the sweep picks it up.
 	past := f.now.UTC().Add(-24 * 3600 * 1e9).UTC().Format("2006-01-02T15:04:05.000Z")
 	if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants
@@ -491,6 +522,7 @@ func TestQuotaBindingUpsertReplacesStaleSource(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	seedPhysicalAccount(t, f, "res-1", "owner")
+	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	first, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "res-1",
 		GranteeType: "system_account", GranteeID: "grantee", LimitsJSON: hourlyLimits(6),

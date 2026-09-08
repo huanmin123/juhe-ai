@@ -218,7 +218,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 
 	// ---- usage service + persistence bridge (adapter 5) ----
 	spool := newUsageSpool(deps.SpoolDirectory, clock, logger)
-	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096}, spool)
+	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096, Logger: logger}, spool)
 	dispatch := gatewayusage.NewFinalizationDispatch(recorder, spoolOverflow{spool: spool}, 0, 0)
 	dispatch.OverflowEnabled = spool != nil
 	usageService := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).

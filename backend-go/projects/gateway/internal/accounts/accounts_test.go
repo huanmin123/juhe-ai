@@ -192,6 +192,7 @@ var schemaStatements = []string{
 		balance_query_config_json TEXT NOT NULL DEFAULT '{}',
 		authorization_instance_source_account_id TEXT,
 		authorization_instance_authorization_id TEXT,
+		authorization_instance_owner_system_account_id TEXT,
 		deleted_at TEXT,
 		deleted_by TEXT,
 		created_at TEXT NOT NULL,

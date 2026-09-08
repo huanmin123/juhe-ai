@@ -41,6 +41,8 @@ type usageBridgeConfig struct {
 	// SpoolMaxFiles / SpoolMaxFileBytes mirror the spool config.
 	SpoolMaxFiles     int
 	SpoolMaxFileBytes int64
+	// Logger 接收投递告警（nil 时回落 slog.Default()）。
+	Logger *slog.Logger
 }
 
 // slogLogger adapts *slog.Logger to the gatewayusage.Logger port.
@@ -67,6 +69,7 @@ func fieldsArgs(fields map[string]any) []any {
 type spooledUsageRecorder struct {
 	config usageBridgeConfig
 	spool  *gatewayusage.UsageRecordSpool
+	logger *slog.Logger
 
 	mu       sync.Mutex
 	buffered chan gatewayusage.UsageRecordInput
@@ -81,9 +84,14 @@ func newSpooledUsageRecorder(config usageBridgeConfig, spool *gatewayusage.Usage
 	if capacity <= 0 {
 		capacity = 4096
 	}
+	logger := config.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	recorder := &spooledUsageRecorder{
 		config:   config,
 		spool:    spool,
+		logger:   logger,
 		buffered: make(chan gatewayusage.UsageRecordInput, capacity),
 	}
 	recorder.wg.Add(1)
@@ -131,17 +139,42 @@ func (r *spooledUsageRecorder) drain() {
 }
 
 // deliver hands one record to the durable writer. The default target is the
-// spool (crash-safe, replayed by UsageRecordSpool.RunReplayOnce); the
-// jobs-module usagewriter input takes over here per the registered takeover
-// point above.
+// spool (crash-safe, replayed by the jobs usage spool drain); the jobs-module
+// usagewriter input takes over here per the registered takeover point above.
+//
+// BUG-0175 D-72 告警面：spool 未装配或写入失败意味着该记录没有到达任何
+// 持久投递面（jobs drain 无从消费），除计数外按采样告警（前 10 条逐条、
+// 之后每 100 条一条，对齐 Node droppedLogSampleLimit 采样），不允许静默丢弃。
 func (r *spooledUsageRecorder) deliver(input gatewayusage.UsageRecordInput) {
 	if r.spool == nil {
+		r.mu.Lock()
+		r.dropped++
+		dropped := r.dropped
+		r.mu.Unlock()
+		if dropped <= 10 || dropped%100 == 0 {
+			r.logger.Warn("usage spool 未装配，用量记录无法持久投递，已丢弃",
+				"event", "usage_record_spool_unavailable",
+				"usageRecordId", input.ID,
+				"traceId", input.TraceID,
+				"trafficSource", input.TrafficSource,
+				"droppedCount", dropped)
+		}
 		return
 	}
 	if err := r.spool.Persist(context.Background(), input); err != nil {
 		r.mu.Lock()
 		r.failed++
+		failed := r.failed
 		r.mu.Unlock()
+		if failed <= 10 || failed%100 == 0 {
+			r.logger.Error("usage spool 写入失败，用量记录未持久化",
+				"event", "usage_record_spool_persist_failed",
+				"usageRecordId", input.ID,
+				"traceId", input.TraceID,
+				"trafficSource", input.TrafficSource,
+				"persistFailureCount", failed,
+				"error", err.Error())
+		}
 	}
 }
 

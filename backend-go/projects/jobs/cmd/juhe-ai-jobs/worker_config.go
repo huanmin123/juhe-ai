@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,12 @@ type workerConfig struct {
 	UsageCatalogSQLitePath string
 	UsageShardRoot         string
 	UsageShardCount        int
+	// UsageSpoolDirectory 是 gateway usage-record 文件 spool 交接表的根目录
+	// （BUG-0175 D-72 消费侧）：env JUHE_AI_USAGE_SPOOL_DIRECTORY，未配置时按
+	// gateway 组合根同规则从 JUHE_AI_STATS_DATABASE_PATH 目录派生
+	// <目录>/usage-record-spool（两侧必须同源，drain 才能读到 gateway 写出的
+	// 交接文件；PG 模式无 stats 文件路径，须显式配置 env）。
+	UsageSpoolDirectory string
 
 	DatasetSQLitePath              string
 	ChatSQLitePath                 string
@@ -145,13 +152,13 @@ func (c workerConfig) CircuitCapacity() int64 {
 
 func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	config := workerConfig{
-		Driver:                                   "sqlite",
-		InstanceID:                               "juhe-ai-jobs",
-		WorkerRole:                               "worker",
-		WorkerReplicaIdx:                         0,
-		PostgresMaxOpenConns:                     50,
-		PostgresMaxIdleConns:                     50,
-		UsageShardCount:                          16,
+		Driver:               "sqlite",
+		InstanceID:           "juhe-ai-jobs",
+		WorkerRole:           "worker",
+		WorkerReplicaIdx:     0,
+		PostgresMaxOpenConns: 50,
+		PostgresMaxIdleConns: 50,
+		UsageShardCount:      16,
 		// CodexContextStateShardCount 对齐 Node runtime.ts:694
 		// （JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 默认 16，1..256）与 gateway
 		// 组合根 runtime.go 的同款默认：codex context 状态写入按 key 哈希路由到
@@ -172,12 +179,12 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		ProbeEnabled:                             true,
 		// 默认 512：jobs 内 J1/J2 家族既有档位（非 Node globalMax 5000 直译，
 		// 见 ProbeConcurrency 字段注释）。
-		ProbeConcurrency: 512,
-		ListProjectionIntervalMS:                 1_000,
-		ListProjectionBatchSize:                  100,
-		ListProjectionMaxBatchesPerRun:           200,
-		ListProjectionWorkerConcurrency:          4,
-		DrainTimeout:                             10 * time.Second,
+		ProbeConcurrency:                512,
+		ListProjectionIntervalMS:        1_000,
+		ListProjectionBatchSize:         100,
+		ListProjectionMaxBatchesPerRun:  200,
+		ListProjectionWorkerConcurrency: 4,
+		DrainTimeout:                    10 * time.Second,
 	}
 	enabled, err := workerEnvBool(getenv, "JUHE_AI_JOBS_WORKER_ENABLED", false)
 	if err != nil {
@@ -218,6 +225,13 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	}
 	config.UsageCatalogSQLitePath = strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH"))
 	config.UsageShardRoot = strings.TrimSpace(getenv("JUHE_AI_USAGE_SHARD_ROOT"))
+	// usage spool 交接表目录：与 gateway 组合根（compose.go spoolDirectory）
+	// 同名 env、同派生规则；sqlite 模式从 stats 库目录派生，PG 模式保持为空
+	// （drain 未接线并告警），部署须显式配置 JUHE_AI_USAGE_SPOOL_DIRECTORY。
+	config.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
+	if config.UsageSpoolDirectory == "" && config.StatsSQLitePath != "" {
+		config.UsageSpoolDirectory = filepath.Join(filepath.Dir(config.StatsSQLitePath), "usage-record-spool")
+	}
 	config.UsageShardCount, err = workerEnvInt(getenv, "JUHE_AI_USAGE_SHARD_COUNT", config.UsageShardCount)
 	if err != nil {
 		return config, err
@@ -367,6 +381,11 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		}
 		if config.UsageWriterEnabled && (config.UsageCatalogSQLitePath == "" || config.UsageShardRoot == "") {
 			return config, fmt.Errorf("启用 JUHE_AI_JOBS_USAGE_WRITER_ENABLED 后必须配置 JUHE_AI_USAGE_CATALOG_DATABASE_PATH 与 JUHE_AI_USAGE_SHARD_ROOT")
+		}
+		// last_used_at / 账户健康副作用回写业务库（usagewriter SqliteShardStore
+		// BusinessDB）；缺库路径时 fail closed，不允许静默 queryOnly。
+		if config.UsageWriterEnabled && config.BusinessSQLitePath == "" {
+			return config, fmt.Errorf("启用 JUHE_AI_JOBS_USAGE_WRITER_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH（usage 记录的业务库副作用）")
 		}
 		if config.RetentionEnabled {
 			if config.DatasetSQLitePath == "" {
