@@ -66,6 +66,11 @@ type Store struct {
 	now      func() time.Time
 	stats    *sql.DB
 	timezone func(ctx context.Context) (string, error)
+	// statsDirty / invalidator carry the committed-write invalidation fan-out
+	// (invalidation.go, BUG-0175 D-56/D-65/D-115); both stay nil-tolerant so
+	// direct NewStore construction keeps the pre-wiring behavior.
+	statsDirty  StatsDirtyMarker
+	invalidator RuntimeInvalidator
 }
 
 func NewStore(db *sql.DB, postgres bool, now func() time.Time) (*Store, error) {

@@ -12,6 +12,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/cleanuprepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
 
 // wireRetentionFamily 把 retention/cleanup 家族的四个任务翻转为 GoWired：
@@ -92,6 +93,19 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		OnDerivedWindowsSkipped: func(reason string) {
 			a.logger.Warn("record cleanup 跳过同步派生窗口刷新", "event", "retention_derived_windows_refresh_skipped", "reason", reason)
 		},
+	}
+	// 派生窗口同步重算接入（BUG-0175 D-48：DerivedWindowRefresher 组合根固定
+	// nil → 仅 PG 清理路径保持 nil——Node PG cleanup 只写脏范围标记、由调度式
+	// 窗口刷新收敛；SQLite 清理链接 statsagg 配额小时窗 + 排行快照重算，
+	// 对齐 refreshDeletedApiKey/AccountDerivedWindowsIfNeeded 的刷新半区）。
+	if !postgres {
+		recordCleanup.DerivedWindows = &retentionDerivedWindows{refresher: &statsagg.WindowRefresher{
+			DB:         stats.DB,
+			BusinessDB: business.DB,
+			Dialect:    statsagg.Dialect{},
+			Clock:      &familyTimezoneClock{family},
+			Now:        family.now,
+		}}
 	}
 	family.recordCleanup = recordCleanup
 
@@ -718,4 +732,21 @@ type familyTimezoneClock struct {
 
 func (c *familyTimezoneClock) StatsTimezone(ctx context.Context) (*time.Location, error) {
 	return c.family.timezone(ctx)
+}
+
+// retentionDerivedWindows 适配 cleanuprepo.DerivedWindowRefresher：复用
+// statsagg 的配额小时窗与排行快照刷新（与 stats 家族同一套实现，句柄来自
+// retention 家族自己的 stats/business 连接，两个家族启用开关独立）。
+type retentionDerivedWindows struct {
+	refresher *statsagg.WindowRefresher
+}
+
+func (d *retentionDerivedWindows) RefreshQuotaHourlyWindows(ctx context.Context) error {
+	_, err := d.refresher.RunQuotaHourlyWindows(ctx)
+	return err
+}
+
+func (d *retentionDerivedWindows) RefreshRankSnapshots(ctx context.Context) error {
+	_, err := d.refresher.RunStages(ctx, nil, statsagg.RefreshOptions{})
+	return err
 }

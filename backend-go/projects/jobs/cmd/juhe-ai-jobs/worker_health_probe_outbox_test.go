@@ -313,7 +313,10 @@ func TestParseProbeOutboxRetentionDays(t *testing.T) {
 	if days := parseProbeOutboxRetentionDays(getenv(" 30 "), warn); days != 30 || warned != 0 {
 		t.Fatalf("trimmed value = %d warned=%d", days, warned)
 	}
-	for _, boundary := range []struct{ value string; want int }{{"1", 1}, {"365", 365}} {
+	for _, boundary := range []struct {
+		value string
+		want  int
+	}{{"1", 1}, {"365", 365}} {
 		if days := parseProbeOutboxRetentionDays(getenv(boundary.value), warn); days != boundary.want || warned > 0 {
 			t.Fatalf("boundary %s = %d warned=%d want %d without warn", boundary.value, days, warned, boundary.want)
 		}

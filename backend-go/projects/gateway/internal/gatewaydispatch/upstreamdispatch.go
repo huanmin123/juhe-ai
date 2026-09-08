@@ -187,6 +187,9 @@ type hotQualityAttemptHandle struct {
 	once    sync.Once
 	attempt *attemptLifecycleFacade
 	input   HotQualityLifecycleInput
+	// factory is the G20 runtime wiring (Engine.HotQualityAttemptFactory);
+	// nil keeps the neutral no-op lifecycle (runtime absent).
+	factory HotQualityAttemptLifecycleFactory
 }
 
 // HotQualityLifecycleInput carries the lifecycle construction inputs.
@@ -195,6 +198,10 @@ type HotQualityLifecycleInput struct {
 	AccountID   string
 	RequestLane string
 	Model       string
+	// ProtocolProfile 是协议画像键（ProviderProtocolProfileID，缺省回落
+	// protocolCode:protocolVersion）：热质量 scope 的必需字段（Node 传入
+	// 整个 account 对象，Go 用输入携带的投影）。
+	ProtocolProfile string
 }
 
 // attemptLifecycleFacade mirrors the lifecycle surface the engine consumes.
@@ -202,6 +209,27 @@ type attemptLifecycleFacade struct {
 	MarkFirstByteFunc  func(firstByteMs *float64)
 	RecordTerminalFunc func(ctx context.Context, terminal HotQualityTerminal)
 }
+
+// MarkFirstByte implements HotQualityAttemptLifecycle.
+func (f *attemptLifecycleFacade) MarkFirstByte(firstByteMs *float64) { f.MarkFirstByteFunc(firstByteMs) }
+
+// RecordTerminal implements HotQualityAttemptLifecycle.
+func (f *attemptLifecycleFacade) RecordTerminal(ctx context.Context, terminal HotQualityTerminal) {
+	f.RecordTerminalFunc(ctx, terminal)
+}
+
+// HotQualityAttemptLifecycle is the hot-quality attempt accounting surface
+// the engine consumes (G12 attempt lifecycle: attempt record on first use,
+// first-byte stamp and terminal outcome).
+type HotQualityAttemptLifecycle interface {
+	MarkFirstByte(firstByteMs *float64)
+	RecordTerminal(ctx context.Context, terminal HotQualityTerminal)
+}
+
+// HotQualityAttemptLifecycleFactory builds the lifecycle for one dispatch
+// attempt (D-137, BUG-0175: the composition root mounts the gatewayhotquality
+// runtime here; returning nil keeps the no-op lifecycle).
+type HotQualityAttemptLifecycleFactory func(HotQualityLifecycleInput) HotQualityAttemptLifecycle
 
 // HotQualityTerminal mirrors the recordTerminal input.
 type HotQualityTerminal struct {
@@ -225,12 +253,25 @@ const (
 func (h *hotQualityAttemptHandle) lifecycle() *attemptLifecycleFacade {
 	h.once.Do(func() {
 		if h.attempt == nil {
-			// Hot-quality attempt creation is delegated to G20's runtime
-			// wiring; the engine keeps the lifecycle contract neutral when
-			// the runtime is absent.
-			h.attempt = &attemptLifecycleFacade{
-				MarkFirstByteFunc:  func(*float64) {},
-				RecordTerminalFunc: func(context.Context, HotQualityTerminal) {},
+			var lifecycle HotQualityAttemptLifecycle
+			if h.factory != nil {
+				lifecycle = h.factory(h.input)
+			}
+			// The factory (Engine.HotQualityAttemptFactory) mounts the G12
+			// runtime lifecycle; a nil factory or nil product keeps the
+			// engine's neutral no-op lifecycle (runtime absent).
+			if concrete, ok := lifecycle.(*attemptLifecycleFacade); ok && concrete != nil {
+				h.attempt = concrete
+			} else if lifecycle != nil {
+				h.attempt = &attemptLifecycleFacade{
+					MarkFirstByteFunc:  lifecycle.MarkFirstByte,
+					RecordTerminalFunc: lifecycle.RecordTerminal,
+				}
+			} else {
+				h.attempt = &attemptLifecycleFacade{
+					MarkFirstByteFunc:  func(*float64) {},
+					RecordTerminalFunc: func(context.Context, HotQualityTerminal) {},
+				}
 			}
 		}
 	})

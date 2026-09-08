@@ -78,6 +78,17 @@ func completeHalfOpenLeaseSuccess(ctx context.Context, lease HalfOpenLease) bool
 // wired by G20, nil = no-op.
 var notifyOneRecoverableUnavailableRuntimeWaiter = func(runtimeKey string) {}
 
+// SetRecoverableUnavailableRuntimeWaiterNotifier wires the half-open lease
+// wake hook (D-134, BUG-0175): releasing or completing a half-open lease
+// wakes the recoverable waiters parked on that runtime key. The composition
+// root binds it to the shared wait coordinator.
+func SetRecoverableUnavailableRuntimeWaiterNotifier(notify func(runtimeKey string)) {
+	if notify == nil {
+		notify = func(string) {}
+	}
+	notifyOneRecoverableUnavailableRuntimeWaiter = notify
+}
+
 // requestRouteFallback mirrors requestRouteFallback with the account-lock
 // guard from preparation.ts.
 func (p *CandidatePipeline) requestRouteFallback(

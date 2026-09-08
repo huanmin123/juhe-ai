@@ -373,9 +373,18 @@ func (r *gatewayModelCatalogRefresher) RefreshDraftModelCatalog(ctx context.Cont
 	if baseURL == "" {
 		return nil, errors.New("获取上游模型目录失败：账户缺少 base_url")
 	}
+	// BUG-0175 D-169: OAuth 账户没有 api_key 池，凭据解封后直接携带
+	// access_token（accounts normalizeOAuthAccountCredentials 契约）。归档
+	// discoverAccountUpstreamModels 对 OAuth candidate 用该 access token 直连
+	// 上游 /models（Bearer 语义，upstreamcatalog requestHeadersForProtocol 的
+	// openai 分支），api_key 池路径保持不变。
 	apiKeys := accounts.EffectiveAccountApiKeys(input.Credentials)
 	if len(apiKeys) == 0 {
-		return nil, errors.New("获取上游模型目录失败：账户缺少 API Key")
+		if accessToken := strings.TrimSpace(textFromCredentials(input.Credentials["access_token"])); accessToken != "" {
+			apiKeys = []string{accessToken}
+		} else {
+			return nil, errors.New("获取上游模型目录失败：账户缺少 API Key")
+		}
 	}
 	proxyURL, err := r.resolveProxyURL(ctx, input.ProxyProfileID)
 	if err != nil {

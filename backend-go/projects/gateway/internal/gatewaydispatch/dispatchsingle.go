@@ -562,14 +562,16 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 			var keyModelAttempt *gatewayaccounteffects.GatewayKeyModelAttempt
 			{
 				var preparation gatewayaccounteffects.GatewayKeyModelAttemptPreparation
-				if in.args.BypassKeyModelAdmission || e.KeyModel == nil {
+				if in.args.BypassKeyModelAdmission || e.KeyModel == nil || e.KeyModelStore == nil {
+					preparation = gatewayaccounteffects.GatewayKeyModelAttemptPreparation{Status: gatewayaccounteffects.AttemptPreparationDisabled}
+				} else if route := ResolveGatewayKeyModelAttemptCapability(in.args.Req, c.account); route == nil {
+					// key-model-capability.ts:31-32: a route without model /
+					// endpoint family / key fingerprint / dispatch revision
+					// stays disabled instead of admitting the zero capability.
 					preparation = gatewayaccounteffects.GatewayKeyModelAttemptPreparation{Status: gatewayaccounteffects.AttemptPreparationDisabled}
 				} else {
-					capability := gatewayaccounteffects.GatewayKeyModelCapability{
-						AccountID: c.account.ID,
-					}
 					prepared, prepErr := e.KeyModel.Prepare(ctx, e.KeyModelStore, gatewayaccounteffects.PrepareGatewayKeyModelAttemptInput{
-						Route:         capability,
+						Route:         *route,
 						RequestID:     usageContext.TraceID,
 						AttemptID:     keyModelAttemptID,
 						FailureBudget: in.keyModelFailureBudget,
@@ -668,6 +670,14 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				}
 			}
 
+			// D-133（BUG-0175）PermitLost 消费（key-model-attempt.ts
+			// transportSignal = AbortSignal.any([parent, renewalAbort])）：前台
+			// 租约续约失败时中止在途上游请求，而不是放任无租约传输继续。
+			attemptSignal := signal
+			if keyModelAttempt != nil {
+				attemptSignal = MergePermitLostSignal(signal, keyModelAttempt.PermitLost())
+			}
+
 			// Attempt registration.
 			attemptRegistration, regErr := in.coordination.RequestAttemptTracker.TryRecordDispatchAttempt(gatewayrouting.GatewayDispatchAttemptRecordInput{
 				GatewayDispatchAttemptIdentity: dispatchAttemptIdentity,
@@ -732,11 +742,12 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				RequestForModelAccounting: in.args.Req,
 			})
 
-			hotQualityAttempt := &hotQualityAttemptHandle{input: HotQualityLifecycleInput{
-				AttemptID:   "hotq:" + usageContext.TraceID + ":" + int64ToString(int64(attemptIndex)) + ":" + int64ToString(int64(*in.auditAttemptIndex)) + ":" + uuid4String(),
-				AccountID:   c.account.ID,
-				RequestLane: in.requestLane,
-				Model:       requestModelOrEmpty(in.args.Req),
+			hotQualityAttempt := &hotQualityAttemptHandle{factory: e.HotQualityAttemptFactory, input: HotQualityLifecycleInput{
+				AttemptID:       "hotq:" + usageContext.TraceID + ":" + int64ToString(int64(attemptIndex)) + ":" + int64ToString(int64(*in.auditAttemptIndex)) + ":" + uuid4String(),
+				AccountID:       c.account.ID,
+				RequestLane:     in.requestLane,
+				Model:           requestModelOrEmpty(in.args.Req),
+				ProtocolProfile: hotQualityProtocolProfileOf(c.account),
 			}}
 
 			if in.coordination.OnUpstreamAttemptStarted != nil {
@@ -762,7 +773,7 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				AttemptStartedAt:           attemptStartedAt,
 				FirstByteDeadlineMs:        deadlineMsPtr(normalRouteFirstByteDeadline),
 				OnFirstByteDeadline:        onFirstByteDeadline,
-				Signal:                     signal,
+				Signal:                     attemptSignal,
 				RequestClientCompatibility: in.args.RequestClientCompatibility,
 			})
 

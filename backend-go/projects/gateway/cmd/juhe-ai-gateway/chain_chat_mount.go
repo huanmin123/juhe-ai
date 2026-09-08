@@ -72,6 +72,10 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		DiagnosticToolEnabled:   cfg.ChatDiagnosticToolEnabled,
 		ToolEnvironment:         cfg.ChatToolEnvironment,
 	}
+	// BUG-0175 D-201: wire the GET conversations toolCapabilities resolver over
+	// the assembled ports (Node loadChatConversationToolCapabilities). Left nil
+	// the route renders the Node catch-branch fallback for every conversation.
+	deps.ToolCapabilit = newChatToolCapabilitiesResolver(deps)
 	deps.Register(composed.kernel, systemAPIPrefix+"/my-chat")
 	return deps, nil
 }

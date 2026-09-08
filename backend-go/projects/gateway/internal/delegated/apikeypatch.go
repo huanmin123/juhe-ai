@@ -340,13 +340,21 @@ func (d *Deps) patchApiKeyTx(ctx context.Context, id, systemAccountID string, in
 	}
 	outcome.Revision = revision
 	outcome.RowPatch["revision"] = revision
+	bindingUpserted := false
 	if d.hasStatusChange(outcome.ChangedFields) {
-		if err := d.syncApiKeyQuotaScopeBinding(ctx, tx, current, input.Status == "active", revision); err != nil {
+		upserted, err := d.syncApiKeyQuotaScopeBinding(ctx, tx, current, input.Status == "active", revision)
+		if err != nil {
 			return nil, err
 		}
+		bindingUpserted = upserted
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	// W2-A 待办2：状态变更重建绑定后打脏（PG；失败不回滚主写，warn 告警；
+	// 停用分支按归档 :94-105 早退不打脏）。
+	if bindingUpserted {
+		d.markQuotaHourlyWindowDirtyScopeAfterCommit(ctx, current.SystemAccountID, current.ID, revision)
 	}
 	_ = nextName
 	d.invalidateCommittedApiKeyPatchCaches(current, outcome)
@@ -426,23 +434,27 @@ func (d *Deps) selectableRouteStrategy(ctx context.Context, tx *sql.Tx, systemAc
 // syncApiKeyRequestQuotaHourlyWindowScopeBindingForClientAsync: a status
 // change rebuilds the api_key hourly-window binding (delete + optional
 // insert when the key carries an enabled hourly quota and stays active).
-func (d *Deps) syncApiKeyQuotaScopeBinding(ctx context.Context, tx *sql.Tx, current *apiKeyMutationRow, active bool, timestamp string) error {
+// The bool reports whether a binding row was inserted (the archived PG async
+// arm marks the scope dirty only in that branch, :94-105).
+func (d *Deps) syncApiKeyQuotaScopeBinding(ctx context.Context, tx *sql.Tx, current *apiKeyMutationRow, active bool, timestamp string) (bool, error) {
 	if _, err := tx.ExecContext(ctx, d.bind(`DELETE FROM `+d.table("request_quota_hourly_window_scope_bindings")+`
 		WHERE source_type = 'api_key' AND source_id = ?`), current.ID); err != nil {
-		return err
+		return false, err
 	}
 	if !active {
-		return nil
+		return false, nil
 	}
 	windowHours, ok := hourlyQuotaWindowHours(current.QuotaLimitsJSON)
 	if !ok {
-		return nil
+		return false, nil
 	}
-	_, err := tx.ExecContext(ctx, d.bind(`INSERT INTO `+d.table("request_quota_hourly_window_scope_bindings")+`
+	if _, err := tx.ExecContext(ctx, d.bind(`INSERT INTO `+d.table("request_quota_hourly_window_scope_bindings")+`
 		(system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at)
 		VALUES (?, 'api_key', ?, 'api_key', ?, ?, ?, ?)`),
-		current.SystemAccountID, current.ID, current.ID, windowHours, timestamp, timestamp)
-	return err
+		current.SystemAccountID, current.ID, current.ID, windowHours, timestamp, timestamp); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // hourlyQuotaWindowHours mirrors activeRequestQuotaHourlyWindowHours for the

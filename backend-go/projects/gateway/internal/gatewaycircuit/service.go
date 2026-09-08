@@ -526,7 +526,10 @@ func (s *CircuitService) nowPtr() *int64 {
 
 // PrepareAttempt mirrors prepareAttempt.
 func (s *CircuitService) PrepareAttempt(ctx context.Context, input PrepareAttemptInput) (PrepareResult, error) {
-	scope := GatewayAccountProtocolModelScope(input.Account, input.RequestLane, input.Model)
+	scope, err := GatewayAccountProtocolModelScope(input.Account, input.RequestLane, input.Model)
+	if err != nil {
+		return PrepareResult{}, err
+	}
 	dispatchRevision, err := AccountCircuitDispatchRevision(input.Account)
 	if err != nil {
 		return PrepareResult{}, err
@@ -1112,23 +1115,38 @@ func (s *CircuitService) acquireConfirmation(
 	return FailureDecision{Outcome: DecisionConfirmationAcquired, Confirmation: confirmation, State: result.State}, nil
 }
 
-// GatewayAccountProtocolModelScope mirrors gatewayAccountProtocolModelScope.
+// GatewayAccountProtocolModelScope mirrors gatewayAccountProtocolModelScope
+// (account-circuit.service.ts:904-919): the account runtime key goes through
+// gatewayAccountRuntimeKey, so authorized-account scopes isolate per binding
+// (`id:authorized:sys:group:authz`) instead of the bare account id. D-131
+// BUG-0175: the previous bare-ID scope merged every authorized binding of one
+// account into a single circuit.
 func GatewayAccountProtocolModelScope(
 	account gatewayruntimecache.OpenAIAccountSecret,
 	requestLane string,
 	model *string,
-) Scope {
+) (Scope, error) {
 	protocolProfile := account.ProviderProtocolProfileID
 	if strings.TrimSpace(protocolProfile) == "" {
 		protocolProfile = fmt.Sprintf("%s:%s", account.ProtocolCode, account.ProtocolVersion)
 	}
+	runtimeKey, err := GatewayAccountRuntimeKey(SuppressibleGatewayAccount{
+		ID:                     account.ID,
+		AccountAccessType:      account.AccountAccessType,
+		BindingSystemAccountID: derefString(account.BindingSystemAccountID),
+		BoundGroupID:           derefString(account.BoundGroupID),
+		AccountAuthorizationID: derefString(account.AccountAuthorizationID),
+	})
+	if err != nil {
+		return Scope{}, err
+	}
 	return Scope{
 		Kind:              ScopeKindProtocolModel,
-		AccountRuntimeKey: account.ID,
+		AccountRuntimeKey: runtimeKey,
 		ProtocolProfile:   protocolProfile,
 		RequestLane:       requestLane,
 		ModelBucket:       gatewayAccountCircuitModelBucket(account, model),
-	}
+	}, nil
 }
 
 // AccountCircuitDispatchRevision mirrors accountCircuitDispatchRevision.

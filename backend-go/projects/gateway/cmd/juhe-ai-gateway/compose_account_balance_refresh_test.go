@@ -404,6 +404,93 @@ func TestGatewayManualBalanceRefresherTestDraft(t *testing.T) {
 	}
 }
 
+// TestModelCatalogRefreshOAuthAccountDiscovery drives the wired catalog
+// refresher port with OAuth draft credentials（BUG-0175 D-169）：api_key 池为空
+// 时 access_token 直连上游 /models（Bearer 语义），api_key 路径由
+// TestModelCatalogRefreshHandlerClosedLoop 保持不回归。
+func TestModelCatalogRefreshOAuthAccountDiscovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("composition closed-loop test skipped in -short mode")
+	}
+	composed, accountStore := composeBalanceRefreshFixture(t)
+	seedSystemSettings(t, composed.DB)
+	db := composed.DB
+
+	var bearerAuthorization, requestPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bearerAuthorization = r.Header.Get("Authorization")
+		requestPath = r.URL.Path
+		if r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"mock-model-a"},{"id":"mock-model-a"},{"id":"mock-model-b"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	adminID := createComposeSessionAdmin(t, composed)
+	seedCatalogRefreshDraftFixtures(t, db, adminID)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id,
+			status, mode, supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+			created_by, created_at, updated_at)
+			VALUES (?, 'gpt', ?, 'global', NULL, 'active', NULL, '["chat_completions"]', '[]', '[]', 'catalog-admin', ?, ?)`,
+		"cpm-oauth", "mock-model-a", now, now); err != nil {
+		t.Fatalf("seed custom model: %v", err)
+	}
+
+	refresher := accountStore.ModelCatalogRefresherPort()
+	if refresher == nil {
+		t.Fatal("模型目录刷新端口未装配")
+	}
+	result, err := refresher.RefreshDraftModelCatalog(context.Background(), accounts.ModelCatalogDiscoveryInput{
+		OwnerSystemAccountID: adminID,
+		ProviderCode:         "gpt",
+		ProtocolCode:         "openai",
+		AccountType:          "oauth",
+		Credentials: accounts.Credentials{
+			"access_token": "oauth-access-token-catalog",
+			"base_url":     upstream.URL + "/v1",
+		},
+		HealthCheckModel: "mock-model-configured",
+		SupportedModels:  []string{"mock-model-configured"},
+	})
+	if err != nil {
+		t.Fatalf("oauth catalog refresh: %v", err)
+	}
+	if bearerAuthorization != "Bearer oauth-access-token-catalog" {
+		t.Fatalf("upstream authorization = %q, want the OAuth access token bearer", bearerAuthorization)
+	}
+	if requestPath != "/v1/models" {
+		t.Fatalf("upstream path = %q, want /v1/models", requestPath)
+	}
+	added, _ := result["addedModels"].([]string)
+	if len(added) != 1 || added[0] != "mock-model-a" {
+		providerStore, providerErr := providers.NewStore(db, false, time.Now)
+		if providerErr == nil {
+			items, listErr := providerStore.ListProviderModelsForRequest(context.Background(), "gpt", adminID, false, true)
+			t.Fatalf("addedModels = %v result=%v localProjection=%v listErr=%v", added, result, items, listErr)
+		}
+		t.Fatalf("addedModels = %v result=%v (provider store error %v)", added, result, providerErr)
+	}
+	// 直接调用端口返回 Go 原生类型：推荐模型落在候选中即保持配置值。
+	if recommended, _ := result["recommendedHealthCheckModel"].(string); recommended != "mock-model-a" {
+		t.Fatalf("recommendedHealthCheckModel = %v, want mock-model-a", result["recommendedHealthCheckModel"])
+	}
+
+	// 无 api_key 且无 access_token → 保留既有 400 文案契约。
+	if _, err := refresher.RefreshDraftModelCatalog(context.Background(), accounts.ModelCatalogDiscoveryInput{
+		OwnerSystemAccountID: adminID,
+		ProviderCode:         "gpt",
+		ProtocolCode:         "openai",
+		AccountType:          "oauth",
+		Credentials:          accounts.Credentials{"base_url": upstream.URL + "/v1"},
+	}); err == nil || !strings.Contains(err.Error(), "账户缺少 API Key") {
+		t.Fatalf("missing credential error = %v, want 账户缺少 API Key", err)
+	}
+}
+
 // seedNewerAdapterSnapshot commits a newer snapshot (input_version=2) through
 // the shared lease machinery so the manual input (1) hits the CAS.
 func seedNewerAdapterSnapshot(t *testing.T, refresher *gatewayManualBalanceRefresher, store *platformaccountbalance.Store) error {

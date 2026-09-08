@@ -7,21 +7,21 @@ import (
 
 // Availability status values mirror AccountRuntimeAvailabilityStatus.
 const (
-	AvailabilityStatusNormal         = "normal"
-	AvailabilityStatusDegraded       = "degraded"
+	AvailabilityStatusNormal          = "normal"
+	AvailabilityStatusDegraded        = "degraded"
 	AvailabilityStatusLocalSuppressed = "local_suppressed"
-	AvailabilityStatusHalfOpen       = "half_open"
+	AvailabilityStatusHalfOpen        = "half_open"
 	AvailabilityStatusPrecheckPending = "precheck_pending"
 	AvailabilityStatusPrecheckFailed  = "precheck_failed"
 )
 
 // Suppression window constants mirror account-local-suppression-store.ts.
 const (
-	LocalSuppressionMaxMs                        = int64(10 * 60_000)
-	LocalDegradationWindowMs                     = int64(5 * 60_000)
-	LocalDegradationActivationFailureThreshold   = int64(2)
-	LocalDegradationMinObservationMs             = int64(60_000)
-	LocalSuppressionPrecheckMinObservationMs     = int64(60_000)
+	LocalSuppressionMaxMs                      = int64(10 * 60_000)
+	LocalDegradationWindowMs                   = int64(5 * 60_000)
+	LocalDegradationActivationFailureThreshold = int64(2)
+	LocalDegradationMinObservationMs           = int64(60_000)
+	LocalSuppressionPrecheckMinObservationMs   = int64(60_000)
 
 	localSuppressionHalfOpenLeaseMs = int64(180_000)
 	localSuppressionIdleRetentionMs = int64(60_000)
@@ -32,33 +32,33 @@ var localSuppressionDelayMs = []int64{3_000, 5_000, 10_000}
 
 // AccountRuntimeAvailability mirrors AccountRuntimeAvailability.
 type AccountRuntimeAvailability struct {
-	Status               string `json:"status"`
-	Reason               string `json:"reason,omitempty"`
-	Since                string `json:"since,omitempty"`
-	Until                string `json:"until,omitempty"`
-	FailureCount         *int64 `json:"failureCount,omitempty"`
+	Status                string `json:"status"`
+	Reason                string `json:"reason,omitempty"`
+	Since                 string `json:"since,omitempty"`
+	Until                 string `json:"until,omitempty"`
+	FailureCount          *int64 `json:"failureCount,omitempty"`
 	DistinctClientIPCount *int64 `json:"distinctClientIpCount,omitempty"`
-	DistinctAPIKeyCount  *int64 `json:"distinctApiKeyCount,omitempty"`
-	PrecheckAttemptCount *int64 `json:"precheckAttemptCount,omitempty"`
-	LocalFailureCount    *int64 `json:"localFailureCount,omitempty"`
-	ProbePresentation    any    `json:"probePresentation,omitempty"`
+	DistinctAPIKeyCount   *int64 `json:"distinctApiKeyCount,omitempty"`
+	PrecheckAttemptCount  *int64 `json:"precheckAttemptCount,omitempty"`
+	LocalFailureCount     *int64 `json:"localFailureCount,omitempty"`
+	ProbePresentation     any    `json:"probePresentation,omitempty"`
 }
 
 // LocalAccountSuppression mirrors the stored suppression entry.
 type LocalAccountSuppression struct {
-	AccountID                 string
+	AccountID                   string
 	AccountConcurrencyAccountID string
-	UntilMs                   int64
-	Reason                    string
-	SinceMs                   int64
-	Status                    string
-	FailureCount              *int64
-	DistinctClientIPCount     *int64
-	DistinctAPIKeyCount       *int64
-	PrecheckAttemptCount      *int64
-	LocalFailureCount         *int64
-	HalfOpenLeaseUntilMs      *int64
-	HalfOpenLeaseID           *string
+	UntilMs                     int64
+	Reason                      string
+	SinceMs                     int64
+	Status                      string
+	FailureCount                *int64
+	DistinctClientIPCount       *int64
+	DistinctAPIKeyCount         *int64
+	PrecheckAttemptCount        *int64
+	LocalFailureCount           *int64
+	HalfOpenLeaseUntilMs        *int64
+	HalfOpenLeaseID             *string
 }
 
 type localAccountDegradation struct {
@@ -83,9 +83,9 @@ type LocalSuppressionResult struct {
 
 // Suppression result actions.
 const (
-	SuppressionActionSuppressed    = "suppressed"
+	SuppressionActionSuppressed       = "suppressed"
 	SuppressionActionPrecheckRequired = "precheck_required"
-	SuppressionActionRedisManaged  = "redis_managed"
+	SuppressionActionRedisManaged     = "redis_managed"
 )
 
 // HalfOpenLease mirrors GatewayAccountHalfOpenLease.
@@ -99,9 +99,9 @@ type HalfOpenLease struct {
 
 // SuppressionFilterOptions mirrors LocalAccountSuppressionFilterOptions.
 type SuppressionFilterOptions struct {
-	AcquireHalfOpenLease        bool
+	AcquireHalfOpenLease         bool
 	AcquirePrecheckHalfOpenLease bool
-	PrecheckHalfOpenGroupKey    string
+	PrecheckHalfOpenGroupKey     string
 }
 
 // PrecheckRuntimeBlockingPredicate mirrors the isPrecheckRuntimeBlocking predicate.
@@ -111,25 +111,25 @@ type PrecheckRuntimeBlockingPredicate func(runtimeKey string) bool
 // (mirrors SuppressibleGatewayAccount consumers).
 type SuppressibleAccount struct {
 	SuppressibleGatewayAccount
-	FallbackEnabled       bool
-	SuperPriorityEnabled  bool
-	Priority              int64
-	ModelRank             int64
-	HasModelRank          bool
+	FallbackEnabled      bool
+	SuperPriorityEnabled bool
+	Priority             int64
+	ModelRank            int64
+	HasModelRank         bool
 }
 
 // SuppressionFilterResult mirrors LocalAccountSuppressionFilterResult.
 type SuppressionFilterResult struct {
-	Accounts                            []SuppressibleAccount
-	SuppressedCount                     int
-	AllSuppressed                       bool
-	SuppressedAccountIDs                []string
-	AcquiredHalfOpenLeases              []HalfOpenLease
-	PrecheckSuppressedAccountIDs        []string
+	Accounts                             []SuppressibleAccount
+	SuppressedCount                      int
+	AllSuppressed                        bool
+	SuppressedAccountIDs                 []string
+	AcquiredHalfOpenLeases               []HalfOpenLease
+	PrecheckSuppressedAccountIDs         []string
 	ConfiguredPolicySuppressedAccountIDs []string
-	PrecheckSuppressedRuntimeScopes     []PrecheckSuppressedRuntimeScope
-	NextRetryAtMs                       *int64
-	NextRetryAfterMs                    *int64
+	PrecheckSuppressedRuntimeScopes      []PrecheckSuppressedRuntimeScope
+	NextRetryAtMs                        *int64
+	NextRetryAfterMs                     *int64
 }
 
 // PrecheckSuppressedRuntimeScope mirrors { runtimeKey, generation }.
@@ -156,8 +156,8 @@ type Logger interface {
 
 type nopLogger struct{}
 
-func (nopLogger) Info(map[string]any, string)  {}
-func (nopLogger) Warn(map[string]any, string)  {}
+func (nopLogger) Info(map[string]any, string) {}
+func (nopLogger) Warn(map[string]any, string) {}
 
 // NopLogger is the default no-op logger.
 var NopLogger Logger = nopLogger{}
@@ -274,24 +274,24 @@ func (s *LocalSuppressionStore) DegradeForGatewayFailure(runtimeKey, accountID, 
 	}
 	if !isLocalAccountDegradationActive(degradation) {
 		s.logger.Info(map[string]any{
-			"event":                    "gateway_account_runtime_degradation_observed",
-			"accountId":                accountID,
-			"runtimeKey":               runtimeKey,
-			"failureCount":             degradation.failureCount,
+			"event":                      "gateway_account_runtime_degradation_observed",
+			"accountId":                  accountID,
+			"runtimeKey":                 runtimeKey,
+			"failureCount":               degradation.failureCount,
 			"activationFailureThreshold": LocalDegradationActivationFailureThreshold,
-			"observationWindowSeconds": LocalDegradationWindowMs / 1000,
-			"reason":                   reason,
+			"observationWindowSeconds":   LocalDegradationWindowMs / 1000,
+			"reason":                     reason,
 		}, "账号近期失败已记录，暂未达到运行态调度降级门槛")
 		return localAccountDegradationObservationAvailability(degradation)
 	}
 	s.logger.Warn(map[string]any{
-		"event":                    "gateway_account_runtime_degraded",
-		"accountId":                accountID,
-		"runtimeKey":               runtimeKey,
-		"failureCount":             degradation.failureCount,
+		"event":                      "gateway_account_runtime_degraded",
+		"accountId":                  accountID,
+		"runtimeKey":                 runtimeKey,
+		"failureCount":               degradation.failureCount,
 		"activationFailureThreshold": LocalDegradationActivationFailureThreshold,
-		"observationWindowSeconds": LocalDegradationWindowMs / 1000,
-		"reason":                   reason,
+		"observationWindowSeconds":   LocalDegradationWindowMs / 1000,
+		"reason":                     reason,
 	}, "账号近期失败，已进入运行态调度降级，仅在普通候选不足时兜底尝试")
 	return localAccountDegradationAvailability(degradation)
 }
@@ -474,12 +474,12 @@ func (s *LocalSuppressionStore) suppressLocked(runtimeKey string, durationMs int
 		return
 	}
 	next := LocalAccountSuppression{
-		AccountID:                 accountID,
+		AccountID:                   accountID,
 		AccountConcurrencyAccountID: accountConcurrencyAccountID,
-		UntilMs:                   untilMs,
-		Reason:                    reason,
-		SinceMs:                   now,
-		Status:                    status,
+		UntilMs:                     untilMs,
+		Reason:                      reason,
+		SinceMs:                     now,
+		Status:                      status,
 	}
 	if current != nil {
 		next.SinceMs = current.SinceMs
@@ -584,15 +584,15 @@ func (s *LocalSuppressionStore) SnapshotAvailability(isPrecheckRuntimeBlocking P
 			continue
 		}
 		snapshot[runtimeKey] = AccountRuntimeAvailability{
-			Status:               suppression.Status,
-			Reason:               suppression.Reason,
-			Since:                msToRFC3339(suppression.SinceMs),
-			Until:                msToRFC3339(localSuppressionVisibleUntilMs(suppression, now, s.accountConcurrency)),
-			FailureCount:         suppression.FailureCount,
+			Status:                suppression.Status,
+			Reason:                suppression.Reason,
+			Since:                 msToRFC3339(suppression.SinceMs),
+			Until:                 msToRFC3339(localSuppressionVisibleUntilMs(suppression, now, s.accountConcurrency)),
+			FailureCount:          suppression.FailureCount,
 			DistinctClientIPCount: suppression.DistinctClientIPCount,
-			DistinctAPIKeyCount:  suppression.DistinctAPIKeyCount,
-			PrecheckAttemptCount: suppression.PrecheckAttemptCount,
-			LocalFailureCount:    suppression.LocalFailureCount,
+			DistinctAPIKeyCount:   suppression.DistinctAPIKeyCount,
+			PrecheckAttemptCount:  suppression.PrecheckAttemptCount,
+			LocalFailureCount:     suppression.LocalFailureCount,
 		}
 	}
 	for runtimeKey, degradation := range s.degradations {
@@ -675,14 +675,33 @@ func (s *LocalSuppressionStore) FilterSuppressions(
 	var filtered []SuppressibleAccount
 	var suppressedAccountIDs []string
 	var acquiredHalfOpenLeases []HalfOpenLease
+	var precheckSuppressedAccountIDs []string
+	var precheckSuppressedRuntimeScopes []PrecheckSuppressedRuntimeScope
 	var nextRetryAtMs *int64
 	for _, account := range accounts {
 		runtimeKey := mustRuntimeKey(account.SuppressibleGatewayAccount)
 		suppression := s.suppressions[runtimeKey]
-		if isPrecheckRuntimeBlocking(runtimeKey) {
+		precheckBlocking := false
+		if isPrecheckRuntimeBlocking != nil {
+			precheckBlocking = isPrecheckRuntimeBlocking(runtimeKey)
+		} else {
+			precheckBlocking = s.precheckRuntimeBlockingLocked(runtimeKey, now)
+		}
+		if precheckBlocking {
 			suppressedAccountIDs = append(suppressedAccountIDs, account.ID)
 			candidate := int64Max64(derefInt64(suppressionUntilMs(suppression)), now+1000)
 			nextRetryAtMs = minRetryAtMs(nextRetryAtMs, candidate)
+			if state := suppression; state != nil &&
+				(state.Status == AvailabilityStatusPrecheckPending || state.Status == AvailabilityStatusPrecheckFailed) {
+				precheckSuppressedAccountIDs = append(precheckSuppressedAccountIDs, account.ID)
+				// Generation mirrors the Node probe-generation stamp: the
+				// precheck entry's SinceMs is monotonic per runtime key and
+				// distinguishes consecutive precheck generations.
+				precheckSuppressedRuntimeScopes = append(precheckSuppressedRuntimeScopes, PrecheckSuppressedRuntimeScope{
+					RuntimeKey: runtimeKey,
+					Generation: state.SinceMs,
+				})
+			}
 			continue
 		}
 		if suppression == nil || !isLocalSuppressionBlocking(suppression, now, s.accountConcurrency) {
@@ -696,12 +715,14 @@ func (s *LocalSuppressionStore) FilterSuppressions(
 		nextRetryAtMs = minRetryAtMs(nextRetryAtMs, localSuppressionVisibleUntilMs(suppression, now, s.accountConcurrency))
 	}
 	result := SuppressionFilterResult{
-		Accounts:             filtered,
-		SuppressedCount:      len(suppressedAccountIDs),
-		AllSuppressed:        len(filtered) == 0 && len(accounts) > 0,
-		SuppressedAccountIDs: suppressedAccountIdsCopy(suppressedAccountIDs),
-		AcquiredHalfOpenLeases: acquiredHalfOpenLeases,
-		NextRetryAtMs:        nextRetryAtMs,
+		Accounts:                        filtered,
+		SuppressedCount:                 len(suppressedAccountIDs),
+		AllSuppressed:                   len(filtered) == 0 && len(accounts) > 0,
+		SuppressedAccountIDs:            suppressedAccountIdsCopy(suppressedAccountIDs),
+		AcquiredHalfOpenLeases:          acquiredHalfOpenLeases,
+		PrecheckSuppressedAccountIDs:    precheckSuppressedAccountIDs,
+		PrecheckSuppressedRuntimeScopes: precheckSuppressedRuntimeScopes,
+		NextRetryAtMs:                   nextRetryAtMs,
 	}
 	if nextRetryAtMs != nil {
 		after := int64Max64(0, *nextRetryAtMs-now)
@@ -722,6 +743,31 @@ func suppressedAccountIdsCopy(values []string) []string {
 		return nil
 	}
 	return append([]string{}, values...)
+}
+
+// PrecheckRuntimeBlockingAt mirrors the isPrecheckRuntimeBlocking predicate
+// (precheckStates.has(runtimeKey)): the runtime key carries an unexpired
+// precheck_pending / precheck_failed suppression. The composition adapters
+// pass this method as the FilterSuppressions predicate so the dispatch-side
+// suppression filter sees the same precheck blocking the store owns.
+func (s *LocalSuppressionStore) PrecheckRuntimeBlockingAt(runtimeKey string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.precheckRuntimeBlockingLocked(runtimeKey, s.now())
+}
+
+// precheckRuntimeBlockingLocked is PrecheckRuntimeBlockingAt without the
+// lock; FilterSuppressions calls it while holding s.mu when the caller did
+// not inject an external predicate.
+func (s *LocalSuppressionStore) precheckRuntimeBlockingLocked(runtimeKey string, now int64) bool {
+	suppression := s.suppressions[runtimeKey]
+	if suppression == nil {
+		return false
+	}
+	if suppression.Status != AvailabilityStatusPrecheckPending && suppression.Status != AvailabilityStatusPrecheckFailed {
+		return false
+	}
+	return suppression.UntilMs > now
 }
 
 // ClearSuppression mirrors clearLocalAccountSuppression.
@@ -811,13 +857,13 @@ func (s *LocalSuppressionStore) ActivateRuntimeDegradation(runtimeKey, accountID
 	}
 	s.degradations[runtimeKey] = degradation
 	s.logger.Warn(map[string]any{
-		"event":                    "gateway_account_runtime_degraded",
-		"accountId":                accountID,
-		"runtimeKey":               runtimeKey,
-		"failureCount":             effectiveFailureCount,
+		"event":                      "gateway_account_runtime_degraded",
+		"accountId":                  accountID,
+		"runtimeKey":                 runtimeKey,
+		"failureCount":               effectiveFailureCount,
 		"activationFailureThreshold": LocalDegradationActivationFailureThreshold,
-		"observationWindowSeconds": LocalDegradationWindowMs / 1000,
-		"reason":                   reason,
+		"observationWindowSeconds":   LocalDegradationWindowMs / 1000,
+		"reason":                     reason,
 	}, "后台探针确认账号近期不稳，已进入运行态调度降级")
 	return localAccountDegradationAvailability(degradation)
 }
@@ -891,7 +937,7 @@ func (s *LocalSuppressionStore) clearLocked() {
 
 func (s *LocalSuppressionStore) cleanupExpiredSuppressionsLocked(now int64, isPrecheckRuntimeBlocking PrecheckRuntimeBlockingPredicate) {
 	for runtimeKey, suppression := range s.suppressions {
-		if isPrecheckRuntimeBlocking(runtimeKey) {
+		if isPrecheckRuntimeBlocking != nil && isPrecheckRuntimeBlocking(runtimeKey) {
 			continue
 		}
 		if suppression.Status == AvailabilityStatusHalfOpen && s.accountConcurrency(localSuppressionConcurrencyAccountID(suppression)) > 0 {

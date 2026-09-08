@@ -46,6 +46,12 @@ type ResponseInspectionBufferOptions struct {
 	EndpointFamily        gatewayproto.ResponseEndpointFamily
 	ExtractSemanticFrames func(ParsedStreamEvent) []gatewayproto.SemanticFrame
 	BuildFailureEvent     func(decision InspectionDecision, clientRetryEnabled bool) []byte
+	// RequiresVisibleOutputTextInspection 按策略顺序声明该策略是否需要检查
+	// 可见输出文本事件（Node policyRequiresVisibleOutputTextInspection 的
+	// match 描述符判定：outputTextIncludes/outputTextExcludes/rawTextIncludes
+	// 或非 error/response.error 的 jsonPathsExists）。与 Policies 一一对应；
+	// 缺省（长度为 0）时保持保守：任一策略即全量检查。
+	RequiresVisibleOutputTextInspection []bool
 }
 
 // ResponseInspectionBuffer mirrors OpenAIResponseInspectionBuffer: buffers
@@ -75,7 +81,7 @@ func NewResponseInspectionBuffer(options ResponseInspectionBufferOptions) *Respo
 		pendingBuffer:                  newPendingSseEventBuffer(),
 		clientRetryEnabled:             options.ClientRetryEnabled,
 		policies:                       options.Policies,
-		inspectVisibleOutputTextEvents: len(options.Policies) > 0,
+		inspectVisibleOutputTextEvents: policiesRequireVisibleOutputTextInspection(options.Policies, options.RequiresVisibleOutputTextInspection),
 		endpointFamily:                 options.EndpointFamily,
 	}
 	if options.ExtractSemanticFrames != nil {
@@ -98,6 +104,21 @@ func openAIEndpointFamilyOrUnknown(family gatewayproto.ResponseEndpointFamily) g
 		return family
 	}
 	return gatewayproto.EndpointFamilyUnknown
+}
+
+// policiesRequireVisibleOutputTextInspection 对齐 Node 的
+// policies.some(policyRequiresVisibleOutputTextInspection)：有描述符按描述符，
+// 缺省保守（任一策略即全量检查可见输出文本事件，快路径关闭）。
+func policiesRequireVisibleOutputTextInspection(policies []InspectionPolicy, declared []bool) bool {
+	if len(declared) > 0 {
+		for _, required := range declared {
+			if required {
+				return true
+			}
+		}
+		return false
+	}
+	return len(policies) > 0
 }
 
 // MarkDownstreamWrite mirrors markDownstreamWrite.

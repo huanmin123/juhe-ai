@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -123,7 +124,7 @@ func (f *fakeFailureDispatcher) IsOpaqueUpstreamFailoverAllowed(req *gatewayprea
 }
 
 type fakeSuppression struct {
-	filterCalls atomic.Int64
+	filterCalls   atomic.Int64
 	allSuppressed bool
 }
 
@@ -131,10 +132,10 @@ func (f *fakeSuppression) FilterAsync(ctx context.Context, accounts []AccountCan
 	f.filterCalls.Add(1)
 	if f.allSuppressed {
 		return SuppressionFilterResult{
-			Accounts:             nil,
-			SuppressedCount:      len(accounts),
-			AllSuppressed:        true,
-			SuppressedAccountIDs: accountIDs(accounts),
+			Accounts:               nil,
+			SuppressedCount:        len(accounts),
+			AllSuppressed:          true,
+			SuppressedAccountIDs:   accountIDs(accounts),
 			AcquiredHalfOpenLeases: []HalfOpenLease{},
 		}, nil
 	}
@@ -354,10 +355,10 @@ func (f *fakeUsage) RecordFailedUpstreamAttempt(ctx context.Context, req *gatewa
 }
 
 type fakeAuditSink struct {
-	started     int
-	completed   int
-	failed      int
-	metadata    []string
+	started   int
+	completed int
+	failed    int
+	metadata  []string
 }
 
 func (f *fakeAuditSink) StartAttempt(input StartAttemptInput) string {
@@ -422,6 +423,9 @@ func newTestEngine(t *testing.T) (*Engine, *fakeDriver, *fakeFailureDispatcher) 
 	engine.Cache = &fakeCache{}
 	engine.Locks = &fakeLocks{}
 	engine.Usage = &fakeUsage{}
+	// D-133: the key-model admission runs against a runtime store; the fake
+	// admission implementations in the tests bypass the real state machine.
+	engine.KeyModelStore = gatewayaccounteffects.NewInMemoryKeyModelRuntimeStore(nil)
 	return engine, driver, dispatcher
 }
 

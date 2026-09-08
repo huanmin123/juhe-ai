@@ -108,6 +108,11 @@ type Engine struct {
 	// (session-identity/index.ts, G14).
 	SessionIdentity func(req *gatewaypreauth.GatewayRequest) SessionIdentityView
 
+	// HotQualityAttemptFactory 挂接 G12 热质量 attempt 记账（D-137，
+	// BUG-0175：attempt 记录 / first-byte / 终态结算）。nil 保持引擎的中性
+	// no-op 生命周期（runtime 缺席语义）。
+	HotQualityAttemptFactory HotQualityAttemptLifecycleFactory
+
 	// Transport carries the shared upstreamhttp collaborators.
 	Transport TransportDeps
 }

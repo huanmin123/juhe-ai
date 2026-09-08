@@ -367,7 +367,6 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	dialect := statsagg.Dialect{Postgres: postgres}
 	timezone := statsTimezoneSource{store: store}
 	a.aggregator = &statsagg.Aggregator{DB: aggDB, Dialect: dialect, Clock: timezone}
-	a.windows = &statsagg.WindowRefresher{DB: aggDB, Dialect: dialect, Clock: timezone}
 
 	// system_settings 读模型（background-jobs settingsNumber 移植）：PG 复用
 	// 共享池，SQLite 读 business 库；读取失败按 Node 语义降级默认（缺表/快照
@@ -378,6 +377,10 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			return err
 		}
 	}
+	// BusinessDB：配额小时窗读业务库绑定表（request_quota_hourly_window_scope_bindings）。
+	// PG 与 stats 同池共用 aggDB（juhe_business. 前缀）；SQLite 用业务库句柄
+	//（与 settings 同一连接，D-48 生产者接线）。
+	a.windows = &statsagg.WindowRefresher{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB}
 	a.settings = dbSettingsSource{source: jobssettings.NewSource(jobssettings.Options{
 		DB:   settingsDB,
 		Mode: settingsMode(postgres),
@@ -487,8 +490,32 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	}
 	a.scheduleWiredJob("authorization-usage-range-windows-refresh", windowTask("authorization_usage_range_windows", []statsagg.WindowStageName{statsagg.StageAuthorizationUsageRangeWindows}))
 	a.scheduleWiredJob("usage-hot-window-refresh", windowTask("usage_hot_window_refresh", hotUsageWindowStages()))
+	// 配额小时窗刷新（BUG-0175 D-48/D-75/D-86）：不在 RunStages 的 watermark
+	// 阶段模型内（归档 :1795-1951 是独立的 expiry 游标 + 脏范围分批消费
+	// 编排），按归档结构独立任务注册；hasMore 在任务内续跑排空（对齐
+	// rebuild-usage-stats.ts drainPostgresQuotaWindows 的 maxPasses 精神，
+	// 上限防御病态循环）。
+	a.scheduleWiredJob("usage-quota-hourly-windows-refresh", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		for pass := 0; pass < quotaHourlyWindowMaxPasses; pass++ {
+			if taskCtx.Err() != nil {
+				break
+			}
+			result, err := a.windows.RunQuotaHourlyWindows(taskCtx)
+			if err != nil {
+				return jobsched.TaskResult{}, err
+			}
+			if !result.HasMore {
+				break
+			}
+		}
+		return jobsched.TaskResult{}, nil
+	})
 	return nil
 }
+
+// quotaHourlyWindowMaxPasses 是单轮任务内 hasMore 续跑上限；脏范围单轮消费
+// <=128 个，正常积压在数百轮内排空，达到上限按任务失败上报（不静默截断）。
+const quotaHourlyWindowMaxPasses = 1000
 
 // rankSnapshotCoreStages 对齐 usageRankSnapshotCoreStageNames（SQLite 分支，
 // 含 ai_performance_summary_windows）与 postgresUsageRankSnapshotCoreStageNames

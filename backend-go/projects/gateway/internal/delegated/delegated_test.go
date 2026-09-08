@@ -169,6 +169,7 @@ var delegatedSchema = []string{
 		health_check_failure_started_at TEXT,
 		cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
 		cooldown_retest_observation_started_at TEXT,
+		cooldown_retest_generation TEXT,
 		cooldown_retest_last_at TEXT,
 		cooldown_retest_last_status_code INTEGER,
 		last_health_check_at TEXT,

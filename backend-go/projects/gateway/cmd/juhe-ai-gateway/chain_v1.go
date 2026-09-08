@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
@@ -213,6 +214,15 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	}
 	serverRetryBudget := gatewaypreauth.NewServerRetryBudget(0, c.clock)
 
+	// D-109（BUG-0175）客户端 IP 并发槽生命周期：Node
+	// attachClientIpSlotRelease（routes.ts:2751-2756）把 release 以 once 语义
+	// 挂到 res 的 finish/close；组切换时重新 attach（routes.ts:539/651/784）。
+	// Go 的等价响应终态是 handler 返回——每个 DispatchContext 的 release 都
+	// 收集进来，handler 退出时逐个调用（release 本身 once 幂等，槽不再泄漏
+	// 到 180s TTL）。
+	releases := &clientIPSlotReleaseList{}
+	defer releases.ReleaseAll()
+
 	loop := &v1DispatchLoop{
 		c:                   c,
 		req:                 req,
@@ -224,6 +234,7 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		startedAt:           startedAt,
 		endpoint:            endpoint,
 		traceID:             traceID,
+		releases:            releases,
 		actionVisitedGroups: map[string]bool{},
 		enteredGroups:       map[string]bool{},
 	}
@@ -244,6 +255,7 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		}, "expected_failure", c.clock.Now())
 		return
 	}
+	releases.Add(context.ReleaseClientIPConcurrency)
 	c.observability.LogRequestStage("preflight.completed", map[string]any{
 		"traceId":               traceID,
 		"groupId":               context.UsageContext.GroupID,
@@ -383,6 +395,9 @@ type v1DispatchLoop struct {
 	// streamServerRetryCount mirrors Node streamServerRetryCount (routes.ts:
 	// 541) for the stream_server_retry_dispatch audit metadata.
 	streamServerRetryCount int
+	// releases 收集每个 DispatchContext 的 client-IP 并发槽释放闭包
+	//（D-109；Node attachClientIpSlotRelease 在组切换时重新 attach）。
+	releases *clientIPSlotReleaseList
 }
 
 // v1FallbackSwitch mirrors the switchToFallbackGroup return union
@@ -944,6 +959,9 @@ func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason strin
 		return v1FallbackNone, nil
 	}
 	l.enteredGroups[next.UsageContext.GroupID] = true
+	// D-109（BUG-0175）：新分组的 DispatchContext 带新的 client-IP 并发槽
+	//（Node routes.ts:651 重新 attach release；旧槽在 handler 终态统一释放）。
+	l.releases.Add(next.ReleaseClientIPConcurrency)
 	// Node 644-651 transfers the client-ip slot and settles the hot-quality
 	// reservation; those lifecycle ports stay engine-internal in Go. The
 	// per-group retry resets ride on the fresh DispatchContext.
@@ -1588,6 +1606,36 @@ func (l gatewayResponseLogger) Info(event string, fields map[string]any, message
 
 func (l gatewayResponseLogger) Warn(event string, fields map[string]any, message string) {
 	l.inner.Warn(message, append([]any{"event", event}, fieldsArgs(fields)...)...)
+}
+
+// clientIPSlotReleaseList 收集每个 DispatchContext 的 client-IP 并发槽释放
+// 闭包（D-109，BUG-0175；Node routes.ts attachClientIpSlotRelease 的
+// res.once('finish'/'close') 语义：每次 preflight / 组切换都会追加一个
+// release，响应终态统一触发）。release 本身是 once 幂等的。
+type clientIPSlotReleaseList struct {
+	mu       sync.Mutex
+	releases []func()
+}
+
+// Add appends one release closure; nil releases are skipped.
+func (l *clientIPSlotReleaseList) Add(release func()) {
+	if release == nil {
+		return
+	}
+	l.mu.Lock()
+	l.releases = append(l.releases, release)
+	l.mu.Unlock()
+}
+
+// ReleaseAll runs every collected release once (idempotent per slot).
+func (l *clientIPSlotReleaseList) ReleaseAll() {
+	l.mu.Lock()
+	releases := l.releases
+	l.releases = nil
+	l.mu.Unlock()
+	for _, release := range releases {
+		release()
+	}
 }
 
 // writableEndedOf mirrors res.writableEnded for the tracking writer.

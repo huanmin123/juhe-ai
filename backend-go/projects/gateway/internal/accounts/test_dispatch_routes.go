@@ -54,9 +54,15 @@ func (d *Deps) mountTestRoutes(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/accounts/{id}/test-options", admin(d.scoped(d.testOptions)))
 	k.Register("GET "+prefix+"/accounts/{id}/test-options/models/{modelId}", admin(d.scoped(d.testOptionsModel)))
 	k.Register("POST "+prefix+"/accounts/{id}/test", admin(d.scoped(d.testAccount)))
+	k.Register("POST "+prefix+"/accounts/test-draft", admin(d.scoped(func(w http.ResponseWriter, r *http.Request) {
+		d.testDraft(w, r, requestScope(r))
+	})))
 	k.Register("GET "+prefix+"/my-accounts/{id}/test-options", self(d.scoped(d.testOptions)))
 	k.Register("GET "+prefix+"/my-accounts/{id}/test-options/models/{modelId}", self(d.scoped(d.testOptionsModel)))
 	k.Register("POST "+prefix+"/my-accounts/{id}/test", self(d.scoped(d.testAccount)))
+	k.Register("POST "+prefix+"/my-accounts/test-draft", self(d.scoped(func(w http.ResponseWriter, r *http.Request) {
+		d.testDraft(w, r, selfScope(r))
+	})))
 
 	// Session/task namespaces (account-test-session.routes.ts +
 	// account-test-status.routes.ts). Single-segment literals register
@@ -326,6 +332,88 @@ func firstNonEmptyTextValue(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// testDraftWorkerUnavailableMessage mirrors the dispatch-failure copy of
+// POST /test-draft (账号草稿测试, distinct from the saved-account route copy).
+const testDraftWorkerUnavailableMessage = "后台 worker 暂不可用，账号草稿测试任务未能投递"
+
+// testDraft mirrors POST /test-draft (accounts.routes.ts:69-114, BUG-0175
+// D-170): the unsaved-draft account test. The draft snapshot preparation runs
+// through the shared prepareAccountDraftTestSnapshot chain, selection rides
+// the draft's health-check model, and any failure renders 400 with the error
+// message (the archive wraps the whole block in try/catch badRequest).
+func (d *Deps) testDraft(w http.ResponseWriter, r *http.Request, access AccessScope) {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	var body map[string]any
+	if !kernel.DecodeJSON(w, r, &body) {
+		return
+	}
+	parsed, message := parseTestRequestBody(body)
+	if message != "" {
+		kernel.WriteBadRequest(w, "账户草稿测试参数无效")
+		return
+	}
+	if parsed.Account == nil {
+		kernel.WriteBadRequest(w, "账户草稿测试参数无效")
+		return
+	}
+	ctx := ensureCtx(r.Context())
+	draft, err := d.Store.prepareAccountDraftTestSnapshot(ctx, parsed.Account, access, "")
+	if err != nil {
+		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
+		return
+	}
+	model, testEndpointMode, err := d.Store.ResolveAccountManualTestSelection(ctx,
+		manualTestCapabilitiesContextFromDraft(draft),
+		draft.HealthCheckModel,
+		firstNonEmptyTextValue(parsed.TestEndpointMode, draft.HealthCheckEndpointMode))
+	if err != nil {
+		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
+		return
+	}
+	profileID := ""
+	if draft.ProviderProtocolProfileID != nil {
+		profileID = *draft.ProviderProtocolProfileID
+	}
+	protocolCode := ""
+	if draft.ProtocolCode != nil {
+		protocolCode = *draft.ProtocolCode
+	}
+	protocolVersion := ""
+	if draft.ProtocolVersion != nil {
+		protocolVersion = *draft.ProtocolVersion
+	}
+	task, err := d.Store.CreateTestTask(ctx, TestTaskCreateInput{
+		AccountID:                 draft.ID,
+		AccountName:               draft.Name,
+		ProviderCode:              draft.ProviderCode,
+		ProviderProtocolProfileID: profileID,
+		ProtocolCode:              protocolCode,
+		ProtocolVersion:           protocolVersion,
+		AccountType:               draft.Type,
+		Access:                    access,
+		Diagnostics:               "full",
+		SessionID:                 parsed.TestSessionID,
+		Model:                     model,
+		TestEndpointMode:          testEndpointMode,
+		Draft:                     draft,
+	})
+	if err != nil {
+		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
+		return
+	}
+	if effects := d.Store.testEffectsOrNil(); effects != nil && effects.DispatchAccountTestTasks(r.Context(), []string{task.ID}) {
+		setNoStoreHeaders(w)
+		kernel.WriteJSON(w, http.StatusAccepted, map[string]any{"data": task, "message": ""})
+		return
+	}
+	_ = d.Store.FailTestTask(r.Context(), task.ID, testDraftWorkerUnavailableMessage)
+	kernel.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"message": testDraftWorkerUnavailableMessage})
 }
 
 // ---- session routes ----

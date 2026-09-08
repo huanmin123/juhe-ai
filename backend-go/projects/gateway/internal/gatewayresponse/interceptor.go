@@ -12,9 +12,9 @@ import (
 // ParseSseEventText / ExtractSseSemanticFrames）+ 本包策略匹配，命中即在写入
 // 下游前拦截。
 //
-// 说明：G02 的 gatewayopenai.ResponseInspectionBuffer 构造器当前未把
-// options.Policies 挂到实例上（策略永不触发），且该包不在本工作包可修改范围；
-// 因此本拦截器自包含事件分帧逻辑，逐事件透传原始字节，保持字节序一致。
+// 说明：本拦截器自包含事件分帧逻辑，逐事件透传原始字节，保持字节序一致；
+// gatewayopenai.ResponseInspectionBuffer 是同源的 G02 边界实现（已挂载
+// 策略），其可见输出快路径见该包 buffer.go。
 type OpenAIStreamInterceptor struct {
 	policies           []RuntimeResponseInspectionPolicy
 	context            *ResponseInspectionRuntimeContext
@@ -131,9 +131,42 @@ func (i *OpenAIStreamInterceptor) TakeObservations() []ResponseInspectionDecisio
 }
 
 func (i *OpenAIStreamInterceptor) isCodexCompactionContext() bool {
-	return i.context != nil &&
+	// 对齐 shouldInspectCodexCompactionContract：契约帧只挂在 responses 端点
+	// 族，且要求 codex 画像 + codex_responses 兼容 + 期望 compaction。
+	return i.endpointFamily == gatewayproto.EndpointFamilyResponses &&
+		i.context != nil &&
 		i.context.ClientProfile == "codex" &&
 		i.context.AccountClientCompatibility == "codex_responses"
+}
+
+// mountResponseInspectionInterceptor 对齐 Node pipeUpstreamStream 的拦截器
+// 装配条件（stream.ts:215-219）：
+//
+//	hasPolicies || (interpretProtocolFailures && clientProfile != 'generic_anthropic' && clientRetryEnabled)
+//
+// 策略存在即启用；无策略时要求协议解释开启、客户端画像非 generic_anthropic
+// 且预提交客户端重试开启。Codex compaction 契约帧经
+// ResponseInspectionContext.CodexCompactionExpected 启用。
+// 归档中 driver.sseResponseInspectionFailureEvent === 'none' 的失败事件抑制
+// 分支依赖 buildFailureEvent 注入口，Go 拦截器面暂未提供（当前唯一驱动
+// openai 返回 "response.failed"，分支不可达）。
+func mountResponseInspectionInterceptor(options StreamPipeOptions, driver StreamDriver) StreamInterceptor {
+	hasPolicies := len(options.ResponseInspectionPolicies) > 0
+	context := options.ResponseInspectionContext
+	enabled := hasPolicies ||
+		(options.InterpretProtocolFailures &&
+			(context == nil || context.ClientProfile != "generic_anthropic") &&
+			options.ClientRetryEnabled)
+	if !enabled {
+		return nil
+	}
+	return NewOpenAIStreamInterceptor(OpenAIStreamInterceptorOptions{
+		ClientRetryEnabled: options.ClientRetryEnabled,
+		Policies:           options.ResponseInspectionPolicies,
+		EndpointFamily:     driver.ResponseInspectionEndpointFamily(options.EndpointFamily),
+		Context:            context,
+		CompactionExpected: context != nil && context.CodexCompactionExpected,
+	})
 }
 
 // shiftEvent 取出一个完整 SSE 事件（含边界空行）；未完则返回 nil。

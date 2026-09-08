@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -256,3 +258,43 @@ func TestRejectGatewayAuthorizationQuotaIfExceeded(t *testing.T) {
 func strPtr(value string) *string { return &value }
 
 func boolRef(value bool) *bool { return &value }
+
+// D-129（BUG-0175）：在途预留必须携带请求侧估算事实；零值 Model/
+// rawBodyBytes/maxOutputTokens 会让估算器按「无估算」短路（不预留也不 429）。
+func TestGatewayInflightEstimateRequestInputCarriesRequestFacts(t *testing.T) {
+	request := NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+	model := "gpt-4o"
+	maxOutputTokens := 256
+	request.Body = &gatewaybody.Request{
+		State: &gatewaybody.BodyState{
+			RawBodyBytes:    512,
+			ServiceTier:     "default",
+			Model:           &model,
+			MaxOutputTokens: &maxOutputTokens,
+		},
+	}
+	input := APIKeyQuotaInput{
+		Req:          request,
+		APIKeyRecord: &gatewayruntimecache.GatewayAPIKeyRow{SystemAccountID: "sys"},
+		UsageContext: GatewayFailureUsageContext{ProviderCode: "openai"},
+	}
+	estimate := gatewayInflightEstimateRequestInput(input)
+	if estimate.Model != "gpt-4o" ||
+		estimate.RawBodyBytes != 512 ||
+		estimate.ServiceTier != "default" ||
+		!estimate.HasMaxOutputTokens ||
+		estimate.MaxOutputTokens != 256 ||
+		estimate.ProviderCode != "openai" ||
+		estimate.SystemAccountID != "sys" {
+		t.Fatalf("estimate = %+v, want the request facts carried through", estimate)
+	}
+
+	// A request without a captured body state keeps the zero-value facts and
+	// lets gatewayquota apply the archive fallbacks (default 4096 output
+	// tokens, at-least-one input token).
+	input.Req.Body = nil
+	empty := gatewayInflightEstimateRequestInput(input)
+	if empty.RawBodyBytes != 0 || empty.HasMaxOutputTokens || empty.ServiceTier != "" {
+		t.Fatalf("empty-state estimate = %+v, want the zero-value defaults", empty)
+	}
+}

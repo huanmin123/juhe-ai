@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
 
 // 组合根级测试：seed → 跑一轮 → 断言删了该删的/留了该留的。
@@ -422,7 +424,9 @@ func seedDeletedAccount(t *testing.T, dir string) {
 		"CREATE TABLE IF NOT EXISTS account_supported_models (account_id TEXT)",
 		"CREATE TABLE IF NOT EXISTS account_model_mappings (account_id TEXT)",
 		"CREATE TABLE IF NOT EXISTS account_tag_bindings (account_id TEXT)",
-		"CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (scope_type TEXT, scope_id TEXT, source_type TEXT, source_id TEXT)",
+		// 完整列集（DerivedWindows 接线后 listQuotaHourlyWindowScopeBindings
+		// 按 system_account_id/window_hours 读取）。
+		"CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (system_account_id TEXT NOT NULL DEFAULT '', scope_type TEXT NOT NULL DEFAULT '', scope_id TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL DEFAULT '', window_hours INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')",
 		"CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (account_id TEXT PRIMARY KEY, current_version INTEGER, reserved_at TEXT)",
 		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (
 			event_id TEXT PRIMARY KEY, account_id TEXT, input_version INTEGER, event_kind TEXT, reason TEXT,
@@ -497,10 +501,23 @@ func TestWorkerRetentionRecordCleanupRetryRound(t *testing.T) {
 	mustExec(t, stats,
 		"DROP TABLE IF EXISTS usage_stats_totals",
 		"CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, request_count REAL DEFAULT 0, success_count REAL DEFAULT 0, error_count REAL DEFAULT 0, input_tokens REAL DEFAULT 0, output_tokens REAL DEFAULT 0, cache_read_tokens REAL DEFAULT 0, cache_read_cost_usd REAL DEFAULT 0, cache_write_tokens REAL DEFAULT 0, cache_write_1h_tokens REAL DEFAULT 0, cache_write_cost_usd REAL DEFAULT 0, thinking_tokens REAL DEFAULT 0, input_image_tokens REAL DEFAULT 0, output_image_tokens REAL DEFAULT 0, total_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0, duration_ms_count REAL DEFAULT 0, duration_ms_max REAL DEFAULT 0, first_token_ms_sum REAL DEFAULT 0, first_token_ms_count REAL DEFAULT 0, first_token_ms_max REAL DEFAULT 0, last_used_at TEXT, last_error_at TEXT, updated_at TEXT)",
-		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count) VALUES ('sys_a', 'api_key', 'key1', 1)`,
+		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count) VALUES ('sys_a', 'api_key', 'key1', 1)`)
+	// 清理链末端 refreshDerivedWindows 跑 statsagg 的派生窗口重算（D-48 接线
+	// 后必经）：配额小时窗全量重建 + RunStages 全阶段都要求完整列集，而
+	// statsCleanupTables 只建清理探测用的简化列。DROP 后用 statsagg 测试
+	// schema 重建升级（SQLiteTestSchema 为 CREATE IF NOT EXISTS，只影响已
+	// DROP 的表）。
+	mustExec(t, stats, statsaggUpgradedDropStatements()...)
+	for _, statement := range statsagg.SQLiteTestSchema {
+		if _, err := stats.Exec(statement); err != nil {
+			t.Fatalf("exec statsagg schema: %v", err)
+		}
+	}
+	mustExec(t, stats,
+		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, updated_at) VALUES ('sys_a', 'api_key', 'key1', 1, '2020-01-01T00:00:00.000Z')`,
 		`INSERT INTO account_quality_dirty_accounts (account_id, first_dirty_at, updated_at) VALUES ('acc-1', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`,
-		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'u-x', 'usage_shard', '20200101:s01', 'usage_stats_aggregation')`,
-		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'u-x', 'usage_shard', '20200101:s01', 'client_ip_stats_aggregation')`)
+		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name, updated_at) VALUES ('2099-01-01T00:00:00.000Z', 'u-x', 'usage_shard', '20200101:s01', 'usage_stats_aggregation', '2020-01-01T00:00:00.000Z')`,
+		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name, updated_at) VALUES ('2099-01-01T00:00:00.000Z', 'u-x', 'usage_shard', '20200101:s01', 'client_ip_stats_aggregation', '2020-01-01T00:00:00.000Z')`)
 	// 重建带主键的 deductions 表（前面仅建了 updated_at 列）。
 	mustExec(t, stats,
 		"DROP TABLE usage_record_cleanup_deductions",
@@ -551,6 +568,21 @@ func TestWorkerRetentionRecordCleanupRetryRound(t *testing.T) {
 	mustExec(t, dataset,
 		`INSERT INTO api_key_record_cleanup_targets (api_key_id, system_account_id, created_at, updated_at) VALUES ('key1', 'sys_a', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`,
 		`INSERT INTO account_record_cleanup_targets (account_id, system_account_id, created_at, updated_at) VALUES ('acc-1', 'sys_a', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`)
+
+	// 清理链末端 refreshDerivedWindows 读业务库绑定表（D-48 接线后必经）；
+	// 空绑定表即可完成重建（清空窗口行）。
+	businessBindings := openTestSQLite(t, filepath.Join(dir, "business.sqlite3"))
+	mustExec(t, businessBindings,
+		`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (
+			system_account_id TEXT NOT NULL,
+			scope_type TEXT NOT NULL,
+			scope_id TEXT NOT NULL DEFAULT '',
+			source_type TEXT NOT NULL,
+			source_id TEXT NOT NULL,
+			window_hours INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (system_account_id, scope_type, scope_id))`)
 
 	assembly, err := buildWorkerAssembly(retentionTestConfig(dir), slog.Default())
 	if err != nil {

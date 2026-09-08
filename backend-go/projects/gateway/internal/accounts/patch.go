@@ -47,17 +47,22 @@ type PatchResult struct {
 // pointers mean the field was absent (undefined vs null distinction follows
 // the Node optional/nullable schema pairs).
 type PatchInput struct {
-	ExpectedConfigRevision      int64
-	Name                        *string
-	Notes                       *string
-	Status                      *string
-	ConcurrencyLimit            *int
-	Priority                    *int
-	SuperPriorityEnabled        *bool
-	FallbackEnabled             *bool
-	Schedulable                 *bool
-	Credentials                 Credentials
-	CredentialsPresent          bool
+	ExpectedConfigRevision int64
+	Name                   *string
+	Notes                  *string
+	Status                 *string
+	ConcurrencyLimit       *int
+	Priority               *int
+	SuperPriorityEnabled   *bool
+	FallbackEnabled        *bool
+	Schedulable            *bool
+	Credentials            Credentials
+	CredentialsPresent     bool
+	// CredentialsPatch marks the credentialsPatch input (BUG-0175 D-164):
+	// null patch keys delete fields from the current record, while the legacy
+	// credentials input pre-merges through mergeAccountCredentialsForUpdate
+	// (D-165 pool replacement).
+	CredentialsPatch            bool
 	SupportedModels             []string
 	SupportedModelsPresent      bool
 	HealthCheckModel            *string
@@ -600,12 +605,15 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err := DecryptJSON(s.secret, row.credentialsEncrypted, &current); err != nil {
 			return nil, err
 		}
-		next := Credentials{}
-		for key, value := range current {
-			next[key] = value
-		}
-		for key, value := range input.Credentials {
-			next[key] = value
+		// 归档 patchOwnerAccountInTransaction（account-management-patch
+		// .repository.ts:338-345）：credentialsPatch 走 null=删键合并，
+		// legacy credentials 走 mergeAccountCredentialsForUpdate 预合并
+		// （api_key 单 Key 替换清空旧池，BUG-0175 D-164/D-165）。
+		var next Credentials
+		if input.CredentialsPatch {
+			next = applyAccountCredentialsPatch(current, input.Credentials)
+		} else {
+			next = mergeAccountCredentialsForUpdate(row.accountType, current, input.Credentials)
 		}
 		normalized, err := NormalizeAccountCredentialsForWrite(row.accountType, next, &EndpointModeDefaultContext{
 			ProviderCode:              row.providerCode,

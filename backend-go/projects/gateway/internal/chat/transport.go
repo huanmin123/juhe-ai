@@ -535,6 +535,11 @@ type ProviderModelCatalogItem struct {
 	InputModalities           []string `json:"inputModalities,omitempty"`
 	OutputModalities          []string `json:"outputModalities,omitempty"`
 	SupportedTools            []string `json:"supportedTools,omitempty"`
+	// GenerationParameterCapabilities mirrors generationParameterCapabilities
+	// (BUG-0175 D-185). Nil rows derive the same table from
+	// providerCode/model/maxOutputTokens, exactly like the archive catalog
+	// snapshot assembly.
+	GenerationParameterCapabilities map[string][]ChatGenerationParameterCapability `json:"generationParameterCapabilities,omitempty"`
 }
 
 var chatReasoningEffortSet = map[string]bool{"minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
@@ -602,6 +607,9 @@ func buildChatModelOptions(modelIDs []string, catalog []ProviderModelCatalogItem
 			InputModalities:           intersectStringCapabilityLists(mapItems(items, func(item ProviderModelCatalogItem) []string { return nilToEmpty(item.InputModalities) })),
 			OutputModalities:          intersectStringCapabilityLists(mapItems(items, func(item ProviderModelCatalogItem) []string { return nilToEmpty(item.OutputModalities) })),
 			SupportedTools:            intersectStringCapabilityLists(mapItems(items, func(item ProviderModelCatalogItem) []string { return nilToEmpty(item.SupportedTools) })),
+			// BUG-0175 D-185: the per-model generation parameter capability
+			// list (chat-model-options.ts:108 flattenGenerationParameters).
+			GenerationParameters: flattenGenerationParameters(items),
 		}
 		if maxInputTokens != nil && *maxInputTokens > 0 {
 			option.MaxInputTokens = maxInputTokens

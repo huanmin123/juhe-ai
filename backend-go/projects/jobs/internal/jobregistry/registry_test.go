@@ -43,12 +43,37 @@ var nodeScheduledJobNames = []string{
 	"expired-deleted-account-cleanup",
 }
 
+// goAddedScheduledJobNames 是 Go 侧在 Node 31 项之外新增接线的 scheduled
+// 任务。配额小时窗刷新在 Node 不走 backgroundScheduledJobs 注册表（SQLite
+// 由 stats-writer 聚合后内联调用、PG 由 worker 后台循环驱动 refresh...Async），
+// BUG-0175 D-48 修复把它显式登记为 Go 调度任务；除名单外不允许任何其他
+// Go 附加条目。
+var goAddedScheduledJobNames = []string{
+	"usage-quota-hourly-windows-refresh",
+}
+
+// expectedScheduledOrder 合并 Node 名单与 Go 附加任务：附加任务插在
+// authorization-usage-range-windows-refresh 之后，与 ScheduledEntries 的登记
+// 位置一致。
+func expectedScheduledOrder() []string {
+	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames))
+	for _, name := range nodeScheduledJobNames {
+		result = append(result, name)
+		if name == "authorization-usage-range-windows-refresh" {
+			result = append(result, goAddedScheduledJobNames...)
+		}
+	}
+	return result
+}
+
 func TestScheduledRegistryCoversAllNodeJobs(t *testing.T) {
 	entries := ScheduledEntries()
-	if len(entries) != len(nodeScheduledJobNames) {
-		t.Fatalf("scheduled entries=%d want=%d", len(entries), len(nodeScheduledJobNames))
+	want := expectedScheduledOrder()
+	if len(entries) != len(want) {
+		t.Fatalf("scheduled entries=%d want=%d（Node %d 项 + Go 附加 %d 项）",
+			len(entries), len(want), len(nodeScheduledJobNames), len(goAddedScheduledJobNames))
 	}
-	for index, name := range nodeScheduledJobNames {
+	for index, name := range want {
 		if entries[index].JobName != name {
 			t.Fatalf("entry %d = %s want %s", index, entries[index].JobName, name)
 		}

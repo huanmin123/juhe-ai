@@ -131,7 +131,10 @@ func CodexCompactionContractMismatchFrame(input CodexCompactionContractMismatchI
 			itoa(int64(input.OutputItemCount)) + " 个"
 	}
 	return &gatewayproto.SemanticFrame{
-		FrameType:      gatewayproto.FrameTypeError,
+		// Node 以 provenance === 'gateway_protocol_contract' 承载契约帧；Go 的
+		// SemanticFrame 用 FrameType raw_json_path 表示（与本包
+		// MatchRuntimeResponseInspectionPolicy 的契约帧匹配一致）。
+		FrameType:      gatewayproto.FrameTypeRawJSONPath,
 		Protocol:       "openai_v1",
 		EndpointFamily: gatewayproto.EndpointFamilyResponses,
 		Transport:      gatewayproto.ResponseTransport(input.Transport),

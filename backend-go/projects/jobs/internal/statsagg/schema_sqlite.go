@@ -379,6 +379,17 @@ var SQLiteTestSchema = []string{
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, scope_type, scope_id)
 	)`,
+	// 配额小时窗（表结构对齐 maintenance sqlite_schema.go:2675 的 juhe_stats 表；
+	// 消费方 gateway gatewayquota/costs.go 按四列主键读）。
+	`CREATE TABLE IF NOT EXISTS usage_quota_hourly_windows (
+		system_account_id TEXT NOT NULL,
+		scope_type TEXT NOT NULL,
+		scope_id TEXT NOT NULL DEFAULT '',
+		window_hours INTEGER NOT NULL,
+		total_cost_usd REAL NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (system_account_id, scope_type, scope_id, window_hours)
+	)`,
 	// 账户质量/健康
 	`CREATE TABLE IF NOT EXISTS account_quality_minute_stats (
 		account_id TEXT NOT NULL,

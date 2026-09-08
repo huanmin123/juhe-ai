@@ -1168,11 +1168,16 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 		}
 		return nil, nil, err
 	}
-	if err := s.syncQuotaHourlyWindowBinding(ctx, tx, id, ownerID, quotaJSONValue, status == "active", revision); err != nil {
+	bindingUpserted, err := s.syncQuotaHourlyWindowBinding(ctx, tx, id, ownerID, quotaJSONValue, status == "active", revision)
+	if err != nil {
 		return nil, nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, nil, err
+	}
+	// W2-A 待办1：绑定重建后打脏（PG；失败不回滚主写，warn 告警）。
+	if bindingUpserted {
+		s.markQuotaHourlyWindowDirtyScopeAfterCommit(ctx, ownerID, id, revision)
 	}
 	return &CreateResult{
 			ID: id, Key: key, KeyPrefix: keyPrefix, KeySuffix: keySuffix, Revision: revision,
@@ -1402,7 +1407,7 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	if affected, _ := result.RowsAffected(); affected != 1 {
 		return &DeleteResult{}, nil
 	}
-	if err := s.syncQuotaHourlyWindowBinding(ctx, tx, rowID, ownerID, sql.NullString{}, false, isoMillis(s.now())); err != nil {
+	if _, err := s.syncQuotaHourlyWindowBinding(ctx, tx, rowID, ownerID, sql.NullString{}, false, isoMillis(s.now())); err != nil {
 		return nil, err
 	}
 	// Node registers the dataset cleanup target inside the delete transaction
@@ -1465,24 +1470,26 @@ func (s *Store) insertCleanupTarget(ctx context.Context, q queryer, apiKeyID, ow
 // syncQuotaHourlyWindowBinding mirrors
 // syncApiKeyRequestQuotaHourlyWindowScopeBinding: the api_key binding row is
 // replaced; an active key with an enabled hourly quota keeps one row with its
-// window hours, everything else leaves the table clean.
-func (s *Store) syncQuotaHourlyWindowBinding(ctx context.Context, q queryer, apiKeyID, ownerID string, quotaJSON sql.NullString, active bool, timestamp string) error {
+// window hours, everything else leaves the table clean. The bool reports
+// whether a binding row was upserted (the archived PG async arm marks the
+// scope dirty only in that branch, :94-105).
+func (s *Store) syncQuotaHourlyWindowBinding(ctx context.Context, q queryer, apiKeyID, ownerID string, quotaJSON sql.NullString, active bool, timestamp string) (bool, error) {
 	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("request_quota_hourly_window_scope_bindings")+`
 		WHERE source_type = 'api_key' AND source_id = ?`), apiKeyID); err != nil {
-		return err
+		return false, err
 	}
 	if !active {
-		return nil
+		return false, nil
 	}
 	limits, err := ParseQuotaLimitsJSON(quotaJSON.String)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if limits.Hourly == nil || !limits.Hourly.Enabled ||
 		limits.Hourly.Hours < 1 || limits.Hourly.Hours > maxRequestQuotaHourlyWindowHours {
-		return nil
+		return false, nil
 	}
-	_, err = q.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("request_quota_hourly_window_scope_bindings")+`
+	if _, err := q.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("request_quota_hourly_window_scope_bindings")+`
 		(system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at)
 		VALUES (?, 'api_key', ?, 'api_key', ?, ?, ?, ?)
 		ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
@@ -1490,8 +1497,10 @@ func (s *Store) syncQuotaHourlyWindowBinding(ctx context.Context, q queryer, api
 			source_id = excluded.source_id,
 			window_hours = excluded.window_hours,
 			updated_at = excluded.updated_at`),
-		ownerID, apiKeyID, apiKeyID, limits.Hourly.Hours, timestamp, timestamp)
-	return err
+		ownerID, apiKeyID, apiKeyID, limits.Hourly.Hours, timestamp, timestamp); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // normalizeOptionalDescription mirrors normalizeOptionalApiKeyDescription:

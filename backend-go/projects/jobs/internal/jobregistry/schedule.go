@@ -201,6 +201,16 @@ func schedules() map[string]Schedule {
 			PassiveJitter: true, OverlapCoalesce: true, Lane: "stats-heavy", Timeout: 10 * minute,
 			BackoffBase: minute, BackoffMax: 30 * minute, LeaseTTL: 15 * minute,
 		},
+		// 配额小时窗刷新（BUG-0175 D-48 族）：归档未保留 background-jobs.ts
+		// 的原始 scheduler.schedule 实参，参数对齐窗口刷新族惯例放宽：
+		// interval=5min（对齐 usage-overview-windows-refresh 的热窗口节拍，
+		// 满足最小 1h 配额窗口的执法新鲜度）、hasMore 续跑在任务内完成
+		//（timeout 10min 覆盖脏积压排空）。
+		"usage-quota-hourly-windows-refresh": {
+			Interval: 5 * minute, InitialDelay: 50 * second, StablePhaseWindow: 10 * second,
+			PassiveJitter: true, OverlapCoalesce: true, Lane: "stats-heavy", Timeout: 10 * minute,
+			BackoffBase: 30 * second, BackoffMax: 5 * minute, LeaseTTL: 15 * minute,
+		},
 		"usage-stats-consistency-check": {
 			Interval: 60 * minute, InitialDelay: 11 * minute, PassiveJitter: true, LeaseTTL: 5 * minute,
 		},

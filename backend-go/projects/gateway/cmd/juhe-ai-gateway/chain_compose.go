@@ -24,7 +24,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -160,6 +162,23 @@ type chainRuntimeDeps struct {
 	// Node runtimeStateDriver !== 'redis' 分叉）。
 	HealthProbeOutbox   *chainProbeRequestOutboxWriter
 	TurnRetryStateStore gatewaycodex.TurnRetryStateStore
+
+	// ---- W2-C production wiring (BUG-0175)；nil 仅保留给显式关闭开关 /
+	// 组合测试，链条回落 chain_ports.go 的 disabled*/degraded* 直通。 ----
+	// AccountCircuits 是 D-131 账户电路服务（SUSPECT/confirmation/恢复）。
+	AccountCircuits *gatewaycircuit.CircuitService
+	// ClientIPSlots 是 D-109 high_concurrency 分组的 client-IP 并发槽。
+	ClientIPSlots gatewaydispatch.ClientIPConcurrencyAcquirer
+	// KeyModelStore 是 D-133 的 key-model 前台准入状态存储（driver 选择器）。
+	KeyModelStore gatewayaccounteffects.KeyModelRuntimeStore
+	// ProxyHealth 是 D-136 的上游桶健康端口。
+	ProxyHealth gatewaydispatch.ProxyHealthPort
+	// HotQuality 是 D-137 的热质量排序端口。
+	HotQuality gatewaydispatch.HotQualityPort
+	// HotQualityFactory 是 D-137 的 attempt 记账生命周期工厂。
+	HotQualityFactory gatewaydispatch.HotQualityAttemptLifecycleFactory
+	// WakeRecoverableWaiter 绑定半开租约释放 → 恢复等待者唤醒（D-134）。
+	WakeRecoverableWaiter func(runtimeKey string)
 }
 
 // sessionIdentityServices bundles the G14 services with their secret.
@@ -326,8 +345,39 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	engine.Clock = clock
 	engine.Affinity = sessionAffinity
 	engine.Latency = &degradedLatency{}
-	engine.ProxyHealth = &degradedProxyHealth{}
-	engine.HotQuality = &degradedHotQuality{}
+	// D-136（BUG-0175）接线：上游桶健康排序 + 失败记录（nil 保持显式降级）。
+	if deps.ProxyHealth != nil {
+		engine.ProxyHealth = deps.ProxyHealth
+	} else {
+		engine.ProxyHealth = &degradedProxyHealth{}
+	}
+	// D-137（BUG-0175）接线：热质量排序 + attempt 记账生命周期（nil 保持
+	// 显式降级 / 中性 no-op 生命周期）。
+	if deps.HotQuality != nil {
+		engine.HotQuality = deps.HotQuality
+	} else {
+		engine.HotQuality = &degradedHotQuality{}
+	}
+	engine.HotQualityAttemptFactory = deps.HotQualityFactory
+	// D-131（BUG-0175）接线：账户电路生产链（SUSPECT/confirmation/父升级/
+	// 恢复；nil 时引擎保持缺席语义——Node runtime 缺席分叉）。
+	engine.Circuits = deps.AccountCircuits
+	// D-133（BUG-0175）接线：key-model 前台准入 + 状态存储（nil 时按
+	// BypassKeyModelAdmission 语义禁用准入）。
+	if deps.KeyModelStore != nil {
+		engine.KeyModel = chainKeyModelAdmission{}
+		engine.KeyModelStore = deps.KeyModelStore
+	}
+	// D-109（BUG-0175）接线：high_concurrency 分组的 client-IP 并发槽
+	//（nil 时 preparation 的槽获取段不会运行——组合根缺槽即panic 风险，
+	// 故 chainRuntimeServices 保证非 nil）。
+	if deps.ClientIPSlots != nil {
+		engine.ClientIPConcurrency = deps.ClientIPSlots
+	}
+	// D-134（BUG-0175）接线：半开租约释放 → 恢复等待者唤醒。
+	if deps.WakeRecoverableWaiter != nil {
+		gatewaydispatch.SetRecoverableUnavailableRuntimeWaiterNotifier(deps.WakeRecoverableWaiter)
+	}
 	if chainTurnRetry != nil {
 		engine.ClientSourceAvoidance = &chainClientSourceAvoidance{turnRetry: chainTurnRetry}
 	} else {

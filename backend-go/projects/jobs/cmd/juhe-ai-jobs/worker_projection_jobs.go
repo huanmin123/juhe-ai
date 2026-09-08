@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/speedfirstrepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/circuitstore"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/speedfirstrepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 )
 

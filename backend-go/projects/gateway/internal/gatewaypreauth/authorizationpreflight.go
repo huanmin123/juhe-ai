@@ -106,6 +106,10 @@ func (s *Service) RejectGatewayAPIKeyQuotaIfExceeded(ctx context.Context, input 
 	if input.APIKeyRecord == nil || input.Req.InflightQuotaReserved {
 		return false, nil
 	}
+	// D-129（BUG-0175）：在途预留必须携带请求侧估算事实（归档
+	// reserveGatewayApiKeyInflightCost 内部从 req/apiKey 构造 estimate；
+	// Go 拆分后由调用方构造 EstimateRequestInput）。Model/rawBodyBytes/
+	// maxOutputTokens 全零值会让估算器按「无估算」短路——既不预留也不 429。
 	inflightDecision, err := s.InflightQuota.ReserveGatewayCost(ctx, gatewayquota.GatewayReserveInput{
 		APIKey: gatewayquota.APIKeyRow{
 			ID:              input.APIKeyRecord.ID,
@@ -113,6 +117,7 @@ func (s *Service) RejectGatewayAPIKeyQuotaIfExceeded(ctx context.Context, input 
 			QuotaLimitsJSON: derefString(input.APIKeyRecord.QuotaLimitsJSON),
 		},
 		ProviderCode: input.UsageContext.ProviderCode,
+		Estimate:     gatewayInflightEstimateRequestInput(input),
 	})
 	if err != nil {
 		return false, err
@@ -140,6 +145,30 @@ func (s *Service) RejectGatewayAPIKeyQuotaIfExceeded(ctx context.Context, input 
 // APIKeyQuotaExceededMessage mirrors API_KEY_QUOTA_EXCEEDED_MESSAGE via the
 // gatewayquota package constant.
 const APIKeyQuotaExceededMessage = gatewayquota.APIKeyQuotaExceededMessage
+
+// gatewayInflightEstimateRequestInput mirrors the estimate facts
+// reserveGatewayApiKeyInflightCost derives from the request (Node
+// estimateGatewayRequestCostUsd caller): the request model, the body state's
+// rawBodyBytes / serviceTier / maxOutputTokens (falls back to the caller
+// defaults inside gatewayquota when the body state is absent).
+func gatewayInflightEstimateRequestInput(input APIKeyQuotaInput) gatewayquota.EstimateRequestInput {
+	estimate := gatewayquota.EstimateRequestInput{
+		ProviderCode:    input.UsageContext.ProviderCode,
+		SystemAccountID: input.APIKeyRecord.SystemAccountID,
+	}
+	if model, ok := RequestModel(input.Req); ok {
+		estimate.Model = model
+	}
+	if state := input.Req.BodyState(); state != nil {
+		estimate.RawBodyBytes = int64(state.RawBodyBytes)
+		estimate.ServiceTier = state.ServiceTier
+		if state.MaxOutputTokens != nil {
+			estimate.HasMaxOutputTokens = true
+			estimate.MaxOutputTokens = int64(*state.MaxOutputTokens)
+		}
+	}
+	return estimate
+}
 
 // APIKeyQuotaInput mirrors the Node input.
 type APIKeyQuotaInput struct {

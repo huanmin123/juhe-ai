@@ -1,6 +1,7 @@
 package gatewayresponse
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -80,13 +81,16 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 	}
 	capture := NewLimitedCapture(captureLimit)
 	usageTail := NewRollingCapture(NonStreamUsageTailCaptureBytes)
-	inspection := NewLimitedCapture(input.InspectBytes)
 	var result NonStreamPipeResult
 	var firstByteMs *int64
 	transferred := int64(0)
 	committedAny := false
 	inspectionMode := input.InspectBytes > 0
 	bufferOverflow := false
+	// 检查窗口内的原始分片缓冲（整分片保存，超限冲刷时不丢跨界分片的
+	// 尾部字节）。
+	var bufferedChunks [][]byte
+	bufferedBytes := 0
 
 	markFirstByte := func() {
 		if firstByteMs != nil {
@@ -144,15 +148,30 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 		usageTail.Push(chunk)
 
 		if inspectionMode && !bufferOverflow {
-			inspection.Push(chunk)
-			if inspection.IsTruncated() {
-				// 超过检查窗口：冲刷缓冲并转透传（Node inspection window 溢出）。
+			bufferedChunks = append(bufferedChunks, chunk)
+			bufferedBytes += len(chunk)
+			if bufferedBytes > input.InspectBytes {
+				markFirstByte()
 				bufferOverflow = true
 				result.InspectionLimitExceeded = true
-				markFirstByte()
-				if err := writeThrough(inspection.Buffer()); err != nil {
-					return partialFailure(err)
+				if input.RequireFullyBuffered {
+					// requireFullyBuffered=true（协议校验要求完整文档）：超限即
+					// 停止转发，不做边透传；下游零字节，由调用方按“拒绝透传
+					// 未验证正文”收 502（Node validateBufferedJsonProtocolResponse
+					// 的 protocolValidationLimitExceeded 分支）。
+					break
 				}
+				// 超过检查窗口：冲刷完整缓冲字节并转透传，边转发并跳过完整
+				// 语义检查（Node inspection window 溢出）。
+				for _, buffered := range bufferedChunks {
+					if len(buffered) == 0 {
+						continue
+					}
+					if err := writeThrough(buffered); err != nil {
+						return partialFailure(err)
+					}
+				}
+				bufferedChunks = nil
 				continue
 			}
 			continue
@@ -175,11 +194,12 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 		result.UsageTailText = text
 	}
 	result.CaptureTruncated = capture.IsTruncated()
-	if inspectionMode && !bufferOverflow && inspection.Buffer() != nil {
+	if inspectionMode && !bufferOverflow {
 		// 完整缓冲：不写下游，由调用方检查后发送（res.send(completeBody)）。
 		result.FullyBuffered = true
-		result.CapturedBody = inspection.Buffer()
-		result.CapturedBodyText = string(inspection.Buffer())
+		completeBody := bytes.Join(bufferedChunks, nil)
+		result.CapturedBody = completeBody
+		result.CapturedBodyText = string(completeBody)
 	}
 	return result, nil
 }
@@ -275,13 +295,18 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			input.MarkFirstOutput()
 		}
 	} else {
-		pipeResult, pipeErr = PipeNonStreamUpstreamResponse(NonStreamPipeInput{
-			Body:         input.UpstreamResponse.Body,
-			Downstream:   input.Downstream,
-			StartedAtMs:  input.StartedAtMs,
-			CaptureBody:  !input.UpstreamResponse.OK() || input.AuditCapture.ShouldCaptureSuccessPayloads() || responseEndpointFamily == gatewayproto.EndpointFamilyResponses,
-			InspectBytes: NonStreamResponseInspectionMaxBytes,
-			Signal:       input.Signal,
+		// Node inspectJsonResponse（finalization.ts:944-949）：上游错误体、协议
+		// 校验路径，或 JSON 内容类型且策略/语义要求缓冲时才走有界检查缓冲；
+		// 其余正文走纯透传管道（如 audio/speech 二进制），不再无条件 1MB 缓冲。
+		inspectJSON := !input.UpstreamResponse.OK() || protocolValidationEnabled ||
+			(isOpenAIJSONResponseContentType(input.UpstreamResponse.Header.Get("Content-Type")) &&
+				shouldBufferNonStreamJSONResponse(input))
+		pipeSpec := NonStreamPipeInput{
+			Body:        input.UpstreamResponse.Body,
+			Downstream:  input.Downstream,
+			StartedAtMs: input.StartedAtMs,
+			CaptureBody: !input.UpstreamResponse.OK() || input.AuditCapture.ShouldCaptureSuccessPayloads() || responseEndpointFamily == gatewayproto.EndpointFamilyResponses,
+			Signal:      input.Signal,
 			PrepareDownstream: func() {
 				prepareUpstreamResponseForDownstream(input.Downstream, input.UpstreamResponse, false)
 				input.DownstreamCommitState.MarkTransportCommitted(0)
@@ -305,7 +330,13 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				}
 			},
 			NowMs: nowMsOf(&input),
-		})
+		}
+		if inspectJSON {
+			pipeSpec.InspectBytes = NonStreamResponseInspectionMaxBytes
+			// Node requireFullyBuffered: protocolValidationEnabled。
+			pipeSpec.RequireFullyBuffered = protocolValidationEnabled
+		}
+		pipeResult, pipeErr = PipeNonStreamUpstreamResponse(pipeSpec)
 	}
 	if pipeErr != nil {
 		return input.handleNonStreamPipeError(pipeErr)
@@ -320,17 +351,36 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		responseBodyText = ""
 	}
 
-	// 2xx 协议校验：要求完整缓冲；未通过时按上游协议失败终态 502 收尾。
-	if protocolValidationEnabled && pipeResult.FullyBuffered && !pipeResult.InspectionLimitExceeded {
+	// 完整缓冲与协议校验的提交契约（finalization.ts:1007-1086）：
+	// - 协议校验开启且超过验证窗口：管道已停止转发，按“拒绝透传未验证正文”
+	//   以 502 协议诊断收尾（validateBufferedJsonProtocolResponse 的
+	//   protocolValidationLimitExceeded 分支）。
+	// - 协议校验开启且完整缓冲：校验通过后发送完整正文（res.send(downstreamBody)）。
+	// - 协议校验关闭但完整缓冲（上游 4xx/5xx 错误体、策略要求缓冲的小 2xx）：
+	//   原样发送缓冲正文，客户端收到上游状态与正文（D-108 空 200 修复）。
+	// - 非必需缓冲超限：管道已边转发，仅记录检查省略告警。
+	if protocolValidationEnabled && pipeResult.InspectionLimitExceeded {
 		parsedForValidation := ParseGatewayNonStreamJsonBody(responseBodyText, len(responseBodyText) > 0, input.UpstreamResponse.Header)
-		if failure := ValidateBufferedJsonProtocolResponse(parsedForValidation, true, false, string(responseEndpointFamily), LowercasedRequestPath(input.Req.PathAndQuery())); failure != nil {
-			return input.finalizeBufferedJSONProtocolFailure(failure, parsedForValidation, pipeResult, responseBody, responseBodyText, driver)
+		// limitExceeded=true 时 ValidateBufferedJsonProtocolResponse 必返回失败。
+		failure := ValidateBufferedJsonProtocolResponse(parsedForValidation, true, true, string(responseEndpointFamily), LowercasedRequestPath(input.Req.PathAndQuery()))
+		return input.finalizeBufferedJSONProtocolFailure(failure, parsedForValidation, pipeResult, responseBody, responseBodyText, driver)
+	}
+	if pipeResult.FullyBuffered {
+		if protocolValidationEnabled {
+			parsedForValidation := ParseGatewayNonStreamJsonBody(responseBodyText, len(responseBodyText) > 0, input.UpstreamResponse.Header)
+			if failure := ValidateBufferedJsonProtocolResponse(parsedForValidation, true, false, string(responseEndpointFamily), LowercasedRequestPath(input.Req.PathAndQuery())); failure != nil {
+				return input.finalizeBufferedJSONProtocolFailure(failure, parsedForValidation, pipeResult, responseBody, responseBodyText, driver)
+			}
 		}
-		// 检查通过：发送完整正文（Node res.send(downstreamBody)）。
+		// 检查通过（或校验关闭）：发送完整正文（Node res.send(downstreamBody)）。
+		if pipeResult.FirstByteMs == nil {
+			value := nowMsOf(&input)() - input.StartedAtMs
+			pipeResult.FirstByteMs = &value
+		}
 		forwardInput := NonStreamPipeInput{
-			Downstream:   input.Downstream,
-			StartedAtMs:  input.StartedAtMs,
-			Signal:       input.Signal,
+			Downstream:  input.Downstream,
+			StartedAtMs: input.StartedAtMs,
+			Signal:      input.Signal,
 			PrepareDownstream: func() {
 				prepareUpstreamResponseForDownstream(input.Downstream, input.UpstreamResponse, false)
 				input.DownstreamCommitState.MarkTransportCommitted(0)
@@ -344,6 +394,14 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			return UpstreamResponseHandlingResult{}, err
 		}
 		markFirstOutputOnce(&firstOutputMarked, input.MarkFirstOutput)
+	} else if pipeResult.InspectionLimitExceeded {
+		input.logger().Warn("gateway_non_stream_response_inspection_omitted", map[string]any{
+			"accountId":        input.Account.GetID(),
+			"statusCode":       input.UpstreamResponse.Status,
+			"transferredBytes": pipeResult.TransferredBytes,
+			"inspectBytes":     NonStreamResponseInspectionMaxBytes,
+			"endpoint":         input.UsageContext.Endpoint,
+		}, "网关非流式 JSON 响应超过检查窗口，已边转发并跳过完整语义检查")
 	}
 	// Responses 根节点失败终态扫描。
 	responsesFailedTerminal := transportResponseSuccessful &&

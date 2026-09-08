@@ -139,5 +139,10 @@ func (s *Store) ReturnGroupForGrantee(ctx context.Context, groupID, granteeUserI
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// Post-commit invalidation fan-out with the returned reason
+	// (return.repository.ts:340/:381-384): the group return only commits when
+	// the returnable receipt resolved, matching the archive's `if
+	// (authorization)` guard.
+	s.invalidateAfterBusinessWrite(ctx, invalidationReasonReturned)
 	return &receipt, nil
 }

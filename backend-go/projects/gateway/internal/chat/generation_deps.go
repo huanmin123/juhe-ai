@@ -151,7 +151,9 @@ func normalizeProviderToken(value string) string {
 }
 
 // constrainChatModelOptionForAccounts mirrors constrainChatModelOptionForAccounts
-// (protocol filtering; generation parameter capabilities are validated per-route).
+// (chat.routes.ts:1669-1689): the protocol filter narrows to routes with at
+// least one supporting account, and the generation parameter capabilities are
+// the per-protocol route constraint intersection (BUG-0175 D-185).
 func constrainChatModelOptionForAccounts(option *ChatModelOption, model string, accounts []ChatTransportAccount, requestedProtocols []ChatTransportProtocol) *ChatModelOption {
 	protocols := option.SupportedAPIProtocols
 	if requestedProtocols != nil {
@@ -161,19 +163,27 @@ func constrainChatModelOptionForAccounts(option *ChatModelOption, model string, 
 		}
 	}
 	supported := []string{}
+	capabilityLists := [][]ChatGenerationParameterCapability{}
 	for _, protocol := range protocols {
 		if protocol != "chat_completions" && protocol != "responses" {
 			continue
 		}
+		routeAccounts := []ChatTransportAccount{}
 		for _, account := range accounts {
 			if chatTransportAccountSupportsProtocol(account, model, ChatTransportProtocol(protocol)) {
-				supported = append(supported, protocol)
-				break
+				routeAccounts = append(routeAccounts, account)
 			}
 		}
+		if len(routeAccounts) == 0 {
+			continue
+		}
+		supported = append(supported, protocol)
+		capabilityLists = append(capabilityLists, constrainChatGenerationParametersForRoute(
+			option.GenerationParameters, model, ChatTransportProtocol(protocol), routeAccounts))
 	}
 	constrained := *option
 	constrained.SupportedAPIProtocols = supported
+	constrained.GenerationParameters = intersectGenerationParameterCapabilityLists(capabilityLists)
 	return &constrained
 }
 

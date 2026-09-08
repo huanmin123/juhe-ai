@@ -26,6 +26,7 @@ import (
 	businesssettings "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/delegated"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -604,6 +605,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// runtime sync only through this composition-root port; PostgreSQL keeps
 	// its existing bulk transaction path inside accounts.Delete.
 	accountStore.SetDeletedResourceGrantRevoker(authzStore)
+	// BUG-0175 追加接线（W2-B 完工后移交的 compose 职责）：M11 账户实例归还
+	// 路由（POST /{id}/return-authorization）的终态授权归还写此前生产不可达
+	//（端口只有 m11_test 在用，组装根从未注入 → 归还路由恒 404）。接到
+	// authz Store.Return 后自动继承其写后失效扇出（AttachWriteInvalidator：
+	// group-stats 脏标记 + K5 gateway runtime / api-key validation /
+	// authorization quota 主题）。
+	accountStore.SetAuthorizationGrantReturner(authzGrantReturner{store: authzStore})
 	// 手动账号测试执行链装配（去跨进程战役：原 jobs internal-api loopback
 	// HTTP 桥删除，执行链抽为共享 backend-go-platform/accounttest 包后在
 	// gateway 进程内装配单持有者队列，见 compose_account_test_local.go）。
@@ -814,6 +822,15 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// authorization-options (authz), proxies (proxyprofiles) and the
 	// table-monitor family (cleanup POST dispatches through the durable
 	// record_maintenance_jobs table; jobs-side drain stays jobs-owned).
+	// BUG-0175 (D-56/D-65/D-115): the authz committed-write invalidation
+	// fan-out (refreshAfterResourceAuthorizationBusinessWrite /
+	// refreshAfterResourceAuthorizationReturnedWrite) wires the same C9 pair
+	// systemteams consumes: the shared groupdirtycursor marker for the
+	// group-stats arm and the K5 bus for the gateway runtime / API-key
+	// validation / authorization quota topics. Both ports are nil-tolerant;
+	// the accounts return-authorization route inherits the fan-out through
+	// the authz Store.Return port it already delegates to.
+	authzStore.AttachWriteInvalidator(groupStatsDirtyMarker, bus)
 	authzDeps := &authz.Deps{Store: authzStore, Sink: sink, Auth: authDeps}
 	authzDeps.Mount(kern)
 	authzDeps.MountAuthorizationOptions(kern)
@@ -1062,6 +1079,24 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// Codex 用量响应头持久化（compose_codex_usage_headers.go）：
 			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道。
 			CodexUsageHeadersDispatcher: newCodexUsageHeadersChannelDispatcher(recordMaintenanceDispatch),
+			// W2-C（BUG-0175）生产接线：D-109 client-IP 并发槽、D-131 账户
+			// 电路、D-133 key-model 前台准入存储、D-134 本地屏蔽端口 +
+			// 半开租约唤醒、D-136 上游桶健康、D-137 热质量排序与 attempt
+			// 记账。各服务在 chainRuntimeServices 中按驱动轴分叉；nil 仅
+			// 出现在组合测试（链条回落 disabled*/degraded* 显式降级）。
+			ClientIPSlots:     newChainClientIPConcurrency(chainServices.ClientIPSlots),
+			AccountCircuits:   chainServices.AccountCircuits,
+			KeyModelStore:     chainServices.KeyModelStore,
+			ProxyHealth:       chainProxyHealthPort{service: chainServices.ProxyHealth},
+			HotQuality:        &chainHotQualityPort{runtime: chainServices.HotQuality},
+			HotQualityFactory: newChainHotQualityLifecycleFactory(chainServices.HotQuality),
+			Suppression: chainSuppressionPort{
+				store:  chainServices.SuppressionStore,
+				waiter: chainServices.SuppressionWaiter,
+			},
+			WakeRecoverableWaiter: func(runtimeKey string) {
+				gatewaycircuit.DefaultRecoverableWaitCoordinator.NotifyOneForRuntimeKey(runtimeKey)
+			},
 		})
 		if chainAssembleErr != nil {
 			chainServices.Close()

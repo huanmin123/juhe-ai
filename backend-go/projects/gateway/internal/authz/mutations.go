@@ -281,6 +281,11 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// Post-commit invalidation fan-out (write.repository.ts:343-345): the
+	// archive refreshes only when created || previousStatus; the idempotent
+	// identical re-create returned early above, so every commit reaching this
+	// point is a create or a revive.
+	s.invalidateAfterBusinessWrite(ctx, invalidationReasonCreated)
 	summary, limits, err := s.findSummaryWithLimits(ctx, grantID)
 	if err != nil {
 		return nil, err
@@ -586,6 +591,10 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// Post-commit invalidation fan-out (write.repository.ts:769/:812-814):
+	// only the updated outcome reaches the commit — unchanged returned before
+	// the write and Node refreshes only on kind 'updated'.
+	s.invalidateAfterBusinessWrite(ctx, invalidationReasonUpdated)
 	summary := next.summary()
 	return &PatchOutcome{Status: "updated", Result: &summary,
 		Limits: decodeAuthorizationLimits(grantLimitsText(next.LimitsJSON))}, nil
@@ -658,6 +667,10 @@ func (s *Store) RevokeForOwner(ctx context.Context, id, expectedUpdatedAt, actor
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// Post-commit invalidation fan-out (write.repository.ts:543/:573-575):
+	// only the updated outcome reaches the commit — unchanged/not_found
+	// returned before the write.
+	s.invalidateAfterBusinessWrite(ctx, invalidationReasonRevoked)
 	summary := next.summary()
 	previous := grant.Status
 	return &TerminalMutation{Status: "updated", Result: &summary, PreviousStatus: &previous}, nil
@@ -751,6 +764,12 @@ func (s *Store) Return(ctx context.Context, id, expectedUpdatedAt, granteeUserID
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// Post-commit invalidation fan-out with the returned reason
+	// (return.repository.ts:157/:186-188): only the updated outcome reaches
+	// the commit. This single write point also carries the accounts
+	// return-authorization route, which delegates the terminal write through
+	// the AuthorizationGrantReturner port (m11_return_authorization.go).
+	s.invalidateAfterBusinessWrite(ctx, invalidationReasonReturned)
 	summary, err := s.Find(ctx, id)
 	if err != nil {
 		return nil, err

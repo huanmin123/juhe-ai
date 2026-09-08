@@ -89,6 +89,11 @@ func newStreamPipe(input PipeUpstreamStreamInput) *streamPipe {
 	if driver == nil {
 		driver = DefaultOpenAIStreamDriver()
 	}
+	// Node pipeUpstreamStream 在管道内装配检查拦截器（stream.ts:215-233）：
+	// 调用方未显式注入时按策略/重试条件装配，策略流式拦截接入生产管线。
+	if options.Interceptor == nil {
+		options.Interceptor = mountResponseInspectionInterceptor(options, driver)
+	}
 	commit := options.DownstreamCommitState
 	if commit == nil {
 		commit = &DownstreamCommitState{}

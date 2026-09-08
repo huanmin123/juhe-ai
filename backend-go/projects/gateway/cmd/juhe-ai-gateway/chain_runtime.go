@@ -24,10 +24,12 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
@@ -81,6 +83,27 @@ type chainRuntimeServices struct {
 	// (gatewayaccounteffects); the runtime-reset bridge reaches the failure
 	// guard / transient tombstone clears through it.
 	AccountAPIKeyGuard *gatewayaccounteffects.AccountAPIKeyFailureGuard
+
+	// ---- W2-C production wiring (BUG-0175: D-109/D-110/D-131/D-133/
+	// D-134/D-136/D-137/D-129). Every field is driver-forked in
+	// composeChainRuntimeServices; the chain assembly degrades the absent
+	// ones exactly like the Node missing-runtime branches. ----
+	// AccountCircuits is the D-131 account-circuit service.
+	AccountCircuits *gatewaycircuit.CircuitService
+	// ClientIPSlots is the D-109 high-concurrency client-IP slot family.
+	ClientIPSlots *gatewayclientip.ClientIPConcurrency
+	// SuppressionStore is the D-134 local account suppression state.
+	SuppressionStore *gatewaycircuit.LocalSuppressionStore
+	// SuppressionWaiter is the D-134 recoverable wait engine behind the
+	// dispatch suppression wait.
+	SuppressionWaiter *gatewaycircuit.PreAuthRecoverableWait
+	// ProxyHealth is the D-136 upstream bucket health service.
+	ProxyHealth *gatewayproxyhealth.ProxyHealthService
+	// HotQuality is the D-137 hot-quality runtime (store pair per driver).
+	HotQuality *gatewayhotquality.GatewayHotQualityRuntime
+	// KeyModelStore is the D-133 key-model foreground admission store
+	// (selected eagerly per runtime state driver).
+	KeyModelStore gatewayaccounteffects.KeyModelRuntimeStore
 
 	closeFuncs []func()
 }
@@ -261,19 +284,29 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	services.Accounts = selector
 	models.SetAccountsSelector(selector)
+	// D-110（BUG-0175）：G08 动态路由选择器（Node
+	// api-key-group-route-selector.service.ts）。redis 驱动共享轮转/权重
+	// 计数器；非动态模式保持存储顺序（selector 语义）。
+	routeSelector := gatewayrouting.NewAPIKeyGroupRouteSelector(cfg.RuntimeStateDriver, gatewayrouting.NewRedisRouteStateCounter(cfg.RedisStateURL), cfg.RedisStateURL)
 	catalogSource, catalogErr := newChainCatalogSource(composed.db, composed.pgDialect)
 	if catalogErr != nil {
 		return nil, fmt.Errorf("create gateway model catalog source: %w", catalogErr)
 	}
 	models.SetCatalogSource(catalogSource)
 	// Live concurrency stays process-local (Node standalone semantics; the
-	// redis-driver live counter lands with the concurrency flip slice).
-	models.SetConcurrencySource(gatewayclientip.NewMemoryAccountConcurrency(nil))
+	// redis-driver live counter lands with the concurrency flip slice). One
+	// tracker instance is shared by the cache overlay, the dispatch store and
+	// the suppression precheck projection.
+	concurrencyTracker := gatewayclientip.NewMemoryAccountConcurrency(nil)
+	models.SetConcurrencySource(concurrencyTracker)
 	cache, err := gatewayruntimecache.New(models, gatewayruntimecache.Options{
 		Bus:                     composed.Bus,
 		Logger:                  chainCacheEventLogger{inner: slog.Default()},
 		UpdateAgeOnGet:          cfg.RuntimeMode == "standalone",
 		SyncInvalidationsOnRead: redisState,
+		// D-110: the dynamic group-binding orderer seam (nil would keep the
+		// stored binding order for every dynamic strategy mode).
+		Orderer: newChainGroupBindingOrderer(routeSelector),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create gateway runtime cache: %w", err)
@@ -408,6 +441,10 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	inflightQuota, err := gatewayquota.NewInflightQuotaService(gatewayquota.InflightQuotaConfig{
 		APIKeys:   apiKeyQuota,
 		Estimator: newChainCostEstimator(cache),
+		// D-129（BUG-0175）：快照 miss 的精确成本兜底走进程内 stats 数据库
+		// 直读（Node 为 db-service IPC；Go 无跨进程，同一进程共享数据库），
+		// 避免「快照恒 miss → 保护性恒 429」的反向破坏。
+		DBService: newChainQuotaDBService(apiKeyQuota, authzQuota),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create inflight quota service: %w", err)
@@ -427,6 +464,83 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		// nil-store behaviour).
 		services.Affinity = gatewaygemini.NewInteractionAffinity(nil)
 	}
+
+	// ---- W2-C production wiring (BUG-0175) ----
+	// D-109：high_concurrency 分组的 client-IP 并发槽（Node
+	// client-ip-concurrency.service.ts；redis 驱动共享 180s TTL 槽）。
+	clientIPSlots, slotsErr := gatewayclientip.NewClientIPConcurrency(gatewayclientip.ClientIPConcurrencyOptions{
+		RuntimeStateDriver: cfg.RuntimeStateDriver,
+		StateRedisURL:      cfg.RedisStateURL,
+		PolicyDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
+			MaxQueueSize:        cfg.ConcurrencyGlobalMax,
+			PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
+		},
+	})
+	if slotsErr != nil {
+		return nil, fmt.Errorf("create client-ip concurrency slots: %w", slotsErr)
+	}
+	services.ClientIPSlots = clientIPSlots
+	services.closeFuncs = append(services.closeFuncs, clientIPSlots.Close)
+
+	// D-131：账户电路服务（Node GatewayAccountCircuitService 单例 fork；
+	// SUSPECT/confirmation/父升级/恢复状态机的存储随 runtimeStateDriver 分叉）。
+	accountCircuits, closeAccountCircuits, circuitsErr := newChainAccountCircuitService(cfg.RuntimeStateDriver, cfg.RedisStateURL, cfg.RedisNamespace)
+	if circuitsErr != nil {
+		return nil, circuitsErr
+	}
+	services.AccountCircuits = accountCircuits
+	services.closeFuncs = append(services.closeFuncs, closeAccountCircuits)
+
+	// D-134：本地账户屏蔽状态（Node account-local-suppression-store 单例；
+	// memory 驱动才可用，redis 驱动按 canUseProcessLocal=false 全量直通），
+	// 恢复等待引擎复用同一 wait coordinator 语义。并发投影挂共享计数器的
+	// total 账户并发（Node getAccountCurrentConcurrency）。
+	suppressionWaiter := gatewaycircuit.NewPreAuthRecoverableWait(nil, chainCircuitWaitLogger{inner: slog.Default()})
+	services.SuppressionWaiter = suppressionWaiter
+	services.SuppressionStore = gatewaycircuit.NewLocalSuppressionStore(gatewaycircuit.LocalSuppressionStoreOptions{
+		AccountConcurrency: func(concurrencyAccountID string) int {
+			return concurrencyTracker.CurrentAccountConcurrency(concurrencyAccountID, "")
+		},
+		Logger: chainSuppressionLogger{},
+	})
+
+	// D-136：上游桶健康服务（Node proxy-health.service.ts 单例 fork；
+	// runtimeStateStore 随 runtimeStateDriver 分叉，memory 保持进程内 LRU）。
+	proxyHealthStore := gatewayproxyhealth.RuntimeStateStore(gatewayproxyhealth.NewMemoryRuntimeStateStore(nil))
+	if redisState && stateClient != nil {
+		redisHealthStore, healthErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-proxy-health")
+		if healthErr != nil {
+			return nil, fmt.Errorf("create proxy health runtime state: %w", healthErr)
+		}
+		proxyHealthStore = redisHealthStore
+	}
+	services.ProxyHealth = gatewayproxyhealth.NewProxyHealthService(nil, proxyHealthStore, gatewayproxyhealth.ProxyHealthOptions{}, func(fields map[string]any, message string) {
+		logger.Warn("gateway_proxy_health", fields, message)
+	})
+
+	// D-137：热质量运行时（Node hot-quality-runtime.service.ts 单例；
+	// standalone=memory / performance=redis，GetGatewayHotQualityRuntime 按
+	// 驱动轴构建 store 对）。
+	hotQuality, hotQualityErr := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
+		RuntimeMode:        cfg.RuntimeMode,
+		RuntimeStateDriver: cfg.RuntimeStateDriver,
+		RedisStateURL:      cfg.RedisStateURL,
+		RedisNamespace:     cfg.RedisNamespace,
+	})
+	if hotQualityErr != nil {
+		return nil, fmt.Errorf("create gateway hot quality runtime: %w", hotQualityErr)
+	}
+	services.HotQuality = hotQuality
+
+	// D-133：key-model 前台准入状态存储（Node getKeyModelRuntimeStore；
+	// memory 单例 + redis 惰性构建）。启动时急切选择，驱动轴非法即
+	// fail-fast，不在请求路径上回退。
+	keyModelStores := newChainKeyModelRuntimeStoreSelector(cfg.RedisStateURL, cfg.RedisNamespace)
+	keyModelStore, keyModelErr := keyModelStores.Select(cfg.RuntimeStateDriver)
+	if keyModelErr != nil {
+		return nil, fmt.Errorf("select key-model runtime store: %w", keyModelErr)
+	}
+	services.KeyModelStore = keyModelStore
 
 	// ---- recoverable wait (G11 circuit wait engine) ----
 	services.Recoverable = gatewaycircuit.NewPreAuthRecoverableWait(

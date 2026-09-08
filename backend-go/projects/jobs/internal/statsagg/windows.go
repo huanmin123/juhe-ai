@@ -75,12 +75,21 @@ type UsageRankStageRun struct {
 // WindowRefresher 执行窗口刷新 job（usage-rank-snapshots-refresh、
 // usage-overview-windows-refresh、system-metrics-trend-windows-refresh、
 // ai-performance-summary-windows-refresh、usage-scope-range-windows-refresh、
-// authorization-usage-range-windows-refresh、usage-hot-window-refresh）。
+// authorization-usage-range-windows-refresh、usage-hot-window-refresh、
+// usage-quota-hourly-windows-refresh）。
 type WindowRefresher struct {
 	DB      *sql.DB
 	Dialect Dialect
 	Clock   StatsTimezoneProvider
 	Now     func() time.Time
+	// BusinessDB 是业务库句柄（request_quota_hourly_window_scope_bindings
+	// 绑定表所在）。PG 与 stats 同池时可留 nil（回退 DB + juhe_business.
+	// 前缀）；SQLite 必须由组合根注入独立业务库连接，配额小时窗全量重建
+	// 依赖它读绑定表。
+	BusinessDB *sql.DB
+	// ScopeLimit 覆盖配额小时窗单轮消费的脏 scope 上限（归档 :1871 固定
+	// 128）；0 用默认值，测试可调小以覆盖分页续跑。
+	ScopeLimit int
 }
 
 func (w *WindowRefresher) now() time.Time {

@@ -144,6 +144,13 @@ func ScheduledEntries() []Entry {
 			GoBinding: "WindowRefresher.RunStages([authorization_usage_range_windows])",
 		},
 		{
+			JobName: "usage-quota-hourly-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
+			Hotspot: true, SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
+			Writes:   []string{"stats:usage_quota_hourly_windows", "stats:usage_quota_hourly_window_dirty_scopes"},
+			GoStatus: GoWired, GoPackage: "statsagg",
+			GoBinding: "WindowRefresher.RunQuotaHourlyWindows（BUG-0175 D-48/D-75/D-86/D-229：配额小时窗生产者，移植 usage-stats.repository.ts:1783-1951。PG=refreshUsageQuotaHourlyWindowsCacheAsync 增量语义：usage_quota_hourly_windows_expiry 小时翻转打脏 + 脏 scope 分批消费（generation 匹配删除）+ hasMore 续跑；SQLite=refreshUsageQuotaHourlyWindowsCache + usage-stats-snapshot-helpers.ts:8-42 全量重建。绑定重建打脏标记属 gateway authz/apikeys 写路径（gateway 侧待接线），聚合后打脏已由 statsagg.markDerivedWindowDirtyScopes 承担",
+		},
+		{
 			JobName: "usage-stats-consistency-check", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "stats-worker",
 			SingleOwner: true, LeaseRequired: true,
 			Writes:   []string{},

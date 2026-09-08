@@ -23,6 +23,10 @@ func multiKeyTestAccount(id string, keys ...string) AccountCandidate {
 	account.ProtocolCode = "openai"
 	account.ProtocolVersion = "v1"
 	account.APIKeys = keys
+	// D-133: the request-side capability resolution (key-model-capability.ts)
+	// requires a dispatch revision >= 1 before the admission runs; the key
+	// selection then supplies the real pool fingerprint for the capability.
+	account.DispatchRevision = ptrInt64(1)
 	return account
 }
 

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 )
 
 // balanceFixtureSchema 建立余额探测依赖的冻结业务/统计表

@@ -523,13 +523,21 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		return nil, &RevisionConflictError{CurrentRevision: updatedAt.String}
 	}
 
+	bindingUpserted := false
 	if containsString(changed, "quotaLimits") || containsString(changed, "status") {
-		if err := s.syncQuotaHourlyWindowBinding(ctx, tx, rowID, ownerID, nextQuotaJSON, nextStatus == "active", revision); err != nil {
+		upserted, err := s.syncQuotaHourlyWindowBinding(ctx, tx, rowID, ownerID, nextQuotaJSON, nextStatus == "active", revision)
+		if err != nil {
 			return nil, err
 		}
+		bindingUpserted = upserted
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	// W2-A 待办1：limits/状态变更重建绑定后打脏（PG；失败不回滚主写，
+	// warn 告警；停用分支按归档 :94-105 早退不打脏）。
+	if bindingUpserted {
+		s.markQuotaHourlyWindowDirtyScopeAfterCommit(ctx, ownerID, rowID, revision)
 	}
 
 	rowPatch["revision"] = revision

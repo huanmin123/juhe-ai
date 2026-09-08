@@ -53,6 +53,16 @@ func testAccount() gatewayruntimecache.OpenAIAccountSecret {
 	}
 }
 
+// protocolModelScope adapts the error-returning scope constructor for the
+// non-authorized test accounts (runtime key = bare id).
+func protocolModelScope(account gatewayruntimecache.OpenAIAccountSecret, lane string, model *string) Scope {
+	scope, err := GatewayAccountProtocolModelScope(account, lane, model)
+	if err != nil {
+		panic(err)
+	}
+	return scope
+}
+
 func TestPrepareAttemptDispatchableWhenClosed(t *testing.T) {
 	store := newNonExpiringMemoryStore(t)
 	service, _ := newTestService(t, store, ServiceOptions{})
@@ -124,7 +134,7 @@ func TestPrepareAttemptConfirmationLeaseFlow(t *testing.T) {
 
 	// Create a SUSPECT incident from an earlier foreground failure.
 	decision, err := service.SuspectForegroundFailure(context.Background(), suspectForegroundInput{
-		scope: GatewayAccountProtocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
+		scope: protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
 		dispatchRevision: revisionOf(t, testAccount()),
 		confirmationFailuresRequired: int64Ptr(2),
 		reason:           "transport:connect failed",
@@ -177,7 +187,7 @@ func TestReportTransportFailureSuspectThenOpen(t *testing.T) {
 		t.Fatalf("memory store: %v", err)
 	}
 	service, _ := newTestService(t, store, ServiceOptions{Now: func() int64 { return *clock }})
-	scope := GatewayAccountProtocolModelScope(testAccount(), LaneText, strPtr("gpt-4o"))
+	scope := protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o"))
 
 	result, err := service.PrepareAttempt(context.Background(), PrepareAttemptInput{
 		Account: testAccount(), RequestLane: LaneText, Model: strPtr("gpt-4o"),
@@ -227,7 +237,7 @@ func TestConfirmationSettlementDeduplicates(t *testing.T) {
 
 	// Build a confirmation through prepareAttempt.
 	_, err = service.SuspectForegroundFailure(context.Background(), suspectForegroundInput{
-		scope: GatewayAccountProtocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
+		scope: protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
 		dispatchRevision: revisionOf(t, testAccount()),
 		confirmationFailuresRequired: int64Ptr(2),
 		reason: "transport:connect failed",
@@ -383,7 +393,7 @@ func TestAcquireConfirmationReplaysLostReply(t *testing.T) {
 	}
 	inner := &failingOnceStore{Store: memory}
 	service, _ := newTestService(t, inner, ServiceOptions{Now: func() int64 { return *clock }})
-	scope := GatewayAccountProtocolModelScope(testAccount(), LaneText, strPtr("gpt-4o"))
+	scope := protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o"))
 	_, err = service.SuspectForegroundFailure(context.Background(), suspectForegroundInput{
 		scope: scope, dispatchRevision: revisionOf(t, testAccount()),
 		confirmationFailuresRequired: int64Ptr(2), reason: "transport:connect failed",
@@ -424,13 +434,13 @@ func TestModelBucketNormalization(t *testing.T) {
 		{"", gatewayAccountCircuitUnknownModelBucket},
 	}
 	for _, tt := range tests {
-		scope := GatewayAccountProtocolModelScope(account, LaneText, strPtr(tt.model))
+		scope := protocolModelScope(account, LaneText, strPtr(tt.model))
 		if scope.ModelBucket != tt.want {
 			t.Fatalf("model %q bucket = %q, want %q", tt.model, scope.ModelBucket, tt.want)
 		}
 	}
 	// nil model falls back to the unknown bucket.
-	if scope := GatewayAccountProtocolModelScope(account, LaneText, nil); scope.ModelBucket != gatewayAccountCircuitUnknownModelBucket {
+	if scope := protocolModelScope(account, LaneText, nil); scope.ModelBucket != gatewayAccountCircuitUnknownModelBucket {
 		t.Fatalf("nil model bucket = %q", scope.ModelBucket)
 	}
 }

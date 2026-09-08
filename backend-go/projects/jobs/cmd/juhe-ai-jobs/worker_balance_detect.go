@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 )
 
 // account-balance-auto-detect-recovery 组合根适配器，逐语义对齐 Node

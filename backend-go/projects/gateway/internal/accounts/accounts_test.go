@@ -282,6 +282,24 @@ var schemaStatements = []string{
 		reason TEXT,
 		updated_at TEXT NOT NULL
 	)`,
+	// D-206 oauthUsage read projection: ListPage hydrates the Codex usage
+	// snapshots from the stats-side table (statsTable renders the bare name on
+	// SQLite; column set mirrors maintenance/internal/schema/sqlite_schema.go).
+	`CREATE TABLE IF NOT EXISTS account_usage_snapshots (
+		system_account_id TEXT NOT NULL,
+		account_id TEXT NOT NULL,
+		kind TEXT NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance')),
+		source TEXT,
+		snapshot_json TEXT NOT NULL,
+		refresh_status TEXT,
+		last_attempt_at TEXT,
+		last_success_at TEXT,
+		next_refresh_after TEXT,
+		last_error_message TEXT,
+		updated_at TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (system_account_id, account_id, kind)
+	)`,
 	`CREATE TABLE IF NOT EXISTS account_circuit_outbox (
 		event_id TEXT PRIMARY KEY,
 		projection_key TEXT NOT NULL,

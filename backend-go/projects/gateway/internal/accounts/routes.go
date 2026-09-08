@@ -1165,6 +1165,8 @@ func patchBody(body map[string]any) (PatchInput, string) {
 		}
 		input.Credentials = Credentials(credentials)
 		input.CredentialsPresent = true
+		// BUG-0175 D-164: null patch keys delete fields (applyAccountCredentialsPatch).
+		input.CredentialsPatch = true
 	}
 	if value, exists := body["supportedModels"]; exists && value != nil {
 		models, err := normalizeSupportedModelsInput(value)

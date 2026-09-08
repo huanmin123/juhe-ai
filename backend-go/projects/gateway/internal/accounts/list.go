@@ -186,54 +186,59 @@ type LockStatePublic struct {
 // balanceSnapshot, apiKeyRuntime) belong to the runtime/circuit/balance
 // companion slices and stay omitted, exactly like the usage zero value.
 type ListItem struct {
-	ID                                   string                `json:"id"`
-	ConfigRevision                       int64                 `json:"configRevision"`
-	SystemAccountID                      *string               `json:"systemAccountId,omitempty"`
-	SystemAccountName                    *string               `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID                 string                `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName               *string               `json:"ownerSystemAccountName,omitempty"`
-	ProviderCode                         string                `json:"providerCode"`
-	ProviderName                         *string               `json:"providerName,omitempty"`
-	ProviderProtocolProfileID            string                `json:"providerProtocolProfileId"`
-	ProtocolCode                         string                `json:"protocolCode"`
-	ProtocolVersion                      string                `json:"protocolVersion"`
-	Name                                 string                `json:"name"`
-	Notes                                *string               `json:"notes,omitempty"`
-	Type                                 string                `json:"type"`
-	Status                               string                `json:"status"`
-	ConcurrencyLimit                     int                   `json:"concurrencyLimit"`
-	Priority                             int                   `json:"priority"`
-	SuperPriorityEnabled                 bool                  `json:"superPriorityEnabled"`
-	FallbackEnabled                      bool                  `json:"fallbackEnabled"`
-	ClientCompatibility                  string                `json:"clientCompatibility"`
-	Tags                                 []TagSummary          `json:"tags"`
-	HealthCheckModel                     string                `json:"healthCheckModel"`
-	HealthCheckEndpointMode              string                `json:"healthCheckEndpointMode"`
-	ProxyProfileID                       *string               `json:"proxyProfileId,omitempty"`
-	ProxyProfileName                     *string               `json:"proxyProfileName,omitempty"`
-	ProxyProfileType                     *string               `json:"proxyProfileType,omitempty"`
-	ProxyProfileEnabled                  *bool                 `json:"proxyProfileEnabled,omitempty"`
-	ProxyProfileUnavailable              *bool                 `json:"proxyProfileUnavailable,omitempty"`
-	ProxyProfileErrorMessage             *string               `json:"proxyProfileErrorMessage,omitempty"`
-	Schedulable                          bool                  `json:"schedulable"`
-	AvailabilitySchedule                 *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt                     *string               `json:"accountExpiresAt,omitempty"`
-	CooldownUntil                        *string               `json:"cooldownUntil,omitempty"`
-	LastErrorCode                        *string               `json:"lastErrorCode,omitempty"`
-	LastErrorMessage                     *string               `json:"lastErrorMessage,omitempty"`
-	LastErrorTraceID                     *string               `json:"lastErrorTraceId,omitempty"`
-	LastUsedAt                           *string               `json:"lastUsedAt,omitempty"`
-	EffectiveAvailability                EffectiveAvailability `json:"effectiveAvailability"`
-	TodayUsage                           UsageSummary          `json:"todayUsage"`
-	Usage                                UsageSummary          `json:"usage"`
-	AccessType                           string                `json:"accessType"`
-	AccountAuthorizationID               *string               `json:"accountAuthorizationId,omitempty"`
-	AuthorizationInstanceSourceAccountID *string               `json:"authorizationInstanceSourceAccountId,omitempty"`
-	BoundGroupID                         *string               `json:"boundGroupId,omitempty"`
-	BoundGroupName                       *string               `json:"boundGroupName,omitempty"`
-	GroupBindStatus                      *string               `json:"groupBindStatus,omitempty"`
-	BindingSystemAccountID               *string               `json:"bindingSystemAccountId,omitempty"`
-	Permissions                          Permissions           `json:"permissions"`
+	ID                        string                `json:"id"`
+	ConfigRevision            int64                 `json:"configRevision"`
+	SystemAccountID           *string               `json:"systemAccountId,omitempty"`
+	SystemAccountName         *string               `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID      string                `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName    *string               `json:"ownerSystemAccountName,omitempty"`
+	ProviderCode              string                `json:"providerCode"`
+	ProviderName              *string               `json:"providerName,omitempty"`
+	ProviderProtocolProfileID string                `json:"providerProtocolProfileId"`
+	ProtocolCode              string                `json:"protocolCode"`
+	ProtocolVersion           string                `json:"protocolVersion"`
+	Name                      string                `json:"name"`
+	Notes                     *string               `json:"notes,omitempty"`
+	Type                      string                `json:"type"`
+	Status                    string                `json:"status"`
+	ConcurrencyLimit          int                   `json:"concurrencyLimit"`
+	Priority                  int                   `json:"priority"`
+	SuperPriorityEnabled      bool                  `json:"superPriorityEnabled"`
+	FallbackEnabled           bool                  `json:"fallbackEnabled"`
+	ClientCompatibility       string                `json:"clientCompatibility"`
+	Tags                      []TagSummary          `json:"tags"`
+	HealthCheckModel          string                `json:"healthCheckModel"`
+	HealthCheckEndpointMode   string                `json:"healthCheckEndpointMode"`
+	ProxyProfileID            *string               `json:"proxyProfileId,omitempty"`
+	ProxyProfileName          *string               `json:"proxyProfileName,omitempty"`
+	ProxyProfileType          *string               `json:"proxyProfileType,omitempty"`
+	ProxyProfileEnabled       *bool                 `json:"proxyProfileEnabled,omitempty"`
+	ProxyProfileUnavailable   *bool                 `json:"proxyProfileUnavailable,omitempty"`
+	ProxyProfileErrorMessage  *string               `json:"proxyProfileErrorMessage,omitempty"`
+	Schedulable               bool                  `json:"schedulable"`
+	AvailabilitySchedule      *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
+	AccountExpiresAt          *string               `json:"accountExpiresAt,omitempty"`
+	CooldownUntil             *string               `json:"cooldownUntil,omitempty"`
+	LastErrorCode             *string               `json:"lastErrorCode,omitempty"`
+	LastErrorMessage          *string               `json:"lastErrorMessage,omitempty"`
+	LastErrorTraceID          *string               `json:"lastErrorTraceId,omitempty"`
+	LastUsedAt                *string               `json:"lastUsedAt,omitempty"`
+	EffectiveAvailability     EffectiveAvailability `json:"effectiveAvailability"`
+	TodayUsage                UsageSummary          `json:"todayUsage"`
+	Usage                     UsageSummary          `json:"usage"`
+	// OAuthUsage mirrors the AccountSummary.oauthUsage read projection
+	// (account-summary.repository.ts:1452,1575, BUG-0175 D-206): populated
+	// only for gpt-provider oauth accounts from the stats-side Codex
+	// snapshot rows.
+	OAuthUsage                           *OAuthUsageSnapshot `json:"oauthUsage,omitempty"`
+	AccessType                           string              `json:"accessType"`
+	AccountAuthorizationID               *string             `json:"accountAuthorizationId,omitempty"`
+	AuthorizationInstanceSourceAccountID *string             `json:"authorizationInstanceSourceAccountId,omitempty"`
+	BoundGroupID                         *string             `json:"boundGroupId,omitempty"`
+	BoundGroupName                       *string             `json:"boundGroupName,omitempty"`
+	GroupBindStatus                      *string             `json:"groupBindStatus,omitempty"`
+	BindingSystemAccountID               *string             `json:"bindingSystemAccountId,omitempty"`
+	Permissions                          Permissions         `json:"permissions"`
 	LockStatePublic
 }
 
@@ -647,6 +652,9 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		return nil, err
 	}
 	if err := s.hydrateLockStates(ctx, items, ids); err != nil {
+		return nil, err
+	}
+	if err := s.hydrateOAuthUsageSnapshots(ctx, items); err != nil {
 		return nil, err
 	}
 	total := (normalized.Page-1)*normalized.PageSize + len(items)

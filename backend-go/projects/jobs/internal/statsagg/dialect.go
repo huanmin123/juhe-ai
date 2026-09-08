@@ -41,6 +41,15 @@ func (d Dialect) StatsTable(tableName string) string {
 	return tableName
 }
 
+// BusinessTable 返回业务库表引用。PG 与 stats 库同池（juhe_business. 前缀）；
+// SQLite 是独立库文件，裸表名由 WindowRefresher.BusinessDB 注入的句柄承载。
+func (d Dialect) BusinessTable(tableName string) string {
+	if d.Postgres {
+		return "juhe_business." + tableName
+	}
+	return tableName
+}
+
 // UsageRecordsTable 返回 usage 记录源表引用。
 func (d Dialect) UsageRecordsTable() string {
 	if d.Postgres {

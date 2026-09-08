@@ -215,7 +215,7 @@ func (a *workerAssembly) wireHealthProbeOutboxFace(getenv func(string) string) (
 	a.addCloser(business.close)
 	face := &healthProbeOutboxFace{
 		pruner: &healthProbeOutboxPruner{
-			business:  business,
+			business: business,
 			retention: time.Duration(parseProbeOutboxRetentionDays(getenv, func(message string) {
 				a.logger.Warn(message, "event", "account_health_probe_outbox_retention_invalid")
 			})) * 24 * time.Hour,
