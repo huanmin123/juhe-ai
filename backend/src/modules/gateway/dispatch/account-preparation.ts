@@ -321,7 +321,7 @@ export async function buildPreparedUpstreamRequestParts(
 function requestWithCanonicalDirectModel(req: Request, account: UpstreamAccount): Request {
   const requested = requestModel(req)
   const canonical = canonicalModel(requested, account.supportedModels)
-  if (!requested || !canonical || modelsEqual(requested, canonical) || account.modelMappings?.some((mapping) => (
+  if (!requested || !canonical || requested === canonical || account.modelMappings?.some((mapping) => (
     mapping.enabled !== false && modelsEqual(mapping.sourceModel, requested)
   ))) {
     return req

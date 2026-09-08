@@ -18,13 +18,16 @@ import {
   filterGatewayAccountsByRequestedModel,
   gatewayModelFilterFailureMessage
 } from '../../modules/gateway/dispatch/model-filter.js'
+import { buildPreparedUpstreamRequestParts } from '../../modules/gateway/dispatch/account-preparation.js'
 import { filterOpenAIGatewayRequestCandidateAccounts } from '../../modules/gateway/dispatch/candidate-filter.js'
 import { markGatewayUpstreamModelsProbe } from '../../modules/gateway/request/upstream-models-probe.js'
+import type { GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
 import { logger } from '../../shared/logger.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import type { AccountModelMapping } from '../../domain/types.js'
 import type { AuditCaptureContext } from '../../modules/gateway/audit/capture.service.js'
 import type { OpenAIGatewayClientStrategyContext } from '../../modules/gateway/client-profiles/strategy.js'
+import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
 
 function account(id: string, supportedModels?: string[], modelMappings?: AccountModelMapping[]): UpstreamAccount {
   return {
@@ -88,6 +91,29 @@ assert.equal(matched.reason, undefined)
 const mixedCaseMatched = filterGatewayAccountsByRequestedModel([gpt55Only], 'GPT-5.5')
 assert.deepEqual(mixedCaseMatched.accounts.map((item) => item.id), ['gpt55-only'], '客户请求模型大小写不同仍应命中支持模型账户')
 assert.equal(mixedCaseMatched.directMatchedCount, 1)
+
+const mixedCaseRequestBody = { model: 'GPT-5.5', messages: [{ role: 'user', content: 'ok' }] }
+const mixedCaseRequest = {
+  method: 'POST',
+  path: '/chat/completions',
+  originalUrl: '/v1/chat/completions',
+  headers: { 'content-type': 'application/json' },
+  body: mixedCaseRequestBody,
+  rawBody: Buffer.from(JSON.stringify(mixedCaseRequestBody), 'utf8'),
+  gatewayParsedJsonBodyAvailable: true,
+  gatewayParsedJsonBody: mixedCaseRequestBody
+} as unknown as Request & GatewayRawBodyRequest
+const mixedCaseParts = await buildPreparedUpstreamRequestParts(mixedCaseRequest, gpt55Only, {
+  systemAccountId: 'sys_model_filter',
+  groupId: 'group_model_filter',
+  trafficSource: 'gateway'
+} as GatewayUsageContext)
+assert.equal(
+  JSON.parse(String(mixedCaseParts.body)).model,
+  'gpt-5.5',
+  '客户请求模型大小写不同时，上游请求必须使用账户配置中的规范模型名'
+)
+assert.equal(mixedCaseRequest.body.model, 'GPT-5.5', '规范化上游请求不得修改原始客户请求')
 
 const mixedCaseMapping = filterGatewayAccountsByRequestedModel([
   account('mixed-case-mapping', ['GPT-5.5-PRIVATE'], [{
