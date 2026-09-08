@@ -95,13 +95,13 @@ func newComposeStatsWiringFixture(t *testing.T) *composeStatsWiringFixture {
 	return &composeStatsWiringFixture{composed: composed, do: do, data: data}
 }
 
-// usageWindowDateKeys resolves the trailing 31-day fixed window keys exactly
-// like defaultUsageStatsRange does under the seeded usageStatsTimezone=UTC
-// (today-30 .. today).
+// usageWindowDateKeys resolves a safe mid-window date range for seeding and
+// querying: (today-15, today-15) is a single day well inside the trailing
+// 31-day window regardless of the server timezone offset from UTC.
 func usageWindowDateKeys() (string, string) {
 	today := time.Now().UTC()
-	start := today.AddDate(0, 0, -30)
-	return start.Format("2006-01-02"), today.Format("2006-01-02")
+	mid := today.AddDate(0, 0, -15)
+	return mid.Format("2006-01-02"), mid.Format("2006-01-02")
 }
 
 // TestComposeSystemAPIWiresAuthzUsageStatsReads is the assembly assertion for
