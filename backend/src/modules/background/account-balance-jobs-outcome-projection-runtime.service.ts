@@ -76,7 +76,14 @@ async function drain(source: AccountBalanceJobsStoreSource, limit: number): Prom
     const result = await projectAccountBalanceJobsOutcome(outcome)
     if (!result.projected && result.reason !== 'stale') throw new Error(`J2 outcome ${outcome.outcomeId} 未投影: ${result.reason ?? 'unknown'}`)
     const next = { observedAt: outcome.storageObservedAt, outcomeId: outcome.outcomeId }
-    if (!await advanceAccountBalanceProjectionCursorAsync(client, consumerKey, next)) throw new Error('J2 projection cursor 未前进')
+    if (!await advanceAccountBalanceProjectionCursorAsync(client, consumerKey, next)) {
+      // Another active replica may have advanced the shared durable cursor
+      // after this outcome was idempotently projected. Treat that CAS miss as
+      // normal contention and reread it on the next poll instead of reporting
+      // a projection failure.
+      logger.debug({ event: 'account_balance_jobs_outcome_projection_cursor_contended', consumerKey, outcomeId: outcome.outcomeId }, 'J2 outcome 游标已由并行实例推进，本轮让出')
+      return
+    }
     cursor = next
   }
 }
