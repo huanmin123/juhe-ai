@@ -496,7 +496,7 @@ def replaceDigest(file, imageName, digest) {
     set -eu
     echo "检查 kustomization 镜像块: ${imageName}"
     grep -n -A2 -B1 -- "name: ${imageName}" '${file}' || true
-    temporary="${file}.tmp.$$"
+    temporary="${file}.tmp.\$\$"
     awk -v target="${imageName}" -v replacement="${digest}" '
       BEGIN { hits = 0; pending = 0 }
       {
@@ -506,7 +506,7 @@ def replaceDigest(file, imageName, digest) {
         if (name_line == target && \$0 ~ /^[[:space:]]*-[[:space:]]+name:/) {
           hits++
           pending++
-        } else if (pending && $0 ~ /^[[:space:]]+digest:[[:space:]]*sha256:[a-f0-9]{64}[[:space:]]*$/) {
+        } else if (pending && \$0 ~ /^[[:space:]]+digest:[[:space:]]*sha256:[a-f0-9]{64}[[:space:]]*\$/) {
           sub(/sha256:[a-f0-9]{64}/, replacement)
           pending = 0
         }
