@@ -504,7 +504,7 @@ def replaceDigest(file, imageName, digest) {
       # Parse lines without embedding Groovy escape sequences; preserve the
       # source file's dominant line ending when writing it back.
       my \$newline = (index(\$text, chr(13) . chr(10)) >= 0) ? chr(13) . chr(10) : chr(10);
-      my @lines = split chr(10), \$text, -1;
+      my @lines = split(chr(10), \$text, -1);
       my @matches;
       for my \$index (0 .. \$#lines - 2) {
         my \$name_line = \$lines[\$index];
