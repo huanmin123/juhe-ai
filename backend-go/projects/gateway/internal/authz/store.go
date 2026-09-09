@@ -71,6 +71,10 @@ type Store struct {
 	// direct NewStore construction keeps the pre-wiring behavior.
 	statsDirty  StatsDirtyMarker
 	invalidator RuntimeInvalidator
+	// statsCache is the Node authorizationStatsCache port behind
+	// ResourceAuthorizationStatsByResourceIds (stats_loader.go, Node
+	// authorization-read-loaders.ts).
+	statsCache *authorizationStatsCache
 }
 
 func NewStore(db *sql.DB, postgres bool, now func() time.Time) (*Store, error) {
@@ -80,7 +84,7 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time) (*Store, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{db: db, pg: postgres, now: now}, nil
+	return &Store{db: db, pg: postgres, now: now, statsCache: newAuthorizationStatsCache(now)}, nil
 }
 
 // AttachStatsDatabase injects the SQLite stats database handle used by the

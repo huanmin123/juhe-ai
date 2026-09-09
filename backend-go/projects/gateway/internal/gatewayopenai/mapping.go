@@ -177,10 +177,29 @@ func isGeminiGenerateContentToChatCompletionsModelMapping(mapping *gatewayproto.
 	return sourceIsGemini && mapping.UpstreamEndpointFamily == FamilyChatCompletions
 }
 
+// isCrossProtocolBridgeToAnthropicMessagesModelMapping mirrors
+// isOpenAIToAnthropicMessagesModelMapping (openai-anthropic-bridge.ts:410-416):
+// an openai chat/responses source mapped onto the anthropic messages upstream
+// family.
+func isCrossProtocolBridgeToAnthropicMessagesModelMapping(mapping *gatewayproto.ResolvedModelMapping) bool {
+	if mapping == nil {
+		return false
+	}
+	source := mapping.SourceEndpointFamily
+	return (source == FamilyChatCompletions || source == FamilyResponses) &&
+		NormalizeAnthropicFamily(mapping.UpstreamEndpointFamily)
+}
+
+// NormalizeAnthropicFamily reports whether the token is the anthropic
+// messages upstream family (either protocol name or the stored row token).
+func NormalizeAnthropicFamily(family string) bool {
+	return family == "anthropic_messages" || family == "messages"
+}
+
 // modelMappedUpstreamPathAndQuery mirrors openAIModelMappedUpstreamPathAndQuery
-// for the chat_completions-targeted rewrites. Cross-protocol upstream
-// families (anthropic/gemini native) belong to the conversion slices and are
-// rejected by the driver before this helper is consulted.
+// for the chat_completions-targeted rewrites, plus the cross-protocol
+// anthropic target rewrite (Node openAIToAnthropicBridgeUpstreamPath:
+// /messages + the client query; audit B-10 openAIToAnthropicBridgeUpstreamPath).
 func modelMappedUpstreamPathAndQuery(originalPathAndQuery string, mapping *gatewayproto.ResolvedModelMapping) (string, bool) {
 	_, query := SplitPathAndQuery(originalPathAndQuery)
 	switch {
@@ -190,6 +209,8 @@ func modelMappedUpstreamPathAndQuery(originalPathAndQuery string, mapping *gatew
 		return "/chat/completions" + query, true
 	case isGeminiGenerateContentToChatCompletionsModelMapping(mapping):
 		return "/chat/completions" + geminiGenerateContentBridgeQuery(query), true
+	case isCrossProtocolBridgeToAnthropicMessagesModelMapping(mapping):
+		return "/messages" + query, true
 	}
 	return originalPathAndQuery, false
 }

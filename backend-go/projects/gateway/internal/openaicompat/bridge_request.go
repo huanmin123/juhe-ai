@@ -43,6 +43,18 @@ type BridgeRequestBodyOptions struct {
 	// FileResolver resolves OpenAI file references for document blocks
 	// (openAIToAnthropicBridgeFileResolverForTest ?? options.fileResolver).
 	FileResolver FileResolver
+	// HostedToolModes carries the hosted tool runtime mode bag (Node
+	// runtimeConfig.hostedToolRuntimes); zero value reads as guidance for
+	// every type (Node default).
+	HostedToolModes OpenAIHostedToolRuntimeModes
+
+	// geminiNativeSourceFamily / geminiNativeSourceModel carry the guidance
+	// render context for the gemini-native-target builders (Node
+	// guidance(req, mapping) reads downstreamProtocol(mapping) and
+	// mapping.sourceModel). The package dispatch and the builder entries set
+	// them; direct callers leave the zero values.
+	geminiNativeSourceFamily string
+	geminiNativeSourceModel  string
 }
 
 // bridgeValidationError mirrors bridgeValidationError: 400 invalid_request_error.
@@ -819,12 +831,21 @@ func BuildOpenAIResponsesToAnthropicMessagesBody(clientBody map[string]any, opti
 	if system := strings.TrimSpace(strings.Join(systemParts, "\n\n")); system != "" {
 		output["system"] = system
 	}
-	tools, err := responsesToolsToAnthropicTools(clientBody["tools"])
+	tools, degradedHostedTools, err := responsesToolsToAnthropicTools(clientBody["tools"], options.HostedToolModes)
 	if err != nil {
 		return nil, err
 	}
 	choice := anthropicToolChoiceFromOpenAI(clientBody["tool_choice"], hasOwnKey(clientBody, "tool_choice"))
 	applyTools(output, tools, choice, clientBody["parallel_tool_calls"] == false)
+	// Hosted tools degraded by the runtime registry surface the internal
+	// capability constraint through the system surface (Node
+	// appendUnsupportedHostedToolConstraint).
+	if constraint := AppendUnsupportedHostedToolConstraintText(degradedHostedTools); constraint != "" {
+		appendSystemText(&systemParts, constraint)
+		if system := strings.TrimSpace(strings.Join(systemParts, "\n\n")); system != "" {
+			output["system"] = system
+		}
+	}
 	if err := validateAnthropicThinkingToolChoiceCompatibility(output); err != nil {
 		return nil, err
 	}
@@ -1027,15 +1048,22 @@ func responsesContentToText(value any) string {
 	return responsesTextFromValue(value)
 }
 
-// responsesToolsToAnthropicTools mirrors responsesToolsToAnthropicTools for the
-// function tool surface (hosted / namespace tools keep the Node guidance
-// errors).
-func responsesToolsToAnthropicTools(value any) ([]any, error) {
+// responsesToolsToAnthropicTools mirrors responsesToolsToAnthropicTools with
+// the hosted tool runtime registry (openai-hosted-tool-runtime-registry.ts):
+// function tools map through; hosted tools resolve through
+// ResolveOpenAIHostedToolRuntimeDecision — reject (or unknown types) surface
+// the Node guidance error, every other mode degrades to the unsupported
+// hosted tool system constraint (Node skips the tool and appends
+// appendUnsupportedHostedToolConstraint). The mock / local_runtime execution
+// loops stay behind the executor slices; the registry decision keeps the
+// request alive either way.
+func responsesToolsToAnthropicTools(value any, modes OpenAIHostedToolRuntimeModes) ([]any, []string, error) {
 	items, ok := bridgeIsArray(value)
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	tools := []any{}
+	degradedHostedTools := []string{}
 	for _, item := range items {
 		tool := bridgeObjectValue(item)
 		if tool == nil {
@@ -1047,12 +1075,17 @@ func responsesToolsToAnthropicTools(value any) ([]any, error) {
 				// Legacy shapeless function definitions keep the function path.
 				toolType = "function"
 			} else {
-				return nil, unsupportedOpenAIToolError(tool)
+				label, degraded := openAIHostedToolBridgeDecision(toolType, modes)
+				if degraded {
+					degradedHostedTools = append(degradedHostedTools, label)
+					continue
+				}
+				return nil, nil, unsupportedOpenAIToolError(tool)
 			}
 		}
 		name := bridgeStringValue(tool["name"])
 		if name == "" {
-			return nil, bridgeValidationError("function tool 缺少 name", "openai_anthropic_bridge_invalid_tool")
+			return nil, nil, bridgeValidationError("function tool 缺少 name", "openai_anthropic_bridge_invalid_tool")
 		}
 		parameters := tool["parameters"]
 		description := tool["description"]
@@ -1063,7 +1096,24 @@ func responsesToolsToAnthropicTools(value any) ([]any, error) {
 		}
 		tools = append(tools, anthropicTool)
 	}
-	return tools, nil
+	return tools, degradedHostedTools, nil
+}
+
+// openAIHostedToolBridgeDecision mirrors unsupportedOpenAIHostedToolLabel:
+// hosted registry types degrade with their label unless the decision is a
+// reject; unknown (non-registry) types fall back to the raw type label as the
+// degraded tool (Node returns the type when no runtime decision resolves).
+func openAIHostedToolBridgeDecision(toolType string, modes OpenAIHostedToolRuntimeModes) (string, bool) {
+	decision, hosted := ResolveOpenAIHostedToolRuntimeDecision(toolType, "", modes)
+	if !hosted {
+		// 非注册表类型（web_search 等）：Node 无 decision 时返回原始 type
+		// label，降级进 guidance 约束。
+		return toolType, true
+	}
+	if decision.Mode == OpenAIHostedToolModeReject {
+		return "", false
+	}
+	return string(decision.ToolType), true
 }
 
 // ---------------------------------------------------------------------------
@@ -2515,10 +2565,17 @@ type codexChatToolPlan struct {
 	chatTools        []any
 	unsupportedTools []string
 	namesByChatName  map[string]string
+	// adaptersByChatName 携带响应侧身份构造所需（chatName -> kind /
+	// responsesName），对齐 Node
+	// codexResponsesChatBridgeToolAdaptersByChatName 请求期存储。
+	adaptersByChatName map[string]CodexBridgeToolAdapter
 }
 
 func responsesToolsToChatToolPlan(tools []any) *codexChatToolPlan {
-	plan := &codexChatToolPlan{namesByChatName: map[string]string{}}
+	plan := &codexChatToolPlan{
+		namesByChatName:    map[string]string{},
+		adaptersByChatName: map[string]CodexBridgeToolAdapter{},
+	}
 	used := map[string]bool{}
 	for _, item := range tools {
 		tool := bridgeObjectValue(item)
@@ -2545,6 +2602,11 @@ func responsesToolsToChatToolPlan(tools []any) *codexChatToolPlan {
 				},
 			})
 			plan.namesByChatName[chatName] = name
+			plan.adaptersByChatName[chatName] = CodexBridgeToolAdapter{
+				Kind:          "function",
+				ChatName:      chatName,
+				ResponsesName: name,
+			}
 		default:
 			label := bridgeStringValue(tool["type"])
 			if label == "" {
@@ -2554,6 +2616,18 @@ func responsesToolsToChatToolPlan(tools []any) *codexChatToolPlan {
 		}
 	}
 	return plan
+}
+
+// CodexResponsesChatBridgeToolAdaptersFromClientBody rebuilds the chat-name
+// tool adapters the response face needs. Node stores the request-time plan on
+// the express request (codexResponsesChatBridgeToolAdaptersByChatName); Go
+// re-derives the same mapping from the same client body at response time.
+func CodexResponsesChatBridgeToolAdaptersFromClientBody(body map[string]any) map[string]CodexBridgeToolAdapter {
+	if body == nil {
+		return map[string]CodexBridgeToolAdapter{}
+	}
+	tools, _ := bridgeIsArray(body["tools"])
+	return responsesToolsToChatToolPlan(tools).adaptersByChatName
 }
 
 func uniqueChatToolName(base string, used map[string]bool) string {

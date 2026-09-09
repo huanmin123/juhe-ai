@@ -966,6 +966,20 @@ func (s *Store) prepareBatchAccount(ctx context.Context, q queryer, account *bat
 	}
 	supportedModelsChanged = hasOwn("supportedModels") && !unorderedStringListEqual(account.supportedModels, nextSupportedModels)
 	if supportedModelsChanged {
+		// Supported-model catalog assertion (归档 patch 链
+		// normalizeAccountSupportedModelsForProviderAsync :1520 的同语义批量段；
+		// 归档 batch-edit prepare 的调用方文件已被裁剪，触发条件对齐 patch 链：
+		// 支持模型实际变化时校验目录归属，hybrid 供应商直通，
+		// filterIncompatibleDefaults=false 严格拒绝)。校验失败使整个批量事务
+		// 回滚（all-or-nothing，与 Node 批量仓库事务一致）。
+		if err := s.assertAccountSupportedModelsInProviderCatalog(ctx, q, nextSupportedModels, account.providerCode, account.systemAccountID, protocolPredicateInput{
+			providerCode:              account.providerCode,
+			protocolCode:              account.protocolCode,
+			protocolVersion:           account.protocolVersion,
+			providerProtocolProfileID: account.providerProtocolProfileID,
+		}); err != nil {
+			return result, err
+		}
 		addChange("supportedModels")
 		result.supportedModels = nextSupportedModels
 	}

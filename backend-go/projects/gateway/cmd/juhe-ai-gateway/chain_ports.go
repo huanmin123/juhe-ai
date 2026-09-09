@@ -1373,6 +1373,10 @@ func (d *disabledAccountLocks) ListStatesAsync(_ context.Context, accountIDs []s
 	return states, nil
 }
 
+func (d *disabledAccountLocks) CompleteSuccessAsync(_ context.Context, _, _ string, _ *gatewaydispatch.AccountLockObservation) error {
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // preauth collaborator adapters (G14/G18)
 // ---------------------------------------------------------------------------

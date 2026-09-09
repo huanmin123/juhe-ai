@@ -345,6 +345,10 @@ func (f *fakeLocks) ListStatesAsync(ctx context.Context, accountIDs []string) (m
 	return map[string]AccountLockStateView{}, nil
 }
 
+func (f *fakeLocks) CompleteSuccessAsync(ctx context.Context, accountID, leaseID string, observation *AccountLockObservation) error {
+	return nil
+}
+
 type fakeUsage struct {
 	records []FailedAttemptRecord
 }

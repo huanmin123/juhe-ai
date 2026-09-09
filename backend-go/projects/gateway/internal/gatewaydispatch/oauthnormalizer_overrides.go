@@ -173,6 +173,29 @@ func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAcco
 	case "chat_completions":
 		body["reasoning_effort"] = effective.ReasoningEffort
 		delete(body, "reasoning")
+	// Node wire 分支（provider-request-overrides.ts:62-84）：anthropic_messages
+	// 写 output_config.effort；gemini_generate_content 写
+	// generationConfig.thinkingConfig.thinkingLevel（audit deviation note，
+	// 本任务 B-6 补齐）。
+	case "anthropic_messages", "messages":
+		outputConfig := map[string]any{}
+		if existing := bridgeObjectValueOf(body["output_config"]); existing != nil {
+			outputConfig = existing
+		}
+		outputConfig["effort"] = effective.ReasoningEffort
+		body["output_config"] = outputConfig
+	case "gemini_generate_content", "generate_content", "gemini_stream_generate", "stream_generate_content":
+		generationConfig := map[string]any{}
+		if existing := bridgeObjectValueOf(body["generationConfig"]); existing != nil {
+			generationConfig = existing
+		}
+		thinkingConfig := map[string]any{}
+		if existing := bridgeObjectValueOf(generationConfig["thinkingConfig"]); existing != nil {
+			thinkingConfig = existing
+		}
+		thinkingConfig["thinkingLevel"] = effective.ReasoningEffort
+		generationConfig["thinkingConfig"] = thinkingConfig
+		body["generationConfig"] = generationConfig
 	}
 	return body, nil
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -97,7 +98,15 @@ func main() {
 		return
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// JUHE_AI_LOG_LEVEL (Node log-level.ts): trace..silent resolved before any
+	// store opens; an invalid value fails fast like the Node startup guard.
+	logLevel, err := processlog.LoadLevel(os.Getenv)
+	if err != nil {
+		fail(err)
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+	processlog.CatchPanic(logger)
+	processlog.KeepAliveOnBrokenOutputPipe()
 	ownerMode, err := ownermode.Load(os.Getenv)
 	if err != nil {
 		fail(err)
@@ -582,6 +591,12 @@ func main() {
 		}
 		mainServeErr = make(chan error, 1)
 		go func() { mainServeErr <- mainServer.Serve(mainListener) }()
+		// Node server.ts:181 启动序列：网关 API Key 校验缓存 fire-and-forget
+		// 预热（失败仅告警），compose_prewarm.go 承载。链条关闭时缓存未装配，
+		// 无预热面。
+		if composed.chainServices != nil {
+			startGatewayAPIKeyCachePrewarm(composed.chainServices.Cache, logger)
+		}
 		logger.Info("gateway system api composed",
 			"address", mainListener.Addr().String(),
 			"databaseDriver", runtimeCfg.DatabaseDriver,

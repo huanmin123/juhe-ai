@@ -52,6 +52,30 @@ type ProviderDriver interface {	// PrepareGatewayUpstreamAccount mirrors prepare
 	GatewayRequestCapabilityMismatchReason(req *gatewaypreauth.GatewayRequest, accounts []AccountCandidate) string
 }
 
+// UpstreamResponseTransformInput mirrors the Node
+// transformGatewayUpstreamResponseForAccount input bag: the attempt request,
+// the selected account, the raw upstream response and the request client
+// compatibility class.
+type UpstreamResponseTransformInput struct {
+	Req                        *gatewaypreauth.GatewayRequest
+	Account                    AccountCandidate
+	Response                   *GatewayUpstreamResponse
+	RequestBody                []byte
+	UpstreamURL                string
+	RequestClientCompatibility string
+}
+
+// UpstreamResponseTransformer is the optional ProviderDriver extension port
+// for the B-4 cross-protocol bridge response face (Node
+// transformUpstreamResponse on the drivers/_shared bridge surfaces): when the
+// dispatch selected account resolved a cross-protocol model mapping, the
+// upstream response (JSON and SSE both) is converted back to the client
+// protocol before response consumption. Nil or absent ports keep the raw
+// upstream response (the pre-B-4 pass-through behavior).
+type UpstreamResponseTransformer interface {
+	TransformUpstreamResponseForAccount(input UpstreamResponseTransformInput) (*GatewayUpstreamResponse, error)
+}
+
 // UsageIdentity mirrors the identity triple passed to the driver.
 type UsageIdentity struct {
 	SystemAccountID string
@@ -722,6 +746,7 @@ type AccountLocks interface {
 	RecordFailureAsync(ctx context.Context, accountID, reason string, observation *AccountLockObservation) error
 	SettleDeadlineAsync(ctx context.Context, accountID string, nowMs int64, observation *AccountLockObservation) error
 	ListStatesAsync(ctx context.Context, accountIDs []string) (map[string]AccountLockStateView, error)
+	CompleteSuccessAsync(ctx context.Context, accountID string, leaseID string, observation *AccountLockObservation) error
 }
 
 // AccountLockRetryLease mirrors { accountId, leaseId }.

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayanthropic"
@@ -129,6 +130,20 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 				return nil, fmt.Errorf("账户 %s 不支持当前 Gemini 请求路径", account.ID)
 			}
 			return []string{geminiCodeAssistUpstreamURL(account.BaseURL)}, nil
+		}
+		// B-4 model-mapped 桥（Node gemini/driver.ts:126-128
+		// buildUpstreamUrls）：解析到 gemini 目标 model mapping 的请求把
+		// 路径重写为 /v1beta/models/<upstreamModel>:<action>[?alt=sse]，
+		// 客户端路径（/v1/chat/completions、/v1/responses、/v1/messages）
+		// 不进入原生路由 helper。
+		if mapping := chainBridgeResponseMappingOf(req, account); mapping != nil {
+			if upstream := openaicompat.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily); upstream == openaicompat.FamilyGeminiGenerateContent || upstream == openaicompat.FamilyGeminiStreamGenerate {
+				url, urlErr := geminiModelMappedUpstreamURL(account.BaseURL, req, mapping.UpstreamModel)
+				if urlErr != nil {
+					return nil, urlErr
+				}
+				return []string{url}, nil
+			}
 		}
 		urls := gatewaygemini.BuildUpstreamURLsForAccount(gatewaygemini.UpstreamAccount{
 			ID:      account.ID,
@@ -689,6 +704,27 @@ func geminiCodeAssistUpstreamURL(baseURL string) string {
 	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/v1internal:streamGenerateContent?alt=sse"
 }
 
+// geminiModelMappedUpstreamURL 对齐 buildGeminiUpstreamUrl +
+// geminiGenerateContentModelMappedUpstreamPathAndQuery
+// （gateway/protocols/openai-v1/model-mapping.ts:228-232）：剥掉 models/
+// 前缀并编码路径段后，按下游流式标志选拡作与 alt=sse 查询，路径重写交给
+// gatewaygemini.BuildUpstreamURL 的 base 归一（/v1beta 去重等）。
+func geminiModelMappedUpstreamURL(baseURL string, req *gatewaypreauth.GatewayRequest, upstreamModel string) (string, error) {
+	model := strings.TrimPrefix(strings.TrimSpace(upstreamModel), "models/")
+	if model == "" {
+		return "", fmt.Errorf("gemini 模型映射缺少上游模型")
+	}
+	action := "generateContent"
+	stream := false
+	if gatewaypreauth.RequestStream(req) {
+		action = "streamGenerateContent"
+		stream = true
+	}
+	// encodeURIComponent 对整段编码（含 /）；PathEscape 保留 /，显式替换对齐。
+	segment := strings.ReplaceAll(url.PathEscape(model), "/", "%2F")
+	return gatewaygemini.BuildUpstreamURL(baseURL, "/v1beta/models/"+segment+":"+action, stream)
+}
+
 // clientUpstreamBody returns the serialized upstream body (the gateway body
 // pipeline cache when present, otherwise the raw body).
 func clientUpstreamBody(req *gatewaypreauth.GatewayRequest) []byte {
@@ -1006,7 +1042,9 @@ func applyOpenAIClientCompatibilityHeaders(headers http.Header, req *gatewayprea
 
 // gptRequestOverrideEndpointFamily mirrors gptRequestOverrideEndpointFamily:
 // the override wire family is the mapping upstream family, falling back to the
-// request family, and limited to chat_completions / responses.
+// request family, and limited to the override wire vocabulary
+// (chat_completions / responses / anthropic_messages /
+// gemini_generate_content; B-6 wire 分支补齐时扩展了跨协议两族).
 func gptRequestOverrideEndpointFamily(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate, mapping *gatewayproto.ResolvedModelMapping) string {
 	family := ""
 	if mapping != nil && mapping.UpstreamEndpointFamily != "" {
@@ -1014,9 +1052,9 @@ func gptRequestOverrideEndpointFamily(req *gatewaypreauth.GatewayRequest, accoun
 	} else {
 		family = requestEndpointFamilyOf(req.PathAndQuery())
 	}
-	switch family {
-	case "chat_completions", "responses":
-		return family
+	switch openaicompat.NormalizeEndpointFamily(family) {
+	case "chat_completions", "responses", "anthropic_messages", "gemini_generate_content", "gemini_stream_generate":
+		return openaicompat.NormalizeEndpointFamily(family)
 	default:
 		return ""
 	}

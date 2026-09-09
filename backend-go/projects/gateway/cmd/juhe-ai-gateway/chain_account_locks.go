@@ -349,6 +349,55 @@ func chainAccountLockLeaseFence(observation *gatewaydispatch.AccountLockObservat
 }
 
 // ---------------------------------------------------------------------------
+// success -> LOCKED_IDLE (completeAccountLockSuccessAsync :319-335)
+// ---------------------------------------------------------------------------
+
+// CompleteSuccessAsync mirrors completeAccountLockSuccessAsync
+// (account-lock.repository.ts:319-335): 上游响应协议成功后，把 ENGAGED 账户锁
+// CAS 复位为 LOCKED_IDLE 并清除事故簿记（incident/deadline/lease 全部置空，
+// generation 保持不变）。行为红线与 Node 一致：未启用（无行/enabled=0）或
+// 非 ENGAGED 状态为空操作；observation 给出时先做 sameAccountLockObservation
+// 围栏，不匹配即空操作；CAS 失竞时重读权威行、不报错（Node :334）。
+func (s *chainAccountLocks) CompleteSuccessAsync(ctx context.Context, accountID, leaseID string, observation *gatewaydispatch.AccountLockObservation) error {
+	_ = leaseID // Node 语义由 observation.leaseId 围栏承载，独立 leaseID 参数仅作签名占位。
+	id := strings.TrimSpace(accountID)
+	if id == "" {
+		return nil
+	}
+	current, err := s.findState(ctx, id)
+	if err != nil {
+		return err
+	}
+	if current == nil || current.enabled != 1 || current.lockState != "ENGAGED" {
+		return nil
+	}
+	if observation != nil && !chainAccountLockObservationMatches(current, observation) {
+		return nil
+	}
+	completionNowMs := s.now().UnixMilli()
+	fenceSQL, fenceArgs := chainAccountLockLeaseFence(observation, completionNowMs)
+	var incidentID any
+	if current.incidentID.Valid && current.incidentID.String != "" {
+		incidentID = current.incidentID.String
+	}
+	args := []any{isoMillisOf(s.now()), id, current.generation, incidentID}
+	args = append(args, fenceArgs...)
+	result, err := s.db.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_lock_states")+`
+		SET lock_state = 'LOCKED_IDLE', incident_id = NULL, incident_started_at = NULL, deadline_at = NULL,
+		    original_status = NULL, provenance = NULL, next_retry_at_ms = NULL, lease_id = NULL,
+		    lease_until_ms = NULL, updated_at = ?
+		WHERE account_id = ? AND enabled = 1 AND lock_state = 'ENGAGED' AND generation = ? AND incident_id = ?`+fenceSQL), args...)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		// CAS 失竞：并发路径已推进锁态，Node 重读权威行（:334）。
+		_, _ = s.readStateOnce(ctx, id)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // failure -> ENGAGED (recordAccountLockFailureAsync :280-317)
 // ---------------------------------------------------------------------------
 

@@ -408,8 +408,16 @@ func TestBuildBridgeRequestBodyFamilyDispatch(t *testing.T) {
 	if _, err := BuildBridgeRequestBody(FamilyGeminiStreamGenerate, FamilyAnthropicMessages, geminiBody, BridgeRequestBodyOptions{DefaultModel: "m"}); err != nil {
 		t.Fatalf("gemini->anthropic: %v", err)
 	}
-	if _, err := BuildBridgeRequestBody(FamilyResponses, FamilyGeminiStreamGenerate, chatBody, BridgeRequestBodyOptions{}); err == nil {
-		t.Fatal("responses->gemini must surface the explicit unsupported error")
+	responsesBody := map[string]any{"model": "m", "input": "hi"}
+	if _, err := BuildBridgeRequestBody(FamilyResponses, FamilyGeminiStreamGenerate, responsesBody, BridgeRequestBodyOptions{ModelOverride: "gemini-m"}); err != nil {
+		t.Fatalf("responses->gemini: %v", err)
+	}
+	anthropicBody := map[string]any{"model": "m", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+	if _, err := BuildBridgeRequestBody(FamilyAnthropicMessages, FamilyGeminiGenerateContent, anthropicBody, BridgeRequestBodyOptions{ModelOverride: "gemini-m"}); err != nil {
+		t.Fatalf("anthropic->gemini: %v", err)
+	}
+	if _, err := BuildBridgeRequestBody("gemini_generate_content", FamilyGeminiGenerateContent, geminiBody, BridgeRequestBodyOptions{}); err == nil {
+		t.Fatal("gemini->gemini same-family source must surface the fallback source error")
 	}
 }
 

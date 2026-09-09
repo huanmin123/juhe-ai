@@ -29,7 +29,7 @@ gateway       jobs       maintenance
 ```
 
 - 三个项目各自拥有独立 `go.mod`、`cmd`、`internal`、测试和发布产物。
-- 项目之间禁止直接 import：`gateway` 不得依赖 `jobs` 或 `maintenance`；`jobs` 不得依赖 `gateway`；`maintenance` 不得依赖前两个项目。
+- 项目之间禁止直接 import：`gateway` 不得依赖 `jobs` 或 `maintenance`；`jobs` 不得依赖 `gateway`；`maintenance` 不得依赖前两个项目。唯一受控例外（2026-09-04 用户批准，X05 / BUG-0167-0168；登记于 gateway go.mod 与 maintenance/bootstrap 包注释，回归脚本 go-project-boundary-regression.mjs 白名单同款收口）：`gateway` 组合根可 import `backend-go-maintenance/bootstrap` 以在 SQLite 启动时执行与 Node db-service 相同的六库 ensure+seed；该包只暴露存储引导入口、无自身业务逻辑，其余 maintenance 内部包仍不可被跨项目引用。
 - 共享代码只能进入明确的、无业务编排的库，例如 DTO、枚举、错误码、协议版本和稳定 ID 规则。共享库不得反向 import 任一项目，也不得放入“万能 service”“跨项目 repository”或隐含 owner 的全局状态。
 - 数据库驱动、HTTP client、日志、配置解析、租约和并发工具优先复用已有经过验证的 Go 基础设施；抽取共享实现前先检查现有 `backend-go/projects/*/internal`、`shared/platform` 能力和已选官方/成熟开源库，不能因项目拆分各写一套。
 - 业务表 schema、Store 和 owner 仍按完整功能归属项目；共享库不拥有业务数据。跨项目只通过稳定的数据库契约、外部协议或一次性维护输入交互，不通过 Go 包调用对方 service。

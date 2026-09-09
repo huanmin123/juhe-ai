@@ -214,13 +214,26 @@ func TestBug0162CreateModelMappingEndpointFamilyEnum(t *testing.T) {
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"good-mapping",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
 		"supportedModels":["gpt-4o-mini"],"status":"active",
-		"modelMappings":[{"sourceModel":"m1","sourceEndpointFamily":"stream_generate_content","upstreamModel":"u1","upstreamEndpointFamily":"generate_content"}]}`)
+		"modelMappings":[{"sourceModel":"m1","sourceEndpointFamily":"chat_completions","upstreamModel":"u1","upstreamEndpointFamily":"chat_completions"}]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("legal families: %d %v", code, payload)
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_model_mappings WHERE source_endpoint_family = 'stream_generate_content'
-		AND upstream_endpoint_family = 'generate_content'`) != 1 {
+	if env.count(t, `SELECT COUNT(*) FROM account_model_mappings WHERE source_endpoint_family = 'chat_completions'
+		AND upstream_endpoint_family = 'chat_completions'`) != 1 {
 		t.Fatal("legal mapping must persist")
+	}
+	// Gemini 源端点族在 openai 档案下被协议矩阵拒绝（归档
+	// assertAccountModelMappingProtocolAllowed：非 native Gemini 档案不支持
+	// Gemini 源端点族），枚举合法但映射门禁拒绝 → 400。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"gemini-source",
+		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
+		"supportedModels":["gpt-4o-mini"],"status":"active",
+		"modelMappings":[{"sourceModel":"m1","sourceEndpointFamily":"stream_generate_content","upstreamModel":"u1","upstreamEndpointFamily":"generate_content"}]}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("gemini source on openai profile: %d %v", code, payload)
+	}
+	if payload["message"] != "当前供应商协议不支持 Gemini native 账号模型别名" {
+		t.Fatalf("gemini source message: %v", payload["message"])
 	}
 }
 

@@ -23,11 +23,40 @@ import (
 // the GroupBindingOrderer seam (Node routeCachedDynamicGatewayRuntime*).
 func (m *SQLReadModels) ReadGatewayRuntime(ctx context.Context, key string) (GatewayRuntime, error) {
 	ctx = ensureModelCtx(ctx)
-	projectedSettings, err := m.ReadGatewaySettings(ctx)
+	if !strings.HasPrefix(key, "sk-") {
+		projectedSettings, err := m.ReadGatewaySettings(ctx)
+		if err != nil {
+			return GatewayRuntime{}, err
+		}
+		return GatewayRuntime{Settings: projectedSettings, Accounts: []OpenAIAccountSecret{}}, nil
+	}
+	apiKey, err := m.loadGatewayAPIKeyByHash(ctx, HashSecret(key))
 	if err != nil {
 		return GatewayRuntime{}, err
 	}
-	apiKey, err := m.loadGatewayAPIKeyByKeyHash(ctx, key)
+	return m.readGatewayRuntimeForAPIKey(ctx, apiKey)
+}
+
+// ReadGatewayRuntimeByKeyHash mirrors ReadGatewayRuntime for a key already
+// known by its hash (the startup prewarm path, Node prewarmGatewayApiKeyValidationCacheAsync):
+// the sk- prefix guard is skipped because the hash form cannot carry it, and
+// the loader validates status/expiry/bindings exactly like the raw-key read.
+func (m *SQLReadModels) ReadGatewayRuntimeByKeyHash(ctx context.Context, keyHash string) (GatewayRuntime, error) {
+	ctx = ensureModelCtx(ctx)
+	apiKey, err := m.loadGatewayAPIKeyByHash(ctx, keyHash)
+	if err != nil {
+		return GatewayRuntime{}, err
+	}
+	return m.readGatewayRuntimeForAPIKey(ctx, apiKey)
+}
+
+// readGatewayRuntimeForAPIKey carries the shared read_gateway_runtime tail
+// (Node db-service readGatewayRuntime after validateGatewayApiKey): the first
+// candidate group with usage access and a dispatchable account set wins.
+// Dynamic route modes return the static shape here; the Service re-routes them
+// through the GroupBindingOrderer seam (Node routeCachedDynamicGatewayRuntime*).
+func (m *SQLReadModels) readGatewayRuntimeForAPIKey(ctx context.Context, apiKey *GatewayAPIKeyRow) (GatewayRuntime, error) {
+	projectedSettings, err := m.ReadGatewaySettings(ctx)
 	if err != nil {
 		return GatewayRuntime{}, err
 	}
@@ -142,12 +171,18 @@ func uniqueInspectionScopes(accounts []OpenAIAccountSecret) [][2]string {
 }
 
 // loadGatewayAPIKeyByKeyHash mirrors validateGatewayApiKey without the process
-// cache (the Service owns caching): sk- prefix guard, active owner join,
-// expiry/status gates, normalized route fields and active bindings.
+// cache (the Service owns caching): sk- prefix guard, then the by-hash loader.
 func (m *SQLReadModels) loadGatewayAPIKeyByKeyHash(ctx context.Context, key string) (*GatewayAPIKeyRow, error) {
 	if !strings.HasPrefix(key, "sk-") {
 		return nil, nil
 	}
+	return m.loadGatewayAPIKeyByHash(ctx, HashSecret(key))
+}
+
+// loadGatewayAPIKeyByHash is the shared by-hash body of validateGatewayApiKey:
+// active owner join, expiry/status gates, normalized route fields and active
+// bindings.
+func (m *SQLReadModels) loadGatewayAPIKeyByHash(ctx context.Context, keyHash string) (*GatewayAPIKeyRow, error) {
 	var id, systemAccountID, routeStrategyID, routeStrategyMode, status string
 	var routeConfigJSON, expiresAt, quotaLimitsJSON, requestLimitsJSON sql.NullString
 	var imageGenerationEnabled int
@@ -171,7 +206,7 @@ func (m *SQLReadModels) loadGatewayAPIKeyByKeyHash(ctx context.Context, key stri
 			AND route_strategies.system_account_id = api_keys.system_account_id
 			AND route_strategies.status = 'active'
 		WHERE api_keys.key_hash = ?
-		LIMIT 1`), HashSecret(key)).
+		LIMIT 1`), keyHash).
 		Scan(&id, &systemAccountID, &routeStrategyID, &routeStrategyMode, &routeConfigJSON,
 			&status, &expiresAt, &quotaLimitsJSON, &imageGenerationEnabled, &requestLimitsJSON)
 	if errors.Is(err, sql.ErrNoRows) {

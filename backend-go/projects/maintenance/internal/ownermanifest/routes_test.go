@@ -10,6 +10,12 @@ import (
 
 func TestVerifyRepositoryGatewayRouteOwnerManifest(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "..")
+	// 归档裁剪后 system-api-app.ts 不在 final-archive 内（对照
+	// 9f55399a3 的 fail-closed 边界）：归档路由校验前提不存在时跳过。
+	if _, err := os.Stat(filepath.Join(root, "migration-backup", "node", "final-archive",
+		"backend", "src", "modules", "system-api", "system-api-app.ts")); err != nil {
+		t.Skip("Node archive system-api-app.ts absent (trimmed archive)")
+	}
 	report, err := VerifyGatewayRouteOwnerManifest(filepath.Join(root, "docs", "migration", "GatewayManagementRouteOwnerManifest.json"), root)
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +85,11 @@ func TestVerifyGatewayRouteOwnerManifestTreatsArchivedMountAsHistorical(t *testi
 
 func TestVerifyGatewayRouteOwnerManifestModelChecksArchiveClosesFamily(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "..")
+	// 与 TestVerifyRepositoryGatewayRouteOwnerManifest 同一裁剪归档边界。
+	if _, err := os.Stat(filepath.Join(root, "migration-backup", "node", "final-archive",
+		"backend", "src", "modules", "system-api", "system-api-app.ts")); err != nil {
+		t.Skip("Node archive system-api-app.ts absent (trimmed archive)")
+	}
 	report, err := VerifyGatewayRouteOwnerManifest(filepath.Join(root, "docs", "migration", "GatewayManagementRouteOwnerManifest.json"), root)
 	if err != nil {
 		t.Fatal(err)

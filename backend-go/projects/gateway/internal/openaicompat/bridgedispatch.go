@@ -12,7 +12,8 @@ import (
 //	chat_completions -> anthropic_messages   openai-anthropic-bridge
 //	responses        -> anthropic_messages   openai-anthropic-bridge (responses input)
 //	chat_completions -> gemini_*             openai-anthropic-gemini-native / chat->gemini
-//	responses        -> gemini_*             not supported yet (explicit error)
+//	responses        -> gemini_*             openai-anthropic-gemini-native (responses input)
+//	anthropic_messages -> gemini_*           openai-anthropic-gemini-native (anthropic input)
 //	anthropic_messages -> chat_completions   anthropic-openai-chat-bridge
 //	gemini_*           -> chat_completions   gemini-openai-chat-bridge
 //	gemini_*           -> anthropic_messages gemini-anthropic-messages-bridge
@@ -47,13 +48,14 @@ func BuildBridgeRequestBody(sourceFamily, upstreamFamily string, clientBody map[
 		case FamilyChatCompletions:
 			return BuildOpenAIChatToGeminiBody(clientBody, options)
 		case FamilyResponses:
-			return nil, bridgeValidationError(
-				"responses 到 Gemini GenerateContent 桥接尚未实现；请改用 chat_completions 源端点或 Gemini 原生映射",
-				"bridge_responses_to_gemini_unsupported")
+			return BuildOpenAIResponsesToGeminiBody(clientBody, options)
 		case FamilyAnthropicMessages:
+			return BuildAnthropicMessagesToGeminiBody(clientBody, options)
+		default:
+			// Node sourceBodyToGeminiGenerateContentBody fall-through.
 			return nil, bridgeValidationError(
-				"anthropic_messages 到 Gemini GenerateContent 桥接尚未实现；请改用 chat_completions 源端点或 Gemini 原生映射",
-				"bridge_anthropic_to_gemini_unsupported")
+				"当前下游协议不能桥接到 Gemini native GenerateContent",
+				"unsupported_gemini_target_bridge_source")
 		}
 	}
 	return nil, bridgeValidationError(

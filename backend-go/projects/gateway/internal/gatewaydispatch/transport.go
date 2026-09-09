@@ -41,6 +41,13 @@ type GatewayUpstreamResponse struct {
 // Status mirrors response.status.
 func (r *GatewayUpstreamResponse) Status() int { return r.status }
 
+// NewGatewayUpstreamResponseForTransform rebuilds an upstream response after a
+// cross-protocol bridge response transform (Node replaces the body stream and
+// rewrites the headers on the same GatewayUpstreamResponse).
+func NewGatewayUpstreamResponseForTransform(status int, header http.Header, body io.ReadCloser) *GatewayUpstreamResponse {
+	return &GatewayUpstreamResponse{status: status, Header: header, Body: body}
+}
+
 // OK mirrors response.ok.
 //
 // SSE 形态裁决（V1 维持，归档对照）：非 2xx 上游响应是终态完整响应——即使

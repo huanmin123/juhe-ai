@@ -123,12 +123,16 @@ func (j *KeepaliveJob) RunOnce(ctx context.Context, plan KeepalivePlan, limit in
 				continue
 			}
 			result.Failed++
-			j.logger.Warn("供应商 OAuth 保活刷新失败",
+			logAttrs := append([]any{
 				"event", "oauth_keepalive_refresh_account_failed",
 				"provider", plan.Provider,
 				"accountId", account.ID,
 				"accountName", account.Name,
-				"error", lockErr)
+			}, tokenExchangeFailureLogAttrs(lockErr, plan.Provider, "oauth_keepalive_refresh", map[string]any{
+				"provider":  plan.Provider,
+				"accountId": account.ID,
+			})...)
+			j.logger.Warn("供应商 OAuth 保活刷新失败", logAttrs...)
 			continue
 		}
 		if !refreshed {

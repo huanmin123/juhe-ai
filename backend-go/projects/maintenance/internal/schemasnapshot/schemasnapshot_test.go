@@ -109,7 +109,10 @@ func TestSnapshotDigestFixedSample(t *testing.T) {
 		Schemas:       []SchemaEntry{{Name: "public", Owner: "postgres"}},
 		Roles:         []RoleEntry{{Name: "juhe_app", CreateRole: true, CanLogin: true}},
 	}
-	want := "7e95fb27eea1845e517ed23d6791f855a9f75dec6943cda9e416310050156383"
+	// 期望值按归档 snapshotDigest 算法手工复核：剔除 target/capturedAt/
+	// database 后对 schema-only 部分做 stableJson（键序稳定、紧凑分隔符）
+	// 再取 sha256，与 Node postgres-schema-snapshot.ts:88-91 逐字节一致。
+	want := "ad6a0ffe0d03949c3df76c5153151192250872c1e4ff4ae63663e9e3415b349c"
 	got, err := SnapshotDigest(snapshot)
 	if err != nil {
 		t.Fatalf("SnapshotDigest() error = %v", err)

@@ -1809,6 +1809,17 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 			}, "账户 API Key 成功结算未完成")
 		}
 	}
+	// 成功侧结算：把 ENGAGED 锁复位为 LOCKED_IDLE
+	// 与 Node routes.ts:2481-2483 completeAccountLockSuccessAsync 行为一致。
+	if dispatched.ConfirmAccountLockSuccess != nil {
+		if err := dispatched.ConfirmAccountLockSuccess(); err != nil {
+			l.c.observability.Logger().Warn("gateway_account_lock_success_settlement_failed", map[string]any{
+				"event":     "gateway_account_lock_success_settlement_failed",
+				"accountId": dispatched.Account.ID,
+				"error":     err.Error(),
+			}, "账户锁成功结算未完成")
+		}
+	}
 }
 
 // fallbackOptions mirrors the option bag Node passes from the current

@@ -200,3 +200,36 @@ func BridgeSseData(payload any) string {
 func BridgeSseEventText(name string, payload any) string {
 	return "event: " + name + "\ndata: " + bridgeJSONStringify(payload) + "\n\n"
 }
+
+// BridgeJSONStringifyOf exports bridgeJSONStringify for the composition-root
+// response transformer.
+func BridgeJSONStringifyOf(value any) string {
+	return bridgeJSONStringify(value)
+}
+
+// TransformAnthropicJSONToChatErrorBody mirrors anthropicChatBridgeResponseErrorJson:
+// the anthropic-protocol error payload the chat bridge renders when the
+// upstream JSON cannot be converted (parse failure branch).
+func TransformAnthropicJSONToChatErrorBody() []byte {
+	return []byte(bridgeJSONStringify(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    "api_error",
+			"code":    "upstream_chat_completions_invalid_json",
+			"message": "上游 Chat Completions 返回了无法转换为 Anthropic Messages 响应的 JSON",
+		},
+	}))
+}
+
+// TransformAnthropicJSONToChatTooLargeErrorBody mirrors the too-large branch
+// of anthropicChatBridgeResponseErrorJson.
+func TransformAnthropicJSONToChatTooLargeErrorBody() []byte {
+	return []byte(bridgeJSONStringify(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    "api_error",
+			"code":    "upstream_chat_completions_response_too_large",
+			"message": "上游 Chat Completions 响应过大，无法转换为 Anthropic Messages 响应",
+		},
+	}))
+}

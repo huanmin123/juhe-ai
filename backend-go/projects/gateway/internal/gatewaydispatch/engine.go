@@ -100,6 +100,10 @@ type Engine struct {
 	APIKeyEffects         APIKeyEffectsPort
 	AccountState          AccountStateMutations
 	CodexBridge           CodexBridgePort
+	// ResponseTransformer 挂 B-4 跨协议桥响应面（Node transformUpstreamResponse
+	// driver 链；UpstreamResponseTransformer 端口定义在 ports.go）。nil 时上游
+	// 响应按协议直通（B-4 之前的透传行为）。
+	ResponseTransformer UpstreamResponseTransformer
 	// KeyRotation 轮转计数器端口（Node Redis 账户 Key 轮换计数器，
 	// account-api-key-rotation.ts:269-299；B-3，BUG-0174）。nil 时回落包级
 	// 进程内计数器 defaultAPIKeyRotationCounter；组合根下一波接 Redis 实现。

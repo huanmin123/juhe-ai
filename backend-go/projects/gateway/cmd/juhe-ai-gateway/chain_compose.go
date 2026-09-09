@@ -418,6 +418,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// B-1（BUG-0174）波1遗留接线：dispatch 的 Key 指纹密钥与水合层同源
 	//（chain_runtime.go newChainAccountsSelectorWithStats 的 cfg.Secret）。
 	engine.Config.Secret = deps.EngineSecret
+	// B-4（BUG-0175）接线：跨协议桥响应面（Node transformUpstreamResponse
+	// driver 链）——桥响应转换挂在 attempt 尾部，非桥请求保持直通。
+	engine.ResponseTransformer = newChainBridgeResponseTransformer()
 	// D-192/D-146（BUG-0175）接线：请求期上游 URL 安全（DNS resolve-all +
 	// 钉扎）与全局并发槽。此前 engine.Transport 保持零值——Governor=Nop、
 	// URLPolicy=Passthrough，UnsafeResolvedUpstreamURLError 有消费端无

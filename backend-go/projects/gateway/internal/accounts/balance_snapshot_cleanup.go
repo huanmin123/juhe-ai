@@ -2,7 +2,9 @@ package accounts
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -56,52 +58,198 @@ func (s *Store) SetBalanceSnapshotCleaner(cleaner BalanceSnapshotCleaner) {
 	s.balanceSnapshotCleaner = cleaner
 }
 
+// cleanupRetryDelays mirrors
+// sequenceRetryPolicy('account_balance_snapshot_cleanup', [250,1000,1000], 3):
+// the first retry waits 250ms, the next two wait 1000ms each (three retries
+// on top of the initial attempt).
+var cleanupRetryDelays = []int64{250, 1000, 1000}
+
+// cleanupQueueConcurrency bounds the fire-and-forget deletion workers. 归档为
+// pLimit(globalMax) + 全局后台并发槽双重限流；Go 无并发治理器，队列并发本身
+// 即限流面（本删除为单条 DELETE，4 已远超实际需要）。
+const cleanupQueueConcurrency = 4
+
 // StoreBalanceSnapshotCleaner is the store-backed BalanceSnapshotCleaner: the
 // composition-root default that executes the archived deletion against the
 // account store's own database surface (PostgreSQL schema-qualified
 // juhe_stats.account_usage_snapshots via statsTable, bare table on the shared
 // SQLite file — the same dual-mode face the M11 snapshot read uses).
 //
-// Node surrounds the deletion with a bounded retry queue
-// (sequenceRetryPolicy [250,1000,1000]ms × 3) plus the read-side isSuppressed
-// suppression map; the Go gateway keeps the single best-effort attempt with an
-// observable warn on failure (retry/suppression residual logged at the
-// registered migration-gap entry).
+// Node surrounds the deletion with the bounded retry queue (see
+// cleanupRetryDelays) plus the read-side isSuppressed suppression map; the Go
+// read side keeps the registered M11 fallback
+// (balanceSnapshotMatchesConfiguration), while this coordinator ports the
+// retry face: temporary failures re-enqueue with the archived delays and the
+// Node log-event vocabulary (initial_failed / retry_failed /
+// retry_scheduled / retry_succeeded / retry_exhausted) verbatim.
 type StoreBalanceSnapshotCleaner struct {
 	store *Store
 	// now seeds updatedBefore (Node item.updatedBefore = now() at enqueue
 	// time); overridable for deterministic tests.
 	now func() time.Time
+
+	mu                sync.Mutex
+	queue             *retryQueue[cleanupQueueItem]
+	suppressedItems   map[string]cleanupQueueItem
+	exhaustedAccounts map[string]bool
+	sequence          int64
+}
+
+// cleanupQueueItem mirrors AccountBalanceSnapshotCleanupQueueItem.
+type cleanupQueueItem struct {
+	request       BalanceSnapshotCleanupRequest
+	requestID     string
+	updatedBefore string
 }
 
 // NewStoreBalanceSnapshotCleaner builds the store-backed cleaner.
 func NewStoreBalanceSnapshotCleaner(store *Store) *StoreBalanceSnapshotCleaner {
-	return &StoreBalanceSnapshotCleaner{store: store, now: time.Now}
+	cleaner := &StoreBalanceSnapshotCleaner{
+		store:             store,
+		now:               time.Now,
+		suppressedItems:   map[string]cleanupQueueItem{},
+		exhaustedAccounts: map[string]bool{},
+	}
+	cleaner.queue = newRetryQueue[cleanupQueueItem]("account-balance-snapshot-cleanup",
+		cleanupRetryDelays, cleanupQueueConcurrency,
+		func(item cleanupQueueItem, attemptIndex int) error {
+			return cleaner.deleteSupersededSnapshot(context.Background(), item.request)
+		},
+		retryQueueCallbacks[cleanupQueueItem]{
+			OnSuccess:        cleaner.onCleanupSuccess,
+			OnFailure:        cleaner.onCleanupFailure,
+			OnRetryScheduled: cleaner.onCleanupRetryScheduled,
+			OnExhausted:      cleaner.onCleanupExhausted,
+		})
+	return cleaner
 }
 
 // SetClockForTest overrides the updatedBefore clock (tests only).
 func (c *StoreBalanceSnapshotCleaner) SetClockForTest(now func() time.Time) {
 	c.now = now
+	c.mu.Lock()
+	c.queue = newRetryQueue[cleanupQueueItem]("account-balance-snapshot-cleanup",
+		cleanupRetryDelays, cleanupQueueConcurrency,
+		func(item cleanupQueueItem, attemptIndex int) error {
+			return c.deleteSupersededSnapshot(context.Background(), item.request)
+		},
+		retryQueueCallbacks[cleanupQueueItem]{
+			OnSuccess:        c.onCleanupSuccess,
+			OnFailure:        c.onCleanupFailure,
+			OnRetryScheduled: c.onCleanupRetryScheduled,
+			OnExhausted:      c.onCleanupExhausted,
+		})
+	c.queue.setClockForTest(now)
+	c.mu.Unlock()
 }
 
-// CleanupBalanceSnapshotAfterSave implements BalanceSnapshotCleaner: the
-// deletion runs fire-and-forget on its own context so the PATCH response path
-// stays non-blocking (the Node enqueue contract); failures log a warn and are
-// otherwise dropped.
+// Queue exposes the retry queue for deterministic tests (tests only).
+func (c *StoreBalanceSnapshotCleaner) Queue() *retryQueue[cleanupQueueItem] {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.queue
+}
+
+// CleanupBalanceSnapshotAfterSave implements BalanceSnapshotCleaner: enqueue
+// on the bounded retry queue (Node cleanupAfterSave contract) — non-blocking
+// for the PATCH response path, replaceExisting keeps the latest request per
+// account.
 func (c *StoreBalanceSnapshotCleaner) CleanupBalanceSnapshotAfterSave(request BalanceSnapshotCleanupRequest) {
 	if c == nil || c.store == nil {
 		return
 	}
-	go func() {
-		if err := c.deleteSupersededSnapshot(context.Background(), request); err != nil {
-			slog.Warn("AI 账户保存已提交，余额旧快照清理失败",
-				"event", "account_balance_snapshot_cleanup_failed",
-				"accountId", request.AccountID,
-				"configRevision", request.ConfigRevision,
-				"cleanupReason", request.Reason,
-				"error", err.Error())
-		}
-	}()
+	now := c.now()
+	c.mu.Lock()
+	c.sequence++
+	item := cleanupQueueItem{
+		request: request,
+		requestID: fmt.Sprintf("%s:%d:%d:%d", request.AccountID, request.ConfigRevision,
+			now.UnixMilli(), c.sequence),
+		updatedBefore: isoMillis(now),
+	}
+	c.suppressedItems[request.AccountID] = item
+	delete(c.exhaustedAccounts, request.AccountID)
+	queue := c.queue
+	c.mu.Unlock()
+	queue.enqueue(request.AccountID, item, retryQueueEnqueueOptions{ReplaceExisting: true})
+}
+
+// currentItemLocked resolves whether the event item is still the account's
+// latest request (Node requestId identity check); caller holds c.mu.
+func (c *StoreBalanceSnapshotCleaner) currentItemLocked(event retryQueueEvent[cleanupQueueItem]) (cleanupQueueItem, bool) {
+	item, ok := c.suppressedItems[event.Key]
+	return item, ok && item.requestID == event.Item.requestID
+}
+
+// onCleanupSuccess mirrors onSuccess: only the latest request clears its own
+// suppression (Node requestId identity check).
+func (c *StoreBalanceSnapshotCleaner) onCleanupSuccess(event retryQueueEvent[cleanupQueueItem]) {
+	c.mu.Lock()
+	item, mine := c.currentItemLocked(event)
+	if mine {
+		delete(c.suppressedItems, event.Key)
+		delete(c.exhaustedAccounts, event.Key)
+	}
+	c.mu.Unlock()
+	if mine {
+		args := append([]any{"event", "account_balance_snapshot_cleanup_retry_succeeded",
+			"attemptCount", event.AttemptIndex + 1}, cleanupLogFields(item)...)
+		slog.Info("AI 账户余额旧快照重试清理成功", args...)
+	}
+}
+
+// onCleanupFailure mirrors onFailure: the initial attempt and the retries use
+// distinct event names (Node attemptIndex fork).
+func (c *StoreBalanceSnapshotCleaner) onCleanupFailure(event retryQueueEvent[cleanupQueueItem]) {
+	c.mu.Lock()
+	item, _ := c.currentItemLocked(event)
+	c.mu.Unlock()
+	eventName := "account_balance_snapshot_cleanup_retry_failed"
+	message := "AI 账户余额旧快照重试清理失败"
+	if event.AttemptIndex == 0 {
+		eventName = "account_balance_snapshot_cleanup_initial_failed"
+		message = "AI 账户保存已提交，余额旧快照首次清理失败并已安排有限重试"
+	}
+	args := append([]any{"event", eventName,
+		"attemptCount", event.AttemptIndex + 1}, cleanupLogFields(item)...)
+	slog.Warn(message, append(args, "error", event.Err.Error())...)
+}
+
+// onCleanupRetryScheduled mirrors onRetryScheduled.
+func (c *StoreBalanceSnapshotCleaner) onCleanupRetryScheduled(event retryQueueEvent[cleanupQueueItem]) {
+	c.mu.Lock()
+	item, _ := c.currentItemLocked(event)
+	c.mu.Unlock()
+	args := append([]any{"event", "account_balance_snapshot_cleanup_retry_scheduled",
+		"attemptCount", event.AttemptIndex + 1,
+		"delayMs", event.DelayMs}, cleanupLogFields(item)...)
+	slog.Warn("AI 账户余额旧快照已安排有限重试", append(args, "error", event.Err.Error())...)
+}
+
+// onCleanupExhausted mirrors onExhausted: the exhausted account keeps its
+// suppression entry so the stale snapshot stays hidden from the read
+// fallback until a newer save replaces it.
+func (c *StoreBalanceSnapshotCleaner) onCleanupExhausted(event retryQueueEvent[cleanupQueueItem]) {
+	c.mu.Lock()
+	item, mine := c.currentItemLocked(event)
+	if mine {
+		c.exhaustedAccounts[event.Key] = true
+	}
+	c.mu.Unlock()
+	args := append([]any{"event", "account_balance_snapshot_cleanup_retry_exhausted",
+		"attemptCount", event.AttemptIndex + 1,
+		"staleSnapshotSuppressed", true}, cleanupLogFields(item)...)
+	slog.Warn("AI 账户余额旧快照清理已用尽重试，继续屏蔽旧快照", append(args, "error", event.Err.Error())...)
+}
+
+func cleanupLogFields(item cleanupQueueItem) []any {
+	return []any{
+		"accountId", item.request.AccountID,
+		"configRevision", item.request.ConfigRevision,
+		"cleanupReason", item.request.Reason,
+		"batchId", item.request.BatchID,
+		"updatedBefore", item.updatedBefore,
+	}
 }
 
 // deleteSupersededSnapshot mirrors deleteAccountBalanceSnapshotAsync

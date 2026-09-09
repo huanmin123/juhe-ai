@@ -603,6 +603,24 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, &ValidationError{Message: "账户分组无效"}
 	}
 
+	// Supported-model catalog assertion (repositories.ts create:1927, the
+	// write-side normalizeAccountSupportedModelsForProvider): 每个支持模型必须
+	// 落在当前供应商模型目录中且声明支持当前协议档案；hybrid 供应商直通（归档
+	// :69），空集直通（归档 :42，空集由上方 assertSupportedModelsRequired 拒绝）。
+	// 归档 filterIncompatibleDefaults = !hasOwnInput(input,'supportedModels')：
+	// 仅在请求未显式提供支持模型时为 true，而该形态在 create 链恒为空集并先被
+	// assertSupportedModelsRequired 拒绝，目录过滤分支不可达，Go 省略该参数
+	// （恒为 filterIncompatibleDefaults=false 的严格拒绝语义）。personal 目录按
+	// 最终 owner scope 读取（分组切换之后的 systemAccountID），与映射断言同源。
+	if err := s.assertAccountSupportedModelsInProviderCatalog(ctx, tx, supportedModels, providerCode, systemAccountID, protocolPredicateInput{
+		providerCode:              providerCode,
+		protocolCode:              profile.protocolCode,
+		protocolVersion:           profile.protocolVersion,
+		providerProtocolProfileID: profile.id,
+	}); err != nil {
+		return nil, err
+	}
+
 	// Model mapping catalog assertion (repositories.ts create:1936, the
 	// write-side normalizeAccountModelMappingsForProvider): 协议档案映射断言
 	// （含 hybrid 跨协议矩阵与协议池）+ 来源/目标模型必须落在当前供应商模型

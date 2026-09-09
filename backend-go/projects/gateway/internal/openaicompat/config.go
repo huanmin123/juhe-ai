@@ -92,6 +92,24 @@ type Config struct {
 	// runtimeConfig.hostedToolRuntimes (guidance default).
 	HostedToolCodeInterpreterMode string
 	HostedToolComputerMode        string
+	// HostedToolShellMode / HostedToolSkillsMode / HostedToolToolSearchMode
+	// mirror the remaining runtimeConfig.hostedToolRuntimes entries
+	// (JUHE_AI_HOSTED_TOOL_{SHELL,SKILLS,TOOL_SEARCH}_MODE, guidance default).
+	HostedToolShellMode      string
+	HostedToolSkillsMode     string
+	HostedToolToolSearchMode string
+}
+
+// HostedToolRuntimeModes projects the Config onto the hosted tool registry
+// mode bag (ResolveOpenAIHostedToolRuntimeDecision).
+func (c Config) HostedToolRuntimeModes() OpenAIHostedToolRuntimeModes {
+	return OpenAIHostedToolRuntimeModes{
+		CodeInterpreter: c.HostedToolCodeInterpreterMode,
+		Computer:        c.HostedToolComputerMode,
+		Shell:           c.HostedToolShellMode,
+		Skills:          c.HostedToolSkillsMode,
+		ToolSearch:      c.HostedToolToolSearchMode,
+	}
 }
 
 // CodeInterpreterConfig mirrors RuntimeConfig['codeInterpreter'].

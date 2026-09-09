@@ -375,6 +375,93 @@ func TestChainAccountLocksRecordFailureEngages(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// completeSuccess → LOCKED_IDLE（归档 completeAccountLockSuccessAsync :319-335）
+// ---------------------------------------------------------------------------
+
+func TestChainAccountLocksCompleteSuccessResetsEngaged(t *testing.T) {
+	fixture := newAccountLocksFixture(t)
+	ctx := context.Background()
+	fixture.seedAccount(t, "acc_s1", "active", 1, "")
+	updatedAt := isoMillisOf(time.UnixMilli(fixture.clock.NowMs() - 60_000))
+	fixture.seedLockRow(t, chainAccountLockRow{accountID: "acc_s1", enabled: 1, lockState: "ENGAGED",
+		deathTimeout: 300, retryInterval: 5, generation: 4,
+		incidentID:     sql.NullString{String: "acc_s1:4:tok-s", Valid: true},
+		incidentStart:  sql.NullString{String: updatedAt, Valid: true},
+		deadlineAt:     sql.NullString{String: isoMillisOf(time.UnixMilli(fixture.clock.NowMs() + 300_000)), Valid: true},
+		originalStatus: sql.NullString{String: "active", Valid: true},
+		provenance:     sql.NullString{String: "lock_policy", Valid: true},
+		nextRetryAtMs:  sql.NullInt64{Int64: fixture.clock.NowMs() + 1_000, Valid: true},
+		leaseID:        sql.NullString{String: "lease-1", Valid: true},
+		leaseUntilMs:   sql.NullInt64{Int64: fixture.clock.NowMs() + 2_000, Valid: true},
+		updatedAt:      updatedAt})
+
+	// 观察代际匹配：ENGAGED → LOCKED_IDLE，事故簿记清空，generation 保持不变
+	// （Node UPDATE :329-333 不递增 generation）。
+	matched := &gatewaydispatch.AccountLockObservation{Generation: 4, IncidentID: "acc_s1:4:tok-s"}
+	if err := fixture.locks.CompleteSuccessAsync(ctx, "acc_s1", "lease-1", matched); err != nil {
+		t.Fatalf("CompleteSuccess: %v", err)
+	}
+	row := fixture.readLockRow(t, "acc_s1")
+	if row.lockState != "LOCKED_IDLE" {
+		t.Fatalf("lock_state = %s, want LOCKED_IDLE", row.lockState)
+	}
+	if row.generation != 4 {
+		t.Fatalf("generation = %d, want 4 (unchanged)", row.generation)
+	}
+	if row.incidentID.Valid || row.incidentStart.Valid || row.deadlineAt.Valid ||
+		row.originalStatus.Valid || row.provenance.Valid ||
+		row.nextRetryAtMs.Valid || row.leaseID.Valid || row.leaseUntilMs.Valid {
+		t.Fatalf("incident bookkeeping must clear: %+v", row)
+	}
+	if row.updatedAt != isoMillisOf(fixture.clock.Now()) {
+		t.Fatalf("updated_at = %s, want %s", row.updatedAt, isoMillisOf(fixture.clock.Now()))
+	}
+
+	// 已 LOCKED_IDLE：空操作（Node :321 lockState !== 'ENGAGED' return current）。
+	if err := fixture.locks.CompleteSuccessAsync(ctx, "acc_s1", "", nil); err != nil {
+		t.Fatalf("second CompleteSuccess: %v", err)
+	}
+	if row := fixture.readLockRow(t, "acc_s1"); row.lockState != "LOCKED_IDLE" {
+		t.Fatalf("LOCKED_IDLE row mutated: %+v", row)
+	}
+
+	// 观察代际不匹配：空操作（Node :322 sameAccountLockObservation）。
+	fixture.seedLockRow(t, chainAccountLockRow{accountID: "acc_s2", enabled: 1, lockState: "ENGAGED",
+		deathTimeout: 300, retryInterval: 5, generation: 6,
+		incidentID: sql.NullString{String: "acc_s2:6:tok-s", Valid: true}})
+	stale := &gatewaydispatch.AccountLockObservation{Generation: 5, IncidentID: "acc_s2:6:tok-s"}
+	if err := fixture.locks.CompleteSuccessAsync(ctx, "acc_s2", "", stale); err != nil {
+		t.Fatalf("stale CompleteSuccess: %v", err)
+	}
+	if row := fixture.readLockRow(t, "acc_s2"); row.lockState != "ENGAGED" || row.generation != 6 {
+		t.Fatalf("stale observation must not reset: %+v", row)
+	}
+
+	// 观察匹配：复位成功。
+	current := &gatewaydispatch.AccountLockObservation{Generation: 6, IncidentID: "acc_s2:6:tok-s"}
+	if err := fixture.locks.CompleteSuccessAsync(ctx, "acc_s2", "", current); err != nil {
+		t.Fatalf("matched CompleteSuccess: %v", err)
+	}
+	if row := fixture.readLockRow(t, "acc_s2"); row.lockState != "LOCKED_IDLE" || row.generation != 6 {
+		t.Fatalf("matched reset failed: %+v", row)
+	}
+
+	// 行为红线：未启用 / 无行 / 非 ENGAGED 与「未锁」等价的空操作。
+	if err := fixture.locks.CompleteSuccessAsync(ctx, "acc_missing", "", nil); err != nil {
+		t.Fatalf("missing account CompleteSuccess: %v", err)
+	}
+	fixture.seedAccount(t, "acc_unlocked", "active", 1, "")
+	fixture.seedLockRow(t, chainAccountLockRow{accountID: "acc_unlocked", enabled: 0, lockState: "UNLOCKED",
+		deathTimeout: 300, retryInterval: 5, generation: 2})
+	if err := fixture.locks.CompleteSuccessAsync(ctx, "acc_unlocked", "", nil); err != nil {
+		t.Fatalf("unlocked account CompleteSuccess: %v", err)
+	}
+	if row := fixture.readLockRow(t, "acc_unlocked"); row.lockState != "UNLOCKED" {
+		t.Fatalf("UNLOCKED row mutated: %+v", row)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // settleDeadline → DEAD_CONFIRMED + 账户结算 + 失效通知（归档 :337-387）
 // ---------------------------------------------------------------------------
 

@@ -132,6 +132,19 @@ type CompactPreflightResult struct {
 // applyCodexResponsesChatBridgeCompactPreflight.
 func (s *CompactPreflightService) ApplyChatBridgeCompactPreflight(ctx context.Context, input CompactPreflightInput) (CompactPreflightResult, error) {
 	prepare := s.Bridge.PrepareCodexResponsesCompactDispatchForAccounts(s.Registry, input.Req, input.DispatchAccounts)
+	// B-4 rejectUnsupportedCodexResponsesChatBridgeCompactRequest
+	// (codex-responses-chat-bridge.ts:188-193): a codex_responses client
+	// compact request that would dispatch through the Chat-only bridge
+	// synthesis is rejected with the dedicated 400
+	// unsupported_codex_bridge_compact. Internal previous-response chains keep
+	// the G18 synthetic-summary contract (the compact preflight port) so an
+	// established bridge session can still compact.
+	if isOpenAIResponsesCompactPostRequest(input.Req) &&
+		strings.EqualFold(input.RequestClientCompatibility, "codex_responses") &&
+		prepare && !s.bridgeCompactRestoresInternalPrevious(input) {
+		s.sendCompactFailure(input, codexBridgeUnsupportedCompactFailure())
+		return CompactPreflightResult{Completed: true}, nil
+	}
 	if !isOpenAIResponsesCompactPostRequest(input.Req) || !prepare {
 		accounts := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(input.DispatchAccounts))
 		for _, account := range input.DispatchAccounts {
@@ -545,4 +558,50 @@ func mustMarshalJSON(value any) []byte {
 		return []byte("null")
 	}
 	return encoded
+}
+
+// ---------------------------------------------------------------------------
+// B-4: rejectUnsupportedCodexResponsesChatBridgeCompactRequest
+// (codex-responses-chat-bridge.ts:168-193)
+// ---------------------------------------------------------------------------
+
+// IsCodexResponsesChatBridgeUnsupportedCompactRequest mirrors
+// isCodexResponsesChatBridgeUnsupportedCompactRequest: the chat-only bridge
+// rejects /responses/compact for codex_responses clients
+// (enabled + codex_responses client + compact POST).
+func IsCodexResponsesChatBridgeUnsupportedCompactRequest(req *gatewaypreauth.GatewayRequest, requestClientCompatibility string, bridgeEnabled bool) bool {
+	return bridgeEnabled &&
+		strings.EqualFold(requestClientCompatibility, "codex_responses") &&
+		isOpenAIResponsesCompactPostRequest(req)
+}
+
+// RejectUnsupportedCodexResponsesChatBridgeCompactRequest mirrors
+// rejectUnsupportedCodexResponsesChatBridgeCompactRequest: the dedicated
+// GatewayRequestValidationError (400 invalid_request_error,
+// unsupported_codex_bridge_compact) with the archived Node copy.
+func RejectUnsupportedCodexResponsesChatBridgeCompactRequest() error {
+	return gatewaypreauth.NewGatewayRequestValidationError(
+		"当前 Chat-only bridge 不支持 /responses/compact；需要使用原生 Responses 账号或供应商显式兼容的 compact 能力",
+		gatewaypreauth.WithValidationErrorCode("unsupported_codex_bridge_compact"),
+	)
+}
+
+// codexBridgeUnsupportedCompactFailure is the compact preflight failure shape
+// carrying the same error code / message as
+// RejectUnsupportedCodexResponsesChatBridgeCompactRequest.
+func codexBridgeUnsupportedCompactFailure() gatewayFailure {
+	return gatewayFailure{
+		statusCode: 400,
+		_type:      "invalid_request_error",
+		code:       "unsupported_codex_bridge_compact",
+		message:    "当前 Chat-only bridge 不支持 /responses/compact；需要使用原生 Responses 账号或供应商显式兼容的 compact 能力",
+	}
+}
+
+// bridgeCompactRestoresInternalPrevious reports whether the compact request
+// restores an internal bridge response chain (PreviousResponseKind internal):
+// those keep the synthetic-summary contract instead of the reject.
+func (s *CompactPreflightService) bridgeCompactRestoresInternalPrevious(input CompactPreflightInput) bool {
+	state, ok := s.Registry.Get(input.Req)
+	return ok && state.PreviousResponseKind == PreviousKindInternal
 }

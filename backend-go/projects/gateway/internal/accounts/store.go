@@ -150,6 +150,12 @@ type Store struct {
 	// hydration (list_usage.go, BUG-0175 D-126 账户面). Nil until
 	// SetUsageSource wires it; a nil port keeps the zero summaries.
 	usage UsageSource
+	// authorizationStats is the authz-slice read port behind the list
+	// authorizationCount/authorizationTeamCount/authorizationUsageAvailable
+	// projection (authorization_stats.go, Node account-summary.repository.ts
+	// :1608-1610). Nil until SetAuthorizationStatsSource wires it; a nil port
+	// keeps the zero fields.
+	authorizationStats AuthorizationStatsSource
 }
 
 // NewStore builds the store.

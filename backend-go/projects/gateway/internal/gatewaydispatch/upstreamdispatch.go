@@ -40,6 +40,11 @@ type UpstreamDispatchResult struct {
 	// recordGatewayAccountApiKeySuccess 的触发点——协议成功后在链上消费一次，
 	// guard 复位 + Redis 瞬态避让清理 + 合并持久成功写。nil = 效果链未装配。
 	ConfirmAccountAPIKeySuccess func() error
+	// ConfirmAccountLockSuccess 镜像 completeAccountLockSuccessAsync：上游响应
+	// 协议成功后，把 ENGAGED 账户锁 CAS 复位为 LOCKED_IDLE（Node
+	// account-lock.repository.ts:completeAccountLockSuccessAsync,
+	// routes.ts:2481-2483）。nil = 账户锁未启用或引擎未装配。
+	ConfirmAccountLockSuccess func() error
 	ConfirmHalfOpenSuccess     func() bool
 	ReleaseHalfOpenLease       func() bool
 	HotQualityAttempt          *hotQualityAttemptHandle

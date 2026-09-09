@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // TokenHTTPRequest mirrors the provider-oauth-token-transport input the Node
@@ -19,6 +21,11 @@ type TokenHTTPRequest struct {
 	URL     string
 	Headers map[string]string
 	Body    string
+	// ProxyURL mirrors TokenExchangeTransportInput.proxyUrl ('' = direct).
+	// When set, the exchange is dialled through this proxy.
+	ProxyURL string
+	// Method is the HTTP verb ('' = POST, the token-endpoint default).
+	Method string
 	// Timeout bounds a single upstream call. Zero falls back to
 	// DefaultTokenTimeout (the 25s Node default).
 	Timeout time.Duration
@@ -52,9 +59,10 @@ const DefaultTokenTimeout = 25 * time.Second
 // tokenResponseMaxBytes mirrors openAIOAuthTokenResponseMaxBytes.
 const tokenResponseMaxBytes = 256 * 1024
 
-// HTTPTokenExchanger is the production transport: form/JSON POST without
-// proxying. Tests never construct this type, so no test traffic leaves the
-// process.
+// HTTPTokenExchanger is the production transport: form/JSON POST, optionally
+// dialled through the request's ProxyURL (Node TokenExchangeTransport passes
+// input.proxyUrl into requestUpstream). Tests never construct this type, so no
+// test traffic leaves the process.
 type HTTPTokenExchanger struct {
 	Client *http.Client
 }
@@ -64,10 +72,32 @@ func NewHTTPTokenExchanger() *HTTPTokenExchanger {
 	return &HTTPTokenExchanger{Client: &http.Client{}}
 }
 
+// clientFor resolves the dialer for one request: an explicit proxy URL wins
+// (mirrors Node requestUpstream(input.proxyUrl)), falling back to the
+// configured client for direct calls. Invalid proxy URLs fail the exchange
+// instead of silently going direct.
+func (e *HTTPTokenExchanger) clientFor(request TokenHTTPRequest) (*http.Client, error) {
+	if strings.TrimSpace(request.ProxyURL) == "" {
+		client := e.Client
+		if client == nil {
+			client = &http.Client{}
+		}
+		return client, nil
+	}
+	// sharedupstreamhttp.NewClient keeps CheckRedirect=ErrUseLastResponse and
+	// wires http/https via ProxyURL and socks5/socks5h via the SOCKS5 dialer
+	// (the same transport family the gateway dispatch uses).
+	return sharedupstreamhttp.NewClient(request.ProxyURL, sharedupstreamhttp.TransportOptions{})
+}
+
 // Do implements TokenExchanger.
 func (e *HTTPTokenExchanger) Do(ctx context.Context, request TokenHTTPRequest) (TokenHTTPResponse, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	client, err := e.clientFor(request)
+	if err != nil {
+		return TokenHTTPResponse{}, err
 	}
 	timeout := request.Timeout
 	if timeout <= 0 {
@@ -75,16 +105,16 @@ func (e *HTTPTokenExchanger) Do(ctx context.Context, request TokenHTTPRequest) (
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, request.URL, strings.NewReader(request.Body))
+	method := request.Method
+	if method == "" {
+		method = http.MethodPost
+	}
+	req, err := http.NewRequestWithContext(ctx, method, request.URL, strings.NewReader(request.Body))
 	if err != nil {
 		return TokenHTTPResponse{}, err
 	}
 	for key, value := range request.Headers {
 		req.Header.Set(key, value)
-	}
-	client := e.Client
-	if client == nil {
-		client = &http.Client{}
 	}
 	response, err := client.Do(req)
 	if err != nil {

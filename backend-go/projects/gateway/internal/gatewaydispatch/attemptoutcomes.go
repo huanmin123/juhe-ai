@@ -62,13 +62,25 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			ConfirmSameAccountApiKeyFailures: func() error {
 				return e.recordConfirmedSameAccountApiKeyFailures(ctx, confirmFailures, c.account, usageContext)
 			},
-			// D-111（BUG-0175）：成功侧结算随协议成功在链上消费（Node
-			// recordGatewayAccountApiKeySuccess 的成功触发点；nil 端口时为
-			// 中性 no-op）。
-			ConfirmAccountAPIKeySuccess: func() error {
-				return e.recordAccountAPIKeySuccess(ctx, c.account, usageContext)
-			},
-			ConfirmHalfOpenSuccess: func() bool {
+// D-111（BUG-0175）：成功侧结算随协议成功在链上消费（Node
+				// recordGatewayAccountApiKeySuccess 的成功触发点；nil 端口时为
+				// 中性 no-op）。
+				ConfirmAccountAPIKeySuccess: func() error {
+					return e.recordAccountAPIKeySuccess(ctx, c.account, usageContext)
+				},
+				// 成功侧结算：ENGAGED 锁复位（Node 完全成功后调用
+				// completeAccountLockSuccessAsync，routes.ts:2481-2483）。
+				ConfirmAccountLockSuccess: func() error {
+					if in.accountLockTrafficEnabled && e.Locks != nil {
+						var obs *AccountLockObservation
+						if in.activeAccountLockObservation != nil {
+							obs = *in.activeAccountLockObservation
+						}
+						return e.Locks.CompleteSuccessAsync(ctx, c.account.ID, "", obs)
+					}
+					return nil
+				},
+				ConfirmHalfOpenSuccess: func() bool {
 				if !in.automaticAccountStateMutationAllowed {
 					return false
 				}

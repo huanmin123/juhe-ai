@@ -75,10 +75,12 @@ func (e *Engine) requestUpstreamForAttempt(
 }
 
 // transformUpstreamResponseForAccount mirrors the
-// transformGatewayUpstreamResponseForAccount tail: the codex bridge and
-// protocol transformation hooks arrive through the driver/failure ports.
-// Go keeps the observation decoration implicit (the response model
-// observation belongs to the observability slice).
+// transformGatewayUpstreamResponseForAccount tail: the B-4 cross-protocol
+// bridge response conversion runs through the UpstreamResponseTransformer
+// driver extension port (composition-root wired); the grok fallback re-request
+// and protocol transformation hooks that Node carried in this tail stay on
+// their own slices. Go keeps the observation decoration implicit (the response
+// model observation belongs to the observability slice).
 func (e *Engine) transformUpstreamResponseForAccount(
 	ctx context.Context,
 	input AttemptInput,
@@ -86,26 +88,24 @@ func (e *Engine) transformUpstreamResponseForAccount(
 	upstreamBody []byte,
 	response *GatewayUpstreamResponse,
 ) (*GatewayUpstreamResponse, error) {
-	continueUpstreamJSONRequest := func(nextBody map[string]any) (*GatewayUpstreamResponse, error) {
-		serialized := SerializeGatewayJSONObject(nextBody)
-		return RequestUpstream(ctx, input.UpstreamURL, UpstreamRequestOptions{
-			Method:           input.Req.MethodUpper(),
-			Header:           headers,
-			Body:             serialized,
-			ProxyURL:         derefStringPtr(input.Account.ProxyURL),
-			TimeoutMs:        socketTimeoutMsOf(input),
-			RequestTimeoutMs: requestTimeoutMsOf(input),
-			DisableTimeouts:  input.TimeoutProfile.TimeoutsDisabled,
-			Signal:           input.Signal,
-			Transport:        upstreamTransportForAttempt(headers, input.UpstreamURL),
-		}, e.Transport)
-	}
-	_ = continueUpstreamJSONRequest
+	_ = headers
 	_ = upstreamBody
-	// The protocol transformation (cross-protocol conversion, codex chat
-	// bridge continuation) is applied by the provider driver slice through
-	// FailureDispatcher/ProviderDriver at the response-consumption stage; the
-	// transport-level attempt returns the raw response.
+	if e.ResponseTransformer != nil {
+		transformed, err := e.ResponseTransformer.TransformUpstreamResponseForAccount(UpstreamResponseTransformInput{
+			Req:                        input.Req,
+			Account:                    input.Account,
+			Response:                   response,
+			RequestBody:                upstreamBody,
+			UpstreamURL:                input.UpstreamURL,
+			RequestClientCompatibility: input.RequestClientCompatibility,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if transformed != nil {
+			return transformed, nil
+		}
+	}
 	return response, nil
 }
 

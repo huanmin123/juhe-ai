@@ -19,6 +19,14 @@ import (
 )
 
 func TestMaintenanceCommandDefaultsUseFinalArchive(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "..", "..")
+	// 归档裁剪后 db-service 契约源与 system-api-app.ts 缺席（对照
+	// ownermanifest 包内同款跳过边界）：CLI 默认指向 final-archive 的
+	// 校验前提不存在时跳过。
+	if _, err := os.Stat(filepath.Join(root, "migration-backup", "node", "final-archive",
+		"backend", "src", "modules", "db-service", "db-service-types.ts")); err != nil {
+		t.Skip("Node archive db-service contract sources absent (trimmed archive)")
+	}
 	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
 	if runtime.GOOS == "windows" {
 		binary += ".exe"

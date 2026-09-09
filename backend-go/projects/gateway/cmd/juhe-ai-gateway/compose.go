@@ -542,19 +542,19 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		return nil, fmt.Errorf("create system-teams store: %w", err)
 	}
 	composed.teamStore = teamStore
-// WithGlobalConcurrencyMax carries the parsed JUHE_AI_CONCURRENCY_GLOBAL_MAX
-		// into the DEFAULT scheduling-policy projection (Node reads
-		// runtimeConfig.concurrency.globalMax live; the store default stays 5000).
-		// D-38: group_account_stats reads from juhe_stats database.
-		groupStatsReader := groups.NewGroupAccountStatsDBReader(composed.statsDB, composed.pgDialect)
-		groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus,
-			groups.WithGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax),
-			groups.WithStatsReader(groupStatsReader),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create groups store: %w", err)
-		}
-		routeStrategyStore, err := routestrategies.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
+	// WithGlobalConcurrencyMax carries the parsed JUHE_AI_CONCURRENCY_GLOBAL_MAX
+	// into the DEFAULT scheduling-policy projection (Node reads
+	// runtimeConfig.concurrency.globalMax live; the store default stays 5000).
+	// D-38: group_account_stats reads from juhe_stats database.
+	groupStatsReader := groups.NewGroupAccountStatsDBReader(composed.statsDB, composed.pgDialect)
+	groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus,
+		groups.WithGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax),
+		groups.WithStatsReader(groupStatsReader),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create groups store: %w", err)
+	}
+	routeStrategyStore, err := routestrategies.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
 	if err != nil {
 		return nil, fmt.Errorf("create route-strategy store: %w", err)
 	}
@@ -624,6 +624,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// group-stats 脏标记 + K5 gateway runtime / api-key validation /
 	// authorization quota 主题）。
 	accountStore.SetAuthorizationGrantReturner(authzGrantReturner{store: authzStore})
+	// 审计补齐装配（verdict-ak/ap/aa）：授权统计 loader（列表三字段投影）+
+	// API Key 运行明细读取器（/{id}/api-key-runtime 的 items 数据源），见
+	// compose_account_reads.go。
+	if err := wireAccountReadCompanions(composed, accountStore, authzStore, cfg.Secret); err != nil {
+		return nil, fmt.Errorf("wire account read companions: %w", err)
+	}
 	// 手动账号测试执行链装配（去跨进程战役：原 jobs internal-api loopback
 	// HTTP 桥删除，执行链抽为共享 backend-go-platform/accounttest 包后在
 	// gateway 进程内装配单持有者队列，见 compose_account_test_local.go）。

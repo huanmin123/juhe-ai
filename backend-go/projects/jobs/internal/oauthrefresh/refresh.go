@@ -480,7 +480,12 @@ func (j *RefreshJob) processCandidate(ctx context.Context, candidate RefreshCand
 	if !candidate.IsDecryptFailure() {
 		expiredOrMissing = accessTokenExpiredOrMissing(candidate.Account.Credentials, j.now())
 	}
-	j.logger.Warn("OpenAI OAuth 访问令牌刷新失败",
+	// Bounded failure-context logging (Node captureExpected/
+	// captureUnexpectedFailureContext semantics): local configuration failures
+	// log a stable reasonCode with sanitized decision inputs, everything else
+	// logs the bounded error capture (cause chain, stage snapshot, byte
+	// budget, hash attribution) instead of a raw error dump.
+	failureLogAttrs := append([]any{
 		"event", "openai_oauth_access_token_refresh_account_failed",
 		"accountId", accountID,
 		"accountName", accountName,
@@ -489,7 +494,11 @@ func (j *RefreshJob) processCandidate(ctx context.Context, candidate RefreshCand
 		"failureKind", string(failureKind),
 		"failureStateApplied", failureState.Applied,
 		"accessTokenExpiredOrMissing", expiredOrMissing,
-		"error", refreshErr)
+	}, tokenExchangeFailureLogAttrs(refreshErr, "openai", "openai_oauth_refresh", map[string]any{
+		"provider":  "openai",
+		"accountId": accountID,
+	})...)
+	j.logger.Warn("OpenAI OAuth 访问令牌刷新失败", failureLogAttrs...)
 
 	if failureState.Applied &&
 		failureState.LocalConfigurationCount >= openAIOAuthRefreshFailureThreshold &&

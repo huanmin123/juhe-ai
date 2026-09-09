@@ -29,6 +29,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -56,7 +57,15 @@ func main() {
 		os.Exit(2)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// JUHE_AI_LOG_LEVEL (Node log-level.ts): trace..silent, fail fast on an
+	// invalid value like the Node startup guard.
+	logLevel, err := processlog.LoadLevel(os.Getenv)
+	if err != nil {
+		fail(err)
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+	processlog.CatchPanic(logger)
+	processlog.KeepAliveOnBrokenOutputPipe()
 	ownerMode, err := ownermode.Load(os.Getenv)
 	if err != nil {
 		fail(err)

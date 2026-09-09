@@ -540,10 +540,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			if err := assertSupportedModelsRequired(next); err != nil {
 				return nil, err
 			}
-			if !stringSlicesEqual(supportedModels, next) {
-				// Node normalizedSupportedModelsForPatch
-				// (account-management-patch.repository.ts:1513-1527)：支持模型
-				// 发生变化时才校验目录归属（目录外拒绝），hybrid 供应商直通。
+			// Node normalizedSupportedModelsForPatch
+			// (account-management-patch.repository.ts:1513-1527)：无序集合相等
+			// （unorderedStringListEquals）即视为未变化，直接沿用当前集合，不触发
+			// 目录校验；支持模型发生变化时才校验目录归属（目录外拒绝），hybrid
+			// 供应商直通。
+			if !unorderedStringListEqual(supportedModels, next) {
 				if err := s.assertAccountSupportedModelsInProviderCatalog(ctx, tx, next, row.providerCode, row.systemAccountID, protocolPredicateInput{
 					providerCode:              row.providerCode,
 					protocolCode:              row.protocolCode,
@@ -588,11 +590,16 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// Model mappings: schema-validated (endpoint family enums in the body
 	// parser), diffed against the persisted rows and replaced in-place
 	// (account-management-patch.repository.ts modelMappingsChanged).
+	var preWriteModelMappings []ModelMapping
 	if input.ModelMappingsPresent {
 		currentMappings, err := s.loadAccountModelMappings(ctx, tx, row.id)
 		if err != nil {
 			return nil, err
 		}
+		// preWriteModelMappings 承载替换前快照：下方目录/协议池校验的"实际变更"
+		// 判定必须对照写前集合（归档 normalizedModelMappingsForPatch 的 current
+		// 语义；写后重读恒等于输入，会让变更条件退化为恒 false）。
+		preWriteModelMappings = currentMappings
 		if !modelMappingsEqual(currentMappings, input.ModelMappings) {
 			addChange("modelMappings", currentMappings, input.ModelMappings)
 			if err := s.replaceAccountModelMappings(ctx, tx, row.id, row.providerCode, input.ModelMappings, nowISO); err != nil {
@@ -732,12 +739,11 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	mappingValidationSource := []ModelMapping{}
 	mappingValidationNeeded := false
 	if input.ModelMappingsPresent {
-		currentMappingsForValidation, err := s.loadAccountModelMappings(ctx, tx, row.id)
-		if err != nil {
-			return nil, err
-		}
+		// 对照写前快照判定"实际变更"（归档 normalizedModelMappingsForPatch：
+		// !endpointModesChanged && accountModelMappingsEqual(current, normalized)
+		// 早退，变化或端点能力变化才校验）。
 		mappingValidationNeeded = len(input.ModelMappings) > 0 &&
-			(endpointModesChanged || !modelMappingsEqual(currentMappingsForValidation, input.ModelMappings))
+			(endpointModesChanged || !modelMappingsEqual(preWriteModelMappings, input.ModelMappings))
 		mappingValidationSource = input.ModelMappings
 	} else if endpointModesChanged {
 		currentMappingsForValidation, err := s.loadAccountModelMappings(ctx, tx, row.id)

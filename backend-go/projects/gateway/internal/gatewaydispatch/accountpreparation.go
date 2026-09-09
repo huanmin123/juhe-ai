@@ -11,6 +11,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
 )
 
 // Account preparation, migrated from dispatch/account-preparation.ts.
@@ -477,7 +478,7 @@ func (e *Engine) BuildPreparedUpstreamRequestParts(
 		GroupID:         usageContext.GroupID,
 	}, requestClientCompatibility)
 	if err != nil {
-		return PreparedRequestParts{}, e.wrapCodexPreparationError(ctx, req, usageContext, account, err)
+		return PreparedRequestParts{}, e.wrapCodexPreparationError(ctx, req, usageContext, account, convertBridgeGuidanceError(err))
 	}
 	body := e.SanitizePreparedCodexResponsesHistoryForAccount(req, account, parts.Body, requestClientCompatibility)
 	metadata := PreparedUpstreamBodyMetadata(req, body)
@@ -490,6 +491,25 @@ func (e *Engine) BuildPreparedUpstreamRequestParts(
 		parts.EffectiveReasoningEffort = derefStringPtr(metadata.ReasoningEffort)
 	}
 	return parts, nil
+}
+
+// convertBridgeGuidanceError lifts the openaicompat.BridgeGuidanceError
+// payload (Node GatewayAgentGuidanceResponse: 200 agent_guidance) onto the
+// gatewaypreauth error the engine's errors.As recognition consumes
+// (dispatchsingle / attemptoutcomes guidance branches). accountScoped keeps
+// the Node `accountScoped !== false` default (nil reads as true).
+func convertBridgeGuidanceError(err error) error {
+	var guidanceErr *openaicompat.BridgeGuidanceError
+	if !errors.As(err, &guidanceErr) {
+		return err
+	}
+	return &gatewaypreauth.GatewayAgentGuidanceResponse{
+		Message:  guidanceErr.Message,
+		Code:     guidanceErr.Code,
+		Protocol: gatewaypreauth.GatewayAgentGuidanceProtocol(guidanceErr.Protocol),
+		Stream:   guidanceErr.Stream,
+		Model:    guidanceErr.Model,
+	}
 }
 
 // wrapCodexPreparationError mirrors the OpenAIOAuthCodexAdapterError branch

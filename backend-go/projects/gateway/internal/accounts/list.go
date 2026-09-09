@@ -234,11 +234,20 @@ type ListItem struct {
 	AccessType                           string              `json:"accessType"`
 	AccountAuthorizationID               *string             `json:"accountAuthorizationId,omitempty"`
 	AuthorizationInstanceSourceAccountID *string             `json:"authorizationInstanceSourceAccountId,omitempty"`
-	BoundGroupID                         *string             `json:"boundGroupId,omitempty"`
-	BoundGroupName                       *string             `json:"boundGroupName,omitempty"`
-	GroupBindStatus                      *string             `json:"groupBindStatus,omitempty"`
-	BindingSystemAccountID               *string             `json:"bindingSystemAccountId,omitempty"`
-	Permissions                          Permissions         `json:"permissions"`
+	// Authorization projection trio mirrors AccountSummary.authorization*
+	// (account-summary.repository.ts:1608-1610): the per-account active
+	// authorization counts from the authz stats loader (Node
+	// loadResourceAuthorizationStatsByResourceIds), zeroed on authorized
+	// views. authorizationUsageAvailable additionally requires the viewer to
+	// manage the resource owner.
+	AuthorizationUsageAvailable bool        `json:"authorizationUsageAvailable"`
+	AuthorizationCount          int         `json:"authorizationCount"`
+	AuthorizationTeamCount      int         `json:"authorizationTeamCount"`
+	BoundGroupID                *string     `json:"boundGroupId,omitempty"`
+	BoundGroupName              *string     `json:"boundGroupName,omitempty"`
+	GroupBindStatus             *string     `json:"groupBindStatus,omitempty"`
+	BindingSystemAccountID      *string     `json:"bindingSystemAccountId,omitempty"`
+	Permissions                 Permissions `json:"permissions"`
 	LockStatePublic
 }
 
@@ -660,6 +669,11 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	// BUG-0175 D-126 账户面: hydrate todayUsage (daily) / usage (totals) from
 	// the stats source; a nil source keeps the zero summaries.
 	if err := s.hydrateListUsage(ctx, items, records); err != nil {
+		return nil, err
+	}
+	// 授权统计投影（Node account-summary.repository.ts:1608-1610）：三字段注入，
+	// nil source 保持零值降级。
+	if err := s.hydrateAuthorizationStats(ctx, access, items, records); err != nil {
 		return nil, err
 	}
 	total := (normalized.Page-1)*normalized.PageSize + len(items)

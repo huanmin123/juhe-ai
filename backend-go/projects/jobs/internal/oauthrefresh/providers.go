@@ -3,7 +3,9 @@ package oauthrefresh
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -311,6 +313,12 @@ type GeminiTokenInfo struct {
 	TierID         string
 	QuotaProjectID string
 	BaseURL        string
+	// Drive storage quota fields (Google One slice of enrichGeminiTokenInfo).
+	// Nil/empty mirrors the Node undefined semantics: the probe did not run or
+	// failed, so buildGeminiOAuthCredentials skips the drive_storage_* keys.
+	DriveStorageLimit  *int64
+	DriveStorageUsage  *int64
+	DriveTierUpdatedAt string
 }
 
 // NormalizeGeminiOAuthType mirrors normalizeOAuthType: unknown falls back to
@@ -426,7 +434,8 @@ func GeminiAccountOAuthType(credentials map[string]any) string {
 
 // GeminiCredentialFallback mirrors the stored-credential bundle the Node
 // dispatch preparation passes into refreshGeminiAuthToken/buildGeminiOAuth
-// Credentials (client pair included; ai_studio requires both).
+// Credentials (client pair included; ai_studio requires both). ProxyURL rides
+// the bundle the way the Node dispatch account's resolved proxy URL did.
 type GeminiCredentialFallback struct {
 	RefreshToken   string
 	OAuthType      string
@@ -437,6 +446,7 @@ type GeminiCredentialFallback struct {
 	QuotaProjectID string
 	BaseURL        string
 	Scope          string
+	ProxyURL       string
 }
 
 // RefreshGeminiToken mirrors refreshGeminiAuthToken minus the retry/backoff and
@@ -470,11 +480,12 @@ func RefreshGeminiToken(ctx context.Context, ex TokenExchanger, refreshToken str
 		QuotaProjectID: normalizeText(fallback.QuotaProjectID),
 		BaseURL:        baseURL,
 		Scope:          normalizeText(fallback.Scope),
+		ProxyURL:       normalizeText(fallback.ProxyURL),
 	}, now)
 	if err != nil {
 		return nil, err
 	}
-	return enrichGeminiTokenInfo(info), nil
+	return enrichGeminiTokenInfo(ctx, info, ex, nil, normalizeText(fallback.ProxyURL), now), nil
 }
 
 // geminiRequestOptions carries the client/tier context through the token call.
@@ -487,12 +498,16 @@ type geminiRequestOptions struct {
 	QuotaProjectID string
 	BaseURL        string
 	Scope          string
+	// ProxyURL mirrors the Node requestGeminiToken options.proxyUrl.
+	ProxyURL string
 }
 
 // requestGeminiToken mirrors requestGeminiToken: form POST with client secret,
 // upstream error envelope, 5-minute clock skew safety on expires_at.
 func requestGeminiToken(ctx context.Context, ex TokenExchanger, form map[string]string, options geminiRequestOptions, now time.Time) (*GeminiTokenInfo, error) {
-	response, err := exchange(ctx, ex, formRequest(GeminiOAuthTokenURL, form))
+	request := formRequest(GeminiOAuthTokenURL, form)
+	request.ProxyURL = options.ProxyURL
+	response, err := exchange(ctx, ex, request)
 	if err != nil {
 		return nil, err
 	}
@@ -550,10 +565,168 @@ func requestGeminiToken(ctx context.Context, ex TokenExchanger, form map[string]
 	}, nil
 }
 
-// enrichGeminiTokenInfo mirrors enrichGeminiTokenInfo's static tier defaults:
-// ai_studio pins aistudio_free, code_assist pins gcp_standard, google_one pins
-// google_one_free unless a tier was already resolved.
-func enrichGeminiTokenInfo(info *GeminiTokenInfo) *GeminiTokenInfo {
+// geminiCLIUserAgent mirrors GEMINI_CLI_USER_AGENT.
+const geminiCLIUserAgent = "GeminiCLI/0.1.5 (Windows; AMD64)"
+
+// googleDriveMetadataScope mirrors the scope check
+// hasGoogleDriveMetadataScope: only grants carrying this scope get the Drive
+// storage probe.
+const googleDriveMetadataScope = "https://www.googleapis.com/auth/drive.metadata.readonly"
+
+// gibibyte/tebibyte mirror the Node tier-threshold bases.
+const (
+	gibibyte int64 = 1024 * 1024 * 1024
+	tebibyte int64 = 1024 * gibibyte
+)
+
+// InferGeminiGoogleOneTier mirrors inferGeminiGoogleOneTier: Drive storage
+// bytes to the Google One tier. Non-positive input reads as unknown.
+func InferGeminiGoogleOneTier(storageBytes int64) string {
+	if storageBytes <= 0 {
+		return "google_one_unknown"
+	}
+	if storageBytes > 100*tebibyte {
+		return "google_ai_ultra"
+	}
+	if storageBytes >= 2*tebibyte {
+		return "google_ai_pro"
+	}
+	if storageBytes >= 15*gibibyte {
+		return "google_one_free"
+	}
+	return "google_one_unknown"
+}
+
+// GeminiDriveQuota mirrors the fetchGoogleDriveStorageQuota result. Values are
+// non-negative; missing quota fields read as 0 (Node finiteNonNegativeNumber
+// ?? 0).
+type GeminiDriveQuota struct {
+	Limit int64
+	Usage int64
+}
+
+// GeminiDriveQuotaProber is the injectable Drive storage-quota probe
+// (fetchGoogleDriveStorageQuota boundary). The production implementation is
+// googleOneDriveQuotaProber; tests supply fakes. The prober may return
+// (nil, nil) to mean "skipped" (no signal needed) — errors never block the
+// refresh main path (Node catch-and-keep semantics).
+type GeminiDriveQuotaProber interface {
+	ProbeDriveQuota(ctx context.Context, accessToken string) (*GeminiDriveQuota, error)
+}
+
+// geminiDriveQuotaProbeFunc adapts a function to GeminiDriveQuotaProber.
+type geminiDriveQuotaProbeFunc func(ctx context.Context, accessToken string) (*GeminiDriveQuota, error)
+
+// ProbeDriveQuota implements GeminiDriveQuotaProber.
+func (f geminiDriveQuotaProbeFunc) ProbeDriveQuota(ctx context.Context, accessToken string) (*GeminiDriveQuota, error) {
+	return f(ctx, accessToken)
+}
+
+// googleOneDriveQuotaProber is the production probe: GET
+// drive/v3/about?fields=storageQuota on www.googleapis.com through the token
+// exchanger. proxyURL mirrors the Node fetchGoogleDriveStorageQuota proxyUrl
+// argument (the same proxy the token exchange used); an empty value dials
+// direct. The response is bounded by the same 256 KiB cap as the token
+// exchange.
+type googleOneDriveQuotaProber struct {
+	exchanger TokenExchanger
+	proxyURL  string
+}
+
+// ProbeDriveQuota implements GeminiDriveQuotaProber.
+func (p googleOneDriveQuotaProber) ProbeDriveQuota(ctx context.Context, accessToken string) (*GeminiDriveQuota, error) {
+	if p.exchanger == nil {
+		return nil, errors.New("Gemini Drive 配额探测不可用")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := TokenHTTPRequest{
+		URL: "https://www.googleapis.com/drive/v3/about?fields=storageQuota",
+		Headers: map[string]string{
+			"accept":        "application/json",
+			"authorization": "Bearer " + accessToken,
+			"content-type":  "application/json",
+			"user-agent":    geminiCLIUserAgent,
+		},
+		Method:   http.MethodGet,
+		ProxyURL: p.proxyURL,
+	}
+	response, err := p.exchanger.Do(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, upstreamError("Gemini", response.StatusCode, response.Body)
+	}
+	payload := parseTokenPayload(response.Body)
+	quota, _ := payload["storageQuota"].(map[string]any)
+	return &GeminiDriveQuota{
+		Limit: finiteNonNegativeInt64(quota["limit"]),
+		Usage: finiteNonNegativeInt64(quota["usage"]),
+	}, nil
+}
+
+// newGoogleOneDriveQuotaProber wires the production probe over the token
+// exchanger, dialled through proxyURL (Node passes the token-exchange proxyUrl
+// into fetchGoogleDriveStorageQuota). exchanger may be nil; probing then fails
+// without a network call (tests never construct this type).
+func newGoogleOneDriveQuotaProber(exchanger TokenExchanger, proxyURL string) GeminiDriveQuotaProber {
+	return googleOneDriveQuotaProber{exchanger: exchanger, proxyURL: normalizeText(proxyURL)}
+}
+
+// finiteNonNegativeInt64 mirrors finiteNonNegativeNumber: JSON numbers arrive
+// as float64, but the Drive API reports storageQuota fields as numeric strings
+// and Node coerces them with Number(); non-finite or negative values read as 0
+// (null -> Number(null)=0, true -> 1, "" -> 0). Go models the quota as int64,
+// so fractional values truncate (Drive quota bytes are integral in practice).
+func finiteNonNegativeInt64(value any) int64 {
+	switch typed := value.(type) {
+	case float64:
+		if typed != typed || typed < 0 {
+			return 0
+		}
+		return int64(typed)
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err != nil || parsed < 0 {
+			return 0
+		}
+		return int64(parsed)
+	case bool:
+		if typed {
+			return 1
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
+// hasGoogleDriveMetadataScope mirrors hasGoogleDriveMetadataScope: the scope
+// string is whitespace-separated.
+func hasGoogleDriveMetadataScope(scope string) bool {
+	for _, candidate := range strings.Fields(normalizeText(scope)) {
+		if candidate == googleDriveMetadataScope {
+			return true
+		}
+	}
+	return false
+}
+
+// enrichGeminiTokenInfo mirrors enrichGeminiTokenInfo(tokenInfo, proxyUrl,
+// signal): static tier defaults first — ai_studio pins aistudio_free,
+// code_assist pins gcp_standard, google_one pins google_one_free unless a tier
+// was already resolved.
+//
+// The Google One Drive storage probe (M17 deferral now carried) runs only for
+// google_one grants that carry the drive.metadata.readonly scope: a successful
+// probe writes driveStorageLimit/usage/updatedAt and upgrades the tier per
+// inferGeminiGoogleOneTier; a failed probe keeps the selected tier (Node
+// catch-and-keep semantics) and never blocks the refresh. proxyURL is the
+// proxy the token exchange used (Node passes it straight through so the Drive
+// quota read dials the same egress).
+func enrichGeminiTokenInfo(ctx context.Context, info *GeminiTokenInfo, ex TokenExchanger, prober GeminiDriveQuotaProber, proxyURL string, now time.Time) *GeminiTokenInfo {
 	switch info.OAuthType {
 	case "ai_studio":
 		if canonical := CanonicalGeminiTierID("ai_studio", info.TierID); canonical != "" {
@@ -566,6 +739,24 @@ func enrichGeminiTokenInfo(info *GeminiTokenInfo) *GeminiTokenInfo {
 			info.TierID = canonical
 		} else {
 			info.TierID = "google_one_free"
+		}
+		if hasGoogleDriveMetadataScope(info.Scope) {
+			probe := prober
+			if probe == nil {
+				probe = newGoogleOneDriveQuotaProber(ex, proxyURL)
+			}
+			if quota, probeErr := probe.ProbeDriveQuota(ctx, info.AccessToken); probeErr == nil && quota != nil {
+				limit := quota.Limit
+				usage := quota.Usage
+				info.DriveStorageLimit = &limit
+				info.DriveStorageUsage = &usage
+				info.DriveTierUpdatedAt = isoMillis(now)
+				if detected := InferGeminiGoogleOneTier(limit); detected != "google_one_unknown" {
+					info.TierID = detected
+				}
+			}
+			// Probe failure keeps the selected tier (Node comment: legacy
+			// grants may include Drive but still reject quota reads).
 		}
 	default:
 		if canonical := CanonicalGeminiTierID("code_assist", info.TierID); canonical != "" {
@@ -649,6 +840,17 @@ func BuildGeminiOAuthCredentials(info *GeminiTokenInfo, fallback *GeminiCredenti
 	}
 	if oauthType != "ai_studio" {
 		credentials["supported_endpoint_modes"] = []string{"generate_content_json", "generate_content_sse"}
+	}
+	// Google One / Drive storage metadata (Node: drive_storage_limit,
+	// drive_storage_usage, drive_tier_updated_at).
+	if info.DriveStorageLimit != nil {
+		credentials["drive_storage_limit"] = *info.DriveStorageLimit
+	}
+	if info.DriveStorageUsage != nil {
+		credentials["drive_storage_usage"] = *info.DriveStorageUsage
+	}
+	if info.DriveTierUpdatedAt != "" {
+		credentials["drive_tier_updated_at"] = info.DriveTierUpdatedAt
 	}
 	return credentials
 }

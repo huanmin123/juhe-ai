@@ -2,6 +2,7 @@ package gatewayopenai
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -268,9 +269,15 @@ type errBridgeBodyObject struct{}
 func (errBridgeBodyObject) Error() string { return "bridge body must be a JSON object" }
 
 // bridgeBuildError maps a bridge conversion failure onto the dispatcher error
-// contract: BridgeRequestError surfaces its message under the mapping
-// conversion code (the D-149 raise point), everything else keeps the code.
+// contract: agent-guidance errors pass through for the engine's errors.As
+// recognition (Node guidance 200 agent_guidance), BridgeRequestError surfaces
+// its message under the mapping conversion code (the D-149 raise point),
+// everything else keeps the code.
 func bridgeBuildError(err error) error {
+	var guidanceErr *openaicompat.BridgeGuidanceError
+	if errors.As(err, &guidanceErr) {
+		return err
+	}
 	bridgeErr, ok := err.(*openaicompat.BridgeRequestError)
 	if !ok {
 		return &gatewayproto.BuildUpstreamError{
