@@ -31,6 +31,25 @@ function Read-DotEnvValue {
   return $Fallback
 }
 
+function Import-DotEnvEnvironment {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+  foreach ($line in Get-Content -LiteralPath $Path) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
+    if ($trimmed.StartsWith('export ')) { $trimmed = $trimmed.Substring(7).Trim() }
+    if ($trimmed -notmatch '^(JUHE_AI_[A-Za-z0-9_]+)=(.*)$') { continue }
+    $name = $Matches[1]
+    $value = $Matches[2].Trim()
+    if ($value.Length -ge 2 -and (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
+      $value = $value.Substring(1, $value.Length - 2)
+    }
+    # Explicit process environment values keep precedence over backend/.env.
+    if ([Environment]::GetEnvironmentVariable($name, 'Process')) { continue }
+    [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+  }
+}
+
 function Set-DotEnvValue {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -192,44 +211,35 @@ function Start-GoProject {
   )
   $binaryName = "juhe-ai-$Project.exe"
   $binaryPath = Join-Path $AppDirectory "backend-go/$binaryName"
-  $launcherPath = Join-Path $AppDirectory 'scripts/start-go-project.mjs'
   $runtimeDir = Join-Path $AppDirectory 'backend/runtime'
   $pidPath = Join-Path $runtimeDir "juhe-ai-go-$Project.pid"
   $logPath = Join-Path $AppDirectory "backend/logs/juhe-ai-go-$Project.log"
   if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) { throw "Go $Project binary not found: $binaryPath. Rebuild the release package for Windows." }
-  if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) { throw "Go project launcher not found: $launcherPath. Rebuild the release package." }
   New-Item -ItemType Directory -Force $runtimeDir | Out-Null
   New-Item -ItemType Directory -Force (Split-Path -Parent $logPath) | Out-Null
   $existingProcess = Get-GoProjectProcess -PidPath $pidPath -BinaryName $binaryName -RemoveStalePid
   if ($null -ne $existingProcess) { throw "juhe-ai-go-$Project is already running (PID $($existingProcess.Id)); stop the existing release before starting another one." }
-  $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
-  $PSNativeCommandUseErrorActionPreference = $false
-  try {
-    $launcherOutput = @(& node $launcherPath $Project $binaryPath (Join-Path $AppDirectory 'backend') $logPath 2>&1)
-    $launcherExitCode = $LASTEXITCODE
-  } finally {
-    $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
-  }
-  if ($launcherExitCode -ne 0) { $launcherOutput | Write-Error; throw "Unable to start juhe-ai-go-$Project." }
-  $pidText = (($launcherOutput | ForEach-Object { $_.ToString() }) -join '').Trim()
-  if ($pidText -notmatch '^[1-9][0-9]*$') { throw "juhe-ai-go-$Project returned an invalid PID: $pidText" }
-  Set-Content -LiteralPath $pidPath -Value $pidText -NoNewline -Encoding utf8
+  $stderrPath = "$logPath.stderr"
+  $process = Start-Process -FilePath $binaryPath -WorkingDirectory (Join-Path $AppDirectory 'backend') -RedirectStandardOutput $logPath -RedirectStandardError $stderrPath -WindowStyle Hidden -PassThru
+  if ($null -eq $process -or $process.Id -lt 1) { throw "Unable to start juhe-ai-go-$Project." }
+  Set-Content -LiteralPath $pidPath -Value $process.Id -NoNewline -Encoding utf8
   $process = Get-GoProjectProcess -PidPath $pidPath -BinaryName $binaryName -RemoveStalePid
   if ($null -eq $process) {
     $logTail = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 } else { @("No Go $Project log was created.") }
     $logTail | Write-Error
+    if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Tail 20 | Write-Error }
     throw "juhe-ai-go-$Project exited during startup."
   }
   try {
     Wait-HttpStatus -Process $process -Url "$($HealthUrl.TrimEnd('/'))/health" -ExpectedStatus 200 -Description "juhe-ai-go-$Project"
   } catch {
     if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 | Write-Error }
+    if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Tail 20 | Write-Error }
     throw
   }
-  return [pscustomobject]@{ Process = $process; PidPath = $pidPath; LogPath = $logPath }
+  return [pscustomobject]@{ Process = $process; PidPath = $pidPath; LogPath = $logPath; ErrorLogPath = $stderrPath }
 }
 
-if (-not (Test-CommandExists 'node')) { throw 'Node.js LTS is required. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) before running this script.' }
 $env:NODE_ENV = if ($env:NODE_ENV) { $env:NODE_ENV } else { 'production' }
 # go-only release packages intentionally omit the archived backend/ tree.
 # Create its runtime configuration root before the first .env write.
@@ -246,8 +256,16 @@ if (-not (Test-Path -LiteralPath 'backend/.env')) {
   }
   Write-Host 'Configure all JUHE_AI_*_INSTANCE_ID values before production use.'
 }
+Import-DotEnvEnvironment -Path 'backend/.env'
 Ensure-DeploymentDefaults
 New-Item -ItemType Directory -Force 'backend/data' | Out-Null
+$frontendDistPath = if ($env:JUHE_AI_FRONTEND_DIST_PATH) { $env:JUHE_AI_FRONTEND_DIST_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_FRONTEND_DIST_PATH' -Fallback '' }
+if (-not $frontendDistPath) {
+  $frontendDistPath = Join-Path $appDir 'frontend/dist'
+} elseif (-not [System.IO.Path]::IsPathRooted($frontendDistPath)) {
+  $frontendDistPath = Join-Path (Join-Path $appDir 'backend') $frontendDistPath
+}
+$env:JUHE_AI_FRONTEND_DIST_PATH = $frontendDistPath
 $deployMode = Get-DeployMode
 
 $hostValue = if ($env:JUHE_AI_HOST) { $env:JUHE_AI_HOST } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_HOST' -Fallback '127.0.0.1' }

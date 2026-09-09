@@ -16,9 +16,11 @@ const j1InputSigningKey = Buffer.alloc(32, 17).toString('base64url')
 for (const source of [powershellSource, shellSource]) {
   assert.match(source, /juhe-ai-gateway/u, 'release startup must run Go gateway')
   assert.match(source, /juhe-ai-jobs/u, 'release startup must run Go jobs')
-  assert.match(source, /start-go-project\.mjs/u, 'release startup must call the generic Go project launcher')
+  assert.doesNotMatch(source, /start-go-project\.mjs/u, 'release startup must not depend on the retired Node launcher')
   assert.doesNotMatch(source, /juhe-ai-go-sidecar/u, 'release startup must not retain the deleted monolithic binary')
 }
+assert.match(powershellSource, /Start-Process -FilePath \$binaryPath/u, 'Windows release startup must launch Go directly')
+assert.match(shellSource, /nohup "\$binary"/u, 'Unix release startup must launch Go directly')
 
 assert.match(launcherSource, /gateway\|jobs/u, 'launcher must accept only declared Go projects')
 assertLauncherRejectsMissingProjectIdentity()

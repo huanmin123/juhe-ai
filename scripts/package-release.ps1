@@ -342,7 +342,6 @@ Copy-RequiredItem (Join-Path $repoRoot 'frontend/dist') (Join-Path $packageRoot 
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.sh') (Join-Path $packageRoot 'start.sh')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.ps1') (Join-Path $packageRoot 'start.ps1')
 Copy-RequiredItem (Join-Path $repoRoot 'scripts/run-with-owner-lock.mjs') (Join-Path $packageRoot 'scripts/run-with-owner-lock.mjs')
-Copy-RequiredItem (Join-Path $repoRoot 'scripts/start-go-project.mjs') (Join-Path $packageRoot 'scripts/start-go-project.mjs')
 Copy-RequiredItem (Join-Path $repoRoot 'scripts/validate-owner-manifest.mjs') (Join-Path $packageRoot 'scripts/validate-owner-manifest.mjs')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.json') (Join-Path $packageRoot 'deploy/owner-manifest.json')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.schema.json') (Join-Path $packageRoot 'deploy/owner-manifest.schema.json')

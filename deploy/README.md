@@ -28,7 +28,7 @@
 
 ## 部署前检查
 
-- Node.js LTS（22.x LTS >=22.13.0 或 24.x LTS >=24.11.0）仍需安装：启动脚本用 `node` 运行 `scripts/start-go-project.mjs` 启动器与健康探测；不再需要 pnpm、`node_modules` 或 `backend/dist`。
+- 启动脚本直接运行发布包中的 Go 二进制，不需要 Node.js、pnpm、`node_modules` 或 `backend/dist`；Node.js 仅在构建前端和执行发布校验时需要。
 - 默认端口 `3000` 没有冲突；冲突时修改 `backend/.env` 的 `JUHE_AI_PORT`。
 - 当前目录有写入权限和足够磁盘空间。
 

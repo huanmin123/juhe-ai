@@ -36,6 +36,35 @@ read_dotenv_value() {
   fi
 }
 
+load_dotenv_environment() {
+  [ -f backend/.env ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#${line%%[![:space:]]*}}"
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    case "$line" in
+      export\ *) line="${line#export }" ;;
+    esac
+    case "$line" in
+      JUHE_AI_*[=]*) ;;
+      *) continue ;;
+    esac
+    name="${line%%=*}"
+    value="${line#*=}"
+    case "$name" in
+      ''|*[!A-Za-z0-9_]*|[0-9]*) continue ;;
+    esac
+    # Explicit process environment values keep precedence over backend/.env.
+    if [ -n "${!name+x}" ]; then continue; fi
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    export "$name=$value"
+  done < backend/.env
+}
+
 set_dotenv_value() {
   name="$1"
   value="$2"
@@ -170,7 +199,9 @@ start_go_project() {
     return 1
   fi
   # Launch the Go binary directly with nohup (no Node .mjs launcher needed).
-  nohup "$binary" >> "$log_path" 2>&1 &
+  # The backend directory is the process cwd, matching the documented
+  # relative-path semantics of backend/.env.
+  (cd backend && exec nohup "$binary" >> "logs/juhe-ai-$project.log" 2>&1) &
   go_project_pid=$!
   printf '%s' "$go_project_pid" > "$pid_path"
   if ! go_project_process "$pid_path" "juhe-ai-$project" >/dev/null; then
@@ -260,8 +291,17 @@ if [ ! -f backend/.env ]; then
   echo 'Configure all JUHE_AI_*_INSTANCE_ID values before production use.'
 fi
 
+load_dotenv_environment
 ensure_deployment_defaults
 mkdir -p backend/data
+
+frontend_dist_path="${JUHE_AI_FRONTEND_DIST_PATH:-$(read_dotenv_value JUHE_AI_FRONTEND_DIST_PATH '')}"
+if [ -z "$frontend_dist_path" ]; then
+  frontend_dist_path="$APP_DIR/frontend/dist"
+elif [ "${frontend_dist_path#/}" = "$frontend_dist_path" ]; then
+  frontend_dist_path="$APP_DIR/backend/$frontend_dist_path"
+fi
+export JUHE_AI_FRONTEND_DIST_PATH="$frontend_dist_path"
 
 DEPLOY_MODE="$(resolve_deploy_mode)" || exit 1
 
