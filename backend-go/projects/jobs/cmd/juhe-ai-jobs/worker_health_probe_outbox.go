@@ -71,10 +71,19 @@ func EnsureHealthProbeOutboxSchema(ctx context.Context, business *businessDB) er
 	if business == nil || business.db == nil {
 		return errors.New("account_health_probe_request_outbox 业务库句柄缺失")
 	}
-	if _, err := business.db.ExecContext(ctx, business.bind(healthProbeOutboxSchema)); err != nil {
+	// PostgreSQL 业务表位于 juhe_business；DDL 必须与读写路径使用同一
+	// schema，不能依赖连接 search_path（否则会在 public 建表而查询不到）。
+	tableName := business.table("account_health_probe_request_outbox")
+	schema := strings.Replace(healthProbeOutboxSchema,
+		"CREATE TABLE IF NOT EXISTS account_health_probe_request_outbox",
+		"CREATE TABLE IF NOT EXISTS "+tableName, 1)
+	index := strings.Replace(healthProbeOutboxIndex,
+		"ON account_health_probe_request_outbox(",
+		"ON "+tableName+"(", 1)
+	if _, err := business.db.ExecContext(ctx, business.bind(schema)); err != nil {
 		return err
 	}
-	_, err := business.db.ExecContext(ctx, business.bind(healthProbeOutboxIndex))
+	_, err := business.db.ExecContext(ctx, business.bind(index))
 	return err
 }
 
