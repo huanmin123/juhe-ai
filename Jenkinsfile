@@ -576,7 +576,13 @@ def configureJ3aManagementRelease(overlay, enabled) {
       [ "$legacy_enabled_count" -eq 1 ] || { echo 'J3a 关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
       [ "$legacy_management_enabled_count" -eq 1 ] || { echo 'J3a 管理关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
     fi
-    route_count=$(awk -v expected="$route" '{ line = $0; sub(/[[:space:]]*$/, "", line); if (line == expected) count++ } END { print count + 0 }' "$file")
+    # Use grep for the exact-line fast path required by the release contract,
+    # then fall back to the whitespace/CRLF-tolerant count for mixed-platform
+    # Jenkins agents. Both reads must agree with the requested route state.
+    route_count=$(grep -Fxc "$route" "$file" || true)
+    if [ "$route_count" -eq 0 ]; then
+      route_count=$(awk -v expected="$route" '{ line = $0; sub(/[[:space:]]*$/, "", line); if (line == expected) count++ } END { print count + 0 }' "$file")
+    fi
     if [ "$J3A_ENABLED" = 'true' ]; then
       [ "$route_count" -eq 1 ] || { echo 'J3a IngressRoute resource must appear exactly once when enabled' >&2; exit 1; }
     else
