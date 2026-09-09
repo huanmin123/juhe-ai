@@ -36,6 +36,72 @@ func TestResolveRuntimeResponseInspectionPoliciesOrdering(t *testing.T) {
 	}
 }
 
+// TestResolvePolicyRuntimeActions 对齐 Node responseInspectionPolicyActionRuntime
+// 的六值 switch（repository.ts:930-950，词面映射：intercept→enforce、
+// none→零值、pass→passthrough）与 default 回退。
+func TestResolvePolicyRuntimeActions(t *testing.T) {
+	cases := []struct {
+		name   string
+		action string
+		want   PolicyRuntime
+	}{
+		{"observe", "observe", PolicyRuntime{ExecutionMode: "dry_run", DataHandling: "passthrough"}},
+		{"drop_event", "drop_event", PolicyRuntime{ExecutionMode: "enforce", DataHandling: "discard_event"}},
+		{"retry_no_avoidance", "retry_no_avoidance", PolicyRuntime{ExecutionMode: "enforce", DataHandling: "replace_with_failure", RetryEnabled: true}},
+		{"retry_next_account", "retry_next_account", PolicyRuntime{ExecutionMode: "enforce", DataHandling: "replace_with_failure", RetryEnabled: true, AccountSwitch: "request_next_account"}},
+		{"avoid_account_ttl", "avoid_account_ttl", PolicyRuntime{ExecutionMode: "enforce", DataHandling: "replace_with_failure", RetryEnabled: true, AccountSwitch: "avoid_account_ttl"}},
+		{"avoid_upstream_bucket_ttl", "avoid_upstream_bucket_ttl", PolicyRuntime{ExecutionMode: "enforce", DataHandling: "replace_with_failure", RetryEnabled: true, AccountSwitch: "avoid_upstream_bucket_ttl"}},
+		{"runtime_avoidance (Go 扩展动作)", "runtime_avoidance", PolicyRuntime{ExecutionMode: "enforce", DataHandling: "replace_with_failure", RetryEnabled: true, AccountState: "runtime_avoidance"}},
+		{"unknown 回退 enforce/replace_with_failure", "mystery", PolicyRuntime{ExecutionMode: "enforce", DataHandling: "replace_with_failure"}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := ResolvePolicyRuntime(testCase.action)
+			if got != testCase.want {
+				t.Fatalf("ResolvePolicyRuntime(%q) = %+v, want %+v", testCase.action, got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestResolveRuntimeResponseInspectionPoliciesNewActions 验证 drop_event /
+// retry_no_avoidance 经账户规则与管理策略两个调用点展开为新运行时字段。
+func TestResolveRuntimeResponseInspectionPoliciesNewActions(t *testing.T) {
+	policies := ResolveRuntimeResponseInspectionPolicies("openai", "p1",
+		[]AccountResponseInspectionRule{
+			{Name: "丢弃事件", Enabled: true, Priority: 1, Action: "drop_event"},
+			{Name: "仅重试不规避", Enabled: true, Priority: 2, Action: "retry_no_avoidance"},
+		},
+		[]gatewayruntimecache.ResponseInspectionPolicySummary{
+			{ID: "mgmt_drop", Enabled: true, Priority: 1, ScopeType: "provider", ProtocolCode: "openai", ProviderCode: strPtr("p1"), Action: "drop_event"},
+		},
+	)
+	if len(policies) != 3 {
+		t.Fatalf("policies = %+v", policies)
+	}
+	drop := policies[0]
+	if drop.ID != "account_rule_1" || drop.Action != "drop_event" {
+		t.Fatalf("drop policy = %+v", drop)
+	}
+	if drop.ExecutionMode != "enforce" || drop.DataHandling != "discard_event" ||
+		drop.RetryEnabled || drop.AccountSwitch != "" || drop.AccountState != "" {
+		t.Fatalf("drop_event runtime = %+v", drop)
+	}
+	retry := policies[1]
+	if retry.ID != "account_rule_2" || retry.Action != "retry_no_avoidance" {
+		t.Fatalf("retry policy = %+v", retry)
+	}
+	if retry.ExecutionMode != "enforce" || retry.DataHandling != "replace_with_failure" ||
+		!retry.RetryEnabled || retry.AccountSwitch != "" || retry.AccountState != "" {
+		t.Fatalf("retry_no_avoidance runtime = %+v", retry)
+	}
+	management := policies[2]
+	if management.ID != "mgmt_drop" || management.Source != PolicySourceManagement ||
+		management.DataHandling != "discard_event" || management.RetryEnabled {
+		t.Fatalf("management drop_event runtime = %+v", management)
+	}
+}
+
 func TestInspectResponseSemanticFramesActions(t *testing.T) {
 	policy := RuntimeResponseInspectionPolicy{
 		ID: "policy_1", Source: PolicySourceManagement, Name: "禁词", Enabled: true,

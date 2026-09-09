@@ -20,6 +20,9 @@ type ShardWriteRow struct {
 	// (empty = undefined).
 	AccountLastUsedAt      string
 	AccountHealthSuccessAt string
+	// CreatedAt mirrors the row's createdAt (the last insert param); the
+	// Postgres partition ensure chain derives the daily date key from it.
+	CreatedAt string
 }
 
 // ShardEntry mirrors UsageRecordShardEntryInput: the catalog entry row.
@@ -207,7 +210,8 @@ func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions
 		pricingSnapshot := PricingSnapshotForWrite(ctx, input, options.CatalogSnapshotEnabled, options.Catalog)
 
 		row := ShardWriteRow{
-			ID: id,
+			ID:        id,
+			CreatedAt: createdAt,
 			Params: []any{
 				id,
 				systemAccountID,

@@ -541,6 +541,17 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 				return nil, err
 			}
 			if !stringSlicesEqual(supportedModels, next) {
+				// Node normalizedSupportedModelsForPatch
+				// (account-management-patch.repository.ts:1513-1527)：支持模型
+				// 发生变化时才校验目录归属（目录外拒绝），hybrid 供应商直通。
+				if err := s.assertAccountSupportedModelsInProviderCatalog(ctx, tx, next, row.providerCode, row.systemAccountID, protocolPredicateInput{
+					providerCode:              row.providerCode,
+					protocolCode:              row.protocolCode,
+					protocolVersion:           row.protocolVersion,
+					providerProtocolProfileID: row.providerProtocolProfileID,
+				}); err != nil {
+					return nil, err
+				}
 				addChange("supportedModels", supportedModels, next)
 				if err := s.replaceAccountSupportedModels(ctx, tx, row.id, row.providerCode, next, nowISO); err != nil {
 					return nil, err
@@ -659,21 +670,36 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// :445-452 + :667 + normalizedModelMappingsForPatch): the gpt
 	// request-override assertion rides the final credential record and the
 	// final supported-model set whenever credentials or supportedModels
-	// participate; the mapping catalog assertion rides the final mapping set
+	// participate; the mapping assertions ride the final mapping set
 	// when modelMappings are present (with an actual change) or the enabled
 	// endpoint modes changed. Assertion failures roll the transaction back,
 	// so running it after the satellite writes stays observation-equivalent
 	// to the Node pre-write ordering.
-	if input.CredentialsPresent || input.SupportedModelsPresent {
-		finalCredentials := Credentials{}
+	//
+	// finalCredentials lazily resolves the effective credential record behind
+	// those assertions: the normalized next record when the credentials input
+	// changed, the decrypted current record otherwise（归档 nextCredentials
+	// 语义：无 credentials 输入时为行内存量凭据）。
+	finalCredentials := Credentials{}
+	finalCredentialsResolved := false
+	resolveFinalCredentials := func() (Credentials, error) {
+		if finalCredentialsResolved {
+			return finalCredentials, nil
+		}
 		if input.CredentialsPresent && credentialsChanged {
 			finalCredentials = nextCredentials
-		} else {
-			// 未变化（或无凭据输入）时归档断言用归一化后/当前凭据：normalized
-			// 与 current 深相等，解密 current 即可。
-			if err := DecryptJSON(s.secret, row.credentialsEncrypted, &finalCredentials); err != nil {
-				return nil, err
-			}
+		} else if input.CredentialsPresent {
+			finalCredentials = currentCredentials
+		} else if err := DecryptJSON(s.secret, row.credentialsEncrypted, &finalCredentials); err != nil {
+			return nil, err
+		}
+		finalCredentialsResolved = true
+		return finalCredentials, nil
+	}
+	if input.CredentialsPresent || input.SupportedModelsPresent {
+		finalCreds, err := resolveFinalCredentials()
+		if err != nil {
+			return nil, err
 		}
 		finalSupportedModels := []string{}
 		modelRows, err := tx.QueryContext(ctx, s.bind(`SELECT model FROM `+s.table("account_supported_models")+`
@@ -696,7 +722,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err := s.assertAccountGptRequestOverridesSupported(ctx, accountGptRequestOverridesInput{
 			ProviderCode:    row.providerCode,
 			AccountType:     row.accountType,
-			Credentials:     finalCredentials,
+			Credentials:     finalCreds,
 			SupportedModels: finalSupportedModels,
 			SystemAccountID: row.systemAccountID,
 		}); err != nil {
@@ -722,13 +748,20 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		mappingValidationSource = currentMappingsForValidation
 	}
 	if mappingValidationNeeded {
+		finalCreds, err := resolveFinalCredentials()
+		if err != nil {
+			return nil, err
+		}
 		if err := s.assertAccountModelMappingsInProviderCatalog(ctx, tx, row.providerCode, row.systemAccountID, protocolPredicateInput{
-			providerCode: row.providerCode,
-			protocolCode: row.protocolCode,
-			// 归档 protocolProfileFromRow(row) 不带 profile id；成员判定只用
-			// providerCode + protocolCode + protocolVersion。
-			protocolVersion: row.protocolVersion,
-		}, mappingValidationSource); err != nil {
+			providerCode:              row.providerCode,
+			protocolCode:              row.protocolCode,
+			protocolVersion:           row.protocolVersion,
+			providerProtocolProfileID: row.providerProtocolProfileID,
+			// 归档 protocolProfileFromRow(row) 带 providerProtocolProfileId
+			// （account-management-patch.repository.ts:1996-2008），Gemini
+			// 档案特判依赖该 id；目录成员判定只用 providerCode + protocolCode
+			// + protocolVersion。
+		}, mappingValidationSource, credentialEndpointModes(finalCreds)); err != nil {
 			return nil, err
 		}
 	}

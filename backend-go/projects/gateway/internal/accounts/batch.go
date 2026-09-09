@@ -1060,7 +1060,7 @@ func (s *Store) prepareBatchAccount(ctx context.Context, q queryer, account *bat
 			protocolCode:              account.protocolCode,
 			protocolVersion:           account.protocolVersion,
 			providerProtocolProfileID: account.providerProtocolProfileID,
-		}, nextModelMappings); err != nil {
+		}, nextModelMappings, storedEndpointModes(nextCredentials["supported_endpoint_modes"])); err != nil {
 			return result, err
 		}
 	}
@@ -1400,10 +1400,10 @@ func normalizeBatchModelMappings(value any) ([]ModelMapping, error) {
 		if !batchMappingSourceFamilies[mapping.SourceEndpointFamily] || !batchMappingUpstreamFamilies[mapping.UpstreamEndpointFamily] {
 			return nil, &ValidationError{Message: batchFieldsPrompt}
 		}
-		if strings.EqualFold(mapping.SourceModel, mapping.UpstreamModel) && mapping.SourceEndpointFamily == mapping.UpstreamEndpointFamily {
+		if mapping.SourceModel == mapping.UpstreamModel && mapping.SourceEndpointFamily == mapping.UpstreamEndpointFamily {
 			continue
 		}
-		sourceKey := mapping.SourceEndpointFamily + "\n" + strings.ToLower(mapping.SourceModel)
+		sourceKey := mapping.SourceEndpointFamily + "\n" + mapping.SourceModel
 		if seenSources[sourceKey] {
 			return nil, &ValidationError{Message: "账户 modelMappings 不能重复配置同一个 sourceModel 和 sourceEndpointFamily：" + mapping.SourceModel + " / " + mapping.SourceEndpointFamily}
 		}
@@ -1434,7 +1434,7 @@ func assertMappingUpstreamsAllowed(mappings []ModelMapping, supportedModels []st
 	for _, model := range supportedModels {
 		trimmed := strings.TrimSpace(model)
 		if trimmed != "" {
-			supported[strings.ToLower(trimmed)] = true
+			supported[trimmed] = true
 		}
 	}
 	if len(supported) == 0 || len(mappings) == 0 {
@@ -1442,7 +1442,7 @@ func assertMappingUpstreamsAllowed(mappings []ModelMapping, supportedModels []st
 	}
 	invalid := []string{}
 	for _, mapping := range mappings {
-		if !supported[strings.ToLower(strings.TrimSpace(mapping.UpstreamModel))] {
+		if !supported[strings.TrimSpace(mapping.UpstreamModel)] {
 			invalid = append(invalid, strings.TrimSpace(mapping.UpstreamModel))
 		}
 	}

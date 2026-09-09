@@ -65,22 +65,6 @@ func normalizeModelMappingBody(object map[string]any) (ModelMapping, bool) {
 	return mapping, true
 }
 
-func validateModelMappingsUnique(mappings []ModelMapping) bool {
-	seen := map[string]bool{}
-	for _, mapping := range mappings {
-		if strings.EqualFold(mapping.SourceModel, mapping.UpstreamModel) &&
-			mapping.SourceEndpointFamily == mapping.UpstreamEndpointFamily {
-			continue
-		}
-		key := mapping.SourceEndpointFamily + "\n" + strings.ToLower(strings.TrimSpace(mapping.SourceModel))
-		if seen[key] {
-			return false
-		}
-		seen[key] = true
-	}
-	return true
-}
-
 var accountHealthCheckEndpointModes = map[string]bool{
 	"images_json": true, "chat_json": true, "chat_sse": true,
 	"responses_json": true, "responses_sse": true,
@@ -334,11 +318,10 @@ func normalizeSupportedModelsInput(value any) ([]string, error) {
 			return nil, &ValidationError{Message: "账户支持模型必须是字符串数组"}
 		}
 		model := strings.TrimSpace(text)
-		key := strings.ToLower(model)
-		if model == "" || seen[key] {
+		if model == "" || seen[model] {
 			continue
 		}
-		seen[key] = true
+		seen[model] = true
 		output = append(output, model)
 	}
 	return output, nil
@@ -360,8 +343,8 @@ func normalizedHealthCheckModel(value string, supportedModels []string) (string,
 		return "", &ValidationError{Message: "账户检查模型不能为空"}
 	}
 	for _, candidate := range supportedModels {
-		if strings.EqualFold(strings.TrimSpace(candidate), model) {
-			return strings.TrimSpace(candidate), nil
+		if candidate == model {
+			return model, nil
 		}
 	}
 	return "", &ValidationError{Message: "账户检查模型必须属于账户支持模型"}
@@ -621,15 +604,16 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	}
 
 	// Model mapping catalog assertion (repositories.ts create:1936, the
-	// write-side normalizeAccountModelMappingsForProvider): 来源/目标模型必须
-	// 落在当前供应商模型目录中且目标模型支持对应上游协议；personal 目录按最终
-	// owner scope 读取。
+	// write-side normalizeAccountModelMappingsForProvider): 协议档案映射断言
+	// （含 hybrid 跨协议矩阵与协议池）+ 来源/目标模型必须落在当前供应商模型
+	// 目录中且目标模型支持对应上游协议；personal 目录按最终 owner scope 读取。
+	// 上游端点能力取归一化后凭据的 supported_endpoint_modes。
 	if err := s.assertAccountModelMappingsInProviderCatalog(ctx, tx, providerCode, systemAccountID, protocolPredicateInput{
 		providerCode:              providerCode,
 		protocolCode:              profile.protocolCode,
 		protocolVersion:           profile.protocolVersion,
 		providerProtocolProfileID: profile.id,
-	}, input.ModelMappings); err != nil {
+	}, input.ModelMappings, credentialEndpointModes(credentials)); err != nil {
 		return nil, err
 	}
 
@@ -820,7 +804,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	return &CreateResult{
 		ID: id, Status: nextStatus, ConfigRevision: configRevision, DispatchRevision: dispatchRevision,
 		OwnerSystemAccountID: systemAccountID, Name: strings.TrimSpace(input.Name),
-		GroupID: group.id,
+		GroupID:                    group.id,
 		InitialHealthCheckRequired: initialHealthCheck,
 	}, nil
 }

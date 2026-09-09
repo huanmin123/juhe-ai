@@ -306,7 +306,7 @@ func (s *Store) loadTestAccountModelMappings(ctx context.Context, q queryer, acc
 		WHERE account_id = ?`
 	args := []any{accountID}
 	if model != "" {
-		query += ` AND lower(source_model) = lower(?)`
+		query += ` AND source_model = ?`
 		args = append(args, model)
 	}
 	query += ` ORDER BY source_endpoint_family ASC, source_model ASC`
@@ -556,7 +556,7 @@ func resolveTestAccountModelMapping(source manualTestModeSource, model, sourceFa
 		if candidate.Enabled != nil && !*candidate.Enabled {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(candidate.SourceModel), strings.TrimSpace(model)) && candidate.SourceEndpointFamily == sourceFamily {
+		if candidate.SourceModel == model && candidate.SourceEndpointFamily == sourceFamily {
 			mapping = &candidate
 			break
 		}
@@ -889,7 +889,7 @@ func (s *Store) collectTestCatalogCandidates(ctx context.Context, builtInCodes, 
 	if codes := normalizeTestProviderCodeList(builtInCodes); len(codes) > 0 {
 		rows, err := s.db.QueryContext(ctx, s.bind(`SELECT model, mode, supported_api_protocols_json, release_date
 			FROM `+s.table("provider_model_catalog")+`
-			WHERE provider_code IN (`+placeholders(len(codes))+`) AND lower(model) = lower(?)`+availability+`
+			WHERE provider_code IN (`+placeholders(len(codes))+`) AND model = ?`+availability+`
 			ORDER BY provider_code ASC, catalog_order ASC, model ASC, id ASC`), append(anySlice(codes), model)...)
 		if err != nil {
 			return nil, err
@@ -903,7 +903,7 @@ func (s *Store) collectTestCatalogCandidates(ctx context.Context, builtInCodes, 
 	}
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT model, mode, supported_api_protocols_json, release_date, scope
 		FROM `+s.table("custom_provider_models")+`
-		WHERE provider_code IN (`+placeholders(len(sourceCodes))+`) AND lower(model) = lower(?) AND status = 'active'
+		WHERE provider_code IN (`+placeholders(len(sourceCodes))+`) AND model = ? AND status = 'active'
 		AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+testTodayText(s)+`)
 		ORDER BY provider_code ASC, scope ASC, lower(model) ASC, id ASC`),
 		append(anySlice(sourceCodes), model)...)
@@ -1330,7 +1330,7 @@ func hasEnabledTestModelMapping(mappings []ModelMapping, model string) bool {
 		if mapping.Enabled != nil && !*mapping.Enabled {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(mapping.SourceModel), strings.TrimSpace(model)) {
+		if mapping.SourceModel == model {
 			return true
 		}
 	}

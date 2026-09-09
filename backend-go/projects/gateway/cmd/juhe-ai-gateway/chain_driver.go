@@ -217,7 +217,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 			ModelMapping: &gatewayproto.ResolvedModelMapping{
 				SourceModel:            mapping.SourceModel,
 				SourceEndpointFamily:   mapping.SourceEndpointFamily,
-				UpstreamModel:          strings.TrimSpace(mapping.UpstreamModel),
+				UpstreamModel:          mapping.UpstreamModel,
 				UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
 				RuntimeSource:          mapping.RuntimeSource,
 				RuntimeRouteRuleID:     mapping.RuntimeRouteRuleID,
@@ -230,11 +230,6 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 		if transformed.Stream {
 			headers = headers.Clone()
 			headers.Set("Accept", "text/event-stream")
-		}
-	} else if canonical := canonicalAccountModel(req, account); canonical != "" {
-		requestedModel, _ := gatewaypreauth.RequestModel(req)
-		if requestedModel != canonical {
-			body = canonicalizeModelBody(body, req.ParsedJSONObjectBody(), canonical)
 		}
 	}
 	// D-151：api_key 账户的运行时 body 应用（Node applyGptAccountRequestOverrides
@@ -315,7 +310,7 @@ func (d *chainProviderDriver) buildGeminiCodeAssistRequestParts(req *gatewayprea
 }
 
 // canonicalAccountModel returns the configured account spelling for a
-// case-insensitive direct model match. An empty result means the account has
+// direct model match. An empty result means the account has
 // no explicit supported-model constraint or the request model was unavailable.
 func canonicalAccountModel(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) string {
 	if req == nil {
@@ -325,34 +320,12 @@ func canonicalAccountModel(req *gatewaypreauth.GatewayRequest, account gatewaydi
 	if !ok {
 		return ""
 	}
-	canonical := gatewayopenai.CanonicalModel(requestedModel, account.SupportedModels)
-	if canonical == "" {
-		return ""
-	}
-	return canonical
-}
-
-func canonicalizeModelBody(raw []byte, parsed any, canonical string) []byte {
-	root, ok := parsed.(map[string]any)
-	if !ok && len(raw) > 0 {
-		var decoded any
-		if err := json.Unmarshal(raw, &decoded); err == nil {
-			root, ok = decoded.(map[string]any)
+	for _, candidate := range account.SupportedModels {
+		if strings.TrimSpace(candidate) == strings.TrimSpace(requestedModel) {
+			return strings.TrimSpace(candidate)
 		}
 	}
-	if !ok || canonical == "" {
-		return raw
-	}
-	next := make(map[string]any, len(root)+1)
-	for key, value := range root {
-		next[key] = value
-	}
-	next["model"] = canonical
-	encoded, err := json.Marshal(next)
-	if err != nil {
-		return raw
-	}
-	return encoded
+	return ""
 }
 
 // AccountSupportsGatewayRequest mirrors accountSupportsGatewayRequest: the
@@ -424,7 +397,7 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 		// supportedModels null semantics).
 		return ""
 	}
-	if gatewayopenai.CanonicalModel(requestedModel, account.SupportedModels) != "" {
+	if containsTrimmed(account.SupportedModels, requestedModel) {
 		return ""
 	}
 	if d.resolveAccountModelMapping(account, req, requestClientCompatibility) != nil {
@@ -791,7 +764,7 @@ func openAIModelMappingsOf(mappings []gatewayruntimecache.AccountModelMapping) [
 func containsTrimmed(values []string, target string) bool {
 	target = strings.TrimSpace(target)
 	for _, value := range values {
-		if gatewayopenai.ModelsEqual(value, target) {
+		if strings.TrimSpace(value) == target {
 			return true
 		}
 	}

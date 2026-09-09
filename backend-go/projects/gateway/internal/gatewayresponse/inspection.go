@@ -124,6 +124,14 @@ func ResolvePolicyRuntime(action string) PolicyRuntime {
 		return PolicyRuntime{ExecutionMode: "enforce", DataHandling: "replace_with_failure", RetryEnabled: true, AccountState: "runtime_avoidance"}
 	case "observe":
 		return PolicyRuntime{ExecutionMode: "dry_run", DataHandling: "passthrough"}
+	case "drop_event":
+		// Node：intercept/discard_event，不重试、不换账户；discard_event 的
+		// JSON 传输降级由 responseInspectionDecisionAction 承载。
+		return PolicyRuntime{ExecutionMode: "enforce", DataHandling: "discard_event"}
+	case "retry_no_avoidance":
+		// Node：intercept/replace_with_failure，重试但不做任何账户规避
+		// （AccountSwitch/AccountState 均为 none → 零值）。
+		return PolicyRuntime{ExecutionMode: "enforce", DataHandling: "replace_with_failure", RetryEnabled: true}
 	default:
 		return PolicyRuntime{ExecutionMode: "enforce", DataHandling: "replace_with_failure"}
 	}

@@ -205,7 +205,7 @@ var goldenUsageCatalogTables = []string{
 // statement counts; goldenTotalTables/goldenTotalIndexes below count distinct
 // objects.
 var goldenSchemaCounts = SQLiteResult{
-	Business:     SchemaCounts{Tables: 80, Indexes: 223},
+	Business:     SchemaCounts{Tables: 80, Indexes: 218},
 	Stats:        SchemaCounts{Tables: 64, Indexes: 124},
 	Chat:         SchemaCounts{Tables: 10, Indexes: 26},
 	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
@@ -221,7 +221,7 @@ const goldenTotalTables = 163
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one
 // schema (IF NOT EXISTS no-ops on a fresh database) are not counted twice.
-const goldenTotalIndexes = 396
+const goldenTotalIndexes = 391
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {

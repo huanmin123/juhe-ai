@@ -222,7 +222,7 @@ func TestModelMappingCatalogHit(t *testing.T) {
 	store.SetModelCatalogReader(fake)
 	profile := protocolPredicateInput{providerCode: "gpt", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: "prof-gpt"}
 	err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile,
-		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "responses")})
+		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "responses")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,11 +232,11 @@ func TestModelMappingCatalogHit(t *testing.T) {
 		t.Fatalf("catalog call contract: %+v", call)
 	}
 	// 空 mapping 集与 hybrid 供应商都不发起目录读取。
-	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, nil); err != nil {
+	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "hybrid", "owner-1", profile,
-		[]ModelMapping{mapping("a", "chat_completions", "b", "chat_completions")}); err != nil {
+		[]ModelMapping{mapping("a", "chat_completions", "b", "chat_completions")}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if fake.callCount() != 1 {
@@ -253,15 +253,15 @@ func TestModelMappingCatalogMiss(t *testing.T) {
 	profile := protocolPredicateInput{providerCode: "gpt", protocolCode: "openai", protocolVersion: "v1"}
 	// 来源模型不在目录。
 	assertValidationError(t, store.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
-		[]ModelMapping{mapping("gpt-o1", "chat_completions", "gpt-4o-mini", "chat_completions")}),
+		[]ModelMapping{mapping("gpt-o1", "chat_completions", "gpt-4o-mini", "chat_completions")}, nil),
 		"账号模型别名来源模型不在当前供应商模型目录中：gpt-o1")
 	// 目标模型不在目录。
 	assertValidationError(t, store.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
-		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-o1", "chat_completions")}),
+		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-o1", "chat_completions")}, nil),
 		"账号模型别名目标模型不在当前供应商模型目录中：gpt-o1")
 	// 目标模型不支持对应上游协议。
 	assertValidationError(t, store.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
-		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "messages_json")}),
+		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "messages_json")}, nil),
 		"账号模型别名目标模型不支持对应上游协议：gpt-4o-mini")
 	// 错误样本只取前 5 个（归档 slice(0, 5).join('、')）。
 	assertValidationError(t, store.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
@@ -272,7 +272,7 @@ func TestModelMappingCatalogMiss(t *testing.T) {
 			mapping("m4", "chat_completions", "gpt-4o-mini", "chat_completions"),
 			mapping("m5", "chat_completions", "gpt-4o-mini", "chat_completions"),
 			mapping("m6", "chat_completions", "gpt-4o-mini", "chat_completions"),
-		}),
+		}, nil),
 		"账号模型别名来源模型不在当前供应商模型目录中：m1、m2、m3、m4、m5")
 }
 
@@ -283,13 +283,13 @@ func TestModelMappingCatalogNilPortAndError(t *testing.T) {
 	mappings := []ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")}
 	// nil 端口 no-op（不触发协议守卫查询）。
 	store := env.store
-	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, mappings); err != nil {
+	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, mappings, nil); err != nil {
 		t.Fatalf("nil port must keep the assertion a no-op: %v", err)
 	}
 	// 目录异常透传，不静默降级（协议守卫已通过 gpt/openai profile，异常来自目录读取）。
 	boom := errors.New("catalog unavailable")
 	store.SetModelCatalogReader(&fakeAccountModelCatalog{err: boom})
-	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, mappings); !errors.Is(err, boom) {
+	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, mappings, nil); !errors.Is(err, boom) {
 		t.Fatalf("catalog failure must propagate verbatim, got %v", err)
 	}
 }

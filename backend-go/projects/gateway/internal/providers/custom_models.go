@@ -160,13 +160,13 @@ func (s *Store) findCustomProviderModelByScope(ctx context.Context, providerCode
 	if scope == catalogScopeGlobal {
 		query = `SELECT ` + customProviderModelColumns + `
 			FROM ` + s.table("custom_provider_models") + `
-			WHERE provider_code = ? AND scope = 'global' AND system_account_id IS NULL AND lower(model) = lower(?)
+			WHERE provider_code = ? AND scope = 'global' AND system_account_id IS NULL AND model = ?
 			LIMIT 1`
 		args = []any{providerCode, model}
 	} else {
 		query = `SELECT ` + customProviderModelColumns + `
 			FROM ` + s.table("custom_provider_models") + `
-			WHERE provider_code = ? AND scope = 'personal' AND system_account_id = ? AND lower(model) = lower(?)
+			WHERE provider_code = ? AND scope = 'personal' AND system_account_id = ? AND model = ?
 			LIMIT 1`
 		args = []any{providerCode, systemAccountID, model}
 	}
@@ -289,13 +289,8 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 	if err != nil {
 		return nil, err
 	}
-	if existing != nil && !strings.EqualFold(strings.TrimSpace(existing.Model), model) {
+	if existing != nil && strings.TrimSpace(existing.Model) != model {
 		return nil, fmt.Errorf("模型 ID 创建后不能修改")
-	}
-	if existing != nil {
-		// A case-only re-submit addresses the existing row and keeps its
-		// configured spelling as the canonical model ID.
-		model = strings.TrimSpace(existing.Model)
 	}
 	id := ""
 	if existing != nil {
@@ -534,21 +529,21 @@ func (s *Store) customProviderModelBindings(ctx context.Context, providerCode, m
 			ON accounts.id = account_supported_models.account_id
 			AND accounts.deleted_at IS NULL
 		WHERE account_supported_models.provider_code = ?
-			AND lower(account_supported_models.model) = lower(?)
+			AND account_supported_models.model = ?
 			` + ownerPredicate
 	mappingSourceSQL := `SELECT account_model_mappings.account_id
 		FROM ` + modelMappings + ` account_model_mappings
 		INNER JOIN ` + accounts + ` accounts
 			ON accounts.id = account_model_mappings.account_id
 			AND accounts.deleted_at IS NULL
-		WHERE lower(account_model_mappings.source_model) = lower(?)
+		WHERE account_model_mappings.source_model = ?
 			` + ownerPredicate
 	mappingUpstreamSQL := `SELECT account_model_mappings.account_id
 		FROM ` + modelMappings + ` account_model_mappings
 		INNER JOIN ` + accounts + ` accounts
 			ON accounts.id = account_model_mappings.account_id
 			AND accounts.deleted_at IS NULL
-		WHERE lower(account_model_mappings.upstream_model) = lower(?)
+		WHERE account_model_mappings.upstream_model = ?
 			` + ownerPredicate
 
 	supportedModelArgs := append([]any{providerCode, model}, ownerArgs...)

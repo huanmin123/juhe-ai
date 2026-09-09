@@ -14,7 +14,9 @@ package accounts
 //     storage/account-model-normalization.ts
 //     (normalizeAccountModelMappingsForProvider(Async) 非 hybrid 分支的
 //     upstreamModelPoolForAccount / accountEndpointModelPoolForAccount 段，
-//     含 isProtocolProviderCode 守卫)。
+//     含 isProtocolProviderCode 守卫)。hybrid 分支的矩阵与协议池校验见
+//     model_mapping_protocol_matrix.go（assertAccountModelMappingsInProvider
+//     Catalog 入口分发）。
 //
 // 目录读取通过窄接口 AccountModelCatalogReader 注入（组合根把
 // internal/providers Store.ListProviderModelsForRequest 适配上来），nil 端口
@@ -155,11 +157,11 @@ func assertAccountGptRequestOverridesSupportedByCatalog(input accountGptRequestO
 	}
 	catalogByModel := map[string]AccountModelCatalogFact{}
 	for _, item := range input.Catalog {
-		catalogByModel[strings.ToLower(strings.TrimSpace(item.Model))] = item
+		catalogByModel[strings.TrimSpace(item.Model)] = item
 	}
 	modelItems := []AccountModelCatalogFact{}
 	for _, model := range supportedModels {
-		if item, ok := catalogByModel[strings.ToLower(model)]; ok {
+		if item, ok := catalogByModel[model]; ok {
 			modelItems = append(modelItems, item)
 		}
 	}
@@ -251,11 +253,10 @@ func uniqueTextListInOrder(values []string) []string {
 	seen := map[string]bool{}
 	for _, value := range values {
 		normalized := strings.TrimSpace(value)
-		key := strings.ToLower(normalized)
-		if normalized == "" || seen[key] {
+		if normalized == "" || seen[normalized] {
 			continue
 		}
-		seen[key] = true
+		seen[normalized] = true
 		output = append(output, normalized)
 	}
 	return output
@@ -263,16 +264,37 @@ func uniqueTextListInOrder(values []string) []string {
 
 // ---- model mapping catalog checks (account-model-normalization.ts) ----
 
-// assertAccountModelMappingsInProviderCatalog ports the catalog segment of
-// normalizeAccountModelMappingsForProvider(Async), the non-hybrid branch:
-// 来源/目标模型都必须落在当前供应商模型目录中，且目标模型必须声明对应的
-// 上游协议（supportedApiProtocols）。Hybrid providers 走跨协议模型池家族
-// （assertMappingModelsInProtocolPools + hybrid 端点形态矩阵），仍留在
-// model-validation companion slice（见报告遗留项）。q 必须传入调用方事务：
-// 协议守卫查询与写入同事务执行（SQLite 单连接池下事务内另开连接会死锁）。
-func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context, q queryer, providerCode, systemAccountID string, profile protocolPredicateInput, mappings []ModelMapping) error {
-	if len(mappings) == 0 || isHybridProviderCodeToken(providerCode) {
+// assertAccountModelMappingsInProviderCatalog ports normalizeAccountModel
+// MappingsForProvider(Async) 的写入断言主体：
+//
+//   - 非 hybrid：先跑协议档案映射断言（assertAccountModelMappingProtocolAllowed，
+//     account-model-mapping-protocol-matrix.ts:69 的 per-profile 门禁），再走
+//     目录段（来源/目标模型必须落在当前供应商模型目录中，且目标模型必须声明
+//     对应的上游协议 supportedApiProtocols）。
+//   - hybrid：跑跨协议矩阵断言（assertHybridAccountModelMappingProtocolAllowed）
+//     与协议模型池校验（assertMappingModelsInProtocolPools，此前登记在
+//     model-validation companion slice 的遗留项）。
+//
+// supportedEndpointModes 取自账户最终凭据的 supported_endpoint_modes（归档
+// normalizedModelMappingsForPatch 的 options.supportedEndpointModes 语义）。
+// q 必须传入调用方事务：协议守卫查询与写入同事务执行（SQLite 单连接池下
+// 事务内另开连接会死锁）。
+func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context, q queryer, providerCode, systemAccountID string, profile protocolPredicateInput, mappings []ModelMapping, supportedEndpointModes []string) error {
+	if len(mappings) == 0 {
 		return nil
+	}
+	if isHybridProviderCodeToken(providerCode) {
+		for _, mapping := range mappings {
+			if err := assertHybridAccountModelMappingProtocolAllowed(mapping, supportedEndpointModes); err != nil {
+				return err
+			}
+		}
+		return s.assertMappingModelsInProtocolPools(ctx, q, systemAccountID, mappings)
+	}
+	for _, mapping := range mappings {
+		if err := assertAccountModelMappingProtocolAllowed(mapping, profile, supportedEndpointModes); err != nil {
+			return err
+		}
 	}
 	if s.modelCatalog == nil {
 		return nil
@@ -288,21 +310,21 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 	pool := map[string]bool{}
 	familyPools := map[string]map[string]bool{}
 	for _, item := range catalog {
-		pool[strings.ToLower(strings.TrimSpace(item.Model))] = true
+		pool[item.Model] = true
 		for _, family := range item.SupportedAPIProtocols {
 			if familyPools[family] == nil {
 				familyPools[family] = map[string]bool{}
 			}
-			familyPools[family][strings.ToLower(strings.TrimSpace(item.Model))] = true
+			familyPools[family][item.Model] = true
 		}
 	}
 	invalidSourceModels := []string{}
 	invalidUpstreamModels := []string{}
 	for _, mapping := range mappings {
-		if !pool[strings.ToLower(strings.TrimSpace(mapping.SourceModel))] {
+		if !pool[mapping.SourceModel] {
 			invalidSourceModels = append(invalidSourceModels, mapping.SourceModel)
 		}
-		if !pool[strings.ToLower(strings.TrimSpace(mapping.UpstreamModel))] {
+		if !pool[mapping.UpstreamModel] {
 			invalidUpstreamModels = append(invalidUpstreamModels, mapping.UpstreamModel)
 		}
 	}
@@ -314,7 +336,7 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 	}
 	invalidUpstreamProtocolModels := []string{}
 	for _, mapping := range mappings {
-		if !familyPools[mapping.UpstreamEndpointFamily][strings.ToLower(strings.TrimSpace(mapping.UpstreamModel))] {
+		if !familyPools[mapping.UpstreamEndpointFamily][mapping.UpstreamModel] {
 			invalidUpstreamProtocolModels = append(invalidUpstreamProtocolModels, mapping.UpstreamModel)
 		}
 	}

@@ -651,6 +651,9 @@ func (d *Deps) createModel(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, err.Error())
 		return
 	}
+	// Node upsertCustomProviderModelAsync notifies after the commit (only on
+	// the saved confirmation, never on the error arms above).
+	d.notifyCommittedModelCacheInvalidation(modelCacheSavedReason)
 	item := customCatalogItemFromRecord(saved)
 	writeCreatedJSON(w, map[string]any{"data": item})
 }

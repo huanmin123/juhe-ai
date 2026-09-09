@@ -58,34 +58,6 @@ func gatewayNormalize(value string) string {
 	return normalized
 }
 
-// NormalizeModelKey returns the case-insensitive lookup key used for model
-// matching. The stored model string remains canonical and is never rewritten
-// by this helper; callers use the configured catalog/account value when they
-// build the upstream request.
-func NormalizeModelKey(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
-// ModelsEqual reports whether two model IDs refer to the same logical model
-// for gateway matching. Model IDs are trimmed and compared case-insensitively,
-// while their original spelling remains available for upstream forwarding.
-func ModelsEqual(left, right string) bool {
-	leftKey := NormalizeModelKey(left)
-	return leftKey != "" && leftKey == NormalizeModelKey(right)
-}
-
-// CanonicalModel returns the first configured model whose lookup key matches
-// requestedModel. The returned value preserves the configured spelling so the
-// upstream receives the account/catalog canonical model ID.
-func CanonicalModel(requestedModel string, configured []string) string {
-	for _, candidate := range configured {
-		if ModelsEqual(requestedModel, candidate) {
-			return strings.TrimSpace(candidate)
-		}
-	}
-	return ""
-}
-
 // ResolveAccountModelMapping mirrors resolveOpenAIAccountModelMapping.
 func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceEndpointFamily string) *gatewayproto.ResolvedModelMapping {
 	model := strings.TrimSpace(requestedModel)
@@ -107,7 +79,7 @@ func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceE
 		if item.Enabled != nil && !*item.Enabled {
 			continue
 		}
-		if ModelsEqual(item.SourceModel, model) && item.SourceEndpointFamily == sourceEndpointFamily {
+		if item.SourceModel == model && item.SourceEndpointFamily == sourceEndpointFamily {
 			mapping = item
 			break
 		}

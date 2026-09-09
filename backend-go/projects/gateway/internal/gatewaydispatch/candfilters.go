@@ -243,14 +243,24 @@ func isMappingAllowedBySupportedModels(upstreamModel string, supportedModels []s
 	if len(supportedModels) == 0 {
 		return false
 	}
-	return gatewayopenai.CanonicalModel(upstreamModel, supportedModels) != ""
+	for _, model := range supportedModels {
+		if model == upstreamModel {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveGatewayAccountModelMatch(requestedModel string, supportedModels []string) bool {
 	if requestedModel == "" {
 		return false
 	}
-	return gatewayopenai.CanonicalModel(requestedModel, supportedModels) != ""
+	for _, model := range supportedModels {
+		if model == requestedModel {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveAccountModelMapping adapts gatewayopenai.ResolveAccountModelMapping

@@ -405,6 +405,12 @@ func (d *Deps) addRouteStrategy(w http.ResponseWriter, r *http.Request) {
 		d.writeServiceError(w, err, "路由策略新增失败")
 		return
 	}
+	// Node addPublicRouteStrategyAsync 在 createRouteStrategyAsync 前调用
+	// assertTargetActive：停用目标用户拒绝新增（与 list/update/delete 同语义）。
+	if target.Account.Status != "active" {
+		kernel.WriteBadRequest(w, "目标用户已停用："+target.Account.Username)
+		return
+	}
 	mutation := strategyMutationFrom(parsed, nil)
 	created, err := d.Strategies.Create(r.Context(), mutation, routestrategies.AccessScope{ViewerID: target.SystemAccountID})
 	if err != nil {

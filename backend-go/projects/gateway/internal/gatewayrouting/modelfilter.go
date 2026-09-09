@@ -150,7 +150,12 @@ func isMappingAllowedBySupportedModels(upstreamModel string, supportedModels []s
 	if len(supportedModels) == 0 {
 		return false
 	}
-	return gatewayopenai.CanonicalModel(upstreamModel, supportedModels) != ""
+	for _, model := range supportedModels {
+		if model == upstreamModel {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveGatewayAccountModelMatch mirrors resolveGatewayAccountModelMatch:
@@ -159,7 +164,12 @@ func resolveGatewayAccountModelMatch(requestedModel string, supportedModels []st
 	if requestedModel == "" {
 		return false
 	}
-	return gatewayopenai.CanonicalModel(requestedModel, supportedModels) != ""
+	for _, model := range supportedModels {
+		if model == requestedModel {
+			return true
+		}
+	}
+	return false
 }
 
 // GatewayModelFilterFailureMessage mirrors gatewayModelFilterFailureMessage

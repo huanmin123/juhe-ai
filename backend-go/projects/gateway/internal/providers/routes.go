@@ -16,6 +16,12 @@ type Deps struct {
 	// Sink receives the built-in model configuration operation log entries
 	// (Node recordOperationLogAsync); nil disables recording.
 	Sink authsys.OperationLogSink
+	// Inval publishes the post-commit model catalog cache invalidations
+	// (Node notifyCommittedModelCacheInvalidationAsync over
+	// notifyGatewayRuntimeCacheInvalidation); *inval.Bus satisfies the port,
+	// nil keeps the no-op behavior. Composition wires the same K5 bus the
+	// gatewayruntimecache subscriber listens on.
+	Inval RuntimeInvalidator
 }
 
 // Mount wires the providers route family exactly as Node mounts it

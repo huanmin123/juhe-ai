@@ -23,7 +23,7 @@ func newPipeline(t *testing.T) (*CandidatePipeline, *Engine, *fakeDriver, *fakeF
 func candidateFilterInput(t *testing.T, req *gatewaypreauth.GatewayRequest, accounts []AccountCandidate) gatewaypreauth.CandidateFilterInput {
 	t.Helper()
 	return gatewaypreauth.CandidateFilterInput{
-		Req:             req,
+		Req:              req,
 		AuditCapture:     &frozenAudit{sink: &fakeAuditSink{}},
 		UsageContext:     testUsageContext(),
 		StartedAt:        NowMs(),
@@ -196,35 +196,27 @@ func TestFilterCandidatesModelMappingRank(t *testing.T) {
 	}
 }
 
-func TestFilterCandidatesModelMatchIgnoresCase(t *testing.T) {
-	accounts := []AccountCandidate{{ID: "direct", SupportedModels: []string{"gpt-4o"}}}
-	result := FilterGatewayAccountsByRequestedModel(accounts, " GPT-4O ", gatewayrouting.EndpointFamilyChatCompletions)
-	if result.DirectMatchedCount != 1 || len(result.Accounts) != 1 {
-		t.Fatalf("case-insensitive direct match failed: %+v", result)
-	}
-}
-
 func TestPrepareDispatchAccountsReady(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
 	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 	input := gatewaypreauth.DispatchPreparationInput{
-		Req:             req,
-		AuditCapture:    &frozenAudit{sink: &fakeAuditSink{}},
-		UsageContext:    testUsageContext(),
-		StartedAt:       NowMs(),
+		Req:               req,
+		AuditCapture:      &frozenAudit{sink: &fakeAuditSink{}},
+		UsageContext:      testUsageContext(),
+		StartedAt:         NowMs(),
 		CandidateAccounts: testAccounts("a-1", "a-2"),
 		ModelPriority: &gatewayrouting.GatewayAccountModelPriority{
 			RankByAccountID: map[string]int{"a-1": ModelPriorityRankDirect, "a-2": ModelPriorityRankDirect},
 		},
-		GroupAccess:      gatewayruntimecache.GroupUsageAccessMetadata{},
-		SystemAccountID:  "system-1",
-		APIKeyID:         "apikey-1",
+		GroupAccess:       gatewayruntimecache.GroupUsageAccessMetadata{},
+		SystemAccountID:   "system-1",
+		APIKeyID:          "apikey-1",
 		GroupID:           "group-1",
-		ClientStrategy:   gatewaypreauth.ClientStrategyContext{},
-		RequestLane:      "text",
+		ClientStrategy:    gatewaypreauth.ClientStrategyContext{},
+		RequestLane:       "text",
 		ServerRetryBudget: gatewaypreauth.NewServerRetryBudget(5_000, gatewaypreauth.SystemClock{}),
-		RouteCoordinator: &capturingCoordinator{},
-		Signal:           context.Background(),
+		RouteCoordinator:  &capturingCoordinator{},
+		Signal:            context.Background(),
 	}
 	concurrency := &fakeConcurrencyStore{}
 	engine.Concurrency = concurrency

@@ -730,6 +730,9 @@ type PostgresShardStoreConfig struct {
 // (ON CONFLICT(created_at, id) DO NOTHING) and flushing last_used_at.
 type PostgresShardStore struct {
 	config PostgresShardStoreConfig
+	// ensured 是 usage_records 按天分区的进程内备忘（Node 模块级
+	// ensuredPartitionDateKeys Set 的等价物；本进程只有一个 store）。
+	ensured ensuredPartitionDateKeys
 }
 
 // NewPostgresShardStore builds the store.
@@ -752,6 +755,21 @@ func (s *PostgresShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 	healthSuccessAt := map[string]string{}
 	for _, shardRows := range plan.RowsByShard {
 		MergeShardWriteResult(lastUsedAt, healthSuccessAt, shardRows.Rows)
+	}
+
+	// ensurePostgresUsageRecordPartitions：插入事务前按批内 createdAt 确保
+	// 当日/次日分区存在（autocommit DDL，父表锁窗口不跨事务，与 Node
+	// client.execute 一致）。失败带原错误中止本批（writer 保留队头按固定
+	// 策略重试）；无效 createdAt 静默跳过，由 INSERT 的 no partition found
+	// 原始错误承载，不新增兜底防御。
+	createdAts := make([]string, 0, len(plan.RowsByShard)*2)
+	for _, shardRows := range plan.RowsByShard {
+		for _, row := range shardRows.Rows {
+			createdAts = append(createdAts, row.CreatedAt)
+		}
+	}
+	if err := ensurePostgresUsageRecordPartitions(ctx, s.config.DB, &s.ensured, createdAts); err != nil {
+		return 0, err
 	}
 
 	tx, err := s.config.DB.BeginTx(ctx, nil)

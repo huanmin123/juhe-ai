@@ -102,6 +102,11 @@ func (d *Deps) patchModel(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusConflict, "模型已被其他操作更新，请刷新后重试")
 		return
 	}
+	// Node patchCustomProviderModelAsync notifies only on the updated kind:
+	// no_op (assignments collapsed) and conflict commits stay silent.
+	if outcome.Kind == "updated" {
+		d.notifyCommittedModelCacheInvalidation(modelCacheSavedReason)
+	}
 	kernel.WriteOK(w, mutationResultBody(outcome.Record.ID, outcome.Record.ProviderCode, outcome.Record.Model,
 		outcome.Record.Status, outcome.Record.UpdatedAt, outcome.ClearedDefaultHealthCheckProviderCodes), "")
 }
@@ -166,6 +171,10 @@ func (d *Deps) patchBuiltInModel(w http.ResponseWriter, r *http.Request, auth *a
 		kernel.WriteError(w, http.StatusConflict, "模型已被其他操作更新，请刷新后重试")
 		return
 	}
+	// Node patchBuiltInProviderModelConfigurationAsync notifies after the
+	// committed update (changes > 0, saved confirmed) and before the route's
+	// operation log; the no-change fork above stays silent.
+	d.notifyCommittedModelCacheInvalidation(modelCacheConfigurationUpdatedReason)
 	d.recordModelConfigurationLog(r, auth, builtIn, next, patch)
 	kernel.WriteOK(w, mutationResultBody(saved.ID, saved.ProviderCode, saved.Model, saved.Status, saved.UpdatedAt, nil), "")
 }
@@ -521,6 +530,11 @@ func (d *Deps) deleteModel(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
+	// Node deleteCustomProviderModelAsync notifies only when the delete
+	// removed a row (changes > 0).
+	if deleted {
+		d.notifyCommittedModelCacheInvalidation(modelCacheDeletedReason)
+	}
 	kernel.WriteOK(w, map[string]any{"deleted": deleted}, "")
 }
 
@@ -612,7 +626,7 @@ func (d *Deps) validateDefaultHealthCheckModelSelection(ctx context.Context, pro
 		return "", "", err
 	}
 	for index := range activeCatalog {
-		if !strings.EqualFold(strings.TrimSpace(activeCatalog[index].Model), model) {
+		if strings.TrimSpace(activeCatalog[index].Model) != model {
 			continue
 		}
 		if !isProviderModelUsableForAccountTest(&activeCatalog[index]) {
@@ -626,7 +640,7 @@ func (d *Deps) validateDefaultHealthCheckModelSelection(ctx context.Context, pro
 		return "", "", err
 	}
 	for index := range inactiveCatalog {
-		if !strings.EqualFold(strings.TrimSpace(inactiveCatalog[index].Model), model) {
+		if strings.TrimSpace(inactiveCatalog[index].Model) != model {
 			continue
 		}
 		if !isProviderModelUsableForAccountTest(&inactiveCatalog[index]) {

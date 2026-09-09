@@ -20,7 +20,6 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 )
 
 // newChatToolCapabilitiesResolver builds the D-201 resolver over the mounted
@@ -241,7 +240,7 @@ func chatToolAccountSupportsProtocol(account chat.ChatTransportAccount, model st
 		if item.Enabled != nil && !*item.Enabled {
 			continue
 		}
-		if gatewayopenai.ModelsEqual(item.SourceModel, model) && (item.SourceEndpointFamily == "" || item.SourceEndpointFamily == string(protocol)) {
+		if item.SourceModel == model && (item.SourceEndpointFamily == "" || item.SourceEndpointFamily == string(protocol)) {
 			mapping = item
 			break
 		}
@@ -252,7 +251,14 @@ func chatToolAccountSupportsProtocol(account chat.ChatTransportAccount, model st
 		if mapping != nil && mapping.UpstreamModel != "" {
 			routedModel = mapping.UpstreamModel
 		}
-		if gatewayopenai.CanonicalModel(routedModel, supportedModels) == "" {
+		found := false
+		for _, candidate := range supportedModels {
+			if candidate == routedModel {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
 	}

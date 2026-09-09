@@ -538,6 +538,55 @@ func TestAIPublicStrategyLifecycle(t *testing.T) {
 	}
 }
 
+// TestAIPublicStrategyAddDisabledTarget mirrors Node addPublicRouteStrategyAsync
+// assertTargetActive (service.ts:58): the add path rejects a disabled target
+// with the same 400 message as list/update/delete, and an active target still
+// creates.
+func TestAIPublicStrategyAddDisabledTarget(t *testing.T) {
+	env := newAIPublicEnv(t)
+	env.seedProvider("gpt", true)
+	env.seedTargetUser("user_frozen", "frozen", "disabled")
+	env.seedTargetUser("user_pusher", "pusher", "active")
+	scopes := []string{
+		"juhe_ai_public:group_add:write", "juhe_ai_public:route_strategy_add:write",
+	}
+	token := env.seedSource("extsrc_sd", "exttok_sd", "juis_token_sdsdsdsdsdsdsdsd",
+		"active", "active", scopes, "[]", "", "")
+
+	// Seed a group owned by pusher for the binding payload.
+	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
+		`{"targetUsername":"pusher","name":"绑定组","providerCode":"gpt"}`, token)
+	if status != 201 {
+		t.Fatalf("seed group: %d %v", status, payload)
+	}
+	groupID := payload["data"].(map[string]any)["group"].(map[string]any)["id"].(string)
+
+	// Disabled target renders 400 目标用户已停用 and writes nothing.
+	addBody := `{"targetUsername":"frozen","name":"冻结策略","groupBindings":[{"groupId":"` + groupID + `"}]}`
+	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/route-strategy/add", addBody, token)
+	if status != 400 || payload["message"] != "目标用户已停用：frozen" {
+		t.Fatalf("disabled target add: %d %v", status, payload)
+	}
+	var rows int
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM route_strategies`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("disabled target must not create strategies: %d", rows)
+	}
+
+	// Active target passes and renders the created envelope (Node parity).
+	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/route-strategy/add",
+		`{"targetUsername":"pusher","name":"公开策略","groupBindings":[{"groupId":"`+groupID+`"}]}`, token)
+	if status != 201 {
+		t.Fatalf("active target add: %d %v", status, payload)
+	}
+	created := payload["data"].(map[string]any)
+	if created["action"] != "created" || created["routeStrategy"] == nil {
+		t.Fatalf("active add envelope: %v", created)
+	}
+}
+
 // TestAIPublicApiKeyLifecycle drives the api-key family over the real store:
 // add returns the plaintext key once, list/update/del follow.
 func TestAIPublicApiKeyLifecycle(t *testing.T) {

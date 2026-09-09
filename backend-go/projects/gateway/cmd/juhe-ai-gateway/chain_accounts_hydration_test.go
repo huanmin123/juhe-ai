@@ -234,14 +234,6 @@ func TestChainAccountsSelectorModelRankWindow(t *testing.T) {
 	if result.Diagnostics == nil || result.Diagnostics.EligibleRowCount != 2 {
 		t.Fatalf("diagnostics = %+v", result.Diagnostics)
 	}
-	caseVariant, err := fixture.selector.ListOpenAIAccountsForGroupResult(context.Background(), fixture.groupID, fixture.systemAccount,
-		gatewayruntimecache.OpenAIAccountsForGroupOptions{RequestedModel: "GPT-PRO", RequestedEndpointFamily: "chat_completions"})
-	if err != nil {
-		t.Fatalf("list case-insensitive model accounts: %v", err)
-	}
-	if len(caseVariant.Accounts) != 2 || caseVariant.Accounts[0].ID != "acc_mapped" {
-		t.Fatalf("case-insensitive model rank order = %#v", caseVariant.Accounts)
-	}
 
 	// An unknown model ranks the no-supported-model account class first and
 	// keeps the base-window remainder behind it (Node merge behaviour: the

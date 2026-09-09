@@ -22,7 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
@@ -330,11 +329,11 @@ func chainInt64ToInt(value *int64) *int {
 	return &out
 }
 
-// findChainCatalogItem resolves model IDs case-insensitively while returning
-// the catalog row's original spelling for pricing and audit semantics.
+// findChainCatalogItem mirrors findCatalogItem (trim equality).
 func findChainCatalogItem(items []gatewayruntimecache.ProviderModelCatalogItem, model string) *gatewayruntimecache.ProviderModelCatalogItem {
+	normalized := strings.TrimSpace(model)
 	for index := range items {
-		if gatewayopenai.ModelsEqual(items[index].Model, model) {
+		if strings.TrimSpace(items[index].Model) == normalized {
 			return &items[index]
 		}
 	}
