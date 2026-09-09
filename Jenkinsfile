@@ -121,7 +121,7 @@ pipeline {
             docker run --rm --network host \
               --env CGO_ENABLED=0 --env GOFLAGS=-mod=readonly --env TZ=UTC \
               --env HTTP_PROXY="$BUILD_HTTP_PROXY" --env HTTPS_PROXY="$BUILD_HTTP_PROXY" --env NO_PROXY="$BUILD_NO_PROXY" \
-              -v "$PWD/backend-go":/source -w /source \
+              -v "$PWD/backend-go":/source/backend-go -w /source/backend-go \
               -v juhe-ai-go-mod-cache:/go/pkg/mod \
               -v juhe-ai-go-build-cache:/root/.cache/go-build \
               "$GO_IMAGE" sh -c '
