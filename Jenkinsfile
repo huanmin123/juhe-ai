@@ -504,14 +504,29 @@ def replaceDigest(file, imageName, digest) {
       # Normalize only for matching so both LF and CRLF platform files are
       # handled. Restore the original dominant line ending before publishing.
       my \$newline = (\$text =~ /\r\n/) ? "\\r\\n" : "\\n";
-      \$text =~ s/\r\n?/\\n/g;
+      \$text =~ s/\r\n?/chr(10)/ge;
       my \$quoted = quotemeta(\$name);
-      my \$pattern = qr{(-\\s+name:\\s*\$quoted\\s*\\r?\\n\\s+newName:\\s*[^\\r\\n]+\\r?\\n\\s+digest:\\s*)sha256:[a-f0-9]{64}};
-      my \$matches = () = \$text =~ /\$pattern/g;
+      my \@lines = split /\\n/, \$text, -1;
+      my \@matches;
+      for my \$index (0 .. \$#lines - 2) {
+        if (\$lines[\$index] =~ /^\\s*-\\s+name:\\s*\$quoted\\s*\$/ &&
+            \$lines[\$index + 1] =~ /^\\s+newName:\\s+/ &&
+            \$lines[\$index + 2] =~ /^\\s+digest:\\s*sha256:[a-f0-9]{64}\\s*\$/) {
+          push \@matches, \$index;
+        }
+      }
+      my \$matches = scalar \@matches;
       die "镜像 \$name digest 替换命中数为 \$matches，期望 1\\n" unless \$matches == 1;
-      \$text =~ s{\$pattern}{\$1 . \$digest}e;
-      my \$expected_pattern = qr{-\\s+name:\\s*\$quoted\\s*\\r?\\n\\s+newName:\\s*[^\\r\\n]+\\r?\\n\\s+digest:\\s*\\Q\$digest\\E};
-      my \$after_matches = () = \$text =~ /\$expected_pattern/g;
+      \$lines[\$matches[0] + 2] =~ s{sha256:[a-f0-9]{64}}{\$digest};
+      \$text = join chr(10), \@lines;
+      my \$after_matches = 0;
+      for my \$index (0 .. \$#lines - 2) {
+        if (\$lines[\$index] =~ /^\\s*-\\s+name:\\s*\$quoted\\s*\$/ &&
+            \$lines[\$index + 1] =~ /^\\s+newName:\\s+/ &&
+            \$lines[\$index + 2] =~ /^\\s+digest:\\s*\\Q\$digest\\E\\s*\$/) {
+          \$after_matches++;
+        }
+      }
       die "镜像 \$name digest 写入后回读命中数为 \$after_matches，期望 1\\n" unless \$after_matches == 1;
       \$text =~ s/\\n/\$newline/g if \$newline eq "\\r\\n";
       my \$temporary = "\$file.tmp.\$\$";
