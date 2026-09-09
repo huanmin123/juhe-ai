@@ -504,11 +504,11 @@ def replaceDigest(file, imageName, digest) {
       my \$newline = (\$text =~ /\r\n/) ? "\\r\\n" : "\\n";
       \$text =~ s/\r\n?/\\n/g;
       my \$quoted = quotemeta(\$name);
-      my \$pattern = qr{(^\\s*-\\s+name:\\s*\$quoted\\s*\\n\\s+newName:\\s*[^\\n]+\\n\\s+digest:\\s*)sha256:[a-f0-9]{64}}m;
+      my \$pattern = qr{(-\\s+name:\\s*\$quoted\\s*\\r?\\n\\s+newName:\\s*[^\\r\\n]+\\r?\\n\\s+digest:\\s*)sha256:[a-f0-9]{64}};
       my \$matches = () = \$text =~ /\$pattern/g;
       die "镜像 \$name digest 替换命中数为 \$matches，期望 1\\n" unless \$matches == 1;
       \$text =~ s{\$pattern}{\$1 . \$digest}e;
-      my \$expected_pattern = qr{^\\s*-\\s+name:\\s*\$quoted\\s*\\n\\s+newName:\\s*[^\\n]+\\n\\s+digest:\\s*\\Q\$digest\\E}m;
+      my \$expected_pattern = qr{-\\s+name:\\s*\$quoted\\s*\\r?\\n\\s+newName:\\s*[^\\r\\n]+\\r?\\n\\s+digest:\\s*\\Q\$digest\\E};
       my \$after_matches = () = \$text =~ /\$expected_pattern/g;
       die "镜像 \$name digest 写入后回读命中数为 \$after_matches，期望 1\\n" unless \$after_matches == 1;
       \$text =~ s/\\n/\$newline/g if \$newline eq "\\r\\n";
