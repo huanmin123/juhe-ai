@@ -382,6 +382,11 @@ func main() {
 	if worker == nil && accountHealthConfig.Enabled {
 		// buildWorkerAssembly 对 disabled config 按契约返回 nil；这里必须
 		// 使用只创建基础句柄的 minimal assembly，不能再次走 Enabled 门禁。
+		// minimal assembly 只承载 J1 outbox/projector；必须复用 J1 已校验的
+		// pool limits，不能落回 workerConfig 的 50/50 历史默认（idle=50
+		// 已被 sqlpool 合约拒绝）。否则 outbox 会静默降级为 pending。
+		workerCfg.PostgresMaxOpenConns = accountHealthConfig.Store.PostgresMaxOpenConns
+		workerCfg.PostgresMaxIdleConns = accountHealthConfig.Store.PostgresMaxIdleConns
 		worker = newWorkerAssembly(workerCfg, logger)
 		logger.Info("worker 调度器关闭但账户健康已启用：装配最小 assembly 以承载 outbox 消费面",
 			"event", "jobs_minimal_assembly_for_outbox")
