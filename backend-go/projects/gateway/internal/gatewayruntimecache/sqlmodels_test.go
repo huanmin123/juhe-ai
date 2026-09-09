@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
 	_ "modernc.org/sqlite"
 )
 
@@ -42,9 +43,20 @@ func newSQLTestDB(t *testing.T) *sql.DB {
 // Node 契约：系统设置表必须携带全部键值（安装期种子），缺失值在投影层报错。
 func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 	t.Helper()
-	keys := map[string]string{
-		"gatewayTextRawBodyLimitMegabytes":          "8",
+	defaults := map[string]string{
+		"gatewayTextRawBodyLimitMegabytes":           "8",
 		"accountCircuitConfirmationFailuresRequired": "3",
+		"gatewayUserRequestLimitPerMinute":           "0",
+		"gatewayUserRequestLimitPerDay":              "0",
+		"gatewayUserRequestLimitPerWeek":             "0",
+		"gatewayUserRequestLimitPerMonth":            "0",
+		"userAiAccountLimit":                         "100",
+		"systemApiRateLimitIpReadPerMinute":          "600",
+		"systemApiRateLimitIpReadBurstPer10Seconds":  "120",
+		"systemApiRateLimitIpWritePerMinute":         "180",
+		"systemApiRateLimitIpWriteBurstPer10Seconds": "40",
+		"systemApiRateLimitUserReadPerMinute":        "300",
+		"systemApiRateLimitUserWritePerMinute":       "120",
 		"defaultTemporaryUnschedulableMinutes":       "10",
 		"temporaryUnschedulableRetryIntervalSeconds": "5",
 		"temporaryUnschedulableRetryAttempts":        "3",
@@ -55,16 +67,49 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"imageStreamIdleTimeoutSeconds":              "30",
 		"imageUncommittedAttemptMaxLifetimeSeconds":  "300",
 		"imageRequestWallTimeoutSeconds":             "600",
+		"chatImageGenerationTotalTimeoutSeconds":     "900",
 		"noAvailableAccountWaitTimeoutSeconds":       "30",
 		"streamFailureThresholdCount":                "3",
 		"streamFailureThresholdWindowMinutes":        "5",
-		"gatewayUserRequestLimitPerMinute":           "0",
-		"gatewayUserRequestLimitPerDay":              "0",
-		"gatewayUserRequestLimitPerWeek":             "0",
-		"gatewayUserRequestLimitPerMonth":            "0",
+		"operationLogRetentionDays":                  "365",
+		"operationLogMaxChangesPerRecord":            "100",
+		"statsAggregationIntervalSeconds":            "60",
+		"statsAggregationBatchSize":                  "2000",
+		"statsAggregationMaxBatchesPerRun":           "5",
+		"usageHotWindowRefreshIntervalSeconds":       "600",
+		"groupAccountStatsRefreshIntervalSeconds":    "60",
+		"systemMetricsSampleIntervalSeconds":         "30",
+		"tableMonitorMaxTablesPerRun":                "4",
+		"accountQualityRefreshIntervalSeconds":       "600",
+		"accountQualityWindowMinutes":                "10",
+		"accountHealthCheckIntervalHours":            "1",
+		"accountHealthCheckJitterMinutes":            "10",
+		"accountHealthCheckFailureThreshold":         "3",
+		"cooldownAccountRetestIntervalSeconds":       "3",
+		"cooldownAccountRetestMaxBackoffHours":       "12",
+		"oauthAccessTokenRefreshIntervalSeconds":     "60",
+		"oauthAccessTokenRefreshLeadSeconds":         "300",
+		"oauthAccessTokenRefreshBatchSize":           "20",
+		"oauthAccessTokenRefreshRetryBackoffSeconds": "300",
+		"modelCheckRetentionDays":                    "30",
+		"runtimeLogIndexRetentionDays":               "14",
+		"publicApiLogRetentionDays":                  "30",
+		"usageRecordRetentionDays":                   "30",
 		"usageStatsTimezone":                         `"UTC"`,
+		"usageStatsMinuteRetentionHours":             "48",
+		"usageStatsHourlyRetentionDays":              "60",
+		"usageStatsDailyRetentionDays":               "400",
+		"usageStatsWeeklyRetentionWeeks":             "104",
+		"usageStatsMonthlyRetentionMonths":           "24",
+		"usageRankSnapshotRetentionDays":             "30",
+		"systemMetricsRetentionDays":                 "7",
+		"systemMetricsHourlyRetentionDays":           "30",
 	}
-	for key, value := range keys {
+	for _, key := range settings.SystemSettingKeys {
+		value, ok := defaults[key]
+		if !ok {
+			t.Fatalf("missing test default for system setting %s", key)
+		}
 		setSetting(t, db, key, value)
 	}
 }
