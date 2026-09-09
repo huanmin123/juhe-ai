@@ -506,6 +506,7 @@ def replaceDigest(file, imageName, digest) {
       my \$newline = (\$text =~ /\r\n/) ? "\\r\\n" : "\\n";
       \$text =~ s/\r\n?/chr(10)/ge;
       my @lines = split /\\n/, \$text, -1;
+      print STDERR "release debug line27=<\$lines[27]> line28=<\$lines[28]> line29=<\$lines[29]>\\n";
       my @matches;
       for my \$index (0 .. \$#lines - 2) {
         if (\$lines[\$index] =~ /^\\s*-\\s+name:\\s*\\Q\$name\\E\\s*\$/ &&
