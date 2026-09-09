@@ -506,19 +506,19 @@ def replaceDigest(file, imageName, digest) {
       my \$newline = (\$text =~ /\r\n/) ? "\\r\\n" : "\\n";
       \$text =~ s/\r\n?/chr(10)/ge;
       my \$quoted = quotemeta(\$name);
-      my \@lines = split /\\n/, \$text, -1;
-      my \@matches;
+      my @lines = split /\\n/, \$text, -1;
+      my @matches;
       for my \$index (0 .. \$#lines - 2) {
         if (\$lines[\$index] =~ /^\\s*-\\s+name:\\s*\$quoted\\s*\$/ &&
             \$lines[\$index + 1] =~ /^\\s+newName:\\s+/ &&
             \$lines[\$index + 2] =~ /^\\s+digest:\\s*sha256:[a-f0-9]{64}\\s*\$/) {
-          push \@matches, \$index;
+          push @matches, \$index;
         }
       }
-      my \$matches = scalar \@matches;
+      my \$matches = scalar @matches;
       die "镜像 \$name digest 替换命中数为 \$matches，期望 1\\n" unless \$matches == 1;
       \$lines[\$matches[0] + 2] =~ s{sha256:[a-f0-9]{64}}{\$digest};
-      \$text = join chr(10), \@lines;
+      \$text = join chr(10), @lines;
       my \$after_matches = 0;
       for my \$index (0 .. \$#lines - 2) {
         if (\$lines[\$index] =~ /^\\s*-\\s+name:\\s*\$quoted\\s*\$/ &&
