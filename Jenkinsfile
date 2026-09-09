@@ -505,11 +505,10 @@ def replaceDigest(file, imageName, digest) {
       # handled. Restore the original dominant line ending before publishing.
       my \$newline = (\$text =~ /\r\n/) ? "\\r\\n" : "\\n";
       \$text =~ s/\r\n?/chr(10)/ge;
-      my \$quoted = quotemeta(\$name);
       my @lines = split /\\n/, \$text, -1;
       my @matches;
       for my \$index (0 .. \$#lines - 2) {
-        if (\$lines[\$index] =~ /^\\s*-\\s+name:\\s*\$quoted\\s*\$/ &&
+        if (\$lines[\$index] =~ /^\\s*-\\s+name:\\s*\\Q\$name\\E\\s*\$/ &&
             \$lines[\$index + 1] =~ /^\\s+newName:\\s+/ &&
             \$lines[\$index + 2] =~ /^\\s+digest:\\s*sha256:[a-f0-9]{64}\\s*\$/) {
           push @matches, \$index;
@@ -521,7 +520,7 @@ def replaceDigest(file, imageName, digest) {
       \$text = join chr(10), @lines;
       my \$after_matches = 0;
       for my \$index (0 .. \$#lines - 2) {
-        if (\$lines[\$index] =~ /^\\s*-\\s+name:\\s*\$quoted\\s*\$/ &&
+        if (\$lines[\$index] =~ /^\\s*-\\s+name:\\s*\\Q\$name\\E\\s*\$/ &&
             \$lines[\$index + 1] =~ /^\\s+newName:\\s+/ &&
             \$lines[\$index + 2] =~ /^\\s+digest:\\s*\\Q\$digest\\E\\s*\$/) {
           \$after_matches++;
