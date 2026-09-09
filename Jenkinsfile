@@ -492,21 +492,22 @@ def replaceDigest(file, imageName, digest) {
   // Only the first (active) image block is eligible. Fail closed when the
   // expected block is missing or duplicated, otherwise metadata could advance
   // while kustomization still points at a different digest.
-  sh """#!/bin/sh
+  withEnv(["RELEASE_IMAGE=${imageName}", "RELEASE_DIGEST=${digest}", "RELEASE_FILE=${file}"]) {
+    sh '''#!/bin/sh
     set -eu
-    echo "检查 kustomization 镜像块: ${imageName}"
-    grep -n -A2 -B1 -- "name: ${imageName}" '${file}' || true
-    temporary="${file}.tmp.\$\$"
-    awk -v target="${imageName}" -v replacement="${digest.toString()}" '
+    echo "检查 kustomization 镜像块: $RELEASE_IMAGE"
+    grep -n -A2 -B1 -- "name: $RELEASE_IMAGE" "$RELEASE_FILE" || true
+    temporary="$RELEASE_FILE.tmp.$$"
+    awk -v target="$RELEASE_IMAGE" -v replacement="$RELEASE_DIGEST" '
       BEGIN { hits = 0; pending = 0 }
       {
-        name_line = \$0
+        name_line = $0
         sub(/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/, "", name_line)
         sub(/[[:space:]]*$/, "", name_line)
-        if (name_line == target && \$0 ~ /^[[:space:]]*-[[:space:]]+name:/) {
+        if (name_line == target && $0 ~ /^[[:space:]]*-[[:space:]]+name:/) {
           hits++
           pending++
-        } else if (pending && \$0 ~ /^[[:space:]]+digest:[[:space:]]*sha256:[a-f0-9]{64}[[:space:]]*\$/) {
+        } else if (pending && $0 ~ /^[[:space:]]+digest:[[:space:]]*sha256:[a-f0-9]{64}[[:space:]]*$/) {
           sub(/sha256:[a-f0-9]{64}/, replacement)
           pending = 0
         }
@@ -515,13 +516,14 @@ def replaceDigest(file, imageName, digest) {
       END {
         if (hits != 1 || pending != 0) exit 42
       }
-    ' '${file}' > "${temporary}" || {
-      rm -f "${temporary}"
-      echo "镜像 ${imageName} digest 替换命中数无效，期望唯一完整镜像块" >&2
+    ' "$RELEASE_FILE" > "$temporary" || {
+      rm -f "$temporary"
+      echo "镜像 $RELEASE_IMAGE digest 替换命中数无效，期望唯一完整镜像块" >&2
       exit 255
     }
-    mv "${temporary}" '${file}'
-  """
+    mv "$temporary" "$RELEASE_FILE"
+    '''
+  }
 }
 
 def sourceUsesDirectJ3aManagement() {
