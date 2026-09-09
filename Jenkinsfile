@@ -570,6 +570,8 @@ def configureJ3aManagementRelease(overlay, enabled) {
       # file's line ending cannot make a valid key look absent.
       enabled_count=$(awk 'index($0, "JUHE_AI_PROXY_LATENCY_ENABLED=") == 1 { count++ } END { print count + 0 }' "$runtime_config")
       management_enabled_count=$(awk 'index($0, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=") == 1 { count++ } END { print count + 0 }' "$runtime_config")
+      echo "J3a runtime config keys: enabled=$enabled_count management=$management_enabled_count file=$runtime_config"
+      grep -n 'JUHE_AI_PROXY_LATENCY_.*ENABLED' "$runtime_config" || true
       [ "$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
       [ "$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
       grep -Fqx "JUHE_AI_PROXY_LATENCY_ENABLED=$J3A_ENABLED" "$runtime_config"
