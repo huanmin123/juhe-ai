@@ -497,7 +497,7 @@ def replaceDigest(file, imageName, digest) {
     echo "检查 kustomization 镜像块: ${imageName}"
     grep -n -A2 -B1 -- "name: ${imageName}" '${file}' || true
     temporary="${file}.tmp.\$\$"
-    awk -v target="${imageName}" -v replacement="${digest}" '
+    awk -v target="${imageName}" -v replacement="${digest.toString()}" '
       BEGIN { hits = 0; pending = 0 }
       {
         name_line = \$0
