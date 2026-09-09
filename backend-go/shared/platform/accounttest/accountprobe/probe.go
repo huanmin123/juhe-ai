@@ -1091,12 +1091,25 @@ func buildUpstreamURL(view *View, pathAndQuery string) (string, error) {
 	}
 	if isGeminiProtocol(view) {
 		basePath := strings.TrimRight(parsed.Path, "/")
-		suffixPath := pathAndQuery
+		suffixPath, suffixQuery := splitPathAndQuery(pathAndQuery)
 		if strings.HasSuffix(basePath, "/v1beta") {
-			suffixPath = stripV1BetaPrefix(pathAndQuery)
+			suffixPath = stripV1BetaPrefix(suffixPath)
 		}
 		parsed.Path = strings.ReplaceAll(basePath+stripTrailingSlashPath(suffixPath), "//", "/")
+		parsed.RawQuery = strings.TrimPrefix(suffixQuery, "?")
 		return parsed.String(), nil
+	}
+	if view.ProviderProtocolProfileID == "profile_gemini_openai_chat_v1beta" {
+		// Gemini's OpenAI-compatible profile owns the complete
+		// /v1beta/openai service path. Match the gateway and J1 builders by
+		// removing the client /v1 prefix only for that canonical base.
+		basePath := strings.TrimRight(parsed.Path, "/")
+		if strings.HasSuffix(strings.ToLower(basePath), "/v1beta/openai") {
+			suffixPath, suffixQuery := splitPathAndQuery(openAIPathSuffix(pathAndQuery))
+			parsed.Path = basePath + suffixPath
+			parsed.RawQuery = strings.TrimPrefix(suffixQuery, "?")
+			return parsed.String(), nil
+		}
 	}
 	if view.Type == "oauth" && view.ProviderProtocolProfileID == "profile_gpt_openai_v1" {
 		codexBase, err := url.Parse("https://chatgpt.com/backend-api/codex")
@@ -1107,7 +1120,11 @@ func buildUpstreamURL(view *View, pathAndQuery string) (string, error) {
 		return codexBase.String(), nil
 	}
 	if isAnthropicProtocol(view) {
-		return parsed.String() + pathAndQuery, nil
+		normalizedBase := strings.TrimRight(parsed.String(), "/")
+		if !strings.HasSuffix(strings.ToLower(strings.TrimRight(parsed.Path, "/")), "/v1") {
+			normalizedBase += "/v1"
+		}
+		return normalizedBase + openAIPathSuffix(pathAndQuery), nil
 	}
 	normalizedBase := parsed.String()
 	if !strings.HasSuffix(normalizedBase, "/v1") {
@@ -1117,12 +1134,7 @@ func buildUpstreamURL(view *View, pathAndQuery string) (string, error) {
 }
 
 func openAIPathSuffix(pathAndQuery string) string {
-	path := pathAndQuery
-	query := ""
-	if index := strings.Index(pathAndQuery, "?"); index >= 0 {
-		path = pathAndQuery[:index]
-		query = pathAndQuery[index:]
-	}
+	path, query := splitPathAndQuery(pathAndQuery)
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
@@ -1134,6 +1146,13 @@ func openAIPathSuffix(pathAndQuery string) string {
 		path = ""
 	}
 	return path + query
+}
+
+func splitPathAndQuery(pathAndQuery string) (path, query string) {
+	if index := strings.Index(pathAndQuery, "?"); index >= 0 {
+		return pathAndQuery[:index], pathAndQuery[index:]
+	}
+	return pathAndQuery, ""
 }
 
 func stripV1BetaPrefix(pathAndQuery string) string {

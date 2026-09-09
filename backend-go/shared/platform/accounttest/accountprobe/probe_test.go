@@ -287,6 +287,75 @@ func TestProbeGeminiGenerateContent(t *testing.T) {
 	}
 }
 
+func TestBuildUpstreamURLGeminiOpenAIProfileDoesNotDuplicateV1(t *testing.T) {
+	view := probeView("https://generativelanguage.googleapis.com/v1beta/openai")
+	view.ProviderCode = "gemini"
+	view.ProtocolCode = "openai"
+	view.ProviderProtocolProfileID = "profile_gemini_openai_chat_v1beta"
+	got, err := buildUpstreamURL(view, "/v1/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" {
+		t.Fatalf("Gemini OpenAI upstream URL = %q", got)
+	}
+}
+
+func TestBuildUpstreamURLAnthropicV1BaseDoesNotDuplicateVersion(t *testing.T) {
+	view := probeView("https://api.anthropic.com/v1")
+	view.ProviderCode = "anthropic"
+	view.ProtocolCode = "anthropic"
+	view.ProviderProtocolProfileID = "profile_anthropic_anthropic_v1"
+	got, err := buildUpstreamURL(view, "/v1/messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://api.anthropic.com/v1/messages" {
+		t.Fatalf("Anthropic upstream URL = %q", got)
+	}
+}
+
+func TestBuildUpstreamURLAnthropicProviderRootsRemainStable(t *testing.T) {
+	cases := []struct {
+		name string
+		base string
+		want string
+	}{
+		{name: "official anthropic", base: "https://api.anthropic.com", want: "https://api.anthropic.com/v1/messages"},
+		{name: "deepseek anthropic", base: "https://api.deepseek.com/anthropic", want: "https://api.deepseek.com/anthropic/v1/messages"},
+		{name: "glm anthropic", base: "https://open.bigmodel.cn/api/anthropic", want: "https://open.bigmodel.cn/api/anthropic/v1/messages"},
+		{name: "glm anthropic v1", base: "https://open.bigmodel.cn/api/anthropic/v1", want: "https://open.bigmodel.cn/api/anthropic/v1/messages"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			view := probeView(tc.base)
+			view.ProtocolCode = "anthropic"
+			view.ProviderProtocolProfileID = "profile_glm_coding_anthropic_v1"
+			got, err := buildUpstreamURL(view, "/v1/messages")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("Anthropic upstream URL = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildUpstreamURLGeminiSSEPreservesAltQuery(t *testing.T) {
+	view := probeView("https://generativelanguage.googleapis.com/v1beta")
+	view.ProviderCode = "gemini"
+	view.ProtocolCode = "gemini"
+	view.ProviderProtocolProfileID = "profile_gemini_native_v1beta"
+	got, err := buildUpstreamURL(view, "/v1beta/models/gemini-test:streamGenerateContent?alt=sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:streamGenerateContent?alt=sse" {
+		t.Fatalf("Gemini SSE upstream URL = %q", got)
+	}
+}
+
 // TestProbeChatSSEStreaming 验证流式 chat_sse 的完成证据解析与首字计时。
 func TestProbeChatSSEStreaming(t *testing.T) {
 	var captured http.Header

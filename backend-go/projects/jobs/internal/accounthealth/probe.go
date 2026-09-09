@@ -271,10 +271,14 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		path = "/v1internal:streamGenerateContent?alt=sse"
 		body = map[string]any{"model": input.HealthModel, "project": input.OAuthProjectID, "request": body}
 	}
-	if input.ProtocolProfileID == "profile_gemini_openai_chat_v1beta" && protocol == "openai" {
+	if input.ProtocolProfileID == "profile_gemini_openai_chat_v1beta" && protocol == "openai" && geminiOpenAIBaseOwnsPath(base) {
 		path = strings.TrimPrefix(path, "/v1")
 	}
-	if (input.ProtocolProfileID == "profile_glm_general_openai_v1" || input.ProtocolProfileID == "profile_glm_coding_openai_v1") && protocol == "openai" {
+	if (input.ProtocolProfileID == "profile_glm_general_openai_v1" || input.ProtocolProfileID == "profile_glm_coding_openai_v1") && protocol == "openai" && !glmOpenAIBaseOwnsV1Path(base) {
+		// GLM official roots already contain their versioned service path
+		// (/api/paas/v4 or /api/coding/paas/v4), while OpenAI-compatible
+		// proxies use the conventional /v1 root. Keep the request version
+		// for the latter so joinBaseURL does not turn /v1/chat into /chat.
 		path = strings.TrimPrefix(path, "/v1")
 	}
 	target := joinBaseURL(base, path)
@@ -444,6 +448,29 @@ func joinBaseURL(base *url.URL, path string) *url.URL {
 		copy.RawQuery = rawQuery
 	}
 	return &copy
+}
+
+// glmOpenAIBaseOwnsV1Path reports whether a GLM OpenAI-compatible base URL
+// already carries the conventional /v1 service root. An empty path is treated
+// the same way as a generic OpenAI service root: joinBaseURL must retain the
+// request's /v1 prefix so manual tests and scheduled probes hit the same URL.
+func glmOpenAIBaseOwnsV1Path(base *url.URL) bool {
+	if base == nil {
+		return false
+	}
+	path := strings.TrimRight(base.Path, "/")
+	return path == "" || strings.HasSuffix(path, "/v1")
+}
+
+// geminiOpenAIBaseOwnsPath reports whether the Gemini OpenAI-compatibility
+// profile's base already includes its complete /v1beta/openai service path.
+// Only then should the request-side /v1 prefix be removed.
+func geminiOpenAIBaseOwnsPath(base *url.URL) bool {
+	if base == nil {
+		return false
+	}
+	path := strings.ToLower(strings.TrimRight(base.Path, "/"))
+	return strings.HasSuffix(path, "/v1beta/openai")
 }
 
 func decryptToken(secret string, envelope CredentialEnvelope) (string, error) {

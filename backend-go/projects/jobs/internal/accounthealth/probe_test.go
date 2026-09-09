@@ -547,3 +547,99 @@ func TestBuildProbeRequestGLMCodingUsesZCodeIdentityForBothProtocols(t *testing.
 		})
 	}
 }
+
+func TestBuildProbeRequestGLMOpenAIUsesManualCompatibleBasePaths(t *testing.T) {
+	cases := []struct {
+		name     string
+		profile  string
+		base     string
+		wantPath string
+	}{
+		{
+			name:     "proxy v1 root",
+			profile:  "profile_glm_coding_openai_v1",
+			base:     "https://vsllm.test/v1",
+			wantPath: "/v1/chat/completions",
+		},
+		{
+			name:     "official general root",
+			profile:  "profile_glm_general_openai_v1",
+			base:     "https://open.bigmodel.cn/api/paas/v4",
+			wantPath: "/api/paas/v4/chat/completions",
+		},
+		{
+			name:     "official coding root",
+			profile:  "profile_glm_coding_openai_v1",
+			base:     "https://open.bigmodel.cn/api/coding/paas/v4/",
+			wantPath: "/api/coding/paas/v4/chat/completions",
+		},
+		{
+			name:     "generic service root",
+			profile:  "profile_glm_general_openai_v1",
+			base:     "https://glm-proxy.test",
+			wantPath: "/v1/chat/completions",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base, err := url.Parse(tc.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := Input{
+				Provider:          "glm",
+				ProtocolProfileID: tc.profile,
+				EndpointMode:      "chat_json",
+				HealthModel:       "glm-5.3-flash",
+			}
+			request, err := buildProbeRequest(context.Background(), base, input, "glm-key")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.URL.Path != tc.wantPath {
+				t.Fatalf("GLM probe path = %q, want %q", request.URL.Path, tc.wantPath)
+			}
+		})
+	}
+}
+
+func TestBuildProbeRequestProviderBasePathsRemainAligned(t *testing.T) {
+	cases := []struct {
+		name     string
+		profile  string
+		provider string
+		mode     string
+		base     string
+		wantPath string
+	}{
+		{name: "OpenAI service root", profile: "profile_openai_openai_v1", provider: "openai", mode: "chat_json", base: "https://api.openai.com", wantPath: "/v1/chat/completions"},
+		{name: "xAI version root", profile: "profile_xai_openai_v1", provider: "xai", mode: "chat_json", base: "https://api.x.ai/v1", wantPath: "/v1/chat/completions"},
+		{name: "DeepSeek OpenAI root", profile: "profile_deepseek_openai_v1", provider: "deepseek", mode: "chat_json", base: "https://api.deepseek.com", wantPath: "/v1/chat/completions"},
+		{name: "DeepSeek Anthropic root", profile: "profile_deepseek_anthropic_v1", provider: "deepseek", mode: "messages_json", base: "https://api.deepseek.com/anthropic", wantPath: "/anthropic/v1/messages"},
+		{name: "GLM Anthropic root", profile: "profile_glm_coding_anthropic_v1", provider: "glm", mode: "messages_json", base: "https://open.bigmodel.cn/api/anthropic", wantPath: "/api/anthropic/v1/messages"},
+		{name: "Anthropic root", profile: "profile_anthropic_anthropic_v1", provider: "anthropic", mode: "messages_json", base: "https://api.anthropic.com", wantPath: "/v1/messages"},
+		{name: "Gemini native root", profile: "profile_gemini_native_v1beta", provider: "gemini", mode: "generate_content_json", base: "https://generativelanguage.googleapis.com", wantPath: "/v1beta/models/gemini-test:generateContent"},
+		{name: "Gemini OpenAI root", profile: "profile_gemini_openai_chat_v1beta", provider: "gemini", mode: "chat_json", base: "https://generativelanguage.googleapis.com/v1beta/openai", wantPath: "/v1beta/openai/chat/completions"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base, err := url.Parse(tc.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := Input{
+				Provider:          tc.provider,
+				ProtocolProfileID: tc.profile,
+				EndpointMode:      tc.mode,
+				HealthModel:       "gemini-test",
+			}
+			request, err := buildProbeRequest(context.Background(), base, input, "test-key")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.URL.Path != tc.wantPath {
+				t.Fatalf("%s probe path = %q, want %q", tc.name, request.URL.Path, tc.wantPath)
+			}
+		})
+	}
+}
