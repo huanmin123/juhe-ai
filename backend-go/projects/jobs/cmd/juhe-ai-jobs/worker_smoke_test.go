@@ -216,7 +216,7 @@ func TestWorkerHealthExposesWorkerFields(t *testing.T) {
 // 通道，jobs 不再持有任何 /__aiinternal__ handler）。
 func TestInternalDispatchRouteAbsent(t *testing.T) {
 	handler := jobsHTTPHandler(ownermode.Active, &atomic.Bool{}, func() bool { return true },
-		false, func() bool { return true }, false, func() bool { return true })
+		false, func() bool { return true }, false, func() bool { return true }, nil, "")
 	for _, path := range []string{
 		"/__aiinternal__/v1/account-health-check/dispatch",
 		"/__aiinternal__/v1/account-test/dispatch",

@@ -28,6 +28,7 @@ type RuntimeConfig struct {
 	Store                     StoreConfig
 	BusinessPostgresURL       string
 	CredentialSecret          string
+	ManualHTTPSecret          string
 	ScanInterval              time.Duration
 	OwnerLease                time.Duration
 	AccountLease              time.Duration
@@ -100,9 +101,10 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.CredentialSecret == "" {
 		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET 是必填配置")
 	}
-	// 去跨进程战役第四刀：JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET 与
-	// /account-balance/manual 手动桥一起删除（Node 时代手动触发的唯一消费
-	// 方，全仓无生产调用方），读取与长度校验一并停用。
+	cfg.ManualHTTPSecret = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET"))
+	if len(cfg.ManualHTTPSecret) < 32 {
+		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET 至少需要 32 个字符")
+	}
 	if cfg.ScanInterval, err = runtimeDuration(getenv, "JUHE_AI_ACCOUNT_BALANCE_SCAN_INTERVAL", 5*time.Second, 5*time.Second); err != nil {
 		return RuntimeConfig{}, err
 	}

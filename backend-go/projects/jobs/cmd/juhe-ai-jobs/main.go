@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -604,7 +606,7 @@ func main() {
 	}
 	j3bReady := func() bool { return true }
 	healthServer := &http.Server{
-		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
+		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
 			if j3Runner == nil {
 				return proxylatency.RunnerStatus{}
 			}
@@ -732,7 +734,7 @@ func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
 	})
 }
 
-func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, j3 ...any) http.Handler {
+func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string, j3 ...any) http.Handler {
 	mux := http.NewServeMux()
 	goCollector := gometrics.New("juhe-ai", "jobs")
 	if len(j3) > 6 {
@@ -766,7 +768,97 @@ func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tabl
 		readinessArgs = append(readinessArgs, j3[8:min(len(j3), 11)]...)
 	}
 	mux.Handle("/health", healthHandler(ownerMode, runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
+	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || accountBalanceService == nil {
+			http.NotFound(response, request)
+			return
+		}
+		if !matchesAccountBalanceManualSecret(request, accountBalanceManualSecret) {
+			response.Header().Set("WWW-Authenticate", `Bearer realm="juhe-ai-jobs"`)
+			http.Error(response, "J2 manual bridge 未授权", http.StatusUnauthorized)
+			return
+		}
+		request.Body = http.MaxBytesReader(response, request.Body, 512<<10)
+		var envelope struct {
+			Input accountbalance.Input `json:"input"`
+		}
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&envelope); err != nil {
+			http.Error(response, "J2 manual input 无效", http.StatusBadRequest)
+			return
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			http.Error(response, "J2 manual input 不得包含尾随 JSON", http.StatusBadRequest)
+			return
+		}
+		if envelope.Input.Trigger == "" {
+			envelope.Input.Trigger = accountbalance.TriggerManual
+		}
+		record, _, err := accountBalanceService.RunManual(request.Context(), envelope.Input)
+		if err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, accountbalance.ErrAccountLeaseHeld) {
+				status = http.StatusConflict
+			}
+			if errors.Is(err, accountbalance.ErrOutcomeStale) {
+				response.Header().Set("Content-Type", "application/json")
+				response.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(response).Encode(manualHandoverResult(envelope.Input, accountbalance.Snapshot{Status: accountbalance.StatusPending}, envelope.Input.NextRefreshAt, false, "stale"))
+				return
+			}
+			http.Error(response, err.Error(), status)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(manualHandoverResult(envelope.Input, record.Snapshot, record.NextRefreshAt, true, manualOutcome(record.Snapshot.Status)))
+	})
 	return mux
+}
+
+func matchesAccountBalanceManualSecret(request *http.Request, expected string) bool {
+	if request == nil || len(expected) < 32 {
+		return false
+	}
+	const prefix = "Bearer "
+	provided := request.Header.Get("Authorization")
+	if len(provided) < len(prefix) || provided[:len(prefix)] != prefix {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided[len(prefix):]), []byte(expected)) == 1
+}
+
+func manualHandoverResult(input accountbalance.Input, snapshot accountbalance.Snapshot, nextRefreshAfter *time.Time, committed bool, outcome string) map[string]any {
+	result := map[string]any{
+		"schemaVersion":    1,
+		"job":              "account-balance-refresh",
+		"accountId":        input.AccountID,
+		"systemAccountId":  input.SystemAccountID,
+		"configRevision":   input.ConfigRevision,
+		"nextRefreshAfter": nextRefreshAfter,
+		"outcome":          outcome,
+		"committed":        committed,
+		"snapshot":         snapshot,
+	}
+	if input.Trigger != accountbalance.TriggerManual {
+		result["expectedNextRefreshAt"] = input.NextRefreshAt
+	}
+	return map[string]any{
+		"schemaVersion": 1,
+		"job":           "account-balance-refresh",
+		"result":        result,
+	}
+}
+
+func manualOutcome(status accountbalance.Status) string {
+	if status == accountbalance.StatusUnsupported {
+		return "unsupported"
+	}
+	if status == accountbalance.StatusFresh || status == accountbalance.StatusUnlimited {
+		return "refreshed"
+	}
+	return "failed"
 }
 
 func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, j2 ...any) http.Handler {
