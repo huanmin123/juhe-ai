@@ -494,6 +494,8 @@ def replaceDigest(file, imageName, digest) {
   // while kustomization still points at a different digest.
   sh """#!/bin/sh
     set -eu
+    echo "检查 kustomization 镜像块: ${imageName}"
+    grep -n -A2 -B1 -- "name: ${imageName}" '${file}' || true
     perl -0e '
       my (\$file, \$name, \$digest) = @ARGV;
       open my \$in, "<", \$file or die "无法读取 kustomization: \$!";
