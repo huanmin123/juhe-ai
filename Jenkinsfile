@@ -537,58 +537,60 @@ def configureJ3aManagementRelease(overlay, enabled) {
   if (!(enabled in ['true', 'false'])) error 'J3a 管理 release 状态必须为 true 或 false。'
   def kustomization = "${overlay}/kustomization.yaml"
   def runtimeConfig = "${overlay}/runtime-config.env"
-  sh """#!/bin/sh
+  withEnv(["J3A_KUSTOMIZATION=${kustomization}", "J3A_RUNTIME_CONFIG=${runtimeConfig}", "J3A_ENABLED=${enabled}"]) {
+  sh '''#!/bin/sh
     set -eu
-    file='${kustomization}'
-    runtime_config='${runtimeConfig}'
+    file="$J3A_KUSTOMIZATION"
+    runtime_config="$J3A_RUNTIME_CONFIG"
     route='  - j3a-management-ingressroute.yaml'
     normalize_line_endings() {
-      target="\$1"
-      [ -f "\$target" ] || return 0
-      temporary="\${target}.line-endings.tmp.\$\$"
-      perl -0e 'local \$/; my \$text = <STDIN>; \$text =~ s/\r\n?/\\n/g; print \$text or die "无法规范化文件换行";' < "\$target" > "\$temporary"
-      mv "\$temporary" "\$target"
+      target="$1"
+      [ -f "$target" ] || return 0
+      temporary="${target}.line-endings.tmp.$$"
+      perl -0e 'local $/; my $text = <STDIN>; $text =~ s/\r\n?/\n/g; print $text or die "无法规范化文件换行";' < "$target" > "$temporary"
+      mv "$temporary" "$target"
     }
-    normalize_line_endings "\$file"
-    normalize_line_endings "\$runtime_config"
-    if [ '${enabled}' = 'true' ]; then
-      [ -f "\$runtime_config" ] || { echo 'J3a 启用时必须提供环境专属 runtime-config.env，拒绝写 release state' >&2; exit 1; }
-      if ! grep -Fqx "\$route" "\$file"; then
-        sed -i '/^  - ingress.yaml\$/a\\  - j3a-management-ingressroute.yaml' "\$file"
+    normalize_line_endings "$file"
+    normalize_line_endings "$runtime_config"
+    if [ "$J3A_ENABLED" = 'true' ]; then
+      [ -f "$runtime_config" ] || { echo 'J3a 启用时必须提供环境专属 runtime-config.env，拒绝写 release state' >&2; exit 1; }
+      if ! grep -Fqx "$route" "$file"; then
+        sed -i '/^  - ingress.yaml$/a\\  - j3a-management-ingressroute.yaml' "$file"
       fi
     else
-      sed -i '/^  - j3a-management-ingressroute.yaml\$/d' "\$file"
+      sed -i '/^  - j3a-management-ingressroute.yaml$/d' "$file"
     fi
-    if [ -f "\$runtime_config" ]; then
+    if [ -f "$runtime_config" ]; then
       sed -i \
-        -e 's|^JUHE_AI_PROXY_LATENCY_ENABLED=.*|JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}|' \
-        -e 's|^JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}|' \
-        "\$runtime_config"
+        -e "s|^JUHE_AI_PROXY_LATENCY_ENABLED=.*|JUHE_AI_PROXY_LATENCY_ENABLED=$J3A_ENABLED|" \
+        -e "s|^JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=$J3A_ENABLED|" \
+        "$runtime_config"
       # Busybox/GNU grep on different Jenkins agents handles CRLF and -E
       # slightly differently. Count by the key prefix with awk so a source
       # file's line ending cannot make a valid key look absent.
-      enabled_count=\$(awk 'index(\$0, "JUHE_AI_PROXY_LATENCY_ENABLED=") == 1 { count++ } END { print count + 0 }' "\$runtime_config")
-      management_enabled_count=\$(awk 'index(\$0, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=") == 1 { count++ } END { print count + 0 }' "\$runtime_config")
-      [ "\$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
-      [ "\$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
-      grep -Fqx 'JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}' "\$runtime_config"
-      grep -Fqx 'JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}' "\$runtime_config"
-    elif [ '${enabled}' = 'true' ]; then
+      enabled_count=$(awk 'index($0, "JUHE_AI_PROXY_LATENCY_ENABLED=") == 1 { count++ } END { print count + 0 }' "$runtime_config")
+      management_enabled_count=$(awk 'index($0, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=") == 1 { count++ } END { print count + 0 }' "$runtime_config")
+      [ "$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
+      [ "$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
+      grep -Fqx "JUHE_AI_PROXY_LATENCY_ENABLED=$J3A_ENABLED" "$runtime_config"
+      grep -Fqx "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=$J3A_ENABLED" "$runtime_config"
+    elif [ "$J3A_ENABLED" = 'true' ]; then
       echo 'J3a 启用时 runtime-config.env 不存在' >&2
       exit 1
     else
-      legacy_enabled_count=\$(grep -Fxc '      - JUHE_AI_PROXY_LATENCY_ENABLED=false' "\$file" || true)
-      legacy_management_enabled_count=\$(grep -Fxc '      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=false' "\$file" || true)
-      [ "\$legacy_enabled_count" -eq 1 ] || { echo 'J3a 关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
-      [ "\$legacy_management_enabled_count" -eq 1 ] || { echo 'J3a 管理关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
+      legacy_enabled_count=$(grep -Fxc '      - JUHE_AI_PROXY_LATENCY_ENABLED=false' "$file" || true)
+      legacy_management_enabled_count=$(grep -Fxc '      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=false' "$file" || true)
+      [ "$legacy_enabled_count" -eq 1 ] || { echo 'J3a 关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
+      [ "$legacy_management_enabled_count" -eq 1 ] || { echo 'J3a 管理关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
     fi
-    route_count=\$(awk -v expected="\$route" '{ line = \$0; sub(/[[:space:]]*$/, "", line); if (line == expected) count++ } END { print count + 0 }' "\$file")
-    if [ '${enabled}' = 'true' ]; then
-      [ "\$route_count" -eq 1 ] || { echo 'J3a IngressRoute resource must appear exactly once when enabled' >&2; exit 1; }
+    route_count=$(awk -v expected="$route" '{ line = $0; sub(/[[:space:]]*$/, "", line); if (line == expected) count++ } END { print count + 0 }' "$file")
+    if [ "$J3A_ENABLED" = 'true' ]; then
+      [ "$route_count" -eq 1 ] || { echo 'J3a IngressRoute resource must appear exactly once when enabled' >&2; exit 1; }
     else
-      [ "\$route_count" -eq 0 ] || { echo 'J3a IngressRoute resource must be absent when disabled' >&2; exit 1; }
+      [ "$route_count" -eq 0 ] || { echo 'J3a IngressRoute resource must be absent when disabled' >&2; exit 1; }
     fi
-  """
+  '''
+  }
 }
 
 def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gatewayDigest, j3aManagementEnabled, actor, expectedPlatformRevision = null, releaseMode = params.RELEASE_MODE?.trim(), schemaChangeClass = params.SCHEMA_CHANGE_CLASS?.trim()) {
