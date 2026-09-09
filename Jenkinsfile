@@ -564,12 +564,17 @@ def configureJ3aManagementRelease(overlay, enabled) {
         -e 's|^JUHE_AI_PROXY_LATENCY_ENABLED=.*|JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}|' \
         -e 's|^JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}|' \
         "\$runtime_config"
-      enabled_count=\$(grep -Ec '^JUHE_AI_PROXY_LATENCY_ENABLED=' "\$runtime_config" || true)
-      management_enabled_count=\$(grep -Ec '^JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=' "\$runtime_config" || true)
+      # Busybox/GNU grep on different Jenkins agents handles CRLF and -E
+      # slightly differently. Count by the key prefix with awk so a source
+      # file's line ending cannot make a valid key look absent.
+      enabled_count=\$(awk 'index(\$0, "JUHE_AI_PROXY_LATENCY_ENABLED=") == 1 { count++ } END { print count + 0 }' "\$runtime_config")
+      management_enabled_count=\$(awk 'index(\$0, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=") == 1 { count++ } END { print count + 0 }' "\$runtime_config")
       [ "\$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
       [ "\$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
-      grep -Fqx 'JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}' "\$runtime_config"
-      grep -Fqx 'JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}' "\$runtime_config"
+      value_count=\$(awk -v expected='JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}' '{ line = \$0; sub(/[[:space:]]*$/, "", line); if (line == expected) count++ } END { print count + 0 }' "\$runtime_config")
+      management_value_count=\$(awk -v expected='JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}' '{ line = \$0; sub(/[[:space:]]*$/, "", line); if (line == expected) count++ } END { print count + 0 }' "\$runtime_config")
+      [ "\$value_count" -eq 1 ] || { echo 'J3a enabled key value verification failed' >&2; exit 1; }
+      [ "\$management_value_count" -eq 1 ] || { echo 'J3a management enabled key value verification failed' >&2; exit 1; }
     elif [ '${enabled}' = 'true' ]; then
       echo 'J3a 启用时 runtime-config.env 不存在' >&2
       exit 1
@@ -579,7 +584,7 @@ def configureJ3aManagementRelease(overlay, enabled) {
       [ "\$legacy_enabled_count" -eq 1 ] || { echo 'J3a 关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
       [ "\$legacy_management_enabled_count" -eq 1 ] || { echo 'J3a 管理关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
     fi
-    route_count=\$(grep -Fxc "\$route" "\$file" || true)
+    route_count=\$(awk -v expected="\$route" '{ line = \$0; sub(/[[:space:]]*$/, "", line); if (line == expected) count++ } END { print count + 0 }' "\$file")
     if [ '${enabled}' = 'true' ]; then
       [ "\$route_count" -eq 1 ] || { echo 'J3a IngressRoute resource must appear exactly once when enabled' >&2; exit 1; }
     else
