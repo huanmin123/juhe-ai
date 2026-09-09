@@ -543,15 +543,6 @@ def configureJ3aManagementRelease(overlay, enabled) {
     file="$J3A_KUSTOMIZATION"
     runtime_config="$J3A_RUNTIME_CONFIG"
     route='  - j3a-management-ingressroute.yaml'
-    normalize_line_endings() {
-      target="$1"
-      [ -f "$target" ] || return 0
-      temporary="${target}.line-endings.tmp.$$"
-      perl -0e 'local $/; my $text = <STDIN>; $text =~ s/\r\n?/\n/g; print $text or die "无法规范化文件换行";' < "$target" > "$temporary"
-      mv "$temporary" "$target"
-    }
-    normalize_line_endings "$file"
-    normalize_line_endings "$runtime_config"
     if [ "$J3A_ENABLED" = 'true' ]; then
       [ -f "$runtime_config" ] || { echo 'J3a 启用时必须提供环境专属 runtime-config.env，拒绝写 release state' >&2; exit 1; }
       if ! grep -Fqx "$route" "$file"; then
@@ -574,8 +565,8 @@ def configureJ3aManagementRelease(overlay, enabled) {
       grep -n 'JUHE_AI_PROXY_LATENCY_.*ENABLED' "$runtime_config" || true
       [ "$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
       [ "$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
-      grep -Fqx "JUHE_AI_PROXY_LATENCY_ENABLED=$J3A_ENABLED" "$runtime_config"
-      grep -Fqx "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=$J3A_ENABLED" "$runtime_config"
+      grep -Fq "JUHE_AI_PROXY_LATENCY_ENABLED=$J3A_ENABLED" "$runtime_config"
+      grep -Fq "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=$J3A_ENABLED" "$runtime_config"
     elif [ "$J3A_ENABLED" = 'true' ]; then
       echo 'J3a 启用时 runtime-config.env 不存在' >&2
       exit 1
