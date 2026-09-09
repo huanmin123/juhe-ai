@@ -409,10 +409,7 @@ func (p *OutcomeProjector) loadCursor(ctx context.Context) (*OutcomeCursor, erro
 // resolveCursorStorage 返回 outcome_id 当前的存储排序时间文本（缺失时返回空，
 // 保持原游标；归档 resolvePostgresCursor/resolveSqliteCursor）。
 func (p *OutcomeProjector) resolveCursorStorage(ctx context.Context, outcomeID string) (string, error) {
-	query := `SELECT observed_at FROM account_health_outcomes WHERE outcome_id = ?`
-	if p.store.mode == StorePostgres {
-		query = `SELECT observed_at FROM juhe_jobs.account_health_outcomes WHERE outcome_id = ?`
-	}
+	query := projectionCursorStorageQuery(p.store.mode)
 	var observed projectionDBTime
 	err := p.store.db.QueryRowContext(ctx, query, outcomeID).Scan(&observed)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -425,6 +422,13 @@ func (p *OutcomeProjector) resolveCursorStorage(ctx context.Context, outcomeID s
 		return "", nil
 	}
 	return observed.RawText, nil
+}
+
+func projectionCursorStorageQuery(mode StoreMode) string {
+	if mode == StorePostgres {
+		return `SELECT observed_at FROM juhe_jobs.account_health_outcomes WHERE outcome_id = $1`
+	}
+	return `SELECT observed_at FROM account_health_outcomes WHERE outcome_id = ?`
 }
 
 // advanceCursor 单调推进游标（归档 advanceAccountHealthProjectionCursor）。
@@ -524,7 +528,7 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 	}
 	defer tx.Rollback()
 	if p.business.postgres {
-		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", accountHealthProjectionAdvisoryLockKey); err != nil {
+		if _, err := tx.ExecContext(ctx, p.business.bind("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))"), accountHealthProjectionAdvisoryLockKey); err != nil {
 			return base, err
 		}
 	}

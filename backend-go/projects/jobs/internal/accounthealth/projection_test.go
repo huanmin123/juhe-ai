@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,6 +97,17 @@ CREATE TABLE account_circuit_outbox (
 `
 
 var projectionFixtureNow = time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+
+func TestProjectionPostgresQueriesUseDollarPlaceholders(t *testing.T) {
+	business := &ProjectionBusinessDB{postgres: true}
+	lockQuery := business.bind("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))")
+	if lockQuery != "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))" {
+		t.Fatalf("advisory lock query = %q", lockQuery)
+	}
+	if query := projectionCursorStorageQuery(StorePostgres); strings.Contains(query, "?") || !strings.Contains(query, "$1") {
+		t.Fatalf("postgres cursor query must use a dollar placeholder: %q", query)
+	}
+}
 
 type projectionFixture struct {
 	t         *testing.T
