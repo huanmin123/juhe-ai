@@ -241,9 +241,25 @@ func TestComposeSystemAPIMountsKernelContract(t *testing.T) {
 		}
 	}
 
+	// J3a's jobs-owned replacement has no Compose ingress yet. Keep the
+	// gateway endpoint mounted until that listener is deployed, so the
+	// management action cannot silently regress to a 404.
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/__aisys__/api/proxies/missing/test", nil)
+	if err != nil {
+		t.Fatalf("create proxy test request: %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("POST proxy test: %v", err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("proxy test endpoint must stay mounted before J3a ingress cutover: status=%d", response.StatusCode)
+	}
+
 	// Unmatched API path keeps the Node 404 JSON contract (and the 405->404
 	// conversion happens inside the kernel).
-	response := get("/__aisys__/api/definitely-not-mounted")
+	response = get("/__aisys__/api/definitely-not-mounted")
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("unmatched api status=%d", response.StatusCode)
 	}

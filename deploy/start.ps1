@@ -45,7 +45,7 @@ function Import-DotEnvEnvironment {
       $value = $value.Substring(1, $value.Length - 2)
     }
     # Explicit process environment values keep precedence over backend/.env.
-    if ([Environment]::GetEnvironmentVariable($name, 'Process')) { continue }
+    if ($null -ne [Environment]::GetEnvironmentVariable($name, 'Process')) { continue }
     [Environment]::SetEnvironmentVariable($name, $value, 'Process')
   }
 }
@@ -220,21 +220,25 @@ function Start-GoProject {
   $existingProcess = Get-GoProjectProcess -PidPath $pidPath -BinaryName $binaryName -RemoveStalePid
   if ($null -ne $existingProcess) { throw "juhe-ai-go-$Project is already running (PID $($existingProcess.Id)); stop the existing release before starting another one." }
   $stderrPath = "$logPath.stderr"
-  $process = Start-Process -FilePath $binaryPath -WorkingDirectory (Join-Path $AppDirectory 'backend') -RedirectStandardOutput $logPath -RedirectStandardError $stderrPath -WindowStyle Hidden -PassThru
-  if ($null -eq $process -or $process.Id -lt 1) { throw "Unable to start juhe-ai-go-$Project." }
-  Set-Content -LiteralPath $pidPath -Value $process.Id -NoNewline -Encoding utf8
-  $process = Get-GoProjectProcess -PidPath $pidPath -BinaryName $binaryName -RemoveStalePid
-  if ($null -eq $process) {
-    $logTail = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 } else { @("No Go $Project log was created.") }
-    $logTail | Write-Error
-    if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Tail 20 | Write-Error }
-    throw "juhe-ai-go-$Project exited during startup."
-  }
   try {
+    $startedProcess = Start-Process -FilePath $binaryPath -WorkingDirectory (Join-Path $AppDirectory 'backend') -RedirectStandardOutput $logPath -RedirectStandardError $stderrPath -WindowStyle Hidden -PassThru
+    if ($null -eq $startedProcess -or $startedProcess.Id -lt 1) { throw "Unable to start juhe-ai-go-$Project." }
+    Set-Content -LiteralPath $pidPath -Value $startedProcess.Id -NoNewline -Encoding utf8
+    $process = Get-GoProjectProcess -PidPath $pidPath -BinaryName $binaryName -RemoveStalePid
+    if ($null -eq $process) {
+      $logTail = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 } else { @("No Go $Project log was created.") }
+      $logTail | Write-Error
+      if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Tail 20 | Write-Error }
+      throw "juhe-ai-go-$Project exited during startup."
+    }
     Wait-HttpStatus -Process $process -Url "$($HealthUrl.TrimEnd('/'))/health" -ExpectedStatus 200 -Description "juhe-ai-go-$Project"
   } catch {
     if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 20 | Write-Error }
     if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Tail 20 | Write-Error }
+    if ($null -ne $startedProcess -and -not $startedProcess.HasExited) {
+      Stop-Process -Id $startedProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
     throw
   }
   return [pscustomobject]@{ Process = $process; PidPath = $pidPath; LogPath = $logPath; ErrorLogPath = $stderrPath }

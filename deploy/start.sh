@@ -9,7 +9,6 @@ set -euo pipefail
 APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 cd "$APP_DIR"
 export TZ=UTC
-export JUHE_AI_LOG_CONSOLE_ENABLED="${JUHE_AI_LOG_CONSOLE_ENABLED:-false}"
 go_gateway_pid=''
 go_jobs_pid=''
 go_gateway_pid_file='backend/runtime/juhe-ai-gateway.pid'
@@ -292,6 +291,7 @@ if [ ! -f backend/.env ]; then
 fi
 
 load_dotenv_environment
+export JUHE_AI_LOG_CONSOLE_ENABLED="${JUHE_AI_LOG_CONSOLE_ENABLED:-false}"
 ensure_deployment_defaults
 mkdir -p backend/data
 

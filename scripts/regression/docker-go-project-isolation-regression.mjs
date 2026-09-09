@@ -57,6 +57,15 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
   // Health-probe outbox rows are consumed/deleted by jobs, so the shared
   // SQLite business volume must be writable by both Go owners.
   assert.match(jobs, /- juhe-ai-data:\/app\/backend\/data\s*$/mu, 'standalone jobs must write the health-probe outbox on the business volume')
+  assert.match(jobs, /JUHE_AI_JOBS_WORKER_ENABLED: \$\{JUHE_AI_JOBS_WORKER_ENABLED:-false\}/u, 'standalone jobs must forward the opt-in worker switch')
+  for (const name of [
+    'JUHE_AI_SECRET', 'JUHE_AI_TASK_RUNS_DATABASE_PATH', 'JUHE_AI_CHAT_DATABASE_PATH',
+    'JUHE_AI_USAGE_SHARD_ROOT', 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT',
+    'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT', 'JUHE_AI_CHAT_ASSETS_ROOT',
+    'JUHE_AI_CODEX_CONTEXT_ROOT'
+  ]) {
+    assert.match(jobs, new RegExp(`${name}:`, 'u'), `standalone worker must receive ${name}`)
+  }
   assert.doesNotMatch(jobs, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:|JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, 'standalone jobs must not receive F3/F4 ownership')
 }
 

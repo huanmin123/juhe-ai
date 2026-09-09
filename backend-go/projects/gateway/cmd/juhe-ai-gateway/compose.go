@@ -90,7 +90,7 @@ import (
 //	/__aisys__/api/stats + /my-stats               -> statreads.Deps.Mount (X04)
 //	/__aisys__/api/usage-records + /my-*           -> statreads.Deps.Mount (X04)
 //	/__aisys__/api/authorization-options + /my-*   -> authz.Deps.MountAuthorizationOptions (X04)
-//	/__aisys__/api/proxies (CRUD/options; J3a test is jobs-owned) -> proxyprofiles.Mount (X04)
+//	/__aisys__/api/proxies (CRUD/options/test; J3a jobs cutover pending) -> proxyprofiles.Mount (X04)
 //	/__aisys__/api/table-monitor (3 GET + cleanup POST) -> tablemonitor.Deps.Mount
 //	  (the cleanup POST enqueues the Node-shaped job through the durable
 //	  record_maintenance_jobs channel; the jobs wave drains it)
