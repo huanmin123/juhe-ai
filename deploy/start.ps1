@@ -27,12 +27,16 @@ function Read-DotEnvValue {
   $line = Get-Content -LiteralPath $Path | Where-Object { $_ -match $pattern } | Select-Object -Last 1
   if (-not $line) { return $Fallback }
   $value = ($line -replace $pattern, '$1').Trim().Trim('"').Trim("'")
+  if ($value -match '^(.*?)\s+#') { $value = $Matches[1].TrimEnd() }
   if ($value) { return $value }
   return $Fallback
 }
 
 function Import-DotEnvEnvironment {
-  param([Parameter(Mandatory = $true)][string]$Path)
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [switch]$CapacityOnly
+  )
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
   foreach ($line in Get-Content -LiteralPath $Path) {
     $trimmed = $line.Trim()
@@ -40,9 +44,12 @@ function Import-DotEnvEnvironment {
     if ($trimmed.StartsWith('export ')) { $trimmed = $trimmed.Substring(7).Trim() }
     if ($trimmed -notmatch '^(JUHE_AI_[A-Za-z0-9_]+)=(.*)$') { continue }
     $name = $Matches[1]
+    if ($CapacityOnly -and $name -notmatch '^(JUHE_AI_CONCURRENCY_|JUHE_AI_ACCOUNT_|JUHE_AI_BACKGROUND_|JUHE_AI_GATEWAY_|JUHE_AI_DB_|JUHE_AI_CHAT_DB_SERVICE_|JUHE_AI_REDIS_STREAM_|JUHE_AI_USAGE_SPOOL_|JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT$|JUHE_AI_(GATEWAY|USAGE|LOG|STATS|OPS)_WORKER_REPLICAS$)') { continue }
     $value = $Matches[2].Trim()
     if ($value.Length -ge 2 -and (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
       $value = $value.Substring(1, $value.Length - 2)
+    } elseif ($value -match '^(.*?)\s+#') {
+      $value = $Matches[1].TrimEnd()
     }
     # Explicit process environment values keep precedence over backend/.env.
     if ($null -ne [Environment]::GetEnvironmentVariable($name, 'Process')) { continue }
@@ -260,7 +267,19 @@ if (-not (Test-Path -LiteralPath 'backend/.env')) {
   }
   Write-Host 'Configure all JUHE_AI_*_INSTANCE_ID values before production use.'
 }
-Import-DotEnvEnvironment -Path 'backend/.env'
+$baseEnvPath = Join-Path $appDir 'backend/.env'
+$overlayProcessValue = [Environment]::GetEnvironmentVariable('JUHE_AI_ENV_FILE', 'Process')
+$overlayName = if ($null -ne $overlayProcessValue) { $overlayProcessValue } else { Read-DotEnvValue -Path $baseEnvPath -Name 'JUHE_AI_ENV_FILE' -Fallback '' }
+if ($overlayName) {
+  $overlayPath = if ([System.IO.Path]::IsPathRooted($overlayName)) { $overlayName } else { Join-Path $appDir "backend/$overlayName" }
+  Import-DotEnvEnvironment -Path $overlayPath
+}
+Import-DotEnvEnvironment -Path (Join-Path $appDir 'backend/.env.capacity') -CapacityOnly
+$disableBaseProcessValue = [Environment]::GetEnvironmentVariable('JUHE_AI_DISABLE_BASE_ENV', 'Process')
+$disableBaseEnv = if ($null -ne $disableBaseProcessValue) { $disableBaseProcessValue } else { Read-DotEnvValue -Path $baseEnvPath -Name 'JUHE_AI_DISABLE_BASE_ENV' -Fallback '' }
+if ($disableBaseEnv.Trim().ToLowerInvariant() -ne 'true') {
+  Import-DotEnvEnvironment -Path $baseEnvPath
+}
 Ensure-DeploymentDefaults
 New-Item -ItemType Directory -Force 'backend/data' | Out-Null
 $frontendDistPath = if ($env:JUHE_AI_FRONTEND_DIST_PATH) { $env:JUHE_AI_FRONTEND_DIST_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_FRONTEND_DIST_PATH' -Fallback '' }

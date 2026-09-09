@@ -21,6 +21,10 @@ for (const source of [powershellSource, shellSource]) {
 }
 assert.match(powershellSource, /Start-Process -FilePath \$binaryPath/u, 'Windows release startup must launch Go directly')
 assert.match(shellSource, /nohup "\$binary"/u, 'Unix release startup must launch Go directly')
+for (const source of [powershellSource, shellSource]) {
+  assert.match(source, /JUHE_AI_ENV_FILE/u, 'release startup must honor the documented env overlay')
+  assert.match(source, /\.env\.capacity/u, 'release startup must honor the documented capacity env file')
+}
 
 assert.match(launcherSource, /gateway\|jobs/u, 'launcher must accept only declared Go projects')
 assertLauncherRejectsMissingProjectIdentity()

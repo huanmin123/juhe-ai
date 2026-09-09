@@ -19,15 +19,19 @@ go_jobs_log_file='backend/logs/juhe-ai-jobs.log'
 read_dotenv_value() {
   name="$1"
   fallback="${2:-}"
-  if [ ! -f backend/.env ]; then
+  path="${3:-backend/.env}"
+  if [ ! -f "$path" ]; then
     printf '%s' "$fallback"
     return
   fi
-  value="$(grep -E "^[[:space:]]*${name}=" backend/.env | tail -n 1 | cut -d= -f2- || true)"
+  value="$(grep -E "^[[:space:]]*${name}=" "$path" | tail -n 1 | cut -d= -f2- || true)"
   value="${value%\"}"
   value="${value#\"}"
   value="${value%\'}"
   value="${value#\'}"
+  case "$value" in
+    *' #'*) value="${value%% \#*}" ;;
+  esac
   if [ -n "$value" ]; then
     printf '%s' "$value"
   else
@@ -36,8 +40,11 @@ read_dotenv_value() {
 }
 
 load_dotenv_environment() {
-  [ -f backend/.env ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
+  load_dotenv_file() {
+    path="$1"
+    capacity_only="${2:-false}"
+    [ -f "$path" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
     line="${line#${line%%[![:space:]]*}}"
     case "$line" in
       ''|'#'*) continue ;;
@@ -54,14 +61,48 @@ load_dotenv_environment() {
     case "$name" in
       ''|*[!A-Za-z0-9_]*|[0-9]*) continue ;;
     esac
+    if [ "$capacity_only" = true ]; then
+      case "$name" in
+        JUHE_AI_CONCURRENCY_*|JUHE_AI_ACCOUNT_*|JUHE_AI_BACKGROUND_*|JUHE_AI_GATEWAY_*|JUHE_AI_DB_*|JUHE_AI_CHAT_DB_SERVICE_*|JUHE_AI_REDIS_STREAM_*|JUHE_AI_USAGE_SPOOL_*|JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT|JUHE_AI_GATEWAY_WORKER_REPLICAS|JUHE_AI_USAGE_WORKER_REPLICAS|JUHE_AI_LOG_WORKER_REPLICAS|JUHE_AI_STATS_WORKER_REPLICAS|JUHE_AI_OPS_WORKER_REPLICAS) ;;
+        *) continue ;;
+      esac
+    fi
     # Explicit process environment values keep precedence over backend/.env.
     if [ -n "${!name+x}" ]; then continue; fi
     value="${value%\"}"
     value="${value#\"}"
     value="${value%\'}"
     value="${value#\'}"
+    case "$value" in
+      *' #'*) value="${value%% \#*}" ;;
+    esac
     export "$name=$value"
-  done < backend/.env
+    done < "$path"
+  }
+
+  base_env='backend/.env'
+  capacity_env='backend/.env.capacity'
+  if [ -n "${JUHE_AI_ENV_FILE+x}" ]; then
+    overlay_name="$JUHE_AI_ENV_FILE"
+  else
+    overlay_name="$(read_dotenv_value JUHE_AI_ENV_FILE '' "$base_env")"
+  fi
+  if [ -n "$overlay_name" ]; then
+    case "$overlay_name" in
+      /*) overlay_path="$overlay_name" ;;
+      *) overlay_path="backend/$overlay_name" ;;
+    esac
+    load_dotenv_file "$overlay_path"
+  fi
+  load_dotenv_file "$capacity_env" true
+  if [ -n "${JUHE_AI_DISABLE_BASE_ENV+x}" ]; then
+    disable_base="$(printf '%s' "$JUHE_AI_DISABLE_BASE_ENV" | tr '[:upper:]' '[:lower:]')"
+  else
+    disable_base="$(printf '%s' "$(read_dotenv_value JUHE_AI_DISABLE_BASE_ENV '' "$base_env")" | tr '[:upper:]' '[:lower:]')"
+  fi
+  if [ "$disable_base" != true ]; then
+    load_dotenv_file "$base_env"
+  fi
 }
 
 set_dotenv_value() {
