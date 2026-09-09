@@ -102,6 +102,19 @@ func (h *testDB) seedSchema(t *testing.T) {
       created_at TEXT NOT NULL DEFAULT ''
     )`)
 	h.exec(t, `
+    CREATE TABLE account_model_mappings (
+      account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      source_model TEXT NOT NULL,
+      source_endpoint_family TEXT NOT NULL,
+      upstream_model TEXT NOT NULL,
+      upstream_endpoint_family TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (account_id, source_model, source_endpoint_family)
+    )`)
+	h.exec(t, `
     CREATE TABLE account_api_key_runtime_states (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
@@ -584,5 +597,39 @@ func TestLoadProbeViewFixedKey(t *testing.T) {
 	policyJSON, _ := json.Marshal(view.QuotaRecoveryPolicy)
 	if !strings.Contains(string(policyJSON), "windowHours") {
 		t.Fatalf("quota policy=%s", policyJSON)
+	}
+}
+
+// TestLoadProbeViewCarriesHybridMappings verifies the saved-account manual
+// test receives the active mapping rows from the effective credential source.
+// The accountprobe layer then selects the exact row for a manual model/mode.
+func TestLoadProbeViewCarriesHybridMappings(t *testing.T) {
+	h := openTestDB(t)
+	h.seedPoolAccount(t, "hybrid-1")
+	h.exec(t, `UPDATE accounts
+    SET provider_code='hybrid', provider_protocol_profile_id='profile_hybrid_openai_chat_v1',
+        protocol_code='openai', protocol_version='v1', health_check_model='client-model',
+        health_check_endpoint_mode='chat_json'
+    WHERE id='hybrid-1'`)
+	h.exec(t, `UPDATE groups SET provider_code='hybrid' WHERE id='group-1'`)
+	h.exec(t, `DELETE FROM account_supported_models WHERE account_id='hybrid-1'`)
+	h.exec(t, `INSERT INTO account_supported_models (account_id, model) VALUES ('hybrid-1', 'client-model')`)
+	h.exec(t, `INSERT INTO account_model_mappings (
+      account_id, provider_code, source_model, source_endpoint_family,
+      upstream_model, upstream_endpoint_family, enabled, updated_at
+    ) VALUES ('hybrid-1', 'hybrid', 'client-model', 'chat_completions', 'claude-target', 'messages', 1, ?)`, nowMillisText())
+
+	view, err := h.store.LoadProbeView(context.Background(), accountquality.ProbeRequest{
+		AccountID: "hybrid-1", GroupID: "group-1", SystemAccountID: "sys-1", Full: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view == nil || len(view.ModelMappings) != 1 {
+		t.Fatalf("hybrid view mappings=%+v", view)
+	}
+	mapping := view.ModelMappings[0]
+	if mapping.SourceModel != "client-model" || mapping.SourceEndpointFamily != "chat_completions" || mapping.UpstreamModel != "claude-target" || mapping.UpstreamEndpointFamily != "messages" {
+		t.Fatalf("hybrid mapping=%+v", mapping)
 	}
 }

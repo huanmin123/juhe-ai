@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 )
 
 // DirectInput is the typed result expected from the PostgreSQL read-only
@@ -235,53 +237,17 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 }
 
 func directProbeTarget(account DirectAccount) (string, string, error) {
-	mode := account.EndpointMode
-	model := account.HealthModel
-	if account.ProtocolProfileID != "profile_hybrid_openai_chat_v1" {
-		return mode, model, nil
+	mode, model, _, err := accountprobe.ResolveHybridProbeTarget(
+		account.ProtocolProfileID,
+		accountprobe.EndpointMode(account.EndpointMode),
+		account.HealthModel,
+		account.MappedUpstreamModel,
+		account.MappedUpstreamEndpointFamily,
+	)
+	if err != nil {
+		return "", "", fmt.Errorf("PG direct input 的 %w", err)
 	}
-	if strings.TrimSpace(account.MappedUpstreamModel) == "" || strings.TrimSpace(account.MappedUpstreamEndpointFamily) == "" {
-		return "", "", fmt.Errorf("PG direct input 的 hybrid 账户缺少冻结的模型映射")
-	}
-	stream := mode == "chat_sse" || mode == "responses_sse" || mode == "messages_sse" || mode == "generate_content_sse" || mode == "interactions_sse"
-	var targetMode string
-	switch account.MappedUpstreamEndpointFamily {
-	case "chat_completions":
-		if mode != "chat_json" && mode != "chat_sse" && mode != "responses_json" && mode != "responses_sse" && mode != "messages_json" && mode != "messages_sse" && mode != "generate_content_json" && mode != "generate_content_sse" {
-			return "", "", fmt.Errorf("PG direct input 的 hybrid 映射不支持目标 Chat Completions")
-		}
-		targetMode = "chat_json"
-		if stream {
-			targetMode = "chat_sse"
-		}
-	case "responses":
-		if mode != "chat_json" && mode != "chat_sse" && mode != "responses_json" && mode != "responses_sse" {
-			return "", "", fmt.Errorf("PG direct input 的 hybrid 映射不支持目标 Responses")
-		}
-		targetMode = "responses_json"
-		if stream {
-			targetMode = "responses_sse"
-		}
-	case "messages":
-		if mode != "chat_json" && mode != "chat_sse" && mode != "responses_json" && mode != "responses_sse" && mode != "messages_json" && mode != "messages_sse" && mode != "generate_content_json" && mode != "generate_content_sse" {
-			return "", "", fmt.Errorf("PG direct input 的 hybrid 映射不支持目标 Messages")
-		}
-		targetMode = "messages_json"
-		if stream {
-			targetMode = "messages_sse"
-		}
-	case "generate_content":
-		if mode != "chat_json" && mode != "chat_sse" && mode != "responses_json" && mode != "responses_sse" && mode != "messages_json" && mode != "messages_sse" && mode != "generate_content_json" && mode != "generate_content_sse" {
-			return "", "", fmt.Errorf("PG direct input 的 hybrid 映射不支持目标 GenerateContent")
-		}
-		targetMode = "generate_content_json"
-		if stream {
-			targetMode = "generate_content_sse"
-		}
-	default:
-		return "", "", fmt.Errorf("PG direct input 的 hybrid 映射协议不受 J1 支持")
-	}
-	return targetMode, account.MappedUpstreamModel, nil
+	return string(mode), model, nil
 }
 
 func validateDirectAccount(account DirectAccount, now time.Time) error {

@@ -287,6 +287,99 @@ func TestProbeGeminiGenerateContent(t *testing.T) {
 	}
 }
 
+// TestProbeHybridMappingUsesAnthropicRequest verifies that a hybrid account
+// does not keep its source OpenAI protocol once its active model mapping
+// selects Anthropic Messages. This is the same route resolver called by J1.
+func TestProbeHybridMappingUsesAnthropicRequest(t *testing.T) {
+	var seenPath, seenAPIKey, seenAuthorization, seenModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenAPIKey = r.Header.Get("x-api-key")
+		seenAuthorization = r.Header.Get("authorization")
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("body must be JSON: %v", err)
+		}
+		seenModel, _ = body["model"].(string)
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"juhe"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+
+	view := probeView(server.URL)
+	view.ProviderCode = "hybrid"
+	view.ProviderProtocolProfileID = "profile_hybrid_openai_chat_v1"
+	view.ProtocolCode = "openai"
+	view.HealthCheckModel = "client-model"
+	view.SupportedModels = []string{"client-model"}
+	view.HealthCheckEndpointMode = string(ModeChatJSON)
+	view.NormalizeEndpointModes = map[EndpointMode]bool{ModeChatJSON: true}
+	view.ModelMappings = []ModelMapping{{
+		SourceModel: "client-model", SourceEndpointFamily: "chat_completions",
+		UpstreamModel: "claude-target", UpstreamEndpointFamily: "messages",
+	}}
+	observation, err := newTestService(t, &fakeSource{view: view}).Probe(context.Background(), accountquality.ProbeRequest{
+		AccountID: "acc-1", GroupID: "group-1", SystemAccountID: "sys-1", Full: true,
+	})
+	if err != nil || !observation.Result.Success {
+		t.Fatalf("hybrid Anthropic observation=%+v err=%v", observation, err)
+	}
+	if seenPath != "/v1/messages" || seenModel != "claude-target" {
+		t.Fatalf("hybrid Anthropic request path=%q model=%q", seenPath, seenModel)
+	}
+	if seenAPIKey != "sk-test" || seenAuthorization != "" {
+		t.Fatalf("hybrid Anthropic auth x-api-key=%q authorization=%q", seenAPIKey, seenAuthorization)
+	}
+	if observation.Result.ProtocolCode != string(ProtocolAnthropic) {
+		t.Fatalf("hybrid Anthropic protocol=%q", observation.Result.ProtocolCode)
+	}
+}
+
+// TestProbeHybridMappingUsesGeminiRequest covers the other cross-protocol
+// branch: an OpenAI source model can be mapped to Gemini GenerateContent.
+func TestProbeHybridMappingUsesGeminiRequest(t *testing.T) {
+	var seenPath, seenAPIKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenAPIKey = r.Header.Get("x-goog-api-key")
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"juhe"}]},"finishReason":"STOP"}]}`))
+	}))
+	defer server.Close()
+
+	view := probeView(server.URL)
+	view.ProviderCode = "hybrid"
+	view.ProviderProtocolProfileID = "profile_hybrid_openai_chat_v1"
+	view.ProtocolCode = "openai"
+	view.HealthCheckModel = "client-model"
+	view.SupportedModels = []string{"client-model"}
+	view.HealthCheckEndpointMode = string(ModeChatJSON)
+	view.NormalizeEndpointModes = map[EndpointMode]bool{ModeChatJSON: true}
+	view.ModelMappings = []ModelMapping{{
+		SourceModel: "client-model", SourceEndpointFamily: "chat_completions",
+		UpstreamModel: "gemini-target", UpstreamEndpointFamily: "generate_content",
+	}}
+	observation, err := newTestService(t, &fakeSource{view: view}).Probe(context.Background(), accountquality.ProbeRequest{
+		AccountID: "acc-1", GroupID: "group-1", SystemAccountID: "sys-1", Full: true,
+	})
+	if err != nil || !observation.Result.Success {
+		t.Fatalf("hybrid Gemini observation=%+v err=%v", observation, err)
+	}
+	if seenPath != "/v1beta/models/gemini-target:generateContent" || seenAPIKey != "sk-test" {
+		t.Fatalf("hybrid Gemini path=%q x-goog-api-key=%q", seenPath, seenAPIKey)
+	}
+	if observation.Result.ProtocolCode != string(ProtocolGemini) {
+		t.Fatalf("hybrid Gemini protocol=%q", observation.Result.ProtocolCode)
+	}
+}
+
+func TestResolveHybridProbeTargetRejectsMissingMapping(t *testing.T) {
+	_, _, _, err := ResolveHybridProbeTarget("profile_hybrid_openai_chat_v1", ModeChatJSON, "client-model", "", "")
+	if err == nil || !strings.Contains(err.Error(), "缺少") {
+		t.Fatalf("missing hybrid mapping must fail closed, err=%v", err)
+	}
+}
+
 func TestBuildUpstreamURLGeminiOpenAIProfileDoesNotDuplicateV1(t *testing.T) {
 	view := probeView("https://generativelanguage.googleapis.com/v1beta/openai")
 	view.ProviderCode = "gemini"

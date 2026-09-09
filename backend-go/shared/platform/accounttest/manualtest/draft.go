@@ -14,22 +14,23 @@ import (
 // DraftSnapshot 对齐 Node AccountTestDraftSnapshot 的 worker 消费字段投影
 // （storage/account-test-tasks.repository.ts 的 v1 信封解密产物）。
 type DraftSnapshot struct {
-	ID                        string         `json:"id"`
-	StateTargetAccountID      string         `json:"stateTargetAccountId,omitempty"`
-	OwnerSystemAccountID      string         `json:"ownerSystemAccountId"`
-	GroupID                   string         `json:"groupId"`
-	GroupName                 string         `json:"groupName,omitempty"`
-	ProviderCode              string         `json:"providerCode"`
-	ProviderProtocolProfileID string         `json:"providerProtocolProfileId,omitempty"`
-	ProtocolCode              string         `json:"protocolCode,omitempty"`
-	ProtocolVersion           string         `json:"protocolVersion,omitempty"`
-	Name                      string         `json:"name"`
-	Type                      string         `json:"type"`
-	Credentials               map[string]any `json:"credentials"`
-	ClientCompatibility       string         `json:"clientCompatibility"`
-	SupportedModels           []string       `json:"supportedModels,omitempty"`
-	HealthCheckModel          string         `json:"healthCheckModel"`
-	HealthCheckEndpointMode   string         `json:"healthCheckEndpointMode"`
+	ID                        string                      `json:"id"`
+	StateTargetAccountID      string                      `json:"stateTargetAccountId,omitempty"`
+	OwnerSystemAccountID      string                      `json:"ownerSystemAccountId"`
+	GroupID                   string                      `json:"groupId"`
+	GroupName                 string                      `json:"groupName,omitempty"`
+	ProviderCode              string                      `json:"providerCode"`
+	ProviderProtocolProfileID string                      `json:"providerProtocolProfileId,omitempty"`
+	ProtocolCode              string                      `json:"protocolCode,omitempty"`
+	ProtocolVersion           string                      `json:"protocolVersion,omitempty"`
+	Name                      string                      `json:"name"`
+	Type                      string                      `json:"type"`
+	Credentials               map[string]any              `json:"credentials"`
+	ClientCompatibility       string                      `json:"clientCompatibility"`
+	SupportedModels           []string                    `json:"supportedModels,omitempty"`
+	HealthCheckModel          string                      `json:"healthCheckModel"`
+	HealthCheckEndpointMode   string                      `json:"healthCheckEndpointMode"`
+	ModelMappings             []accountprobe.ModelMapping `json:"modelMappings,omitempty"`
 }
 
 // DecryptDraft 等价 Node accountTestDraftSnapshot：v1 信封解密 + 规范化；
@@ -101,6 +102,7 @@ func normalizeDraftSnapshot(value any) *DraftSnapshot {
 		SupportedModels:           stringListValue(record["supportedModels"]),
 		HealthCheckModel:          text("healthCheckModel"),
 		HealthCheckEndpointMode:   text("healthCheckEndpointMode"),
+		ModelMappings:             modelMappingsValue(record["modelMappings"]),
 	}
 	if credentials, ok := record["credentials"].(map[string]any); ok {
 		draft.Credentials = credentials
@@ -115,6 +117,50 @@ func normalizeDraftSnapshot(value any) *DraftSnapshot {
 		return nil
 	}
 	return draft
+}
+
+// modelMappingsValue 解析网关保存到草稿信封中的 modelMappings。草稿快照
+// 可能来自旧版本（字段缺失），也可能包含显式 enabled=false 的行；后者
+// 必须和保存账户查询一样被忽略，不能让手动测试误用已停用映射。
+func modelMappingsValue(value any) []accountprobe.ModelMapping {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	mappings := make([]accountprobe.ModelMapping, 0, len(items))
+	for _, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if enabled, present := record["enabled"]; present {
+			if flag, isBool := enabled.(bool); isBool && !flag {
+				continue
+			}
+		}
+		text := func(key string) string {
+			value, ok := record[key].(string)
+			if !ok {
+				return ""
+			}
+			return strings.TrimSpace(value)
+		}
+		mapping := accountprobe.ModelMapping{
+			SourceModel:            text("sourceModel"),
+			SourceEndpointFamily:   text("sourceEndpointFamily"),
+			UpstreamModel:          text("upstreamModel"),
+			UpstreamEndpointFamily: text("upstreamEndpointFamily"),
+		}
+		if mapping.SourceModel == "" || mapping.SourceEndpointFamily == "" ||
+			mapping.UpstreamModel == "" || mapping.UpstreamEndpointFamily == "" {
+			continue
+		}
+		mappings = append(mappings, mapping)
+	}
+	if len(mappings) == 0 {
+		return nil
+	}
+	return mappings
 }
 
 func stringListValue(value any) []string {
@@ -258,6 +304,7 @@ func draftView(secret string, draft *DraftSnapshot, modelOverride, endpointModeO
 		HealthCheckModel:          healthModel,
 		HealthCheckEndpointMode:   healthMode,
 		SupportedModels:           draft.SupportedModels,
+		ModelMappings:             draft.ModelMappings,
 		BaseURL:                   draftBaseURL(draft.Credentials),
 		Credentials:               draft.Credentials,
 		APIKeyEntries:             entries,

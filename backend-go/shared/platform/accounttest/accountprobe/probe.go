@@ -39,6 +39,17 @@ type KeyEntry struct {
 	Index       int
 }
 
+// ModelMapping 是账户模型映射的只读投影。它与业务表
+// account_model_mappings 的 source_model/source_endpoint_family/
+// upstream_model/upstream_endpoint_family 语义一致，供手动测试复用后台
+// J1 的同一条模型路由。
+type ModelMapping struct {
+	SourceModel            string `json:"sourceModel"`
+	SourceEndpointFamily   string `json:"sourceEndpointFamily"`
+	UpstreamModel          string `json:"upstreamModel"`
+	UpstreamEndpointFamily string `json:"upstreamEndpointFamily"`
+}
+
 // View 是探针输入的最小视图（等价 Node find_account_for_test 的 AccountSummary
 // + find_openai_account_for_group 的 OpenAIAccountSecret 被消费字段）。
 type View struct {
@@ -56,6 +67,9 @@ type View struct {
 	HealthCheckModel        string
 	HealthCheckEndpointMode string
 	SupportedModels         []string
+	// ModelMappings 只在需要模型映射的账户（当前为 hybrid OpenAI 档案）
+	// 注入；未命中映射时必须显式失败，不得退回另一套协议请求。
+	ModelMappings []ModelMapping
 	// BaseURL 与凭据来自分组候选（授权实例取来源账户）。
 	BaseURL             string
 	Credentials         map[string]any
@@ -366,22 +380,17 @@ func protocolCodeForView(view *View) string {
 
 // executeAttempt 构造请求、发起真实上游调用并做协议分类。
 func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntry, timeout time.Duration, limited bool) (*accountquality.ProbeObservation, error) {
-	protocol := DiagnosticProtocol(protocolCodeForView(view))
-	defaultMode := EndpointMode(strings.TrimSpace(view.HealthCheckEndpointMode))
-	endpointMode, modeErr := resolveEndpointMode(view, defaultMode)
-	if modeErr != nil {
-		return nil, modeErr
+	routedView, endpointMode, model, routeErr := resolveProbeView(view)
+	if routeErr != nil {
+		return nil, routeErr
 	}
-	model, modelErr := resolveTestModel(view, "")
-	if modelErr != nil {
-		return nil, modelErr
-	}
+	protocol := DiagnosticProtocol(protocolCodeForView(routedView))
 	challenge := CreateOutputChallenge()
-	request, buildErr := buildTestRequest(view, endpointMode, model, challenge)
+	request, buildErr := buildTestRequest(routedView, endpointMode, model, challenge)
 	if buildErr != nil {
 		return nil, buildErr
 	}
-	upstreamURL, urlErr := buildUpstreamURL(view, request.path)
+	upstreamURL, urlErr := buildUpstreamURL(routedView, request.path)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -475,9 +484,9 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 
 	startedAt := s.now()
 	client := s.client
-	if strings.TrimSpace(view.ProxyURL) != "" {
+	if strings.TrimSpace(routedView.ProxyURL) != "" {
 		var err error
-		client, err = upstreamhttp.SharedClient(view.ProxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
+		client, err = upstreamhttp.SharedClient(routedView.ProxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
 		if err != nil {
 			return nil, err
 		}
@@ -489,7 +498,7 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 		firstTokenMS = firstByteAt.Sub(startedAt).Milliseconds()
 	}
 	if response != nil {
-		attempt := classifyResponse(view, protocol, endpointMode, response.bodyText, response.headers, response.status, firstTokenMS, durationMS, challenge, limited)
+		attempt := classifyResponse(routedView, protocol, endpointMode, response.bodyText, response.headers, response.status, firstTokenMS, durationMS, challenge, limited)
 		attempt.Evidence.HasRealUpstreamAttempt = true
 		attempt.Evidence.UpstreamCompleted = readErr == nil
 		attempt.Evidence.UpstreamStatus = response.status
@@ -912,6 +921,145 @@ func isAnthropicProtocol(view *View) bool {
 
 func isGeminiProtocol(view *View) bool {
 	return strings.EqualFold(strings.TrimSpace(view.ProtocolCode), "gemini")
+}
+
+// resolveProbeView 先按账户声明的请求形态选择 source route，再应用与 J1
+// 相同的 hybrid account_model_mappings 一跳映射。返回的视图是本次请求的
+// 有效上游协议视图，因此 URL、认证、请求体和响应分类不会各自重新推断。
+func resolveProbeView(view *View) (*View, EndpointMode, string, error) {
+	if view == nil {
+		return nil, "", "", errors.New("探针视图缺失")
+	}
+	defaultMode := EndpointMode(strings.TrimSpace(view.HealthCheckEndpointMode))
+	sourceMode, err := resolveEndpointMode(view, defaultMode)
+	if err != nil {
+		return nil, "", "", err
+	}
+	sourceModel, err := resolveTestModel(view, "")
+	if err != nil {
+		return nil, "", "", err
+	}
+	routedMode, routedModel, routedProtocol, err := resolveHybridRoute(view, sourceMode, sourceModel)
+	if err != nil {
+		return nil, "", "", err
+	}
+	routed := *view
+	// 非 hybrid 账户的 protocol_code 是已验证的账户契约，不能仅按某个
+	// endpoint mode 重写；只有 hybrid 映射明确切换了真实上游协议时才改变。
+	if view.ProviderProtocolProfileID == "profile_hybrid_openai_chat_v1" {
+		routed.ProtocolCode = string(routedProtocol)
+	}
+	routed.HealthCheckEndpointMode = string(routedMode)
+	routed.HealthCheckModel = routedModel
+	return &routed, routedMode, routedModel, nil
+}
+
+// resolveHybridRoute mirrors jobs/internal/accounthealth.directProbeTarget:
+// only profile_hybrid_openai_chat_v1 uses a model mapping to select the real
+// upstream protocol. Other profiles already encode a fixed protocol route.
+func resolveHybridRoute(view *View, sourceMode EndpointMode, sourceModel string) (EndpointMode, string, DiagnosticProtocol, error) {
+	sourceFamily := endpointFamilyForProbeMode(sourceMode)
+	var mapping *ModelMapping
+	for index := range view.ModelMappings {
+		candidate := &view.ModelMappings[index]
+		if candidate.SourceModel == sourceModel && candidate.SourceEndpointFamily == sourceFamily &&
+			(candidate.UpstreamModel != candidate.SourceModel || candidate.UpstreamEndpointFamily != candidate.SourceEndpointFamily) {
+			mapping = candidate
+			break
+		}
+	}
+	mappedModel, mappedFamily := "", ""
+	if mapping != nil {
+		mappedModel = mapping.UpstreamModel
+		mappedFamily = mapping.UpstreamEndpointFamily
+	}
+	return ResolveHybridProbeTarget(view.ProviderProtocolProfileID, sourceMode, sourceModel, mappedModel, mappedFamily)
+}
+
+// ResolveHybridProbeTarget is the shared J1/manual-test model mapping
+// decision. profile_hybrid_openai_chat_v1 has no safe unmapped fallback: the
+// source protocol may differ from the actual upstream protocol, so a missing
+// non-identity mapping is a configuration error rather than an OpenAI request.
+func ResolveHybridProbeTarget(profile string, sourceMode EndpointMode, sourceModel, mappedModel, mappedFamily string) (EndpointMode, string, DiagnosticProtocol, error) {
+	protocol := protocolCodeForMode(sourceMode)
+	if profile != "profile_hybrid_openai_chat_v1" {
+		return sourceMode, sourceModel, protocol, nil
+	}
+	if strings.TrimSpace(mappedModel) == "" || strings.TrimSpace(mappedFamily) == "" {
+		return "", "", "", fmt.Errorf("混合供应商账户缺少 %s/%s 的启用模型映射", sourceModel, endpointFamilyForProbeMode(sourceMode))
+	}
+	if !hybridMappingSourceSupported(sourceMode, mappedFamily) {
+		return "", "", "", fmt.Errorf("混合供应商账户模型映射不支持 %s 到 %s 的探针转换", endpointFamilyForProbeMode(sourceMode), strings.TrimSpace(mappedFamily))
+	}
+	routedMode, ok := endpointModeForUpstreamFamily(mappedFamily, sourceMode.streaming())
+	if !ok {
+		return "", "", "", fmt.Errorf("混合供应商账户模型映射的上游协议不受探针支持：%s", mappedFamily)
+	}
+	routedProtocol := protocolCodeForMode(routedMode)
+	return routedMode, strings.TrimSpace(mappedModel), routedProtocol, nil
+}
+
+func hybridMappingSourceSupported(source EndpointMode, targetFamily string) bool {
+	sourceOpenAI := source == ModeChatJSON || source == ModeChatSSE || source == ModeResponsesJSON || source == ModeResponsesSSE
+	if targetFamily == "responses" {
+		return sourceOpenAI
+	}
+	return source != ModeInteractionsJSON && source != ModeInteractionsSSE
+}
+
+func endpointFamilyForProbeMode(mode EndpointMode) string {
+	switch mode {
+	case ModeChatJSON, ModeChatSSE:
+		return "chat_completions"
+	case ModeResponsesJSON, ModeResponsesSSE:
+		return "responses"
+	case ModeMessagesJSON, ModeMessagesSSE:
+		return "messages"
+	case ModeGenerateContentJSON:
+		return "generate_content"
+	case ModeGenerateContentSSE:
+		return "stream_generate_content"
+	default:
+		return "interactions"
+	}
+}
+
+func endpointModeForUpstreamFamily(family string, streaming bool) (EndpointMode, bool) {
+	switch strings.TrimSpace(family) {
+	case "chat_completions":
+		if streaming {
+			return ModeChatSSE, true
+		}
+		return ModeChatJSON, true
+	case "responses":
+		if streaming {
+			return ModeResponsesSSE, true
+		}
+		return ModeResponsesJSON, true
+	case "messages":
+		if streaming {
+			return ModeMessagesSSE, true
+		}
+		return ModeMessagesJSON, true
+	case "generate_content":
+		if streaming {
+			return ModeGenerateContentSSE, true
+		}
+		return ModeGenerateContentJSON, true
+	default:
+		return "", false
+	}
+}
+
+func protocolCodeForMode(mode EndpointMode) DiagnosticProtocol {
+	switch {
+	case mode.anthropic():
+		return ProtocolAnthropic
+	case mode.gemini():
+		return ProtocolGemini
+	default:
+		return ProtocolOpenAI
+	}
 }
 
 // resolveTestModel 等价 resolveAccountTestModelAsync（无显式模型分支）。

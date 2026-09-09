@@ -64,3 +64,26 @@ func TestNormalizeDraftSnapshotRejectsInvalidEnums(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeDraftSnapshotCarriesOnlyEnabledModelMappings(t *testing.T) {
+	record := validDraftRecord()
+	record["modelMappings"] = []any{
+		map[string]any{
+			"sourceModel": "client-model", "sourceEndpointFamily": "chat_completions",
+			"upstreamModel": "claude-target", "upstreamEndpointFamily": "messages", "enabled": true,
+		},
+		map[string]any{
+			"sourceModel": "disabled-model", "sourceEndpointFamily": "chat_completions",
+			"upstreamModel": "ignored-target", "upstreamEndpointFamily": "messages", "enabled": false,
+		},
+		map[string]any{"sourceModel": "incomplete"},
+	}
+	draft := normalizeDraftSnapshot(record)
+	if draft == nil || len(draft.ModelMappings) != 1 {
+		t.Fatalf("model mappings=%+v", draft)
+	}
+	mapping := draft.ModelMappings[0]
+	if mapping.SourceModel != "client-model" || mapping.UpstreamModel != "claude-target" || mapping.UpstreamEndpointFamily != "messages" {
+		t.Fatalf("enabled mapping=%+v", mapping)
+	}
+}

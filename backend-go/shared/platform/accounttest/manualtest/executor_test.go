@@ -196,6 +196,58 @@ func TestExecutorDraftSuccessWritesEnvelope(t *testing.T) {
 	}
 }
 
+// 草稿账户也会携带 modelMappings。它不能在手动测试时退回存储协议（OpenAI），
+// 否则和后台 J1 对同一份草稿的实际供应商选择不一致。
+func TestExecutorDraftHybridMappingUsesMappedProtocol(t *testing.T) {
+	var seenPath, seenModel, seenAPIKey, seenAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenAPIKey = r.Header.Get("x-api-key")
+		seenAuthorization = r.Header.Get("authorization")
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("body must be JSON: %v", err)
+		}
+		seenModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"juhe"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+
+	draft := DraftSnapshot{
+		ID: "acct-draft-hybrid", OwnerSystemAccountID: "sys-1", GroupID: "grp-1",
+		ProviderCode: "hybrid", ProviderProtocolProfileID: "profile_hybrid_openai_chat_v1",
+		ProtocolCode: "openai", ProtocolVersion: "v1", Name: "Hybrid 草稿", Type: "api_key",
+		Credentials: map[string]any{
+			"api_key": "sk-test-123456", "base_url": server.URL,
+			"supported_endpoint_modes": []any{"chat_json"},
+		},
+		ClientCompatibility: "openai_standard", SupportedModels: []string{"client-model"},
+		HealthCheckModel: "client-model", HealthCheckEndpointMode: "chat_json",
+		ModelMappings: []accountprobe.ModelMapping{{
+			SourceModel: "client-model", SourceEndpointFamily: "chat_completions",
+			UpstreamModel: "claude-target", UpstreamEndpointFamily: "messages",
+		}},
+	}
+	envelope := encryptDraft(t, &draft)
+	decoded, decodeErr := DecryptDraft(testSecret, envelope)
+	if decodeErr != nil || decoded == nil || len(decoded.ModelMappings) != 1 {
+		t.Fatalf("hybrid draft mappings decode=%+v err=%v", decoded, decodeErr)
+	}
+	task := manualTestTask(envelope)
+	task.Model = "client-model"
+	result, err := newTestExecutor(t, nil).Execute(context.Background(), task, func(string) {})
+	if err != nil || !result.Success {
+		t.Fatalf("hybrid draft result=%+v err=%v", result, err)
+	}
+	if seenPath != "/v1/messages" || seenModel != "claude-target" {
+		t.Fatalf("hybrid draft request path=%q model=%q", seenPath, seenModel)
+	}
+	if seenAPIKey != "sk-test-123456" || seenAuthorization != "" {
+		t.Fatalf("hybrid draft auth x-api-key=%q authorization=%q", seenAPIKey, seenAuthorization)
+	}
+}
+
 // 诊断失败路径：上游 401 → fail 结果仍带信封（Node complete(failed) 行形状）。
 func TestExecutorDraftUpstreamFailureCarriesEnvelope(t *testing.T) {
 	server := chatUpstream(t, http.StatusUnauthorized, `{"error":{"message":"Incorrect API key","code":"invalid_api_key"}}`, nil, nil)

@@ -535,6 +535,40 @@ func TestDirectInputRejectsProtocolMetadataMismatch(t *testing.T) {
 	}
 }
 
+// TestDirectProbeTargetSharesHybridRouteWithManualDiagnostics protects the
+// common resolver used by J1 and accountprobe. A change in endpoint family,
+// streaming intent, or model must therefore affect both callers together.
+func TestDirectProbeTargetSharesHybridRouteWithManualDiagnostics(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceMode string
+		family     string
+		wantMode   string
+	}{
+		{name: "chat to messages", sourceMode: "chat_json", family: "messages", wantMode: "messages_json"},
+		{name: "responses stream to chat", sourceMode: "responses_sse", family: "chat_completions", wantMode: "chat_sse"},
+		{name: "messages to gemini", sourceMode: "messages_json", family: "generate_content", wantMode: "generate_content_json"},
+		{name: "gemini stream to messages", sourceMode: "generate_content_sse", family: "messages", wantMode: "messages_sse"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mode, model, err := directProbeTarget(DirectAccount{
+				ProtocolProfileID:            "profile_hybrid_openai_chat_v1",
+				EndpointMode:                 test.sourceMode,
+				HealthModel:                  "client-model",
+				MappedUpstreamModel:          "upstream-model",
+				MappedUpstreamEndpointFamily: test.family,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode != test.wantMode || model != "upstream-model" {
+				t.Fatalf("route mode=%q model=%q", mode, model)
+			}
+		})
+	}
+}
+
 func TestDirectInputUsesGrokCLIProxyForOAuthWithoutBaseURL(t *testing.T) {
 	baseURL, err := directBaseURL(map[string]json.RawMessage{}, DirectAccount{ProtocolProfileID: "profile_xai_openai_v1", Type: "oauth"}, "openai")
 	if err != nil {

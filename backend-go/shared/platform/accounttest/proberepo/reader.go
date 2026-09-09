@@ -453,6 +453,9 @@ type CandidateAccount struct {
 	// SelectedAPIKey 为默认凭据（oauth 取 access_token，api_key 取首把 Key）。
 	SelectedAPIKey string
 	APIKeyEntries  []KeyEntry
+	// ModelMappings 仅用于 hybrid OpenAI 档案。完整载入后由 accountprobe
+	// 按本次手动测试选择的 model/mode 决定一跳上游路由。
+	ModelMappings []accountprobe.ModelMapping
 }
 
 // FindAccountForGroup 实现 accountquality.AccountReader（ignoreAvailability=true
@@ -637,10 +640,51 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		SelectedAPIKey:              selectedKey,
 		APIKeyEntries:               entries,
 	}
+	if candidate.ProviderProtocolProfileID == "profile_hybrid_openai_chat_v1" {
+		mappingAccountID := candidate.CredentialSourceAccountID
+		if mappingAccountID == "" {
+			mappingAccountID = candidate.ID
+		}
+		mappings, err := s.loadHybridProbeMappings(ctx, mappingAccountID, candidate.ProviderCode)
+		if err != nil {
+			return nil, err
+		}
+		candidate.ModelMappings = mappings
+	}
 	_ = accountAccessType
 	_ = resourceStatus
 	_ = configRevision
 	return candidate, nil
+}
+
+// loadHybridProbeMappings reads only active rows from the same effective
+// credential source as J1's direct_input reader. The caller performs the
+// source model/family lookup after a manual task has applied its explicit
+// model/mode override; loading the complete enabled set prevents the manual
+// path from silently reusing the account default mapping.
+func (s *Store) loadHybridProbeMappings(ctx context.Context, accountID, providerCode string) ([]accountprobe.ModelMapping, error) {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+    SELECT source_model, source_endpoint_family, upstream_model, upstream_endpoint_family
+    FROM %s
+    WHERE account_id = ? AND provider_code = ? AND enabled = 1
+    ORDER BY updated_at DESC, source_model ASC, source_endpoint_family ASC
+  `, s.table("account_model_mappings")), accountID, providerCode)
+	if err != nil {
+		return nil, fmt.Errorf("读取 hybrid 账户模型映射失败: %w", err)
+	}
+	defer rows.Close()
+	mappings := make([]accountprobe.ModelMapping, 0)
+	for rows.Next() {
+		var mapping accountprobe.ModelMapping
+		if err := rows.Scan(&mapping.SourceModel, &mapping.SourceEndpointFamily, &mapping.UpstreamModel, &mapping.UpstreamEndpointFamily); err != nil {
+			return nil, fmt.Errorf("解码 hybrid 账户模型映射失败: %w", err)
+		}
+		mappings = append(mappings, mapping)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历 hybrid 账户模型映射失败: %w", err)
+	}
+	return mappings, nil
 }
 
 func mapField(credentials map[string]any, key string) map[string]any {
@@ -841,6 +885,7 @@ func (s *Store) LoadProbeView(ctx context.Context, req accountquality.ProbeReque
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		SupportedModels:           account.SupportedModels,
+		ModelMappings:             candidate.ModelMappings,
 		BaseURL:                   textCredential(candidate.Credentials, "base_url"),
 		Credentials:               candidate.Credentials,
 		SelectedAPIKey:            candidate.SelectedAPIKey,
@@ -879,6 +924,7 @@ func AssembleProbeView(account *AccountForTestView, candidate *CandidateAccount)
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		SupportedModels:           account.SupportedModels,
+		ModelMappings:             candidate.ModelMappings,
 		BaseURL:                   textCredential(candidate.Credentials, "base_url"),
 		Credentials:               candidate.Credentials,
 		SelectedAPIKey:            candidate.SelectedAPIKey,
