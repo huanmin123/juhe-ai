@@ -522,7 +522,7 @@ def replaceDigest(file, imageName, digest) {
       my \$after_matches = () = \$text =~ /\$expected_pattern/g;
       die "镜像 \$name digest 写入后回读命中数为 \$after_matches，期望 1\\n" unless \$after_matches == 1;
       \$text =~ s/\\n/\$newline/g if \$newline eq "\\r\\n";
-      my \$temporary = "\$file.tmp.$$";
+      my \$temporary = "\$file.tmp.\$\$";
       open my \$out, ">", \$temporary or die "无法写入 kustomization 临时文件: \$!";
       binmode \$out;
       print \$out \$text or die "无法写入 kustomization 临时文件: \$!";
