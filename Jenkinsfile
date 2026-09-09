@@ -571,8 +571,9 @@ def configureJ3aManagementRelease(overlay, enabled) {
       management_enabled_count=\$(awk 'index(\$0, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=") == 1 { count++ } END { print count + 0 }' "\$runtime_config")
       [ "\$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
       [ "\$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
-      value_count=\$(awk -v expected='JUHE_AI_PROXY_LATENCY_ENABLED=${enabled}' '{ line = \$0; sub(/[[:space:]]*$/, "", line); if (line == expected) count++ } END { print count + 0 }' "\$runtime_config")
-      management_value_count=\$(awk -v expected='JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=${enabled}' '{ line = \$0; sub(/[[:space:]]*$/, "", line); if (line == expected) count++ } END { print count + 0 }' "\$runtime_config")
+      expected_enabled='${enabled}'
+      value_count=\$(awk -v expected="\$expected_enabled" '{ line = \$0; sub(/[[:space:]]*$/, "", line); if (line == "JUHE_AI_PROXY_LATENCY_ENABLED=" expected) count++ } END { print count + 0 }' "\$runtime_config")
+      management_value_count=\$(awk -v expected="\$expected_enabled" '{ line = \$0; sub(/[[:space:]]*$/, "", line); if (line == "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=" expected) count++ } END { print count + 0 }' "\$runtime_config")
       [ "\$value_count" -eq 1 ] || { echo 'J3a enabled key value verification failed' >&2; exit 1; }
       [ "\$management_value_count" -eq 1 ] || { echo 'J3a management enabled key value verification failed' >&2; exit 1; }
     elif [ '${enabled}' = 'true' ]; then
