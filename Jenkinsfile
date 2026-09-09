@@ -496,55 +496,31 @@ def replaceDigest(file, imageName, digest) {
     set -eu
     echo "检查 kustomization 镜像块: ${imageName}"
     grep -n -A2 -B1 -- "name: ${imageName}" '${file}' || true
-    perl -0e '
-      my (\$file, \$name, \$digest) = @ARGV;
-      open my \$in, "<", \$file or die "无法读取 kustomization: \$!";
-      binmode \$in;
-      local \$/; my \$text = <\$in>; close \$in or die "无法关闭 kustomization 输入: \$!";
-      # Parse lines without embedding Groovy escape sequences; preserve the
-      # source file's dominant line ending when writing it back.
-      my \$newline = (index(\$text, chr(13) . chr(10)) >= 0) ? chr(13) . chr(10) : chr(10);
-      my @lines = split(chr(10), \$text, -1);
-      my @matches;
-      for my \$index (0 .. \$#lines - 2) {
-        my \$name_line = \$lines[\$index];
-        \$name_line =~ s/^[[:space:]]*-[[:space:]]+name:[[:space:]]*//;
-        \$name_line =~ s/[[:space:]]*\$//;
-        if (\$name_line eq \$name &&
-            \$lines[\$index + 1] =~ /^[[:space:]]+newName:[[:space:]]+/ &&
-            \$lines[\$index + 2] =~ /^[[:space:]]+digest:[[:space:]]*sha256:[a-f0-9]{64}[[:space:]]*\$/) {
-          push @matches, \$index;
+    temporary="${file}.tmp.$$"
+    awk -v target="${imageName}" -v replacement="${digest}" '
+      BEGIN { hits = 0; pending = 0 }
+      {
+        name_line = \$0
+        sub(/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/, "", name_line)
+        sub(/[[:space:]]*$/, "", name_line)
+        if (name_line == target && \$0 ~ /^[[:space:]]*-[[:space:]]+name:/) {
+          hits++
+          pending++
+        } else if (pending && $0 ~ /^[[:space:]]+digest:[[:space:]]*sha256:[a-f0-9]{64}[[:space:]]*$/) {
+          sub(/sha256:[a-f0-9]{64}/, replacement)
+          pending = 0
         }
+        print
       }
-      my \$matches = scalar @matches;
-      die "镜像 \$name digest 替换命中数为 \$matches，期望 1\\n" unless \$matches == 1;
-      \$lines[\$matches[0] + 2] =~ s{sha256:[a-f0-9]{64}}{\$digest};
-      \$text = join \$newline, @lines;
-      my \$after_matches = 0;
-      for my \$index (0 .. \$#lines - 2) {
-        my \$name_line = \$lines[\$index];
-        \$name_line =~ s/^[[:space:]]*-[[:space:]]+name:[[:space:]]*//;
-        \$name_line =~ s/[[:space:]]*\$//;
-        my \$digest_line = \$lines[\$index + 2];
-        \$digest_line =~ s/^[[:space:]]*digest:[[:space:]]*//;
-        \$digest_line =~ s/[[:space:]]*\$//;
-        if (\$name_line eq \$name &&
-            \$lines[\$index + 1] =~ /^[[:space:]]+newName:[[:space:]]+/ &&
-            \$digest_line eq \$digest) {
-          \$after_matches++;
-        }
+      END {
+        if (hits != 1 || pending != 0) exit 42
       }
-      die "镜像 \$name digest 写入后回读命中数为 \$after_matches，期望 1\\n" unless \$after_matches == 1;
-      my \$temporary = "\$file.tmp.\$\$";
-      open my \$out, ">", \$temporary or die "无法写入 kustomization 临时文件: \$!";
-      binmode \$out;
-      print \$out \$text or die "无法写入 kustomization 临时文件: \$!";
-      close \$out or die "无法关闭 kustomization 临时文件: \$!";
-      rename \$temporary, \$file or do {
-        unlink \$temporary;
-        die "无法原子替换 kustomization: \$!";
-      };
-    ' '${file}' '${imageName}' '${digest}'
+    ' '${file}' > "${temporary}" || {
+      rm -f "${temporary}"
+      echo "镜像 ${imageName} digest 替换命中数无效，期望唯一完整镜像块" >&2
+      exit 255
+    }
+    mv "${temporary}" '${file}'
   """
 }
 
