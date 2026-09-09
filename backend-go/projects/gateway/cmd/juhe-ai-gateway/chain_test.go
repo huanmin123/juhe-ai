@@ -283,38 +283,10 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 // preflight reads.
 func seedSettingsDefaults(t *testing.T, db *sql.DB) {
 	t.Helper()
-	defaults := map[string]any{
-		"gatewayTextRawBodyLimitMegabytes":           16,
-		"accountCircuitConfirmationFailuresRequired": 2,
-		"gatewayUserRequestLimitPerMinute":           0,
-		"gatewayUserRequestLimitPerDay":              0,
-		"gatewayUserRequestLimitPerWeek":             0,
-		"gatewayUserRequestLimitPerMonth":            0,
-		"usageStatsTimezone":                         "UTC",
-		"defaultTemporaryUnschedulableMinutes":       2,
-		"temporaryUnschedulableRetryIntervalSeconds": 3,
-		"temporaryUnschedulableRetryAttempts":        2,
-		"textFirstResponseTimeoutSeconds":            120,
-		"textStreamIdleTimeoutSeconds":               30,
-		"textUncommittedAttemptMaxLifetimeSeconds":   1800,
-		"imageFirstResponseTimeoutSeconds":           600,
-		"imageStreamIdleTimeoutSeconds":              120,
-		"imageUncommittedAttemptMaxLifetimeSeconds":  3600,
-		"imageRequestWallTimeoutSeconds":             3600,
-		"noAvailableAccountWaitTimeoutSeconds":       270,
-		"streamFailureThresholdCount":                3,
-		"streamFailureThresholdWindowMinutes":        5,
-	}
-	for key, value := range defaults {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			t.Fatalf("marshal %s: %v", key, err)
-		}
-		if _, err := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, '2026-09-04T00:00:00.000Z')`,
-			key, string(encoded)); err != nil {
-			t.Fatalf("seed setting %s: %v", key, err)
-		}
-	}
+	// Reuse the canonical composition seed so this fixture cannot silently
+	// drift when a new runtime system setting becomes part of the request
+	// pipeline. The chain database already has the compatible schema.
+	seedSystemSettings(t, db)
 }
 
 // ---------------------------------------------------------------------------
