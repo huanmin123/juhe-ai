@@ -18,7 +18,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
 )
 
-const archivedDBServiceSourceRoot = "migration-backup/node/final-archive/backend/src/modules/db-service"
+// db-service 契约源在二次伪迁移第一轮（63793f367）移入 migration-backup-1
+// 墓地；快照保留瘦身后的其余文件。
+const archivedDBServiceSourceRoot = "migration-backup-1/node/final-archive/backend/src/modules/db-service"
 
 func main() {
 	version := flag.Bool("version", false, "print the maintenance project contract version")

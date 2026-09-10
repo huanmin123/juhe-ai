@@ -103,6 +103,16 @@ var modelChecksGatewayHandlerNeedles = []string{
 
 var routeStatuses = map[string]struct{}{"implemented": {}, "implemented-archive-pending": {}, "partial": {}, "missing": {}, "excluded": {}}
 
+// isArchivedNodeSourcePath recognizes both archive roots: the trimmed
+// migration-backup snapshot and the migration-backup-1 graveyard the first
+// pseudo-migration wave moved the landed/eliminated sources into
+// (63793f367). Paths under either root are historical evidence, never a live
+// Node mount.
+func isArchivedNodeSourcePath(slash string) bool {
+	return strings.HasPrefix(slash, "migration-backup/node/") ||
+		strings.HasPrefix(slash, "migration-backup-1/node/")
+}
+
 // VerifyGatewayRouteOwnerManifest validates source coverage and ownership
 // metadata. A structurally valid manifest still exits as pending when any
 // route family is partial/missing; callers must treat that as a closed gate.
@@ -128,7 +138,7 @@ func VerifyGatewayRouteOwnerManifest(manifestPath, repositoryRoot string) (Gatew
 	// An app source inside final-archive is historical evidence, not a live
 	// Node mount. Its app.use calls must still be parsed to prove the frozen
 	// route inventory, but they cannot keep an owner gate open after archive.
-	sourceAppArchived := strings.HasPrefix(filepath.ToSlash(manifest.SourceApp), "migration-backup/node/")
+	sourceAppArchived := isArchivedNodeSourcePath(filepath.ToSlash(manifest.SourceApp))
 	report := GatewayRouteOwnerReport{ManifestVersion: manifest.ManifestVersion, Families: len(manifest.Families), StatusCoverage: map[string]int{}}
 	seenIDs := map[string]struct{}{}
 	seenFiles := map[string]struct{}{}
@@ -180,7 +190,7 @@ func VerifyGatewayRouteOwnerManifest(manifestPath, repositoryRoot string) (Gatew
 			return GatewayRouteOwnerReport{}, fmt.Errorf("read route family %q source: %w", family.ID, err)
 		}
 		mounted := regexp.MustCompile(`(?m)^\s*app\.use\([^\n]*\b` + regexp.QuoteMeta(family.NodeRouterSymbol) + `\b`).Match(appSource)
-		archivedSource := strings.HasPrefix(filepath.ToSlash(family.NodeRouterFile), "migration-backup/node/")
+		archivedSource := isArchivedNodeSourcePath(filepath.ToSlash(family.NodeRouterFile))
 		if family.Status == "implemented-archive-pending" {
 			// The slice is Go-owned: the Node mount MUST be gone, while the
 			// physical file move is deferred to the P8 final archive. Once the
@@ -324,7 +334,7 @@ func verifyModelChecksRouteOwner(family GatewayRouteFamily, source, appSource []
 	const selfMount = "app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)"
 	const adminMount = "app.use(`${systemApiPrefix}/model-checks`, requireAdmin, modelChecksRouter)"
 	selfCount, adminCount := strings.Count(string(appSource), selfMount), strings.Count(string(appSource), adminMount)
-	archivedSource := strings.HasPrefix(filepath.ToSlash(family.NodeRouterFile), "migration-backup/node/")
+	archivedSource := isArchivedNodeSourcePath(filepath.ToSlash(family.NodeRouterFile))
 	if selfCount != 1 || adminCount != 1 {
 		// During the staged handoff the Node mounts are intentionally removed;
 		// the Gateway baseline below remains the source of truth until the

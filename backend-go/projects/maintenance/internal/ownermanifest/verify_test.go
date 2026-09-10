@@ -9,14 +9,10 @@ import (
 
 func TestVerifyRepositoryBusinessOwnerManifest(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "..")
-	// Node backend was physically archived (X02, 2026-09-04); the db-service
-	// contract sources now live only in the final-archive browsable copy.
-	// 归档裁剪后 db-service 目录整体缺席：校验前提不存在时跳过（与
-	// 9f55399a3 的 fail-closed 边界一致）。
-	archive := filepath.Join(root, "migration-backup", "node", "final-archive", "backend", "src", "modules", "db-service")
-	if _, err := os.Stat(filepath.Join(archive, "db-service-types.ts")); err != nil {
-		t.Skip("Node archive db-service contract sources absent (trimmed archive)")
-	}
+	// Node backend was physically archived (X02，2026-09-04)；db-service 契约
+	// 源在二次伪迁移第一轮（63793f367）移入 migration-backup-1 墓地（git 跟踪，
+	// 自带 SHA256SUMS）。墓地缺席属于归档损坏，直接失败（fail-closed）。
+	archive := filepath.Join(root, "migration-backup-1", "node", "final-archive", "backend", "src", "modules", "db-service")
 	report, err := Verify(
 		filepath.Join(root, "docs", "migration", "BusinessSQLite-owner-manifest.json"),
 		filepath.Join(archive, "db-service-types.ts"),

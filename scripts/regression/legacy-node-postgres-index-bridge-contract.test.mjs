@@ -8,10 +8,11 @@ const operationsRoot = resolve(root, 'docs/deploy/macos/operations')
 const catalogPath = resolve(operationsRoot, 'legacy-node-postgres-index-bridge.catalog.json')
 const scriptPath = resolve(operationsRoot, 'legacy-node-postgres-index-bridge.mjs')
 const guidePath = resolve(operationsRoot, '遗留NodePostgreSQL索引桥接说明.md')
-// Node backend 已物理归档（X02，2026-09-04）：schema 对照源改从
-// final-archive 全量归档读取，内容与归档时 HEAD d8bfbc2a 一致。
-const businessSchemaPath = resolve(root, 'migration-backup/node/final-archive/backend/src/storage/schema/business-schema.ts')
-const datasetSchemaPath = resolve(root, 'migration-backup/node/final-archive/backend/src/storage/schema/dataset-schema.ts')
+// Node backend 已物理归档（X02，2026-09-04）：schema 对照源从归档体系读取。
+// 二次伪迁移第一轮（63793f367）把这批文件从 migration-backup 的瘦身快照移入
+// migration-backup-1 墓地（自有 SHA256SUMS），内容与归档时 HEAD d8bfbc2a 一致。
+const businessSchemaPath = resolve(root, 'migration-backup-1/node/final-archive/backend/src/storage/schema/business-schema.ts')
+const datasetSchemaPath = resolve(root, 'migration-backup-1/node/final-archive/backend/src/storage/schema/dataset-schema.ts')
 
 const [catalogRaw, script, guide, operationsReadme, businessSchema, datasetSchema, packageJson, releasePowerShell, releaseShell] = await Promise.all([
   readFile(catalogPath, 'utf8'),
