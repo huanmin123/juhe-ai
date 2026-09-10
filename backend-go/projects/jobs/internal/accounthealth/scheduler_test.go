@@ -680,7 +680,7 @@ func TestCooldownRetestUsesInputFenceWhenCurrentStateFenceChanged(t *testing.T) 
 	}
 }
 
-func TestNextDueUsesInputCooldownWhenCurrentStateFenceChanged(t *testing.T) {
+func TestNextDueUsesFreshReconciliationEpochWhenCurrentStateFenceChanged(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")
 	cooldownUntil := now.Add(-time.Second)
@@ -689,8 +689,11 @@ func TestNextDueUsesInputCooldownWhenCurrentStateFenceChanged(t *testing.T) {
 	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond)}
 	state := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", NextDueAt: &cooldownUntil, CooldownFence: &CooldownFence{ObservationStartedAt: now.Add(-2 * time.Minute), Generation: "stale-generation"}}
 	kind, due, ok := nextDue(input, state, true, now)
-	if !ok || kind != "cooldown_retest" || !due.Equal(cooldownUntil) {
-		t.Fatalf("nextDue must fall back to the current input fence: kind=%q due=%s ok=%t", kind, due, ok)
+	if !ok || kind != "cooldown_retest" || !due.Equal(now) {
+		t.Fatalf("nextDue must create a fresh reconciliation request: kind=%q due=%s ok=%t", kind, due, ok)
+	}
+	if scheduledRequestID(input, kind, due) == scheduledRequestID(input, kind, cooldownUntil) {
+		t.Fatal("reconciliation request must not reuse the already-settled business cooldown request ID")
 	}
 }
 
@@ -708,7 +711,7 @@ func TestNextDueBusinessCooldownWinsOverActiveJobsState(t *testing.T) {
 	state := CurrentState{InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, AccountStatus: "active", NextDueAt: ptrTime(now.Add(time.Hour))}
 
 	kind, due, ok := nextDue(input, state, true, now)
-	if !ok || kind != "cooldown_retest" || !due.Equal(cooldownUntil) {
+	if !ok || kind != "cooldown_retest" || !due.Equal(now) {
 		t.Fatalf("business cooldown must override stale active jobs state: kind=%q due=%s ok=%t", kind, due, ok)
 	}
 

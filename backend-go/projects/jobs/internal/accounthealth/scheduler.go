@@ -690,7 +690,10 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 		if !validCooldownFence(input.Cooldown, input) || input.Eligibility.CooldownUntil == nil {
 			return "", time.Time{}, false
 		}
-		return "cooldown_retest", *input.Eligibility.CooldownUntil, true
+		// The business cooldown due time may already identify an earlier settled
+		// request. Use this reconciliation cycle as the idempotency epoch so the
+		// stale jobs state cannot suppress the repair forever.
+		return "cooldown_retest", now, true
 	}
 	if state.NextDueAt == nil {
 		return "health", now, true
@@ -700,7 +703,11 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 			if !validCooldownFence(input.Cooldown, input) || input.Eligibility.CooldownUntil == nil {
 				return "", time.Time{}, false
 			}
-			return "cooldown_retest", *input.Eligibility.CooldownUntil, true
+			// A changed business fence can retain the original cooldown_until after
+			// an earlier request with that deterministic ID has already settled.
+			// Give the reconciliation probe a fresh ID while its outcome remains
+			// fenced by the current business cooldown generation.
+			return "cooldown_retest", now, true
 		}
 		if !validCooldownFence(state.CooldownFence, input) {
 			return "", time.Time{}, false
