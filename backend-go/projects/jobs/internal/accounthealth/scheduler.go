@@ -678,6 +678,24 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 		}
 		return "cooldown_retest", *input.Eligibility.CooldownUntil, true
 	}
+	// The business account row is the source of truth for the current
+	// eligibility epoch. A previous projector may have advanced jobs
+	// current_state to active while its business-side recovery CAS was stale;
+	// treating this split-brain row as ordinary health work emits
+	// health_success with expectedAccountStatus=active and can never repair the
+	// still-temporary_unavailable business row. Resume bounded cooldown
+	// recovery from the business fence so a successful probe can reconcile it.
+	if (input.Eligibility.AccountStatus == "temporary_unavailable" || input.Eligibility.AccountStatus == "rate_limited") &&
+		state.AccountStatus != input.Eligibility.AccountStatus {
+		if !validCooldownFence(input.Cooldown, input) || input.Eligibility.CooldownUntil == nil {
+			return "", time.Time{}, false
+		}
+		// A due time in the past may already identify an earlier settled request.
+		// Use this reconciliation cycle as the idempotency epoch so stale jobs
+		// state cannot suppress the repair forever, while preserving a cooldown
+		// that has not expired yet.
+		return "cooldown_retest", reconciliationDue(*input.Eligibility.CooldownUntil, now), true
+	}
 	if state.NextDueAt == nil {
 		return "health", now, true
 	}
@@ -686,7 +704,11 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 			if !validCooldownFence(input.Cooldown, input) || input.Eligibility.CooldownUntil == nil {
 				return "", time.Time{}, false
 			}
-			return "cooldown_retest", *input.Eligibility.CooldownUntil, true
+			// A changed business fence can retain the original cooldown_until after
+			// an earlier request with that deterministic ID has already settled.
+			// Give an overdue reconciliation probe a fresh ID while preserving an
+			// unexpired cooldown and fencing the outcome by the current generation.
+			return "cooldown_retest", reconciliationDue(*input.Eligibility.CooldownUntil, now), true
 		}
 		if !validCooldownFence(state.CooldownFence, input) {
 			return "", time.Time{}, false
@@ -708,7 +730,7 @@ func applyOutcomeDecision(outcome *Outcome, input Input, prior CurrentState, pri
 		priorFound = false
 	}
 	priorStatus := input.Eligibility.AccountStatus
-	if priorFound && prior.AccountStatus != "" {
+	if priorFound && prior.AccountStatus != "" && prior.AccountStatus == input.Eligibility.AccountStatus {
 		priorStatus = prior.AccountStatus
 	}
 	if kind == "cooldown_retest" {
@@ -958,6 +980,14 @@ func inputEligible(input Input) bool {
 func scheduledRequestID(input Input, kind string, due time.Time) string {
 	value := sha256.Sum256([]byte(strings.Join([]string{input.AccountID, fmt.Sprintf("%d", input.InputVersion), fmt.Sprintf("%d", input.ConfigRevision), fmt.Sprintf("%d", input.DispatchRevision), kind, due.UTC().Format(time.RFC3339Nano)}, "\n")))
 	return "account-health-" + hex.EncodeToString(value[:])
+}
+
+func reconciliationDue(cooldownUntil, now time.Time) time.Time {
+	cooldownUntil = cooldownUntil.UTC()
+	if cooldownUntil.After(now) {
+		return cooldownUntil
+	}
+	return now
 }
 
 func invalidInputRequestID(input Input) string {

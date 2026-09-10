@@ -680,7 +680,7 @@ func TestCooldownRetestUsesInputFenceWhenCurrentStateFenceChanged(t *testing.T) 
 	}
 }
 
-func TestNextDueUsesInputCooldownWhenCurrentStateFenceChanged(t *testing.T) {
+func TestNextDueUsesFreshReconciliationEpochWhenCurrentStateFenceChanged(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")
 	cooldownUntil := now.Add(-time.Second)
@@ -689,8 +689,54 @@ func TestNextDueUsesInputCooldownWhenCurrentStateFenceChanged(t *testing.T) {
 	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond)}
 	state := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", NextDueAt: &cooldownUntil, CooldownFence: &CooldownFence{ObservationStartedAt: now.Add(-2 * time.Minute), Generation: "stale-generation"}}
 	kind, due, ok := nextDue(input, state, true, now)
+	if !ok || kind != "cooldown_retest" || !due.Equal(now) {
+		t.Fatalf("nextDue must create a fresh reconciliation request: kind=%q due=%s ok=%t", kind, due, ok)
+	}
+	if scheduledRequestID(input, kind, due) == scheduledRequestID(input, kind, cooldownUntil) {
+		t.Fatal("reconciliation request must not reuse the already-settled business cooldown request ID")
+	}
+}
+
+func TestNextDueBusinessCooldownWinsOverActiveJobsState(t *testing.T) {
+	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	cooldownUntil := now.Add(-time.Second)
+	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "business-generation"}
+	input := testInput("https://api.example.com", "chat_json")
+	input.InputVersion = 1
+	input.ConfigRevision = 5
+	input.DispatchRevision = 7
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = fence
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownFailureBackoffMS: 3_000}
+	state := CurrentState{InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, AccountStatus: "active", NextDueAt: ptrTime(now.Add(time.Hour))}
+
+	kind, due, ok := nextDue(input, state, true, now)
+	if !ok || kind != "cooldown_retest" || !due.Equal(now) {
+		t.Fatalf("business cooldown must override stale active jobs state: kind=%q due=%s ok=%t", kind, due, ok)
+	}
+
+	outcome := Outcome{Outcome: OutcomeSuccess, ObservedAt: now, StatusCode: 200}
+	applyOutcomeDecision(&outcome, input, state, true, kind)
+	if outcome.AccountStatus != "active" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_success" || outcome.Projection.ExpectedAccountStatus != "temporary_unavailable" || outcome.Projection.ExpectedCooldownFence == nil || !sameCooldownFence(outcome.Projection.ExpectedCooldownFence, fence) {
+		t.Fatalf("cooldown recovery must carry the business fence: %#v", outcome)
+	}
+}
+
+func TestNextDueBusinessCooldownWaitsUntilFutureDue(t *testing.T) {
+	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	cooldownUntil := now.Add(time.Minute)
+	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "business-generation"}
+	input := testInput("https://api.example.com", "chat_json")
+	input.InputVersion = 1
+	input.ConfigRevision = 5
+	input.DispatchRevision = 7
+	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = fence
+	state := CurrentState{InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, AccountStatus: "active", NextDueAt: ptrTime(now.Add(time.Hour))}
+
+	kind, due, ok := nextDue(input, state, true, now)
 	if !ok || kind != "cooldown_retest" || !due.Equal(cooldownUntil) {
-		t.Fatalf("nextDue must fall back to the current input fence: kind=%q due=%s ok=%t", kind, due, ok)
+		t.Fatalf("business cooldown must retain an unexpired due time: kind=%q due=%s ok=%t", kind, due, ok)
 	}
 }
 
