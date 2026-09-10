@@ -461,9 +461,9 @@ func openKitFailingRecorderPG(rec *pgRecorder, failOn ...string) *DB {
 // ---- retention.StatsWriter / DerivedWindowRefresher fake ----
 
 type kitAPIKeyStatsCall struct {
-	Target      retention.APIKeyCleanupTarget
-	Rows        []map[string]any
-	UpdatedAt   string
+	Target       retention.APIKeyCleanupTarget
+	Rows         []map[string]any
+	UpdatedAt    string
 	ShardDeleted bool
 }
 

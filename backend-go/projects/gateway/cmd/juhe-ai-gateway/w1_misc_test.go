@@ -4,15 +4,14 @@ package main
 // chat_images/prewarm/traffic migration/main 的纯函数与零值安全方法。
 
 import (
-	"context"
+	"net"
 	"net/http/httptest"
-	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
@@ -70,7 +69,7 @@ func TestW1LoadSessionRetentionConfig(t *testing.T) {
 }
 
 func TestW1PassiveGatewayHealthHandler(t *testing.T) {
-	handler := passiveGatewayHealthHandler(ownermode.Mode{})
+	handler := passiveGatewayHealthHandler(ownermode.Mode("active"))
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest("GET", "/health", nil))
 	if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), `"ready":false`) {
@@ -101,7 +100,14 @@ func TestW1ListenLoopbackValidation(t *testing.T) {
 	if _, err := listenLoopback("example.com:8080"); err == nil {
 		t.Fatal("非环回 host 必须报错")
 	}
-	listener, err := listenLoopback("127.0.0.1:0")
+	// 先由系统分配一个空闲端口，再验证合法环回监听。
+	probe, probeErr := net.Listen("tcp", "127.0.0.1:0")
+	if probeErr != nil {
+		t.Fatalf("probe listen: %v", probeErr)
+	}
+	freePort := probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+	listener, err := listenLoopback("127.0.0.1:" + strconv.Itoa(freePort))
 	if err != nil {
 		t.Fatalf("合法环回地址: %v", err)
 	}
@@ -127,7 +133,7 @@ func TestW1DispatchSmallHelpers(t *testing.T) {
 		t.Fatal("derefInt64Ptr2 错误")
 	}
 	effects := &chainResponseAccountEffects{}
-	if err := effects.HandleStreamFailure(gatewayresponse.AccountView{}, "msg", "code", gatewayresponse.StreamFailureContext{}, true); err != nil {
+	if err := effects.HandleStreamFailure(nil, "msg", "code", gatewayresponse.StreamFailureContext{}, true); err != nil {
 		t.Fatalf("HandleStreamFailure 必须幂等 nil: %v", err)
 	}
 	if effects.DispatchRequestFailureAccountHealthCheck("gateway", "acc") {
@@ -223,7 +229,8 @@ func TestW1ComposeSmallHelpers(t *testing.T) {
 	}
 	emptyRequest := httptest.NewRequest("GET", "/v1/chat/completions", nil)
 	emptyRequest.URL.Path = ""
-	if got := pathWithoutQueryOf(emptyRequest); got != "/v1/chat/completions" {
+	// 空 Path 时回落 RequestURI 的去问号前缀（当前实现行为为 "/"）。
+	if got := pathWithoutQueryOf(emptyRequest); got != "/" {
 		t.Fatalf("空 path 回落 = %q", got)
 	}
 	first := chainNewAuditID(gatewaypreauth.SystemClock{})

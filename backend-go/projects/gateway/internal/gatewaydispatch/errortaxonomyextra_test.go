@@ -187,13 +187,13 @@ func TestOpenAIOAuthCodexAdapterErrorConstruction(t *testing.T) {
 
 func TestTimeoutLikeText(t *testing.T) {
 	cases := map[string]bool{
-		"":            false,
-		"normal":      false,
-		"TIMEOUT":     true,
-		"ETIMEDOUT":   true,
+		"":             false,
+		"normal":       false,
+		"TIMEOUT":      true,
+		"ETIMEDOUT":    true,
 		"req timedout": true,
-		"timed out":   true,
-		"请求超时":        true,
+		"timed out":    true,
+		"请求超时":         true,
 	}
 	for text, want := range cases {
 		if got := timeoutLikeText(text); got != want {

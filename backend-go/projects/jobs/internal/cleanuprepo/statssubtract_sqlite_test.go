@@ -30,7 +30,7 @@ func newKitStatsStore(t *testing.T) (*RecordCleanupStore, *DB) {
 	return store, stats
 }
 
-func kitText(v string) *string { return &v }
+func kitText(v string) *string  { return &v }
 func kitNum(v float64) *float64 { return &v }
 
 // kitFailedRow 构造一行失败记录（触发 error/quality/auth/health 全家族）。
@@ -39,7 +39,7 @@ func kitFailedRow() statsagg.UsageStatsRecordRow {
 		ID: "rec-kit-1", SystemAccountID: "sys-1", TraceID: "tr-kit", TrafficSource: "account_health_check",
 		ClientIP: kitText("127.0.0.1"), APIKeyID: kitText("key-1"), AccountID: kitText("acc-1"),
 		ProviderCode: kitText("openai"), StatusCode: kitNum(500), Success: 0,
-		Model: kitText("gpt-kit"),
+		Model:              kitText("gpt-kit"),
 		FailureAttribution: kitText("account_upstream"),
 		FirstTokenMs:       kitNum(120), DurationMs: kitNum(340),
 		InputTokens: kitNum(10), OutputTokens: kitNum(5), CostUsd: kitNum(0.01),

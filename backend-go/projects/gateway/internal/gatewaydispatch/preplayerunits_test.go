@@ -15,7 +15,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
 // 准备层与协议层残余分支的单元测试：bodypreparation / accountpreparation /
@@ -100,7 +99,7 @@ func TestNormalizeAnthropicMessageJoin(t *testing.T) {
 		t.Fatal("非对象原样返回")
 	}
 	noContent := map[string]any{"role": "user"}
-	if normalizeAnthropicMessage(noContent) != normalizeAnthropicMessage(noContent) {
+	if !jsonValueEqual(normalizeAnthropicMessage(noContent), noContent) {
 		t.Fatal("无 content 原样返回")
 	}
 }
@@ -443,7 +442,8 @@ func TestEnsureOpenAIOAuthCodexPlainJsonObject(t *testing.T) {
 	}
 	// 克隆语义：修改克隆不影响原对象。
 	object["a"] = 2
-	if EnsureOpenAIOAuthCodexPlainJsonObject(map[string]any{"a": 1})["a"] != float64(1) {
+	fresh, err := EnsureOpenAIOAuthCodexPlainJsonObject(map[string]any{"a": 1})
+	if err != nil || fresh["a"] != float64(1) {
 		t.Fatal("克隆必须隔离")
 	}
 	if _, err := EnsureOpenAIOAuthCodexPlainJsonObject("str"); !IsOpenAIOAuthCodexAdapterError(err) {
@@ -486,8 +486,11 @@ func TestNormalizeOpenAIOAuthCodexLegacyFunctions(t *testing.T) {
 		t.Fatalf("tools = %#v", body["tools"])
 	}
 	tool := tools[0].(map[string]any)
-	if tool["type"] != "function" || tool["name"] != "f" {
+	if tool["type"] != "function" {
 		t.Fatalf("tool = %#v", tool)
+	}
+	if tool["function"].(map[string]any)["name"] != "f" {
+		t.Fatalf("tool function = %#v", tool["function"])
 	}
 	if body["tool_choice"] != "auto" {
 		t.Fatalf("tool_choice = %#v", body["tool_choice"])
@@ -583,10 +586,10 @@ func TestBuildOpenAIOAuthCodexRequestPartsVariants(t *testing.T) {
 	if parts.Headers.Get("Accept") != "application/json" {
 		t.Fatalf("accept = %q", parts.Headers.Get("Accept"))
 	}
-	// 空 path 的 compact 判定为 false。
-	emptyReq := gatewaypreauth.NewGatewayRequest(&http.Request{Method: http.MethodPost, URI: func() string { return "" }})
-	if IsOpenAIOAuthCodexCompactRequest(emptyReq) {
-		t.Fatal("空 path 不判 compact")
+	// 根路径不判 compact。
+	rootReq := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/", nil))
+	if IsOpenAIOAuthCodexCompactRequest(rootReq) {
+		t.Fatal("根路径不判 compact")
 	}
 }
 
@@ -652,7 +655,7 @@ func TestBuildOpenAICodexUsageSnapshotPayloadNormalization(t *testing.T) {
 		SecondaryResetAfterSeconds: ptrInt64V(604800),
 		SecondaryWindowMinutes:     ptrInt64V(10080),
 	}
-	payload := buildOpenAICodexUsageSnapshotPayload(snapshot, timeNowForTest(), "test-source")
+	payload := buildOpenAICodexUsageSnapshotPayload(snapshot, time.UnixMilli(1_000), "test-source")
 	if payload["codex_5h_used_percent"] != 41.5 {
 		t.Fatalf("5h = %#v", payload["codex_5h_used_percent"])
 	}
@@ -666,7 +669,7 @@ func TestBuildOpenAICodexUsageSnapshotPayloadNormalization(t *testing.T) {
 		t.Fatal("5h reset_at 缺失")
 	}
 	// 无窗口数据时只有基础字段。
-	empty := buildOpenAICodexUsageSnapshotPayload(OpenAICodexUsageSnapshot{UpdatedAt: "1970-01-01T00:00:01Z"}, timeNowForTest(), "")
+	empty := buildOpenAICodexUsageSnapshotPayload(OpenAICodexUsageSnapshot{UpdatedAt: "1970-01-01T00:00:01Z"}, time.UnixMilli(1_000), "")
 	if _, ok := empty["codex_5h_used_percent"]; ok {
 		t.Fatal("空窗口不应有 5h 字段")
 	}
@@ -756,8 +759,10 @@ func TestUpstreamTimeoutHelpers(t *testing.T) {
 	if !IsEffectiveOpenAIStreamRequest(newTestRequest(t, `{"model":"gpt-test","stream":true}`), nil) {
 		t.Fatal("普通流式请求识别")
 	}
-	// 非 oauth 账户不触发 compact 规则。
-	if !IsEffectiveOpenAIStreamRequest(compactReq, &UpstreamHeaderAccount{Type: "api_key"}) {
+	// 非 oauth 账户不触发 compact 规则：按 body stream 判定。
+	streamCompact := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil))
+	streamCompact.Body = newTestRequestBody(t, `{"model":"gpt-test","stream":true}`)
+	if !IsEffectiveOpenAIStreamRequest(streamCompact, &UpstreamHeaderAccount{Type: "api_key"}) {
 		t.Fatal("非 oauth 账户按 body stream 判定")
 	}
 }

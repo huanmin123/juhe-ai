@@ -2,7 +2,6 @@ package gatewaydispatch
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,9 +22,9 @@ import (
 // ---------------------------------------------------------------------------
 
 type flagLatencyPort struct {
-	applied    bool
-	degraded   []string
-	bypassAll  bool
+	applied   bool
+	degraded  []string
+	bypassAll bool
 }
 
 func (f *flagLatencyPort) OrderAsync(_ context.Context, accounts []AccountCandidate, _ *LatencyScopeInput, _ *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, _ *gatewayrouting.GatewayAccountModelPriority) (LatencyDegradationOrder, error) {
@@ -45,7 +44,9 @@ func (f *flagProxyHealthPort) OrderAsync(_ context.Context, accounts []AccountCa
 	return ProxyHealthOrder{Accounts: accounts, Applied: f.applied}, nil
 }
 
-func (f *flagProxyHealthPort) RecordFailureAsync(context.Context, AccountCandidate, string) error { return nil }
+func (f *flagProxyHealthPort) RecordFailureAsync(context.Context, AccountCandidate, string) error {
+	return nil
+}
 
 type flagClientIPAvoidancePort struct {
 	applied bool
@@ -112,21 +113,21 @@ func dispatchPreparationInput(t *testing.T, accounts []AccountCandidate) gateway
 	}
 	return gatewaypreauth.DispatchPreparationInput{
 		GatewayRequestWallBudget: wallBudget,
-		Req:               req,
-		AuditCapture:      &frozenAudit{sink: &fakeAuditSink{}},
-		UsageContext:      testUsageContext(),
-		StartedAt:         NowMs(),
-		CandidateAccounts: accounts,
-		ModelPriority:     &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: map[string]int{}},
-		GroupAccess:       gatewayruntimecache.GroupUsageAccessMetadata{},
-		SystemAccountID:   "system-1",
-		APIKeyID:          "apikey-1",
-		GroupID:           "group-1",
-		ClientStrategy:    gatewaypreauth.ClientStrategyContext{},
-		RequestLane:       "text",
-		ServerRetryBudget: gatewaypreauth.NewServerRetryBudget(5_000, gatewaypreauth.SystemClock{}),
-		RouteCoordinator:  &capturingCoordinator{},
-		Signal:            context.Background(),
+		Req:                      req,
+		AuditCapture:             &frozenAudit{sink: &fakeAuditSink{}},
+		UsageContext:             testUsageContext(),
+		StartedAt:                NowMs(),
+		CandidateAccounts:        accounts,
+		ModelPriority:            &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: map[string]int{}},
+		GroupAccess:              gatewayruntimecache.GroupUsageAccessMetadata{},
+		SystemAccountID:          "system-1",
+		APIKeyID:                 "apikey-1",
+		GroupID:                  "group-1",
+		ClientStrategy:           gatewaypreauth.ClientStrategyContext{},
+		RequestLane:              "text",
+		ServerRetryBudget:        gatewaypreauth.NewServerRetryBudget(5_000, gatewaypreauth.SystemClock{}),
+		RouteCoordinator:         &capturingCoordinator{},
+		Signal:                   context.Background(),
 	}
 }
 
@@ -200,12 +201,12 @@ func (f *precheckSuppressedFake) FilterAsync(_ context.Context, accounts []Accou
 	if f.calls == 1 {
 		ids := accountIDs(accounts)
 		return SuppressionFilterResult{
-			AllSuppressed:                     true,
-			SuppressedCount:                   len(accounts),
-			SuppressedAccountIDs:              ids,
-			PrecheckSuppressedAccountIDs:      ids,
+			AllSuppressed:                        true,
+			SuppressedCount:                      len(accounts),
+			SuppressedAccountIDs:                 ids,
+			PrecheckSuppressedAccountIDs:         ids,
 			ConfiguredPolicySuppressedAccountIDs: []string{},
-			AcquiredHalfOpenLeases:            []HalfOpenLease{},
+			AcquiredHalfOpenLeases:               []HalfOpenLease{},
 		}, nil
 	}
 	return localSuppressionBypassResult(accounts), nil
@@ -744,15 +745,16 @@ func reserveSameAccountRetryForTest(t *testing.T, coordination *RequestCoordinat
 // TestDispatchSameAccountRetryStripsFingerprint: 非活动同账户重试上下文剥离
 // 选中 Key 指纹后照常调度。
 func TestDispatchSameAccountRetryStripsFingerprint(t *testing.T) {
-	okServer := sequentialServer(t, 0, 500)
-	defer okServer.Close()
-	engine, _, dispatcher := newTestEngine(t)
-	dispatcher.keyScopedFailure.Store(true)
-	partsDriver := &partsErrorDriver{errByAccountID: map[string]error{"a-1": errors.New("准备失败")}}
-	partsDriver.urlByAccount = map[string][]string{
-		"a-1": {okServer.URL + "/v1/chat/completions"},
+	failServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream down","type":"server_error","code":"upstream_error"}}`))
+	}))
+	defer failServer.Close()
+	engine, driver, _ := newTestEngine(t)
+	engine.FailureDispatcher = &tryNextKeyDispatcher{}
+	driver.urlByAccount = map[string][]string{
+		"a-1": {failServer.URL + "/v1/chat/completions"},
 	}
-	engine.Driver = partsDriver
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 	args := fastDispatchArgs(t, req, nil)
 	carried := multiKeyTestAccount("a-1", "key-a", "key-b")
@@ -769,9 +771,10 @@ func TestDispatchSameAccountRetryStripsFingerprint(t *testing.T) {
 	if !errorsAs(err, &attemptErr) {
 		t.Fatalf("expected UpstreamAttemptError, got %v", err)
 	}
-	// 携带指纹在第二轮 Key 轮换被剥离：key-b 得到一次尝试。
-	if dispatcher.handleErrorCalls.Load() < 2 {
-		t.Fatalf("第二把 Key 必须在剥离指纹后被尝试, calls = %d", dispatcher.handleErrorCalls.Load())
+	// 第一次真实尝试清除同账户重试活动态；第二轮轮换剥离携带指纹后 key-b 得到尝试。
+	dispatcher := engine.FailureDispatcher.(*tryNextKeyDispatcher)
+	if dispatcher.calls.Load() < 2 {
+		t.Fatalf("第二把 Key 必须在剥离指纹后被尝试, calls = %d", dispatcher.calls.Load())
 	}
 }
 

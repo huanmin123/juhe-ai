@@ -166,7 +166,7 @@ func TestAssetStoreLifecycleW3(t *testing.T) {
 		AssetID: created.ID, SystemAccountID: "owner", ConversationID: "conv_asset",
 		ProcessedMimeType: "image/webp", ProcessedWidth: 1, ProcessedHeight: 1,
 		ProcessedBytes: 10, ProcessedSha256: strings.Repeat("b", 64),
-		StorageKey:     "aa/bb/key", Now: f.nowISO,
+		StorageKey: "aa/bb/key", Now: f.nowISO,
 	})
 	if err != nil || completed.ProcessingStatus != "ready" {
 		t.Fatalf("完成处理失败: %+v err=%v", completed, err)

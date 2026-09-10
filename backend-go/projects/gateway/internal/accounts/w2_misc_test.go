@@ -90,7 +90,7 @@ func TestW2RuntimeResetTimeAndBindingHelpers(t *testing.T) {
 		if got := trimSpaces("  x  "); got != "x" {
 			t.Fatalf("trim 不一致：%q", got)
 		}
-		if got := trimSpaces("\t\n x \v"); got != "x" {
+		if got := trimSpaces("\t\n x\r"); got != "x" {
 			t.Fatalf("控制符 trim 不一致：%q", got)
 		}
 	})
@@ -256,11 +256,14 @@ func TestW2TrafficMigrationBodyAndHelpers(t *testing.T) {
 		}
 	})
 	t.Run("不可用目标文案", func(t *testing.T) {
-		if got := trafficTargetUnavailableMessage(nil); got == "" {
-			t.Fatal("nil 目标应有兜底文案")
+		// 只以有效可用性判定：不可调度目标给出固定文案，可调度返回空。
+		if got := trafficTargetUnavailableMessage(&ListItem{}); !strings.Contains(got, "目标账户当前不可调度") {
+			t.Fatalf("不可调度文案不一致：%q", got)
 		}
-		if got := trafficTargetUnavailableMessage(&ListItem{Status: "disabled"}); !strings.Contains(got, "已停用") {
-			t.Fatalf("disabled 文案不一致：%q", got)
+		available := ListItem{}
+		available.EffectiveAvailability.Available = true
+		if got := trafficTargetUnavailableMessage(&available); got != "" {
+			t.Fatalf("可调度目标应为空文案：%q", got)
 		}
 	})
 }

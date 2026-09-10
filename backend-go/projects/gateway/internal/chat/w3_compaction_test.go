@@ -127,11 +127,11 @@ func TestParseSnapshotW3(t *testing.T) {
 		t.Fatalf("非对象应报错")
 	}
 	raw := map[string]any{
-		"durableMemory":       []any{"偏好简体中文", "", 42},
-		"currentGoal":         "  完成导出  ",
+		"durableMemory":        []any{"偏好简体中文", "", 42},
+		"currentGoal":          "  完成导出  ",
 		"importantToolResults": []any{map[string]any{"name": "搜索", "result": "结果"}, map[string]any{"name": "", "result": "无"}, "junk"},
-		"imageMemories":       []any{map[string]any{"assetId": "asset-1", "summary": "一只猫", "ocr": []any{"文字"}, "uncertainties": []any{"背景模糊"}}, map[string]any{"assetId": ""}},
-		"uncertainties":       []any{"时间未知"},
+		"imageMemories":        []any{map[string]any{"assetId": "asset-1", "summary": "一只猫", "ocr": []any{"文字"}, "uncertainties": []any{"背景模糊"}}, map[string]any{"assetId": ""}},
+		"uncertainties":        []any{"时间未知"},
 	}
 	snapshot, err := parseSnapshot(raw)
 	if err != nil {
@@ -236,9 +236,9 @@ func TestTimeHelpersW3(t *testing.T) {
 	}
 
 	validCases := []struct {
-		name   string
-		value  string
-		canon  string
+		name  string
+		value string
+		canon string
 	}{
 		{"Z 无毫秒", "2026-03-10T08:00:00Z", "2026-03-10T08:00:00.000Z"},
 		{"正 offset", "2026-03-10T09:30:00+01:30", "2026-03-10T08:00:00.000Z"},

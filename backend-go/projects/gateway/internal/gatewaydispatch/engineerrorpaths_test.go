@@ -59,10 +59,10 @@ func newAttemptErrorHarness(t *testing.T) *attemptErrorHarness {
 	auditIndex := 0
 	sameAccountRetryID := ""
 	harness := &attemptErrorHarness{
-		engine:        engine,
-		args:          args,
-		coordination:  coordination,
-		lastAttempt:   &UpstreamAttempt{AccountID: "a-1", Message: "上次尝试"},
+		engine:       engine,
+		args:         args,
+		coordination: coordination,
+		lastAttempt:  &UpstreamAttempt{AccountID: "a-1", Message: "上次尝试"},
 	}
 	harness.input = &dispatchSingleAccountInput{
 		args:                                &args,
@@ -113,14 +113,14 @@ func (h *attemptErrorHarness) errorContext(account AccountCandidate, failure err
 	keepSlot := false
 	var result *UpstreamDispatchResult
 	loop := upstreamAttemptLoopContext{
-		in:            h.input,
-		account:       account,
-		upstreamUrls:  []string{"https://upstream.example/v1/chat/completions"},
-		usageContext:  h.input.usageContext,
-		auditCapture:  h.input.auditCapture,
-		signal:        h.input.signal,
-		accountApiKeyAttemptCount: ptrInt(0),
-		concurrencySlot: &ConcurrencySlot{Acquired: true},
+		in:                         h.input,
+		account:                    account,
+		upstreamUrls:               []string{"https://upstream.example/v1/chat/completions"},
+		usageContext:               h.input.usageContext,
+		auditCapture:               h.input.auditCapture,
+		signal:                     h.input.signal,
+		accountApiKeyAttemptCount:  ptrInt(0),
+		concurrencySlot:            &ConcurrencySlot{Acquired: true},
 		excludedApiKeyFingerprints: map[string]struct{}{},
 		keepConcurrencySlotRef:     &keepSlot,
 		pendingApiKeyFailuresRef:   h.input.pendingApiKeyFailures,
@@ -357,7 +357,7 @@ func TestHandleUpstreamAttemptErrorProvenTimeoutClassified(t *testing.T) {
 func TestHandleUpstreamAttemptErrorRetryAnotherApiKeyWithPendingFailure(t *testing.T) {
 	harness := newAttemptErrorHarness(t)
 	harness.engine.FailureDispatcher = &fakeFailureDispatcher{
-		failedResult:  FailedUpstreamResponseResult{Action: FailedResponseActionSkipAccount},
+		failedResult:   FailedUpstreamResponseResult{Action: FailedResponseActionSkipAccount},
 		opaqueFailover: true,
 	}
 	effects := &recordingAPIKeyEffects{}

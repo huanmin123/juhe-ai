@@ -367,10 +367,10 @@ func TestGenerationDepsRoutesW3(t *testing.T) {
 // TestWriteChatRouteErrorW3 表驱动覆盖错误到 HTTP 的映射。
 func TestWriteChatRouteErrorW3(t *testing.T) {
 	cases := []struct {
-		name       string
-		err        error
-		status     int
-		code       string
+		name   string
+		err    error
+		status int
+		code   string
 	}{
 		{"无效请求", &invalidRequestError{Message: "坏请求"}, 400, "chat_invalid_request"},
 		{"资产上传", &AssetUploadError{Code: "chat_asset_too_large", StatusCode: 413, Message: "太大"}, 413, "chat_asset_too_large"},
@@ -408,8 +408,10 @@ func TestStreamWithImageInputW3(t *testing.T) {
 	}
 	assetID, _ := created.dataMap()["id"].(string)
 	env.executor.steps = []scriptStep{{
-		match:   func(call dispatchCall) bool { return call.Path == "/v1/responses" },
-		respond: func(dispatchCall) *GenerationDispatchResponse { return sseResponse(responsesTextSSE("我看到了图片")) },
+		match: func(call dispatchCall) bool { return call.Path == "/v1/responses" },
+		respond: func(dispatchCall) *GenerationDispatchResponse {
+			return sseResponse(responsesTextSSE("我看到了图片"))
+		},
 	}}
 	payload := `{"clientMessageId":"cmid-img-1","content":"看这张图","model":"gpt-5","contentBlocks":[{"type":"input_text","text":"看这张图"},{"type":"input_image","assetId":"` + assetID + `"}]}`
 	response := env.streamPost("chat_conv_img", routeTestOwner, payload)
@@ -446,7 +448,7 @@ func TestStreamWithImageInputW3(t *testing.T) {
 		t.Fatalf("第二张资产上传失败: %s", created2.rawString())
 	}
 	env.executor.steps = []scriptStep{}
-	second := env.streamPost("chat_conv_img", routeTestOwner, `{"clientMessageId":"cmid-img-2","content":"再看","model":"gpt-5","contentBlocks":[{"type":"input_text","text":"再看"},{"type":"input_image","assetId":"` + assetID2 + `"}]}`)
+	second := env.streamPost("chat_conv_img", routeTestOwner, `{"clientMessageId":"cmid-img-2","content":"再看","model":"gpt-5","contentBlocks":[{"type":"input_text","text":"再看"},{"type":"input_image","assetId":"`+assetID2+`"}]}`)
 	if second.status != http.StatusUnprocessableEntity || second.code() != "chat_model_context_image_pending" {
 		t.Fatalf("第二轮 = %d %s", second.status, second.rawString())
 	}

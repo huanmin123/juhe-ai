@@ -14,8 +14,8 @@ import (
 // 全部用 Mock 替换，不触达真实上游。
 
 type stubImageGenerationW3 struct {
-	calls int
-	fail  error
+	calls  int
+	fail   error
 	result ChatImageGenerationToolResult
 }
 
@@ -411,7 +411,7 @@ func TestChatInternalToolOrchestratorW3(t *testing.T) {
 
 type abortTestErrorW3 struct{}
 
-func (e *abortTestErrorW3) Error() string   { return "aborted" }
+func (e *abortTestErrorW3) Error() string    { return "aborted" }
 func (e *abortTestErrorW3) AbortError() bool { return true }
 
 // TestGenerateChatImageW3 用 Mock 执行器覆盖图片生成传输的完整链路。

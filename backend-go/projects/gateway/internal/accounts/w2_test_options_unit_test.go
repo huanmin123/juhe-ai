@@ -270,7 +270,7 @@ func TestW2EndpointModeProtocolFamily(t *testing.T) {
 		"chat_json": "chat_completions", "chat_sse": "chat_completions",
 		"responses_json": "responses", "responses_sse": "responses",
 		"messages_json": "messages", "messages_sse": "messages",
-		"generate_content_sse": "stream_generate_content",
+		"generate_content_sse":  "stream_generate_content",
 		"generate_content_json": "generate_content", "count_tokens": "generate_content",
 	}
 	for mode, family := range families {
@@ -284,14 +284,14 @@ func TestW2EndpointModeProtocolFamily(t *testing.T) {
 func TestW2OptionMergeHelpers(t *testing.T) {
 	t.Run("发布日期归一", func(t *testing.T) {
 		cases := map[string]string{
-			"2026-01-02": "2026-01-02",
+			"2026-01-02":            "2026-01-02",
 			" 2026-01-02T10:00:00Z": "2026-01-02",
-			"20260102":   "",
-			"2026-1-2":   "",
-			"2026-13-01": "",
-			"2026-00-10": "",
-			"2026-01-32": "",
-			"":           "",
+			"20260102":              "",
+			"2026-1-2":              "",
+			"2026-13-01":            "",
+			"2026-00-10":            "",
+			"2026-01-32":            "",
+			"":                      "",
 		}
 		for input, want := range cases {
 			if got := normalizedOptionReleaseDate(input); got != want {
@@ -375,7 +375,7 @@ func TestW2AccountManualTestEndpointModesFilters(t *testing.T) {
 	// anthropic 源只保留 anthropic 模式，且顺序按 mode order 收敛。
 	source := manualTestModeSource{
 		providerCode: anthropicProviderCode, protocolCode: anthropicProtocolCodeConstant, protocolVersion: anthropicProtocolVersionConstant,
-		supportedEndpointModes: []string{"messages_json", "chat_json", "messages_sse"},
+		supportedEndpointModes:  []string{"messages_json", "chat_json", "messages_sse"},
 		healthCheckEndpointMode: "messages_sse",
 	}
 	got := accountManualTestEndpointModes(source)

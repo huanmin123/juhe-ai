@@ -135,7 +135,7 @@ func (panickyWriterW3) WriteHeader(int) {}
 
 type plainWriterW3 struct{ buffer *bytes.Buffer }
 
-func (w plainWriterW3) Header() http.Header          { return http.Header{} }
+func (w plainWriterW3) Header() http.Header            { return http.Header{} }
 func (w plainWriterW3) Write(data []byte) (int, error) { return w.buffer.Write(data) }
 func (w plainWriterW3) WriteHeader(int)                {}
 

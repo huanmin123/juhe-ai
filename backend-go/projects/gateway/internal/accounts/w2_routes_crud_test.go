@@ -111,14 +111,14 @@ func TestW2RoutesCreateValidation(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, adminID)
 
 	cases := map[string]string{
-		"缺 providerCode":  `{"providerProtocolProfileId":"prof-gpt","name":"w2c1","type":"api_key"}`,
-		"缺 profile":       `{"providerCode":"gpt","name":"w2c2","type":"api_key"}`,
-		"缺 name":          `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","type":"api_key"}`,
-		"缺 type":          `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c3"}`,
-		"未知键":             `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c4","type":"api_key","bogus":1}`,
-		"空支持模型":           `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c5","type":"api_key","supportedModels":[]}`,
+		"缺 providerCode":        `{"providerProtocolProfileId":"prof-gpt","name":"w2c1","type":"api_key"}`,
+		"缺 profile":             `{"providerCode":"gpt","name":"w2c2","type":"api_key"}`,
+		"缺 name":                `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","type":"api_key"}`,
+		"缺 type":                `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c3"}`,
+		"未知键":                   `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c4","type":"api_key","bogus":1}`,
+		"空支持模型":                 `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c5","type":"api_key","supportedModels":[]}`,
 		"healthCheckModel 非字符串": `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c6","type":"api_key","healthCheckModel":3}`,
-		"并发非法":          `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c7","type":"api_key","concurrencyLimit":"x"}`,
+		"并发非法":                  `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c7","type":"api_key","concurrencyLimit":"x"}`,
 	}
 	for name, body := range cases {
 		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", body)
@@ -151,12 +151,12 @@ func TestW2RoutesPatchValidation(t *testing.T) {
 	id := dataMap(t, payload)["id"].(string)
 
 	cases := map[string]string{
-		"未知键":        `{"expectedConfigRevision":1,"bogus":1}`,
-		"缺修订号":       `{"name":"新名"}`,
-		"修订号非法":      `{"expectedConfigRevision":0}`,
-		"name 非字符串":  `{"expectedConfigRevision":1,"name":3}`,
+		"未知键":         `{"expectedConfigRevision":1,"bogus":1}`,
+		"缺修订号":        `{"name":"新名"}`,
+		"修订号非法":       `{"expectedConfigRevision":0}`,
+		"name 非字符串":   `{"expectedConfigRevision":1,"name":3}`,
 		"status 非字符串": `{"expectedConfigRevision":1,"status":9}`,
-		"并发非法":       `{"expectedConfigRevision":1,"concurrencyLimit":"x"}`,
+		"并发非法":        `{"expectedConfigRevision":1,"concurrencyLimit":"x"}`,
 	}
 	for name, body := range cases {
 		code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id, body)
@@ -166,8 +166,8 @@ func TestW2RoutesPatchValidation(t *testing.T) {
 	}
 	// 标签面校验。
 	tagCases := map[string]string{
-		"未知键":   `{"expectedConfigRevision":1,"tags":[],"bogus":1}`,
-		"缺修订号":  `{"tags":[]}`,
+		"未知键":     `{"expectedConfigRevision":1,"tags":[],"bogus":1}`,
+		"缺修订号":    `{"tags":[]}`,
 		"tags 缺失": `{"expectedConfigRevision":1}`,
 		"超量标签":    `{"expectedConfigRevision":1,"tags":["` + strings.Repeat("t", 1) + `","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24","25"]}`,
 	}
@@ -353,4 +353,3 @@ func TestW2RuntimeResetOwnerPath(t *testing.T) {
 		}
 	})
 }
-

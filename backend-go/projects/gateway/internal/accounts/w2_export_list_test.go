@@ -87,12 +87,12 @@ func TestW2ExportByIDAndFilters(t *testing.T) {
 	})
 	t.Run("body 校验", func(t *testing.T) {
 		for name, body := range map[string]string{
-			"未知键":     `{"bogus":1}`,
-			"双键互斥":    `{"accountIds":["a"],"filters":{}}`,
-			"ID 非字符串": `{"accountIds":[3]}`,
-			"ID 空白":   `{"accountIds":["  "]}`,
-			"ID 为空数组": `{"accountIds":[]}`,
-			"filters 缺失": `{"filters":"x"}`,
+			"未知键":         `{"bogus":1}`,
+			"双键互斥":        `{"accountIds":["a"],"filters":{}}`,
+			"ID 非字符串":     `{"accountIds":[3]}`,
+			"ID 空白":       `{"accountIds":["  "]}`,
+			"ID 为空数组":     `{"accountIds":[]}`,
+			"filters 缺失":  `{"filters":"x"}`,
 			"filters 未知键": `{"filters":{"mystery":1}}`,
 		} {
 			code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/export", body)
@@ -104,7 +104,7 @@ func TestW2ExportByIDAndFilters(t *testing.T) {
 	t.Run("用户导出无代理创建权限差异", func(t *testing.T) {
 		env.login(t, "export-user", "export-pass", "user")
 		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts/export",
-			`{"accountIds":["` + strings.Join(ids, `","`) + `"]}`)
+			`{"accountIds":["`+strings.Join(ids, `","`)+`"]}`)
 		// 他人账户在用户范围不可见 → 导出列表为空或 400。
 		if code == http.StatusOK {
 			if accounts, ok := dataMap(t, payload)["accounts"].([]any); ok && len(accounts) > 0 {

@@ -25,8 +25,10 @@ func TestSummarizePageW3(t *testing.T) {
 
 	t.Run("chat 协议成功", func(t *testing.T) {
 		executor := mockExecutor{steps: []scriptStep{{
-			match:   func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
-			respond: func(dispatchCall) *GenerationDispatchResponse { return jsonStatusResponse(200, `{"choices":[{"message":{"content":"{\"currentGoal\":\"目标\",\"recentUserIntent\":\"意图\",\"durableMemory\":[\"记忆\"]}"}}]}`) },
+			match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
+			respond: func(dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"choices":[{"message":{"content":"{\"currentGoal\":\"目标\",\"recentUserIntent\":\"意图\",\"durableMemory\":[\"记忆\"]}"}}]}`)
+			},
 		}}}
 		snapshot, err := newService(&executor).summarizePage(context.Background(), input, emptySnapshot(), messages)
 		if err != nil || snapshot.CurrentGoal != "目标" || !equalStringsW3(snapshot.DurableMemory, []string{"记忆"}) {
@@ -35,8 +37,10 @@ func TestSummarizePageW3(t *testing.T) {
 	})
 	t.Run("responses 协议成功", func(t *testing.T) {
 		executor := mockExecutor{steps: []scriptStep{{
-			match:   func(call dispatchCall) bool { return call.Path == "/v1/responses" },
-			respond: func(dispatchCall) *GenerationDispatchResponse { return jsonStatusResponse(200, `{"output_text":"{\"currentGoal\":\"G\",\"recentUserIntent\":\"I\"}"}`) },
+			match: func(call dispatchCall) bool { return call.Path == "/v1/responses" },
+			respond: func(dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"output_text":"{\"currentGoal\":\"G\",\"recentUserIntent\":\"I\"}"}`)
+			},
 		}}}
 		snapshot, err := newService(&executor).summarizePage(context.Background(), CompactionInput{
 			ConversationID: "c", SystemAccountID: "o", APIKeySecret: "k", Model: "gpt-5", Protocol: ProtocolResponses,
@@ -61,7 +65,9 @@ func TestSummarizePageW3(t *testing.T) {
 		if _, err := newService(&badBody).summarizePage(context.Background(), input, emptySnapshot(), messages); err == nil || !strings.Contains(err.Error(), "summary_missing_response") {
 			t.Fatalf("非法 JSON 应报错: %v", err)
 		}
-		badSummary := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse { return jsonStatusResponse(200, `{"choices":[{"message":{"content":"not-json"}}]}`) }}}}
+		badSummary := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
+			return jsonStatusResponse(200, `{"choices":[{"message":{"content":"not-json"}}]}`)
+		}}}}
 		if _, err := newService(&badSummary).summarizePage(context.Background(), input, emptySnapshot(), messages); err == nil || !strings.Contains(err.Error(), "summary_invalid_json") {
 			t.Fatalf("非法摘要应报错: %v", err)
 		}
