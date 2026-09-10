@@ -33,9 +33,17 @@ func TestComposeSystemAPIWiresBalanceSnapshotCleaner(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	needle := "accountStore.SetBalanceSnapshotCleaner(accounts.NewStoreBalanceSnapshotCleaner(accountStore))"
+	needle := "balanceSnapshotCleaner := accounts.NewStoreBalanceSnapshotCleaner(accountStore)"
 	if !strings.Contains(text, needle) {
-		t.Fatalf("compose root must wire the store-backed balance snapshot cleaner: %s", needle)
+		t.Fatalf("compose root must construct the store-backed balance snapshot cleaner: %s", needle)
+	}
+	wireNeedle := "accountStore.SetBalanceSnapshotCleaner(balanceSnapshotCleaner)"
+	if !strings.Contains(text, wireNeedle) {
+		t.Fatalf("compose root must wire the balance snapshot cleaner into the account store: %s", wireNeedle)
+	}
+	shutdownNeedle := "composed.shutdowns = append(composed.shutdowns, balanceSnapshotCleaner.Close)"
+	if !strings.Contains(text, shutdownNeedle) {
+		t.Fatalf("balance snapshot cleaner lifecycle must register on the shutdown chain (queue never touches a closed pool): %s", shutdownNeedle)
 	}
 	accountStorePos := strings.Index(text, "accountStore, err := accounts.NewStore")
 	wirePos := strings.Index(text, needle)

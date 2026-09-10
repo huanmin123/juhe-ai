@@ -93,6 +93,10 @@ type StoreBalanceSnapshotCleaner struct {
 	suppressedItems   map[string]cleanupQueueItem
 	exhaustedAccounts map[string]bool
 	sequence          int64
+	// lifetimeCtx drives the deletion statements; Close cancels it so an
+	// in-flight DELETE stops touching the pool while the process shuts down.
+	lifetimeCtx context.Context
+	cancel      context.CancelFunc
 }
 
 // cleanupQueueItem mirrors AccountBalanceSnapshotCleanupQueueItem.
@@ -104,16 +108,22 @@ type cleanupQueueItem struct {
 
 // NewStoreBalanceSnapshotCleaner builds the store-backed cleaner.
 func NewStoreBalanceSnapshotCleaner(store *Store) *StoreBalanceSnapshotCleaner {
+	ctx, cancel := context.WithCancel(context.Background())
 	cleaner := &StoreBalanceSnapshotCleaner{
 		store:             store,
 		now:               time.Now,
 		suppressedItems:   map[string]cleanupQueueItem{},
 		exhaustedAccounts: map[string]bool{},
+		lifetimeCtx:       ctx,
+		cancel:            cancel,
 	}
 	cleaner.queue = newRetryQueue[cleanupQueueItem]("account-balance-snapshot-cleanup",
 		cleanupRetryDelays, cleanupQueueConcurrency,
 		func(item cleanupQueueItem, attemptIndex int) error {
-			return cleaner.deleteSupersededSnapshot(context.Background(), item.request)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return cleaner.deleteSupersededSnapshot(ctx, item.request)
 		},
 		retryQueueCallbacks[cleanupQueueItem]{
 			OnSuccess:        cleaner.onCleanupSuccess,
@@ -122,6 +132,24 @@ func NewStoreBalanceSnapshotCleaner(store *Store) *StoreBalanceSnapshotCleaner {
 			OnExhausted:      cleaner.onCleanupExhausted,
 		})
 	return cleaner
+}
+
+// Close stops the cleanup lifecycle: new enqueues are refused, pending items
+// and timers are dropped, the lifetime context cancels any in-flight DELETE,
+// and the call blocks until running invocations returned (Node
+// stopAndDrain's shutdown contract). Register on the composition shutdown
+// chain ahead of the SQL handle close so the queue never touches a closed
+// pool.
+func (c *StoreBalanceSnapshotCleaner) Close() {
+	c.mu.Lock()
+	queue := c.queue
+	c.mu.Unlock()
+	if queue == nil {
+		return
+	}
+	queue.stop()
+	c.cancel()
+	queue.waitRunning()
 }
 
 // SetClockForTest overrides the updatedBefore clock (tests only).

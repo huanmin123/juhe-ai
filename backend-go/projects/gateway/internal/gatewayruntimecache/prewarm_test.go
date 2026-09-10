@@ -3,6 +3,7 @@ package gatewayruntimecache
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -150,4 +151,46 @@ func TestPrewarmNoPrewarmerDegradesToNoop(t *testing.T) {
 	if err != nil || warmed != 0 {
 		t.Fatalf("models without the prewarm seam must no-op: %d %v", warmed, err)
 	}
+}
+
+// TestPrewarmConcurrentWithInvalidationNoRace 驱动预热与失效并发（-race 门）：
+// 预热读 generation 必须走锁内读取（currentAPIKeyRuntimeGeneration），
+// 与 ClearGatewayRuntimeCacheLocal 的代次递增并发时不产生数据竞争；
+// 结束后预热条目要么完整要么被失效代次拒绝（无半份条目）。
+func TestPrewarmConcurrentWithInvalidationNoRace(t *testing.T) {
+	models := newFakeModels()
+	hashes := make([]string, 0, 64)
+	for index := 0; index < 64; index++ {
+		hashes = append(hashes, "hash-race-"+strings.Repeat("x", index%8)+"-"+itoaPrewarm(index))
+	}
+	fake := &fakePrewarmer{fakeModels: models, hashes: hashes}
+	svc := newTestService(t, fake, newManualClock(), nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for index := 0; index < 200; index++ {
+			svc.ClearGatewayRuntimeCacheLocal(ClearOptions{})
+		}
+	}()
+	warmed, err := svc.PrewarmGatewayAPIKeyValidationCache(context.Background())
+	<-done
+	if err != nil {
+		t.Fatalf("prewarm under invalidation: %v", err)
+	}
+	if warmed < 0 || warmed > len(hashes) {
+		t.Fatalf("warmed out of range: %d", warmed)
+	}
+}
+
+func itoaPrewarm(value int) string {
+	if value == 0 {
+		return "0"
+	}
+	digits := []byte{}
+	for value > 0 {
+		digits = append([]byte{byte('0' + value%10)}, digits...)
+		value /= 10
+	}
+	return string(digits)
 }

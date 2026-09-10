@@ -70,10 +70,11 @@ type retryQueue[T any] struct {
 	callbacks   retryQueueCallbacks[T]
 	now         func() time.Time
 
-	mu      sync.Mutex
-	items   map[string]*retryQueueItem[T]
-	timer   *time.Timer
-	stopped bool
+	mu          sync.Mutex
+	items       map[string]*retryQueueItem[T]
+	timer       *time.Timer
+	stopped     bool
+	runningWait sync.WaitGroup
 }
 
 func newRetryQueue[T any](name string, retryDelays []int64, concurrency int,
@@ -147,6 +148,32 @@ func (q *retryQueue[T]) clear() {
 		q.timer = nil
 	}
 	q.mu.Unlock()
+}
+
+// stop mirrors stopAndDrain's scheduling half: refuse new enqueues, drop
+// every pending item and follow-up, and disarm the timer. Running items
+// finish their current invocation and are discarded without further
+// scheduling (runItem checks stopped before settling). The caller that needs
+// in-flight work to stop touching external resources owns the run context
+// cancellation (see StoreBalanceSnapshotCleaner.Close).
+func (q *retryQueue[T]) stop() {
+	q.mu.Lock()
+	if q.stopped {
+		q.mu.Unlock()
+		return
+	}
+	q.stopped = true
+	q.items = map[string]*retryQueueItem[T]{}
+	if q.timer != nil {
+		q.timer.Stop()
+		q.timer = nil
+	}
+	q.mu.Unlock()
+}
+
+// waitRunning blocks until every in-flight invocation returned.
+func (q *retryQueue[T]) waitRunning() {
+	q.runningWait.Wait()
 }
 
 // setClockForTest overrides the scheduling clock (tests only).
@@ -230,6 +257,8 @@ func (q *retryQueue[T]) armTimerLocked(delayMs int64) {
 // runItem mirrors runItem: execute, then settle the attempt (followUp
 // replacement, success delete, retry schedule or exhaustion).
 func (q *retryQueue[T]) runItem(queueItem *retryQueueItem[T]) {
+	q.runningWait.Add(1)
+	defer q.runningWait.Done()
 	err := q.run(queueItem.item, queueItem.attemptIndex)
 	success := err == nil
 

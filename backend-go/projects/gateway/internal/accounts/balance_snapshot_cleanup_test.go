@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -339,4 +340,106 @@ func waitCond(t *testing.T, cond func() bool, what string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("condition not met in time: %s", what)
+}
+
+// TestBalanceCleanupCloseRefusesAndCancels pins the shutdown lifecycle
+// (Node stopAndDrain contract): after Close the queue refuses new enqueues,
+// pending items never run, the lifetime context is cancelled (an in-flight
+// DELETE stops touching the pool), and Close returns only after running
+// invocations returned — the queue never touches a closed pool.
+func TestBalanceCleanupCloseRefusesAndCancels(t *testing.T) {
+	env := newCleanupCoordEnv(t)
+	env.failAlways()
+	// 慢删除：Close 与取消的竞态面。
+	started := make(chan struct{})
+	release := make(chan struct{})
+	env.cleaner.mu.Lock()
+	runErr := error(nil)
+	env.cleaner.queue = newRetryQueue[cleanupQueueItem]("account-balance-snapshot-cleanup",
+		cleanupRetryDelays, cleanupQueueConcurrency,
+		func(item cleanupQueueItem, attemptIndex int) error {
+			close(started)
+			<-release
+			return env.cleaner.lifetimeCtx.Err()
+		},
+		retryQueueCallbacks[cleanupQueueItem]{
+			OnSuccess: env.cleaner.onCleanupSuccess,
+			OnFailure: func(ev retryQueueEvent[cleanupQueueItem]) {
+				runErr = ev.Err
+				env.cleaner.onCleanupFailure(ev)
+			},
+			OnRetryScheduled: env.cleaner.onCleanupRetryScheduled,
+			OnExhausted:      env.cleaner.onCleanupExhausted,
+		})
+	env.cleaner.mu.Unlock()
+
+	env.cleaner.CleanupBalanceSnapshotAfterSave(BalanceSnapshotCleanupRequest{
+		AccountID: "acc-close", ConfigRevision: 3, Reason: BalanceSnapshotCleanupReasonConfigurationChanged,
+	})
+	<-started // 删除已在飞行中。
+
+	closed := make(chan struct{})
+	go func() {
+		env.cleaner.Close()
+		close(closed)
+	}()
+	// Close 等待在飞调用返回：取消 ctx 后释放删除，Close 才能完成。
+	<-time.After(20 * time.Millisecond)
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close must return after the in-flight invocation settled")
+	}
+	if runErr != nil && runErr != context.Canceled {
+		t.Fatalf("in-flight run must observe the cancelled lifetime ctx, got %v", runErr)
+	}
+	// Close 后拒绝新任务。
+	if env.cleaner.Queue().enqueue("acc-close-2", cleanupQueueItem{}, retryQueueEnqueueOptions{ReplaceExisting: true}) {
+		t.Fatal("enqueue after Close must be refused")
+	}
+	// 重复 Close 幂等。
+	env.cleaner.Close()
+}
+
+
+// TestRetryQueueStopDropsPending pins the stop contract at the queue level:
+// stop() refuses new enqueues, drops every pending item (they never run),
+// and the running item finishes verbatim without retry scheduling.
+func TestRetryQueueStopDropsPending(t *testing.T) {
+	ran := make(chan string, 4)
+	blockerStarted := make(chan struct{})
+	release := make(chan struct{})
+	q := newRetryQueue[string]("test", []int64{1, 1, 1}, 1,
+		func(item string, attemptIndex int) error {
+			if item == "blocker" {
+				close(blockerStarted)
+				<-release
+			}
+			ran <- item
+			return nil
+		}, retryQueueCallbacks[string]{})
+	q.enqueue("b", "blocker", retryQueueEnqueueOptions{})
+	<-blockerStarted
+	if !q.enqueue("a", "pending-item", retryQueueEnqueueOptions{}) {
+		t.Fatal("enqueue while running must be accepted")
+	}
+	// stop 先于 release：pending 被丢弃，release 只放行在飞项收尾。
+	q.stop()
+	close(release)
+	q.waitRunning()
+	close(ran)
+	got := []string{}
+	for item := range ran {
+		got = append(got, item)
+	}
+	if len(got) != 1 || got[0] != "blocker" {
+		t.Fatalf("stop must drop pending items: %v", got)
+	}
+	if pending, running := q.counts(); pending != 0 || running != 0 {
+		t.Fatalf("stopped queue must report empty: pending=%d running=%d", pending, running)
+	}
+	if q.enqueue("c", "after-stop", retryQueueEnqueueOptions{}) {
+		t.Fatal("enqueue after stop must be refused")
+	}
 }

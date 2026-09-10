@@ -612,7 +612,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// account-balance-snapshot-cleanup.service.ts:220-224）：PATCH 均衡身份
 	// 变化后的旧 relay_balance 快照删除经本 store 句柄执行（PG 走 juhe_stats
 	// schema 限定，SQLite 共享文件直名，同 M11 快照读取面）。
-	accountStore.SetBalanceSnapshotCleaner(accounts.NewStoreBalanceSnapshotCleaner(accountStore))
+	balanceSnapshotCleaner := accounts.NewStoreBalanceSnapshotCleaner(accountStore)
+	accountStore.SetBalanceSnapshotCleaner(balanceSnapshotCleaner)
+	// 关停生命周期（Node stopAndDrain 语义）：shutdowns 链先于 stats/business
+	// 句柄关闭执行（composition.Shutdown 顺序），Close 停止调度、取消在飞
+	// DELETE 并等待返回，保证队列不触碰已关闭的连接池。
+	composed.shutdowns = append(composed.shutdowns, balanceSnapshotCleaner.Close)
 	// SQLite account deletion performs the Node per-grant authorization
 	// runtime sync only through this composition-root port; PostgreSQL keeps
 	// its existing bulk transaction path inside accounts.Delete.

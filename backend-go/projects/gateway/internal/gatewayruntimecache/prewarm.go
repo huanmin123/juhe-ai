@@ -34,7 +34,7 @@ func (s *Service) PrewarmGatewayAPIKeyValidationCache(ctx context.Context) (int,
 	// Node opens with the forced redis invalidation sync before snapshotting
 	// the generation.
 	s.syncInvalidationsForRuntime(ctx)
-	generation := s.apiKeyRuntimeGeneration
+	generation := s.currentAPIKeyRuntimeGeneration()
 	hashes, err := prewarmer.ListActiveGatewayAPIKeyHashes(ctx)
 	if err != nil {
 		return 0, err
