@@ -120,10 +120,13 @@ func NewStoreBalanceSnapshotCleaner(store *Store) *StoreBalanceSnapshotCleaner {
 	cleaner.queue = newRetryQueue[cleanupQueueItem]("account-balance-snapshot-cleanup",
 		cleanupRetryDelays, cleanupQueueConcurrency,
 		func(item cleanupQueueItem, attemptIndex int) error {
-			if err := ctx.Err(); err != nil {
+			cleaner.mu.Lock()
+			lifetime := cleaner.lifetimeCtx
+			cleaner.mu.Unlock()
+			if err := lifetime.Err(); err != nil {
 				return err
 			}
-			return cleaner.deleteSupersededSnapshot(ctx, item.request)
+			return cleaner.deleteSupersededSnapshot(lifetime, item.request)
 		},
 		retryQueueCallbacks[cleanupQueueItem]{
 			OnSuccess:        cleaner.onCleanupSuccess,
@@ -156,6 +159,12 @@ func (c *StoreBalanceSnapshotCleaner) Close() {
 func (c *StoreBalanceSnapshotCleaner) SetClockForTest(now func() time.Time) {
 	c.now = now
 	c.mu.Lock()
+	// 重建 queue 前先重置生命周期（测试路径可能多次重建）。
+	if c.cancel != nil {
+		c.cancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.lifetimeCtx, c.cancel = ctx, cancel
 	c.queue = newRetryQueue[cleanupQueueItem]("account-balance-snapshot-cleanup",
 		cleanupRetryDelays, cleanupQueueConcurrency,
 		func(item cleanupQueueItem, attemptIndex int) error {
