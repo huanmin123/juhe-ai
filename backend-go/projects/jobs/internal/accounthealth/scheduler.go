@@ -678,6 +678,20 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 		}
 		return "cooldown_retest", *input.Eligibility.CooldownUntil, true
 	}
+	// The business account row is the source of truth for the current
+	// eligibility epoch. A previous projector may have advanced jobs
+	// current_state to active while its business-side recovery CAS was stale;
+	// treating this split-brain row as ordinary health work emits
+	// health_success with expectedAccountStatus=active and can never repair the
+	// still-temporary_unavailable business row. Resume bounded cooldown
+	// recovery from the business fence so a successful probe can reconcile it.
+	if (input.Eligibility.AccountStatus == "temporary_unavailable" || input.Eligibility.AccountStatus == "rate_limited") &&
+		state.AccountStatus != input.Eligibility.AccountStatus {
+		if !validCooldownFence(input.Cooldown, input) || input.Eligibility.CooldownUntil == nil {
+			return "", time.Time{}, false
+		}
+		return "cooldown_retest", *input.Eligibility.CooldownUntil, true
+	}
 	if state.NextDueAt == nil {
 		return "health", now, true
 	}
@@ -708,7 +722,7 @@ func applyOutcomeDecision(outcome *Outcome, input Input, prior CurrentState, pri
 		priorFound = false
 	}
 	priorStatus := input.Eligibility.AccountStatus
-	if priorFound && prior.AccountStatus != "" {
+	if priorFound && prior.AccountStatus != "" && prior.AccountStatus == input.Eligibility.AccountStatus {
 		priorStatus = prior.AccountStatus
 	}
 	if kind == "cooldown_retest" {
