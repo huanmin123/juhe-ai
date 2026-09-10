@@ -1,6 +1,8 @@
 package openaicompat
 
 import (
+	"bytes"
+	"io"
 	"strings"
 	"time"
 )
@@ -654,17 +656,24 @@ func TransformAnthropicMessagesJSONBufferToResponsesJSON(body []byte, model, pre
 // TransformAnthropicMessagesSseBufferToResponsesSse mirrors
 // transformAnthropicMessagesSseToResponsesSse (plain plan).
 func TransformAnthropicMessagesSseBufferToResponsesSse(body []byte, model, previousResponseID string) []byte {
+	var output bytes.Buffer
+	_ = PumpAnthropicMessagesSseToResponsesSse(bytes.NewReader(body), &output, model, previousResponseID)
+	return output.Bytes()
+}
+
+// PumpAnthropicMessagesSseToResponsesSse 是
+// TransformAnthropicMessagesSseBufferToResponsesSse 的逐事件增量变体：按事件
+// 边界增量消费 src，渲染事件立即写入 dst；事件处理与收尾语义与 buffer 版本
+// 逐行一致。
+func PumpAnthropicMessagesSseToResponsesSse(src io.Reader, dst io.Writer, model, previousResponseID string) error {
 	state := NewAnthropicResponsesStreamState(model, previousResponseID)
-	output := strings.Builder{}
-	for _, eventText := range codexBridgeSplitCompleteSseEvents(string(body)) {
-		for _, rendered := range state.ProcessAnthropicEvent(eventText) {
-			output.WriteString(rendered)
-		}
+	return PumpBridgeSseTransform(src, dst, func(eventText string) []string {
+		rendered := state.ProcessAnthropicEvent(eventText)
 		state.NotifyResponsesCompletion()
-	}
-	for _, rendered := range state.FinishAnthropicResponsesStream() {
-		output.WriteString(rendered)
-	}
-	state.NotifyResponsesCompletion()
-	return []byte(output.String())
+		return rendered
+	}, func() []string {
+		rendered := state.FinishAnthropicResponsesStream()
+		state.NotifyResponsesCompletion()
+		return rendered
+	})
 }

@@ -761,6 +761,10 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				c.concurrencySlot.MarkFirstOutput()
 			}
 
+			// 每次尝试一个模型归因 slot：观察钩子在 fetch 后、转换前挂到原始
+			// 上游流（Node upstream-attempts.ts:180-198），成功结果经 loop
+			// 状态带回调用方（chain 响应面绑定响应快照）。
+			upstreamResponseModelSlot := &UpstreamResponseModelSlot{}
 			response, attemptErr := e.PerformUpstreamRequestAttempt(ctx, AttemptInput{
 				Req:                        in.args.Req,
 				Account:                    c.account,
@@ -775,6 +779,7 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				OnFirstByteDeadline:        onFirstByteDeadline,
 				Signal:                     attemptSignal,
 				RequestClientCompatibility: in.args.RequestClientCompatibility,
+				UpstreamResponseModelSlot:  upstreamResponseModelSlot,
 			})
 
 			if attemptErr == nil {
@@ -797,6 +802,7 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 					onFirstByteDeadline:           onFirstByteDeadline,
 					markFirstOutput:               markFirstOutput,
 					dispatchAttemptIdentity:       dispatchAttemptIdentity,
+					upstreamResponseModelSlot:     upstreamResponseModelSlot,
 				})
 				if err != nil {
 					return attemptLoopExhausted, attemptStopNone, err
@@ -928,6 +934,9 @@ type upstreamAttemptResponseContext struct {
 	onFirstByteDeadline           FirstByteDeadlineHandler
 	markFirstOutput               func()
 	dispatchAttemptIdentity       gatewayrouting.GatewayDispatchAttemptIdentity
+	// upstreamResponseModelSlot 携带本尝试的原始上游模型归因，写入成功结果
+	//（UpstreamDispatchResult.UpstreamResponseModelSlot）。
+	upstreamResponseModelSlot *UpstreamResponseModelSlot
 }
 
 // errorKind / stop tags for handleUpstreamAttemptError.

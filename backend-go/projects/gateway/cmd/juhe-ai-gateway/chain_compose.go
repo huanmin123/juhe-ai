@@ -34,6 +34,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayobs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -421,6 +422,14 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// B-4（BUG-0175）接线：跨协议桥响应面（Node transformUpstreamResponse
 	// driver 链）——桥响应转换挂在 attempt 尾部，非桥请求保持直通。
 	engine.ResponseTransformer = newChainBridgeResponseTransformer()
+	// P2 接线：上游响应模型观察挂在 attempt 内、桥转换之前的原始上游流上
+	//（Node upstream-attempts.ts:180-210 response =
+	// observeUpstreamResponseModelResponse(response, observation) 先于
+	// transformGatewayUpstreamResponseForAccount），协议按上游账户解析——桥
+	// 路径归因的是上游原生模型（modelVersion / 上游 model），不是转换后的
+	// 客户端形态；观察值经 UpstreamDispatchResult.UpstreamResponseModelSlot
+	// 带回 chain 响应面发布。
+	engine.ObserveUpstreamResponseModel = newChainUpstreamResponseModelObserver()
 	// D-192/D-146（BUG-0175）接线：请求期上游 URL 安全（DNS resolve-all +
 	// 钉扎）与全局并发槽。此前 engine.Transport 保持零值——Governor=Nop、
 	// URLPolicy=Passthrough，UnsafeResolvedUpstreamURLError 有消费端无
@@ -600,6 +609,29 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		upstreamClientPool.CloseIdleConnections()
 	}
 	return chain, shutdown, nil
+}
+
+// newChainUpstreamResponseModelObserver 把 gatewayobs 的上游响应模型观察装配
+// 成 dispatch 引擎钩子：观察器在 fetch 之后、桥转换之前挂到原始上游流
+// （Node upstream-attempts.ts:180-210），协议按上游账户解析，观察器不改写
+// 字节，干净 EOF / 提前关闭时把观察到的模型交给 publish（即本尝试的
+// UpstreamResponseModelSlot.Set）。
+func newChainUpstreamResponseModelObserver() func(*gatewaydispatch.GatewayUpstreamResponse, gatewaydispatch.UpstreamResponseModelObservationInfo, func(string)) {
+	return func(response *gatewaydispatch.GatewayUpstreamResponse, info gatewaydispatch.UpstreamResponseModelObservationInfo, publish func(model string)) {
+		if response == nil || response.Body == nil || publish == nil {
+			return
+		}
+		observation := gatewayobs.CreateUpstreamResponseModelObservation(gatewayobs.UpstreamResponseModelObserverOptions{
+			Protocol: gatewayobs.UpstreamResponseModelProtocolForRequest(gatewayobs.UpstreamResponseModelRequestInfo{
+				Headers:      info.Headers,
+				UpstreamURL:  info.UpstreamURL,
+				ProviderCode: info.ProviderCode,
+				ProtocolCode: info.ProtocolCode,
+			}),
+			SSE: info.SSE,
+		})
+		response.Body = gatewayobs.ObserveUpstreamResponseModelBodyPublishing(response.Body, observation, publish)
+	}
 }
 
 func joinChinese(values []string) string {

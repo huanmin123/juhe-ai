@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -26,6 +27,10 @@ type AttemptInput struct {
 	RequestClientCompatibility string
 	FirstByteDeadlineMs        *int64
 	OnFirstByteDeadline        FirstByteDeadlineHandler
+	// UpstreamResponseModelSlot 是本次尝试的原始上游模型归因 slot（dispatch
+	// loop 每次 attempt 创建；观察钩子经 Set 发布、成功结果带回调用方）。
+	// nil = 调用方不消费归因，跳过观察。
+	UpstreamResponseModelSlot *UpstreamResponseModelSlot
 }
 
 // PerformUpstreamRequestAttempt mirrors performUpstreamRequestAttempt.
@@ -40,6 +45,22 @@ func (e *Engine) PerformUpstreamRequestAttempt(ctx context.Context, input Attemp
 			err = &PrimaryStartedGatewayTransportError{Err: err}
 		}
 		return nil, err
+	}
+
+	// Node upstream-attempts.ts:180-198: the model observation decorates the
+	// raw upstream response BEFORE any bridge transform — the attribution must
+	// read the upstream-native payload (modelVersion / upstream model), not the
+	// transformed client shape. The hook implementation wraps response.Body;
+	// publish lands in this attempt's slot.
+	if e.ObserveUpstreamResponseModel != nil && input.UpstreamResponseModelSlot != nil {
+		e.ObserveUpstreamResponseModel(response, UpstreamResponseModelObservationInfo{
+			Headers:      headers,
+			UpstreamURL:  input.UpstreamURL,
+			ProviderCode: input.Account.ProviderCode,
+			ProtocolCode: input.Account.ProtocolCode,
+			SSE: IsEffectiveOpenAIStreamRequest(input.Req, headerAccountOf(input.Account)) ||
+				strings.Contains(strings.ToLower(response.ContentType()), "text/event-stream"),
+		}, input.UpstreamResponseModelSlot.Set)
 	}
 
 	return e.transformUpstreamResponseForAccount(ctx, input, headers, upstreamBody, response)

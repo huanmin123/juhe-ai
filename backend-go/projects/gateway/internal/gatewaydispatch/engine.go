@@ -104,6 +104,15 @@ type Engine struct {
 	// driver 链；UpstreamResponseTransformer 端口定义在 ports.go）。nil 时上游
 	// 响应按协议直通（B-4 之前的透传行为）。
 	ResponseTransformer UpstreamResponseTransformer
+	// ObserveUpstreamResponseModel 挂上游响应模型观察（Node
+	// upstream-attempts.ts:180-198：fetch 之后、transform 之前挂
+	// observeUpstreamResponseModelResponse，观察原始上游流而非转换后的客户端
+	// 形态）。实现方包装 response.Body（观察器不改写字节），publish 在干净
+	// EOF / 提前关闭时收到观察到的模型；publish 目标是本次尝试的
+	// UpstreamResponseModelSlot.Set（engine 侧不持有 slot）。nil 时不观察。
+	// 依赖倒置：gatewaydispatch 不 import 观察实现包，组合根用 gatewayobs
+	// 装配本钩子。
+	ObserveUpstreamResponseModel func(response *GatewayUpstreamResponse, info UpstreamResponseModelObservationInfo, publish func(model string))
 	// KeyRotation 轮转计数器端口（Node Redis 账户 Key 轮换计数器，
 	// account-api-key-rotation.ts:269-299；B-3，BUG-0174）。nil 时回落包级
 	// 进程内计数器 defaultAPIKeyRotationCounter；组合根下一波接 Redis 实现。

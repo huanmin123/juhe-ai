@@ -55,6 +55,60 @@ type UpstreamDispatchResult struct {
 	AccountLockObservation     *AccountLockObservation
 	AccountLockRetryLease      *AccountLockRetryLease
 	ReleaseAccountLockRetryLease func(scheduleNextRetry bool) bool
+	// UpstreamResponseModelSlot 携带本尝试的原始上游模型归因（Node
+	// upstream-attempts.ts:180-198 观察器在 fetch 后、transform 前挂载，观察
+	// 的是原始上游流而非转换后的客户端形态）。nil = 引擎未装配观察钩子。
+	UpstreamResponseModelSlot *UpstreamResponseModelSlot
+}
+
+// UpstreamResponseModelSlot 携带单次上游尝试观察到的原始响应模型：dispatch
+// 侧在 fetch 之后、桥转换之前把观察钩子挂到原始上游流，观察器在干净 EOF /
+// 提前关闭时经 Set 发布；调用方（chain 响应面）经 Bind 把发布接入响应快照
+// （发布发生在下游消费完成之前，与 Node getter 惰性求值时序一致）。Set /
+// Get / Bind 均 nil 安全。
+type UpstreamResponseModelSlot struct {
+	mu       sync.Mutex
+	model    string
+	consumer func(model string)
+}
+
+// Set 发布观察到的模型；已绑定消费方时同步转发（互斥锁提供 happens-before）。
+func (s *UpstreamResponseModelSlot) Set(model string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.model = model
+	consumer := s.consumer
+	s.mu.Unlock()
+	if consumer != nil {
+		consumer(model)
+	}
+}
+
+// Get 返回已观察到的模型（未发布时为空串）。
+func (s *UpstreamResponseModelSlot) Get() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.model
+}
+
+// Bind 绑定模型发布消费方（响应快照的 UpstreamResponseModel 字段）。发布
+// 先于绑定时立即补发一次，保证绑定后读取必然看到已发布值。
+func (s *UpstreamResponseModelSlot) Bind(consumer func(model string)) {
+	if s == nil || consumer == nil {
+		return
+	}
+	s.mu.Lock()
+	s.consumer = consumer
+	model := s.model
+	s.mu.Unlock()
+	if model != "" {
+		consumer(model)
+	}
 }
 
 // RequestCoordinationContext mirrors GatewayUpstreamRequestCoordinationContext.

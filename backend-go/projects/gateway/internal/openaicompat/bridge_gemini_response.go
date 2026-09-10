@@ -1,7 +1,9 @@
 package openaicompat
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"time"
 )
@@ -839,22 +841,28 @@ func TransformGeminiJSONBufferToDownstreamJSON(body []byte, protocol GeminiNativ
 // TransformGeminiSseBufferToDownstreamSse mirrors transformGeminiSseToDownstreamSse
 // for one buffered Gemini streamGenerateContent SSE body.
 func TransformGeminiSseBufferToDownstreamSse(body []byte, protocol GeminiNativeDownstreamProtocol, model string) []byte {
+	var output bytes.Buffer
+	_ = PumpGeminiSseToDownstreamSse(bytes.NewReader(body), &output, protocol, model)
+	return output.Bytes()
+}
+
+// PumpGeminiSseToDownstreamSse 是 TransformGeminiSseBufferToDownstreamSse 的
+// 逐事件增量变体：按事件边界增量消费 src，渲染事件立即写入 dst，EOF 后补
+// RenderSseDone；事件处理与收尾语义与 buffer 版本逐行一致。
+func PumpGeminiSseToDownstreamSse(src io.Reader, dst io.Writer, protocol GeminiNativeDownstreamProtocol, model string) error {
 	state := NewGeminiNativeSseRenderState(protocol, model)
-	output := strings.Builder{}
-	for _, eventText := range codexBridgeSplitCompleteSseEvents(string(body)) {
+	return PumpBridgeSseTransform(src, dst, func(eventText string) []string {
 		event := ParseBridgeSseEvent(eventText)
 		if event.DataText == "" || event.DataText == "[DONE]" {
-			continue
+			return nil
 		}
 		if event.Data == nil {
-			continue
+			return nil
 		}
-		for _, rendered := range state.RenderSseSummary(SummarizeGeminiResponse(event.Data)) {
-			output.WriteString(rendered)
-		}
-	}
-	output.WriteString(state.RenderSseDone())
-	return []byte(output.String())
+		return state.RenderSseSummary(SummarizeGeminiResponse(event.Data))
+	}, func() []string {
+		return []string{state.RenderSseDone()}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -887,16 +895,22 @@ func UnwrapGeminiCodeAssistPayload(payload string) string {
 // UnwrapGeminiCodeAssistSseBuffer mirrors unwrapGeminiCodeAssistSse: every SSE
 // data payload is unwrapped in place, the event framing kept.
 func UnwrapGeminiCodeAssistSseBuffer(body []byte) []byte {
-	output := strings.Builder{}
-	for _, eventText := range codexBridgeSplitCompleteSseEvents(string(body)) {
+	var output bytes.Buffer
+	_ = PumpUnwrapGeminiCodeAssistSse(bytes.NewReader(body), &output)
+	return output.Bytes()
+}
+
+// PumpUnwrapGeminiCodeAssistSse 是 UnwrapGeminiCodeAssistSseBuffer 的逐事件
+// 增量变体：每个事件的 {response:...} 包装在事件边界到达时即时解开写入 dst，
+// 事件改写规则与 buffer 版本逐行一致。
+func PumpUnwrapGeminiCodeAssistSse(src io.Reader, dst io.Writer) error {
+	return PumpBridgeSseTransform(src, dst, func(eventText string) []string {
 		payload := geminiCodeAssistSseDataPayload(eventText)
 		if payload == "" || payload == "[DONE]" {
-			output.WriteString(strings.TrimRight(eventText, "\n") + "\n\n")
-			continue
+			return []string{strings.TrimRight(eventText, "\n") + "\n\n"}
 		}
-		output.WriteString("data: " + UnwrapGeminiCodeAssistPayload(payload) + "\n\n")
-	}
-	return []byte(output.String())
+		return []string{"data: " + UnwrapGeminiCodeAssistPayload(payload) + "\n\n"}
+	}, nil)
 }
 
 // CollectGeminiCodeAssistSseBuffer mirrors collectGeminiCodeAssistSse:

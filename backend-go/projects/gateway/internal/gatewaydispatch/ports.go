@@ -76,6 +76,18 @@ type UpstreamResponseTransformer interface {
 	TransformUpstreamResponseForAccount(input UpstreamResponseTransformInput) (*GatewayUpstreamResponse, error)
 }
 
+// UpstreamResponseModelObservationInfo 携带上游响应模型观察的协议解析输入
+// （Node upstreamResponseModelProtocolForRequest 入参投影 + SSE 判定结果）。
+// Headers 是发往上游的请求头（Node 同名入参），UpstreamURL / ProviderCode /
+// ProtocolCode 按本次尝试的上游账户解析。
+type UpstreamResponseModelObservationInfo struct {
+	Headers      http.Header
+	UpstreamURL  string
+	ProviderCode string
+	ProtocolCode string
+	SSE          bool
+}
+
 // UsageIdentity mirrors the identity triple passed to the driver.
 type UsageIdentity struct {
 	SystemAccountID string

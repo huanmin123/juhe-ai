@@ -26,7 +26,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -39,7 +38,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayobs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
@@ -335,30 +333,21 @@ func (c *gatewayChain) handleUpstreamResponse(
 	// text/event-stream content type) with a gateway event.
 	handleAsStream := shouldHandleOpenAIUpstreamResponseAsStreamWithStatus(
 		upstream.Status(), upstream.ContentType(), streamRequest)
-	// D-97（BUG-0175）：上游响应模型观察器接线。Go 的响应变换由 driver 切片
-	// 承接（gatewaydispatch 不再做装饰），观察在组合根挂到最终响应体上：
-	// 分片流经观察器，干净 EOF 时把 observation.Model() 发布进响应快照的
-	// UpstreamResponseModel 字段——发布发生在管道收到 EOF 之前（发送先于
-	// 接收），finalization 读取字段时值已就位，与 Node getter 的惰性求值
-	// 时序一致。
-	observedBody := io.Reader(upstream.Body)
-	upstreamModelObservation := gatewayobs.CreateUpstreamResponseModelObservation(gatewayobs.UpstreamResponseModelObserverOptions{
-		Protocol: gatewayobs.UpstreamResponseModelProtocolForRequest(gatewayobs.UpstreamResponseModelRequestInfo{
-			Headers:      upstream.Header,
-			UpstreamURL:  dispatched.UpstreamURL,
-			ProviderCode: dispatched.Account.ProviderCode,
-			ProtocolCode: dispatched.Account.ProtocolCode,
-		}),
-		SSE: gatewaydispatch.IsEffectiveOpenAIStreamRequest(req, chainUpstreamHeaderAccountOf(dispatched.Account)) ||
-			strings.Contains(strings.ToLower(upstream.ContentType()), "text/event-stream"),
-	})
+	// D-97（BUG-0175）+ P2：上游响应模型归因。观察器已在 dispatch attempt 内、
+	// 桥转换之前挂到原始上游流（engine.ObserveUpstreamResponseModel 钩子，
+	// Node upstream-attempts.ts:180-210 观察先于 transform），归因的是上游
+	// 原生模型（modelVersion / 上游 model），不是转换后的客户端形态。这里把
+	// slot 的发布接入响应快照：发布发生在原始上游流 EOF / 提前关闭时——先于
+	// 下游消费完成，finalization 读取字段时值已就位，与 Node getter 的惰性
+	// 求值时序一致。
 	responseSnapshot := &gatewayresponse.GatewayUpstreamResponse{
 		Status: upstream.Status(),
 		Header: upstream.Header,
 	}
-	observedBody = gatewayobs.ObserveUpstreamResponseModelBodyPublishing(upstream.Body, upstreamModelObservation,
-		func(model string) { responseSnapshot.UpstreamResponseModel = model })
-	responseSnapshot.Body = gatewayresponse.NewReaderUpstreamBody(ctx, observedBody)
+	dispatched.UpstreamResponseModelSlot.Bind(func(model string) {
+		responseSnapshot.UpstreamResponseModel = model
+	})
+	responseSnapshot.Body = gatewayresponse.NewReaderUpstreamBody(ctx, upstream.Body)
 	input := &gatewayresponse.HandleUpstreamResponseInput{
 		Req:                        req,
 		Downstream:                 gatewayresponse.StreamDownstream{Res: res},

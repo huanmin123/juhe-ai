@@ -1,7 +1,9 @@
 package openaicompat
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"math/rand"
 	"strings"
 	"time"
@@ -957,19 +959,27 @@ func codexChatUsageToResponsesUsage(usage map[string]any) map[string]any {
 // TransformChatCompletionsSseBufferToResponsesSse consumes a buffered chat
 // SSE body and renders the Responses SSE event stream.
 func TransformChatCompletionsSseBufferToResponsesSse(body []byte, options CodexResponsesChatBridgeTransformOptions) []byte {
+	var output bytes.Buffer
+	_ = PumpChatCompletionsSseToResponsesSse(bytes.NewReader(body), &output, options)
+	return output.Bytes()
+}
+
+// PumpChatCompletionsSseToResponsesSse 是 TransformChatCompletionsSseBuffer-
+// ToResponsesSse 的逐事件增量变体：经 PumpBridgeSseTransform 按事件边界增量
+// 消费 src，每个事件渲染后立即写入 dst（上游未 EOF 时下游已可读到已转换的
+// 首事件），事件处理与收尾（Finish + completion 通知）语义与 buffer 版本
+// 逐行一致。
+func PumpChatCompletionsSseToResponsesSse(src io.Reader, dst io.Writer, options CodexResponsesChatBridgeTransformOptions) error {
 	state := NewCodexChatToResponsesState(options)
-	output := strings.Builder{}
-	for _, eventText := range codexBridgeSplitCompleteSseEvents(string(body)) {
-		for _, rendered := range state.ProcessChatSseEvent(eventText) {
-			output.WriteString(rendered)
-		}
+	return PumpBridgeSseTransform(src, dst, func(eventText string) []string {
+		rendered := state.ProcessChatSseEvent(eventText)
 		state.NotifyCodexResponsesChatBridgeCompletion()
-	}
-	for _, rendered := range state.Finish() {
-		output.WriteString(rendered)
-	}
-	state.NotifyCodexResponsesChatBridgeCompletion()
-	return []byte(output.String())
+		return rendered
+	}, func() []string {
+		rendered := state.Finish()
+		state.NotifyCodexResponsesChatBridgeCompletion()
+		return rendered
+	})
 }
 
 // TransformChatCompletionsSseBufferToResponsesJSON consumes a buffered chat

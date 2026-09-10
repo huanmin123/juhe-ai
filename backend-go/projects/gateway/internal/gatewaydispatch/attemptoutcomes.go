@@ -97,6 +97,7 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			AccountLockObservation:        *in.activeAccountLockObservation,
 			AccountLockRetryLease:         *in.activeAccountLockRetryLease,
 			ReleaseAccountLockRetryLease:  accountLockLeaseRelease,
+			UpstreamResponseModelSlot:     c.upstreamResponseModelSlot,
 		}
 		return responseKindSelected, responseStopNone, nil
 	}
@@ -182,6 +183,7 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			AccountLockObservation:        *in.activeAccountLockObservation,
 			AccountLockRetryLease:         *in.activeAccountLockRetryLease,
 			ReleaseAccountLockRetryLease:  accountLockLeaseRelease,
+			UpstreamResponseModelSlot:     c.upstreamResponseModelSlot,
 		}
 		return responseKindSelected, responseStopNone, nil
 	}

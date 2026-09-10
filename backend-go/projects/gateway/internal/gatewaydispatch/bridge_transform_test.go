@@ -82,7 +82,7 @@ func TestPerformUpstreamRequestAttemptAppliesResponseTransformer(t *testing.T) {
 		Account: AccountCandidate{ID: "acc-1"},
 		UpstreamURL: upstream.URL,
 		Headers: http.Header{},
-		TimeoutProfile: gatewayrouting.GatewayTimeoutProfile{},
+		TimeoutProfile: gatewayrouting.GatewayTimeoutProfile{TimeoutsDisabled: true},
 	})
 	if err != nil {
 		t.Fatalf("attempt: %v", err)
@@ -115,7 +115,7 @@ func TestPerformUpstreamRequestAttemptNilTransformerKeepsRaw(t *testing.T) {
 		Account:        AccountCandidate{ID: "acc-1"},
 		UpstreamURL:    upstream.URL,
 		Headers:        http.Header{},
-		TimeoutProfile: gatewayrouting.GatewayTimeoutProfile{},
+		TimeoutProfile: gatewayrouting.GatewayTimeoutProfile{TimeoutsDisabled: true},
 	})
 	if err != nil {
 		t.Fatalf("attempt: %v", err)
@@ -141,7 +141,7 @@ func TestPerformUpstreamRequestAttemptTransformerPassThrough(t *testing.T) {
 		Account:        AccountCandidate{ID: "acc-1"},
 		UpstreamURL:    upstream.URL,
 		Headers:        http.Header{},
-		TimeoutProfile: gatewayrouting.GatewayTimeoutProfile{},
+		TimeoutProfile: gatewayrouting.GatewayTimeoutProfile{TimeoutsDisabled: true},
 	})
 	if err != nil {
 		t.Fatalf("attempt: %v", err)
@@ -166,7 +166,7 @@ func TestPerformUpstreamRequestAttemptTransformerErrorSurfaces(t *testing.T) {
 		Account:        AccountCandidate{ID: "acc-1"},
 		UpstreamURL:    upstream.URL,
 		Headers:        http.Header{},
-		TimeoutProfile: gatewayrouting.GatewayTimeoutProfile{},
+		TimeoutProfile: gatewayrouting.GatewayTimeoutProfile{TimeoutsDisabled: true},
 	})
 	if err != errFakeTransform {
 		t.Fatalf("err = %v, want errFakeTransform", err)
