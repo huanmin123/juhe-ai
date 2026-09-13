@@ -1,0 +1,1 @@
+const w1GeminiSSE = "data: \\"candidates\\":[\\"content\\":{\\"parts\\":[{\\"text\\":\\"hi\\"}]}}]}\n\n"
