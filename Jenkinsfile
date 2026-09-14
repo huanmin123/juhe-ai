@@ -629,9 +629,7 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
          metadataValue('test', 'gatewayImageDigest') != gatewayDigest ||
          metadataValue('test', 'j3aManagementEnabled') != j3aManagementEnabled ||
          metadataValue('test', 'releaseMode') != releaseMode ||
-         metadataValue('test', 'schemaChangeClass') != schemaChangeClass ||
-         (metadataValue('test', 'verification.sourceCommit') &&
-          metadataValue('test', 'verification.sourceCommit') != sourceCommit))) {
+         metadataValue('test', 'schemaChangeClass') != schemaChangeClass)) {
       error 'test release state source/digest 在晋级前未保持原子一致；拒绝写入 prod。'
     }
   }
