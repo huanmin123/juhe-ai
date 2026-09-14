@@ -740,6 +740,29 @@ func TestNextDueBusinessCooldownWaitsUntilFutureDue(t *testing.T) {
 	}
 }
 
+func TestNextDueBusinessActiveReconcilesStaleCooldownState(t *testing.T) {
+	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	input := testInput("https://api.example.com", "chat_json")
+	input.InputVersion = 1
+	input.ConfigRevision = 5
+	input.DispatchRevision = 7
+	input.IssuedAt = now
+	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureRetryMS: int64(time.Minute / time.Millisecond)}
+	state := CurrentState{InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, AccountStatus: "temporary_unavailable", NextDueAt: ptrTime(now.Add(time.Hour))}
+
+	kind, due, ok := nextDue(input, state, true, now)
+	if !ok || kind != "health" || !due.Equal(now) {
+		t.Fatalf("business active must reconcile stale jobs cooldown state: kind=%q due=%s ok=%t", kind, due, ok)
+	}
+
+	outcome := Outcome{Outcome: OutcomeSuccess, ObservedAt: now, StatusCode: 200}
+	applyOutcomeDecision(&outcome, input, state, true, kind)
+	if outcome.AccountStatus != "active" || outcome.Projection == nil || outcome.Projection.TransitionKind != "health_success" || outcome.Projection.ExpectedAccountStatus != "active" {
+		t.Fatalf("stale cooldown state must produce a normal active health projection: %#v", outcome)
+	}
+}
+
 func TestCooldownNeutralDeferUsesObservationGenerationWindow(t *testing.T) {
 	start := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
 	input := testInput("https://api.example.com", "chat_json")

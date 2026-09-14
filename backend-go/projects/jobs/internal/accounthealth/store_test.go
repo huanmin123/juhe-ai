@@ -381,6 +381,36 @@ func TestSQLiteCurrentStateCASAppliesNewerRevisionAndRejectsOlderOutcome(t *test
 	assertStoredOutcomeProjectionStripped(t, store, dispatchMismatch.RequestID)
 }
 
+func TestSQLiteCurrentStateCASReconcilesBusinessActiveFromStaleCooldownState(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Round(0)
+	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "stale-cooldown-generation"}
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "stale-cooldown", RequestID: "stale-cooldown-request", AccountID: "account-business-active",
+		Outcome: OutcomeNeutral, ObservedAt: now, InputVersion: 1, ConfigRevision: 2, DispatchRevision: 3,
+		AccountStatus: "temporary_unavailable", NextDueAt: ptrTime(now.Add(time.Minute)), CooldownFence: fence,
+	})
+
+	nextDue := now.Add(time.Hour)
+	health := Outcome{
+		OutcomeID: "reconciled-health", RequestID: "reconciled-health-request", AccountID: "account-business-active",
+		Outcome: OutcomeSuccess, ObservedAt: now.Add(time.Second), InputVersion: 1, ConfigRevision: 2, DispatchRevision: 3,
+		AccountStatus: "active", StatusCode: 200, NextDueAt: &nextDue,
+		Projection: &Projection{
+			TargetAccountID: "account-business-active", TransitionKind: "health_success", InputVersion: 1,
+			ConfigRevision: 2, DispatchRevision: 3, ExpectedAccountStatus: "active",
+		},
+	}
+	appendStoreOutcome(t, store, lease, health)
+
+	state, found, err := store.LoadCurrentState(ctx, health.AccountID)
+	if err != nil || !found || state.OutcomeID != health.OutcomeID || state.AccountStatus != "active" || state.CooldownFence != nil {
+		t.Fatalf("business-active projection must clear stale jobs cooldown state: found=%t state=%#v err=%v", found, state, err)
+	}
+	assertStoredOutcomeProjectionPresent(t, store, health.RequestID)
+}
+
 func TestSQLiteTaskFailureWithoutProjectionCannotResetCurrentState(t *testing.T) {
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()

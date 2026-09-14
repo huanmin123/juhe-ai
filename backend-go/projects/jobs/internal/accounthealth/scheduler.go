@@ -696,6 +696,16 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 		// that has not expired yet.
 		return "cooldown_retest", reconciliationDue(*input.Eligibility.CooldownUntil, now), true
 	}
+	// The business account row is authoritative for the current eligibility
+	// epoch. A manual recovery (or a legacy Node projector) can advance the
+	// business row back to active while jobs current_state still carries a
+	// cooldown/error status. Do not keep emitting cooldown_success with an
+	// active expected status (which the projection contract must reject); run
+	// one ordinary health decision so the jobs state can be reconciled and the
+	// normal health projection can advance the active epoch.
+	if input.Eligibility.AccountStatus == "active" && state.AccountStatus != "" && state.AccountStatus != "active" {
+		return "health", input.IssuedAt, true
+	}
 	if state.NextDueAt == nil {
 		return "health", now, true
 	}

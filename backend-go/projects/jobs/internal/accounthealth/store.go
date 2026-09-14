@@ -624,7 +624,13 @@ WHERE (juhe_jobs.account_health_current_state.input_version < EXCLUDED.input_ver
        AND juhe_jobs.account_health_current_state.dispatch_revision = EXCLUDED.dispatch_revision
 	   AND juhe_jobs.account_health_current_state.observed_at <= EXCLUDED.observed_at`
 		if outcome.Projection != nil {
-			query += ` AND juhe_jobs.account_health_current_state.account_status = $18`
+			// The business account is the source of truth for the current
+			// eligibility epoch. When it is already active, a manual/legacy
+			// recovery may leave jobs state in a cooldown or terminal status;
+			// allow the current input projection to reconcile that split-brain
+			// row instead of recording an outcome that can never advance state.
+			query += ` AND (juhe_jobs.account_health_current_state.account_status = $18
+                 OR ($18 = 'active' AND juhe_jobs.account_health_current_state.account_status <> 'active'))`
 			args = append(args, outcome.Projection.ExpectedAccountStatus)
 		}
 		query += `))`
@@ -643,7 +649,9 @@ WHERE (account_health_current_state.input_version < excluded.input_version
        AND account_health_current_state.dispatch_revision = excluded.dispatch_revision
 	   AND account_health_current_state.observed_at <= excluded.observed_at`
 		if outcome.Projection != nil {
-			query += ` AND account_health_current_state.account_status = ?`
+			query += ` AND (account_health_current_state.account_status = ?
+                 OR (? = 'active' AND account_health_current_state.account_status <> 'active'))`
+			args = append(args, outcome.Projection.ExpectedAccountStatus)
 			args = append(args, outcome.Projection.ExpectedAccountStatus)
 		}
 		query += `))`
