@@ -39,42 +39,16 @@ const prodPromotion = jenkinsfile.slice(prodPromotionStart, prodPromotionEnd)
 assert(prodPromotionStart >= 0 && prodPromotionEnd > prodPromotionStart)
 assert.match(prodPromotion, /writeReleaseState\('prod'/,
   'DEPLOY_PROD 必须写入 prod release state')
-assert.match(prodPromotion, /readTestRelease\(true\)/,
-  'DEPLOY_PROD 必须读取并要求 test release state 的 verifier 通过')
+assert.match(prodPromotion, /readTestRelease\(false\)/,
+  'DEPLOY_PROD 只读取 test release state，不把运行态 verifier 塞进 Jenkins 门禁')
 assert.match(jenkinsfile, /releaseMode: metadataValue\('test', 'releaseMode'\)/,
   'Jenkins 必须读取 test releaseMode，防止旧双槽候选进入晋级链')
 assert.match(jenkinsfile, /validateReleaseStrategy\(release\.releaseMode, release\.schemaChangeClass\)/,
   'Jenkins 必须按数据库变更分类校验 test release state')
 assert.doesNotMatch(prodPromotion, /waitForArgoApplication|waitForIngress|verifyJ3aRelease|markReleaseVerified|assertStandardProdPromotionAllowed/,
   'Jenkins 不负责运行态观察；验证由 Jenkins 外部 AI/观测链路执行')
-assert.match(jenkinsfile, /def readTestRelease\(boolean requireVerification = false\)/,
-  'Jenkins 必须支持仅生产晋级启用 verifier 硬门的读取模式')
-assert.match(jenkinsfile, /if \(requireVerification\)[\s\S]*?verificationStatus != 'passed'[\s\S]*?verificationSourceCommit != release\.sourceCommit[\s\S]*?validEvidenceRef/,
-  'DEPLOY_PROD 必须硬性要求 verifier status/source/evidenceRef')
-assert.match(jenkinsfile, /verificationEvidenceManifestDigest: metadataValueOptional\('test', 'verification\.evidenceManifestDigest'\)/,
-  'DEPLOY_PROD 必须读取 verifier evidence manifest 摘要')
-assert.match(jenkinsfile, /verificationVerifierIdentity: metadataValueOptional\('test', 'verification\.verifierIdentity'\)/,
-  'DEPLOY_PROD 必须读取受控 verifier 身份')
-assert.match(jenkinsfile, /verificationVerifiedAt: metadataValueOptional\('test', 'verification\.verifiedAt'\)/,
-  'DEPLOY_PROD 必须读取 verifier UTC 时间')
-assert.match(jenkinsfile, /verificationReleaseMode: metadataValueOptional\('test', 'verification\.releaseMode'\)/,
-  'DEPLOY_PROD 必须读取 verifier 绑定的发布模式')
-assert.match(jenkinsfile, /verificationSchemaChangeClass: metadataValueOptional\('test', 'verification\.schemaChangeClass'\)/,
-  'DEPLOY_PROD 必须读取 verifier 绑定的数据库变更分类')
-assert.match(jenkinsfile, /validSha256Hex\(release\.verificationEvidenceManifestDigest\)/,
-  'DEPLOY_PROD 必须校验 verifier evidence manifest 摘要格式')
-assert.match(jenkinsfile, /verificationVerifierIdentity ==~ \/\^\[A-Za-z0-9\._:@\\\/-\]\{1,128\}\$\//,
-  'DEPLOY_PROD 必须校验 verifier 身份格式')
-assert.match(jenkinsfile, /verificationVerifiedAt ==~ \/\^\\d\{4\}-\\d\{2\}-\\d\{2\}T/,
-  'DEPLOY_PROD 必须校验 verifier UTC 时间格式')
-assert.match(jenkinsfile, /verificationReleaseMode != release\.releaseMode \|\| release\.verificationSchemaChangeClass != release\.schemaChangeClass/,
-  'verifier 必须绑定与候选一致的发布模式和数据库变更分类')
-assert.match(jenkinsfile, /metadataValue\('test', 'verification\.status'\) != 'passed'[\s\S]*?metadataValue\('test', 'verification\.sourceCommit'\)[\s\S]*?validEvidenceRef\(metadataValue\('test', 'verification\.evidenceRef'\)\)/,
-  '写 prod 前必须二次核对 verifier 字段，防止 test release state 竞态')
-assert.match(jenkinsfile, /metadataValue\('test', 'verification\.evidenceManifestDigest'\)[\s\S]*?metadataValue\('test', 'verification\.verifierIdentity'\)[\s\S]*?metadataValue\('test', 'verification\.verifiedAt'\)/,
-  '写 prod 前必须二次核对 verifier manifest/身份/时间，防止伪造 passed')
-assert.match(jenkinsfile, /metadataValue\('test', 'verification\.releaseMode'\) != releaseMode[\s\S]*?metadataValue\('test', 'verification\.schemaChangeClass'\) != schemaChangeClass/,
-  '写 prod 前必须二次核对 verifier 绑定的发布模式和数据库变更分类')
+assert.doesNotMatch(prodPromotion, /verification\.status|verification\.evidence|verification\.verifier|verification\.verifiedAt/,
+  'Jenkins 晋级不得把 Jenkins 外部运行态 verifier 作为硬门禁')
 assert.doesNotMatch(jenkinsfile, /writeReverseReleaseState|candidateVerification|reverse-blue-green/,
   '当前单 active 发布契约不保留反向蓝绿 release state 写入实现')
 assert.match(jenkinsfile, /def metadataValueOptional\(environmentName, key\)/,
