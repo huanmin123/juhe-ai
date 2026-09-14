@@ -10,6 +10,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -206,5 +207,37 @@ func TestW1ComposeReadsDepsMountArms(t *testing.T) {
 	_ = response.Body.Close()
 	if response.StatusCode == http.StatusNotFound {
 		t.Fatal("runtime-logs 必须已挂载（401 而非 404）")
+	}
+}
+
+// TestW1BalanceRefreshPureHelpers 收割余额刷新系的纯辅助函数：
+// snapshotToMap round-trip、textFromCredentials 各类型分支。
+func TestW1BalanceRefreshPureHelpers(t *testing.T) {
+	_, err2 := snapshotToMap(accountbalance.Snapshot{})
+	if err2 != nil {
+		t.Fatalf("空快照 = %v", err2)
+	}
+	mapped2, err := snapshotToMap(accountbalance.Snapshot{Status: accountbalance.StatusFresh, RemainingUSD: "12.50"})
+	if err != nil || mapped2["status"] != string(accountbalance.StatusFresh) || mapped2["remainingUsd"] != "12.50" {
+		t.Fatalf("round-trip = %v %v", mapped2, err)
+	}
+	if textFromCredentials(nil) != "" {
+		t.Fatal("nil 必须空串")
+	}
+	if textFromCredentials("abc") != "abc" {
+		t.Fatal("string 直通")
+	}
+	if textFromCredentials(float64(12.5)) != "" {
+		t.Fatal("非 string 必须空串")
+	}
+	if textFromCredentials(true) != "" {
+		t.Fatal("bool 必须空串")
+	}
+	if derefText(nil) != "" {
+		t.Fatal("nil 指针必须空串")
+	}
+	value := "x"
+	if derefText(&value) != "x" {
+		t.Fatal("解引用")
 	}
 }

@@ -240,13 +240,13 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 	j3bEnv["JUHE_AI_J3B_OWNER_EPOCH"] = j3bEvidenceEnv["JUHE_AI_BUSINESS_OWNER_EPOCH"]
 	j3bEnv["JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH"] = j3bEvidenceEnv["JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH"]
 	j3bEnv["JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS"] = "127.0.0.1:" + w1FreePort(t)
-	// 生产缺陷记录（不改产品代码）：main.go 将 modelcheckauth.Mode（uint8
-	// 枚举）直接类型转换成 sessionretention.Mode（string 枚举
-	// "sqlite"/"postgres"），得到 "U+0001"，J3b 分支 100% 在
-	// "create J3b Gateway session retention owner" 处 fail——无法配置绕过。
-	// 因此本场景以预期失败收割：断言 exit 1 与错误原文，同时覆盖 J3b 装配
-	// 前段（config/evidence/Business connection/authenticator 契约链）。
-	w1BootExpectExit(t, exe, filepath.Join(root, "cov-j3b"), nil, j3bEnv, 1, "session retention database mode is invalid")
+	// 生产缺陷 #5 已修复（retention mode 按枚举映射）：本场景转正为成功
+	// 场景，收割 J3b 装配全段（Business connection/authenticator/
+	// retention/circuit control-plane+circuit runtime Redis/key-model/
+	// projector/host 装配 + 管理监听 + 组件节拍）。
+	w1BootRun(t, exe, root, "j3b", j3bEnv, nil, func(body string) bool {
+		return strings.Contains(body, `"j3bReady":true`) && strings.Contains(body, `"ready":true`)
+	})
 	// 场景六：J3b evidence fail fast——交接证据文件缺失/纪元不匹配。
 	// 前段已证明 J3b 分支必然在 retention mode 处 fail；这里补收割
 	// VerifyConfiguredCutoverEvidence 的两个 fail 出口。
@@ -262,6 +262,27 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 	}
 	j3bEvEpoch["JUHE_AI_J3B_OWNER_EPOCH"] = "w1-boot-wrong-epoch"
 	w1BootExpectExit(t, exe, filepath.Join(root, "cov-case"), nil, j3bEvEpoch, 1, "verify J3b cutover evidence")
+	// 场景七：J3b 装配段 fail fast（缺陷 #5 修复后全装配可达）——
+	// circuit runtime Redis ping 失败、runtime-index-meta 未就绪、
+	// 管理监听端口冲突。
+	j3bBadRedis := map[string]string{}
+	for key, value := range j3bEnv {
+		j3bBadRedis[key] = value
+	}
+	j3bBadRedis["JUHE_AI_J3B_CIRCUIT_REDIS_URL"] = "redis://127.0.0.1:1"
+	w1BootExpectExit(t, exe, filepath.Join(root, "cov-case"), nil, j3bBadRedis, 1, "ping J3b Gateway circuit runtime Redis")
+	// runtime-index-meta 未就绪：新 miniredis 不预置就绪哈希 → CheckReady fail。
+	miniBare := miniredis.NewMiniRedis()
+	if err := miniBare.Start(); err != nil {
+		t.Fatalf("miniredis bare start = %v", err)
+	}
+	defer miniBare.Close()
+	j3bNoIndex := map[string]string{}
+	for key, value := range j3bEnv {
+		j3bNoIndex[key] = value
+	}
+	j3bNoIndex["JUHE_AI_J3B_CIRCUIT_REDIS_URL"] = "redis://" + miniBare.Addr()
+	w1BootExpectExit(t, exe, filepath.Join(root, "cov-case"), nil, j3bNoIndex, 1, "verify J3b Gateway circuit runtime owner fence")
 	// 场景五：SQLite 六库路径契约 fail fast（子进程收割——错误分支在进程内
 	// 返回时不关闭 composed.db，Windows 句柄锁会阻塞临时目录清理）。审计
 	// F3 专库隔离校验先于组合根，逐项移除必需路径后断言 exit 1 与错误
@@ -286,7 +307,7 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 	bootProfile := filepath.Join(root, "boot.out")
 	// 三个场景的 cov 目录必须全部聚合；此前只收 owner 场景，
 	// passive 与 compose（SystemAPI 全装配）的覆盖率被整体丢弃。
-	covInputs := filepath.Join(root, "cov", "passive") + "," + filepath.Join(root, "cov", "owner") + "," + filepath.Join(root, "cov", "compose") + "," + filepath.Join(root, "cov-j3b") + "," + filepath.Join(root, "cov-case")
+	covInputs := filepath.Join(root, "cov", "passive") + "," + filepath.Join(root, "cov", "owner") + "," + filepath.Join(root, "cov", "compose") + "," + filepath.Join(root, "cov", "j3b") + "," + filepath.Join(root, "cov-case")
 	merge := exec.Command("go", "tool", "covdata", "textfmt", "-i", covInputs, "-o", bootProfile)
 	if output, err := merge.CombinedOutput(); err != nil {
 		t.Fatalf("covdata textfmt 失败：%v\n%s", err, output)
