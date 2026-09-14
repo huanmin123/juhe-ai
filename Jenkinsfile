@@ -190,7 +190,7 @@ pipeline {
       when { expression { (params.DEPLOY_PROD || reverseDeployRequested()) && !rollbackRequested() } }
       steps {
         script {
-          def release = readTestRelease(params.DEPLOY_PROD)
+          def release = readTestRelease(false)
           env.SOURCE_COMMIT = release.sourceCommit
           env.JOBS_DIGEST = release.jobsDigest
           env.GATEWAY_DIGEST = release.gatewayDigest
