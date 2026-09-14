@@ -25,25 +25,25 @@ const (
 
 // Durable incident scope kinds mirror AccountCircuitScopeKind.
 const (
-	IncidentScopeKindAccount      = "account"
-	IncidentScopeKindKey          = "key"
+	IncidentScopeKindAccount       = "account"
+	IncidentScopeKindKey           = "key"
 	IncidentScopeKindProtocolModel = "protocol_model"
-	IncidentScopeKindKeyModel     = "key_model"
+	IncidentScopeKindKeyModel      = "key_model"
 )
 
 // Failure classes mirror AccountCircuitFailureClass.
 const (
-	FailureClassConnectFailed      = "connect_failed"
+	FailureClassConnectFailed         = "connect_failed"
 	FailureClassTimeoutBeforeComplete = "timeout_before_complete"
-	FailureClassReadInterrupted    = "read_interrupted"
-	FailureClassIncompleteResponse = "incomplete_response"
-	FailureClassExplicitPolicy     = "explicit_policy"
+	FailureClassReadInterrupted       = "read_interrupted"
+	FailureClassIncompleteResponse    = "incomplete_response"
+	FailureClassExplicitPolicy        = "explicit_policy"
 )
 
 // Lease purposes mirror AccountCircuitLeasePurpose.
 const (
-	LeasePurposeCooldownRetest   = "cooldown_retest"
-	LeasePurposeBackgroundProbe  = "background_probe"
+	LeasePurposeCooldownRetest  = "cooldown_retest"
+	LeasePurposeBackgroundProbe = "background_probe"
 )
 
 // Outbox event types / statuses mirror the repository unions.
@@ -57,11 +57,11 @@ const (
 
 // CAS incident statuses mirror CompareAndSetAccountCircuitIncidentResult['status'].
 const (
-	CASApplied                = "applied"
-	CASIdempotent             = "idempotent"
-	CASConflict               = "cas_conflict"
-	CASStaleDispatchRevision  = "stale_dispatch_revision"
-	CASAccountNotFound        = "account_not_found"
+	CASApplied               = "applied"
+	CASIdempotent            = "idempotent"
+	CASConflict              = "cas_conflict"
+	CASStaleDispatchRevision = "stale_dispatch_revision"
+	CASAccountNotFound       = "account_not_found"
 )
 
 // IncidentRecord mirrors AccountCircuitIncidentRecord.
@@ -168,10 +168,10 @@ type CompareAndSetIncidentResult struct {
 
 // RebuildPageInput mirrors the loadRebuildPage input.
 type RebuildPageInput struct {
-	NowMs             int64
-	AfterUpdatedAtMs  *int64
+	NowMs                int64
+	AfterUpdatedAtMs     *int64
 	AfterCircuitScopeKey *string
-	Limit             int
+	Limit                int
 }
 
 // RebuildPage mirrors AccountCircuitIncidentRebuildPage.
@@ -189,18 +189,18 @@ type RebuildCursor struct {
 // OutboxEvent mirrors the claimed AccountCircuitOutboxRecord surface the
 // bridge consumes.
 type OutboxEvent struct {
-	EventID          string
-	ProjectionKey    string
-	EventType        string
-	AccountID        string
+	EventID           string
+	ProjectionKey     string
+	EventType         string
+	AccountID         string
 	AccountRuntimeKey string
-	CircuitScopeKey  *string
-	IncidentID       *string
-	TransitionID     string
-	DispatchRevision int64
-	Generation       *int64
-	LedgerRevision   *int64
-	ClaimToken       *string
+	CircuitScopeKey   *string
+	IncidentID        *string
+	TransitionID      string
+	DispatchRevision  int64
+	Generation        *int64
+	LedgerRevision    *int64
+	ClaimToken        *string
 }
 
 // AckOutboxInput mirrors ack_account_circuit_outbox input.
@@ -235,9 +235,9 @@ type ClaimOutboxInput struct {
 
 // ListIncidentsByRuntimeKeysInput mirrors the requestDb operation input.
 type ListIncidentsByRuntimeKeysInput struct {
-	AccountRuntimeKeys   []string
+	AccountRuntimeKeys    []string
 	IncludeRetainedClosed bool
-	NowMs                *int64
+	NowMs                 *int64
 }
 
 // ControlPlaneDB is the requestDb port the bridge persists through. The
@@ -255,11 +255,11 @@ type ControlPlaneDB interface {
 
 // Rebuild reasons mirror AccountCircuitControlPlaneRebuildResult['reason'].
 const (
-	RebuildReasonRebuilding         = "runtime_state_rebuilding"
-	RebuildReasonRebuildFailed      = "runtime_state_rebuild_failed"
-	RebuildReasonRebuildTimeout     = "runtime_state_rebuild_timeout"
-	RebuildReasonInvalidCursor      = "runtime_state_rebuild_invalid_cursor"
-	RebuildReasonCapacityExhausted  = "runtime_state_rebuild_capacity_exhausted"
+	RebuildReasonRebuilding        = "runtime_state_rebuilding"
+	RebuildReasonRebuildFailed     = "runtime_state_rebuild_failed"
+	RebuildReasonRebuildTimeout    = "runtime_state_rebuild_timeout"
+	RebuildReasonInvalidCursor     = "runtime_state_rebuild_invalid_cursor"
+	RebuildReasonCapacityExhausted = "runtime_state_rebuild_capacity_exhausted"
 )
 
 // RebuildResult mirrors AccountCircuitControlPlaneRebuildResult.
@@ -279,10 +279,10 @@ const (
 
 // PublicSummary mirrors PublicAccountCircuitSummary.
 type PublicSummary struct {
-	Status      string  `json:"status"`
-	Reason      string  `json:"reason,omitempty"`
-	Since       string  `json:"since,omitempty"`
-	NextCheckAt string  `json:"nextCheckAt,omitempty"`
+	Status      string `json:"status"`
+	Reason      string `json:"reason,omitempty"`
+	Since       string `json:"since,omitempty"`
+	NextCheckAt string `json:"nextCheckAt,omitempty"`
 }
 
 // BridgeOptions mirrors AccountCircuitControlPlaneBridgeOptions.
@@ -302,11 +302,26 @@ type BridgeOptions struct {
 	PersistIncident       func(ctx context.Context, input CompareAndSetIncidentInput) (CompareAndSetIncidentResult, error)
 	LoadRebuildPage       func(ctx context.Context, input RebuildPageInput) (RebuildPage, error)
 	LoadAccountIncidents  func(ctx context.Context, accountRuntimeKey string) ([]IncidentRecord, error)
+	// OnReadinessFailure receives a bounded, secret-free diagnostic whenever
+	// account readiness cannot be reconstructed. The callback is deliberately
+	// optional so existing callers keep the fail-closed behavior.
+	OnReadinessFailure func(ReadinessFailure)
 	// Sleep replaces the retry backoff sleep in tests.
 	Sleep func(ctx context.Context, delay time.Duration) error
 	// NewTimer overrides retry timer creation (Node setTimeout). The done
 	// channel closes after the delay; stop cancels it.
 	NewTimer func(delay time.Duration) (done <-chan struct{}, stop func())
+}
+
+// ReadinessFailure is the structured diagnostic for a failed runtime-state
+// rebuild/account load. It intentionally carries only stable classifications,
+// never provider responses or credentials.
+type ReadinessFailure struct {
+	Operation           string
+	AccountRuntimeKey   string
+	Reason              string
+	RetryAtMs           int64
+	ConsecutiveFailures int64
 }
 
 type observeInput struct {
@@ -341,25 +356,28 @@ type Bridge struct {
 	persistIncident       func(ctx context.Context, input CompareAndSetIncidentInput) (CompareAndSetIncidentResult, error)
 	loadRebuildPage       func(ctx context.Context, input RebuildPageInput) (RebuildPage, error)
 	loadAccountIncidents  func(ctx context.Context, accountRuntimeKey string) ([]IncidentRecord, error)
+	onReadinessFailure    func(ReadinessFailure)
 	sleep                 func(ctx context.Context, delay time.Duration) error
 	newTimer              func(delay time.Duration) (done <-chan struct{}, stop func())
 
-	mu                       sync.Mutex
-	pending                  map[string]observeInput
-	workers                  map[string]*scopeWorker
-	retryBackoffs            map[string]*scopeRetryState
-	persistenceFailures      map[string]string
-	ledgerRevisions          map[string]int64
-	dispatchRevisions        map[string]int64
-	rebuilding               bool
-	globallyReady            bool
-	readyAccountRuntimeKeys  map[string]struct{}
-	accountLoads             map[string]*accountLoad
-	rebuildInFlight          *rebuildCall
-	reconcileCursor          *RebuildCursor
-	stopped                  bool
-	stopCh                   chan struct{}
-	stopOnce                 sync.Once
+	mu                      sync.Mutex
+	pending                 map[string]observeInput
+	workers                 map[string]*scopeWorker
+	retryBackoffs           map[string]*scopeRetryState
+	persistenceFailures     map[string]string
+	ledgerRevisions         map[string]int64
+	dispatchRevisions       map[string]int64
+	rebuilding              bool
+	globallyReady           bool
+	readyAccountRuntimeKeys map[string]struct{}
+	accountLoads            map[string]*accountLoad
+	readinessFailures       map[string]readinessFailure
+	rebuildFailures         int64
+	rebuildInFlight         *rebuildCall
+	reconcileCursor         *RebuildCursor
+	stopped                 bool
+	stopCh                  chan struct{}
+	stopOnce                sync.Once
 }
 
 type scopeWorker struct {
@@ -367,12 +385,17 @@ type scopeWorker struct {
 }
 
 type accountLoad struct {
-	done chan struct{}
+	done  chan struct{}
 	ready bool
 }
 
+type readinessFailure struct {
+	nextRetryAtMs       int64
+	consecutiveFailures int64
+}
+
 type rebuildCall struct {
-	done chan struct{}
+	done   chan struct{}
 	result RebuildResult
 }
 
@@ -468,32 +491,38 @@ func NewBridge(options BridgeOptions) (*Bridge, error) {
 			})
 		}
 	}
+	onReadinessFailure := options.OnReadinessFailure
+	if onReadinessFailure == nil {
+		onReadinessFailure = func(ReadinessFailure) {}
+	}
 	return &Bridge{
-		store:                 options.Store,
-		db:                    options.DB,
-		ownerID:               ownerID,
-		retryDelayMs:          retryDelayMs,
-		maxPersistAttempts:    maxPersistAttempts,
-		closedRetentionMs:     closedRetentionMs,
-		rebuildPageSize:       rebuildPageSize,
-		rebuildMaxPages:       rebuildMaxPages,
-		rebuildPageTimeoutMs:  rebuildPageTimeoutMs,
-		rebuildTotalTimeoutMs: rebuildTotalTimeoutMs,
-		now:                   now,
-		monotonicNow:          monotonicNow,
-		persistIncident:       persistIncident,
-		loadRebuildPage:       loadRebuildPage,
-		loadAccountIncidents:  loadAccountIncidents,
-		sleep:                 sleep,
-		newTimer:              newTimer,
-		pending:               map[string]observeInput{},
-		workers:               map[string]*scopeWorker{},
-		retryBackoffs:         map[string]*scopeRetryState{},
-		persistenceFailures:   map[string]string{},
-		ledgerRevisions:       map[string]int64{},
-		dispatchRevisions:     map[string]int64{},
+		store:                   options.Store,
+		db:                      options.DB,
+		ownerID:                 ownerID,
+		retryDelayMs:            retryDelayMs,
+		maxPersistAttempts:      maxPersistAttempts,
+		closedRetentionMs:       closedRetentionMs,
+		rebuildPageSize:         rebuildPageSize,
+		rebuildMaxPages:         rebuildMaxPages,
+		rebuildPageTimeoutMs:    rebuildPageTimeoutMs,
+		rebuildTotalTimeoutMs:   rebuildTotalTimeoutMs,
+		now:                     now,
+		monotonicNow:            monotonicNow,
+		persistIncident:         persistIncident,
+		loadRebuildPage:         loadRebuildPage,
+		loadAccountIncidents:    loadAccountIncidents,
+		onReadinessFailure:      onReadinessFailure,
+		sleep:                   sleep,
+		newTimer:                newTimer,
+		pending:                 map[string]observeInput{},
+		workers:                 map[string]*scopeWorker{},
+		retryBackoffs:           map[string]*scopeRetryState{},
+		persistenceFailures:     map[string]string{},
+		ledgerRevisions:         map[string]int64{},
+		dispatchRevisions:       map[string]int64{},
 		readyAccountRuntimeKeys: map[string]struct{}{},
 		accountLoads:            map[string]*accountLoad{},
+		readinessFailures:       map[string]readinessFailure{},
 		stopCh:                  make(chan struct{}),
 	}, nil
 }
@@ -567,6 +596,10 @@ func (b *Bridge) EnsureAccountReady(ctx context.Context, accountRuntimeKey strin
 	}
 	for {
 		b.mu.Lock()
+		if failure, ok := b.readinessFailures[normalized]; ok && b.now() < failure.nextRetryAtMs {
+			b.mu.Unlock()
+			return false, nil
+		}
 		if load, ok := b.accountLoads[normalized]; ok {
 			b.mu.Unlock()
 			select {
@@ -582,14 +615,45 @@ func (b *Bridge) EnsureAccountReady(ctx context.Context, accountRuntimeKey strin
 		b.accountLoads[normalized] = load
 		b.mu.Unlock()
 
-		ready := b.performAccountLoad(ctx, normalized)
+		ready, loadErr := b.performAccountLoad(ctx, normalized)
+		var failure ReadinessFailure
+		shouldReport := false
 		b.mu.Lock()
 		load.ready = ready
 		if current, ok := b.accountLoads[normalized]; ok && current == load {
 			delete(b.accountLoads, normalized)
 		}
+		if ready {
+			delete(b.readinessFailures, normalized)
+		} else {
+			previous := b.readinessFailures[normalized]
+			consecutive := previous.consecutiveFailures + 1
+			if consecutive <= 0 {
+				consecutive = 1
+			}
+			backoff := int64Min(b.retryDelayMs, 60_000)
+			for i := int64(1); i < consecutive && backoff < 60_000; i++ {
+				backoff = int64Min(backoff*2, 60_000)
+			}
+			nextRetryAt := b.now() + backoff
+			b.readinessFailures[normalized] = readinessFailure{
+				nextRetryAtMs:       nextRetryAt,
+				consecutiveFailures: consecutive,
+			}
+			failure = ReadinessFailure{
+				Operation:           "account_load",
+				AccountRuntimeKey:   normalized,
+				Reason:              accountLoadFailureReason(loadErr),
+				RetryAtMs:           nextRetryAt,
+				ConsecutiveFailures: consecutive,
+			}
+			shouldReport = true
+		}
 		b.mu.Unlock()
 		close(load.done)
+		if shouldReport {
+			b.onReadinessFailure(failure)
+		}
 		return ready, nil
 	}
 }
@@ -634,7 +698,7 @@ func (b *Bridge) Rebuild(ctx context.Context) (RebuildResult, error) {
 	return result, nil
 }
 
-func (b *Bridge) performRebuild(ctx context.Context) RebuildResult {
+func (b *Bridge) performRebuild(ctx context.Context) (result RebuildResult) {
 	b.mu.Lock()
 	b.rebuilding = true
 	b.mu.Unlock()
@@ -644,15 +708,32 @@ func (b *Bridge) performRebuild(ctx context.Context) RebuildResult {
 	var deferredParents []IncidentRecord
 	startedAt := b.monotonicNow()
 	defer func() {
+		var failure ReadinessFailure
+		shouldReport := false
 		b.mu.Lock()
 		b.rebuilding = false
+		if result.Blocked {
+			b.rebuildFailures++
+			failure = ReadinessFailure{
+				Operation:           "rebuild",
+				Reason:              result.Reason,
+				RetryAtMs:           b.now() + b.retryDelayMs,
+				ConsecutiveFailures: b.rebuildFailures,
+			}
+			shouldReport = true
+		} else {
+			b.rebuildFailures = 0
+		}
 		b.mu.Unlock()
+		if shouldReport {
+			b.onReadinessFailure(failure)
+		}
 	}()
 	for pageNumber := int64(1); ; pageNumber++ {
 		if pageNumber > b.rebuildMaxPages {
 			return rebuildFailure(loaded, RebuildReasonInvalidCursor)
 		}
-		remaining := b.rebuildTotalTimeoutMs - durationToMs(b.monotonicNow() - startedAt)
+		remaining := b.rebuildTotalTimeoutMs - durationToMs(b.monotonicNow()-startedAt)
 		if remaining <= 0 {
 			return rebuildFailure(loaded, RebuildReasonRebuildTimeout)
 		}
@@ -714,7 +795,7 @@ func (b *Bridge) performRebuild(ctx context.Context) RebuildResult {
 		}
 		loaded++
 	}
-	remaining := b.rebuildTotalTimeoutMs - durationToMs(b.monotonicNow() - startedAt)
+	remaining := b.rebuildTotalTimeoutMs - durationToMs(b.monotonicNow()-startedAt)
 	if remaining <= 0 {
 		return rebuildFailure(loaded, RebuildReasonRebuildTimeout)
 	}
@@ -792,12 +873,12 @@ func (b *Bridge) ReconcileActive(ctx context.Context, limit int) (int64, error) 
 	return repaired, nil
 }
 
-func (b *Bridge) performAccountLoad(ctx context.Context, accountRuntimeKey string) bool {
+func (b *Bridge) performAccountLoad(ctx context.Context, accountRuntimeKey string) (bool, error) {
 	incidents, err := b.withinTimeoutList(ctx, func(ctx context.Context) ([]IncidentRecord, error) {
 		return b.loadAccountIncidents(ctx, accountRuntimeKey)
 	}, b.rebuildPageTimeoutMs, RebuildReasonRebuildTimeout)
 	if err != nil {
-		return false
+		return false, err
 	}
 	hierarchyScopeKeys := incidentScopeKeyMap(incidents)
 	var leafIncidents, parentIncidents []IncidentRecord
@@ -811,15 +892,15 @@ func (b *Bridge) performAccountLoad(ctx context.Context, accountRuntimeKey strin
 	orderedIncidents := append(append([]IncidentRecord{}, leafIncidents...), parentIncidents...)
 	for _, incident := range orderedIncidents {
 		if incident.AccountRuntimeKey != accountRuntimeKey {
-			return false
+			return false, errors.New("account_load_runtime_key_mismatch")
 		}
 		restored, err := b.store.Restore(ctx, IncidentToRuntimeState(incident, hierarchyScopeKeys), int64Ptr(b.now()))
 		if err != nil {
-			return false
+			return false, err
 		}
 		b.observeRestoredRelationships(restored)
 		if restored.Status == MutationCapacityExhausted {
-			return false
+			return false, errors.New("account_load_capacity_exhausted")
 		}
 		b.mu.Lock()
 		b.ledgerRevisions[incident.CircuitScopeKey] = incident.LedgerRevision
@@ -830,7 +911,32 @@ func (b *Bridge) performAccountLoad(ctx context.Context, accountRuntimeKey strin
 	b.readyAccountRuntimeKeys[accountRuntimeKey] = struct{}{}
 	ready := !b.hasAccountPersistenceFailureLocked(accountRuntimeKey)
 	b.mu.Unlock()
-	return ready
+	if !ready {
+		return false, errors.New("account_load_persistence_failure")
+	}
+	return true, nil
+}
+
+func accountLoadFailureReason(err error) string {
+	if err == nil {
+		return "account_load_failed"
+	}
+	if rebuildErr, ok := err.(*rebuildError); ok {
+		switch rebuildErr.reason {
+		case RebuildReasonRebuildTimeout:
+			return "account_load_timeout"
+		}
+	}
+	switch err.Error() {
+	case "account_load_runtime_key_mismatch":
+		return "account_load_runtime_key_mismatch"
+	case "account_load_capacity_exhausted":
+		return "account_load_capacity_exhausted"
+	case "account_load_persistence_failure":
+		return "account_load_persistence_failure"
+	default:
+		return "account_load_failed"
+	}
 }
 
 // ProjectPending mirrors projectPending.

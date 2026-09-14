@@ -140,13 +140,17 @@ func wbAccountIncident(key string) IncidentRecord {
 	}
 }
 
-func wbNewBridgeForTest(t *testing.T, db *wbControlPlaneDB, store Store) *Bridge {
+func wbNewBridgeForTest(t *testing.T, db *wbControlPlaneDB, store Store, mutates ...func(*BridgeOptions)) *Bridge {
 	t.Helper()
-	bridge, err := NewBridge(BridgeOptions{
+	options := BridgeOptions{
 		Store: store, DB: db, OwnerID: "wb-bridge",
 		Now:   func() int64 { return 1_000 },
 		Sleep: func(context.Context, time.Duration) error { return nil },
-	})
+	}
+	if len(mutates) > 0 && mutates[0] != nil {
+		mutates[0](&options)
+	}
+	bridge, err := NewBridge(options)
 	if err != nil {
 		t.Fatalf("NewBridge: %v", err)
 	}
@@ -251,15 +255,65 @@ func TestWBBridgeAccountLoadFailures(t *testing.T) {
 	}
 }
 
+// 账户加载失败必须进入有界退避，避免每个请求都重复打 DB；退避到期后
+// 仍会自动重试，成功后清除失败状态。
+func TestWBBridgeAccountLoadFailureBackoffAndRecovery(t *testing.T) {
+	now := int64(1_000)
+	db := wbNewFakeDB()
+	db.errListByKeys = errors.New("列表失败")
+	var failures []ReadinessFailure
+	bridge, err := NewBridge(BridgeOptions{
+		Store: newNonExpiringMemoryStore(t), DB: db,
+		Now: func() int64 { return now }, RetryDelayMs: 1_000,
+		OnReadinessFailure: func(failure ReadinessFailure) { failures = append(failures, failure) },
+	})
+	if err != nil {
+		t.Fatalf("NewBridge: %v", err)
+	}
+	t.Cleanup(bridge.Close)
+
+	if ready, err := bridge.EnsureAccountReady(context.Background(), "acc"); err != nil || ready {
+		t.Fatalf("首次列表失败 = (%v, %v)", ready, err)
+	}
+	if ready, err := bridge.EnsureAccountReady(context.Background(), "acc"); err != nil || ready {
+		t.Fatalf("退避期间必须保持未就绪 = (%v, %v)", ready, err)
+	}
+	if db.loadKeyCalls != 1 {
+		t.Fatalf("退避期间不得重复查询 DB: %d", db.loadKeyCalls)
+	}
+	if len(failures) != 1 || failures[0].Reason != "account_load_failed" || failures[0].RetryAtMs != 2_000 {
+		t.Fatalf("失败诊断 = %+v", failures)
+	}
+
+	// 模拟依赖恢复；到达 retryAt 后下一次请求应重新加载并成功。
+	db.mu.Lock()
+	db.errListByKeys = nil
+	db.byRuntimeKeys = nil
+	db.mu.Unlock()
+	now = 2_000
+	if ready, err := bridge.EnsureAccountReady(context.Background(), "acc"); err != nil || !ready {
+		t.Fatalf("退避到期后必须恢复 = (%v, %v)", ready, err)
+	}
+	if db.loadKeyCalls != 2 {
+		t.Fatalf("恢复后应恰好重试一次: %d", db.loadKeyCalls)
+	}
+}
+
 // 重建失败矩阵：分页失败、游标回退、容量耗尽都必须 Blocked 且带原因。
 func TestWBBridgeRebuildFailureReasons(t *testing.T) {
 	t.Run("page error", func(t *testing.T) {
 		db := wbNewFakeDB()
 		db.errListForRebuild = errors.New("分页失败")
-		bridge := wbNewBridgeForTest(t, db, newNonExpiringMemoryStore(t))
+		var failures []ReadinessFailure
+		bridge := wbNewBridgeForTest(t, db, newNonExpiringMemoryStore(t), func(options *BridgeOptions) {
+			options.OnReadinessFailure = func(failure ReadinessFailure) { failures = append(failures, failure) }
+		})
 		result, err := bridge.Rebuild(context.Background())
 		if err != nil || !result.Blocked || result.Reason != RebuildReasonRebuildFailed {
 			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		if len(failures) != 1 || failures[0].Operation != "rebuild" || failures[0].Reason != RebuildReasonRebuildFailed {
+			t.Fatalf("重建失败诊断 = %+v", failures)
 		}
 	})
 	t.Run("invalid cursor", func(t *testing.T) {
