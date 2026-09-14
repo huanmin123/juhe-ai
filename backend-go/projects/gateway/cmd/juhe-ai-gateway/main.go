@@ -184,7 +184,15 @@ func main() {
 			fail(fmt.Errorf("verify J3b Gateway auth contract: %w", authErr))
 		}
 		retentionGate := sessionretention.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped}
-		retentionStore, retentionErr := sessionretention.New(businessConnection.DB, sessionretention.Mode(businessMode), "juhe_business", retentionGate)
+		// 按枚举映射保留模式（与上方 circuitMode 同款写法）。直接
+		// sessionretention.Mode(businessMode) 会经 string(uint8) rune 转换
+		// 得到 ""/""，永远不是 "sqlite"/"postgres"，J3b 分支
+		// 100% 在 ErrInvalidMode 处 fail。
+		retentionMode := sessionretention.SQLite
+		if businessMode == modelcheckauth.Postgres {
+			retentionMode = sessionretention.Postgres
+		}
+		retentionStore, retentionErr := sessionretention.New(businessConnection.DB, retentionMode, "juhe_business", retentionGate)
 		if retentionErr != nil {
 			fail(fmt.Errorf("create J3b Gateway session retention owner: %w", retentionErr))
 		}

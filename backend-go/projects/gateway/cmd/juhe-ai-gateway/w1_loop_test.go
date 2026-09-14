@@ -5,6 +5,7 @@ package main
 // 失败 sink 模式（newV1TestLoop / recordingFailureSink / chainStubCapture）。
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http/httptest"
@@ -263,5 +264,36 @@ func TestW1LoopStateResetsAndBudgets(t *testing.T) {
 	acquirer := loop2.speedFirstSlotAcquirer(loop2.current)
 	if _, ok, err := acquirer(context.Background(), "acc_1", 4, gatewayhotquality.AccountConcurrencyAcquireRequest{}); err != nil || ok {
 		t.Fatalf("nil concurrency = %v, %v", ok, err)
+	}
+}
+
+func TestW1HandleOrchestratorErrorContracts(t *testing.T) {
+	loop, _ := w1LoopWithEngine(t, &w1FakeLocks{})
+	// db-service 不可用：503 + 原文透传。
+	recorder503 := httptest.NewRecorder()
+	loop.res = gatewaypreauth.NewTrackingWriter(recorder503)
+	loop.c.handleOrchestratorError(errors.New("本地数据库服务暂时不可用：健康检查超时"),
+		loop.req, loop.res, loop.startedAt, "/v1/chat/completions")
+	if recorder503.Code != 503 {
+		t.Fatalf("503 契约 = %d body=%s", recorder503.Code, recorder503.Body.String())
+	}
+	if !bytes.Contains(recorder503.Body.Bytes(), []byte("本地数据库服务暂时不可用")) {
+		t.Fatalf("body = %s", recorder503.Body.String())
+	}
+	// 普通错误：Express 兜底 500 固定文案（无网关错误包络）。
+	recorder500 := httptest.NewRecorder()
+	loop.res = gatewaypreauth.NewTrackingWriter(recorder500)
+	loop.c.handleOrchestratorError(errors.New("上游炸了"), loop.req, loop.res, loop.startedAt, "/v1/chat/completions")
+	if recorder500.Code != 500 || recorder500.Body.String() != `{"message":"服务器内部错误"}` {
+		t.Fatalf("500 契约 = %d %s", recorder500.Code, recorder500.Body.String())
+	}
+	// 头已发出：不再渲染。
+	recorderSent := httptest.NewRecorder()
+	writer := gatewaypreauth.NewTrackingWriter(recorderSent)
+	_, _ = writer.Write([]byte("partial"))
+	loop.res = writer
+	loop.c.handleOrchestratorError(errors.New("普通错误"), loop.req, loop.res, loop.startedAt, "/v1/chat/completions")
+	if recorderSent.Code == 500 && recorderSent.Body.String() == `{"message":"服务器内部错误"}` {
+		t.Fatal("头已发出不得重复渲染")
 	}
 }
