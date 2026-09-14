@@ -631,7 +631,7 @@ def writeReleaseState(environmentName, sourceCommit, nodeDigest, jobsDigest, gat
          metadataValue('test', 'releaseMode') != releaseMode ||
          metadataValue('test', 'schemaChangeClass') != schemaChangeClass ||
          (metadataValue('test', 'verification.sourceCommit') &&
-          metadataValue('test', 'verification.sourceCommit') != sourceCommit)) {
+          metadataValue('test', 'verification.sourceCommit') != sourceCommit))) {
       error 'test release state source/digest 在晋级前未保持原子一致；拒绝写入 prod。'
     }
   }
