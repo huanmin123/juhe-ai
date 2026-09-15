@@ -1,6 +1,7 @@
 package circuitruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1101,11 +1102,30 @@ type accountCircuitRuntimeStateWire struct {
 	HalfOpenOrigin            string                          `json:"halfOpenOrigin,omitempty"`
 	IncidentID                string                          `json:"incidentId,omitempty"`
 	ShadowedByIncidentID      string                          `json:"shadowedByIncidentId,omitempty"`
-	ChildIncidentIDs          []string                        `json:"childIncidentIds,omitempty"`
-	ChildScopeKeys            []string                        `json:"childScopeKeys,omitempty"`
-	RequiredRecoveryScopeKeys []string                        `json:"requiredRecoveryScopeKeys,omitempty"`
-	RecoveryEvidenceScopeKeys []string                        `json:"recoveryEvidenceScopeKeys,omitempty"`
+	ChildIncidentIDs          accountCircuitRuntimeStrings    `json:"childIncidentIds,omitempty"`
+	ChildScopeKeys            accountCircuitRuntimeStrings    `json:"childScopeKeys,omitempty"`
+	RequiredRecoveryScopeKeys accountCircuitRuntimeStrings    `json:"requiredRecoveryScopeKeys,omitempty"`
+	RecoveryEvidenceScopeKeys accountCircuitRuntimeStrings    `json:"recoveryEvidenceScopeKeys,omitempty"`
 	UpdatedAtMS               int64                           `json:"updatedAtMs"`
+}
+
+// accountCircuitRuntimeStrings 兼容两种真实形态：Redis Lua cjson 把空表编码为
+// {}（open/enter_recovering/escalate 等路径的空关系数组），常规路径编码为
+// []。解码把 {} 与 null 归一为空，其余按字符串数组处理。
+type accountCircuitRuntimeStrings []string
+
+func (s *accountCircuitRuntimeStrings) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte("{}")) {
+		*s = nil
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal(trimmed, &values); err != nil {
+		return err
+	}
+	*s = values
+	return nil
 }
 
 type accountCircuitRuntimeMutationWire struct {
@@ -1537,7 +1557,7 @@ func runtimeStateFromWire(value accountCircuitRuntimeStateWire) (GatewayAccountC
 		}
 		lease = &GatewayAccountCircuitLease{Kind: GatewayAccountCircuitLeaseKind(value.Lease.Kind), ID: value.Lease.LeaseID, Until: time.UnixMilli(value.Lease.LeaseUntilMS).UTC()}
 	}
-	state := GatewayAccountCircuitState{ScopeKey: value.ScopeKey, Scope: scope, Phase: GatewayAccountCircuitPhase(value.Phase), Generation: value.Generation, DispatchRevision: dispatchRevision, LedgerRevision: ledgerRevision, TransitionID: value.TransitionID, BackoffAttempt: value.BackoffAttempt, RecoverySuccessCount: value.RecoverySuccessCount, OpenedAt: openedAt, RetryAt: retryAt, FailureReason: value.FailureReason, Lease: lease, HalfOpenOrigin: GatewayAccountCircuitPhase(value.HalfOpenOrigin), IncidentID: value.IncidentID, ShadowedByIncidentID: value.ShadowedByIncidentID, ChildIncidentIDs: canonicalRuntimeStrings(value.ChildIncidentIDs), ChildScopeKeys: canonicalRuntimeStrings(value.ChildScopeKeys), RequiredRecoveryScopeKeys: canonicalRuntimeStrings(value.RequiredRecoveryScopeKeys), RecoveryEvidenceScopeKeys: canonicalRuntimeStrings(value.RecoveryEvidenceScopeKeys), UpdatedAt: time.UnixMilli(value.UpdatedAtMS).UTC()}
+	state := GatewayAccountCircuitState{ScopeKey: value.ScopeKey, Scope: scope, Phase: GatewayAccountCircuitPhase(value.Phase), Generation: value.Generation, DispatchRevision: dispatchRevision, LedgerRevision: ledgerRevision, TransitionID: value.TransitionID, BackoffAttempt: value.BackoffAttempt, RecoverySuccessCount: value.RecoverySuccessCount, OpenedAt: openedAt, RetryAt: retryAt, FailureReason: value.FailureReason, Lease: lease, HalfOpenOrigin: GatewayAccountCircuitPhase(value.HalfOpenOrigin), IncidentID: value.IncidentID, ShadowedByIncidentID: value.ShadowedByIncidentID, ChildIncidentIDs: canonicalRuntimeStrings([]string(value.ChildIncidentIDs)), ChildScopeKeys: canonicalRuntimeStrings([]string(value.ChildScopeKeys)), RequiredRecoveryScopeKeys: canonicalRuntimeStrings([]string(value.RequiredRecoveryScopeKeys)), RecoveryEvidenceScopeKeys: canonicalRuntimeStrings([]string(value.RecoveryEvidenceScopeKeys)), UpdatedAt: time.UnixMilli(value.UpdatedAtMS).UTC()}
 	if err := ValidateGatewayAccountCircuitState(state); err != nil {
 		return GatewayAccountCircuitState{}, err
 	}
@@ -1553,9 +1573,9 @@ func runtimeStateToWire(state GatewayAccountCircuitState) (accountCircuitRuntime
 		DispatchRevision: strconv.FormatInt(state.DispatchRevision, 10), TransitionID: state.TransitionID,
 		BackoffAttempt: state.BackoffAttempt, RecoverySuccessCount: state.RecoverySuccessCount,
 		FailureReason: state.FailureReason, HalfOpenOrigin: string(state.HalfOpenOrigin), IncidentID: state.IncidentID,
-		ShadowedByIncidentID: state.ShadowedByIncidentID, ChildIncidentIDs: append([]string(nil), state.ChildIncidentIDs...),
-		ChildScopeKeys: append([]string(nil), state.ChildScopeKeys...), RequiredRecoveryScopeKeys: append([]string(nil), state.RequiredRecoveryScopeKeys...),
-		RecoveryEvidenceScopeKeys: append([]string(nil), state.RecoveryEvidenceScopeKeys...), UpdatedAtMS: state.UpdatedAt.UTC().UnixMilli(),
+		ShadowedByIncidentID: state.ShadowedByIncidentID, ChildIncidentIDs: accountCircuitRuntimeStrings(append([]string(nil), state.ChildIncidentIDs...)),
+		ChildScopeKeys: accountCircuitRuntimeStrings(append([]string(nil), state.ChildScopeKeys...)), RequiredRecoveryScopeKeys: accountCircuitRuntimeStrings(append([]string(nil), state.RequiredRecoveryScopeKeys...)),
+		RecoveryEvidenceScopeKeys: accountCircuitRuntimeStrings(append([]string(nil), state.RecoveryEvidenceScopeKeys...)), UpdatedAtMS: state.UpdatedAt.UTC().UnixMilli(),
 	}
 	if state.LedgerRevision > 0 {
 		value.LedgerRevision = strconv.FormatInt(state.LedgerRevision, 10)

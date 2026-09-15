@@ -77,7 +77,9 @@ func (c *RedisSharedCache) Get(ctx context.Context, key string, dst any) (bool, 
 		return false, err
 	}
 	if err := json.Unmarshal(raw, dst); err != nil {
-		return false, err
+		// 载荷损坏（非 JSON）按未命中处理（Node createSharedJsonCache catch
+		// 同款）：调用方回退 loader，不让坏载荷污染进程缓存。
+		return false, nil
 	}
 	return true, nil
 }

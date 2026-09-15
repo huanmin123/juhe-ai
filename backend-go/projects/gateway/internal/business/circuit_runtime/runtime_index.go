@@ -623,10 +623,10 @@ func validateAccountCircuitRuntimeWireRelations(state accountCircuitRuntimeState
 		values   []string
 		maxBytes int
 	}{
-		{state.ChildIncidentIDs, 256},
-		{state.ChildScopeKeys, 2048},
-		{state.RequiredRecoveryScopeKeys, 2048},
-		{state.RecoveryEvidenceScopeKeys, 2048},
+		{[]string(state.ChildIncidentIDs), 256},
+		{[]string(state.ChildScopeKeys), 2048},
+		{[]string(state.RequiredRecoveryScopeKeys), 2048},
+		{[]string(state.RecoveryEvidenceScopeKeys), 2048},
 	} {
 		if len(relation.values) > GatewayAccountCircuitRuntimeMaxEvidenceScopes {
 			return fmt.Errorf("account circuit runtime relation list is invalid")

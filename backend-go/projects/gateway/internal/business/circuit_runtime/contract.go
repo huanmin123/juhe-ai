@@ -432,10 +432,17 @@ func ValidateGatewayAccountCircuitState(state GatewayAccountCircuitState) error 
 	if state.ScopeKey != scopeKey || state.Generation < 0 || state.DispatchRevision < 0 || state.LedgerRevision < 0 || state.BackoffAttempt < 0 || state.RecoverySuccessCount < 0 || state.UpdatedAt.IsZero() {
 		return fmt.Errorf("account circuit state is invalid")
 	}
-	if state.DispatchRevision > 0 {
+	// transitionId 校验：非 CLOSED 相位必须携带真实迁移 id（全部由携带
+	// transition id 的变更写入）；CLOSED 允许 Lua 合成的占位回退状态
+	// （not_found / capacity_exhausted / 围栏 stale 响应，dispatchRevision
+	// 为当前修订但 transitionId 为空）。提供的 transitionId 仍须合法。
+	if state.TransitionID != "" {
 		if err := validateGatewayAccountCircuitText(state.TransitionID, 256, "transition id"); err != nil {
 			return err
 		}
+	}
+	if state.Phase != GatewayAccountCircuitPhaseClosed && state.TransitionID == "" {
+		return fmt.Errorf("account circuit state is invalid")
 	}
 	switch state.Phase {
 	case GatewayAccountCircuitPhaseClosed, GatewayAccountCircuitPhaseSuspect, GatewayAccountCircuitPhaseOpen, GatewayAccountCircuitPhaseHalfOpen, GatewayAccountCircuitPhaseRecovering:

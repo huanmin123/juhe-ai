@@ -165,7 +165,8 @@ func (s *Service) refreshActiveResponseInspectionPoliciesInBackground(protocolCo
 		s.mu.Unlock()
 		return
 	}
-	generation := s.currentRuntimeGeneration()
+	// s.mu 已持有：直接读世代字段，禁止重入 currentRuntimeGeneration。
+	generation := s.runtimeGeneration
 	call := newRefreshCall()
 	s.pendingInspectRefreshes[cacheKey] = call
 	s.mu.Unlock()
