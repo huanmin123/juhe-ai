@@ -38,12 +38,24 @@ func w1iBuildEXIFJPEG(orientation int) []byte {
 }
 
 func TestW1iArmsMathFunctions(t *testing.T) {
-	if ceilDiv(10, 3) != 4 { t.Fatal("ceilDiv(10,3)") }
-	if ceilDiv(9, 3) != 3 { t.Fatal("ceilDiv(9,3)") }
-	if ceilDiv(0, 32) != 0 { t.Fatal("ceilDiv(0,32)") }
-	if maxOf(3, 5) != 5 { t.Fatal("maxOf(3,5)") }
-	if minOf(5, 3) != 3 { t.Fatal("minOf(5,3)") }
-	if sqrtOf(256) < 15.9 || sqrtOf(256) > 16.1 { t.Fatal("sqrtOf(256)") }
+	if ceilDiv(10, 3) != 4 {
+		t.Fatal("ceilDiv(10,3)")
+	}
+	if ceilDiv(9, 3) != 3 {
+		t.Fatal("ceilDiv(9,3)")
+	}
+	if ceilDiv(0, 32) != 0 {
+		t.Fatal("ceilDiv(0,32)")
+	}
+	if maxOf(3, 5) != 5 {
+		t.Fatal("maxOf(3,5)")
+	}
+	if minOf(5, 3) != 3 {
+		t.Fatal("minOf(5,3)")
+	}
+	if sqrtOf(256) < 15.9 || sqrtOf(256) > 16.1 {
+		t.Fatal("sqrtOf(256)")
+	}
 }
 
 func TestW1iArmsChatJPEGOrientation(t *testing.T) {
@@ -108,11 +120,19 @@ func TestW1iArmsVP8LBitWriter(t *testing.T) {
 func TestW1iArmsBuildVP8LFile(t *testing.T) {
 	payload := []byte{0x01, 0x02, 0x03}
 	out := buildVP8LFile(2, 2, payload)
-	if string(out[:4]) != "RIFF" { t.Fatal("RIFF missing") }
-	if string(out[8:12]) != "WEBP" { t.Fatal("WEBP missing") }
-	if string(out[12:16]) != "VP8L" { t.Fatal("VP8L missing") }
+	if string(out[:4]) != "RIFF" {
+		t.Fatal("RIFF missing")
+	}
+	if string(out[8:12]) != "WEBP" {
+		t.Fatal("WEBP missing")
+	}
+	if string(out[12:16]) != "VP8L" {
+		t.Fatal("VP8L missing")
+	}
 	sz := int(binary.LittleEndian.Uint32(out[16:20]))
-	if sz != 4 { t.Fatalf("vp8l size = %d", sz) }
+	if sz != 4 {
+		t.Fatalf("vp8l size = %d", sz)
+	}
 }
 
 func TestW1iArmsVP8LRoundTrip(t *testing.T) {
@@ -123,12 +143,16 @@ func TestW1iArmsVP8LRoundTrip(t *testing.T) {
 	for _, b := range sizes {
 		src := image.NewNRGBA(b)
 		enc, err := chainVP8LEncode(src)
-		if err != nil { t.Fatalf("%v encode: %v", b, err) }
+		if err != nil {
+			t.Fatalf("%v encode: %v", b, err)
+		}
 		if string(enc[:4]) != "RIFF" || string(enc[12:16]) != "VP8L" {
 			t.Fatalf("%v header wrong", b)
 		}
 		dec, err := xwebp.Decode(bytes.NewReader(enc))
-		if err != nil { t.Fatalf("%v decode: %v", b, err) }
+		if err != nil {
+			t.Fatalf("%v decode: %v", b, err)
+		}
 		if dec.Bounds().Dx() != b.Dx() || dec.Bounds().Dy() != b.Dy() {
 			t.Fatalf("%v bounds mismatch", b)
 		}

@@ -211,7 +211,8 @@ func (s *chatAttachSubscriber) TrySend(event chat.ChatGenerationEvent) bool {
 // qualification) and closes nothing here.
 func openChatDatabase(cfg runtimeConfig, postgresPools *pgpool.Registry, businessDB *sql.DB, pgDialect bool) (*sql.DB, bool, error) {
 	if pgDialect {
-		handle, err := postgresPools.Acquire(cfg.BusinessPostgresURL, "gateway-chat", 0, 0)
+		handle, err := postgresPools.Acquire(cfg.BusinessPostgresURL, "gateway-chat",
+			gatewayPostgresPoolMaxOpen, gatewayPostgresPoolMaxIdle)
 		if err != nil {
 			return nil, false, fmt.Errorf("open chat postgres pool: %w", err)
 		}

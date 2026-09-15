@@ -44,7 +44,7 @@ func (c w1pClock) Now() time.Time { return c.now }
 // w1pCodedError 携带 ErrorCode 表面的错误，用于 upstreamRequestErrorCode。
 type w1pCodedError struct{ code string }
 
-func (e w1pCodedError) Error() string   { return "w1p coded failure" }
+func (e w1pCodedError) Error() string     { return "w1p coded failure" }
 func (e w1pCodedError) ErrorCode() string { return e.code }
 
 // w1pObservationPort 是 chainAPIKeyObservationPort 的可观测 fake。
@@ -334,12 +334,12 @@ func TestW1PRecordDownstreamClosedRequestError(t *testing.T) {
 		dispatcher := &chainFailureDispatcher{}
 		sink := &w1pAuditSink{}
 		input := gatewaydispatch.UpstreamRequestErrorInput{
-			Account:          account,
-			UpstreamURL:      upstreamURL,
-			AuditCapture:     gatewaydispatch.AuditCapture{Sink: sink},
-			AuditAttemptID:   "attempt-9",
+			Account:           account,
+			UpstreamURL:       upstreamURL,
+			AuditCapture:      gatewaydispatch.AuditCapture{Sink: sink},
+			AuditAttemptID:    "attempt-9",
 			AuditAttemptIndex: 2,
-			AttemptStartedAt: 1728000000000,
+			AttemptStartedAt:  1728000000000,
 			LastAttempt: &gatewaydispatch.UpstreamAttempt{
 				AccountID: "acc-1", UpstreamURL: upstreamURL, Status: 502, HasStatus: true,
 			},
@@ -369,11 +369,11 @@ func TestW1PRecordDownstreamClosedRequestError(t *testing.T) {
 		dispatcher := &chainFailureDispatcher{}
 		sink := &w1pAuditSink{}
 		input := gatewaydispatch.UpstreamRequestErrorInput{
-			Account:          account,
-			UpstreamURL:      upstreamURL,
-			AuditCapture:     gatewaydispatch.AuditCapture{Sink: sink},
+			Account:           account,
+			UpstreamURL:       upstreamURL,
+			AuditCapture:      gatewaydispatch.AuditCapture{Sink: sink},
 			AuditAttemptIndex: 1,
-			AttemptStartedAt: 1728000000000,
+			AttemptStartedAt:  1728000000000,
 		}
 		if err := dispatcher.recordDownstreamClosedRequestError(ctx, input); err != nil {
 			t.Fatalf("recordDownstreamClosedRequestError 错误：%v", err)
@@ -432,7 +432,7 @@ func TestW1PFailedResponseAttemptOf(t *testing.T) {
 	parsed := map[string]any{"error": map[string]any{"code": "rate_limited"}}
 
 	fresh := failedResponseAttemptOf(gatewaydispatch.FailedUpstreamResponseInput{
-		Account:    account,
+		Account:     account,
 		UpstreamURL: "https://up.example/v1/responses",
 	}, "err-body", parsed)
 	if fresh.AccountID != "acc-2" || fresh.AccountName != "账户二" ||
@@ -475,7 +475,7 @@ func TestW1PFailedResponseAttemptOf(t *testing.T) {
 // TestW1PDownstreamClosedAttemptOf：匹配先前尝试携带状态，否则无状态。
 func TestW1PDownstreamClosedAttemptOf(t *testing.T) {
 	input := gatewaydispatch.UpstreamRequestErrorInput{
-		Account: gatewaydispatch.AccountCandidate{ID: "acc-1", Name: "账户一"},
+		Account:     gatewaydispatch.AccountCandidate{ID: "acc-1", Name: "账户一"},
 		UpstreamURL: "https://up.example/v1/responses",
 	}
 	attempt := downstreamClosedAttemptOf(input)
@@ -511,7 +511,7 @@ func TestW1PDownstreamClosedAttemptOf(t *testing.T) {
 // TestW1PTransportFailureAttemptOf：复制 + 覆盖 + 传输失败种类附加。
 func TestW1PTransportFailureAttemptOf(t *testing.T) {
 	input := gatewaydispatch.UpstreamRequestErrorInput{
-		Account: gatewaydispatch.AccountCandidate{ID: "acc-3", Name: "账户三", ProviderCode: "openai"},
+		Account:     gatewaydispatch.AccountCandidate{ID: "acc-3", Name: "账户三", ProviderCode: "openai"},
 		UpstreamURL: "https://up.example/v1/chat/completions",
 		LastAttempt: &gatewaydispatch.UpstreamAttempt{AccountID: "acc-old", ErrorCode: "E_KEEP"},
 	}
@@ -561,10 +561,10 @@ func TestW1PFormatUpstreamRequestTransportFailureKind(t *testing.T) {
 	started := &gatewaydispatch.UpstreamAttempt{Status: 200, HasStatus: true}
 	notStarted := &gatewaydispatch.UpstreamAttempt{}
 	cases := []struct {
-		name  string
-		err   error
-		prev  *gatewaydispatch.UpstreamAttempt
-		want  string
+		name string
+		err  error
+		prev *gatewaydispatch.UpstreamAttempt
+		want string
 	}{
 		{"timeout字样", errors.New("dial tcp: i/o timeout"), nil, gatewaydispatch.TransportFailureKindTimeout},
 		{"timed out字样", errors.New("request timed out"), nil, gatewaydispatch.TransportFailureKindTimeout},
@@ -680,7 +680,7 @@ func TestW1PSessionIdentityAdapter(t *testing.T) {
 
 	passthrough := sessionIdentityAdapter{}.ResolveGatewaySessionIdentity(
 		w1pGatewayRequest(http.MethodPost, "/v1/responses", map[string]string{
-			"x-session-id":        "  sess-42\t",
+			"x-session-id":       "  sess-42\t",
 			"x-conversation-key": "\tconv-9 ",
 		}), input)
 	if passthrough.SessionID != "sess-42" || passthrough.ConversationKey != "conv-9" {
@@ -1063,8 +1063,10 @@ func TestW1PFmtInt64(t *testing.T) {
 		{42, "42"},
 		{-42, "-42"},
 		{9223372036854775807, "9223372036854775807"},
-		// 不含 math.MinInt64：fmtInt64 对其取负溢出后返回 "-"（生产缺陷，
-		// 本任务不修改生产代码，CreateTraceID 的 UnixNano 恒为正不受影响）。
+		// 修复后契约：绝对值在无符号域计算，MinInt64 正常渲染
+		//（历史缺陷：有符号取负溢出曾使此处返回 "-"）。
+		{-9223372036854775808, "-9223372036854775808"},
+		{-1, "-1"},
 	}
 	for _, tc := range cases {
 		if got := fmtInt64(tc.in); got != tc.want {

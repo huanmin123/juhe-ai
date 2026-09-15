@@ -212,14 +212,14 @@ func TestBug0162CreateModelMappingEndpointFamilyEnum(t *testing.T) {
 		t.Fatalf("bogus upstream family: %d %v", code, payload)
 	}
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"good-mapping",
-		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
+		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1","supported_endpoint_modes":["chat_json"]},
 		"supportedModels":["gpt-4o-mini"],"status":"active",
-		"modelMappings":[{"sourceModel":"m1","sourceEndpointFamily":"stream_generate_content","upstreamModel":"u1","upstreamEndpointFamily":"generate_content"}]}`)
+		"modelMappings":[{"sourceModel":"m1","sourceEndpointFamily":"chat_completions","upstreamModel":"u1","upstreamEndpointFamily":"chat_completions"}]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("legal families: %d %v", code, payload)
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_model_mappings WHERE source_endpoint_family = 'stream_generate_content'
-		AND upstream_endpoint_family = 'generate_content'`) != 1 {
+	if env.count(t, `SELECT COUNT(*) FROM account_model_mappings WHERE source_endpoint_family = 'chat_completions'
+		AND upstream_endpoint_family = 'chat_completions'`) != 1 {
 		t.Fatal("legal mapping must persist")
 	}
 }

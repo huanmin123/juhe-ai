@@ -165,7 +165,7 @@ type chatGPTStrategy struct {
 func (p *chatAPIKeyProvider) defaultGptRouteStrategyForSystemAccount(ownerID string) (*chatGPTStrategy, error) {
 	query := fmt.Sprintf(`SELECT route_strategies.id, route_strategies.name
 		FROM %[1]s route_strategies
-		INNER JOIN %[1]s route_strategy_groups
+		INNER JOIN %[3]s route_strategy_groups
 			ON route_strategy_groups.route_strategy_id = route_strategies.id
 			AND route_strategy_groups.system_account_id = route_strategies.system_account_id
 			AND route_strategy_groups.status = 'active'
@@ -179,7 +179,7 @@ func (p *chatAPIKeyProvider) defaultGptRouteStrategyForSystemAccount(ownerID str
 			AND route_strategies.is_default = 1
 			AND groups.provider_code = ?
 		ORDER BY route_strategies.created_at ASC, route_strategies.id ASC
-		LIMIT 1`, p.table("route_strategies"), p.table("groups"))
+		LIMIT 1`, p.table("route_strategies"), p.table("groups"), p.table("route_strategy_groups"))
 	var strategy chatGPTStrategy
 	err := p.db.QueryRow(p.bind(query), ownerID, "gpt").Scan(&strategy.id, &strategy.name)
 	if err == sql.ErrNoRows {
@@ -300,7 +300,7 @@ func (p *chatAPIKeyProvider) defaultRouteStrategyIDForGroup(ownerID, groupID str
 
 // nextDefaultApiKeyName mirrors nextDefaultApiKeyNameAsync.
 func (p *chatAPIKeyProvider) nextDefaultApiKeyName(ownerID, baseName string) (string, error) {
-	query := fmt.Sprintf(`SELECT name FROM %s WHERE system_account_id = ? AND (name = ? OR name LIKE ? ESCAPE '\\')`, p.table("api_keys"))
+	query := fmt.Sprintf(`SELECT name FROM %s WHERE system_account_id = ? AND (name = ? OR name LIKE ? ESCAPE '\')`, p.table("api_keys"))
 	rows, err := p.db.Query(p.bind(query), ownerID, baseName, baseName+" %")
 	if err != nil {
 		return "", err
@@ -322,7 +322,7 @@ func (p *chatAPIKeyProvider) nextDefaultApiKeyName(ownerID, baseName string) (st
 
 // nextDefaultRouteStrategyName mirrors nextDefaultRouteStrategyNameAsync.
 func (p *chatAPIKeyProvider) nextDefaultRouteStrategyName(ownerID, baseName string) (string, error) {
-	query := fmt.Sprintf(`SELECT name FROM %s WHERE system_account_id = ? AND (name = ? OR name LIKE ? ESCAPE '\\')`, p.table("route_strategies"))
+	query := fmt.Sprintf(`SELECT name FROM %s WHERE system_account_id = ? AND (name = ? OR name LIKE ? ESCAPE '\')`, p.table("route_strategies"))
 	rows, err := p.db.Query(p.bind(query), ownerID, baseName, baseName+" %")
 	if err != nil {
 		return "", err

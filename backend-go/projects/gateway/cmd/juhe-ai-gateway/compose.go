@@ -53,6 +53,16 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/tablemonitor"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/uibootstrap"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
+	sharedsqlpool "github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
+)
+
+// 系统组合根 PG 池默认规格（gateway-system-api / gateway-chat 两个角色
+// 共用）：open 对齐审计/操作日志 store 的 defaultPostgresPoolSize，idle 取
+// sqlpool 全局上限。sqlpool.ValidatePoolLimits 拒绝 0/0（"无上限"不是合法
+// 池规格），此前两处 0/0 使 PG 模式下业务与 chat 池永远打不开。
+const (
+	gatewayPostgresPoolMaxOpen = 5096
+	gatewayPostgresPoolMaxIdle = sharedsqlpool.MaxIdleConns
 )
 
 // Mount matrix (Node system-api-app.ts / db-service.ts app.use prefix -> Go
@@ -262,7 +272,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// Business database (dual mode): Postgres shares the managed pool
 	// registry; SQLite opens a single writer handle over the handoff file.
 	if composed.pgDialect {
-		handle, err := postgresPools.Acquire(cfg.BusinessPostgresURL, "gateway-system-api", 0, 0)
+		handle, err := postgresPools.Acquire(cfg.BusinessPostgresURL, "gateway-system-api",
+			gatewayPostgresPoolMaxOpen, gatewayPostgresPoolMaxIdle)
 		if err != nil {
 			return nil, fmt.Errorf("open business PostgreSQL pool: %w", err)
 		}

@@ -1,4 +1,3 @@
-
 package main
 
 // compose_accounts_reset.go 的补充单元测试（w1 波次）：覆盖 guard 记忆、
@@ -11,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
+	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -342,7 +341,7 @@ func TestW1STeamGrantLimitsJSONBranches(t *testing.T) {
 	}
 
 	// 插入活跃 team grant（resource_type/resource_id 匹配）。
-	futureISO := now.Add(48 * time.Hour).UTC().Format("2006-01-02T15:04:05.000") + "Z"
+	futureISO := now.Add(48*time.Hour).UTC().Format("2006-01-02T15:04:05.000") + "Z"
 	if _, err := fixture.db.Exec(
 		`INSERT INTO resource_authorization_grants (resource_type, resource_id, grantee_type, grantee_team_id, limits_json, status, expires_at)
 		VALUES (?, 'm1', 'team', 'tm-1', '{"total":{"enabled":true,"limit":5}}', 'active', ?)`,
@@ -358,7 +357,7 @@ func TestW1STeamGrantLimitsJSONBranches(t *testing.T) {
 	}
 
 	// 过期 grant → 空串。
-	pastISO := now.Add(-1 * time.Hour).UTC().Format("2006-01-02T15:04:05.000") + "Z"
+	pastISO := now.Add(-1*time.Hour).UTC().Format("2006-01-02T15:04:05.000") + "Z"
 	if _, err := fixture.db.Exec(
 		`UPDATE resource_authorization_grants SET expires_at = ? WHERE grantee_team_id = 'tm-1'`, pastISO); err != nil {
 		t.Fatalf("expire grant: %v", err)
@@ -518,7 +517,7 @@ func TestW1SAuthorizationQuotaExceededTeamGrant(t *testing.T) {
 	fixture := newW1SResetFixture(t)
 	ctx := context.Background()
 	now := fixture.bridge.now()
-	futureISO := now.Add(48 * time.Hour).UTC().Format("2006-01-02T15:04:05.000") + "Z"
+	futureISO := now.Add(48*time.Hour).UTC().Format("2006-01-02T15:04:05.000") + "Z"
 
 	// authorization: effective_source_team_id='tm-1'，自身无 limits_json。
 	if _, err := fixture.db.Exec(
@@ -575,7 +574,7 @@ func TestW1SAuthorizationQuotaExceededTeamLimitsInvalidJSON(t *testing.T) {
 	fixture := newW1SResetFixture(t)
 	ctx := context.Background()
 	now := fixture.bridge.now()
-	futureISO := now.Add(48 * time.Hour).UTC().Format("2006-01-02T15:04:05.000") + "Z"
+	futureISO := now.Add(48*time.Hour).UTC().Format("2006-01-02T15:04:05.000") + "Z"
 
 	if _, err := fixture.db.Exec(
 		`INSERT INTO resource_authorizations (id, resource_type, resource_id, effective_source_team_id, status, expires_at)

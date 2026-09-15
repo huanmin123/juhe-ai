@@ -123,8 +123,8 @@ func TestW1DDecodeRoundTrip(t *testing.T) {
 
 func TestW1DBasicMath(t *testing.T) {
 	cases := []struct {
-		name string
-		fn   func(int, int) int
+		name       string
+		fn         func(int, int) int
 		a, b, want int
 	}{
 		{"ceilDiv/10/3", ceilDiv, 10, 3, 4},
@@ -216,10 +216,16 @@ func TestW1DVP8LRoundTrip(t *testing.T) {
 			}
 		}
 		encoded, err := chainVP8LEncode(src)
-		if err != nil { t.Fatalf("%v encode: %v", b, err) }
-		if len(encoded) == 0 { t.Fatalf("%v empty output", b) }
+		if err != nil {
+			t.Fatalf("%v encode: %v", b, err)
+		}
+		if len(encoded) == 0 {
+			t.Fatalf("%v empty output", b)
+		}
 		decoded, err := xwebp.Decode(bytes.NewReader(encoded))
-		if err != nil { t.Fatalf("%v decode: %v", b, err) }
+		if err != nil {
+			t.Fatalf("%v decode: %v", b, err)
+		}
 		if got := decoded.Bounds(); got.Dx() != b.Dx() || got.Dy() != b.Dy() {
 			t.Fatalf("%v decoded bounds %v", b, got)
 		}
@@ -291,7 +297,9 @@ func TestW1DOrientedDimensions(t *testing.T) {
 		{0, 100, 200}, {1, 100, 200}, {5, 200, 100}, {6, 200, 100},
 	} {
 		dims, ok := orientedChatDimensions(image.Rect(0, 0, 100, 200), tc.orientation)
-		if !ok { t.Fatalf("orientation %d: not ok", tc.orientation) }
+		if !ok {
+			t.Fatalf("orientation %d: not ok", tc.orientation)
+		}
 		if dims.width != tc.wantW || dims.height != tc.wantH {
 			t.Fatalf("orientation %d dims = %dx%d want %dx%d", tc.orientation, dims.width, dims.height, tc.wantW, tc.wantH)
 		}

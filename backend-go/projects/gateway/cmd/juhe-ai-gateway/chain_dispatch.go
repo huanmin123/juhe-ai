@@ -340,16 +340,16 @@ type chainAccountAPIKeyWriter struct {
 
 func (w *chainAccountAPIKeyWriter) RecordFailure(ctx context.Context, write gatewayaccounteffects.AccountAPIKeyFailureWrite) (gatewayaccounteffects.APIKeyWriteResult, error) {
 	result, err := w.keyStates.RecordFailure(ctx, accountkeystates.FailureInput{
-		Account:                 chainKeyStateTargetOf(write.Account),
-		Status:                  string(write.Input.Status),
-		StatusCode:              int(derefInt64Ptr2(write.Input.StatusCode)),
-		ErrorCode:               derefStringValue(write.Input.ErrorCode),
-		ErrorMessage:            derefStringValue(write.Input.ErrorMessage),
-		TraceID:                 derefStringValue(write.Input.TraceID),
-		CooldownUntil:           derefStringValue(write.Input.CooldownUntil),
-		QuotaRecoveryMode:       string(write.Input.QuotaRecoveryMode),
-		ObservedAt:              write.Input.ObservedAt,
-		Expected:                accountkeystates.ExpectedProbeState{AccountConfigRevision: write.Input.ExpectedAccountConfigRevision},
+		Account:           chainKeyStateTargetOf(write.Account),
+		Status:            string(write.Input.Status),
+		StatusCode:        int(derefInt64Ptr2(write.Input.StatusCode)),
+		ErrorCode:         derefStringValue(write.Input.ErrorCode),
+		ErrorMessage:      derefStringValue(write.Input.ErrorMessage),
+		TraceID:           derefStringValue(write.Input.TraceID),
+		CooldownUntil:     derefStringValue(write.Input.CooldownUntil),
+		QuotaRecoveryMode: string(write.Input.QuotaRecoveryMode),
+		ObservedAt:        write.Input.ObservedAt,
+		Expected:          accountkeystates.ExpectedProbeState{AccountConfigRevision: write.Input.ExpectedAccountConfigRevision},
 	})
 	return gatewayaccounteffects.APIKeyWriteResult{Changed: result.Changed, SkippedReason: nilStringPtr(result.SkippedReason)}, err
 }
@@ -394,19 +394,19 @@ func (p chainAPIKeyEffectsPort) RecordFailure(ctx context.Context, account gatew
 		statusCode = &value
 	}
 	p.effects.RecordFailure(ctx, account, gatewayaccounteffects.RecordFailureInput{
-		Status:           gatewayaccounteffects.AccountApiKeyFailureStatus(input.Status),
-		StatusCode:       statusCode,
-		ErrorCode:        nilStringFrom(input.ErrorCode),
-		ErrorMessage:     nilStringFrom(input.ErrorMessage),
-		TraceID:          nilStringFrom(input.TraceID),
-		CooldownUntil:    input.CooldownUntil,
+		Status:            gatewayaccounteffects.AccountApiKeyFailureStatus(input.Status),
+		StatusCode:        statusCode,
+		ErrorCode:         nilStringFrom(input.ErrorCode),
+		ErrorMessage:      nilStringFrom(input.ErrorMessage),
+		TraceID:           nilStringFrom(input.TraceID),
+		CooldownUntil:     input.CooldownUntil,
 		QuotaRecoveryMode: gatewayaccounteffects.QuotaRecoveryMode(chainQuotaRecoveryModeOf(input.MutationContext)),
-		TrafficSource:    input.TrafficSource,
-		MutationContext:  chainMutationContextOf(input.MutationContext),
-		ClientIP:         input.ClientIP,
-		APIKeyID:         input.APIKeyID,
-		ObservationEpoch: chainObservationEpochPtrOf(input.ObservationEpoch),
-		Source:           input.Source,
+		TrafficSource:     input.TrafficSource,
+		MutationContext:   chainMutationContextOf(input.MutationContext),
+		ClientIP:          input.ClientIP,
+		APIKeyID:          input.APIKeyID,
+		ObservationEpoch:  chainObservationEpochPtrOf(input.ObservationEpoch),
+		Source:            input.Source,
 	})
 	return nil
 }
@@ -609,11 +609,11 @@ func (s *chainConfiguredPolicyAvoidanceSuppression) ResolveLocalSuppressionFilte
 	}
 	if configured.AllSuppressed {
 		input.AuditCapture.AddGatewayMetadata("local_account_suppression", map[string]any{
-			"suppressedCount":                       configured.SuppressedCount,
-			"suppressedAccountIds":                  configured.SuppressedAccountIDs,
-			"allSuppressed":                         true,
-			"nextRetryAfterMs":                      configured.NextRetryAfterMs,
-			"configuredPolicySuppressedAccountIds":  configured.ConfiguredPolicySuppressedAccountIDs,
+			"suppressedCount":                      configured.SuppressedCount,
+			"suppressedAccountIds":                 configured.SuppressedAccountIDs,
+			"allSuppressed":                        true,
+			"nextRetryAfterMs":                     configured.NextRetryAfterMs,
+			"configuredPolicySuppressedAccountIds": configured.ConfiguredPolicySuppressedAccountIDs,
 		})
 		failure := gatewaycircuit.LocalSuppressionExhaustedFailureResponse(configured.NextRetryAfterMs)
 		if err := input.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
@@ -644,10 +644,10 @@ func (s *chainConfiguredPolicyAvoidanceSuppression) ResolveLocalSuppressionFilte
 // （Node applyResponseInspectionPolicyRuntimeSideEffects +
 // applyResponseInspectionObservationDecisions）。
 type chainResponseAccountEffects struct {
-	avoidance  *gatewayaccounteffects.ConfiguredPolicyAvoidanceService
+	avoidance   *gatewayaccounteffects.ConfiguredPolicyAvoidanceService
 	proxyHealth *gatewayproxyhealth.ProxyHealthService
-	cache      *gatewayruntimecache.Service
-	affinity   gatewaydispatch.SessionAffinityPort
+	cache       *gatewayruntimecache.Service
+	affinity    gatewaydispatch.SessionAffinityPort
 }
 
 func (e *chainResponseAccountEffects) HandleStreamFailure(account gatewayresponse.AccountView, message string, errorCode string, context gatewayresponse.StreamFailureContext, shouldMutateAccount bool) error {
@@ -755,10 +755,10 @@ func (p chainLatencyDegradationPort) OrderAsync(ctx context.Context, accounts []
 		return gatewaydispatch.LatencyDegradationOrder{}, err
 	}
 	return gatewaydispatch.LatencyDegradationOrder{
-		Accounts:             result.Accounts,
-		Applied:              result.Applied,
-		DegradedAccountIDs:   result.DegradedAccountIDs,
-		BypassedAllDegraded:  result.BypassedAllDegraded,
+		Accounts:            result.Accounts,
+		Applied:             result.Applied,
+		DegradedAccountIDs:  result.DegradedAccountIDs,
+		BypassedAllDegraded: result.BypassedAllDegraded,
 	}, nil
 }
 

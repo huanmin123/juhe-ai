@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,7 +59,7 @@ func (r *Repo) ValidateCoreTables(ctx context.Context) error {
 	for _, table := range []string{"account_test_tasks", "account_test_sessions", "account_test_session_tasks"} {
 		query := "SELECT COUNT(*) FROM " + r.table(table) + " WHERE 1 = 0"
 		var count int
-		if err := r.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		if err := r.db.QueryRowContext(ctx, r.bindSQL(query)).Scan(&count); err != nil {
 			return fmt.Errorf("业务库缺少手动测试任务表 %s: %w", table, err)
 		}
 	}
@@ -73,6 +74,33 @@ func (r *Repo) table(name string) string {
 }
 
 func (r *Repo) nowIso() string { return r.now().UTC().Format(time.RFC3339Nano) }
+
+// bindSQL 把 SQLite 风格的 ? 占位符在 postgres 方言下改写为 $n。pgx 不会
+// 转换 ?，原样下发时 PG 词法把 ? 当操作符 token，报错位置后移（实测
+// cleanupExpired 报 syntax error at or near "ORDER"，42601），导致 PG 模式
+// 维护与任务生命周期 SQL 全部失效，故在仓储出口统一改写。
+func (r *Repo) bindSQL(query string) string {
+	if !r.postgres {
+		return query
+	}
+	var b strings.Builder
+	n := 0
+	inString := false
+	for i := 0; i < len(query); i++ {
+		c := query[i]
+		if c == '\'' {
+			inString = !inString
+		}
+		if c == '?' && !inString {
+			n++
+			b.WriteByte('$')
+			b.WriteString(strconv.Itoa(n))
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
 
 func normalizedText(value string, maxLength int) (string, bool) {
 	normalized := strings.TrimSpace(value)
@@ -149,11 +177,11 @@ func (row *taskRow) record() *accounttest.ManualTestTaskRecord {
 }
 
 func (r *Repo) getTaskRecord(ctx context.Context, q queryContext, id string) (*accounttest.ManualTestTaskRecord, error) {
-	row := q.QueryRowContext(ctx, `
+	row := q.QueryRowContext(ctx, r.bindSQL(`
     SELECT `+r.taskScanQualified()+`
     FROM `+r.table("account_test_tasks")+` t
     WHERE t.id = ?
-    LIMIT 1`, id)
+    LIMIT 1`), id)
 	scanned, err := scanTaskRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -182,12 +210,12 @@ func (r *Repo) sessionCancelReason(ctx context.Context, q queryContext, taskID s
 		status       string
 		cancelReason sql.NullString
 	)
-	err := q.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, r.bindSQL(`
     SELECT s.status, s.cancel_reason
     FROM `+r.table("account_test_session_tasks")+` st
     JOIN `+r.table("account_test_sessions")+` s ON s.id = st.session_id
     WHERE st.task_id = ?
-    LIMIT 1`, taskID).Scan(&status, &cancelReason)
+    LIMIT 1`), taskID).Scan(&status, &cancelReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -307,7 +335,7 @@ func (r *Repo) MarkRunning(ctx context.Context, taskID string) (*accounttest.Man
     WHERE id = ?
       AND status = 'queued'
       AND cancel_requested = ` + r.boolFalse()
-	result, err := tx.ExecContext(ctx, update, now, now, id)
+	result, err := tx.ExecContext(ctx, r.bindSQL(update), now, now, id)
 	if err != nil {
 		return nil, err
 	}
@@ -318,8 +346,8 @@ func (r *Repo) MarkRunning(ctx context.Context, taskID string) (*accounttest.Man
 	if changed == 0 {
 		var status string
 		var cancelRequested bool
-		err := tx.QueryRowContext(ctx, `
-      SELECT status, cancel_requested FROM `+r.table("account_test_tasks")+` WHERE id = ? LIMIT 1`, id).
+		err := tx.QueryRowContext(ctx, r.bindSQL(`
+      SELECT status, cancel_requested FROM `+r.table("account_test_tasks")+` WHERE id = ? LIMIT 1`), id).
 			Scan(&status, &cancelRequested)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, tx.Commit()
@@ -362,7 +390,7 @@ func (r *Repo) Complete(ctx context.Context, taskID string, resultValue accountt
 	}
 	now := r.nowIso()
 	fenceSQL, fenceArgs := r.startedAtFence(expectedStartedAt)
-	write, err := tx.ExecContext(ctx, `
+	write, err := tx.ExecContext(ctx, r.bindSQL(`
     UPDATE `+r.table("account_test_tasks")+`
     SET status = ?,
         status_message = ?,
@@ -372,7 +400,7 @@ func (r *Repo) Complete(ctx context.Context, taskID string, resultValue accountt
         updated_at = ?
     WHERE id = ?
       AND status = 'running'
-      AND cancel_requested = `+r.boolFalse()+fenceSQL,
+      AND cancel_requested = `+r.boolFalse()+fenceSQL),
 		append([]any{status, resultValue.Message, nullIfEmpty(resultValue.ResultJSON), sqlString(resultValue.Success, resultValue.Message), now, now, id}, fenceArgs...)...)
 	if err != nil {
 		return err
@@ -408,7 +436,7 @@ func (r *Repo) Fail(ctx context.Context, taskID string, message string, resultJS
 	defer func() { _ = tx.Rollback() }()
 	now := r.nowIso()
 	fenceSQL, fenceArgs := r.startedAtFence(expectedStartedAt)
-	write, err := tx.ExecContext(ctx, `
+	write, err := tx.ExecContext(ctx, r.bindSQL(`
     UPDATE `+r.table("account_test_tasks")+`
     SET status = 'failed',
         status_message = ?,
@@ -418,7 +446,7 @@ func (r *Repo) Fail(ctx context.Context, taskID string, message string, resultJS
         updated_at = ?
     WHERE id = ?
       AND status IN ('queued', 'running')
-      AND cancel_requested = `+r.boolFalse()+fenceSQL,
+      AND cancel_requested = `+r.boolFalse()+fenceSQL),
 		append([]any{message, nullIfEmpty(resultJSON), message, now, now, id}, fenceArgs...)...)
 	if err != nil {
 		return err
@@ -459,7 +487,7 @@ func (r *Repo) markCanceledTx(ctx context.Context, tx queryContext, id, message 
 	}
 	now := r.nowIso()
 	fenceSQL, fenceArgs := r.startedAtFence(expectedStartedAt)
-	write, err := tx.ExecContext(ctx, `
+	write, err := tx.ExecContext(ctx, r.bindSQL(`
     UPDATE `+r.table("account_test_tasks")+`
     SET status = 'canceled',
         status_message = CASE
@@ -470,7 +498,7 @@ func (r *Repo) markCanceledTx(ctx context.Context, tx queryContext, id, message 
         finished_at = COALESCE(finished_at, ?),
         updated_at = ?
     WHERE id = ?
-      AND status IN ('queued', 'running')`+fenceSQL,
+      AND status IN ('queued', 'running')`+fenceSQL),
 		append([]any{message, now, now, id}, fenceArgs...)...)
 	if err != nil {
 		return false, err
@@ -495,13 +523,13 @@ func (r *Repo) UpdateMessage(ctx context.Context, taskID string, message string,
 	}
 	now := r.nowIso()
 	fenceSQL, fenceArgs := r.startedAtFence(expectedStartedAt)
-	_, err := r.db.ExecContext(ctx, `
+	_, err := r.db.ExecContext(ctx, r.bindSQL(`
     UPDATE `+r.table("account_test_tasks")+`
     SET status_message = ?,
         updated_at = ?
     WHERE id = ?
       AND status = 'running'
-      AND cancel_requested = `+r.boolFalse()+fenceSQL,
+      AND cancel_requested = `+r.boolFalse()+fenceSQL),
 		append([]any{normalized, now, id}, fenceArgs...)...)
 	return err
 }
@@ -512,11 +540,11 @@ func (r *Repo) finalizeIfCanceledTx(ctx context.Context, tx queryContext, id str
 		return err
 	}
 	var cancelRequested bool
-	if err := tx.QueryRowContext(ctx, `SELECT cancel_requested FROM `+r.table("account_test_tasks")+` WHERE id = ?`, id).Scan(&cancelRequested); err != nil {
+	if err := tx.QueryRowContext(ctx, r.bindSQL(`SELECT cancel_requested FROM `+r.table("account_test_tasks")+` WHERE id = ?`), id).Scan(&cancelRequested); err != nil {
 		return err
 	}
 	status := ""
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM `+r.table("account_test_tasks")+` WHERE id = ?`, id).Scan(&status); err != nil {
+	if err := tx.QueryRowContext(ctx, r.bindSQL(`SELECT status FROM `+r.table("account_test_tasks")+` WHERE id = ?`), id).Scan(&status); err != nil {
 		return err
 	}
 	if databaseBoolean(cancelRequested) && (status == "queued" || status == "running") {
@@ -580,7 +608,7 @@ func (r *Repo) cleanupExpired(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, r.bindSQL(`
     DELETE FROM `+tasks+`
     WHERE id IN (
       SELECT id
@@ -589,10 +617,10 @@ func (r *Repo) cleanupExpired(ctx context.Context) error {
         AND finished_at < ?
       ORDER BY finished_at ASC, id ASC
       LIMIT ?
-    )`, instantParam(r.postgres, cutoff, r.now), cleanupBatchSize); err != nil {
+    )`), instantParam(r.postgres, cutoff, r.now), cleanupBatchSize); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, r.bindSQL(`
     DELETE FROM `+sessions+`
     WHERE id IN (
       SELECT s.id
@@ -607,7 +635,7 @@ func (r *Repo) cleanupExpired(ctx context.Context) error {
         )
       ORDER BY s.updated_at ASC, s.id ASC
       LIMIT ?
-    )`, instantParam(r.postgres, cutoff, r.now), cleanupBatchSize); err != nil {
+    )`), instantParam(r.postgres, cutoff, r.now), cleanupBatchSize); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -623,7 +651,7 @@ func (r *Repo) completeIdleSessions(ctx context.Context, limit int) (int, error)
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `
+	rows, err := tx.QueryContext(ctx, r.bindSQL(`
     SELECT s.id
     FROM `+sessions+` s
     WHERE s.status = 'running'
@@ -636,7 +664,7 @@ func (r *Repo) completeIdleSessions(ctx context.Context, limit int) (int, error)
           AND t.status IN ('queued', 'running')
       )
     ORDER BY s.last_heartbeat_at ASC, s.id ASC
-    LIMIT ?`, instantParam(r.postgres, cutoff, r.now), maxInt(1, limit))
+    LIMIT ?`), instantParam(r.postgres, cutoff, r.now), maxInt(1, limit))
 	if err != nil {
 		return 0, err
 	}
@@ -656,7 +684,7 @@ func (r *Repo) completeIdleSessions(ctx context.Context, limit int) (int, error)
 	completed := 0
 	now := r.nowIso()
 	for _, sessionID := range sessionIDs {
-		result, err := tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, r.bindSQL(`
       UPDATE `+sessions+`
       SET status = 'completed',
           finished_at = COALESCE(finished_at, ?),
@@ -669,7 +697,7 @@ func (r *Repo) completeIdleSessions(ctx context.Context, limit int) (int, error)
           JOIN `+tasks+` t ON t.id = st.task_id
           WHERE st.session_id = ?
             AND t.status IN ('queued', 'running')
-        )`, now, now, sessionID, sessionID)
+        )`), now, now, sessionID, sessionID)
 		if err != nil {
 			return completed, err
 		}
@@ -685,7 +713,7 @@ func (r *Repo) completeIdleSessions(ctx context.Context, limit int) (int, error)
 }
 
 func (r *Repo) listRunnable(ctx context.Context, limit int) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.db.QueryContext(ctx, r.bindSQL(`
     SELECT t.id
     FROM `+r.table("account_test_tasks")+` t
     LEFT JOIN `+r.table("account_test_session_tasks")+` st ON st.task_id = t.id
@@ -696,7 +724,7 @@ func (r *Repo) listRunnable(ctx context.Context, limit int) ([]string, error) {
         OR s.status = 'running'
       )
     ORDER BY t.queued_at ASC, t.id ASC
-    LIMIT ?`, maxInt(1, limit))
+    LIMIT ?`), maxInt(1, limit))
 	if err != nil {
 		return nil, err
 	}
@@ -723,7 +751,7 @@ func (r *Repo) failExpiredQueued(ctx context.Context, maxQueuedMS int64, limit i
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `
+	rows, err := tx.QueryContext(ctx, r.bindSQL(`
     SELECT t.id
     FROM `+tasks+` t
     LEFT JOIN `+sessionTasks+` st ON st.task_id = t.id
@@ -739,7 +767,7 @@ func (r *Repo) failExpiredQueued(ctx context.Context, maxQueuedMS int64, limit i
         OR s.status = 'running'
       )
     ORDER BY t.queued_at ASC, t.id ASC
-    LIMIT ?`, instantParam(r.postgres, r.nowIso(), r.now), instantParam(r.postgres, queuedCutoff, r.now), maxInt(1, limit))
+    LIMIT ?`), instantParam(r.postgres, r.nowIso(), r.now), instantParam(r.postgres, queuedCutoff, r.now), maxInt(1, limit))
 	if err != nil {
 		return nil, err
 	}
@@ -767,7 +795,7 @@ func (r *Repo) failExpiredQueued(ctx context.Context, maxQueuedMS int64, limit i
 	for _, id := range taskIDs {
 		args = append(args, id)
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, r.bindSQL(`
     UPDATE `+tasks+`
     SET status = 'failed',
         status_message = ?,
@@ -776,7 +804,7 @@ func (r *Repo) failExpiredQueued(ctx context.Context, maxQueuedMS int64, limit i
         updated_at = ?
     WHERE id IN (`+placeholders+`)
       AND status = 'queued'
-      AND cancel_requested = `+r.boolFalse(), args...); err != nil {
+      AND cancel_requested = `+r.boolFalse()), args...); err != nil {
 		return nil, err
 	}
 	return taskIDs, tx.Commit()
@@ -792,17 +820,17 @@ func (r *Repo) requeueInterrupted(ctx context.Context, staleRunningMS int, refil
 	}
 	defer func() { _ = tx.Rollback() }()
 	nowIso := instantParam(r.postgres, r.nowIso(), r.now)
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, r.bindSQL(`
     UPDATE `+tasks+`
     SET status = 'canceled',
         status_message = '已停止测试',
         finished_at = COALESCE(finished_at, ?),
         updated_at = ?
     WHERE status = 'running'
-      AND cancel_requested = `+r.boolTrue(), nowIso, nowIso); err != nil {
+      AND cancel_requested = `+r.boolTrue()), nowIso, nowIso); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, r.bindSQL(`
     UPDATE `+tasks+`
     SET status = 'queued',
         status_message = '后台 worker 重启后重新排队',
@@ -811,7 +839,7 @@ func (r *Repo) requeueInterrupted(ctx context.Context, staleRunningMS int, refil
         updated_at = ?
     WHERE status = 'running'
       AND cancel_requested = `+r.boolFalse()+`
-      AND updated_at < ?`, nowIso, instantParam(r.postgres, staleCutoff, r.now)); err != nil {
+      AND updated_at < ?`), nowIso, instantParam(r.postgres, staleCutoff, r.now)); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

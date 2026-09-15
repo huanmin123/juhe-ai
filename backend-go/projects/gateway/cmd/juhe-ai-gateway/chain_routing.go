@@ -451,8 +451,6 @@ func (b hybridRequestBody) ReplaceModelWithParsed(targetModel string, parsed *ga
 	if parsed == nil || b.request == nil || b.request.Body == nil {
 		return false
 	}
-	object := gatewayhybrid.NewOrderedJSON()
-	object.Set("model", targetModel)
 	return gatewaybody.ReplaceGatewayJSONBodyModel(b.request.Body, targetModel, orderedJSONObjectMap(parsed))
 }
 

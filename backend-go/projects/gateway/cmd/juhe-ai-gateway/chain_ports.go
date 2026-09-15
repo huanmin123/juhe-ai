@@ -1619,14 +1619,18 @@ func fmtInt64(value int64) string {
 	if value == 0 {
 		return "0"
 	}
+	// 取绝对值走无符号域：有符号取负在 math.MinInt64 处溢出回自身，
+	// 会导致循环不执行、输出 "-"。-uint64(v) 的补码语义对全部 int64
+	//（含 MinInt64）都等于其绝对值。
 	negative := value < 0
+	magnitude := uint64(value)
 	if negative {
-		value = -value
+		magnitude = -magnitude
 	}
 	digits := []byte{}
-	for value > 0 {
-		digits = append([]byte{byte('0' + value%10)}, digits...)
-		value /= 10
+	for magnitude > 0 {
+		digits = append([]byte{byte('0' + magnitude%10)}, digits...)
+		magnitude /= 10
 	}
 	if negative {
 		return "-" + string(digits)
