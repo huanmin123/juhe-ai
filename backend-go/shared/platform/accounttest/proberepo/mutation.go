@@ -422,7 +422,13 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
 	}
 	now := s.now().UTC().Format(rfc3339Milli)
 	observedAt := normalizeObservedAt(input.ObservedAt, now)
-	nextBackoff := nextProbeBackoffSeconds(existing.backoffSeconds())
+	// 首次失败的 Key 还没有 runtime 行（existing == nil），回退从 0 开始的
+	// backoff，不能直接解引用。
+	previousBackoff := 0
+	if existing != nil {
+		previousBackoff = existing.backoffSeconds()
+	}
+	nextBackoff := nextProbeBackoffSeconds(previousBackoff)
 	status := normalizeFailureStatus(input.Status)
 	cooldownUntil := strings.TrimSpace(input.CooldownUntil)
 	nextProbeAt := passiveProbeRetryAt(nextBackoff, s.now)
@@ -884,8 +890,11 @@ func quotaRecoveryStartedAt(mode string, existing *runtimeRow, observedAt string
 		return nil
 	}
 	if mode == "generic" {
-		previousMode := quotaModeFromErrorCode(existing.lastErrorCode)
-		if previousMode == "generic" && (existing.status == "rate_limited" || existing.status == "error") {
+		previousMode := ""
+		if existing != nil {
+			previousMode = quotaModeFromErrorCode(existing.lastErrorCode)
+		}
+		if existing != nil && previousMode == "generic" && (existing.status == "rate_limited" || existing.status == "error") {
 			if existing.recoveryStartedAt != "" {
 				return existing.recoveryStartedAt
 			}

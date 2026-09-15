@@ -560,11 +560,19 @@ func (r *Repo) finalizeIfCanceledTx(ctx context.Context, tx queryContext, id str
 
 // startedAtFence 返回 started_at 围栏子句与绑定参数（对齐 Node 的
 // (? IS NULL OR started_at = ?) 形状，两种驱动统一使用双绑定）。
+// postgres 方言必须给两个占位符显式 ::timestamptz：bindSQL 改写后第一个
+// 参数只出现在 `? IS NULL` 中，没有独立类型推导上下文，PG prepare 报
+// 42P18（could not determine data type）；显式类型后围栏退化为毫秒级
+// 时间戳相等比较，SQLite 侧保持原样。
 func (r *Repo) startedAtFence(expectedStartedAt *string) (string, []any) {
-	if expectedStartedAt == nil {
-		return ` AND (? IS NULL OR started_at = ?)`, []any{nil, nil}
+	clause := ` AND (? IS NULL OR started_at = ?)`
+	if r.postgres {
+		clause = ` AND (?::timestamptz IS NULL OR started_at = ?::timestamptz)`
 	}
-	return ` AND (? IS NULL OR started_at = ?)`, []any{*expectedStartedAt, *expectedStartedAt}
+	if expectedStartedAt == nil {
+		return clause, []any{nil, nil}
+	}
+	return clause, []any{*expectedStartedAt, *expectedStartedAt}
 }
 
 func (r *Repo) boolTrue() string {
