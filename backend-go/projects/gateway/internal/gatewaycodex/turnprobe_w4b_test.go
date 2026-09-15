@@ -70,7 +70,7 @@ func (c *w4bProbeCoordinator) GetState(_ context.Context, _ string) (*gatewaycir
 
 func w4bProbeInput() CodexTurnAvoidanceProbeInput {
 	return CodexTurnAvoidanceProbeInput{
-		Account: gatewayruntimecache.OpenAIAccountSecret{ID: "acc-1", ConfigRevision: nil},
+		Account:  gatewayruntimecache.OpenAIAccountSecret{ID: "acc-1", ConfigRevision: nil},
 		Strategy: OpenAIGatewayClientStrategyContext{ClientSourceAvoidanceStateKey: "state-w4b"},
 		Activation: CodexTurnFailureActivation{
 			AccountID:        "acc-1",

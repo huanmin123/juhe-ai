@@ -85,13 +85,15 @@ func TestPostgresFakeVerifyLeaseFailureBlocksWrites(t *testing.T) {
 }
 
 // TestPostgresFakeStatementLevelFailures 逐条注入 DML/查询失败，确保每个
-// 失败点都把数据库错误暴露给调用方。
+// 失败点都把数据库错误暴露给调用方。成功路径脚本必须先注册，错误注入最后
+// 注册：wn_pgfake 同键后注册覆盖先注册，精确匹配优先于前缀匹配。
 func TestPostgresFakeStatementLevelFailures(t *testing.T) {
 	cases := []struct {
 		name          string
 		failSQL       string
 		failSQLPrefix string
 		skipCatalog   bool
+		register      func(t *testing.T, server *pgFakeServer)
 		execute       func(t *testing.T, store *postgresStore, server *pgFakeServer)
 	}{
 		{name: "acquire query", failSQL: pgFakeLeaseAcquireSQL, execute: func(t *testing.T, store *postgresStore, server *pgFakeServer) {
@@ -123,9 +125,8 @@ func TestPostgresFakeStatementLevelFailures(t *testing.T) {
 				t.Fatal("cursor 删除失败必须暴露")
 			}
 		}},
-		{name: "facet summary insert", failSQLPrefix: "INSERT INTO juhe_dataset.runtime_log_facet_summary", execute: func(t *testing.T, store *postgresStore, server *pgFakeServer) {
+		{name: "facet summary insert", failSQLPrefix: "INSERT INTO juhe_dataset.runtime_log_facet_summary", register: registerCommitSuccessPath, execute: func(t *testing.T, store *postgresStore, server *pgFakeServer) {
 			lease := OwnerLease{OwnerID: "o", FenceToken: 7}
-			registerCommitSuccessPath(t, server)
 			if err := store.Commit(context.Background(), lease, []Record{{ID: "r", Time: "2026-08-08T00:00:00.000Z", Level: "info", Event: "e", CreatedAt: "2026-08-08T00:00:00.000Z"}},
 				Cursor{LogFile: "x"}, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)); err == nil {
 				t.Fatal("facet 汇总写入失败必须暴露")
@@ -137,16 +138,14 @@ func TestPostgresFakeStatementLevelFailures(t *testing.T) {
 				t.Fatal("过期记录查询失败必须暴露")
 			}
 		}},
-		{name: "cleanup cursor delete", failSQLPrefix: "DELETE FROM juhe_dataset.runtime_log_file_cursors WHERE ctid IN", execute: func(t *testing.T, store *postgresStore, server *pgFakeServer) {
+		{name: "cleanup cursor delete", failSQL: "DELETE FROM juhe_dataset.runtime_log_file_cursors WHERE ctid IN (SELECT ctid FROM juhe_dataset.runtime_log_file_cursors WHERE updated_at < $1 AND cursor_offset >= file_size AND last_error_message IS NULL ORDER BY updated_at ASC, ctid ASC LIMIT $2)", register: registerCleanupSuccessPath, execute: func(t *testing.T, store *postgresStore, server *pgFakeServer) {
 			lease := OwnerLease{OwnerID: "o", FenceToken: 7}
-			registerCleanupSuccessPath(t, server)
 			if _, err := store.Cleanup(context.Background(), lease, time.Now(), 10, 1); err == nil {
 				t.Fatal("cursor 清理失败必须暴露")
 			}
 		}},
-		{name: "decrement earliest baseline", failSQLPrefix: "SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary", execute: func(t *testing.T, store *postgresStore, server *pgFakeServer) {
+		{name: "decrement earliest baseline", failSQL: "SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", register: registerCleanupSuccessPath, execute: func(t *testing.T, store *postgresStore, server *pgFakeServer) {
 			lease := OwnerLease{OwnerID: "o", FenceToken: 7}
-			registerCleanupSuccessPath(t, server)
 			if _, err := store.Cleanup(context.Background(), lease, time.Now(), 10, 1); err == nil {
 				t.Fatal("facet 基线读取失败必须暴露")
 			}
@@ -169,6 +168,9 @@ func TestPostgresFakeStatementLevelFailures(t *testing.T) {
 				registerPostgresCatalog(t, server)
 			}
 			registerPostgresLeaseHandlers(t, server)
+			if test.register != nil {
+				test.register(t, server)
+			}
 			if test.failSQLPrefix != "" {
 				server.handleErrorPrefix(test.failSQLPrefix, "42501", "wn_pgfake 注入失败: "+test.name)
 			} else if test.failSQL != "" {

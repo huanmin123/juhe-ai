@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,21 +44,52 @@ func TestIndexerTruncationResetsCursorAndReindexes(t *testing.T) {
 	if after.CursorOffset != 0 || after.LineNumber != 0 {
 		t.Fatalf("截断后 cursor 必须归零: %#v", after)
 	}
-	assertRuntimeLogCount(t, store, 0)
+	// 架构契约（docs/architecture/架构总览.md）：截断通过持久化代次重置游标，
+	// 旧行保留到 retention 清理，不得静默清除。
+	assertRuntimeLogCount(t, store, 2)
 
-	// 重新写入内容后按新 generation 重建索引，记录 id 必须变化。
+	// 重新写入内容后按新 generation 重建索引：总行数 +1，新行 id 必须与
+	// 忽略 generation 的推导 id 不同，证明新内容未被旧索引 ID 去重。
 	writeTestFile(t, rotatedPath, logLine("first", "2026-08-08T00:00:00.000Z")+"\n")
 	if err := indexer.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertRuntimeLogCount(t, store, 1)
-	var id string
-	if err := store.db.QueryRow("SELECT id FROM runtime_logs").Scan(&id); err != nil {
+	assertRuntimeLogCount(t, store, 3)
+	rows, err := store.db.Query("SELECT id FROM runtime_logs")
+	if err != nil {
 		t.Fatal(err)
 	}
-	record := ParseLine(logLine("first", "2026-08-08T00:00:00.000Z"), LineOptions{SourceKey: before.FileIdentity + ":1:0:0"})
-	if record == nil || record.ID == id {
-		t.Fatalf("截断后 stable id 必须与原 generation 不同: new=%s", id)
+	ids := make([]string, 0, 3)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	line := logLine("first", "2026-08-08T00:00:00.000Z")
+	legacyIDRecord := ParseLine(line, LineOptions{SourceKey: before.FileIdentity + ":1:0:0"})
+	reindexedRecord := ParseLine(line, LineOptions{SourceKey: before.FileIdentity + ":" + fmt.Sprint(after.TruncationGeneration) + ":0"})
+	if legacyIDRecord == nil || reindexedRecord == nil {
+		t.Fatal("fixture 行必须可解析")
+	}
+	reindexed := false
+	for _, id := range ids {
+		if id == legacyIDRecord.ID {
+			t.Fatalf("重写内容不得以忽略 generation 的 id 重建索引: %s", id)
+		}
+		if id == reindexedRecord.ID {
+			reindexed = true
+		}
+	}
+	if !reindexed {
+		t.Fatalf("重写内容必须以 truncation generation %d 生成新 id: %v", after.TruncationGeneration, ids)
 	}
 }
 
@@ -179,7 +211,9 @@ func TestRunWithOwnerLeaseRenewalPanicIsManaged(t *testing.T) {
 		return ctx.Err()
 	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- RunWithOwnerLease(context.Background(), config, &panickingRenewStore{Store: store}, run) }()
+	go func() {
+		errCh <- RunWithOwnerLease(context.Background(), config, &panickingRenewStore{Store: store}, run)
+	}()
 	<-started
 	select {
 	case err := <-errCh:
@@ -330,7 +364,7 @@ func TestSQLiteCleanupCursorDeleteFailure(t *testing.T) {
 	cutoff := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
 	old := nodeISO(cutoff.Add(-time.Hour))
 	if err := store.CopyCursor(context.Background(), lease, Cursor{
-		LogFile: filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log"),
+		LogFile:      filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log"),
 		FileIdentity: "rotated:a", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old,
 	}); err != nil {
 		t.Fatal(err)
@@ -445,18 +479,18 @@ func TestPostgresFakeFacetLevelEventFailures(t *testing.T) {
 }
 
 // TestPostgresFakeDecrementFacetFailures 注入 facet 扣减各语句失败。
+// wn_pgfake 的 resolve 精确匹配优先于前缀匹配，而 registerCleanupSuccessPath
+// 已为下列语句注册精确成功脚本，因此必须用整句精确注入才能覆盖成功脚本。
 func TestPostgresFakeDecrementFacetFailures(t *testing.T) {
 	cases := []struct {
 		name    string
-		prefix  string
-		exact   string
-		rows    string
+		failSQL string
 	}{
-		{name: "summary update", prefix: "UPDATE juhe_dataset.runtime_log_facet_summary SET total_count = GREATEST"},
-		{name: "summary delete", exact: "DELETE FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1 AND total_count <= 0"},
-		{name: "level update", prefix: "UPDATE juhe_dataset.runtime_log_level_facets SET count = GREATEST"},
-		{name: "level delete", exact: "DELETE FROM juhe_dataset.runtime_log_level_facets WHERE bucket_key = $1 AND count <= 0"},
-		{name: "event update", prefix: "UPDATE juhe_dataset.runtime_log_event_facets SET count = GREATEST"},
+		{name: "summary update", failSQL: "UPDATE juhe_dataset.runtime_log_facet_summary SET total_count = GREATEST(0, total_count - $1), earliest_time = $2, latest_time = $3, updated_at = $4 WHERE bucket_key = $5"},
+		{name: "summary delete", failSQL: "DELETE FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1 AND total_count <= 0"},
+		{name: "level update", failSQL: "UPDATE juhe_dataset.runtime_log_level_facets SET count = GREATEST(0, count - $1), updated_at = $2 WHERE bucket_key = $3 AND level = $4"},
+		{name: "level delete", failSQL: "DELETE FROM juhe_dataset.runtime_log_level_facets WHERE bucket_key = $1 AND count <= 0"},
+		{name: "event update", failSQL: "UPDATE juhe_dataset.runtime_log_event_facets SET count = GREATEST(0, count - $1), updated_at = $2 WHERE bucket_key = $3 AND event = $4"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -464,11 +498,7 @@ func TestPostgresFakeDecrementFacetFailures(t *testing.T) {
 			registerPostgresCatalog(t, server)
 			registerPostgresLeaseHandlers(t, server)
 			registerCleanupSuccessPath(t, server)
-			if test.prefix != "" {
-				server.handleErrorPrefix(test.prefix, "42501", "wn_pgfake 注入失败: "+test.name)
-			} else {
-				server.handleError(test.exact, "42501", "wn_pgfake 注入失败: "+test.name)
-			}
+			server.handleError(test.failSQL, "42501", "wn_pgfake 注入失败: "+test.name)
 			store := openFakePostgresStore(t, server)
 			if _, err := store.Cleanup(context.Background(), OwnerLease{OwnerID: "o", FenceToken: 7}, time.Now(), 10, 1); err == nil {
 				t.Fatalf("%s 失败必须暴露", test.name)

@@ -182,37 +182,32 @@ func (c *whReadErrShared) Set(context.Context, string, any, time.Duration) error
 
 func (c *whReadErrShared) Clear(context.Context) error { return nil }
 
-// 账户后台刷新失败的告警路径（共享模式 + 陈旧 + loader 失败）。
-func TestWhAccountsBackgroundRefreshFailureWarns(t *testing.T) {
+// 共享模式账户读取契约（Node redis 驱动同款）：app 进程缓存禁用（凭据不进
+// 共享层），每次 async 读都落 loader；loader 失败直接上抛，无 stale 回退。
+func TestWhAccountsSharedModeAlwaysLoadsAndSurfacesLoaderFailure(t *testing.T) {
 	models := newFakeModels()
 	models.accounts["g1"] = OpenAIAccountsForGroupResult{Accounts: []OpenAIAccountSecret{testAccount("a1", "sys")}}
 	counter := &whFailingAfterModels{fakeModels: models, failAfter: 1}
 	clock := newManualClock()
 	shared := newFakeSharedFactory()
-	logger := &whWarnLogger{}
 	svc := newTestService(t, counter, clock, func(o *Options) {
 		o.Shared = shared
-		o.Logger = logger
 	})
 	ctx := context.Background()
 	if _, err := svc.ListCachedOpenAIAccountsForGroupAsync(ctx, "g1", "sys", CachedOpenAIAccountsForGroupOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	clock.Advance(11 * time.Minute)
-	if _, err := svc.ListCachedOpenAIAccountsForGroupAsync(ctx, "g1", "sys", CachedOpenAIAccountsForGroupOptions{}); err != nil {
-		t.Fatal(err)
+	if calls := counter.calls; calls != 1 {
+		t.Fatalf("首读 loader = %d", calls)
 	}
-	if err := svc.AwaitBackgroundWork(ctx); err != nil {
-		t.Fatal(err)
+	// retain 窗口内再次读取仍触发 loader（共享模式进程缓存为 no-op），
+	// 且 loader 失败直接上抛，不用任何缓存兜底。
+	clock.Advance(2 * time.Minute)
+	if _, err := svc.ListCachedOpenAIAccountsForGroupAsync(ctx, "g1", "sys", CachedOpenAIAccountsForGroupOptions{}); err == nil {
+		t.Fatal("共享模式二次读取必须重新加载并上抛 loader 失败")
 	}
-	found := false
-	for _, event := range logger.events {
-		if event == "gateway_accounts_stale_refresh_failed" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("刷新失败告警缺失: %v", logger.events)
+	if calls := counter.calls; calls != 2 {
+		t.Fatalf("共享模式二次读取 loader = %d", calls)
 	}
 }
 

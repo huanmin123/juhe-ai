@@ -12,7 +12,12 @@ import (
 
 func newSamplerTestStore(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "sampler.sqlite3"))
+	// The sampler suite is the only gometrics fixture with concurrent write
+	// (Run goroutine) and read (polling loop) traffic on the same database, so
+	// it must open the file with the exact production OpenStore DSN contract
+	// (busy_timeout + WAL); a bare DSN intermittently fails with SQLITE_BUSY.
+	dsn := "file:" + filepath.Join(t.TempDir(), "sampler.sqlite3") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
