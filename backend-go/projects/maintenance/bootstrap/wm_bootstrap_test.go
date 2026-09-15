@@ -158,7 +158,7 @@ type wmPGConn struct{ rec *wmPGRecorder }
 func (c *wmPGConn) Prepare(string) (driver.Stmt, error) {
 	return nil, errors.New("wm bootstrap fake: Prepare 不应被调用")
 }
-func (c *wmPGConn) Close() error   { return nil }
+func (c *wmPGConn) Close() error { return nil }
 func (c *wmPGConn) Begin() (driver.Tx, error) {
 	return nil, errors.New("wm bootstrap fake: Begin 不应被调用")
 }

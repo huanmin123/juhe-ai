@@ -41,7 +41,7 @@ func TestStableJSON(t *testing.T) {
 		{"empty object", map[string]any{}, `{}`},
 		{"int64 text", int64(9007199254740993), "9007199254740993"},
 		{
-			name:  "struct normalizes via json tags",
+			name: "struct normalizes via json tags",
 			value: struct {
 				A int     `json:"a"`
 				B *string `json:"b"`
@@ -49,9 +49,11 @@ func TestStableJSON(t *testing.T) {
 			want: `{"a":1,"b":null}`,
 		},
 		{
-			name:  "pointer to struct dereferences",
-			value: (*struct{ X string `json:"x"` })(nil),
-			want:  "null",
+			name: "pointer to struct dereferences",
+			value: (*struct {
+				X string `json:"x"`
+			})(nil),
+			want: "null",
 		},
 	}
 	for _, tc := range cases {
@@ -135,12 +137,14 @@ func TestSnapshotDigestExcludesEnvironment(t *testing.T) {
 		t.Fatalf("SnapshotDigest() error = %v", err)
 	}
 	variants := []struct {
-		name  string
+		name   string
 		mutate func(*SchemaSnapshot)
 	}{
 		{"target", func(s *SchemaSnapshot) { s.Target = TargetTest }},
 		{"capturedAt", func(s *SchemaSnapshot) { s.CapturedAt = "2030-06-01T12:00:00.000Z" }},
-		{"database", func(s *SchemaSnapshot) { s.Database = DatabaseInfo{Name: "other", OID: "99999", ServerAddress: strPtr("10.0.0.9")} }},
+		{"database", func(s *SchemaSnapshot) {
+			s.Database = DatabaseInfo{Name: "other", OID: "99999", ServerAddress: strPtr("10.0.0.9")}
+		}},
 		{"digest placeholder", func(s *SchemaSnapshot) { s.Digest = "stale" }},
 	}
 	for _, variant := range variants {

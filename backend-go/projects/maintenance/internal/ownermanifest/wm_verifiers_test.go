@@ -392,7 +392,9 @@ func TestWMVerifyCapabilityManifestBaselineAndBranches(t *testing.T) {
 		fragment string
 	}{
 		{"empty group id", func(c *[]Capability, _ *[]Operation) { (*c)[0].NodeWriterOperationGroup = " " }, "lacks id or Node operation group"},
-		{"duplicate group", func(c *[]Capability, _ *[]Operation) { (*c)[1].NodeWriterOperationGroup = (*c)[0].NodeWriterOperationGroup }, "duplicate group"},
+		{"duplicate group", func(c *[]Capability, _ *[]Operation) {
+			(*c)[1].NodeWriterOperationGroup = (*c)[0].NodeWriterOperationGroup
+		}, "duplicate group"},
 		{"unknown group", func(c *[]Capability, _ *[]Operation) { (*c)[0].NodeWriterOperationGroup = "ghost" }, "references unknown operation group"},
 		{"stale operation count", func(c *[]Capability, _ *[]Operation) { (*c)[0].OperationCount = 5 }, "operation_count=5"},
 		{"missing metadata", func(c *[]Capability, _ *[]Operation) { (*c)[1].GatewayTargetModule = "" }, "lacks owner, module"},
@@ -468,17 +470,17 @@ func TestWMVerifyCapabilityManifestBaselineAndBranches(t *testing.T) {
 // ---- gateway route manifest fixtures（不含 model-checks 特例）----
 
 type wmRouteFamilyInput struct {
-	id               string
-	symbol           string
-	routerFile       string
-	routerSource     string
-	mutations        []string
-	mutationCount    int
-	status           string
-	evidence         []string
-	gates            []string
-	mount            string
-	skipMountInApp   bool
+	id             string
+	symbol         string
+	routerFile     string
+	routerSource   string
+	mutations      []string
+	mutationCount  int
+	status         string
+	evidence       []string
+	gates          []string
+	mount          string
+	skipMountInApp bool
 }
 
 func wmWriteRouteFixture(t *testing.T, families []wmRouteFamilyInput, sourceAppArchived bool) string {

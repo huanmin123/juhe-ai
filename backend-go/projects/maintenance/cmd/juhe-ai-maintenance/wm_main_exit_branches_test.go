@@ -79,7 +79,10 @@ func TestWMMainExitBranches(t *testing.T) {
 		branch("storage mutex", "-ensure-schema\x1f-check-boundary", 2, "storage bootstrap flags are mutually exclusive"),
 		branch("metrics check+apply", "-check-go-runtime-metrics\x1f-apply-go-runtime-metrics", 2, "Go runtime metrics check and apply flags are mutually exclusive"),
 		branch("metrics mutex with version", "-check-go-runtime-metrics\x1f-version", 2, "Go runtime metrics flags are mutually exclusive"),
-		branch("cutover evidence mutex", "-verify-j3b-cutover-evidence\x1f-j3b-backfill-evidence\x1f"+evidencePath, 2, "J3b cutover evidence verification is mutually exclusive"),
+		// -verify-j3b-cutover-evidence 与 -j3b-backfill-evidence 均为带值
+		// string flag（main.go 的 flag 定义与 usage），必须用 = 形式赋值；
+		// 空格分隔会让第一个 flag 吞掉第二个 flag 名。
+		branch("cutover evidence mutex", "-verify-j3b-cutover-evidence="+evidencePath+"\x1f-j3b-backfill-evidence="+evidencePath, 2, "J3b cutover evidence verification is mutually exclusive"),
 		branch("inventory mutex", "-verify-j3b-model-check-inventory\x1f-check-j3a-proxy-latency-postgres", 2, "J3b inventory verification flag is mutually exclusive"),
 		branch("j3a check+apply", "-check-j3a-proxy-latency-postgres\x1f-apply-j3a-proxy-latency-postgres", 2, "J3a PostgreSQL bootstrap flags are mutually exclusive"),
 		branch("j3b check+apply", "-check-j3b-model-check-postgres\x1f-apply-j3b-model-check-postgres", 2, "J3b PostgreSQL bootstrap flags are mutually exclusive"),
@@ -97,9 +100,15 @@ func TestWMMainExitBranches(t *testing.T) {
 		branch("metrics apply without confirmations", "-apply-go-runtime-metrics\x1f-go-runtime-metrics-postgres-url\x1fpostgres://m@127.0.0.1:5432/db", 2, "--node-stopped --go-stopped --backup-confirmed"),
 		branch("inventory without evidence", "-verify-j3b-model-check-inventory", 2, "requires --j3b-inventory-evidence"),
 		branch("inventory evidence missing file", "-verify-j3b-model-check-inventory\x1f-j3b-inventory-evidence\x1f"+filepath.Join(root, "missing.json"), 2, "input failed"),
-		branch("inventory evidence unready", "-verify-j3b-model-check-inventory\x1f-j3b-inventory-evidence\x1f"+malformedPath, 3, ""),
+		// inventory 证据契约（LoadLegacyJ3bFactEvidence）：文件缺失或解码失败
+		// 是 input error（exit 2）；解码成功但覆盖清单为空才进入未就绪门
+		// （exit 3），因此这里用 emptyFactsPath 而非 malformedPath。
+		branch("inventory evidence unready", "-verify-j3b-model-check-inventory\x1f-j3b-inventory-evidence\x1f"+emptyFactsPath, 3, ""),
 		branch("cutover evidence missing file", "-verify-j3b-cutover-evidence\x1f"+filepath.Join(root, "missing.json"), 2, "input failed"),
-		branch("cutover evidence malformed", "-verify-j3b-cutover-evidence\x1f"+malformedPath, 2, "input failed"),
+		// cutover/backfill 证据共用 verifyJ3bEvidence：可读但解码失败会进入
+		// 结构化报告（ready=false）并以 exit 3 fail-closed，只有打不开文件才
+		// 是 "input failed"（exit 2）。
+		branch("cutover evidence malformed", "-verify-j3b-cutover-evidence\x1f"+malformedPath, 3, ""),
 		branch("business schema check without path", "-verify-business-sqlite-schema", 2, "requires --business-sqlite-path"),
 		branch("business handoff without paths", "-verify-business-sqlite-handoff", 2, "JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH"),
 		branch("j3b sqlite bootstrap without env", "-check-j3b-model-check-sqlite", 2, "JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH"),
@@ -142,6 +151,11 @@ func TestWMMainExitBranches(t *testing.T) {
 				cmd.Env = append(cmd.Env, "JUHE_AI_SCHEMA_SNAPSHOT_TARGET=test", "JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL=postgres://s@127.0.0.1:5432/db", "JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=")
 			case "snapshot sqlite url rejected":
 				cmd.Env = append(cmd.Env, "JUHE_AI_SCHEMA_SNAPSHOT_TARGET=test", "JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL=sqlite:///x.db", "JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY")
+			case "j3b sqlite apply without confirmations":
+				// SQLite bootstrap 的预检顺序是先 env 后确认 flag
+				// （runJ3bModelCheckSQLiteBootstrap），必须提供非空 env 才能
+				// 到达确认分支；路径在确认分支返回前不会被打开。
+				cmd.Env = append(cmd.Env, "JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH="+filepath.Join(root, "apply-target.db"))
 			case "j3b sqlite bootstrap on directory":
 				cmd.Env = append(cmd.Env, "JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH="+root)
 			case "j3b sqlite readback on missing files":

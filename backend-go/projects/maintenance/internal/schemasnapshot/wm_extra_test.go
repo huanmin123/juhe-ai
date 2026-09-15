@@ -110,8 +110,10 @@ type wmErrAfterRow struct {
 	err     error
 }
 
-func (r *wmErrAfterRow) Columns() []string { return []string{"name", "oid", "serverAddress", "serverPort"} }
-func (r *wmErrAfterRow) Close() error      { return nil }
+func (r *wmErrAfterRow) Columns() []string {
+	return []string{"name", "oid", "serverAddress", "serverPort"}
+}
+func (r *wmErrAfterRow) Close() error { return nil }
 func (r *wmErrAfterRow) Next(dest []driver.Value) error {
 	if r.started {
 		return io.EOF
@@ -125,8 +127,10 @@ type wmErrAfterRowConn struct{ rows *wmErrAfterRow }
 func (c *wmErrAfterRowConn) Prepare(string) (driver.Stmt, error) {
 	return nil, errors.New("wm fake: Prepare 不应被调用")
 }
-func (c *wmErrAfterRowConn) Close() error              { return nil }
-func (c *wmErrAfterRowConn) Begin() (driver.Tx, error) { return nil, errors.New("wm fake: Begin 不应被调用") }
+func (c *wmErrAfterRowConn) Close() error { return nil }
+func (c *wmErrAfterRowConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("wm fake: Begin 不应被调用")
+}
 func (c *wmErrAfterRowConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
 	if containsWMText(query, "current_database()") {
 		return c.rows, nil
