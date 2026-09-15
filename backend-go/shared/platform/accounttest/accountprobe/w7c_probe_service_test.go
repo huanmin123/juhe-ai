@@ -243,10 +243,14 @@ func TestW7CTransportFailureClassification(t *testing.T) {
 	// escalation evidence under limited; only the abort wording is masked
 	// （Node：AccountTestAbortError 文案脱敏，errorCode/accountFailureEligible
 	// 保留，晋级判定依赖 signal 证据而非文案）。
+	release := make(chan struct{})
 	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
+		<-release
 	}))
+	// LIFO：后注册的 defer 先执行——先 close(release) 解除悬挂 handler，
+	// 再 Close 服务器。
 	defer hang.Close()
+	defer close(release)
 	hangView := probeView(hang.URL)
 	hangView.APIKeyEntries = []KeyEntry{{Key: "sk-1", Fingerprint: "fp-1", Index: 0}}
 	fullTimeout := service.attemptWithTimeout(context.Background(), hangView, &hangView.APIKeyEntries[0], 30*time.Millisecond, false)
