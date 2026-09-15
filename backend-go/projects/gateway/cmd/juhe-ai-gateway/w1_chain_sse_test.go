@@ -43,6 +43,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -120,17 +121,23 @@ type w1vResolveStep struct {
 // RouteAction；回退预检的候选阶段照常透传），ResolveNextGroupFallbackCandidate
 // 按脚本逐步返回，脚本耗尽后透传真实管道。
 type w1vChainCandidatePipeline struct {
-	inner            gatewaypreauth.CandidatePipeline
-	filterEmptyCalls int
-	filterCalls      int
-	resolve          []w1vResolveStep
-	resolveCalls     int
-	debugT           *testing.T
+	inner                gatewaypreauth.CandidatePipeline
+	filterOutcomeByGroup map[string]string // 按分组脚本化 FilterCandidates 结论
+	filterEmptySkip      int               // 前 N 次 FilterCandidates 调用照常透传
+	filterEmptyCalls     int               // 其后 filterEmptyCalls 次调用返回空窗口
+	filterCalls          int
+	resolve              []w1vResolveStep
+	resolveCalls         int
+	debugT               *testing.T
 }
 
 func (s *w1vChainCandidatePipeline) FilterCandidates(ctx context.Context, input gatewaypreauth.CandidateFilterInput) (gatewaypreauth.CandidateFilterResult, error) {
 	s.filterCalls++
-	if s.filterEmptyCalls > 0 && s.filterCalls <= s.filterEmptyCalls {
+	if outcome, ok := s.filterOutcomeByGroup[input.GroupID]; ok {
+		// 按分组脚本化候选阶段结论（fallback = 候选排空 → 预检产出 RouteAction）。
+		return gatewaypreauth.CandidateFilterResult{Outcome: outcome, Reason: "w1v_scripted"}, nil
+	}
+	if s.filterEmptyCalls > 0 && s.filterCalls > s.filterEmptySkip && s.filterCalls <= s.filterEmptySkip+s.filterEmptyCalls {
 		return gatewaypreauth.CandidateFilterResult{}, nil
 	}
 	return s.inner.FilterCandidates(ctx, input)
@@ -293,7 +300,15 @@ func w1vServeV1(t *testing.T, chain *gatewayChain, apiKeySecret, body string, mu
 // chainSmokeDeps 缺省不带的端口）。
 func w1vComposeChain(t *testing.T, fixture *chainFixture) (*gatewayChain, func()) {
 	t.Helper()
-	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool"))
+	// spool 目录放在独立临时根：链关闭后 spool 写侧仍有异步收尾，与
+	// t.TempDir 的 RemoveAll 清理存在 Windows unlinkat 竞态；此目录走
+	// 容错清理（失败仅遗留 %TEMP 垃圾，不影响测试结论）。
+	spoolRoot, err := os.MkdirTemp("", "w1v-spool-")
+	if err != nil {
+		t.Fatalf("create spool root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(spoolRoot) })
+	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(spoolRoot, "spool"))
 	slots, err := gatewayclientip.NewClientIPConcurrency(gatewayclientip.ClientIPConcurrencyOptions{Clock: gatewaypreauth.SystemClock{}})
 	if err != nil {
 		t.Fatalf("construct client-ip concurrency: %v", err)
@@ -603,9 +618,9 @@ func TestW1VChainResolveRouteActionFallbackErrorAtCallSite(t *testing.T) {
 	chain, shutdown := w1vComposeChain(t, fixture)
 	defer shutdown()
 	chain.preauth.Candidates = &w1vChainCandidatePipeline{
-		inner:       chain.preauth.Candidates,
+		inner:            chain.preauth.Candidates,
 		filterEmptyCalls: 1,
-		resolve:     []w1vResolveStep{{err: errors.New("w1v: 回退候选解析失败")}},
+		resolve:          []w1vResolveStep{{err: errors.New("w1v: 回退候选解析失败")}},
 	}
 	status, body := w1vServeV1(t, chain, secret, `{"model":"gpt-test","messages":[]}`, nil)
 	if status != http.StatusInternalServerError {
@@ -630,8 +645,10 @@ func TestW1VChainResolveRouteActionFallbackAttemptedArms(t *testing.T) {
 	newCase := func(t *testing.T, resolve []w1vResolveStep, blockedGroupID string) (*gatewayChain, func(), string) {
 		fixture := newChainFixture(t)
 		secret := w1vSeedMultiGroupKey(t, fixture, []string{"w1v_group_a", "w1v_group_b"},
-			map[int]bool{0: true}, map[int]string{0: ""})
+			map[int]bool{0: true, 1: true}, map[int]string{0: "", 1: goodUpstream.URL})
 		chain, shutdown := w1vComposeChain(t, fixture)
+		// 仅把初始预检的候选窗口排空（拍成 RouteAction(A)）；回退预检的候选
+		// 阶段照常透传真实管道。
 		chain.preauth.Candidates = &w1vChainCandidatePipeline{inner: chain.preauth.Candidates, filterEmptyCalls: 1, resolve: resolve}
 		chain.preauth.Circuits = &w1vCircuitsStub{inner: chain.preauth.Circuits, blockedGroupID: blockedGroupID}
 		return chain, shutdown, secret
@@ -641,7 +658,7 @@ func TestW1VChainResolveRouteActionFallbackAttemptedArms(t *testing.T) {
 		// 首组候选排空 → RouteAction(A) → 回退候选 B（携带 gpt-test 账户窗口）
 		// → 回退预检 DispatchContext → result=上下文续环（985-987）→ B 派发成功。
 		chain, shutdown, secret := newCase(t, []w1vResolveStep{
-			{found: true, groupID: "w1v_group_b", accountIDs: []string{"acc_w1v_b"}, baseURL: goodUpstream.URL},
+			{found: true, groupID: "w1v_group_b", accountIDs: []string{"acc_w1v_group_b"}, baseURL: goodUpstream.URL},
 		}, "")
 		defer shutdown()
 		status, body := w1vServeV1(t, chain, secret, `{"model":"gpt-test","messages":[]}`, nil)
@@ -726,7 +743,7 @@ func TestW1VDispatchLoopRunNarrowsSpeedFirstWindow(t *testing.T) {
 	defer shutdown()
 	sink := &recordingFailureSink{}
 	loop := newV1TestLoop(t, sink)
-	loop.c = chain // 真实引擎：候选窗口收窄后派发失败 → 耗尽结算
+	loop.c = chain          // 真实引擎：候选窗口收窄后派发失败 → 耗尽结算
 	w1vLoopBudgets(t, loop) // 引擎协调上下文需要真实预算组
 	loop.current.Accounts = []gatewaydispatch.AccountCandidate{{ID: "acc_1"}, {ID: "acc_2"}}
 	loop.speedFirstRetryCandidateAccountIds = map[string]struct{}{"acc_1": {}}
@@ -781,6 +798,57 @@ func TestW1VSettleResponseStreamServerRetryEndedAndFallbackError(t *testing.T) {
 			t.Fatalf("inputs=%+v", sink.inputs)
 		}
 	})
+
+	t.Run("fallback_preflight_renders_completed", func(t *testing.T) {
+		// 剩余候选为空 → switchToFallbackGroup → 回退分组预检被客户端电路
+		// 拒绝（渲染 429）→ Attempted+空 → Completed → settle 返回 true（698）。
+		fixture := newChainFixture(t)
+		w1vSeedPlainGroup(t, fixture, "w1v_group_fb", "")
+		chain, shutdown := w1vComposeChain(t, fixture)
+		defer shutdown()
+		chain.preauth.Candidates = &w1vChainCandidatePipeline{inner: chain.preauth.Candidates, resolve: []w1vResolveStep{
+			{found: true, groupID: "w1v_group_fb"},
+		}}
+		chain.preauth.Circuits = &w1vCircuitsStub{inner: chain.preauth.Circuits, blockedGroupID: "w1v_group_fb"}
+		sink := &recordingFailureSink{}
+		loop := newV1TestLoop(t, sink)
+		loop.c = chain
+		loop.current.UsageContext.TrafficSource = gatewayTrafficSource
+		loop.current.UsageContext.SystemAccountID = fixture.systemAccount
+		loop.current.RoutePlanSnapshot = gatewayrouting.RoutePlanSnapshot[string]{
+			OrderedAllowedTargets: []string{"group_main", "w1v_group_fb"},
+			Cursor:                0,
+		}
+		loop.current.APIKeyRecord = &gatewayruntimecache.GatewayAPIKeyRow{
+			GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
+				{GroupID: "group_main"}, {GroupID: "w1v_group_fb"},
+			},
+		}
+		loop.current.Accounts = []gatewaydispatch.AccountCandidate{{ID: "acc_1"}}
+		modeledRequest := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":"w1v"}]}`))
+		modeledRequest.Header.Set("Content-Type", "application/json")
+		loop.req = gatewaypreauth.NewGatewayRequest(modeledRequest)
+		model := "gpt-test"
+		loop.req.Body = &gatewaybody.Request{
+			RawBody:           []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"w1v"}]}`),
+			ContentTypeHeader: "application/json",
+			State:             &gatewaybody.BodyState{Model: &model},
+		}
+		loop.releases = &clientIPSlotReleaseList{}
+		settled := loop.settleResponseStreamServerRetry(context.Background(),
+			gatewaydispatch.UpstreamDispatchResult{Account: gatewaydispatch.AccountCandidate{ID: "acc_1"}},
+			inspectionRetryHandling(true))
+		if !settled {
+			t.Fatal("回退预检已渲染（Completed）必须结算")
+		}
+		if loop.res.StatusCode() != http.StatusTooManyRequests {
+			t.Fatalf("res status=%d want 429（回退预检渲染）", loop.res.StatusCode())
+		}
+		if len(sink.inputs) != 0 {
+			t.Fatalf("Completed 由回退预检渲染，sink 不应重复: %+v", sink.inputs)
+		}
+	})
 }
 
 // chainCandidatePipelineNone 返回一个不可达兜底管道（脚本内错误已拦截）。
@@ -831,6 +899,11 @@ func TestW1VSettleDispatchErrorCutoverFalseKnownErrorGuidance(t *testing.T) {
 	t.Run("agent_guidance_reason_exhausted", func(t *testing.T) {
 		sink := &recordingFailureSink{}
 		loop := newV1TestLoop(t, sink)
+		// 空 FailedAccountIDs：耗尽集写入直接返回（1021）。
+		loop.exhaustDispatchFailedAccounts(&gatewaydispatch.UpstreamAttemptError{Message: "无失败账户"})
+		if len(loop.exhaustedAccounts) != 0 {
+			t.Fatalf("空失败集不应入耗尽集: %v", loop.exhaustedAccounts)
+		}
 		settled := loop.settleDispatchError(context.Background(), &gatewaydispatch.UpstreamAttemptError{
 			Message:               "账户级代理指引耗尽",
 			AgentGuidanceResponse: &gatewaypreauth.GatewayAgentGuidanceResponse{},
@@ -1003,14 +1076,22 @@ func TestW1VSwitchToFallbackGroupContinuations(t *testing.T) {
 	})
 
 	t.Run("fallback_route_action_resolve_error", func(t *testing.T) {
-		// 回退预检的候选窗口被模型门排空（wrongModel）→ RouteAction(B) →
-		// resolveRouteAction 二次候选解析报错 → switchToFallbackGroup 原样
-		// 上抛（1105）→ 顶层 503 意外契约。
+		// 首组派发耗尽 → switchToFallbackGroup → 回退分组（空缓存）预检产出
+		// RouteAction(B) → resolveRouteAction 二次候选解析报错 → 原样上抛
+		// （1105）→ 顶层 503 意外契约。
 		chain, shutdown, secret := newCase(t, []w1vResolveStep{
-			{found: true, groupID: "w1v_group_b", accountIDs: []string{"acc_w1v_ghost_b"}, wrongModel: true},
+			{found: true, groupID: "w1v_group_b"},
+			// RouteAction(B) 的二次候选解析报错 → resolveRouteAction 原样上抛
+			// → switchToFallbackGroup 上抛（1105）→ 顶层 503 意外契约。
 			{err: errors.New("w1v: 二次候选解析失败")},
 		}, "", false)
 		defer shutdown()
+		// 仅把回退分组(B)的候选阶段脚本化为 fallback 结论：首组照常派发到
+		// dead 上游耗尽 → switchToFallbackGroup → 回退预检产出 RouteAction(B)
+		// → 1104 的 resolveRouteAction 二次候选解析报错 → 上抛（1105）。
+		chain.preauth.Candidates.(*w1vChainCandidatePipeline).filterOutcomeByGroup = map[string]string{
+			"w1v_group_b": gatewaypreauth.CandidateOutcomeFallback,
+		}
 		status, body := w1vServeV1(t, chain, secret, `{"model":"gpt-test","messages":[]}`, nil)
 		if status != http.StatusServiceUnavailable {
 			t.Fatalf("status=%d body=%s", status, body)

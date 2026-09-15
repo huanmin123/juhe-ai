@@ -1213,10 +1213,7 @@ func TestW1USnapshotToMapAndTextHelpers(t *testing.T) {
 		RawRemaining:              "1250",
 		ConsecutiveTransientFails: 3,
 	}
-	payload, err := snapshotToMap(snapshot)
-	if err != nil {
-		t.Fatalf("snapshotToMap: %v", err)
-	}
+	payload := snapshotToMap(snapshot)
 	if payload["remainingUsd"] != "12.5" || payload["rawRemaining"] != "1250" || payload["consecutiveTransientFailures"] != float64(3) {
 		t.Fatalf("snapshotToMap = %#v", payload)
 	}

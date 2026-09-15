@@ -74,8 +74,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 
 	_ "modernc.org/sqlite"
 )
@@ -612,15 +612,80 @@ func TestW1WOwnerJ3bPostgresContractArms(t *testing.T) {
 	}
 }
 
-// 场景 B2（F3/F4 store 与租约段 fail-fast 臂）记录性跳过：
+// ---------------------------------------------------------------------------
+// 场景 B2：F3/F4 EnsureSchema 失败臂（378-380、425-427）——PG store 的
+// OpenStore 惰性不连接，EnsureSchema 首次连库时对不可达 URL 确定性失败。
+// ---------------------------------------------------------------------------
+
+func TestW1WOwnerF3F4EnsureSchemaArms(t *testing.T) {
+	w1bBuildCoverBinary(t)
+	root := t.TempDir()
+	for _, name := range []string{"audit-blobs", "audit-hot", "usage-shards", "logs"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o750); err != nil {
+			t.Fatalf("创建目录 %s 失败: %v", name, err)
+		}
+	}
+	businessSettings := filepath.Join(root, "business-settings.sqlite3")
+	w1bCreateBusinessSettingsSQLite(t, businessSettings)
+	args := []string{"-health-listen-address", fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))}
+	rolePaths := []string{
+		"JUHE_AI_DATABASE_PATH=" + filepath.Join(root, "business.sqlite"),
+		"JUHE_AI_CHAT_DATABASE_PATH=" + filepath.Join(root, "chat.sqlite"),
+		"JUHE_AI_DATASET_DATABASE_PATH=" + filepath.Join(root, "dataset.sqlite"),
+		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(root, "usage-catalog.sqlite"),
+		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(root, "stats.sqlite"),
+		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH=" + filepath.Join(root, "table-monitor.sqlite"),
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + filepath.Join(root, "runtime-log.sqlite"),
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(root, "codex-shards"),
+		"JUHE_AI_USAGE_SHARD_ROOT=" + filepath.Join(root, "usage-shards"),
+		"JUHE_AI_USAGE_SPOOL_DIRECTORY=" + filepath.Join(root, "usage-spool"),
+		"JUHE_AI_LOG_DIR=" + filepath.Join(root, "logs"),
+	}
+	auditBase := []string{
+		"JUHE_AI_AUDIT_LOG_STORE=postgres",
+		"JUHE_AI_AUDIT_LOG_POSTGRES_URL=postgres://127.0.0.1:1/w1w_unused",
+		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL=postgres://127.0.0.1:1/w1w_unused",
+		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=" + filepath.Join(root, "audit-blobs"),
+		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=" + filepath.Join(root, "audit-hot"),
+		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f3-schema",
+	}
+
+	// F3 PG EnsureSchema 连接失败臂（378-380）。
+	coverageDir := w1bCoverageDir(t, "W1W-f3-schema-fail")
+	env := w1bScenarioEnv(t, coverageDir, append(append([]string{}, rolePaths...), auditBase...)...)
+	_, stderr, code := w1bRunScenario(t, "W1W-f3-schema-fail", env, args...)
+	w1bRequireExitCode(t, "f3-schema-fail", code, 1)
+	w1bRequireContains(t, "f3-schema-fail", stderr, "initialize F3 audit-log schema")
+
+	// F4 PG EnsureSchema 连接失败臂（425-427）。
+	coverageDir = w1bCoverageDir(t, "W1W-f4-schema-fail")
+	env = w1bScenarioEnv(t, coverageDir, append(append([]string{}, rolePaths...),
+		"JUHE_AI_AUDIT_LOG_STORE=sqlite",
+		"JUHE_AI_AUDIT_LOG_DATABASE_PATH="+filepath.Join(root, "audit-ok.sqlite"),
+		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "audit-blobs"),
+		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="+filepath.Join(root, "audit-hot"),
+		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH="+businessSettings,
+		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f4-schema",
+		"JUHE_AI_OPERATION_LOG_STORE=postgres",
+		"JUHE_AI_OPERATION_LOG_POSTGRES_URL=postgres://127.0.0.1:1/w1w_unused",
+		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-schema",
+	)...)
+	_, stderr, code = w1bRunScenario(t, "W1W-f4-schema-fail", env, args...)
+	w1bRequireExitCode(t, "f4-schema-fail", code, 1)
+	w1bRequireContains(t, "f4-schema-fail", stderr, "initialize F4 operation-log schema")
+}
+
+// 场景 B2 补充（369-371 / 408-410 / 388-390 / 442-444 / 514-516）记录性跳过：
 //   - 369-371 / 408-410（共享 PG 池打开失败）：pgpool.Acquire 的错误臂是空
 //     URL/role、池上限非法与 open() 同步失败；前两者被 auditlog/operationlog
 //     LoadConfig 内的 sqlpool.ValidatePoolLimits 先行拦截，sql.Open("pgx")
-//     惰性解析使不可达/非法 DSN 拖到 EnsureSchema 才失败。无可达触发缝。
-//   - 378-380 / 425-427（sqlite EnsureSchema 失败）：OpenStore 先行启用 WAL，
-//     垃圾文件在 OpenStore 即失败（W1W 试跑实证）；合法库上 IF NOT EXISTS
-//     对同名 view/table 均为静默跳过（探针实证），锁/IO 故障同样先落在
-//     OpenStore。无可达触发缝。
+//     惰性解析使不可达 DSN 拖到 EnsureSchema 才失败（上一场景正是利用该
+//     语义覆盖 378-380 / 425-427）。
+//   - 388-390 / 442-444（租约获取错误臂）：租约表由 EnsureSchema 刚建好，
+//     错误需要启动中途的 DB 故障注入，无确定性缝（held 臂 445-447 已由
+//     TestW1WOwnerF4LeaseHeldPostgres 覆盖）。
+//   - 514-516（F4 组件私有租约获取错误臂）：同上，需要组件运行中途的
+//     DB 故障注入。无可达触发缝。
 // 场景 B3（620-622 内部网关注册表错误臂）记录性跳过：NewRegistry 的三个
 // 错误臂（空 URL / 空 secret / URL 解析失败）在 main 装配序里都被更早的
 // 门禁拦截——loadRuntimeConfig 强制 redis state driver 下 URL 非空、secret
@@ -912,17 +977,17 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 		"JUHE_AI_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_SECRET=w1w-f4-lease-secret",
-		"JUHE_AI_DATABASE_PATH=" + filepath.Join(root, "business.sqlite"),
-		"JUHE_AI_CHAT_DATABASE_PATH=" + filepath.Join(root, "chat.sqlite"),
-		"JUHE_AI_DATASET_DATABASE_PATH=" + filepath.Join(root, "dataset.sqlite"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(root, "usage-catalog.sqlite"),
-		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(root, "stats.sqlite"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH=" + filepath.Join(root, "table-monitor.sqlite"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + filepath.Join(root, "runtime-log.sqlite"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(root, "codex-shards"),
-		"JUHE_AI_USAGE_SHARD_ROOT=" + filepath.Join(root, "usage-shards"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY=" + filepath.Join(root, "usage-spool"),
-		"JUHE_AI_LOG_DIR=" + filepath.Join(root, "logs"),
+		"JUHE_AI_DATABASE_PATH="+filepath.Join(root, "business.sqlite"),
+		"JUHE_AI_CHAT_DATABASE_PATH="+filepath.Join(root, "chat.sqlite"),
+		"JUHE_AI_DATASET_DATABASE_PATH="+filepath.Join(root, "dataset.sqlite"),
+		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH="+filepath.Join(root, "usage-catalog.sqlite"),
+		"JUHE_AI_STATS_DATABASE_PATH="+filepath.Join(root, "stats.sqlite"),
+		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH="+filepath.Join(root, "table-monitor.sqlite"),
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH="+filepath.Join(root, "runtime-log.sqlite"),
+		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT="+filepath.Join(root, "codex-shards"),
+		"JUHE_AI_USAGE_SHARD_ROOT="+filepath.Join(root, "usage-shards"),
+		"JUHE_AI_USAGE_SPOOL_DIRECTORY="+filepath.Join(root, "usage-spool"),
+		"JUHE_AI_LOG_DIR="+filepath.Join(root, "logs"),
 		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
 		"JUHE_AI_BUSINESS_OWNER=gateway",
 		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
@@ -1056,6 +1121,36 @@ func TestW1WChainRuntimeWarnClosures(t *testing.T) {
 	})
 	time.Sleep(5 * time.Second) // 等待协调器后台同步节拍触达失败日志。
 	t.Logf("chain_runtime warn 闭包（368-370、376-378）已驱动")
+}
+
+// TestW1WChainRuntimeEmptySecretArm 覆盖 accountkeystates 构造失败臂
+// （chain_runtime.go 606-608）：空 Secret 走完内存驱动全部装配后在
+// accountkeystates.NewStore 处 fail-fast。
+func TestW1WChainRuntimeEmptySecretArm(t *testing.T) {
+	composed := &composition{
+		db:        w1uOpenSeededBusinessDB(t),
+		statsDB:   w1uOpenPlainSQLite(t, "w1w-empty-secret-stats.sqlite3"),
+		pgDialect: false,
+		Bus:       inval.New(time.Now),
+	}
+	cfg := runtimeConfig{
+		RuntimeMode:                   "standalone",
+		DatabaseDriver:                "sqlite",
+		CacheDriver:                   "memory",
+		RuntimeStateDriver:            "memory",
+		Secret:                        "   ",
+		DispatchAccountCandidateLimit: 5000,
+		ConcurrencyGlobalMax:          5000,
+	}
+	services, err := composeChainRuntimeServices(composed, cfg, w1tSettingValue)
+	if err == nil {
+		services.Close()
+		t.Fatalf("空 Secret 的组合必须 fail-fast")
+	}
+	if !strings.Contains(err.Error(), "create account api-key effects key states store") {
+		t.Fatalf("期望 accountkeystates 构造失败，实际: %v", err)
+	}
+	t.Logf("chain_runtime 空 Secret 失败臂（606-608）已驱动")
 }
 
 // ---------------------------------------------------------------------------
