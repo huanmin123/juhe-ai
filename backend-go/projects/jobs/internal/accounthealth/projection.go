@@ -712,7 +712,7 @@ func (p *OutcomeProjector) fenceMismatchReason(ctx context.Context, tx *sql.Tx, 
 		return "source_config_revision_missing", nil
 	}
 	if projection.ExpectedCooldownFence != nil {
-		if !account.cooldownRetestObservation.Valid || !account.cooldownRetestObservation.Time.UTC().Equal(projection.ExpectedCooldownFence.ObservationStartedAt.UTC()) {
+		if !account.cooldownRetestObservation.Valid || !sameFenceInstant(account.cooldownRetestObservation.Time, projection.ExpectedCooldownFence.ObservationStartedAt) {
 			return "cooldown_observation_stale", nil
 		}
 		if !account.cooldownRetestGeneration.Valid || account.cooldownRetestGeneration.String != projection.ExpectedCooldownFence.Generation {
@@ -910,7 +910,7 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 		params = append(params, *projection.SourceRevision)
 	}
 	if projection.ExpectedCooldownFence != nil {
-		guards = append(guards, "target.cooldown_retest_observation_started_at = ?", "target.cooldown_retest_generation = ?")
+		guards = append(guards, cooldownObservationFenceGuard(p.business.postgres), "target.cooldown_retest_generation = ?")
 		params = append(params, fenceGuardText(projection.ExpectedCooldownFence.ObservationStartedAt), projection.ExpectedCooldownFence.Generation)
 	}
 	query := p.business.bind(`UPDATE ` + accountsTable + ` AS target SET ` + strings.Join(updates, ", ") + ` WHERE ` + strings.Join(guards, " AND "))
@@ -992,6 +992,17 @@ func projectedHealthFailureCount(outcome Outcome) int {
 // cooldown 复测 fence 守卫文本逐字一致。
 func fenceGuardText(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+// cooldownObservationFenceGuard compares the business text/timestamp column
+// at millisecond precision. The PostgreSQL production schema has historically
+// received both Node millisecond text and Go time.Time values rendered with
+// microseconds/+00; exact text equality rejects the former against the latter.
+func cooldownObservationFenceGuard(postgres bool) string {
+	if postgres {
+		return "date_trunc('milliseconds', target.cooldown_retest_observation_started_at::timestamptz) = date_trunc('milliseconds', ?::timestamptz)"
+	}
+	return "strftime('%Y-%m-%dT%H:%M:%fZ', target.cooldown_retest_observation_started_at) = strftime('%Y-%m-%dT%H:%M:%fZ', ?)"
 }
 
 // limitedText 镜像归档 limited：trim 后超长截断，空文本返回空串（调用方
