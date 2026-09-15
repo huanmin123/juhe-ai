@@ -18,7 +18,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
 )
 
-const archivedDBServiceSourceRoot = "migration-backup/node/final-archive/backend/src/modules/db-service"
+// The db-service contract sources live in the migration-backup-1 final
+// archive copy; the migration-backup/node tree no longer contains the
+// db-service module after the archive was split across both roots.
+const archivedDBServiceSourceRoot = "migration-backup-1/node/final-archive/backend/src/modules/db-service"
 
 func main() {
 	version := flag.Bool("version", false, "print the maintenance project contract version")

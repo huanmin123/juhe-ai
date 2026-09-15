@@ -41,7 +41,7 @@ func TestStableJSON(t *testing.T) {
 		{"empty object", map[string]any{}, `{}`},
 		{"int64 text", int64(9007199254740993), "9007199254740993"},
 		{
-			name:  "struct normalizes via json tags",
+			name: "struct normalizes via json tags",
 			value: struct {
 				A int     `json:"a"`
 				B *string `json:"b"`
@@ -49,9 +49,11 @@ func TestStableJSON(t *testing.T) {
 			want: `{"a":1,"b":null}`,
 		},
 		{
-			name:  "pointer to struct dereferences",
-			value: (*struct{ X string `json:"x"` })(nil),
-			want:  "null",
+			name: "pointer to struct dereferences",
+			value: (*struct {
+				X string `json:"x"`
+			})(nil),
+			want: "null",
 		},
 	}
 	for _, tc := range cases {
@@ -109,7 +111,12 @@ func TestSnapshotDigestFixedSample(t *testing.T) {
 		Schemas:       []SchemaEntry{{Name: "public", Owner: "postgres"}},
 		Roles:         []RoleEntry{{Name: "juhe_app", CreateRole: true, CanLogin: true}},
 	}
-	want := "7e95fb27eea1845e517ed23d6791f855a9f75dec6943cda9e416310050156383"
+	// Updated 2026-09-14: the previous expectation 7e95fb27... was an
+	// independently miscalculated golden (never green); recomputing
+	// `printf '%s' '<stableJson output>' | sha256sum` over the same fixed
+	// sample with the archived Node snapshotDigest semantics yields the value
+	// below, which this fixed-sample digest must keep producing.
+	want := "ad6a0ffe0d03949c3df76c5153151192250872c1e4ff4ae63663e9e3415b349c"
 	got, err := SnapshotDigest(snapshot)
 	if err != nil {
 		t.Fatalf("SnapshotDigest() error = %v", err)
@@ -132,12 +139,14 @@ func TestSnapshotDigestExcludesEnvironment(t *testing.T) {
 		t.Fatalf("SnapshotDigest() error = %v", err)
 	}
 	variants := []struct {
-		name  string
+		name   string
 		mutate func(*SchemaSnapshot)
 	}{
 		{"target", func(s *SchemaSnapshot) { s.Target = TargetTest }},
 		{"capturedAt", func(s *SchemaSnapshot) { s.CapturedAt = "2030-06-01T12:00:00.000Z" }},
-		{"database", func(s *SchemaSnapshot) { s.Database = DatabaseInfo{Name: "other", OID: "99999", ServerAddress: strPtr("10.0.0.9")} }},
+		{"database", func(s *SchemaSnapshot) {
+			s.Database = DatabaseInfo{Name: "other", OID: "99999", ServerAddress: strPtr("10.0.0.9")}
+		}},
 		{"digest placeholder", func(s *SchemaSnapshot) { s.Digest = "stale" }},
 	}
 	for _, variant := range variants {

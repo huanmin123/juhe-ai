@@ -10,8 +10,9 @@ import (
 func TestVerifyRepositoryBusinessOwnerManifest(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "..")
 	// Node backend was physically archived (X02, 2026-09-04); the db-service
-	// contract sources now live only in the final-archive browsable copy.
-	archive := filepath.Join(root, "migration-backup", "node", "final-archive", "backend", "src", "modules", "db-service")
+	// contract sources now live only in the migration-backup-1 final-archive
+	// browsable copy (archive split across both roots, 2026-09).
+	archive := filepath.Join(root, "migration-backup-1", "node", "final-archive", "backend", "src", "modules", "db-service")
 	report, err := Verify(
 		filepath.Join(root, "docs", "migration", "BusinessSQLite-owner-manifest.json"),
 		filepath.Join(archive, "db-service-types.ts"),

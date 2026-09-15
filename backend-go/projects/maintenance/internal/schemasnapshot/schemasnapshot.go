@@ -67,13 +67,13 @@ type SchemaEntry struct {
 
 // RoleEntry mirrors the Node roles[] rows.
 type RoleEntry struct {
-	Name       string `json:"name"`
-	Superuser  bool   `json:"superuser"`
-	CreateRole bool   `json:"createRole"`
-	CreateDb   bool   `json:"createDb"`
-	CanLogin   bool   `json:"canLogin"`
-	Replication bool  `json:"replication"`
-	BypassRls  bool   `json:"bypassRls"`
+	Name        string `json:"name"`
+	Superuser   bool   `json:"superuser"`
+	CreateRole  bool   `json:"createRole"`
+	CreateDb    bool   `json:"createDb"`
+	CanLogin    bool   `json:"canLogin"`
+	Replication bool   `json:"replication"`
+	BypassRls   bool   `json:"bypassRls"`
 }
 
 // ExtensionEntry mirrors the Node extensions[] rows.
@@ -95,14 +95,14 @@ type RelationEntry struct {
 
 // ColumnEntry mirrors the Node columns[] rows.
 type ColumnEntry struct {
-	Schema       string  `json:"schema"`
-	Relation     string  `json:"relation"`
-	Name         string  `json:"name"`
-	Ordinal      int     `json:"ordinal"`
-	Type         string  `json:"type"`
-	UDT          string  `json:"udt"`
-	Nullable     bool    `json:"nullable"`
-	DefaultSha   *string `json:"defaultSha256"`
+	Schema     string  `json:"schema"`
+	Relation   string  `json:"relation"`
+	Name       string  `json:"name"`
+	Ordinal    int     `json:"ordinal"`
+	Type       string  `json:"type"`
+	UDT        string  `json:"udt"`
+	Nullable   bool    `json:"nullable"`
+	DefaultSha *string `json:"defaultSha256"`
 }
 
 // ConstraintEntry mirrors the Node constraints[] rows.
@@ -124,10 +124,10 @@ type IndexEntry struct {
 
 // FunctionEntry mirrors the Node functions[] rows.
 type FunctionEntry struct {
-	Schema           string `json:"schema"`
-	Name             string `json:"name"`
+	Schema            string `json:"schema"`
+	Name              string `json:"name"`
 	IdentityArguments string `json:"identityArguments"`
-	DefinitionSha256 string `json:"definitionSha256"`
+	DefinitionSha256  string `json:"definitionSha256"`
 }
 
 // TriggerEntry mirrors the Node triggers[] rows.
@@ -362,49 +362,49 @@ func stableNormalize(value any) (any, error) {
 			out[name] = fieldValue
 		}
 		return out, nil
-case reflect.Slice, reflect.Array:
-	if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
-		return nil, errors.New("stableJson: 不支持 []byte 值")
-	}
-	out := make([]any, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		item, err := stableNormalize(rv.Index(i).Interface())
-		if err != nil {
-			return nil, err
+	case reflect.Slice, reflect.Array:
+		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
+			return nil, errors.New("stableJson: 不支持 []byte 值")
 		}
-		out[i] = item
-	}
-	return out, nil
-case reflect.String:
-	return value, nil
-case reflect.Bool:
-	return value, nil
-case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-	return rv.Int(), nil
-case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-	return int64(rv.Uint()), nil
-case reflect.Float32, reflect.Float64:
-	return value, nil
-case reflect.Map:
-	if rv.Type().Key().Kind() != reflect.String {
-		return nil, fmt.Errorf("stableJson: map key 非 string")
-	}
-	out := make(map[string]any, rv.Len())
-	for _, key := range rv.MapKeys() {
-		normalized, err := stableNormalize(rv.MapIndex(key).Interface())
-		if err != nil {
-			return nil, err
+		out := make([]any, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			item, err := stableNormalize(rv.Index(i).Interface())
+			if err != nil {
+				return nil, err
+			}
+			out[i] = item
 		}
-		out[key.String()] = normalized
-	}
-	return out, nil
-default:
+		return out, nil
+	case reflect.String:
+		return value, nil
+	case reflect.Bool:
+		return value, nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return int64(rv.Uint()), nil
+	case reflect.Float32, reflect.Float64:
+		return value, nil
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, fmt.Errorf("stableJson: map key 非 string")
+		}
+		out := make(map[string]any, rv.Len())
+		for _, key := range rv.MapKeys() {
+			normalized, err := stableNormalize(rv.MapIndex(key).Interface())
+			if err != nil {
+				return nil, err
+			}
+			out[key.String()] = normalized
+		}
+		return out, nil
+	default:
 		return nil, fmt.Errorf("stableJson: 不支持的值类型 %T", value)
 	}
 }
 
 // DigestDefinition mirrors the Node digestDefinition: sha256 over
-// String(value ?? ''). The snapshot feeds it only strings and nulls; other
+// String(value ?? ”). The snapshot feeds it only strings and nulls; other
 // scalar Go types fall back to fmt.Sprint, whose bool form matches
 // JavaScript String() but whose float form is intentionally out of scope.
 func DigestDefinition(value any) string {
