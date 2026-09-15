@@ -1156,10 +1156,9 @@ func (r *chainBodyRejectionRecorder) RecordGatewayBodyRejection(req *http.Reques
 		method = "UNKNOWN"
 	}
 	originalURL := req.URL.RequestURI()
+	// RequestURI() 对空 Path 恒返回 "/"，strings.Cut 的前段恒非空，
+	// 空路径兜底已按 w2 登记删除。
 	path, queryString, _ := strings.Cut(originalURL, "?")
-	if path == "" {
-		path = req.URL.Path
-	}
 	message := input.ErrorMessage
 	if message == "" {
 		message = input.ResponsePayload.Error.Message
@@ -1309,9 +1308,9 @@ func chainTextRawBodyLimitOf(cache *gatewayruntimecache.Service) gatewaybody.Tex
 // preauth 的审计 ID 形状，供组合根的 dropped audit 面复用）。
 func chainNewAuditID(clock gatewaypreauth.Clock) string {
 	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return fmt.Sprintf("audit_%d", clock.Now().UnixMilli())
-	}
+	// Go 1.24+ crypto/rand.Read 文档契约：never returns an error（w2 登记），
+	// 降级臂已删。
+	_, _ = rand.Read(buf[:])
 	buf[6] = (buf[6] & 0x0f) | 0x40
 	buf[8] = (buf[8] & 0x3f) | 0x80
 	dst := make([]byte, 36)

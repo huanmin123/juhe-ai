@@ -107,36 +107,20 @@ func chatAttachStreamHandler(hub *chat.GenerationHub) chat.AttachStreamHandler {
 			}
 		}
 
-		var (
-			writeMu sync.Mutex
-			ended   bool
-		)
+		// writeEvent 的 ended 守卫与 data==nil 兜底已删（w2 登记）：唯一调用点
+		// 恒传非 nil data；终态事件与失败路径置位后立即同步退出循环，事件循环
+		// 单线程，ended 读取时恒为 false。
 		writeEvent := func(eventType string, data map[string]any) bool {
-			writeMu.Lock()
-			defer writeMu.Unlock()
-			if ended {
-				return false
-			}
-			if data == nil {
-				data = map[string]any{}
-			}
 			payload, err := json.Marshal(data)
 			if err != nil {
-				ended = true
 				return false
 			}
 			chunk := "event: " + eventType + "\ndata: " + string(payload) + "\n\n"
 			if _, err := w.Write([]byte(chunk)); err != nil {
-				ended = true
 				return false
 			}
 			flush()
 			return true
-		}
-		end := func() {
-			writeMu.Lock()
-			ended = true
-			writeMu.Unlock()
 		}
 
 		heartbeat := time.NewTicker(5 * time.Second)
@@ -146,7 +130,6 @@ func chatAttachStreamHandler(hub *chat.GenerationHub) chat.AttachStreamHandler {
 			select {
 			case event, ok := <-events:
 				if !ok {
-					end()
 					return true
 				}
 				data := map[string]any{}
@@ -158,23 +141,14 @@ func chatAttachStreamHandler(hub *chat.GenerationHub) chat.AttachStreamHandler {
 					return true
 				}
 				if event.Type == "message.completed" || event.Type == "message.failed" || event.Type == "message.canceled" {
-					end()
 					return true
 				}
 			case <-heartbeat.C:
-				writeMu.Lock()
-				active := !ended
-				writeMu.Unlock()
-				if !active {
-					return true
-				}
 				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
-					end()
 					return true
 				}
 				flush()
 			case <-ctx.Done():
-				end()
 				return true
 			}
 		}

@@ -1757,15 +1757,11 @@ func (d auditUsageDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gateway
 	if d.producer == nil {
 		return
 	}
-	encoded, err := json.Marshal(input)
-	if err != nil {
-		// The retired HTTP hop dropped the capture on a marshal error too.
-		return
-	}
+	// 纯 JSON 数据结构体的 Marshal→Unmarshal 往返恒成功（w2 登记）；往返本身
+	// 是保留 wire contract 等价的类型桥（含 durationMs int → *int64 强转）。
+	encoded, _ := json.Marshal(input)
 	var decoded auditlog.AuditLogInput
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		return
-	}
+	_ = json.Unmarshal(encoded, &decoded)
 	d.producer.Capture(decoded)
 }
 

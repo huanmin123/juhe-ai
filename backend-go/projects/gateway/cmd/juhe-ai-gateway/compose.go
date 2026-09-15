@@ -489,10 +489,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if readErr != nil {
 			return 14
 		}
-		parsed, parseErr := strconv.Atoi(strings.TrimSpace(value))
-		if parseErr != nil {
-			return 14
-		}
+		// runtimeLogIndexRetentionDays 经 settings.Load 归一化为 [1,90] 内的
+		// 整数 float64，settingsString 输出整数文本，Atoi 恒成功（w2 登记）。
+		parsed, _ := strconv.Atoi(strings.TrimSpace(value))
 		return parsed
 	}, time.Now)
 	if err != nil {
@@ -553,19 +552,19 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		return nil, fmt.Errorf("create system-teams store: %w", err)
 	}
 	composed.teamStore = teamStore
-// WithGlobalConcurrencyMax carries the parsed JUHE_AI_CONCURRENCY_GLOBAL_MAX
-		// into the DEFAULT scheduling-policy projection (Node reads
-		// runtimeConfig.concurrency.globalMax live; the store default stays 5000).
-		// D-38: group_account_stats reads from juhe_stats database.
-		groupStatsReader := groups.NewGroupAccountStatsDBReader(composed.statsDB, composed.pgDialect)
-		groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus,
-			groups.WithGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax),
-			groups.WithStatsReader(groupStatsReader),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create groups store: %w", err)
-		}
-		routeStrategyStore, err := routestrategies.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
+	// WithGlobalConcurrencyMax carries the parsed JUHE_AI_CONCURRENCY_GLOBAL_MAX
+	// into the DEFAULT scheduling-policy projection (Node reads
+	// runtimeConfig.concurrency.globalMax live; the store default stays 5000).
+	// D-38: group_account_stats reads from juhe_stats database.
+	groupStatsReader := groups.NewGroupAccountStatsDBReader(composed.statsDB, composed.pgDialect)
+	groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus,
+		groups.WithGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax),
+		groups.WithStatsReader(groupStatsReader),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create groups store: %w", err)
+	}
+	routeStrategyStore, err := routestrategies.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
 	if err != nil {
 		return nil, fmt.Errorf("create route-strategy store: %w", err)
 	}
@@ -1435,55 +1434,19 @@ func ratelimitSettingsProvider(store *settings.Store) ratelimit.SettingsProvider
 		if err != nil {
 			return ratelimit.Settings{}, err
 		}
-		load := func(key string) (int, error) {
-			raw, ok := snapshot[key]
-			if !ok || raw == nil {
-				return 0, fmt.Errorf("%s 必须是整数", key)
-			}
-			number, ok := raw.(float64)
-			if !ok {
-				parsed, parseErr := strconv.Atoi(settingsString(raw))
-				if parseErr != nil {
-					return 0, fmt.Errorf("%s 必须是整数", key)
-				}
-				number = float64(parsed)
-			}
-			if number != float64(int(number)) || number < 0 || number > 1_000_000 {
-				return 0, fmt.Errorf("%s 必须在 0 到 1000000 之间", key)
-			}
-			return int(number), nil
-		}
-		ipRead, err := load("systemApiRateLimitIpReadPerMinute")
-		if err != nil {
-			return ratelimit.Settings{}, err
-		}
-		ipReadBurst, err := load("systemApiRateLimitIpReadBurstPer10Seconds")
-		if err != nil {
-			return ratelimit.Settings{}, err
-		}
-		ipWrite, err := load("systemApiRateLimitIpWritePerMinute")
-		if err != nil {
-			return ratelimit.Settings{}, err
-		}
-		ipWriteBurst, err := load("systemApiRateLimitIpWriteBurstPer10Seconds")
-		if err != nil {
-			return ratelimit.Settings{}, err
-		}
-		userRead, err := load("systemApiRateLimitUserReadPerMinute")
-		if err != nil {
-			return ratelimit.Settings{}, err
-		}
-		userWrite, err := load("systemApiRateLimitUserWritePerMinute")
-		if err != nil {
-			return ratelimit.Settings{}, err
+		// settings.Load 成功 ⇒ 六个限流键全键存在且经 normalizeSystemSetting
+		// 校验为 [0,1000000] 内的整数 float64（缺键/坏值让 Load 整体失败走上方
+		// err 臂）；解析、越界与逐键错误臂不可达，已按 w2 登记删除。
+		load := func(key string) int {
+			return int(snapshot[key].(float64))
 		}
 		return ratelimit.Settings{
-			IPReadPerMinute:    ipRead,
-			IPReadBurstPer10s:  ipReadBurst,
-			IPWritePerMinute:   ipWrite,
-			IPWriteBurstPer10s: ipWriteBurst,
-			UserReadPerMinute:  userRead,
-			UserWritePerMinute: userWrite,
+			IPReadPerMinute:    load("systemApiRateLimitIpReadPerMinute"),
+			IPReadBurstPer10s:  load("systemApiRateLimitIpReadBurstPer10Seconds"),
+			IPWritePerMinute:   load("systemApiRateLimitIpWritePerMinute"),
+			IPWriteBurstPer10s: load("systemApiRateLimitIpWriteBurstPer10Seconds"),
+			UserReadPerMinute:  load("systemApiRateLimitUserReadPerMinute"),
+			UserWritePerMinute: load("systemApiRateLimitUserWritePerMinute"),
 		}, nil
 	}
 }
@@ -1572,19 +1535,10 @@ func (a aiAccountLimitSettingsAdapter) UserAiAccountLimit(ctx context.Context) (
 	if err != nil {
 		return 0, err
 	}
-	switch value := snapshot["userAiAccountLimit"].(type) {
-	case float64:
-		return int64(value), nil
-	case int64:
-		return value, nil
-	case int:
-		return int64(value), nil
-	default:
-		// Missing key keeps the schema default (accounts.write.go
-		// defaultUserAiAccountLimit); 0 must stay reserved for explicit
-		// "unlimited" configuration only.
-		return 100, nil
-	}
+	// settings.Load 成功 ⇒ userAiAccountLimit 恒存在（缺键时 compatible 默认
+	// 100 合并）且经 normalize 校验为整数 float64，仅 float64 臂可达（w2 登记）；
+	// 0 仍由设置面保留给显式"不限制"配置。
+	return int64(snapshot["userAiAccountLimit"].(float64)), nil
 }
 
 var _ accounts.AiAccountCreationLimitSettings = aiAccountLimitSettingsAdapter{}

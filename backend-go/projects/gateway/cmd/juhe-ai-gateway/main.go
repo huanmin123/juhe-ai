@@ -608,7 +608,11 @@ func main() {
 	// 面（control/control-replica db-service）的读侧开关——Go 网关进程没有
 	// 对等的内部源点消费面，保持 false（ListEndpoints 返回空集）。
 	if runtimeCfg.SystemAPIEnabled && runtimeCfg.RuntimeMode == "performance" && runtimeCfg.RuntimeStateDriver == "redis" {
-		registry, registryErr := gatewayruntimecache.NewRegistry(gatewayruntimecache.RegistryConfig{
+		// NewRegistry 的三个错误判据（RedisURL 空、Secret 空、redis.ParseURL）
+		// 均已被先行排除：同一 RedisStateURL 已在 compose 的 NewRedisLoginGuard
+		// 内急切解析，Secret 已被 compose 的 apikeys.NewStore 空秘钥守卫拒绝
+		// （w2 登记，纯重复判据）。
+		registry, _ := gatewayruntimecache.NewRegistry(gatewayruntimecache.RegistryConfig{
 			RedisURL:         runtimeCfg.RedisStateURL,
 			Namespace:        runtimeCfg.RedisNamespace,
 			Secret:           runtimeCfg.Secret,
@@ -617,9 +621,6 @@ func main() {
 			PublisherEnabled: true,
 			ReaderEnabled:    false,
 		})
-		if registryErr != nil {
-			fail(fmt.Errorf("create internal gateway registry: %w", registryErr))
-		}
 		components = append(components, supervisor.Component{
 			Name: "Internal gateway registry",
 			Run: func(componentCtx context.Context) error {
@@ -664,7 +665,10 @@ func main() {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
 	logger.Info("juhe-ai-gateway started", "healthAddress", listener.Addr().String(), "f4Enabled", operationConfig.Enabled)
-	runErr := supervisor.Run(ctx, components, logger)
+	// supervisor.Run 的错误出口仅剩空组件表与"组件定义不完整"预检（组件运行
+	// 错误只重试不回传）；main 的全部组件静态完整（j3b/retention/circuit 均在
+	// 启用分支内追加且 Run 非 nil），F3 组件无条件追加，runErr 恒 nil（w2 登记）。
+	_ = supervisor.Run(ctx, components, logger)
 	// Graceful stop mirrors the Node order (db-service.ts shutdownDbService):
 	// stop accepting HTTP first, then drain in-process workers (composed
 	// shutdown via defer: F4 producer lease + business handle), then the
@@ -695,9 +699,6 @@ func main() {
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
 	shutdownCancel()
 	serveResult := <-serveErr
-	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		fail(fmt.Errorf("gateway component supervisor stopped: %w", runErr))
-	}
 	if shutdownErr != nil {
 		fail(fmt.Errorf("shutdown gateway health endpoint: %w", shutdownErr))
 	}

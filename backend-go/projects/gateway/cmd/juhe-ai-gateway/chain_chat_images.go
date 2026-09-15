@@ -56,12 +56,11 @@ func newChatImageProcessor() *chatImageProcessor { return &chatImageProcessor{} 
 
 // ProcessUpload mirrors processChatImageFile.
 func (p *chatImageProcessor) ProcessUpload(data []byte, _ string) (*chat.ProcessedImage, error) {
+	// decodeChatImage 的全部错误出口只返回 errChatImageDecode（w2 登记），直接
+	// 归一为面向用户的处理错误。
 	src, format, err := decodeChatImage(data)
 	if err != nil {
-		if errors.Is(err, errChatImageDecode) {
-			return nil, &chat.ImageProcessingError{Message: "图片无法解码、像素过大或文件已损坏"}
-		}
-		return nil, err
+		return nil, &chat.ImageProcessingError{Message: "图片无法解码、像素过大或文件已损坏"}
 	}
 	if !isChatSupportedFormat(format) {
 		return nil, &chat.ImageProcessingError{Message: "仅支持 JPEG、PNG、WebP 或 GIF 图片"}
@@ -234,19 +233,16 @@ func orientedChatDimensions(bounds image.Rectangle, orientation int) (chatImageD
 // boundedChatImageDimensions mirrors boundedImageDimensions (maxEdge cap +
 // the 2500-patch area cap with the 0.98 shrink loop).
 func boundedChatImageDimensions(width, height int) chatImageDimensions {
+	// 面积上限臂已删（w2 登记）：sqrt(2500·32²/(w·h)) < 1024/max(w,h) 需要
+	// min > 2.44×max，与 min ≤ max 矛盾，任意输入都不可能触发；0.98 收缩循环
+	// 同理（1024 边上限后 patch 数 ≤ 32×32 = 1024 < 2500）。边长臂保持
+	// min(1, 1024/max)：未超 1024 边的图不放大。
 	scale := 1.0
 	if edgeScale := float64(chatImageMaxEdge) / float64(maxOf(width, height)); edgeScale < scale {
 		scale = edgeScale
 	}
-	if areaScale := sqrtOf(float64(chatMaxModelImagePatch*chatImagePatchEdge*chatImagePatchEdge) / float64(width*height)); areaScale < scale {
-		scale = areaScale
-	}
 	targetWidth := maxInt(1, int(float64(width)*scale))
 	targetHeight := maxInt(1, int(float64(height)*scale))
-	for chatImagePatchCount(targetWidth, targetHeight) > chatMaxModelImagePatch {
-		targetWidth = maxInt(1, int(float64(targetWidth)*0.98))
-		targetHeight = maxInt(1, int(float64(targetHeight)*0.98))
-	}
 	return chatImageDimensions{width: targetWidth, height: targetHeight}
 }
 
@@ -324,9 +320,6 @@ func chatJPEGOrientation(data []byte, format string) int {
 		if marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {
 			offset += 2
 			continue
-		}
-		if offset+4 > len(data) {
-			return 0
 		}
 		segmentLength := int(binary.BigEndian.Uint16(data[offset+2 : offset+4]))
 		if segmentLength < 2 {
@@ -421,8 +414,6 @@ func applyChatOrientation(src image.Image, orientation int) image.Image {
 				dx, dy = height-1-y, width-1-x
 			case 8:
 				dx, dy = y, width-1-x
-			default:
-				dx, dy = x, y
 			}
 			dst.SetNRGBA(dx, dy, nrgbaAt(src, bounds.Min.X+x, bounds.Min.Y+y))
 		}

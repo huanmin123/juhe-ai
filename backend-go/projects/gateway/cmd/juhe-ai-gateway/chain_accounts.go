@@ -714,13 +714,14 @@ func orderChainCandidateRowsForDispatch(rows []chainEligibleRow, modelRanks map[
 		if lp, rp := chainPriorityRank(l), chainPriorityRank(r); lp != rp {
 			return lp < rp
 		}
+		// 到达此处时 model/fallback/super/priority 全平 ⇒ bucket key 相同且
+		// 桶内行数 >=2 ⇒ compareChainQuality 必然执行；它对相异行以
+		// collator（名字）或 ID 收尾恒非零，返回 0 仅剩“名称与 ID 双重复”
+		// 的行，此时 ID 比较也恒 false（稳定序保持原位）。
 		if chainBucketKey(l) == chainBucketKey(r) && chainBucketSize(out, chainBucketKey(l)) >= 2 {
 			if delta := compareChainQuality(l, r, collator); delta != 0 {
 				return delta < 0
 			}
-		}
-		if delta := collator.CompareString(l.Name, r.Name); delta != 0 {
-			return delta < 0
 		}
 		return l.ID < r.ID
 	})

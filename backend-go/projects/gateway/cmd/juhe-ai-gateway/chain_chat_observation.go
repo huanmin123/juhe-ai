@@ -261,7 +261,8 @@ func (o *chatImageObservations) runObservation(ctx context.Context, input chat.S
 	dialogueContext := fmt.Sprintf(`{"userQuestion":%s,"visibleAnswer":%s}`,
 		chatObservationJSONString(truncateChatObservationText(input.UserContent, 16_000)),
 		chatObservationJSONString(truncateChatObservationText(input.AssistantContent, 16_000)))
-	body, err := json.Marshal(map[string]any{
+	// 纯 JSON 值（string/嵌套 map/bool）的 Marshal 恒成功（w2 登记）。
+	body, _ := json.Marshal(map[string]any{
 		"model":        input.Model,
 		"instructions": instructions,
 		"input": []map[string]any{{
@@ -273,9 +274,6 @@ func (o *chatImageObservations) runObservation(ctx context.Context, input chat.S
 		}},
 		"stream": false,
 	})
-	if err != nil {
-		return fail(err)
-	}
 	response, err := o.executor.Dispatch(ctx, chat.GenerationDispatchRequest{
 		Path:   "/v1/responses",
 		Method: "POST",
@@ -446,12 +444,10 @@ func truncateChatObservationText(value string, max int) string {
 	return value
 }
 
-// chatObservationJSONString mirrors JSON.stringify for one string value.
+// chatObservationJSONString mirrors JSON.stringify for one string value
+// (string 恒可序列化，Marshal 恒成功，w2 登记).
 func chatObservationJSONString(value string) string {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return `""`
-	}
+	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }
 

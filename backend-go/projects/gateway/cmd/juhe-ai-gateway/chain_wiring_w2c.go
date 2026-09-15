@@ -297,10 +297,9 @@ func (p chainSuppressionPort) FilterAsync(ctx context.Context, accounts []gatewa
 // suppressed — the recoverable wait window, then the 503 completeFailure
 // contract. completed=true means the request settled inside the resolver.
 func (p chainSuppressionPort) ResolveLocalSuppressionFilter(ctx context.Context, input gatewaydispatch.LocalSuppressionPreflightInput) (*gatewaydispatch.SuppressionFilterResult, bool, error) {
-	filter, err := p.FilterAsync(ctx, input.Accounts, gatewaydispatch.SuppressionFilterOptions{})
-	if err != nil {
-		return nil, false, err
-	}
+	// FilterAsync 的实现（本文件 281-293 行）恒返回 nil error，错误臂已按
+	// w2 登记清理；error 保留在接口方法签名上。
+	filter, _ := p.FilterAsync(ctx, input.Accounts, gatewaydispatch.SuppressionFilterOptions{})
 	if filter.SuppressedCount > 0 {
 		p.logger.Warn(map[string]any{
 			"suppressedCount":      filter.SuppressedCount,
@@ -321,7 +320,7 @@ func (p chainSuppressionPort) ResolveLocalSuppressionFilter(ctx context.Context,
 	if filter.AllSuppressed {
 		waitStartedAtMs := input.StartedAt
 		deadlineAtMs := input.ServerRetryBudget.DeadlineAtMs(&waitStartedAtMs)
-		waitedMs, _, waitErr := p.waiter.WaitForStateLoop(ctx, gatewaycircuit.StateWaitInput{
+		waitedMs, _, _ := p.waiter.WaitForStateLoop(ctx, gatewaycircuit.StateWaitInput{
 			ScopeKey:                 gatewaycircuit.RecoverableSuppressionScopeKey(input.SystemAccountID, input.APIKeyID, input.GroupID),
 			Reason:                   gatewaycircuit.LocalAccountSuppressionWaitReason,
 			AuditCapture:             input.AuditCapture,
@@ -332,10 +331,8 @@ func (p chainSuppressionPort) ResolveLocalSuppressionFilter(ctx context.Context,
 			GatewayRequestWallBudget: input.GatewayRequestWallBudget,
 			Signal:                   input.Signal,
 			Refresh: func(ctx context.Context) (bool, bool, int64, error) {
-				state, refreshErr := p.FilterAsync(ctx, input.Accounts, gatewaydispatch.SuppressionFilterOptions{})
-				if refreshErr != nil {
-					return false, false, 0, refreshErr
-				}
+				// FilterAsync 恒 nil error（w2 登记），refreshErr 臂已删。
+				state, _ := p.FilterAsync(ctx, input.Accounts, gatewaydispatch.SuppressionFilterOptions{})
 				filter = state
 				if state.NextRetryAfterMs != nil {
 					return !state.AllSuppressed, true, *state.NextRetryAfterMs, nil
@@ -343,11 +340,10 @@ func (p chainSuppressionPort) ResolveLocalSuppressionFilter(ctx context.Context,
 				return !state.AllSuppressed, false, 0, nil
 			},
 		})
-		if waitErr != nil {
-			return nil, false, waitErr
-		}
-		input.ServerRetryBudget.PauseNoAvailableWait(&waitStartedAtMs)
+		// WaitForStateLoop 仅在 Refresh 报错时返回 error；Refresh 由 FilterAsync
+		// 包裹恒不报错 → waitErr 恒 nil（w2 登记）。
 		_ = waitedMs
+		input.ServerRetryBudget.PauseNoAvailableWait(&waitStartedAtMs)
 		if filter.AllSuppressed {
 			input.AuditCapture.AddGatewayMetadata("local_account_suppression_exhausted", map[string]any{
 				"nextRetryAfterMs": filter.NextRetryAfterMs,

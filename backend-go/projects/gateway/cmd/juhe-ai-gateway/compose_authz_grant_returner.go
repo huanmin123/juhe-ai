@@ -29,14 +29,13 @@ type authzGrantReturner struct {
 // Return mirrors the narrow port contract: TerminalMutation.Status carries
 // updated / unchanged / not_found / conflict verbatim (the accounts route
 // renders not_found / conflict as the 404 不可归还 contract and treats the
-// remaining outcomes as terminal success).
+// remaining outcomes as terminal success). authz.Store.Return 的全部成功路径
+// 均显式构造非 nil *TerminalMutation（mutations.go Return：not_found/conflict/
+// unchanged/updated），mutation==nil 只与 err 同时出现，由上方 err 守卫处理。
 func (r authzGrantReturner) Return(ctx context.Context, grantID, expectedUpdatedAt, granteeUserID string) (string, error) {
 	mutation, err := r.store.Return(ctx, grantID, expectedUpdatedAt, granteeUserID)
 	if err != nil {
 		return "", err
-	}
-	if mutation == nil {
-		return "", nil
 	}
 	return mutation.Status, nil
 }

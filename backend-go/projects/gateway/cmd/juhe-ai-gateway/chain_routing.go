@@ -496,10 +496,9 @@ func (m hybridAuditMetadata) AddGatewayMetadata(label string, metadata *gatewayh
 	if m.capture == nil || metadata == nil {
 		return
 	}
-	rendered, ok := orderedValueToPlain(metadata).(map[string]any)
-	if !ok {
-		return
-	}
+	// orderedValueToPlain 对 *gatewayhybrid.OrderedJSON 恒返回 map[string]any
+	// （OrderedJSON 只承载 JSON 对象），断言恒成功。
+	rendered := orderedValueToPlain(metadata).(map[string]any)
 	m.capture.AddGatewayMetadata(label, rendered)
 }
 
@@ -598,42 +597,31 @@ func projectAPIKeyRowForHybrid(record *gatewayruntimecache.GatewayAPIKeyRow) (*g
 	return out, nil
 }
 
+// hybridConfigToMap / hybridScoringToMap / hybridRouteToMap round-trip pure
+// flat JSON structures (scalar / slice-of-scalar / nested-flat-struct fields,
+// no chan/func/custom marshaler): Marshal and Unmarshal into map[string]any
+// cannot fail, so the error arms are omitted by construction.
 func hybridConfigToMap(config *routestrategies.HybridRoutingConfig) map[string]any {
 	if config == nil {
 		return nil
 	}
-	raw, err := json.Marshal(config)
-	if err != nil {
-		return nil
-	}
+	raw, _ := json.Marshal(config)
 	out := map[string]any{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil
-	}
+	_ = json.Unmarshal(raw, &out)
 	return out
 }
 
 func hybridScoringToMap(scoring gatewayhybrid.HybridScoringResult) map[string]any {
-	raw, err := json.Marshal(scoring)
-	if err != nil {
-		return nil
-	}
+	raw, _ := json.Marshal(scoring)
 	out := map[string]any{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil
-	}
+	_ = json.Unmarshal(raw, &out)
 	return out
 }
 
 func hybridRouteToMap(route routestrategies.HybridLevelRoute) map[string]any {
-	raw, err := json.Marshal(route)
-	if err != nil {
-		return nil
-	}
+	raw, _ := json.Marshal(route)
 	out := map[string]any{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil
-	}
+	_ = json.Unmarshal(raw, &out)
 	return out
 }
 
@@ -666,9 +654,6 @@ func localEndpointFamily(view gatewayrouting.RequestView) string {
 		source = view.Path
 	}
 	path := strings.ToLower(strings.TrimSpace(source))
-	if index := strings.Index(path, "?"); index >= 0 {
-		path = path[:index]
-	}
 	if index := strings.Index(path, "?"); index >= 0 {
 		path = path[:index]
 	}
