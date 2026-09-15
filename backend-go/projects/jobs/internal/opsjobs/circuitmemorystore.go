@@ -730,6 +730,11 @@ func (s *MemoryCircuitStore) apply(entry *memoryCircuitEntry, state CircuitState
 }
 
 func (s *MemoryCircuitStore) idempotentResult(entry *memoryCircuitEntry, transitionID string) *CircuitMutationResult {
+	// 无条目时不可能有重放记忆（ReplaceDispatchRevision 会在新 scope 上先于
+	// nil 检查调用本方法），直接视为非幂等。
+	if entry == nil {
+		return nil
+	}
 	if _, err := requiredScopePart(transitionID, "transitionId"); err != nil {
 		return nil
 	}
