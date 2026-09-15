@@ -156,12 +156,12 @@ func newProjectionFixture(t *testing.T) *projectionFixture {
 func (f *projectionFixture) seedAccount(t *testing.T, values map[string]any) {
 	t.Helper()
 	row := map[string]any{
-		"id":               "acct-1",
-		"status":           "active",
-		"config_revision":  int64(5),
+		"id":                "acct-1",
+		"status":            "active",
+		"config_revision":   int64(5),
 		"dispatch_revision": int64(7),
-		"created_at":       "2026-09-01T00:00:00Z",
-		"updated_at":       "2026-09-01T00:00:00Z",
+		"created_at":        "2026-09-01T00:00:00Z",
+		"updated_at":        "2026-09-01T00:00:00Z",
 	}
 	for column, value := range values {
 		row[column] = value
@@ -296,9 +296,9 @@ func cooldownSuccessOutcome(observedAt time.Time, fence CooldownFence) Outcome {
 			ExpectedAccountStatus: "temporary_unavailable",
 			ExpectedCooldownFence: &fence,
 			Values: map[string]any{
-				"last_health_check_at":           observedAt.Format(time.RFC3339Nano),
-				"last_health_success_at":         observedAt.Format(time.RFC3339Nano),
-				"last_health_check_status_code":  200,
+				"last_health_check_at":          observedAt.Format(time.RFC3339Nano),
+				"last_health_success_at":        observedAt.Format(time.RFC3339Nano),
+				"last_health_check_status_code": 200,
 			},
 		},
 	}
@@ -311,17 +311,17 @@ func TestProjectionCooldownSuccessRestoresActive(t *testing.T) {
 	fixture := newProjectionFixture(t)
 	observation := projectionFixtureNow.Add(-2 * time.Hour)
 	fixture.seedAccount(t, map[string]any{
-		"status":                                   "temporary_unavailable",
-		"schedulable":                              1,
-		"cooldown_until":                           projectionFixtureNow.Add(time.Hour).Format(time.RFC3339Nano),
-		"cooldown_retest_failure_count":            3,
-		"cooldown_retest_observation_started_at":   fenceGuardText(observation),
-		"cooldown_retest_generation":               "gen-1",
-		"cooldown_retest_last_at":                  observation.Format(time.RFC3339Nano),
-		"cooldown_retest_last_status_code":         503,
-		"last_error_code":                          "upstream_5xx",
-		"last_error_message":                       "上游失败",
-		"health_check_failure_count":               2,
+		"status":                                 "temporary_unavailable",
+		"schedulable":                            1,
+		"cooldown_until":                         projectionFixtureNow.Add(time.Hour).Format(time.RFC3339Nano),
+		"cooldown_retest_failure_count":          3,
+		"cooldown_retest_observation_started_at": fenceGuardText(observation),
+		"cooldown_retest_generation":             "gen-1",
+		"cooldown_retest_last_at":                observation.Format(time.RFC3339Nano),
+		"cooldown_retest_last_status_code":       503,
+		"last_error_code":                        "upstream_5xx",
+		"last_error_message":                     "上游失败",
+		"health_check_failure_count":             2,
 	})
 	observed := projectionFixtureNow.Add(-time.Minute)
 	fixture.insertOutcome(observed, cooldownSuccessOutcome(observed, CooldownFence{ObservationStartedAt: observation, Generation: "gen-1"}))
@@ -414,11 +414,11 @@ func TestProjectionActivationSuccessSchedulesBalance(t *testing.T) {
 		t.Fatalf("加密测试凭据失败: %v", err)
 	}
 	fixture.seedAccount(t, map[string]any{
-		"status":                  "pending_test",
-		"schedulable":             0,
-		"type":                    "api_key",
-		"credentials_encrypted":   credentials,
-		"balance_query_enabled":   0,
+		"status":                    "pending_test",
+		"schedulable":               0,
+		"type":                      "api_key",
+		"credentials_encrypted":     credentials,
+		"balance_query_enabled":     0,
 		"balance_query_config_json": "{}",
 	})
 	observed := projectionFixtureNow.Add(-time.Minute)
@@ -460,12 +460,12 @@ func TestProjectionActivationSuccessOutsideScheduleWindow(t *testing.T) {
 		t.Fatalf("加密测试凭据失败: %v", err)
 	}
 	fixture.seedAccount(t, map[string]any{
-		"status":                    "pending_test",
-		"schedulable":               0,
-		"type":                      "api_key",
-		"credentials_encrypted":     credentials,
-		"balance_query_enabled":     0,
-		"balance_query_config_json": "{}",
+		"status":                     "pending_test",
+		"schedulable":                0,
+		"type":                       "api_key",
+		"credentials_encrypted":      credentials,
+		"balance_query_enabled":      0,
+		"balance_query_config_json":  "{}",
 		"availability_schedule_json": schedule,
 	})
 	observed := projectionFixtureNow.Add(-time.Minute)
@@ -603,6 +603,38 @@ func TestProjectionHealthFailureKeepsActive(t *testing.T) {
 	disposition, _ := fixture.receipt(t, "outcome-health-failure")
 	if disposition != "applied" {
 		t.Fatalf("receipt = %s, 期望 applied", disposition)
+	}
+}
+
+// TestProjectionCooldownFenceAcceptsSubMillisecondPersistedTimestamp covers
+// the production representation boundary: a Go PostgreSQL write may retain
+// microseconds/+00 while the expected Node-compatible fence is millisecond/Z.
+func TestProjectionCooldownFenceAcceptsSubMillisecondPersistedTimestamp(t *testing.T) {
+	fixture := newProjectionFixture(t)
+	observation := projectionFixtureNow.Add(-2 * time.Hour).Truncate(time.Millisecond)
+	fixture.seedAccount(t, map[string]any{
+		"status":                                 "temporary_unavailable",
+		"schedulable":                            1,
+		"cooldown_retest_observation_started_at": "2026-09-06T10:00:00.000386Z",
+		"cooldown_retest_generation":             "gen-precision",
+	})
+	observed := projectionFixtureNow.Add(-time.Minute)
+	fixture.insertOutcome(observed, cooldownSuccessOutcome(observed, CooldownFence{
+		ObservationStartedAt: observation,
+		Generation:           "gen-precision",
+	}))
+
+	result := fixture.drain(t)
+	if result.Processed != 1 {
+		t.Fatalf("Processed = %d, 期望 1", result.Processed)
+	}
+	disposition, reason := fixture.receipt(t, "outcome-cooldown-success")
+	if disposition != "applied" || reason != "" {
+		t.Fatalf("receipt = %s/%s, 期望 applied", disposition, reason)
+	}
+	row := fixture.accountRow(t)
+	if row["status"] != "active" {
+		t.Fatalf("status = %v, 期望 active", row["status"])
 	}
 }
 
