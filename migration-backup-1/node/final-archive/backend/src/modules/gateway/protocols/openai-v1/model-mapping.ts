@@ -54,6 +54,19 @@ export interface ResolvedOpenAIModelMapping {
   runtimeRouteRuleId?: string
 }
 
+/** Model IDs are identifiers for routing purposes; client casing must not
+ * prevent a configured account mapping from being selected. */
+export function modelsEqual(left: string | undefined, right: string | undefined): boolean {
+  return typeof left === 'string'
+    && typeof right === 'string'
+    && left.trim().toLowerCase() === right.trim().toLowerCase()
+}
+
+export function canonicalModel(requestedModel: string | undefined, supportedModels: readonly string[] | undefined): string | undefined {
+  if (!requestedModel) return undefined
+  return (supportedModels ?? []).find((model) => modelsEqual(model, requestedModel))
+}
+
 type GatewayModelMappingSourceEndpointFamilyOverrideRequest = Request & {
   gatewayModelMappingSourceEndpointFamilyOverride?: GatewayRequestEndpointFamily
 }
@@ -71,7 +84,7 @@ export function resolveOpenAIAccountModelMapping(
   }
   const mapping = (account?.modelMappings ?? []).find((item) => (
     item.enabled !== false
-    && item.sourceModel === model
+    && modelsEqual(item.sourceModel, model)
     && item.sourceEndpointFamily === sourceEndpointFamily
   ))
   if (!mapping || (mapping.upstreamModel === mapping.sourceModel && mapping.upstreamEndpointFamily === mapping.sourceEndpointFamily)) return undefined

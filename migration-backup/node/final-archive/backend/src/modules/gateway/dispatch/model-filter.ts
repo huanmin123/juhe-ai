@@ -1,6 +1,6 @@
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { GatewayRequestEndpointFamily } from '../../../domain/types.js'
-import { resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
+import { modelsEqual, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 
 export interface GatewayModelAccountFilterResult {
   accounts: UpstreamAccount[]
@@ -100,7 +100,7 @@ export function filterGatewayAccountsByRequestedModel(
 
 function isMappingAllowedBySupportedModels(upstreamModel: string, supportedModels: string[]): boolean {
   if (!supportedModels.length) return false
-  return supportedModels.some((model) => model === upstreamModel)
+  return supportedModels.some((model) => modelsEqual(model, upstreamModel))
 }
 
 type GatewayAccountModelMatch = 'direct' | undefined
@@ -110,7 +110,7 @@ function resolveGatewayAccountModelMatch(
   supportedModels: string[]
 ): GatewayAccountModelMatch {
   if (!requestedModel) return undefined
-  if (supportedModels.includes(requestedModel)) {
+  if (supportedModels.some((model) => modelsEqual(model, requestedModel))) {
     return 'direct'
   }
   return undefined

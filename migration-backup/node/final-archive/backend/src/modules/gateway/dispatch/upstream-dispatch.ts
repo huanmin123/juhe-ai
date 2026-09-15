@@ -28,6 +28,7 @@ import {
   buildPreparedUpstreamRequestParts,
   handleUnavailableProxyProfile,
   prepareUpstreamAccount,
+  requestWithCanonicalDirectModel,
   selectAccountApiKeyForDispatch,
   skipAccountForFailedProxyDispatch
 } from './account-preparation.js'
@@ -874,6 +875,7 @@ export async function fetchFirstAvailableUpstream(
             }
           }
           let account = originalAccount
+          let dispatchReq = req
           let headers: Headers
           let body: Buffer | string | undefined
           let effectiveServiceTier = usageContext.effectiveServiceTier ?? usageContext.requestedServiceTier ?? 'default'
@@ -882,7 +884,8 @@ export async function fetchFirstAvailableUpstream(
           const preparationStageStartedAt = performance.now()
           try {
             account = await prepareUpstreamAccount(originalAccount, signal)
-            upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, req)
+            dispatchReq = await requestWithCanonicalDirectModel(req, account)
+            upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, dispatchReq)
             if (upstreamUrls.length === 0) {
               logRequestStage('upstream.request_prepare', {
                 traceId: usageContext.traceId,
@@ -972,7 +975,7 @@ export async function fetchFirstAvailableUpstream(
               excludedApiKeyFingerprints.add(account.selectedApiKeyFingerprint)
               previousSelectedApiKeyFingerprint = account.selectedApiKeyFingerprint
             }
-            const requestParts = await buildPreparedUpstreamRequestParts(req, account, usageContext, signal, {
+            const requestParts = await buildPreparedUpstreamRequestParts(dispatchReq, account, usageContext, signal, {
               requestClientCompatibility
             })
             headers = requestParts.headers

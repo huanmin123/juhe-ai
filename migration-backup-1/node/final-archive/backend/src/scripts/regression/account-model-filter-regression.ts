@@ -7,6 +7,10 @@ import type { Request, Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GEMINI_PROTOCOL_CODE,
+  GEMINI_PROTOCOL_VERSION,
+  GEMINI_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
@@ -18,13 +22,17 @@ import {
   filterGatewayAccountsByRequestedModel,
   gatewayModelFilterFailureMessage
 } from '../../modules/gateway/dispatch/model-filter.js'
+import { buildPreparedUpstreamRequestParts, requestWithCanonicalDirectModel } from '../../modules/gateway/dispatch/account-preparation.js'
+import { buildGatewayUpstreamUrlsForAccount } from '../../modules/providers/drivers/registry.js'
 import { filterOpenAIGatewayRequestCandidateAccounts } from '../../modules/gateway/dispatch/candidate-filter.js'
 import { markGatewayUpstreamModelsProbe } from '../../modules/gateway/request/upstream-models-probe.js'
+import type { GatewayRawBodyRequest, GatewayRequestBodyState } from '../../modules/gateway/request/body.js'
 import { logger } from '../../shared/logger.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import type { AccountModelMapping } from '../../domain/types.js'
 import type { AuditCaptureContext } from '../../modules/gateway/audit/capture.service.js'
 import type { OpenAIGatewayClientStrategyContext } from '../../modules/gateway/client-profiles/strategy.js'
+import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
 
 function account(id: string, supportedModels?: string[], modelMappings?: AccountModelMapping[]): UpstreamAccount {
   return {
@@ -84,6 +92,114 @@ assert.equal(matched.invalidModelConstraintCount, 1)
 assert.equal(matched.directMatchedCount, 1)
 assert.equal(matched.mappingMatchedCount, 0)
 assert.equal(matched.reason, undefined)
+
+const mixedCaseMatched = filterGatewayAccountsByRequestedModel([gpt55Only], 'GPT-5.5')
+assert.deepEqual(mixedCaseMatched.accounts.map((item) => item.id), ['gpt55-only'], '客户请求模型大小写不同仍应命中支持模型账户')
+assert.equal(mixedCaseMatched.directMatchedCount, 1)
+
+const mixedCaseRequestBody = { model: 'GPT-5.5', messages: [{ role: 'user', content: 'ok' }] }
+const mixedCaseRequest = {
+  method: 'POST',
+  path: '/chat/completions',
+  originalUrl: '/v1/chat/completions',
+  headers: { 'content-type': 'application/json' },
+  body: mixedCaseRequestBody,
+  rawBody: Buffer.from(JSON.stringify(mixedCaseRequestBody), 'utf8'),
+  gatewayParsedJsonBodyAvailable: true,
+  gatewayParsedJsonBody: mixedCaseRequestBody
+} as unknown as Request & GatewayRawBodyRequest
+const mixedCaseParts = await buildPreparedUpstreamRequestParts(mixedCaseRequest, gpt55Only, {
+  systemAccountId: 'sys_model_filter',
+  groupId: 'group_model_filter',
+  trafficSource: 'gateway'
+} as GatewayUsageContext)
+assert.equal(
+  JSON.parse(String(mixedCaseParts.body)).model,
+  'gpt-5.5',
+  '客户请求模型大小写不同时，上游请求必须使用账户配置中的规范模型名'
+)
+assert.equal(mixedCaseRequest.body.model, 'GPT-5.5', '规范化上游请求不得修改原始客户请求')
+
+const scannedJsonBody = { model: 'GPT-5.5', messages: [{ role: 'user', content: 'ok' }] }
+const scannedJsonRawBody = Buffer.from(JSON.stringify(scannedJsonBody), 'utf8')
+const scannedJsonRequest = {
+  method: 'POST',
+  path: '/chat/completions',
+  originalUrl: '/v1/chat/completions',
+  headers: { 'content-type': 'application/json' },
+  rawBody: scannedJsonRawBody,
+  gatewayRequestBody: {
+    rawBodyBytes: scannedJsonRawBody.length,
+    contentType: 'application/json',
+    isJson: true,
+    jsonParseStatus: 'scanned_json',
+    jsonParseWarningBytes: 0,
+    model: 'GPT-5.5'
+  } satisfies GatewayRequestBodyState
+} as unknown as Request & GatewayRawBodyRequest
+const scannedJsonCanonicalRequest = await requestWithCanonicalDirectModel(scannedJsonRequest, gpt55Only) as GatewayRawBodyRequest
+assert.equal(JSON.parse(String(scannedJsonCanonicalRequest.rawBody)).model, 'gpt-5.5', 'scanned_json 请求也必须规范化上游 body 模型名')
+assert.equal(JSON.parse(String(scannedJsonRequest.rawBody)).model, 'GPT-5.5', 'scanned_json 规范化不得修改原始客户请求')
+
+const geminiNativeAccount = {
+  ...account('gemini-native-case', ['gemini-2.5-pro']),
+  providerCode: GEMINI_PROVIDER_CODE,
+  providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  protocolCode: GEMINI_PROTOCOL_CODE,
+  protocolVersion: GEMINI_PROTOCOL_VERSION,
+  baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+  apiKey: 'gemini-case'
+} as UpstreamAccount
+const geminiNativeBody = { contents: [{ role: 'user', parts: [{ text: 'ok' }] }] }
+const geminiNativeRequest = {
+  method: 'POST',
+  path: '/v1beta/models/GEMINI-2.5-PRO:generateContent',
+  originalUrl: '/v1beta/models/GEMINI-2.5-PRO:generateContent?alt=sse',
+  url: '/v1beta/models/GEMINI-2.5-PRO:generateContent?alt=sse',
+  headers: { 'content-type': 'application/json' },
+  body: geminiNativeBody,
+  rawBody: Buffer.from(JSON.stringify(geminiNativeBody), 'utf8'),
+  gatewayParsedJsonBodyAvailable: true,
+  gatewayParsedJsonBody: geminiNativeBody
+} as unknown as Request & GatewayRawBodyRequest
+const canonicalGeminiRequest = await requestWithCanonicalDirectModel(geminiNativeRequest, geminiNativeAccount)
+assert.equal(canonicalGeminiRequest.originalUrl, '/v1beta/models/gemini-2.5-pro:generateContent?alt=sse', 'Gemini 原生请求应规范化 URL 模型名')
+assert.deepEqual(canonicalGeminiRequest.body, geminiNativeBody, 'Gemini 原生请求不得额外注入 OpenAI 风格 model 字段')
+assert.equal(geminiNativeRequest.originalUrl, '/v1beta/models/GEMINI-2.5-PRO:generateContent?alt=sse', 'Gemini 规范化不得修改原始客户请求')
+assert.equal(
+  new URL(buildGatewayUpstreamUrlsForAccount(geminiNativeAccount, canonicalGeminiRequest)[0] ?? '').pathname,
+  '/v1beta/models/gemini-2.5-pro:generateContent',
+  'Gemini 上游 URL 应使用规范模型名'
+)
+
+const unrelatedMappingAccount = account('unrelated-mapping', ['gpt-5.5'], [{
+  sourceModel: 'GPT-5.5',
+  sourceEndpointFamily: 'responses',
+  upstreamModel: 'gpt-5.5-responses',
+  upstreamEndpointFamily: 'responses',
+  enabled: true
+}])
+const unrelatedMappingParts = await buildPreparedUpstreamRequestParts(mixedCaseRequest, unrelatedMappingAccount, {
+  systemAccountId: 'sys_model_filter',
+  groupId: 'group_model_filter',
+  trafficSource: 'gateway'
+} as GatewayUsageContext)
+assert.equal(
+  JSON.parse(String(unrelatedMappingParts.body)).model,
+  'gpt-5.5',
+  '其他 endpoint 的同名映射不得阻止当前直连请求规范化模型名'
+)
+
+const mixedCaseMapping = filterGatewayAccountsByRequestedModel([
+  account('mixed-case-mapping', ['GPT-5.5-PRIVATE'], [{
+    sourceModel: 'GPT-5.5',
+    sourceEndpointFamily: 'chat_completions',
+    upstreamModel: 'GPT-5.5-PRIVATE',
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }])
+], 'gpt-5.5', 'chat_completions')
+assert.deepEqual(mixedCaseMapping.accounts.map((item) => item.id), ['mixed-case-mapping'], '模型映射源模型和上游模型大小写不同仍应命中')
 
 const prioritized = filterGatewayAccountsByRequestedModel([emptySupportedModels, mappedByUpstream, gpt55Only], 'gpt-5.5', 'chat_completions')
 assert.deepEqual(

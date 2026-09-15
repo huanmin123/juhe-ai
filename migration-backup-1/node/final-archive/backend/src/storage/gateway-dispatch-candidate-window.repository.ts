@@ -387,18 +387,18 @@ export function listGatewayDispatchModelCandidateRows(
               FROM account_supported_models direct_models
               WHERE direct_models.account_id = eligible_rows.model_resource_account_id
                 AND direct_models.provider_code = eligible_rows.model_resource_provider_code
-                AND direct_models.model = ?
+                AND lower(direct_models.model) = lower(?)
             ) THEN 0
             WHEN EXISTS (
               SELECT 1
               FROM account_model_mappings model_mappings
               WHERE model_mappings.account_id = eligible_rows.model_resource_account_id
                 AND model_mappings.provider_code = eligible_rows.model_resource_provider_code
-                AND model_mappings.source_model = ?
+                AND lower(model_mappings.source_model) = lower(?)
                 AND model_mappings.source_endpoint_family = ?
                 AND model_mappings.enabled = 1
                 AND (
-                  model_mappings.upstream_model <> model_mappings.source_model
+                  lower(model_mappings.upstream_model) <> lower(model_mappings.source_model)
                   OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
                 )
                 AND (
@@ -412,7 +412,7 @@ export function listGatewayDispatchModelCandidateRows(
                     FROM account_supported_models mapped_supported
                     WHERE mapped_supported.account_id = eligible_rows.model_resource_account_id
                       AND mapped_supported.provider_code = eligible_rows.model_resource_provider_code
-                      AND mapped_supported.model = model_mappings.upstream_model
+                      AND lower(mapped_supported.model) = lower(model_mappings.upstream_model)
                   )
                 )
             ) THEN 1
@@ -558,18 +558,18 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
             FROM ${tables.accountSupportedModels} AS direct_models
             WHERE direct_models.account_id = eligible_rows.model_resource_account_id
               AND direct_models.provider_code = eligible_rows.model_resource_provider_code
-              AND direct_models.model = ?
+              AND lower(direct_models.model) = lower(?)
           ) THEN 0
           WHEN EXISTS (
             SELECT 1
             FROM ${tables.accountModelMappings} AS model_mappings
             WHERE model_mappings.account_id = eligible_rows.model_resource_account_id
               AND model_mappings.provider_code = eligible_rows.model_resource_provider_code
-              AND model_mappings.source_model = ?
+              AND lower(model_mappings.source_model) = lower(?)
               AND model_mappings.source_endpoint_family = ?
               AND model_mappings.enabled = 1
               AND (
-                model_mappings.upstream_model <> model_mappings.source_model
+                lower(model_mappings.upstream_model) <> lower(model_mappings.source_model)
                 OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
               )
               AND (
@@ -583,7 +583,7 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
                   FROM ${tables.accountSupportedModels} AS mapped_supported
                   WHERE mapped_supported.account_id = eligible_rows.model_resource_account_id
                     AND mapped_supported.provider_code = eligible_rows.model_resource_provider_code
-                    AND mapped_supported.model = model_mappings.upstream_model
+                    AND lower(mapped_supported.model) = lower(model_mappings.upstream_model)
                 )
               )
           ) THEN 1
