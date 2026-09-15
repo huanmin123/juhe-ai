@@ -196,6 +196,11 @@ func (s *Service) ManualDiagnostics(ctx context.Context, view *View, limited boo
 		return observation, nil, err
 	}
 	// oauth / google_oauth：单凭据（SelectedAPIKey = access_token / refresh_token）。
+	// Node 等价：runAccountApiKeyPoolTestIfNeeded 对非 api_key 账户返回
+	// undefined（account-test-task-queue.service.ts type !== 'api_key'），
+	// 回落 testOpenAIAccountWithDiagnosticRetries 的单凭据分级臂，凭据由
+	// 网关按账户类型解析为 OAuth access token（didRefreshToken 比对的
+	// resolved.apiKey）。entry=nil 表示"使用 SelectedAPIKey"。
 	observation, err := staged.probeFixedKey(ctx, view, nil, limited)
 	return observation, nil, err
 }
@@ -210,12 +215,13 @@ func (s *Service) withScheduleForView(view *View) *Service {
 	return s
 }
 
-// probeFixedKey 对单个固定 Key 执行分级诊断（Node runAccountApiKeyPoolDiagnostic
+// probeFixedKey 对单个固定凭据执行分级诊断（Node runAccountApiKeyPoolDiagnostic
 // 的 stage 循环：仅“真实上游尝试后超时”晋级下一阶段）。
+// entry 为 nil 时使用 view.SelectedAPIKey（oauth / google_oauth 单凭据臂；
+// Node testOpenAIAccountWithDiagnosticRetries 的凭据由网关按账户类型解析，
+// 不要求 API Key），凭据缺失由 executeAttempt 的凭据守卫以失败观测收口
+// （Node：网关链路内的凭据异常转为失败结果，不抛出队列错误）。
 func (s *Service) probeFixedKey(ctx context.Context, view *View, entry *KeyEntry, limited bool) (*accountquality.ProbeObservation, error) {
-	if entry == nil {
-		return nil, errors.New("探针候选缺少可用 API Key")
-	}
 	var lastObservation *accountquality.ProbeObservation
 	for stage := 0; stage < len(s.retryTimeouts); stage++ {
 		if err := ctx.Err(); err != nil {
@@ -518,11 +524,18 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	}
 	// 传输层失败分类（Node upstreamRequestFailureKind / transport evidence）。
 	failure := transportFailureFromError(readErr, timeout)
+	message := failure.message(readErr)
+	if limited {
+		// Node 的传输层失败同样落入 testOpenAIAccount 的 catch 路径并经过
+		// accountTestResultWithDiagnosticsMode → limitedAccountTestMessage
+		// 脱敏；脱敏只改文案，server_diagnostic_* errorCode 与超时证据保留。
+		message = limitedFailureMessage(0, failure.errorCode(), message)
+	}
 	observation := &accountquality.ProbeObservation{
 		Result: accountquality.ProbeResult{
 			Success:      false,
 			ErrorCode:    failure.errorCode(),
-			Message:      failure.message(readErr),
+			Message:      message,
 			ProtocolCode: string(protocol),
 			DurationMs:   durationMS,
 			TraceID:      newTraceID(),
@@ -651,15 +664,15 @@ func transportFailureFromError(err error, timeout time.Duration) transportFailur
 
 func classifyAttemptError(view *View, err error, timeout time.Duration, limited bool, nowMS int64) *accountquality.ProbeObservation {
 	failure := transportFailureFromError(err, timeout)
-	message := "账户测试失败"
-	if !limited {
-		message = failure.message(err)
-	} else {
-		message = "上游请求失败"
-	}
 	errorCode := ""
 	if failure.timedOut {
 		errorCode = "server_diagnostic_timeout"
+	}
+	message := failure.message(err)
+	if limited {
+		// Node：catch 路径（含超时/取消 abort 文案）同样经 limitedAccountTestMessage
+		// 脱敏，仅保留 errorCode 与 accountFailureEligible 证据。
+		message = limitedFailureMessage(0, errorCode, message)
 	}
 	return &accountquality.ProbeObservation{
 		Result: accountquality.ProbeResult{
@@ -769,11 +782,7 @@ func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode
 	}
 	if limited && !success {
 		// limitedAccountTestMessage：额度规则命中显示“上游额度不足”。
-		if accountquality.SystemInsufficientQuotaRuleMatches(statusCode, errorCode, "", searchableText(message, bodyText)) {
-			message = "上游额度不足"
-		} else {
-			message = "上游请求失败"
-		}
+		message = limitedFailureMessage(statusCode, errorCode, searchableText(message, bodyText))
 	}
 	result := accountquality.ProbeResult{
 		Success:      success,
@@ -821,6 +830,16 @@ func hasImagesSuccessEvidence(context responseContext) bool {
 		}
 	}
 	return false
+}
+
+// limitedFailureMessage 等价 Node limitedAccountTestMessage（account-test.service.ts）：
+// limited 诊断下的失败消息统一脱敏，系统额度不足规则命中显示“上游额度不足”，
+// 其余失败（含传输层失败与 abort 文案）一律“上游请求失败”。
+func limitedFailureMessage(statusCode int, errorCode, searchable string) string {
+	if accountquality.SystemInsufficientQuotaRuleMatches(statusCode, errorCode, "", searchable) {
+		return "上游额度不足"
+	}
+	return "上游请求失败"
 }
 
 func searchableText(parts ...string) string {

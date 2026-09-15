@@ -65,7 +65,9 @@ func failingProbe(t *testing.T, source CandidateSource) *Service {
 }
 
 func TestW7CManualDiagnosticsDispatch(t *testing.T) {
+	var seenAuthorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuthorization = r.Header.Get("authorization")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
@@ -103,24 +105,36 @@ func TestW7CManualDiagnosticsDispatch(t *testing.T) {
 		t.Fatalf("single key observation: %+v", observation)
 	}
 
-	// oauth views carry no key entries; the current single-credential arm
-	// passes a nil entry into probeFixedKey, which rejects it outright.
+	// oauth views carry no key entries: the single-credential arm must probe
+	// via SelectedAPIKey（Node 等价：runAccountApiKeyPoolTestIfNeeded 对非
+	// api_key 账户返回 undefined，回落 testOpenAIAccountWithDiagnosticRetries，
+	// 凭据由网关链路按账户类型解析为 OAuth access token，不要求 API Key）。
+	// 非 codex profile 避免 buildUpstreamURL 重定向到 chatgpt.com。
 	oauthView := probeView(server.URL)
 	oauthView.Type = "oauth"
-	oauthView.ProviderProtocolProfileID = "profile_gpt_openai_v1"
+	oauthView.ProviderProtocolProfileID = ""
 	oauthView.APIKeyEntries = nil
 	oauthView.SelectedAPIKey = "oauth-token"
 	observation, attempts, err = service.ManualDiagnostics(ctx, oauthView, false)
-	if err == nil || !strings.Contains(err.Error(), "缺少可用 API Key") || observation != nil || attempts != nil {
-		t.Fatalf("oauth diagnostics (current behavior): %+v %v %v", observation, attempts, err)
+	if err != nil || observation == nil || !observation.Result.Success || attempts != nil {
+		t.Fatalf("oauth diagnostics: %+v %v", observation, err)
+	}
+	if seenAuthorization != "Bearer oauth-token" {
+		t.Fatalf("oauth credential must reach upstream: %q", seenAuthorization)
 	}
 
-	// A view with neither entries nor a selected credential fails closed.
+	// A view with neither entries nor a selected credential fails closed as a
+	// failed observation（Node：网关链路内的凭据缺失转为失败结果，不抛出
+	// 队列错误），full 模式保留凭据守卫的错误原文。
 	brokenView := probeView(server.URL)
 	brokenView.APIKeyEntries = nil
 	brokenView.SelectedAPIKey = ""
-	if _, _, err := service.ManualDiagnostics(ctx, brokenView, false); err == nil || !strings.Contains(err.Error(), "缺少可用") {
-		t.Fatalf("broken view: %v", err)
+	observation, attempts, err = service.ManualDiagnostics(ctx, brokenView, false)
+	if err != nil || observation == nil || observation.Result.Success || attempts != nil {
+		t.Fatalf("broken view: %+v %v", observation, err)
+	}
+	if !strings.Contains(observation.Result.Message, "缺少可用凭据") {
+		t.Fatalf("broken view message: %q", observation.Result.Message)
 	}
 }
 
@@ -214,12 +228,37 @@ func TestW7CTransportFailureClassification(t *testing.T) {
 	if !strings.Contains(observation.Result.Message, "账户测试失败") {
 		t.Fatalf("connection message: %+v", observation.Result)
 	}
-	// NOTE: transport failures are classified inside executeAttempt and do
-	// not apply the limited message mask (only classifyAttemptError does, for
-	// pre-request failures). Assert the observable shape without the mask.
+	// Node 等价：testOpenAIAccount 的 catch 路径统一经过
+	// accountTestResultWithDiagnosticsMode → limitedAccountTestMessage，传输层
+	// 失败在 limited 下同样脱敏为“上游请求失败”，传输证据保留。
 	limited := service.attemptWithTimeout(context.Background(), view, &view.APIKeyEntries[0], time.Second, true)
 	if limited == nil || limited.Result.Success || limited.Evidence.TransportFailureKind != "connection" {
 		t.Fatalf("limited transport: %+v", limited)
+	}
+	if limited.Result.Message != "上游请求失败" {
+		t.Fatalf("limited transport message: %q", limited.Result.Message)
+	}
+
+	// Transport timeout keeps the server_diagnostic_timeout errorCode and the
+	// escalation evidence under limited; only the abort wording is masked
+	// （Node：AccountTestAbortError 文案脱敏，errorCode/accountFailureEligible
+	// 保留，晋级判定依赖 signal 证据而非文案）。
+	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer hang.Close()
+	hangView := probeView(hang.URL)
+	hangView.APIKeyEntries = []KeyEntry{{Key: "sk-1", Fingerprint: "fp-1", Index: 0}}
+	fullTimeout := service.attemptWithTimeout(context.Background(), hangView, &hangView.APIKeyEntries[0], 30*time.Millisecond, false)
+	if fullTimeout == nil || !fullTimeout.Evidence.TimedOut || fullTimeout.Result.ErrorCode != "server_diagnostic_timeout" || fullTimeout.Result.Message != "账户测试超时" {
+		t.Fatalf("full timeout: %+v", fullTimeout)
+	}
+	limitedTimeout := service.attemptWithTimeout(context.Background(), hangView, &hangView.APIKeyEntries[0], 30*time.Millisecond, true)
+	if limitedTimeout == nil || !limitedTimeout.Evidence.TimedOut || limitedTimeout.Result.ErrorCode != "server_diagnostic_timeout" {
+		t.Fatalf("limited timeout evidence: %+v", limitedTimeout)
+	}
+	if limitedTimeout.Result.Message != "上游请求失败" {
+		t.Fatalf("limited timeout message: %q", limitedTimeout.Result.Message)
 	}
 
 	// Classification matrix for classifyAttemptError.
