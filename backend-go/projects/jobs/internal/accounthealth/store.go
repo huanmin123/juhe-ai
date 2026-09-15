@@ -808,13 +808,22 @@ func sameCooldownFence(left, right *CooldownFence) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
-	if !left.ObservationStartedAt.Equal(right.ObservationStartedAt) || left.Generation != right.Generation {
+	if !sameFenceInstant(left.ObservationStartedAt, right.ObservationStartedAt) || left.Generation != right.Generation {
 		return false
 	}
 	if left.SourceConfigRevision == nil || right.SourceConfigRevision == nil {
 		return left.SourceConfigRevision == nil && right.SourceConfigRevision == nil
 	}
 	return *left.SourceConfigRevision == *right.SourceConfigRevision
+}
+
+// sameFenceInstant follows the J1/Node timestamp contract: cooldown fences
+// are emitted at millisecond precision. PostgreSQL may scan a TIMESTAMPTZ
+// written by Go with microseconds, while an outcome from Node/JSON carries
+// only milliseconds. The sub-millisecond representation must not invalidate
+// an otherwise identical logical fence.
+func sameFenceInstant(left, right time.Time) bool {
+	return left.UTC().UnixMilli() == right.UTC().UnixMilli()
 }
 
 func nullableInt64(value *int64) any {
