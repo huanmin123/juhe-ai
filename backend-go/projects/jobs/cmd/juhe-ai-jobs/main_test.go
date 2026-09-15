@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
@@ -51,18 +52,44 @@ func TestListenLoopbackUsesValidatedAddress(t *testing.T) {
 	}
 }
 
-// TestRetiredAccountBalanceManualBridgeStaysGone 是去跨进程战役第四刀的回归：
-// Node 时代的手动触发桥（/account-balance/manual，唯一消费方是已删除的
-// Node 手动入口）在 jobs 健康监听上必须保持 404，且不再要求任何 Bearer
-// secret 配置。
-func TestRetiredAccountBalanceManualBridgeStaysGone(t *testing.T) {
+func TestAccountBalanceManualBridgeRequiresService(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true })
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true }, nil, "")
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, "/account-balance/manual", nil))
 	if record.Code != http.StatusNotFound {
-		t.Fatalf("retired J2 manual bridge status=%d body=%s", record.Code, record.Body.String())
+		t.Fatalf("unwired J2 manual bridge status=%d body=%s", record.Code, record.Body.String())
+	}
+}
+
+func TestAccountBalanceManualBridgeRequiresAuthorization(t *testing.T) {
+	var running atomic.Bool
+	running.Store(true)
+	handler := jobsHTTPHandler(
+		ownermode.Active, &running, func() bool { return true }, false, func() bool { return true },
+		true, func() bool { return true }, &accountbalance.Service{}, "0123456789abcdef0123456789abcdef",
+	)
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, "/account-balance/manual", nil))
+	if record.Code != http.StatusUnauthorized {
+		t.Fatalf("manual bridge without authorization status=%d body=%s", record.Code, record.Body.String())
+	}
+}
+
+func TestMatchesAccountBalanceManualSecret(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	request := httptest.NewRequest(http.MethodPost, "/account-balance/manual", nil)
+	if matchesAccountBalanceManualSecret(request, secret) {
+		t.Fatal("manual bridge accepted missing bearer secret")
+	}
+	request.Header.Set("Authorization", "Bearer wrong")
+	if matchesAccountBalanceManualSecret(request, secret) {
+		t.Fatal("manual bridge accepted wrong bearer secret")
+	}
+	request.Header.Set("Authorization", "Bearer "+secret)
+	if !matchesAccountBalanceManualSecret(request, secret) {
+		t.Fatal("manual bridge rejected configured bearer secret")
 	}
 }
 
@@ -149,7 +176,7 @@ func TestHealthUsesAtomicProxyLatencySnapshot(t *testing.T) {
 func TestJobsHTTPHandlerDoesNotExposeRetiredProxyLatencyBridge(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true })
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "")
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", nil))
 	if record.Code != http.StatusNotFound {
@@ -159,7 +186,7 @@ func TestJobsHTTPHandlerDoesNotExposeRetiredProxyLatencyBridge(t *testing.T) {
 
 func TestJobsHTTPHandlerExposesGoRuntimeMetrics(t *testing.T) {
 	var running atomic.Bool
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true })
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "")
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/__aisys__/metrics", nil))
 	if record.Code != http.StatusOK || !strings.Contains(record.Body.String(), `runtimeKind="go"`) {
@@ -173,7 +200,7 @@ func TestJobsHTTPHandlerExposesGoRuntimeMetrics(t *testing.T) {
 // into the gateway statreads store query.
 func TestJobsHTTPHandlerDoesNotExposeGoRuntimeTrend(t *testing.T) {
 	var running atomic.Bool
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true })
+	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "")
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/__aisys__/api/stats/go-runtime-trend?from=2026-09-01T00:00:00Z&to=2026-09-02T00:00:00Z", nil))
 	if record.Code != http.StatusNotFound {
@@ -192,6 +219,7 @@ func TestJobsHTTPHandlerForwardsWorkerFieldsToHealth(t *testing.T) {
 	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true },
 		false, func() bool { return true },
 		false, func() bool { return true },
+		nil, "",
 		false, func() bool { return true },
 		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
 		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },

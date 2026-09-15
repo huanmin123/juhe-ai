@@ -67,18 +67,15 @@ func TestRuntimeConfigRejectsOwnerLeaseShorterThanCycleBudget(t *testing.T) {
 	}
 }
 
-// TestRuntimeConfigAcceptsMissingManualBridgeSecret 是去跨进程战役第四刀的
-// 回归：JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET 与 /account-balance/manual
-// 手动桥一起删除，secret 不再是必填配置，合法 env 不因缺 secret 被拒绝。
-func TestRuntimeConfigAcceptsMissingManualBridgeSecret(t *testing.T) {
+func TestRuntimeConfigRejectsMissingManualBridgeSecret(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret",
 	}
-	if _, err := LoadRuntimeConfig(func(name string) string { return values[name] }); err != nil {
-		t.Fatalf("J2 must accept a config without the removed manual bridge secret: %v", err)
+	if _, err := LoadRuntimeConfig(func(name string) string { return values[name] }); err == nil {
+		t.Fatal("J2 must require the authenticated manual bridge secret")
 	}
 }
 
@@ -91,6 +88,7 @@ func TestRuntimeConfigUsesHighPerformanceConcurrencyAndPoolDefaults(t *testing.T
 		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL":       "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input",
 		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":  "secret",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":   "0123456789abcdef0123456789abcdef",
 	}
 	cfg, err := LoadRuntimeConfig(func(name string) string { return values[name] })
 	if err != nil {
@@ -110,6 +108,7 @@ func TestRuntimeConfigAcceptsExternalPoolAndConcurrency(t *testing.T) {
 		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL":                  "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL":            "postgres://input",
 		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":             "secret",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":              "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY":               "64",
 		"JUHE_AI_ACCOUNT_BALANCE_IO_CONCURRENCY":                "128",
 		"JUHE_AI_ACCOUNT_BALANCE_DB_CONCURRENCY":                "12",
@@ -132,7 +131,7 @@ func TestRuntimeConfigAcceptsLargeGoConcurrencyAndBatch(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go", "JUHE_AI_ACCOUNT_BALANCE_STORE": "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret",
+		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET": "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY": "5096", "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE": "5096", "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE": "5095",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE": "20m", "JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET": "15m", "JUHE_AI_ACCOUNT_BALANCE_PROBE_TIMEOUT": "15s",
 	}
