@@ -213,13 +213,13 @@ func TestW1ComposeReadsDepsMountArms(t *testing.T) {
 // TestW1BalanceRefreshPureHelpers 收割余额刷新系的纯辅助函数：
 // snapshotToMap round-trip、textFromCredentials 各类型分支。
 func TestW1BalanceRefreshPureHelpers(t *testing.T) {
-	_, err2 := snapshotToMap(accountbalance.Snapshot{})
-	if err2 != nil {
-		t.Fatalf("空快照 = %v", err2)
+	empty := snapshotToMap(accountbalance.Snapshot{})
+	if empty == nil {
+		t.Fatal("空快照必须返回非 nil map")
 	}
-	mapped2, err := snapshotToMap(accountbalance.Snapshot{Status: accountbalance.StatusFresh, RemainingUSD: "12.50"})
-	if err != nil || mapped2["status"] != string(accountbalance.StatusFresh) || mapped2["remainingUsd"] != "12.50" {
-		t.Fatalf("round-trip = %v %v", mapped2, err)
+	mapped2 := snapshotToMap(accountbalance.Snapshot{Status: accountbalance.StatusFresh, RemainingUSD: "12.50"})
+	if mapped2["status"] != string(accountbalance.StatusFresh) || mapped2["remainingUsd"] != "12.50" {
+		t.Fatalf("round-trip = %v", mapped2)
 	}
 	if textFromCredentials(nil) != "" {
 		t.Fatal("nil 必须空串")

@@ -3,6 +3,7 @@ package modelcheckowner
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -10,6 +11,11 @@ import (
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 )
+
+// errSQLiteIndexExpression 标记 PRAGMA index_info 返回 NULL 列名的表达式
+// 索引（如真实维护 DDL 的 lower(username) 大小写不敏感唯一索引）。它是
+// "该索引不是普通列约束候选"的分类信号，不是 schema 故障。
+var errSQLiteIndexExpression = errors.New("index contains an expression")
 
 type postgresSchemaConstraint struct {
 	kind    string
@@ -471,6 +477,12 @@ func sqliteSchemaHasUniqueConstraint(ctx context.Context, db *sql.DB, table stri
 	for _, index := range indexes {
 		columns, err := sqliteSchemaIndexColumns(ctx, db, index.name)
 		if err != nil {
+			// 表达式唯一索引（维护 DDL 的大小写不敏感唯一约束等）不是
+			// 普通列唯一约束的候选：跳过并继续找普通列索引，而不是把
+			// 合法存在的表达式索引误判为 schema 故障。
+			if errors.Is(err, errSQLiteIndexExpression) {
+				continue
+			}
 			return false, nil, err
 		}
 		observed = append(observed, columns)
@@ -502,7 +514,7 @@ func sqliteSchemaIndexColumns(ctx context.Context, db *sql.DB, requestedName str
 			return nil, fmt.Errorf("scan Business SQLite index %s: %w", requestedName, err)
 		}
 		if !columnName.Valid {
-			return nil, fmt.Errorf("Business SQLite index %s contains an expression", requestedName)
+			return nil, fmt.Errorf("Business SQLite index %s: %w", requestedName, errSQLiteIndexExpression)
 		}
 		columns = append(columns, column{seq: seq, name: columnName.String})
 	}

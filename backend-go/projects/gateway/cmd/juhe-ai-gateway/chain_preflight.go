@@ -100,48 +100,12 @@ func (p *chainImagePreflight) Apply(ctx context.Context, input gatewaypreauth.Im
 		return gatewaypreauth.ImagePermissionPreflightResult{Completed: false, RequestLane: string(requestLane)}, nil
 	}
 
-	if downgrade.Reason == gatewaybody.DowngradeReasonInvalidJSON {
-		p.preauth.SendInvalidJSONGatewayResponse(ctx, gatewaypreauth.InvalidJSONResponseInput{
-			Req:             input.Req,
-			Res:             input.Res,
-			AuditCapture:    input.AuditCapture,
-			UsageContext:    input.UsageContext,
-			StartedAt:       input.StartedAt,
-			SystemAccountID: input.SystemAccountID,
-			APIKeyID:        input.APIKeyID,
-			GroupID:         input.GroupID,
-			ClientIP:        input.ClientIP,
-			Endpoint:        input.Endpoint,
-		})
-		return gatewaypreauth.ImagePermissionPreflightResult{Completed: true}, nil
-	}
-
-	if downgrade.Reason == gatewaybody.DowngradeReasonJSONWorkerOverloaded {
-		responsePayload := gatewaypreauth.GatewayErrorPayloadOf("网关请求解析繁忙，请稍后重试", "server_overloaded", "server_overloaded")
-		input.AuditCapture.AddGatewayMetadata("system_account_image_generation_permission", map[string]any{
-			"allowed":    false,
-			"downgraded": false,
-			"reason":     string(downgrade.Reason),
-		})
-		// Node's json_worker_overloaded arm sets no Connection header (the
-		// 503 body rides the normal failure response contract).
-		p.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
-			Req:             input.Req,
-			Res:             input.Res,
-			AuditCapture:    input.AuditCapture,
-			UsageContext:    input.UsageContext,
-			StartedAt:       input.StartedAt,
-			StatusCode:      503,
-			ResponsePayload: responsePayload,
-			Audit: gatewaypreauth.FailureAudit{
-				Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
-				ErrorPhase:   "request_validation",
-				ErrorCode:    "server_overloaded",
-				ErrorMessage: responsePayload.Error.Message,
-			},
-		})
-		return gatewaypreauth.ImagePermissionPreflightResult{Completed: true}, nil
-	}
+	// Node 的 invalid_json / json_worker_overloaded 两个降级臂在 Go 侧
+	// 不可达：唯一产生器 DowngradeAutoImageGenerationToolsInBody 只产出
+	// not_json_object / forced / no_auto_tool / auto_removed 四种 reason；
+	// 非法 JSON 请求在 preflight 更早阶段（gatewaypreauth/preflight.go 的
+	// BodyState 早退）已被 400 invalid_json 拒绝，json worker 概念未移植。
+	// 两个 reason 常量保留在 gatewaybody 联合类型中作 Node 协议对齐。
 
 	input.AuditCapture.AddGatewayMetadata("system_account_image_generation_permission", map[string]any{
 		"allowed":    false,

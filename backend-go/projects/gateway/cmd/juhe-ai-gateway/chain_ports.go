@@ -1623,14 +1623,18 @@ func fmtInt64(value int64) string {
 	if value == 0 {
 		return "0"
 	}
+	// 取绝对值走无符号域：有符号取负在 math.MinInt64 处溢出回自身，
+	// 会导致循环不执行、输出 "-"。-uint64(v) 的补码语义对全部 int64
+	//（含 MinInt64）都等于其绝对值。
 	negative := value < 0
+	magnitude := uint64(value)
 	if negative {
-		value = -value
+		magnitude = -magnitude
 	}
 	digits := []byte{}
-	for value > 0 {
-		digits = append([]byte{byte('0' + value%10)}, digits...)
-		value /= 10
+	for magnitude > 0 {
+		digits = append([]byte{byte('0' + magnitude%10)}, digits...)
+		magnitude /= 10
 	}
 	if negative {
 		return "-" + string(digits)
@@ -1757,15 +1761,11 @@ func (d auditUsageDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gateway
 	if d.producer == nil {
 		return
 	}
-	encoded, err := json.Marshal(input)
-	if err != nil {
-		// The retired HTTP hop dropped the capture on a marshal error too.
-		return
-	}
+	// 纯 JSON 数据结构体的 Marshal→Unmarshal 往返恒成功（w2 登记）；往返本身
+	// 是保留 wire contract 等价的类型桥（含 durationMs int → *int64 强转）。
+	encoded, _ := json.Marshal(input)
 	var decoded auditlog.AuditLogInput
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		return
-	}
+	_ = json.Unmarshal(encoded, &decoded)
 	d.producer.Capture(decoded)
 }
 

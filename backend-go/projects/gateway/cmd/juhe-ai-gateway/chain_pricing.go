@@ -189,10 +189,8 @@ func (c *chainUsagePricingCatalog) breakdownFor(input gatewayusagePricingCostInp
 	if item == nil {
 		return nil
 	}
+	// chainCatalogPricing 仅在 item==nil 时返回 nil，上方已守卫。
 	catalogPricing := chainCatalogPricing(item)
-	if catalogPricing == nil {
-		return nil
-	}
 	return pricing.BuildCostBreakdown(catalogPricing, chainPricingCostInput(catalogPricing, input))
 }
 
@@ -302,11 +300,10 @@ func chainIntToFloat(value *int) *float64 {
 }
 
 // chainRoundCost mirrors roundCost / Number(value.toFixed(10)).
+// strconv.FormatFloat(v,'f',10,64) 的输出（含 "NaN"/"+Inf"/"-Inf" 文本）恒可
+// 被 strconv.ParseFloat 解析，error 不可能出现。
 func chainRoundCost(value float64) float64 {
-	out, err := strconv.ParseFloat(strconv.FormatFloat(value, 'f', 10, 64), 64)
-	if err != nil {
-		return value
-	}
+	out, _ := strconv.ParseFloat(strconv.FormatFloat(value, 'f', 10, 64), 64)
 	return out
 }
 

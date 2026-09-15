@@ -154,10 +154,10 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		}
 		rawBody, parserErr := c.bodyPipeline.ReadRawBody(w, r)
 		if parserErr != nil {
-			if c.bodyPipeline.HandleParserRejection(w, r, parserErr) {
-				return
-			}
-			c.handleOrchestratorError(fmt.Errorf("网关请求体读取失败"), req, res, startedAt, endpoint)
+			// HandleParserRejection 对非 nil parserErr 恒写完响应并返回 true
+			// （gatewaybody.Middleware 唯一 false 出口是 perr == nil），
+			// 因此这里不需要回落到 orchestrator 错误路径。
+			_ = c.bodyPipeline.HandleParserRejection(w, r, parserErr)
 			return
 		}
 		bodyReq, captureErr := c.bodyPipeline.Capture(w, r, rawBody)
@@ -484,7 +484,7 @@ const (
 )
 
 // stopWaitHeartbeat 终止 D-120 等待心跳：请求 handler 返回即下游终态
-//（Node 由 res 的 close/error 监听承载），防止心跳 goroutine 泄漏或在
+// （Node 由 res 的 close/error 监听承载），防止心跳 goroutine 泄漏或在
 // 响应结束后继续写出。
 func (l *v1DispatchLoop) stopWaitHeartbeat() {
 	if l != nil && l.waitHeartbeat != nil {
@@ -799,8 +799,8 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 				l.speedFirstRetryCandidateAccountIds = nil
 				remainingSpeedFirstAccounts := streamRetryDispatchAccounts(l.current.Accounts, l.streamRetryExcludedAccounts)
 				l.auditCapture.AddGatewayMetadata("normal_route_speed_first_reserved_target_exhausted", map[string]any{
-					"failedAccountIds":      attempt.FailedAccountIDs,
-					"recoverableAccountIds": attempt.RecoverableAccountIDs,
+					"failedAccountIds":             attempt.FailedAccountIDs,
+					"recoverableAccountIds":        attempt.RecoverableAccountIDs,
 					"remainingCandidateAccountIds": chainAccountIDsOf(remainingSpeedFirstAccounts),
 				})
 				if len(remainingSpeedFirstAccounts) > 0 {
@@ -1178,14 +1178,14 @@ func (l *v1DispatchLoop) settleSpeedFirstCutoverError(ctx context.Context, cutov
 	l.speedFirstByteRetryCount++
 	retryAllowed := targetAccountID != ""
 	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_retry_dispatch", map[string]any{
-		"accountId":             cutover.AccountID,
+		"accountId":               cutover.AccountID,
 		"responseHeadersReceived": false,
-		"limitingFactor":        cutover.Deadline.LimitingFactor,
-		"retryCount":            l.speedFirstByteRetryCount,
-		"maxRetries":            chainSpeedFirstMaxRetriesOf(current),
-		"retryAllowed":          retryAllowed,
-		"retryBlockedReason":    map[bool]string{true: "", false: "cutover_not_confirmed"}[retryAllowed],
-		"targetAccountId":       targetAccountID,
+		"limitingFactor":          cutover.Deadline.LimitingFactor,
+		"retryCount":              l.speedFirstByteRetryCount,
+		"maxRetries":              chainSpeedFirstMaxRetriesOf(current),
+		"retryAllowed":            retryAllowed,
+		"retryBlockedReason":      map[bool]string{true: "", false: "cutover_not_confirmed"}[retryAllowed],
+		"targetAccountId":         targetAccountID,
 	})
 	if reservation != nil && targetAccountID != "" {
 		// routes.ts:1328-1332: carry the reservation into the next dispatch
@@ -1281,17 +1281,17 @@ func (l *v1DispatchLoop) exhaustDispatchFailedAccountID(accountID string) {
 }
 
 // renderDispatchExhaustedWithMessage 渲染速度优先耗尽的固定 503 契约
-//（Node UpstreamAttemptError transportFailureKind=timeout 的顶层 catch）。
+// （Node UpstreamAttemptError transportFailureKind=timeout 的顶层 catch）。
 func (l *v1DispatchLoop) renderDispatchExhaustedWithMessage(ctx context.Context, message, accountID, accountName string) {
 	l.c.observability.Logger().Warn("gateway_dispatch_exhausted", map[string]any{
-		"event":                "gateway_dispatch_exhausted",
-		"failureReason":        "first_byte_timeout",
-		"lastAttemptAccountId": accountID,
+		"event":                  "gateway_dispatch_exhausted",
+		"failureReason":          "first_byte_timeout",
+		"lastAttemptAccountId":   accountID,
 		"lastAttemptAccountName": accountName,
-		"endpoint":             l.current.UsageContext.Endpoint,
-		"apiKeyId":             l.current.UsageContext.APIKeyID,
-		"groupId":              l.current.UsageContext.GroupID,
-		"trafficSource":        l.current.UsageContext.TrafficSource,
+		"endpoint":               l.current.UsageContext.Endpoint,
+		"apiKeyId":               l.current.UsageContext.APIKeyID,
+		"groupId":                l.current.UsageContext.GroupID,
+		"trafficSource":          l.current.UsageContext.TrafficSource,
 	}, "网关上游调度已耗尽")
 	l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, l.current, "gateway_failure_response")
 	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
@@ -1319,7 +1319,7 @@ func (l *v1DispatchLoop) renderDispatchExhaustedWithMessage(ctx context.Context,
 // ---------------------------------------------------------------------------
 
 // chainFirstByteConfigOf 把 preauth 的首字截止配置投影为 routing 侧类型
-//（两包同形状；DispatchContext 载 preauth 投影，coordination 消费 routing）。
+// （两包同形状；DispatchContext 载 preauth 投影，coordination 消费 routing）。
 func chainFirstByteConfigOf(config *gatewaypreauth.NormalRouteFirstByteRuntimeConfig) *gatewayrouting.NormalRouteFirstByteRuntimeConfig {
 	if config == nil {
 		return nil
@@ -1331,7 +1331,7 @@ func chainFirstByteConfigOf(config *gatewaypreauth.NormalRouteFirstByteRuntimeCo
 }
 
 // speedFirstDecisionsOf 从时延降级端口上取速度优先决策面；组合根未装配
-//（组合测试的 degradedLatency）时返回 nil——决策闭包保持 Node
+// （组合测试的 degradedLatency）时返回 nil——决策闭包保持 Node
 // runtime 缺席的 continue 语义。
 func (l *v1DispatchLoop) speedFirstDecisionsOf() chainSpeedFirstDecisions {
 	if decisions, ok := l.c.engine.Latency.(chainSpeedFirstDecisions); ok {
@@ -1341,7 +1341,7 @@ func (l *v1DispatchLoop) speedFirstDecisionsOf() chainSpeedFirstDecisions {
 }
 
 // speedFirstLatencyScopeOf 镜像 normalRouteLatencyDegradationScope
-//（routes.ts:1106-1110）：systemAccountId + apiKey 的 routeStrategyId + groupId。
+// （routes.ts:1106-1110）：systemAccountId + apiKey 的 routeStrategyId + groupId。
 func (l *v1DispatchLoop) speedFirstLatencyScopeOf(current *gatewaypreauth.DispatchContext) *gatewaydispatch.LatencyScopeInput {
 	routeStrategyID := ""
 	if current.APIKeyRecord != nil {
@@ -1517,19 +1517,19 @@ func (l *v1DispatchLoop) speedFirstDeadlineDecision(
 		thresholdMs = *config.FirstByteDeadlineMs
 	}
 	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_slow_observed", map[string]any{
-		"accountId":          account.ID,
-		"accountName":        account.Name,
-		"thresholdMs":        thresholdMs,
-		"observedAt":         "first_byte_deadline",
-		"alreadyDegraded":    alreadyDegraded,
-		"slowCount":          slowCount,
-		"degraded":           degraded,
-		"degradedUntil":      degradedUntil,
-		"nextProbeAt":        nextProbeAt,
-		"cutoverAllowed":     cutoverAllowed,
-		"retryBlockedReason": retryBlockedReason,
-		"retryCount":         l.speedFirstByteRetryCount,
-		"maxRetries":         maxRetries,
+		"accountId":                    account.ID,
+		"accountName":                  account.Name,
+		"thresholdMs":                  thresholdMs,
+		"observedAt":                   "first_byte_deadline",
+		"alreadyDegraded":              alreadyDegraded,
+		"slowCount":                    slowCount,
+		"degraded":                     degraded,
+		"degradedUntil":                degradedUntil,
+		"nextProbeAt":                  nextProbeAt,
+		"cutoverAllowed":               cutoverAllowed,
+		"retryBlockedReason":           retryBlockedReason,
+		"retryCount":                   l.speedFirstByteRetryCount,
+		"maxRetries":                   maxRetries,
 		"remainingCandidateCount":      remainingCandidateCount,
 		"remainingCandidateAccountIds": remainingIDs,
 	})
@@ -1629,7 +1629,7 @@ func chainCutoverTargetsOf(accounts []gatewaydispatch.AccountCandidate) []gatewa
 }
 
 // speedFirstSlotAcquirer 把引擎的账户并发存储桥成切号预留的槽获取器
-//（Node tryAcquireAccountConcurrencyAsync 共享实现）。
+// （Node tryAcquireAccountConcurrencyAsync 共享实现）。
 func (l *v1DispatchLoop) speedFirstSlotAcquirer(current *gatewaypreauth.DispatchContext) gatewayhotquality.SpeedFirstCutoverSlotAcquirer {
 	return func(ctx context.Context, accountID string, concurrencyLimit int, request gatewayhotquality.AccountConcurrencyAcquireRequest) (gatewayhotquality.AccountConcurrencySlot, bool, error) {
 		if l.c.engine.Concurrency == nil {
@@ -1668,7 +1668,7 @@ func speedFirstReservationViewOf(reservation *gatewayhotquality.SpeedFirstCutove
 }
 
 // speedFirstReservationHandleOf 把预留包装成引擎的预占并发句柄
-//（Node preAcquiredConcurrency）。
+// （Node preAcquiredConcurrency）。
 func speedFirstReservationHandleOf(reservation *gatewayhotquality.SpeedFirstCutoverReservation) *gatewaydispatch.SpeedFirstCutoverReservationHandle {
 	if reservation == nil {
 		return nil

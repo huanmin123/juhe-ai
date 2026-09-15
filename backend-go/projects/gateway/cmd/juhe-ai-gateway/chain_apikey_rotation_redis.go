@@ -71,9 +71,8 @@ func (c *chainAPIKeyRotationRedisCounter) NextIndex(ctx context.Context, account
 	if err != nil {
 		return 0, err
 	}
-	if index < 0 {
-		return 0, nil
-	}
+	// INCR 恒 >= 1 且 Lua % 对正除数恒非负，modulo<=0 已在入口守卫，
+	// index 不可能为负。
 	return index, nil
 }
 

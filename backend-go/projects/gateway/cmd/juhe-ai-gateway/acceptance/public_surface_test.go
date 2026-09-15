@@ -105,7 +105,7 @@ func TestAcceptancePublicSurface(t *testing.T) {
 	tokenResponse := postForm(t, client, "/oauth/token", url.Values{
 		"grant_type": {"authorization_code"}, "code": {code},
 		"redirect_uri": {"http://127.0.0.1:9/callback"}, "code_verifier": {verifier},
-		"client_id":    {clientID},
+		"client_id": {clientID},
 	})
 	if tokenResponse.statusCode != http.StatusOK {
 		t.Fatalf("token status=%d body=%s", tokenResponse.statusCode, tokenResponse.body)

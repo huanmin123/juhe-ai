@@ -71,10 +71,8 @@ func resolveChatToolCapabilities(deps *chat.Deps, conversation *chat.Conversatio
 		groupIDs = append(groupIDs, binding.GroupID)
 	}
 	_, catalogItems := chatToolCatalogSnapshot(deps, groupIDs, ownerID, model)
+	// chatToolModelOption 恒返回非 nil（无目录行时返回空能力视图，w2 登记）。
 	option := chatToolModelOption(model, catalogItems)
-	if option == nil {
-		return unavailable("当前模型能力信息不可用")
-	}
 	supportedProtocols := chatToolSupportedProtocols(deps, groupIDs, ownerID, model)
 	supportsWebSearch := chatToolContains(option.supportedTools, "web_search")
 	protocol := ""

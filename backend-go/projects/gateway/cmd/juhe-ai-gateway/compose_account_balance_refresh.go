@@ -301,10 +301,7 @@ func (r *gatewayManualBalanceRefresher) RefreshManual(ctx context.Context, candi
 	if !found {
 		return accounts.BalanceManualRefreshOutcome{}, errors.New("余额手动刷新 outcome 未生成结果")
 	}
-	snapshot, err := snapshotToMap(outcome.Snapshot)
-	if err != nil {
-		return accounts.BalanceManualRefreshOutcome{}, err
-	}
+	snapshot := snapshotToMap(outcome.Snapshot)
 	return accounts.BalanceManualRefreshOutcome{Persisted: true, Outcome: "committed", Snapshot: snapshot}, nil
 }
 
@@ -361,7 +358,7 @@ func (r *gatewayManualBalanceRefresher) TestDraft(ctx context.Context, input acc
 	if err != nil {
 		return nil, err
 	}
-	return snapshotToMap(accountbalance.ApplyManualQueryResult(result, r.now().UTC()))
+	return snapshotToMap(accountbalance.ApplyManualQueryResult(result, r.now().UTC())), nil
 }
 
 // RefreshDraftModelCatalog 拉取上游模型目录并与本地 provider_model_catalog
@@ -548,16 +545,14 @@ func recommendedAccountHealthCheckModel(configuredHealthCheckModel string, upstr
 	return ""
 }
 
-func snapshotToMap(snapshot accountbalance.Snapshot) (map[string]any, error) {
-	encoded, err := json.Marshal(snapshot)
-	if err != nil {
-		return nil, fmt.Errorf("编码余额快照失败: %w", err)
-	}
+// snapshotToMap 把余额快照投成 JSON map。accountbalance.Snapshot 全字段为
+// string 底层类型 / int（types.go:46-58），json.Marshal 及其产物 Unmarshal 进
+// map[string]any 恒成功，无 error 路径。
+func snapshotToMap(snapshot accountbalance.Snapshot) map[string]any {
+	encoded, _ := json.Marshal(snapshot)
 	var payload map[string]any
-	if err := json.Unmarshal(encoded, &payload); err != nil {
-		return nil, fmt.Errorf("解码余额快照失败: %w", err)
-	}
-	return payload, nil
+	_ = json.Unmarshal(encoded, &payload)
+	return payload
 }
 
 func textFromCredentials(value any) string {

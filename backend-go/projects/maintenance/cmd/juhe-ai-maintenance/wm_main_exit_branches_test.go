@@ -170,7 +170,9 @@ func TestWMMainExitBranches(t *testing.T) {
 	// 与 backfill 证据门在完整清单下放行的出口）。
 	t.Run("complete evidence accepted", func(t *testing.T) {
 		cmd := exec.Command(self, "-test.run=TestWMMainExitBranches", "-test.v=false")
-		cmd.Env = append(os.Environ(),
+		// 与上方表格 case 一致必须携带 childSentinel：缺它子进程走父分支
+		// 再次孵化自身，形成无限递归，CombinedOutput 永不返回。
+		cmd.Env = append(os.Environ(), childSentinel,
 			childEnv+"=-verify-j3b-cutover-evidence\x1f"+completeEvidence,
 			"JUHE_AI_MAINTENANCE_J3B_BACKFILL_EVIDENCE=")
 		if coverDir != "" {

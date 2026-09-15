@@ -55,9 +55,9 @@ func startChainFixture(t *testing.T) *chainFixture {
 		if strings.Contains(body, `"stream":true`) {
 			w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-acc-1","object":"chat.completion.chunk","model":"` + acceptanceModel + `","choices":[{"index":0,"delta":{"role":"assistant","content":"验收"},"finish_reason":null}]}`) + "\n\n"))
-			_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-acc-1","object":"chat.completion.chunk","model":"` + acceptanceModel + `","choices":[{"index":0,"delta":{"content":"直通"},"finish_reason":null}]}`) + "\n\n"))
-			_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-acc-1","object":"chat.completion.chunk","model":"` + acceptanceModel + `","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`) + "\n\n"))
+			_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-acc-1","object":"chat.completion.chunk","model":"`+acceptanceModel+`","choices":[{"index":0,"delta":{"role":"assistant","content":"验收"},"finish_reason":null}]}`) + "\n\n"))
+			_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-acc-1","object":"chat.completion.chunk","model":"`+acceptanceModel+`","choices":[{"index":0,"delta":{"content":"直通"},"finish_reason":null}]}`) + "\n\n"))
+			_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-acc-1","object":"chat.completion.chunk","model":"`+acceptanceModel+`","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`) + "\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 			return
 		}

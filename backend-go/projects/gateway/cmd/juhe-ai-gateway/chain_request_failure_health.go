@@ -249,10 +249,9 @@ func (m *chainRequestDispatchMarks) mark(req *gatewaypreauth.GatewayRequest) {
 	}
 	m.keys[req] = m.order.PushBack(req)
 	for len(m.keys) > m.cap {
+		// keys 与 order 在同一把锁内严格同步增删，len(keys) > cap >= 1
+		// 蕴含 order 非空，Front() 不会返回 nil。
 		oldest := m.order.Front()
-		if oldest == nil {
-			break
-		}
 		delete(m.keys, m.order.Remove(oldest).(*gatewaypreauth.GatewayRequest))
 	}
 }

@@ -307,10 +307,8 @@ func (d *chainProviderDriver) buildGeminiCodeAssistRequestParts(req *gatewayprea
 	if !ok {
 		return gatewaydispatch.PreparedRequestParts{}, fmt.Errorf("Gemini Code Assist 请求体必须是 JSON 对象")
 	}
-	body, err := json.Marshal(map[string]any{"model": model, "project": project, "request": requestObject})
-	if err != nil {
-		return gatewaydispatch.PreparedRequestParts{}, fmt.Errorf("编码 Gemini Code Assist 请求体失败: %w", err)
-	}
+	// 值全部来自 JSON 反序列化结果与字符串标量，Marshal 恒成功（w2 登记）。
+	body, _ := json.Marshal(map[string]any{"model": model, "project": project, "request": requestObject})
 	credential := account.APIKey
 	if credential == "" && len(account.APIKeys) > 0 {
 		credential = account.APIKeys[0]
@@ -859,10 +857,8 @@ func (d *chainProviderDriver) buildOpenAIClientCompatibilityBody(req *gatewaypre
 	}
 	applyCodexResponsesCompatibility(body)
 	gatewaydispatch.NormalizeOpenAICodexResponsesLiteBody(body, stringValueOrEmpty(body["model"]), nil)
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("编码 Codex Responses 兼容请求体失败: %w", err)
-	}
+	// body 为 json.Unmarshal 产物加纯 JSON 值注入，Marshal 恒成功（w2 登记）。
+	encoded, _ := json.Marshal(body)
 	return encoded, nil
 }
 

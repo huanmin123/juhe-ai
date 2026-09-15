@@ -283,18 +283,23 @@ func TestW1EnsureChatAPIKeyLifecycle(t *testing.T) {
 		t.Fatalf("无默认分组错误 = %v", err)
 	}
 	f.seedDefaultGPTGroup(t)
-	// 行为存疑：defaultGptRouteStrategyForSystemAccount 的 SQL 把
-	// route_strategies 表别名为 route_strategy_groups（INNER JOIN %[1]s
-	// route_strategy_groups），route_strategy_groups.route_strategy_id 引用
-	// 不存在的列，首次创建路径在 SQLite/PostgreSQL 下都必然失败。当前实际
-	// 行为按此断言；见报告「疑似生产问题」。
-	if _, err := f.provider.EnsureChatAPIKey(f.ownerID); err == nil || !strings.Contains(err.Error(), "no such column") {
-		t.Fatalf("首次 ensure 按当前实现必须失败（SQL 别名缺陷）: %v", err)
+	// merge 后实现先 ensureDefaultRouteStrategies（默认分组存在即自动创建
+	// GPT 默认普通路由并绑定分组），首次 ensure 直接成功创建 chat key；
+	// theirs 分支报告的「SQL 别名缺陷」路径在当前实现中不存在。
+	created, err := f.provider.EnsureChatAPIKey(f.ownerID)
+	if err != nil || created == "" {
+		t.Fatalf("首次 ensure 创建 chat key = %q, %v", created, err)
 	}
-	if _, err := f.provider.defaultGptRouteStrategyForSystemAccount(f.ownerID); err == nil || !strings.Contains(err.Error(), "no such column") {
-		t.Fatalf("gpt strategy 按当前实现必须失败（SQL 别名缺陷）: %v", err)
+	strategy, err := f.provider.defaultGptRouteStrategyForSystemAccount(f.ownerID)
+	if err != nil || strategy == nil || strategy.id == "" {
+		t.Fatalf("gpt strategy = %+v, %v", strategy, err)
 	}
-	// 预插入一条 chat key：ensure 命中 existing 分支直接返回（幂等路径）。
+	// 再次 ensure 命中 existing 分支直接返回首建 key（幂等路径）。
+	again, err := f.provider.EnsureChatAPIKey(f.ownerID)
+	if err != nil || again != created {
+		t.Fatalf("existing ensure = %q, %v, want %q", again, err, created)
+	}
+	// 预插入一条指定 id 的 chat key，供 FindChatAPIKey 解密链路断言。
 	secret := "sk-w1-chat-existing"
 	sealed, err := w1SealChatKey(f.secret, secret)
 	if err != nil {
@@ -304,16 +309,12 @@ func TestW1EnsureChatAPIKeyLifecycle(t *testing.T) {
 		VALUES ('key_chat_1', ?, 'rs_1', 'AI 对话 API Key', 'hash', ?, 'active', 'chat')`, f.ownerID, sealed); err != nil {
 		t.Fatalf("seed chat key: %v", err)
 	}
-	first, err := f.provider.EnsureChatAPIKey(f.ownerID)
-	if err != nil || first != "key_chat_1" {
-		t.Fatalf("existing ensure = %q, %v", first, err)
-	}
 	// FindChatAPIKey 解密成功。
-	record, err := f.provider.FindChatAPIKey(first, f.ownerID)
+	record, err := f.provider.FindChatAPIKey("key_chat_1", f.ownerID)
 	if err != nil || record == nil {
 		t.Fatalf("find = %v, %v", record, err)
 	}
-	if record.ID != first || record.Status != "active" || record.Secret != secret {
+	if record.ID != "key_chat_1" || record.Status != "active" || record.Secret != secret {
 		t.Fatalf("record = %+v secret=%q", record, record.Secret)
 	}
 	// 未知 key：nil。
@@ -322,10 +323,10 @@ func TestW1EnsureChatAPIKeyLifecycle(t *testing.T) {
 		t.Fatalf("缺失 find = %v, %v", missing, err)
 	}
 	// 过期 key：nil。
-	if _, err := f.db.Exec(`UPDATE api_keys SET expires_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`, first); err != nil {
+	if _, err := f.db.Exec(`UPDATE api_keys SET expires_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`, "key_chat_1"); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
-	expired, err := f.provider.FindChatAPIKey(first, f.ownerID)
+	expired, err := f.provider.FindChatAPIKey("key_chat_1", f.ownerID)
 	if err != nil || expired != nil {
 		t.Fatalf("过期 find = %v, %v", expired, err)
 	}

@@ -93,9 +93,7 @@ func OpenStore(config StoreConfig) (*Store, error) {
 		}
 		return &Store{db: db, mode: config.Mode}, nil
 	case StorePostgres:
-		if strings.TrimSpace(config.PostgresURL) == "" {
-			return nil, errors.New("account-balance postgres 缺少连接 URL")
-		}
+		pool := config.PostgresPool
 		maxOpen := config.PostgresMaxOpenConns
 		if maxOpen == 0 {
 			maxOpen = 1000
@@ -107,10 +105,12 @@ func OpenStore(config StoreConfig) (*Store, error) {
 		if maxOpen < 1 || maxIdle < 1 || maxIdle > maxOpen {
 			return nil, fmt.Errorf("account-balance postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpen, maxIdle)
 		}
-		pool := config.PostgresPool
 		if pool == nil {
 			// No injected handle: open a dedicated pgx pool. Hosts that own a
 			// shared registry (gateway/jobs pgpool) inject PoolHandle instead.
+			if strings.TrimSpace(config.PostgresURL) == "" {
+				return nil, errors.New("account-balance postgres 缺少连接 URL")
+			}
 			db, openErr := sql.Open("pgx", config.PostgresURL)
 			if openErr != nil {
 				return nil, openErr

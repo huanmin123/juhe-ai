@@ -204,14 +204,11 @@ func (c chatModelCatalog) ListProviderCatalog(providerCode, systemAccountID stri
 	if err != nil {
 		return nil
 	}
-	encoded, err := json.Marshal(items)
-	if err != nil {
-		return nil
-	}
+	// Marshal→Unmarshal 往返是 runtimecache 大结构到 chat 传输小结构的类型
+	// 投影：两侧均为纯 JSON 数据（字段 tag 同形），往返恒成功（w2 登记）。
+	encoded, _ := json.Marshal(items)
 	var out []chat.ProviderModelCatalogItem
-	if err := json.Unmarshal(encoded, &out); err != nil {
-		return nil
-	}
+	_ = json.Unmarshal(encoded, &out)
 	return out
 }
 

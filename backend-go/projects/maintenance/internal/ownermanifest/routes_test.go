@@ -45,12 +45,12 @@ func TestVerifyGatewayRouteOwnerManifestRejectsSourceDrift(t *testing.T) {
 
 func TestVerifyGatewayRouteOwnerManifestTreatsArchivedMountAsHistorical(t *testing.T) {
 	root := t.TempDir()
-	const archive = "migration-backup/node/final-archive/backend/src/modules/example"
-	writeFixtureFile(t, root, "migration-backup/node/final-archive/backend/src/system-api-app.ts", "app.use('/example', exampleRouter)\n")
+	const archive = "migration-backup-1/node/final-archive/backend/src/modules/example"
+	writeFixtureFile(t, root, "migration-backup-1/node/final-archive/backend/src/system-api-app.ts", "app.use('/example', exampleRouter)\n")
 	writeFixtureFile(t, root, archive+"/example.routes.ts", "exampleRouter.post('/rotate', handler)\n")
 	manifest := GatewayRouteOwnerManifest{
 		ManifestVersion: 1,
-		SourceApp:       "migration-backup/node/final-archive/backend/src/system-api-app.ts",
+		SourceApp:       "migration-backup-1/node/final-archive/backend/src/system-api-app.ts",
 		Families: []GatewayRouteFamily{{
 			ID:               "example",
 			NodeMount:        "/example",
