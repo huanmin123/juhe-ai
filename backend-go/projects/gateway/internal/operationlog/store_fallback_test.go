@@ -36,6 +36,7 @@ func seedFallbackBusinessFile(t *testing.T, path string, withRuntimeAccount bool
 		}
 	}
 }
+
 // seedStaticMirror 建一个只含 seed 时刻账户的静态镜像文件（无 runtime 账户）。
 func seedStaticMirror(t *testing.T, path string) {
 	t.Helper()

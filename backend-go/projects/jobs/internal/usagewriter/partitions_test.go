@@ -63,10 +63,10 @@ func (stubDDLResult) RowsAffected() (int64, error) { return 0, nil }
 
 func TestUsageRecordPartitionDateKeyFromIso(t *testing.T) {
 	cases := []struct {
-		value   string
-		want    string
-		wantOK  bool
-		reason  string
+		value  string
+		want   string
+		wantOK bool
+		reason string
 	}{
 		{value: "2026-09-09T12:00:00.000Z", want: "20260909", wantOK: true, reason: "UTC 毫秒 instants 取前缀日期"},
 		{value: "2026-09-09T23:59:59-05:00", want: "20260909", wantOK: true, reason: "Node 语义只看 ISO 前缀，不做时区换算"},

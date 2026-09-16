@@ -97,15 +97,13 @@ func TestBoundUsageRecordSnapshotCircularAndDepth(t *testing.T) {
 	if got := BoundUsageRecordSnapshot(circularMap).(*OrderedObject).Get("self"); got != "[circular]" {
 		t.Fatalf("map 循环引用应标记 [circular]，实际: %#v", got)
 	}
-	// 行为存疑：identitySet 只按 data pointer 跟踪 Slice/Map，*OrderedObject
-	// 指针不入集合，因此对象循环引用不产生 [circular]，而是靠深度上限
-	// （6 层）终止并打上 _truncated。此处按当前实际行为断言。
+	// identitySet 修复后追踪 *OrderedObject 指针身份（对齐 Node WeakSet），
+	// 对象循环引用直接收敛为 [circular]；此前靠深度上限终止属行为缺陷。
 	circular := NewOrderedObject()
 	circular.Set("self", circular)
 	root := BoundUsageRecordSnapshot(circular).(*OrderedObject)
-	bounded, ok := root.Get("self").(*OrderedObject)
-	if !ok || bounded.Get("_truncated") != true {
-		t.Fatalf("对象循环引用应靠深度截断终止并带 _truncated，实际: %#v", root.Get("self"))
+	if got := root.Get("self"); got != "[circular]" {
+		t.Fatalf("对象循环引用应标记 [circular]，实际: %#v", got)
 	}
 	// 深度超过 6 层触发 [depth_truncated]：沿 child 链下钻，直到遇到字符串标记。
 	deep := NewOrderedObject()
