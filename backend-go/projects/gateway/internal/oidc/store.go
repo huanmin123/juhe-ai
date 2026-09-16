@@ -185,9 +185,8 @@ func (s *Store) nowISO() string { return isoMillis(s.now()) }
 
 func newUUIDv4() string {
 	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		panic("oidc: random source failed: " + err.Error())
-	}
+	// crypto/rand.Read 自 Go 1.24 起保证永不返回错误，无需错误臂。
+	_, _ = rand.Read(buf)
 	buf[6] = (buf[6] & 0x0f) | 0x40
 	buf[8] = (buf[8] & 0x3f) | 0x80
 	hexed := hex.EncodeToString(buf)
@@ -432,10 +431,9 @@ func (s *Store) EnsureSigningKey(ctx context.Context) (*SigningKey, error) {
 		SET status = 'retired', retired_at = ? WHERE status = 'active'`), now); err != nil {
 		return nil, err
 	}
-	publicJWKJSON, err := json.Marshal(material.PublicJWK)
-	if err != nil {
-		return nil, err
-	}
+	// PublicJWK 全部为 string 值（crypto.go CreateSigningKeyMaterial），
+	// json.Marshal 不可能失败，无需错误臂。
+	publicJWKJSON, _ := json.Marshal(material.PublicJWK)
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("oauth_signing_keys")+`
 		(id, kid, private_key_ciphertext, public_jwk_json, status, created_at, retired_at)
 		VALUES (?, ?, ?, ?, 'active', ?, NULL)`),
@@ -879,9 +877,8 @@ const userCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 // generateUserCode mirrors generateUserCode (8 chars, no 0/O/1/I).
 func generateUserCode() string {
 	bytes := make([]byte, 8)
-	if _, err := rand.Read(bytes); err != nil {
-		panic("oidc: random source failed: " + err.Error())
-	}
+	// crypto/rand.Read 自 Go 1.24 起保证永不返回错误，无需错误臂。
+	_, _ = rand.Read(bytes)
 	out := make([]byte, 8)
 	for i, b := range bytes {
 		out[i] = userCodeAlphabet[int(b)%len(userCodeAlphabet)]

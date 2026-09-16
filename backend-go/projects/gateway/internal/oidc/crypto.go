@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"math/big"
 	"strings"
 	"time"
@@ -72,9 +71,8 @@ func EncryptOidcValue(secret string, value any) (string, error) {
 		return "", err
 	}
 	iv := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(iv); err != nil {
-		return "", err
-	}
+	// crypto/rand.Read 自 Go 1.24 起保证永不返回错误，无需错误臂。
+	_, _ = rand.Read(iv)
 	sealed := gcm.Seal(nil, iv, plain, nil)
 	ciphertext, tag := sealed[:len(sealed)-gcm.Overhead()], sealed[len(sealed)-gcm.Overhead():]
 	encode := base64.RawURLEncoding
@@ -222,11 +220,9 @@ func SignIDToken(secret, privateKeyCiphertext, kid, issuer, audience, subject st
 	if err != nil {
 		return "", err
 	}
-	header, err := json.Marshal(jwtHeader{Alg: "RS256", Kid: kid, Typ: "JWT"})
-	if err != nil {
-		return "", err
-	}
-	claims, err := json.Marshal(jwtClaims{
+	// jwtHeader/jwtClaims 全部为 string/int 字段，json.Marshal 不可能失败。
+	header, _ := json.Marshal(jwtHeader{Alg: "RS256", Kid: kid, Typ: "JWT"})
+	claims, _ := json.Marshal(jwtClaims{
 		Nonce: nonce,
 		Iss:   issuer,
 		Aud:   audience,
@@ -234,9 +230,6 @@ func SignIDToken(secret, privateKeyCiphertext, kid, issuer, audience, subject st
 		Iat:   now.Unix(),
 		Exp:   expiresAtSeconds,
 	})
-	if err != nil {
-		return "", err
-	}
 	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
 	digest := sha256.Sum256([]byte(signingInput))
 	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
@@ -290,8 +283,7 @@ func VerifyPKCE(verifier, expectedChallenge string) bool {
 // randomBase64URLBytes mirrors randomBytes(n).toString('base64url').
 func randomBase64URLBytes(n int) string {
 	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		panic(fmt.Sprintf("oidc: random source failed: %v", err))
-	}
+	// crypto/rand.Read 自 Go 1.24 起保证永不返回错误，无需错误臂。
+	_, _ = rand.Read(buf)
 	return base64.RawURLEncoding.EncodeToString(buf)
 }

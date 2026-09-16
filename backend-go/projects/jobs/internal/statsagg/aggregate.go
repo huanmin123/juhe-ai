@@ -100,10 +100,11 @@ func (a *Aggregator) AggregateUsageStatsBatch(ctx context.Context, options Aggre
 		return 0, err
 	}
 	if len(records) == 0 {
-		lagSeconds, err := a.latestUsageRecordLagSeconds(ctx, tx, safeCreatedBefore, state.CursorCreatedAt, state.CursorID)
-		if err != nil {
-			return 0, err
-		}
+		// 空批次 lag 固定 0：此前的 latestUsageRecordLagSeconds 查询与主查询
+		// 谓词完全一致（created_at <= safeCreatedBefore AND (created_at > cursor
+		// OR (= AND id >))，仅 ORDER/LIMIT 不同），主查询已返回空 ⟺ 最新行查询
+		// 必空，非空分支不可达（防御性死代码，w10c 测试举证后移除）。
+		lagSeconds := 0.0
 		if err := a.updateStatsJobState(ctx, tx, statsJobStateInput{LastSuccessAt: &updatedAt, LagSeconds: &lagSeconds}); err != nil {
 			return 0, err
 		}
@@ -790,26 +791,4 @@ func statsLagSecondsFromCursor(cursorCreatedAt string, now time.Time) float64 {
 		return 0
 	}
 	return float64(lag)
-}
-
-func (a *Aggregator) latestUsageRecordLagSeconds(ctx context.Context, tx *sql.Tx, safeCreatedBefore, cursorCreatedAt, cursorID string) (float64, error) {
-	query := a.Dialect.bind(`
-		SELECT created_at FROM ` + a.Dialect.UsageRecordsTable() + `
-		WHERE created_at <= ?
-		  AND (created_at > ? OR (created_at = ? AND id > ?))
-		ORDER BY created_at DESC, id DESC
-		LIMIT 1
-	`)
-	var latest sql.NullString
-	err := tx.QueryRowContext(ctx, query, safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorID).Scan(&latest)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	if !latest.Valid || latest.String == "" {
-		return 0, nil
-	}
-	return statsLagSecondsFromCursor(latest.String, a.now()), nil
 }

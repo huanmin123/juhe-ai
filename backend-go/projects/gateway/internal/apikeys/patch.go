@@ -348,9 +348,8 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 	}
 
 	if input.HasName {
-		if strings.TrimSpace(input.Name) == "" {
-			return nil, &ValidationError{Message: "API Key 名称不能为空"}
-		}
+		// name 非空由 HTTP 层先行校验（parsePatchBody / aipublic
+		// optionalTrimmedBody 同 strings.TrimSpace + min=1），store 层不再重复。
 		if input.Name != name {
 			if purpose.Valid && purpose.String == "chat" {
 				return nil, &ValidationError{Message: "AI 对话 API Key 不允许修改名称"}

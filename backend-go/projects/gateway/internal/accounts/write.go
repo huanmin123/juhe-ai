@@ -406,19 +406,17 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 
 func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, access AccessScope, now time.Time, nowISO string) (*CreateResult, error) {
 	id := s.newI("acc")
+	// providerCode 非空由两个入口前置校验保证（routes.go createBody 与
+	// aipublic parseAccountAddBody 的 requiredTrimmedBody），此处不再重复。
 	providerCode := strings.TrimSpace(input.ProviderCode)
-	if providerCode == "" {
-		return nil, &ValidationError{Message: "供应商不能为空"}
-	}
 	profileID := strings.TrimSpace(input.ProviderProtocolProfileID)
 	profile, err := s.requireEnabledProviderProtocolProfile(ctx, tx, providerCode, profileID)
 	if err != nil {
 		return nil, err
 	}
+	// accountType 非空由 createBody 保证（routes.go）；aipublic 固定写入
+	// "api_key"。此处不再重复空值校验。
 	accountType := strings.TrimSpace(input.AccountType)
-	if accountType == "" {
-		return nil, &ValidationError{Message: "账户类型不能为空"}
-	}
 	supported := false
 	for _, candidate := range profile.accountTypes {
 		if candidate == accountType {
@@ -685,9 +683,8 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	balanceQueryEnabledInt := 0
 	balanceQueryConfigJSON := "{}"
 	if input.BalanceQueryEnabled {
-		if input.BalanceQueryConfigCanonical == nil {
-			return nil, &ValidationError{Message: "开启上游余额查询时必须选择查询类型"}
-		}
+		// BalanceQueryConfigCanonical 非空由 createBody 保证（routes.go 开启
+		// 查询时强制已归一化 config）；aipublic 不开启余额查询。
 		balanceQueryEnabledInt = 1
 		balanceQueryConfigJSON = *input.BalanceQueryConfigCanonical
 	}

@@ -231,7 +231,12 @@ func newChatRoutesForTest(deps *Deps) *chatRoutes {
 
 func newGenerationEnv(t *testing.T) *generationEnv {
 	t.Helper()
-	fixture := newChatFixture(t)
+	return buildGenerationEnvW10D(t, newChatFixture(t))
+}
+
+// buildGenerationEnvW10D 构建路由级测试环境；w10d 故障注入 env 复用同一构建。
+func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
+	t.Helper()
 	_, clock := fixedChatClock()
 	executor := &mockExecutor{}
 	chatKeys := &mockChatKeys{}

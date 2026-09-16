@@ -752,7 +752,7 @@ func (s *RecordCleanupStore) deletePostgresAccountScopeStatsRows(ctx context.Con
 			}
 			for _, accountID := range accountIDs {
 				if _, err := tx.ExecContext(ctx, s.Stats.Bind(fmt.Sprintf(
-					`DELETE FROM juhe_stats.%s WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'`, tableName)),
+					`DELETE FROM juhe_stats.%s WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\'`, tableName)),
 					escapeLikePrefix(accountID)+":%"); err != nil {
 					return err
 				}
@@ -781,7 +781,7 @@ func (s *RecordCleanupStore) deletePostgresAccountScopeStatsRows(ctx context.Con
 		}
 		for _, accountID := range accountIDs {
 			if _, err := tx.ExecContext(ctx, s.Stats.Bind(
-				`DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'`),
+				`DELETE FROM juhe_stats.stats_job_state WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\'`),
 				escapeLikePrefix(accountID)+":%"); err != nil {
 				return err
 			}
@@ -897,11 +897,9 @@ func (s *RecordCleanupStore) CleanupAPIKeyRelatedPostgres(ctx context.Context, a
 		result.BlockedReason = cleanupPendingReason(hasUsageMore, false)
 	}
 	if result.HasMore || result.BlockedReason != "" {
-		reason := result.BlockedReason
-		if reason == "" {
-			reason = "等待高性能模式后续批次清理"
-		}
-		if err := s.markPostgresAPIKeyCleanupTargetDeferred(ctx, apiKeyID, systemAccountID, reason, updatedAt); err != nil {
+		// cleanupPendingReason 的三个分支均返回非空常量，hasMore=true 时
+		// BlockedReason 必非空，无需兜底 reason。
+		if err := s.markPostgresAPIKeyCleanupTargetDeferred(ctx, apiKeyID, systemAccountID, result.BlockedReason, updatedAt); err != nil {
 			return result, err
 		}
 	} else if err := s.clearPostgresAPIKeyCleanupTarget(ctx, apiKeyID, systemAccountID); err != nil {
@@ -974,11 +972,9 @@ func (s *RecordCleanupStore) CleanupAccountRelatedPostgres(ctx context.Context, 
 		result.BlockedReason = cleanupPendingReason(hasUsageMore, false)
 	}
 	if result.HasMore || result.BlockedReason != "" {
-		reason := result.BlockedReason
-		if reason == "" {
-			reason = "等待高性能模式后续批次清理"
-		}
-		if err := s.markPostgresAccountCleanupTargetDeferred(ctx, target, reason, updatedAt); err != nil {
+		// cleanupPendingReason 的三个分支均返回非空常量，hasMore=true 时
+		// BlockedReason 必非空，无需兜底 reason。
+		if err := s.markPostgresAccountCleanupTargetDeferred(ctx, target, result.BlockedReason, updatedAt); err != nil {
 			return result, err
 		}
 	} else if err := s.clearPostgresAccountCleanupTarget(ctx, target); err != nil {

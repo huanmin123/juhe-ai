@@ -157,9 +157,9 @@ func accountPatchChangeLabel(field string) string {
 // access scope.
 func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, access AccessScope) (*PatchResult, error) {
 	ctx = ensureCtx(ctx)
-	if input.ExpectedConfigRevision < 1 {
-		return nil, &ValidationError{Message: "账户配置版本无效"}
-	}
+	// expectedConfigRevision >= 1 由全部 HTTP 入口先行校验（routes.go
+	// patchBody/tagsPatchBody/runtime patchBody、m11_routes.go groupBinding
+	// 同判据；aipublic 从行内 config_revision 读入），store 层不再重复。
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

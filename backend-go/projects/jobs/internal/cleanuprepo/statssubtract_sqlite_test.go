@@ -347,22 +347,23 @@ func TestCleanupAccountRecordStatsDataEmptyRows(t *testing.T) {
 		AuthorizationIDs:  []string{"auth-1"},
 		TeamScopeIDs:      []string{"acc-1:team-9", "acc-rel-1:team-8"},
 	}
-	// 行为存疑：deleteAccountScopeStatsRows 的团队 scope LIKE 条件使用
-	// `ESCAPE '\\'`（raw string，实际两字符），SQLite 要求单字符 ESCAPE，
-	// 语句报错「ESCAPE expression must be a single character」；Node 归档的
-	// JS 模板串 `'\\'` 渲染为单反斜杠。按当前实际行为断言：入口报错，且
-	// 首张表已完成 account/caller_account 两行删除后才中断。
-	err := store.CleanupAccountRecordStatsData(context.Background(), target, nil, kitUpdatedAt, false, kitZone())
-	if err == nil || !strings.Contains(err.Error(), "ESCAPE expression must be a single character") {
-		t.Fatalf("当前实现应在团队 LIKE 语句报错，实际：%v", err)
+	// LIKE/ESCAPE 修复后（raw string 单反斜杠，与 Node 归档模板一致）：
+	// deleteAccountScopeStatsRows 的团队 LIKE 语句可正常执行，全链清理成功。
+	if err := store.CleanupAccountRecordStatsData(context.Background(), target, nil, kitUpdatedAt, false, kitZone()); err != nil {
+		t.Fatalf("cleanup: %v", err)
 	}
-	// 报错经 defer tx.Rollback() 回滚：全部种子行保持原状。
+	// account/caller_account/授权/团队 scope 行全部被清理。
 	if got := mustQueryCountKit(t, stats, `SELECT COUNT(*) FROM usage_stats_totals
-      WHERE scope_type IN ('account','caller_account','account_authorization','account_authorization_team')`); got != 4 {
-		t.Fatalf("报错应整体回滚，残余 scope 行 = %d, 期望 4", got)
+      WHERE scope_type IN ('account','caller_account','account_authorization','account_authorization_team')`); got != 0 {
+		t.Fatalf("scope 行应全部清理，残余 = %d", got)
 	}
-	if got := mustQueryCountKit(t, stats, `SELECT COUNT(*) FROM account_quality_scores`); got != 1 {
-		t.Fatalf("账户附属行不应被清理（回滚语义）")
+	if got := mustQueryCountKit(t, stats, `SELECT COUNT(*) FROM account_quality_scores`); got != 0 {
+		t.Fatalf("账户附属行应被清理")
+	}
+	// 团队 LIKE 前缀与 IN 分块命中：stats_job_state 三行（含 acc-1:team-8 前缀）清空。
+	if got := mustQueryCountKit(t, stats, `SELECT COUNT(*) FROM stats_job_state
+      WHERE scope_type IN ('account','account_authorization','account_authorization_team')`); got != 0 {
+		t.Fatalf("stats_job_state scope 行应全部清理")
 	}
 }
 

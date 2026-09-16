@@ -920,7 +920,9 @@ func (s *Store) findImportProxyOptionByName(ctx context.Context, name string, pl
 	if key == "" {
 		return nil
 	}
-	if planCtx.proxyLookup != nil {
+	// planCtx 可能为 nil（createImportProxy 的重复名回退以 nil 调用），
+	// 既不能解引用其缓存，也不投递查询结果到缓存。
+	if planCtx != nil && planCtx.proxyLookup != nil {
 		if existing, ok := planCtx.proxyLookup[key]; ok {
 			return existing
 		}

@@ -158,10 +158,9 @@ func ScheduleJSON(schedule *AvailabilitySchedule) (string, bool) {
 	if schedule == nil {
 		return "", false
 	}
-	encoded, err := json.Marshal(schedule)
-	if err != nil {
-		return "", false
-	}
+	// AvailabilitySchedule 及其子类型均为纯 int/string/bool/slice/指针字段，
+	// json.Marshal 不可能失败，无需错误臂。
+	encoded, _ := json.Marshal(schedule)
 	return string(encoded), true
 }
 

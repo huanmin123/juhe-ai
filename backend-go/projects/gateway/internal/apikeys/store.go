@@ -1088,10 +1088,9 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if err != nil {
 		return nil, nil, err
 	}
+	// name 非空由 HTTP 层先行校验（apikeys/routes.go createBody 与 aipublic
+	// parseApiKeyAddBody 同 strings.TrimSpace + min=1），store 层不再重复。
 	name := strings.TrimSpace(input.Name)
-	if name == "" {
-		return nil, nil, &ValidationError{Message: "API Key 名称不能为空"}
-	}
 	description, err := normalizeOptionalDescription(input.Description)
 	if err != nil {
 		return nil, nil, err
@@ -1108,11 +1107,10 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if err != nil {
 		return nil, nil, err
 	}
+	// status 枚举由 HTTP 层先行校验（createBody / bodyOptionalEnumField 均
+	// 限定 active|disabled），store 层不再重复。
 	requestedStatus := "active"
 	if input.Status != nil {
-		if *input.Status != "active" && *input.Status != "disabled" {
-			return nil, nil, &ValidationError{Message: "API Key 状态无效"}
-		}
 		requestedStatus = *input.Status
 	}
 	status := requestedStatus

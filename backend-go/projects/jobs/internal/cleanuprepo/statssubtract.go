@@ -981,7 +981,7 @@ func (s *RecordCleanupStore) deleteAccountScopeStatsRows(ctx context.Context, tx
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-				`DELETE FROM %s WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'`, tableName),
+				`DELETE FROM %s WHERE scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\'`, tableName),
 				escapeLikePrefix(accountID)+":%"); err != nil {
 				return err
 			}
