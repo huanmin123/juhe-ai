@@ -125,18 +125,22 @@ func visitJSONLikeValue(value any, context *jsonLikeEstimateContext) {
 // objects they mirror. Returns false for non-struct values.
 func visitStructLikeValue(value any, context *jsonLikeEstimateContext) bool {
 	rv := reflect.ValueOf(value)
-	for rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Ptr {
 		if rv.IsNil() {
 			return false
 		}
-		rv = rv.Elem()
+		// 指针身份先于解引用登记（Node WeakSet 语义）：解引用后的结构体
+		// 值无法与兄弟副本区分，环检测会在嵌套层失效。
+		if circularRef(context, value) {
+			addEstimatedBytes(context, 16)
+			return true
+		}
+		for rv.Kind() == reflect.Ptr {
+			rv = rv.Elem()
+		}
 	}
 	if rv.Kind() != reflect.Struct {
 		return false
-	}
-	if circularRef(context, value) {
-		addEstimatedBytes(context, 16)
-		return true
 	}
 	addEstimatedBytes(context, 2)
 	rt := rv.Type()
@@ -149,8 +153,17 @@ func visitStructLikeValue(value any, context *jsonLikeEstimateContext) bool {
 		if !keep {
 			continue
 		}
+		fieldValue := rv.Field(index)
+		// 指针字段同样先登记身份再解引用，保证任意深度的结构体指针环
+		// 都能收敛为 "[circular]" 估算字节而不是无限递归。
+		if fieldValue.Kind() == reflect.Ptr && !fieldValue.IsNil() {
+			if circularRef(context, fieldValue.Interface()) {
+				addEstimatedBytes(context, 16)
+				continue
+			}
+		}
 		addEstimatedBytes(context, estimateStringBytes(name, context)+3)
-		visitJSONLikeValue(exportFieldValue(rv.Field(index)), context)
+		visitJSONLikeValue(exportFieldValue(fieldValue), context)
 		addEstimatedBytes(context, 1)
 		if estimateLimitReached(context) {
 			return true
@@ -213,7 +226,9 @@ func newIdentitySet() *identitySet { return &identitySet{} }
 func (s *identitySet) add(value any) bool {
 	rv := reflect.ValueOf(value)
 	switch rv.Kind() {
-	case reflect.Slice, reflect.Map:
+	// Ptr 覆盖 *OrderedObject 等指针容器（Node WeakSet 追踪任意对象；
+	// 缺少 Ptr 时自引用 OrderedObject 会无限递归）。
+	case reflect.Slice, reflect.Map, reflect.Ptr:
 		pointer := rv.Pointer()
 		for _, item := range s.items {
 			if item.kind == rv.Kind() && item.pointer == pointer {

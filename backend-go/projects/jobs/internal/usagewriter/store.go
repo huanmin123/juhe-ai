@@ -711,6 +711,16 @@ func (s *SqliteShardStore) Close() error {
 	return firstErr
 }
 
+// postgresPlaceholders builds "$start, $start+1, ..." of the requested size
+// (pgx stdlib 不改写 `?`，PostgreSQL 语句必须使用 $n 序号占位符)。
+func postgresPlaceholders(count, start int) string {
+	parts := make([]string, 0, count)
+	for index := 0; index < count; index++ {
+		parts = append(parts, "$"+itoa(start+index))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // PostgresShardStoreConfig mirrors the facts the Postgres write path
 // consumes (createUsageRecordsBatchPostgres).
 type PostgresShardStoreConfig struct {
@@ -798,7 +808,7 @@ func (s *PostgresShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
         AND deleted_at IS NULL
       ORDER BY id
       FOR NO KEY UPDATE
-    `, sqlitePlaceholders(len(ids)))
+    `, postgresPlaceholders(len(ids), 1))
 		args := make([]any, 0, len(ids))
 		for _, id := range ids {
 			args = append(args, id)
@@ -817,7 +827,7 @@ func (s *PostgresShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 		rowPlaceholders := make([]string, 0, len(shardRows.Rows))
 		args := make([]any, 0, len(shardRows.Rows)*len(UsageRecordColumns))
 		for _, row := range shardRows.Rows {
-			rowPlaceholders = append(rowPlaceholders, "("+sqlitePlaceholders(len(UsageRecordColumns))+")")
+			rowPlaceholders = append(rowPlaceholders, "("+postgresPlaceholders(len(UsageRecordColumns), len(args)+1)+")")
 			args = append(args, row.Params...)
 		}
 		insertSQL := fmt.Sprintf(`
@@ -838,10 +848,10 @@ func (s *PostgresShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 		lastUsed := lastUsedAt[accountID]
 		if _, err := tx.ExecContext(ctx, `
       UPDATE juhe_business.accounts
-      SET last_used_at = ?, updated_at = ?
-      WHERE id = ?
+      SET last_used_at = $1, updated_at = $2
+      WHERE id = $3
         AND deleted_at IS NULL
-        AND (last_used_at IS NULL OR last_used_at < ?)
+        AND (last_used_at IS NULL OR last_used_at < $4)
     `, lastUsed, lastUsed, accountID, lastUsed); err != nil {
 			return 0, err
 		}

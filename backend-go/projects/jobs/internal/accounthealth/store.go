@@ -79,7 +79,13 @@ func OpenStore(config StoreConfig) (*Store, error) {
 		}
 		maxIdleConns := config.PostgresMaxIdleConns
 		if maxIdleConns == 0 {
-			maxIdleConns = defaultPostgresPoolSize
+			// The platform idle ceiling (sqlpool.MaxIdleConns=10) owns the idle
+			// default; the 16-connection open default violates it otherwise
+			// (sqlpool.ValidatePoolLimits rejects idle > min(open, 10)).
+			maxIdleConns = defaultPostgresMaxIdleConns
+			if maxIdleConns > maxOpenConns {
+				maxIdleConns = maxOpenConns
+			}
 		}
 		if maxOpenConns < 1 || maxIdleConns < 1 || maxIdleConns > maxOpenConns {
 			return nil, fmt.Errorf("account-health postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpenConns, maxIdleConns)
