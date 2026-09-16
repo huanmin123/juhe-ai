@@ -790,17 +790,19 @@ func writeStreamRouteError(w http.ResponseWriter, err error) {
 	}
 	var budget *ContextBudgetError
 	if errors.As(err, &budget) {
-		writeChatRouteError(w, err)
+		// Node stream 路由（chat.routes.ts:1245-1248）：422 + 独立 code，
+		// 不能落回 handleChatRouteError 的 500 兜底。
+		writeMessageCode(w, http.StatusUnprocessableEntity, budget.Error(), "chat_input_exceeds_context")
 		return
 	}
 	var request *RequestError
 	if errors.As(err, &request) {
-		writeChatRouteError(w, err)
+		writeMessageCode(w, http.StatusUnprocessableEntity, request.Message, string(request.Code))
 		return
 	}
 	var assetInput *ChatAssetInputError
 	if errors.As(err, &assetInput) {
-		writeChatRouteError(w, err)
+		writeMessageCode(w, http.StatusUnprocessableEntity, assetInput.Message, "chat_asset_unavailable")
 		return
 	}
 	var capability *ModelCapabilityError

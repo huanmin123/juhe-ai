@@ -110,6 +110,11 @@ func DecryptOidcValue(secret, envelope string, target any) error {
 	if err != nil {
 		return err
 	}
+	// gcm.Open 对非法 nonce 长度会 panic（crypto/cipher 契约），这里先把
+	// 损坏行降级为可恢复的 OidcCiphertextError，避免请求被连接级 panic 打断。
+	if len(iv) != gcm.NonceSize() {
+		return &OidcCiphertextError{}
+	}
 	plain, err := gcm.Open(nil, iv, append(ciphertext, tag...), nil)
 	if err != nil {
 		return &OidcCiphertextError{}

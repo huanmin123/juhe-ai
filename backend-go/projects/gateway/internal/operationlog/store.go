@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/text/unicode/norm"
@@ -121,7 +122,9 @@ func OpenStore(cfg Config) (Store, error) {
 	}
 	maxIdle := cfg.PostgresMaxIdleConns
 	if maxIdle == 0 {
-		maxIdle = 1000
+		// 与 LoadConfig 的 defaultPostgresMaxIdleConns 一致：超过
+		// sqlpool.MaxIdleConns 的 idle 上限会被 pool registry 拒绝。
+		maxIdle = sqlpool.MaxIdleConns
 	}
 	var err error
 	pool := cfg.PostgresPool

@@ -631,22 +631,27 @@ func TestWriteStreamRouteErrorW3(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), "chat_model_context_load_limit") {
 		t.Fatalf("code 后缀不正确: %s", recorder.Body.String())
 	}
-	// 行为存疑：writeStreamRouteError 的 budget/request/assetInput 分支委托给
-	// writeChatRouteError，而后者不识别这三类错误，实际降级为 500
-	// internal_generation_failed（Node 契约为 422 + 专用 code）。
-	for name, err := range map[string]error{
-		"上下文预算": &ContextBudgetError{},
-		"请求错误":  &RequestError{Code: RequestImageNotSupported, Message: "不支持图片"},
-		"资产输入":  &ChatAssetInputError{Message: "资产不可用"},
-	} {
-		t.Run("降级500/"+name, func(t *testing.T) {
+	// w9f 缺陷修复回归：budget/request/assetInput 曾被误降级为 500；现按归档
+	// Node 契约（chat.routes.ts:1245-1272 与 golden regression "stream 422
+	// 错误必须保持各自 code"）断言 422 + 专用 code。
+	fixedCases := []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"上下文预算", &ContextBudgetError{}, "chat_input_exceeds_context"},
+		{"请求错误", &RequestError{Code: RequestImageNotSupported, Message: "不支持图片"}, "chat_image_not_supported"},
+		{"资产输入", &ChatAssetInputError{Message: "资产不可用"}, "chat_asset_unavailable"},
+	}
+	for _, testCase := range fixedCases {
+		t.Run("422/"+testCase.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			writeStreamRouteError(recorder, err)
-			if recorder.Code != http.StatusInternalServerError {
-				t.Fatalf("当前实际行为应为 500: %d", recorder.Code)
+			writeStreamRouteError(recorder, testCase.err)
+			if recorder.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, 期望 422", recorder.Code)
 			}
-			if !strings.Contains(recorder.Body.String(), "internal_generation_failed") {
-				t.Fatalf("应降级为内部错误: %s", recorder.Body.String())
+			if !strings.Contains(recorder.Body.String(), testCase.code) {
+				t.Fatalf("code 不正确: %s", recorder.Body.String())
 			}
 		})
 	}
