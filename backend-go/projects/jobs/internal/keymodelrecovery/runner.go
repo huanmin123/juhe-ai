@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -194,7 +195,11 @@ func (r *Runner) executeProbe(ctx context.Context, state State) Outcome {
 }
 
 func defaultProbe(ctx context.Context, state State, input accounthealth.Input) Outcome {
-	result := accounthealth.ProbeExactKeyModel(ctx, input, state.KeyFingerprint, state.FinalUpstreamModel, state.UpstreamEndpointMode, accounthealth.ProbeOptions{Timeout: ProbeTimeout, MaxResponseBytes: 256 * 1024})
+	// 缺陷修复：此前 ProbeOptions 缺少 Secret，decryptToken 对空 secret 直接
+	// 报"凭据 envelope 缺失"，恢复探针永远只能得到 unknown。凭据 envelope 由
+	// account-health 输入读取器以 JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET
+	// 加密（见 accounthealth/config.go），这里读取同一契约变量。
+	result := accounthealth.ProbeExactKeyModel(ctx, input, state.KeyFingerprint, state.FinalUpstreamModel, state.UpstreamEndpointMode, accounthealth.ProbeOptions{Secret: os.Getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"), Timeout: ProbeTimeout, MaxResponseBytes: 256 * 1024})
 	if result.Outcome == accounthealth.OutcomeSuccess {
 		return CompleteSuccess
 	}

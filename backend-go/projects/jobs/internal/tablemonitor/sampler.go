@@ -137,10 +137,8 @@ func selectShardWindow(entries []string, limit int, sampledAt time.Time, interva
 		interval = time.Minute
 	}
 	slot := sampledAt.UTC().UnixNano() / int64(interval)
+	// slot 对正数取模恒非负，原 `if start < 0` 钳制不可达，按死守卫删除（w12f）。
 	start := int(slot % int64(len(entries)))
-	if start < 0 {
-		start += len(entries)
-	}
 	selected := make([]string, 0, limit)
 	for offset := 0; offset < limit; offset++ {
 		selected = append(selected, entries[(start+offset)%len(entries)])
@@ -149,7 +147,7 @@ func selectShardWindow(entries []string, limit int, sampledAt time.Time, interva
 }
 
 func collectSQLiteTarget(ctx context.Context, target sqliteTarget, sampledAt time.Time, maxTables int) (collectedSample, error) {
-	db, info, err := openSQLiteReadOnly(target.path)
+	db, _, err := openSQLiteReadOnly(target.path)
 	if err != nil {
 		return collectedSample{}, fmt.Errorf("打开表监控源库 %s 失败: %w", target.role, err)
 	}
@@ -217,9 +215,8 @@ func collectSQLiteTarget(ctx context.Context, target sqliteTarget, sampledAt tim
 		}
 		rows = append(rows, TableSnapshot{Role: target.role, TableName: tableName, SampledAt: sampledAt, TableKind: kind, ParentTableName: parent, IsPartition: isPartition, RowCount: &count, TableBytes: tableBytes, IndexBytes: indexBytes, TotalBytes: totalBytes, PageCount: pageTotal, IndexCount: len(indexes)})
 	}
-	if info.Size() < 0 {
-		return collectedSample{}, fmt.Errorf("表监控源库 %s 文件大小无效", target.role)
-	}
+	// os.Stat 报告的常规文件 Size 恒非负，原 `if info.Size() < 0` 守卫不可达，
+	// 按死守卫删除（w12f）。
 	return collectedSample{databases: []DatabaseSnapshot{database}, tables: rows}, nil
 }
 
@@ -611,11 +608,9 @@ func collectBounded[T any, R any](ctx context.Context, limit int, targets []T, c
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					errs <- fmt.Errorf("表监控采样 worker panic: %v\n%s", recovered, debug.Stack())
-				}
-			}()
+			// worker 循环内的 panic 已由 collectSafely 统一 recover，其余语句
+			// （channel/ctx/slice 写）不会 panic，原 worker 级 recover 不可达，
+			// 按死守卫删除（w12f）。
 			for index := range jobs {
 				if err := ctx.Err(); err != nil {
 					errs <- err

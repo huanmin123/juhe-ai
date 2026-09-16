@@ -1328,6 +1328,22 @@ func (d *disabledDegradation) OrderSync(accounts []gatewaydispatch.AccountCandid
 	return gatewaydispatch.DegradationOrder{Accounts: accounts}
 }
 
+// degradedHighConcurrencyQueue keeps the ordinary capacity semantics when the
+// composition root has no group queue (组合测试专用降级；生产组合根必须装配
+// gatewayclientip 队列——E2E-FINDING #5：队列缺席时引擎的等待调用曾直接
+// nil panic）。Ready=true 表示允许按既有候选顺序继续重试容量，与文档
+//「快速失败优先于无限排队」的缺席语义一致：没有队列就不排队。
+type degradedHighConcurrencyQueue struct {
+	once sync.Once
+}
+
+func (d *degradedHighConcurrencyQueue) WaitForCapacity(_ context.Context, _ gatewaydispatch.HighConcurrencyWaitInput) (gatewaydispatch.QueueWaitResult, error) {
+	d.once.Do(func() {
+		slog.Warn("网关链端口显式降级", "port", "gatewaydispatch.HighConcurrencyWaiter", "effect", "分组队列缺席，按普通容量语义立即放行")
+	})
+	return gatewaydispatch.QueueWaitResult{Ready: true}, nil
+}
+
 // disabledAccountLocks answers with unlocked accounts (Node: lock owner
 // absent → no cross-account block, no retry lease).
 type disabledAccountLocks struct {
@@ -1800,6 +1816,22 @@ func (usageModelResolverAdapter) ResolveUsageModel(account gatewayusage.UsageMod
 
 func gatewayopenaiIsProtocolPath(pathAndQuery string) bool {
 	return gatewayopenai.IsProtocolRequestPath(pathAndQuery)
+}
+
+// gatewayIsProtocolRequest mirrors isGatewayProtocolRequest (Node
+// modules/gateway/protocols/registry.ts): the gateway protocol surface is the
+// union of the openai /v1 paths and the anthropic / gemini native request
+// faces. The Go port originally shipped only the openai family here, 404-ing
+// POST /v1/messages at the gate while the dispatch chain below already
+// carried the full anthropic native handling (E2E-FINDING #6).
+func gatewayIsProtocolRequest(req *gatewaypreauth.GatewayRequest) bool {
+	if gatewayopenaiIsProtocolPath(req.PathAndQuery()) {
+		return true
+	}
+	if req.HTTP != nil && gatewayanthropic.IsNativeRequest(req.HTTP) {
+		return true
+	}
+	return req.HTTP != nil && gatewaygemini.IsNativeRequest(req.HTTP)
 }
 
 func gatewayanthropicIsNative(r *http.Request) bool {

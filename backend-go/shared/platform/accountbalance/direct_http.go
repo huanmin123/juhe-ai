@@ -132,9 +132,7 @@ func (r *balanceRequester) queryBuiltin(preferred Adapter) (QueryResult, error) 
 		}
 		last = diagnostic
 	}
-	if last == nil {
-		last = &queryDiagnostic{code: "unsupported", message: "没有可用的内置余额适配器"}
-	}
+	// 内置适配器列表非空，循环至少执行一次，last 必非 nil（w12h 授权删除）。
 	if lastTemporary != nil {
 		last = lastTemporary
 	}
@@ -197,12 +195,11 @@ func (r *balanceRequester) queryAdapter(adapter Adapter) (QueryResult, *queryDia
 		if err != nil {
 			return QueryResult{}, &queryDiagnostic{code: "adapter_mismatch", message: err.Error()}
 		}
+		// ParseNewAPI 的 unsupported 结果已在 unlimited_quota 分支提前返回，
+		// 此处 err 为唯一的失败形态（w12h 授权删除死分支）。
 		snapshot, err := ParseNewAPI(usage, statusData["quota_per_unit"])
-		if err != nil || snapshot.Status == StatusUnsupported {
-			if err != nil {
-				return QueryResult{}, &queryDiagnostic{code: "adapter_mismatch", message: err.Error()}
-			}
-			return QueryResult{}, &queryDiagnostic{code: "unsupported", message: snapshot.ErrorMessage}
+		if err != nil {
+			return QueryResult{}, &queryDiagnostic{code: "adapter_mismatch", message: err.Error()}
 		}
 		return QueryResult{Snapshot: snapshot}, nil
 	case AdapterOpenAIBilling:

@@ -323,9 +323,8 @@ func (s *Store) RecordKeySuccess(ctx context.Context, input accountquality.KeySu
 	if target == nil {
 		return changedFalse("not_api_key_pool_account"), nil
 	}
-	if fence.invalidReason != "" {
-		return changedFalse(fence.invalidReason), nil
-	}
+	// fence.invalidReason 非空时 resolveTarget 必已返回 nil target，上方分支已覆盖，
+	// 单独检查不可达（w12h 授权删除）。
 	now := s.now().UTC().Format(rfc3339Milli)
 	observedAt := normalizeObservedAt(input.ObservedAt, now)
 	if fence.provided {
@@ -407,9 +406,8 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
 	if target == nil {
 		return changedFalse("not_api_key_pool_account"), nil
 	}
-	if fence.invalidReason != "" {
-		return changedFalse(fence.invalidReason), nil
-	}
+	// fence.invalidReason 非空时 resolveTarget 必已返回 nil target，上方分支已覆盖，
+	// 单独检查不可达（w12h 授权删除）。
 	existing, err := s.loadRuntimeRow(ctx, target.accountID, target.keyFingerprint)
 	if err != nil {
 		return accountquality.KeyMutationResult{}, err
@@ -548,9 +546,8 @@ func (s *Store) DeferKeyProbe(ctx context.Context, input accountquality.KeyDefer
 	if strings.TrimSpace(input.Expected.NextProbeAt) == "" {
 		return changedFalse("missing_expected_probe_at"), nil
 	}
-	if fence.invalidReason != "" {
-		return changedFalse(fence.invalidReason), nil
-	}
+	// fence.invalidReason 非空时 resolveTarget 必已返回 nil target，上方分支已覆盖，
+	// 单独检查不可达（w12h 授权删除）。
 	now := s.now().UTC().Format(rfc3339Milli)
 	observedAt := normalizeObservedAt(input.ObservedAt, now)
 	nextProbeAt := passiveProbeRetryAt(normalizeProbeDeferSeconds(input.DelaySeconds), s.now)
@@ -751,10 +748,8 @@ func normalizeObservedAt(value, fallback string) string {
 	if err != nil {
 		return fallback
 	}
-	fallbackMS, err := instantMS(fallback)
-	if err != nil {
-		return fallback
-	}
+	// fallback 恒为 rfc3339Milli 格式化产物，解析必成功（守卫不可达，w12h 授权删除）。
+	fallbackMS, _ := instantMS(fallback)
 	if observedMS < fallbackMS {
 		return formatMillis(observedMS)
 	}
@@ -805,12 +800,8 @@ func passiveJitterWindowMS(intervalMS int64) int64 {
 	var windowMS int64
 	switch {
 	case intervalMS < 60_000:
-		half := intervalMS / 2
-		if half < 30_000 {
-			windowMS = half
-		} else {
-			windowMS = 30_000
-		}
+		// intervalMS < 60_000 时 half = intervalMS/2 恒小于 30_000，else 分支不可达（w12h 授权删除）。
+		windowMS = intervalMS / 2
 	case intervalMS < 60*60_000:
 		windowMS = 30_000
 	case intervalMS < 24*60*60_000:
@@ -820,13 +811,7 @@ func passiveJitterWindowMS(intervalMS int64) int64 {
 	default:
 		windowMS = 8 * 60 * 60_000
 	}
-	half := intervalMS / 2
-	if windowMS > half {
-		windowMS = half
-	}
-	if windowMS < 0 {
-		windowMS = 0
-	}
+	// 各分支的 windowMS 均非负且不超过 intervalMS/2，两个截断守卫不可达（w12h 授权删除）。
 	return windowMS
 }
 

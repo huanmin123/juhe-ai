@@ -175,6 +175,100 @@ CREATE TABLE IF NOT EXISTS juhe_business.provider_protocol_profiles (
 )`); err != nil {
 		t.Fatalf("补建 provider_protocol_profiles 表失败: %v", err)
 	}
+	// 旧版 stand-in 或历史 bootstrap 可能留下缺列的表；CREATE TABLE IF NOT
+	// EXISTS 会静默跳过，这里用加法 ALTER 把种子/读取契约列补齐（幂等）。
+	for _, statement := range []string{
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS system_account_id text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS config_revision integer NOT NULL DEFAULT 1`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS dispatch_revision bigint NOT NULL DEFAULT 1`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS provider_code text NOT NULL DEFAULT 'openai'`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS provider_protocol_profile_id text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS protocol_code text NOT NULL DEFAULT 'chat_completions'`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS protocol_version text NOT NULL DEFAULT 'v1'`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS type text NOT NULL DEFAULT 'api_key'`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS credentials_encrypted text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS schedulable integer NOT NULL DEFAULT 1`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS balance_query_enabled integer NOT NULL DEFAULT 0`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS balance_query_config_json text NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS balance_query_next_refresh_at text`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS proxy_profile_id text`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS authorization_instance_authorization_id text`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS deleted_at text`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS health_check_model text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS health_check_endpoint_mode text NOT NULL DEFAULT 'chat_json'`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS created_at text NOT NULL DEFAULT '1970-01-01T00:00:00Z'`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS updated_at text NOT NULL DEFAULT '1970-01-01T00:00:00Z'`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS system_account_id text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS type text NOT NULL DEFAULT 'http'`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS host text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS port integer NOT NULL DEFAULT 0`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS username text`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS password_encrypted text`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00'`,
+		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00'`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS provider_code text NOT NULL DEFAULT 'openai'`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS enabled integer NOT NULL DEFAULT 1`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS protocol_code text NOT NULL DEFAULT 'chat_completions'`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS protocol_version text NOT NULL DEFAULT 'v1'`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS base_url text NOT NULL DEFAULT 'https://w7c.invalid'`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS default_health_check_model text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS account_types_json text NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS capabilities_json text NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS created_at text NOT NULL DEFAULT '1970-01-01T00:00:00Z'`,
+		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS updated_at text NOT NULL DEFAULT '1970-01-01T00:00:00Z'`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("补齐 stand-in 列失败: %v", err)
+		}
+	}
+	// 更早的 wave 曾把 stand-in 表建成全 text 列（SQLite 形状镜像）；reader
+	// 的扫描契约要求整数/布尔/时间戳类型（NullInt64/NullBool/time.Time），
+	// pgx 严格编码也会拒绝 int→text 列。这里逐列检测实际类型，仅在漂移时
+	// 做加法类型对齐（空串转 NULL，幂等可重入）。
+	for _, drift := range []struct{ table, column, dataType, using string }{
+		{"accounts", "config_revision", "integer", "NULLIF(btrim(config_revision::text), '')::integer"},
+		{"accounts", "dispatch_revision", "integer", "NULLIF(btrim(dispatch_revision::text), '')::integer"},
+		{"accounts", "schedulable", "integer", "NULLIF(btrim(schedulable::text), '')::integer"},
+		{"accounts", "balance_query_enabled", "integer", "NULLIF(btrim(balance_query_enabled::text), '')::integer"},
+		{"proxy_profiles", "port", "integer", "NULLIF(btrim(port::text), '')::integer"},
+		{"proxy_profiles", "enabled", "boolean", "CASE WHEN enabled IS NULL OR btrim(enabled::text) = '' THEN NULL ELSE enabled::text::boolean END"},
+		{"proxy_profiles", "created_at", "timestamptz", "NULLIF(btrim(created_at::text), '')::timestamptz"},
+		{"proxy_profiles", "updated_at", "timestamptz", "NULLIF(btrim(updated_at::text), '')::timestamptz"},
+		{"provider_protocol_profiles", "enabled", "integer", "NULLIF(btrim(enabled::text), '')::integer"},
+	} {
+		var actual string
+		if err := db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
+  WHERE table_schema = 'juhe_business' AND table_name = $1 AND column_name = $2`, drift.table, drift.column).Scan(&actual); err != nil {
+			t.Fatalf("检测 %s.%s 类型失败: %v", drift.table, drift.column, err)
+		}
+		if actual == drift.dataType {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `ALTER TABLE juhe_business.` + drift.table + ` ALTER COLUMN ` + drift.column + ` TYPE ` + drift.dataType + ` USING ` + drift.using); err != nil {
+			t.Fatalf("对齐 %s.%s 为 %s 失败: %v", drift.table, drift.column, drift.dataType, err)
+		}
+	}
+	// 历史遗留表可能没有 id 唯一约束，ON CONFLICT (id) 会报 42P10；先确认
+	// 无重复 id 再补唯一索引（不删除共享库中的既有行）。
+	for _, table := range []string{"accounts", "proxy_profiles", "provider_protocol_profiles"} {
+		var duplicates int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM (
+  SELECT id FROM juhe_business.`+table+` GROUP BY id HAVING COUNT(*) > 1
+) d`).Scan(&duplicates); err != nil {
+			t.Fatalf("检查 %s 重复 id 失败: %v", table, err)
+		}
+		if duplicates > 0 {
+			t.Fatalf("临时子库 %s 存在 %d 组重复 id，无法补唯一索引", table, duplicates)
+		}
+		if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS w7c_ux_`+table+`_id ON juhe_business.`+table+` (id)`); err != nil {
+			t.Fatalf("补建 %s 唯一索引失败: %v", table, err)
+		}
+	}
 	return tempURL
 }
 
@@ -310,7 +404,7 @@ INSERT INTO juhe_business.accounts (
   balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, proxy_profile_id,
   deleted_at, authorization_instance_authorization_id, health_check_model, health_check_endpoint_mode,
   created_at, updated_at
-) VALUES ($1,$9,1,1,'openai',$8,'chat_completions','v1',$1,'api_key','active',$2,1,$3,$4,$5,NULLIF($6,''),NULL,NULL,'','chat_json',$7,$7)
+) VALUES ($1,$9,1,1,'openai',$8,'chat_completions','v1',$1,'api_key','active',$2,1,$3::integer,$4,$5,NULLIF($6,''),NULL,NULL,'','chat_json',$7,$7)
 ON CONFLICT (id) DO UPDATE SET credentials_encrypted=excluded.credentials_encrypted,
   balance_query_enabled=excluded.balance_query_enabled, balance_query_config_json=excluded.balance_query_config_json,
   balance_query_next_refresh_at=excluded.balance_query_next_refresh_at, proxy_profile_id=excluded.proxy_profile_id,
@@ -326,7 +420,7 @@ func w7cSeedProxy(t *testing.T, db *sql.DB, id, kind, host string, port int64, u
 	defer cancel()
 	if _, err := db.ExecContext(ctx, `
 INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
-VALUES ($1,'w7c-sys',$1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),$7,$8,$8)
+VALUES ($1,'w7c-sys',$1,$2,$3,$4::integer,NULLIF($5,''),NULLIF($6,''),$7::boolean,$8::timestamptz,$8::timestamptz)
 ON CONFLICT (id) DO UPDATE SET type=excluded.type, host=excluded.host, port=excluded.port,
   username=excluded.username, password_encrypted=excluded.password_encrypted, enabled=excluded.enabled, updated_at=excluded.updated_at`,
 		id, kind, host, port, username, encryptedPassword, enabled, time.Now().UTC()); err != nil {

@@ -64,6 +64,65 @@ func w7cOpenCoverDB(t *testing.T) *sql.DB {
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatalf("临时子库不可达: %v", err)
 	}
+	// 临时子库可能从未引导过业务表（其他波次只建了自己需要的表）；这里
+	// 按 maintenance 权威 DDL 幂等补建本包契约校验的三张表（加法、可重入）。
+	if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+		t.Fatalf("补建 juhe_business schema 失败: %v", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS juhe_business.account_test_tasks (
+      id text PRIMARY KEY,
+      account_id text NOT NULL,
+      account_name text NOT NULL,
+      provider_code text NOT NULL,
+      provider_protocol_profile_id text NOT NULL,
+      protocol_code text NOT NULL,
+      protocol_version text NOT NULL,
+      account_type text NOT NULL,
+      request_system_account_id text NOT NULL,
+      request_role text NOT NULL,
+      request_system_account_filter_id text,
+      diagnostics text NOT NULL DEFAULT 'full',
+      model text,
+      test_endpoint_mode text,
+      draft_account_encrypted text,
+      status text NOT NULL DEFAULT 'queued',
+      status_message text,
+      result_json text,
+      error_message text,
+      cancel_requested boolean NOT NULL DEFAULT false,
+      queued_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
+      queued_deadline_at timestamptz,
+      started_at timestamptz,
+      finished_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
+      updated_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00'
+    )`,
+		`CREATE TABLE IF NOT EXISTS juhe_business.account_test_sessions (
+      id text PRIMARY KEY,
+      request_system_account_id text NOT NULL,
+      request_role text NOT NULL,
+      request_system_account_filter_id text,
+      status text NOT NULL DEFAULT 'running',
+      cancel_reason text,
+      last_heartbeat_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
+      cancel_requested_at timestamptz,
+      finished_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
+      updated_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
+      CHECK (status IN ('running', 'canceled', 'expired', 'completed'))
+    )`,
+		`CREATE TABLE IF NOT EXISTS juhe_business.account_test_session_tasks (
+      session_id text NOT NULL,
+      task_id text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
+      PRIMARY KEY (session_id, task_id)
+    )`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("补建手动测试契约表失败: %v", err)
+		}
+	}
 	return db
 }
 

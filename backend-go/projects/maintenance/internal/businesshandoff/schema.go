@@ -140,7 +140,11 @@ func VerifySQLiteSchema(ctx context.Context, path string) (SchemaReport, error) 
 	return report, nil
 }
 
-func sqliteObjects(ctx context.Context, db *sql.DB, objectType string) (map[string]bool, error) {
+// 下列 sqlite 辅助查询以包级函数变量承载，保持签名与语义不变，
+// 为错误路径测试提供 Mock 注入边界（w12g）。
+var sqliteObjects = sqliteObjectsImpl
+
+func sqliteObjectsImpl(ctx context.Context, db *sql.DB, objectType string) (map[string]bool, error) {
 	rows, err := db.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type=?", objectType)
 	if err != nil {
 		return nil, err
@@ -157,7 +161,7 @@ func sqliteObjects(ctx context.Context, db *sql.DB, objectType string) (map[stri
 	return result, rows.Err()
 }
 
-func sqliteColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
+func sqliteColumnsImpl(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteIdentifier(table)+")")
 	if err != nil {
 		return nil, fmt.Errorf("inspect Business SQLite table %s: %w", table, err)
@@ -177,7 +181,7 @@ func sqliteColumns(ctx context.Context, db *sql.DB, table string) (map[string]bo
 	return result, rows.Err()
 }
 
-func sqlitePrimaryKey(ctx context.Context, db *sql.DB, table string) ([]string, error) {
+func sqlitePrimaryKeyImpl(ctx context.Context, db *sql.DB, table string) ([]string, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteIdentifier(table)+")")
 	if err != nil {
 		return nil, fmt.Errorf("inspect Business SQLite primary key for table %s: %w", table, err)
@@ -210,7 +214,7 @@ func sqlitePrimaryKey(ctx context.Context, db *sql.DB, table string) ([]string, 
 	return result, nil
 }
 
-func sqliteHasUniqueConstraint(ctx context.Context, db *sql.DB, table string, required []string) (bool, error) {
+func sqliteHasUniqueConstraintImpl(ctx context.Context, db *sql.DB, table string, required []string) (bool, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA index_list("+quoteIdentifier(table)+")")
 	if err != nil {
 		return false, err
@@ -247,7 +251,7 @@ func sqliteHasUniqueConstraint(ctx context.Context, db *sql.DB, table string, re
 	return false, nil
 }
 
-func sqliteIndexColumns(ctx context.Context, db *sql.DB, name string) ([]string, error) {
+func sqliteIndexColumnsImpl(ctx context.Context, db *sql.DB, name string) ([]string, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA index_info("+quoteIdentifier(name)+")")
 	if err != nil {
 		return nil, err
@@ -280,7 +284,7 @@ func sqliteIndexColumns(ctx context.Context, db *sql.DB, name string) ([]string,
 	return result, nil
 }
 
-func sqliteForeignKeys(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
+func sqliteForeignKeysImpl(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA foreign_key_list("+quoteIdentifier(table)+")")
 	if err != nil {
 		return nil, fmt.Errorf("inspect Business SQLite foreign keys for table %s: %w", table, err)
@@ -314,9 +318,7 @@ func sqliteForeignKeys(ctx context.Context, db *sql.DB, table string) (map[strin
 	result := map[string]bool{}
 	for _, group := range groups {
 		sort.Slice(group, func(i, j int) bool { return group[i].seq < group[j].seq })
-		if len(group) == 0 {
-			continue
-		}
+		// 注：group 由 append 构造，至少含一条记录（w12g 删除不可达守卫）。
 		fromColumns := make([]string, 0, len(group))
 		toColumns := make([]string, 0, len(group))
 		for _, item := range group {
@@ -342,9 +344,18 @@ func foreignKeySignature(table string, spec contracts.SQLiteForeignKeySpec) stri
 	return fmt.Sprintf("%s(%s)->%s(%s) onDelete=%s onUpdate=%s", table, from, spec.RefTable, to, onDelete, onUpdate)
 }
 
+var (
+	sqliteColumns             = sqliteColumnsImpl
+	sqlitePrimaryKey          = sqlitePrimaryKeyImpl
+	sqliteHasUniqueConstraint = sqliteHasUniqueConstraintImpl
+	sqliteIndexColumns        = sqliteIndexColumnsImpl
+	sqliteForeignKeys         = sqliteForeignKeysImpl
+	sqliteIndexMatches        = sqliteIndexMatchesImpl
+)
+
 func quoteIdentifier(value string) string { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }
 
-func sqliteIndexMatches(ctx context.Context, db *sql.DB, table string, required contracts.SQLiteIndexDefinition) (bool, string, error) {
+func sqliteIndexMatchesImpl(ctx context.Context, db *sql.DB, table string, required contracts.SQLiteIndexDefinition) (bool, string, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA index_list("+quoteIdentifier(table)+")")
 	if err != nil {
 		return false, "read index_list failed", err
@@ -446,9 +457,8 @@ func predicatesEquivalent(actual, expected string) bool {
 		v = strings.NewReplacer("::text", "", "::character varying", "", "::varchar", "").Replace(v)
 		v = strings.ReplaceAll(strings.ReplaceAll(v, "(", ""), ")", "")
 		v = strings.Join(strings.Fields(v), " ")
-		for strings.HasPrefix(v, "(") && strings.HasSuffix(v, ")") {
-			v = strings.TrimSpace(v[1 : len(v)-1])
-		}
+		// 注：括号字符已在上方被整体移除，此处不可能再以括号包裹
+		// （w12g 删除不可达守卫）。
 		parts := strings.Split(v, " and ")
 		for i := range parts {
 			parts[i] = strings.Join(strings.Fields(parts[i]), " ")

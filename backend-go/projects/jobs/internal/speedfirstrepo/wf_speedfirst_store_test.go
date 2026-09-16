@@ -18,11 +18,10 @@ import (
 // 与索引维护。全部使用 miniredis 内存实例 + 固定时钟/随机函数，保证确定性
 // 与可重放；不依赖真实 Redis。
 //
-// 行为存疑：addIndexKey/filterIndexKeys 以索引键本身作为 SetNX 锁键，CAS
-// 写入会用索引 JSON 覆盖锁值，导致同一 namespace 内第二次索引写入必然
-// 以"索引锁获取失败"告终（详见报告）。因此每个会写索引的场景都使用独立
-// 的新鲜 miniredis 实例，只断言第一次写入；对第二次写入按当前实际行为
-// 断言失败，并以"行为存疑"注释标记。
+// w12f 修复备注：addIndexKey/filterIndexKeys 曾把索引键本身作为 SetNX 锁键，
+// CAS 写入用索引 JSON 覆盖锁值，导致同一索引 TTL 内的第二次写入必然以
+// "索引锁获取失败"告终。现锁键已改为 indexLockKey(indexKey+"-lock")，
+// 同一索引可重复写入；原"行为存疑"断言同步更新为第二次写入成功。
 
 // wfSpeedFirstBase 是测试固定的当前时间（毫秒精度，UTC）。
 var wfSpeedFirstBase = time.UnixMilli(1_700_000_000_000).UTC()
@@ -961,12 +960,13 @@ func TestWFSpeedFirstIndexMaintenance(t *testing.T) {
 		t.Fatalf("索引 TTL=%v 必须为正", ttl)
 	}
 
-	// 行为存疑：同一索引的第二次 addIndexKey 以"索引锁获取失败"告终。
-	// 根因是索引键本身被当作 SetNX 锁键使用，首次 CAS 写入已用索引 JSON
-	// 覆盖锁值，键存在导致 SetNX 永远失败（indexLockKey 辅助未被使用）。
-	secondErr := store.addIndexKey(ctx, "v1:idx-test", "key-b")
-	if secondErr == nil || !strings.Contains(secondErr.Error(), "索引锁获取失败") {
-		t.Fatalf("第二次 addIndexKey 实际错误=%v", secondErr)
+	// w12f 修复后：同一索引的第二次 addIndexKey 正常追加（锁键与索引键分离）。
+	if err := store.addIndexKey(ctx, "v1:idx-test", "key-b"); err != nil {
+		t.Fatalf("第二次 addIndexKey 失败: %v", err)
+	}
+	keys, err = store.loadIndexKeys(ctx, "v1:idx-test")
+	if err != nil || len(keys) != 2 || keys[0] != "key-a" || keys[1] != "key-b" {
+		t.Fatalf("第二次写入后索引=%v err=%v", keys, err)
 	}
 
 	// 新鲜索引上的过滤：缺失索引被改写为空列表（删除路径的预期行为）。

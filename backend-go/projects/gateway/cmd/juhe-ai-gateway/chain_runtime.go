@@ -101,6 +101,11 @@ type chainRuntimeServices struct {
 	AccountCircuits *gatewaycircuit.CircuitService
 	// ClientIPSlots is the D-109 high-concurrency client-IP slot family.
 	ClientIPSlots *gatewayclientip.ClientIPConcurrency
+	// HighConcurrencyQueue is the D-109 high-concurrency group short queue
+	// (Node runtime/high-concurrency-queue.service.ts singleton fork; the
+	// memory driver keeps process-local queues, the redis driver shares the
+	// juhe-ai:state:high-concurrency-queue keyspace).
+	HighConcurrencyQueue *gatewayclientip.HighConcurrencyGroupQueue
 	// SuppressionStore is the D-134 local account suppression state.
 	SuppressionStore *gatewaycircuit.LocalSuppressionStore
 	// SuppressionWaiter is the D-134 recoverable wait engine behind the
@@ -490,6 +495,28 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	services.ClientIPSlots = clientIPSlots
 	services.closeFuncs = append(services.closeFuncs, clientIPSlots.Close)
+
+	// D-109 补齐（E2E-FINDING #5）：high_concurrency 分组的分组级短队列
+	//（Node runtime/high-concurrency-queue.service.ts 单例 fork）。此前
+	// engine.HighConcurrencyQueue 从未装配，并发满时直接 nil panic
+	//（4×EOF + panic 栈）。实现复用 gatewayclientip 队列：memory 驱动进程内
+	// 队列，redis 驱动共享 juhe-ai:state:high-concurrency-queue 键空间；账户
+	// 并发事实源与 cache/dispatch 同用一个 concurrencyTracker（G10 seam）。
+	highConcurrencyQueue, queueErr := gatewayclientip.NewHighConcurrencyGroupQueue(gatewayclientip.HighConcurrencyQueueOptions{
+		RuntimeStateDriver: cfg.RuntimeStateDriver,
+		StateRedisURL:      cfg.RedisStateURL,
+		RedisNamespace:     cfg.RedisNamespace,
+		PolicyDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
+			MaxQueueSize:        cfg.ConcurrencyGlobalMax,
+			PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
+		},
+		Concurrency: concurrencyTracker,
+	})
+	if queueErr != nil {
+		return nil, fmt.Errorf("create high-concurrency group queue: %w", queueErr)
+	}
+	services.HighConcurrencyQueue = highConcurrencyQueue
+	services.closeFuncs = append(services.closeFuncs, highConcurrencyQueue.Close)
 
 	// D-131：账户电路服务（Node GatewayAccountCircuitService 单例 fork；
 	// SUSPECT/confirmation/父升级/恢复状态机的存储随 runtimeStateDriver 分叉）。

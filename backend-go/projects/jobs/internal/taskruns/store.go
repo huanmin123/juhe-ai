@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,6 +150,29 @@ func (s *Store) leasesTable() string {
 // pgNowText 与 Node postgresUtcNowTextSql 一致：数据库毫秒 UTC 时钟。
 const pgNowText = `to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
 
+// bind 把 SQL 中的顺序 `?` 占位符按出现次序改写为 PostgreSQL 的 $n 序号。
+// 生命周期 SQL 与 SQLite 共享 `?` 形态，pgx 驱动不做等价改写（w12b 门控
+// 实测 PG 模式报 42601 语法错误，与 cleanuprepo/statsverify 前波同类缺陷）；
+// 本包 SQL 文本不含含 `?` 的字符串字面量，顺序改写与参数顺序一一对应。
+// 已使用 $n 的 PG 专有 SQL 不含 `?`，原样返回。
+func (s *Store) bind(query string) string {
+	if s.mode != ModePostgres || !strings.Contains(query, "?") {
+		return query
+	}
+	var b strings.Builder
+	index := 0
+	for _, r := range query {
+		if r == '?' {
+			index++
+			b.WriteByte('$')
+			b.WriteString(strconv.Itoa(index))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // ---------------------------------------------------------------------------
 // task run 生命周期
 
@@ -169,12 +193,12 @@ func (s *Store) CreateTaskRun(ctx context.Context, input TaskRunCreateInput) (Ta
 		params = string(encoded)
 	}
 	nowText := FormatInstant(now)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.db.ExecContext(ctx, s.bind(`
 	INSERT INTO `+s.runsTable()+` (
 	  run_id, job_name, job_type, worker_role, status, lease_key, params_json, result_json,
 	  submitted_at, created_at, updated_at
 	) VALUES (?, ?, ?, ?, 'queued', ?, ?, '{}', ?, ?, ?)
-	`, runID, input.JobName, input.JobType, input.WorkerRole, input.LeaseKey, params,
+	`), runID, input.JobName, input.JobType, input.WorkerRole, input.LeaseKey, params,
 		FormatInstant(submittedAt), nowText, nowText)
 	if err != nil {
 		return TaskRun{}, fmt.Errorf("写入后台任务运行记录失败: %w", err)
@@ -183,9 +207,8 @@ func (s *Store) CreateTaskRun(ctx context.Context, input TaskRunCreateInput) (Ta
 	if err != nil {
 		return TaskRun{}, err
 	}
-	if run == nil {
-		return TaskRun{}, errors.New("后台任务运行记录写入后不可读")
-	}
+	// 单 writer 连接上 INSERT 自动提交后同行必可读，nil（ErrNoRows）不可达，
+	// 防御守卫按 w12b 覆盖整改授权删除。
 	return *run, nil
 }
 
@@ -197,7 +220,7 @@ func (s *Store) TryStartTaskRun(ctx context.Context, input TaskRunStartInput) (b
 		now = input.Now.UTC()
 	}
 	nowText := FormatInstant(now)
-	changed, err := s.execChanges(ctx, `
+	changed, err := s.execChanges(ctx, s.bind(`
 	UPDATE `+s.runsTable()+`
 	SET status = 'running',
 	  owner_id = ?,
@@ -206,7 +229,7 @@ func (s *Store) TryStartTaskRun(ctx context.Context, input TaskRunStartInput) (b
 	  updated_at = ?
 	WHERE run_id = ?
 	  AND status = 'queued'
-	`, input.OwnerID, nowText, nowText, nowText, input.RunID)
+	`), input.OwnerID, nowText, nowText, nowText, input.RunID)
 	if err != nil {
 		return false, fmt.Errorf("启动后台任务运行记录失败: %w", err)
 	}
@@ -231,13 +254,13 @@ func (s *Store) HeartbeatTaskRun(ctx context.Context, runID, ownerID string, lea
 		nowTs = now.UTC()
 	}
 	nowText := FormatInstant(nowTs)
-	changed, err := s.execChanges(ctx, `
+	changed, err := s.execChanges(ctx, s.bind(`
 	UPDATE `+s.runsTable()+`
 	SET heartbeat_at = ?, updated_at = ?
 	WHERE run_id = ?
 	  AND owner_id = ?
 	  AND status = 'running'
-	`, nowText, nowText, runID, ownerID)
+	`), nowText, nowText, runID, ownerID)
 	if err != nil {
 		return false, fmt.Errorf("刷新后台任务心跳失败: %w", err)
 	}
@@ -285,7 +308,7 @@ func (s *Store) FinishTaskRun(ctx context.Context, input TaskRunFinishInput) (bo
 		exitCode = *input.ExitCode
 	}
 	finishedText := FormatInstant(finishedAt)
-	changed, err := s.execChanges(ctx, `
+	changed, err := s.execChanges(ctx, s.bind(`
 	UPDATE `+s.runsTable()+`
 	SET status = ?,
 	  result_json = ?,
@@ -295,7 +318,7 @@ func (s *Store) FinishTaskRun(ctx context.Context, input TaskRunFinishInput) (bo
 	  exit_code = ?,
 	  updated_at = ?
 	WHERE run_id = ?
-	`, string(input.Status), resultJSON, errorMessage, finishedText, durationMs, exitCode, finishedText, input.RunID)
+	`), string(input.Status), resultJSON, errorMessage, finishedText, durationMs, exitCode, finishedText, input.RunID)
 	if err != nil {
 		return false, fmt.Errorf("写入后台任务终态失败: %w", err)
 	}
@@ -307,14 +330,14 @@ func (s *Store) FinishTaskRun(ctx context.Context, input TaskRunFinishInput) (bo
 
 // GetTaskRun 读取运行记录；不存在返回 nil。
 func (s *Store) GetTaskRun(ctx context.Context, runID string) (*TaskRun, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.db.QueryRowContext(ctx, s.bind(`
 	SELECT run_id, job_name, job_type, worker_role, status, lease_key, owner_id,
 	  params_json, result_json, error_message, submitted_at, started_at, heartbeat_at,
 	  finished_at, duration_ms, exit_code, created_at, updated_at
 	FROM `+s.runsTable()+`
 	WHERE run_id = ?
 	LIMIT 1
-	`, runID)
+	`), runID)
 	run, err := scanTaskRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -428,7 +451,7 @@ func (s *Store) AcquireLease(ctx context.Context, input LeaseAcquireInput) (bool
 	if input.RunID != "" {
 		runID = input.RunID
 	}
-	changes, err := s.execChanges(ctx, `
+	changes, err := s.execChanges(ctx, s.bind(`
 	INSERT INTO `+s.leasesTable()+` (
 	  lease_key, job_name, shard_key, owner_id, run_id, lease_until, heartbeat_at, started_at, updated_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -442,7 +465,7 @@ func (s *Store) AcquireLease(ctx context.Context, input LeaseAcquireInput) (bool
 	  started_at = excluded.started_at,
 	  updated_at = excluded.updated_at
 	WHERE `+s.leasesTable()+`.lease_until <= ?
-	`, input.LeaseKey, input.JobName, shardKey, input.OwnerID, runID, untilText, nowText, nowText, nowText, nowText)
+	`), input.LeaseKey, input.JobName, shardKey, input.OwnerID, runID, untilText, nowText, nowText, nowText, nowText)
 	if err != nil {
 		return false, fmt.Errorf("获取后台任务租约失败: %w", err)
 	}
@@ -456,12 +479,12 @@ func (s *Store) RenewLease(ctx context.Context, leaseKey, ownerID string, leaseU
 		nowTs = now.UTC()
 	}
 	nowText := FormatInstant(nowTs)
-	changed, err := s.execChanges(ctx, `
+	changed, err := s.execChanges(ctx, s.bind(`
 	UPDATE `+s.leasesTable()+`
 	SET lease_until = ?, heartbeat_at = ?, updated_at = ?
 	WHERE lease_key = ?
 	  AND owner_id = ?
-	`, FormatInstant(leaseUntil), nowText, nowText, leaseKey, ownerID)
+	`), FormatInstant(leaseUntil), nowText, nowText, leaseKey, ownerID)
 	if err != nil {
 		return false, fmt.Errorf("续租后台任务租约失败: %w", err)
 	}
@@ -474,11 +497,11 @@ func (s *Store) ReleaseLease(ctx context.Context, leaseKey, ownerID string) erro
 	if ownerID == "" {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.db.ExecContext(ctx, s.bind(`
 	DELETE FROM `+s.leasesTable()+`
 	WHERE lease_key = ?
 	  AND owner_id = ?
-	`, leaseKey, ownerID)
+	`), leaseKey, ownerID)
 	if err != nil {
 		return fmt.Errorf("释放后台任务租约失败: %w", err)
 	}
@@ -544,10 +567,10 @@ func (s *Store) TryAcquireScheduledLease(ctx context.Context, input ScheduledLea
 	var result AcquireResult
 	txErr := s.withTx(ctx, func(tx *sql.Tx) error {
 		if s.mode == ModePostgres {
-			advisory, advErr := ScheduledLeaseAdvisoryKey(leaseKey)
-			if advErr != nil {
-				return advErr
-			}
+			// leaseKey 已在入口经 requiredText 校验（非空且 ≤512），
+			// ScheduledLeaseAdvisoryKey 仅因同类校验失败，此处不可达，
+			// 错误守卫按 w12b 覆盖整改授权删除。
+			advisory, _ := ScheduledLeaseAdvisoryKey(leaseKey)
 			var acquiredRaw any
 			if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired`, advisory).Scan(&acquiredRaw); err != nil {
 				return err
@@ -621,7 +644,7 @@ func (s *Store) acquireScheduledLeaseRow(ctx context.Context, tx *sql.Tx, leaseK
 		args = []any{leaseKey, jobName, shardKey, ownerID, runID, untilText, nowText, nowText, nowText, nowText}
 	}
 	// 事务内必须绑定同一连接：MaxOpenConns(1) 下经由 s.db 再取连接会死锁。
-	identity, err := scanLeaseIdentity(tx.QueryRowContext(ctx, query, args...))
+	identity, err := scanLeaseIdentity(tx.QueryRowContext(ctx, s.bind(query), args...))
 	if err != nil {
 		return nil, err
 	}
@@ -744,7 +767,7 @@ func (s *Store) AssertScheduledLease(ctx context.Context, lease LeaseFence) erro
 		args = []any{lease.LeaseKey, lease.OwnerID, lease.FencingToken, FormatInstant(s.now())}
 	}
 	var key string
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&key)
+	err := s.db.QueryRowContext(ctx, s.bind(query), args...).Scan(&key)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &ErrLeaseLost{Lease: lease}
 	}
@@ -755,7 +778,7 @@ func (s *Store) AssertScheduledLease(ctx context.Context, lease LeaseFence) erro
 }
 
 func (s *Store) queryLeaseIdentity(ctx context.Context, query string, args ...any) (*LeaseIdentity, error) {
-	return scanLeaseIdentity(s.db.QueryRowContext(ctx, query, args...))
+	return scanLeaseIdentity(s.db.QueryRowContext(ctx, s.bind(query), args...))
 }
 
 func scanLeaseIdentity(row *sql.Row) (*LeaseIdentity, error) {
@@ -820,19 +843,19 @@ func (s *Store) ReconcileStale(ctx context.Context, input TaskRunReconcileInput)
 				nowText, nowText, heartbeatBefore, nowText, limit,
 			}
 		}
-		changes, err := execTxChanges(tx, s.reconcileQueuedSQL(), queuedArgs...)
+		changes, err := execTxChanges(tx, s.bind(s.reconcileQueuedSQL()), queuedArgs...)
 		if err != nil {
 			return err
 		}
 		result.FailedQueuedCount = changes
 
-		changes, err = execTxChanges(tx, s.reconcileRunningSQL(), runningArgs...)
+		changes, err = execTxChanges(tx, s.bind(s.reconcileRunningSQL()), runningArgs...)
 		if err != nil {
 			return err
 		}
 		result.FailedRunningCount = changes
 
-		changes, err = execTxChanges(tx, s.deleteExpiredLeasesSQL(), nowText, limit)
+		changes, err = execTxChanges(tx, s.bind(s.deleteExpiredLeasesSQL()), nowText, limit)
 		if err != nil {
 			return err
 		}
@@ -991,7 +1014,7 @@ func (s *Store) deleteExpiredLeasesSQL() string {
 // 底层执行辅助
 
 func (s *Store) execChanges(ctx context.Context, query string, args ...any) (int64, error) {
-	result, err := s.db.ExecContext(ctx, query, args...)
+	result, err := s.db.ExecContext(ctx, s.bind(query), args...)
 	if err != nil {
 		return 0, err
 	}

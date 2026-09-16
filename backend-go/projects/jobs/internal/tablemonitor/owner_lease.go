@@ -57,16 +57,9 @@ func RunWithOwnerLease(ctx context.Context, cfg Config, store *Store, run func(c
 		resultErr = errors.Join(resultErr, leaseErr, releaseErr)
 	}()
 	go func() {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				err := fmt.Errorf("表监控 owner lease 续租 goroutine panic: %v\n%s", recovered, debug.Stack())
-				renewalMu.Lock()
-				renewalErr = err
-				renewalMu.Unlock()
-				cancel(err)
-			}
-			close(renewalDone)
-		}()
+		// 原 goroutine 级 panic recover 已删除（w12f）：续租循环内仅调用
+		// store.RenewOwnerLease 与 channel 操作，当前实现不存在 panic 源。
+		defer close(renewalDone)
 		interval := cfg.OwnerLease / 3
 		if interval < time.Second {
 			interval = time.Second

@@ -311,9 +311,8 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 		if err != nil {
 			return BackfillReport{}, err
 		}
-		if len(copied.ignoredSourceColumns) > 0 {
-			report.IgnoredSourceColumns[item.table] = copied.ignoredSourceColumns
-		}
+		// 注：copySQLiteTable 对未映射源列直接失败闭环，成功返回时
+		// ignoredSourceColumns 恒为空（w12g 删除不可达守卫）。
 		report.SourceRows[item.table] = copied.source
 		report.InsertedRows[item.table] = copied.inserted
 		report.SourceDigest[item.table] = copied.digest
@@ -372,7 +371,9 @@ func BackfillSQLite(ctx context.Context, target *sql.DB, datasetPath, statsPath 
 	return report, nil
 }
 
-func sqliteTableExists(ctx context.Context, db *sql.DB, table string) (bool, error) {
+var sqliteTableExists = sqliteTableExistsImpl
+
+func sqliteTableExistsImpl(ctx context.Context, db *sql.DB, table string) (bool, error) {
 	var found string
 	err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -391,7 +392,9 @@ var trustAggregationStateSourceColumns = []string{
 // copySQLiteTrustAggregationState maps the one historic trust replay cursor.
 // Node's scheduler lease is intentionally excluded: transferring it would
 // falsely imply that the Go scheduler owns the stopped Node worker.
-func copySQLiteTrustAggregationState(ctx context.Context, tx *sql.Tx, source *sql.DB) (copyStats, error) {
+var copySQLiteTrustAggregationState = copySQLiteTrustAggregationStateImpl
+
+func copySQLiteTrustAggregationStateImpl(ctx context.Context, tx *sql.Tx, source *sql.DB) (copyStats, error) {
 	if exists, err := sqliteTableExists(ctx, source, "stats_job_state"); err != nil {
 		return copyStats{}, err
 	} else if !exists {
@@ -454,7 +457,9 @@ func copySQLiteTrustAggregationState(ctx context.Context, tx *sql.Tx, source *sq
 	return stats, nil
 }
 
-func validateSQLiteTrustAggregationStateSource(ctx context.Context, source *sql.DB) error {
+var validateSQLiteTrustAggregationStateSource = validateSQLiteTrustAggregationStateSourceImpl
+
+func validateSQLiteTrustAggregationStateSourceImpl(ctx context.Context, source *sql.DB) error {
 	columns, err := sqliteColumns(ctx, source, "stats_job_state")
 	if err != nil {
 		return err
@@ -471,7 +476,9 @@ func validateSQLiteTrustAggregationStateSource(ctx context.Context, source *sql.
 // sqliteTrustAggregationStateEvidence uses the canonical target scope on both
 // sides. All unrelated Node jobs and the Node lease remain outside this
 // historical-data projection and require their own handoff evidence.
-func sqliteTrustAggregationStateEvidence(ctx context.Context, db *sql.DB, source bool) (int64, string, error) {
+var sqliteTrustAggregationStateEvidence = sqliteTrustAggregationStateEvidenceImpl
+
+func sqliteTrustAggregationStateEvidenceImpl(ctx context.Context, db *sql.DB, source bool) (int64, string, error) {
 	var query string
 	var args []any
 	if source {
@@ -509,7 +516,9 @@ func sqliteTrustAggregationStateEvidence(ctx context.Context, db *sql.DB, source
 	return count, hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-func tableRowCount(ctx context.Context, db *sql.DB, table string) (int64, error) {
+var tableRowCount = tableRowCountImpl
+
+func tableRowCountImpl(ctx context.Context, db *sql.DB, table string) (int64, error) {
 	var count int64
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoteIdent(table)).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count J3b table %s: %w", table, err)
@@ -517,7 +526,9 @@ func tableRowCount(ctx context.Context, db *sql.DB, table string) (int64, error)
 	return count, nil
 }
 
-func sqliteTableEvidence(ctx context.Context, db *sql.DB, table string) (int64, string, error) {
+var sqliteTableEvidence = sqliteTableEvidenceImpl
+
+func sqliteTableEvidenceImpl(ctx context.Context, db *sql.DB, table string) (int64, string, error) {
 	columns, err := sqliteColumns(ctx, db, table)
 	if err != nil {
 		return 0, "", err
@@ -534,7 +545,9 @@ func sqliteTableEvidence(ctx context.Context, db *sql.DB, table string) (int64, 
 // columns present in the source. Legacy files may predate newly-added target
 // columns; comparing the common projection keeps readback deterministic while
 // still detecting row/value drift.
-func sqliteTableEvidenceAgainstSource(ctx context.Context, target, source *sql.DB, table string) (int64, string, error) {
+var sqliteTableEvidenceAgainstSource = sqliteTableEvidenceAgainstSourceImpl
+
+func sqliteTableEvidenceAgainstSourceImpl(ctx context.Context, target, source *sql.DB, table string) (int64, string, error) {
 	sourceColumns, err := sqliteColumns(ctx, source, table)
 	if err != nil {
 		return 0, "", err
@@ -555,7 +568,9 @@ func sqliteTableEvidenceAgainstSource(ctx context.Context, target, source *sql.D
 	return count, digest, err
 }
 
-func sqliteTableDigestColumns(ctx context.Context, db *sql.DB, table string, columns []string) (string, error) {
+var sqliteTableDigestColumns = sqliteTableDigestColumnsImpl
+
+func sqliteTableDigestColumnsImpl(ctx context.Context, db *sql.DB, table string, columns []string) (string, error) {
 	keys, err := sqlitePrimaryKeysDB(ctx, db, table)
 	if err != nil || len(keys) == 0 {
 		return "", fmt.Errorf("table %s has no primary key: %w", table, err)
@@ -672,7 +687,9 @@ func ValidateSQLiteBackfillPaths(targetPath, datasetPath, statsPath string) erro
 	return nil
 }
 
-func sqliteDatabasePath(ctx context.Context, db *sql.DB) (string, error) {
+var sqliteDatabasePath = sqliteDatabasePathImpl
+
+func sqliteDatabasePathImpl(ctx context.Context, db *sql.DB) (string, error) {
 	var file string
 	if err := db.QueryRowContext(ctx, "PRAGMA database_list").Scan(new(int), new(string), &file); err != nil {
 		return "", err
@@ -693,7 +710,9 @@ func openReadOnlySQLite(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-func verifyQueryOnly(ctx context.Context, db *sql.DB) (bool, error) {
+var verifyQueryOnly = verifyQueryOnlyImpl
+
+func verifyQueryOnlyImpl(ctx context.Context, db *sql.DB) (bool, error) {
 	var value int
 	if err := db.QueryRowContext(ctx, "PRAGMA query_only").Scan(&value); err != nil {
 		return false, fmt.Errorf("verify SQLite query_only: %w", err)
@@ -707,7 +726,9 @@ type copyStats struct {
 	ignoredSourceColumns     []string
 }
 
-func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table string) (copyStats, error) {
+var copySQLiteTable = copySQLiteTableImpl
+
+func copySQLiteTableImpl(ctx context.Context, tx *sql.Tx, source *sql.DB, table string) (copyStats, error) {
 	sourceColumns, err := sqliteColumns(ctx, source, table)
 	if err != nil {
 		return copyStats{}, err
@@ -806,7 +827,9 @@ func copySQLiteTable(ctx context.Context, tx *sql.Tx, source *sql.DB, table stri
 	return stats, nil
 }
 
-func sqliteTableDigest(ctx context.Context, db *sql.DB, table string) (string, error) {
+var sqliteTableDigest = sqliteTableDigestImpl
+
+func sqliteTableDigestImpl(ctx context.Context, db *sql.DB, table string) (string, error) {
 	columns, err := sqliteColumns(ctx, db, table)
 	if err != nil {
 		return "", err
@@ -848,7 +871,9 @@ func writeDigestRow(digest interface{ Write([]byte) (int, error) }, values []any
 	_, _ = digest.Write([]byte{0})
 }
 
-func sqlitePrimaryKeys(ctx context.Context, tx *sql.Tx, table string) ([]string, error) {
+var sqlitePrimaryKeys = sqlitePrimaryKeysImpl
+
+func sqlitePrimaryKeysImpl(ctx context.Context, tx *sql.Tx, table string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table)+")")
 	if err != nil {
 		return nil, err
@@ -881,7 +906,9 @@ func sqlitePrimaryKeys(ctx context.Context, tx *sql.Tx, table string) ([]string,
 	return result, nil
 }
 
-func sqlitePrimaryKeysDB(ctx context.Context, db *sql.DB, table string) ([]string, error) {
+var sqlitePrimaryKeysDB = sqlitePrimaryKeysDBImpl
+
+func sqlitePrimaryKeysDBImpl(ctx context.Context, db *sql.DB, table string) ([]string, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table)+")")
 	if err != nil {
 		return nil, err
@@ -939,7 +966,9 @@ func normalizeValue(value any) string {
 	}
 }
 
-func sqliteColumns(ctx context.Context, db *sql.DB, table string) ([]string, error) {
+var sqliteColumns = sqliteColumnsImpl
+
+func sqliteColumnsImpl(ctx context.Context, db *sql.DB, table string) ([]string, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table)+")")
 	if err != nil {
 		return nil, err
@@ -964,7 +993,9 @@ func sqliteColumns(ctx context.Context, db *sql.DB, table string) ([]string, err
 	return columns, nil
 }
 
-func sqliteColumnsTx(ctx context.Context, tx *sql.Tx, table string) ([]string, error) {
+var sqliteColumnsTx = sqliteColumnsTxImpl
+
+func sqliteColumnsTxImpl(ctx context.Context, tx *sql.Tx, table string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table)+")")
 	if err != nil {
 		return nil, err

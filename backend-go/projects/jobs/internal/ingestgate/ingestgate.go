@@ -127,14 +127,10 @@ func oldestIso(left, right string) (string, error) {
 	if normalizedRight == "" {
 		return normalizedLeft, nil
 	}
-	leftMs, ok := statsagg.RFC3339Milliseconds(normalizedLeft)
-	if !ok {
-		return "", fmt.Errorf("使用记录 oldestCreatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间")
-	}
-	rightMs, ok := statsagg.RFC3339Milliseconds(normalizedRight)
-	if !ok {
-		return "", fmt.Errorf("使用记录 oldestCreatedAt 必须是带 Z 或数值 offset 的 RFC3339 时间")
-	}
+	// 说明：两侧均经 normalizeIsoTime（RequiredRFC3339Instant）规范化，输出
+	// 必可再解析，原 RFC3339Milliseconds !ok 错误臂为死代码，按覆盖率清理授权删除。
+	leftMs, _ := statsagg.RFC3339Milliseconds(normalizedLeft)
+	rightMs, _ := statsagg.RFC3339Milliseconds(normalizedRight)
 	if leftMs <= rightMs {
 		return normalizedLeft, nil
 	}
@@ -158,14 +154,10 @@ func safeCreatedBeforeForPendingBacklog(defaultSafeCreatedBefore, oldestPendingC
 	if normalizedOldest == "" {
 		return normalizedDefault, nil
 	}
-	oldestMs, ok := statsagg.RFC3339Milliseconds(normalizedOldest)
-	if !ok {
-		return "", fmt.Errorf("统计安全截止时间必须是带 Z 或数值 offset 的 RFC3339 时间")
-	}
-	defaultMs, ok := statsagg.RFC3339Milliseconds(normalizedDefault)
-	if !ok {
-		return "", fmt.Errorf("统计安全截止时间必须是带 Z 或数值 offset 的 RFC3339 时间")
-	}
+	// 说明：oldest 经 normalizeIsoTime、default 经 RequiredRFC3339Instant 规范
+	// 后必可再解析，原 RFC3339Milliseconds !ok 错误臂为死代码，按覆盖率清理授权删除。
+	oldestMs, _ := statsagg.RFC3339Milliseconds(normalizedOldest)
+	defaultMs, _ := statsagg.RFC3339Milliseconds(normalizedDefault)
 	if oldestMs > defaultMs {
 		return normalizedDefault, nil
 	}

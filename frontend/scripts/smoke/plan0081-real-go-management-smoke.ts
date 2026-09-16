@@ -112,10 +112,12 @@ const externalIntegrationSourcePrimaryTokenFieldSet = new Set([
 const externalIntegrationSourceTokenSecretFieldSet = new Set(['token'])
 const apiKeyListItemFieldSet = new Set([
   'id',
+  'revision',
   'systemAccountId',
   'systemAccountName',
   'name',
   'description',
+  'purpose',
   'keyPrefix',
   'keySuffix',
   'status',
@@ -224,7 +226,8 @@ interface GroupRecord {
   groupType: 'personal' | 'high_concurrency'
   accessType: 'owner' | 'authorized'
   accountStats: Record<string, unknown>
-  permissions: Record<string, unknown>
+  permissions?: Record<string, unknown>
+  updatedAt: string
   schedulingPolicy?: Record<string, unknown>
 }
 
@@ -263,8 +266,9 @@ interface ProviderRecord {
 }
 
 interface ModelOptionRecord {
-  providerCode: string
-  model: string
+  providerCode?: string
+  id: string
+  name: string
 }
 
 interface AccountTestOptionModel {
@@ -690,11 +694,17 @@ async function runReadOnlySmoke(
     routeStrategyDetailChecked = true
   }
 
-  const providersUrl = endpointUrl(config.baseUrl, '/providers/options', {
+  const providerOptionsUrl = endpointUrl(config.baseUrl, '/providers/options', {
     systemAccountId: config.systemAccountId
   })
-  const providersData = await getEnvelopeData(providersUrl, config, 'providers/options')
-  const providers = assertProviders(providersData)
+  const providerOptionsData = await getEnvelopeData(providerOptionsUrl, config, 'providers/options')
+  assertProviderOptions(providerOptionsData)
+
+  const providersUrl = endpointUrl(config.baseUrl, '/providers/definitions', {
+    systemAccountId: config.systemAccountId
+  })
+  const providersData = await getEnvelopeData(providersUrl, config, 'providers/definitions')
+  const providers = assertProviderDefinitions(providersData)
 
   const modelsUrl = endpointUrl(config.baseUrl, '/providers/models/options', {
     systemAccountId: config.systemAccountId
@@ -703,7 +713,10 @@ async function runReadOnlySmoke(
   const modelOptions = assertModelOptions(modelsData)
   const providerCodes = new Set(providers.map((provider) => provider.code))
   for (const option of modelOptions) {
-    expect(providerCodes.has(option.providerCode), 'Model option references an unknown provider')
+    // 未归属供应商的模型选项不带 providerCode（前端 ProviderModelOption 同形可选）。
+    if (option.providerCode !== undefined) {
+      expect(providerCodes.has(option.providerCode), 'Model option references an unknown provider')
+    }
   }
 
   const adminApiKeyListData = await getEnvelopeData(
@@ -1043,6 +1056,7 @@ async function runGroupMutationSmoke(
     {
       method: 'PATCH',
       body: {
+        expectedUpdatedAt: detail.updatedAt,
         name: patchedName,
         description: temporaryGroupDescription,
         groupType: 'high_concurrency',
@@ -1051,8 +1065,12 @@ async function runGroupMutationSmoke(
       expectedStatus: 200
     }
   )
-  const patchedGroup = assertGroupDetail(patchData)
-  assertPatchedTemporaryGroup(patchedGroup, identity, patchedName, 'temporary group PATCH response')
+  // 现行 PATCH 契约（前端 GroupMutationResult 同形）：响应为变更确认
+  // {id, changedFields, updatedAt}，补丁后的完整状态经随后的 detail GET 断言。
+  expect(isRecord(patchData), 'temporary group PATCH response must be an object')
+  expect(patchData.id === identity.id, 'temporary group PATCH response id must match')
+  expect(Array.isArray(patchData.changedFields) && patchData.changedFields.length > 0, 'temporary group PATCH response changedFields must be a non-empty array')
+  expect(isNonEmptyString(patchData.updatedAt), 'temporary group PATCH response updatedAt must be a non-empty string')
   identity.name = patchedName
   identity.cleanupNames = [patchedName]
 
@@ -1250,7 +1268,7 @@ function selectMutationProvider(
 ): ProviderRecord {
   const requestedCode = configuredProviderCode ?? selectedGroup.providerCode
   const provider = providers.find((item) => item.code === requestedCode)
-  expect(provider, 'Mutation provider was not returned by providers/options')
+  expect(provider, 'Mutation provider was not returned by providers/definitions')
   expect(provider.enabled, 'Mutation provider must be enabled')
   return provider
 }
@@ -2258,9 +2276,19 @@ function assertClientIPStatsList(value: unknown): ClientIPStatsListResult {
   expect(value.items.length <= value.pageSize, 'client IP stats list must not exceed pageSize')
 
   if (!value.rangeReady) {
-    expect(value.items.length === 0, 'client IP stats list must be empty when rangeReady is false')
-    expect(value.pageUpperBound === 0, 'client IP stats list pageUpperBound must be 0 when rangeReady is false')
-    expect(value.hasMore === false, 'client IP stats list hasMore must be false when rangeReady is false')
+    // 现行 Go 契约：聚合窗口未就绪时列表降级为不带范围的 registry 视图
+    // （前端显示“用量窗口尚未完成预聚合”警告并照常渲染 items），并非空列表；
+    // 此时行不受范围约束，rangeUsage 不与 range.days 耦合校验。
+    for (const [index, item] of value.items.entries()) {
+      const label = `client IP stats list item ${index}`
+      expect(isRecord(item), `${label} must be an object`)
+      expect(isNonEmptyString(item.ipHash), `${label}.ipHash must be a non-empty string`)
+      expect(isNonEmptyString(item.aggregateIpKey), `${label}.aggregateIpKey must be a non-empty string`)
+      expect(
+        item.status === 'normal' || item.status === 'blacklisted' || item.status === 'allowlisted',
+        `${label}.status is invalid`
+      )
+    }
   } else {
     value.items.forEach((item, index) => assertClientIPStatsItem(item, range.days, index))
     expect(
@@ -2465,6 +2493,10 @@ function assertGroupDetail(value: unknown): GroupDetailRecord {
   expect(isRecord(value) && Array.isArray(value.accountIds), 'group detail accountIds must be an array')
   assertStringArray(value.accountIds, 'group detail accountIds')
   expect(isRecord(value.permissions), 'group detail permissions must be an object')
+  // 详情（GroupSummary 同形）携带完整 schedulingPolicy；列表项已瘦身省略。
+  if (group.groupType === 'high_concurrency') {
+    expect(isRecord(value.schedulingPolicy), 'group detail schedulingPolicy must be an object for high_concurrency')
+  }
   return group as GroupDetailRecord
 }
 
@@ -2483,9 +2515,6 @@ function assertGroup(value: unknown, label: string): GroupRecord {
     value.groupType === 'personal' || value.groupType === 'high_concurrency',
     `${label}.groupType must be personal or high_concurrency`
   )
-  if (value.groupType === 'high_concurrency') {
-    expect(isRecord(value.schedulingPolicy), `${label}.schedulingPolicy must be an object for high_concurrency`)
-  }
   expect(value.accessType === 'owner' || value.accessType === 'authorized', `${label}.accessType is invalid`)
   expect(isRecord(value.accountStats), `${label}.accountStats must be an object`)
   // 列表项契约（前端 GroupListItem）已瘦身省略 permissions；详情（GroupSummary）仍提供。
@@ -2495,13 +2524,35 @@ function assertGroup(value: unknown, label: string): GroupRecord {
   return value as unknown as GroupRecord
 }
 
-function assertProviders(value: unknown): ProviderRecord[] {
+function assertProviderOptions(value: unknown): void {
+  // 现行 /providers/options 契约（前端 ProviderOption 同形）只有轻量四字段；
+  // 全量协议档案定义在 /providers/definitions，由 assertProviderDefinitions 断言。
   expect(Array.isArray(value) && value.length > 0, 'providers/options data must be a non-empty array')
+  const providerCodes = new Set<string>()
+  for (const [index, item] of value.entries()) {
+    const label = `providers/options item ${index}`
+    expect(isRecord(item), `${label} must be an object`)
+    expect(
+      Object.keys(item).sort().join(',') === 'code,enabled,id,name',
+      `${label} must match the lightweight option contract (id, code, name, enabled)`
+    )
+    expect(isNonEmptyString(item.id) && isNonEmptyString(item.code) && isNonEmptyString(item.name), `${label} fields must be non-empty strings`)
+    expect(typeof item.enabled === 'boolean', `${label}.enabled must be boolean`)
+    expect(!providerCodes.has(item.code), `providers/options contains duplicate provider code ${item.code}`)
+    providerCodes.add(item.code)
+  }
+  for (const code of builtInProviderCodes) {
+    expect(providerCodes.has(code), `providers/options must include built-in provider ${code}`)
+  }
+}
+
+function assertProviderDefinitions(value: unknown): ProviderRecord[] {
+  expect(Array.isArray(value) && value.length > 0, 'providers/definitions data must be a non-empty array')
   const providers = value.map((item, index) => {
-    const itemLabel = `providers/options item ${index}`
+    const itemLabel = `providers/definitions item ${index}`
     expect(isRecord(item), `${itemLabel} must be an object`)
     expect(isNonEmptyString(item.code), `${itemLabel}.code must be a non-empty string`)
-    const label = `providers/options provider ${item.code}`
+    const label = `providers/definitions provider ${item.code}`
     for (const field of [
       'id',
       'name',
@@ -2538,11 +2589,11 @@ function assertProviders(value: unknown): ProviderRecord[] {
   })
   const providerCodes = new Set<string>()
   for (const provider of providers) {
-    expect(!providerCodes.has(provider.code), `providers/options contains duplicate provider code ${provider.code}`)
+    expect(!providerCodes.has(provider.code), `providers/definitions contains duplicate provider code ${provider.code}`)
     providerCodes.add(provider.code)
   }
   for (const code of builtInProviderCodes) {
-    expect(providerCodes.has(code), `providers/options must include built-in provider ${code}`)
+    expect(providerCodes.has(code), `providers/definitions must include built-in provider ${code}`)
   }
   return providers
 }
@@ -2611,18 +2662,24 @@ function assertModelOptions(value: unknown): ModelOptionRecord[] {
   return value.map((item, index) => {
     const label = `providers/models/options item ${index}`
     expect(isRecord(item), `${label} must be an object`)
-    expect(isNonEmptyString(item.providerCode), `${label}.providerCode must be a non-empty string`)
-    expect(isNonEmptyString(item.model), `${label}.model must be a non-empty string`)
+    // 现行契约（前端 ProviderModelOption 同形）：id/name 必备；providerCode 与
+    // defaultReasoningEffort 可选（未归属供应商的模型选项不带 providerCode）。
+    expect(isNonEmptyString(item.id), `${label}.id must be a non-empty string`)
+    expect(isNonEmptyString(item.name), `${label}.name must be a non-empty string`)
+    if (Object.hasOwn(item, 'providerCode')) {
+      expect(isNonEmptyString(item.providerCode), `${label}.providerCode must be a non-empty string when present`)
+    }
     for (const field of ['supportedApiProtocols', 'supportedServiceTiers', 'supportedReasoningEfforts']) {
       if (Object.hasOwn(item, field)) {
         assertStringArray(item[field], `${label}.${field}`)
       }
     }
-    expect(Object.hasOwn(item, 'defaultReasoningEffort'), `${label}.defaultReasoningEffort must be explicit`)
-    expect(
-      item.defaultReasoningEffort === null || isNonEmptyString(item.defaultReasoningEffort),
-      `${label}.defaultReasoningEffort must be a non-empty string or null`
-    )
+    if (Object.hasOwn(item, 'defaultReasoningEffort')) {
+      expect(
+        item.defaultReasoningEffort === null || isNonEmptyString(item.defaultReasoningEffort),
+        `${label}.defaultReasoningEffort must be a non-empty string or null`
+      )
+    }
     return item as unknown as ModelOptionRecord
   })
 }

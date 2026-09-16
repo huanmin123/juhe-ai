@@ -1364,3 +1364,41 @@ func TestAccountCloneContext(t *testing.T) {
 		t.Fatalf("missing clone-context: %d", missingCode)
 	}
 }
+
+// TestCreateDerivesClientCompatibilityColumn 覆盖 E2E-FINDING #7 写侧修复：
+// INSERT 的 client_compatibility 列必须取 deriveOpenAIAccountClientCompatibility
+// 派生值（openai/v1 下的 gpt api_key/oauth → codex_responses），不得硬编码
+// openai_standard；该列是调度侧 pinned 比较与凭据端点模式默认集的源头。
+func TestCreateDerivesClientCompatibilityColumn(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", createPayload("codex-兼容列"))
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, payload)
+	}
+	id := dataMap(t, payload)["id"].(string)
+	if got := env.queryCell(t, `SELECT client_compatibility FROM accounts WHERE id = ?`, id); got != "codex_responses" {
+		t.Fatalf("gpt api_key 账户 client_compatibility = %q，期望 codex_responses", got)
+	}
+	// 端点模式默认集与列语义同源：codex_responses 账户必须带 responses_sse。
+	sealed := env.queryCell(t, `SELECT credentials_encrypted FROM accounts WHERE id = ?`, id)
+	var credentials Credentials
+	if err := DecryptJSON(testSecret, sealed, &credentials); err != nil {
+		t.Fatalf("凭据解密失败: %v", err)
+	}
+	modes, ok := credentials["supported_endpoint_modes"].([]any)
+	if !ok {
+		t.Fatalf("supported_endpoint_modes 缺失: %v", credentials)
+	}
+	hasSSE := false
+	for _, mode := range modes {
+		if mode == "responses_sse" {
+			hasSSE = true
+		}
+	}
+	if !hasSSE {
+		t.Fatalf("codex_responses 账户端点模式应含 responses_sse: %v", modes)
+	}
+}

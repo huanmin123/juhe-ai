@@ -452,6 +452,8 @@ func upstreamRequestHeaders(headers http.Header, body []byte) http.Header {
 // x-gzip / deflate / x-deflate / identity; anything else fails the response.
 // The archived Node decoder creates a brotli stream for 'br'
 // (request.ts createUpstreamResponseDecoder -> createBrotliDecompress).
+// 非标准 `Content-Encoding: none`（部分上游用来声明"未压缩"）与空值同义，
+// 视同 identity 直通；真实未知编码仍报 UnsupportedUpstreamResponseEncodingError。
 func decodeUpstreamResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadCloser, error) {
 	encodings := parseContentEncodings(contentEncoding)
 	if len(encodings) == 0 || allIdentity(encodings) {
@@ -492,9 +494,15 @@ func parseContentEncodings(value string) []string {
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
 		trimmed := strings.ToLower(strings.TrimSpace(part))
-		if trimmed != "" {
-			out = append(out, trimmed)
+		if trimmed == "" {
+			continue
 		}
+		// 部分上游返回非标准 `Content-Encoding: none` 声明未压缩响应
+		//（E2E-FINDING #8：真实生产流式响应触发），语义等价 identity。
+		if trimmed == "none" {
+			trimmed = "identity"
+		}
+		out = append(out, trimmed)
 	}
 	return out
 }

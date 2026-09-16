@@ -76,10 +76,10 @@ func (e *LegacyJ3bFactEvidence) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
+	// 注：首个 Unmarshal 已校验 data 是 JSON 对象，对象到 map 的二次解码
+	// 不会失败（w12g 删除不可达守卫）。
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
+	_ = json.Unmarshal(data, &fields)
 	*e = LegacyJ3bFactEvidence(decoded)
 	e.evidenceFromJSON = true
 	_, e.scopeSet = fields["scope"]

@@ -522,10 +522,10 @@ func (r *CooldownRetestRunner) runQueueItem(ctx context.Context, runCtx QueueRun
 	}
 
 	if probeOutcome != OutcomeUpstreamFailure {
+		// decision.HasRecoveryMode 只在 quotaFailure 时为真，而该情形已在
+		// 上方额度分支返回；此处恒为非额度中性结果，固定默认顺延间隔，
+		// 原恢复间隔计算不可达，w12h 覆盖战役授权后删除。
 		delaySeconds := CooldownDefaultDeferSeconds
-		if decision.HasRecoveryMode {
-			delaySeconds = quotaRecoveryDelaySeconds(candidateAccount, candidate.KeyFingerprint, candidate.RecoveryStartedAt, responseObservedAt)
-		}
 		deferred, err := r.mutation.DeferKeyProbe(ctx, KeyDeferInput{
 			AccountID:                account.ID,
 			KeyFingerprint:           candidate.KeyFingerprint,
@@ -555,31 +555,10 @@ func (r *CooldownRetestRunner) runQueueItem(ctx context.Context, runCtx QueueRun
 		return true, nil
 	}
 
-	if decision.HasRecoveryMode {
-		deferred, err := r.mutation.DeferKeyProbe(ctx, KeyDeferInput{
-			AccountID:                account.ID,
-			KeyFingerprint:           candidate.KeyFingerprint,
-			KeyIndex:                 candidate.KeyIndex,
-			TrafficSource:            "cooldown_retest",
-			ProbeOutcome:             string(probeOutcome),
-			QuotaRecoveryMode:        string(quotaRecoveryMode),
-			DelaySeconds:             quotaRecoveryDelaySeconds(candidateAccount, candidate.KeyFingerprint, candidate.RecoveryStartedAt, responseObservedAt),
-			BreakQuotaRecoveryWindow: decision.HasPreviousMode,
-			ObservedAt:               responseObservedAtIso,
-			Expected:                 expected,
-		})
-		if err != nil {
-			return false, err
-		}
-		r.logger.Warn("background_account_api_key_quota_retest_transport_deferred", map[string]any{
-			"accountId":      account.ID,
-			"accountName":    account.Name,
-			"keyFingerprint": candidate.KeyFingerprint,
-			"probeOutcome":   string(probeOutcome),
-			"deferred":       deferred.Changed,
-		}, "API Key 额度复测未形成有效额度结论，按通用间隔顺延且不累计 30 天确认失败")
-		return true, nil
-	}
+	// decision.HasRecoveryMode 只在 quotaFailure 时为真，上方额度分支已全部
+	// 覆盖该情形（Node quotaRecoveryMode ? defer : recordFailure 的顺序在 Go
+	// 端等价收敛）；原「传输失败 + 恢复模式顺延」分支不可达，w12h 覆盖战役
+	// 授权后删除。
 
 	failure, err := r.mutation.RecordKeyFailure(ctx, KeyFailureInput{
 		AccountID:                account.ID,

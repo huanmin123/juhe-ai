@@ -80,14 +80,13 @@ func (p *ClientPool) Client(rawProxyURL string, options TransportOptions) (*http
 func (p *ClientPool) evictLeastRecentlyUsed() {
 	var oldestKey string
 	var oldestUse uint64
+	// 调用点保证 len(clients) >= maxEntries >= 1，地图非空，oldestKey 必非空
+	// （空图守卫不可达，w12h 授权删除）。
 	for key, entry := range p.clients {
 		if oldestKey == "" || entry.used < oldestUse {
 			oldestKey = key
 			oldestUse = entry.used
 		}
-	}
-	if oldestKey == "" {
-		return
 	}
 	p.clients[oldestKey].client.CloseIdleConnections()
 	delete(p.clients, oldestKey)

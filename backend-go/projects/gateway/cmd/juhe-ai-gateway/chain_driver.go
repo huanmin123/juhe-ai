@@ -379,12 +379,17 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 			}
 		}
 	}
-	// Client compatibility: a pinned account only serves its own
-	// compatibility class (Node clientCompatibility check).
-	if account.ClientCompatibility != "" && requestClientCompatibility != "" &&
-		!strings.EqualFold(account.ClientCompatibility, requestClientCompatibility) {
-		return "client_compatibility_mismatch"
-	}
+	// Client compatibility 裁决（E2E-FINDING #7）：Node 的
+	// accountSupportsGatewayRequest 链（registry.ts:88-102）不做「账户列 vs
+	// 请求类」对称比较——gpt 驱动只有 OAuth 只服务 codex_responses 的门
+	//（gpt/driver.ts accountSupportsRequest:279-283），anthropic / gemini
+	// 驱动不消费 requestClientCompatibility；兼容列的调度作用由写侧端点
+	// 模式默认集（credentials supported_endpoint_modes）与 D-155 端点模式
+	// 门承接。此前 Go 侧的对称 EqualFold pinned 比较与 derive 落列组合会把
+	// 普通 chat 客户端（openai_standard 请求类）从 gpt+api_key 账户
+	//（codex_responses 列）上挤掉，或把 codex 客户端恒淘汰（列 openai_standard
+	// 的存量数据）——两个方向都与 Node 语义冲突，故不在此比较。
+	// D-99 eliminated 裁决（Node gpt/driver.ts accountSupportsRequest）：
 	// D-99 eliminated 裁决（Node gpt/driver.ts accountSupportsRequest）：
 	// OAuth 账户只服务 codex_responses 客户端形态，其他客户端兼容类直接淘汰。
 	if account.Type == "oauth" && requestClientCompatibility != "" &&

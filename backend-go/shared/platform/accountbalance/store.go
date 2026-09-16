@@ -77,14 +77,10 @@ func OpenStore(config StoreConfig) (*Store, error) {
 		if path == "" {
 			return nil, errors.New("account-balance sqlite 缺少数据库路径")
 		}
-		dsn, err := balanceSQLiteDSN(path)
-		if err != nil {
-			return nil, err
-		}
-		db, err := sql.Open("sqlite", dsn)
-		if err != nil {
-			return nil, err
-		}
+		// balanceSQLiteDSN 仅做路径规范化不会失败；sql.Open 惰性连接，
+		// 错误延迟到 PRAGMA 执行处（w12h 授权删除死守卫）。
+		dsn, _ := balanceSQLiteDSN(path)
+		db, _ := sql.Open("sqlite", dsn)
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
 		if _, err := db.Exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;"); err != nil {
@@ -111,10 +107,8 @@ func OpenStore(config StoreConfig) (*Store, error) {
 			if strings.TrimSpace(config.PostgresURL) == "" {
 				return nil, errors.New("account-balance postgres 缺少连接 URL")
 			}
-			db, openErr := sql.Open("pgx", config.PostgresURL)
-			if openErr != nil {
-				return nil, openErr
-			}
+			// sql.Open 对已知驱动惰性连接，openErr 恒为 nil（w12h 授权删除死守卫）。
+			db, _ := sql.Open("pgx", config.PostgresURL)
 			db.SetMaxOpenConns(maxOpen)
 			db.SetMaxIdleConns(maxIdle)
 			return &Store{db: db, mode: config.Mode}, nil

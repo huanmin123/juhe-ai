@@ -895,6 +895,30 @@ func TestW1PProtocolGateHelpers(t *testing.T) {
 		t.Fatal("gatewayanthropicIsNative(nil) 应为 false")
 	}
 
+	// E2E-FINDING #6：组合协议门是三协议并集（Node isGatewayProtocolRequest），
+	// anthropic / gemini native 面放行，未知路径维持 404 兜底。
+	gateCases := []struct {
+		name   string
+		method string
+		path   string
+		want   bool
+	}{
+		{"openai chat", http.MethodPost, "/v1/chat/completions", true},
+		{"anthropic messages", http.MethodPost, "/v1/messages", true},
+		{"anthropic messages query", http.MethodPost, "/v1/messages?beta=true", true},
+		{"anthropic count_tokens", http.MethodPost, "/v1/messages/count_tokens", true},
+		{"gemini generateContent", http.MethodPost, "/v1beta/models/gemini-test:generateContent", true},
+		{"未知路径 404 兜底", http.MethodPost, "/v1/complete", false},
+	}
+	for _, tc := range gateCases {
+		t.Run("gate/"+tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(tc.method, tc.path, nil)
+			if got := gatewayIsProtocolRequest(gatewaypreauth.NewGatewayRequest(request)); got != tc.want {
+				t.Fatalf("gatewayIsProtocolRequest(%s %s) = %v，want %v", tc.method, tc.path, got, tc.want)
+			}
+		})
+	}
+
 	geminiCases := []struct {
 		name   string
 		method string

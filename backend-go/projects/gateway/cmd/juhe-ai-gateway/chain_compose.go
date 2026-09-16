@@ -194,6 +194,10 @@ type chainRuntimeDeps struct {
 	AccountCircuits *gatewaycircuit.CircuitService
 	// ClientIPSlots 是 D-109 high_concurrency 分组的 client-IP 并发槽。
 	ClientIPSlots gatewaydispatch.ClientIPConcurrencyAcquirer
+	// HighConcurrencyQueue 是 D-109 的分组级短队列（E2E-FINDING #5：此前
+	// engine.HighConcurrencyQueue 从未装配，并发满时 nil panic）。nil 仅出现
+	// 在组合测试，链条回落 degradedHighConcurrencyQueue 的普通容量语义。
+	HighConcurrencyQueue gatewaydispatch.HighConcurrencyWaiter
 	// KeyModelStore 是 D-133 的 key-model 前台准入状态存储（driver 选择器）。
 	KeyModelStore gatewayaccounteffects.KeyModelRuntimeStore
 	// ProxyHealth 是 D-136 的上游桶健康端口。
@@ -485,6 +489,16 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// 故 chainRuntimeServices 保证非 nil）。
 	if deps.ClientIPSlots != nil {
 		engine.ClientIPConcurrency = deps.ClientIPSlots
+	}
+	// E2E-FINDING #5 接线：high_concurrency 分组的分组级短队列。生产组合根
+	// 由 chainRuntimeServices 提供 gatewayclientip 队列（memory/redis 双驱动，
+	// 见 docs/functions/高并发分组调度设计.md「分组级队列」）；nil 仅出现在
+	// 组合测试，回落 degradedHighConcurrencyQueue——等待者缺席时立即放行
+	//（普通容量语义），绝不 nil panic。
+	if deps.HighConcurrencyQueue != nil {
+		engine.HighConcurrencyQueue = deps.HighConcurrencyQueue
+	} else {
+		engine.HighConcurrencyQueue = &degradedHighConcurrencyQueue{}
 	}
 	// D-134（BUG-0175）接线：半开租约释放 → 恢复等待者唤醒。
 	if deps.WakeRecoverableWaiter != nil {

@@ -92,8 +92,10 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// enhancement, NOT the archived Node server.ts order, where the same
 	// routers sat behind rejectUnrecognizedGatewayProtocolRequest. Every
 	// other non-protocol /v1 path keeps the Node 404 JSON contract.
+	// E2E-FINDING #6：门面是三协议并集（Node isGatewayProtocolRequest），
+	// anthropic / gemini native 面放行进同一条分发链。
 	req := gatewaypreauth.NewGatewayRequest(r)
-	if !gatewayopenaiIsProtocolPath(req.PathAndQuery()) {
+	if !gatewayIsProtocolRequest(req) {
 		if c.compat != nil {
 			c.compat.ServeHTTP(w, r)
 			return

@@ -82,14 +82,12 @@ func inspectJ3cBoundary(path string) ([]string, error) {
 	healthSourceMethods := 0
 	readerTypeFound := false
 	readerMethods := make(map[string]struct{})
-	for _, declaration := range file.Decls {
-		gen, ok := declaration.(*ast.GenDecl)
-		if ok && gen.Tok.String() == "type" {
-			for _, spec := range gen.Specs {
-				typeSpec, ok := spec.(*ast.TypeSpec)
-				if !ok {
-					continue
-				}
+		for _, declaration := range file.Decls {
+			gen, ok := declaration.(*ast.GenDecl)
+			if ok && gen.Tok.String() == "type" {
+				for _, spec := range gen.Specs {
+					// type 声明组的 spec 必为 *ast.TypeSpec（w12g 删除不可达守卫）。
+					typeSpec := spec.(*ast.TypeSpec)
 				switch typeSpec.Name.Name {
 				case "HealthSource":
 					interfaceType, ok := typeSpec.Type.(*ast.InterfaceType)

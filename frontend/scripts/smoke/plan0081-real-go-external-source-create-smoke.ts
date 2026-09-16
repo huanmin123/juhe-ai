@@ -265,6 +265,15 @@ async function recoverCleanupTarget(config: NormalizedConfig, sourceName: string
   throw lastError instanceof Error ? lastError : new Error('recovery list failed')
 }
 
+async function currentSourceUpdatedAt(config: NormalizedConfig, path: string): Promise<string> {
+  // 现行 DELETE 契约要求 expectedUpdatedAt 乐观并发字段：删除前经 detail 取当前值。
+  const response = await request(config, path, 'GET', undefined, 'cleanup detail')
+  expect(response.status === 200, `cleanup detail failed with HTTP ${response.status}`)
+  const detail = unwrapData(await parseJSON(response, 'cleanup detail'), 'cleanup detail')
+  expect(isRecord(detail) && isNonEmptyString(detail.updatedAt), 'cleanup detail updatedAt is invalid')
+  return detail.updatedAt
+}
+
 async function deleteAndVerify(config: NormalizedConfig, target: CleanupTarget): Promise<void> {
   const path = `${collectionPath}/${encodeURIComponent(target.sourceId)}`
   if (!(await cleanupTargetStillExists(config, path, target))) return
@@ -272,7 +281,8 @@ async function deleteAndVerify(config: NormalizedConfig, target: CleanupTarget):
   let lastError: unknown
   for (let attempt = 1; attempt <= cleanupMaximumAttempts; attempt += 1) {
     try {
-      const response = await request(config, path, 'DELETE', undefined, 'cleanup delete')
+      const expectedUpdatedAt = await currentSourceUpdatedAt(config, path)
+      const response = await request(config, path, 'DELETE', { expectedUpdatedAt }, 'cleanup delete')
       if (response.status !== 204) throw new SanitizedHttpStatusError('cleanup delete', response.status)
 
       let contractError: unknown
@@ -454,9 +464,10 @@ async function request(
         cookie: config.cookie,
         'user-agent': smokeUserAgent,
         'x-juhe-ai-smoke': smokeHeaderValue,
-        ...(method === 'POST' ? { 'content-type': 'application/json' } : {})
+        // DELETE 的 expectedUpdatedAt body 同样需要 JSON media type（kernel.DecodeJSON 严格校验）。
+        ...(method === 'POST' || method === 'DELETE' ? { 'content-type': 'application/json' } : {})
       },
-      body: method === 'POST' ? JSON.stringify(body) : undefined,
+      body: method === 'POST' || method === 'DELETE' ? JSON.stringify(body) : undefined,
       redirect: 'error',
       signal: controller.signal
     })

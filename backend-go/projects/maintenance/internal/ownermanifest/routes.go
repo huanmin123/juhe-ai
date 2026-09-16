@@ -177,9 +177,8 @@ func VerifyGatewayRouteOwnerManifest(manifestPath, repositoryRoot string) (Gatew
 		if err := verifyEvidenceFiles(repositoryRoot, family); err != nil {
 			return GatewayRouteOwnerReport{}, err
 		}
-		if family.NodeRouterFile == "" {
-			return GatewayRouteOwnerReport{}, fmt.Errorf("route family %q has empty source file", family.ID)
-		}
+		// 注：NodeRouterFile 的空值校验已由上方 identity 校验（第 146 行）承担，
+		// 此处不会再为空（w12g 删除不可达守卫）。
 		rel := filepath.FromSlash(family.NodeRouterFile)
 		if _, ok := seenFiles[rel]; ok {
 			return GatewayRouteOwnerReport{}, fmt.Errorf("source router file %q is assigned more than once", family.NodeRouterFile)
@@ -204,9 +203,8 @@ func VerifyGatewayRouteOwnerManifest(manifestPath, repositoryRoot string) (Gatew
 		}
 		actual := make([]string, 0)
 		for _, match := range routeMethodPattern.FindAllSubmatch(source, -1) {
-			if string(match[0]) == "" {
-				continue
-			}
+			// 注：routeMethodPattern 的整体匹配必含标识符、方法名与引号路径，
+			// 不可能为空串（w12g 删除不可达守卫）。
 			// The regex intentionally matches the router symbol as a token; ensure
 			// this family does not accidentally count another router in the file.
 			prefix := []byte(family.NodeRouterSymbol + ".")

@@ -21,7 +21,11 @@ package main
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +74,9 @@ type spooledUsageRecorder struct {
 	config usageBridgeConfig
 	spool  *gatewayusage.UsageRecordSpool
 	logger *slog.Logger
+	// clock / idFactory 驱动 enqueue 入口的记录归一化（稳定 id/createdAt）。
+	clock     gatewayusage.Clock
+	idFactory gatewayusage.UsageRecordIDFactory
 
 	mu       sync.Mutex
 	buffered chan gatewayusage.UsageRecordInput
@@ -89,10 +96,12 @@ func newSpooledUsageRecorder(config usageBridgeConfig, spool *gatewayusage.Usage
 		logger = slog.Default()
 	}
 	recorder := &spooledUsageRecorder{
-		config:   config,
-		spool:    spool,
-		logger:   logger,
-		buffered: make(chan gatewayusage.UsageRecordInput, capacity),
+		config:    config,
+		spool:     spool,
+		logger:    logger,
+		clock:     gatewayusage.SystemClock{},
+		idFactory: usageShardRecordIDFactory{now: time.Now},
+		buffered:  make(chan gatewayusage.UsageRecordInput, capacity),
 	}
 	recorder.wg.Add(1)
 	go recorder.drain()
@@ -102,7 +111,29 @@ func newSpooledUsageRecorder(config usageBridgeConfig, spool *gatewayusage.Usage
 // EnqueueUsageRecord implements gatewayusage.UsageRecorder. Node never
 // surfaces enqueue failures to callers on the local path: overflow falls to
 // the spool and only persistent failure counts + logs.
+//
+// 入口第一步先做记录归一化（Node record-queue.service.ts enqueueUsageRecord
+// 语义）：补齐稳定 id 与 RFC3339 createdAt 并收紧快照。spool 落盘 JSON 因此
+// 带稳定 id/createdAt，jobs usagespooldrain 的 parseSpoolRecord 契约（缺
+// id/createdAt 判损坏隔离）在无 Redis 的 spool 交接路径上成立。
 func (r *spooledUsageRecorder) EnqueueUsageRecord(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
+	normalized, err := gatewayusage.NormalizeUsageRecordInput(input, r.clock, r.idFactory)
+	if err != nil {
+		r.mu.Lock()
+		r.failed++
+		failed := r.failed
+		r.mu.Unlock()
+		if failed <= 10 || failed%100 == 0 {
+			r.logger.Warn("usage 记录归一化失败，无法持久投递，已丢弃",
+				"event", "usage_record_normalize_failed",
+				"traceId", input.TraceID,
+				"trafficSource", input.TrafficSource,
+				"normalizeFailureCount", failed,
+				"error", err.Error())
+		}
+		return nil
+	}
+	input = normalized
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -392,4 +423,93 @@ func requestModelHintOf(req *gatewaypreauth.GatewayRequest) string {
 		return model
 	}
 	return ""
+}
+
+// ---------------------------------------------------------------------------
+// usage record id factory
+// ---------------------------------------------------------------------------
+
+// usageDefaultUsageShardCount mirrors the jobs usagewriter
+// DefaultUsageShardCount（JUHE_AI_USAGE_SHARD_COUNT 默认 16）。三项目基线
+// 禁止 gateway 进程 import jobs 模块，故 shard-id 格式在此按
+// generateUsageRecordId 契约复制实现，单测对照 jobs 契约防漂移。分片 id
+// 只影响同 id 行的路由映射（drain → writer 按 id 前缀 parse 路由），与
+// jobs 侧配置的 ShardCount 不一致时仍保证 id→文件 的确定性。
+const usageDefaultUsageShardCount = 16
+
+// usageShardRecordIDFactory implements gatewayusage.UsageRecordIDFactory:
+// `usage_<bucketDateKey>_sNN_<unixmilli>_<entropy sanitized to 24>`
+// (storage/usage-record-shards.ts generateUsageRecordId)。G17 port 声明把
+// shard-id 格式留在 writer slice；组合根在无 Redis 交接路径上需要本进程
+// 生成稳定 id（spool 记录缺 id 会被 jobs drain 判损坏），因此此处复制该
+// 格式，使 spool 记录与 Redis 队列路径的记录 id 同构。
+type usageShardRecordIDFactory struct {
+	// now 注入时间源（单测确定性）；nil 回落 wall clock。
+	now func() time.Time
+}
+
+// GenerateUsageRecordID implements gatewayusage.UsageRecordIDFactory.
+// createdAt 已由 NormalizeUsageRecordInput 校验为 RFC3339 instant；解析
+// 失败时回落当前时间 bucket，保持 id 可路由（与 jobs idFactory 兜底分支
+// 同形）。
+func (f usageShardRecordIDFactory) GenerateUsageRecordID(createdAt string) string {
+	now := f.now
+	if now == nil {
+		now = time.Now
+	}
+	bucket, err := usageBucketDateKey(createdAt)
+	if err != nil {
+		bucket = now().UTC().Format("20060102")
+	}
+	entropy := usageRecordEntropyUUID()
+	shardID := usageStableHash(entropy) % usageDefaultUsageShardCount
+	return fmt.Sprintf("usage_%s_s%02d_%d_%s", bucket, shardID, now().UnixMilli(), usageSanitizeShardEntropy(entropy))
+}
+
+// usageBucketDateKey mirrors bucketDateKeyFromIso: YYYYMMDD in UTC from an
+// RFC3339 instant.
+func usageBucketDateKey(createdAt string) (string, error) {
+	parsed, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return "", err
+	}
+	return parsed.UTC().Format("20060102"), nil
+}
+
+// usageRecordEntropyUUID 生成随机 entropy（RFC 4122 v4 同形的 hex 段）。
+// 随机源失败属环境级异常：回落纳秒时间熵，保持 id 唯一性与可路由性。
+func usageRecordEntropyUUID() string {
+	bytes := make([]byte, 16)
+	if _, err := crand.Read(bytes); err != nil {
+		return fmt.Sprintf("t%d", time.Now().UnixNano())
+	}
+	bytes[6] = (bytes[6] & 0x0f) | 0x40
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+	return hex.EncodeToString(bytes)
+}
+
+// usageSanitizeShardEntropy mirrors entropy.replace(/[^a-zA-Z0-9]/g,
+// '').slice(0, 24).
+func usageSanitizeShardEntropy(entropy string) string {
+	var builder strings.Builder
+	for _, r := range entropy {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			if builder.Len() >= 24 {
+				break
+			}
+		}
+	}
+	return builder.String()
+}
+
+// usageStableHash mirrors stableShardId 的 FNV-1a 32-bit（与 jobs
+// usagewriter.StableHash 同式，ASCII 输入逐字节一致）。
+func usageStableHash(value string) int {
+	hash := uint32(2166136261)
+	for index := 0; index < len(value); index++ {
+		hash ^= uint32(value[index])
+		hash *= 16777619
+	}
+	return int(hash)
 }

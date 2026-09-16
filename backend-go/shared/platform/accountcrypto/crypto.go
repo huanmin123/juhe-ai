@@ -15,7 +15,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 )
 
@@ -58,10 +57,7 @@ func DecryptJSON(secret string, envelope string, target any) error {
 	if err != nil {
 		return err
 	}
-	gcm, err := newEnvelopeGCM(secret)
-	if err != nil {
-		return err
-	}
+	gcm := newEnvelopeGCM(secret)
 	if len(iv) != gcm.NonceSize() || len(tag) != gcm.Overhead() {
 		return errors.New("加密数据格式不受支持")
 	}
@@ -75,10 +71,7 @@ func DecryptJSON(secret string, envelope string, target any) error {
 // sealJSONWithIV is the deterministic write side used by EncryptJSON and the
 // cross-language vector tests (the IV is normally random).
 func sealJSONWithIV(secret string, plain, iv []byte) (string, error) {
-	gcm, err := newEnvelopeGCM(secret)
-	if err != nil {
-		return "", err
-	}
+	gcm := newEnvelopeGCM(secret)
 	if len(iv) != gcm.NonceSize() {
 		return "", errors.New("加密数据 IV 长度无效")
 	}
@@ -89,16 +82,13 @@ func sealJSONWithIV(secret string, plain, iv []byte) (string, error) {
 }
 
 // newEnvelopeGCM derives the AES-256-GCM block cipher exactly like Node:
-// createHash('sha256').update(secret).digest().
-func newEnvelopeGCM(secret string) (cipher.AEAD, error) {
+// createHash('sha256').update(secret).digest(). aes.NewCipher 仅在 key 长度
+// 非 16/24/32 字节时失败、cipher.NewGCM 仅在块密码非法时失败；sha256 摘要
+// 恒为 32 字节，两处错误分支不可达，w12h 覆盖战役授权后删除守卫并收敛为
+// 单一返回值。
+func newEnvelopeGCM(secret string) cipher.AEAD {
 	key := sha256.Sum256([]byte(secret))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		return nil, fmt.Errorf("aes-256-gcm unavailable: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("aes-256-gcm unavailable: %w", err)
-	}
-	return gcm, nil
+	block, _ := aes.NewCipher(key[:])
+	gcm, _ := cipher.NewGCM(block)
+	return gcm
 }

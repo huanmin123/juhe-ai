@@ -310,10 +310,9 @@ func parseAbsoluteRecoveryTime(value any) *time.Time {
 		if !ok {
 			return nil
 		}
-		t, err := time.Parse(time.RFC3339, normalized)
-		if err != nil {
-			return nil
-		}
+		// canonicalizeRFC3339 内部即按 RFC3339 解析成功后才返回规范文本，
+		// 此处重复解析的失败分支不可达，w12h 覆盖战役授权后直接返回。
+		t, _ := time.Parse(time.RFC3339, normalized)
 		return &t
 	default:
 		return nil
@@ -374,12 +373,9 @@ func parseRetryAfter(value string, now time.Time) *time.Time {
 	if httpDate, err := time.Parse(time.RFC1123, value); err == nil && httpDate.After(now) {
 		return &httpDate
 	}
-	if ms, err := strconv.ParseInt(value, 10, 64); err == nil {
-		t := msToTime(float64(ms))
-		if t.After(now) {
-			return &t
-		}
-	}
+	// 旧实现末尾还有毫秒整数字符串分支；纯数字文本已被 parsePositiveSeconds
+	// 按秒解析（任意正数返回非空），能走到这里只可能是 0/负数，毫秒解释恒为
+	// 过去时刻，分支不可达，w12h 覆盖战役授权后删除。
 	return nil
 }
 

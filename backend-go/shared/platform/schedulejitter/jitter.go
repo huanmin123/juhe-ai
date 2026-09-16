@@ -23,10 +23,9 @@ func Window(interval time.Duration) time.Duration {
 	var window time.Duration
 	switch {
 	case interval < time.Minute:
+		// window = interval/2 < 30s，恒小于 SubMinuteWindow；原上限钳制恒假
+		// 已删除（w12h 覆盖战役授权：明显不可达的防御守卫）。
 		window = interval / 2
-		if window > SubMinuteWindow {
-			window = SubMinuteWindow
-		}
 	case interval < time.Hour:
 		window = MinuteWindow
 	case interval < 24*time.Hour:
@@ -36,9 +35,8 @@ func Window(interval time.Duration) time.Duration {
 	default:
 		window = WeekWindow
 	}
-	if maximum := interval / 2; window > maximum {
-		window = maximum
-	}
+	// 各档 window 都不超过 interval/2（MinuteWindow=30s 需要 interval≥1min），
+	// 原 `window > interval/2` 二次钳制恒假，一并删除（w12h 授权）。
 	return window
 }
 

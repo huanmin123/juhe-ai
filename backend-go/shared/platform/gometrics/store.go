@@ -102,8 +102,9 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	}
 	// Samples are the only unbounded-by-window table. Retention runs by
 	// sampled_at, so keep that maintenance path indexed without adding any
-	// high-cardinality dimensions to the runtime contract.
-	if _, e := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS "+p+"go_runtime_metrics_samples_sampled_at_idx ON "+p+"go_runtime_metrics_samples (sampled_at)"); e != nil {
+	// high-cardinality dimensions to the runtime contract. PG 不允许索引名
+	// 带 schema 前缀（索引归属由 ON 的表决定），索引名必须裸写。
+	if _, e := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS go_runtime_metrics_samples_sampled_at_idx ON "+p+"go_runtime_metrics_samples (sampled_at)"); e != nil {
 		return fmt.Errorf("gometrics ensure schema samples index: %w", e)
 	}
 	if e := s.ensureMetricColumns(ctx, p, i, r); e != nil {

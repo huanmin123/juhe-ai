@@ -511,3 +511,66 @@ func TestRequestRecording(t *testing.T) {
 		t.Fatalf("explicit false stream field recorded as %q", got)
 	}
 }
+
+func TestW12HScenarioDefaultsAndToolCallStreams(t *testing.T) {
+	m := New()
+	defer m.Close()
+
+	// 无 scenario 头与查询参数 → 默认 chat_ok。
+	code, _, body := post(t, m.Server, "/v1/chat/completions", "", `{"model":"gpt-mock"}`)
+	if code != 200 || !strings.Contains(body, "MOCK-OK reply") {
+		t.Fatalf("默认场景不符: %d %s", code, body)
+	}
+
+	// Responses 非流式：tool_call 与 empty completion 固定报文。
+	code, _, body = post(t, m.Server, "/v1/responses", string(ScenarioToolCall), `{}`)
+	if code != 200 || !strings.Contains(body, `"name":"get_weather"`) {
+		t.Fatalf("responses tool_call 不符: %d %s", code, body)
+	}
+	code, _, body = post(t, m.Server, "/v1/responses", string(ScenarioEmptyCompletion), `{}`)
+	if code != 200 || !strings.Contains(body, `"text":""`) {
+		t.Fatalf("responses empty 不符: %d %s", code, body)
+	}
+
+	// Chat 流式 tool_call：含 function_call 增量与工具 finish_reason。
+	req, _ := http.NewRequest(http.MethodPost, m.Server.URL+"/v1/chat/completions?scenario="+string(ScenarioToolCall), strings.NewReader(`{"stream":true}`))
+	toolResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolRaw, _ := io.ReadAll(toolResp.Body)
+	toolResp.Body.Close()
+	if toolResp.StatusCode != 200 || !strings.Contains(string(toolRaw), `"finish_reason":"stop"`) {
+		// chat 流式无 tool_call 变体：回落标准两段流。
+		t.Fatalf("chat 流式 tool_call 回落不符: %d %s", toolResp.StatusCode, string(toolRaw))
+	}
+
+	// Responses 流式 tool_call：added/done 事件对 + tool 报文 completed。
+	req, _ = http.NewRequest(http.MethodPost, m.Server.URL+"/v1/responses?scenario="+string(ScenarioToolCall), strings.NewReader(`{"stream":true}`))
+	respTool, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respToolRaw, _ := io.ReadAll(respTool.Body)
+	respTool.Body.Close()
+	if respTool.StatusCode != 200 || !strings.Contains(string(respToolRaw), "response.output_item.added") || !strings.Contains(string(respToolRaw), "response.output_item.done") || !strings.Contains(string(respToolRaw), `"status":"completed"`) {
+		t.Fatalf("responses 流式 tool_call 不符: %d %s", respTool.StatusCode, string(respToolRaw))
+	}
+
+	// 内部助手直接断言。
+	if !m.sleep(context.Background(), 0, 0) {
+		t.Fatal("零延迟必须立即返回 true")
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if m.sleep(canceled, time.Second, -1) {
+		t.Fatal("取消上下文必须返回 false")
+	}
+	m.noteAbort(-1) // 越界索引：幂等无副作用
+	if m.aborts != 0 {
+		t.Fatalf("越界索引不得计入中止: %d", m.aborts)
+	}
+	if FormatRetryAfter(30) != "30" {
+		t.Fatal("FormatRetryAfter 不符")
+	}
+}

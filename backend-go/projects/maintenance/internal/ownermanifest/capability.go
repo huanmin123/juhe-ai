@@ -180,8 +180,7 @@ func VerifyCapabilityManifest(capabilityPath, operationPath string) (CapabilityR
 		sort.Strings(missing)
 		return CapabilityReport{}, fmt.Errorf("capability manifest omits operation groups: %s", strings.Join(missing, ", "))
 	}
-	if len(seenOperations) != len(operationsManifest.Operations) {
-		return CapabilityReport{}, fmt.Errorf("capability operation coverage=%d, source operations=%d", len(seenOperations), len(operationsManifest.Operations))
-	}
+	// 注：走到此处时所有事务组都已被覆盖、组内同名操作在赋值处即报重复，
+	// seenOperations 必然与源操作总数一致（w12g 删除不可达守卫）。
 	return report, nil
 }

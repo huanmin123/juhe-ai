@@ -67,7 +67,7 @@ func TestW2BatchUpdateFullFieldSuccess(t *testing.T) {
 			"supportedModels":         []any{"gpt-4o-mini", "gpt-4.1"},
 			"tags":                    []any{"新标签"},
 			"accountExpiresAt":        "2030-01-01T00:00:00Z",
-			"supportedEndpointModes":  []any{"chat_json", "chat_sse"},
+			"supportedEndpointModes":  []any{"chat_json", "chat_sse", "responses_sse"},
 			"serviceTierOverride":     "priority",
 			"reasoningEffortOverride": "high",
 		}),
@@ -125,7 +125,7 @@ func TestW2BatchUpdateFullFieldSuccess(t *testing.T) {
 		t.Fatalf("覆盖字段未写入凭据：%v", credentials)
 	}
 	modes, ok := credentials["supported_endpoint_modes"].([]any)
-	if !ok || len(modes) != 2 || modes[0] != "chat_json" || modes[1] != "chat_sse" {
+	if !ok || len(modes) != 3 || modes[0] != "chat_json" || modes[1] != "chat_sse" || modes[2] != "responses_sse" {
 		t.Fatalf("端点形态未写入凭据：%v", credentials["supported_endpoint_modes"])
 	}
 }

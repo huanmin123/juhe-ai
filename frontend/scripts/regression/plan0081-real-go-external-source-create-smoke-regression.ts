@@ -147,6 +147,8 @@ async function assertSuccessfulSequence(baseUrl: string): Promise<void> {
     `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`,
     `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}/tokens/${encodeURIComponent(tokenId)}/secret`,
     `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`,
+    // DELETE 前的 cleanup detail GET：取 expectedUpdatedAt 乐观并发字段。
+    `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`,
     `DELETE /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`,
     `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`
   ])
@@ -204,6 +206,8 @@ async function assertAmbiguousPostRecovery(baseUrl: string): Promise<void> {
   assert.deepEqual(records.map(signature), [
     'POST /__aisys__/api/external-integration-sources',
     `GET /__aisys__/api/external-integration-sources?page=1&pageSize=100&keyword=${encodeURIComponent(currentName)}`,
+    `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`,
+    // DELETE 前的 cleanup detail GET：取 expectedUpdatedAt 乐观并发字段。
     `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`,
     `DELETE /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`,
     `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`

@@ -34,10 +34,12 @@ const TableName = "record_maintenance_jobs"
 // 同款 juhe_dataset 前缀）。
 const PGSchema = "juhe_dataset"
 
-// schema 与 gateway internal/tablemonitor/enqueue.go recordMaintenanceSchema
-// 逐字一致（两侧各自运行时建表，CREATE IF NOT EXISTS 幂等；不占用生产
-// migration catalog，与 accounttesttask schema 先例一致）。
-var schema = `CREATE TABLE IF NOT EXISTS record_maintenance_jobs (
+// schemaSQL 按方言返回建表语句：列定义与 gateway internal/tablemonitor/
+// enqueue.go recordMaintenanceSchema 逐字一致（CREATE IF NOT EXISTS 幂等；
+// 不占用生产 migration catalog）。表名经 Table() 方言限定——w12b 门控实测
+// 修复前 PG 侧建到 search_path 默认 schema，juhe_dataset 全限定名随后 42P01。
+func (s *Store) schemaSQL() string {
+	return `CREATE TABLE IF NOT EXISTS ` + s.Table() + ` (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   cutoff_at TEXT NOT NULL,
@@ -50,6 +52,7 @@ var schema = `CREATE TABLE IF NOT EXISTS record_maintenance_jobs (
   snapshot_json TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT ''
 )`
+}
 
 // snapshotColumns 是 v2 契约对既有 6 列旧表的加法式升级列
 // （account_usage_snapshot_upsert 载荷；与 gateway 侧
@@ -109,7 +112,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if s.ensured {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx, s.bind(schema)); err != nil {
+	if _, err := s.db.ExecContext(ctx, s.bind(s.schemaSQL())); err != nil {
 		return fmt.Errorf("初始化 %s schema 失败: %w", s.Table(), err)
 	}
 	if err := s.ensureSnapshotColumns(ctx); err != nil {

@@ -249,11 +249,11 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 				if itemErr == nil && releaseErr != nil {
 					itemErr = releaseErr
 				}
+				// persistInput 只返回 executed/executedStale，skipped 分支不可达
+				// （w12h 授权删除）。
 				switch state {
 				case runStateExecuted:
 					executed.Add(1)
-				case runStateSkipped:
-					skipped.Add(1)
 				case runStateExecutedStale:
 					stale.Add(1)
 				}
@@ -278,9 +278,8 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 					recordError(input.AccountID, itemErr)
 					continue
 				}
-				if query == nil {
-					continue
-				}
+				// prepareInput 仅在 queryErr 时返回 nil query 且同时返回错误，
+				// 此处 query 为 nil 必然已走错误分支（w12h 授权删除）。
 				task := dbTask{input: input, account: account, query: *query}
 				queuedAt := time.Now()
 				select {

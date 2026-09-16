@@ -431,15 +431,20 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// Credentials: normalized through the ported
 	// normalizeAccountCredentialsForWrite family, then sealed with the shared
 	// AES-GCM envelope plus the fingerprint and mask columns.
+	// E2E-FINDING #7 修复：写账户时按 Node deriveOpenAIAccountClientCompatibility
+	// 派生并落列（openai/v1 协议下的 gpt api_key/oauth 账户为 codex_responses，
+	// 其余 openai_standard）；此前 INSERT 硬编码 openai_standard，导致
+	// codex_responses 请求类被调度侧 pinned 比较恒淘汰。
+	derivedClientCompatibility := deriveOpenAIAccountClientCompatibility(providerCode, accountType, protocolProfileRef{
+		ProviderCode:              profile.providerCode,
+		ProtocolCode:              profile.protocolCode,
+		ProtocolVersion:           profile.protocolVersion,
+		ProviderProtocolProfileID: profile.id,
+	})
 	credentials, err := NormalizeAccountCredentialsForWrite(accountType, input.Credentials, &EndpointModeDefaultContext{
-		ProviderCode: providerCode,
-		AccountType:  accountType,
-		ClientCompatibility: deriveOpenAIAccountClientCompatibility(providerCode, accountType, protocolProfileRef{
-			ProviderCode:              profile.providerCode,
-			ProtocolCode:              profile.protocolCode,
-			ProtocolVersion:           profile.protocolVersion,
-			ProviderProtocolProfileID: profile.id,
-		}),
+		ProviderCode:              providerCode,
+		AccountType:               accountType,
+		ClientCompatibility:       derivedClientCompatibility,
 		ProviderProtocolProfileID: profile.id,
 		ProtocolCode:              profile.protocolCode,
 		ProtocolVersion:           profile.protocolVersion,
@@ -743,7 +748,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		id, systemAccountID, providerCode, profile.id, profile.protocolCode, profile.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit,
-		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), "openai_standard", boolInt(schedulable),
+		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), derivedClientCompatibility, boolInt(schedulable),
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage, healthCheckModel, healthCheckEndpointMode,
 		balanceQueryEnabledInt, balanceQueryConfigJSON, temporaryProbeEnabled,

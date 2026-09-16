@@ -645,6 +645,7 @@ func TestW1OComposeChainRuntimeServicesMemorySuccess(t *testing.T) {
 		"ConfiguredPolicyAvoidance": services.ConfiguredPolicyAvoidance != nil,
 		"AccountCircuits":           services.AccountCircuits != nil,
 		"ClientIPSlots":             services.ClientIPSlots != nil,
+		"HighConcurrencyQueue":      services.HighConcurrencyQueue != nil,
 		"SuppressionStore":          services.SuppressionStore != nil,
 		"SuppressionWaiter":         services.SuppressionWaiter != nil,
 		"ProxyHealth":               services.ProxyHealth != nil,

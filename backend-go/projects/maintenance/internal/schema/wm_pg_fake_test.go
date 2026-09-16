@@ -27,6 +27,9 @@ type wmCapturedStatement struct {
 type wmScriptedRows struct {
 	match string
 	rows  [][]driver.Value
+	// nextErrAt 大于 0 时，第 nextErrAt 次 Next 在返回完该行数据后改为
+	// 返回迭代错误（w12g 加入：覆盖生产代码的 rows.Err() 分支）。
+	nextErrAt int
 }
 
 type wmSchemaRecorder struct {
@@ -93,16 +96,24 @@ func (r *wmSchemaRecorder) script(match string, columns []string, rows [][]drive
 	r.scripted = append(r.scripted, wmScriptedRows{match: match, rows: rows})
 }
 
-func (r *wmSchemaRecorder) popScripted(query string) ([][]driver.Value, bool) {
+// scriptNextError 注册一条查询结果：先返回 rows 全部行真实数据，行耗尽后的
+// 下一次 Next 返回迭代错误（w12g 加入：覆盖生产代码 rows.Err() 分支）。
+func (r *wmSchemaRecorder) scriptNextError(match string, rows [][]driver.Value) {
+	r.scriptedMu.Lock()
+	defer r.scriptedMu.Unlock()
+	r.scripted = append(r.scripted, wmScriptedRows{match: match, rows: rows, nextErrAt: len(rows) + 1})
+}
+
+func (r *wmSchemaRecorder) popScripted(query string) (wmScriptedRows, bool) {
 	r.scriptedMu.Lock()
 	defer r.scriptedMu.Unlock()
 	for index, item := range r.scripted {
 		if strings.Contains(query, item.match) {
 			r.scripted = append(r.scripted[:index], r.scripted[index+1:]...)
-			return item.rows, true
+			return item, true
 		}
 	}
-	return nil, false
+	return wmScriptedRows{}, false
 }
 
 type wmSchemaConnector struct{ rec *wmSchemaRecorder }
@@ -156,7 +167,8 @@ func (c *wmSchemaConn) ExecContext(_ context.Context, query string, args []drive
 
 func (c *wmSchemaConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	c.rec.recordQuery(query, args)
-	if rows, ok := c.rec.popScripted(query); ok {
+	if scripted, ok := c.rec.popScripted(query); ok {
+		rows := scripted.rows
 		columns := make([]string, 0, 1)
 		if len(rows) > 0 {
 			for i := range rows[0] {
@@ -165,7 +177,7 @@ func (c *wmSchemaConn) QueryContext(_ context.Context, query string, args []driv
 		} else {
 			columns = append(columns, "c0")
 		}
-		return &wmSchemaRows{columns: columns, rows: rows}, nil
+		return &wmSchemaRows{columns: columns, rows: rows, nextErrAt: scripted.nextErrAt}, nil
 	}
 	// 默认零行结果：QueryRow().Scan() 语义等价 sql.ErrNoRows。
 	return &wmSchemaRows{columns: []string{"c0"}}, nil
@@ -177,15 +189,19 @@ func (wmSchemaTx) Commit() error   { return nil }
 func (wmSchemaTx) Rollback() error { return nil }
 
 type wmSchemaRows struct {
-	columns []string
-	rows    [][]driver.Value
-	pos     int
+	columns   []string
+	rows      [][]driver.Value
+	pos       int
+	nextErrAt int
 }
 
 func (r *wmSchemaRows) Columns() []string { return r.columns }
 func (r *wmSchemaRows) Close() error      { return nil }
 func (r *wmSchemaRows) Next(dest []driver.Value) error {
 	if r.pos >= len(r.rows) {
+		if r.nextErrAt > 0 {
+			return errors.New("wm fake rows: 注入迭代错误")
+		}
 		return io.EOF
 	}
 	copy(dest, r.rows[r.pos])

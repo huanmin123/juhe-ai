@@ -681,3 +681,60 @@ func TestRequestUpstreamBodyIdleWatchDisabled(t *testing.T) {
 		t.Fatalf("body = %q", string(body))
 	}
 }
+
+// TestDecodeUpstreamResponseBodyNoneEncoding 覆盖 E2E-FINDING #8：非标准
+// `Content-Encoding: none`（部分上游用它声明"未压缩"）必须视同 identity 直通，
+// 空值同样直通；真实未知编码仍报编码错误（E2E mock F8 确定性复现的生产行为）。
+func TestDecodeUpstreamResponseBodyNoneEncoding(t *testing.T) {
+	cases := []struct {
+		name        string
+		encoding    string
+		payload     string
+		wantErrText string
+	}{
+		{name: "非标准 none 视同未压缩直通", encoding: "none", payload: "plain-none"},
+		{name: "none 大小写混写同样直通", encoding: "None", payload: "plain-mixed"},
+		{name: "空值直通", encoding: "", payload: "plain-empty"},
+		{name: "identity 直通", encoding: "identity", payload: "plain-identity"},
+		{name: "none 与 gzip 混合仍解压 gzip", encoding: "none, gzip", payload: ""},
+		{name: "未知编码保持报错", encoding: "zstd", payload: "x", wantErrText: "不支持的上游响应压缩编码"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := tc.payload
+			if tc.encoding == "none, gzip" {
+				var buffer bytes.Buffer
+				writer := gzip.NewWriter(&buffer)
+				if _, err := writer.Write([]byte(`{"ok":true}`)); err != nil {
+					t.Fatalf("gzip 写入失败: %v", err)
+				}
+				_ = writer.Close()
+				body = buffer.String()
+			}
+			closer := io.NopCloser(strings.NewReader(body))
+			decoded, err := decodeUpstreamResponseBody(closer, tc.encoding)
+			if tc.wantErrText != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErrText) {
+					t.Fatalf("encoding=%q 期望错误 %q，实际 %v", tc.encoding, tc.wantErrText, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("encoding=%q 不应报错: %v", tc.encoding, err)
+			}
+			data, err := io.ReadAll(decoded)
+			if err != nil {
+				t.Fatalf("读取解码结果失败: %v", err)
+			}
+			if tc.encoding == "none, gzip" {
+				if string(data) != `{"ok":true}` {
+					t.Fatalf("gzip 解压结果 = %q", string(data))
+				}
+				return
+			}
+			if string(data) != body {
+				t.Fatalf("encoding=%q 直通内容 = %q，期望 %q", tc.encoding, string(data), body)
+			}
+		})
+	}
+}

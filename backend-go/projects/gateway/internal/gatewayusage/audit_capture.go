@@ -310,8 +310,8 @@ func NewAuditCaptureContext(input AuditCaptureInput) *AuditCaptureContext {
 	}
 	context.successSampleRate = settings.SuccessSampleRate
 	context.activeCaptureMaxBytes = ResolveAuditCaptureLimits(settings)
-	context.successFullBodyLimitBytes = settings.SuccessFullBodyLimitBytes
-	context.problemFullBodyLimitBytes = settings.ProblemFullBodyLimitBytes
+	context.successFullBodyLimitBytes = ResolveAuditSuccessFullBodyLimitBytes(settings)
+	context.problemFullBodyLimitBytes = ResolveAuditProblemFullBodyLimitBytes(settings)
 	context.httpCompletion = input.HTTPCompletion
 	context.sampleBucket = sampleBucketForTraceID(context.traceID)
 	context.successCaptureSelected = int64(context.sampleBucket) < int64(roundToInt(context.successSampleRate*10000))

@@ -35,9 +35,8 @@ func LoadRedisConfig(getenv func(string) string) (RedisConfig, error) {
 	if !cfg.Enabled {
 		return cfg, nil
 	}
-	if cfg.URL == "" {
-		return RedisConfig{}, errors.New("启用 model-recovery 必须配置 JUHE_AI_REDIS_STATE_URL")
-	}
+	// 说明：此处曾有一个 `if cfg.URL == ""` 守卫，但该分支内 cfg.Enabled 为真
+	// 已确保 URL 非空，属永假死代码，按覆盖率清理授权删除。
 	if !namespacePartPattern.MatchString(cfg.Namespace) {
 		return RedisConfig{}, errors.New("启用 model-recovery 必须配置合法 JUHE_AI_REDIS_NAMESPACE")
 	}

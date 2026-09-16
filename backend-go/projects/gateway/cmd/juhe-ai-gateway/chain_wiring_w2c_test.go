@@ -584,3 +584,96 @@ func newW2CTestRequest(t *testing.T, body string) *gatewaypreauth.GatewayRequest
 }
 
 func strBoolPtr(value bool) *bool { return &value }
+
+// ---------------------------------------------------------------------------
+// E2E-FINDING #5: high-concurrency group queue wiring
+// ---------------------------------------------------------------------------
+
+// TestChainHighConcurrencyQueueAdapterWaitCapacity 覆盖分组级短队列适配器：
+// 分组内账户并发未满时立即 Ready；MaxWaitMs 与 policy map 透传；结果折叠为
+// dispatch QueueWaitResult 形状。
+func TestChainHighConcurrencyQueueAdapterWaitCapacity(t *testing.T) {
+	tracker := gatewayclientip.NewMemoryAccountConcurrency(nil)
+	queue, err := gatewayclientip.NewHighConcurrencyGroupQueue(gatewayclientip.HighConcurrencyQueueOptions{
+		Concurrency: tracker,
+	})
+	if err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+	defer queue.Close()
+	port := newChainHighConcurrencyQueue(queue)
+	maxWaitMs := int64(50)
+	result, err := port.WaitForCapacity(context.Background(), gatewaydispatch.HighConcurrencyWaitInput{
+		SystemAccountID: "sys",
+		GroupID:         "grp",
+		APIKeyID:        "key",
+		AccountIDs:      []string{"acc-1"},
+		AccountConcurrencyLimits: map[string]int{
+			"acc-1": 1,
+		},
+		Lane:      "text",
+		MaxWaitMs: maxWaitMs,
+	})
+	if err != nil {
+		t.Fatalf("wait capacity: %v", err)
+	}
+	if !result.Ready {
+		t.Fatalf("空队列应立即 Ready，result = %+v", result)
+	}
+}
+
+// TestChainComposeWiresHighConcurrencyQueue 断言组合根把队列接上引擎：
+// 此前 engine.HighConcurrencyQueue 无生产赋值，high_concurrency 分组并发满
+// 时直接 nil panic（E2E-FINDING #5 崩溃级缺陷）。
+func TestChainComposeWiresHighConcurrencyQueue(t *testing.T) {
+	deps := chainSmokeDeps(t, newChainFixture(t), gatewaypreauth.SystemClock{}, "")
+	tracker := gatewayclientip.NewMemoryAccountConcurrency(nil)
+	queue, err := gatewayclientip.NewHighConcurrencyGroupQueue(gatewayclientip.HighConcurrencyQueueOptions{
+		Concurrency: tracker,
+	})
+	if err != nil {
+		t.Fatalf("create queue: %v", err)
+	}
+	defer queue.Close()
+	deps.ClientIPSlots = newChainClientIPConcurrency(slotsForQueue(t))
+	deps.HighConcurrencyQueue = newChainHighConcurrencyQueue(queue)
+	chain, shutdown, err := composeGatewayChain(deps)
+	if err != nil {
+		t.Fatalf("compose gateway chain: %v", err)
+	}
+	defer shutdown()
+	if chain.engine.HighConcurrencyQueue == nil {
+		t.Fatal("engine.HighConcurrencyQueue 必须接线（nil 在并发满时 panic）")
+	}
+}
+
+// TestChainComposeDegradesHighConcurrencyQueueWhenAbsent 断言 nil 队列回落
+// 普通容量语义（Ready=true 立即放行），绝不 nil panic。
+func TestChainComposeDegradesHighConcurrencyQueueWhenAbsent(t *testing.T) {
+	deps := chainSmokeDeps(t, newChainFixture(t), gatewaypreauth.SystemClock{}, "")
+	deps.ClientIPSlots = newChainClientIPConcurrency(slotsForQueue(t))
+	chain, shutdown, err := composeGatewayChain(deps)
+	if err != nil {
+		t.Fatalf("compose gateway chain: %v", err)
+	}
+	defer shutdown()
+	result, err := chain.engine.HighConcurrencyQueue.WaitForCapacity(context.Background(), gatewaydispatch.HighConcurrencyWaitInput{})
+	if err != nil {
+		t.Fatalf("degraded wait: %v", err)
+	}
+	if !result.Ready {
+		t.Fatalf("缺席降级应立即 Ready，result = %+v", result)
+	}
+}
+
+// slotsForQueue builds the minimal slot family the queue-wiring fixtures need
+// (the D-109 slot acquisition segment runs ahead of the group queue).
+func slotsForQueue(t *testing.T) *gatewayclientip.ClientIPConcurrency {
+	t.Helper()
+	slots, err := gatewayclientip.NewClientIPConcurrency(gatewayclientip.ClientIPConcurrencyOptions{})
+	if err != nil {
+		t.Fatalf("create slots: %v", err)
+	}
+	t.Cleanup(slots.Close)
+	return slots
+}

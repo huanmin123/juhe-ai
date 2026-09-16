@@ -452,18 +452,68 @@ func TestChainProviderDriverCapabilityMismatchReason(t *testing.T) {
 	driver := newChainProviderDriver()
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","messages":[]}`))
 	req := gatewaypreauth.NewGatewayRequest(request)
+	// E2E-FINDING #7 裁决：client_compatibility 列不再参与调度淘汰（Node
+	// accountSupportsGatewayRequest 链无对称比较），列值无论新旧数据都只
+	// 影响写侧端点模式默认集与读面投影。
 	account := gatewaydispatch.AccountCandidate{
 		ID:                  "acc_1",
 		ProviderCode:        "openai",
 		ProtocolCode:        "openai",
 		ClientCompatibility: "codex",
 	}
-	if reason := driver.gatewayRequestCapabilityMismatchReasonFor(req, account, "generic"); reason != "client_compatibility_mismatch" {
-		t.Fatalf("compatibility mismatch reason = %q", reason)
+	if reason := driver.gatewayRequestCapabilityMismatchReasonFor(req, account, "generic"); reason != "" {
+		t.Fatalf("兼容列不应淘汰请求，reason = %q", reason)
 	}
 	anthropic := gatewaydispatch.AccountCandidate{ID: "acc_2", ProtocolCode: "anthropic"}
 	if reason := driver.gatewayRequestCapabilityMismatchReasonFor(req, anthropic, ""); reason != "anthropic_native_unsupported" {
 		t.Fatalf("anthropic mismatch reason = %q", reason)
+	}
+}
+
+// TestChainProviderDriverClientCompatibilityNotADispatchGate 覆盖
+// E2E-FINDING #7 修复后的调度语义：client_compatibility 列（含 derive 落列
+// 的 codex_responses 与存量 openai_standard）不再淘汰任何请求类——chat /
+// codex / claude 三类客户端都能命中 gpt+api_key 账户；codex 的 responses
+// 端点约束由 D-155 端点模式门承担，anthropic native 门保持协议面检查。
+func TestChainProviderDriverClientCompatibilityNotADispatchGate(t *testing.T) {
+	driver := newChainProviderDriver()
+	messagesRequest := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","max_tokens":16,"messages":[]}`))
+	messagesReq := gatewaypreauth.NewGatewayRequest(messagesRequest)
+	anthropicAccount := gatewaydispatch.AccountCandidate{
+		ID:                  "acc_anthropic",
+		ProviderCode:        "anthropic",
+		ProtocolCode:        "anthropic",
+		ClientCompatibility: "openai_standard",
+	}
+	if reason := driver.gatewayRequestCapabilityMismatchReasonFor(messagesReq, anthropicAccount, "claude_code"); reason != "" {
+		t.Fatalf("anthropic 账户不应淘汰 claude_code 请求，reason = %q", reason)
+	}
+	if reason := driver.gatewayRequestCapabilityMismatchReasonFor(messagesReq, anthropicAccount, "anthropic_native"); reason != "" {
+		t.Fatalf("anthropic_native 请求不应被淘汰，reason = %q", reason)
+	}
+	responsesRequest := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-test","input":"hi"}`))
+	responsesReq := gatewaypreauth.NewGatewayRequest(responsesRequest)
+	chatRequest := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","messages":[]}`))
+	chatReq := gatewaypreauth.NewGatewayRequest(chatRequest)
+	// 存量列（openai_standard）承接 codex_responses 请求；derive 落列
+	//（codex_responses）承接 openai_standard 请求——两个方向都不淘汰。
+	legacyAccount := gatewaydispatch.AccountCandidate{
+		ID:                  "acc_openai_legacy",
+		ProviderCode:        "gpt",
+		ProtocolCode:        "openai",
+		ClientCompatibility: "openai_standard",
+	}
+	if reason := driver.gatewayRequestCapabilityMismatchReasonFor(responsesReq, legacyAccount, "codex_responses"); reason != "" {
+		t.Fatalf("存量 openai_standard 列不应淘汰 codex_responses 请求，reason = %q", reason)
+	}
+	derivedAccount := gatewaydispatch.AccountCandidate{
+		ID:                  "acc_openai_derived",
+		ProviderCode:        "gpt",
+		ProtocolCode:        "openai",
+		ClientCompatibility: "codex_responses",
+	}
+	if reason := driver.gatewayRequestCapabilityMismatchReasonFor(chatReq, derivedAccount, "openai_standard"); reason != "" {
+		t.Fatalf("codex_responses 列不应淘汰 chat 请求，reason = %q", reason)
 	}
 }
 

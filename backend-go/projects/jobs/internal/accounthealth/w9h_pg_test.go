@@ -76,7 +76,9 @@ func w9hCleanupJobsRows(t *testing.T, db *sql.DB) {
 		`DELETE FROM juhe_jobs.account_health_direct_input_suppressions WHERE account_id LIKE 'w9h-%'`,
 		`DELETE FROM juhe_jobs.account_health_key_cursors WHERE account_id LIKE 'w9h-%'`,
 		`DELETE FROM juhe_jobs.account_health_owner_leases WHERE owner_id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_jobs.account_health_projection_receipts WHERE outcome_id LIKE 'w9h-%'`,
+		// receipts 表在 juhe_business schema（与 pg_schema.go / 查询一致）；
+		// 原语句误用 juhe_jobs 前缀导致清理永远失败、残留行让幂等重放短路。
+		`DELETE FROM juhe_business.account_health_projection_receipts WHERE outcome_id LIKE 'w9h-%'`,
 		`DELETE FROM juhe_business.account_health_projection_cursors WHERE consumer_key LIKE 'w9h-%'`,
 		`DELETE FROM juhe_business.account_circuit_outbox WHERE account_id LIKE 'w9h-%'`,
 		`DELETE FROM juhe_business.group_accounts WHERE account_id LIKE 'w9h-%'`,

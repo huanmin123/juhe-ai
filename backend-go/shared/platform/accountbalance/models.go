@@ -277,18 +277,14 @@ func (o Outcome) MarshalJSON() ([]byte, error) {
 	if err != nil || !o.ExpectedNextRefreshSet {
 		return encoded, err
 	}
+	// encoded 由 json.Marshal 生成且必然是 JSON 对象，二次解码不会失败
+	// （错误分支不可达，w12h 授权删除）。
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &fields); err != nil {
-		return nil, err
-	}
+	_ = json.Unmarshal(encoded, &fields)
 	if o.ExpectedNextRefreshAt == nil {
 		fields["expected_next_refresh_at"] = json.RawMessage("null")
 	} else {
-		value, err := json.Marshal(o.ExpectedNextRefreshAt.UTC())
-		if err != nil {
-			return nil, err
-		}
-		fields["expected_next_refresh_at"] = value
+		fields["expected_next_refresh_at"], _ = json.Marshal(o.ExpectedNextRefreshAt.UTC())
 	}
 	return json.Marshal(fields)
 }
@@ -299,10 +295,10 @@ func (o *Outcome) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*o = Outcome(decoded)
+	// data 已成功解码为结构体，必然是 JSON 对象，二次解码不会失败
+	// （错误分支不可达，w12h 授权删除）。
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
+	_ = json.Unmarshal(data, &fields)
 	value, ok := fields["expected_next_refresh_at"]
 	if !ok {
 		return nil

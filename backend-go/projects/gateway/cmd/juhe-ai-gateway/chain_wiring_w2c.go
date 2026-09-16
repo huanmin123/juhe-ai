@@ -189,6 +189,55 @@ func (c *chainClientIPConcurrency) Acquire(ctx context.Context, input gatewaydis
 }
 
 // ---------------------------------------------------------------------------
+// D-109: high-concurrency group queue (high_concurrency groups)
+// ---------------------------------------------------------------------------
+
+// chainHighConcurrencyQueue adapts the gatewayclientip group queue onto the
+// dispatch HighConcurrencyWaiter port (Node
+// runtime/high-concurrency-queue.service.ts waitForHighConcurrencyGroupCapacity).
+// The scheduling policy map rides through (gatewayruntimecache.GroupSchedulingPolicy
+// is the raw map alias); the request signal is the dispatch context itself.
+type chainHighConcurrencyQueue struct {
+	queue *gatewayclientip.HighConcurrencyGroupQueue
+}
+
+func newChainHighConcurrencyQueue(queue *gatewayclientip.HighConcurrencyGroupQueue) *chainHighConcurrencyQueue {
+	return &chainHighConcurrencyQueue{queue: queue}
+}
+
+// WaitForCapacity mirrors the Node wait: policy map, lane and the bounded
+// MaxWaitMs ride through; the result collapses to the dispatch QueueWaitResult
+// shape (Ready / Reason / WaitedMs / QueueSize).
+func (c *chainHighConcurrencyQueue) WaitForCapacity(ctx context.Context, input gatewaydispatch.HighConcurrencyWaitInput) (gatewaydispatch.QueueWaitResult, error) {
+	waitInput := gatewayclientip.HighConcurrencyQueueWaitInput{
+		SystemAccountID:          input.SystemAccountID,
+		GroupID:                  input.GroupID,
+		APIKeyID:                 input.APIKeyID,
+		AccountIDs:               input.AccountIDs,
+		AccountConcurrencyLimits: input.AccountConcurrencyLimits,
+		Lane:                     input.Lane,
+		Signal:                   ctx,
+	}
+	if input.Policy != nil {
+		waitInput.Policy = *input.Policy
+	}
+	if input.MaxWaitMs > 0 {
+		maxWaitMs := input.MaxWaitMs
+		waitInput.MaxWaitMs = &maxWaitMs
+	}
+	result, err := c.queue.WaitForHighConcurrencyGroupCapacity(ctx, waitInput)
+	if err != nil {
+		return gatewaydispatch.QueueWaitResult{}, err
+	}
+	return gatewaydispatch.QueueWaitResult{
+		Ready:     result.Ready,
+		Reason:    result.Reason,
+		WaitedMs:  result.WaitedMs,
+		QueueSize: result.QueueSize,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
 // D-131: account circuits (gatewaycircuit.CircuitService)
 // ---------------------------------------------------------------------------
 
@@ -750,6 +799,7 @@ func slogInfoFields(event string, fields map[string]any, message string) {
 var (
 	_ gatewayruntimecache.GroupBindingOrderer      = chainGroupBindingOrderer{}
 	_ gatewaydispatch.ClientIPConcurrencyAcquirer  = (*chainClientIPConcurrency)(nil)
+	_ gatewaydispatch.HighConcurrencyWaiter        = (*chainHighConcurrencyQueue)(nil)
 	_ gatewaydispatch.KeyModelAdmission            = chainKeyModelAdmission{}
 	_ gatewaydispatch.SuppressionPort              = chainSuppressionPort{}
 	_ gatewaydispatch.RecoverableSuppressionWaiter = chainDispatchSuppressionWaiter{}

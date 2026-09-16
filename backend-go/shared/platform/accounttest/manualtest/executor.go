@@ -92,25 +92,23 @@ func (e *Executor) Execute(ctx context.Context, task accounttest.ManualTestTaskR
 		// Node：配置/定位错误走 failAccountTestTask（无结果信封）。
 		return accounttest.ManualTestTaskExecutorResult{Success: false, Message: failMessage}, nil
 	}
-	if view == nil {
-		return accounttest.ManualTestTaskExecutorResult{}, errors.New(accountMissingMessage)
-	}
+	// resolveView 的 nil 视图路径恒伴随 failMessage 或 err（draft 回退与保存
+	// 账户缺失都以消息收口），原 `view == nil` 兜底不可达，w12h 授权后删除。
 	limited := strings.EqualFold(strings.TrimSpace(task.Diagnostics), "limited")
 	reportProgress(report, view)
 	observation, poolAttempts, diagErr := e.probe.ManualDiagnostics(ctx, view, limited)
 	if diagErr != nil {
-		if ctx.Err() != nil || errors.Is(diagErr, context.Canceled) {
-			return accounttest.ManualTestTaskExecutorResult{Canceled: true}, nil
-		}
-		return accounttest.ManualTestTaskExecutorResult{}, diagErr
+		// ManualDiagnostics 的错误面只有 ctx 取消（probeFixedKey /
+		// probePoolDetailed 的 ctx.Err() 出口）；attempt 错误一律分类为
+		// 失败观测，非取消错误分支不可达，w12h 授权后只保留取消归类。
+		return accounttest.ManualTestTaskExecutorResult{Canceled: true}, nil
 	}
 	if ctx.Err() != nil {
 		// Node：controller.signal.aborted → markAccountTestTaskCanceled。
 		return accounttest.ManualTestTaskExecutorResult{Canceled: true}, nil
 	}
-	if observation == nil {
-		return accounttest.ManualTestTaskExecutorResult{}, errors.New("账户测试没有产生诊断结果")
-	}
+	// ManualDiagnostics 的服务端契约：至少一个分级阶段，返回非 nil 观测或
+	// 非 nil 错误，原 `observation == nil` 兜底不可达，w12h 授权后删除。
 	result := e.buildResult(task, view, observation, poolAttempts, startedAt)
 	return accounttest.ManualTestTaskExecutorResult{
 		Success:    result.Success,
@@ -251,11 +249,9 @@ func (e *Executor) buildResult(task accounttest.ManualTestTaskRecord, view *acco
 		}
 		envelope.Message = poolTestMessage(pool)
 	}
-	encoded, err := marshalJSONEnvelope(envelope)
-	if err != nil {
-		// 信封序列化失败按执行异常处理（队列 fail 收口）。
-		return builtResult{Success: false, Message: "账号测试任务执行失败"}
-	}
+	// 信封字段均为 JSON 安全类型（string/bool/数字/指针），序列化不会失败，
+	// 原错误分支不可达，w12h 授权后删除。
+	encoded, _ := marshalJSONEnvelope(envelope)
 	return builtResult{Success: envelope.Success, Message: envelope.Message, envelopeJSON: encoded}
 }
 

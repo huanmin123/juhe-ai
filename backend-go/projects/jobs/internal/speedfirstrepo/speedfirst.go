@@ -535,14 +535,17 @@ func (s *SpeedFirstStore) writeStateAndIndexes(ctx context.Context, key string, 
 
 func (s *SpeedFirstStore) addIndexKey(ctx context.Context, indexKey, key string) error {
 	token := randomToken(16)
-	locked, err := s.acquireIndexLock(ctx, indexKey, token)
+	// 缺陷修复：锁必须使用独立的 indexLockKey(indexKey+"-lock")。此前把索引键
+	// 本身当 SetNX 锁键，首次 CAS 写入用索引 JSON 覆盖锁值后，同一索引在索引
+	// TTL 内的所有后续写入都会重试耗尽并报"索引锁获取失败"。
+	locked, err := s.acquireIndexLock(ctx, s.indexLockKey(indexKey), token)
 	if err != nil {
 		return err
 	}
 	if !locked {
 		return fmt.Errorf("普通路由速度优先索引锁获取失败：%s", indexKey)
 	}
-	defer func() { _ = s.releaseLock(ctx, indexKey, token) }()
+	defer func() { _ = s.releaseLock(ctx, s.indexLockKey(indexKey), token) }()
 	for attempt := 0; attempt < speedFirstGenerationCASRetries; attempt++ {
 		var currentIndex struct {
 			Keys []string `json:"keys"`
@@ -600,14 +603,15 @@ func (s *SpeedFirstStore) removeIndexKeys(ctx context.Context, keys []string) er
 
 func (s *SpeedFirstStore) filterIndexKeys(ctx context.Context, indexKey string, removeSet map[string]bool) error {
 	token := randomToken(16)
-	locked, err := s.acquireIndexLock(ctx, indexKey, token)
+	// 与 addIndexKey 相同的锁键修复：索引数据与锁分离，避免锁值被索引 JSON 覆盖。
+	locked, err := s.acquireIndexLock(ctx, s.indexLockKey(indexKey), token)
 	if err != nil {
 		return err
 	}
 	if !locked {
 		return fmt.Errorf("普通路由速度优先索引锁获取失败：%s", indexKey)
 	}
-	defer func() { _ = s.releaseLock(ctx, indexKey, token) }()
+	defer func() { _ = s.releaseLock(ctx, s.indexLockKey(indexKey), token) }()
 	for attempt := 0; attempt < speedFirstGenerationCASRetries; attempt++ {
 		var currentIndex struct {
 			Keys []string `json:"keys"`

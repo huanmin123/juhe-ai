@@ -56,10 +56,9 @@ func parseDecimal(value any, field string) (decimal, error) {
 	if digits == "" {
 		digits = "0"
 	}
+	// digits 已通过纯数字校验，SetString 不可能失败（w12h 授权删除）。
 	coefficient := new(big.Int)
-	if _, ok := coefficient.SetString(digits, 10); !ok {
-		return decimal{}, fmt.Errorf("%s 不是有效数字", field)
-	}
+	coefficient.SetString(digits, 10)
 	if negative {
 		coefficient.Neg(coefficient)
 	}

@@ -1135,7 +1135,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// 记账。各服务在 chainRuntimeServices 中按驱动轴分叉；nil 仅
 			// 出现在组合测试（链条回落 disabled*/degraded* 显式降级）。
 			ClientIPSlots:     newChainClientIPConcurrency(chainServices.ClientIPSlots),
-			AccountCircuits:   chainServices.AccountCircuits,
+			// E2E-FINDING #5：分组级短队列随 W2-C 一起进生产组合根（nil 仅
+			// 出现在组合测试，链条回落 degradedHighConcurrencyQueue）。
+			HighConcurrencyQueue: newChainHighConcurrencyQueue(chainServices.HighConcurrencyQueue),
+			AccountCircuits:      chainServices.AccountCircuits,
 			KeyModelStore:     chainServices.KeyModelStore,
 			ProxyHealth:       chainProxyHealthPort{service: chainServices.ProxyHealth},
 			HotQuality:        &chainHotQualityPort{runtime: chainServices.HotQuality},

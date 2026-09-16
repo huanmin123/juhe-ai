@@ -145,7 +145,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("枚举 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 失败: %w", err)
 		}
-		shardKeys := make(map[string]string, len(entries))
 		for _, entry := range entries {
 			same, err := sameSQLiteFile(cfg.OutputPath, entry)
 			if err != nil {
@@ -154,17 +153,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			if same {
 				return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_DATABASE_PATH 不得与 Codex context SQLite shard 共用")
 			}
-			key := filepath.Base(entry)
-			if prior, exists := shardKeys[key]; exists {
-				same, err := sameSQLiteFile(prior, entry)
-				if err != nil {
-					return Config{}, fmt.Errorf("校验 Codex context SQLite shard %q 与 %q 的物理 identity 失败: %w", prior, entry, err)
-				}
-				if !same {
-					return Config{}, fmt.Errorf("Codex context SQLite shard 文件名重复，无法形成稳定 table identity: %s", key)
-				}
-			}
-			shardKeys[key] = entry
+			// 原 shardKeys basename 去重检查已删除（w12f）：filepath.Glob 单层
+			// 枚举同目录下 basename 必然唯一，重名分支不可达。
 		}
 		within, err := pathWithin(cfg.CodexShardRoot, cfg.OutputPath)
 		if err != nil {

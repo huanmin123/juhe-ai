@@ -1011,7 +1011,7 @@ async function assertLogBoundaryRedaction(baseUrl: string): Promise<void> {
       [realGoManagementSmokeEnv.providerCode]: missingProviderCode
     }), () => undefined)
   )
-  assert.match(providerFailureMessage, /Mutation provider was not returned by providers\/options/)
+  assert.match(providerFailureMessage, /Mutation provider was not returned by providers\/definitions/)
   messages.push(providerFailureMessage)
 
   resetMock('ip_stats_failure')
@@ -1060,7 +1060,7 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(),
-    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+    providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
   assertNoEnvironmentIdentifierLeak(emptyOutput, baseUrl)
 
@@ -1126,7 +1126,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+    providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
   assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
   assertNoCookieLeak(output)
@@ -1138,9 +1138,9 @@ async function assertProviderOptionsResponseRequirements(baseUrl: string): Promi
   const cases = [
     [
       'provider_profile_endpoint_families_missing',
-      /providers\/options provider hybrid\.protocolProfiles item 0\.endpointFamilies must be an array/
+      /providers\/definitions provider hybrid\.protocolProfiles item 0\.endpointFamilies must be an array/
     ],
-    ['provider_duplicate_code', /providers\/options contains duplicate provider code gpt/]
+    ['provider_duplicate_code', /providers\/definitions contains duplicate provider code gpt/]
   ] as const
   for (const [requestScenario, expectedMessage] of cases) {
     resetMock(requestScenario)
@@ -1170,7 +1170,7 @@ async function assertAccountTestOptionsReadSmoke(baseUrl: string): Promise<void>
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), accountTestOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+    providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), accountTestOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
 
   const accountTestOptionsRequests = requestRecords.filter((record) =>
@@ -1217,7 +1217,7 @@ async function assertAccountTestOptionsResponseRequirements(baseUrl: string): Pr
       externalIntegrationSourceApiDocsPath(),
       externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-      providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), accountTestOptionsPath()
+      providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), accountTestOptionsPath()
     ])
     assert.equal(requestRecords.every((record) => record.method === 'GET' && record.body === undefined), true)
     assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
@@ -1246,7 +1246,7 @@ async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promis
       externalIntegrationSourceApiDocsPath(),
       externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-      providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath()
+      providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath()
     ])
     assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
     assertRequestHeaders()
@@ -1282,7 +1282,7 @@ async function assertStrictClientIPDetailResponseRequirements(baseUrl: string): 
       externalIntegrationSourceApiDocsPath(),
       externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-      providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+      providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath()
     ])
     assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
     assertRequestHeaders()
@@ -1315,7 +1315,7 @@ async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
       externalIntegrationSourceApiDocsPath(),
       externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-      providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath(explicitClientIPHash)
+      providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath(explicitClientIPHash)
     ])
     assertNoEnvironmentIdentifierLeak(output, baseUrl)
     assertRequestHeaders()
@@ -1342,7 +1342,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath()
+    providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath()
   ])
   assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
@@ -1369,7 +1369,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath()
+    providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath()
   ])
   assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
@@ -1395,7 +1395,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath(),
+    providersPath(), providerDefinitionsPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath(),
     groupsCreatePath(),
     groupsListPath(),
     groupDetailPath(temporaryGroupId),
@@ -1573,7 +1573,7 @@ async function assertInvalidConfiguration(baseUrl: string): Promise<void> {
   })
   await assert.rejects(
     runRealGoManagementSmokeFromEnvironment(unsupportedProviderEnv, () => undefined),
-    /Mutation provider was not returned by providers\/options/
+    /Mutation provider was not returned by providers\/definitions/
   )
   assert.equal(requestRecords.some((record) => record.method === 'POST'), false)
   assertRequestHeaders()
@@ -1917,6 +1917,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/providers/options') {
+    // 现行 /providers/options 契约：轻量四字段（id, code, name, enabled）。
+    const providers = [
+      ['hybrid', 'Hybrid'],
+      ['openai', 'OpenAI'],
+      ['gpt', 'GPT'],
+      ['deepseek', 'DeepSeek'],
+      ['anthropic', 'Anthropic'],
+      ['gemini', 'Gemini'],
+      ['glm', 'GLM']
+    ].map(([code, name]) => ({ id: `provider_${code}`, code, name, enabled: true }))
+    sendEnvelope(res, providers)
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/__aisys__/api/providers/definitions') {
+    // 全量协议档案定义走 /providers/definitions（与真实 gateway 契约一致）。
     const providers = [
       ['hybrid', 'Hybrid'],
       ['openai', 'OpenAI'],
@@ -1938,18 +1953,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/providers/models/options') {
+    // 现行契约（前端 ProviderModelOption 同形）：id/name 必备，providerCode 可选。
     sendEnvelope(res, [
       {
+        id: 'gpt-5.6-sol',
+        name: 'gpt-5.6-sol',
         providerCode: 'gpt',
-        model: 'gpt-5.6-sol',
         supportedApiProtocols: ['responses'],
         supportedServiceTiers: ['priority'],
         supportedReasoningEfforts: ['low', 'high'],
         defaultReasoningEffort: 'high'
       },
       {
-        providerCode: 'openai',
-        model: 'gpt-4.1',
+        id: 'gpt-4.1',
+        name: 'gpt-4.1',
         supportedApiProtocols: ['chat_completions'],
         defaultReasoningEffort: null
       }
@@ -2144,7 +2161,12 @@ async function handleGroupDetailRequest(
       res.end(JSON.stringify({ message: 'patch response unavailable' }))
       return
     }
-    sendEnvelope(res, groupResponse(group))
+    // 现行 PATCH 契约（真实 gateway 同形）：变更确认 {id, changedFields, updatedAt}。
+    sendEnvelope(res, {
+      id: group.id,
+      changedFields: ['description', 'groupType', 'name', 'schedulingPolicy'],
+      updatedAt: new Date().toISOString()
+    })
     return
   }
 
@@ -2956,6 +2978,10 @@ function groupDeletePath(groupId: string): string {
 
 function providersPath(): string {
   return `GET /__aisys__/api/providers/options?systemAccountId=${systemAccountId}`
+}
+
+function providerDefinitionsPath(): string {
+  return `GET /__aisys__/api/providers/definitions?systemAccountId=${systemAccountId}`
 }
 
 function modelOptionsPath(): string {

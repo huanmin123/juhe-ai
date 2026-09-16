@@ -418,12 +418,12 @@ func TestBatchUpdateCredentialConfigFields(t *testing.T) {
 		t.Fatalf("stale credential batch: %d %v", code, conflict)
 	}
 
-	// supportedEndpointModes override: restrict to the chat pair; the account
-	// was created with the default chat_json health mode, so nothing else
-	// moves — but a responses-only account flips the health check mode.
+	// supportedEndpointModes override: 扩展 chat 能力；gpt api_key 账户按
+	// derive 落列为 codex_responses（E2E-FINDING #7 修复后的写侧语义），
+	// 兼容断言不允许移除 responses_sse，因此集合必须保留它。
 	code, modesPayload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/batch-update", `{"targets":[
 			{"accountId":"`+ids[0]+`","configRevision":2},{"accountId":"`+ids[1]+`","configRevision":2}],
-		"updates":{"supportedEndpointModes":{"enabled":true,"value":["chat_json","chat_sse"]}}}`)
+		"updates":{"supportedEndpointModes":{"enabled":true,"value":["chat_json","chat_sse","responses_sse"]}}}`)
 	if code != http.StatusOK {
 		t.Fatalf("modes batch: %d %v", code, modesPayload)
 	}

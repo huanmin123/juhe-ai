@@ -265,12 +265,8 @@ func (e *availabilityException) UnmarshalJSON(data []byte) error {
 	if err := windowDecoder.Decode(&windows); err != nil {
 		return err
 	}
-	if err := windowDecoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return errors.New("trailing content")
-		}
-		return err
-	}
+	// raw.Windows 是外层 decoder 捕获的完整 JSON 值：Decode(&windows) 成功后
+	// 流内必然只剩 io.EOF，不存在尾随内容，因此无需二次 Decode 校验。
 	e.Windows = make([]availabilityWindow, len(windows))
 	for i, window := range windows {
 		e.Windows[i] = availabilityWindow{Start: window.Start, End: window.End}

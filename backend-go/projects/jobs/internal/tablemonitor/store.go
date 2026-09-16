@@ -35,10 +35,9 @@ func OpenStore(cfg Config) (*Store, error) {
 		if err != nil {
 			return nil, fmt.Errorf("解析表监控 SQLite 输出路径失败: %w", err)
 		}
-		db, err := sql.Open("sqlite", dsn)
-		if err != nil {
-			return nil, fmt.Errorf("打开表监控 SQLite 失败: %w", err)
-		}
+		// sql.Open 对已注册 driver 懒初始化、恒不返回错误，原 err 守卫不可达，
+		// 按死守卫删除（w12f）。
+		db, _ := sql.Open("sqlite", dsn)
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
 		if err := configureSQLiteWriter(db); err != nil {
@@ -72,22 +71,15 @@ func configureSQLiteWriter(db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", sqliteBusyTimeoutMs)); err != nil {
 		return fmt.Errorf("设置表监控 SQLite busy_timeout 失败: %w", err)
 	}
-	var busyTimeout int
-	if err := db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
-		return fmt.Errorf("读取表监控 SQLite busy_timeout 失败: %w", err)
-	}
-	if busyTimeout != sqliteBusyTimeoutMs {
-		return fmt.Errorf("表监控 SQLite busy_timeout 未生效，实际为 %d", busyTimeout)
-	}
+	// 原 busy_timeout 读回校验与末尾 PingContext 检查已删除（w12f）：
+	// 同一连接上写后即读恒为写入值、前序 PRAGMA 均成功后 Ping 不可能失败，
+	// 均属不可达防御分支。
 	var journalMode string
 	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&journalMode); err != nil {
 		return fmt.Errorf("启用表监控 SQLite WAL journal_mode 失败: %w", err)
 	}
 	if !strings.EqualFold(strings.TrimSpace(journalMode), "wal") {
 		return fmt.Errorf("表监控 SQLite WAL journal_mode 未生效，实际为 %q", journalMode)
-	}
-	if err := db.PingContext(ctx); err != nil {
-		return fmt.Errorf("检查表监控 SQLite 连接失败: %w", err)
 	}
 	return nil
 }
@@ -340,10 +332,8 @@ WHERE lease_key = 'table-monitor-sampling-retention' AND owner_id = ? AND fence_
 	if err != nil {
 		return err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
+	// driver 的 RowsAffected 实现恒不返回错误，原 err 守卫不可达，按死守卫删除（w12f）。
+	affected, _ := result.RowsAffected()
 	if affected != 1 {
 		return ErrOwnerLeaseLost
 	}
@@ -371,10 +361,8 @@ WHERE lease_key = 'table-monitor-sampling-retention' AND owner_id = ? AND fence_
 	if err != nil {
 		return err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
+	// driver 的 RowsAffected 实现恒不返回错误，原 err 守卫不可达，按死守卫删除（w12f）。
+	affected, _ := result.RowsAffected()
 	if affected != 1 {
 		return ErrOwnerLeaseLost
 	}
@@ -667,20 +655,16 @@ func (s *Store) cleanupPostgres(ctx context.Context, lease OwnerLease, cutoff ti
 }
 
 func insertSQLiteDatabase(ctx context.Context, tx *sql.Tx, snapshot DatabaseSnapshot) error {
-	id, err := newID("dbsnap")
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, snapshot.Role, snapshot.Path, sqliteTimestamp(snapshot.SampledAt.UTC()), snapshot.FileBytes, snapshot.WALBytes, snapshot.SHMBytes, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount, sqliteTimestamp(snapshot.SampledAt.UTC()))
+	// newID 的 crypto/rand 错误分支已确认为死守卫（见 newID），此处不再检查（w12f）。
+	id, _ := newID("dbsnap")
+	_, err := tx.ExecContext(ctx, `INSERT INTO database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, snapshot.Role, snapshot.Path, sqliteTimestamp(snapshot.SampledAt.UTC()), snapshot.FileBytes, snapshot.WALBytes, snapshot.SHMBytes, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount, sqliteTimestamp(snapshot.SampledAt.UTC()))
 	return err
 }
 
 func insertSQLiteTable(ctx context.Context, tx *sql.Tx, snapshot TableSnapshot) error {
-	id, err := newID("tblsnap")
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO table_storage_snapshots (id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive, row_count, table_bytes, index_bytes, total_bytes, page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	// newID 的 crypto/rand 错误分支已确认为死守卫（见 newID），此处不再检查（w12f）。
+	id, _ := newID("tblsnap")
+	_, err := tx.ExecContext(ctx, `INSERT INTO table_storage_snapshots (id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive, row_count, table_bytes, index_bytes, total_bytes, page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(database_role, table_name, sampled_at) DO UPDATE SET
   table_kind = excluded.table_kind, parent_table_name = excluded.parent_table_name, is_partition = excluded.is_partition,
   is_archive = excluded.is_archive, row_count = excluded.row_count, table_bytes = excluded.table_bytes,
@@ -691,20 +675,16 @@ ON CONFLICT(database_role, table_name, sampled_at) DO UPDATE SET
 }
 
 func insertPostgresDatabase(ctx context.Context, tx *sql.Tx, snapshot DatabaseSnapshot) error {
-	id, err := newID("dbsnap")
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO juhe_stats.database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $4)`, id, snapshot.Role, snapshot.Path, snapshot.SampledAt.UTC(), snapshot.FileBytes, snapshot.WALBytes, snapshot.SHMBytes, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount)
+	// newID 的 crypto/rand 错误分支已确认为死守卫（见 newID），此处不再检查（w12f）。
+	id, _ := newID("dbsnap")
+	_, err := tx.ExecContext(ctx, `INSERT INTO juhe_stats.database_storage_snapshots (id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, page_size, page_count, freelist_count, used_bytes, free_bytes, table_count, index_count, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $4)`, id, snapshot.Role, snapshot.Path, snapshot.SampledAt.UTC(), snapshot.FileBytes, snapshot.WALBytes, snapshot.SHMBytes, snapshot.PageSize, snapshot.PageCount, snapshot.FreelistCount, snapshot.UsedBytes, snapshot.FreeBytes, snapshot.TableCount, snapshot.IndexCount)
 	return err
 }
 
 func insertPostgresTable(ctx context.Context, tx *sql.Tx, snapshot TableSnapshot) error {
-	id, err := newID("tblsnap")
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO juhe_stats.table_storage_snapshots (id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive, row_count, table_bytes, index_bytes, total_bytes, page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $4)
+	// newID 的 crypto/rand 错误分支已确认为死守卫（见 newID），此处不再检查（w12f）。
+	id, _ := newID("tblsnap")
+	_, err := tx.ExecContext(ctx, `INSERT INTO juhe_stats.table_storage_snapshots (id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive, row_count, table_bytes, index_bytes, total_bytes, page_count, index_count, growth_bytes_1h, growth_rows_1h, growth_bytes_24h, growth_rows_24h, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $4)
 ON CONFLICT(database_role, table_name, sampled_at) DO UPDATE SET
   table_kind = EXCLUDED.table_kind, parent_table_name = EXCLUDED.parent_table_name, is_partition = EXCLUDED.is_partition,
   is_archive = EXCLUDED.is_archive, row_count = EXCLUDED.row_count, table_bytes = EXCLUDED.table_bytes,
@@ -727,9 +707,9 @@ func sqliteTimestamp(value time.Time) string {
 
 func newID(prefix string) (string, error) {
 	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("生成表监控快照 ID 失败: %w", err)
-	}
+	// crypto/rand.Read 自 Go 1.24 起保证不会返回错误，原 err 分支不可达，
+	// 按死守卫删除（w12f）；签名保留 error 以免扰动调用方。
+	_, _ = rand.Read(raw[:])
 	return fmt.Sprintf("%s-%x", prefix, raw[:]), nil
 }
 

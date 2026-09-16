@@ -30,12 +30,9 @@ func passiveJitterWindowMS(intervalMS int64) int64 {
 	var windowMS int64
 	switch {
 	case intervalMS < 60_000:
-		half := intervalMS / 2
-		if half < 30_000 {
-			windowMS = half
-		} else {
-			windowMS = 30_000
-		}
+		// intervalMS < 60_000 时 half = intervalMS/2 < 30_000 恒成立，
+		// 原 else 分支（windowMS = 30_000）不可达，按死守卫删除（w12f）。
+		return intervalMS / 2
 	case intervalMS < 60*60_000:
 		windowMS = 30_000
 	case intervalMS < 24*60*60_000:
@@ -45,12 +42,7 @@ func passiveJitterWindowMS(intervalMS int64) int64 {
 	default:
 		windowMS = 8 * 60 * 60_000
 	}
-	half := intervalMS / 2
-	if windowMS > half {
-		windowMS = half
-	}
-	if windowMS < 0 {
-		windowMS = 0
-	}
+	// 各 case 给出的 windowMS 恒 <= intervalMS/2 且恒非负：
+	// 原 `if windowMS > half` 与 `if windowMS < 0` 钳制不可达，按死守卫删除（w12f）。
 	return windowMS
 }
