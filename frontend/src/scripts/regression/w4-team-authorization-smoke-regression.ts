@@ -231,12 +231,19 @@ function assertSourceBoundaries(): void {
   const authorizationActionsSource = readSource('src/views/authorizations/useAuthorizationActions.ts')
   const routerSource = readSource('src/router/index.ts')
 
-  // Node backend 已归档（X02）；执行入口随 backend workspace 移除，
-  // 对应的团队/统一授权 smoke 面由 Go gateway acceptance 覆盖。
+  // Node backend 已归档（X02）；本 smoke 恢复为 frontend 本地 tsx 直跑入口，
+  // 不得再依赖已归档的 ../backend workspace（juhe-ai-backend）。
+  // 对应的团队/统一授权后端链路由 Go gateway acceptance 覆盖。
+  const w4SmokeEntry = packageJson.scripts?.['test:w4-team-authorization-smoke']
   assert.equal(
-    packageJson.scripts?.['test:w4-team-authorization-smoke'],
-    undefined,
-    'W4 smoke 的 backend tsx 执行入口必须已随 Node backend 归档移除'
+    w4SmokeEntry,
+    'tsx --tsconfig tsconfig.json src/scripts/regression/w4-team-authorization-smoke-regression.ts',
+    'W4 smoke 入口必须是 frontend 本地 tsx 直跑命令'
+  )
+  assert.equal(
+    w4SmokeEntry?.includes('../backend') === true || w4SmokeEntry?.includes('juhe-ai-backend') === true,
+    false,
+    'W4 smoke 入口不得依赖已归档的 Node backend workspace'
   )
 
   assertIncludes(scopedApiSource, 'api.systemTeams.list(params)', '授权团队页面管理侧列表必须走 systemTeams')

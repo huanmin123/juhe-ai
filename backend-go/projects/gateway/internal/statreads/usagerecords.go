@@ -344,9 +344,14 @@ func (d *Deps) usageRecordKeywordAccountIds(r *http.Request, scope AccessScope, 
 		}
 	}
 	ownerClause := ""
+	instanceOwnerClause := ""
 	ownerParams := []any{}
 	if ownerID != "" {
 		ownerClause = " AND accounts.system_account_id = ?"
+		// Node 原版（usage-record-list-query.ts accountOwnerFilterClause）：
+		// instance 联查把 accounts 别名为 source_accounts/instance_accounts，
+		// owner 条件必须锚定 instance_accounts，否则 SQL 报 unknown column。
+		instanceOwnerClause = " AND instance_accounts.system_account_id = ?"
 		ownerParams = append(ownerParams, ownerID)
 	}
 	rows, err := d.queryBusiness(r, `
@@ -368,7 +373,7 @@ func (d *Deps) usageRecordKeywordAccountIds(r *http.Request, scope AccessScope, 
 			ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
 		WHERE source_accounts.deleted_at IS NULL
 			AND instance_accounts.deleted_at IS NULL
-			AND source_accounts.name >= ? AND source_accounts.name < ?`+ownerClause+`
+			AND source_accounts.name >= ? AND source_accounts.name < ?`+instanceOwnerClause+`
 		ORDER BY source_accounts.name ASC, instance_accounts.id ASC
 		LIMIT ?
 	`, flatParams([]any{normalized, upperBound}, ownerParams, usageRecordKeywordMatchLimit)...)

@@ -7,9 +7,16 @@ const workspaceRoot = resolve(sourceRoot, '../..')
 const view = readFileSync(resolve(sourceRoot, 'views/stats/SystemMetricsStatsView.vue'), 'utf8')
 const card = readFileSync(resolve(sourceRoot, 'views/stats/StatsChartCard.vue'), 'utf8')
 const api = readFileSync(resolve(sourceRoot, 'api/domains/stats.ts'), 'utf8')
-const route = readFileSync(resolve(workspaceRoot, 'migration-backup/node/final-archive/backend/src/modules/stats/stats.routes.ts'), 'utf8')
-const worker = readFileSync(resolve(workspaceRoot, 'migration-backup/node/final-archive/backend/src/storage/sqlite-read-worker.ts'), 'utf8')
-const workerTypes = readFileSync(resolve(workspaceRoot, 'migration-backup/node/final-archive/backend/src/storage/sqlite-read-worker-pool.types.ts'), 'utf8')
+// Node backend 已归档（X02），sqlite-read-worker.ts 契约源未随归档保留，
+// stats.routes.ts 归档快照也已死；system-metrics 路由与查询契约的现役等价
+// 实现是 Go gateway statreads（statreads.go 注册路由，systemmetrics.go 承载
+// 趋势与运行时分节读取；Node SQLite read worker 概念无 Go 对应物）。
+const route = readFileSync(resolve(workspaceRoot, 'backend-go/projects/gateway/internal/statreads/statreads.go'), 'utf8')
+const systemMetrics = readFileSync(resolve(workspaceRoot, 'backend-go/projects/gateway/internal/statreads/systemmetrics.go'), 'utf8')
+const systemMetricsTrendHandlerSource = systemMetrics.slice(
+  systemMetrics.indexOf('func (d *Deps) systemMetricsTrendHandler'),
+  systemMetrics.indexOf('func (d *Deps) processEventLoopTrendLatestRows')
+)
 const domainTypes = readFileSync(resolve(sourceRoot, 'types/domain/usage-stats.ts'), 'utf8')
 const loadPageDataStart = view.indexOf('function loadPageData(')
 const loadPageDataEnd = view.indexOf('function setupRuntimeObservers', loadPageDataStart)
@@ -19,12 +26,13 @@ const loadPageDataSource = loadPageDataStart >= 0 && loadPageDataEnd > loadPageD
 
 if (!api.includes("systemMetricsTrend: ") || !api.includes("'/stats/system-metrics/trend'")) throw new Error('system metrics trend API must use a dedicated endpoint')
 if (/systemMetrics:\s*\(/.test(api) || /http\.get\('\/stats\/system-metrics'[,)]/.test(api)) throw new Error('unused wide system metrics API must not remain public')
-if (!route.includes("statsRouter.get('/system-metrics/trend'")) throw new Error('system metrics trend route missing')
-if (/statsRouter\.get\('\/system-metrics',/.test(route)) throw new Error('unused wide system metrics HTTP route must be removed')
-if (!route.includes('getSystemMetricsTrendAsync(')) throw new Error('system metrics trend route must use a dedicated narrow repository loader')
-if (/system-metrics\/trend[\s\S]*getSystemMetricsOverviewAsync\(/.test(route)) throw new Error('system metrics trend route must not load the wide overview and trim it afterwards')
-if (!worker.includes("case 'get_system_metrics_trend_read_only'")) throw new Error('narrow trend loader must run in the SQLite read worker')
-if (!workerTypes.includes("type: 'get_system_metrics_trend_read_only'")) throw new Error('narrow trend worker operation must be typed')
+if (!route.includes('"/system-metrics/trend"')) throw new Error('system metrics trend route missing')
+if (route.includes('"/system-metrics",')) throw new Error('unused wide system metrics HTTP route must be removed')
+// Node getSystemMetricsTrendAsync + get_system_metrics_trend_read_only
+// read-worker operation 的等价契约：窄趋势 handler 直读统计库
+// system_metrics_trend_windows 预聚合窗口表。
+if (!systemMetricsTrendHandlerSource.includes('statsTable("system_metrics_trend_windows")')) throw new Error('system metrics trend route must use the dedicated narrow trend window loader')
+if (/runtimeSnapshot|gatewayRoutingObservability|SystemMetricsOverview/.test(systemMetricsTrendHandlerSource)) throw new Error('system metrics trend route must not load the wide overview and trim it afterwards')
 if (domainTypes.includes('export interface SystemMetricsOverview')) throw new Error('frontend must not retain the retired wide system metrics DTO')
 if (!view.includes('api.stats.systemMetricsTrend(rangeParams, { signal: controller.signal })')) throw new Error('system metrics view must request the narrow trend DTO with cancellation')
 if (view.includes('Promise.all([\n      api.stats.systemMetrics(')) throw new Error('trend request must not be blocked by usage-window loading')
@@ -54,15 +62,29 @@ for (const token of ['systemMetrics.value = undefined', 'runtimeSummary.value = 
 }
 if (!view.includes('disposed || !pageActive.value')) throw new Error('queued viewport callbacks must not request runtime after deactivation or unmount')
 for (const routePath of ['runtime/summary', 'runtime/jobs', 'runtime/queues']) {
-  if (!route.includes(`/system-metrics/${routePath}`)) throw new Error(`runtime split route missing: ${routePath}`)
+  if (!route.includes(`"/system-metrics/${routePath}"`)) throw new Error(`runtime split route missing: ${routePath}`)
 }
 for (const apiName of ['systemMetricsRuntimeSummary', 'systemMetricsRuntimeJobs', 'systemMetricsRuntimeQueues']) {
   if (!api.includes(`${apiName}:`)) throw new Error(`frontend runtime split API missing: ${apiName}`)
 }
 if (view.includes('systemMetricsRuntime.value') || api.includes('systemMetricsRuntime:')) throw new Error('view must not retain the retired wide runtime response')
-if (!route.includes('systemMetricsRuntimeJobRows(runtime)') || !route.includes('systemMetricsRuntimeQueueRows([')) throw new Error('runtime split routes must pass through explicit response projections')
-for (const unusedField of ['runtimeSnapshotSource:', 'runtimeSnapshotObservedAt,', 'gatewayRoutingObservability:', 'ingestWorker:', 'statsWorker:', 'opsWorker:']) {
-  if (route.includes(unusedField)) throw new Error(`system metrics runtime must not return unused field ${unusedField}`)
+// Node systemMetricsRuntimeJobRows / systemMetricsRuntimeQueueRows 投影的等价
+// 契约：jobs/queues 分节 handler 经 paginateSystemMetricsRows 构造显式行投影。
+const runtimeJobsHandlerSource = systemMetrics.slice(
+  systemMetrics.indexOf('func (d *Deps) runtimeJobsHandler'),
+  systemMetrics.indexOf('func (d *Deps) runtimeQueuesHandler')
+)
+const runtimeQueuesHandlerSource = systemMetrics.slice(
+  systemMetrics.indexOf('func (d *Deps) runtimeQueuesHandler'),
+  systemMetrics.indexOf('// parseRuntimePageQuery mirrors')
+)
+if (!runtimeJobsHandlerSource.includes('paginateSystemMetricsRows([]any{}') || !runtimeQueuesHandlerSource.includes('paginateSystemMetricsRows([]any{}')) throw new Error('runtime split routes must pass through explicit response projections')
+const runtimeSummaryHandlerSource = systemMetrics.slice(
+  systemMetrics.indexOf('func (d *Deps) runtimeSummaryHandler'),
+  systemMetrics.indexOf('func (d *Deps) runtimeJobsHandler')
+)
+for (const unusedField of ['runtimeSnapshotSource', 'runtimeSnapshotObservedAt', 'gatewayRoutingObservability']) {
+  if (runtimeSummaryHandlerSource.includes(unusedField)) throw new Error(`system metrics runtime must not return unused field ${unusedField}`)
 }
 if (card.includes('<a-alert')) throw new Error('chart cards must not expose loading failures as page banners')
 

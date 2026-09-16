@@ -30,7 +30,7 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
   let requestId = 0
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
-  let searchTimer: ReturnType<typeof window.setTimeout> | undefined
+  let searchTimer: number | undefined
   let lastMissingNoticeKey = ''
 
   async function load(nextKeyword = keyword.value): Promise<void> {
@@ -153,7 +153,9 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
 
   function normalizedSelectedIds(): string[] {
     return [...new Set((config.selectedIds?.() ?? [])
-      .filter((id): id is string => Boolean(id && id !== allSystemAccountsValue))
+      .filter((id): id is string => Boolean(id))
+      .map((id) => id.trim())
+      .filter((id) => id && id !== allSystemAccountsValue)
       .sort())]
   }
 

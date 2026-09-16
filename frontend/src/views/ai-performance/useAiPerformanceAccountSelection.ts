@@ -35,7 +35,7 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
   const accounts = ref<AiPerformanceAccountOption[]>([])
   const accountsLoading = ref(false)
   const accountSearchKeyword = ref('')
-  let accountSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+  let accountSearchTimer: number | undefined
   let accountSearchSeq = 0
   let loadingAccountOptionsKey: string | undefined
   let loadingAccountOptionsPromise: Promise<void> | undefined

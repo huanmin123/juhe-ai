@@ -73,14 +73,17 @@ export function recordLocalSelectChoices(
   const store = readPreferenceStore(key)
   const knownValues = new Set(options.map((option) => normalizeValue(option.value)).filter(Boolean))
   const now = Date.now()
+  let changed = false
   for (const value of selectedValues) {
     if (!knownValues.has(value)) continue
+    changed = true
     const current = store.records[value]
     store.records[value] = {
       count: Math.min(9999, (current?.count ?? 0) + 1),
       lastSelectedAt: now
     }
   }
+  if (!changed) return
   trimPreferenceStore(store)
   writePreferenceStore(key, store)
 }

@@ -64,7 +64,7 @@ const formatting = ref(false)
 
 let editorView: EditorView | undefined
 let formatTaskId = 0
-let formatTimer: ReturnType<typeof window.setTimeout> | undefined
+let formatTimer: number | undefined
 let componentDisposed = false
 let componentActive = true
 

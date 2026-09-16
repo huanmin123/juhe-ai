@@ -179,7 +179,13 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 }
 
 func (s *Store) checkPostgresSchema(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT table_schema, table_name FROM information_schema.tables WHERE (table_schema = ANY($1) OR table_schema = ANY($2)) AND table_name = ANY($3)`,
+	// 匹配限定名（table_schema || '.' || table_name）而非裸表名：
+	// postgresRequiredTables 存限定名，裸表名恒不匹配会导致 PG 校验恒失败
+	//（w10c PG 门禁取证后修复）。
+	rows, err := s.db.QueryContext(ctx, `SELECT table_schema || '.' || table_name AS qualified
+		FROM information_schema.tables
+		WHERE (table_schema = ANY($1) OR table_schema = ANY($2))
+		  AND (table_schema || '.' || table_name) = ANY($3)`,
 		[]string{"juhe_stats"}, []string{"juhe_business", "juhe_usage"}, postgresRequiredTables)
 	if err != nil {
 		return fmt.Errorf("读取 statsverify postgres tables 失败: %w", err)
@@ -187,11 +193,11 @@ func (s *Store) checkPostgresSchema(ctx context.Context) error {
 	defer rows.Close()
 	seen := make(map[string]struct{}, len(postgresRequiredTables))
 	for rows.Next() {
-		var schema, table string
-		if err := rows.Scan(&schema, &table); err != nil {
+		var qualified string
+		if err := rows.Scan(&qualified); err != nil {
 			return fmt.Errorf("读取 statsverify postgres table 名称失败: %w", err)
 		}
-		seen[schema+"."+table] = struct{}{}
+		seen[qualified] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("遍历 statsverify postgres tables 失败: %w", err)

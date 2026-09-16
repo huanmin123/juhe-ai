@@ -35,10 +35,6 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 	// the public projection without touching the admin gate.
 	k.Register("GET "+prefix+"/announcements/public", deps.RequireSession(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := authsys.AuthContextFrom(r)
-		if auth == nil {
-			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
 		// publicListQuerySchema: z.coerce.number().int().min(1).max(30)
 		// .optional() — 0/negative/non-numeric/fractional/>30 and repeated
 		// keys all render 400 before the repository runs; a missing limit
@@ -57,10 +53,6 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 	})))
 	k.Register("POST "+prefix+"/announcements/public/read", deps.RequireSession(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := authsys.AuthContextFrom(r)
-		if auth == nil {
-			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
 		ids, ok := readAnnouncementIDs(w, r)
 		if !ok {
 			return
@@ -73,11 +65,6 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 		kernel.WriteOK(w, result, "")
 	})))
 	k.Register("GET "+prefix+"/announcements/public/{id}", deps.RequireSession(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := authsys.AuthContextFrom(r)
-		if auth == nil {
-			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
 		detail, err := store.FindPublic(r.Context(), r.PathValue("id"))
 		if err != nil {
 			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
@@ -98,10 +85,6 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 	// Node-contract routes.
 	k.Register("GET "+prefix+"/my-announcements", deps.RequireSession(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := authsys.AuthContextFrom(r)
-		if auth == nil {
-			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
 		limit := parseIntOr(r.URL.Query().Get("limit"), 0)
 		items, err := store.ListPublic(r.Context(), auth.SystemAccountID, limit)
 		if err != nil {
@@ -112,10 +95,6 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 	})))
 	k.Register("POST "+prefix+"/my-announcements/read", deps.RequireSession(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := authsys.AuthContextFrom(r)
-		if auth == nil {
-			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
 		var body struct {
 			AnnouncementIDs []string `json:"announcementIds"`
 		}
@@ -552,10 +531,6 @@ func truncateUTF16(value string, units int) string {
 // status.
 func announcementUpdate(w http.ResponseWriter, r *http.Request, store *Store, sink authsys.OperationLogSink) {
 	auth := authsys.AuthContextFrom(r)
-	if auth == nil {
-		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
 	const invalidMessage = "公告参数无效"
 	body, ok := bodyObject(w, r, invalidMessage)
 	if !ok {
@@ -598,8 +573,8 @@ func announcementUpdate(w http.ResponseWriter, r *http.Request, store *Store, si
 			OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "admin",
 			Module: "announcements", Action: "update", OperationKey: "announcements.update",
 			ResourceType: "announcement", ResourceID: outcome.Receipt.ID,
-			ResourceName: outcome.After.Title,
-			Summary:      "更新公告：" + outcome.After.Title,
+			ResourceName:    outcome.After.Title,
+			Summary:         "更新公告：" + outcome.After.Title,
 			VisibilityScope: visibilityScope,
 			DetailLevel:     detailLevel,
 			Changes:         mutationDiff(outcome.Before, outcome.After, updateDiffFields),
@@ -614,10 +589,6 @@ func announcementUpdate(w http.ResponseWriter, r *http.Request, store *Store, si
 // changed (always all_users/summary, announcements.routes.ts).
 func announcementVersionAction(w http.ResponseWriter, r *http.Request, store *Store, sink authsys.OperationLogSink, action, status string) {
 	auth := authsys.AuthContextFrom(r)
-	if auth == nil {
-		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
 	const invalidMessage = "公告版本参数无效"
 	body, ok := bodyObject(w, r, invalidMessage)
 	if !ok {
@@ -636,7 +607,7 @@ func announcementVersionAction(w http.ResponseWriter, r *http.Request, store *St
 			OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "admin",
 			Module: "announcements", Action: action, OperationKey: "announcements." + action,
 			ResourceType: "announcement", ResourceID: outcome.Receipt.ID,
-			ResourceName: outcome.After.Title,
+			ResourceName:    outcome.After.Title,
 			VisibilityScope: "all_users",
 			DetailLevel:     "summary",
 		}
@@ -655,10 +626,6 @@ func announcementVersionAction(w http.ResponseWriter, r *http.Request, store *St
 
 func announcementDelete(w http.ResponseWriter, r *http.Request, store *Store, sink authsys.OperationLogSink) {
 	auth := authsys.AuthContextFrom(r)
-	if auth == nil {
-		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
 	const invalidMessage = "公告版本参数无效"
 	body, ok := bodyObject(w, r, invalidMessage)
 	if !ok {
@@ -683,8 +650,8 @@ func announcementDelete(w http.ResponseWriter, r *http.Request, store *Store, si
 			OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "admin",
 			Module: "announcements", Action: "delete", OperationKey: "announcements.delete",
 			ResourceType: "announcement", ResourceID: outcome.Receipt.ID,
-			ResourceName: outcome.Before.Title,
-			Summary:      "删除公告：" + outcome.Before.Title,
+			ResourceName:    outcome.Before.Title,
+			Summary:         "删除公告：" + outcome.Before.Title,
 			VisibilityScope: visibilityScope,
 			DetailLevel:     detailLevel,
 			Changes: []authsys.OperationLogChange{
@@ -730,10 +697,6 @@ func mountGuardedCreate(d *authsys.Deps, store *Store, sink authsys.OperationLog
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := authsys.AuthContextFrom(r)
-		if auth == nil {
-			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
 		// createAnnouncementSchema (strict): title/content required trimmed
 		// strings (≤120/≤5000 UTF-16 units), level/status optional enums,
 		// unknown fields and non-string values → 400 公告参数无效.

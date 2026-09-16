@@ -655,8 +655,8 @@ const groupOptionsLoaded = ref(false)
 let groupOptionsRequestToken = 0
 let groupOptionsLoadingKey: string | undefined
 let groupOptionsLoadingPromise: Promise<void> | undefined
-let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
-let modelOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let groupOptionsSearchTimer: number | undefined
+let modelOptionsSearchTimer: number | undefined
 
 const routeStrategyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)

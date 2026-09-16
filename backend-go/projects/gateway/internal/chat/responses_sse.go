@@ -192,96 +192,8 @@ func CollectChatResponsesSse(stream io.Reader, maxBytes, maxEvents int, onEvent 
 		}
 		return nil
 	}
-	consumeSpooledBlock := func(block string) error {
-		eventNameTrimmed := extractEventName(block)
-		if eventNameTrimmed == "response.completed" {
-			dataJSON := sseDataJSON(block)
-			if len(dataJSON) > responsesSpoolMetaMaxBytes {
-				return errors.New("上游 Responses 终态元数据超过 512 KiB 上限")
-			}
-			sanitized, values, err := stripImageResultStrings(dataJSON, "result", "b64_json")
-			if err != nil {
-				return err
-			}
-			var payload map[string]any
-			if err := json.Unmarshal([]byte(sanitized), &payload); err != nil {
-				return errors.New("上游 Responses 终态 JSON 无法解析")
-			}
-			response := objectItem(payload["response"])
-			images := completedResponseImages(response)
-			for index, image := range images {
-				if completedImageIDs[image.callID] {
-					continue
-				}
-				completedImageIDs[image.callID] = true
-				if onImageResult != nil {
-					base64 := ""
-					if index < len(values) {
-						base64 = values[index]
-					}
-					if err := onImageResult(image.callID, image.revisedPrompt, []string{base64}); err != nil {
-						return err
-					}
-				}
-				item := map[string]any{"callId": image.callID, "status": "completed"}
-				if image.revisedPrompt != "" {
-					item["revisedPrompt"] = image.revisedPrompt
-				}
-				if err := consumeEvent(ChatResponsesEvent{Type: "image_completed", Item: item}); err != nil {
-					return err
-				}
-			}
-			eventCount++
-			if eventCount > maxEvents {
-				return errors.New("上游 Responses 事件数量超过 " + itoa(maxEvents) + " 上限")
-			}
-			return consumeEvent(ChatResponsesEvent{Type: "completed", Response: response})
-		}
-		parsed := parseResponsesBlock(block)
-		if parsed.event == nil {
-			return nil
-		}
-		if parsed.event.Type == "image_completed" {
-			eventCount++
-			if eventCount > maxEvents {
-				return errors.New("上游 Responses 事件数量超过 " + itoa(maxEvents) + " 上限")
-			}
-			return consumeBlock(block)
-		}
-		if len(block) > responsesMaxEventBytes {
-			return errors.New("上游 Responses 单个事件超过 64 KiB 上限")
-		}
-		eventCount++
-		if eventCount > maxEvents {
-			return errors.New("上游 Responses 事件数量超过 " + itoa(maxEvents) + " 上限")
-		}
-		return consumeBlock(block)
-	}
 	buffer := string(raw)
-	pendingImage := ""
 	for {
-		if pendingImage != "" {
-			combined := pendingImage + buffer
-			boundary := findEventBoundary(combined)
-			if boundary == nil {
-				if len(combined) > responsesMaxImageEventByte {
-					return result, errors.New("图像 SSE 事件超过 64 MiB 上限")
-				}
-				pendingImage = combined
-				buffer = ""
-				break
-			}
-			if len(combined) > responsesMaxImageEventByte {
-				return result, errors.New("图像 SSE 事件超过 64 MiB 上限")
-			}
-			block := combined[:boundary.index]
-			buffer = combined[boundary.index+boundary.length:]
-			pendingImage = ""
-			if err := consumeSpooledBlock(block); err != nil {
-				return result, err
-			}
-			continue
-		}
 		boundary := findEventBoundary(buffer)
 		if boundary == nil {
 			break
@@ -291,9 +203,6 @@ func CollectChatResponsesSse(stream io.Reader, maxBytes, maxEvents int, onEvent 
 		if err := consumeBlock(block); err != nil {
 			return result, err
 		}
-	}
-	if pendingImage != "" {
-		return result, errors.New("图像 SSE 事件被截断")
 	}
 	if len(buffer) > responsesMaxEventBytes {
 		if !isPendingImageBlock(buffer) {

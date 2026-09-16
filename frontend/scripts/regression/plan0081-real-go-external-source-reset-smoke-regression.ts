@@ -27,7 +27,7 @@ interface ChildResult {
 
 const execFileAsync = promisify(execFile)
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url))
-const tsxCliPath = fileURLToPath(new URL('../../../backend/node_modules/tsx/dist/cli.mjs', import.meta.url))
+const tsxCliPath = fileURLToPath(new URL('../../../frontend/node_modules/tsx/dist/cli.mjs', import.meta.url))
 const smokePath = fileURLToPath(new URL('../smoke/plan0081-real-go-external-source-reset-smoke.ts', import.meta.url))
 
 const cookie = 'juhe_ai_session=external-reset-cookie-secret; scope=admin'

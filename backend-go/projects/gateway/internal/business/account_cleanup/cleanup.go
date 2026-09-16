@@ -728,9 +728,6 @@ func (s *Store) queryRelated(ctx context.Context, query string, args ...any) ([]
 func (s *Store) queryAuthorizations(ctx context.Context, accountIDs, explicitIDs []string) ([]authorizationRow, error) {
 	seen := map[string]authorizationRow{}
 	for _, chunk := range chunks(unique(accountIDs), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
 		q := `SELECT id,resource_id,grantee_system_account_id FROM ` + s.table("resource_authorizations") + ` WHERE resource_type='account' AND resource_id IN (` + placeholders(len(chunk)) + `)`
 		rows, err := s.queryAuthorizationRows(ctx, q, stringArgs(chunk)...)
 		if err != nil {
@@ -741,9 +738,6 @@ func (s *Store) queryAuthorizations(ctx context.Context, accountIDs, explicitIDs
 		}
 	}
 	for _, chunk := range chunks(unique(explicitIDs), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
 		q := `SELECT id,resource_id,grantee_system_account_id FROM ` + s.table("resource_authorizations") + ` WHERE id IN (` + placeholders(len(chunk)) + `)`
 		rows, err := s.queryAuthorizationRows(ctx, q, stringArgs(chunk)...)
 		if err != nil {
@@ -784,9 +778,6 @@ func (s *Store) activeAuthorizationInstances(ctx context.Context, ids []string, 
 		return active, nil
 	}
 	for _, chunk := range chunks(unique(ids), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
 		q := `SELECT DISTINCT authorization_instance_authorization_id FROM ` + s.table("accounts") + ` WHERE authorization_instance_authorization_id IN (` + placeholders(len(chunk)) + `) AND deleted_at IS NULL`
 		rows, err := s.db.QueryContext(ctx, s.bind(q), stringArgs(chunk)...)
 		if err != nil {
@@ -812,9 +803,6 @@ func (s *Store) activeAuthorizationInstances(ctx context.Context, ids []string, 
 func (s *Store) queryTeamSources(ctx context.Context, ids []string) ([]teamSourceRow, error) {
 	var out []teamSourceRow
 	for _, chunk := range chunks(unique(ids), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
 		q := `SELECT authorization_id,source_team_id FROM ` + s.table("resource_authorization_sources") + ` WHERE authorization_id IN (` + placeholders(len(chunk)) + `) AND source_team_id IS NOT NULL`
 		rows, err := s.db.QueryContext(ctx, s.bind(q), stringArgs(chunk)...)
 		if err != nil {
@@ -858,9 +846,6 @@ func (s *Store) queryGrantIDs(ctx context.Context, accountIDs, authIDs []string,
 		return unique(out), nil
 	}
 	for _, chunk := range chunks(unique(authIDs), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
 		q := `SELECT DISTINCT grants.id FROM ` + s.table("resource_authorization_grants") + ` grants
       INNER JOIN ` + s.table("resource_authorizations") + ` authorizations
         ON authorizations.resource_type=grants.resource_type AND authorizations.resource_id=grants.resource_id

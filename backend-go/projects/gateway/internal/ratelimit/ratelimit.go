@@ -119,10 +119,8 @@ func (s *MemoryStore) Check(ctx context.Context, nowMs int64, buckets []BucketIn
 			resetAt = nowMs + bucket.WindowMs
 		}
 		if count >= bucket.Limit {
+			// 拒绝路径要求 current.resetAtMs > nowMs，因此 ceil((resetAt-nowMs)/1000) 恒 >= 1。
 			retry := int(math.Ceil(float64(resetAt-nowMs) / 1000))
-			if retry < 1 {
-				retry = 1
-			}
 			return false, retry, bucket.StoreName, bucket.Limit, nil
 		}
 		pendings = append(pendings, pending{key, count + 1, resetAt})

@@ -144,9 +144,10 @@ func (s *Store) beginWriteTx(ctx context.Context) (*sql.Tx, error) {
 // SQLite relies on the BEGIN IMMEDIATE writer lock from the DSN.
 func (s *Store) loadClientIPJobState(ctx context.Context, q queryer) (ClientIPStatsAggregationJobState, error) {
 	if s.mode == StorePostgres {
+		// PG 分支必须用 $n 占位符（硬编码 ? 触发 pgx 语法错误；w10c PG 门禁取证修复）。
 		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, updated_at)
-			VALUES ('global', '', ?, ?)
+			VALUES ('global', '', $1, $2)
 			ON CONFLICT(scope_type, scope_id, job_name) DO NOTHING
 		`, clientIpStatsJobName, NowIso(time.Now())); err != nil {
 			return ClientIPStatsAggregationJobState{}, fmt.Errorf("初始化 client-ip 统计 job state 失败: %w", err)

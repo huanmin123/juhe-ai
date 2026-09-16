@@ -13,7 +13,7 @@ interface AuthorizationSearchSchedulerOptions {
 
 export function createAuthorizationSearchScheduler(options: AuthorizationSearchSchedulerOptions): AuthorizationSearchScheduler {
   const { delayMs, keyword, load } = options
-  let timer: ReturnType<typeof window.setTimeout> | undefined
+  let timer: number | undefined
 
   function clear(): void {
     if (timer && typeof window !== 'undefined') {

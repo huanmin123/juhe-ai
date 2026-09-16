@@ -41,7 +41,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   let requestId = 0
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
-  let searchTimer: ReturnType<typeof window.setTimeout> | undefined
+  let searchTimer: number | undefined
   let lastMissingNoticeKey = ''
 
   watch(

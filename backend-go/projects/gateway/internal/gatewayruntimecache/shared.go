@@ -53,10 +53,10 @@ func NewRedisSharedCacheFactory(url, namespace string) (SharedCacheFactory, func
 	}
 	client := redis.NewClient(options)
 	normalized := strings.TrimRight(strings.TrimSpace(namespace), ":")
-	if !strings.HasPrefix(normalized, "juhe-ai:") {
+	if normalized != "juhe-ai" && !strings.HasPrefix(normalized, "juhe-ai:") {
 		normalized = "juhe-ai:" + normalized
 	}
-	if normalized == "juhe-ai:" {
+	if strings.HasSuffix(normalized, "juhe-ai:") {
 		normalized = "juhe-ai"
 	}
 	closeFunc := func() { _ = client.Close() }

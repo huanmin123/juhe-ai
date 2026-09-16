@@ -45,7 +45,7 @@ type DeletedAccountStore struct {
 	OnOrphanSweepSkipped func(ctx context.Context, reason string)
 	// LastTargetError 记录最近一个目标失败的诊断信息（组合根可上报）。
 	LastTargetError string
-	Now                  func() time.Time
+	Now             func() time.Time
 }
 
 func (s *DeletedAccountStore) now() time.Time {

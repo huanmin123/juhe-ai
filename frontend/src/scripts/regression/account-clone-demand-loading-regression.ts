@@ -151,7 +151,8 @@ assert.equal(savePayload.groupId, 'group-clone-source', '克隆保存请求必�
 assert.equal(savePayload.status, 'active', '克隆保存请求必须携带来源状态')
 assert.equal(savePayload.credentials.api_key_strategy, 'weighted_round_robin', '克隆保存请求必须携带 API Key 池策略')
 assert.deepEqual(savePayload.credentials.api_key_weights, [3, 7], '克隆保存请求必须携带 API Key 池权重')
-assert.equal(savePayload.balanceQueryEnabled, false, '多个 API Key 的余额查询必须遵守现有自动停用规则')
+assert.equal(savePayload.balanceQueryEnabled, true, '多 API Key 余额查询不再被前端自动停用，克隆必须保留来源启用状态')
+assert.equal(savePayload.balanceQueryConfig?.adapter, 'custom', '克隆保存请求必须透传余额查询配置')
 
 const roundRobinContext: AccountCloneContext = {
   ...context,

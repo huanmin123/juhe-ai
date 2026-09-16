@@ -15,7 +15,7 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
   const accountOptionRows = ref<AccountUsageStatsOption[]>([])
   const accountOptionsLoading = ref(false)
   const accountOptionsKeyword = ref('')
-  let accountOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+  let accountOptionsSearchTimer: number | undefined
   let accountOptionsRequestSeq = 0
   let accountOptionsLoadingKey: string | undefined
   let accountOptionsLoadingPromise: Promise<void> | undefined

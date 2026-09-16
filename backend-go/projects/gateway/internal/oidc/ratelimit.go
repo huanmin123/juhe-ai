@@ -90,10 +90,9 @@ func (l *ProtocolRateLimiter) Allow(class, scopeKey string) (allowed bool, retry
 	}
 	window.count++
 	if window.count > maxRequests {
+		// 窗口在 nowMs >= windowEnd 时已被上面重置，此处 windowEnd > nowMs 恒成立，
+		// ceil((windowEnd-nowMs)/1000) >= 1，无需下限钳制。
 		retry := (window.windowEnd - nowMs + 999) / 1_000
-		if retry < 1 {
-			retry = 1
-		}
 		return false, int(retry)
 	}
 	return true, 0

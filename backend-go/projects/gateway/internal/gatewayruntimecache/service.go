@@ -209,7 +209,6 @@ type Service struct {
 	catalogGeneration       int64
 	pendingRuntimeLoads     map[string]*runtimeLoad
 	pendingGroupRefreshes   map[string]*refreshCall
-	pendingAccountRefreshes map[string]*refreshCall
 	pendingCatalogLoads     map[string]*catalogLoad
 	pendingInspectRefreshes map[string]*refreshCall
 
@@ -283,11 +282,10 @@ func New(models ReadModels, opts Options) (*Service, error) {
 		routeIdxCache: newEntryCache[string, providerModelRouteIndexCacheEntry](providerModelRouteIndexCacheName, 1000, providerModelCatalogTTL, false, enabled, clock, nil, nil),
 		inspectCache:  newEntryCache[string, responseInspectionPolicyCacheEntry](responseInspectionPolicyCacheName, 100, responseInspectionPolicyRetainTTL, false, enabled, clock, nil, nil),
 
-		keysByAPIKeyID:          map[string]map[string]struct{}{},
-		pendingRuntimeLoads:     map[string]*runtimeLoad{},
-		pendingGroupRefreshes:   map[string]*refreshCall{},
-		pendingAccountRefreshes: map[string]*refreshCall{},
-		pendingCatalogLoads:     map[string]*catalogLoad{},
+		keysByAPIKeyID:        map[string]map[string]struct{}{},
+		pendingRuntimeLoads:   map[string]*runtimeLoad{},
+		pendingGroupRefreshes: map[string]*refreshCall{},
+		pendingCatalogLoads:   map[string]*catalogLoad{},
 		pendingInspectRefreshes: map[string]*refreshCall{},
 		sharedFailureLoggedAt:   map[string]time.Time{},
 		lastSeenVer:             map[string]int64{},
@@ -510,7 +508,7 @@ func ttlBoundedByIsoExpiries(baseTTL time.Duration, expiresAtValues []string, no
 		if !ok {
 			return 0, errors.New("缓存 expiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间：" + expiresAt)
 		}
-		if delta := expiresAtMs - now; delta < int64(ttl) {
+		if delta := (expiresAtMs - now) * int64(time.Millisecond); delta < int64(ttl) {
 			ttl = time.Duration(delta)
 		}
 	}
@@ -560,8 +558,8 @@ func gatewayRuntimeCacheTTL(runtime GatewayRuntime, now int64) (time.Duration, e
 		if !ok {
 			return 0, errors.New("网关运行态 expiresAt 必须是带 Z 或数值 offset 的 RFC3339 时间：" + expiresAt)
 		}
-		if delta := time.Duration(expiresAtMs - now); delta < ttl {
-			ttl = delta
+		if delta := (expiresAtMs - now) * int64(time.Millisecond); delta < int64(ttl) {
+			ttl = time.Duration(delta)
 		}
 	}
 	if ttl < time.Millisecond {

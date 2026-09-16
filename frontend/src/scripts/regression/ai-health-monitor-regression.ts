@@ -11,8 +11,10 @@ const statusBarSource = readFileSync(resolve(frontendRoot, 'views/ai-health/AiHe
 const routerSource = readFileSync(resolve(frontendRoot, 'router/index.ts'), 'utf8')
 const statsApiSource = readFileSync(resolve(frontendRoot, 'api/domains/stats.ts'), 'utf8')
 const statsTypesSource = readFileSync(resolve(frontendRoot, 'types/domain/usage-stats.ts'), 'utf8')
-// Node backend 已归档（X02）；遗留 repository 契约源改读 final-archive 浏览副本。
-const monitorRepositorySource = readFileSync(resolve(repositoryRoot, 'migration-backup/node/final-archive/backend/src/storage/account-health-monitor.repository.ts'), 'utf8')
+// Node backend 已归档（X02），原 account-health-monitor.repository.ts 契约源
+// 未随归档保留；AI 健康查询契约的现役等价实现是 Go gateway statreads
+// （aihealth.go 镜像 account-health-monitor.repository.ts 的列表/详情语义）。
+const aiHealthReadSource = readFileSync(resolve(repositoryRoot, 'backend-go/projects/gateway/internal/statreads/aihealth.go'), 'utf8')
 
 assert.match(routerSource, /path: '\/ai-health'[\s\S]+title: 'AI健康监控'/, '管理菜单必须注册 AI 健康监控')
 assert.match(routerSource, /path: '\/my-ai-health'[\s\S]+viewScope: 'self'/, '用户菜单必须注册自助健康监控')
@@ -56,11 +58,20 @@ assert.match(activatedSource, /pageActive = true[\s\S]*loadInitialVisiblePage\(\
 assert.doesNotMatch(activatedSource, /\bloadData\s*\(/, 'KeepAlive 重新激活不得直接常规刷新列表')
 assert.match(viewSource, /watch\(\(\) => authState\.revision\.value[\s\S]*accounts\.value = \[\][\s\S]*pagination\.current = 1/, '身份变化必须清空旧健康数据并重置分页')
 assert.doesNotMatch(viewSource.match(/watch\(\(\) => authState\.revision\.value[\s\S]*?\n\}\)/)?.[0] ?? '', /\bloadData\s*\(/, '身份变化不得自动加载健康数据')
-assert.doesNotMatch(monitorRepositorySource, /\busage_records\b/i, '页面查询不得扫描使用记录明细')
-assert.match(monitorRepositorySource, /31 \* 24/, '服务端必须限制最大 31 天')
-assert.match(monitorRepositorySource, /FROM account_health_hourly/, '页面查询必须读取小时预聚合')
-assert.match(monitorRepositorySource, /SELECT\s+account_id,\s*stat_hour,\s*status,\s*last_observed_at,\s*0\s+AS\s+source_order/, '列表 SQL 必须只投影小时槽状态')
-assert.match(monitorRepositorySource, /loadAccountHealthHourDetail/, '错误正文必须移入单点详情查询')
+assert.doesNotMatch(aiHealthReadSource, /\busage_records\b/i, '页面查询不得扫描使用记录明细')
+assert.match(aiHealthReadSource, /31\*24/, '服务端必须限制最大 31 天')
+const aiHealthListRowsSource = aiHealthReadSource.slice(
+  aiHealthReadSource.indexOf('func (d *Deps) loadAccountHealthRows'),
+  aiHealthReadSource.indexOf('// aiHealthAccountNameContainsFilter')
+)
+assert.match(aiHealthListRowsSource, /SELECT account_id, stat_hour, status, last_observed_at/, '列表 SQL 必须只投影小时槽状态')
+assert.match(aiHealthListRowsSource, /statsTable\("account_health_hourly"\)/, '页面查询必须读取小时预聚合')
+assert.doesNotMatch(aiHealthListRowsSource, /error_message|error_code|status_code/, '列表查询不得读取错误正文')
+const aiHealthHourDetailSource = aiHealthReadSource.slice(
+  aiHealthReadSource.indexOf('func (d *Deps) aiHealthHourDetail('),
+  aiHealthReadSource.indexOf('// newestJ1OutcomeHourRow')
+)
+assert.match(aiHealthHourDetailSource, /error_code,\s*error_message/, '错误正文必须移入单点详情查询')
 const aiHealthResultType = statsTypesSource.match(/export interface AiHealthListResult \{[\s\S]*?\n\}/)?.[0] ?? ''
 assert.doesNotMatch(aiHealthResultType, /\btotal\b/, 'AI 健康响应类型不得声明未经 COUNT 证明的 total')
 

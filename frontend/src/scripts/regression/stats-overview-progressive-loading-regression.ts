@@ -5,9 +5,12 @@ const viewSource = readFileSync(new URL('../../views/stats/StatsView.vue', impor
 const routerSource = readFileSync(new URL('../../router/index.ts', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../../api/domains/stats.ts', import.meta.url), 'utf8')
 const chartSource = readFileSync(new URL('../../views/stats/statsChartOptions.ts', import.meta.url), 'utf8')
-const workerSource = readFileSync(new URL('../../../../migration-backup/node/final-archive/backend/src/storage/sqlite-read-worker.ts', import.meta.url), 'utf8')
-const workerTypesSource = readFileSync(new URL('../../../../migration-backup/node/final-archive/backend/src/storage/sqlite-read-worker-pool.types.ts', import.meta.url), 'utf8')
-const routesSource = readFileSync(new URL('../../../../migration-backup/node/final-archive/backend/src/modules/stats/stats.routes.ts', import.meta.url), 'utf8')
+// Node backend 已归档（X02），sqlite-read-worker.ts 契约源未随归档保留，
+// stats.routes.ts 归档快照也已死；usage-overview 路由与分节查询契约的现役
+// 等价实现是 Go gateway statreads（statreads.go 注册 /usage-overview/<section>，
+// usageoverview.go 按分节分发独立只读查询；Node SQLite read worker 概念无 Go 对应物）。
+const statreadsMountSource = readFileSync(new URL('../../../../backend-go/projects/gateway/internal/statreads/statreads.go', import.meta.url), 'utf8')
+const usageOverviewSource = readFileSync(new URL('../../../../backend-go/projects/gateway/internal/statreads/usageoverview.go', import.meta.url), 'utf8')
 
 assert.doesNotMatch(viewSource, /api\.(?:stats|myStats)\.usageOverview\(/, '统计首页不得继续调用旧组合 usage-overview')
 assert.match(viewSource, /usageOverviewSummary\(/, '统计首页首屏必须调用独立 summary')
@@ -77,24 +80,27 @@ for (const path of ['/my-stats', '/stats']) {
 }
 
 for (const path of ['summary', 'hourly-trend', 'model-distribution', 'errors']) {
-  assert(routesSource.includes(`'/usage-overview/${path}'`), `Node 必须注册 usage-overview/${path}`)
+  assert(statreadsMountSource.includes(`"/usage-overview/${path}"`), `Go gateway 必须注册 usage-overview/${path}`)
   assert(apiSource.includes(`/stats/usage-overview/${path}`), `管理端 API 必须暴露 usage-overview/${path}`)
   assert(apiSource.includes(`/my-stats/usage-overview/${path}`), `个人端 API 必须暴露 usage-overview/${path}`)
 }
-assert(!routesSource.includes("statsRouter.get('/usage-overview',"), 'Node 不得继续公开无生产消费者的旧组合 usage-overview')
+assert(!statreadsMountSource.includes('"/usage-overview",'), 'Go gateway 不得继续公开无生产消费者的旧组合 usage-overview')
 assert(!apiSource.includes('usageOverview: '), '前端 API 不得继续暴露旧组合 usage-overview')
-assert(routesSource.includes("'/usage-overview/daily-trend'"), 'Node 必须注册 usage-overview/daily-trend')
+assert(statreadsMountSource.includes('"/usage-overview/daily-trend"'), 'Go gateway 必须注册 usage-overview/daily-trend')
 assert(apiSource.includes('/stats/usage-overview/daily-trend'), '管理端 API 必须暴露 usage-overview/daily-trend')
 assert(apiSource.includes('/my-stats/usage-overview/daily-trend'), '个人端 API 必须暴露 usage-overview/daily-trend')
-for (const operation of [
-  'get_usage_stats_overview_summary_read_only',
-  'get_usage_stats_overview_daily_trend_read_only',
-  'get_usage_stats_overview_hourly_trend_read_only',
-  'get_usage_stats_overview_model_distribution_read_only',
-  'get_usage_stats_overview_errors_read_only'
-]) {
-  assert(workerSource.includes(`case '${operation}'`), `${operation} 必须接入 SQLite read worker`)
-  assert(workerTypesSource.includes(`type: '${operation}'`), `${operation} 必须进入 worker operation 类型`)
+// Node 时代 5 个 get_usage_stats_overview_*_read_only worker operation 的等价契约：
+// overviewSectionHandler 按 5 个分节分发到独立只读查询函数。
+const usageOverviewSections: Array<[string, string]> = [
+  ['summary', 'usageOverviewSummary'],
+  ['daily-trend', 'usageOverviewDailyTrend'],
+  ['hourly-trend', 'usageOverviewHourlyTrend'],
+  ['model-distribution', 'usageOverviewModelDistribution'],
+  ['errors', 'usageOverviewErrors']
+]
+for (const [section, reader] of usageOverviewSections) {
+  assert(usageOverviewSource.includes(`case "${section}":`), `usage-overview/${section} 必须有独立分节分发`)
+  assert(usageOverviewSource.includes(`d.${reader}(r, scope, rng)`), `${reader} 必须作为独立只读分节查询实现`)
 }
 
 const usageTrendOptionSource = chartSource.slice(

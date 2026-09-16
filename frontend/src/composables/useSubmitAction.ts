@@ -10,7 +10,7 @@ const globalPending = reactive(new Map<string, number>())
 
 export function useSubmitAction(scope = 'local') {
   const ownedKeys = new Set<string>()
-  const releaseTimers = new Map<string, ReturnType<typeof window.setTimeout>>()
+  const releaseTimers = new Map<string, number>()
 
   function isSubmitting(key: string): boolean {
     return globalPending.has(resolveKey(scope, key))

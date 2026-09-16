@@ -141,12 +141,15 @@ function assertSnapshot(actual: Record<string, unknown>, initial: Record<string,
 }
 
 async function verifyGoReadiness(config: NormalizedConfig): Promise<void> {
-  const response = await request(config, 'GET', '/readyz', undefined, 'Go readiness', false)
+  // readiness 锚定 gateway 现行 /__aisys__/api/health 契约（compose.go 挂载，
+  // service 标识沿用其镜像的 db-service 健康契约）。body.status 随 accountBalance
+  // 依赖可降级（200 不变），因此只断言 identity，不断言 health 状态值。
+  const response = await request(config, 'GET', '/health', undefined, 'Go readiness', false)
   expect(response.status === 200, `Go readiness failed with HTTP ${response.status}`)
   assertNoStore(response, 'Go readiness')
   const value = await parseResponseJson(response)
   expect(
-    isRecord(value) && value.success === true && value.status === 'ok' && value.service === 'juhe-ai-go',
+    isRecord(value) && value.statusCode === 200 && value.service === 'juhe-ai-db-service',
     'Go readiness identity is invalid'
   )
 }

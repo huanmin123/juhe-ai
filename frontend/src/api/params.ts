@@ -61,7 +61,7 @@ export function accountListParams(params?: AccountListParams, includeSystemAccou
   if (params.sorts?.length) {
     output.sorts = params.sorts.map((sort) => `${sort.field}:${sort.order}`).join(',')
   }
-  return output
+  return Object.keys(output).length ? output : undefined
 }
 
 export function accountOptionsParams(params?: AccountOptionParams, includeSystemAccount = true): Record<string, unknown> | undefined {
@@ -131,7 +131,8 @@ export function proxyOptionParams(params?: ProxyOptionParams): Record<string, un
   const output: Record<string, unknown> = {}
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.limit) output.limit = params.limit
-  if (params.selectedIds?.length) output.selectedIds = [...new Set(params.selectedIds.map((id) => id.trim()).filter(Boolean))].sort()
+  const selectedIds = [...new Set(params.selectedIds?.map((id) => id.trim()).filter(Boolean) ?? [])].sort()
+  if (selectedIds.length) output.selectedIds = selectedIds
   return Object.keys(output).length ? output : undefined
 }
 export function scopedListParams<T extends object>(params?: T, includeSystemAccount = true): Record<string, unknown> | undefined {

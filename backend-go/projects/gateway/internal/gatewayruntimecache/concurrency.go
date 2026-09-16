@@ -72,9 +72,6 @@ func (s *Service) AwaitBackgroundWork(ctx context.Context) error {
 	for _, call := range s.pendingGroupRefreshes {
 		calls = append(calls, call)
 	}
-	for _, call := range s.pendingAccountRefreshes {
-		calls = append(calls, call)
-	}
 	for _, call := range s.pendingInspectRefreshes {
 		calls = append(calls, call)
 	}

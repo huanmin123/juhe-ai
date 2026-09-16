@@ -19,8 +19,13 @@ const runtimeIndexStateSource = source('../../views/runtime-logs/useRuntimeLogIn
 const runtimeFacetsStateSource = source('../../views/runtime-logs/useRuntimeLogFacetsState.ts')
 const logsApiSource = source('../../api/domains/logs.ts')
 const runtimeTypesSource = source('../../types/domain/runtime-logs.ts')
-const runtimeRouteSource = source('../../../../migration-backup/node/final-archive/backend/src/modules/runtime-logs/runtime-logs.routes.ts')
-const auditRouteSource = source('../../../../migration-backup/node/final-archive/backend/src/modules/audit-logs/audit-logs.routes.ts')
+// Node backend 已归档（X02），runtime-logs.routes.ts / audit-logs.routes.ts
+// 契约源未随归档保留；路由与查询契约的现役等价实现是 Go gateway logreads
+// （audit_reads.go 注册面镜像两个 Node 路由族，runtime_reads.go / audit_detail.go
+// 承载列表、facets、详情增量和 payload 读取语义）。
+const runtimeRoutesSource = source('../../../../backend-go/projects/gateway/internal/logreads/audit_reads.go')
+const runtimeReadsSource = source('../../../../backend-go/projects/gateway/internal/logreads/runtime_reads.go')
+const auditDetailSource = source('../../../../backend-go/projects/gateway/internal/logreads/audit_detail.go')
 const globalStylesSource = source('../../styles/global.css')
 
 const auditFetchPageSource = auditViewSource.match(/fetchPage: async[\s\S]*?requestSignature:/)?.[0] ?? ''
@@ -63,7 +68,7 @@ assert.doesNotMatch(auditViewSource, /<RuntimeAvailabilityAlert|<a-alert/, '审�
 assert.doesNotMatch(source('../../views/runtime-logs/RuntimeLogListSection.vue'), /<a-alert/, '运行日志页面不得显示搜索结果横幅')
 assert.match(globalStylesSource, /\.ant-alert\s*\{\s*display:\s*none\s*!important;/, '全局样式必须禁止页面横幅展示')
 assert.doesNotMatch(logsApiSource, /runtime:\s*\(\)/, '前端日志 API 不得保留无消费者的运行态入口')
-assert.doesNotMatch(runtimeRouteSource, /runtimeLogsRouter\.get\('\/runtime'/, '后端不得保留无页面消费者的运行态接口')
+assert.doesNotMatch(runtimeRoutesSource, /runtime-logs\/runtime/, '后端不得保留无页面消费者的运行态接口')
 
 type Deferred<T> = {
   promise: Promise<T>
@@ -170,11 +175,14 @@ assert.deepEqual(
   ['retentionDays', 'earliestIndexedAt', 'latestIndexedAt', 'totalIndexed', 'levels', 'events'],
   '索引 facets 类型只应包含保留范围、索引数量与筛选项'
 )
-const runtimeFacetsRouteSource = runtimeRouteSource.match(
-  /runtimeLogsRouter\.get\('\/facets'[\s\S]*?(?=\nruntimeLogsRouter\.get\('\/grep-options')/
-)?.[0] ?? ''
-assert.match(runtimeFacetsRouteSource, /requestDbService\(\{ type: 'get_runtime_log_facets' \}\)/, 'facets 必须只读取专用只读 worker 结果')
-assert.doesNotMatch(runtimeFacetsRouteSource, /requestServerRuntime|type: 'status'|getRuntimeLogGrepRuntime|buildBackgroundQueueHealthSnapshot|gatewayAccountSideEffects/, 'facets 不得读取 server runtime、DB status、grep 或网关副作用')
+const runtimeFacetsHandlerSource = runtimeReadsSource.match(/func \(d \*ReadsDeps\) handleRuntimeLogFacets[\s\S]*?\n\}/)?.[0] ?? ''
+assert.match(runtimeFacetsHandlerSource, /d\.Runtime\.GetRuntimeLogFacets\(r\.Context\(\)\)/, 'facets 必须只读取专用只读数据集结果')
+const runtimeFacetsQuerySource = runtimeReadsSource.slice(
+  runtimeReadsSource.indexOf('func (s *runtimeLogSQLReader) GetRuntimeLogFacets'),
+  runtimeReadsSource.indexOf('func (s *runtimeLogSQLReader) GetRuntimeLogDetailDelta')
+)
+assert.match(runtimeFacetsQuerySource, /runtime_log_facet_summary/, 'facets 必须只读取预聚合 facet 汇总表')
+assert.doesNotMatch(runtimeFacetsQuerySource, /grep|Grep|runtime_logs\b|Snapshot|snapshot|gateway|Gateway/, 'facets 不得读取日志明细、grep 或网关副作用')
 
 const openAuditDetailSource = auditPayloadStateSource.match(/async function openDetail[\s\S]*?async function loadPayload/)?.[0] ?? ''
 assert.match(openAuditDetailSource, /payloadRequestId \+= 1/, '切换审计详情时必须作废上一条记录的 payload 请求')
@@ -185,15 +193,28 @@ assert.doesNotMatch(auditDetailDrawerSource, /加载下一段|load-next-payload/
 assert.match(logsApiSource, /payload: \(id: string, payloadId: string\)/, '审计 payload API 不应再暴露 offset/limit 参数')
 assert.match(logsApiSource, /detail: \(id: string\) => unwrap<AuditLogDetailSupplement>/, '审计详情 API 必须声明为列表行补充字段，不能伪装成完整详情')
 assert.doesNotMatch(logsApiSource, /auditLogsApi[\s\S]{0,500}runtime:/, '前端不得保留无人使用且容易重新接入首屏的审计运行态 API')
-const auditPayloadRouteSource = auditRouteSource.match(/auditLogsRouter\.get\('\/:id\/payloads\/:payloadId'[\s\S]*?\n}\)/)?.[0] ?? ''
-assert.match(auditPayloadRouteSource, /full: true/, '管理员审计 payload 接口必须一次返回完整正文')
-assert.doesNotMatch(auditPayloadRouteSource, /req\.query\.(offset|limit)/, '管理员审计 payload 接口不得继续接受窗口参数')
+const auditPayloadHandlerSource = auditDetailSource.match(/func \(d \*ReadsDeps\) handleGetAuditLogPayload[\s\S]*?\n\}/)?.[0] ?? ''
+assert.match(
+  auditPayloadHandlerSource,
+  /GetAuditLogPayload\(r\.Context\(\), r\.PathValue\("id"\), r\.PathValue\("payloadId"\)\)/,
+  '管理员审计 payload 接口必须只按日志与 payload 定位读取'
+)
+assert.doesNotMatch(auditPayloadHandlerSource, /offset|limit|Query\(\)/, '管理员审计 payload 接口不得继续接受窗口参数')
+const auditPayloadReaderSource = auditDetailSource.slice(
+  auditDetailSource.indexOf('func (s *auditLogSQLReader) GetAuditLogPayload'),
+  auditDetailSource.indexOf('// auditBlobWindow mirrors')
+)
+assert.match(auditPayloadReaderSource, /readBlobWindow\(ctx, bodyBlobID, 0, 0, true\)/, '管理员审计 payload 接口必须一次返回完整正文')
 
 const grepItemType = runtimeTypesSource.match(/export interface RuntimeLogGrepItem \{[\s\S]*?\n\}/)?.[0] ?? ''
 assert.doesNotMatch(grepItemType, /rawJson:|\n  line:|\n  file:/, 'grep 列表不得提前返回原始行或服务器完整路径')
 assert.match(logsApiSource, /grepDetail: \(item: \{ id: string; fileName: string; lineNumber: number \}\)/, 'grep 原始行必须由点击详情后的定位接口读取')
-assert.match(runtimeRouteSource, /runtimeLogsRouter\.get\('\/grep-detail'/, '后端必须提供 grep 增量详情端点')
-assert.match(runtimeRouteSource, /type: 'get_runtime_log_detail_delta'/, '索引详情路由只应读取 rawJson 增量')
+assert.match(runtimeRoutesSource, /runtime-logs\/grep-detail/, '后端必须提供 grep 增量详情端点')
+const runtimeDetailDeltaSource = runtimeReadsSource.slice(
+  runtimeReadsSource.indexOf('func (s *runtimeLogSQLReader) GetRuntimeLogDetailDelta'),
+  runtimeReadsSource.indexOf('func parseRuntimeLogListOptions')
+)
+assert.match(runtimeDetailDeltaSource, /SELECT id, raw_json/, '索引详情读取只应返回 rawJson 增量')
 const runtimeDetailStateSource = source('../../views/runtime-logs/useRuntimeLogDetailState.ts')
 assert.match(runtimeDetailStateSource, /selectedLog\.value = \{ \.\.\.record, \.\.\.detail \}/, '索引详情必须把行摘要与详情增量合并')
 assert.match(runtimeDetailStateSource, /selectedGrepItem\.value = \{ \.\.\.record, \.\.\.detail \}/, 'grep 详情必须把行摘要与原始行增量合并')

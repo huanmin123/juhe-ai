@@ -64,10 +64,6 @@ func (d *Deps) getGlobalSettings(w http.ResponseWriter, r *http.Request) {
 // (settings.routes.ts catch block).
 func (d *Deps) patchGlobalSettings(w http.ResponseWriter, r *http.Request) {
 	auth := authsys.AuthContextFrom(r)
-	if auth == nil {
-		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
 	var body map[string]any
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
@@ -134,10 +130,6 @@ func (d *Deps) getSettingsSection(w http.ResponseWriter, r *http.Request) {
 // try-block renders 400 with the verbatim message.
 func (d *Deps) patchSettingsSection(w http.ResponseWriter, r *http.Request) {
 	auth := authsys.AuthContextFrom(r)
-	if auth == nil {
-		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
 	sectionKey, err := parseSettingsSectionKey(r.PathValue("sectionKey"))
 	if err != nil {
 		kernel.WriteBadRequest(w, err.Error())
@@ -227,10 +219,6 @@ func (d *Deps) getSettings(w http.ResponseWriter, r *http.Request) {
 // the all_users/summary visibility set by settings.routes.ts.
 func (d *Deps) patchSettings(w http.ResponseWriter, r *http.Request) {
 	auth := authsys.AuthContextFrom(r)
-	if auth == nil {
-		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
 	var body map[string]any
 	if !kernel.DecodeJSON(w, r, &body) {
 		return

@@ -126,12 +126,10 @@ func (c *entryCache[K, V]) expiresAt(ttl time.Duration) time.Time {
 }
 
 func (c *entryCache[K, V]) evictOverflowLocked() {
+	// len(c.items) > c.max >= 1 保证 order 非空（items 与 order 在锁内同步增删），
+	// Back() 不可能为 nil。
 	for len(c.items) > c.max {
-		oldest := c.order.Back()
-		if oldest == nil {
-			return
-		}
-		c.removeElementLocked(oldest)
+		c.removeElementLocked(c.order.Back())
 	}
 }
 

@@ -31,7 +31,7 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
   let keyword = ''
-  let searchTimer: ReturnType<typeof window.setTimeout> | undefined
+  let searchTimer: number | undefined
 
   async function load(nextKeyword = keyword, force = false): Promise<void> {
     keyword = nextKeyword

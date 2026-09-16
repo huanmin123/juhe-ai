@@ -70,6 +70,7 @@ const externalIntegrationSourceListItemFieldSet = new Set([
   'expiresAt',
   'notes',
   'lastUsedAt',
+  'updatedAt',
   'primaryToken',
   'isBuiltIn'
 ])
@@ -2149,10 +2150,11 @@ function assertGroupList(value: unknown): GroupListResult {
   expect(typeof value.hasMore === 'boolean', 'groups list hasMore must be boolean')
   expect(value.page === 1, 'groups list page must be 1')
   expect(value.pageSize === 500, 'groups list pageSize must be 500')
-  expect(isRecord(value.runtimeSnapshot), 'groups list runtimeSnapshot must be an object')
+  // 现行契约（前端 GroupListResult 同形）：分组列表以 generatedAt 标记生成时间，
+  // 旧 runtimeSnapshot 运行态块已随列表瘦身契约移除。
   expect(
-    typeof value.runtimeSnapshot.accountConcurrencyAvailable === 'boolean',
-    'groups list runtimeSnapshot.accountConcurrencyAvailable must be boolean'
+    typeof value.generatedAt === 'string' && value.generatedAt.length > 0,
+    'groups list generatedAt must be a non-empty string'
   )
   expect(value.total >= value.items.length, 'groups list total must cover returned items')
   return value as unknown as GroupListResult
@@ -2462,6 +2464,7 @@ function assertGroupDetail(value: unknown): GroupDetailRecord {
   const group = assertGroup(value, 'group detail')
   expect(isRecord(value) && Array.isArray(value.accountIds), 'group detail accountIds must be an array')
   assertStringArray(value.accountIds, 'group detail accountIds')
+  expect(isRecord(value.permissions), 'group detail permissions must be an object')
   return group as GroupDetailRecord
 }
 
@@ -2485,7 +2488,10 @@ function assertGroup(value: unknown, label: string): GroupRecord {
   }
   expect(value.accessType === 'owner' || value.accessType === 'authorized', `${label}.accessType is invalid`)
   expect(isRecord(value.accountStats), `${label}.accountStats must be an object`)
-  expect(isRecord(value.permissions), `${label}.permissions must be an object`)
+  // 列表项契约（前端 GroupListItem）已瘦身省略 permissions；详情（GroupSummary）仍提供。
+  if (Object.hasOwn(value, 'permissions')) {
+    expect(isRecord(value.permissions), `${label}.permissions must be an object`)
+  }
   return value as unknown as GroupRecord
 }
 

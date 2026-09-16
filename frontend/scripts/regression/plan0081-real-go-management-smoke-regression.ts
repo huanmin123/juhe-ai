@@ -2177,9 +2177,7 @@ function groupListFixture(): Record<string, unknown> {
     hasMore: false,
     page: 1,
     pageSize: 500,
-    runtimeSnapshot: {
-      accountConcurrencyAvailable: true
-    }
+    generatedAt: new Date().toISOString()
   }
 }
 

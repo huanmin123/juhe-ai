@@ -37,10 +37,9 @@ func (s *Service) ResolveCachedGroupUsageAccessMetadataAsync(ctx context.Context
 	if s.sharedGroup == nil {
 		return s.ResolveCachedGroupUsageAccessMetadata(ctx, groupID, systemAccountID)
 	}
+	// 共享模式（cacheDriver=redis）下 groupCache 在 New 中禁用：本地命中分支
+	// 不可达，共享条目（命中时）即事实源。
 	cacheKey := gatewayCacheKey(groupID, systemAccountID)
-	if cached, ok := s.groupCache.get(cacheKey); ok {
-		return s.staleAwareGroupAccess(groupID, systemAccountID, cacheKey, cached), nil
-	}
 	shared, ok, err := s.getSharedGroupAccess(ctx, cacheKey)
 	if err != nil {
 		s.logSharedFailure("gateway_group_usage_access_shared_cache_read_failed", err)

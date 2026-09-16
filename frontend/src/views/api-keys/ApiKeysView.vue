@@ -210,7 +210,7 @@ const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
 const routeStrategyOptionsLoading = ref(false)
-let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let routeStrategyOptionsSearchTimer: number | undefined
 let routeStrategyOptionsKeyword = ''
 let routeStrategyOptionsRequestToken = 0
 let routeStrategyOptionsLoadingKey: string | undefined

@@ -9,7 +9,6 @@
     "test:docker-go-project-isolation": "node scripts/regression/docker-go-project-isolation-regression.mjs",
     "test:platform-time-contract": "node scripts/regression/platform-time-contract.test.mjs",
     "test:account-test-task-polling": "pnpm --filter juhe-ai-frontend test:account-test-task-polling",
-    "test:runtime-display-contract": "pnpm --filter juhe-ai-frontend test:runtime-display-contract",
     "build": "pnpm -r build",
     "package:release": "pwsh ./scripts/package-release.ps1",
     "package:release:windows": "pwsh ./scripts/package-release.ps1",

@@ -623,8 +623,8 @@ assert.equal(
 
 assert.equal(
   packageJson.scripts?.['test:account-edit-save-flow'],
-  'pnpm --filter juhe-ai-backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-edit-save-flow-regression.ts',
-  '前端 package script 应暴露账户编辑保存流程回归'
+  'tsx --tsconfig tsconfig.json scripts/regression/account-edit-save-flow-regression.ts',
+  '前端 package script 应暴露账户编辑保存流程回归（frontend 本地 tsx 直跑，不依赖已归档的 Node backend）'
 )
 assert.deepEqual(
   accountListParams({ ids: ['account-source', 'account-authorized'], page: 1, pageSize: 2 }),

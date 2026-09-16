@@ -788,17 +788,21 @@ func TestWdUsageRecordsKeywordResolvesScopedAccountIds(t *testing.T) {
 			('u-w3', 'sys-user-1', 'tr-3', 'gateway', 'acct-unrelated', 1, 200, '2026-09-04T12:00:00.000Z')`,
 	)
 	handler := fixture.deps.usageRecordsListHandler(true)
-	// 行为存疑：scoped（ownerID 非空）关键字检索在 usageRecordKeywordAccountIds
-	// 的第二段查询直接报错——ownerClause 硬编码 " AND accounts.system_account_id
-	// = ?"，但该查询的表别名是 source_accounts/instance_accounts，不存在裸
-	// accounts，SQLite/PG 均返回 "no such column: accounts.system_account_id"，
-	// 路由呈现为 500 服务器内部错误。按当前实际行为断言。
+	// w11g 修复回归：scoped（ownerID 非空）关键字检索此前在
+	// usageRecordKeywordAccountIds 第二段查询报 "no such column:
+	// accounts.system_account_id"（ownerClause 锚错了别名），路由呈现 500。
+	// 已按 Node 原版把 owner 条件锚定 instance_accounts 别名；现在 owner 视角
+	// 关键字检索正常返回命中记录（acct-w1 自有 + acct-w2 分组授权）。
 	recorder := wdGet(t, handler, "/?accountKeyword=Widget", userAuth())
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("当前实现下 scoped accountKeyword 应 500: %d %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("scoped accountKeyword 应 200: %d %s", recorder.Code, recorder.Body.String())
 	}
-	if got := decodeBody(t, recorder)["message"]; got != "服务器内部错误" {
-		t.Fatalf("500 消息错误: %#v", got)
+	keywordItems := wdJSONArray(t, wdData(t, recorder)["items"], "items")
+	if len(keywordItems) != 2 {
+		t.Fatalf("scoped accountKeyword 应命中两条记录: %#v", keywordItems)
+	}
+	if keywordItems[1].(map[string]any)["accountName"] != "WidgetAccount" {
+		t.Fatalf("账户名水合错误: %#v", keywordItems[1])
 	}
 	// 非关键字读取保持可用：三条种子记录照常返回并带账户名水合。
 	recorder = wdGet(t, handler, "/", userAuth())

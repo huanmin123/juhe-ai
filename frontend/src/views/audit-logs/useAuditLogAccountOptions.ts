@@ -15,7 +15,7 @@ export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParam
   const options = ref<AccountOptionSummary[]>([])
   const loading = ref(false)
   const keyword = ref('')
-  let searchTimer: ReturnType<typeof window.setTimeout> | undefined
+  let searchTimer: number | undefined
   let requestSeq = 0
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined

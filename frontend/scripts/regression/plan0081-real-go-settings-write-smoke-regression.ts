@@ -85,7 +85,7 @@ async function successTest(baseUrl: string): Promise<void> {
   assert.deepEqual(summary, { settingsWriteChecked: true, settingsRestored: true })
   assert.deepEqual(output, ['settingsWriteChecked=true settingsRestored=true'])
   assert.deepEqual(records.map(item => `${item.method} ${item.pathname}`), [
-    'GET /__aisys__/api/readyz',
+    'GET /__aisys__/api/health',
     'GET /__aisys__/api/settings', 'PATCH /__aisys__/api/settings',
     'GET /__aisys__/api/settings', 'GET /__aisys__/api/settings',
     'PATCH /__aisys__/api/settings', 'GET /__aisys__/api/settings'
@@ -111,7 +111,7 @@ async function failureTests(baseUrl: string): Promise<void> {
     assert.equal(settings.systemMetricsHourlyRetentionDays, 20, `${name} must restore the setting`)
     if (name === 'missing-header' || name === 'invalid-json' || name === 'disconnect') {
       assert.deepEqual(records.map(item => `${item.method} ${item.pathname}`), [
-        'GET /__aisys__/api/readyz',
+        'GET /__aisys__/api/health',
         'GET /__aisys__/api/settings',
         'PATCH /__aisys__/api/settings',
         'GET /__aisys__/api/settings',
@@ -121,7 +121,7 @@ async function failureTests(baseUrl: string): Promise<void> {
       assert.equal(patchNumber, 2, `${name} must complete one temporary and one restore PATCH`)
     }
     if (name === 'ready-service') {
-      assert.deepEqual(records.map(item => `${item.method} ${item.pathname}`), ['GET /__aisys__/api/readyz'])
+      assert.deepEqual(records.map(item => `${item.method} ${item.pathname}`), ['GET /__aisys__/api/health'])
       assert.equal(records[0]?.cookie, undefined)
     }
   }
@@ -142,13 +142,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   let body: unknown
   if (method === 'PATCH') body = await readJson(req)
   records.push({ method, pathname: url.pathname, body, cookie: req.headers.cookie })
-  if (url.pathname === '/__aisys__/api/readyz') {
+  if (url.pathname === '/__aisys__/api/health') {
+    // 对齐 gateway compose.go 的 /__aisys__/api/health 契约（service 标识沿用
+    // 其镜像的 db-service 健康契约；ready-service 场景注入错误标识验证前置失败）。
     return respond(res, 200, {
-      success: true,
+      statusCode: 200,
       status: 'ok',
-      service: scenario === 'ready-service' ? 'juhe-ai-node' : 'juhe-ai-go',
-      version: '0.1.0',
-      dependencies: {}
+      service: scenario === 'ready-service' ? 'juhe-ai-node' : 'juhe-ai-db-service',
+      accountBalance: { ready: true },
+      proxyLatency: { enabled: false, ready: true },
+      checkedAt: '2026-09-16T00:00:00.000Z'
     })
   }
   if (method === 'GET') {

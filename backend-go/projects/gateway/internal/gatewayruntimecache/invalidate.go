@@ -29,7 +29,6 @@ func (s *Service) ClearGatewayRuntimeCacheLocal(options ClearOptions) {
 	s.apiKeyRuntimeGeneration++
 	s.pendingRuntimeLoads = map[string]*runtimeLoad{}
 	s.pendingGroupRefreshes = map[string]*refreshCall{}
-	s.pendingAccountRefreshes = map[string]*refreshCall{}
 	s.pendingInspectRefreshes = map[string]*refreshCall{}
 	s.mu.Unlock()
 

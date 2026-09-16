@@ -570,9 +570,9 @@ func normalizeRange(startRaw, endRaw string, now time.Time, location *time.Locat
 	if start > end {
 		start = end
 	}
-	if windowStart := addDateKey(end, -(maxRangeDays - 1)); start < windowStart {
-		start = windowStart
-	}
+	// start 已被 clampDateKey 钳到 [today-(maxRangeDays-1), today]，而
+	// windowStart = end-(maxRangeDays-1) <= today-(maxRangeDays-1) <= start，
+	// 原 start < windowStart 分支不可达，故不再重复钳制。
 	return Range{
 		StartDate: start,
 		EndDate:   end,

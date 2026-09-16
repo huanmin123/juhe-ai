@@ -47,6 +47,7 @@ interface NormalizedConfig extends RealGoExternalSourceCreateSmokeConfig {
 }
 
 interface CreatedAuthorization {
+  item?: Record<string, unknown>
   token: Record<string, unknown>
 }
 
@@ -351,8 +352,21 @@ function cleanupRetryDelay(): Promise<void> {
 
 function assertCreatedAuthorization(value: unknown): CreatedAuthorization {
   expect(isRecord(value), 'create DTO is invalid')
-  expect(hasExactKeys(value, ['token']), 'create DTO is invalid')
+  // gateway 创建响应当前为 {item, token}（item 为列表项形状，前端类型同形可选）；
+  // 兼容仅 {token} 的历史形状。
+  expect(hasExactKeys(value, ['token']) || hasExactKeys(value, ['item', 'token']), 'create DTO is invalid')
   expect(isRecord(value.token), 'create token DTO is invalid')
+  if (Object.hasOwn(value, 'item')) {
+    expect(isRecord(value.item), 'create item DTO is invalid')
+    expect(
+      hasOnlyKeys(value.item, [
+        'id', 'name', 'status', 'scopes', 'rateLimits', 'expiresAt',
+        'notes', 'lastUsedAt', 'updatedAt', 'primaryToken', 'isBuiltIn'
+      ]),
+      'create item DTO is invalid'
+    )
+    expect(isNonEmptyString(value.item.id) && isNonEmptyString(value.item.updatedAt), 'create item DTO is invalid')
+  }
 
   expect(
     hasOnlyKeys(value.token, ['id', 'name', 'token', 'tokenPrefix', 'tokenSuffix', 'scopes', 'expiresAt']),

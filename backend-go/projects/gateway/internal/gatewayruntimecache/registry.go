@@ -132,10 +132,10 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		return nil, fmt.Errorf("parse registry Redis URL: %w", err)
 	}
 	namespace := strings.TrimRight(strings.TrimSpace(config.Namespace), ":")
-	if !strings.HasPrefix(namespace, "juhe-ai:") {
+	if namespace != "juhe-ai" && !strings.HasPrefix(namespace, "juhe-ai:") {
 		namespace = "juhe-ai:" + namespace
 	}
-	if strings.HasSuffix(namespace, "juhe-ai:") || namespace == "juhe-ai:" {
+	if strings.HasSuffix(namespace, "juhe-ai:") {
 		namespace = "juhe-ai"
 	}
 	return &Registry{

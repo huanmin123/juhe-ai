@@ -20,9 +20,9 @@ const (
 
 // ClientHandoffReason mirrors the ClientHandoffReason union.
 const (
-	ClientHandoffWallBudgetExhausted    = "gateway_request_wall_budget_exhausted"
-	ClientHandoffPrecommitExhausted     = "precommit_budget_exhausted"
-	ClientHandoffServerRetryExhausted   = "server_retry_wait_budget_exhausted"
+	ClientHandoffWallBudgetExhausted  = "gateway_request_wall_budget_exhausted"
+	ClientHandoffPrecommitExhausted   = "precommit_budget_exhausted"
+	ClientHandoffServerRetryExhausted = "server_retry_wait_budget_exhausted"
 )
 
 // GatewayDispatchAttemptRejectionReason values mirror the Node union.
@@ -57,20 +57,20 @@ const (
 
 // Error message constants shared with the Node implementation.
 const (
-	msgKeyMustNotBeEmpty        = "route coordination key must not be empty"
-	msgDurationPositive         = "route coordination duration must be a positive finite number"
-	msgDurationNonNegative      = "route coordination duration must be a non-negative finite number"
-	msgVersionNonNegative       = "route coordination version must be a non-negative integer"
-	msgMaxRetriesRange          = "same-account retry maxRetries must be an integer between 0 and 10"
-	msgTargetsMustNotBeEmpty    = "route plan orderedAllowedTargets must not be empty"
+	msgKeyMustNotBeEmpty     = "route coordination key must not be empty"
+	msgDurationPositive      = "route coordination duration must be a positive finite number"
+	msgDurationNonNegative   = "route coordination duration must be a non-negative finite number"
+	msgVersionNonNegative    = "route coordination version must be a non-negative integer"
+	msgMaxRetriesRange       = "same-account retry maxRetries must be an integer between 0 and 10"
+	msgTargetsMustNotBeEmpty = "route plan orderedAllowedTargets must not be empty"
 )
 
 // GatewayRequestAttemptSnapshot mirrors GatewayRequestAttemptSnapshot.
 type GatewayRequestAttemptSnapshot struct {
-	AttemptedAccountRuntimeKeys      []string
-	AttemptedPhysicalCredentialKeys  []string
-	AttemptedKeyFingerprints         []string
-	AttemptedProtocolModelKeys       []string
+	AttemptedAccountRuntimeKeys     []string
+	AttemptedPhysicalCredentialKeys []string
+	AttemptedKeyFingerprints        []string
+	AttemptedProtocolModelKeys      []string
 }
 
 // GatewayDispatchAttemptIdentity mirrors GatewayDispatchAttemptIdentity.
@@ -127,10 +127,10 @@ type RouteCoordinationResult[TAccount any] struct {
 	Attempts GatewayRequestAttemptSnapshot
 
 	// client_handoff
-	HandoffReason                     string
+	HandoffReason                      string
 	RemainingUntriedCandidatesPossible bool
-	WallRemainingMs                   int64
-	ServerRetryRemainingMs            int64
+	WallRemainingMs                    int64
+	ServerRetryRemainingMs             int64
 }
 
 // GatewayRouteFallbackDecision mirrors GatewayRouteFallbackDecision<TContext>
@@ -143,13 +143,13 @@ type GatewayRouteFallbackDecision struct {
 
 // GatewayRouteFinalFailure mirrors GatewayRouteFinalFailure.
 type GatewayRouteFinalFailure struct {
-	StatusCode          int
-	Message             string
-	ErrorType           string
-	ErrorCode           string
-	ErrorPhase          string // 'quota' | 'dispatch'
-	FailureAttribution  string // 'gateway_capacity' | ''
-	RetryAfterMs        *int64
+	StatusCode         int
+	Message            string
+	ErrorType          string
+	ErrorCode          string
+	ErrorPhase         string // 'quota' | 'dispatch'
+	FailureAttribution string // 'gateway_capacity' | ''
+	RetryAfterMs       *int64
 }
 
 // GatewayRouteCoordinatorOwner mirrors GatewayRouteCoordinatorOwner<TContext>
@@ -432,12 +432,12 @@ func (b *GatewayRequestWallBudget) nowMsOr(value *int64) int64 {
 
 // RouteCoordinationBudgetSnapshot mirrors RouteCoordinationBudgetSnapshot.
 type RouteCoordinationBudgetSnapshot struct {
-	RequestID      string
-	BudgetID       string
-	Version        int
-	RemainingMs    int64
-	ActiveSinceMs  *int64
-	LastWaitToken  string
+	RequestID     string
+	BudgetID      string
+	Version       int
+	RemainingMs   int64
+	ActiveSinceMs *int64
+	LastWaitToken string
 }
 
 // RouteCoordinationBudgetOptions mirrors RouteCoordinationBudgetOptions.
@@ -458,10 +458,10 @@ type RouteCoordinationBudgetTransitionInput struct {
 
 // Route coordination budget transition outcomes.
 const (
-	BudgetTransitionApplied         = "applied"
+	BudgetTransitionApplied          = "applied"
 	BudgetTransitionIdempotentReplay = "idempotent_replay"
-	BudgetTransitionVersionConflict = "version_conflict"
-	BudgetTransitionInvalid         = "invalid_transition"
+	BudgetTransitionVersionConflict  = "version_conflict"
+	BudgetTransitionInvalid          = "invalid_transition"
 )
 
 // RouteCoordinationBudgetTransitionResult mirrors
@@ -477,14 +477,14 @@ type RouteCoordinationBudget struct {
 	BudgetID  string
 	BudgetMs  int64
 
-	mu                    sync.Mutex
-	version               int
-	storedRemainingMs     int64
-	activeSinceMs         *int64
-	lastWaitToken         string
-	observedWaitTokens    map[string]struct{}
-	completedWaitTokens   map[string]struct{}
-	now                   func() int64
+	mu                  sync.Mutex
+	version             int
+	storedRemainingMs   int64
+	activeSinceMs       *int64
+	lastWaitToken       string
+	observedWaitTokens  map[string]struct{}
+	completedWaitTokens map[string]struct{}
+	now                 func() int64
 }
 
 // NewRouteCoordinationBudget mirrors the constructor; errors mirror the Node
@@ -495,9 +495,8 @@ func NewRouteCoordinationBudget(options RouteCoordinationBudgetOptions) (*RouteC
 		return nil, err
 	}
 	budgetID := requestID + ":route-coordination"
-	if normalized, err := normalizedOptionalKey(options.BudgetID); err != nil {
-		return nil, err
-	} else if normalized != "" {
+	// normalizedOptionalKey 只做 trimSpace，永不返回错误。
+	if normalized, _ := normalizedOptionalKey(options.BudgetID); normalized != "" {
 		budgetID = normalized
 	}
 	budgetMs, err := normalizedPositiveMsOrDefault(options.BudgetMs, DefaultRouteCoordinationBudgetMs)
@@ -508,13 +507,13 @@ func NewRouteCoordinationBudget(options RouteCoordinationBudgetOptions) (*RouteC
 		options.Now = defaultUnixMillis
 	}
 	return &RouteCoordinationBudget{
-		RequestID:        requestID,
-		BudgetID:         budgetID,
-		BudgetMs:         budgetMs,
-		storedRemainingMs: budgetMs,
-		observedWaitTokens: make(map[string]struct{}),
+		RequestID:           requestID,
+		BudgetID:            budgetID,
+		BudgetMs:            budgetMs,
+		storedRemainingMs:   budgetMs,
+		observedWaitTokens:  make(map[string]struct{}),
 		completedWaitTokens: make(map[string]struct{}),
-		now:              options.Now,
+		now:                 options.Now,
 	}, nil
 }
 
@@ -1105,28 +1104,21 @@ func GatewayAttemptProtocolModelKey(accountRuntimeKey, protocolCode, protocolVer
 	if err != nil {
 		return "", err
 	}
-	protocol := "unknown_protocol"
-	if normalized, err := normalizedOptionalKey(protocolCode); err != nil {
-		return "", err
-	} else if normalized != "" {
-		protocol = normalized
+	// normalizedOptionalKey 只做 trimSpace，永不返回错误；[]string 的
+	// json.Marshal 也不可能失败。
+	protocol, _ := normalizedOptionalKey(protocolCode)
+	if protocol == "" {
+		protocol = "unknown_protocol"
 	}
-	version := "unknown_version"
-	if normalized, err := normalizedOptionalKey(protocolVersion); err != nil {
-		return "", err
-	} else if normalized != "" {
-		version = normalized
+	version, _ := normalizedOptionalKey(protocolVersion)
+	if version == "" {
+		version = "unknown_version"
 	}
-	modelKey := "unknown_model"
-	if normalized, err := normalizedOptionalKey(model); err != nil {
-		return "", err
-	} else if normalized != "" {
-		modelKey = normalized
+	modelKey, _ := normalizedOptionalKey(model)
+	if modelKey == "" {
+		modelKey = "unknown_model"
 	}
-	encoded, err := json.Marshal([]string{account, protocol, version, modelKey})
-	if err != nil {
-		return "", err
-	}
+	encoded, _ := json.Marshal([]string{account, protocol, version, modelKey})
 	return string(encoded), nil
 }
 
@@ -1198,12 +1190,7 @@ func CreateGatewayRoutePlanSnapshot[TTarget any](input CreateGatewayRoutePlanSna
 	if err != nil {
 		return RoutePlanSnapshot[TTarget]{}, err
 	}
-	weightedDecisionToken := ""
-	if normalized, err := normalizedOptionalKey(input.WeightedDecisionToken); err != nil {
-		return RoutePlanSnapshot[TTarget]{}, err
-	} else if normalized != "" {
-		weightedDecisionToken = normalized
-	}
+	weightedDecisionToken, _ := normalizedOptionalKey(input.WeightedDecisionToken)
 	if requestPrecommitDeadlineAtMs > gatewayRequestWallDeadlineAtMs {
 		requestPrecommitDeadlineAtMs = gatewayRequestWallDeadlineAtMs
 	}
@@ -1288,10 +1275,7 @@ func normalizedDispatchAttemptIdentity(identity GatewayDispatchAttemptIdentity) 
 	if err != nil {
 		return GatewayDispatchAttemptIdentity{}, err
 	}
-	keyFingerprint, err := normalizedOptionalKey(identity.KeyFingerprint)
-	if err != nil {
-		return GatewayDispatchAttemptIdentity{}, err
-	}
+	keyFingerprint, _ := normalizedOptionalKey(identity.KeyFingerprint)
 	return GatewayDispatchAttemptIdentity{
 		ProtocolModelKey:      protocolModelKey,
 		AccountRuntimeKey:     accountRuntimeKey,

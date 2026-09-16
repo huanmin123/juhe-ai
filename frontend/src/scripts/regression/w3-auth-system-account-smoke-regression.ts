@@ -146,12 +146,19 @@ function assertSourceBoundaries(): void {
     assertNotIncludes(systemAccountsViewSource, forbidden, `系统账户页不应引用敏感字段：${forbidden}`)
   }
 
-  // Node backend 已归档（X02）；执行入口随 backend workspace 移除，
-  // 对应的登录/系统账户 smoke 面由 Go gateway acceptance 覆盖。
+  // Node backend 已归档（X02）；本 smoke 恢复为 frontend 本地 tsx 直跑入口，
+  // 不得再依赖已归档的 ../backend workspace（juhe-ai-backend）。
+  // 对应的登录/系统账户后端链路由 Go gateway acceptance 覆盖。
+  const w3SmokeEntry = frontendPackageJson.scripts?.['test:w3-auth-system-account-smoke']
   assert.equal(
-    frontendPackageJson.scripts?.['test:w3-auth-system-account-smoke'],
-    undefined,
-    'W3 smoke 的 backend tsx 执行入口必须已随 Node backend 归档移除'
+    w3SmokeEntry,
+    'tsx --tsconfig tsconfig.json src/scripts/regression/w3-auth-system-account-smoke-regression.ts',
+    'W3 smoke 入口必须是 frontend 本地 tsx 直跑命令'
+  )
+  assert.equal(
+    w3SmokeEntry?.includes('../backend') === true || w3SmokeEntry?.includes('juhe-ai-backend') === true,
+    false,
+    'W3 smoke 入口不得依赖已归档的 Node backend workspace'
   )
 }
 

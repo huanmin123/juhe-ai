@@ -45,7 +45,7 @@ export function usePageStateCache<T extends object>(
   const storageType = options.storage ?? 'local'
   const debounceMs = options.debounceMs ?? 200
   const fixedPageKey = normalizePageKey(pageKey || route.path)
-  let writeTimer: ReturnType<typeof window.setTimeout> | undefined
+  let writeTimer: number | undefined
   let pendingSnapshot: (() => T) | undefined
 
   const cacheKey = computed(() => {

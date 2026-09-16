@@ -136,7 +136,7 @@ const routeStrategyTouched = ref(false)
 let routeStrategyOptionsRequestToken = 0
 let routeStrategyOptionsLoadingKey: string | undefined
 let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
-let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let routeStrategyOptionsSearchTimer: number | undefined
 let editingBaseline: ApiKeyEditableSnapshot | undefined
 let editingRevision: string | undefined
 let modalSessionGeneration = 0

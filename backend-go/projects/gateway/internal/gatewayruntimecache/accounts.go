@@ -41,14 +41,10 @@ func (s *Service) ListCachedOpenAIAccountsForGroupAsync(ctx context.Context, gro
 	if s.sharedGroup == nil {
 		return s.ListCachedOpenAIAccountsForGroup(ctx, groupID, systemAccountID, opts)
 	}
+	// 共享模式（cacheDriver=redis）下进程缓存禁用（快照携带解密后的上游凭据，
+	// 不得进共享层）：New 中 accountsCache.enabled 恒为 false，因此每次读都走
+	// loader，loader 失败直接上抛，无 stale 回退。
 	cacheKey := gatewayOpenAIAccountsCacheKey(groupID, systemAccountID, opts.RequestedModel, opts.RequestedEndpointFamily)
-	cached, ok := s.accountsCache.get(cacheKey)
-	if ok {
-		if !isEntryFresh(cached.revalidateAtMs, s.nowMs()) {
-			s.refreshOpenAIAccountsForGroupInBackground(groupID, systemAccountID, cacheKey, opts.RequestedModel, opts.RequestedEndpointFamily)
-		}
-		return s.cloneOpenAIAccountsWithCurrentConcurrency(ctx, cached.accounts)
-	}
 	return s.loadOpenAIAccountsForGroupAndPopulateCache(ctx, groupID, systemAccountID, cacheKey, opts.RequestedModel, opts.RequestedEndpointFamily)
 }
 
@@ -250,53 +246,6 @@ func (s *Service) loadOpenAIAccountsForGroupAndPopulateCache(ctx context.Context
 		s.accountsCache.set(cacheKey, entry, openAIAccountsRetainTTL)
 	}
 	return s.cloneOpenAIAccountsWithCurrentConcurrency(ctx, result.Accounts)
-}
-
-// refreshOpenAIAccountsForGroupInBackground mirrors
-// refreshOpenAIAccountsForGroupInBackground.
-func (s *Service) refreshOpenAIAccountsForGroupInBackground(groupID, systemAccountID, cacheKey, requestedModel, requestedEndpointFamily string) {
-	s.mu.Lock()
-	if _, pending := s.pendingAccountRefreshes[cacheKey]; pending {
-		s.mu.Unlock()
-		return
-	}
-	// s.mu 已持有：直接读世代字段，禁止重入 currentRuntimeGeneration。
-	generation := s.runtimeGeneration
-	call := newRefreshCall()
-	s.pendingAccountRefreshes[cacheKey] = call
-	s.mu.Unlock()
-
-	go func() {
-		defer func() {
-			s.mu.Lock()
-			delete(s.pendingAccountRefreshes, cacheKey)
-			s.mu.Unlock()
-			call.finish()
-		}()
-		ctx, cancel := context.WithTimeout(context.Background(), GatewayRuntimeLoadTimeout)
-		defer cancel()
-		result, err := s.models.ListOpenAIAccountsForGroupResult(ctx, groupID, systemAccountID, OpenAIAccountsForGroupOptions{
-			RequestedModel:          requestedModel,
-			RequestedEndpointFamily: requestedEndpointFamily,
-		})
-		if err != nil {
-			s.warnEvent("gateway_accounts_stale_refresh_failed", map[string]any{
-				"groupId": groupID, "systemAccountId": systemAccountID, "err": err.Error(),
-			}, "网关候选账号后台刷新失败，保留当前有界缓存快照")
-			return
-		}
-		if !s.isRuntimeGenerationCurrent(generation) {
-			return
-		}
-		entry, entryErr := newOpenAIAccountsCacheEntry(cloneStaticOpenAIAccounts(result.Accounts), s.nowMs())
-		if entryErr != nil {
-			s.warnEvent("gateway_accounts_stale_refresh_failed", map[string]any{
-				"groupId": groupID, "systemAccountId": systemAccountID, "err": entryErr.Error(),
-			}, "网关候选账号后台刷新失败，保留当前有界缓存快照")
-			return
-		}
-		s.accountsCache.set(cacheKey, entry, openAIAccountsRetainTTL)
-	}()
 }
 
 // ---------------------------------------------------------------------------
