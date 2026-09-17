@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -55,9 +56,9 @@ func bridgeStreamMappingAccount() gatewaydispatch.AccountCandidate {
 		ProviderCode: "hybrid",
 		ProtocolCode: "gemini",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
-			SourceModel:            "client-model",
-			SourceEndpointFamily:   "responses",
-			UpstreamModel:          "mapped-upstream-model",
+			SourceModel:          "client-model",
+			SourceEndpointFamily: "responses",
+			UpstreamModel:        "mapped-upstream-model",
 			// 映射行存储的是 gatewayopenai 词汇（generate_content），桥侧经
 			// NormalizeEndpointFamily 归一为 gemini_generate_content。
 			UpstreamEndpointFamily: "generate_content",
@@ -105,6 +106,35 @@ func readStreamOnce(body io.Reader, result chan<- streamReadResult) {
 	buffer := make([]byte, 8192)
 	n, err := body.Read(buffer)
 	result <- streamReadResult{n: n, text: string(buffer[:n]), err: err}
+}
+
+// bridgeWallClockIDPattern 匹配桥输出里由挂钟时间戳派生的 id 值
+// （"resp_<base36>"、"chatcmpl_<base36>"、"msg_<base36>"，镜像 Node
+// Date.now() 后缀；长度 6-14 覆盖 base36 毫秒串，且不误伤 "msg_0" 这类
+// 固定字面量与含下划线的确定性 id）。
+var bridgeWallClockIDPattern = regexp.MustCompile(`"(resp|chatcmpl|msg)_[0-9a-z]{6,14}"`)
+
+// normalizeBridgeWallClockIDs 把挂钟派生 id 归一为占位符。增量管道与 buffer
+// 转换是两次独立调用，毫秒边界处两侧 id 后缀必然不同；归一后其余字节仍
+// 逐字节比较（事件结构、字段、顺序差异不会被掩盖）。
+func normalizeBridgeWallClockIDs(text string) string {
+	return bridgeWallClockIDPattern.ReplaceAllString(text, `"$1_<wallclock>"`)
+}
+
+// TestNormalizeBridgeWallClockIDs 钉住归一化边界：只折叠挂钟 base36 后缀，
+// 固定字面量 id 与含下划线的确定性 id 保持原样。
+func TestNormalizeBridgeWallClockIDs(t *testing.T) {
+	left := `{"id":"resp_mu5616tu","item_id":"msg_0","name":"resp_anthropic_x_1"}`
+	right := `{"id":"resp_mu5616tv","item_id":"msg_0","name":"resp_anthropic_x_1"}`
+	if normalizeBridgeWallClockIDs(left) != normalizeBridgeWallClockIDs(right) {
+		t.Fatalf("挂钟 id 归一后应相等:\nleft=%q\nright=%q", normalizeBridgeWallClockIDs(left), normalizeBridgeWallClockIDs(right))
+	}
+	if strings.Contains(normalizeBridgeWallClockIDs(left), "msg_0") == false {
+		t.Fatalf("固定字面量 msg_0 不应被归一化")
+	}
+	if strings.Contains(normalizeBridgeWallClockIDs(left), "resp_anthropic_x_1") == false {
+		t.Fatalf("含下划线的确定性 id 不应被归一化")
+	}
 }
 
 // TestChainBridgeResponseStreamFirstEventReadableBeforeUpstreamEOF 钉住 P1
@@ -169,7 +199,9 @@ func TestChainBridgeResponseStreamFirstEventReadableBeforeUpstreamEOF(t *testing
 	full := first.text + string(rest)
 	buffered := openaicompat.TransformGeminiSseBufferToDownstreamSse(
 		[]byte(geminiBridgeUpstreamEvent()), openaicompat.GeminiNativeProtocolResponses, "mapped-upstream-model")
-	if full != string(buffered) {
+	// 挂钟 id（response.created/completed 的 resp_<base36>）在两次独立转换
+	// 之间不可复现，归一后比较；结构差异仍是逐字节判定（见 helper 注释）。
+	if normalizeBridgeWallClockIDs(full) != normalizeBridgeWallClockIDs(string(buffered)) {
 		t.Fatalf("增量管道输出必须与 buffer 转换逐字节一致:\n增量=%q\nbuffer=%q", full, string(buffered))
 	}
 }

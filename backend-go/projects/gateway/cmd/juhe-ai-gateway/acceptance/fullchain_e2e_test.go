@@ -212,7 +212,7 @@ func (m *fullchainMockUpstream) clearKey(key string) {
 }
 
 // protocolCallsByKeyModel 统计某上游 key 指定模型的协议端点命中
-//（真号混搭场景的请求模型不是 acceptanceModel，用此口径计数）。
+// （真号混搭场景的请求模型不是 acceptanceModel，用此口径计数）。
 func (m *fullchainMockUpstream) protocolCallsByKeyModel(key, model string) []fullchainUpstreamCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -399,9 +399,9 @@ type fullchainFixture struct {
 	mock  *fullchainMockUpstream
 	jobs  *managedProcess
 
-	usageChainProbed    bool
+	usageChainProbed     bool
 	usageChainBrokenFlag bool
-	usageChainReason    string
+	usageChainReason     string
 }
 
 // startFullchainFixture 组装：mock 上游（含场景控制器）+ chain 网关 + 真实
@@ -630,12 +630,31 @@ func (f *fullchainFixture) chat(apiKey, body string) fullchainChatResponse {
 	return f.doRaw(request)
 }
 
+// chatT 是 chat 的显式 t 变体：子测试上下文中的失败落在子测试上，不会把
+// 父测试标记为失败（REAL 链路单 provider 上游故障不应终止后续子测试）。
+func (f *fullchainFixture) chatT(t *testing.T, apiKey, body string) fullchainChatResponse {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, f.gw.baseURL+"/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build chat request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	return f.doRawT(t, request)
+}
+
 func (f *fullchainFixture) doRaw(request *http.Request) fullchainChatResponse {
-	f.t.Helper()
+	return f.doRawT(f.t, request)
+}
+
+func (f *fullchainFixture) doRawT(t *testing.T, request *http.Request) fullchainChatResponse {
+	t.Helper()
 	client := &http.Client{Timeout: 120 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
-		f.t.Fatalf("%s %s: %v", request.Method, request.URL.Path, err)
+		t.Fatalf("%s %s: %v", request.Method, request.URL.Path, err)
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(response.Body)
@@ -706,8 +725,8 @@ func (f *fullchainFixture) listUsageRecords(apiKeyID string) []fullchainUsageRec
 
 // waitUsageRecords 轮询直到谓词满足（usage 落库是异步桥：gateway spool →
 // jobs drain → usage shard → usage-catalog 注册 → statreads 读模型）。
-func (f *fullchainFixture) waitUsageRecords(apiKeyID string, predicate func([]fullchainUsageRecord) bool, what string) []fullchainUsageRecord {
-	f.t.Helper()
+func (f *fullchainFixture) waitUsageRecords(t *testing.T, apiKeyID string, predicate func([]fullchainUsageRecord) bool, what string) []fullchainUsageRecord {
+	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	var matched []fullchainUsageRecord
 	for time.Now().Before(deadline) {
@@ -718,7 +737,7 @@ func (f *fullchainFixture) waitUsageRecords(apiKeyID string, predicate func([]fu
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	f.t.Fatalf("usage records not %s in time; got %#v\nusage chain triage: %s", what, f.listUsageRecords(apiKeyID), f.usageChainTriage())
+	t.Fatalf("usage records not %s in time; got %#v\nusage chain triage: %s", what, f.listUsageRecords(apiKeyID), f.usageChainTriage())
 	return nil
 }
 
@@ -849,8 +868,13 @@ func (f *fullchainFixture) auditLogDetail(logID string) fullchainAuditLog {
 }
 
 // waitAuditLogDetail 轮询直到某条审计日志满足谓词（审计落库异步）。
-func (f *fullchainFixture) waitAuditLogDetail(apiKeyID string, predicate func(fullchainAuditLog) bool, what string) fullchainAuditLog {
-	f.t.Helper()
+//
+// E2E-FINDING #10（已修复）：根因是 gateway 组合根只传 Enabled 位、
+// SuccessSampleRate 恒 0，成功信封 attempts 被写侧按未采样清空。
+// 已接线修复于 F10（采样配置经 chainRuntimeDeps 注入
+// auditSettingsSourceAdapter），canary 移除，超时即 Fatal。
+func (f *fullchainFixture) waitAuditLogDetail(t *testing.T, apiKeyID string, predicate func(fullchainAuditLog) bool, what string) fullchainAuditLog {
+	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, item := range f.findAuditLogs(apiKeyID) {
@@ -861,7 +885,7 @@ func (f *fullchainFixture) waitAuditLogDetail(apiKeyID string, predicate func(fu
 		}
 		time.Sleep(400 * time.Millisecond)
 	}
-	f.t.Fatalf("audit log not %s in time", what)
+	t.Fatalf("audit log not %s in time", what)
 	return fullchainAuditLog{}
 }
 
@@ -899,7 +923,7 @@ func (f *fullchainFixture) clearAccountFailure(accountID string) {
 }
 
 // rebindAccountGroup 把已有账户改绑到指定分组并设置组内调度优先级
-//（组内派发次序为 priority 升序：值小者先被派发）。
+// （组内派发次序为 priority 升序：值小者先被派发）。
 func (f *fullchainFixture) rebindAccountGroup(accountID, groupID string, priority int) {
 	f.t.Helper()
 	f.patchAccount(accountID, map[string]any{"groupId": groupID, "priority": priority})
@@ -1023,7 +1047,7 @@ func TestFullchainStage1BaseChain(t *testing.T) {
 
 	// 审计归因：请求级审计含该账户的成功 attempt（上游状态码 200）。
 	apiKeyID := f.apiKeyIDByName("全链路-基础Key")
-	detail := f.waitAuditLogDetail(apiKeyID, func(log fullchainAuditLog) bool {
+	detail := f.waitAuditLogDetail(t, apiKeyID, func(log fullchainAuditLog) bool {
 		return log.Success && len(log.Attempts) > 0
 	}, "with a successful attempt")
 	if len(detail.Attempts) != 1 {
@@ -1036,7 +1060,7 @@ func TestFullchainStage1BaseChain(t *testing.T) {
 	t.Run("usage_attribution", func(t *testing.T) {
 		// usage 归因：账户/分组/模型正确（链路回归时按 canary skip，见头注）。
 		f.requireUsageChain(t)
-		f.waitUsageRecords(apiKeyID, func(records []fullchainUsageRecord) bool {
+		f.waitUsageRecords(t, apiKeyID, func(records []fullchainUsageRecord) bool {
 			for _, record := range records {
 				if record.Success && record.AccountID != "" && record.GroupID == groupID && record.Model == acceptanceModel {
 					return true

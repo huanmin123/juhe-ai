@@ -1332,7 +1332,7 @@ func (d *disabledDegradation) OrderSync(accounts []gatewaydispatch.AccountCandid
 // composition root has no group queue (组合测试专用降级；生产组合根必须装配
 // gatewayclientip 队列——E2E-FINDING #5：队列缺席时引擎的等待调用曾直接
 // nil panic）。Ready=true 表示允许按既有候选顺序继续重试容量，与文档
-//「快速失败优先于无限排队」的缺席语义一致：没有队列就不排队。
+// 「快速失败优先于无限排队」的缺席语义一致：没有队列就不排队。
 type degradedHighConcurrencyQueue struct {
 	once sync.Once
 }
@@ -1787,12 +1787,18 @@ func (d auditUsageDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gateway
 
 // auditSettingsSourceAdapter implements gatewayusage.AuditLogSettingsSource.
 type auditSettingsSourceAdapter struct {
-	enabled func() bool
+	enabled                  func() bool
+	successSampleRate        float64
+	successHotRetentionHours int
 }
 
 func (a auditSettingsSourceAdapter) ReadAuditLogSettings() gatewayusage.AuditLogSettings {
 	enabled := a.enabled != nil && a.enabled()
-	return gatewayusage.AuditLogSettings{Enabled: enabled}
+	return gatewayusage.AuditLogSettings{
+		Enabled:                  enabled,
+		SuccessSampleRate:        a.successSampleRate,
+		SuccessHotRetentionHours: a.successHotRetentionHours,
+	}
 }
 
 // usageModelResolverAdapter implements gatewayusage.UsageModelResolver: the

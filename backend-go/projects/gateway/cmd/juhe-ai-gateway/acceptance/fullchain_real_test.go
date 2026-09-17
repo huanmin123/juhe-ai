@@ -387,7 +387,7 @@ func assertRealChat(t *testing.T, f *fullchainFixture, apiKey, model string) ful
 	t.Helper()
 	var last fullchainChatResponse
 	for attempt := 0; attempt < 2; attempt++ {
-		last = f.chat(apiKey, realChatPayload(model))
+		last = f.chatT(t, apiKey, realChatPayload(model))
 		if last.Status == http.StatusOK && strings.Contains(last.Body, "choices") && strings.TrimSpace(realContentOf(last.Body)) != "" {
 			return last
 		}
@@ -448,7 +448,7 @@ func TestFullchainRealChain(t *testing.T) {
 
 				// 审计归因：成功请求的全部 attempt 都归属该真号且最终上游
 				// 200（同账户瞬态重试/Key 轮换时 attempt 数可 >1）。
-				detail := f.waitAuditLogDetail(route.apiKeyID, func(log fullchainAuditLog) bool {
+				detail := f.waitAuditLogDetail(t, route.apiKeyID, func(log fullchainAuditLog) bool {
 					if !log.Success || len(log.Attempts) == 0 {
 						return false
 					}
@@ -465,7 +465,7 @@ func TestFullchainRealChain(t *testing.T) {
 				if providerCode == "gpt" {
 					// gpt 流式一次（成本同纪律；用同一真号）。
 					streamRoute := r.realRoute("S1-gpt-stream", "gpt", account)
-					streamResponse := f.chat(streamRoute.apiKey, fmt.Sprintf(`{"model":"%s","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"回复OK"}]}`, account.Model))
+					streamResponse := f.chatT(t, streamRoute.apiKey, fmt.Sprintf(`{"model":"%s","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"回复OK"}]}`, account.Model))
 					if streamResponse.Status != http.StatusOK || !strings.Contains(streamResponse.ContentType, "text/event-stream") {
 						t.Fatalf("S1 gpt stream status=%d contentType=%s body=%s", streamResponse.Status, streamResponse.ContentType, maskRealBody(streamResponse.Body))
 					}
@@ -491,7 +491,7 @@ func TestFullchainRealChain(t *testing.T) {
 			strings.NewReader(fmt.Sprintf(`{"model":"%s","max_tokens":64,"messages":[{"role":"user","content":"回复OK"}]}`, account.Model)))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer "+route.apiKey)
-		response := f.doRaw(request)
+		response := f.doRawT(t, request)
 		var last fullchainChatResponse
 		last = response
 		for attempt := 0; attempt < 2 && !(last.Status == http.StatusOK && strings.Contains(last.Body, "content")); attempt++ {
@@ -499,7 +499,7 @@ func TestFullchainRealChain(t *testing.T) {
 				strings.NewReader(fmt.Sprintf(`{"model":"%s","max_tokens":64,"messages":[{"role":"user","content":"回复OK"}]}`, account.Model)))
 			retry.Header.Set("Content-Type", "application/json")
 			retry.Header.Set("Authorization", "Bearer "+route.apiKey)
-			last = f.doRaw(retry)
+			last = f.doRawT(t, retry)
 		}
 		if last.Status != http.StatusOK || !strings.Contains(last.Body, "content") {
 			t.Fatalf("S2 messages failed: status=%d body=%s", last.Status, maskRealBody(last.Body))
@@ -557,7 +557,7 @@ func TestFullchainRealChain(t *testing.T) {
 		}
 		// 审计归因两行：mock 失败 attempt + 真号成功 attempt（usage 面被
 		// E2E-FINDING #1 阻塞，attempt 行是同源证据）。
-		detail := f.waitAuditLogDetail(apiKeyID, func(log fullchainAuditLog) bool {
+		detail := f.waitAuditLogDetail(t, apiKeyID, func(log fullchainAuditLog) bool {
 			return len(log.Attempts) >= 2
 		}, "with mock + real attempts")
 		if str(detail.Attempts[0]["accountId"]) != mockAccountID {
@@ -595,7 +595,7 @@ func TestFullchainRealChain(t *testing.T) {
 		}, nil)
 		apiKey := f.createAPIKey("全链路-M2-Key", strategyID)
 
-		response := f.chat(apiKey, realChatPayload(account.Model))
+		response := f.chatT(t, apiKey, realChatPayload(account.Model))
 		if response.Status != http.StatusOK {
 			t.Fatalf("M2 mock-first status=%d body=%s", response.Status, maskRealBody(response.Body))
 		}
@@ -604,7 +604,7 @@ func TestFullchainRealChain(t *testing.T) {
 		}
 		// 成本护栏证据：全部 attempt 都是 mock 账户（真号零出网）。
 		apiKeyID := f.apiKeyIDByName("全链路-M2-Key")
-		detail := f.waitAuditLogDetail(apiKeyID, func(log fullchainAuditLog) bool {
+		detail := f.waitAuditLogDetail(t, apiKeyID, func(log fullchainAuditLog) bool {
 			return log.Success && len(log.Attempts) >= 1
 		}, "mock-first success")
 		for _, attempt := range detail.Attempts {

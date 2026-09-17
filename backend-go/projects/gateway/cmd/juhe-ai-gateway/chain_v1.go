@@ -563,7 +563,20 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 		})
 		if dispatchErr == nil {
 			// ---- response piping + finalization (response/finalization.ts) ----
-			handling := l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
+			// F13（E2E-FINDING #13 第二层）：账户并发槽随本轮派发迭代释放。
+			// keepConcurrencySlot=true 时 dispatch 内 releaseTransientState 是空操作，
+			// 槽必须在响应管道结束后交给排队者（Node attachAccountSlotRelease
+			// 挂在 res finish/close；Go 等价点是 handleUpstreamResponse 返回）。
+			// 嵌套函数 + defer：循环体内不能用函数级 defer（会拖到 run 返回），
+			// onceFunc 幂等，panic 与 RetryUpstream 切号都不会漏槽或双释放。
+			handling := func() gatewayresponse.UpstreamResponseHandlingResult {
+				defer func() {
+					if dispatched.ReleaseConcurrency != nil {
+						dispatched.ReleaseConcurrency()
+					}
+				}()
+				return l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
+			}()
 			if !handling.RetryUpstream {
 				// routes.ts:2393-2455: the speed-first response observation
 				// (slow/success sampling) runs once the response completed

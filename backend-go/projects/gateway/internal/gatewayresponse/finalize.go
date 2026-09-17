@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayanthropic"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -111,7 +113,29 @@ func (input *HandleUpstreamResponseInput) driver() ResponseDriverPort {
 	if input.Driver != nil {
 		return input.Driver
 	}
-	return NewOpenAIResponseDriver()
+	// F9（BUG: anthropic 流式完整回复被误判 missing terminal）：编排层未显式
+	// 装配 Driver 时，按账户协议解析响应驱动视图，而不是无条件回退 openai。
+	// anthropic/gemini 上游的流式终止事件（message_stop 等）只有协议自身的
+	// StreamInspector 能识别；openai 回退会把完整回复误判为
+	// upstream_stream_interrupted。协议码常量与 ResolveRuntimeResponseInspectionPolicies
+	// 消费的账户 protocolCode 同源。
+	switch accountProtocolCode(input.Account) {
+	case gatewayanthropic.ProtocolCode:
+		return NewAnthropicResponseDriver()
+	case gatewaygemini.ProtocolCode:
+		return NewGeminiResponseDriver()
+	default:
+		return NewOpenAIResponseDriver()
+	}
+}
+
+// accountProtocolCode 读取账户协议码；nil 账户返回空串（回退 openai 视图，
+// 与历史行为一致）。
+func accountProtocolCode(account AccountView) string {
+	if account == nil {
+		return ""
+	}
+	return account.GetProtocolCode()
 }
 
 // effectiveInspectionPolicies 对齐 runtimeResponseInspectionPoliciesForInput：
@@ -285,6 +309,7 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 				input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
 					UsageContext:    input.UsageContext,
 					Account:         input.Account,
+					RequestedModel:  requestModelHint(input.Req),
 					StatusCode:      input.UpstreamResponse.Status,
 					Success:         false,
 					Stream:          true,
@@ -408,6 +433,7 @@ func (input *HandleUpstreamResponseInput) finalizeStreamFailure(pipeResult Strea
 		input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
 			UsageContext:     input.UsageContext,
 			Account:          input.Account,
+			RequestedModel:   requestModelHint(input.Req),
 			StatusCode:       input.UpstreamResponse.Status,
 			Success:          false,
 			Stream:           true,

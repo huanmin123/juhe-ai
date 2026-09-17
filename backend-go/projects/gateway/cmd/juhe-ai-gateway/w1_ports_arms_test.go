@@ -1191,8 +1191,15 @@ func TestW1PAuditSettingsAndUsageModelResolver(t *testing.T) {
 	if settings := (auditSettingsSourceAdapter{}).ReadAuditLogSettings(); settings.Enabled {
 		t.Fatalf("nil enabled 函数 ReadAuditLogSettings = %+v", settings)
 	}
+	if settings := (auditSettingsSourceAdapter{}).ReadAuditLogSettings(); settings.SuccessSampleRate != 0 || settings.SuccessHotRetentionHours != 0 {
+		t.Fatalf("零值构造 ReadAuditLogSettings = %+v，want 采样字段 0", settings)
+	}
 	if settings := (auditSettingsSourceAdapter{enabled: func() bool { return true }}).ReadAuditLogSettings(); !settings.Enabled {
 		t.Fatalf("ReadAuditLogSettings = %+v，want Enabled=true", settings)
+	}
+	// E2E-FINDING #10：采样字段构造透传（值源 auditlog.LoadConfig）。
+	if settings := (auditSettingsSourceAdapter{successSampleRate: 0.1, successHotRetentionHours: 1}).ReadAuditLogSettings(); settings.SuccessSampleRate != 0.1 || settings.SuccessHotRetentionHours != 1 {
+		t.Fatalf("ReadAuditLogSettings = %+v，want 采样字段透传 0.1/1", settings)
 	}
 
 	resolution := (usageModelResolverAdapter{}).ResolveUsageModel(

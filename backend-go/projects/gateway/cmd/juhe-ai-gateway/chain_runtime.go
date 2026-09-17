@@ -106,6 +106,12 @@ type chainRuntimeServices struct {
 	// memory driver keeps process-local queues, the redis driver shares the
 	// juhe-ai:state:high-concurrency-queue keyspace).
 	HighConcurrencyQueue *gatewayclientip.HighConcurrencyGroupQueue
+	// ConcurrencyTracker 是唯一的账户并发事实源（E2E-FINDING #13）：组合根
+	// 必须把同一实例传给 engine.Concurrency（chainRuntimeDeps.
+	// ConcurrencyTracker）与本 HighConcurrencyQueue；事实源分裂会让 queue
+	// 读数恒 0、WaitForCapacity 永远立即 Ready、请求永不入队且排队者
+	// 永不被唤醒。
+	ConcurrencyTracker *gatewayclientip.MemoryAccountConcurrency
 	// SuppressionStore is the D-134 local account suppression state.
 	SuppressionStore *gatewaycircuit.LocalSuppressionStore
 	// SuppressionWaiter is the D-134 recoverable wait engine behind the
@@ -239,6 +245,8 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, errors.New("网关链组合根缺少全局设置读取器")
 	}
 	logger := chainRuntimeLogger{inner: slog.Default()}
+	// services 承载逆序 closeFuncs；任何一步失败都必须先 Close 再返回，
+	// 否则已启动的 coordinator goroutine、cache、circuit 等会泄漏到进程。
 	services := &chainRuntimeServices{}
 	redisCache := cfg.CacheDriver == "redis"
 	redisState := cfg.RuntimeStateDriver == "redis"
@@ -249,12 +257,14 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if redisCache {
 		factory, closeFactory, err := gatewayruntimecache.NewRedisSharedCacheFactory(cfg.RedisCacheURL, cfg.RedisNamespace)
 		if err != nil {
+			services.Close()
 			return nil, fmt.Errorf("create gateway redis shared cache factory: %w", err)
 		}
 		sharedFactory = factory
 		services.closeFuncs = append(services.closeFuncs, closeFactory)
 		options, parseErr := redis.ParseURL(cfg.RedisCacheURL)
 		if parseErr != nil {
+			services.Close()
 			return nil, fmt.Errorf("parse cache redis url: %w", parseErr)
 		}
 		cacheClient = redis.NewClient(options)
@@ -266,6 +276,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if redisState {
 		options, err := redis.ParseURL(cfg.RedisStateURL)
 		if err != nil {
+			services.Close()
 			return nil, fmt.Errorf("parse state redis url: %w", err)
 		}
 		stateClient = redis.NewClient(options)
@@ -286,6 +297,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// ---- runtime cache (G10) ----
 	models, err := gatewayruntimecache.NewSQLReadModels(composed.db, composed.pgDialect, time.Now, nil, nil, nil)
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway runtime sql read models: %w", err)
 	}
 	// One settings repository per process: the read models must see a
@@ -294,6 +306,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	models.SetSettingsStore(composed.settingsStore)
 	selector, selectorErr := newChainAccountsSelectorWithStats(composed.db, composed.statsDB, composed.pgDialect, cfg.Secret, time.Now, cfg.DispatchAccountCandidateLimit)
 	if selectorErr != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway accounts selector: %w", selectorErr)
 	}
 	services.Accounts = selector
@@ -304,6 +317,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	routeSelector := gatewayrouting.NewAPIKeyGroupRouteSelector(cfg.RuntimeStateDriver, gatewayrouting.NewRedisRouteStateCounter(cfg.RedisStateURL), cfg.RedisStateURL)
 	catalogSource, catalogErr := newChainCatalogSource(composed.db, composed.pgDialect)
 	if catalogErr != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway model catalog source: %w", catalogErr)
 	}
 	models.SetCatalogSource(catalogSource)
@@ -312,6 +326,10 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// tracker instance is shared by the cache overlay, the dispatch store and
 	// the suppression precheck projection.
 	concurrencyTracker := gatewayclientip.NewMemoryAccountConcurrency(nil)
+	// E2E-FINDING #13：tracker 同步暴露到 services，供生产组合根传入
+	// chainRuntimeDeps.ConcurrencyTracker（engine.Concurrency），与
+	// HighConcurrencyQueue 共用同一事实源。
+	services.ConcurrencyTracker = concurrencyTracker
 	models.SetConcurrencySource(concurrencyTracker)
 	cache, err := gatewayruntimecache.New(models, gatewayruntimecache.Options{
 		Bus:                     composed.Bus,
@@ -323,6 +341,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Orderer: newChainGroupBindingOrderer(routeSelector),
 	})
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway runtime cache: %w", err)
 	}
 	services.Cache = cache
@@ -335,6 +354,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		RedisNamespace:     cfg.RedisNamespace,
 	})
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway error circuit: %w", err)
 	}
 	services.Circuits = circuits
@@ -342,6 +362,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 
 	policySource, err := gatewayclientip.NewSQLPolicySource(composed.statsDB, composed.pgDialect, time.Now, ipstatsTimezone(settingValue))
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create client-ip policy source: %w", err)
 	}
 	policyCache, err := gatewayclientip.NewPolicyCache(gatewayclientip.PolicyCacheOptions{
@@ -351,6 +372,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Shared:      sharedFactory,
 	})
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create client-ip policy cache: %w", err)
 	}
 	services.IPPolicy = policyCache
@@ -362,6 +384,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		RedisNamespace:     cfg.RedisNamespace,
 	})
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create client-ip account avoidance: %w", err)
 	}
 	services.Avoidance = avoidance
@@ -396,6 +419,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	statsStore, err := gatewayquota.NewStatsStore(composed.statsDB, composed.pgDialect)
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway quota stats store: %w", err)
 	}
 	services.QuotaStats = statsStore
@@ -403,11 +427,13 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if redisCache && redisState {
 		snapshotRuntimeState, err = gatewayquota.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, gatewayquota.GatewayQuotaSnapshotRuntimeStateStoreName)
 		if err != nil {
+			services.Close()
 			return nil, fmt.Errorf("create gateway quota snapshot runtime state: %w", err)
 		}
 	}
 	snapshotCache, err := gatewayquota.NewSnapshotCache(quotaModes, snapshotRuntimeState, time.Now, nil)
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway quota snapshot cache: %w", err)
 	}
 	newQuotaShared := func(name string) (gatewayquota.SharedJSONCache, error) {
@@ -429,6 +455,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Now:      time.Now,
 	})
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create api-key quota service: %w", err)
 	}
 	services.APIKeyQuota = apiKeyQuota
@@ -446,6 +473,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Now:      time.Now,
 	})
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create authorization quota service: %w", err)
 	}
 	services.AuthzQuota = authzQuota
@@ -461,6 +489,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		DBService: newChainQuotaDBService(apiKeyQuota, authzQuota),
 	})
 	if err != nil {
+		services.Close()
 		return nil, fmt.Errorf("create inflight quota service: %w", err)
 	}
 	services.InflightQuota = inflightQuota
@@ -469,6 +498,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if redisState && stateClient != nil {
 		affinityState, affinityErr := gatewayquota.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-gemini-interaction-affinity")
 		if affinityErr != nil {
+			services.Close()
 			return nil, fmt.Errorf("create gemini interaction affinity state: %w", affinityErr)
 		}
 		services.Affinity = gatewaygemini.NewInteractionAffinity(quotaRuntimeStateBridge{store: affinityState, storeName: "gateway-gemini-interaction-affinity"})
@@ -491,6 +521,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		},
 	})
 	if slotsErr != nil {
+		services.Close()
 		return nil, fmt.Errorf("create client-ip concurrency slots: %w", slotsErr)
 	}
 	services.ClientIPSlots = clientIPSlots
@@ -513,6 +544,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Concurrency: concurrencyTracker,
 	})
 	if queueErr != nil {
+		services.Close()
 		return nil, fmt.Errorf("create high-concurrency group queue: %w", queueErr)
 	}
 	services.HighConcurrencyQueue = highConcurrencyQueue
@@ -546,6 +578,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if redisState && stateClient != nil {
 		redisHealthStore, healthErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-proxy-health")
 		if healthErr != nil {
+			services.Close()
 			return nil, fmt.Errorf("create proxy health runtime state: %w", healthErr)
 		}
 		proxyHealthStore = redisHealthStore
@@ -564,6 +597,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		RedisNamespace:     cfg.RedisNamespace,
 	})
 	if hotQualityErr != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway hot quality runtime: %w", hotQualityErr)
 	}
 	services.HotQuality = hotQuality
@@ -574,6 +608,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	keyModelStores := newChainKeyModelRuntimeStoreSelector(cfg.RedisStateURL, cfg.RedisNamespace)
 	keyModelStore, keyModelErr := keyModelStores.Select(cfg.RuntimeStateDriver)
 	if keyModelErr != nil {
+		services.Close()
 		return nil, fmt.Errorf("select key-model runtime store: %w", keyModelErr)
 	}
 	services.KeyModelStore = keyModelStore
@@ -591,6 +626,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if redisState && stateClient != nil {
 		store, storeErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-normal-route-latency-degradation")
 		if storeErr != nil {
+			services.Close()
 			return nil, fmt.Errorf("create normal route latency degradation runtime state: %w", storeErr)
 		}
 		latencyStore = store
@@ -631,6 +667,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		},
 	})
 	if keyStatesErr != nil {
+		services.Close()
 		return nil, fmt.Errorf("create account api-key effects key states store: %w", keyStatesErr)
 	}
 	services.AccountAPIKeyEffects = gatewayaccounteffects.NewAccountAPIKeyEffects(
@@ -653,6 +690,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if redisState && stateClient != nil {
 		redisAvoidanceStore, avoidanceErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, gatewayaccounteffects.ConfiguredPolicyAvoidanceStoreName)
 		if avoidanceErr != nil {
+			services.Close()
 			return nil, fmt.Errorf("create configured policy avoidance runtime state: %w", avoidanceErr)
 		}
 		avoidanceStore = redisAvoidanceStore
@@ -674,6 +712,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if redisCache && cacheClient != nil {
 		scoringCache, scoringErr := gatewayhybrid.NewRedisSharedJSONCache(cacheClient, cfg.RedisNamespace)
 		if scoringErr != nil {
+			services.Close()
 			return nil, fmt.Errorf("create hybrid scoring shared cache: %w", scoringErr)
 		}
 		services.HybridScoringCache = scoringCache
@@ -681,6 +720,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if redisState && stateClient != nil {
 		hybridState, hybridErr := gatewayhybrid.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace)
 		if hybridErr != nil {
+			services.Close()
 			return nil, fmt.Errorf("create hybrid route affinity state: %w", hybridErr)
 		}
 		services.HybridRuntimeState = hybridState
@@ -689,6 +729,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// ---- G14 session identity + affinity services ----
 	identityService, identityErr := gatewaysession.NewIdentityService(cfg.Secret)
 	if identityErr != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway session identity service: %w", identityErr)
 	}
 	affinityConfig := gatewaysession.AffinityConfig{
@@ -706,6 +747,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	affinityService, affinityErr := gatewaysession.NewAffinityService(affinityConfig)
 	if affinityErr != nil {
+		services.Close()
 		return nil, fmt.Errorf("create gateway session affinity service: %w", affinityErr)
 	}
 	services.Identity = &sessionIdentityServices{

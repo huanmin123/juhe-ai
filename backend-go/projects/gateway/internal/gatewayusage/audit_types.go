@@ -1,6 +1,10 @@
 package gatewayusage
 
-import "strings"
+import (
+	"encoding/base64"
+	"encoding/json"
+	"strings"
+)
 
 // Audit log input types mirroring backend/src/storage/audit-log-types.ts
 // field for field. Only the capture-side input surface is needed here; the
@@ -125,6 +129,35 @@ type AuditLogPayloadInput struct {
 	CaptureStatus   AuditPayloadCaptureStatus `json:"captureStatus,omitempty"`
 	DropReason      AuditPayloadDropReason    `json:"dropReason,omitempty"`
 	CreatedAt       string                    `json:"createdAt,omitempty"`
+}
+
+// MarshalJSON carries Body in the legacy Node Buffer wire form
+// {"type":"Buffer","base64":...} so the JSON round-trip over the
+// cmd/juhe-ai-gateway/chain_ports.go type bridge (auditUsageDispatcher.
+// DispatchAuditLog) stays lossless: Body/HasBody keep `json:"-" as a guard
+// against leaking raw bodies through generic serialization, and the bridge
+// is the one hop that must see them. The form aligns exactly with
+// auditlog.PayloadBody.UnmarshalJSON: the base64 branch decodes
+// base64.StdEncoding when non-empty. HasBody stays unserialized on purpose —
+// the receiving side derives Present from the decoded body. Empty Body
+// emits no body key at all (the receiver's null/absent branch).
+func (p AuditLogPayloadInput) MarshalJSON() ([]byte, error) {
+	type auditLogPayloadInputWire AuditLogPayloadInput
+	type bufferBodyWire struct {
+		Type   string `json:"type"`
+		Base64 string `json:"base64"`
+	}
+	wire := struct {
+		auditLogPayloadInputWire
+		Body *bufferBodyWire `json:"body,omitempty"`
+	}{auditLogPayloadInputWire(p), nil}
+	if len(p.Body) > 0 {
+		wire.Body = &bufferBodyWire{
+			Type:   "Buffer",
+			Base64: base64.StdEncoding.EncodeToString(p.Body),
+		}
+	}
+	return json.Marshal(wire)
 }
 
 // AuditLogAttemptInput mirrors AuditLogAttemptInput.

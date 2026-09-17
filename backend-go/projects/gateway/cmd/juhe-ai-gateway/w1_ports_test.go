@@ -427,10 +427,18 @@ func TestW1AdapterGuardsAndIdentity(t *testing.T) {
 	// 审计适配器：producer 缺席静默丢弃。
 	auditDispatchAdapter{}.Dispatch(gatewaypreauth.DispatchedAuditLogInput{})
 	auditUsageDispatcher{}.DispatchAuditLog(nil, gatewayusage.AuditLogInput{})
-	// auditSettingsSource：nil enabled 函数 → 关闭。
+	// auditSettingsSource：nil enabled 函数 → 关闭；零值构造采样字段保持 0。
 	settings := (auditSettingsSourceAdapter{}).ReadAuditLogSettings()
 	if settings.Enabled {
 		t.Fatal("nil enabled 必须关闭")
+	}
+	if settings.SuccessSampleRate != 0 || settings.SuccessHotRetentionHours != 0 {
+		t.Fatalf("零值构造采样字段应保持 0：%+v", settings)
+	}
+	// E2E-FINDING #10：采样字段构造透传。
+	wired := (auditSettingsSourceAdapter{successSampleRate: 0.1, successHotRetentionHours: 1}).ReadAuditLogSettings()
+	if wired.SuccessSampleRate != 0.1 || wired.SuccessHotRetentionHours != 1 {
+		t.Fatalf("采样字段透传断言失败：%+v", wired)
 	}
 	// 协议探测助手：可调用且不 panic（原生判定依赖各自头，断言仅要求稳定）。
 	anthropicNative := gatewayanthropicIsNative(httptest.NewRequest(http.MethodPost, "/v1/messages", nil))

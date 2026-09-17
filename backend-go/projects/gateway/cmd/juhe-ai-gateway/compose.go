@@ -1064,6 +1064,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			Cache:           chainServices.Cache,
 			Clock:           gatewaypreauth.SystemClock{},
 			AuditLogEnabled: func() bool { return cfg.AuditLogEnabled },
+			// E2E-FINDING #10：成功采样配置链接线（值源 auditlog.LoadConfig，与审计存储侧同源）。
+			AuditLogSuccessSampleRate:        auditConfig.SuccessSampleRate,
+			AuditLogSuccessHotRetentionHours: auditConfig.SuccessHotRetentionHours,
 			// 去跨进程战役第四刀：审计派发走进程内 F3 producer（原 loopback
 			// input URL/POST 面，且从未携带强制 HMAC 签名头 → 现网审计派发
 			// 全部 401 被吞）。nil 适配器保留空目标降级分支。
@@ -1134,15 +1137,18 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// 半开租约唤醒、D-136 上游桶健康、D-137 热质量排序与 attempt
 			// 记账。各服务在 chainRuntimeServices 中按驱动轴分叉；nil 仅
 			// 出现在组合测试（链条回落 disabled*/degraded* 显式降级）。
-			ClientIPSlots:     newChainClientIPConcurrency(chainServices.ClientIPSlots),
+			ClientIPSlots: newChainClientIPConcurrency(chainServices.ClientIPSlots),
 			// E2E-FINDING #5：分组级短队列随 W2-C 一起进生产组合根（nil 仅
 			// 出现在组合测试，链条回落 degradedHighConcurrencyQueue）。
 			HighConcurrencyQueue: newChainHighConcurrencyQueue(chainServices.HighConcurrencyQueue),
-			AccountCircuits:      chainServices.AccountCircuits,
-			KeyModelStore:     chainServices.KeyModelStore,
-			ProxyHealth:       chainProxyHealthPort{service: chainServices.ProxyHealth},
-			HotQuality:        &chainHotQualityPort{runtime: chainServices.HotQuality},
-			HotQualityFactory: newChainHotQualityLifecycleFactory(chainServices.HotQuality),
+			// E2E-FINDING #13：engine.Concurrency 与 HighConcurrencyQueue
+			// 共用同一并发事实源（chainServices.ConcurrencyTracker）。
+			ConcurrencyTracker: chainServices.ConcurrencyTracker,
+			AccountCircuits:    chainServices.AccountCircuits,
+			KeyModelStore:      chainServices.KeyModelStore,
+			ProxyHealth:        chainProxyHealthPort{service: chainServices.ProxyHealth},
+			HotQuality:         &chainHotQualityPort{runtime: chainServices.HotQuality},
+			HotQualityFactory:  newChainHotQualityLifecycleFactory(chainServices.HotQuality),
 			Suppression: chainSuppressionPort{
 				store:  chainServices.SuppressionStore,
 				waiter: chainServices.SuppressionWaiter,

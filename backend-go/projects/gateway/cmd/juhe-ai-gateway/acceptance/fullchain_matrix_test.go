@@ -105,8 +105,13 @@ func (f *fullchainFixture) upstreamKeySequence() []string {
 
 // waitAuditLabels 轮询该 API Key 全部审计的 gateway_metadata label 并集，
 // 直到包含 want 全部标签（审计落库异步）。
-func (f *fullchainFixture) waitAuditLabels(apiKeyID string, want []string, what string) []string {
-	f.t.Helper()
+//
+// E2E-FINDING #11 已修复（F11）：根因是类型桥 auditUsageDispatcher 的
+// JSON 往返丢弃 payload body（Body/HasBody 为 json:"-"）；gatewayusage.
+// AuditLogPayloadInput 现以 Buffer base64 形式序列化 Body，label 恢复
+// 可从 bodyText 解析。超时即 Fatal，不再跳过。
+func (f *fullchainFixture) waitAuditLabels(t *testing.T, apiKeyID string, want []string, what string) []string {
+	t.Helper()
 	missing := func(labels []string) []string {
 		set := map[string]bool{}
 		for _, label := range labels {
@@ -129,7 +134,7 @@ func (f *fullchainFixture) waitAuditLabels(apiKeyID string, want []string, what 
 		}
 		time.Sleep(400 * time.Millisecond)
 	}
-	f.t.Fatalf("audit labels not %s in time; want %v got %v\npayload triage: %s", what, want, union, f.auditPayloadTriage(apiKeyID))
+	t.Fatalf("audit labels not %s in time; want %v got %v\npayload triage: %s", what, want, union, f.auditPayloadTriage(apiKeyID))
 	return nil
 }
 
@@ -223,7 +228,7 @@ func fullchainR1(t *testing.T, f *fullchainFixture) {
 
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
-		f.waitUsageRecords(route.apiKeyID, func(records []fullchainUsageRecord) bool {
+		f.waitUsageRecords(t, route.apiKeyID, func(records []fullchainUsageRecord) bool {
 			success := 0
 			for _, record := range records {
 				if record.Success && record.AccountID == route.accountIDs[0] {
@@ -270,7 +275,7 @@ func fullchainR2(t *testing.T, f *fullchainFixture) {
 
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
-		f.waitUsageRecords(route.apiKeyID, func(records []fullchainUsageRecord) bool {
+		f.waitUsageRecords(t, route.apiKeyID, func(records []fullchainUsageRecord) bool {
 			backupSuccess, primarySuccess := 0, 0
 			for _, record := range records {
 				if !record.Success {
@@ -319,7 +324,7 @@ func fullchainR3(t *testing.T, f *fullchainFixture) {
 
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
-		f.waitUsageRecords(route.apiKeyID, func(records []fullchainUsageRecord) bool {
+		f.waitUsageRecords(t, route.apiKeyID, func(records []fullchainUsageRecord) bool {
 			perGroup := map[string]int{}
 			for _, record := range records {
 				if record.Success {
@@ -354,7 +359,7 @@ func fullchainR4(t *testing.T, f *fullchainFixture) {
 
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
-		f.waitUsageRecords(route.apiKeyID, func(records []fullchainUsageRecord) bool {
+		f.waitUsageRecords(t, route.apiKeyID, func(records []fullchainUsageRecord) bool {
 			counts := map[string]int{}
 			for _, record := range records {
 				if record.Success {
@@ -480,14 +485,14 @@ func fullchainR5(t *testing.T, f *fullchainFixture) {
 	// 审计证据：同请求切换时应有「慢+快」两条 attempt 的审计；重排接管时
 	// 每条审计 1 个 attempt，接管请求的账户是快账户。
 	if cutoverAt == 2 {
-		detail := f.waitAuditLogDetail(route.apiKeyID, func(log fullchainAuditLog) bool {
+		detail := f.waitAuditLogDetail(t, route.apiKeyID, func(log fullchainAuditLog) bool {
 			return len(log.Attempts) >= 2
 		}, "with two attempts (slow + fast)")
 		if str(detail.Attempts[0]["accountId"]) != route.accountIDs[0] || str(detail.Attempts[1]["accountId"]) != route.accountIDs[1] {
 			t.Fatalf("R5 cutover attempts wrong: %#v", detail.Attempts)
 		}
 	} else {
-		f.waitAuditLogDetail(route.apiKeyID, func(log fullchainAuditLog) bool {
+		f.waitAuditLogDetail(t, route.apiKeyID, func(log fullchainAuditLog) bool {
 			return len(log.Attempts) == 1 && str(log.Attempts[0]["accountId"]) == route.accountIDs[1]
 		}, "with a fast-account attempt after reorder takeover")
 	}
@@ -556,7 +561,7 @@ func fullchainF1(t *testing.T, f *fullchainFixture) {
 	if got := len(f.mock.protocolCallsByKey(retryKey)); got != 2 {
 		t.Fatalf("F1 same-account attempts=%d want 2（一次失败 + 一次重试）", got)
 	}
-	detail := f.waitAuditLogDetail(route.apiKeyID, func(log fullchainAuditLog) bool {
+	detail := f.waitAuditLogDetail(t, route.apiKeyID, func(log fullchainAuditLog) bool {
 		return str(log.Raw["auditOutcome"]) == "success_after_retry"
 	}, "with success_after_retry outcome")
 	if len(detail.Attempts) != 2 {
@@ -576,11 +581,11 @@ func fullchainF1(t *testing.T, f *fullchainFixture) {
 
 	// 请求级元数据：同账户重试派发事件以 gateway_metadata 载荷保留且 label
 	// 可读（捕获上限默认回落生效，载荷不再被 active_capture_overflow 清空）。
-	f.waitAuditLabels(route.apiKeyID, []string{"same_account_retry_dispatch"}, "same-account retry dispatch metadata event")
+	f.waitAuditLabels(t, route.apiKeyID, []string{"same_account_retry_dispatch"}, "same-account retry dispatch metadata event")
 
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
-		f.waitUsageRecords(route.apiKeyID, func(records []fullchainUsageRecord) bool {
+		f.waitUsageRecords(t, route.apiKeyID, func(records []fullchainUsageRecord) bool {
 			success, failed := 0, 0
 			for _, record := range records {
 				if record.AccountID != route.accountIDs[0] {
@@ -624,7 +629,7 @@ func fullchainF2(t *testing.T, f *fullchainFixture) {
 
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
-		f.waitUsageRecords(route.apiKeyID, func(records []fullchainUsageRecord) bool {
+		f.waitUsageRecords(t, route.apiKeyID, func(records []fullchainUsageRecord) bool {
 			failureA, successB := 0, 0
 			for _, record := range records {
 				if record.AccountID == route.accountIDs[0] && !record.Success {
@@ -743,7 +748,8 @@ func (f *fullchainFixture) retryChatUntil(apiKey, body string, timeout time.Dura
 	return last.Status, last.Body
 }
 
-// F5 流式已提交断流：mid_stream_close → 客户端断流，无第二账户内容拼接。
+// F5 流式已提交断流：mid_stream_close → 上游断流（upstream TCP reset，客户端
+// 是观测方），无第二账户内容拼接。
 func fullchainF5(t *testing.T, f *fullchainFixture) {
 	streamKey := fullchainUpstreamKey(t, "F5-stream")
 	route := f.newRoute("F5", "normal", []fullchainGroupSpec{
@@ -773,14 +779,22 @@ func fullchainF5(t *testing.T, f *fullchainFixture) {
 
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
-		f.waitUsageRecords(route.apiKeyID, func(records []fullchainUsageRecord) bool {
-			for _, record := range records {
-				if !record.Success && record.FailureAttribution == "downstream_closed" {
-					return true
+		// 归因裁决（E2E-FINDING #12，2026-09-17）：Node 归档
+		// migration-backup-1/node/final-archive/backend/src/modules/gateway/usage/
+		// records.ts:324 失败分支兜底 failureAttribution ?? 'account_upstream'，流式
+		// !completed 终态不传归因 → 兜底 account_upstream；Go finalize.go 是精确
+		// 镜像非迁移遗漏。F5 断流发起方是上游 mock（模拟上游 TCP reset），非
+		// downstream_closed 语义（专属下游客户端断开）。
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, record := range f.listUsageRecords(route.apiKeyID) {
+				if !record.Success && record.FailureAttribution == "account_upstream" {
+					return
 				}
 			}
-			return false
-		}, "downstream_closed failure attribution row")
+			time.Sleep(300 * time.Millisecond)
+		}
+		t.Fatalf("usage records not account_upstream failure attribution row in time")
 	})
 }
 
@@ -815,7 +829,7 @@ func fullchainF6(t *testing.T, f *fullchainFixture) {
 
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
-		f.waitUsageRecords(route.apiKeyID, func(records []fullchainUsageRecord) bool {
+		f.waitUsageRecords(t, route.apiKeyID, func(records []fullchainUsageRecord) bool {
 			success := 0
 			for _, record := range records {
 				if record.Success && record.AccountID == route.accountIDs[0] {
@@ -940,13 +954,15 @@ func fullchainG1(t *testing.T, f *fullchainFixture) {
 	if successes < 1 {
 		t.Fatalf("G1 no request succeeded; even the concurrency-slot holder failed")
 	}
+	// E2E-FINDING #13（已修复 2026-09-17）：根因是并发事实源分裂——compose.go
+	// 未把 chainServices.ConcurrencyTracker 传给 chainRuntimeDeps，chain_compose.go
+	// nil 兜底新建第二个实例给 engine → queue 读数恒 0、立即 Ready、请求永不
+	// 入队。已接线同一事实源，连接中断不再是合法结局。
 	if connectionDropped > 0 {
-		t.Fatalf("G1 queue path dropped %d/%d connections；排队路径必须排队而非中断连接"+
-			"（E2E-FINDING #5 已修复：engine.HighConcurrencyQueue 由 chainRuntimeServices 装配）",
-			connectionDropped, parallel)
+		t.Fatalf("G1 queue path dropped %d/%d connections（E2E-FINDING #13 并发事实源接线已修复，连接中断不再是合法结局）", connectionDropped, parallel)
 	}
 	// 队列生效路径：全部成功后必须有排队审计。
-	f.waitAuditLabels(route.apiKeyID, []string{"high_concurrency_dispatch_queue"}, "high-concurrency queue event")
+	f.waitAuditLabels(t, route.apiKeyID, []string{"high_concurrency_dispatch_queue"}, "high-concurrency queue event")
 }
 
 // G2 普通组并发满：切组内下一账户。
@@ -979,7 +995,7 @@ func fullchainG2(t *testing.T, f *fullchainFixture) {
 
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
-		f.waitUsageRecords(route.apiKeyID, func(records []fullchainUsageRecord) bool {
+		f.waitUsageRecords(t, route.apiKeyID, func(records []fullchainUsageRecord) bool {
 			perAccount := map[string]int{}
 			for _, record := range records {
 				if record.Success {

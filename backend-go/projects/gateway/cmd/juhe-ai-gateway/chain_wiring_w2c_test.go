@@ -23,6 +23,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 )
 
 // readSource loads a composition-root source file for the text-level wiring
@@ -676,4 +677,103 @@ func slotsForQueue(t *testing.T) *gatewayclientip.ClientIPConcurrency {
 	}
 	t.Cleanup(slots.Close)
 	return slots
+}
+
+// ---------------------------------------------------------------------------
+// E2E-FINDING #13: composition-root concurrency-tracker single source
+// ---------------------------------------------------------------------------
+
+// TestChainComposeRootSharesConcurrencyTrackerWithQueue 断言生产组合根的并发
+// 事实源单一性（E2E-FINDING #13 回归）：composeChainRuntimeServices 的同一
+// concurrencyTracker 必须经 chainRuntimeDeps.ConcurrencyTracker 传给
+// engine.Concurrency，并与 HighConcurrencyQueue 共用。事实源分裂时 queue 读数
+// 恒 0，WaitForCapacity 永远立即 Ready=true（请求永不入队），且 release 事件
+// 发在另一个实例上、排队者永不被唤醒（G1 曾 4/5 连接悬挂至客户端超时）。
+// 断言形态是行为级的：engine 侧 acquire 占满后 queue 必须观察到占用（不再
+// 立即 Ready），engine 侧 release 后排队等待者必须被唤醒。
+func TestChainComposeRootSharesConcurrencyTrackerWithQueue(t *testing.T) {
+	fixture := newChainFixture(t)
+	cfg := composeTestConfig(t)
+	composed := &composition{db: fixture.db, statsDB: fixture.statsDB, Bus: inval.New(time.Now)}
+	services, err := composeChainRuntimeServices(composed, cfg, func(string) (string, error) { return "UTC", nil })
+	if err != nil {
+		t.Fatalf("composeChainRuntimeServices: %v", err)
+	}
+	t.Cleanup(services.Close)
+	if services.ConcurrencyTracker == nil {
+		t.Fatal("chainRuntimeServices.ConcurrencyTracker 不得为 nil（生产组合根的并发事实源出口）")
+	}
+
+	// 与生产组合根同源的装配：chainSmokeDeps 之上按 compose.go 的传法补上
+	// 三个端口（Cache 也对齐 services 实例）。
+	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, t.TempDir())
+	deps.Cache = services.Cache
+	deps.ClientIPSlots = newChainClientIPConcurrency(services.ClientIPSlots)
+	deps.HighConcurrencyQueue = newChainHighConcurrencyQueue(services.HighConcurrencyQueue)
+	deps.ConcurrencyTracker = services.ConcurrencyTracker
+	chain, shutdown, err := composeGatewayChain(deps)
+	if err != nil {
+		t.Fatalf("composeGatewayChain: %v", err)
+	}
+	defer shutdown()
+
+	const accountID = "w2c-f13-acc"
+	waitInput := gatewaydispatch.HighConcurrencyWaitInput{
+		SystemAccountID:          "sys",
+		GroupID:                  "grp",
+		APIKeyID:                 "key",
+		AccountIDs:               []string{accountID},
+		AccountConcurrencyLimits: map[string]int{accountID: 1},
+		Lane:                     "text",
+		MaxWaitMs:                80,
+	}
+
+	// 空载：立即 Ready。
+	idle, err := chain.engine.HighConcurrencyQueue.WaitForCapacity(context.Background(), waitInput)
+	if err != nil {
+		t.Fatalf("空载等待出错: %v", err)
+	}
+	if !idle.Ready {
+		t.Fatalf("空载等待应立即 Ready，result = %+v", idle)
+	}
+
+	// engine 侧占用 1/1：queue 必须观察到占用（共享事实源），短超时拒绝。
+	slot, err := chain.engine.Concurrency.TryAcquireAsync(context.Background(), accountID, 1, gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: "text"})
+	if err != nil {
+		t.Fatalf("engine TryAcquireAsync: %v", err)
+	}
+	if !slot.Acquired {
+		t.Fatalf("首次 acquire 应成功，slot = %+v", slot)
+	}
+	occupied, err := chain.engine.HighConcurrencyQueue.WaitForCapacity(context.Background(), waitInput)
+	if err != nil {
+		t.Fatalf("占用满等待出错: %v", err)
+	}
+	if occupied.Ready {
+		t.Fatalf("engine 侧占用满后 queue 仍立即 Ready——并发事实源分裂（E2E-FINDING #13 回归），result = %+v", occupied)
+	}
+
+	// engine 侧 release：已在排队的等待者必须被 release 事件唤醒（订阅在
+	// 同一事实源上）。唤醒路径携带 WaitedMs>0；立即 Ready 路径恒为 0。
+	waited := make(chan gatewaydispatch.QueueWaitResult, 1)
+	go func() {
+		longWait := waitInput
+		longWait.MaxWaitMs = 5000
+		result, waitErr := chain.engine.HighConcurrencyQueue.WaitForCapacity(context.Background(), longWait)
+		if waitErr != nil {
+			t.Errorf("排队等待出错: %v", waitErr)
+			return
+		}
+		waited <- result
+	}()
+	time.Sleep(150 * time.Millisecond) // 保证等待者已入队
+	slot.Release()
+	select {
+	case result := <-waited:
+		if !result.Ready || result.WaitedMs <= 0 {
+			t.Fatalf("engine release 后排队者应被唤醒（Ready=true 且 WaitedMs>0），result = %+v", result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("engine release 后排队者未被唤醒——release 事件与 queue 订阅不在同一事实源（E2E-FINDING #13 回归）")
+	}
 }

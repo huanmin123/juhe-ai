@@ -74,6 +74,13 @@ type chainRuntimeDeps struct {
 	Logger *slog.Logger
 	// AuditLogEnabled mirrors readAuditLogSettings().enabled.
 	AuditLogEnabled func() bool
+	// AuditLogSuccessSampleRate / AuditLogSuccessHotRetentionHours mirror
+	// readAuditLogSettings() 的 env-merged 值（auditlog.LoadConfig 的
+	// JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE / SUCCESS_HOT_RETENTION_HOURS，
+	// 默认 0.1 / 1）。E2E-FINDING #10：此前组合根只传递 Enabled 位，成功
+	// 采样率恒 0，成功信封 attempts 永远被写侧清空。
+	AuditLogSuccessSampleRate        float64
+	AuditLogSuccessHotRetentionHours int
 	// AuditDispatch carries the in-process F3 audit producer adapter
 	// (去跨进程战役第四刀: the loopback audit input URL/POST is gone; the
 	// producer persists finalized dropped captures directly). Nil adapters
@@ -512,6 +519,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	engine.ClientIPAvoidance = newChainClientIPAvoidance(deps.AvoidanceTracker)
 	engine.Quota = newChainDispatchQuota(deps.AuthzQuota)
 	if deps.ConcurrencyTracker == nil {
+		// nil 兜底仅供组合测试：生产组合根必须传 chainServices.
+		// ConcurrencyTracker，与 HighConcurrencyQueue 共用同一事实源
+		//（E2E-FINDING #13：分裂会让 queue 读数恒 0、永不入队）。
 		deps.ConcurrencyTracker = gatewayclientip.NewMemoryAccountConcurrency(nil)
 	}
 	engine.Concurrency = newChainConcurrencyStore(deps.ConcurrencyTracker)
@@ -597,8 +607,12 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 			// failure（Node recordGatewayBodyRejection）；此前 nil 保持静默。
 			Recorder: rejectionRecorder,
 		},
-		finalizationUsage:  recorder,
-		auditSettings:      auditSettingsSourceAdapter{enabled: deps.AuditLogEnabled},
+		finalizationUsage: recorder,
+		auditSettings: auditSettingsSourceAdapter{
+			enabled:                  deps.AuditLogEnabled,
+			successSampleRate:        deps.AuditLogSuccessSampleRate,
+			successHotRetentionHours: deps.AuditLogSuccessHotRetentionHours,
+		},
 		auditDispatcher:    deps.AuditUsageDispatch,
 		usageModelResolver: usageModelResolverAdapter{},
 	}

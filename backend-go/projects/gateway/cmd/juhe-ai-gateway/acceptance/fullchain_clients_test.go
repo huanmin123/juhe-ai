@@ -157,7 +157,7 @@ wire_api = "responses"
 				"codex_responses），实际 exit=%d，stderr 摘要=%s",
 				result.ExitCode, maskClientText(result.Stderr))
 		}
-		detail := f.waitAuditLogDetail(route.apiKeyID, func(log fullchainAuditLog) bool {
+		detail := f.waitAuditLogDetail(t, route.apiKeyID, func(log fullchainAuditLog) bool {
 			return log.Success && len(log.Attempts) >= 1
 		}, "codex success audit")
 		last := detail.Attempts[len(detail.Attempts)-1]
@@ -180,12 +180,24 @@ wire_api = "responses"
 		env := append(clientBaseEnv(t, home),
 			"ANTHROPIC_BASE_URL="+f.gw.baseURL,
 			"ANTHROPIC_AUTH_TOKEN="+route.apiKey,
-			"ANTHROPIC_API_KEY="+route.apiKey)
-		result := runFullchainClient(t, clientTempDir(t), env, "claude.cmd", "-p", "回复OK", "--output-format", "json")
+			"ANTHROPIC_API_KEY="+route.apiKey,
+			// CLI 默认模型名不在账户 supportedModels 内（网关 503
+			// model_unsupported），显式钉住导入账户的健康模型。
+			"ANTHROPIC_MODEL="+account.Model)
+		// Stage3 惯例（上游偶发重试一次）：claude CLI ≥2.1.220 在 API 错误时
+		// exit=1 且错误详情在 stdout 的 is_error JSON（result 字段）；上游
+		// anthropic 529 过载是环境噪声，不应记为链路缺陷。
+		var result fullchainClientResult
+		for attempt := 0; attempt < 2; attempt++ {
+			result = runFullchainClient(t, clientTempDir(t), env, "claude.cmd", "-p", "回复OK", "--output-format", "json")
+			if result.ExitCode == 0 && strings.TrimSpace(result.Stdout) != "" {
+				break
+			}
+		}
 		if result.ExitCode != 0 || strings.TrimSpace(result.Stdout) == "" {
-			t.Fatalf("E2E-FINDING #6 已修复：claude 客户端链路应可用（/v1/messages 已接入协议门与分发链），"+
-				"实际 exit=%d，stderr 摘要=%s",
-				result.ExitCode, maskClientText(result.Stderr))
+			t.Fatalf("claude 客户端链路应可用（/v1/messages 已接入协议门与分发链），"+
+				"实际 exit=%d，stdout 摘要=%s，stderr 摘要=%s",
+				result.ExitCode, maskClientText(result.Stdout), maskClientText(result.Stderr))
 		}
 		t.Logf("C2 claude（…%s /v1/messages）：exit=0，输出长度 %d", account.ID[len(account.ID)-8:], len(result.Stdout))
 	})
@@ -198,10 +210,10 @@ wire_api = "responses"
 				t.Skip("C3：无可用 deepseek/glm 导入账户")
 			}
 		}
-	route := r.realRoute("C3", account.ProviderCode, account)
-	home := clientTempDir(t)
-	workDir := clientTempDir(t)
-	opencodeConfig := fmt.Sprintf(`{
+		route := r.realRoute("C3", account.ProviderCode, account)
+		home := clientTempDir(t)
+		workDir := clientTempDir(t)
+		opencodeConfig := fmt.Sprintf(`{
   "$schema": "https://opencode.ai/config.json",
   "provider": {
     "fullchain": {
@@ -213,37 +225,37 @@ wire_api = "responses"
   }
 }
 `, f.gw.baseURL+"/v1", route.apiKey, account.Model, account.Model)
-	writeFile(t, filepath.Join(workDir, "opencode.json"), opencodeConfig)
-	// PWD 覆盖：go test 继承的 PWD 指向测试源码目录，opencode 会拿它解析
-	// 项目目录（--print-logs 可见第二个 instance 在 acceptance 目录
-	// bootstrap 后内部错误退出），必须与 cmd.Dir 一致。
-	env := append(clientBaseEnv(t, home),
-		"OPENCODE_DISABLE_AUTOUPDATE=1",
-		"PWD="+workDir)
-	result := runFullchainClient(t, workDir, env, "opencode.cmd", "run", "--print-logs",
-		"-m", "fullchain/"+account.Model, "回复OK")
-	trimmed := strings.TrimSpace(result.Stdout)
-	if result.ExitCode != 0 || trimmed == "" {
-		// 对照组：同账户非流式 chat 可用（真号/凭据/路由健康才走到这里），
-		// 失败即 Fatal，不掩盖真号侧回归。
-		assertRealChat(t, f, route.apiKey, account.Model)
-		// E2E-FINDING #8 canary：opencode 链路已通（真实请求进入网关、真号
-		// 被调用），失败是生产上游对该客户端流式请求返回非标准
-		// `Content-Encoding: none`，网关 unexpected_failure 503 循环直到
-		// opencode 重试耗尽（网关日志 error="不支持的上游响应压缩编码:
-		// none"；确定性 mock 复现见 F8_upstream_content_encoding_none）。
-		t.Skipf("E2E-FINDING #8：客户端失败但同账户非流式 chat 200（exit=%d，120s 超时内重试耗尽）；"+
-			"确定性复现见 F8；修复 #8 后应恢复 exit=0 + 审计归因断言", result.ExitCode)
-	}
-	detail := f.waitAuditLogDetail(route.apiKeyID, func(log fullchainAuditLog) bool {
-		return log.Success && len(log.Attempts) >= 1
-	}, "opencode success audit")
-	last := detail.Attempts[len(detail.Attempts)-1]
-	if str(last["accountId"]) != account.ID {
-		t.Fatalf("C3 attempt account wrong: %s", str(last["accountId"]))
-	}
-	t.Logf("C3 opencode（…%s chat_completions）：exit=0，输出 %d 字节，模型 %s", account.ID[len(account.ID)-8:], len(trimmed), account.Model)
-})
+		writeFile(t, filepath.Join(workDir, "opencode.json"), opencodeConfig)
+		// PWD 覆盖：go test 继承的 PWD 指向测试源码目录，opencode 会拿它解析
+		// 项目目录（--print-logs 可见第二个 instance 在 acceptance 目录
+		// bootstrap 后内部错误退出），必须与 cmd.Dir 一致。
+		env := append(clientBaseEnv(t, home),
+			"OPENCODE_DISABLE_AUTOUPDATE=1",
+			"PWD="+workDir)
+		result := runFullchainClient(t, workDir, env, "opencode.cmd", "run", "--print-logs",
+			"-m", "fullchain/"+account.Model, "回复OK")
+		trimmed := strings.TrimSpace(result.Stdout)
+		if result.ExitCode != 0 || trimmed == "" {
+			// 对照组：同账户非流式 chat 可用（真号/凭据/路由健康才走到这里），
+			// 失败即 Fatal，不掩盖真号侧回归。
+			assertRealChat(t, f, route.apiKey, account.Model)
+			// E2E-FINDING #8 canary：opencode 链路已通（真实请求进入网关、真号
+			// 被调用），失败是生产上游对该客户端流式请求返回非标准
+			// `Content-Encoding: none`，网关 unexpected_failure 503 循环直到
+			// opencode 重试耗尽（网关日志 error="不支持的上游响应压缩编码:
+			// none"；确定性 mock 复现见 F8_upstream_content_encoding_none）。
+			t.Skipf("E2E-FINDING #8：客户端失败但同账户非流式 chat 200（exit=%d，120s 超时内重试耗尽）；"+
+				"确定性复现见 F8；修复 #8 后应恢复 exit=0 + 审计归因断言", result.ExitCode)
+		}
+		detail := f.waitAuditLogDetail(t, route.apiKeyID, func(log fullchainAuditLog) bool {
+			return log.Success && len(log.Attempts) >= 1
+		}, "opencode success audit")
+		last := detail.Attempts[len(detail.Attempts)-1]
+		if str(last["accountId"]) != account.ID {
+			t.Fatalf("C3 attempt account wrong: %s", str(last["accountId"]))
+		}
+		t.Logf("C3 opencode（…%s chat_completions）：exit=0，输出 %d 字节，模型 %s", account.ID[len(account.ID)-8:], len(trimmed), account.Model)
+	})
 
 	t.Run("C5_codex_failover_mock500_to_real", func(t *testing.T) {
 		// E2E-FINDING #7（已修复）：codex_responses 请求类可承接 gpt+api_key
@@ -302,7 +314,7 @@ wire_api = "responses"
 		if got := len(f.mock.protocolCallsByKeyModel(mockKey, account.Model)); got < 1 {
 			t.Fatalf("C5：mock 未被 codex 请求命中（attempts=%d），故障切换链未建立", got)
 		}
-		detail := f.waitAuditLogDetail(apiKeyID, func(log fullchainAuditLog) bool {
+		detail := f.waitAuditLogDetail(t, apiKeyID, func(log fullchainAuditLog) bool {
 			return log.Success && len(log.Attempts) >= 1
 		}, "codex failover success audit")
 		if str(detail.Attempts[len(detail.Attempts)-1]["accountId"]) != account.ID {
