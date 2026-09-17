@@ -514,6 +514,7 @@ func (input *HandleUpstreamResponseInput) handleNonStreamPipeError(pipeErr error
 			input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
 				UsageContext:    input.UsageContext,
 				Account:         input.Account,
+				RequestedModel:  requestModelHint(input.Req),
 				StatusCode:      input.UpstreamResponse.Status,
 				Success:         false,
 				Stream:          false,
@@ -575,6 +576,7 @@ func (input *HandleUpstreamResponseInput) finalizeBufferedJSONProtocolFailure(
 		input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
 			UsageContext:    input.UsageContext,
 			Account:         input.Account,
+			RequestedModel:  requestModelHint(input.Req),
 			StatusCode:      input.UpstreamResponse.Status,
 			Success:         false,
 			Stream:          gatewaypreauth.IsOpenAIStreamRequest(input.Req),
@@ -656,6 +658,7 @@ func (input *HandleUpstreamResponseInput) finalizeNonStreamResponseAfterSseHeart
 		input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
 			UsageContext:    input.UsageContext,
 			Account:         input.Account,
+			RequestedModel:  requestModelHint(input.Req),
 			StatusCode:      input.UpstreamResponse.Status,
 			Success:         false,
 			Stream:          true,
@@ -825,6 +828,7 @@ func FinalizeHandledUpstreamResponse(input HandleUpstreamResponseInput, result U
 		input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
 			UsageContext:                        input.UsageContext,
 			Account:                             input.Account,
+			RequestedModel:                      requestModelHint(input.Req),
 			Stream:                              true,
 			StatusCode:                          input.UpstreamResponse.Status,
 			Success:                             forwardedResponseSuccessful,

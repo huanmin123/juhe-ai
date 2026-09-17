@@ -131,6 +131,9 @@ func ExtractJSONBodyMetadata(raw []byte) JSONBodyMetadata {
 				}
 			case "max_output_tokens":
 				if value, ok := readJSONNonNegativeInteger(raw, index); ok {
+					// Feed the tokenLimits max-merge below; without this the
+					// var stays nil and max_tokens alone wins the merge.
+					maxOutputTokens = &value
 					metadata.MaxOutputTokens = &value
 				} else {
 					metadata.MaxOutputTokens = nil

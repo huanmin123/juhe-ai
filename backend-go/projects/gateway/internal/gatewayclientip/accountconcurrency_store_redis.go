@@ -160,8 +160,8 @@ func (r *RedisAccountConcurrency) SubscribeAccountConcurrencyRelease(listener fu
 const redisAccountConcurrencyAcquireScript = `
 local key = KEYS[1]
 local field = ARGV[1]
-local now_ms = tonumber(ARGV[2])
-local ttl_ms = tonumber(ARGV[3])
+local ttl_ms = tonumber(ARGV[2])
+redis.call('HINCRBY', key, 'total', 1)
 redis.call('HINCRBY', key, field, 1)
 redis.call('PEXPIRE', key, ttl_ms)
 return {1}
@@ -170,27 +170,29 @@ return {1}
 const redisAccountConcurrencyReleaseScript = `
 local key = KEYS[1]
 local field = ARGV[1]
-local newValue = redis.call('HINCRBY', key, field, -1)
-if newValue <= 0 then
+local new_total = redis.call('HINCRBY', key, 'total', -1)
+local new_lane = redis.call('HINCRBY', key, field, -1)
+if new_total <= 0 then
   redis.call('DEL', key)
 end
-return {newValue}
+return {new_lane}
 `
 
-// AcquireAccountConcurrency increments the concurrency counter for an account.
+// AcquireAccountConcurrency increments the total and lane concurrency
+// counters for an account (LoadAccountCurrentConcurrencyByID reads 'total').
 func (r *RedisAccountConcurrency) AcquireAccountConcurrency(ctx context.Context, accountID string, lane string, ttlMs int64) error {
 	key := r.accountConcurrencyKey(accountID)
 	field := lane
 	if field == "" {
 		field = AccountConcurrencyLaneText
 	}
-	nowMs := r.clock()
 	_, err := r.client.Eval(ctx, redisAccountConcurrencyAcquireScript, []string{key},
-		field, strconv.Itoa(int(nowMs)), strconv.Itoa(int(ttlMs))).Result()
+		field, strconv.Itoa(int(ttlMs))).Result()
 	return err
 }
 
-// ReleaseAccountConcurrency decrements the concurrency counter for an account.
+// ReleaseAccountConcurrency decrements the total and lane concurrency
+// counters; the key is dropped once the total reaches zero.
 func (r *RedisAccountConcurrency) ReleaseAccountConcurrency(ctx context.Context, accountID string, lane string) error {
 	key := r.accountConcurrencyKey(accountID)
 	field := lane

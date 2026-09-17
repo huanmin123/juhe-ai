@@ -57,6 +57,21 @@ type CompletedAttemptInput struct {
 	FailureAttribution                  string
 	RequestSnapshot                     *UsageRequestSnapshotView
 	ResponseSnapshot                    *UsageResponseSnapshotView
+	// RequestedModel 是客户端请求模型（Node requestModel(req) 语义）；usage
+	// 记录的 model 归因用它，而不是上游响应观察模型。空串表示请求体缺失或
+	// 未携带 model。
+	RequestedModel string
+}
+
+// requestModelHint 读取请求模型（RequestModel 的字符串投影；nil 请求安全）。
+func requestModelHint(req *gatewaypreauth.GatewayRequest) string {
+	if req == nil {
+		return ""
+	}
+	if model, ok := gatewaypreauth.RequestModel(req); ok {
+		return model
+	}
+	return ""
 }
 
 // FailedAttemptInput 对齐 recordFailedUpstreamAttempt 的 input。

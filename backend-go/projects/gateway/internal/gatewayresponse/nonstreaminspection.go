@@ -129,6 +129,7 @@ func (input *HandleUpstreamResponseInput) inspectBufferedGatewayJSONResponse(arg
 		input.Deps.UsageRecords.RecordCompletedUpstreamAttempt(CompletedAttemptInput{
 			UsageContext:    input.UsageContext,
 			Account:         input.Account,
+			RequestedModel:  requestModelHint(input.Req),
 			StatusCode:      input.UpstreamResponse.Status,
 			Success:         false,
 			Stream:          gatewaypreauth.IsOpenAIStreamRequest(input.Req),

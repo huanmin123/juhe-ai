@@ -134,16 +134,14 @@ func TestWIRedisAccountConcurrencyStoreContract(t *testing.T) {
 	if !server.Exists(key) {
 		t.Fatal("acquire 后 hash key 必须存在")
 	}
-	// 行为存疑：AcquireAccountConcurrency 只写 lane 字段，而
-	// LoadAccountCurrentConcurrencyByID 读 "total" 字段；生产代码无任何入口写
-	// "total"，ByID 读取恒为 redis.Nil → 0。空 lane 的 CurrentAccountConcurrency
-	// 与 ByLane 一致回落 text 字段。按当前实际行为断言。
+	// w13d 修复后契约：AcquireAccountConcurrency 同时 HINCRBY total 与 lane
+	// 字段（原先只写 lane，ByID 读取的 total 恒缺，属于已修复缺陷）。
 	byID, err := instance.LoadAccountCurrentConcurrencyByID(ctx, []string{"acc-1", "acc-missing"})
 	if err != nil {
 		t.Fatalf("LoadAccountCurrentConcurrencyByID 失败: %v", err)
 	}
-	if byID["acc-1"] != 0 || byID["acc-missing"] != 0 {
-		t.Fatalf("redis ByID 读取（total 字段恒缺）错误: %v", byID)
+	if byID["acc-1"] != 2 || byID["acc-missing"] != 0 {
+		t.Fatalf("redis ByID 读取（total 字段）错误: %v", byID)
 	}
 	if instance.CurrentAccountConcurrency("acc-1", "") != 2 {
 		t.Fatalf("CurrentAccountConcurrency(空 lane 回落 text 字段) 应为 2")

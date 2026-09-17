@@ -322,10 +322,17 @@ func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresp
 		ErrorCode:       input.ErrorCode,
 		ErrorMessage:    input.ErrorMessage,
 		CreatedAt:       time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+		// Node normalizeUsageRecordInput 的 scope 完整性规则：groupId/accountId
+		// 只有伴随 owner/accessType 授权五元组齐备才保留，否则整组清空。
+		// Group scope 在 usageContext 上，Account scope 在账户视图上。
+		GroupOwnerSystemAccountID:      input.UsageContext.GroupOwnerSystemAccountID,
+		GroupAccessType:                input.UsageContext.GroupAccessType,
+		GroupAuthorizationID:           input.UsageContext.GroupAuthorizationID,
+		GroupAuthorizationSourceType:   input.UsageContext.GroupAuthorizationSourceType,
+		GroupAuthorizationSourceTeamID: input.UsageContext.GroupAuthorizationSourceTeamID,
+		Model:                          input.RequestedModel,
 	}
-	if input.Account != nil && input.Account.GetID() != "" {
-		record.AccountID = input.Account.GetID()
-	}
+	applyUsageAccountScope(&record, input.Account)
 	stream := input.Stream
 	record.Stream = &stream
 	statusCode := input.StatusCode
@@ -339,6 +346,47 @@ func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresp
 		record.DurationMs = &durationMs
 	}
 	_ = u.recorder.EnqueueUsageRecord(context.Background(), record)
+}
+
+// applyUsageAccountScope 把账户视图携带的 usage scope 投影到记录（对齐
+// usageModelAccountOf 的 UsageAccessFields 投影面；非 OpenAIAccountView 的
+// 测试实现保持零值，归一化按缺失 scope 清空 accountId，与 Node 行为一致）。
+func applyUsageAccountScope(record *gatewayusage.UsageRecordInput, account gatewayresponse.AccountView) {
+	if account == nil {
+		return
+	}
+	record.AccountID = account.GetID()
+	view, ok := account.(gatewayresponse.OpenAIAccountView)
+	if !ok {
+		return
+	}
+	secret := view.Account
+	record.AccountOwnerSystemAccountID = secret.AccountOwnerSystemAccountID
+	record.AccountAccessType = secret.AccountAccessType
+	record.AccountAuthorizationID = derefString(secret.AccountAuthorizationID)
+	record.AccountAuthorizationSourceType = derefString(secret.AccountAuthorizationSourceType)
+	record.AccountAuthorizationSourceTeamID = derefString(secret.AccountAuthorizationSourceTeamID)
+	record.GroupOwnerSystemAccountID = firstNonEmptyChainUsage(record.GroupOwnerSystemAccountID, secret.GroupOwnerSystemAccountID)
+	record.GroupAccessType = firstNonEmptyChainUsage(record.GroupAccessType, secret.GroupAccessType)
+	record.GroupAuthorizationID = firstNonEmptyChainUsage(record.GroupAuthorizationID, derefString(secret.GroupAuthorizationID))
+	record.GroupAuthorizationSourceType = firstNonEmptyChainUsage(record.GroupAuthorizationSourceType, derefString(secret.GroupAuthorizationSourceType))
+	record.GroupAuthorizationSourceTeamID = firstNonEmptyChainUsage(record.GroupAuthorizationSourceTeamID, derefString(secret.GroupAuthorizationSourceTeamID))
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func firstNonEmptyChainUsage(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (u chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayresponse.FailedAttemptInput) {
@@ -360,10 +408,14 @@ func (u chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespons
 		ErrorMessage:       input.ErrorMessage,
 		FailureAttribution: input.FailureAttribution,
 		CreatedAt:          time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+		// scope 完整性五元组，与成功路径同规则。
+		GroupOwnerSystemAccountID:      input.UsageContext.GroupOwnerSystemAccountID,
+		GroupAccessType:                input.UsageContext.GroupAccessType,
+		GroupAuthorizationID:           input.UsageContext.GroupAuthorizationID,
+		GroupAuthorizationSourceType:   input.UsageContext.GroupAuthorizationSourceType,
+		GroupAuthorizationSourceTeamID: input.UsageContext.GroupAuthorizationSourceTeamID,
 	}
-	if input.Account != nil && input.Account.GetID() != "" {
-		record.AccountID = input.Account.GetID()
-	}
+	applyUsageAccountScope(&record, input.Account)
 	if input.StatusCode != nil {
 		statusCode := *input.StatusCode
 		record.StatusCode = &statusCode
@@ -489,7 +541,7 @@ func usageRecordEntropyUUID() string {
 }
 
 // usageSanitizeShardEntropy mirrors entropy.replace(/[^a-zA-Z0-9]/g,
-// '').slice(0, 24).
+// ”).slice(0, 24).
 func usageSanitizeShardEntropy(entropy string) string {
 	var builder strings.Builder
 	for _, r := range entropy {

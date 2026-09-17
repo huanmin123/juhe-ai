@@ -201,8 +201,8 @@ func startChatSSEHeartbeat(writer *chatSSEWriter, intervalMs int, onUnwritable f
 	return func() {
 		mu.Lock()
 		if stopped {
+			// stop 幂等：已停止时不再重复 close（二次 close 会 panic）。
 			mu.Unlock()
-			close(done)
 			return
 		}
 		stopped = true

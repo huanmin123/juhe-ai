@@ -266,9 +266,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if err != nil {
 		return nil, err
 	}
-	if !access.canAccessAll() && row.systemAccountID != access.ViewerID {
-		return nil, nil
-	}
+	// 说明：此处曾有一道 `!access.canAccessAll() && row.systemAccountID !=
+	// access.ViewerID` 的越权守卫，但非管理员查询已带
+	// `system_account_id = manageableID()` 过滤、管理员恒可访问，条件恒为
+	// 假，属于不可达防御代码，w13a 移除。
 	if row.configRevision != input.ExpectedConfigRevision {
 		return nil, &RevisionConflictError{Message: RevisionConflictMessage}
 	}
