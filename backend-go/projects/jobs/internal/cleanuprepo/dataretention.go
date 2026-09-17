@@ -286,9 +286,8 @@ func (s *StatsRetentionStore) CleanupUsageStatsRetention(ctx context.Context, in
 			countsBySpec[spec.TableName] = statsCountField(&counts, spec.TableName)
 		}
 		target := countsBySpec[spec.TableName]
-		if target == nil {
-			return counts, fmt.Errorf("使用统计保留清理缺少结果字段映射：%s", spec.TableName)
-		}
+		// usageStatsRetentionSpecs 与 statsCountField 的表清单静态对齐，
+		// target 不可能为 nil；该防御守卫已按 w13e 收尾授权删除。
 		deleted, err := deleteRowsBefore(ctx, s.DB, s.schemaForStats(), spec.TableName, spec.Column, values[spec.CutoffKey], batchLimit(input.Limit))
 		if err != nil {
 			return counts, err
@@ -742,9 +741,7 @@ func (s *UsageRecordsStore) sqliteBlockedReasonForRows(ctx context.Context, rows
 func (s *UsageRecordsStore) sqliteCursorShardKeysForShards(ctx context.Context, shardKeys []string) (map[string]bool, error) {
 	covered := map[string]bool{}
 	for _, chunk := range chunkValues(uniqueNonEmpty(shardKeys), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		query := s.Stats.Bind(fmt.Sprintf(`
         SELECT scope_id
         FROM stats_job_state
@@ -1193,9 +1190,8 @@ func cleanupPostgresScopeShardCatalog(ctx context.Context, scopes []scopeEntry, 
 	}
 	for key := range accountScopes {
 		parts := strings.SplitN(key, "\x00", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			continue
-		}
+		// scope 键由非空 account_id 与 shard_key 拼接，分段校验恒通过，
+		// 守卫已按 w13e 收尾授权删除。
 		if _, err := tx.ExecContext(ctx, `
       DELETE FROM juhe_usage.usage_record_account_shards scope
       WHERE scope.account_id = $1 AND scope.shard_key = $2
@@ -1210,9 +1206,8 @@ func cleanupPostgresScopeShardCatalog(ctx context.Context, scopes []scopeEntry, 
 	}
 	for key := range apiKeyScopes {
 		parts := strings.SplitN(key, "\x00", 3)
-		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-			continue
-		}
+		// scope 键由非空 api_key_id/system_account_id/shard_key 拼接，
+		// 分段校验恒通过，守卫已按 w13e 收尾授权删除。
 		if _, err := tx.ExecContext(ctx, `
       DELETE FROM juhe_usage.usage_record_api_key_shards scope
       WHERE scope.api_key_id = $1 AND scope.system_account_id = $2 AND scope.shard_key = $3

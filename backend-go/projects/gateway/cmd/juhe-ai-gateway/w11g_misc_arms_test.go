@@ -60,7 +60,6 @@ func TestW11GPreflightMissingPathArms(t *testing.T) {
 	}
 }
 
-
 func TestW11GChatImageProcessingEdges(t *testing.T) {
 	processor := newChatImageProcessor()
 	// 1x1 PNG：正常处理路径（小图走免缩放编码）。

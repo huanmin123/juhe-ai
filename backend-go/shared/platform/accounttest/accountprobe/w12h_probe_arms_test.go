@@ -270,7 +270,7 @@ func TestW12HClassifyResponseArms(t *testing.T) {
 	// 有限模式下的额度规则命中：响应头收敛为额度头。
 	limited := classifyResponse(view, protocol, ModeChatJSON,
 		`{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details in"},"finish_reason":null}`,
-		map[string]string{"x-request-id": "w12h"}, 429, 0, 0, challenge, true)
+		map[string]string{"retry-after": "30"}, 403, 0, 0, challenge, true)
 	if limited.Result.Success || limited.Result.ResponseHeaders == nil {
 		t.Fatalf("受限模式必须收敛响应头: %+v", limited.Result)
 	}
@@ -330,7 +330,8 @@ func TestW12HClassifyPayloadArms(t *testing.T) {
 	if !hasCompletedGeminiPayload(gemini.record) {
 		t.Fatal("gemini 完成载荷必须识别")
 	}
-	if texts := geminiVisibleContentTexts(gemini.record["candidates"].([]any)[0].(map[string]any)["content"].(map[string]any)); len(texts) != 1 {
+	candidate := gemini.record["candidates"].([]any)[0].(map[string]any)
+	if texts := geminiVisibleContentTexts(candidate); len(texts) != 1 {
 		t.Fatalf("thought 部分必须跳过: %v", texts)
 	}
 	if geminiVisibleContentTexts(nil) != nil {

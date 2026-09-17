@@ -316,7 +316,12 @@ func TestW12HPostgresSchemaContract(t *testing.T) {
 
 	cpu := 42.5
 	var rss uint64 = 1 << 20
-	when := time.Now().UTC().Truncate(time.Microsecond)
+	// 锚定在当前小时的安全区间：避免 when+10min 落入下一个小时聚合窗口
+	// （临近整点运行时的时钟依赖缺陷）。
+	when := time.Now().UTC().Truncate(time.Minute)
+	if when.Minute() > 45 {
+		when = when.Add(-15 * time.Minute)
+	}
 	inserted, err := store.InsertSnapshot(ctx, RuntimeSnapshot{
 		SampledAt: when, ProcessPID: 424242, Service: service, Role: "w12h-jobs",
 		Goroutines: 5, GoroutinesRunnable: 2, GoroutinesWaiting: 2, Threads: 4, GOMAXPROCS: 8,

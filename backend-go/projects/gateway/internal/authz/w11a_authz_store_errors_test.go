@@ -593,15 +593,25 @@ func TestW11AReadAndOptionErrorArms(t *testing.T) {
 
 	t.Run("grant_for_mutation_arms", func(t *testing.T) {
 		f := w11aGrantFixture(t)
+		// fixture 连接池限单连接：DROP 必须在事务回滚释放连接之后执行，
+		// 否则 f.db.Exec 永久等待连接（与对齐 530 行附近 advance_arms 的模式）。
 		tx, err := f.db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback()
 		if grant, err := f.store.GetGrantForMutation(ctx, tx, "w11a-missing"); err != nil || grant != nil {
+			tx.Rollback()
 			t.Fatalf("missing grant = %v, %v", grant, err)
 		}
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
 		f.exec(t, `DROP TABLE resource_authorization_grants`)
+		tx, err = f.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
 		if _, err := f.store.GetGrantForMutation(ctx, tx, "w11a-any"); err == nil {
 			t.Fatal("broken schema must fail GetGrantForMutation")
 		}
@@ -622,17 +632,26 @@ func TestW11AReadAndOptionErrorArms(t *testing.T) {
 
 	t.Run("projection_lookup_failures", func(t *testing.T) {
 		f := w11aGrantFixture(t)
-		w11aCreateGrant(t, f)
+		// loadAccountLookupRows 只在存在 account 类型 grant 时才查 accounts
+		// 表（空 ID 集直接跳过），且 Create 校验资源存在：先 seed accounts 行。
+		w11aExec(t, f, `INSERT INTO accounts (id, system_account_id, name, status, created_at, updated_at)
+			VALUES ('w11a-acc-1', 'owner', 'w11a 资源账号', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+		if _, err := f.store.Create(ctx, CreateInput{ResourceType: "account", ResourceID: "w11a-acc-1", GranteeType: "system_account", GranteeID: "grantee"}, "owner"); err != nil {
+			t.Fatal(err)
+		}
 		f.exec(t, `DROP TABLE accounts`)
 		if _, _, _, err := f.store.ListItemsPage(ctx, Filters{}, 1, 20, accessInfo{IsAdmin: true}); err == nil {
 			t.Fatal("account lookup failure must fail the projection")
 		}
-		fresh := w11aGrantFixture(t)
-		w11aCreateGrant(t, fresh)
-		fresh.exec(t, `DROP TABLE groups`)
-		if _, _, _, err := fresh.store.ListItemsPage(ctx, Filters{}, 1, 20, accessInfo{IsAdmin: true}); err == nil {
-			t.Fatal("group lookup failure must fail the projection")
-		}
+		t.Run("group_projection_failure", func(t *testing.T) {
+			// 嵌套子测试名不同 → 独立内存库，避免与外层 fixture 的 seed 撞唯一约束。
+			fresh := w11aGrantFixture(t)
+			w11aCreateGrant(t, fresh)
+			fresh.exec(t, `DROP TABLE groups`)
+			if _, _, _, err := fresh.store.ListItemsPage(ctx, Filters{}, 1, 20, accessInfo{IsAdmin: true}); err == nil {
+				t.Fatal("group lookup failure must fail the projection")
+			}
+		})
 	})
 
 	t.Run("find_summary_failures", func(t *testing.T) {
@@ -659,6 +678,11 @@ func TestW11AReadAndOptionErrorArms(t *testing.T) {
 		if _, err := f.store.ListAuthorizationGranteeAccounts(ctx, authorizationPrincipalOptionListOptions{}); err == nil {
 			t.Fatal("broken schema must fail grantee accounts")
 		}
+		// teams 读只查 system_teams 表：system_accounts 缺失不影响它。
+		if _, err := f.store.ListAuthorizationGranteeTeams(ctx, authorizationPrincipalOptionListOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		f.exec(t, `DROP TABLE system_teams`)
 		if _, err := f.store.ListAuthorizationGranteeTeams(ctx, authorizationPrincipalOptionListOptions{}); err == nil {
 			t.Fatal("broken schema must fail grantee teams")
 		}
@@ -675,9 +699,10 @@ func TestW11AReadAndOptionErrorArms(t *testing.T) {
 			t.Fatalf("stats = %+v", stats)
 		}
 		// Cached read stays green, then the broken schema fails fresh reads
-		// only after invalidation.
+		// only after invalidation. 聚合查询走 resource_authorizations/sources
+		// 两表，grants 投影表与该读路径无关。
 		f.store.InvalidateResourceAuthorizationStatsCache("group", "grp_1")
-		f.exec(t, `DROP TABLE resource_authorization_grants`)
+		f.exec(t, `DROP TABLE resource_authorizations`)
 		if _, err := f.store.ResourceAuthorizationStatsByResourceIds(ctx, "group", []string{"grp_1"}); err == nil {
 			t.Fatal("broken schema must fail the stats load")
 		}
@@ -688,8 +713,9 @@ func TestW11AReturnGroupArms(t *testing.T) {
 	ctx := context.Background()
 	t.Run("blank_grantee_and_missing_group", func(t *testing.T) {
 		f := w11aGrantFixture(t)
-		if _, err := f.store.ReturnGroupForGrantee(ctx, "grp_1", "  ", "owner"); err == nil || !strings.Contains(err.Error(), "被授权人") {
-			t.Fatalf("blank grantee = %v", err)
+		// 空 grantee 走早退分支：返回 (nil, nil)，不产生错误。
+		if receipt, err := f.store.ReturnGroupForGrantee(ctx, "grp_1", "", "owner"); err != nil || receipt != nil {
+			t.Fatalf("blank grantee = %+v, %v", receipt, err)
 		}
 		if receipt, err := f.store.ReturnGroupForGrantee(ctx, "w11a-missing", "grantee", "owner"); err != nil || receipt != nil {
 			t.Fatalf("missing group = %+v, %v", receipt, err)
@@ -735,25 +761,33 @@ func TestW11ADeleteResourceArms(t *testing.T) {
 	t.Run("revoke_grants_for_deleted", func(t *testing.T) {
 		f := w11aGrantFixture(t)
 		w11aCreateGrant(t, f)
+		// 同子测试内两个 fixture 连到同一共享内存库；先显式回滚 f 的事务
+		// 释放库锁，fresh 的 DDL/seed 才能执行（否则互等挂死）。
 		tx, err := f.db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback()
 		if err := f.store.RevokeGrantsForResourceDeleted(ctx, tx, "group", "grp_1", "owner", "2026-01-01T00:00:00Z"); err != nil {
+			tx.Rollback()
 			t.Fatal(err)
 		}
-		fresh := w11aGrantFixture(t)
-		w11aCreateGrant(t, fresh)
-		fresh.exec(t, `DROP TABLE resource_authorization_grants`)
-		freshTx, err := fresh.db.BeginTx(ctx, nil)
-		if err != nil {
+		if err := tx.Rollback(); err != nil {
 			t.Fatal(err)
 		}
-		defer freshTx.Rollback()
-		if err := fresh.store.RevokeGrantsForResourceDeleted(ctx, freshTx, "group", "grp_1", "owner", "2026-01-01T00:00:00Z"); err == nil {
-			t.Fatal("broken schema must fail the deleted-resource sweep")
-		}
+		t.Run("broken_schema", func(t *testing.T) {
+			// 嵌套子测试名不同 → 独立内存库，避免与外层 fixture 的 seed 撞唯一约束。
+			fresh := w11aGrantFixture(t)
+			w11aCreateGrant(t, fresh)
+			fresh.exec(t, `DROP TABLE resource_authorization_grants`)
+			freshTx, err := fresh.db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer freshTx.Rollback()
+			if err := fresh.store.RevokeGrantsForResourceDeleted(ctx, freshTx, "group", "grp_1", "owner", "2026-01-01T00:00:00Z"); err == nil {
+				t.Fatal("broken schema must fail the deleted-resource sweep")
+			}
+		})
 	})
 }
 

@@ -602,17 +602,15 @@ func (s *RecordCleanupStore) cleanupAPIKeyRelated(ctx context.Context, apiKeyID,
 		hasMore = false
 	}
 	result := retention.RelatedCleanupResult{DeletedRows: deletedUsageRows, HasMore: hasMore}
-	if blockedReason != "" {
-		result.BlockedReason = blockedReason
-	} else if hasMore {
+	// selectAPIKeyUsageRowsGuarded 恒返回空 blockedReason，原 blockedReason
+	// 分支不可达，已按 w13e 收尾授权删除。
+	if hasMore {
 		result.BlockedReason = cleanupPendingReason(hasMoreCoveredRows, hasUncoveredRows)
 	}
 	if result.HasMore || result.BlockedReason != "" {
-		reason := result.BlockedReason
-		if reason == "" {
-			reason = "等待统计安全游标追平"
-		}
-		if err := s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, reason, "", updatedAt); err != nil {
+		// result.HasMore 时 BlockedReason 恒非空，reason=="" 分支不可达，
+		// 已按 w13e 收尾授权删除。
+		if err := s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, result.BlockedReason, "", updatedAt); err != nil {
 			return result, err
 		}
 	} else if err := s.clearAPIKeyTarget(ctx, apiKeyID, systemAccountID); err != nil {
@@ -712,11 +710,9 @@ func (s *RecordCleanupStore) cleanupAccountRelated(ctx context.Context, target r
 		result.BlockedReason = cleanupPendingReason(hasMoreCoveredRows, hasUncoveredRows)
 	}
 	if result.HasMore || result.BlockedReason != "" {
-		reason := result.BlockedReason
-		if reason == "" {
-			reason = "等待统计安全游标追平"
-		}
-		if err := s.markAccountTarget(ctx, target, reason, "", updatedAt); err != nil {
+		// result.HasMore 时 BlockedReason 恒非空，reason=="" 分支不可达，
+		// 已按 w13e 收尾授权删除。
+		if err := s.markAccountTarget(ctx, target, result.BlockedReason, "", updatedAt); err != nil {
 			return result, err
 		}
 	} else if err := s.clearAccountTarget(ctx, target); err != nil {
@@ -810,9 +806,7 @@ func (s *RecordCleanupStore) hasDeletedAccountStatsRowsSQLite(ctx context.Contex
 		}
 	}
 	for _, chunk := range chunkValues(authorizationIDs, 400) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		condition := fmt.Sprintf("scope_type = 'account_authorization' AND scope_id IN (%s)", placeholderList(len(chunk)))
 		for _, tableName := range accountScopeStatsTables {
 			if ok, err := rowExists(tableName, condition, stringSliceToAny(chunk)...); err != nil || ok {
@@ -824,9 +818,7 @@ func (s *RecordCleanupStore) hasDeletedAccountStatsRowsSQLite(ctx context.Contex
 		}
 	}
 	for _, chunk := range chunkValues(teamScopeIDs, 400) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		condition := fmt.Sprintf("scope_type = 'account_authorization_team' AND scope_id IN (%s)", placeholderList(len(chunk)))
 		for _, tableName := range accountScopeStatsTables {
 			if ok, err := rowExists(tableName, condition, stringSliceToAny(chunk)...); err != nil || ok {

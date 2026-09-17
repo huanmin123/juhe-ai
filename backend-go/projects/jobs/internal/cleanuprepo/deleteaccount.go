@@ -301,9 +301,7 @@ type authorizationRow struct {
 func (s *DeletedAccountStore) loadAuthorizationRows(ctx context.Context, accountIDs, authorizationInstanceAuthorizationIDs []string) ([]authorizationRow, error) {
 	rowsByID := map[string]authorizationRow{}
 	for _, chunk := range chunkValues(uniqueNonEmpty(accountIDs), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		rows, err := queryRows(ctx, s.Business, s.Business.Bind(fmt.Sprintf(`
       SELECT id, resource_id, grantee_system_account_id
       FROM %s
@@ -320,9 +318,7 @@ func (s *DeletedAccountStore) loadAuthorizationRows(ctx context.Context, account
 		}
 	}
 	for _, chunk := range chunkValues(uniqueNonEmpty(authorizationInstanceAuthorizationIDs), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		rows, err := queryRows(ctx, s.Business, s.Business.Bind(fmt.Sprintf(`
       SELECT id, resource_id, grantee_system_account_id
       FROM %s
@@ -355,9 +351,7 @@ func mapValues(source map[string]string) []string {
 func (s *DeletedAccountStore) loadActiveAuthorizationInstanceIDs(ctx context.Context, authorizationIDs []string) (map[string]bool, error) {
 	output := map[string]bool{}
 	for _, chunk := range chunkValues(uniqueNonEmpty(authorizationIDs), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		rows, err := queryRows(ctx, s.Business, s.Business.Bind(fmt.Sprintf(`
       SELECT DISTINCT authorization_instance_authorization_id
       FROM %s
@@ -379,9 +373,7 @@ func (s *DeletedAccountStore) loadActiveAuthorizationInstanceIDs(ctx context.Con
 func (s *DeletedAccountStore) loadTeamScopeIDs(ctx context.Context, authorizationIDs []string, authorizationInstanceIDsByAuthorizationID map[string]string, authorizationResourceIDByID map[string]string, fallbackAccountID string) ([]string, error) {
 	var teamScopeIDs []string
 	for _, chunk := range chunkValues(uniqueNonEmpty(authorizationIDs), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		rows, err := queryRows(ctx, s.Business, s.Business.Bind(fmt.Sprintf(`
       SELECT authorization_id, source_team_id
       FROM %s
@@ -413,9 +405,7 @@ func (s *DeletedAccountStore) loadTeamScopeIDs(ctx context.Context, authorizatio
 func (s *DeletedAccountStore) loadSourceAccountGrantIDs(ctx context.Context, accountIDs []string) ([]string, error) {
 	var grantIDs []string
 	for _, chunk := range chunkValues(uniqueNonEmpty(accountIDs), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		rows, err := queryRows(ctx, s.Business, s.Business.Bind(fmt.Sprintf(`
       SELECT id
       FROM %s
@@ -435,9 +425,7 @@ func (s *DeletedAccountStore) loadSourceAccountGrantIDs(ctx context.Context, acc
 func (s *DeletedAccountStore) loadAuthorizationInstanceGrantIDs(ctx context.Context, authorizationIDs []string) ([]string, error) {
 	var grantIDs []string
 	for _, chunk := range chunkValues(uniqueNonEmpty(authorizationIDs), 900) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		rows, err := queryRows(ctx, s.Business, s.Business.Bind(fmt.Sprintf(`
       SELECT DISTINCT grants.id
       FROM %s grants

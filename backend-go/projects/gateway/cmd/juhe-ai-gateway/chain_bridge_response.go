@@ -374,8 +374,8 @@ func (t *chainBridgeResponseTransformer) transformToAnthropicClient(
 		if err != nil {
 			return []byte(openaicompat.BridgeJSONStringifyOf(map[string]any{
 				"error": map[string]any{
-					"status": "INTERNAL",
-					"code":   "upstream_anthropic_messages_invalid_json",
+					"status":  "INTERNAL",
+					"code":    "upstream_anthropic_messages_invalid_json",
 					"message": "上游 Anthropic Messages 返回了无法转换为 Gemini GenerateContent 响应的 JSON",
 				},
 			}))
@@ -588,7 +588,7 @@ func bridgeChatUpstreamInvalidJSONErrorBody(model, text string) string {
 	return openaicompat.BridgeJSONStringifyOf(map[string]any{
 		"candidates": []any{map[string]any{
 			"content": map[string]any{
-				"role": "model",
+				"role":  "model",
 				"parts": []any{map[string]any{"text": text}},
 			},
 			"finishReason": "STOP",

@@ -731,7 +731,13 @@ func verifyLegacySQLiteExistingRecord(ctx context.Context, queryer legacyRecordQ
 	if err != nil {
 		return fmt.Errorf("校验已迁移操作日志 %s 失败: %w", record.Input.ID, err)
 	}
+	// created_at 两侧对称归一化后再比较：parseStorageTime 输出 RFC3339Nano
+	// 文本，只归一化回读侧会让 DeepEqual 对格式完全一致的记录也判不一致，
+	// 吞掉 target/viewer/search-terms 三个定位分支（任何差异都报通用文案）。
 	if actual.Input.CreatedAt, err = parseStorageTime(actual.Input.CreatedAt); err != nil {
+		return fmt.Errorf("校验已迁移操作日志 %s created_at 失败: %w", record.Input.ID, err)
+	}
+	if record.Input.CreatedAt, err = parseStorageTime(record.Input.CreatedAt); err != nil {
 		return fmt.Errorf("校验已迁移操作日志 %s created_at 失败: %w", record.Input.ID, err)
 	}
 	if err := json.Unmarshal([]byte(changes), &actual.Input.Changes); err != nil {
@@ -748,7 +754,23 @@ func verifyLegacySQLiteExistingRecord(ctx context.Context, queryer legacyRecordQ
 	if actual.Viewers, err = readLegacyViewersFromQuery(ctx, queryer, record.Input.ID); err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(actual.Targets, record.Targets) || !reflect.DeepEqual(actual.Viewers, record.Viewers) {
+	// 回读侧的 target/viewer created_at 同样被归一化为 RFC3339Nano；比较前
+	// 对源侧做对称归一化（副本方式，record 的 slice 底层数组归调用方共享）。
+	recordTargets := make([]legacyTarget, len(record.Targets))
+	for i, target := range record.Targets {
+		if target.CreatedAt, err = parseStorageTime(target.CreatedAt); err != nil {
+			return fmt.Errorf("校验已迁移操作日志 %s created_at 失败: %w", record.Input.ID, err)
+		}
+		recordTargets[i] = target
+	}
+	recordViewers := make([]legacyViewer, len(record.Viewers))
+	for i, viewer := range record.Viewers {
+		if viewer.CreatedAt, err = parseStorageTime(viewer.CreatedAt); err != nil {
+			return fmt.Errorf("校验已迁移操作日志 %s created_at 失败: %w", record.Input.ID, err)
+		}
+		recordViewers[i] = viewer
+	}
+	if !reflect.DeepEqual(actual.Targets, recordTargets) || !reflect.DeepEqual(actual.Viewers, recordViewers) {
 		return fmt.Errorf("已存在操作日志 %s 的 target 或 viewer 与迁移源不一致", record.Input.ID)
 	}
 	terms, err := legacySearchTerms(ctx, queryer, record.Input.ID)

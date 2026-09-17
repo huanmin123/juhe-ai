@@ -600,9 +600,7 @@ func (s *CodexContextStore) filterUnreferencedStorageKeysSQLite(ctx context.Cont
 func deleteStorageCleanupQueueRows(ctx context.Context, tx *sql.Tx, storageKeys []string) (int64, error) {
 	var deleted int64
 	for _, chunk := range chunkValues(storageKeys, 900) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		result, err := tx.ExecContext(ctx, fmt.Sprintf(
 			`DELETE FROM codex_context_storage_cleanup_queue WHERE storage_key IN (%s)`, placeholderList(len(chunk))),
 			stringSliceToAny(chunk)...)

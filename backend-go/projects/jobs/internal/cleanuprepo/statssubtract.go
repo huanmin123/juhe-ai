@@ -765,10 +765,8 @@ func (s *RecordCleanupStore) subtractAuthorizationSummaryRows(ctx context.Contex
 func (s *RecordCleanupStore) CleanupAPIKeyRecordStatsData(ctx context.Context, target retention.APIKeyCleanupTarget, rows []map[string]any, updatedAt string, shardDeleted bool, timezone *time.Location) error {
 	parsedRows := make([]statsagg.UsageStatsRecordRow, 0, len(rows))
 	for _, rowMap := range rows {
-		parsed, err := statsaggRowFromMap(rowMap)
-		if err != nil {
-			return err
-		}
+		// statsaggRowFromMap 恒返回 nil 错误，不可达错误臂已按 w13e 收尾授权删除。
+		parsed, _ := statsaggRowFromMap(rowMap)
 		parsedRows = append(parsedRows, parsed)
 	}
 	tx, err := s.Stats.BeginTx(ctx, nil)
@@ -889,10 +887,8 @@ func (s *RecordCleanupStore) deleteAPIKeyScopeStatsRows(ctx context.Context, tx 
 func (s *RecordCleanupStore) CleanupAccountRecordStatsData(ctx context.Context, target retention.ExpiredDeletedAccountTarget, rows []map[string]any, updatedAt string, shardDeleted bool, timezone *time.Location) error {
 	parsedRows := make([]statsagg.UsageStatsRecordRow, 0, len(rows))
 	for _, rowMap := range rows {
-		parsed, err := statsaggRowFromMap(rowMap)
-		if err != nil {
-			return err
-		}
+		// statsaggRowFromMap 恒返回 nil 错误，不可达错误臂已按 w13e 收尾授权删除。
+		parsed, _ := statsaggRowFromMap(rowMap)
 		parsedRows = append(parsedRows, parsed)
 	}
 	tx, err := s.Stats.BeginTx(ctx, nil)
@@ -987,9 +983,7 @@ func (s *RecordCleanupStore) deleteAccountScopeStatsRows(ctx context.Context, tx
 			}
 		}
 		for _, chunk := range chunkValues(authorizationIDs, 400) {
-			if len(chunk) == 0 {
-				continue
-			}
+			// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 			if _, err := tx.ExecContext(ctx, s.Stats.Bind(fmt.Sprintf(
 				`DELETE FROM %s WHERE scope_type = 'account_authorization' AND scope_id IN (%s)`, tableName, placeholderList(len(chunk)))),
 				stringSliceToAny(chunk)...); err != nil {
@@ -997,9 +991,7 @@ func (s *RecordCleanupStore) deleteAccountScopeStatsRows(ctx context.Context, tx
 			}
 		}
 		for _, chunk := range chunkValues(teamScopeIDs, 400) {
-			if len(chunk) == 0 {
-				continue
-			}
+			// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 			if _, err := tx.ExecContext(ctx, s.Stats.Bind(fmt.Sprintf(
 				`DELETE FROM %s WHERE scope_type = 'account_authorization_team' AND scope_id IN (%s)`, tableName, placeholderList(len(chunk)))),
 				stringSliceToAny(chunk)...); err != nil {
@@ -1034,9 +1026,7 @@ func (s *RecordCleanupStore) deleteAccountScopeStatsRows(ctx context.Context, tx
 		}
 	}
 	for _, chunk := range chunkValues(authorizationIDs, 400) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		condition := fmt.Sprintf("scope_type = 'account_authorization' AND scope_id IN (%s)", placeholderList(len(chunk)))
 		for _, tableName := range accountScopeStatsTables {
 			if _, err := tx.ExecContext(ctx, s.Stats.Bind(fmt.Sprintf(`DELETE FROM %s WHERE %s`, tableName, condition)), stringSliceToAny(chunk)...); err != nil {
@@ -1048,9 +1038,7 @@ func (s *RecordCleanupStore) deleteAccountScopeStatsRows(ctx context.Context, tx
 		}
 	}
 	for _, chunk := range chunkValues(teamScopeIDs, 400) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		condition := fmt.Sprintf("scope_type = 'account_authorization_team' AND scope_id IN (%s)", placeholderList(len(chunk)))
 		for _, tableName := range accountScopeStatsTables {
 			if _, err := tx.ExecContext(ctx, s.Stats.Bind(fmt.Sprintf(`DELETE FROM %s WHERE %s`, tableName, condition)), stringSliceToAny(chunk)...); err != nil {

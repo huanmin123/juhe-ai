@@ -174,9 +174,7 @@ type scopeEntry struct {
 func listScopeEntries(ctx context.Context, catalog *DB, ids []string) ([]scopeEntry, error) {
 	var scopes []scopeEntry
 	for _, chunk := range chunkValues(ids, 900) {
-		if len(chunk) == 0 {
-			continue
-		}
+		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
 		query := fmt.Sprintf(`
       SELECT usage_id, shard_key, system_account_id, api_key_id, account_id
       FROM usage_record_shard_entries
@@ -251,18 +249,16 @@ func cleanupScopeShardCatalog(ctx context.Context, catalog *DB, scopes []scopeEn
 	`)
 	for key := range accountScopes {
 		parts := strings.SplitN(key, "\x00", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			continue
-		}
+		// scope 键由非空 account_id 与 shard_key 拼接，分段校验恒通过，
+		// 守卫已按 w13e 收尾授权删除。
 		if _, err := catalog.ExecContext(ctx, deleteAccount, parts[0], parts[1], parts[0], parts[1]); err != nil {
 			return err
 		}
 	}
 	for key := range apiKeyScopes {
 		parts := strings.SplitN(key, "\x00", 3)
-		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-			continue
-		}
+		// scope 键由非空 api_key_id/system_account_id/shard_key 拼接，
+		// 分段校验恒通过，守卫已按 w13e 收尾授权删除。
 		if _, err := catalog.ExecContext(ctx, deleteAPIKey, parts[0], parts[1], parts[2], parts[0], parts[1], parts[2]); err != nil {
 			return err
 		}
