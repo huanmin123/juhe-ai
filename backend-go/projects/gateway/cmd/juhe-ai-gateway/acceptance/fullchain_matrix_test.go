@@ -13,6 +13,7 @@
 package acceptance
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -172,6 +173,35 @@ func (f *fullchainFixture) auditLabelUnion(apiKeyID string) []string {
 				seen[label] = true
 				out = append(out, label)
 			}
+		}
+	}
+	return out
+}
+
+// fullchainGatewayMetadataByLabel 从审计详情提取指定 label 的全部
+// gateway_metadata 载荷 metadata map（bodyText JSON 形如
+// {"type":"gateway_metadata","label":...,"metadata":{...}}，按落库顺序）；
+// 取不到（审计异步窗口 / 载荷被省略）返回空切片，由调用方裁决语义。
+func (f *fullchainFixture) fullchainGatewayMetadataByLabel(log fullchainAuditLog, label string) []map[string]any {
+	f.t.Helper()
+	out := []map[string]any{}
+	payloads, _ := log.Raw["payloads"].([]any)
+	for _, raw := range payloads {
+		part, _ := raw.(map[string]any)
+		if part == nil || str(part["partType"]) != "gateway_metadata" {
+			continue
+		}
+		_, meta := f.admin.do(http.MethodGet,
+			"/__aisys__/api/audit-logs/"+log.ID+"/payloads/"+str(part["id"]), nil, wantStatus(http.StatusOK))
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(str(data(meta)["bodyText"])), &decoded); err != nil {
+			continue
+		}
+		if str(decoded["label"]) != label {
+			continue
+		}
+		if metadata, ok := decoded["metadata"].(map[string]any); ok {
+			out = append(out, metadata)
 		}
 	}
 	return out
@@ -467,7 +497,33 @@ func fullchainR5(t *testing.T, f *fullchainFixture) {
 		// ~12s 且 fastHits=0、请求 3 立即命中快账户。blocked 原因元数据
 		// （normal_route_speed_first_slow_observed.retryBlockedReason）随
 		// E2E-FINDING #2 修复（捕获上限回落默认）已可读。
-		t.Logf("E2E-FINDING #4: speed-first same-request cutover did not fire on the degrade-triggering observation; takeover happened via latency-degradation reorder on request %d", cutoverAt)
+		// R5 FINDING#4 审计闭环：提取降级观测（degraded==true；warmup 请求
+		// 的 slowCount 未达标观测合法报 slow_observation_not_degraded，不算
+		// 缺陷信号）载荷的 retryBlockedReason 留档。取到且值 ==
+		// slow_observation_not_degraded → Fatal（降级观测未生效的缺陷信号）；
+		// 其他值或取不到（审计异步窗口）保持本日志继续，不改变放行语义。
+		retryBlockedReason := ""
+		var degradedMetadata map[string]any
+		for _, item := range f.findAuditLogs(route.apiKeyID) {
+			detail := f.auditLogDetail(str(item["id"]))
+			for _, metadata := range f.fullchainGatewayMetadataByLabel(detail, "normal_route_speed_first_slow_observed") {
+				if degradedFlag, _ := metadata["degraded"].(bool); !degradedFlag {
+					continue
+				}
+				if reason, ok := metadata["retryBlockedReason"].(string); ok {
+					retryBlockedReason = reason
+				}
+				degradedMetadata = metadata
+				break
+			}
+			if degradedMetadata != nil {
+				break
+			}
+		}
+		t.Logf("E2E-FINDING #4: speed-first same-request cutover did not fire on the degrade-triggering observation; takeover happened via latency-degradation reorder on request %d; audit retryBlockedReason=%q degradedMetadata=%v", cutoverAt, retryBlockedReason, degradedMetadata)
+		if retryBlockedReason == "slow_observation_not_degraded" {
+			t.Fatalf("R5 FINDING #4 defect signal: degrade-triggering observation still reports retryBlockedReason=slow_observation_not_degraded; metadata=%v", degradedMetadata)
+		}
 	}
 	if got := len(f.mock.protocolCallsByKey(route.upstreamKeys[1])); got != 1 {
 		t.Fatalf("R5 fast account hits=%d want 1", got)
@@ -504,14 +560,20 @@ func fullchainR5(t *testing.T, f *fullchainFixture) {
 	}
 
 	t.Run("slow_header_probe_finding", func(t *testing.T) {
-		// 语义裁决（E2E-FINDING #3，对齐文档而非实现缺陷）：docs/functions/
-		// 普通路由速度优先延迟切换设计.md 第 68/69 行定义「流式请求按首个
-		// 可见语义输出计算首字；非流式生成请求按上游 2xx 后首个 body 字节
-		// 计算首字」——首字语义在 body 侧，响应头阶段不属于首字截止覆盖
-		// 范围。上游在「响应头阶段」拖延时（mockupstream 原生 slow_first_byte，
-		// 12s 后才写头），配置的 firstByteDeadlineMs=10s 不触发切换，请求直到
-		// 上游 12s 出头才完成。此探针固化该文档契约：若网关把头阶段纳入
-		// 首字截止（语义变更），本探针会失败并提示更新契约。
+		// 语义裁决（E2E-FINDING #3 修订，2026-09-18）：此探针此前固化「头阶段
+		// 不切号」，但该断言建立在 NormalRouteFirstByteAttemptCoordinator 零值
+		// 缺陷（state 恒空 → AttachReservation 恒 false → 决策恒 Continue）之上。
+		// Node 契约：request.ts:261-266 头阶段同样挂 firstByteDeadlineMs timer +
+		// onFirstByteDeadline 决策（upstream-attempts.ts:97-101 传入），决策闭包
+		// （routes.ts:884-920）不区分头/体 transport——头阶段拖延到截止进入与
+		// body 阶段同一条决策链。设计文档第 68/69 行的「首字按 body 字节计」是
+		// 观测口径，不是头阶段豁免。
+		//
+		// 确定性断言（独立 scope 单请求，slowTriggerCount=2 首次观测未降级，
+		// Continue 是合法决策）：① 请求等满上游 12s 出头完成（截止未中断流）；
+		// ② 审计出现 normal_route_speed_first_slow_observed——证明头阶段截止
+		// 进入速度优先决策链（零值缺陷下该审计不存在）。切号链路由 R5 主测
+		// （同闭包、喂满降级）覆盖。
 		headerSlowKey := fullchainUpstreamKey(t, "R5-headerslow")
 		probe := f.newRoute("R5B", "normal", []fullchainGroupSpec{
 			{accounts: []fullchainAccountSpec{
@@ -531,12 +593,31 @@ func fullchainR5(t *testing.T, f *fullchainFixture) {
 		if response.Status != http.StatusOK {
 			t.Fatalf("R5B probe status=%d body=%s", response.Status, response.Body)
 		}
+		// 修复后确定性时线：10s 头阶段截止 → 首次慢观测（未降级）Continue；
+		// 12s 慢头返回 → body 竞速立即第二次决策（实测已慢 → degraded →
+		// cutover）→ 慢账户排除、fast 接管。请求总时长 ≈ 12s（慢头决定），
+		// fast 恰好 1 次（切号接管）、slow 恰好 1 次（切号后排除）。
 		if elapsed < 11*time.Second {
-			t.Fatalf("R5B probe expected current no-cutover behavior (elapsed>=11s) but got %s；首字截止已覆盖响应头阶段，请更新 E2E-FINDING #3", elapsed)
+			t.Fatalf("R5B probe expected full slow-header wait (elapsed>=11s) but got %s", elapsed)
 		}
-		if got := len(f.mock.protocolCallsByKey(probe.upstreamKeys[1])); got != 0 {
-			t.Fatalf("R5B probe expected no cutover on header phase; fast hits=%d", got)
+		if got := len(f.mock.protocolCallsByKey(probe.upstreamKeys[1])); got != 1 {
+			t.Fatalf("R5B probe expected fast takeover after second slow observation; fast hits=%d", got)
 		}
+		if got := len(f.mock.protocolCallsByKey(probe.upstreamKeys[0])); got != 1 {
+			t.Fatalf("R5B probe expected slow account hit exactly once (excluded after cutover); slow hits=%d", got)
+		}
+		deadline := time.Now().Add(20 * time.Second)
+		var observed []map[string]any
+		for time.Now().Before(deadline) {
+			for _, log := range f.findAuditLogs(probe.apiKeyID) {
+				observed = f.fullchainGatewayMetadataByLabel(f.auditLogDetail(str(log["id"])), "normal_route_speed_first_slow_observed")
+				if len(observed) > 0 {
+					return
+				}
+			}
+			time.Sleep(400 * time.Millisecond)
+		}
+		t.Fatalf("R5B probe：头阶段截止未产生 normal_route_speed_first_slow_observed 审计（决策链不可达）")
 	})
 }
 

@@ -142,8 +142,13 @@ func w1g2CoverPostgres(t *testing.T) string {
 		t.Fatalf("临时子库 ping 失败: %v", err)
 	}
 	schemaCount := w1g2CountCoverSchemas(t, appDB)
-	if schemaCount != len(w1g2CoverSchemas) {
-		// 重灌：只允许 DROP 清单内的六个 schema（临时子库内部）。
+	drifted := w1g2CoverPostgresDrifted(t, appDB)
+	if schemaCount != len(w1g2CoverSchemas) || drifted {
+		// 重灌：只允许 DROP 清单内的六个 schema（临时子库内部）。跨运行
+		// 持久子库的历史漂移有两种已取证形态（schema 数检查均覆盖不到）：
+		// 表 owner 漂移（system_sessions 非 app 角色 → modelcheckauth
+		// fail-closed 退出）与 schema 形状漂移（旧版 provider_protocol_profiles
+		// 缺 id 主键 → EnsurePostgres 建 FK 报 42830）。探针任一不满足即重灌。
 		for _, schema := range w1g2CoverSchemas {
 			if _, err := appDB.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+schema+` CASCADE`); err != nil {
 				t.Fatalf("重灌临时子库时 DROP SCHEMA %s 失败: %v", schema, err)
@@ -194,6 +199,43 @@ func w1g2CountCoverSchemas(t *testing.T, db *sql.DB) int {
 		t.Fatalf("统计临时子库 schema 失败: %v", err)
 	}
 	return count
+}
+
+// w1g2CoverPostgresDrifted 只读探测临时子库的两类跨运行历史漂移（均为已取证
+// 的真实失败形态，且 schema 数检查覆盖不到）：
+//   - 探针 A（owner）：has_table_privilege(current_user,
+//     'juhe_business.system_sessions','UPDATE') 为 false，说明表 owner 已
+//     漂移，网关启动时 modelcheckauth fail-closed 退出；
+//   - 探针 B（形状）：provider_protocol_profiles 的 id 列必须带 PK/UNIQUE
+//     约束，旧版缺 id 主键的表会让 EnsurePostgres 建
+//     provider_protocol_profile_families FK 时报 42830。
+//
+// 表不存在或探针查询出错一律按漂移处理（交由重灌分支给出真实错误），不 Fatal。
+func w1g2CoverPostgresDrifted(t *testing.T, appDB *sql.DB) bool {
+	t.Helper()
+	// 探针 A：has_table_privilege 对缺失表返回 false 而非报错。
+	var canUpdate bool
+	if err := appDB.QueryRow(`SELECT has_table_privilege(current_user, 'juhe_business.system_sessions', 'UPDATE')`).Scan(&canUpdate); err != nil {
+		return true
+	}
+	if !canUpdate {
+		return true
+	}
+	// 探针 B：约束列集（conkey）须包含 id 列的 PK/UNIQUE 约束；表缺失时
+	// EXISTS 自然为 false。
+	var idConstrained bool
+	err := appDB.QueryRow(`SELECT EXISTS (
+		SELECT 1 FROM pg_constraint c
+		JOIN pg_class t ON t.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		WHERE n.nspname = 'juhe_business' AND t.relname = 'provider_protocol_profiles'
+			AND c.contype IN ('p','u')
+			AND c.conkey @> (SELECT ARRAY[(SELECT attnum::smallint FROM pg_attribute WHERE attrelid = t.oid AND attname = 'id')])
+	)`).Scan(&idConstrained)
+	if err != nil || !idConstrained {
+		return true
+	}
+	return false
 }
 
 // w1g2OpenApp 打开指向临时子库的独立 database/sql 句柄（B/D 场景直接 DDL/DML 用）。

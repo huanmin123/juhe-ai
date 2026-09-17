@@ -108,15 +108,21 @@ func readStreamOnce(body io.Reader, result chan<- streamReadResult) {
 	result <- streamReadResult{n: n, text: string(buffer[:n]), err: err}
 }
 
-// bridgeWallClockIDPattern 匹配桥输出里由挂钟时间戳派生的 id 值
+// bridgeWallClockIDPattern 匹配 Gemini 桥输出里由挂钟时间戳派生的 id 值
 // （"resp_<base36>"、"chatcmpl_<base36>"、"msg_<base36>"，镜像 Node
 // Date.now() 后缀；长度 6-14 覆盖 base36 毫秒串，且不误伤 "msg_0" 这类
 // 固定字面量与含下划线的确定性 id）。
+// 适用边界：只覆盖 gemini 桥（bridge_gemini_response.go 的
+// resp_+base36(毫秒) 形态）。codex 桥（resp_chat_bridge_<base36>_<rand6>，
+// 另有秒级 created 字段）与 anthropic 桥（resp_anthropic_<suffix>）的 id
+// 不匹配本模式——那两座桥若将来加增量/buffer 一致性对照，需要各自的
+// 归一化模式，不得直接复用本 helper。
 var bridgeWallClockIDPattern = regexp.MustCompile(`"(resp|chatcmpl|msg)_[0-9a-z]{6,14}"`)
 
-// normalizeBridgeWallClockIDs 把挂钟派生 id 归一为占位符。增量管道与 buffer
-// 转换是两次独立调用，毫秒边界处两侧 id 后缀必然不同；归一后其余字节仍
-// 逐字节比较（事件结构、字段、顺序差异不会被掩盖）。
+// normalizeBridgeWallClockIDs 把挂钟派生 id 归一为占位符（适用边界见
+// bridgeWallClockIDPattern 注释）。增量管道与 buffer 转换是两次独立调用，
+// 毫秒边界处两侧 id 后缀必然不同；归一后其余字节仍逐字节比较（事件结构、
+// 字段、顺序差异不会被掩盖）。
 func normalizeBridgeWallClockIDs(text string) string {
 	return bridgeWallClockIDPattern.ReplaceAllString(text, `"$1_<wallclock>"`)
 }
