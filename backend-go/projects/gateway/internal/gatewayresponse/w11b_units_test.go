@@ -489,14 +489,24 @@ func TestW11BWritePreCommitStreamFailureToClient(t *testing.T) {
 	if writePreCommitStreamFailureToClient(&input, noCode, input.Driver) != nil {
 		t.Fatal("无错误码时不补写")
 	}
-	// 无 chunks（无未提交正文且协议不生成事件）→ nil。
+	// chat_completions_sse 现已生成失败帧（超出 Node 基线的行为收敛，
+	// 见 BuildGatewayStreamFailureEventForProtocol 注释）：客户端不再空 body。
 	plain := StreamPipeResult{Message: "m", ErrorCode: "c"}
 	plainInput, plainRecorder := newInputFixture(nil, 200, nil)
 	plainInput.ClientStrategy = &ClientStrategyView{DownstreamProtocol: "chat_completions_sse"}
-	if got := writePreCommitStreamFailureToClient(&plainInput, plain, plainInput.Driver); got != nil {
-		t.Fatalf("无事件时 = %q", got)
+	chatBody := writePreCommitStreamFailureToClient(&plainInput, plain, plainInput.Driver)
+	if chatBody == nil || !strings.Contains(string(chatBody), `"error"`) || !strings.Contains(string(chatBody), "m") {
+		t.Fatalf("chat_completions_sse 应补写失败帧，got = %q", chatBody)
 	}
-	_ = plainRecorder
+	if plainRecorder.Body.Len() == 0 {
+		t.Fatal("chat_completions_sse 失败帧应写到下游")
+	}
+	// 未声明下游协议仍不生成事件 → nil。
+	unknownInput, _ := newInputFixture(nil, 200, nil)
+	unknownInput.ClientStrategy = &ClientStrategyView{DownstreamProtocol: ""}
+	if got := writePreCommitStreamFailureToClient(&unknownInput, StreamPipeResult{Message: "m", ErrorCode: "c"}, unknownInput.Driver); got != nil {
+		t.Fatalf("未声明协议时 = %q", got)
+	}
 }
 
 // ---- heartbeat ----

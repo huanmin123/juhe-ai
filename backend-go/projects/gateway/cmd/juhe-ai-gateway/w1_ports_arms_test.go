@@ -20,9 +20,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
@@ -185,17 +187,136 @@ func TestW1PLocalSessionAffinityOrderAsync(t *testing.T) {
 	}
 }
 
-// TestW1PLocalSessionAffinityHighConcurrencyBusy：降级实现恒不忙。
+// w1pFakeConcurrencyStore 是 gatewaydispatch.AccountConcurrencyStore 的可控
+// fake：LoadCurrentAsync / LoadCurrentByLaneAsync 返回预置计数副本并记录
+// lane 查询；TryAcquireAsync 不在忙判定路径上，恒返回未获取的空槽。
+type w1pFakeConcurrencyStore struct {
+	current   map[string]int
+	lane      map[string]int
+	laneCalls []string
+}
+
+func (s *w1pFakeConcurrencyStore) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
+	out := make(map[string]int, len(s.current))
+	for id, value := range s.current {
+		out[id] = value
+	}
+	return out, nil
+}
+
+func (s *w1pFakeConcurrencyStore) LoadCurrentByLaneAsync(_ context.Context, _ []string, lane string) (map[string]int, error) {
+	s.laneCalls = append(s.laneCalls, lane)
+	out := make(map[string]int, len(s.lane))
+	for id, value := range s.lane {
+		out[id] = value
+	}
+	return out, nil
+}
+
+func (s *w1pFakeConcurrencyStore) TryAcquireAsync(context.Context, string, int, gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
+	return gatewaydispatch.ConcurrencySlot{}, nil
+}
+
+// TestW1PLocalSessionAffinityHighConcurrencyBusy：高并发忙判定谓词。
+// nil store（组合测试零值）恒不忙；注入 store 后 busy = 所有候选并发满
+// （总并发达硬上限 max(1, ConcurrencyLimit)），且仅 high_concurrency 分组
+// 参与判定（Node areHighConcurrencyAccountsBusyForLaneAsync 语义）。
 func TestW1PLocalSessionAffinityHighConcurrencyBusy(t *testing.T) {
+	ctx := context.Background()
+	hcOptions := gatewaydispatch.HighConcurrencyBusyOptions{
+		AffinityOrderingOptions: gatewaydispatch.AffinityOrderingOptions{GroupType: "high_concurrency"},
+	}
+	candidate := []gatewaydispatch.AccountCandidate{{ID: "acc-A", ConcurrencyLimit: 1}}
+
+	// (a) 零值 localSessionAffinity（nil store）：恒 false。
+	nilAffinity := &localSessionAffinity{}
+	busy, err := nilAffinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, candidate, hcOptions)
+	if err != nil || busy {
+		t.Fatalf("nil store busy = %v, %v，want false,nil", busy, err)
+	}
+
+	// (b) high_concurrency + 单账户总并发 1 >= 硬上限 1 → true。
 	affinity := newLocalSessionAffinity()
-	busy, err := affinity.AreHighConcurrencyAccountsBusyForLaneAsync(context.Background(),
-		[]gatewaydispatch.AccountCandidate{{ID: "acc-A", ConcurrencyLimit: 100}},
-		gatewaydispatch.HighConcurrencyBusyOptions{RequestLane: "lane-1"})
+	affinity.concurrency = &w1pFakeConcurrencyStore{current: map[string]int{"acc-A": 1}}
+	busy, err = affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, candidate, hcOptions)
 	if err != nil {
 		t.Fatalf("AreHighConcurrencyAccountsBusyForLaneAsync 错误：%v", err)
 	}
-	if busy {
-		t.Fatal("降级实现不应报告高并发账户忙")
+	if !busy {
+		t.Fatal("总并发 1 >= 硬上限 1 应报告忙")
+	}
+
+	// (c) 未占满（0 < 1）→ false。
+	affinity.concurrency = &w1pFakeConcurrencyStore{current: map[string]int{"acc-A": 0}}
+	busy, err = affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, candidate, hcOptions)
+	if err != nil || busy {
+		t.Fatalf("未占满 busy = %v, %v，want false,nil", busy, err)
+	}
+
+	// (d) 非 high_concurrency 分组即使占满也不忙。
+	affinity.concurrency = &w1pFakeConcurrencyStore{current: map[string]int{"acc-A": 1}}
+	personalOptions := gatewaydispatch.HighConcurrencyBusyOptions{
+		AffinityOrderingOptions: gatewaydispatch.AffinityOrderingOptions{GroupType: "personal"},
+	}
+	busy, err = affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, candidate, personalOptions)
+	if err != nil || busy {
+		t.Fatalf("非 high_concurrency busy = %v, %v，want false,nil", busy, err)
+	}
+}
+
+// TestW1PLocalSessionAffinityHighConcurrencyBusyImageLane：image 请求的
+// lane 腿——总并发未满但 image lane 并发达
+// EffectiveImageLaneConcurrencyLimit（policy imageLaneMaxConcurrency 收紧）
+// → 忙；text 请求不看 lane 腿 → 不忙。
+func TestW1PLocalSessionAffinityHighConcurrencyBusyImageLane(t *testing.T) {
+	ctx := context.Background()
+	accounts := []gatewaydispatch.AccountCandidate{{ID: "acc-A", ConcurrencyLimit: 4}}
+	policy := gatewayruntimecache.GroupSchedulingPolicy{"imageLaneMaxConcurrency": 2}
+	imageOptions := gatewaydispatch.HighConcurrencyBusyOptions{
+		AffinityOrderingOptions: gatewaydispatch.AffinityOrderingOptions{
+			GroupType:        "high_concurrency",
+			SchedulingPolicy: &policy,
+		},
+		RequestLane: "image",
+	}
+	affinity := newLocalSessionAffinity()
+	store := &w1pFakeConcurrencyStore{
+		current: map[string]int{"acc-A": 1},
+		lane:    map[string]int{"acc-A": 2},
+	}
+	affinity.concurrency = store
+
+	// 总并发 1 < 4 未满；image lane 2 >= EffectiveImageLaneConcurrencyLimit(4, policy)=2 → 忙。
+	if effective := gatewayhotquality.EffectiveImageLaneConcurrencyLimit(4, policy); effective != 2 {
+		t.Fatalf("EffectiveImageLaneConcurrencyLimit(4, policy) = %d，want 2", effective)
+	}
+	busy, err := affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, imageOptions)
+	if err != nil {
+		t.Fatalf("image lane busy 错误：%v", err)
+	}
+	if !busy {
+		t.Fatal("image lane 并发 2 >= 收紧上限 2 应报告忙")
+	}
+	if len(store.laneCalls) != 1 || store.laneCalls[0] != "image" {
+		t.Fatalf("image 请求应恰好查询一次 image lane：%v", store.laneCalls)
+	}
+
+	// text 请求不看 lane 腿：同一计数下不忙，且不追加 lane 查询。
+	textOptions := imageOptions
+	textOptions.RequestLane = "text"
+	busy, err = affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, textOptions)
+	if err != nil || busy {
+		t.Fatalf("text 请求 busy = %v, %v，want false,nil", busy, err)
+	}
+	if len(store.laneCalls) != 1 {
+		t.Fatalf("text 请求不应追加 lane 查询：%v", store.laneCalls)
+	}
+
+	// image lane 未达收紧上限（1 < 2）→ 不忙。
+	store.lane["acc-A"] = 1
+	busy, err = affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, imageOptions)
+	if err != nil || busy {
+		t.Fatalf("lane 并发 1 < 2 busy = %v, %v，want false,nil", busy, err)
 	}
 }
 

@@ -4,8 +4,10 @@
 // storage/external-integration-source*.ts repositories. It covers the paged
 // source list, the token-aware detail, the static scope options and public
 // API catalog, guarded source/token mutations with optimistic locking and
-// built-in test-token guards, the one-shot token secret reveal and the
-// built-in test token reset. Token material is hashed like Node
+// built-in test-token guards, the repeatable token secret reveal (Node
+// findExternalIntegrationSourceTokenSecretAsync keeps the sealed secret; 404
+// only when the token is gone) and the built-in test token reset. Token
+// material is hashed like Node
 // (sha256 of "external-integration-source-token:<token>") and sealed with the
 // storage crypto AES-GCM envelope (apikeys.EncryptJSON/DecryptJSON, same
 // format as storage/crypto.ts encryptJson).

@@ -81,8 +81,11 @@ type HandleUpstreamResponseInput struct {
 		Done() <-chan struct{}
 		Err() error
 	}
-	FirstByteTimeoutMs            *int64
-	FirstByteDeadlineMs           *int64
+	FirstByteTimeoutMs  *int64
+	FirstByteDeadlineMs *int64
+	// DeadlineStartedAtMs 是 FirstByteDeadlineMs 的计时基准（attempt 时刻）。
+	// nil 时非流式竞速回退 StartedAtMs；语义详见 NonStreamPipeInput 同名字段。
+	DeadlineStartedAtMs           *int64
 	ResponsePrecommitDeadlineAtMs *int64
 	OnFirstByteDeadline           FirstByteDeadlineHandler
 	OnFirstByteDeadlineSuperseded func()

@@ -24,6 +24,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -1180,6 +1181,10 @@ type localSessionAffinity struct {
 	mu   sync.Mutex
 	ttls map[string]time.Time
 	keys map[string]localAffinityEntry
+	// concurrency 是高并发忙判定读的账户并发事实源（F13：与 engine 并发槽、
+	// high-concurrency 队列共用同一 tracker）；nil（仅组合测试零值）保持
+	// 既往「恒不忙」显式降级。
+	concurrency gatewaydispatch.AccountConcurrencyStore
 }
 
 type localAffinityEntry struct {
@@ -1274,12 +1279,55 @@ func (a *localSessionAffinity) ForgetAsync(_ context.Context, sessionAffinityKey
 }
 
 // AreHighConcurrencyAccountsBusyForLaneAsync mirrors
-// areOpenAIHighConcurrencyAccountsBusyForLaneAsync: the concurrency runtime
-// store is absent from this slice, so high-concurrency accounts are never
-// considered busy (Node memory-mode equivalent without the runtime state
-// driver; the live counter rides on gatewayruntimecache ConcurrencySource).
-func (a *localSessionAffinity) AreHighConcurrencyAccountsBusyForLaneAsync(context.Context, []gatewaydispatch.AccountCandidate, gatewaydispatch.HighConcurrencyBusyOptions) (bool, error) {
-	return false, nil
+// areOpenAIHighConcurrencyAccountsBusyForLaneAsync
+// (backend/src/modules/gateway/runtime/session-affinity.service.ts:273-330):
+// only high-concurrency groups with a non-empty candidate set can be busy;
+// busy means every candidate has exhausted its concurrency — total current
+// concurrency >= hard limit, or, for image-lane requests, image-lane current
+// >= EffectiveImageLaneConcurrencyLimit(gatewayhotquality, policy 收紧).
+// 采用活计数版（Redis 驱动语义）：总并发与 lane 并发都读注入的并发事实源，
+// 与 engine 并发槽 / high-concurrency 队列共用同一 tracker（F13 确立）。
+// nil store（仅组合测试零值）保持既往「恒不忙」显式降级。
+func (a *localSessionAffinity) AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []gatewaydispatch.AccountCandidate, options gatewaydispatch.HighConcurrencyBusyOptions) (bool, error) {
+	if a.concurrency == nil || options.GroupType != "high_concurrency" || len(accounts) == 0 {
+		return false, nil
+	}
+	ids := make([]string, 0, len(accounts))
+	limits := make(map[string]int, len(accounts))
+	for _, account := range accounts {
+		ids = append(ids, account.ID)
+		limit := account.ConcurrencyLimit
+		if limit < 1 {
+			limit = 1
+		}
+		limits[account.ID] = limit
+	}
+	current, err := a.concurrency.LoadCurrentAsync(ctx, ids)
+	if err != nil {
+		return false, err
+	}
+	laneCurrent := map[string]int{}
+	if options.RequestLane == "image" {
+		if laneCurrent, err = a.concurrency.LoadCurrentByLaneAsync(ctx, ids, "image"); err != nil {
+			return false, err
+		}
+	}
+	var policy gatewayruntimecache.GroupSchedulingPolicy
+	if options.SchedulingPolicy != nil {
+		policy = *options.SchedulingPolicy
+	}
+	for _, account := range accounts {
+		limit := limits[account.ID]
+		totalBusy := current[account.ID] >= limit
+		if !totalBusy && options.RequestLane == "image" {
+			laneLimit := gatewayhotquality.EffectiveImageLaneConcurrencyLimit(limit, policy)
+			totalBusy = laneCurrent[account.ID] >= laneLimit
+		}
+		if !totalBusy {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------

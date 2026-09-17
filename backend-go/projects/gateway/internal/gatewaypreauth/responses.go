@@ -363,6 +363,11 @@ func WriteGatewayStreamFailureEvent(message string, code string, protocol Gatewa
 }
 
 // BuildGatewayStreamFailureEventForProtocol mirrors the protocol dispatch.
+// chat_completions_sse 补分支是超出 Node 基线的行为收敛（Node
+// responses.ts:202-217 只为 responses_sse/anthropic/gemini 生成失败帧，
+// chat_completions_sse 流在 pre-commit 失败时静默 end，客户端拿到
+// 200 + text/event-stream + 空 body；REAL 门 2026-09-18 生产 gpt 流式
+// 过载场景取证后裁决补帧——客户端应拿到可解析的失败事件而不是空流）。
 func BuildGatewayStreamFailureEventForProtocol(message string, code string, protocol GatewayErrorProtocol, downstreamProtocol OpenAIGatewayDownstreamProtocol) []byte {
 	if protocol == GatewayErrorProtocolAnthropic {
 		return BuildAnthropicGatewayStreamFailureEvent(GatewayErrorPayloadOf(message, "service_unavailable", code))
@@ -373,7 +378,27 @@ func BuildGatewayStreamFailureEventForProtocol(message string, code string, prot
 	if downstreamProtocol == DownstreamProtocolResponsesSSE {
 		return BuildGatewayStreamFailureEvent(message, code)
 	}
+	if downstreamProtocol == DownstreamProtocolChatCompletionsSSE {
+		return BuildChatCompletionsGatewayStreamFailureEvent(GatewayErrorPayloadOf(message, "service_unavailable", code))
+	}
 	return nil
+}
+
+// DownstreamProtocolChatCompletionsSSE mirrors 'chat_completions_sse'
+// (gatewaycodex.DownstreamChatCompletionsSSE; constant kept here to avoid a
+// gatewaypreauth → gatewaycodex import).
+const DownstreamProtocolChatCompletionsSSE OpenAIGatewayDownstreamProtocol = "chat_completions_sse"
+
+// BuildChatCompletionsGatewayStreamFailureEvent assembles the OpenAI chat
+// completions stream failure frame (`data: {"error":{...}}`), reusing the
+// GatewayErrorPayload envelope so message/type/code ordering matches the
+// non-stream error contract.
+func BuildChatCompletionsGatewayStreamFailureEvent(payload GatewayErrorPayload) []byte {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return []byte("data: " + string(encoded) + "\n\n")
 }
 
 // GatewayStreamFailureCode mirrors gatewayStreamFailureCode: a constant

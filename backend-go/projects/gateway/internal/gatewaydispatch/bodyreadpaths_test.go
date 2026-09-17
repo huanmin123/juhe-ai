@@ -624,3 +624,41 @@ func TestReadUpstreamBodyLimitedIncompleteRead(t *testing.T) {
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("连接重置") }
+
+// TestReadFirstNonStreamChunkInspectionPipeKeepsConfiguredAbort 钉住管线参数
+// 对照（Node body.ts:169 vs :305）：inspection 管线（速度优先切号决策所在，
+// pendingReadSupersedesDeadline=false）在 configured deadline abort 后不被
+// 迟到的原始首块推翻；普通转发管线（true）保持并行读优先。false 分支若被
+// 误改为等待读，保底放行 goroutine 会让 Read 返回 EOF → done，断言即失败。
+func TestReadFirstNonStreamChunkInspectionPipeKeepsConfiguredAbort(t *testing.T) {
+	base := int64(10_000)
+	injectNowMs(t, func() int64 { return base })
+	release := make(chan struct{})
+	reader := &releaseOnceReader{release: release}
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		close(release)
+	}()
+	_, _, err := readFirstNonStreamChunk(NonStreamPipeInput{
+		StartedAt:           base - 5_000,
+		Signal:              context.Background(),
+		FirstByteDeadlineMs: ptrInt64(1_000),
+		OnFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
+			return FirstByteDeadlineActionAbort
+		},
+	}, reader, make([]byte, 8), new(bool), false, nil, false)
+	var timeoutErr *GatewayFirstByteTimeoutError
+	if !errorsAs(err, &timeoutErr) || timeoutErr.Source != FirstByteTimeoutSourceConfiguredDeadline {
+		t.Fatalf("inspection 管线应保持 configured deadline abort，err = %v", err)
+	}
+}
+
+// releaseOnceReader 阻塞到 release 后返回 EOF。
+type releaseOnceReader struct {
+	release chan struct{}
+}
+
+func (r *releaseOnceReader) Read([]byte) (int, error) {
+	<-r.release
+	return 0, io.EOF
+}

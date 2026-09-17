@@ -62,17 +62,16 @@ func TestUpstreamResponseModelSlotBindBeforePublish(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFirstByteCoordinatorReservationLifecycle(t *testing.T) {
-	// 行为存疑：NormalRouteFirstByteAttemptCoordinator 零值 state 为 ""，而
-	// AttachReservation/CanCutover/TransferForCutover 只在 state=="active" 时
-	// 生效；dispatchsingle.go 以 `&NormalRouteFirstByteAttemptCoordinator{}`
-	// 构造（Node 对应构造即 active），因此当前生产路径上预留永远无法挂载。
-	// 本测试按当前实际行为断言零值拒绝，并用白盒方式置 active 覆盖完整生命周期。
-	coordinator := &NormalRouteFirstByteAttemptCoordinator{}
-	if coordinator.CanCutover() {
+	// 生产构造入口 NewNormalRouteFirstByteAttemptCoordinator 即 active（Node
+	// 构造语义）。此前 dispatchsingle.go 用零值构造（state=""），预留永远无法
+	// 挂载、速度优先同请求切号整体不可达——已修复为构造函数，零值仍保持拒绝
+	// 语义（直接字面量只应出现在旧测试/白盒场景）。
+	zero := &NormalRouteFirstByteAttemptCoordinator{}
+	if zero.CanCutover() {
 		t.Fatal("零值协调器不可切换")
 	}
 	releasedZero := false
-	if coordinator.AttachReservation(&SpeedFirstCutoverReservationView{
+	if zero.AttachReservation(&SpeedFirstCutoverReservationView{
 		ReleaseFunc: func() { releasedZero = true },
 	}) {
 		t.Fatal("零值协调器必须拒绝挂载")
@@ -80,15 +79,9 @@ func TestFirstByteCoordinatorReservationLifecycle(t *testing.T) {
 	if !releasedZero {
 		t.Fatal("被拒绝的预留必须立即释放")
 	}
-	if coordinator.ReservedTargetAccountID() != "" {
-		t.Fatal("无预留时目标账户应为空")
-	}
-	if coordinator.TransferForCutover() != nil {
-		t.Fatal("无预留时转移应返回 nil")
-	}
 
-	// 白盒进入 active 状态（生产契约期望的构造态）。
-	coordinator.state = "active"
+	// 生产构造：active 态覆盖完整生命周期。
+	coordinator := NewNormalRouteFirstByteAttemptCoordinator()
 	releasedActive := false
 	attached := coordinator.AttachReservation(&SpeedFirstCutoverReservationView{
 		TargetAccountIDValue: "a-1",

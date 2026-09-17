@@ -542,7 +542,7 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 					return attemptLoopExhausted, attemptStopNone, err
 				}
 				normalRouteFirstByteDeadline = &deadline
-				firstByteDeadlineCoordinator = &NormalRouteFirstByteAttemptCoordinator{}
+				firstByteDeadlineCoordinator = NewNormalRouteFirstByteAttemptCoordinator()
 			}
 			firstByteDeadlineTriggered := false
 			var onFirstByteDeadline FirstByteDeadlineHandler

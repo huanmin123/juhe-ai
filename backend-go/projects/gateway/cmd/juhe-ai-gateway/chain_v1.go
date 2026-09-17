@@ -229,7 +229,15 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		c.handleOrchestratorError(err, req, res, startedAt, endpoint)
 		return
 	}
+	// 主 dispatch 循环复用 preflight 构造的 server retry budget（等待上限来自
+	// NoAvailableAccountWaitTimeoutSeconds）；preflight 未装配 DispatchContext
+	// 时（请求已在其内部完成，不会进入 dispatch）才新建。此前这里无条件
+	// NewServerRetryBudget(0)→WaitBudgetMs=1，循环内并发排队/恢复等待的预算
+	// 与 preflight/fallback 路径脱节，上限实际回落到各自策略默认。
 	serverRetryBudget := gatewaypreauth.NewServerRetryBudget(0, c.clock)
+	if preflight.DispatchContext != nil && preflight.DispatchContext.ServerRetryBudget != nil {
+		serverRetryBudget = preflight.DispatchContext.ServerRetryBudget
+	}
 
 	// D-109（BUG-0175）客户端 IP 并发槽生命周期：Node
 	// attachClientIpSlotRelease（routes.ts:2751-2756）把 release 以 once 语义
@@ -380,6 +388,41 @@ func (c *gatewayChain) handleUpstreamResponse(
 	if dispatched.ResponsePrecommitDeadlineAtMs != nil {
 		input.ResponsePrecommitDeadlineAtMs = dispatched.ResponsePrecommitDeadlineAtMs
 	}
+	// 速度优先普通路由非流式首字截止（Node 响应面把 normalRouteFirstByteDeadline
+	// / onFirstByteDeadline 传入 handleNonStreamUpstreamResponse）：尝试级软截止
+	// 与决策回调透传给响应管道，R5 场景 chain 收到配置的 firstByteDeadlineMs。
+	// superseded 通知绑定尝试协调器：原始字节推翻截止时释放切换预留。
+	// 仅非流式装配（B2 复审修复）：流式 StreamPipe 的截止激活属于独立机制——
+	// 其 abort 错误是 gatewayresponse 包内类型，不进下方 cutover verdict 臂，
+	// 激活会造成「流式截止 → 固定 503 + 切换预留悬挂」；流式 cutover 补齐前
+	// 保持流式不激活（对齐 HEAD 行为）。
+	// B1 复审修复：EffectiveDeadlineMs 是相对 attemptStart 的时长
+	// （gatewayrouting/firstbytedeadline.go DeadlineAtMs = attemptStartedAtMs +
+	// effectiveDeadlineMs），竞速基准必须用 dispatched.AttemptStartedAt，
+	// 不能用请求级 startedAt（attempt 前的 preflight/并发等待会被重复扣除，
+	// 响应面截止相对 fetch 面提前）。
+	if !handleAsStream &&
+		dispatched.NormalRouteFirstByteDeadline != nil && dispatched.NormalRouteFirstByteDeadline.EffectiveDeadlineMs > 0 {
+		deadlineMs := dispatched.NormalRouteFirstByteDeadline.EffectiveDeadlineMs
+		input.FirstByteDeadlineMs = &deadlineMs
+		input.DeadlineStartedAtMs = &dispatched.AttemptStartedAt
+		if dispatched.OnFirstByteDeadline != nil {
+			// engine 决策回调是 dispatch 版签名（单返回值）；适配为响应面
+			// 的包内签名（error 返回对齐 handler throw 决策错误）。
+			onDeadline := dispatched.OnFirstByteDeadline
+			input.OnFirstByteDeadline = func(in gatewayresponse.FirstByteDeadlineInput) (gatewayresponse.FirstByteDeadlineAction, error) {
+				action := onDeadline(gatewaydispatch.FirstByteDeadlineDecisionInput{
+					ElapsedMs: in.ElapsedMs,
+					TimeoutMs: in.TimeoutMs,
+					Transport: in.Transport,
+				})
+				return gatewayresponse.FirstByteDeadlineAction(action), nil
+			}
+		}
+		if dispatched.FirstByteDeadlineCoordinator != nil {
+			input.OnFirstByteDeadlineSuperseded = dispatched.FirstByteDeadlineCoordinator.Supersede
+		}
+	}
 	var (
 		handling gatewayresponse.UpstreamResponseHandlingResult
 		err      error
@@ -390,6 +433,28 @@ func (c *gatewayChain) handleUpstreamResponse(
 		handling, err = gatewayresponse.HandleNonStreamUpstreamResponse(*input)
 	}
 	if err != nil {
+		// 速度优先非流式首字截止竞速的 configured_deadline abort（Node
+		// routes.ts catch 响应段的 deadline 分支）：凭尝试协调器转移的切换
+		// 预留转 cutover verdict，由 dispatch loop 的
+		// settleSpeedFirstCutoverError 消费（收窄重派或耗尽退出），不落入
+		// 下方固定 503。engine attempt loop 只覆盖 fetch 阶段错误，响应段
+		// 只能由 chain 层接入。流式 body 阶段截止错误是 gatewayresponse 包
+		// 内错误类型且当前未在 chain 激活流式 body 截止，不进本臂。
+		var firstByteTimeoutErr *gatewaydispatch.GatewayFirstByteTimeoutError
+		if errors.As(err, &firstByteTimeoutErr) &&
+			firstByteTimeoutErr.Source == gatewaydispatch.FirstByteTimeoutSourceConfiguredDeadline &&
+			dispatched.NormalRouteFirstByteDeadline != nil {
+			var cutoverReservation any
+			if dispatched.FirstByteDeadlineCoordinator != nil {
+				cutoverReservation = dispatched.FirstByteDeadlineCoordinator.TransferForCutover()
+			}
+			return gatewayresponse.UpstreamResponseHandlingResult{
+				FirstByteDeadlineCutover: true,
+				CutoverReservationView:   cutoverReservation,
+				ErrorCode:                firstByteTimeoutErr.Code(),
+				Message:                  firstByteTimeoutErr.Message,
+			}
+		}
 		// Node has no dedicated response-handler error exit: the failure
 		// falls through to the top-level catch contract. A committed
 		// downstream stays untouched (bare disconnect); an unwritten one
@@ -577,6 +642,17 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 				}()
 				return l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
 			}()
+			if handling.FirstByteDeadlineCutover {
+				// R5：非流式管线 configured_deadline 首字超时的切号 verdict
+				// （Node routes.ts catch 响应段）交给既有 cutover 消费端：
+				// 收窄到保留目标重派（false → continue）或耗尽退出（true）。
+				// 预留已在响应面 TransferForCutover 转移进 verdict，此处只
+				// 消费、不重复转移（Transfer 为 active→transferred once 语义）。
+				if l.settleFirstByteDeadlineCutoverVerdict(ctx, dispatched, handling) {
+					return
+				}
+				continue
+			}
 			if !handling.RetryUpstream {
 				// routes.ts:2393-2455: the speed-first response observation
 				// (slow/success sampling) runs once the response completed
@@ -1155,6 +1231,31 @@ func (l *v1DispatchLoop) resetSpeedFirstState() {
 		l.speedFirstCutoverReservation = nil
 	}
 	l.speedFirstSlowObservedForAttempt = nil
+}
+
+// settleFirstByteDeadlineCutoverVerdict 把响应面的非流式首字截止切号
+// verdict（R5）映射为 NormalRouteFirstByteCutoverError 交给既有
+// settleSpeedFirstCutoverError 消费（锁定臂/预留携带收窄重派/无预留耗尽
+// 退出臂与审计保持原样）。返回 true = 请求已结算；false = 收窄后继续派发。
+func (l *v1DispatchLoop) settleFirstByteDeadlineCutoverVerdict(
+	ctx context.Context,
+	dispatched gatewaydispatch.UpstreamDispatchResult,
+	handling gatewayresponse.UpstreamResponseHandlingResult,
+) bool {
+	deadline := dispatched.NormalRouteFirstByteDeadline
+	if deadline == nil {
+		// 响应面仅在尝试级截止存在时产出 cutover verdict；此臂为恒不可达
+		// 守卫：保持耗尽契约渲染，避免空 200。
+		l.renderDispatchExhaustedWithMessage(ctx, handling.Message, dispatched.Account.ID, dispatched.Account.Name)
+		return true
+	}
+	return l.settleSpeedFirstCutoverError(ctx, &gatewaydispatch.NormalRouteFirstByteCutoverError{
+		AccountID:          dispatched.Account.ID,
+		AccountName:        dispatched.Account.Name,
+		Deadline:           *deadline,
+		Message:            handling.Message,
+		CutoverReservation: handling.CutoverReservationView,
+	})
 }
 
 // settleSpeedFirstCutoverError 镜像 routes.ts:1295-1345 的

@@ -220,7 +220,7 @@ func pipeNonStreamUpstreamResponseCommon(
 			return inspectOutcome{}, downstreamWriting, &UpstreamRequestAbortedError{Message: "请求已取消", UpstreamRequestStarted: true}
 		}
 
-		read, deadlineObserved, readErr := readFirstNonStreamChunk(input, upstreamBody, buffer, &firstByteSeen, firstByteDeadlineObserved, maxLifetimeDeadlineAt)
+		read, deadlineObserved, readErr := readFirstNonStreamChunk(input, upstreamBody, buffer, &firstByteSeen, firstByteDeadlineObserved, maxLifetimeDeadlineAt, inspect == nil)
 		firstByteDeadlineObserved = deadlineObserved
 		if readErr != nil {
 			if readErr == io.EOF {
@@ -361,7 +361,12 @@ type chunkRead struct {
 }
 
 // readFirstNonStreamChunk dispatches between the first-chunk deadline reader
-// and the absolute-deadline reader for later chunks.
+// and the absolute-deadline reader for later chunks. pendingReadSupersedesDeadline
+// mirrors the Node split (body.ts:169 vs :305): the plain forward pipe keeps a
+// parallel raw read (true), while the inspection pipe — where the speed-first
+// cutover decision lives — requires semantic output to supersede an abort
+// (false); raw first bytes alone still throw the configured-deadline timeout
+// so the same-request cutover fires.
 func readFirstNonStreamChunk(
 	input NonStreamPipeInput,
 	reader io.Reader,
@@ -369,6 +374,7 @@ func readFirstNonStreamChunk(
 	firstByteSeen *bool,
 	firstByteDeadlineObserved bool,
 	maxLifetimeDeadlineAt *int64,
+	pendingReadSupersedesDeadline bool,
 ) (chunkRead, bool, error) {
 	if !*firstByteSeen {
 		return readFirstNonStreamChunkWithDeadlines(reader, buffer, input.StartedAt, firstByteDeadlineReadInput{
@@ -380,7 +386,7 @@ func readFirstNonStreamChunk(
 			onFirstByteDeadline:           input.OnFirstByteDeadline,
 			onFirstByteDeadlineSuperseded: input.OnFirstByteDeadlineSuperseded,
 			responsePrecommitDeadlineAtMs: input.ResponsePrecommitDeadlineAtMs,
-			pendingReadSupersedesDeadline: true,
+			pendingReadSupersedesDeadline: pendingReadSupersedesDeadline,
 			maxLifetimeDeadlineAt:         maxLifetimeDeadlineAt,
 			maxLifetimeMs:                 input.MaxLifetimeMs,
 		})

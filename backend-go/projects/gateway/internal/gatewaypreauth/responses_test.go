@@ -169,12 +169,15 @@ func TestBuildGatewayStreamFailureEvent(t *testing.T) {
 	gemini := BuildGeminiGatewayStreamFailureEvent(GatewayErrorPayloadOf("boom", "service_unavailable", "x"))
 	assertContains(t, string(gemini), "event: error", `"status":"UNAVAILABLE"`)
 	if downstream := BuildGatewayStreamFailureEventForProtocol("boom", "", GatewayErrorProtocolOpenAI, ""); downstream != nil {
-		t.Fatal("responses_sse 之外的 openai 流不应产生失败事件")
+		t.Fatal("未声明下游协议的 openai 流不应产生失败事件")
 	}
 	withResponsesSSE := BuildGatewayStreamFailureEventForProtocol("boom", "", GatewayErrorProtocolOpenAI, DownstreamProtocolResponsesSSE)
 	if withResponsesSSE == nil {
 		t.Fatal("responses_sse 流应产生失败事件")
 	}
+	// chat_completions_sse 失败帧（超出 Node 基线的行为收敛，见构建器注释）。
+	chatCompletions := BuildGatewayStreamFailureEventForProtocol("boom", "c9", GatewayErrorProtocolOpenAI, DownstreamProtocolChatCompletionsSSE)
+	assertContains(t, string(chatCompletions), `data: {"error":`, `"type":"service_unavailable"`, `"code":"c9"`)
 }
 
 func TestIsOpenAIStreamContentType(t *testing.T) {

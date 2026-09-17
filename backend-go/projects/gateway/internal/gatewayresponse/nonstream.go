@@ -7,7 +7,10 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
@@ -48,13 +51,32 @@ type NonStreamPipeInput struct {
 	// InspectBytes>0 启用有界整体缓冲（ForInspection 路径）。
 	InspectBytes         int
 	RequireFullyBuffered bool
-	Signal               interface{ Done() <-chan struct{} }
-	PrepareDownstream    func()
-	OnChunkRead          func(chunk []byte)
-	OnChunkWritten       func(bytesWritten int64)
-	OnBodyCompleted      func(transferredBytes int64)
-	OnFirstByte          func()
-	NowMs                func() int64
+	// FirstByteDeadlineMs 对齐 pipeNonStreamUpstreamResponse 的
+	// firstByteDeadlineMs：速度优先普通路由软截止（绝对时刻 =
+	// DeadlineStartedAtMs + 值），只约束首个 body 分片的读取。
+	FirstByteDeadlineMs *int64
+	// DeadlineStartedAtMs 是软截止的计时基准（attempt 时刻，Node
+	// routes.ts:1575 给响应面传 attemptStartedAt）。nil 时回退 StartedAtMs。
+	// EffectiveDeadlineMs 的定义域是「相对 attemptStart 的时长」，与请求级
+	// StartedAtMs 之间隔着 preflight/并发等待/候选轮换——用请求开始当基准会把
+	// 这段耗时重复扣除，响应面截止相对 fetch 面提前。
+	DeadlineStartedAtMs *int64
+	// OnFirstByteDeadline 对齐 onFirstByteDeadline：软截止到点后的路由决策
+	// 回调（abort → 抛 configured_deadline 首字超时；continue → 继续等待）。
+	// 与 HandleUpstreamResponseInput.OnFirstByteDeadline 同为包内签名
+	// （error 返回对齐 handler throw 决策错误）。
+	OnFirstByteDeadline FirstByteDeadlineHandler
+	// OnFirstByteDeadlineSuperseded 对齐 onFirstByteDeadlineSuperseded：读
+	// 胜出且本管线允许原始字节推翻截止决策时通知（对齐 Node body.ts:169 与
+	// :305 双管线——纯透传管线 true、检查管线 false）。
+	OnFirstByteDeadlineSuperseded func()
+	Signal                        interface{ Done() <-chan struct{} }
+	PrepareDownstream             func()
+	OnChunkRead                   func(chunk []byte)
+	OnChunkWritten                func(bytesWritten int64)
+	OnBodyCompleted               func(transferredBytes int64)
+	OnFirstByte                   func()
+	NowMs                         func() int64
 }
 
 // PipeNonStreamUpstreamResponse 对齐 pipeNonStreamUpstreamResponse /
@@ -126,13 +148,44 @@ func PipeNonStreamUpstreamResponse(input NonStreamPipeInput) (NonStreamPipeResul
 		return result, &NonStreamBodyPipeError{OriginalError: original, PartialResult: partialResultOf(result)}
 	}
 
+	// 速度优先首块竞速（R5）：配置了软截止时，首个 body 分片的读取与截止
+	// 竞速（Node pipeNonStreamUpstreamResponse / ForInspection 的首块
+	// readFirstNonStreamChunkWithDeadlines）；后续分片保持原逻辑。
+	deadlineRaced := false
+	var racedChunk ChunkResult
+	var racedDone bool
+	var racedErr error
+	if input.FirstByteDeadlineMs != nil && *input.FirstByteDeadlineMs > 0 {
+		// 检查管线（InspectBytes>0）只有完整语义响应可推翻截止（supersede
+		// false，Node body.ts:305）；纯透传管线原始字节即可推翻（true，
+		// body.ts:169）。
+		racedChunk, racedDone, racedErr = raceFirstNonStreamChunkWithDeadline(input, !inspectionMode, nowMs)
+		deadlineRaced = true
+	}
+
 	for {
 		if signalAbortedChannel(input.Signal) {
 			return result, &UpstreamRequestAbortedError{Message: ErrUpstreamRequestAbortedMessage, UpstreamRequestStarted: true}
 		}
-		chunkResult, ok := <-input.Body.Next()
-		if !ok {
-			break
+		var chunkResult ChunkResult
+		if deadlineRaced {
+			deadlineRaced = false
+			if racedErr != nil {
+				if IsUpstreamRequestAbortedError(racedErr) {
+					return result, racedErr
+				}
+				return partialFailure(racedErr)
+			}
+			if racedDone {
+				break
+			}
+			chunkResult = racedChunk
+		} else {
+			var ok bool
+			chunkResult, ok = <-input.Body.Next()
+			if !ok {
+				break
+			}
 		}
 		if chunkResult.Err != nil {
 			if errors.Is(chunkResult.Err, io.EOF) {
@@ -218,6 +271,174 @@ func SendFullyBufferedNonStreamBody(input NonStreamPipeInput, body []byte) error
 		input.OnChunkWritten(int64(len(body)))
 	}
 	return nil
+}
+
+// nonStreamFirstChunkFuture 把首个 body 分片的读取收敛为单值 future：数据源
+// goroutine 是 body.Next() 的唯一消费者，结果经缓存共享，done 关闭广播就绪。
+// 主流程 select 与截止决策（经 pendingRead 工厂）竞争唤醒，先到者触发缓存，
+// 不存在第二个 channel 消费者，避免双消费与并发 Await 死锁。
+type nonStreamFirstChunkFuture struct {
+	done  chan struct{}
+	mu    sync.Mutex
+	chunk ChunkResult
+}
+
+func observeNonStreamFirstChunk(body UpstreamBody) *nonStreamFirstChunkFuture {
+	future := &nonStreamFirstChunkFuture{done: make(chan struct{})}
+	go func() {
+		result, ok := <-body.Next()
+		if !ok {
+			// 上游 future 源被关闭（管道 Close / 连接中断）按干净 EOF 收敛。
+			result = ChunkResult{Err: io.EOF}
+		}
+		future.mu.Lock()
+		future.chunk = result
+		future.mu.Unlock()
+		close(future.done)
+	}()
+	return future
+}
+
+func (f *nonStreamFirstChunkFuture) settle() ChunkResult {
+	<-f.done
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.chunk
+}
+
+// raceFirstNonStreamChunkWithDeadline 对齐 readFirstNonStreamChunkWithDeadlines
+// （upstream/body.ts 的非流式首块读取竞速）：首块读取与软截止竞速，到点后
+// 等待路由决策——abort 抛 configured_deadline 首字超时；continue 继续等待
+// 原始读；决策期间读已 settle 时按 pendingReadSupersedesDeadline 分支（纯
+// 透传管线原始字节推翻截止并通知 superseded；检查管线只有语义决策可推翻，
+// abort 决策按「仍未返回完整语义响应」超时）。决策与错误语义单一事实源是
+// gatewaydispatch 的导出决策原语；此处镜像的仅是竞速骨架，因为本管道的
+// 数据源是 UpstreamBody 的 channel future，而非 dispatch 管道的 io.Reader。
+func raceFirstNonStreamChunkWithDeadline(
+	input NonStreamPipeInput,
+	pendingReadSupersedesDeadline bool,
+	nowMs func() int64,
+) (ChunkResult, bool, error) {
+	deadlineMs := *input.FirstByteDeadlineMs
+	var abortCh <-chan struct{}
+	if input.Signal != nil {
+		abortCh = input.Signal.Done()
+	}
+	future := observeNonStreamFirstChunk(input.Body)
+	pendingRead := gatewaydispatch.ObserveFirstBytePendingRead(func() (ChunkResult, error) {
+		chunk := future.settle()
+		return chunk, chunk.Err
+	})
+	// 包内 handler（error 返回对齐 handler throw）桥接为 dispatch 决策原语
+	// 的 handler：throw 经 panic 交给 runDeadlineHandler 的 recover 转为
+	// decisionError，保持单一事实源的决策语义与 panic 保护。
+	var dispatchDeadlineHandler gatewaydispatch.FirstByteDeadlineHandler
+	if input.OnFirstByteDeadline != nil {
+		handler := input.OnFirstByteDeadline
+		dispatchDeadlineHandler = func(in gatewaydispatch.FirstByteDeadlineDecisionInput) gatewaydispatch.FirstByteDeadlineAction {
+			action, handlerErr := handler(FirstByteDeadlineInput{
+				ElapsedMs: in.ElapsedMs,
+				TimeoutMs: in.TimeoutMs,
+				Transport: in.Transport,
+			})
+			if handlerErr != nil {
+				panic(handlerErr)
+			}
+			return gatewaydispatch.FirstByteDeadlineAction(action)
+		}
+	}
+
+	deadlineStartedAtMs := input.StartedAtMs
+	if input.DeadlineStartedAtMs != nil {
+		deadlineStartedAtMs = *input.DeadlineStartedAtMs
+	}
+	softDeadlineAt := deadlineStartedAtMs + deadlineMs
+	remainingMs := softDeadlineAt - nowMs()
+	if remainingMs > 0 {
+		timer := time.NewTimer(time.Duration(remainingMs) * time.Millisecond)
+		select {
+		case <-timer.C:
+			// 软截止到点 → 路由决策。
+		case <-abortCh:
+			timer.Stop()
+			return ChunkResult{}, false, &UpstreamRequestAbortedError{Message: ErrUpstreamRequestAbortedMessage, UpstreamRequestStarted: true}
+		case <-future.done:
+			timer.Stop()
+			chunk := future.settle()
+			return resolveNonStreamFirstChunkResult(chunk)
+		}
+	}
+
+	// 软截止到点：等待路由决策（handler 拥有共享的切换预留与慢观察审计）。
+	decision := gatewaydispatch.DecideFirstByteDeadlineAfterPendingRead(
+		pendingRead,
+		dispatchDeadlineHandler,
+		gatewaydispatch.FirstByteDeadlineDecisionInput{
+			ElapsedMs: nowMs() - deadlineStartedAtMs,
+			TimeoutMs: deadlineMs,
+			Transport: "non_stream",
+		},
+		gatewaydispatch.FirstByteDeadlineDecisionWaitOptions{},
+	)
+	if decision.Type == gatewaydispatch.DeadlineDecisionRead {
+		// 决策期间原始读已 settle：按管线语义判定能否推翻截止。
+		if pendingReadSupersedesDeadline {
+			if input.OnFirstByteDeadlineSuperseded != nil {
+				input.OnFirstByteDeadlineSuperseded()
+			}
+			return resolveNonStreamFirstChunkResult(decision.Result)
+		}
+		if decision.DecisionError != nil {
+			return ChunkResult{}, false, decision.DecisionError
+		}
+		if decision.Action == gatewaydispatch.FirstByteDeadlineActionAbort {
+			return ChunkResult{}, false, nonStreamConfiguredDeadlineError(deadlineMs, true)
+		}
+		return resolveNonStreamFirstChunkResult(decision.Result)
+	}
+	if decision.Error != nil {
+		// handler panic / 返回错误且读未 settle：决策失败按原始错误上抛。
+		return ChunkResult{}, false, decision.Error
+	}
+	if decision.Action == gatewaydispatch.FirstByteDeadlineActionAbort {
+		return ChunkResult{}, false, nonStreamConfiguredDeadlineError(deadlineMs, false)
+	}
+
+	// continue：软截止已观测且不再重建计时器（Node 循环重复但 soft 已
+	// observed），等待原始读或客户端中断。
+	for {
+		select {
+		case <-future.done:
+			chunk := future.settle()
+			return resolveNonStreamFirstChunkResult(chunk)
+		case <-abortCh:
+			return ChunkResult{}, false, &UpstreamRequestAbortedError{Message: ErrUpstreamRequestAbortedMessage, UpstreamRequestStarted: true}
+		}
+	}
+}
+
+// resolveNonStreamFirstChunkResult 把首块 future 结果收敛为管道循环入参：
+// Err == io.EOF 表示干净 EOF（done），读取错误原样上抛。
+func resolveNonStreamFirstChunkResult(chunk ChunkResult) (ChunkResult, bool, error) {
+	if errors.Is(chunk.Err, io.EOF) {
+		return ChunkResult{}, true, nil
+	}
+	return chunk, false, nil
+}
+
+// nonStreamConfiguredDeadlineError 对齐 dispatch 侧 configured_deadline 首字
+// 超时；semanticWait 区分 timer 胜出（首个字节）与检查管线语义决策（完整
+// 语义响应）两个消息分支。
+func nonStreamConfiguredDeadlineError(deadlineMs int64, semanticWait bool) error {
+	suffix := "首个字节"
+	if semanticWait {
+		suffix = "完整语义响应"
+	}
+	return &gatewaydispatch.GatewayFirstByteTimeoutError{
+		Message:   "上游非流式响应 " + itoa(ceilDiv(deadlineMs, 1000)) + "s 后仍未返回" + suffix,
+		TimeoutMs: deadlineMs,
+		Source:    gatewaydispatch.FirstByteTimeoutSourceConfiguredDeadline,
+	}
 }
 
 func partialResultOf(result NonStreamPipeResult) NonStreamPipeResult {
@@ -330,6 +551,12 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				}
 			},
 			NowMs: nowMsOf(&input),
+			// 速度优先软截止与决策回调透传（对齐流式 StreamPipeOptions 的
+			// FirstByteDeadlineMs / OnFirstByteDeadline 装配）。
+			FirstByteDeadlineMs:           timeoutsWithDisabled(input.TimeoutProfile, input.FirstByteDeadlineMs),
+			DeadlineStartedAtMs:           input.DeadlineStartedAtMs,
+			OnFirstByteDeadline:           input.OnFirstByteDeadline,
+			OnFirstByteDeadlineSuperseded: input.OnFirstByteDeadlineSuperseded,
 		}
 		if inspectJSON {
 			pipeSpec.InspectBytes = NonStreamResponseInspectionMaxBytes

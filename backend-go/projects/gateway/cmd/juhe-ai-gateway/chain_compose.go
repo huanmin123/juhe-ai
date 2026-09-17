@@ -525,6 +525,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		deps.ConcurrencyTracker = gatewayclientip.NewMemoryAccountConcurrency(nil)
 	}
 	engine.Concurrency = newChainConcurrencyStore(deps.ConcurrencyTracker)
+	// F13 同源接线：session affinity 的高并发忙判定（Node
+	// session-affinity.service.ts:273-330 areHighConcurrencyAccountsBusyForLaneAsync）
+	// 与 engine 并发槽 / high-concurrency 队列读同一并发事实源；nil store
+	// 仅存在于零值 localSessionAffinity 的组合测试（恒不忙降级）。
+	sessionAffinity.concurrency = newChainConcurrencyStore(deps.ConcurrencyTracker)
 	engine.Cache = newChainRuntimeCachePort(deps.Cache)
 	// W4-B（BUG-0175）D-111 接线：瞬态加载守卫 + API Key 效果链端口
 	//（nil 守卫保持空集降级；nil 端口保持 confirmed-rotation 静默跳过——

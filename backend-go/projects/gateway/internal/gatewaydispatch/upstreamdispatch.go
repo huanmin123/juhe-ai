@@ -162,6 +162,17 @@ type NormalRouteFirstByteAttemptCoordinator struct {
 	reservation *SpeedFirstCutoverReservationView
 }
 
+// NewNormalRouteFirstByteAttemptCoordinator builds the coordinator in the
+// active state. Node's constructor produces an active coordinator, so the
+// zero value (state "") must not reach production: dispatchsingle.go used to
+// build `&NormalRouteFirstByteAttemptCoordinator{}`, which made
+// AttachReservation/CanCutover/TransferForCutover permanently false and kept
+// the speed-first same-request cutover unreachable (R5 E2E FINDING #4 root
+// cause). Keep the zero value rejecting for direct literals in tests.
+func NewNormalRouteFirstByteAttemptCoordinator() *NormalRouteFirstByteAttemptCoordinator {
+	return &NormalRouteFirstByteAttemptCoordinator{state: "active"}
+}
+
 // SpeedFirstCutoverReservationView is the reservation view the engine owns
 // (gatewayhotquality.SpeedFirstCutoverReservation projected for the engine).
 type SpeedFirstCutoverReservationView struct {

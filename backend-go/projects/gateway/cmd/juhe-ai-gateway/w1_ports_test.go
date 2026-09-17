@@ -278,7 +278,10 @@ func TestW1LocalSessionAffinityLifecycle(t *testing.T) {
 	if err := affinity.ForgetAsync(ctx, "", "c"); err != nil {
 		t.Fatalf("empty forget = %v", err)
 	}
-	// 高并发账户：进程内实现恒不忙。
+	// 高并发账户：零值 localSessionAffinity（nil 并发事实源）保持显式降级，
+	// 恒不忙（注入 store 后的真实谓词见
+	// TestW1PLocalSessionAffinityHighConcurrencyBusy）。
+	affinity.concurrency = nil
 	busy, err := affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, gatewaydispatch.HighConcurrencyBusyOptions{})
 	if err != nil || busy {
 		t.Fatalf("busy = %v, %v", busy, err)
