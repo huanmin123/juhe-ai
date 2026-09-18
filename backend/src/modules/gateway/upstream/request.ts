@@ -624,10 +624,79 @@ export function buildUpstreamRequestBody(req: Request): Buffer | undefined {
     return cached.body
   }
   const rawBody = (req as GatewayRawBodyRequest).rawBody
-  const body = rawBody && rawBody.length > 0 ? rawBody : undefined
+  const body = rawBody && rawBody.length > 0
+    ? normalizeOpenAIReasoningFieldsForUpstream(req, rawBody)
+    : undefined
   requestWithBodyCache.gatewayUpstreamBodyCache = requestWithBodyCache.gatewayUpstreamBodyCache ?? {}
   requestWithBodyCache.gatewayUpstreamBodyCache.passthrough = { body }
   return body
+}
+
+/**
+ * Keep OpenAI Chat and Responses reasoning controls on their own wire shape.
+ * Some clients can send both fields; OpenAI-compatible upstreams may reject
+ * that request instead of choosing one. Only these protocol control fields
+ * are normalized; unrelated raw passthrough content remains untouched.
+ */
+export function normalizeOpenAIReasoningFieldsForUpstream(
+  req: Pick<Request, 'originalUrl' | 'path'>,
+  body: Buffer
+): Buffer {
+  const endpointFamily = openAIReasoningEndpointFamily(req)
+  if (!endpointFamily) return body
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body.toString('utf8'))
+  } catch {
+    return body
+  }
+  if (!isPlainJSONObject(parsed)) return body
+
+  const reasoning = isPlainJSONObject(parsed.reasoning) ? parsed.reasoning : undefined
+  const nestedEffort = typeof reasoning?.effort === 'string' && reasoning.effort.trim()
+    ? reasoning.effort
+    : undefined
+  const flatEffort = typeof parsed.reasoning_effort === 'string' && parsed.reasoning_effort.trim()
+    ? parsed.reasoning_effort
+    : undefined
+  if (!nestedEffort && !flatEffort) return body
+
+  let changed = false
+  if (endpointFamily === 'chat_completions') {
+    if (!flatEffort && nestedEffort) {
+      parsed.reasoning_effort = nestedEffort
+      changed = true
+    }
+    if (Object.prototype.hasOwnProperty.call(parsed, 'reasoning')) {
+      delete parsed.reasoning
+      changed = true
+    }
+  } else {
+    if (!nestedEffort && flatEffort) {
+      parsed.reasoning = { effort: flatEffort }
+      changed = true
+    }
+    if (Object.prototype.hasOwnProperty.call(parsed, 'reasoning_effort')) {
+      delete parsed.reasoning_effort
+      changed = true
+    }
+  }
+  return changed ? Buffer.from(JSON.stringify(parsed)) : body
+}
+
+function openAIReasoningEndpointFamily(
+  req: Pick<Request, 'originalUrl' | 'path'>
+): 'chat_completions' | 'responses' | undefined {
+  const rawPath = req.originalUrl || req.path || ''
+  const path = rawPath.split('?', 1)[0].replace(/^\/v1(?=\/|$)/, '') || '/'
+  if (path === '/chat/completions') return 'chat_completions'
+  if (path === '/responses' || path === '/responses/compact') return 'responses'
+  return undefined
+}
+
+function isPlainJSONObject(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, account: UpstreamHeaderAccount): Headers {

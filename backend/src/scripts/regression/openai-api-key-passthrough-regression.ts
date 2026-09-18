@@ -78,6 +78,7 @@ const apiKeyAccount: OpenAIAccountSecret = {
 
 async function main(): Promise<void> {
   testRawBodyPassthrough()
+  testOpenAIReasoningFieldNormalization()
   testGptAccountRequestOverridePureFunction()
   await testOpenAIStandardRequestPartsPassthrough()
   await testGptResponsesRequestOverrides()
@@ -249,6 +250,51 @@ function testRawBodyPassthrough(): void {
 
   assert.ok(Buffer.isBuffer(body))
   assert.equal(Buffer.compare(body, rawBody), 0)
+}
+
+function testOpenAIReasoningFieldNormalization(): void {
+  const chatRawBody = Buffer.from(JSON.stringify({
+    model: 'glm-5.3-flash',
+    messages: [{ role: 'user', content: 'hello' }],
+    reasoning_effort: 'high',
+    reasoning: { effort: 'high', summary: 'auto' }
+  }))
+  const chatBody = parseJsonBuffer(buildUpstreamRequestBody(createRequest(
+    undefined,
+    { 'content-type': 'application/json' },
+    chatRawBody,
+    '/v1/chat/completions'
+  )))
+  assert.equal(chatBody.reasoning_effort, 'high')
+  assert.equal(chatBody.reasoning, undefined, 'Chat 上游不得携带 Responses reasoning 对象')
+
+  const responsesRawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.6',
+    input: 'hello',
+    reasoning_effort: 'low',
+    reasoning: { effort: 'high', summary: 'auto' }
+  }))
+  const responsesBody = parseJsonBuffer(buildUpstreamRequestBody(createRequest(
+    undefined,
+    { 'content-type': 'application/json' },
+    responsesRawBody,
+    '/v1/responses'
+  )))
+  assert.deepEqual(responsesBody.reasoning, { effort: 'high', summary: 'auto' })
+  assert.equal(responsesBody.reasoning_effort, undefined, 'Responses 上游不得携带 Chat reasoning_effort')
+
+  const chatNestedOnlyBody = parseJsonBuffer(buildUpstreamRequestBody(createRequest(
+    undefined,
+    { 'content-type': 'application/json' },
+    Buffer.from(JSON.stringify({
+      model: 'glm-5.3-flash',
+      messages: [],
+      reasoning: { effort: 'medium' }
+    })),
+    '/v1/chat/completions'
+  )))
+  assert.equal(chatNestedOnlyBody.reasoning_effort, 'medium')
+  assert.equal(chatNestedOnlyBody.reasoning, undefined)
 }
 
 async function testOpenAIStandardRequestPartsPassthrough(): Promise<void> {
