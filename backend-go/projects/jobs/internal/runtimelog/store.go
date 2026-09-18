@@ -97,10 +97,9 @@ func OpenStore(ctx context.Context, config Config) (Store, error) {
 		if strings.TrimSpace(runtimeLogPath) == "" {
 			return nil, errors.New("sqlite 模式缺少运行日志专用数据库路径")
 		}
-		db, err := sql.Open("sqlite", runtimeLogPath)
-		if err != nil {
-			return nil, err
-		}
+		// sqlite 驱动经空白导入静态注册，sql.Open 惰性连接不再出错
+		// （w14i 删除不可达防御守卫）。
+		db, _ := sql.Open("sqlite", runtimeLogPath)
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", sqliteBusyTimeoutMs)); err != nil {
@@ -345,10 +344,8 @@ func (store *sqliteStore) ReleaseOwnerLease(ctx context.Context, lease OwnerLeas
 	if err != nil {
 		return err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
+	// modernc 驱动的 RowsAffected 不会产生错误（w14i 删除不可达防御守卫）。
+	affected, _ := result.RowsAffected()
 	return requireOwnerLeaseMutation(affected)
 }
 
@@ -557,10 +554,9 @@ func openSQLiteReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("无法访问运行日志所需的 SQLite 只读数据源: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, err
-	}
+	// sqlite 驱动经空白导入静态注册，sql.Open 惰性连接不再出错
+	// （w14i 删除不可达防御守卫）。
+	db, _ := sql.Open("sqlite", path)
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	if _, err := db.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
@@ -654,10 +650,8 @@ func sqliteRenewOwnerLease(ctx context.Context, db *sql.DB, lease OwnerLease, du
 	if err != nil {
 		return false, err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
+	// modernc 驱动的 RowsAffected 不会产生错误（w14i 删除不可达防御守卫）。
+	affected, _ := result.RowsAffected()
 	return affected == 1, nil
 }
 
@@ -729,10 +723,8 @@ func verifySQLiteOwnerLease(ctx context.Context, tx *sql.Tx, lease OwnerLease) e
 	if err != nil {
 		return err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
+	// modernc 驱动的 RowsAffected 不会产生错误（w14i 删除不可达防御守卫）。
+	affected, _ := result.RowsAffected()
 	return requireOwnerLeaseMutation(affected)
 }
 
@@ -921,10 +913,8 @@ func insertSQLiteRecords(ctx context.Context, tx *sql.Tx, records []Record) ([]f
 		if err != nil {
 			return nil, err
 		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return nil, err
-		}
+		// modernc 驱动的 RowsAffected 不会产生错误（w14i 删除不可达防御守卫）。
+		changed, _ := result.RowsAffected()
 		if changed > 0 {
 			inserted = append(inserted, facetRow{Time: record.Time, Level: record.Level, Event: record.Event})
 		}

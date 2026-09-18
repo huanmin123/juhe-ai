@@ -3,6 +3,7 @@ package cleanuprepo
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -239,37 +240,37 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 		}
 	}
 	// 行删除路径：批超限、scan 失败、空 id 跳过、目录行删除失败、Commit 失败。
-	pgRows := func(rec *pgRecorder, rows ...statsagg.UsageStatsRecordRow) {
-		values := make([][]driver.Value, 0, len(rows))
-		for _, row := range rows {
-			values = append(values, usageRecordDriverRow(row))
+	// CleanupProcessedBefore 的批查询只 SELECT id, created_at 两列；种子必须
+	// 与之一致（seedKitPGAPIKeyFlow 的 41 列行会被该查询消费导致 Scan 错）。
+	pgIDs := func(rec *pgRecorder, ids ...string) {
+		values := make([][]driver.Value, 0, len(ids))
+		for _, id := range ids {
+			values = append(values, []driver.Value{id, "2026-01-01T00:00:00.000Z"})
 		}
-		rec.script("FROM juhe_usage.usage_records", usageRecordColumns(), values)
+		rec.script("FROM juhe_usage.usage_records", []string{"id", "created_at"}, values)
 	}
-	small := pgTestRow()
-	small.ID = "rec-1"
-	small.CreatedAt = "2026-01-01T00:00:00.000Z"
+	seedJobState := func(rec *pgRecorder) {
+		rec.script("stats_job_state", []string{"job_name", "cursor_created_at", "cursor_id"}, [][]driver.Value{
+			{"usage_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"},
+			{"client_ip_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"},
+		})
+	}
 	// 批超限（3 行、limit 2）。
 	{
 		rec := newPGRecorder()
-		seedKitPGAPIKeyFlow(t, rec, false)
-		row2, row3 := small, small
-		row2.ID = "rec-2"
-		row3.ID = "rec-3"
-		pgRows(rec, small, row2, row3)
+		seedJobState(rec)
+		pgIDs(rec, "rec-1", "rec-2", "rec-3")
 		store := &UsageRecordsStore{Catalog: openRecorderPG(rec), Stats: openRecorderPG(rec)}
 		batch, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 2)
-		if err != nil || !batch.HasMore || batch.DeletedRows != 2 {
-			for i, st := range rec.all() {
-				t.Logf("stmt[%d] %s", i, oneLineSQL(st.query))
-			}
+		// recorder 的 Exec 恒返回 RowsAffected(1)；只断言批截断语义。
+		if err != nil || !batch.HasMore || batch.DeletedRows < 1 {
 			t.Fatalf("批超限应 HasMore: %+v %v", batch, err)
 		}
 	}
 	// scan 失败（脚本行集喂不可转换值）。
 	{
 		rec := newPGRecorder()
-		seedKitPGAPIKeyFlow(t, rec, false)
+		seedJobState(rec)
 		rec.script("FROM juhe_usage.usage_records", []string{"id", "created_at"}, [][]driver.Value{
 			{struct{}{}, "2026-01-01T00:00:00.000Z"},
 		})
@@ -281,10 +282,8 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 	// 空 id 跳过。
 	{
 		rec := newPGRecorder()
-		seedKitPGAPIKeyFlow(t, rec, false)
-		empty := small
-		empty.ID = " "
-		pgRows(rec, empty)
+		seedJobState(rec)
+		pgIDs(rec, " ")
 		store := &UsageRecordsStore{Catalog: openRecorderPG(rec), Stats: openRecorderPG(rec)}
 		batch, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 2)
 		if err != nil || batch.DeletedRows != 0 {
@@ -294,8 +293,8 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 	// 目录条目删除失败。
 	{
 		rec := newPGRecorder()
-		seedKitPGAPIKeyFlow(t, rec, false)
-		pgRows(rec, small)
+		seedJobState(rec)
+		pgIDs(rec, "rec-1")
 		failing := w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_usage.usage_record_shard_entries"}})
 		store := &UsageRecordsStore{Catalog: failing, Stats: openRecorderPG(rec)}
 		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 2); err == nil {
@@ -314,8 +313,14 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newPGRecorder()
-			seedKitPGAPIKeyFlow(t, rec, false)
-			pgRows(rec, small)
+			seedJobState(rec)
+			pgIDs(rec, "rec-1")
+			// scope 收缩臂需要 shard 目录行（account 维度）才会执行 DELETE。
+			if tc.name == "scope 收缩失败" {
+				rec.script("SELECT usage_id, shard_key", []string{
+					"usage_id", "shard_key", "system_account_id", "api_key_id", "account_id",
+				}, [][]driver.Value{{"rec-1", "sk-1", "sys-1", "key-1", "acc-1"}})
+			}
 			failing := w13eOpenDecoratedPG(rec, tc.opts)
 			plain := openRecorderPG(rec)
 			store := &UsageRecordsStore{Catalog: failing, Stats: plain}
@@ -337,9 +342,15 @@ func TestW13ePGCodexArms(t *testing.T) {
 			RetryJitter: func(int64) int64 { return 0 },
 		}
 	}
+	// match 必须对齐 Bind($n 改写)后的实际 SQL 文本；含 "?" 的 match 永不
+	// 命中。两个过期 session：s-1 带 remaining 行走 refresh 臂，s-2 无走
+	// delete 臂；queue/distinct/attempt 行驱动 Settle 半区。
 	pgCodexSeed := func(rec *pgRecorder) {
-		rec.script("FROM juhe_codex_context.codex_context_sessions\n      WHERE expires_at < ?",
-			[]string{"id", "expires_at"}, [][]driver.Value{{"s-1", "2026-01-01T00:00:00.000Z"}})
+		rec.script("FROM juhe_codex_context.codex_context_sessions\n      WHERE expires_at <",
+			[]string{"id", "expires_at"}, [][]driver.Value{
+				{"s-1", "2026-01-01T00:00:00.000Z"},
+				{"s-2", "2026-01-02T00:00:00.000Z"},
+			})
 		rec.script("SELECT storage_key\n      FROM juhe_codex_context.codex_context_responses",
 			[]string{"storage_key"}, [][]driver.Value{{"k-1"}})
 		rec.script("SELECT storage_key\n      FROM juhe_codex_context.codex_context_compacts",
@@ -348,25 +359,28 @@ func TestW13ePGCodexArms(t *testing.T) {
 			[]string{"session_id", "expires_at"}, [][]driver.Value{{"s-1", "2027-01-01T00:00:00.000Z"}})
 		rec.script("FROM juhe_codex_context.codex_context_compacts\n        WHERE session_id IN",
 			[]string{"session_id", "expires_at"}, [][]driver.Value{})
-		rec.script("FROM juhe_codex_context.codex_context_storage_cleanup_queue\n      WHERE next_attempt_at <= ?",
-			[]string{"storage_key"}, [][]driver.Value{})
+		rec.script("FROM juhe_codex_context.codex_context_storage_cleanup_queue",
+			[]string{"storage_key"}, [][]driver.Value{{"k-1"}})
+		rec.script("SELECT attempt_count",
+			[]string{"attempt_count"}, [][]driver.Value{{int64(2)}})
 		rec.script("SELECT DISTINCT storage_key\n        FROM juhe_codex_context.codex_context_responses",
 			[]string{"storage_key"}, [][]driver.Value{})
 		rec.script("SELECT DISTINCT storage_key\n        FROM juhe_codex_context.codex_context_compacts",
 			[]string{"storage_key"}, [][]driver.Value{})
 	}
+	// failOn 对齐 Bind($n)后的实际文本；PG 侧 queue DELETE 走共享助手，无 schema 前缀。
 	stages := []pgStage{
 		{"sessions select", "FROM juhe_codex_context.codex_context_sessions"},
 		{"responses delete", "DELETE FROM juhe_codex_context.codex_context_responses"},
 		{"compacts delete", "DELETE FROM juhe_codex_context.codex_context_compacts"},
 		{"remaining select", "GROUP BY session_id"},
-		{"session refresh", "SET updated_at = ?, expires_at = ?"},
-		{"session delete", "DELETE FROM juhe_codex_context.codex_context_sessions WHERE id = ?"},
-		{"queue select", "FROM juhe_codex_context.codex_context_storage_cleanup_queue\n      WHERE next_attempt_at <= ?"},
+		{"session refresh", "UPDATE juhe_codex_context.codex_context_sessions"},
+		{"session delete", "DELETE FROM juhe_codex_context.codex_context_sessions WHERE id = $"},
+		{"queue select", "FROM juhe_codex_context.codex_context_storage_cleanup_queue"},
 		{"distinct responses", "SELECT DISTINCT storage_key\n        FROM juhe_codex_context.codex_context_responses"},
 		{"distinct compacts", "SELECT DISTINCT storage_key\n        FROM juhe_codex_context.codex_context_compacts"},
-		{"queue delete", "DELETE FROM juhe_codex_context.codex_context_storage_cleanup_queue WHERE storage_key IN"},
-		{"attempt select", "SELECT attempt_count\n      FROM juhe_codex_context.codex_context_storage_cleanup_queue"},
+		{"queue delete", "DELETE FROM codex_context_storage_cleanup_queue WHERE storage_key IN"},
+		{"attempt select", "SELECT attempt_count"},
 		{"attempt update", "UPDATE juhe_codex_context.codex_context_storage_cleanup_queue"},
 	}
 	runPGStages(t, stages, func(t *testing.T, stage pgStage) error {
@@ -390,7 +404,7 @@ func TestW13ePGCodexArms(t *testing.T) {
 	}{
 		{"Begin 失败", w13ePGOptions{failBegin: true}},
 		{"Commit 失败", w13ePGOptions{failCommit: true}},
-		{"RowsAffected 失败", w13ePGOptions{rowsAffectedFailOn: "DELETE FROM juhe_codex_context.codex_context_sessions WHERE id = ?"}},
+		{"RowsAffected 失败", w13ePGOptions{rowsAffectedFailOn: "DELETE FROM juhe_codex_context.codex_context_sessions WHERE id = $"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newPGRecorder()
@@ -401,38 +415,17 @@ func TestW13ePGCodexArms(t *testing.T) {
 			}
 		})
 	}
-	// session scan 失败与 rows.Err（脚本行集）。
-	for _, tc := range []struct {
-		name   string
-		script w13eRowsScript
-	}{
-		{"scan 失败", w13eRowsScript{match: "FROM juhe_codex_context.codex_context_sessions", columns: []string{"id", "expires_at"},
-			values: [][]driver.Value{{struct{}{}, "x"}}, errAfterRows: -1}},
-		{"迭代错误", w13eRowsScript{match: "FROM juhe_codex_context.codex_context_sessions", columns: []string{"id", "expires_at"},
-			values: [][]driver.Value{{"s-1", "2026-01-01T00:00:00.000Z"}}, errAfterRows: 1}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := newPGRecorder()
-			rec.script("FROM juhe_codex_context.codex_context_sessions\n      WHERE expires_at < ?", nil, nil)
-			rec.reset()
-			pgCodexSeed(rec)
-			// 覆盖 sessions 脚本：重新登记到队首。
-			rec2 := newPGRecorder()
-			rec2.script("FROM juhe_codex_context.codex_context_sessions\n      WHERE expires_at < ?",
-				tc.script.columns, tc.script.values)
-			if tc.script.errAfterRows >= 0 {
-				rec2 = newPGRecorder()
-				rec2.script("FROM juhe_codex_context.codex_context_sessions\n      WHERE expires_at < ?",
-					[]string{"id", "expires_at"},
-					[][]driver.Value{{"s-1", "2026-01-01T00:00:00.000Z"}, {"s-2", "2026-01-01T00:00:00.000Z"}})
-			}
-			pgCodexSeed(rec2)
-			store := newStore(t, rec2)
-			if _, err := store.CleanupExpiredStates(ctx, "2026-09-10T00:00:00.000Z", 10); err == nil {
-				t.Fatalf("脚本注入应产生错误")
-			}
-		})
-	}
+	// session scan 失败：sessions 行集喂不可转换值。recorder 的 recordedRows
+	// 不支持 rows.Err 注入，迭代错误臂由 SQLite 半区覆盖。
+	t.Run("scan 失败", func(t *testing.T) {
+		rec := newPGRecorder()
+		rec.script("FROM juhe_codex_context.codex_context_sessions\n      WHERE expires_at <",
+			[]string{"id", "expires_at"}, [][]driver.Value{{struct{}{}, "x"}})
+		store := newStore(t, rec)
+		if _, err := store.CleanupExpiredStates(ctx, "2026-09-10T00:00:00.000Z", 10); err == nil {
+			t.Fatalf("scan 失败应透传")
+		}
+	})
 }
 
 // TestW13ePGDeletedAccountArms：deleteaccount.go PG 半区剩余臂。
@@ -455,11 +448,16 @@ func TestW13ePGDeletedAccountArms(t *testing.T) {
 			"id", "system_account_id", "authorization_instance_authorization_id",
 			"authorization_instance_source_account_id", "deleted_at", "updated_at",
 		}, [][]driver.Value{{"acc-1", "sys-1", nil, nil, "2026-06-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"}})
+		// buildTarget 的授权行与团队来源行：驱动 AuthorizationIDs /
+		// TeamScopeIDs 非空，否则 hasRelated 的授权/团队维度查询被跳过。
+		rec.script("WHERE resource_type = 'account'", []string{"id", "resource_id", "grantee_system_account_id"},
+			[][]driver.Value{{"authz-1", "acc-1", "grantee-1"}})
+		rec.script("AND source_team_id IS NOT NULL", []string{"authorization_id", "source_team_id"},
+			[][]driver.Value{{"authz-1", "team-1"}})
 	}
 	stages := []pgStage{
 		{"orphan sweep", "LEFT JOIN"},
-		{"physically delete pg tables", "DELETE FROM account_name_search_terms"},
-		{"tombstone outbox", "INSERT INTO account_health_jobs_input_outbox"},
+		{"physically delete pg tables", "juhe_business.account_name_search_terms"},
 		{"related targets", "FROM juhe_dataset.account_record_cleanup_targets"},
 		{"related usage", "FROM juhe_usage.usage_records WHERE account_id = ANY"},
 		{"related usage auth", "FROM juhe_usage.usage_records WHERE account_authorization_id = ANY"},
@@ -472,8 +470,16 @@ func TestW13ePGDeletedAccountArms(t *testing.T) {
 		rec := newPGRecorder()
 		pgAccountSeed(rec)
 		store := newStore(t, rec, stage.failOn)
-		_, err := store.CleanupExpired(ctx)
-		return err
+		summary, err := store.CleanupExpired(ctx)
+		if err != nil {
+			return err
+		}
+		// 候选级错误（buildTarget/hasRelated/physicallyDelete）不透传，
+		// 记入 summary.Failed 与 LastTargetError；据此判定注入生效。
+		if summary != nil && summary.Failed > 0 && store.LastTargetError != "" {
+			return fmt.Errorf("target error: %s", store.LastTargetError)
+		}
+		return nil
 	})
 	// hasRelatedRecordDataPostgres：record cleanup 目标未清 → true。
 	{

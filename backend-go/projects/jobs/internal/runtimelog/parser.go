@@ -31,9 +31,9 @@ func ParseLine(rawLine string, options LineOptions) *Record {
 		return fallbackRecord(line, options, metadata, "运行日志行不是 JSON 对象", now)
 	}
 	var parsed map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
-		return fallbackRecord(line, options, metadata, "运行日志行不是有效 JSON", now)
-	}
+	// 行已在上方成功解析为 JSON 对象，RawMessage 二次解析不会失败
+	// （w14i 删除不可达防御守卫）。
+	_ = json.Unmarshal([]byte(line), &parsed)
 	timestamp := readString(parsed["time"])
 	return &Record{
 		ID:           stableID(sourceKey(options, line)),

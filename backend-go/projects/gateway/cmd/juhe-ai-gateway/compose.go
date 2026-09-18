@@ -827,7 +827,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// The groups family mounts the M05 return-authorization route through the
 	// authz return domain (Node returnGroupAuthorizationForGranteeAsync).
 	(&groups.Deps{Store: groupsStore, Auth: authDeps, Sink: sink, Authz: authzStore}).Mount(kern)
-	(&routestrategies.Deps{Store: routeStrategyStore, Auth: authDeps, Sink: sink}).Mount(kern)
+	(&routestrategies.Deps{Store: routeStrategyStore, Auth: authDeps, Sink: sink, Log: slog.Default()}).Mount(kern)
 	(&apikeys.Deps{Store: apiKeyStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&accounts.Deps{Store: accountStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	// providers built-in PATCH (update_model_configuration) operation log:

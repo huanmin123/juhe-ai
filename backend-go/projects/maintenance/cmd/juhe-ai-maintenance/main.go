@@ -199,36 +199,50 @@ func main() {
 }
 
 func runGoRuntimeMetricsBootstrap(apply bool, rawURL string, nodeStopped, goStopped, backupConfirmed bool) {
+	os.Exit(goRuntimeMetricsBootstrapResult(apply, rawURL, nodeStopped, goStopped, backupConfirmed))
+}
+
+// goRuntimeMetricsBootstrapResult is runGoRuntimeMetricsBootstrap without the
+// process-terminating os.Exit calls so the whole flow stays testable in
+// process; the wrapper keeps the CLI exit-code contract.
+func goRuntimeMetricsBootstrapResult(apply bool, rawURL string, nodeStopped, goStopped, backupConfirmed bool) int {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		rawURL = strings.TrimSpace(os.Getenv(goruntimemetrics.BootstrapEnv))
 	}
 	if goRuntimeMetricsURLRequiredExitCode(rawURL) != 0 {
 		fmt.Fprintf(os.Stderr, "Go runtime metrics bootstrap requires --go-runtime-metrics-postgres-url or %s\n", goruntimemetrics.BootstrapEnv)
-		os.Exit(2)
+		return 2
 	}
 	if apply && goRuntimeMetricsApplyPreflightExitCode(rawURL, nodeStopped, goStopped, backupConfirmed) != 0 {
 		fmt.Fprintln(os.Stderr, "Go runtime metrics apply requires --node-stopped --go-stopped --backup-confirmed")
-		os.Exit(2)
+		return 2
 	}
 	db, err := goruntimemetrics.Open(rawURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open Go runtime metrics PostgreSQL connection: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	defer db.Close()
-	report, err := goruntimemetrics.Run(context.Background(), db, apply)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Go runtime metrics bootstrap failed: %v\n", err)
-		os.Exit(1)
+	report, runErr := goruntimemetrics.Run(context.Background(), db, apply)
+	return goRuntimeMetricsOutcomeExitCode(report, runErr)
+}
+
+// goRuntimeMetricsOutcomeExitCode renders the bootstrap report and maps the
+// outcome to the maintenance exit-code contract.
+func goRuntimeMetricsOutcomeExitCode(report goruntimemetrics.Report, runErr error) int {
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "Go runtime metrics bootstrap failed: %v\n", runErr)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode Go runtime metrics bootstrap report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if !report.Ready() {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func goRuntimeMetricsURLRequiredExitCode(rawURL string) int {
@@ -246,36 +260,50 @@ func goRuntimeMetricsApplyPreflightExitCode(rawURL string, nodeStopped, goStoppe
 }
 
 func runJ3bModelCheckPostgresBackfill(rawURL string, maxRowsPerTable, maxBytesPerTable int64, nodeStopped, goStopped, backupConfirmed bool, evidencePath string) {
+	os.Exit(j3bModelCheckPostgresBackfillResult(rawURL, maxRowsPerTable, maxBytesPerTable, nodeStopped, goStopped, backupConfirmed, evidencePath))
+}
+
+// j3bModelCheckPostgresBackfillResult is runJ3bModelCheckPostgresBackfill
+// without the process-terminating os.Exit calls; the wrapper keeps the CLI
+// exit-code contract.
+func j3bModelCheckPostgresBackfillResult(rawURL string, maxRowsPerTable, maxBytesPerTable int64, nodeStopped, goStopped, backupConfirmed bool, evidencePath string) int {
 	if strings.TrimSpace(rawURL) == "" {
 		fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill requires --j3b-postgres-backfill-url with an explicit maintenance-scoped PostgreSQL URL")
-		os.Exit(2)
+		return 2
 	}
 	if j3bPostgresBackfillPreflightExitCode(rawURL, nodeStopped, goStopped, backupConfirmed) != 0 {
 		fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill requires --node-stopped --go-stopped --backup-confirmed")
-		os.Exit(2)
+		return 2
 	}
 	if report, exitCode, err := j3bBackfillEvidencePreflight(evidencePath); err != nil {
 		fmt.Fprintf(os.Stderr, "J3b backfill evidence input failed: %v\n", err)
-		os.Exit(exitCode)
+		return exitCode
 	} else if exitCode != 0 {
 		fmt.Fprintf(os.Stderr, "J3b backfill evidence verification failed: %s\n", strings.Join(report.Errors, "; "))
-		os.Exit(exitCode)
+		return exitCode
 	}
 	db, err := j3bmodelcheck.Open(rawURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open J3b PostgreSQL backfill connection: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	defer db.Close()
-	report, err := j3bmodelcheck.BackfillPostgres(context.Background(), db, j3bmodelcheck.PostgresBackfillOptions{MaxRowsPerTable: maxRowsPerTable, MaxBytesPerTable: maxBytesPerTable})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "J3b PostgreSQL backfill failed and was rolled back: %v\n", err)
-		os.Exit(1)
+	report, runErr := j3bmodelcheck.BackfillPostgres(context.Background(), db, j3bmodelcheck.PostgresBackfillOptions{MaxRowsPerTable: maxRowsPerTable, MaxBytesPerTable: maxBytesPerTable})
+	return j3bPostgresBackfillOutcomeExitCode(report, runErr)
+}
+
+// j3bPostgresBackfillOutcomeExitCode renders the backfill report and maps the
+// outcome to the maintenance exit-code contract.
+func j3bPostgresBackfillOutcomeExitCode(report j3bmodelcheck.PostgresBackfillReport, runErr error) int {
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "J3b PostgreSQL backfill failed and was rolled back: %v\n", runErr)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3b PostgreSQL backfill report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func j3bPostgresBackfillPreflightExitCode(rawURL string, nodeStopped, goStopped, backupConfirmed bool) int {
@@ -300,29 +328,43 @@ func j3bBackfillEvidencePreflight(path string) (businesshandoff.J3bCutoverEviden
 }
 
 func runJ3bModelCheckPostgresBackfillReadback(rawURL string, maxRowsPerTable int64) {
+	os.Exit(j3bModelCheckPostgresReadbackResult(rawURL, maxRowsPerTable))
+}
+
+// j3bModelCheckPostgresReadbackResult is runJ3bModelCheckPostgresBackfillReadback
+// without the process-terminating os.Exit calls; the wrapper keeps the CLI
+// exit-code contract.
+func j3bModelCheckPostgresReadbackResult(rawURL string, maxRowsPerTable int64) int {
 	rawURL = strings.TrimSpace(rawURL)
 	if j3bPostgresReadbackURLRequiredExitCode(rawURL) != 0 {
 		fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill readback requires --j3b-postgres-readback-url with an explicit maintenance-scoped PostgreSQL URL")
-		os.Exit(2)
+		return 2
 	}
 	db, err := j3bmodelcheck.Open(rawURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open J3b PostgreSQL backfill readback connection: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	defer db.Close()
-	report, err := j3bmodelcheck.VerifyPostgresBackfill(context.Background(), db, j3bmodelcheck.PostgresReadbackOptions{MaxRowsPerTable: maxRowsPerTable})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "J3b PostgreSQL backfill readback failed: %v\n", err)
-		os.Exit(1)
+	report, runErr := j3bmodelcheck.VerifyPostgresBackfill(context.Background(), db, j3bmodelcheck.PostgresReadbackOptions{MaxRowsPerTable: maxRowsPerTable})
+	return j3bPostgresReadbackOutcomeExitCode(report, runErr)
+}
+
+// j3bPostgresReadbackOutcomeExitCode renders the readback report and maps the
+// outcome to the maintenance exit-code contract.
+func j3bPostgresReadbackOutcomeExitCode(report j3bmodelcheck.PostgresBackfillVerificationReport, runErr error) int {
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "J3b PostgreSQL backfill readback failed: %v\n", runErr)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3b PostgreSQL backfill readback report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if j3bPostgresReadbackExitCode(report) != 0 {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func j3bPostgresReadbackURLRequiredExitCode(rawURL string) int {
@@ -340,23 +382,31 @@ func j3bPostgresReadbackExitCode(report j3bmodelcheck.PostgresBackfillVerificati
 }
 
 func runJ3bModelCheckInventory(evidencePath string) {
+	os.Exit(j3bModelCheckInventoryResult(evidencePath))
+}
+
+// j3bModelCheckInventoryResult is runJ3bModelCheckInventory without the
+// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func j3bModelCheckInventoryResult(evidencePath string) int {
 	if j3bInventoryEvidenceRequiredExitCode(evidencePath) != 0 {
 		fmt.Fprintln(os.Stderr, "J3b inventory verification requires --j3b-inventory-evidence with an explicit JSON evidence file")
-		os.Exit(2)
+		return 2
 	}
 	evidence, err := j3bmodelcheck.LoadLegacyJ3bFactEvidence(evidencePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "J3b inventory evidence input failed: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	report := j3bmodelcheck.ValidateLegacyJ3bFactCoverage(j3bmodelcheck.LegacyJ3bFactInventory, evidence)
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3b inventory coverage report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if j3bInventoryExitCode(report) != 0 {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func j3bInventoryEvidenceRequiredExitCode(path string) int {
@@ -374,34 +424,49 @@ func j3bInventoryExitCode(report j3bmodelcheck.LegacyJ3bFactCoverageReport) int 
 }
 
 func runJ3cReadOnlyBoundaryCheck() {
-	root := resolveRepositoryRoot()
+	os.Exit(j3cReadOnlyBoundaryResult(resolveRepositoryRoot()))
+}
+
+// j3cReadOnlyBoundaryResult is runJ3cReadOnlyBoundaryCheck without the
+// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func j3cReadOnlyBoundaryResult(root string) int {
 	report, err := ownermanifest.VerifyJ3cReadOnlyBoundary(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "J3c read-only boundary verification failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3c read-only boundary report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if !report.ReadOnlyAuditReady || !report.J3cOwnerReady {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func runJ3bCutoverEvidenceCheck(path string) {
+	os.Exit(j3bCutoverEvidenceCheckResult(path))
+}
+
+// j3bCutoverEvidenceCheckResult is runJ3bCutoverEvidenceCheck without the
+// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func j3bCutoverEvidenceCheckResult(path string) int {
 	report, err := businesshandoff.VerifyJ3bCutoverEvidence(path, time.Now().UTC())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "J3b cutover evidence input failed: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3b cutover evidence report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if exitCode := j3bCutoverEvidenceExitCode(report); exitCode != 0 {
-		os.Exit(exitCode)
+		return exitCode
 	}
+	return 0
 }
 
 func j3bCutoverEvidenceExitCode(report businesshandoff.J3bCutoverEvidenceReport) int {
@@ -412,83 +477,115 @@ func j3bCutoverEvidenceExitCode(report businesshandoff.J3bCutoverEvidenceReport)
 }
 
 func runGatewayRouteOwnerManifestCheck() {
-	manifestPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_GATEWAY_ROUTE_MANIFEST", "docs/migration/GatewayManagementRouteOwnerManifest.json"))
-	root := resolveRepositoryRoot()
+	os.Exit(gatewayRouteOwnerManifestResult(
+		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_GATEWAY_ROUTE_MANIFEST", "docs/migration/GatewayManagementRouteOwnerManifest.json")),
+		resolveRepositoryRoot()))
+}
+
+// gatewayRouteOwnerManifestResult is runGatewayRouteOwnerManifestCheck without
+// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func gatewayRouteOwnerManifestResult(manifestPath, root string) int {
 	report, err := ownermanifest.VerifyGatewayRouteOwnerManifest(manifestPath, root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Gateway route owner manifest verification failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode Gateway route owner manifest report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if len(report.PendingFamilies) > 0 {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func runBusinessSQLiteSchemaCheck(path string) {
+	os.Exit(businessSQLiteSchemaCheckResult(path))
+}
+
+// businessSQLiteSchemaCheckResult is runBusinessSQLiteSchemaCheck without the
+// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func businessSQLiteSchemaCheckResult(path string) int {
 	if strings.TrimSpace(path) == "" {
 		path = strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH"))
 	}
 	if strings.TrimSpace(path) == "" {
 		fmt.Fprintln(os.Stderr, "Business SQLite schema preflight requires --business-sqlite-path or JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH")
-		os.Exit(2)
+		return 2
 	}
 	report, err := businesshandoff.VerifySQLiteSchema(context.Background(), path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Business SQLite schema preflight failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode Business SQLite schema preflight report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if !report.Ready {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func runBusinessCapabilityManifestCheck() {
-	capabilityPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_CAPABILITY_MANIFEST", "docs/migration/GoBusinessCapabilityManifest.json"))
-	operationPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json"))
+	os.Exit(businessCapabilityManifestResult(
+		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_CAPABILITY_MANIFEST", "docs/migration/GoBusinessCapabilityManifest.json")),
+		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json"))))
+}
+
+// businessCapabilityManifestResult is runBusinessCapabilityManifestCheck
+// without the process-terminating os.Exit calls; the wrapper keeps the CLI
+// exit-code contract.
+func businessCapabilityManifestResult(capabilityPath, operationPath string) int {
 	report, err := ownermanifest.VerifyCapabilityManifest(capabilityPath, operationPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Business capability manifest verification failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode Business capability manifest report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	// A valid manifest is still only a completeness proof. Any capability
 	// marked missing/partial keeps the handoff gate closed.
 	if report.StatusCoverage["missing"] > 0 || report.StatusCoverage["partial"] > 0 {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func runJ3bModelCheckSQLiteReadback() {
+	os.Exit(j3bModelCheckSQLiteReadbackResult())
+}
+
+// j3bModelCheckSQLiteReadbackResult is runJ3bModelCheckSQLiteReadback without
+// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func j3bModelCheckSQLiteReadbackResult() int {
 	targetPath := strings.TrimSpace(os.Getenv(j3bmodelcheck.SQLiteBootstrapEnv))
 	datasetPath := strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH"))
 	statsPath := strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH"))
 	if targetPath == "" || datasetPath == "" || statsPath == "" {
 		fmt.Fprintln(os.Stderr, "J3b SQLite readback requires JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH, JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH and JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH")
-		os.Exit(2)
+		return 2
 	}
 	report, err := j3bmodelcheck.VerifySQLiteBackfill(context.Background(), targetPath, datasetPath, statsPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "J3b SQLite readback failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3b SQLite readback report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if j3bSQLiteReadbackExitCode(report) != 0 {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 // j3bSQLiteReadbackExitCode gates cutover evidence on the lossless projection
@@ -502,6 +599,13 @@ func j3bSQLiteReadbackExitCode(report j3bmodelcheck.BackfillVerificationReport) 
 }
 
 func runBusinessSQLiteHandoffCheck(businessPath, j3bPath string) {
+	os.Exit(businessSQLiteHandoffCheckResult(businessPath, j3bPath))
+}
+
+// businessSQLiteHandoffCheckResult is runBusinessSQLiteHandoffCheck without
+// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func businessSQLiteHandoffCheckResult(businessPath, j3bPath string) int {
 	if strings.TrimSpace(businessPath) == "" {
 		businessPath = strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH"))
 	}
@@ -510,36 +614,44 @@ func runBusinessSQLiteHandoffCheck(businessPath, j3bPath string) {
 	}
 	if strings.TrimSpace(businessPath) == "" || strings.TrimSpace(j3bPath) == "" {
 		fmt.Fprintln(os.Stderr, "Business SQLite handoff preflight requires --business-sqlite-path/--j3b-sqlite-path or JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH/JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH")
-		os.Exit(2)
+		return 2
 	}
 	report, err := businesshandoff.Verify(context.Background(), businessPath, j3bPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Business SQLite handoff preflight failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode Business SQLite handoff preflight report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if !report.Ready {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func runNodeJ3bActivePathCheck() {
-	root := resolveRepositoryRoot()
+	os.Exit(nodeJ3bActivePathResult(resolveRepositoryRoot()))
+}
+
+// nodeJ3bActivePathResult is runNodeJ3bActivePathCheck without the
+// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func nodeJ3bActivePathResult(root string) int {
 	report, err := ownermanifest.ScanNodeJ3bActivePaths(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Node J3b active-path scan failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode Node J3b active-path report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if len(report.Findings) > 0 {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func resolveRepositoryRoot() string {
@@ -579,21 +691,29 @@ func isRepositoryRoot(dir string) bool {
 }
 
 func runBusinessOwnerManifestCheck() {
-	manifestPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json"))
 	// The manifest records original Node source locations for provenance, but
 	// its immutable source-of-truth files now live in final-archive.
-	typesPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_TYPES", filepath.Join(archivedDBServiceSourceRoot, "db-service-types.ts")))
-	accessPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_ACCESS", filepath.Join(archivedDBServiceSourceRoot, "db-service-operation-access-mode.ts")))
-	handlerPath := resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", filepath.Join(archivedDBServiceSourceRoot, "db-service-handlers.ts")))
+	os.Exit(businessOwnerManifestResult(
+		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json")),
+		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_TYPES", filepath.Join(archivedDBServiceSourceRoot, "db-service-types.ts"))),
+		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_ACCESS", filepath.Join(archivedDBServiceSourceRoot, "db-service-operation-access-mode.ts"))),
+		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", filepath.Join(archivedDBServiceSourceRoot, "db-service-handlers.ts")))))
+}
+
+// businessOwnerManifestResult is runBusinessOwnerManifestCheck without the
+// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func businessOwnerManifestResult(manifestPath, typesPath, accessPath, handlerPath string) int {
 	report, err := ownermanifest.Verify(manifestPath, typesPath, accessPath, handlerPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Business SQLite owner manifest verification failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode Business SQLite owner manifest report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func envOrDefault(key, fallback string) string {
@@ -626,123 +746,179 @@ func resolveRepoPath(path string) string {
 }
 
 func runJ3bModelCheckSQLiteBackfill(nodeStopped, goStopped, backupConfirmed bool, evidencePath string) {
+	os.Exit(j3bModelCheckSQLiteBackfillResult(nodeStopped, goStopped, backupConfirmed, evidencePath))
+}
+
+// j3bModelCheckSQLiteBackfillResult is runJ3bModelCheckSQLiteBackfill without
+// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func j3bModelCheckSQLiteBackfillResult(nodeStopped, goStopped, backupConfirmed bool, evidencePath string) int {
 	if !nodeStopped || !goStopped || !backupConfirmed {
 		fmt.Fprintln(os.Stderr, "J3b SQLite backfill requires --node-stopped --go-stopped --backup-confirmed")
-		os.Exit(2)
+		return 2
 	}
 	if report, exitCode, err := j3bBackfillEvidencePreflight(evidencePath); err != nil {
 		fmt.Fprintf(os.Stderr, "J3b backfill evidence input failed: %v\n", err)
-		os.Exit(exitCode)
+		return exitCode
 	} else if exitCode != 0 {
 		fmt.Fprintf(os.Stderr, "J3b backfill evidence verification failed: %s\n", strings.Join(report.Errors, "; "))
-		os.Exit(exitCode)
+		return exitCode
 	}
 	targetPath := strings.TrimSpace(os.Getenv(j3bmodelcheck.SQLiteBootstrapEnv))
 	datasetPath := strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH"))
 	statsPath := strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH"))
 	if targetPath == "" || datasetPath == "" || statsPath == "" {
 		fmt.Fprintln(os.Stderr, "J3b SQLite backfill requires JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH, JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH and JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH")
-		os.Exit(2)
+		return 2
 	}
 	if err := j3bmodelcheck.ValidateSQLiteBackfillPaths(targetPath, datasetPath, statsPath); err != nil {
 		fmt.Fprintf(os.Stderr, "J3b SQLite backfill path isolation failed: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	target, err := j3bmodelcheck.OpenSQLite(targetPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open J3b SQLite backfill target: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	defer target.Close()
-	report, err := j3bmodelcheck.BackfillSQLite(context.Background(), target, datasetPath, statsPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "J3b SQLite backfill failed: %v\n", err)
-		os.Exit(1)
+	report, runErr := j3bmodelcheck.BackfillSQLite(context.Background(), target, datasetPath, statsPath)
+	return j3bSQLiteBackfillOutcomeExitCode(report, runErr)
+}
+
+// j3bSQLiteBackfillOutcomeExitCode renders the SQLite backfill report and maps
+// the outcome to the maintenance exit-code contract.
+func j3bSQLiteBackfillOutcomeExitCode(report j3bmodelcheck.BackfillReport, runErr error) int {
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "J3b SQLite backfill failed: %v\n", runErr)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3b SQLite backfill report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func runJ3bModelCheckSQLiteBootstrap(apply, nodeStopped, goStopped, backupConfirmed bool) {
+	os.Exit(j3bModelCheckSQLiteBootstrapResult(apply, nodeStopped, goStopped, backupConfirmed))
+}
+
+// j3bModelCheckSQLiteBootstrapResult is runJ3bModelCheckSQLiteBootstrap without
+// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func j3bModelCheckSQLiteBootstrapResult(apply, nodeStopped, goStopped, backupConfirmed bool) int {
 	path := strings.TrimSpace(os.Getenv(j3bmodelcheck.SQLiteBootstrapEnv))
 	if path == "" {
 		fmt.Fprintf(os.Stderr, "J3b SQLite bootstrap requires %s\n", j3bmodelcheck.SQLiteBootstrapEnv)
-		os.Exit(2)
+		return 2
 	}
 	if apply && (!nodeStopped || !goStopped || !backupConfirmed) {
 		fmt.Fprintln(os.Stderr, "J3b SQLite apply requires --node-stopped --go-stopped --backup-confirmed")
-		os.Exit(2)
+		return 2
 	}
 	db, err := j3bmodelcheck.OpenSQLite(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open J3b SQLite bootstrap connection: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	defer db.Close()
-	report, err := j3bmodelcheck.RunSQLite(context.Background(), db, apply)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "J3b SQLite bootstrap failed: %v\n", err)
-		os.Exit(1)
+	report, runErr := j3bmodelcheck.RunSQLite(context.Background(), db, apply)
+	return j3bSQLiteBootstrapOutcomeExitCode(report, runErr)
+}
+
+// j3bSQLiteBootstrapOutcomeExitCode renders the SQLite bootstrap report and
+// maps the outcome to the maintenance exit-code contract.
+func j3bSQLiteBootstrapOutcomeExitCode(report j3bmodelcheck.SQLiteReport, runErr error) int {
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "J3b SQLite bootstrap failed: %v\n", runErr)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3b SQLite bootstrap report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if !report.Ready() {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func runJ3bModelCheckBootstrap(apply bool) {
+	os.Exit(j3bModelCheckBootstrapResult(apply))
+}
+
+// j3bModelCheckBootstrapResult is runJ3bModelCheckBootstrap without the
+// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func j3bModelCheckBootstrapResult(apply bool) int {
 	rawURL := strings.TrimSpace(os.Getenv(j3bmodelcheck.BootstrapEnv))
 	if rawURL == "" {
 		fmt.Fprintf(os.Stderr, "J3b PostgreSQL bootstrap requires %s\n", j3bmodelcheck.BootstrapEnv)
-		os.Exit(2)
+		return 2
 	}
 	db, err := j3bmodelcheck.Open(rawURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open J3b PostgreSQL bootstrap connection: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	defer db.Close()
-	report, err := j3bmodelcheck.Run(context.Background(), db, apply)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "J3b PostgreSQL bootstrap failed: %v\n", err)
-		os.Exit(1)
+	report, runErr := j3bmodelcheck.Run(context.Background(), db, apply)
+	return j3bBootstrapOutcomeExitCode(report, runErr)
+}
+
+// j3bBootstrapOutcomeExitCode renders the J3b PostgreSQL bootstrap report and
+// maps the outcome to the maintenance exit-code contract.
+func j3bBootstrapOutcomeExitCode(report j3bmodelcheck.Report, runErr error) int {
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "J3b PostgreSQL bootstrap failed: %v\n", runErr)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3b PostgreSQL bootstrap report: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if !report.Ready() {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }
 
 func runJ3aProxyLatencyBootstrap(apply bool) {
+	os.Exit(j3aProxyLatencyBootstrapResult(apply))
+}
+
+// j3aProxyLatencyBootstrapResult is runJ3aProxyLatencyBootstrap without the
+// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func j3aProxyLatencyBootstrapResult(apply bool) int {
 	rawURL := strings.TrimSpace(os.Getenv(j3aproxylatency.BootstrapEnv))
 	if rawURL == "" {
 		fmt.Fprintf(os.Stderr, "J3a PostgreSQL bootstrap requires %s\n", j3aproxylatency.BootstrapEnv)
-		os.Exit(2)
+		return 2
 	}
 	db, err := j3aproxylatency.Open(rawURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open J3a PostgreSQL bootstrap connection: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	defer db.Close()
-	report, err := j3aproxylatency.Run(context.Background(), db, apply)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "J3a PostgreSQL bootstrap failed: %v\n", err)
-		os.Exit(1)
+	report, runErr := j3aproxylatency.Run(context.Background(), db, apply)
+	return j3aBootstrapOutcomeExitCode(report, runErr)
+}
+
+// j3aBootstrapOutcomeExitCode renders the J3a bootstrap report and maps the
+// outcome to the maintenance exit-code contract.
+func j3aBootstrapOutcomeExitCode(report j3aproxylatency.Report, runErr error) int {
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "J3a PostgreSQL bootstrap failed: %v\n", runErr)
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
-		fmt.Fprintf(os.Stderr, "encode J3a PostgreSQL bootstrap report: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "encode J3a bootstrap report: %v\n", err)
+		return 1
 	}
 	if !report.Ready() {
-		os.Exit(3)
+		return 3
 	}
+	return 0
 }

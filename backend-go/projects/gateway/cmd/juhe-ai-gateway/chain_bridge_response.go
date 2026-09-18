@@ -301,7 +301,11 @@ func (t *chainBridgeResponseTransformer) transformToChatClient(
 		if err != nil {
 			return openaicompat.TransformAnthropicJSONToChatErrorBody()
 		}
-		return openaicompat.TransformAnthropicMessagesJSONToChatJSONBody(parsed, model)
+		// 缺陷修复（w14a）：chat 上游 → anthropic 客户端的缓冲臂此前误用
+		// TransformAnthropicMessagesJSONToChatJSONBody（anthropic→chat 反向
+		// 渲染）；Node transformAnthropicMessagesChatBridgeUpstreamResponse 的
+		// 非流式分支是 chatCompletionsJson → AnthropicMessagesJson。
+		return []byte(openaicompat.BridgeJSONStringifyOf(openaicompat.ChatCompletionJSONToAnthropicMessage(parsed, model)))
 	case openaicompat.FamilyGeminiGenerateContent, openaicompat.FamilyGeminiStreamGenerate:
 		// transformGeminiGenerateContentChatBridgeUpstreamResponse.
 		if stream {
@@ -482,19 +486,16 @@ func (t *chainBridgeResponseTransformer) transformGeminiCodeAssistIfApplicable(
 		return nil, err
 	}
 	_ = response.Body.Close()
-	transformed := body
-	if stream {
-		transformed = openaicompat.UnwrapGeminiCodeAssistSseBuffer(body)
-	} else {
-		transformed = openaicompat.CollectGeminiCodeAssistSseBuffer(body)
-		if !strings.Contains(strings.ToLower(response.ContentType()), "json") {
-			// The non-stream collection consumes the SSE stream into one JSON
-			// payload (Node sets the JSON content type).
-			headers := response.Header.Clone()
-			headers.Set("Content-Type", "application/json; charset=utf-8")
-			headers.Del("Content-Length")
-			return gatewaydispatch.NewGatewayUpstreamResponseForTransform(response.Status(), headers, io.NopCloser(strings.NewReader(string(transformed)))), nil
-		}
+	// stream 已在上方管道分支 return（明显不可达守卫，w14a 删除）；此处恒为
+	// 非流式收集合并。
+	transformed := openaicompat.CollectGeminiCodeAssistSseBuffer(body)
+	if !strings.Contains(strings.ToLower(response.ContentType()), "json") {
+		// The non-stream collection consumes the SSE stream into one JSON
+		// payload (Node sets the JSON content type).
+		headers := response.Header.Clone()
+		headers.Set("Content-Type", "application/json; charset=utf-8")
+		headers.Del("Content-Length")
+		return gatewaydispatch.NewGatewayUpstreamResponseForTransform(response.Status(), headers, io.NopCloser(strings.NewReader(string(transformed)))), nil
 	}
 	return gatewaydispatch.NewGatewayUpstreamResponseForTransform(response.Status(), response.Header.Clone(), io.NopCloser(strings.NewReader(string(transformed)))), nil
 }

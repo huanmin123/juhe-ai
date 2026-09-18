@@ -130,6 +130,15 @@ func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
 	)`, envelope, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
+	// 授权行先于实例账户：accounts.authorization_instance_authorization_id 有
+	// 外键约束（schema 漂移修复补齐），后插会违反 FK。
+	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorizations (
+		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
+		effective_source_type, effective_source_team_id, activated_at, limits_json, created_by, created_at, updated_at
+	) VALUES ('w12d-team-auth', 'account', 'w12d-team-src', 'sys_admin', 'sys_admin', 'health_check', 'active',
+		'direct', 'w12d-team-a', $1, NULL, 'w12d', $1, $1)`, w12dFixtureNowText); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (
 		id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
@@ -161,13 +170,6 @@ func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
 		VALUES ('sys_admin', 'w12d-group', 'w12d-team-inst', 'w12d-team-auth', 1, $1, $1) ON CONFLICT (group_id, account_id) DO NOTHING`, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorizations (
-		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
-		effective_source_type, effective_source_team_id, activated_at, limits_json, created_by, created_at, updated_at
-	) VALUES ('w12d-team-auth', 'account', 'w12d-team-src', 'sys_admin', 'sys_admin', 'health_check', 'active',
-		'direct', 'w12d-team-a', $1, NULL, 'w12d', $1, $1)`, w12dFixtureNowText); err != nil {
-		t.Fatal(err)
-	}
 	// 无 active team grant → ErrNoRows 臂（候选仍合格）。
 	reader, err := NewPostgresDirectInputReader(db, secret, time.Hour, func() time.Time {
 		return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
@@ -187,6 +189,11 @@ func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("team candidate missing: %+v failures=%+v", result.Inputs, result.Failures)
+	}
+	// grants.grantee_team_id 有外键约束：team 行先于 grant 插入。
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_teams (id, name, status, created_by, created_at, updated_at)
+		VALUES ('w12d-team-a', 'w12d-team-a', 'active', 'w12d', $1, $1) ON CONFLICT (id) DO NOTHING`, w12dFixtureNowText); err != nil {
+		t.Fatal(err)
 	}
 	// active team grant 存在且无 limits → 合格（grant limits NULL 分支）。
 	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorization_grants (

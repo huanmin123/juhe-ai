@@ -209,7 +209,10 @@ func newIdentitySet() *identitySet { return &identitySet{} }
 func (s *identitySet) add(value any) bool {
 	rv := reflect.ValueOf(value)
 	switch rv.Kind() {
-	case reflect.Slice, reflect.Map:
+	// w14g 修复：调用方（circularRef）对 *OrderedObject / 指针结构同样调用本
+	// 集合，但此前只登记 Slice/Map，导致指针容器的循环引用保护失效并可能
+	// 无限递归。补充 Ptr，保持文档承诺的“按数据指针跟踪容器身份”。
+	case reflect.Slice, reflect.Map, reflect.Ptr:
 		pointer := rv.Pointer()
 		for _, item := range s.items {
 			if item.kind == rv.Kind() && item.pointer == pointer {

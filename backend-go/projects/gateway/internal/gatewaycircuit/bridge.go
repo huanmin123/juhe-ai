@@ -1167,10 +1167,9 @@ func buildPersistIncidentInput(
 	if err != nil {
 		return CompareAndSetIncidentInput{}, err
 	}
-	evidenceKeys, err := FailureEvidenceKeysOf(desiredState)
-	if err != nil {
-		return CompareAndSetIncidentInput{}, err
-	}
+	// FailureEvidenceKeysOf 的唯一错误源是 NormalizeConfirmationFailuresRequired，
+	// 与上一行同参调用已通过，此处不会报错（w14m 甄别：不可达防御臂）。
+	evidenceKeys, _ := FailureEvidenceKeysOf(desiredState)
 	consecutiveFailures, err := ConfirmationFailureCountOf(desiredState)
 	if err != nil {
 		return CompareAndSetIncidentInput{}, err

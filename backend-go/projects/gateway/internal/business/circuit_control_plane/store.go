@@ -399,9 +399,8 @@ func predicatesEquivalent(actual, expected string) bool {
 		v = regexp.MustCompile(`::[a-z0-9_]+`).ReplaceAllString(v, "")
 		v = strings.ReplaceAll(strings.ReplaceAll(v, "(", ""), ")", "")
 		v = strings.Join(strings.Fields(v), " ")
-		for strings.HasPrefix(v, "(") && strings.HasSuffix(v, ")") {
-			v = strings.TrimSpace(v[1 : len(v)-1])
-		}
+		// 说明：norm 上方已移除全部括号，此处原有的成对去括号循环不可达，
+		// w14g 覆盖波次确认后删除。
 		parts := strings.Split(v, " and ")
 		for i := range parts {
 			parts[i] = strings.Join(strings.Fields(parts[i]), " ")

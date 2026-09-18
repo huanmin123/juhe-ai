@@ -19,12 +19,17 @@ const w12dFixtureNowText = "2026-09-06T12:00:00Z"
 func w12dPgDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := w9hPgDB(t)
+	// 先清一次残留（上次失败运行的 w12d- 行会让本次插入撞主键），测试结束再清。
+	w12dCleanupRows(t, db)
 	t.Cleanup(func() { w12dCleanupRows(t, db) })
 	return db
 }
 
 func w12dCleanupRows(t *testing.T, db *sql.DB) {
 	t.Helper()
+	// 删除顺序遵循外键：group_accounts → grants → accounts →
+	// authorizations → system_teams（grants.grantee_team_id 引用 teams，
+	// accounts.authorization_instance_authorization_id 引用 authorizations）。
 	statements := []string{
 		`DELETE FROM juhe_jobs.account_health_outcomes WHERE outcome_id LIKE 'w12d-%' OR account_id LIKE 'w12d-%' OR request_id LIKE 'w12d-%'`,
 		`DELETE FROM juhe_jobs.account_health_current_state WHERE account_id LIKE 'w12d-%'`,
@@ -38,9 +43,10 @@ func w12dCleanupRows(t *testing.T, db *sql.DB) {
 		`DELETE FROM juhe_business.group_accounts WHERE account_id LIKE 'w12d-%' OR group_id LIKE 'w12d-%'`,
 		`DELETE FROM juhe_business.groups WHERE id LIKE 'w12d-%'`,
 		`DELETE FROM juhe_business.resource_authorization_grants WHERE id LIKE 'w12d-%' OR resource_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.resource_authorizations WHERE id LIKE 'w12d-%'`,
 		`DELETE FROM juhe_business.proxy_profiles WHERE id LIKE 'w12d-%'`,
 		`DELETE FROM juhe_business.accounts WHERE id LIKE 'w12d-%'`,
+		`DELETE FROM juhe_business.resource_authorizations WHERE id LIKE 'w12d-%'`,
+		`DELETE FROM juhe_business.system_teams WHERE id LIKE 'w12d-%'`,
 		`DELETE FROM juhe_stats.usage_stats_totals WHERE system_account_id LIKE 'w12d-%' OR scope_id LIKE 'w12d-%'`,
 		`DELETE FROM juhe_stats.usage_stats_daily WHERE system_account_id LIKE 'w12d-%' OR scope_id LIKE 'w12d-%'`,
 		`DELETE FROM juhe_stats.usage_stats_weekly WHERE system_account_id LIKE 'w12d-%' OR scope_id LIKE 'w12d-%'`,
@@ -177,6 +183,15 @@ func TestW12dReaderQuotaArms(t *testing.T) {
 	)`, envelope, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
+	// 授权行先于实例账户：accounts.authorization_instance_authorization_id 有
+	// 外键约束（schema 漂移修复补齐），后插会违反 FK。
+	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorizations (
+		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
+		effective_source_type, activated_at, limits_json, created_by, created_at, updated_at
+	) VALUES ('w12d-auth-1', 'account', 'w12d-quota-src', 'sys_admin', 'sys_admin', 'health_check', 'active',
+		'direct', $1, NULL, 'w12d', $1, $1)`, w12dFixtureNowText); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (
 		id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
@@ -204,13 +219,6 @@ func TestW12dReaderQuotaArms(t *testing.T) {
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
 		VALUES ('sys_admin', 'w12d-group', 'w12d-quota-a', 'w12d-auth-1', 1, $1, $1) ON CONFLICT (group_id, account_id) DO NOTHING`, w12dFixtureNowText); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorizations (
-		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
-		effective_source_type, activated_at, limits_json, created_by, created_at, updated_at
-	) VALUES ('w12d-auth-1', 'account', 'w12d-quota-src', 'sys_admin', 'sys_admin', 'health_check', 'active',
-		'direct', $1, NULL, 'w12d', $1, $1)`, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.account_health_jobs_input_versions (account_id, current_version, reserved_at) VALUES ('w12d-quota-src', 1, $1)

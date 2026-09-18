@@ -602,7 +602,9 @@ func (s *LocalSuppressionStore) SnapshotAvailability(isPrecheckRuntimeBlocking P
 		if _, exists := snapshot[runtimeKey]; exists {
 			continue
 		}
-		if isPrecheckRuntimeBlocking(runtimeKey) {
+		// 与 FilterSuppressions 一致：nil 谓词表示调用方不感知 precheck 阻断，
+		// 直接调用会解引用空指针（w14e 修复的空指针缺陷）。
+		if isPrecheckRuntimeBlocking != nil && isPrecheckRuntimeBlocking(runtimeKey) {
 			continue
 		}
 		snapshot[runtimeKey] = localAccountDegradationAvailability(degradation)

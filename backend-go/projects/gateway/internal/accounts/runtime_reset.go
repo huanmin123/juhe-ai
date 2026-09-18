@@ -1241,12 +1241,18 @@ func (s *Store) advanceResetDispatchRevision(ctx context.Context, accountID, tra
 	// The shared in-transaction fence reports replays through a nil error;
 	// distinguish by re-reading the current dispatch revision for idempotent
 	// replays.
+	// 缺陷现象：重放同一 transitionID 时 SELECT 按 dedupe_key 查不到既有事件，
+	// 随后 INSERT 撞 UNIQUE(projection_key, dedupe_key) 报错，无法幂等返回。
+	// 根因：SELECT 的 projection_key 硬编码 "account_circuit_dispatch"，与
+	// INSERT 使用的 circuitProjectionKey()（circuit_control_plane.ProjectionKey
+	// = "account_circuit_runtime_v1"）不一致；控制面 store.go 亦校验
+	// projection_key 必须等于 ProjectionKey。最小修复：SELECT 改用同一常量。
 	dedupeKey := "dispatch:" + transitionID
 	var replayRevision int64
 	var replayEventType, replayAccountID, replayRuntimeKey string
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT event_type, account_id, account_runtime_key, dispatch_revision
 		FROM `+s.table("account_circuit_outbox")+`
-		WHERE projection_key = ? AND dedupe_key = ?`), "account_circuit_dispatch", dedupeKey).
+		WHERE projection_key = ? AND dedupe_key = ?`), circuitProjectionKey(), dedupeKey).
 		Scan(&replayEventType, &replayAccountID, &replayRuntimeKey, &replayRevision)
 	if err == nil {
 		if replayEventType != "dispatch_revision_changed" || replayAccountID != accountID || replayRuntimeKey != accountID {

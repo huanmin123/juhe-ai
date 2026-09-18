@@ -75,10 +75,8 @@ func (w *PreAuthRecoverableWait) WaitForRecoverableUnavailableState(ctx context.
 	if w.Options.CheckIntervalMs != 0 {
 		engineInput.checkIntervalMs = w.Options.CheckIntervalMs
 	}
-	if w.Options.DueRetryDelayMs != 0 {
-		settings := DefaultSettings()
-		settings.RecoverableUnavailableDueRetryDelayMs = w.Options.DueRetryDelayMs
-	}
+	// DueRetryDelayMs 在 waitInput 上没有消费端口，原处的本地 settings 赋值
+	// 是死代码，已移除（行为不变）。
 	outcome, err := waitForRecoverableUnavailableState(ctx, engineInput)
 	if err != nil {
 		return err

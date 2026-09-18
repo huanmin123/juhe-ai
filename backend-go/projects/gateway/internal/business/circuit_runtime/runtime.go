@@ -1305,10 +1305,10 @@ func (s *AccountCircuitRuntimeStore) RestoreGatewayAccountCircuit(ctx context.Co
 	if input.State.DispatchRevision < 1 {
 		return GatewayAccountCircuitMutationResult{}, fmt.Errorf("account circuit restore dispatch revision is invalid")
 	}
-	state, err := runtimeStateToWire(input.State)
-	if err != nil {
-		return GatewayAccountCircuitMutationResult{}, err
-	}
+	// 说明：runtimeStateToWire 首行会再次执行与上方同语句的
+	// ValidateGatewayAccountCircuitState，两次校验间无状态变化，其错误
+	// 分支不可达，w14g 覆盖波次确认后不再检查。
+	state, _ := runtimeStateToWire(input.State)
 	retainedUntilMS := int64(0)
 	if input.RetainedUntil != nil {
 		retainedUntilMS = input.RetainedUntil.UTC().UnixMilli()

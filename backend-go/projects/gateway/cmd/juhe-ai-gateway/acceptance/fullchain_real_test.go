@@ -436,15 +436,53 @@ func TestFullchainRealChain(t *testing.T) {
 		// 每个 chat provider 一次非流式真号调用；gpt 另加一次流式。
 		// 每 provider 一个子测试：单 provider 失败只影响自身。
 		for _, providerCode := range []string{"openai", "glm", "deepseek", "xai", "gpt"} {
-			account, ok := r.pick(providerCode, 0)
-			if !ok {
-				t.Logf("S1 %s：无可用导入账户，跳过该 provider", providerCode)
-				continue
-			}
 			t.Run("provider_"+providerCode, func(t *testing.T) {
-				route := r.realRoute("S1-"+providerCode, providerCode, account)
-				response := assertRealChat(t, f, route.apiKey, account.Model)
-				t.Logf("S1 %s（…%s）：200，回复长度 %d，模型 %s", providerCode, account.ID[len(account.ID)-8:], len(realContentOf(response.Body)), account.Model)
+				// 生产账户池的单个成员上游可偶发不可用（第三方中转 503 /
+				// 连接挂起）：按导入顺序依次尝试该 provider 的账户（每账户
+				// 一次瞬态重试，对齐 assertRealChat），取首个真实成功者作为
+				// 验收对象；全部失败才算 provider 链路失败。候选的失败结果
+				// 脱敏留证，不因池内单账户上游不可用误判网关。
+				var account fullchainRealAccount
+				var route fullchainRoute
+				var response fullchainChatResponse
+				candidates := 0
+				attempted := 0
+				for nth := 0; ; nth++ {
+					candidate, ok := r.pick(providerCode, nth)
+					if !ok {
+						break
+					}
+					candidates++
+					candidateRoute := r.realRoute(fmt.Sprintf("S1-%s-%d", providerCode, nth), providerCode, candidate)
+					var last fullchainChatResponse
+					var lastErr error
+					succeeded := false
+					for attempt := 0; attempt < 2; attempt++ {
+						last, lastErr = f.chatE(candidateRoute.apiKey, realChatPayload(candidate.Model))
+						if lastErr == nil && last.Status == http.StatusOK &&
+							strings.Contains(last.Body, "choices") && strings.TrimSpace(realContentOf(last.Body)) != "" {
+							succeeded = true
+							break
+						}
+					}
+					if succeeded {
+						account, route, response = candidate, candidateRoute, last
+						attempted = nth + 1
+						break
+					}
+					tail := candidate.ID[len(candidate.ID)-8:]
+					if lastErr != nil {
+						t.Logf("S1 %s 候选 %d（…%s）上游不可用：传输错误 %v", providerCode, nth, tail, lastErr)
+						continue
+					}
+					t.Logf("S1 %s 候选 %d（…%s）上游不可用：status=%d body=%s",
+						providerCode, nth, tail, last.Status, maskRealBody(last.Body))
+				}
+				if account.ID == "" {
+					t.Fatalf("S1 %s：%d 个导入账户全部失败（上游不可用，非网关链缺陷）", providerCode, candidates)
+				}
+				t.Logf("S1 %s（…%s）：200，回复长度 %d，模型 %s（第 %d 个候选）",
+					providerCode, account.ID[len(account.ID)-8:], len(realContentOf(response.Body)), account.Model, attempted)
 
 				// 审计归因：成功请求的全部 attempt 都归属该真号且最终上游
 				// 200（同账户瞬态重试/Key 轮换时 attempt 数可 >1）。
@@ -463,9 +501,19 @@ func TestFullchainRealChain(t *testing.T) {
 				t.Logf("S1 %s 归因：attempt 数 %d，全部命中真号，最终上游 200",
 					providerCode, len(detail.Attempts))
 				if providerCode == "gpt" {
-					// gpt 流式一次（成本同纪律；用同一真号）。
-					streamRoute := r.realRoute("S1-gpt-stream", "gpt", account)
-					streamResponse := f.chatT(t, streamRoute.apiKey, fmt.Sprintf(`{"model":"%s","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"回复OK"}]}`, account.Model))
+					// gpt 流式一次（成本同纪律；复用同一真号与已选路由——
+					// 流式与否是请求属性，无需再建一套分组/策略/Key 拓扑）。
+					// 上游中转偶发「200 + SSE 头但零字节」，按套件惯例重试
+					// 一次；两次都无 SSE 帧才算链路失败。
+					var streamResponse fullchainChatResponse
+					for streamAttempt := 0; streamAttempt < 2; streamAttempt++ {
+						streamResponse = f.chatT(t, route.apiKey, fmt.Sprintf(`{"model":"%s","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"回复OK"}]}`, account.Model))
+						if streamResponse.Status == http.StatusOK &&
+							strings.Contains(streamResponse.ContentType, "text/event-stream") &&
+							strings.Contains(streamResponse.Body, "data:") {
+							break
+						}
+					}
 					if streamResponse.Status != http.StatusOK || !strings.Contains(streamResponse.ContentType, "text/event-stream") {
 						t.Fatalf("S1 gpt stream status=%d contentType=%s body=%s", streamResponse.Status, streamResponse.ContentType, maskRealBody(streamResponse.Body))
 					}

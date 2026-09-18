@@ -21,25 +21,32 @@ import (
 // and the schema JSON (with digest) written to stdout. PostgreSQL is the only
 // supported dialect; SQLite targets are rejected by openSnapshotDB.
 func runPostgresSchemaSnapshot() {
+	os.Exit(postgresSchemaSnapshotResult())
+}
+
+// postgresSchemaSnapshotResult is runPostgresSchemaSnapshot without the
+// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
+// contract.
+func postgresSchemaSnapshotResult() int {
 	target, err := schemasnapshot.AssertSnapshotTarget(os.Getenv(schemasnapshot.EnvTarget))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(2)
+		return 2
 	}
 	rawURL := strings.TrimSpace(os.Getenv(schemasnapshot.EnvPostgresURL))
 	if rawURL == "" {
 		fmt.Fprintf(os.Stderr, "%s 未配置\n", schemasnapshot.EnvPostgresURL)
-		os.Exit(2)
+		return 2
 	}
 	if os.Getenv(schemasnapshot.EnvReadOnlyConfirm) != schemasnapshot.ReadOnlyConfirmValue {
 		fmt.Fprintln(os.Stderr, "必须设置 JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY；该工具只允许只读快照")
-		os.Exit(2)
+		return 2
 	}
 
 	db, err := openSnapshotDB(rawURL, target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "PostgreSQL schema snapshot failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer db.Close()
 
@@ -47,8 +54,9 @@ func runPostgresSchemaSnapshot() {
 	defer cancel()
 	if err := runSnapshotSession(ctx, db, target); err != nil {
 		fmt.Fprintf(os.Stderr, "PostgreSQL schema snapshot failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // runSnapshotSession mirrors the Node main(): REPEATABLE READ READ ONLY

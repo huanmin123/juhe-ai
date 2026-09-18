@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -20,6 +21,10 @@ type Deps struct {
 	Store *Store
 	Auth  *authsys.Deps
 	Sink  authsys.OperationLogSink
+	// Log 可选（nil 安全）：writeMutationError 兜底分支以 400 + 原始错误文本
+	// 响应，非中文文本随后被 localize 中间件改写为「请求参数无效」，原始错误
+	// 从此只存在于服务端日志——这里提供落点，未接线时静默。
+	Log *slog.Logger
 }
 
 // Mount wires the route-strategy family: admin surface on /route-strategies
@@ -631,7 +636,9 @@ func (s *Store) StrategyName(ctx context.Context, id string, access AccessScope)
 // version conflicts → 409 + currentUpdatedAt; duplicate name (已存在) → 409;
 // validation-cache invalidation failure → 500 (after the row is committed);
 // everything else → 400 with the error message (Node catch-all
-// badRequest(message) for create/patch).
+// badRequest(message) for create/patch). 兜底分支的 message 若不含中文会被
+// localize 中间件改写为「请求参数无效」，原始错误从响应侧不可见——Log 非 nil
+// 时补一条 WARN 保留原始文本（真号验收曾因此无法归因一次策略创建 400）。
 func (d *Deps) writeMutationError(w http.ResponseWriter, err error) {
 	var invalidation *ValidationCacheInvalidationError
 	if errors.As(err, &invalidation) {
@@ -651,6 +658,9 @@ func (d *Deps) writeMutationError(w http.ResponseWriter, err error) {
 	if errors.As(err, &duplicate) {
 		kernel.WriteError(w, http.StatusConflict, duplicate.Message)
 		return
+	}
+	if d.Log != nil {
+		d.Log.Warn("route_strategy_mutation_rejected", "error", err.Error())
 	}
 	kernel.WriteBadRequest(w, err.Error())
 }

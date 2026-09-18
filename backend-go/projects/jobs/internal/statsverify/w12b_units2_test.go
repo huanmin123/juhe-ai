@@ -165,6 +165,14 @@ func TestW12bSvJobsAndStoreExtraArms(t *testing.T) {
 	}
 	statsSpec.disarm()
 
+	// 前两步的聚合臂在 LoadUsageStatsLocation 之后才触发，已用真实 SystemClock
+	// 把 "UTC" 写进时区缓存；固定时钟的 now 一旦被真实时钟追上，缓存会误判
+	// 仍有效。显式清缓存，保证后续空值臂真正落到 DB 读取（可重放）。
+	store.tzMu.Lock()
+	store.tzValue = ""
+	store.tzExpiresAt = time.Time{}
+	store.tzMu.Unlock()
+
 	// LoadUsageStatsTimezone 空值臂与空时区臂。
 	mustExec(t, ctx, store.business, "UPDATE system_settings SET value_json = '' WHERE key = 'usageStatsTimezone'")
 	if _, err := store.LoadUsageStatsTimezone(ctx, now.Add(2*UsageStatsTimezoneCacheTTL)); err == nil {
@@ -177,6 +185,11 @@ func TestW12bSvJobsAndStoreExtraArms(t *testing.T) {
 	if _, _, err := store.LoadUsageStatsLocation(ctx, now.Add(6*UsageStatsTimezoneCacheTTL)); err == nil {
 		t.Fatal("空时区 Location 应报错")
 	}
+	// 收尾清缓存，避免污染同进程内其他用例对缓存语义的假设。
+	store.tzMu.Lock()
+	store.tzValue = ""
+	store.tzExpiresAt = time.Time{}
+	store.tzMu.Unlock()
 
 	// nil store Close / nil EnsureSchema（OpenStore 的 EnsureSchema 失败臂
 	// 经真实 "sqlite" 驱动无注入点，登记不可达）。

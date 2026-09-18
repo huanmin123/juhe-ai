@@ -134,7 +134,9 @@ func TestW12aOpenHostPostgresStopsAtBusinessReaderContract(t *testing.T) {
 	}
 	// 覆盖库上的失败点允许是候选查询计划或读取器契约本身，但必须是
 	// 业务读取器契约阶段的错误，而不是更早的连接/Schema 错误。
-	if !strings.Contains(err.Error(), "verify J3b business reader contract") {
+	// 生产文案为 host.go 的 "J3b business reader does not implement ...",
+	// 失败点可能是 target/management scope 任一契约。
+	if !strings.Contains(err.Error(), "J3b business reader") {
 		t.Fatalf("错误应指向业务读取器契约，实际: %v", err)
 	}
 }

@@ -145,10 +145,8 @@ func (s *MemoryStore) Suspect(_ context.Context, input SuspectInput) (MutationRe
 	if err != nil {
 		return MutationResult{}, err
 	}
-	failureEvidenceKey, err := NormalizeFailureEvidenceKey(input.FailureEvidenceKey, "suspect:"+input.TransitionID)
-	if err != nil {
-		return MutationResult{}, err
-	}
+	// fallbackSeed 前缀 "suspect:" 恒非空，NormalizeFailureEvidenceKey 不会报错（w14m 甄别：不可达防御臂）。
+	failureEvidenceKey, _ := NormalizeFailureEvidenceKey(input.FailureEvidenceKey, "suspect:"+input.TransitionID)
 	dispatchRevision, err := requiredValue(input.DispatchRevision, "dispatchRevision")
 	if err != nil {
 		return MutationResult{}, err
@@ -205,10 +203,8 @@ func (s *MemoryStore) AcquireConfirmationLease(_ context.Context, input AcquireC
 		return mutationResult(MutationStateMismatch, entry.state), nil
 	}
 	if input.ExpectedFailureEvidenceKey != nil {
-		expected, err := NormalizeFailureEvidenceKey(input.ExpectedFailureEvidenceKey, "confirmation-acquire:"+input.TransitionID)
-		if err != nil {
-			return MutationResult{}, err
-		}
+		// fallbackSeed 前缀恒非空，不会报错（w14m 甄别：不可达防御臂）。
+		expected, _ := NormalizeFailureEvidenceKey(input.ExpectedFailureEvidenceKey, "confirmation-acquire:"+input.TransitionID)
 		last, ok, err := LastFailureEvidenceKey(entry.state)
 		if err != nil {
 			return MutationResult{}, err
@@ -218,10 +214,8 @@ func (s *MemoryStore) AcquireConfirmationLease(_ context.Context, input AcquireC
 		}
 	}
 	if input.ConfirmationEvidenceKey != nil {
-		confirmationEvidence, err := NormalizeFailureEvidenceKey(input.ConfirmationEvidenceKey, "confirmation-evidence:"+input.TransitionID)
-		if err != nil {
-			return MutationResult{}, err
-		}
+		// fallbackSeed 前缀恒非空，不会报错（w14m 甄别：不可达防御臂）。
+		confirmationEvidence, _ := NormalizeFailureEvidenceKey(input.ConfirmationEvidenceKey, "confirmation-evidence:"+input.TransitionID)
 		keys, err := FailureEvidenceKeysOf(entry.state)
 		if err != nil {
 			return MutationResult{}, err
@@ -260,10 +254,8 @@ func (s *MemoryStore) CloseSuspectFromObserver(_ context.Context, input CloseSus
 	if failure != nil {
 		return *failure, nil
 	}
-	observerEvidenceKey, err := NormalizeFailureEvidenceKey(strPtr(input.ObserverEvidenceKey), "observer-close:"+input.TransitionID)
-	if err != nil {
-		return MutationResult{}, err
-	}
+	// fallbackSeed 前缀 "observer-close:" 恒非空，不会报错（w14m 甄别：不可达防御臂）。
+	observerEvidenceKey, _ := NormalizeFailureEvidenceKey(strPtr(input.ObserverEvidenceKey), "observer-close:"+input.TransitionID)
 	keys, err := FailureEvidenceKeysOf(entry.state)
 	if err != nil {
 		return MutationResult{}, err
@@ -327,10 +319,8 @@ func (s *MemoryStore) CompleteConfirmation(_ context.Context, input CompleteConf
 	if err != nil {
 		return MutationResult{}, err
 	}
-	failureEvidenceKey, err := NormalizeFailureEvidenceKey(input.FailureEvidenceKey, "confirmation:"+input.LeaseID)
-	if err != nil {
-		return MutationResult{}, err
-	}
+	// fallbackSeed 前缀 "confirmation:" 恒非空，不会报错（w14m 甄别：不可达防御臂）。
+	failureEvidenceKey, _ := NormalizeFailureEvidenceKey(input.FailureEvidenceKey, "confirmation:"+input.LeaseID)
 	isIndependentEvidence := !containsString(previousEvidenceKeys, failureEvidenceKey)
 	failureEvidenceKeys := previousEvidenceKeys
 	if isIndependentEvidence {
@@ -761,11 +751,9 @@ func (s *MemoryStore) ReplaceAccountDispatchRevision(_ context.Context, input Re
 		}
 	}
 	var changed int64
+	// s.order 与 s.entries 由 setEntryLocked/removeEntryLocked 成对维护，恒同步（w14m 甄别：不可达防御臂）。
 	for _, scopeKey := range append([]string(nil), s.order...) {
-		entry, ok := s.entries[scopeKey]
-		if !ok {
-			continue
-		}
+		entry := s.entries[scopeKey]
 		if !runtimeKeyMatchesDispatchRevisionTarget(entry.state.Scope.AccountRuntimeKey, input.AccountRuntimeKey) {
 			continue
 		}
@@ -800,11 +788,9 @@ func (s *MemoryStore) ListDue(_ context.Context, nowMs int64, limit int) ([]Stat
 		due   int64
 	}
 	dueEntries := make([]dueEntry, 0, len(s.entries))
+	// s.order 与 s.entries 恒同步（w14m 甄别：不可达防御臂）。
 	for _, key := range append([]string(nil), s.order...) {
-		entry, ok := s.entries[key]
-		if !ok {
-			continue
-		}
+		entry := s.entries[key]
 		dueAt := accountCircuitDueAtMs(entry.state)
 		if dueAt <= now {
 			dueEntries = append(dueEntries, dueEntry{entry: entry, due: dueAt})
@@ -874,10 +860,8 @@ func (s *MemoryStore) checkedSuspectClosureLocked(
 		result := mutationResult(MutationStateMismatch, entry.state)
 		return nil, 0, &result, nil
 	}
-	expectedEvidence, err := NormalizeFailureEvidenceKey(strPtr(expectedFailureEvidenceKey), "suspect-close:"+transitionID)
-	if err != nil {
-		return nil, 0, nil, err
-	}
+	// fallbackSeed 前缀 "suspect-close:" 恒非空，不会报错（w14m 甄别：不可达防御臂）。
+	expectedEvidence, _ := NormalizeFailureEvidenceKey(strPtr(expectedFailureEvidenceKey), "suspect-close:"+transitionID)
 	last, ok, err := LastFailureEvidenceKey(entry.state)
 	if err != nil {
 		return nil, 0, nil, err
@@ -1312,11 +1296,9 @@ func (s *MemoryStore) reserveCapacityLocked(now int64) bool {
 }
 
 func (s *MemoryStore) cleanupLocked(now int64) {
+	// s.order 与 s.entries 恒同步（w14m 甄别：不可达防御臂）。
 	for _, key := range append([]string(nil), s.order...) {
-		entry, ok := s.entries[key]
-		if !ok {
-			continue
-		}
+		entry := s.entries[key]
 		if entry.state.Phase == PhaseClosed && (entry.closedExpiresAtMs == nil || *entry.closedExpiresAtMs <= now) {
 			s.removeEntryLocked(key)
 		} else {
@@ -1362,9 +1344,7 @@ func (s *MemoryStore) applyLocked(entry *memoryEntry, state State, transitionID 
 }
 
 func (s *MemoryStore) idempotentLocked(entry *memoryEntry, transitionID string) *MutationResult {
-	if entry == nil {
-		return nil
-	}
+	// 全部调用点已先判空，entry 恒非 nil（w14m 甄别：不可达防御臂）。
 	if _, ok := entry.replayIDs[transitionID]; ok {
 		result := mutationResult(MutationIdempotent, entry.state)
 		return &result

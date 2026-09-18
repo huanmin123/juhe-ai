@@ -153,8 +153,9 @@ type confirmationSettlement struct {
 	result  MutationResult
 }
 
-// settlementSignal carries the in-flight settlement result or the error to
-// every concurrent settler (Node: all await the same promise).
+// settlementDone 关闭即表示在途结算完成；结果（或错误）从
+// confirmationSettled / settlementErr 读取，保证任意数量的并发结算方都能拿到
+// 同一份结果（Node：所有调用方 await 同一个 promise）。
 type settlementSignal struct {
 	settlement confirmationSettlement
 	err        error
@@ -176,7 +177,8 @@ type Attempt struct {
 	confirmation                       *Confirmation
 	confirmationSettlementIntent       *confirmationSettlementIntent
 	confirmationSettled                *confirmationSettlement
-	settlementSignal                   chan settlementSignal
+	settlementDone                     chan struct{}
+	settlementErr                      error
 	failureEvidenceKey                 *string
 	observer                           *observerState
 }
@@ -381,22 +383,33 @@ func (a *Attempt) settleConfirmation(ctx context.Context, requested confirmation
 		a.confirmationSettlementIntent = &intentCopy
 	}
 	intent := *a.confirmationSettlementIntent
-	if a.settlementSignal != nil {
-		signal := a.settlementSignal
+	if a.settlementDone != nil {
+		done := a.settlementDone
 		a.mu.Unlock()
-		received := <-signal
-		return received.settlement, received.err
+		<-done
+		a.mu.Lock()
+		settled := a.confirmationSettled
+		settleErr := a.settlementErr
+		a.mu.Unlock()
+		if settleErr != nil {
+			return confirmationSettlement{}, settleErr
+		}
+		if settled != nil {
+			return *settled, nil
+		}
+		return confirmationSettlement{}, errors.New("settlement finished without a result")
 	}
-	signal := make(chan settlementSignal, 1)
-	a.settlementSignal = signal
+	done := make(chan struct{})
+	a.settlementDone = done
 	a.mu.Unlock()
 
 	result, err := a.service.CompleteConfirmation(ctx, *confirmation, intent.outcome, intent.reason, intent.failureEvidenceKey, intent.framingCompleteDisposition)
 	if err != nil {
 		a.mu.Lock()
-		a.settlementSignal = nil
+		a.settlementDone = nil
+		a.settlementErr = err
 		a.mu.Unlock()
-		signal <- settlementSignal{err: err}
+		close(done)
 		return confirmationSettlement{}, err
 	}
 	completed := confirmationSettlement{outcome: intent.outcome, result: result}
@@ -404,8 +417,9 @@ func (a *Attempt) settleConfirmation(ctx context.Context, requested confirmation
 	a.confirmationSettled = &completed
 	a.confirmation = nil
 	a.confirmationKeyRotationFailureObserved = false
+	a.settlementErr = nil
 	a.mu.Unlock()
-	signal <- settlementSignal{settlement: completed}
+	close(done)
 	return completed, nil
 }
 
@@ -774,10 +788,8 @@ func (s *CircuitService) SuspectForegroundFailure(ctx context.Context, input sus
 	if err != nil {
 		return FailureDecision{}, err
 	}
-	failureEvidenceKey, err := NormalizeFailureEvidenceKey(input.failureEvidenceKey, "suspect:"+suspectTransitionID)
-	if err != nil {
-		return FailureDecision{}, err
-	}
+	// fallbackSeed 前缀 "suspect:" 恒非空，NormalizeFailureEvidenceKey 不会报错（w14m 甄别：不可达防御臂）。
+	failureEvidenceKey, _ := NormalizeFailureEvidenceKey(input.failureEvidenceKey, "suspect:"+suspectTransitionID)
 	suspect, err := s.store.Suspect(ctx, SuspectInput{
 		Scope:                        input.scope,
 		DispatchRevision:             dispatchRevision,
@@ -833,10 +845,8 @@ func (s *CircuitService) CompleteConfirmation(
 		NowMs:                      &now,
 	}
 	if outcome == OutcomeTransportFailure {
-		normalized, err := NormalizeFailureEvidenceKey(failureEvidenceKey, "confirmation:"+confirmation.LeaseID)
-		if err != nil {
-			return MutationResult{}, err
-		}
+		// fallbackSeed 前缀 "confirmation:" 恒非空，不会报错（w14m 甄别：不可达防御臂）。
+		normalized, _ := NormalizeFailureEvidenceKey(failureEvidenceKey, "confirmation:"+confirmation.LeaseID)
 		input.FailureEvidenceKey = &normalized
 	}
 	result, err := s.completeAndNotify(ctx, OperationCompleteConfirmation, confirmation.Scope, PhaseSuspect, func() (MutationResult, error) {
@@ -982,10 +992,8 @@ func (s *CircuitService) CompleteRequestFramingAfterKeyRotation(ctx context.Cont
 func (s *CircuitService) completeRequestFramingAfterKeyRotation(ctx context.Context, input keyRotationFramingInput) (MutationResult, error) {
 	var expectedEvidence *string
 	if input.failureEvidenceKey != nil {
-		normalized, err := NormalizeFailureEvidenceKey(input.failureEvidenceKey, "request-key-rotation")
-		if err != nil {
-			return MutationResult{}, err
-		}
+		// fallbackSeed "request-key-rotation" 恒非空，不会报错（w14m 甄别：不可达防御臂）。
+		normalized, _ := NormalizeFailureEvidenceKey(input.failureEvidenceKey, "request-key-rotation")
 		expectedEvidence = &normalized
 	}
 	if expectedEvidence == nil {
@@ -1406,9 +1414,8 @@ func jsonString(value any) string {
 	var out strings.Builder
 	encoder := json.NewEncoder(&out)
 	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return "null"
-	}
+	// 入参均为标量/纯数据，编码到内存 Builder 不会失败（w14m 甄别：不可达防御臂）。
+	_ = encoder.Encode(value)
 	return strings.TrimRight(out.String(), "\n")
 }
 

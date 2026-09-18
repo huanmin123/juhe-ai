@@ -54,17 +54,17 @@ func TestWeProvidersPatchBuiltInModelFullConfiguration(t *testing.T) {
 	if mode != "text" || imageInput != 5 {
 		t.Fatalf("列投影: mode=%s imageIn=%v", mode, imageInput)
 	}
-	// 行为存疑：内置模型补丁的整型字段（maxOutputTokens 等）被写成 NULL——
-	// builtInSubmittedFields 经 jsonNullable 产出 int64，而 nullableIntegerJSON
-	// 只接受 float64，类型断言失败后归 nil。按当前实际行为断言，不修改生产代码。
-	if maxOutput != nil {
-		t.Fatalf("当前实际行为应为 NULL（疑似迁移缺陷）, got %v", maxOutput)
+	// w14d 缺陷修复：builtInSubmittedFields 经 jsonNullable 产出 int64，
+	// nullableIntegerJSON 现在接受 int64 分支，整型字段按提交值落库
+	//（原实现类型断言失败后写 NULL，属迁移断层，已修复）。
+	if maxOutput != int64(16384) && maxOutput != float64(16384) {
+		t.Fatalf("maxOutputTokens 应按提交值落库, got %v (%T)", maxOutput, maxOutput)
 	}
-	// 行为存疑：与整型字段同源的类型断层——builtInSubmittedFields 产出的
-	// tier 价格值是 ModelPriceSet 结构体而非 map[string]any，
-	// serviceTierPricesFromAny 全部丢弃后写入空对象（疑似迁移缺陷）。
-	if tierPricesJSON != "{}" {
-		t.Fatalf("当前实际行为应为空对象（疑似迁移缺陷）, got %s", tierPricesJSON)
+	// w14d 缺陷修复：与整型字段同源的类型断层——builtInSubmittedFields
+	// 产出的 tier 价格值是 ModelPriceSet 结构体，serviceTierPricesFromAny
+	// 现在接受该形态，提交的档位价格不再被清成空对象（已修复）。
+	if tierPricesJSON != `{"priority":{"inputUsdPer1M":12,"outputUsdPer1M":24,"audioInputUsdPer1M":30}}` {
+		t.Fatalf("提交的档位价格应完整落库, got %s", tierPricesJSON)
 	}
 	// 配置字段（非 status/catalogVisible）触发 manual-override 源迁移。
 	if source != "manual-override" {

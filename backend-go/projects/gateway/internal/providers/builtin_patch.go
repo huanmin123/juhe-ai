@@ -280,13 +280,25 @@ func stringListJSON(value any) []string {
 	return output
 }
 
-// nullableIntegerJSON mirrors nullableInteger.
+// nullableIntegerJSON mirrors nullableInteger. The patch value space carries
+// both JSON-decoded float64 (raw bodies) and *int64 (jsonNullable over the
+// parsed schema ints); accepting the int64 arm keeps the Node contract that
+// submitted integer tokens persist instead of collapsing to NULL.
 func nullableIntegerJSON(value any) any {
-	number, ok := value.(float64)
-	if !ok || number != float64(int64(number)) || number < 0 {
+	switch number := value.(type) {
+	case float64:
+		if number != float64(int64(number)) || number < 0 {
+			return nil
+		}
+		return int64(number)
+	case int64:
+		if number < 0 {
+			return nil
+		}
+		return number
+	default:
 		return nil
 	}
-	return int64(number)
 }
 
 // nullablePriceJSON mirrors nullablePrice.
@@ -307,6 +319,14 @@ func serviceTierPricesFromAny(value any) map[string]ModelPriceSet {
 		return output
 	}
 	for tier, rawPrices := range record {
+		// builtInSubmittedFields carries the typed ModelPriceSet (via
+		// serviceTierPricesToAny); raw JSON-decoded bodies carry
+		// map[string]any. Both shapes are honored so the patch roundtrip
+		// keeps the submitted tier prices instead of dropping them.
+		if typed, isTyped := rawPrices.(ModelPriceSet); isTyped {
+			output[tier] = typed
+			continue
+		}
 		prices, ok := rawPrices.(map[string]any)
 		if !ok {
 			continue

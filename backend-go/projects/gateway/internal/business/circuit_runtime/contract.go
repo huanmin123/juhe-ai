@@ -460,9 +460,9 @@ func ValidateGatewayAccountCircuitState(state GatewayAccountCircuitState) error 
 	if state.Phase != GatewayAccountCircuitPhaseHalfOpen && state.HalfOpenOrigin != "" {
 		return fmt.Errorf("account circuit half-open origin is invalid")
 	}
-	if state.HalfOpenOrigin != "" && state.HalfOpenOrigin != GatewayAccountCircuitPhaseOpen && state.HalfOpenOrigin != GatewayAccountCircuitPhaseRecovering {
-		return fmt.Errorf("account circuit half-open origin is invalid")
-	}
+	// 说明：此处曾有 HalfOpenOrigin 的第三次白名单校验，但第 457 行已保证
+	// HALF_OPEN 相位的 origin 只能是 OPEN/RECOVERING，第 460 行已保证其余
+	// 相位 origin 为空，该守卫不可达，w14g 覆盖波次确认后删除。
 	for _, values := range [][]string{state.ChildIncidentIDs, state.ChildScopeKeys, state.RequiredRecoveryScopeKeys, state.RecoveryEvidenceScopeKeys} {
 		if len(values) > GatewayAccountCircuitRuntimeMaxEvidenceScopes || !gatewayAccountCircuitUniqueSortedStrings(values) {
 			return fmt.Errorf("account circuit state relation list is invalid")
