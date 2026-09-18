@@ -216,11 +216,11 @@ var systemDefaultInspectionRules = []inspectionDefaultRule{
 		"仅限尚未向客户端提交语义输出的明确短暂上游错误；网关先按当前物理账号的有界预算重试，耗尽后再切换候选，不写长期账号状态。"),
 	defaultRule("default_gpt_upstream_error", "GPT 上游限流/过载错误", 0, "provider", "openai", "gpt",
 		ResponseInspectionPolicyMatch{
-			ErrorTypes:            []string{"upstream_error"},
+			ErrorTypes:            []string{"upstream_error", "server_error"},
 			ErrorMessagesIncludes: []string{"overloaded"},
 		},
 		"retry_no_avoidance",
-		"upstream_error 是上游包装层的流内失败帧标记（type=upstream_error 无 code），不只代表过载——为避免误杀，本规则在 type 之上叠加 errorMessageIncludes=overloaded（AND），仅上游过载文案（'Our servers are currently overloaded'）原地有界重试（瞬态白名单授予同账号重试资格），不切换账户；其余 upstream_error 帧落通用 error 对象兜底交客户端。供应商可预知，按供应商级配置（同 default_gpt_cyber_policy 先例）。"),
+		"upstream_error 是上游包装层的流内失败帧标记（type=upstream_error 无 code），不只代表过载——为避免误杀，本规则在 type 之上叠加 errorMessageIncludes=overloaded（AND），仅上游过载文案（'Our servers are currently overloaded'）原地有界重试（瞬态白名单授予同账号重试资格），不切换账户；其余 upstream_error 帧落通用 error 对象兜底交客户端。server_error 兼容直连 OpenAI 官方账户（官方原生过载 type，中转包装场景见 upstream_error）。供应商可预知，按供应商级配置（同 default_gpt_cyber_policy 先例）。"),
 	defaultRule("default_openai_context_window_error", "OpenAI 上下文窗口错误", 1, "protocol", "openai", "",
 		ResponseInspectionPolicyMatch{
 			ClientProfiles: []string{"generic_openai", "codex"},

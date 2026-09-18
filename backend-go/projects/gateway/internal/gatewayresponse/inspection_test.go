@@ -265,7 +265,7 @@ func TestGptUpstreamErrorTypeRule(t *testing.T) {
 		{ID: "default_gpt_upstream_error", DefaultRule: true, Enabled: true, Priority: priority,
 			ScopeType: "provider", ProtocolCode: "openai", ProviderCode: strPtr("gpt"),
 			Match: gatewayruntimecache.ResponseInspectionPolicyMatch{
-				ErrorTypes:            []string{"upstream_error"},
+				ErrorTypes:            []string{"upstream_error", "server_error"},
 				ErrorMessagesIncludes: []string{"overloaded"},
 			},
 			Action: "retry_no_avoidance"},
@@ -287,6 +287,24 @@ func TestGptUpstreamErrorTypeRule(t *testing.T) {
 	decision := buildPolicyDecision(matched, false, matched.Policy.Action, nil)
 	if !IsTransientPrecommitUpstreamFailureDecision(&decision) {
 		t.Fatalf("decision 应获得原地重试资格: %+v", decision)
+	}
+	// 直连 OpenAI 官方账户：官方原生过载 type=server_error + 同文案 → 命中。
+	official := gatewayproto.SemanticFrame{
+		FrameType:    gatewayproto.FrameTypeError,
+		ErrorType:    "server_error",
+		ErrorMessage: "Our servers are currently overloaded. Please try again later.",
+	}
+	if hit := MatchRuntimeResponseInspectionPolicy(official, policies, nil); hit == nil || hit.Policy.ID != "default_gpt_upstream_error" {
+		t.Fatalf("直连官方 server_error 过载应命中: %+v", hit)
+	}
+	// 官方原生 server_error 但非过载文案（真正内部错误）→ 不命中，避免误杀。
+	otherOfficial := gatewayproto.SemanticFrame{
+		FrameType:    gatewayproto.FrameTypeError,
+		ErrorType:    "server_error",
+		ErrorMessage: "The server had an error while processing your request.",
+	}
+	if hit := MatchRuntimeResponseInspectionPolicy(otherOfficial, policies, nil); hit != nil && hit.Policy.ID == "default_gpt_upstream_error" {
+		t.Fatalf("官方非过载 server_error 不得命中: %+v", hit)
 	}
 	// 误杀防护：同为 upstream_error 但非过载文案（如配额/审核类）不命中本
 	// 规则，落通用 error 对象兜底交客户端。
