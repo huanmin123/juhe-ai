@@ -5,6 +5,8 @@
 
 ## 文档索引
 
+- [全链路真实 AI 业务场景验收报告（2026-09-18）](全链路真实AI业务场景验收报告-20260918.md)：mock 矩阵 0 skip/0 fail、真号 + 真实客户端（codex/claude/opencode）门 100% 全绿；记录 F9–F13 缺陷修复、开放观察项与边界，上线前最低验收标准的通过证据。
+- [后端架构与性能现状评估（2026-09-18）](后端架构与性能现状评估-20260918.md)：Go 后端迁移收尾后的第一轮系统性架构与性能现状评估，量化体量（46.7 万行生产 / 61.5 万行测试）、超限文件、god 包、7 类跨包重复、扇入枢纽（gatewayruntimecache 231）与热路径信号，给出 R1-R5 改革方向；已通过独立复审数字复核，作为改革 PLAN 的证据基线。
 - [J3a 代理延迟检测 Node-Go 深度对照报告（2026-08-22）](J3a代理延迟检测Node-Go深度对照报告-2026-08-22.md)：逐项记录 Node 历史 oracle、手动报告、Go projector、现役 Node 管理 CRUD/CAS、scheduler 生命周期和本地接线结果；真实进程 readback、owner handoff/active-path-zero、生产切换仍未完成。
 - [Codex Reasoning 完整性检测源码审计报告（2026-07-28）](CodexReasoning完整性检测源码审计报告-2026-07-28.md)：核对 reasoning item、summary、encrypted content、SSE 终态与 juhe-ai 缺口，区分确定协议失败、合法不可见和语义启发式异常。
 - [Codex Responses 双向协议防护验证报告（2026-07-28）](CodexResponses双向协议防护验证报告-2026-07-28.md)：记录目标生产会话的请求/响应 ID 污染证据、双检查点和 identity 暴露边界修复，以及 JSON/SSE 性能门禁。
