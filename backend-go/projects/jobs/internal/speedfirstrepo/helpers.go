@@ -3,6 +3,8 @@ package speedfirstrepo
 import (
 	mathrand "math/rand"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
 // 本文件承载原 proberepo 包内被 speedfirst.go 依赖的共享小工具
@@ -23,26 +25,8 @@ func formatMillis(ms int64) string {
 }
 
 // passiveJitterWindowMS 等价 passiveScheduleJitterWindowMs。
+// 实现收敛到 shared/platform/schedulejitter（全输入域等价，含 interval<1
+// 钳制与 ms 整除语义）。
 func passiveJitterWindowMS(intervalMS int64) int64 {
-	if intervalMS < 1 {
-		intervalMS = 1
-	}
-	var windowMS int64
-	switch {
-	case intervalMS < 60_000:
-		// intervalMS < 60_000 时 half = intervalMS/2 < 30_000 恒成立，
-		// 原 else 分支（windowMS = 30_000）不可达，按死守卫删除（w12f）。
-		return intervalMS / 2
-	case intervalMS < 60*60_000:
-		windowMS = 30_000
-	case intervalMS < 24*60*60_000:
-		windowMS = 30 * 60_000
-	case intervalMS < 7*24*60*60_000:
-		windowMS = 60 * 60_000
-	default:
-		windowMS = 8 * 60 * 60_000
-	}
-	// 各 case 给出的 windowMS 恒 <= intervalMS/2 且恒非负：
-	// 原 `if windowMS > half` 与 `if windowMS < 0` 钳制不可达，按死守卫删除（w12f）。
-	return windowMS
+	return int64(schedulejitter.Window(time.Duration(intervalMS) * time.Millisecond) / time.Millisecond)
 }

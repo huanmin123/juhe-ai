@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // 本包是 jobs 侧账户电路运行态 Redis store，移植 Node
@@ -879,62 +881,19 @@ func redisAccountCircuitStoreKeys(name, namespace string) redisCircuitKeys {
 	}
 }
 
-func sanitizeRedisName(name string) string {
-	trimmed := strings.TrimSpace(name)
-	var out strings.Builder
-	for _, c := range trimmed {
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == ':', c == '_', c == '-':
-			out.WriteRune(c)
-		default:
-			out.WriteRune('_')
-		}
-	}
-	return out.String()
-}
+// 实现收敛到 shared/platform/rediscfg（行为逐字节等价）。
+func sanitizeRedisName(name string) string { return rediscfg.SanitizeRedisName(name) }
 
 // redisNamespacedKey mirrors shared/redis-namespace.ts（namespace 插在 juhe-ai
 // 根之后，与部署键位一致；proberepo 速度优先键同规则）。
+// 实现收敛到 shared/platform/rediscfg（panic 语义等价）。
 func redisNamespacedKey(key, namespace string) string {
-	normalized := strings.TrimSpace(key)
-	if normalized == "" {
-		panic("Redis key 不能为空")
-	}
-	rootPrefix := "juhe-ai:"
-	ns := sanitizeRedisNamespacePart(namespace)
-	if ns == "" {
-		return normalized
-	}
-	namespacePrefix := rootPrefix + ns + ":"
-	if strings.HasPrefix(normalized, namespacePrefix) {
-		return normalized
-	}
-	if strings.HasPrefix(normalized, rootPrefix) {
-		return namespacePrefix + normalized[len(rootPrefix):]
-	}
-	return namespacePrefix + normalized
+	return rediscfg.NamespacedKey(key, namespace)
 }
 
+// 实现收敛到 shared/platform/rediscfg（行为逐字节等价）。
 func sanitizeRedisNamespacePart(value string) string {
-	normalized := strings.TrimSpace(value)
-	if normalized == "" {
-		return ""
-	}
-	var out strings.Builder
-	var lastUnderscore bool
-	for _, c := range normalized {
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '.', c == ':', c == '-':
-			out.WriteRune(c)
-			lastUnderscore = false
-		default:
-			if !lastUnderscore {
-				out.WriteRune('_')
-				lastUnderscore = true
-			}
-		}
-	}
-	return strings.Trim(out.String(), "_")
+	return rediscfg.SanitizeRedisNamespacePart(value)
 }
 
 type redisListDuePage struct {

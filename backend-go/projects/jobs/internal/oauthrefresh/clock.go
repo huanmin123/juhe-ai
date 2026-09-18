@@ -3,25 +3,20 @@ package oauthrefresh
 import (
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
 // Clock mirrors the injectable time sources the Node services take for tests
 // (clock parameter / Date.now) and keeps kill-restart idempotency tests
-// deterministic.
-type Clock interface {
-	Now() time.Time
-}
+// deterministic. 统一签名收敛到 shared/platform/timeclock（类型别名）。
+type Clock = timeclock.Clock
 
-// ClockFunc adapts a function to Clock.
-type ClockFunc func() time.Time
-
-// Now implements Clock.
-func (f ClockFunc) Now() time.Time { return f() }
+// ClockFunc adapts a function to Clock（nil 时退回 SystemClock）。
+type ClockFunc = timeclock.ClockFunc
 
 // systemClock is the production clock.
-type systemClock struct{}
-
-func (systemClock) Now() time.Time { return time.Now() }
+type systemClock = timeclock.SystemClock
 
 // SystemClock returns the wall-clock Clock.
 func SystemClock() Clock { return systemClock{} }

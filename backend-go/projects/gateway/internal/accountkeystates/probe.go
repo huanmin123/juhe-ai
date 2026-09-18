@@ -9,6 +9,8 @@ import (
 	"math/rand"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
 // 本文件移植 Node storage/account-api-key-runtime-state.repository.ts 的
@@ -981,36 +983,10 @@ func normalizeProbeDeferSeconds(value int) int {
 
 // passiveJitterWindowMS 等价 passiveScheduleJitterWindowMs（shared/
 // passive-schedule-jitter.ts；与 jobs proberepo 同源）。
+// 实现收敛到 shared/platform/schedulejitter（全输入域等价，含 interval<1
+// 钳制与 ms 整除语义）。
 func passiveJitterWindowMS(intervalMS int64) int64 {
-	if intervalMS < 1 {
-		intervalMS = 1
-	}
-	var windowMS int64
-	switch {
-	case intervalMS < 60_000:
-		half := intervalMS / 2
-		if half < 30_000 {
-			windowMS = half
-		} else {
-			windowMS = 30_000
-		}
-	case intervalMS < 60*60_000:
-		windowMS = 30_000
-	case intervalMS < 24*60*60_000:
-		windowMS = 30 * 60_000
-	case intervalMS < 7*24*60*60_000:
-		windowMS = 60 * 60_000
-	default:
-		windowMS = 8 * 60 * 60_000
-	}
-	half := intervalMS / 2
-	if windowMS > half {
-		windowMS = half
-	}
-	if windowMS < 0 {
-		windowMS = 0
-	}
-	return windowMS
+	return int64(schedulejitter.Window(time.Duration(intervalMS) * time.Millisecond) / time.Millisecond)
 }
 
 // passiveJitterOffsetMS 采样对称抖动偏移（零偏移取 1，与 jobs proberepo

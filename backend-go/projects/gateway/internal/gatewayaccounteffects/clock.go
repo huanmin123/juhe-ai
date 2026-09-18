@@ -4,19 +4,17 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
 // Clock injects time; tests use a fixed clock. It mirrors the Node
 // Date.now()/new Date() reads in the migrated services.
-type Clock interface {
-	Now() time.Time
-}
+// 统一签名收敛到 shared/platform/timeclock（类型别名，调用点零改动）。
+type Clock = timeclock.Clock
 
 // SystemClock is the default wall clock.
-type SystemClock struct{}
-
-// Now implements Clock.
-func (SystemClock) Now() time.Time { return time.Now() }
+type SystemClock = timeclock.SystemClock
 
 // NowMs returns the clock reading in unix milliseconds.
 func NowMs(clock Clock) int64 {

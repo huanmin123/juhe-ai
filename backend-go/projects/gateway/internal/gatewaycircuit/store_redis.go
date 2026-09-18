@@ -9,6 +9,9 @@ import (
 	"strings"
 
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/jsonenc"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // RedisStoreOptions mirrors RedisAccountCircuitStoreOptions. Either RedisURL
@@ -632,8 +635,8 @@ func cursorString(value any, fallback string) string {
 
 func encodeJSON(value any) string {
 	// 入参均为 map/基本类型构成的纯数据，json.Marshal 不会失败（w14m 甄别：不可达防御臂）。
-	encoded, _ := json.Marshal(value)
-	return string(encoded)
+	// 实现收敛到 shared/platform/jsonenc（行为逐字节等价）。
+	return jsonenc.EncodeJSON(value)
 }
 
 // decodeStrict parses a Lua cjson response. Lua encodes an empty array as
@@ -696,65 +699,17 @@ func redisAccountCircuitStoreKeys(name, namespace string) redisCircuitKeys {
 }
 
 // sanitizeRedisName mirrors name.trim().replace(/[^a-zA-Z0-9:_-]/g, '_').
-func sanitizeRedisName(name string) string {
-	trimmed := strings.TrimSpace(name)
-	var out strings.Builder
-	for _, c := range trimmed {
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == ':', c == '_', c == '-':
-			out.WriteRune(c)
-		default:
-			out.WriteRune('_')
-		}
-	}
-	return out.String()
-}
+// 实现收敛到 shared/platform/rediscfg（行为逐字节等价）。
+func sanitizeRedisName(name string) string { return rediscfg.SanitizeRedisName(name) }
 
 // redisNamespacedKey mirrors shared/redis-namespace.ts: the namespace part is
 // inserted after the juhe-ai root, matching the deployed key layout.
-func redisNamespacedKey(key, namespace string) string {
-	normalized := strings.TrimSpace(key)
-	if normalized == "" {
-		panic("Redis key 不能为空")
-	}
-	rootPrefix := "juhe-ai:"
-	ns := sanitizeRedisNamespacePart(namespace)
-	if ns == "" {
-		return normalized
-	}
-	namespacePrefix := rootPrefix + ns + ":"
-	if strings.HasPrefix(normalized, namespacePrefix) {
-		return normalized
-	}
-	if strings.HasPrefix(normalized, rootPrefix) {
-		return namespacePrefix + normalized[len(rootPrefix):]
-	}
-	return namespacePrefix + normalized
-}
+// 实现收敛到 shared/platform/rediscfg（panic 语义等价）。
+func redisNamespacedKey(key, namespace string) string { return rediscfg.NamespacedKey(key, namespace) }
 
 // sanitizeRedisNamespacePart mirrors sanitizeRedisNamespacePart.
-func sanitizeRedisNamespacePart(value string) string {
-	normalized := strings.TrimSpace(value)
-	if normalized == "" {
-		return ""
-	}
-	var out strings.Builder
-	var lastUnderscore bool
-	for _, c := range normalized {
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '.', c == ':', c == '-':
-			out.WriteRune(c)
-			lastUnderscore = false
-		default:
-			if !lastUnderscore {
-				out.WriteRune('_')
-				lastUnderscore = true
-			}
-		}
-	}
-	result := strings.Trim(out.String(), "_")
-	return result
-}
+// 实现收敛到 shared/platform/rediscfg（行为逐字节等价）。
+func sanitizeRedisNamespacePart(value string) string { return rediscfg.SanitizeRedisNamespacePart(value) }
 
 type redisListDuePage struct {
 	scopeKeys  []string

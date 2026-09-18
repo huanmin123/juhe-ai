@@ -1,8 +1,7 @@
 package statsagg
 
 import (
-	"fmt"
-	"strings"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 )
 
 // Dialect 承载 SQLite 测试 / PG 生产的 SQL 双模差异：
@@ -16,21 +15,9 @@ type Dialect struct {
 	Postgres bool
 }
 
+// bind 实现收敛到 shared/platform/sqldialect（行为逐字节等价）。
 func (d Dialect) bind(query string) string {
-	if !d.Postgres {
-		return query
-	}
-	var out strings.Builder
-	index := 0
-	for _, ch := range query {
-		if ch == '?' {
-			index++
-			out.WriteString(fmt.Sprintf("$%d", index))
-			continue
-		}
-		out.WriteRune(ch)
-	}
-	return out.String()
+	return sqldialect.BindSQL(d.Postgres, query)
 }
 
 // StatsTable 返回 stats 库表引用。

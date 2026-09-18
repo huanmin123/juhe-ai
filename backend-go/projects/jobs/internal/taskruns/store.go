@@ -7,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 
 	_ "modernc.org/sqlite"
 )
@@ -155,22 +156,9 @@ const pgNowText = `to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"H
 // 实测 PG 模式报 42601 语法错误，与 cleanuprepo/statsverify 前波同类缺陷）；
 // 本包 SQL 文本不含含 `?` 的字符串字面量，顺序改写与参数顺序一一对应。
 // 已使用 $n 的 PG 专有 SQL 不含 `?`，原样返回。
+// 实现收敛到 shared/platform/sqldialect（行为逐字节等价）。
 func (s *Store) bind(query string) string {
-	if s.mode != ModePostgres || !strings.Contains(query, "?") {
-		return query
-	}
-	var b strings.Builder
-	index := 0
-	for _, r := range query {
-		if r == '?' {
-			index++
-			b.WriteByte('$')
-			b.WriteString(strconv.Itoa(index))
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
+	return sqldialect.BindSQL(s.mode == ModePostgres, query)
 }
 
 // ---------------------------------------------------------------------------

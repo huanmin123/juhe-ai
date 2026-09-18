@@ -8,27 +8,14 @@ package circuitstore
 import (
 	"context"
 	"database/sql"
-	"strconv"
-	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 )
 
 // bindSQL 把顺序 `?` 占位符按出现次序改写为 PostgreSQL 的 $n 序号。
+// 实现收敛到 shared/platform/sqldialect（行为逐字节等价）。
 func bindSQL(postgres bool, query string) string {
-	if !postgres || !strings.Contains(query, "?") {
-		return query
-	}
-	var b strings.Builder
-	index := 0
-	for _, ch := range query {
-		if ch == '?' {
-			index++
-			b.WriteByte('$')
-			b.WriteString(strconv.Itoa(index))
-			continue
-		}
-		b.WriteRune(ch)
-	}
-	return b.String()
+	return sqldialect.BindSQL(postgres, query)
 }
 
 // boundDB 嵌入 *sql.DB，对 PG 模式改写方言共享 SQL 的 `?` 占位符。

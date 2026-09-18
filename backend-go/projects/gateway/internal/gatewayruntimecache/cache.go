@@ -4,18 +4,17 @@ import (
 	"container/list"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
 // Clock separates wall time from cache logic so every TTL/revalidate path is
 // testable with a fake clock (Node tests inject Date.now the same way).
-type Clock interface {
-	Now() time.Time
-}
+// 统一签名收敛到 shared/platform/timeclock（类型别名，调用点零改动）。
+type Clock = timeclock.Clock
 
 // realClock uses the system time.
-type realClock struct{}
-
-func (realClock) Now() time.Time { return time.Now() }
+type realClock = timeclock.SystemClock
 
 // SystemClock returns the default clock.
 func SystemClock() Clock { return realClock{} }

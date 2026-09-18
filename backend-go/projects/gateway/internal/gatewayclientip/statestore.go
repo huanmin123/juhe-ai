@@ -10,6 +10,8 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // RuntimeStateDriver values mirror runtimeConfig.runtimeStateDriver.
@@ -125,11 +127,10 @@ func stateStoreKeyPrefix(namespace, name string) (string, error) {
 	return fmt.Sprintf("juhe-ai:%s:state:%s:", sanitizedNamespace, sanitizeRedisKeyPart(name)), nil
 }
 
-// sanitizeRedisNamespacePart mirrors shared/redis-namespace.ts.
+// sanitizeRedisNamespacePart mirrors shared/redis-namespace.ts（清洗收敛到
+// shared/platform/rediscfg，空值 error 文案保留在调用点）。
 func sanitizeRedisNamespacePart(value string) (string, error) {
-	normalized := strings.TrimSpace(value)
-	normalized = namespaceSanitizePattern.ReplaceAllString(normalized, "_")
-	normalized = strings.Trim(normalized, "_")
+	normalized := rediscfg.SanitizeRedisNamespacePart(value)
 	if normalized == "" {
 		return "", errors.New("Redis namespace 不能为空")
 	}

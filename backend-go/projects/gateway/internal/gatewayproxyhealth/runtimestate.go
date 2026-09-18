@@ -10,6 +10,8 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // RuntimeStateStore ports the consumed surface of
@@ -290,28 +292,9 @@ func namespacedRedisKey(namespace, key string) string {
 }
 
 // sanitizeRedisNamespacePart mirrors the Node helper of the same name.
+// 实现收敛到 shared/platform/rediscfg（行为逐字节等价）。
 func sanitizeRedisNamespacePart(value string) string {
-	normalized := strings.TrimSpace(value)
-	var builder strings.Builder
-	prevUnderscore := false
-	for _, r := range normalized {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
-			r == '_' || r == '.' || r == ':' || r == '-' {
-			builder.WriteRune(r)
-			prevUnderscore = false
-			continue
-		}
-		// Node replaces runs with a single underscore.
-		if !prevUnderscore {
-			builder.WriteByte('_')
-			prevUnderscore = true
-		}
-	}
-	result := strings.Trim(builder.String(), "_")
-	if result == "" {
-		return result
-	}
-	return result
+	return rediscfg.SanitizeRedisNamespacePart(value)
 }
 
 // sanitizeRedisKeyPart mirrors the runtime-state-store helper: character

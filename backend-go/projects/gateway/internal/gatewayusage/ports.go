@@ -5,6 +5,8 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
 // newUUID mirrors randomUUID(): a random RFC 4122 version-4 UUID string.
@@ -24,15 +26,11 @@ func newUUID() string {
 // wired at the composition root; tests in this package provide mocks.
 
 // Clock ports the injected time source (Node Date.now / new Date()).
-type Clock interface {
-	Now() time.Time
-}
+// 统一签名收敛到 shared/platform/timeclock（类型别名，调用点零改动）。
+type Clock = timeclock.Clock
 
 // SystemClock reads the wall clock.
-type SystemClock struct{}
-
-// Now implements Clock.
-func (SystemClock) Now() time.Time { return time.Now() }
+type SystemClock = timeclock.SystemClock
 
 // ClockFunc adapts a function to Clock.
 type ClockFunc func() time.Time

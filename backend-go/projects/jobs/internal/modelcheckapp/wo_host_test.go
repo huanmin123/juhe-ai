@@ -111,24 +111,24 @@ func TestNilHostReadyAndClose(t *testing.T) {
 	}
 }
 
-func TestOpenHostSQLiteStopsAtTargetResolutionAssertion(t *testing.T) {
-	// 行为存疑：modelcheckexecutor.TargetResolver 是函数类型（不是接口），
-	// OpenHost 用它对 *SQLiteReader 结构体指针做类型断言必然失败，因此
-	// 即使全部 schema 就绪，装配也会在该断言处 fail-closed，后续的
-	// Service/Handler 组装代码当前不可达（gateway 侧同名装配需单独核对）。
-	// 此处按当前实际行为断言；若上游把断言目标改为接口，本用例需同步更新。
+func TestOpenHostSQLiteAssemblesThroughTargetResolution(t *testing.T) {
+	// 历史缺陷已修复：TargetResolver 是函数类型，OpenHost 曾对
+	// *SQLiteReader 结构体指针做类型断言必然失败；现改为按 Resolve 方法
+	// 签名断言后取方法值装配。全部 schema 就绪时 OpenHost 应完整装配。
 	cfg := validSQLiteConfig(t)
 	prepareSQLiteBusinessDB(t, cfg.BusinessDatabasePath, sqliteBusinessFixtureSchema)
 	host, err := OpenHost(context.Background(), cfg)
-	if err == nil {
-		_ = host.Close()
-		t.Fatalf("按当前实现，类型断言必然失败，OpenHost 应报错")
+	if err != nil {
+		t.Fatalf("修复后 OpenHost 应完整装配: %v", err)
 	}
-	if !strings.Contains(err.Error(), "J3b business reader does not implement target resolution") {
-		t.Fatalf("错误应指向目标解析断言失败，实际: %v", err)
+	if host == nil || !host.Ready() {
+		t.Fatalf("Host 应就绪: %+v", host)
 	}
-	if host != nil {
-		t.Fatalf("失败路径应返回 nil Host")
+	if host.Handler == nil || host.Service == nil {
+		t.Fatalf("Handler/Service 应完成组装: %+v", host)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatalf("Close 应返回 nil: %v", err)
 	}
 }
 

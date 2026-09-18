@@ -149,11 +149,17 @@ func OpenHost(ctx context.Context, cfg modelcheckruntime.RuntimeConfig) (*Host, 
 		closeAll()
 		return nil, err
 	}
-	targetResolver, ok := sourceAny.(modelcheckexecutor.TargetResolver)
+	// TargetResolver 是函数类型而非接口：对 *SQLiteReader/*PostgresReader
+	// 结构体指针做类型断言必然失败（历史缺陷，Service/Handler 组装不可达）。
+	// 此处按 Resolve 方法签名做鸭子断言，再取方法值装配。
+	targetResolverSource, ok := sourceAny.(interface {
+		Resolve(context.Context, modelcheckexecutor.ResolutionRequest) (modelcheckexecutor.ResolvedTarget, error)
+	})
 	if !ok {
 		closeAll()
 		return nil, errors.New("J3b business reader does not implement target resolution")
 	}
+	targetResolver := modelcheckexecutor.TargetResolver(targetResolverSource.Resolve)
 	service := &modelcheckruntime.Service{Durable: durable, Dataset: dataset, Resolver: targetResolver, Active: modelcheckactive.NewRegistry(), Now: time.Now}
 	scopeReader, ok := sourceAny.(modelcheckhttp.ManagementTargetScopeReader)
 	if !ok {

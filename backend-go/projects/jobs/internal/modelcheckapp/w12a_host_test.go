@@ -80,11 +80,11 @@ func w12aW1CoverPostgresURLs(t *testing.T) (jobsURL, businessURL string) {
 	return base, base
 }
 
-func TestW12aOpenHostPostgresStopsAtBusinessReaderContract(t *testing.T) {
+func TestW12aOpenHostPostgresAssembles(t *testing.T) {
 	// 契约：PostgreSQL 装配臂按 durable -> dataset -> business reader 的顺序
-	// 打开并校验。w1cover 覆盖库的候选查询 schema 与生产不一致（历史遗留的
-	// 全 text 列），业务读取器契约校验在候选 EXPLAIN 处 fail-closed，
-	// 这正是本用例要锁定的装配失败路径。
+	// 打开并校验。w1cover 覆盖库的历史遗留全 text 列已按权威 DDL 修复，
+	// 业务读取器契约通过，OpenHost 应完整装配（历史前提“契约 fail-closed”
+	// 随覆盖库修复作废）。
 	jobsURL, businessURL := w12aW1CoverPostgresURLs(t)
 
 	// 覆盖库可能尚未建 durable 四表；这里按维护项目权威 DDL 幂等补建
@@ -125,19 +125,17 @@ func TestW12aOpenHostPostgresStopsAtBusinessReaderContract(t *testing.T) {
 		Heartbeat:            time.Second,
 	}
 	host, err := OpenHost(context.Background(), cfg)
-	if err == nil {
-		_ = host.Close()
-		t.Fatalf("覆盖库 schema 与生产不一致时业务读取器契约应失败")
+	if err != nil {
+		t.Fatalf("覆盖库修复后 OpenHost 应完整装配: %v", err)
 	}
-	if host != nil {
-		t.Fatalf("失败路径应返回 nil Host")
+	if host == nil || !host.Ready() {
+		t.Fatalf("Host 应就绪: %+v", host)
 	}
-	// 覆盖库上的失败点允许是候选查询计划或读取器契约本身，但必须是
-	// 业务读取器契约阶段的错误，而不是更早的连接/Schema 错误。
-	// 生产文案为 host.go 的 "J3b business reader does not implement ...",
-	// 失败点可能是 target/management scope 任一契约。
-	if !strings.Contains(err.Error(), "J3b business reader") {
-		t.Fatalf("错误应指向业务读取器契约，实际: %v", err)
+	if host.Handler == nil || host.Service == nil {
+		t.Fatalf("Handler/Service 应完成组装: %+v", host)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatalf("Close 应返回 nil: %v", err)
 	}
 }
 

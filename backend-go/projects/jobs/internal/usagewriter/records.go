@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
 // UsageRecordInput mirrors UsageRecordInput
@@ -122,23 +124,15 @@ const (
 	AuthorizationSourceTypeTeam   = "team"
 )
 
-// Clock ports the injected time source (Node Date.now / new Date()), the
-// same port shape as gateway/internal/gatewayusage ports.go.
-type Clock interface {
-	Now() time.Time
-}
+// Clock ports the injected time source (Node Date.now / new Date()).
+// 统一签名收敛到 shared/platform/timeclock（类型别名，调用点零改动）。
+type Clock = timeclock.Clock
 
 // SystemClock reads the wall clock.
-type SystemClock struct{}
+type SystemClock = timeclock.SystemClock
 
-// Now implements Clock.
-func (SystemClock) Now() time.Time { return time.Now() }
-
-// ClockFunc adapts a function to Clock.
-type ClockFunc func() time.Time
-
-// Now implements Clock.
-func (f ClockFunc) Now() time.Time { return f() }
+// ClockFunc adapts a function to Clock（nil 时退回 SystemClock）。
+type ClockFunc = timeclock.ClockFunc
 
 // UsageRecordIDFactory ports generateUsageRecordId(createdAt, entropy)
 // with the entropy bounded to one argument, mirroring the G17 port shape so

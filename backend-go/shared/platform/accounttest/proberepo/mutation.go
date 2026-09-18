@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
 // 本文件移植：
@@ -793,26 +794,10 @@ func normalizeProbeDeferSeconds(value int) int {
 }
 
 // passiveJitterWindowMS 等价 passiveScheduleJitterWindowMs。
+// 实现收敛到 shared/platform/schedulejitter（全输入域等价，含 interval<1
+// 钳制与 ms 整除语义）。
 func passiveJitterWindowMS(intervalMS int64) int64 {
-	if intervalMS < 1 {
-		intervalMS = 1
-	}
-	var windowMS int64
-	switch {
-	case intervalMS < 60_000:
-		// intervalMS < 60_000 时 half = intervalMS/2 恒小于 30_000，else 分支不可达（w12h 授权删除）。
-		windowMS = intervalMS / 2
-	case intervalMS < 60*60_000:
-		windowMS = 30_000
-	case intervalMS < 24*60*60_000:
-		windowMS = 30 * 60_000
-	case intervalMS < 7*24*60*60_000:
-		windowMS = 60 * 60_000
-	default:
-		windowMS = 8 * 60 * 60_000
-	}
-	// 各分支的 windowMS 均非负且不超过 intervalMS/2，两个截断守卫不可达（w12h 授权删除）。
-	return windowMS
+	return int64(schedulejitter.Window(time.Duration(intervalMS) * time.Millisecond) / time.Millisecond)
 }
 
 // passiveScheduleDelayMS 等价 passiveScheduleDelayMs（对称抖动，零偏移取 1）。

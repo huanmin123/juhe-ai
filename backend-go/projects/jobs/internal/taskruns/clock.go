@@ -9,17 +9,16 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
 // Clock 注入时间源；测试用 FakeClock 保证可回放。
-type Clock interface {
-	Now() time.Time
-}
+// 统一签名收敛到 shared/platform/timeclock（类型别名，调用点零改动）。
+type Clock = timeclock.Clock
 
 // SystemClock 使用真实时间。
-type SystemClock struct{}
-
-func (SystemClock) Now() time.Time { return time.Now() }
+type SystemClock = timeclock.SystemClock
 
 // FakeClock 是测试用的手动推进时钟（并发安全：心跳协程与主 goroutine
 // 会同时读/推进）。

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
 // Shared contracts of the preflight orchestration: the decision unions of the
@@ -264,15 +265,11 @@ type DroppedAuditCapture struct {
 }
 
 // Clock injects time; tests use a fixed clock.
-type Clock interface {
-	Now() time.Time
-}
+// 统一签名收敛到 shared/platform/timeclock（类型别名，调用点零改动）。
+type Clock = timeclock.Clock
 
 // SystemClock is the default wall clock.
-type SystemClock struct{}
-
-// Now implements Clock.
-func (SystemClock) Now() time.Time { return time.Now() }
+type SystemClock = timeclock.SystemClock
 
 // Logger mirrors the consumed logger.warn surface.
 type Logger interface {
