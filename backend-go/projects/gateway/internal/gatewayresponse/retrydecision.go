@@ -27,8 +27,12 @@ var serverRetryableSystemDefaultResponseInspectionPolicyIds = map[string]bool{
 }
 
 // transientPrecommitUpstreamPolicyIds 对齐 transientPrecommitUpstreamPolicyIds。
+// default_gpt_upstream_error 是超出 Node 基线的运营规则：供应商级（gpt 可
+// 预知）的固定错误形态 type=upstream_error 无 code，命中后原地有界重试不
+// 切号，见 policyreads systemDefaultRules 注释。
 var transientPrecommitUpstreamPolicyIds = map[string]bool{
 	"default_openai_transient_precommit_error":    true,
+	"default_gpt_upstream_error":                  true,
 	"default_anthropic_transient_precommit_error": true,
 	"default_gemini_transient_precommit_error":    true,
 }

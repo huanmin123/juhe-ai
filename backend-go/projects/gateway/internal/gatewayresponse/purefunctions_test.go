@@ -211,6 +211,16 @@ func TestTransientPrecommitDecision(t *testing.T) {
 	if IsTransientPrecommitUpstreamFailureDecision(decision) {
 		t.Fatal("downstream written disqualifies")
 	}
+	// errorTypes 运营规则（超出 Node 基线，gpt 中转固定形态）同属瞬态白名单。
+	decision = &ResponseInspectionDecision{
+		PolicySource: "system_default",
+		PolicyID:     "default_gpt_upstream_error",
+		Reason:       "before_downstream_write_response_failure",
+		TriggerPhase: "before_downstream_write",
+	}
+	if !IsTransientPrecommitUpstreamFailureDecision(decision) {
+		t.Fatal("expected gpt upstream_error provider rule to qualify")
+	}
 }
 
 func TestShouldExcludeCurrentAccountForStreamServerRetry(t *testing.T) {

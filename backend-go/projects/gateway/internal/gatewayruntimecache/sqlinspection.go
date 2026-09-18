@@ -214,6 +214,12 @@ var systemDefaultInspectionRules = []inspectionDefaultRule{
 		},
 		"retry_next_account",
 		"仅限尚未向客户端提交语义输出的明确短暂上游错误；网关先按当前物理账号的有界预算重试，耗尽后再切换候选，不写长期账号状态。"),
+	defaultRule("default_gpt_upstream_error", "GPT 上游限流/过载错误", 0, "provider", "openai", "gpt",
+		ResponseInspectionPolicyMatch{
+			ErrorTypes: []string{"upstream_error"},
+		},
+		"retry_no_avoidance",
+		"GPT 供应商上游的流内 error 对象只有 type 无 code，固定以 upstream_error 标记上游限流/过载（运营确认的固定形态，供应商可预知）。供应商级规则、先于通用 error 对象兜底命中；命中后原地有界重试（瞬态白名单授予同账号重试资格），不切换账户；耗尽后交客户端统一可重试失败。适用于该供应商的所有下游客户端。"),
 	defaultRule("default_openai_context_window_error", "OpenAI 上下文窗口错误", 1, "protocol", "openai", "",
 		ResponseInspectionPolicyMatch{
 			ClientProfiles: []string{"generic_openai", "codex"},

@@ -251,3 +251,41 @@ func TestSnippetAround(t *testing.T) {
 		t.Fatalf("fallback snippet length = %d", len([]rune(trimmed)))
 	}
 }
+
+// TestGptUpstreamErrorTypeRule 端到端钉住供应商级 gpt 上游错误规则
+// (default_gpt_upstream_error，超出 Node 基线的运营规则)：type=upstream_error
+// 无 code 的错误帧在 gpt 账户上先于通用 error 对象兜底命中，且决策进入瞬态
+// 白名单（原地有界重试资格）；非 gpt 供应商不命中。
+func TestGptUpstreamErrorTypeRule(t *testing.T) {
+	// 系统默认规则经运行时缓存合并后由 managementPolicies 传入；构造与本规则
+	// 同上下文的清单（含通用 error 对象兜底，priority 2 靠后）。
+	priority := 0
+	priority2 := 2
+	management := []gatewayruntimecache.ResponseInspectionPolicySummary{
+		{ID: "default_gpt_upstream_error", DefaultRule: true, Enabled: true, Priority: priority,
+			ScopeType: "provider", ProtocolCode: "openai", ProviderCode: strPtr("gpt"),
+			Match:  gatewayruntimecache.ResponseInspectionPolicyMatch{ErrorTypes: []string{"upstream_error"}},
+			Action: "retry_no_avoidance"},
+		{ID: "default_openai_error_object", DefaultRule: true, Enabled: true, Priority: priority2,
+			ScopeType: "protocol", ProtocolCode: "openai",
+			Match:  gatewayruntimecache.ResponseInspectionPolicyMatch{JSONPathsExists: []string{"error"}},
+			Action: "retry_no_avoidance"},
+	}
+	frame := gatewayproto.SemanticFrame{FrameType: gatewayproto.FrameTypeError, ErrorType: "upstream_error"}
+	policies := ResolveRuntimeResponseInspectionPolicies("openai", "gpt", nil, management)
+	matched := MatchRuntimeResponseInspectionPolicy(frame, policies, nil)
+	if matched == nil || matched.Policy.ID != "default_gpt_upstream_error" {
+		t.Fatalf("expected default_gpt_upstream_error, got %+v", matched)
+	}
+	decision := buildPolicyDecision(matched, false, matched.Policy.Action, nil)
+	if !IsTransientPrecommitUpstreamFailureDecision(&decision) {
+		t.Fatalf("decision 应获得原地重试资格: %+v", decision)
+	}
+	// 非 gpt 供应商：同帧不命中该规则（被 scope 过滤，落通用 error 对象兜底）。
+	otherPolicies := ResolveRuntimeResponseInspectionPolicies("openai", "other-vendor", nil, management)
+	otherMatched := MatchRuntimeResponseInspectionPolicy(frame, otherPolicies, nil)
+	if otherMatched != nil && otherMatched.Policy.ID == "default_gpt_upstream_error" {
+		t.Fatalf("非 gpt 供应商不应命中 gpt 规则: %+v", otherMatched)
+	}
+}
+
