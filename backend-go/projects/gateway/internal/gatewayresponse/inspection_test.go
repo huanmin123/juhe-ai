@@ -264,14 +264,21 @@ func TestGptUpstreamErrorTypeRule(t *testing.T) {
 	management := []gatewayruntimecache.ResponseInspectionPolicySummary{
 		{ID: "default_gpt_upstream_error", DefaultRule: true, Enabled: true, Priority: priority,
 			ScopeType: "provider", ProtocolCode: "openai", ProviderCode: strPtr("gpt"),
-			Match:  gatewayruntimecache.ResponseInspectionPolicyMatch{ErrorTypes: []string{"upstream_error"}},
+			Match: gatewayruntimecache.ResponseInspectionPolicyMatch{
+				ErrorTypes:            []string{"upstream_error"},
+				ErrorMessagesIncludes: []string{"overloaded"},
+			},
 			Action: "retry_no_avoidance"},
 		{ID: "default_openai_error_object", DefaultRule: true, Enabled: true, Priority: priority2,
 			ScopeType: "protocol", ProtocolCode: "openai",
 			Match:  gatewayruntimecache.ResponseInspectionPolicyMatch{JSONPathsExists: []string{"error"}},
 			Action: "retry_no_avoidance"},
 	}
-	frame := gatewayproto.SemanticFrame{FrameType: gatewayproto.FrameTypeError, ErrorType: "upstream_error"}
+	frame := gatewayproto.SemanticFrame{
+		FrameType:    gatewayproto.FrameTypeError,
+		ErrorType:    "upstream_error",
+		ErrorMessage: "Our servers are currently overloaded. Please try again later.",
+	}
 	policies := ResolveRuntimeResponseInspectionPolicies("openai", "gpt", nil, management)
 	matched := MatchRuntimeResponseInspectionPolicy(frame, policies, nil)
 	if matched == nil || matched.Policy.ID != "default_gpt_upstream_error" {
@@ -281,6 +288,16 @@ func TestGptUpstreamErrorTypeRule(t *testing.T) {
 	if !IsTransientPrecommitUpstreamFailureDecision(&decision) {
 		t.Fatalf("decision 应获得原地重试资格: %+v", decision)
 	}
+	// 误杀防护：同为 upstream_error 但非过载文案（如配额/审核类）不命中本
+	// 规则，落通用 error 对象兜底交客户端。
+	nonOverload := gatewayproto.SemanticFrame{
+		FrameType:    gatewayproto.FrameTypeError,
+		ErrorType:    "upstream_error",
+		ErrorMessage: "Insufficient quota",
+	}
+	if hit := MatchRuntimeResponseInspectionPolicy(nonOverload, policies, nil); hit != nil && hit.Policy.ID == "default_gpt_upstream_error" {
+		t.Fatalf("非过载文案不得命中 gpt 过载规则: %+v", hit)
+	}
 	// 非 gpt 供应商：同帧不命中该规则（被 scope 过滤，落通用 error 对象兜底）。
 	otherPolicies := ResolveRuntimeResponseInspectionPolicies("openai", "other-vendor", nil, management)
 	otherMatched := MatchRuntimeResponseInspectionPolicy(frame, otherPolicies, nil)
@@ -288,4 +305,3 @@ func TestGptUpstreamErrorTypeRule(t *testing.T) {
 		t.Fatalf("非 gpt 供应商不应命中 gpt 规则: %+v", otherMatched)
 	}
 }
-

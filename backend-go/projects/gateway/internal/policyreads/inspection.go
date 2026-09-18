@@ -510,9 +510,12 @@ var systemDefaultRules = []systemDefaultRule{
 	{
 		id: "default_gpt_upstream_error", name: "GPT 上游限流/过载错误", priority: 0,
 		scopeType: "provider", protocolCode: protocolCodeOpenAI, providerCode: vendorCodeGPT,
-		match:  InspectionMatch{"errorTypes": {"upstream_error"}},
+		match: InspectionMatch{
+			"errorTypes":           {"upstream_error"},
+			"errorMessageIncludes": {"overloaded"},
+		},
 		action: "retry_no_avoidance",
-		notes:  "upstream_error 是网关桥层（openaicompat FailXxxChatStream 等）把上游失败转换为 chat completions 失败帧时写入的固定 type——命中它即识别「上游失败经桥转换、尚未向客户端提交语义输出」的瞬间，零猜测。gpt 供应商场景（上游限流/过载，如 'Our servers are currently overloaded'）：命中后原地有界重试（瞬态白名单授予同账号重试资格），不切换账户；耗尽后交客户端统一可重试失败。供应商可预知，按供应商级配置（同 default_gpt_cyber_policy 先例）。",
+		notes:  "upstream_error 是上游包装层的流内失败帧标记（type=upstream_error 无 code），不只代表过载——为避免误杀，本规则在 type 之上叠加 errorMessageIncludes=overloaded（AND），仅上游过载文案（'Our servers are currently overloaded'）原地有界重试（瞬态白名单授予同账号重试资格），不切换账户；其余 upstream_error 帧落通用 error 对象兜底交客户端。供应商可预知，按供应商级配置（同 default_gpt_cyber_policy 先例）。",
 	},
 	{
 		id: "default_openai_context_window_error", name: "OpenAI 上下文窗口错误", priority: 1,
