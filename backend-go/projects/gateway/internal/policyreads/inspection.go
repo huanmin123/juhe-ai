@@ -518,6 +518,16 @@ var systemDefaultRules = []systemDefaultRule{
 		notes:  "upstream_error 是上游包装层的流内失败帧标记（type=upstream_error 无 code），不只代表过载——为避免误杀，本规则在 type 之上叠加 errorMessageIncludes=overloaded（AND），仅上游过载文案（'Our servers are currently overloaded'）原地有界重试（瞬态白名单授予同账号重试资格），不切换账户；其余 upstream_error 帧落通用 error 对象兜底交客户端。server_error 兼容直连 OpenAI 官方账户（官方原生过载 type，中转包装场景见 upstream_error）。供应商可预知，按供应商级配置（同 default_gpt_cyber_policy 先例）。",
 	},
 	{
+		id: "default_openai_transient_precommit_error_type", name: "OpenAI 首输出前短暂错误（官方原生 type）", priority: 0,
+		scopeType: "protocol", protocolCode: protocolCodeOpenAI,
+		match: InspectionMatch{
+			"clientProfiles": {"generic_openai", "codex"},
+			"errorTypes":     {"server_error"},
+		},
+		action: "retry_next_account",
+		notes:  "直连官方账户的流内错误帧为官方原生形态 type=server_error 且 code 通常为空，仅配 errorCodes 的瞬态规则接不到（改写型中转见 default_gpt_upstream_error / upstream_error）。server_error 是官方定义的 5xx 可重试错误；语义与 Anthropic/Gemini 的 errorTypes 瞬态规则同构。匹配谓词为 AND，故与仅配 errorCodes 的规则拆分为两条。",
+	},
+	{
 		id: "default_openai_context_window_error", name: "OpenAI 上下文窗口错误", priority: 1,
 		scopeType: "protocol", protocolCode: protocolCodeOpenAI,
 		match: InspectionMatch{

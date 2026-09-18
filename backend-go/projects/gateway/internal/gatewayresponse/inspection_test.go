@@ -316,6 +316,31 @@ func TestGptUpstreamErrorTypeRule(t *testing.T) {
 	if hit := MatchRuntimeResponseInspectionPolicy(nonOverload, policies, nil); hit != nil && hit.Policy.ID == "default_gpt_upstream_error" {
 		t.Fatalf("非过载文案不得命中 gpt 过载规则: %+v", hit)
 	}
+	// 官方原生形态（直连官方账户）：type=server_error 无 code，命中 protocol
+	// 级 errorTypes 瞬态规则（default_openai_transient_precommit_error_type）。
+	officialFrame := gatewayproto.SemanticFrame{FrameType: gatewayproto.FrameTypeError, ErrorType: "server_error"}
+	officialPolicies := ResolveRuntimeResponseInspectionPolicies("openai", "other-vendor", nil, []gatewayruntimecache.ResponseInspectionPolicySummary{
+		{ID: "default_openai_transient_precommit_error_type", DefaultRule: true, Enabled: true, Priority: priority,
+			ScopeType: "protocol", ProtocolCode: "openai",
+			Match:  gatewayruntimecache.ResponseInspectionPolicyMatch{ClientProfiles: []string{"generic_openai"}, ErrorTypes: []string{"server_error"}},
+			Action: "retry_next_account"},
+	})
+	openAIProfileContext := &ResponseInspectionRuntimeContext{ClientProfile: "generic_openai"}
+	officialMatched := MatchRuntimeResponseInspectionPolicy(officialFrame, officialPolicies, openAIProfileContext)
+	if officialMatched == nil || officialMatched.Policy.ID != "default_openai_transient_precommit_error_type" {
+		t.Fatalf("官方原生 server_error 应命中 errorTypes 瞬态规则: %+v", officialMatched)
+	}
+	// gpt 账户 + 过载帧：provider 级过载规则（原地重试）必须先于 protocol 级
+	// server_error 规则命中（scopeOrder provider=0 < protocol=1），不被截胡。
+	gptMixed := ResolveRuntimeResponseInspectionPolicies("openai", "gpt", nil, append(management, gatewayruntimecache.ResponseInspectionPolicySummary{
+		ID: "default_openai_transient_precommit_error_type", DefaultRule: true, Enabled: true, Priority: priority,
+		ScopeType: "protocol", ProtocolCode: "openai",
+		Match:  gatewayruntimecache.ResponseInspectionPolicyMatch{ClientProfiles: []string{"generic_openai"}, ErrorTypes: []string{"server_error"}},
+		Action: "retry_next_account"}))
+	gptMixedMatched := MatchRuntimeResponseInspectionPolicy(frame, gptMixed, openAIProfileContext)
+	if gptMixedMatched == nil || gptMixedMatched.Policy.ID != "default_gpt_upstream_error" {
+		t.Fatalf("gpt 过载帧应继续命中 provider 级规则（原地重试）: %+v", gptMixedMatched)
+	}
 	// 非 gpt 供应商：同帧不命中该规则（被 scope 过滤，落通用 error 对象兜底）。
 	otherPolicies := ResolveRuntimeResponseInspectionPolicies("openai", "other-vendor", nil, management)
 	otherMatched := MatchRuntimeResponseInspectionPolicy(frame, otherPolicies, nil)

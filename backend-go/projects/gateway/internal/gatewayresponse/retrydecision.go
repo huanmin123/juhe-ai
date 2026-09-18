@@ -32,10 +32,11 @@ var serverRetryableSystemDefaultResponseInspectionPolicyIds = map[string]bool{
 // 即识别「上游失败经桥转换、未提交语义输出」——原地有界重试不切号，见
 // policyreads systemDefaultRules 注释。
 var transientPrecommitUpstreamPolicyIds = map[string]bool{
-	"default_openai_transient_precommit_error":    true,
-	"default_gpt_upstream_error":                  true,
-	"default_anthropic_transient_precommit_error": true,
-	"default_gemini_transient_precommit_error":    true,
+	"default_openai_transient_precommit_error":      true,
+	"default_openai_transient_precommit_error_type": true,
+	"default_gpt_upstream_error":                    true,
+	"default_anthropic_transient_precommit_error":   true,
+	"default_gemini_transient_precommit_error":      true,
 }
 
 // StreamServerRetryReason 对齐 StreamServerRetryReason union。
