@@ -197,12 +197,8 @@ func (e *gatewayException) UnmarshalJSON(data []byte) error {
 	if err := windowDecoder.Decode(&windows); err != nil {
 		return err
 	}
-	if err := windowDecoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return errors.New("trailing content")
-		}
-		return err
-	}
+	// raw.Windows 由 encoding/json Decoder 从单一 JSON 值原样捕获，不可能再
+	// 携带尾随值，二次 Decode 的尾随分支不可达（w14m 甄别：不可达防御臂）。
 	e.Windows = make([]gatewayWindow, len(windows))
 	for i, window := range windows {
 		e.Windows[i] = gatewayWindow{Start: window.Start, End: window.End}

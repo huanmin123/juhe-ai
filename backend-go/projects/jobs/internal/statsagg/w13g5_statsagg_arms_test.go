@@ -193,3 +193,37 @@ func TestW13g5StatsAggregateDirtyScopesErrorArm(t *testing.T) {
 		t.Fatal("派生窗口脏标记失败必须传播")
 	}
 }
+
+func TestW13g5StatsAggregateDirtyScopeInsertErrorArms(t *testing.T) {
+	cases := []struct {
+		name  string
+		match string
+	}{
+		{"overview dirty", "INSERT INTO usage_overview_dirty_scopes"},
+		{"ai dirty", "INSERT INTO ai_performance_summary_dirty_system_accounts"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, spec := w13g5StatsOpenFailEnv(t)
+			env.seedUsageRecord(w13g5QualitySeedRow("w13g5-rec-dirty-" + tc.name))
+			spec.armOnce(tc.match)
+			defer spec.disarm()
+			if _, err := env.aggregator().AggregateUsageStatsBatch(context.Background(), AggregateOptions{}); err == nil {
+				t.Fatalf("%s 失败必须传播", tc.name)
+			}
+		})
+	}
+}
+
+func TestW13g5StatsAggregateDirtyScopeExistingBranches(t *testing.T) {
+	env, _ := w13g5StatsOpenFailEnv(t)
+	// 同 system 两条不同日期的行 → overview/ai 的 existing 分支（min/max 合并）。
+	first := w13g5QualitySeedRow("w13g5-rec-day1")
+	first.CreatedAt = "2026-09-17T07:15:00.000Z"
+	second := w13g5QualitySeedRow("w13g5-rec-day2")
+	env.seedUsageRecord(first)
+	env.seedUsageRecord(second)
+	if _, err := env.aggregator().AggregateUsageStatsBatch(context.Background(), AggregateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}

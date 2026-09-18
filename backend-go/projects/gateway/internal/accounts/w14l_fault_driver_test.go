@@ -341,6 +341,22 @@ func (f *w14lFixture) createViaStore(name string) *CreateResult {
 // accountIDs 返回 setup 阶段经 Create 建立的账户 ID。
 func (f *w14lFixture) accountIDs() []string { return f.created }
 
+// dispatchRevision 读取 w14l 调度测试账户的当前 config_revision。
+func (f *w14lFixture) dispatchRevision() int64 {
+	f.t.Helper()
+	return f.configRevision("acc-w14l-dispatch")
+}
+
+// configRevision 读取指定账户的当前 config_revision。
+func (f *w14lFixture) configRevision(accountID string) int64 {
+	f.t.Helper()
+	var revision int64
+	if err := f.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, accountID).Scan(&revision); err != nil {
+		f.t.Fatal(err)
+	}
+	return revision
+}
+
 // firstID 返回第一个建立账户的 ID。
 func (f *w14lFixture) firstID() string {
 	if len(f.created) == 0 {

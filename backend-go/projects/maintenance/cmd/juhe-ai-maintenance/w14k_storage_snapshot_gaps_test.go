@@ -55,22 +55,35 @@ func TestW14KEnsureSQLiteStorageFailurePoints(t *testing.T) {
 		return dir
 	}
 	cases := []struct {
-		name   string
-		broken string
+		name       string
+		brokenKey  string
+		brokenPath string
 	}{
-		{"stats fails", "stats=" + asDir("stats-dir")},
-		{"chat fails", "chat=" + asDir("chat-dir")},
-		{"dataset fails", "dataset=" + asDir("dataset-dir")},
-		{"usage-catalog fails", "usage-catalog=" + asDir("usage-dir")},
+		{"stats fails", "stats", asDir("stats-dir")},
+		{"chat fails", "chat", asDir("chat-dir")},
+		{"dataset fails", "dataset", asDir("dataset-dir")},
+		{"usage-catalog fails", "usage-catalog", asDir("usage-dir")},
 	}
 	for _, item := range cases {
 		item := item
 		t.Run(item.name, func(t *testing.T) {
-			paths := "business=" + goodBusiness + "," + item.broken +
-				",chat=" + filepath.Join(root, "chat-"+strings.ReplaceAll(item.name, " ", "-")+".db") +
-				",dataset=" + filepath.Join(root, "dataset-"+strings.ReplaceAll(item.name, " ", "-")+".db") +
-				",usage-catalog=" + filepath.Join(root, "usage-"+strings.ReplaceAll(item.name, " ", "-")+".db") +
-				",codex-context-shard-root=" + asDir("shards-"+strings.ReplaceAll(item.name, " ", "-"))
+			// 六库默认路径拼好后把指定 key 换成坏路径，避免 key 重复。
+			suffix := strings.ReplaceAll(item.name, " ", "-")
+			values := map[string]string{
+				"business":                 goodBusiness,
+				"chat":                     filepath.Join(root, "chat-"+suffix+".db"),
+				"dataset":                  filepath.Join(root, "dataset-"+suffix+".db"),
+				"usage-catalog":            filepath.Join(root, "usage-"+suffix+".db"),
+				"stats":                    filepath.Join(root, "stats-"+suffix+".db"),
+				"codex-context-shard-root": asDir("shards-" + suffix),
+			}
+			values[item.brokenKey] = item.brokenPath
+			paths := "business=" + values["business"] +
+				",chat=" + values["chat"] +
+				",dataset=" + values["dataset"] +
+				",usage-catalog=" + values["usage-catalog"] +
+				",stats=" + values["stats"] +
+				",codex-context-shard-root=" + values["codex-context-shard-root"]
 			if code := runStorageBootstrap(true, false, "sqlite", paths, "", ""); code != 1 {
 				t.Fatalf("%s 失败点必须返回 1: %d", item.name, code)
 			}

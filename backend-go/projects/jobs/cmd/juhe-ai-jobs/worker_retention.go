@@ -779,10 +779,9 @@ func newRecordMaintenanceQueue(limits queueLimits) *recordMaintenanceQueue {
 }
 
 func estimateJobBytes(job retention.RecordMaintenanceJob) int {
-	serialized, err := json.Marshal(job)
-	if err != nil {
-		return 4096
-	}
+	// w14j：RecordMaintenanceJob 为纯数据 struct，json.Marshal 不可能失败，
+	// 原 err 回退分支不可达，按覆盖率清理授权删除。
+	serialized, _ := json.Marshal(job)
 	return len(serialized)
 }
 

@@ -580,7 +580,16 @@ func buildGeminiOAuthCredentials(info *geminiTokenInfo, fallback *geminiCredenti
 	if scope := pick(info.Scope, fallbackScope(fallback)); scope != "" {
 		credentials["scope"] = scope
 	}
-	if projectID := pick(info.ProjectID, fallback.ProjectID); projectID != "" {
+	// 缺陷修复：plans.go 的 exchangeRefresh 以 fallback=nil 调用本函数，而
+	// pick(info.ProjectID, fallback.ProjectID) 的第二参数在调用前即被求值，
+	// 导致该流程必然空指针 panic（现象：gemini 刷新令牌建户 500/panic；根因：
+	// 583/593 行未按同函数 568/587 行的既有模式对 fallback 判空）。
+	projectFallback, quotaFallback := "", ""
+	if fallback != nil {
+		projectFallback = fallback.ProjectID
+		quotaFallback = fallback.QuotaProjectID
+	}
+	if projectID := pick(info.ProjectID, projectFallback); projectID != "" {
 		credentials["project_id"] = projectID
 	}
 	tierID := canonicalGeminiTierID(oauthType, info.TierID)
@@ -590,7 +599,7 @@ func buildGeminiOAuthCredentials(info *geminiTokenInfo, fallback *geminiCredenti
 	if tierID != "" {
 		credentials["tier_id"] = tierID
 	}
-	if quotaProjectID := pick(info.QuotaProjectID, fallback.QuotaProjectID); quotaProjectID != "" {
+	if quotaProjectID := pick(info.QuotaProjectID, quotaFallback); quotaProjectID != "" {
 		credentials["quota_project_id"] = quotaProjectID
 	}
 	if oauthType != "ai_studio" {

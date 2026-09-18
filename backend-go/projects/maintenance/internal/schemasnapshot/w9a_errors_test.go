@@ -52,6 +52,15 @@ func (c *w9aSnapConn) QueryContext(_ context.Context, query string, _ []driver.N
 	return nil, fmt.Errorf("w9a snapshot fake: unexpected query %.80s", query)
 }
 
+// CheckNamedValue 放行 catalog 查询的 text[] 参数（schemaNames []string），
+// 其余类型回退 database/sql 默认转换。
+func (c *w9aSnapConn) CheckNamedValue(nv *driver.NamedValue) error {
+	if _, ok := nv.Value.([]string); ok {
+		return nil
+	}
+	return driver.ErrSkip
+}
+
 type w9aSnapRows struct {
 	columns []string
 	rows    [][]driver.Value

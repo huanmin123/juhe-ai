@@ -19,11 +19,16 @@ import (
 //
 // 错误语义：单轮失败仅告警并等下一轮（投影收敛是尽力而为的补偿面，不得
 // 因短暂 DB 抖动拖垮 system-api owner）；组件本身只在 ctx 取消时退出。
-func newAuthzExpiryRuntimeSyncComponent(store *authz.Store) supervisor.Component {
+// intervalOverride 仅供测试注入短节拍；生产装配不传参，使用固定 1 分钟节拍。
+func newAuthzExpiryRuntimeSyncComponent(store *authz.Store, intervalOverride ...time.Duration) supervisor.Component {
+	interval := authzExpirySyncInterval
+	if len(intervalOverride) > 0 && intervalOverride[0] > 0 {
+		interval = intervalOverride[0]
+	}
 	return supervisor.Component{
 		Name: "authz-expiry-runtime-sync",
 		Run: func(runCtx context.Context) error {
-			ticker := time.NewTicker(authzExpirySyncInterval)
+			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 			runPass := func() {
 				ctx, cancel := context.WithTimeout(runCtx, authzExpirySyncPassTimeout)

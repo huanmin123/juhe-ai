@@ -517,7 +517,7 @@ func CollectSnapshot(ctx context.Context, q Queryable, target string) (SchemaSna
 		}
 		entry.ACL = nullableDigestOf(acl)
 		return entry, nil
-	})
+	}, schemaNames)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}
@@ -532,7 +532,7 @@ func CollectSnapshot(ctx context.Context, q Queryable, target string) (SchemaSna
 		entry.Ordinal = int(ordinal)
 		entry.DefaultSha = nullableDigestOf(defaultDefinition)
 		return entry, nil
-	})
+	}, schemaNames)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}
@@ -545,7 +545,7 @@ func CollectSnapshot(ctx context.Context, q Queryable, target string) (SchemaSna
 		}
 		entry.DefinitionSha256 = DigestDefinition(nullStringOrEmpty(definition))
 		return entry, nil
-	})
+	}, schemaNames)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}
@@ -558,7 +558,7 @@ func CollectSnapshot(ctx context.Context, q Queryable, target string) (SchemaSna
 		}
 		entry.DefinitionSha256 = DigestDefinition(nullStringOrEmpty(definition))
 		return entry, nil
-	})
+	}, schemaNames)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}
@@ -571,7 +571,7 @@ func CollectSnapshot(ctx context.Context, q Queryable, target string) (SchemaSna
 		}
 		entry.DefinitionSha256 = DigestDefinition(nullStringOrEmpty(definition))
 		return entry, nil
-	})
+	}, schemaNames)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}
@@ -584,7 +584,7 @@ func CollectSnapshot(ctx context.Context, q Queryable, target string) (SchemaSna
 		}
 		entry.DefinitionSha256 = DigestDefinition(nullStringOrEmpty(definition))
 		return entry, nil
-	})
+	}, schemaNames)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}
@@ -597,7 +597,7 @@ func CollectSnapshot(ctx context.Context, q Queryable, target string) (SchemaSna
 		}
 		entry.DefinitionSha256 = DigestDefinition(nullStringOrEmpty(definition))
 		return entry, nil
-	})
+	}, schemaNames)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}
@@ -608,7 +608,7 @@ func CollectSnapshot(ctx context.Context, q Queryable, target string) (SchemaSna
 			return PartitionEntry{}, err
 		}
 		return entry, nil
-	})
+	}, schemaNames)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}
@@ -619,7 +619,7 @@ func CollectSnapshot(ctx context.Context, q Queryable, target string) (SchemaSna
 			return SequenceEntry{}, err
 		}
 		return entry, nil
-	})
+	}, schemaNames)
 	if err != nil {
 		return SchemaSnapshot{}, err
 	}

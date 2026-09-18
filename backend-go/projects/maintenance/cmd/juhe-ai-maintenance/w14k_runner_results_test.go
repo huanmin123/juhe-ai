@@ -4,7 +4,34 @@ package main
 // 以 os.Exit 终止，传统 -coverprofile 口径只能靠子进程重执行（wm_main_exit_
 // branches_test.go）拿到行为断言、拿不到计数；本文件直调等价的 *Result /
 // *OutcomeExitCode 函数，覆盖 usage 预检、Open 拒绝、运行时失败、encode 失败、
-// 未就绪门与成功路径的全部语句。wrapper 的 os.Exit 一行保留子进程行为覆盖。
+// 未就绪门与成功路径的全部语句。wrapper 改为“非零才 os.Exit”，成功时返回
+// main 正常退出（CLI 契约不变），使既有直调用例与进程内测试可用。
+//
+// 结构性限制登记（w14k 终态 96.7%，未覆盖 20 语句，均为以下四类）：
+//  1. os.Exit 终止行只能由子进程行为覆盖（wm_main_exit_branches_test.go 已断
+//     言退出码），传统 -coverprofile 口径无计数：main.go:83 的
+//     os.Exit(runStorageBootstrap(...))，以及 runJ3cReadOnlyBoundaryCheck /
+//     runNodeJ3bActivePathCheck / runBusinessOwnerManifestCheck 三个 wrapper
+//     的 os.Exit(code) 行。
+//  2. os.Getwd 失败分支（resolveRepositoryRoot / resolveRepoPath）：测试进程
+//     无法注入工作目录不可用，Windows 下不可触发。
+//  3. database/sql 懒连接使 sql.Open 的错误分支不可达（openSnapshotDB /
+//     openPostgresBootstrap / j3bmodelcheck.OpenSQLite 的 sql.Open err 包装）：
+//     pgx/sqlite 驱动把 DSN 解析推迟到首个语句，Open 仅在未知驱动时失败，
+//     属 API 契约守卫，按 w12g sql.Open 懒注册同口径保留不删。
+//  4. 仓库/契约状态分支：gatewayRouteOwnerManifestResult 与
+//     businessCapabilityManifestResult 的 return 0（当前仓库清单门真实保持
+//     关闭 exit 3）、businessSQLiteSchemaCheckResult 的 return 0（schema 包
+//     生成的 business 库含表达式索引，与 handoff 契约不一致，w12g 同口径
+//     skip）、businessSQLiteHandoffCheckResult 的 err→1（businesshandoff.
+//     Verify 仅在 os.MkdirTemp 等系统级失败时返回 err）、runStorageBootstrap
+//     的 postgres ensure/seed 成功后 report 赋值行（需真实可写 PG，共享库
+//     禁止 schema 变更）、ensureSQLiteStorage 闭包的 apply err 包装（需
+//     “可打开但写入失败”的 SQLite 文件，Windows 只读属性仍导致打开失败）。
+// 另登记上游缺陷（不属本波次改动范围）：internal/schemasnapshot CollectSnapshot
+// 的 $1::text[] 查询调用 collectRows 时缺 schemaNames 实参（Node 原件均带
+// [schemaNames]），真实 PG 上 --postgres-schema-snapshot 必失败；详见
+// w14k_pg_gate_test.go 注释。
 
 import (
 	"context"
@@ -137,18 +164,17 @@ func TestW14KRunnerUsageGates(t *testing.T) {
 		if got := j3bModelCheckSQLiteBackfillResult(true, true, true, malformed); got != 3 {
 			t.Fatalf("malformed evidence 必须 fail-closed 返回 3: %d", got)
 		}
-		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, "")
-		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH", "")
-		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH", "")
-		if got := j3bModelCheckSQLiteBackfillResult(true, true, true, emptyFacts); got != 2 {
+		// evidence 预检先于 env 读取，env 缺失场景必须携带放行的完整证据。
+		if got := j3bModelCheckSQLiteBackfillResult(true, true, true, wmWriteCompleteCutoverEvidenceWithManifest(t)); got != 2 {
 			t.Fatalf("env 缺失必须返回 2: %d", got)
 		}
-		// 路径隔离：target 与 dataset 不得相同。
+		// 路径隔离：target 与 dataset 不得相同（evidence 预检先于路径校验，
+		// 需携带放行的完整证据）。
 		same := filepath.Join(root, "same.db")
 		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, same)
 		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH", same)
 		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH", filepath.Join(root, "stats.db"))
-		if got := j3bModelCheckSQLiteBackfillResult(true, true, true, emptyFacts); got != 2 {
+		if got := j3bModelCheckSQLiteBackfillResult(true, true, true, wmWriteCompleteCutoverEvidenceWithManifest(t)); got != 2 {
 			t.Fatalf("target==dataset 必须返回 2: %d", got)
 		}
 	})
@@ -275,20 +301,22 @@ func TestW14KRunnerRuntimeFailures(t *testing.T) {
 			t.Fatalf("目录路径必须返回 1: %d", got)
 		}
 	})
-	t.Run("j3b sqlite backfill missing dataset", func(t *testing.T) {
+	t.Run("j3b sqlite backfill empty source tables", func(t *testing.T) {
+		// 路径隔离校验只看路径本身，三个路径都合法后 BackfillSQLite 在查询
+		// 空库缺失的契约表时失败（运行时 1，与路径校验的 2 分离）。
 		root := t.TempDir()
-		target, err := j3bmodelcheck.OpenSQLite(filepath.Join(root, "target.db"))
-		if err != nil {
-			t.Fatal(err)
+		emptyFile := func(name string) string {
+			path := filepath.Join(root, name)
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
 		}
-		if err := target.Close(); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, filepath.Join(root, "target.db"))
-		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH", filepath.Join(root, "missing-dataset.db"))
-		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH", filepath.Join(root, "missing-stats.db"))
+		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, emptyFile("target.db"))
+		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH", emptyFile("dataset.db"))
+		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH", emptyFile("stats.db"))
 		if got := j3bModelCheckSQLiteBackfillResult(true, true, true, wmWriteCompleteCutoverEvidenceWithManifest(t)); got != 1 {
-			t.Fatalf("缺失 dataset 的 backfill 必须返回 1: %d", got)
+			t.Fatalf("空源库 backfill 必须返回 1: %d", got)
 		}
 	})
 	t.Run("j3b sqlite readback missing files", func(t *testing.T) {
@@ -622,4 +650,61 @@ func wm14kReadyJ3bSQLite(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestW14KRunnerRemainingBranches(t *testing.T) {
+	t.Run("j3b pg backfill open rejection", func(t *testing.T) {
+		// Open 的 URL 校验先于 DB 交互：缺主机 URL 必须在 backfill 前被拒绝。
+		evidence := wmWriteCompleteCutoverEvidenceWithManifest(t)
+		if got := j3bModelCheckPostgresBackfillResult("postgres://@/", 1, 1, true, true, true, evidence); got != 2 {
+			t.Fatalf("缺主机 URL 必须返回 2: %d", got)
+		}
+	})
+	t.Run("business schema check empty db not ready", func(t *testing.T) {
+		// 0 字节文件是可打开的空 SQLite 库：缺契约表 → 未就绪门 3。
+		path := filepath.Join(t.TempDir(), "empty-business.db")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := businessSQLiteSchemaCheckResult(path); got != 3 {
+			t.Fatalf("空库 schema 预检必须返回 3: %d", got)
+		}
+	})
+	t.Run("j3b sqlite readback encode failure", func(t *testing.T) {
+		_, targetPath, datasetPath, statsPath := wmBuildJ3bSQLiteCutoverSet(t)
+		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, targetPath)
+		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH", datasetPath)
+		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH", statsPath)
+		wm14kWithClosedStdout(t, func() {
+			if got := j3bModelCheckSQLiteReadbackResult(); got != 1 {
+				t.Fatalf("encode 失败必须返回 1: %d", got)
+			}
+		})
+	})
+	t.Run("parse paths tolerates empty entries", func(t *testing.T) {
+		// 尾随/连续逗号产生空条目，必须被跳过而不是报“key=value 形式”错；
+		// 其余必填 key 齐全时解析成功。
+		paths, err := parseSQLiteStoragePaths("business=a,,chat=b,dataset=c,usage-catalog=d,stats=e,codex-context-shard-root=f,")
+		if err != nil {
+			t.Fatalf("空条目必须被跳过: %v", err)
+		}
+		if paths.Business != "a" || paths.Chat != "b" {
+			t.Fatalf("空条目两侧的键值必须正常解析: %+v", paths)
+		}
+	})
+	t.Run("node active path findings block cutover", func(t *testing.T) {
+		// 构造含 J3b 活动路由标识的最小 Node 源码树：findings>0 必须触发门 3。
+		root := t.TempDir()
+		sourceDir := filepath.Join(root, "backend", "src", "modules")
+		if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		activeRoute := "// " + "modelChecksRouter" + " is the J3b management route\nexport {}\n"
+		if err := os.WriteFile(filepath.Join(sourceDir, "route.ts"), []byte(activeRoute), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := nodeJ3bActivePathResult(root); got != 3 {
+			t.Fatalf("含活动路由的扫描必须返回 3: %d", got)
+		}
+	})
 }

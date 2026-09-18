@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -70,6 +71,12 @@ func TestW12CPGWorkerAssemblyWiring(t *testing.T) {
 	pgURL := w12cPGOverrideURL(t)
 	if pgURL == "" {
 		t.Skip("w12c: 覆盖库连接串不可用")
+	}
+	// w14j：共享覆盖库可能被外部重置，先幂等自愈测试形状（加法 DDL +
+	// canonical sys_admin 种子；连接串不落日志）。
+	if db, err := sql.Open("pgx", pgURL); err == nil {
+		w14jEnsurePGFixture(t, db)
+		_ = db.Close()
 	}
 	redisServer := miniredis.RunT(t)
 	env := map[string]string{

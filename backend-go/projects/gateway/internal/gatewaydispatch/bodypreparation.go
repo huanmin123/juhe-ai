@@ -163,7 +163,7 @@ func isAnthropicMessagesPath(upstreamURL string) bool {
 	return stripV1Prefix(parsed.Path) == "/messages"
 }
 
-// stripV1Prefix mirrors `.replace(/^\/v1(?=\/|$)/, '') || '/'`.
+// stripV1Prefix mirrors `.replace(/^\/v1(?=\/|$)/, ”) || '/'`.
 func stripV1Prefix(path string) string {
 	if strings.HasPrefix(path, "/v1") && (len(path) == 3 || path[3] == '/') {
 		rest := path[3:]
@@ -176,6 +176,83 @@ func stripV1Prefix(path string) string {
 		return "/"
 	}
 	return path
+}
+
+// NormalizeOpenAIReasoningFieldsForUpstream keeps the Chat Completions and
+// Responses reasoning controls on their respective wire shapes. Some clients
+// send both shapes in one request; compatible upstreams may reject that body
+// instead of choosing one. The helper is deliberately endpoint-scoped and
+// returns the original bytes whenever no protocol-field change is needed.
+func NormalizeOpenAIReasoningFieldsForUpstream(path string, body []byte) []byte {
+	family := openAIReasoningEndpointFamily(path)
+	if family == "" || len(body) == 0 {
+		return body
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed == nil {
+		return body
+	}
+	reasoning, hasReasoning := parsed["reasoning"]
+	reasoningObject, _ := reasoning.(map[string]any)
+	nestedEffort, nestedOK := reasoningObject["effort"].(string)
+	nestedEffort = strings.TrimSpace(nestedEffort)
+	flatEffort, flatOK := parsed["reasoning_effort"].(string)
+	flatEffort = strings.TrimSpace(flatEffort)
+	if !nestedOK || nestedEffort == "" {
+		nestedEffort = ""
+	}
+	if !flatOK || flatEffort == "" {
+		flatEffort = ""
+	}
+	if nestedEffort == "" && flatEffort == "" {
+		return body
+	}
+
+	changed := false
+	switch family {
+	case "chat_completions":
+		if flatEffort == "" && nestedEffort != "" {
+			parsed["reasoning_effort"] = nestedEffort
+			changed = true
+		}
+		if hasReasoning {
+			delete(parsed, "reasoning")
+			changed = true
+		}
+	case "responses":
+		if nestedEffort == "" && flatEffort != "" {
+			parsed["reasoning"] = map[string]any{"effort": flatEffort}
+			changed = true
+		}
+		if _, ok := parsed["reasoning_effort"]; ok {
+			delete(parsed, "reasoning_effort")
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	serialized, err := json.Marshal(parsed)
+	if err != nil {
+		return body
+	}
+	return serialized
+}
+
+func openAIReasoningEndpointFamily(path string) string {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return ""
+	}
+	switch stripV1Prefix(parsed.Path) {
+	case "/chat/completions":
+		return "chat_completions"
+	case "/responses", "/responses/compact":
+		return "responses"
+	default:
+		return ""
+	}
 }
 
 func bytesEqual(a, b []byte) bool {

@@ -1189,12 +1189,9 @@ func TestW2BAuthzExpirySyncReconciledLog(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestW2BAuthzExpirySyncTickerPass 覆盖组件运行循环的节拍臂（47→48）：
-// 组件以固定 1 分钟 ticker 运行，首跑后等待一次 tick 再取消退出。除 -short
-// 外全程运行（约 62 秒），失败信息不携带任何连接事实。
+// 通过注入短节拍（生产装配不传参仍为固定 1 分钟），首跑后等待多次 tick
+// 再取消退出，约 0.5 秒完成，失败信息不携带任何连接事实。
 func TestW2BAuthzExpirySyncTickerPass(t *testing.T) {
-	if testing.Short() {
-		t.Skip("slow 模式跳过 1 分钟节拍测试")
-	}
 	db, err := sql.Open("sqlite", "file:w2b-authz-expiry-tick?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatal(err)
@@ -1204,12 +1201,12 @@ func TestW2BAuthzExpirySyncTickerPass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	component := newAuthzExpiryRuntimeSyncComponent(store)
+	component := newAuthzExpiryRuntimeSyncComponent(store, 20*time.Millisecond)
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- component.Run(runCtx) }()
-	// 等待节拍触发（authzExpirySyncInterval = 1 分钟）后再取消。
-	time.Sleep(authzExpirySyncInterval + 2*time.Second)
+	// 等待注入节拍多次触发后再取消。
+	time.Sleep(300 * time.Millisecond)
 	cancel()
 	select {
 	case err := <-done:

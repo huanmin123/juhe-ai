@@ -158,25 +158,29 @@ func TestW13g5SystemTrendStageHappyPath(t *testing.T) {
 
 func TestW13g5SystemTrendStageStatementArms(t *testing.T) {
 	cases := []struct {
-		name  string
-		match string
+		name     string
+		match    string
+		skipFrom int
 	}{
-		{"delete system trend", "DELETE FROM system_metrics_trend_windows"},
-		{"delete process trend", "DELETE FROM process_event_loop_trend_windows"},
-		{"system refresh select", "ORDER BY stat_hour ASC\n\t\t"},
-		{"process refresh select", "ORDER BY stat_hour ASC, process_role ASC"},
-		{"system trend insert", "INSERT INTO system_metrics_trend_windows"},
-		{"process trend insert", "INSERT INTO process_event_loop_trend_windows"},
-		{"source state select", "SELECT updated_at FROM usage_stats_totals"},
-		{"source version system", "SELECT * FROM system_metrics_hourly"},
-		{"source version process", "SELECT * FROM process_event_loop_hourly"},
+		{"delete system trend", "DELETE FROM system_metrics_trend_windows", 0},
+		{"delete process trend", "DELETE FROM process_event_loop_trend_windows", 0},
+		{"system refresh select", "FROM system_metrics_hourly", 2},
+		{"process refresh select", "ORDER BY stat_hour ASC, process_role ASC", 0},
+		{"system trend insert", "INSERT INTO system_metrics_trend_windows", 0},
+		{"process trend insert", "INSERT INTO process_event_loop_trend_windows", 0},
+		{"source version system", "SELECT * FROM system_metrics_hourly", 0},
+		{"source version process", "SELECT * FROM process_event_loop_hourly", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env, spec := w13g5StatsOpenFailEnv(t)
 			w13g5SeedSystemHourly(t, env, "2026-09-18T00", "2026-09-18T01:00:00.000Z", 20)
 			w13g5SeedProcessHourly(t, env, "2026-09-18T00", "server", "2026-09-18T01:00:00.000Z")
-			spec.armOnce(tc.match)
+			if tc.skipFrom > 0 {
+				spec.armAfter(tc.match, tc.skipFrom)
+			} else {
+				spec.armOnce(tc.match)
+			}
 			defer spec.disarm()
 			if err := w13g5RunStage(t, env, StageSystemMetricsTrendWindows); err == nil {
 				t.Fatalf("%s 失败必须传播", tc.name)
@@ -195,7 +199,9 @@ func TestW13g5SystemTrendSourceVersionBadUpdatedAt(t *testing.T) {
 
 func TestW13g5SystemTrendScanArms(t *testing.T) {
 	env, _ := w13g5StatsOpenFailEnv(t)
-	// 列数不匹配使 Scan 失败，覆盖扫描错误传播臂。
+	// 先播种一行，保证 rows.Next() 迭代到 Scan 列数不匹配错误。
+	env.exec(`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, status_code, success, created_at)
+		VALUES ('w13g5-scan-row', 'w13g5-sa', 'w13g5-tr', 'gateway', 200, 1, '2026-09-18T07:00:00.000Z')`)
 	rows, err := env.db.Query(`SELECT * FROM usage_records`)
 	if err != nil {
 		t.Fatal(err)
@@ -260,10 +266,11 @@ func TestW13g5OverviewStageStatementArms(t *testing.T) {
 		stage WindowStageName
 	}{
 		{"scopes select", "ORDER BY updated_at DESC, system_account_id ASC, scope_id ASC", StageUsageOverviewWindows},
+		{"source state select", "SELECT updated_at FROM usage_stats_totals", StageUsageOverviewWindows},
 		{"delete summary", "DELETE FROM usage_overview_summary_windows", StageUsageOverviewWindows},
-		{"daily load", "scope_type = 'system_account'", StageUsageOverviewWindows},
+		{"daily load", "AND stat_date >= ?", StageUsageOverviewWindows},
 		{"summary insert", "INSERT INTO usage_overview_summary_windows", StageUsageOverviewWindows},
-		{"hourly load", "FROM usage_stats_hourly\n\t\t\tWHERE system_account_id = ?", StageUsageOverviewWindows},
+		{"hourly load", "FROM usage_stats_hourly\n\t\tWHERE system_account_id = ?", StageUsageOverviewWindows},
 		{"trend insert", "INSERT INTO usage_overview_trend_windows", StageUsageOverviewWindows},
 		{"model load", "FROM usage_model_daily", StageUsageOverviewWindows},
 		{"model rank insert", "INSERT INTO usage_model_rank_windows", StageUsageOverviewWindows},
@@ -330,9 +337,14 @@ func TestW13g5RunStagesSourceVersionArms(t *testing.T) {
 	env, spec := w13g5StatsOpenFailEnv(t)
 	w13g5SeedSystemHourly(t, env, "2026-09-18T00", "2026-09-18T01:00:00.000Z", 20)
 	w13g5SeedProcessHourly(t, env, "2026-09-18T00", "server", "2026-09-18T01:00:00.000Z")
-	spec.armOnce("cursor_created_at = excluded.cursor_created_at")
-	defer spec.disarm()
-	// 单 stage + SkipIfUnchanged 走 sourceVersion 双行写入路径。
+	// 主状态 upsert 与 sourceVersion 行 upsert 共用同一语句文本，跳过首命中
+	// 让主状态写入成功、sourceVersion 行写入失败（539-541 错误臂）。
+	spec.armAfter("cursor_created_at = excluded.cursor_created_at", 1)
+	if _, err := w13g5Refresher(env).RunStages(context.Background(), []WindowStageName{StageSystemMetricsTrendWindows}, RefreshOptions{SkipIfUnchanged: true}); err == nil {
+		t.Fatal("sourceVersion 行写入失败必须传播")
+	}
+	spec.disarm()
+	// 注入解除后完整写入双行状态。
 	if _, err := w13g5Refresher(env).RunStages(context.Background(), []WindowStageName{StageSystemMetricsTrendWindows}, RefreshOptions{SkipIfUnchanged: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -600,6 +612,7 @@ func TestW13g5QuotaIncrementalEmptyDirtyScope(t *testing.T) {
 	}
 	// 无绑定镜像（脏 scope 无绑定）→ rebuild 空活跃集直接返回。
 	env2, spec2 := w13g5StatsOpenFailEnv(t)
+	createBindingTable(t, env2.db)
 	refresher2 := w13g5Refresher(env2)
 	env2.exec(`INSERT INTO usage_quota_hourly_window_dirty_scopes (system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at)
 		VALUES ('w13g5-sa', 'api_key', 'w13g5-orphan', 1, '2026-09-18T07:00:00.000Z', '2026-09-18T07:00:00.000Z')`)

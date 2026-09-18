@@ -113,6 +113,12 @@ func maskSecret(value string) string {
 	}
 	runes := []rune(value)
 	if len(runes) <= 10 {
+		// 缺陷修复：1 字符密钥在 runes[len(runes)-2:] 处触发 [-1:] 越界 panic
+		// （现象：RotateCredentials 写 credential_mask 时请求 panic；根因：短值
+		// 分支假设长度 >= 2，未处理单字符输入）。
+		if len(runes) == 1 {
+			return string(runes) + "***"
+		}
 		return string(runes[:2]) + "***" + string(runes[len(runes)-2:])
 	}
 	return string(runes[:6]) + "***" + string(runes[len(runes)-4:])

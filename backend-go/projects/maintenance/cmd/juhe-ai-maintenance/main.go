@@ -199,7 +199,9 @@ func main() {
 }
 
 func runGoRuntimeMetricsBootstrap(apply bool, rawURL string, nodeStopped, goStopped, backupConfirmed bool) {
-	os.Exit(goRuntimeMetricsBootstrapResult(apply, rawURL, nodeStopped, goStopped, backupConfirmed))
+	if code := goRuntimeMetricsBootstrapResult(apply, rawURL, nodeStopped, goStopped, backupConfirmed); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // goRuntimeMetricsBootstrapResult is runGoRuntimeMetricsBootstrap without the
@@ -260,7 +262,9 @@ func goRuntimeMetricsApplyPreflightExitCode(rawURL string, nodeStopped, goStoppe
 }
 
 func runJ3bModelCheckPostgresBackfill(rawURL string, maxRowsPerTable, maxBytesPerTable int64, nodeStopped, goStopped, backupConfirmed bool, evidencePath string) {
-	os.Exit(j3bModelCheckPostgresBackfillResult(rawURL, maxRowsPerTable, maxBytesPerTable, nodeStopped, goStopped, backupConfirmed, evidencePath))
+	if code := j3bModelCheckPostgresBackfillResult(rawURL, maxRowsPerTable, maxBytesPerTable, nodeStopped, goStopped, backupConfirmed, evidencePath); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3bModelCheckPostgresBackfillResult is runJ3bModelCheckPostgresBackfill
@@ -328,7 +332,9 @@ func j3bBackfillEvidencePreflight(path string) (businesshandoff.J3bCutoverEviden
 }
 
 func runJ3bModelCheckPostgresBackfillReadback(rawURL string, maxRowsPerTable int64) {
-	os.Exit(j3bModelCheckPostgresReadbackResult(rawURL, maxRowsPerTable))
+	if code := j3bModelCheckPostgresReadbackResult(rawURL, maxRowsPerTable); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3bModelCheckPostgresReadbackResult is runJ3bModelCheckPostgresBackfillReadback
@@ -382,7 +388,9 @@ func j3bPostgresReadbackExitCode(report j3bmodelcheck.PostgresBackfillVerificati
 }
 
 func runJ3bModelCheckInventory(evidencePath string) {
-	os.Exit(j3bModelCheckInventoryResult(evidencePath))
+	if code := j3bModelCheckInventoryResult(evidencePath); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3bModelCheckInventoryResult is runJ3bModelCheckInventory without the
@@ -424,7 +432,9 @@ func j3bInventoryExitCode(report j3bmodelcheck.LegacyJ3bFactCoverageReport) int 
 }
 
 func runJ3cReadOnlyBoundaryCheck() {
-	os.Exit(j3cReadOnlyBoundaryResult(resolveRepositoryRoot()))
+	if code := j3cReadOnlyBoundaryResult(resolveRepositoryRoot()); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3cReadOnlyBoundaryResult is runJ3cReadOnlyBoundaryCheck without the
@@ -447,7 +457,9 @@ func j3cReadOnlyBoundaryResult(root string) int {
 }
 
 func runJ3bCutoverEvidenceCheck(path string) {
-	os.Exit(j3bCutoverEvidenceCheckResult(path))
+	if code := j3bCutoverEvidenceCheckResult(path); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3bCutoverEvidenceCheckResult is runJ3bCutoverEvidenceCheck without the
@@ -477,9 +489,11 @@ func j3bCutoverEvidenceExitCode(report businesshandoff.J3bCutoverEvidenceReport)
 }
 
 func runGatewayRouteOwnerManifestCheck() {
-	os.Exit(gatewayRouteOwnerManifestResult(
+	if code := gatewayRouteOwnerManifestResult(
 		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_GATEWAY_ROUTE_MANIFEST", "docs/migration/GatewayManagementRouteOwnerManifest.json")),
-		resolveRepositoryRoot()))
+		resolveRepositoryRoot()); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // gatewayRouteOwnerManifestResult is runGatewayRouteOwnerManifestCheck without
@@ -502,7 +516,9 @@ func gatewayRouteOwnerManifestResult(manifestPath, root string) int {
 }
 
 func runBusinessSQLiteSchemaCheck(path string) {
-	os.Exit(businessSQLiteSchemaCheckResult(path))
+	if code := businessSQLiteSchemaCheckResult(path); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // businessSQLiteSchemaCheckResult is runBusinessSQLiteSchemaCheck without the
@@ -532,9 +548,11 @@ func businessSQLiteSchemaCheckResult(path string) int {
 }
 
 func runBusinessCapabilityManifestCheck() {
-	os.Exit(businessCapabilityManifestResult(
+	if code := businessCapabilityManifestResult(
 		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_CAPABILITY_MANIFEST", "docs/migration/GoBusinessCapabilityManifest.json")),
-		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json"))))
+		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json"))); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // businessCapabilityManifestResult is runBusinessCapabilityManifestCheck
@@ -559,7 +577,9 @@ func businessCapabilityManifestResult(capabilityPath, operationPath string) int 
 }
 
 func runJ3bModelCheckSQLiteReadback() {
-	os.Exit(j3bModelCheckSQLiteReadbackResult())
+	if code := j3bModelCheckSQLiteReadbackResult(); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3bModelCheckSQLiteReadbackResult is runJ3bModelCheckSQLiteReadback without
@@ -599,7 +619,9 @@ func j3bSQLiteReadbackExitCode(report j3bmodelcheck.BackfillVerificationReport) 
 }
 
 func runBusinessSQLiteHandoffCheck(businessPath, j3bPath string) {
-	os.Exit(businessSQLiteHandoffCheckResult(businessPath, j3bPath))
+	if code := businessSQLiteHandoffCheckResult(businessPath, j3bPath); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // businessSQLiteHandoffCheckResult is runBusinessSQLiteHandoffCheck without
@@ -632,7 +654,9 @@ func businessSQLiteHandoffCheckResult(businessPath, j3bPath string) int {
 }
 
 func runNodeJ3bActivePathCheck() {
-	os.Exit(nodeJ3bActivePathResult(resolveRepositoryRoot()))
+	if code := nodeJ3bActivePathResult(resolveRepositoryRoot()); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // nodeJ3bActivePathResult is runNodeJ3bActivePathCheck without the
@@ -693,11 +717,13 @@ func isRepositoryRoot(dir string) bool {
 func runBusinessOwnerManifestCheck() {
 	// The manifest records original Node source locations for provenance, but
 	// its immutable source-of-truth files now live in final-archive.
-	os.Exit(businessOwnerManifestResult(
+	if code := businessOwnerManifestResult(
 		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json")),
 		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_TYPES", filepath.Join(archivedDBServiceSourceRoot, "db-service-types.ts"))),
 		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_ACCESS", filepath.Join(archivedDBServiceSourceRoot, "db-service-operation-access-mode.ts"))),
-		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", filepath.Join(archivedDBServiceSourceRoot, "db-service-handlers.ts")))))
+		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", filepath.Join(archivedDBServiceSourceRoot, "db-service-handlers.ts")))); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // businessOwnerManifestResult is runBusinessOwnerManifestCheck without the
@@ -746,7 +772,9 @@ func resolveRepoPath(path string) string {
 }
 
 func runJ3bModelCheckSQLiteBackfill(nodeStopped, goStopped, backupConfirmed bool, evidencePath string) {
-	os.Exit(j3bModelCheckSQLiteBackfillResult(nodeStopped, goStopped, backupConfirmed, evidencePath))
+	if code := j3bModelCheckSQLiteBackfillResult(nodeStopped, goStopped, backupConfirmed, evidencePath); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3bModelCheckSQLiteBackfillResult is runJ3bModelCheckSQLiteBackfill without
@@ -800,7 +828,9 @@ func j3bSQLiteBackfillOutcomeExitCode(report j3bmodelcheck.BackfillReport, runEr
 }
 
 func runJ3bModelCheckSQLiteBootstrap(apply, nodeStopped, goStopped, backupConfirmed bool) {
-	os.Exit(j3bModelCheckSQLiteBootstrapResult(apply, nodeStopped, goStopped, backupConfirmed))
+	if code := j3bModelCheckSQLiteBootstrapResult(apply, nodeStopped, goStopped, backupConfirmed); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3bModelCheckSQLiteBootstrapResult is runJ3bModelCheckSQLiteBootstrap without
@@ -844,7 +874,9 @@ func j3bSQLiteBootstrapOutcomeExitCode(report j3bmodelcheck.SQLiteReport, runErr
 }
 
 func runJ3bModelCheckBootstrap(apply bool) {
-	os.Exit(j3bModelCheckBootstrapResult(apply))
+	if code := j3bModelCheckBootstrapResult(apply); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3bModelCheckBootstrapResult is runJ3bModelCheckBootstrap without the
@@ -884,7 +916,9 @@ func j3bBootstrapOutcomeExitCode(report j3bmodelcheck.Report, runErr error) int 
 }
 
 func runJ3aProxyLatencyBootstrap(apply bool) {
-	os.Exit(j3aProxyLatencyBootstrapResult(apply))
+	if code := j3aProxyLatencyBootstrapResult(apply); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // j3aProxyLatencyBootstrapResult is runJ3aProxyLatencyBootstrap without the

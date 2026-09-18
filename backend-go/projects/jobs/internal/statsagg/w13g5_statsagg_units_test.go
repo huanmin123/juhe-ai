@@ -114,16 +114,17 @@ func TestW13g5AddPostgresAggregatedAccountQualityEntryArms(t *testing.T) {
 	if err := addPostgresAggregatedAccountQualityEntry(entries, second, UsageStatsTimeKeys{StatMinute: "2026-09-18T07:15"}); err != nil {
 		t.Fatal(err)
 	}
-	// 失败行替换 lastError（628-641）。
+	// 失败行（带 account_upstream 归因）替换 lastError（628-641）。
 	failed := good
 	failed.Success = 0
+	failed.FailureAttribution = w13g5s("account_upstream")
 	failed.ErrorMessage = w13g5s("w13g5-boom")
 	failed.CreatedAt = "2026-09-18T07:15:45.000Z"
 	if err := addPostgresAggregatedAccountQualityEntry(entries, failed, UsageStatsTimeKeys{StatMinute: "2026-09-18T07:15"}); err != nil {
 		t.Fatal(err)
 	}
 	entry := entries["w13g5-acc\x002026-09-18T07:15"]
-	if entry == nil || entry.RequestCount != 3 || entry.FirstTokenMsCount != 2 || entry.LastErrorMessage != "w13g5-boom" {
+	if entry == nil || entry.RequestCount != 3 || entry.FirstTokenMsCount != 1 || entry.LastErrorMessage != "w13g5-boom" {
 		t.Fatalf("聚合结果不符合预期: %+v", entry)
 	}
 }
@@ -159,14 +160,14 @@ func TestW13g5AddPostgresAggregatedAccountHealthEntryExistingBranch(t *testing.T
 	row := UsageStatsRecordRow{
 		SystemAccountID: "w13g5-sa", TrafficSource: "account_health_check",
 		AccountID: w13g5s("w13g5-acc"), Success: 1,
-		ProviderCode: w13g5s("openai"),
+		ProviderCode: w13g5s("openai"), CreatedAt: "2026-09-18T07:00:00.000Z",
 	}
 	addPostgresAggregatedAccountHealthEntry(entries, row, "2026-09-18T07")
 	older := row
 	older.CreatedAt = "2026-09-18T06:00:00.000Z"
 	older.ID = "w13g5-old"
 	addPostgresAggregatedAccountHealthEntry(entries, older, "2026-09-18T07")
-	if entries["w13g5-acc\x002026-09-18T07"].LastObservedAt == older.CreatedAt {
+	if entries["w13g5-acc\x002026-09-18T07"].LastRecordID == "w13g5-old" {
 		t.Fatal("更旧的观察不得覆盖")
 	}
 	newer := row

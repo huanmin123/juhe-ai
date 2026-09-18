@@ -21,7 +21,9 @@ import (
 // and the schema JSON (with digest) written to stdout. PostgreSQL is the only
 // supported dialect; SQLite targets are rejected by openSnapshotDB.
 func runPostgresSchemaSnapshot() {
-	os.Exit(postgresSchemaSnapshotResult())
+	if code := postgresSchemaSnapshotResult(); code != 0 {
+		os.Exit(code)
+	}
 }
 
 // postgresSchemaSnapshotResult is runPostgresSchemaSnapshot without the

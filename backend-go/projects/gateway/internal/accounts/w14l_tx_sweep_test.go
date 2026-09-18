@@ -72,7 +72,7 @@ func w14lSequences() map[string]w14lSequence {
 					AvailabilitySchedulePresent: true,
 					AvailabilitySchedule: map[string]any{
 						"enabled": true, "timezone": "UTC", "mode": "allow_windows",
-						"windows": []any{map[string]any{"daysOfWeek": []any{1, 2}, "start": "01:00", "end": "02:00"}},
+						"windows": []any{map[string]any{"daysOfWeek": []any{float64(1), float64(2)}, "start": "01:00", "end": "02:00"}},
 					},
 				}, f.scope())
 				return err

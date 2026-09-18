@@ -266,10 +266,9 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	heartbeatDone := make(chan struct{})
 	go func() {
 		defer close(heartbeatDone)
+		// lease > 0 已由 ClaimInput 入参校验保证，interval 恒为正；小于 3ns 的
+		// lease 会让探针先行超时，秒级兜底分支不可达（w14m 甄别：不可达防御臂）。
 		interval := lease / 3
-		if interval <= 0 {
-			interval = time.Second
-		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {

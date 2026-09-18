@@ -60,11 +60,19 @@ func chainV1ChatRequest(t *testing.T, serverURL, apiKey, body string) (int, stri
 // (cooldown) accounts during the failure drills.
 func shortenChainWaitBudgets(t *testing.T, fixture *chainFixture) {
 	t.Helper()
-	for _, key := range []string{"noAvailableAccountWaitTimeoutSeconds", "temporaryUnschedulableRetryIntervalSeconds"} {
-		// 10 是 noAvailableAccountWaitTimeoutSeconds 的校验下限。
-		if _, err := fixture.db.Exec(`UPDATE system_settings SET value_json = '10' WHERE key = ?`, key); err != nil {
-			t.Fatalf("shorten %s: %v", key, err)
-		}
+	// temporaryUnschedulableRetryIntervalSeconds 是 dispatch 同账户重试的
+	// 真实 sleep 时长（gatewaydispatch reserveSameAccountRetry 的
+	// configuredDelayMs，waitForDelayMs 实钟等待）；读侧钳制范围
+	// [0,3600]，0 表示重试不等待——失败演练里的耗尽/回退语义不依赖该
+	// 等待，此前写 10 使每个 dead-upstream 链路测试空烧 ~20s（2 次重试
+	// ×10s），是整包超出测试超时预算的主因（w14n）。
+	if _, err := fixture.db.Exec(`UPDATE system_settings SET value_json = '0' WHERE key = ?`, "temporaryUnschedulableRetryIntervalSeconds"); err != nil {
+		t.Fatalf("shorten %s: %v", "temporaryUnschedulableRetryIntervalSeconds", err)
+	}
+	// 10 是 noAvailableAccountWaitTimeoutSeconds 的校验下限（读侧
+	// numberSetting [10,3600]），只能取到 10。
+	if _, err := fixture.db.Exec(`UPDATE system_settings SET value_json = '10' WHERE key = ?`, "noAvailableAccountWaitTimeoutSeconds"); err != nil {
+		t.Fatalf("shorten %s: %v", "noAvailableAccountWaitTimeoutSeconds", err)
 	}
 }
 

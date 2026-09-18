@@ -210,18 +210,19 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 	}
 	body := clientUpstreamBody(req)
 	headers := upstreamHeadersOf(req, account)
+	modelMapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility)
 	if compatibilityBody != nil {
 		body = compatibilityBody
 		modelOverride := ""
-		if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil {
-			modelOverride = strings.TrimSpace(mapping.UpstreamModel)
+		if modelMapping != nil {
+			modelOverride = strings.TrimSpace(modelMapping.UpstreamModel)
 		} else if canonical := canonicalAccountModel(req, account); canonical != "" {
 			modelOverride = canonical
 		} else if requested, ok := gatewaypreauth.RequestModel(req); ok {
 			modelOverride = requested
 		}
 		applyOpenAIClientCompatibilityHeaders(headers, req, modelOverride, true)
-	} else if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil {
+	} else if modelMapping != nil {
 		transformed, err := d.openai.BuildUpstreamRequest(gatewayproto.BuildUpstreamRequestInput{
 			Method:              req.MethodUpper(),
 			ClientPathAndQuery:  req.PathAndQuery(),
@@ -230,12 +231,12 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 			ParsedBody:          req.ParsedJSONObjectBody(),
 			ParsedBodyAvailable: req.ParsedJSONObjectBody() != nil,
 			ModelMapping: &gatewayproto.ResolvedModelMapping{
-				SourceModel:            mapping.SourceModel,
-				SourceEndpointFamily:   mapping.SourceEndpointFamily,
-				UpstreamModel:          mapping.UpstreamModel,
-				UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
-				RuntimeSource:          mapping.RuntimeSource,
-				RuntimeRouteRuleID:     mapping.RuntimeRouteRuleID,
+				SourceModel:            modelMapping.SourceModel,
+				SourceEndpointFamily:   modelMapping.SourceEndpointFamily,
+				UpstreamModel:          modelMapping.UpstreamModel,
+				UpstreamEndpointFamily: modelMapping.UpstreamEndpointFamily,
+				RuntimeSource:          modelMapping.RuntimeSource,
+				RuntimeRouteRuleID:     modelMapping.RuntimeRouteRuleID,
 			},
 		})
 		if err != nil {
@@ -250,7 +251,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 	// D-151：api_key 账户的运行时 body 应用（Node applyGptAccountRequestOverrides
 	// 的非 oauth 分支）。端点族取映射上游族，缺省回落请求族；compact 仅出现在
 	// /responses/compact 端点。
-	if endpointFamily := gptRequestOverrideEndpointFamily(req, account, d.resolveAccountModelMapping(account, req, requestClientCompatibility)); endpointFamily != "" {
+	if endpointFamily := gptRequestOverrideEndpointFamily(req, account, modelMapping); endpointFamily != "" {
 		upstreamModel := ""
 		if requested, ok := gatewaypreauth.RequestModel(req); ok {
 			upstreamModel = requested
@@ -266,6 +267,19 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 		}
 		body = overridesBody
 	}
+	reasoningPath := req.PathAndQuery()
+	if modelMapping != nil {
+		switch modelMapping.UpstreamEndpointFamily {
+		case gatewayopenai.FamilyChatCompletions:
+			reasoningPath = "/v1/chat/completions"
+		case gatewayopenai.FamilyResponses:
+			reasoningPath = "/v1/responses"
+		case gatewayopenai.FamilyAnthropicMessages, gatewayopenai.FamilyGeminiGenerateContent, gatewayopenai.FamilyGeminiStreamGenerate:
+			// Non-OpenAI endpoint families are intentionally left untouched.
+			reasoningPath = ""
+		}
+	}
+	body = gatewaydispatch.NormalizeOpenAIReasoningFieldsForUpstream(reasoningPath, body)
 	return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 }
 

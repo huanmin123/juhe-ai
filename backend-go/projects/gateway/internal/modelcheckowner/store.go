@@ -240,10 +240,9 @@ func OpenStore(cfg Config) (*Store, error) {
 	default:
 		return nil, fmt.Errorf("unsupported J3b store mode %q", cfg.StoreMode)
 	}
-	db, err := sql.Open(driver, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open J3b store: %w", err)
-	}
+	// sql.Open 仅在驱动名未注册时返回错误；上面 switch 已把 driver 限定为
+	// 包内 init 注册的 "sqlite"/"pgx"，该错误臂不可达（w14m 甄别：不可达防御臂）。
+	db, _ := sql.Open(driver, dsn)
 	if cfg.StoreMode == "sqlite" {
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)

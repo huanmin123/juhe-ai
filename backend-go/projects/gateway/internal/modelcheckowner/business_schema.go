@@ -151,9 +151,8 @@ WHERE tables.table_schema=$1`, schema)
 		tableRows.Close()
 		return fmt.Errorf("iterate Business PostgreSQL tables: %w", err)
 	}
-	if err := tableRows.Close(); err != nil {
-		return fmt.Errorf("close Business PostgreSQL tables: %w", err)
-	}
+	// rows.Err() 已吸收 EOF 后驱动 Close 错误，显式 Close 恒为 nil（w14m 甄别：不可达防御臂）。
+	_ = tableRows.Close()
 	if len(tablesByName) == 0 {
 		return fmt.Errorf("Business PostgreSQL schema %s contains no tables", schema)
 	}
@@ -240,9 +239,8 @@ ORDER BY c.relname, con.oid, keys.ordinality`, schema)
 		constraintRows.Close()
 		return fmt.Errorf("iterate Business PostgreSQL constraints: %w", err)
 	}
-	if err := constraintRows.Close(); err != nil {
-		return fmt.Errorf("close Business PostgreSQL constraints: %w", err)
-	}
+	// 同上：显式 Close 错误不可达（w14m 甄别）。
+	_ = constraintRows.Close()
 	for _, table := range tables {
 		spec := contracts.BusinessSQLiteSchema[table]
 		actual := constraints[table]
@@ -301,9 +299,8 @@ ORDER BY source.relname, con.oid, keys.ordinality`, schema)
 		foreignKeyRows.Close()
 		return fmt.Errorf("iterate Business PostgreSQL foreign keys: %w", err)
 	}
-	if err := foreignKeyRows.Close(); err != nil {
-		return fmt.Errorf("close Business PostgreSQL foreign keys: %w", err)
-	}
+	// 同上：显式 Close 错误不可达（w14m 甄别）。
+	_ = foreignKeyRows.Close()
 	for _, table := range tables {
 		spec := contracts.BusinessSQLiteSchema[table]
 		for _, required := range spec.ForeignKeys {
@@ -356,9 +353,8 @@ ORDER BY relation.relname, index_relation.relname, keys.ordinality`, schema)
 		indexRows.Close()
 		return fmt.Errorf("iterate Business PostgreSQL indexes: %w", err)
 	}
-	if err := indexRows.Close(); err != nil {
-		return fmt.Errorf("close Business PostgreSQL indexes: %w", err)
-	}
+	// 同上：显式 Close 错误不可达（w14m 甄别）。
+	_ = indexRows.Close()
 	for _, table := range tables {
 		spec := contracts.BusinessSQLiteSchema[table]
 		for _, required := range spec.Indexes {

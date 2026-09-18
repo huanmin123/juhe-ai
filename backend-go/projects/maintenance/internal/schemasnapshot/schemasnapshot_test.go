@@ -447,6 +447,15 @@ func (c *fakeConn) QueryContext(_ context.Context, query string, _ []driver.Name
 	return nil, fmt.Errorf("fake snapshot driver: unexpected query %.80s", query)
 }
 
+// CheckNamedValue 放行 catalog 查询的 text[] 参数（schemaNames []string），
+// 其余类型回退 database/sql 默认转换，保持既有断言行为不变。
+func (c *fakeConn) CheckNamedValue(nv *driver.NamedValue) error {
+	if _, ok := nv.Value.([]string); ok {
+		return nil
+	}
+	return driver.ErrSkip
+}
+
 type fakeRows struct {
 	columns []string
 	rows    [][]driver.Value

@@ -491,9 +491,40 @@ func osReadFileImpl(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// w12aDatasetSelfHealDDL 按权威列集在 juhe_dataset 幂等补建 dataset 三表与
+// 索引（与 modelcheckapp/w12a_host_test.go 的 fixture 同源）；共享覆盖库被
+// 外部重建后测试可自愈，不依赖他人留下的表。
+var w12aDatasetSelfHealDDL = []string{
+	`CREATE TABLE IF NOT EXISTS juhe_dataset.model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL DEFAULT 'quick', trigger_kind TEXT NOT NULL DEFAULT 'manual', schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'running', message TEXT NOT NULL DEFAULT '', trace_id TEXT, probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1', started_at TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, request_summary_json TEXT NOT NULL DEFAULT '{}', result_summary_json TEXT NOT NULL DEFAULT '{}', policy_snapshot_json TEXT NOT NULL DEFAULT '{}', quality_decision_json TEXT NOT NULL DEFAULT '{}', quality_health_sync_status TEXT, error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS juhe_dataset.model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL, score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL DEFAULT '{}', error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS juhe_dataset.model_check_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, provider_code TEXT NOT NULL, provider_protocol_profile_id TEXT NOT NULL DEFAULT 'unknown', endpoint_family TEXT NOT NULL DEFAULT 'unknown', requested_model TEXT NOT NULL, mapped_upstream_model TEXT NOT NULL, observed_model TEXT, mapping_applied INTEGER NOT NULL DEFAULT 0, upstream_bucket_hmac TEXT NOT NULL DEFAULT '', cohort_key_hmac TEXT NOT NULL DEFAULT '', population_key_hmac TEXT NOT NULL DEFAULT '', probe_key_hmac TEXT NOT NULL DEFAULT '', system_fingerprint_hmac TEXT, probe_family TEXT NOT NULL, probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1', tokenizer_version TEXT NOT NULL DEFAULT 'unavailable', feature_version TEXT NOT NULL DEFAULT 'none', round_index INTEGER NOT NULL DEFAULT 0, padding_tokens INTEGER NOT NULL DEFAULT 0, local_input_tokens INTEGER NOT NULL DEFAULT 0, reported_input_tokens INTEGER, cached_input_tokens INTEGER, constraint_passed INTEGER, feature_1 DOUBLE PRECISION, feature_2 DOUBLE PRECISION, feature_3 DOUBLE PRECISION, feature_4 DOUBLE PRECISION, feature_5 DOUBLE PRECISION, feature_6 DOUBLE PRECISION, feature_7 DOUBLE PRECISION, feature_8 DOUBLE PRECISION, observation_status TEXT NOT NULL, identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, protocol_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL DEFAULT 0, trace_id TEXT, created_at TEXT NOT NULL, aggregation_completed_at TEXT)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_created ON juhe_dataset.model_check_runs(created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_created ON juhe_dataset.model_check_runs(system_account_id,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_actor_created ON juhe_dataset.model_check_runs(actor_system_account_id,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_model_created ON juhe_dataset.model_check_runs(model,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_level_created ON juhe_dataset.model_check_runs(level,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_status_created ON juhe_dataset.model_check_runs(status,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_target_created ON juhe_dataset.model_check_runs(target_type,target_id,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_account_created ON juhe_dataset.model_check_runs(account_id,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_trigger_created ON juhe_dataset.model_check_runs(trigger_kind,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_quality_health_sync_retry ON juhe_dataset.model_check_runs(quality_health_sync_status,updated_at,id) WHERE quality_health_sync_status='failed'`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_model_created ON juhe_dataset.model_check_runs(system_account_id,model,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_level_created ON juhe_dataset.model_check_runs(system_account_id,level,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_status_created ON juhe_dataset.model_check_runs(system_account_id,status,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_target_created ON juhe_dataset.model_check_runs(system_account_id,target_type,target_id,created_at DESC,id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_items_run_order ON juhe_dataset.model_check_items(run_id,created_at,id)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_items_run_key ON juhe_dataset.model_check_items(run_id,item_key,id)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_items_run_status ON juhe_dataset.model_check_items(run_id,status,created_at,id)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_observations_cursor ON juhe_dataset.model_check_observations(created_at,id)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON juhe_dataset.model_check_observations(created_at,id) WHERE aggregation_completed_at IS NULL`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_observations_account_model ON juhe_dataset.model_check_observations(system_account_id,account_id,requested_model,created_at,id)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_observations_cohort ON juhe_dataset.model_check_observations(cohort_key_hmac,mapped_upstream_model,created_at,id)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_observations_population ON juhe_dataset.model_check_observations(population_key_hmac,requested_model,probe_family,created_at,id)`,
+}
+
 func TestW12aCheckSchemaPostgresArmOnW1Cover(t *testing.T) {
-	// w1cover 覆盖库已由模型检查装配 fixture 幂等补齐 juhe_dataset 三表与
-	// 必需索引；这里验证 PostgreSQL 方言臂的表/索引校验全通过。
+	// 自愈：共享覆盖库被外部重建后，这里幂等补齐 juhe_dataset 三表与索引，
+	// 再验证 PostgreSQL 方言臂的表/索引校验全通过。
 	store, err := OpenPostgres(w12aW1CoverDSN(t), 4, 2)
 	if err != nil {
 		t.Skipf("w12a PG gated: 打开失败: %v", err)
@@ -503,6 +534,11 @@ func TestW12aCheckSchemaPostgresArmOnW1Cover(t *testing.T) {
 	defer cancel()
 	if err := store.db.PingContext(pingCtx); err != nil {
 		t.Skip("w12a PG gated: PG 不可达")
+	}
+	for _, ddl := range w12aDatasetSelfHealDDL {
+		if _, err := store.db.Exec(ddl); err != nil {
+			t.Fatalf("自愈建表失败: %v", err)
+		}
 	}
 	if err := store.CheckSchema(context.Background()); err != nil {
 		t.Fatalf("覆盖库 schema 应满足契约: %v", err)

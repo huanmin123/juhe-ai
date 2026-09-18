@@ -142,18 +142,15 @@ func TestWCGeminiCreateFromCode(t *testing.T) {
 		t.Fatalf("会话字段透传: %+v", info)
 	}
 
-	// 行为存疑：geminiPlan.exchangeCode 以 fallback=nil 调用
-	// buildGeminiOAuthCredentials，gemini.go:583 解引用 fallback.ProjectID
-	// 导致成功路径必然 panic（HTTP 层表现为连接中断）。按当前实际行为断言，
-	// 待主代理裁定。
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Fatalf("当前实现应在 fallback=nil 时 panic（行为存疑点）")
-			}
-		}()
-		buildGeminiOAuthCredentials(info, nil)
-	}()
+	// 行为存疑点已裁定并修复（w13g6）：geminiPlan.exchangeCode 以 fallback=nil
+	// 调用 buildGeminiOAuthCredentials，原实现 gemini.go:583 解引用
+	// fallback.ProjectID 使成功路径必然 panic。缺陷按"真实缺陷最小修复"处理：
+	// projectID/quotaProjectID 的 fallback 拾取改为判空后取值。此处改为断言
+	// 修复后的正确契约（不 panic 且沿用 info 侧字段）。
+	fixed := buildGeminiOAuthCredentials(info, nil)
+	if fixed["access_token"] != "gem-access" || fixed["base_url"] != "https://custom.example" {
+		t.Fatalf("fallback=nil 凭据构建: %v", fixed)
+	}
 
 	// 会话单次消费（store 层重复交换；第二次读取时条目已删除，呈现为
 	// "会话不存在或已过期"，与"已消费"同属单次消费保障）。

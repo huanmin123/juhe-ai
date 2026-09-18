@@ -115,8 +115,19 @@ func w12aW1CoverDSN(t *testing.T) string {
 	return base
 }
 
+// w12aDurableSelfHealDDL 按权威列集在 juhe_jobs 幂等补建 durable 四表（与
+// modelcheckapp/w12a_host_test.go 的 fixture 同源）；共享覆盖库被外部重建后
+// 测试可自愈，不依赖他人留下的表。
+var w12aDurableSelfHealDDL = []string{
+	`CREATE TABLE IF NOT EXISTS juhe_jobs.model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS juhe_jobs.model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version BIGINT NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, UNIQUE(identity_key,input_version), UNIQUE(identity_key,input_digest))`,
+	`CREATE TABLE IF NOT EXISTS juhe_jobs.model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, claim_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS juhe_jobs.model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token BIGINT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, stored_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, payload_digest TEXT NOT NULL, committed BOOLEAN NOT NULL DEFAULT FALSE)`,
+}
+
 func TestW12aCheckSchemaPostgresArmOnW1Cover(t *testing.T) {
-	// 装配 fixture 已在 juhe_jobs 建好 durable 四表；这里验证 PG 方言前缀臂。
+	// 自愈：共享覆盖库被外部重建后，这里幂等补齐 juhe_jobs durable 四表，
+	// 再验证 PG 方言前缀臂。
 	db, err := sql.Open("pgx", w12aW1CoverDSN(t))
 	if err != nil {
 		t.Skipf("w12a PG gated: 打开失败: %v", err)
@@ -126,6 +137,11 @@ func TestW12aCheckSchemaPostgresArmOnW1Cover(t *testing.T) {
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
 		t.Skip("w12a PG gated: PG 不可达")
+	}
+	for _, ddl := range w12aDurableSelfHealDDL {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatalf("自愈建表失败: %v", err)
+		}
 	}
 	db.SetMaxOpenConns(1)
 	store, err := New(db, Postgres)

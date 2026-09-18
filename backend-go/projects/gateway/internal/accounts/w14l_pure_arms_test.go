@@ -123,46 +123,95 @@ func TestW14LPatchAuthorizedDispatchTxArms(t *testing.T) {
 	ptrString := func(value string) *string { return &value }
 	ptrBool := func(value bool) *bool { return &value }
 	ptrInt := func(value int) *int { return &value }
-	activeRow := func() *authorizedDispatchRow {
+	now := "2026-03-10T08:00:00.000Z"
+	// 真实行：账户授权实例绑定 + 分组绑定，使事务内 UPDATE 命中。
+	f.exec(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
+		health_check_model, authorization_instance_authorization_id, config_revision, created_at, updated_at)
+		VALUES ('acc-w14l-dispatch', ?, 'gpt', 'prof-gpt', 'openai', 'v1', 'w14l-dispatch', 'api_key',
+		'active', 'sealed', 'mask', 'gpt-4o-mini', 'aa-w14l-1', 1, ?, ?)`, f.owner, now, now)
+	f.exec(`INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id,
+		local_priority, enabled, created_at, updated_at)
+		VALUES (?, 'grp-w14l-auth', 'acc-w14l-dispatch', 'aa-w14l-1', 0, 1, ?, ?)`, f.owner, now, now)
+	// 单连接池下开事务期间禁止再走 f.db 查询：config_revision 在本地跟踪，
+	// 仅当 accountSets 非空（状态/清除失败）时才 +1。
+	revision := int64(1)
+	row := func() *authorizedDispatchRow {
 		return &authorizedDispatchRow{
-			id: "acc-w14l-dispatch", configRevision: 1, systemAccountID: f.owner,
+			id: "acc-w14l-dispatch", configRevision: revision, systemAccountID: f.owner,
 			name: "w14l-dispatch", status: "active", schedulable: 1,
-			sourceID:     strNull("src-1"),
-			sourceStatus: strNull("active"),
+			authorizationID:   strNull("aa-w14l-1"),
+			sourceID:          strNull("src-1"),
+			sourceStatus:      strNull("active"),
+			sourceSchedulable: sql.NullInt64{Int64: 1, Valid: true},
 		}
 	}
 	binding := func() *authorizedDispatchBinding {
-		return &authorizedDispatchBinding{groupID: "grp-1", accountAuthorizationID: "aa-1"}
+		return &authorizedDispatchBinding{groupID: "grp-w14l-auth", accountAuthorizationID: "aa-w14l-1"}
 	}
 
-	// 待检查账户拒绝。
+	// 待检查账户拒绝（不落任何 UPDATE）。
+	pending := row()
+	pending.status = "pending_test"
 	tx, err := f.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pending := activeRow()
-	pending.status = "pending_test"
 	if _, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, pending, binding(),
-		AuthorizedDispatchInput{ExpectedConfigRevision: 1, Status: ptrString("active")}); err == nil {
+		AuthorizedDispatchInput{ExpectedConfigRevision: revision, Status: ptrString("active")}); err == nil {
 		t.Fatal("待检查账户应拒绝激活")
 	}
-	// 超级优先 + 降级互斥。
-	if _, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, activeRow(), binding(),
-		AuthorizedDispatchInput{ExpectedConfigRevision: 1, SuperPriorityEnabled: ptrBool(true), FallbackEnabled: ptrBool(true)}); err == nil {
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	// 超级优先 + 降级互斥（写库前拒绝）。
+	tx, err = f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, row(), binding(),
+		AuthorizedDispatchInput{ExpectedConfigRevision: revision, SuperPriorityEnabled: ptrBool(true), FallbackEnabled: ptrBool(true)}); err == nil {
 		t.Fatal("超级优先 + 降级应互斥")
 	}
-	// 状态停用：状态与可调度变更入 changes。
-	result, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, activeRow(), binding(),
-		AuthorizedDispatchInput{ExpectedConfigRevision: 1, Status: ptrString("disabled")})
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	// 状态停用：状态与可调度变更入 changes 并提交。
+	tx, err = f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, row(), binding(),
+		AuthorizedDispatchInput{ExpectedConfigRevision: revision, Status: ptrString("disabled")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Changes) == 0 {
 		t.Fatal("停用应产生变更")
 	}
-	// 优先级 / 超级 / 降级各字段变更与补丁。
-	result, err = f.store.patchAuthorizedDispatchTx(context.Background(), tx, activeRow(), binding(),
-		AuthorizedDispatchInput{ExpectedConfigRevision: 1, Priority: ptrInt(7),
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	revision++
+	// 优先级 / 超级 / 降级各字段变更与补丁（先恢复 active）。
+	tx, err = f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, row(), binding(),
+		AuthorizedDispatchInput{ExpectedConfigRevision: revision, Status: ptrString("active")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	revision++
+	tx, err = f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = f.store.patchAuthorizedDispatchTx(context.Background(), tx, row(), binding(),
+		AuthorizedDispatchInput{ExpectedConfigRevision: revision, Priority: ptrInt(7),
 			SuperPriorityEnabled: ptrBool(true), FallbackEnabled: ptrBool(false)})
 	if err != nil {
 		t.Fatal(err)
@@ -170,17 +219,32 @@ func TestW14LPatchAuthorizedDispatchTxArms(t *testing.T) {
 	if result.Patch.Priority == nil || result.Patch.SuperPriorityEnabled == nil {
 		t.Fatalf("优先级与超级优先应进入补丁：%+v", result.Patch)
 	}
-	// 清除失败状态。
-	if _, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, activeRow(), binding(),
-		AuthorizedDispatchInput{ExpectedConfigRevision: 1, ClearFailureState: true}); err != nil {
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	// 无实际变更。
-	if _, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, activeRow(), binding(),
-		AuthorizedDispatchInput{ExpectedConfigRevision: 1, Priority: ptrInt(0)}); err != nil {
+	// 清除失败状态（accountSets 非空 → 版本递增）。
+	tx, err = f.db.BeginTx(context.Background(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Rollback(); err != nil {
+	if _, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, row(), binding(),
+		AuthorizedDispatchInput{ExpectedConfigRevision: revision, ClearFailureState: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	revision++
+	// 无实际变更（空 changes 不写库）。
+	tx, err = f.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.patchAuthorizedDispatchTx(context.Background(), tx, row(), binding(),
+		AuthorizedDispatchInput{ExpectedConfigRevision: revision, Priority: ptrInt(7)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -188,26 +252,26 @@ func TestW14LPatchAuthorizedDispatchTxArms(t *testing.T) {
 // --- 时间计划解析臂 ---
 
 func TestW14LScheduleNormalizeArms(t *testing.T) {
-	denyAll := func(extra map[string]any) map[string]any {
+	baseSchedule := func(extra map[string]any) map[string]any {
 		object := map[string]any{
-			"enabled": true, "timezone": "UTC", "mode": "deny_windows",
-			"windows": []any{map[string]any{"daysOfWeek": []any{1, 2, 3, 4, 5, 6, 7}, "start": "00:00", "end": "23:59"}},
+			"enabled": true, "timezone": "UTC", "mode": "allow_windows",
+			"windows": []any{map[string]any{"daysOfWeek": []any{float64(1), float64(2), float64(3), float64(4), float64(5), float64(6), float64(7)}, "start": "00:00", "end": "23:59"}},
 		}
 		for key, value := range extra {
 			object[key] = value
 		}
 		return object
 	}
-	// 拒绝例外：非法动作 / deny 带窗口 / allow 无窗口 / 缺日期 / 多余键 / 非对象 / 非列表。
+	// 例外日期：非法动作 / deny 带窗口 / allow 无窗口 / 缺日期 / 多余键 / 非对象 / 非列表 / 非法日期。
 	badSchedules := []map[string]any{
-		denyAll(map[string]any{"exceptions": "not-a-list"}),
-		denyAll(map[string]any{"exceptions": []any{"not-an-object"}}),
-		denyAll(map[string]any{"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "allow", "windows": []any{}, "extra": 1}}}),
-		denyAll(map[string]any{"exceptions": []any{map[string]any{"date": "", "action": "allow", "windows": []any{map[string]any{"start": "01:00", "end": "02:00"}}}}}),
-		denyAll(map[string]any{"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "toggle"}}}),
-		denyAll(map[string]any{"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "deny", "windows": []any{map[string]any{"start": "01:00", "end": "02:00"}}}}}),
-		denyAll(map[string]any{"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "allow", "windows": []any{}}}}),
-		denyAll(map[string]any{"exceptions": []any{map[string]any{"date": "2026-13-01", "action": "deny"}}}),
+		baseSchedule(map[string]any{"exceptions": "not-a-list"}),
+		baseSchedule(map[string]any{"exceptions": []any{"not-an-object"}}),
+		baseSchedule(map[string]any{"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "allow", "windows": []any{}, "extra": 1}}}),
+		baseSchedule(map[string]any{"exceptions": []any{map[string]any{"date": "", "action": "allow", "windows": []any{map[string]any{"start": "01:00", "end": "02:00"}}}}}),
+		baseSchedule(map[string]any{"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "toggle"}}}),
+		baseSchedule(map[string]any{"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "deny", "windows": []any{map[string]any{"start": "01:00", "end": "02:00"}}}}}),
+		baseSchedule(map[string]any{"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "allow", "windows": []any{}}}}),
+		baseSchedule(map[string]any{"exceptions": []any{map[string]any{"date": "2026-13-01", "action": "deny"}}}),
 	}
 	for index, object := range badSchedules {
 		if _, err := NormalizeSchedule(object); err == nil {
@@ -215,9 +279,9 @@ func TestW14LScheduleNormalizeArms(t *testing.T) {
 		}
 	}
 	// 合法：允许例外 + 日期范围。
-	schedule, err := NormalizeSchedule(denyAll(map[string]any{
+	schedule, err := NormalizeSchedule(baseSchedule(map[string]any{
 		"dateRange":  map[string]any{"startDate": "2026-01-01", "endDate": "2026-12-31"},
-		"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "allow", "windows": []any{map[string]any{"start": "01:00", "end": "02:00"}}}},
+		"exceptions": []any{map[string]any{"date": "2026-03-01", "action": "deny"}},
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -228,37 +292,41 @@ func TestW14LScheduleNormalizeArms(t *testing.T) {
 	// 日期范围倒置与时段错误。
 	if _, err := NormalizeSchedule(map[string]any{
 		"enabled": true, "timezone": "UTC", "mode": "allow_windows",
-		"windows":   []any{map[string]any{"daysOfWeek": []any{1}, "start": "01:00", "end": "02:00"}},
+		"windows":   []any{map[string]any{"daysOfWeek": []any{float64(1)}, "start": "01:00", "end": "02:00"}},
 		"dateRange": map[string]any{"startDate": "2026-12-31", "endDate": "2026-01-01"},
 	}); err == nil {
 		t.Fatal("日期范围倒置应拒绝")
 	}
 	if _, err := NormalizeSchedule(map[string]any{
 		"enabled": true, "timezone": "UTC", "mode": "allow_windows",
-		"windows": []any{map[string]any{"daysOfWeek": []any{1}, "start": "01:00", "end": "01:00"}},
+		"windows": []any{map[string]any{"daysOfWeek": []any{float64(1)}, "start": "01:00", "end": "01:00"}},
 	}); err == nil {
 		t.Fatal("开始等于停止应拒绝")
 	}
 	if _, err := NormalizeSchedule(map[string]any{
 		"enabled": true, "timezone": "Bogus/Zone", "mode": "allow_windows",
-		"windows": []any{map[string]any{"daysOfWeek": []any{1}, "start": "01:00", "end": "02:00"}},
+		"windows": []any{map[string]any{"daysOfWeek": []any{float64(1)}, "start": "01:00", "end": "02:00"}},
 	}); err == nil {
 		t.Fatal("非法时区应拒绝")
 	}
-	// 全天拒绝计划：ScheduleStatus 命中 disabled 覆盖，NextScheduleCheckAt 无边界。
-	denied, err := NormalizeSchedule(denyAll(nil))
+	// 过期日期范围：范围外一律 denied 覆盖，且未来两周无边界（回退 7 天）。
+	expired, err := NormalizeSchedule(map[string]any{
+		"enabled": true, "timezone": "UTC", "mode": "allow_windows",
+		"windows":   []any{map[string]any{"daysOfWeek": []any{float64(1), float64(2), float64(3), float64(4), float64(5), float64(6), float64(7)}, "start": "00:00", "end": "23:59"}},
+		"dateRange": map[string]any{"startDate": "2020-01-01", "endDate": "2020-01-02"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 3, 10, 8, 0, 0, 0, time.UTC)
-	if override, ok := ScheduleStatus(denied, now); !ok || override != "disabled" {
-		t.Fatalf("全天拒绝应覆盖为 disabled：%q %v", override, ok)
+	if override, ok := ScheduleStatus(expired, now); !ok || override != "disabled" {
+		t.Fatalf("范围外应覆盖为 disabled：%q %v", override, ok)
 	}
-	if _, ok := NextScheduleCheckAt(denied, now); ok {
-		t.Fatal("全天拒绝不应有下一检查点")
+	if _, ok := NextScheduleCheckAt(expired, now); !ok {
+		t.Fatal("范围外应回退到 7 天后的检查点")
 	}
 	// JSON 往返与解析失败。
-	raw, ok := ScheduleJSON(denied)
+	raw, ok := ScheduleJSON(expired)
 	if !ok || raw == "" {
 		t.Fatal("计划应可序列化")
 	}
@@ -338,7 +406,7 @@ func TestW14LUpstreamIPArms(t *testing.T) {
 	if !isBlockedIPv6(net.ParseIP("fc00::1")) {
 		t.Fatal("ULA IPv6 应被阻断")
 	}
-	if !isBlockedIPv4(net.ParseIP("10.1.2.3")) || isBlockedIPv4(net.ParseIP("8.8.8.8")) {
+	if !isBlockedIPv4(net.ParseIP("10.1.2.3").To4()) || isBlockedIPv4(net.ParseIP("8.8.8.8").To4()) {
 		t.Fatal("IPv4 私网判定不符")
 	}
 	// ipv4MatchesPrefix 边界：前缀 0 立即通过，前缀 32 全匹配，中途失配。
@@ -358,7 +426,7 @@ func TestW14LUpstreamIPArms(t *testing.T) {
 func TestW14LBatchFieldArms(t *testing.T) {
 	f := newW14LFaultFixture(t)
 	scope := f.scope()
-	// 余额查询开启的账户 + 属主代理行。
+	// 余额查询开启的账户 + 普通账户（批量最少 2 个目标）+ 属主代理行。
 	input := w14lCreateInput("w14l-balance")
 	input.BalanceQueryEnabled = true
 	canonical := `{"adapter":"builtin"}`
@@ -368,64 +436,84 @@ func TestW14LBatchFieldArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.created = append(f.created, created.ID)
+	companion, err := f.store.Create(context.Background(), w14lCreateInput("w14l-companion"), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.created = append(f.created, companion.ID)
 	f.exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
 		VALUES ('pp-w14l-batch', ?, 'w14l 批量代理', 'socks5', '127.0.0.1', 1080, 1, 'unknown', '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z')`, f.owner)
 
-	target := func() []BatchUpdateTarget {
-		return []BatchUpdateTarget{{AccountID: created.ID, ConfigRevision: 1}}
+	// targets 按当前 config_revision 组装双目标。
+	targets := func() []BatchUpdateTarget {
+		return []BatchUpdateTarget{
+			{AccountID: created.ID, ConfigRevision: f.configRevision(created.ID)},
+			{AccountID: companion.ID, ConfigRevision: f.configRevision(companion.ID)},
+		}
 	}
-	// 非管理员无过滤域 → 批量访问错误。
+	// 非管理员空 ViewerID（scoped 为空且不可全量访问）→ 批量访问错误。
 	if _, err := f.store.BatchUpdate(context.Background(), BatchUpdateInput{
-		Targets: target(), Updates: map[string]BatchUpdateField{"notes": w14lField("x")},
-	}, AccessScope{ViewerID: f.owner}); err == nil {
-		t.Fatal("非管理员无过滤域应拒绝")
+		Targets: targets(), Updates: map[string]BatchUpdateField{"notes": w14lField("x")},
+	}, AccessScope{}); err == nil {
+		t.Fatal("无作用域应拒绝")
 	}
 	// 版本冲突。
+	stale := targets()
+	stale[0].ConfigRevision++
 	if _, err := f.store.BatchUpdate(context.Background(), BatchUpdateInput{
-		Targets: []BatchUpdateTarget{{AccountID: created.ID, ConfigRevision: 99}},
-		Updates: map[string]BatchUpdateField{"notes": w14lField("x")},
+		Targets: stale, Updates: map[string]BatchUpdateField{"notes": w14lField("x")},
 	}, scope); err == nil {
 		t.Fatal("过期版本应冲突")
 	}
 	// 未知代理 → 校验错误；空文本 → 校验错误。
 	for _, value := range []any{"pp-missing-w14l", "   "} {
 		if _, err := f.store.BatchUpdate(context.Background(), BatchUpdateInput{
-			Targets: target(), Updates: map[string]BatchUpdateField{"proxyProfileId": w14lField(value)},
+			Targets: targets(), Updates: map[string]BatchUpdateField{"proxyProfileId": w14lField(value)},
 		}, scope); err == nil {
 			t.Fatalf("代理 %q 应拒绝", value)
 		}
 	}
 	// 合法代理 → 变更（含余额查询的下次刷新列）。
 	if _, err := f.store.BatchUpdate(context.Background(), BatchUpdateInput{
-		Targets: target(), Updates: map[string]BatchUpdateField{"proxyProfileId": w14lField("pp-w14l-batch")},
+		Targets: targets(), Updates: map[string]BatchUpdateField{"proxyProfileId": w14lField("pp-w14l-batch")},
 	}, scope); err != nil {
 		t.Fatal(err)
 	}
-	// 空支持模型 → 校验错误；nil 标签 → 清空；非法到期 → 校验错误；
-	// 全天拒绝计划 → 状态自动停用 + 无下一检查点；notes 清空。
+	// nil 标签 → 清空；有效到期 → 写入；到期清空 → NULL；过期日期范围计划 →
+	// 状态自动停用；notes 清空；关闭降级（未开启时无变化）。逐轮读版本号。
 	updates := []map[string]BatchUpdateField{
-		{"supportedModels": w14lField([]any{})},
 		{"tags": w14lField(nil)},
-		{"accountExpiresAt": w14lField("not-a-time")},
 		{"accountExpiresAt": w14lField("2027-01-01T00:00:00.000Z")},
 		{"accountExpiresAt": w14lField(nil)},
 		{"availabilitySchedule": w14lField(map[string]any{
-			"enabled": true, "timezone": "UTC", "mode": "deny_windows",
-			"windows": []any{map[string]any{"daysOfWeek": []any{1, 2, 3, 4, 5, 6, 7}, "start": "00:00", "end": "23:59"}},
+			"enabled": true, "timezone": "UTC", "mode": "allow_windows",
+			"windows":   []any{map[string]any{"daysOfWeek": []any{float64(1), float64(2), float64(3), float64(4), float64(5), float64(6), float64(7)}, "start": "00:00", "end": "23:59"}},
+			"dateRange": map[string]any{"startDate": "2020-01-01", "endDate": "2020-01-02"},
 		})},
 		{"notes": w14lField("")},
 		{"fallbackEnabled": w14lField(false)},
 	}
 	for index, update := range updates {
-		fresh := target()
-		fresh[0].ConfigRevision = int64(index + 2)
-		if _, err := f.store.BatchUpdate(context.Background(), BatchUpdateInput{Targets: fresh, Updates: update}, scope); err != nil {
+		if _, err := f.store.BatchUpdate(context.Background(), BatchUpdateInput{
+			Targets: targets(), Updates: update,
+		}, scope); err != nil {
 			t.Fatalf("更新 #%d 应成功：%v", index, err)
 		}
 	}
-	// 加载上下文（含支持模型 / 映射 / 标签）。
-	if _, err := f.store.LoadBatchEditContext(context.Background(), []string{created.ID},
-		[]string{"supportedModels", "modelMappings", "tags", "notes"}, scope); err != nil {
+	// 校验错误类：空支持模型 / 非法到期。
+	if _, err := f.store.BatchUpdate(context.Background(), BatchUpdateInput{
+		Targets: targets(), Updates: map[string]BatchUpdateField{"supportedModels": w14lField([]any{})},
+	}, scope); err == nil {
+		t.Fatal("空支持模型应拒绝")
+	}
+	if _, err := f.store.BatchUpdate(context.Background(), BatchUpdateInput{
+		Targets: targets(), Updates: map[string]BatchUpdateField{"accountExpiresAt": w14lField("not-a-time")},
+	}, scope); err == nil {
+		t.Fatal("非法到期应拒绝")
+	}
+	// 加载上下文（合法字段集：支持模型 / 映射 / 端点模式）。
+	if _, err := f.store.LoadBatchEditContext(context.Background(), []string{created.ID, companion.ID},
+		[]string{"supportedModels", "modelMappings", "supportedEndpointModes"}, scope); err != nil {
 		t.Fatal(err)
 	}
 	// 空集合早退臂。
@@ -464,8 +552,15 @@ func TestW14LInvalidatorErrorArms(t *testing.T) {
 	}, scope); err != nil {
 		t.Fatal(err)
 	}
+	second, err := f.store.Create(context.Background(), w14lCreateInput("w14l-inval-2"), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.store.BatchUpdate(context.Background(), BatchUpdateInput{
-		Targets: []BatchUpdateTarget{{AccountID: created.ID, ConfigRevision: 2}},
+		Targets: []BatchUpdateTarget{
+			{AccountID: created.ID, ConfigRevision: 2},
+			{AccountID: second.ID, ConfigRevision: 1},
+		},
 		Updates: map[string]BatchUpdateField{"notes": w14lField("w14l 批量")},
 	}, scope); err != nil {
 		t.Fatal(err)

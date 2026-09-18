@@ -33,7 +33,7 @@ type ListAvailabilityConfig struct {
 // ListAvailabilityRepo 实现 opsjobs.ListAvailabilityRepo 与
 // opsjobs.OverlayReconciler 的 PG 持久化半边。
 type ListAvailabilityRepo struct {
-	db       *sql.DB
+	db       *boundDB
 	postgres bool
 	now      func() time.Time
 }
@@ -47,7 +47,7 @@ func NewListAvailabilityRepo(config ListAvailabilityConfig) (*ListAvailabilityRe
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &ListAvailabilityRepo{db: config.DB, postgres: config.Postgres, now: now}, nil
+	return &ListAvailabilityRepo{db: &boundDB{DB: config.DB, postgres: config.Postgres}, postgres: config.Postgres, now: now}, nil
 }
 
 func (r *ListAvailabilityRepo) table(name string) string {
@@ -232,7 +232,7 @@ const markDirtySQL = `
     claim_until_ms = NULL,
     updated_at_ms = excluded.updated_at_ms`
 
-func (r *ListAvailabilityRepo) markDirtyTx(ctx context.Context, tx *sql.Tx, accountID, reason string, availableAtMS, nowMS int64) error {
+func (r *ListAvailabilityRepo) markDirtyTx(ctx context.Context, tx txLike, accountID, reason string, availableAtMS, nowMS int64) error {
 	accountID = strings.TrimSpace(accountID)
 	if accountID == "" || len(accountID) > 256 {
 		return errors.New("accountId 长度必须为 1..256")
@@ -928,7 +928,7 @@ func normalizeProjectionWrite(write opsjobs.ProjectionWrite) (normalizedProjecti
 
 // upsertProjectionTx 对齐 upsertAccountListAvailabilityProjectionInTransaction
 // （payload/index/overlay/tags/terms/viewer 全部在同一 fenced 事务内）。
-func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx *sql.Tx, value normalizedProjection) (bool, error) {
+func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike, value normalizedProjection) (bool, error) {
 	projections := r.table("account_list_availability_projections")
 	result, err := tx.ExecContext(ctx, `
     INSERT INTO `+projections+` (
@@ -1069,7 +1069,7 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx *sql.T
 	return true, nil
 }
 
-func (r *ListAvailabilityRepo) markViewerHealthStaleTx(ctx context.Context, tx *sql.Tx, viewerSystemAccountID, updatedAt string) error {
+func (r *ListAvailabilityRepo) markViewerHealthStaleTx(ctx context.Context, tx txLike, viewerSystemAccountID, updatedAt string) error {
 	_, err := tx.ExecContext(ctx, `
     INSERT INTO `+r.table("account_list_availability_projection_viewer_health")+` (
       viewer_system_account_id, projection_count, oldest_projected_at,

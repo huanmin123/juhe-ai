@@ -70,6 +70,10 @@ func w10cPgExec(t *testing.T, db *sql.DB, query string, args ...any) {
 func TestW10CPGQuotaIncrementalSkipLocked(t *testing.T) {
 	db := w10cPgDB(t)
 	ctx := context.Background()
+	// w14j：共享覆盖库可能被外部重置，幂等补齐配额脏标记依赖的
+	// account_list_availability_* 函数族（CREATE OR REPLACE，权威 DDL 来自
+	// maintenance/internal/schema/pg_schema.go）。
+	w14jEnsureAccountListAvailabilityFunctions(t, db)
 
 	// 幂等 bootstrap 最小 schema（w1cover 覆盖库，加法式变更）。
 	for _, statement := range []string{

@@ -61,6 +61,19 @@ func (c *wmSnapshotConn) QueryContext(_ context.Context, query string, _ []drive
 	return nil, fmt.Errorf("wm snapshot fake: unexpected query %.80s", query)
 }
 
+// CheckNamedValue 接受 pgx 生产路径的 []string 数组参数（ANY($1::text[])），
+// 转成假驱动可携带的占位值；database/sql 默认转换器会直接拒绝 []string。
+func (c *wmSnapshotConn) CheckNamedValue(nv *driver.NamedValue) error {
+	if values, ok := nv.Value.([]string); ok {
+		nv.Value = strings.Join(values, ",")
+		return nil
+	}
+	if driver.IsValue(nv.Value) {
+		return nil
+	}
+	return fmt.Errorf("wm snapshot fake: 不支持的参数类型 %T", nv.Value)
+}
+
 type wmSnapshotRows struct {
 	columns []string
 	rows    [][]driver.Value
