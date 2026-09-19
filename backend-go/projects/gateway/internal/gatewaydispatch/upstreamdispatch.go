@@ -505,11 +505,6 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 	}
 	{
 		filtered := make([]AccountCandidate, 0, len(dispatchAccounts))
-		snapshot := requestAttemptTracker.Snapshot()
-		attemptedFingerprints := map[string]struct{}{}
-		for _, fingerprint := range snapshot.AttemptedKeyFingerprints {
-			attemptedFingerprints[fingerprint] = struct{}{}
-		}
 		for _, account := range dispatchAccounts {
 			accountRuntimeKey, keyErr := gatewayAccountRuntimeKey(account)
 			if keyErr != nil {
@@ -528,7 +523,6 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 			if registration.Allowed || sameAccountCarry {
 				filtered = append(filtered, account)
 			}
-			_ = attemptedFingerprints
 		}
 		dispatchAccounts = filtered
 	}

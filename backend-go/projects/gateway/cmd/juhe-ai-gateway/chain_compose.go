@@ -430,6 +430,14 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// B-1（BUG-0174）波1遗留接线：dispatch 的 Key 指纹密钥与水合层同源
 	//（chain_runtime.go newChainAccountsSelectorWithStats 的 cfg.Secret）。
 	engine.Config.Secret = deps.EngineSecret
+	// W2：engine.go DefaultEngineConfig 注释契约——attempt safety limit 的
+	// Node 默认即 globalConcurrencyMax（runtime.ts:769），组合根必须用 env
+	// 配置的 JUHE_AI_CONCURRENCY_GLOBAL_MAX 覆盖编译期 5000 默认。deps 值与
+	// 用量收尾队列/全局并发槽同源（runtimeConfig.ConcurrencyGlobalMax，env
+	// 未设置时已回落 5000）；异常零值构造保持 engine 默认不变。
+	if deps.ConcurrencyGlobalMax > 0 {
+		engine.Config.AccountApiKeyRequestAttemptSafetyLimit = deps.ConcurrencyGlobalMax
+	}
 	// B-4（BUG-0175）接线：跨协议桥响应面（Node transformUpstreamResponse
 	// driver 链）——桥响应转换挂在 attempt 尾部，非桥请求保持直通。
 	engine.ResponseTransformer = newChainBridgeResponseTransformer()

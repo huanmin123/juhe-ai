@@ -135,6 +135,12 @@ func TestW2BatchUpdateExpiredPackageDisables(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	first, second, rev1, rev2 := w2BatchAccounts(t, env, adminID)
 
+	// 预置悬挂重试代际：批量过期停用链必须与单账户路径（nextRuntimeState
+	// expiredByPackage 臂）一致，观察起点清空时代际同步清空，否则 jobs 侧
+	// 冷却恢复候选会因悬挂代际被判 fence 无效。
+	env.exec(t, `UPDATE accounts SET cooldown_retest_generation = 'cooldown:seed-generation'
+		WHERE id IN (?, ?)`, first, second)
+
 	// 过期套餐触发自动停用链：status/schedulable/last_error_* 全部落库。
 	input := BatchUpdateInput{
 		Targets: []BatchUpdateTarget{{AccountID: first, ConfigRevision: rev1}, {AccountID: second, ConfigRevision: rev2}},
@@ -153,6 +159,10 @@ func TestW2BatchUpdateExpiredPackageDisables(t *testing.T) {
 	row := env.queryCell(t, `SELECT status || '|' || schedulable || '|' || COALESCE(last_error_code,'') FROM accounts WHERE id = ?`, first)
 	if row != "disabled|0|account_expired" {
 		t.Fatalf("过期停用状态不一致：%s", row)
+	}
+	if got := env.count(t, `SELECT COUNT(*) FROM accounts
+		WHERE id IN (?, ?) AND cooldown_retest_generation IS NULL`, first, second); got != 2 {
+		t.Fatalf("批量过期停用应清空重试代际：%d", got)
 	}
 }
 

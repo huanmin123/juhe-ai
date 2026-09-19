@@ -2307,8 +2307,8 @@ func captureSlogWarnings(t *testing.T) *bytes.Buffer {
 
 // TestChainFailureDispatcherStructuredFailureWarnings（缺口 D，归档
 // failure-dispatch.ts:240-254 / :524-542）：失败响应与传输失败分支各记录一条
-// 结构化 warn，字段集对照归档（phase-only 分类保留 Node 的 metric reason
-// 缺省）。
+// 结构化 warn，字段集对照归档（W2：分类输入带 statusCode/errorCode，429 响应
+// 的 metric reason 归入 rate_limit，无 code 传输错误保持 transport 默认）。
 func TestChainFailureDispatcherStructuredFailureWarnings(t *testing.T) {
 	logs := captureSlogWarnings(t)
 
@@ -2336,7 +2336,7 @@ func TestChainFailureDispatcherStructuredFailureWarnings(t *testing.T) {
 		"contentType=application/json",
 		"responseBodyTruncated=false",
 		"failureClass=opaque_upstream_response",
-		"metricReasonClass=unknown",
+		"metricReasonClass=rate_limit",
 		"classificationReason=opaque_upstream_response_failure",
 		"trafficSource=gateway",
 		"event=gateway_upstream_request_failed",

@@ -523,10 +523,29 @@ func (s *chainAccountLocks) SettleDeadlineAsync(ctx context.Context, accountID s
 	}
 	accountAvailabilityChanged := false
 	if effectiveOriginalStatus.Valid && effectiveOriginalStatus.String == "active" {
-		now := isoMillisOf(s.now())
+		// W2：锁死结算写 temporary_unavailable 必须携带冷却复测 fence，
+		// 否则 jobs J1 的 direct input 候选在 validCooldownFence
+		//（accounthealth/scheduler.go）处直接拒绝，账户永远无法被复测恢复。
+		// 列族对齐 chain_error_policy_effects.go 生产正路：observation started at
+		// 取结算时刻、generation 用 cooldown: 前缀 token、cooldown_until 复用
+		// temporaryUnavailableRuntimeState 的 3 秒初始退避（锁死设计：DEAD_
+		// CONFIRMED 进入既有冷却复测流程，不新造恢复状态机）。锁死端口没有
+		// 失败码上下文，不伪造 last_error_*（归档 settle 亦只写
+		// status/cooldown/updated_at）。
+		settleNow := s.now()
+		settleNowISO := isoMillisOf(settleNow)
+		generation := "cooldown:" + s.newToken()
 		accountTransition, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("accounts")+`
-			SET status = 'temporary_unavailable', cooldown_until = ?, updated_at = ?
-			WHERE id = ? AND status = 'active' AND schedulable = 1`), now, now, id)
+			SET status = 'temporary_unavailable',
+			    cooldown_until = ?,
+			    cooldown_retest_failure_count = 0,
+			    cooldown_retest_observation_started_at = ?,
+			    cooldown_retest_generation = ?,
+			    cooldown_retest_last_at = NULL,
+			    cooldown_retest_last_status_code = NULL,
+			    updated_at = ?
+			WHERE id = ? AND status = 'active' AND schedulable = 1`),
+			isoMillisOf(settleNow.Add(3*time.Second)), settleNowISO, generation, settleNowISO, id)
 		if err != nil {
 			return err
 		}

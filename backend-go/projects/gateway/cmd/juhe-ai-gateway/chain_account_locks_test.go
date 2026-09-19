@@ -108,6 +108,11 @@ func newAccountLocksFixture(t *testing.T) *lockFixture {
 			status TEXT NOT NULL,
 			schedulable INTEGER NOT NULL DEFAULT 1,
 			cooldown_until TEXT,
+			cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
+			cooldown_retest_observation_started_at TEXT,
+			cooldown_retest_generation TEXT,
+			cooldown_retest_last_at TEXT,
+			cooldown_retest_last_status_code INTEGER,
 			updated_at TEXT NOT NULL,
 			deleted_at TEXT
 		)`,
@@ -212,6 +217,18 @@ func (f *lockFixture) readAccount(t *testing.T, accountID string) (status string
 		t.Fatalf("read account: %v", err)
 	}
 	return status, cooldownUntil
+}
+
+// readAccountCooldownFence reads the J1 cooldown retest fence columns the
+// settle path must persist (jobs accounthealth validCooldownFence: observation
+// 非零 + generation 非空)。
+func (f *lockFixture) readAccountCooldownFence(t *testing.T, accountID string) (observationStartedAt, generation sql.NullString, failureCount int) {
+	t.Helper()
+	if err := f.db.QueryRow(`SELECT cooldown_retest_observation_started_at, cooldown_retest_generation, cooldown_retest_failure_count
+		FROM accounts WHERE id = ?`, accountID).Scan(&observationStartedAt, &generation, &failureCount); err != nil {
+		t.Fatalf("read account cooldown fence: %v", err)
+	}
+	return observationStartedAt, generation, failureCount
 }
 
 // ---------------------------------------------------------------------------
@@ -499,8 +516,22 @@ func TestChainAccountLocksSettleDeadline(t *testing.T) {
 	if status != "temporary_unavailable" {
 		t.Fatalf("account status = %s, want temporary_unavailable", status)
 	}
-	if !cooldownUntil.Valid || cooldownUntil.String != isoMillisOf(time.UnixMilli(settleMs)) {
-		t.Fatalf("cooldown_until = %v, want %s", cooldownUntil, isoMillisOf(time.UnixMilli(settleMs)))
+	// W2：cooldown_until 复用 temporaryUnavailableRuntimeState 的 3 秒初始
+	// 退避（对齐 chain_error_policy_effects 生产正路）。
+	if !cooldownUntil.Valid || cooldownUntil.String != isoMillisOf(time.UnixMilli(settleMs+3_000)) {
+		t.Fatalf("cooldown_until = %v, want %s", cooldownUntil, isoMillisOf(time.UnixMilli(settleMs+3_000)))
+	}
+	// W2：锁死结算必须写完整 J1 冷却复测 fence（observation 非零时刻 +
+	// 非空 generation），否则 jobs 恢复探针在 validCooldownFence 处拒绝候选。
+	observationStartedAt, generation, retestFailures := fixture.readAccountCooldownFence(t, "acc_1")
+	if !observationStartedAt.Valid || observationStartedAt.String == "" || observationStartedAt.String != isoMillisOf(time.UnixMilli(settleMs)) {
+		t.Fatalf("cooldown_retest_observation_started_at = %v, want %s", observationStartedAt, isoMillisOf(time.UnixMilli(settleMs)))
+	}
+	if !generation.Valid || generation.String != "cooldown:tok-s" {
+		t.Fatalf("cooldown_retest_generation = %v, want cooldown:tok-s", generation)
+	}
+	if retestFailures != 0 {
+		t.Fatalf("cooldown_retest_failure_count = %d, want 0", retestFailures)
 	}
 	if reasons := fixture.reasons.All(); len(reasons) != 1 || reasons[0] != "account_lock_deadline" {
 		t.Fatalf("invalidations = %v, want [account_lock_deadline]", reasons)
@@ -881,6 +912,10 @@ func TestComposeGatewayChainWiresLocksSecretAndRotation(t *testing.T) {
 	deps.AccountLocks = &stubbedLocks
 	deps.EngineSecret = "wired-secret"
 	deps.KeyRotation = &stubbedRotation
+	// W2：engine.go DefaultEngineConfig 注释契约——组合根用 env 配置的
+	// globalMax（ConcurrencyGlobalMax，JUHE_AI_CONCURRENCY_GLOBAL_MAX）覆盖
+	// attempt safety limit 的编译期 5000 默认。
+	deps.ConcurrencyGlobalMax = 7500
 	chain, shutdown, err := composeGatewayChain(deps)
 	if err != nil {
 		t.Fatalf("compose gateway chain: %v", err)
@@ -891,6 +926,9 @@ func TestComposeGatewayChainWiresLocksSecretAndRotation(t *testing.T) {
 	}
 	if chain.engine.Config.Secret != "wired-secret" {
 		t.Fatalf("engine.Config.Secret = %q, want the injected secret", chain.engine.Config.Secret)
+	}
+	if chain.engine.Config.AccountApiKeyRequestAttemptSafetyLimit != 7500 {
+		t.Fatalf("engine.Config.AccountApiKeyRequestAttemptSafetyLimit = %d, want 7500", chain.engine.Config.AccountApiKeyRequestAttemptSafetyLimit)
 	}
 	if chain.engine.KeyRotation != gatewaydispatch.APIKeyRotationCounter(&stubbedRotation) {
 		t.Fatalf("engine.KeyRotation = %T, want the injected stub", chain.engine.KeyRotation)
@@ -908,6 +946,10 @@ func TestComposeGatewayChainWiresLocksSecretAndRotation(t *testing.T) {
 	}
 	if degradedChain.engine.KeyRotation != nil {
 		t.Fatalf("degraded engine.KeyRotation = %T, want nil (in-process fallback)", degradedChain.engine.KeyRotation)
+	}
+	// ConcurrencyGlobalMax 零值（异常构造）不得破坏 engine 编译期默认。
+	if degradedChain.engine.Config.AccountApiKeyRequestAttemptSafetyLimit != 5000 {
+		t.Fatalf("degraded safety limit = %d, want the 5000 default", degradedChain.engine.Config.AccountApiKeyRequestAttemptSafetyLimit)
 	}
 }
 

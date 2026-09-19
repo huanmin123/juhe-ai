@@ -380,13 +380,17 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	}
 
 	// failure-dispatch.ts:229-254: the structured failed-response warning.
-	// Node classifies with the phase only (no status/error code inputs), so
-	// metricReasonClass stays the phase default; the account-probe debug
-	// demotion is unreachable here — the branches above already returned for
-	// every non-gateway traffic source.
-	failureObservation := gatewayresponse.ClassifyGatewayUpstreamFailure(gatewayresponse.GatewayUpstreamFailureClassificationInput{
+	// W2：statusCode 在上方已解析（HTTP 终态必带），传给分类器让
+	// metricReasonClass 区分 rate_limit / authorization / upstream_5xx /
+	// upstream_4xx（failclass.go classifyMetricReason 的状态码分支），不再
+	// 恒 unknown。
+	failureClassificationInput := gatewayresponse.GatewayUpstreamFailureClassificationInput{
 		Phase: "upstream_response",
-	})
+	}
+	if hasStatus {
+		failureClassificationInput.StatusCode = &statusCode
+	}
+	failureObservation := gatewayresponse.ClassifyGatewayUpstreamFailure(failureClassificationInput)
 	slog.Warn("上游返回非成功状态",
 		"event", "gateway_upstream_response_failed",
 		"accountId", input.Account.ID,
@@ -643,11 +647,13 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 	message := formatUpstreamRequestErrorMessage(input.Error)
 	lastAttempt := transportFailureAttemptOf(input, message, formatUpstreamRequestTransportFailureKind(input.Error, input.LastAttempt))
 	// failure-dispatch.ts:522-542: the structured transport-failure warning.
-	// Node classifies with the phase only, so the metric reason class is the
-	// fixed transport default; errorCode degrades to "" for Go error values
-	// without a code surface.
+	// W2：传输层错误没有 HTTP 状态码可传，但 errorCode 同函数内已解析
+	//（upstreamRequestErrorCode），传给分类器让 quota / timeout 等
+	// errorCode 命中分支优先于 transport 默认；无 code 的传输错误保持
+	// MetricReasonTransport 不变。
 	requestFailureObservation := gatewayresponse.ClassifyGatewayUpstreamFailure(gatewayresponse.GatewayUpstreamFailureClassificationInput{
-		Phase: "upstream_request",
+		Phase:     "upstream_request",
+		ErrorCode: upstreamRequestErrorCode(input.Error),
 	})
 	slog.Warn("网关请求上游失败",
 		"event", "gateway_upstream_request_failed",

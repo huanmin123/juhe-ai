@@ -209,18 +209,23 @@ rotationLoop:
 			*in.concurrencyRetryWaitBudgetMs = e.remainingConcurrencyWaitBudget(*in.concurrencyRetryWaitBudgetMs)
 			concurrencySlot = acquired
 			reacquireConcurrencyForNextKey = false
+			// P0-1（PLAN-20260918T142845703Z）: 生产并发实现未 Acquired 时
+			// Release 为 nil（cmd/juhe-ai-gateway/chain_dispatch.go:247-248）；
+			// 未获取出口 break 后循环出口仍会执行 releaseTransientState，故先
+			// 填充 no-op 兜底（同上方 162-167 行首取路径）再判定，避免 nil
+			// Release panic。
+			if concurrencySlot.MarkFirstOutput == nil {
+				concurrencySlot.MarkFirstOutput = func() {}
+			}
+			if concurrencySlot.Release == nil {
+				concurrencySlot.Release = func() {}
+			}
 			if !concurrencySlot.Acquired {
 				message := accountConcurrencyLimitMessage(concurrencySlot, waitedMs)
 				*in.lastAttempt = accountCapacityLimitAttempt(originalAccount, message)
 				*in.capacityLimitFailures = append(*in.capacityLimitFailures, AccountCapacityLimitFailure{account: originalAccount, message: message})
 				skipAccount = true
 				break rotationLoop
-			}
-			if concurrencySlot.MarkFirstOutput == nil {
-				concurrencySlot.MarkFirstOutput = func() {}
-			}
-			if concurrencySlot.Release == nil {
-				concurrencySlot.Release = func() {}
 			}
 		}
 
@@ -580,6 +585,12 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 						// upstream-dispatch.ts:1240-1242: release the slot and let
 						// the rotation loop re-acquire it for the next key.
 						c.concurrencySlot.Release()
+						// P0-1（PLAN-20260918T142845703Z）: 生产 Release 非幂等
+						//（cmd/juhe-ai-gateway/chain_dispatch.go:256 直接归还计数），
+						// 显式释放后立即中和为 no-op：reacquire 失败出口
+						//（acquireErr 分支）此刻仍持有旧槽引用，其
+						// releaseTransientState 不得二次释放旧槽。
+						c.concurrencySlot.Release = func() {}
 						*c.reacquireConcurrencyRef = true
 						*in.lastAttempt = keyModelUnavailableAttempt(c.account, "state_unavailable")
 						*c.retryAccountApiKeyRef = true
@@ -626,6 +637,9 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 					// upstream-dispatch.ts:1198-1199: release the slot and let
 					// the rotation loop re-acquire it for the next key attempt.
 					c.concurrencySlot.Release()
+					// P0-1（PLAN-20260918T142845703Z）: 同上 prepErr 分支——
+					// 显式释放后中和，防止 reacquire 失败出口二次释放旧槽。
+					c.concurrencySlot.Release = func() {}
 					*c.reacquireConcurrencyRef = true
 					*in.lastAttempt = keyModelUnavailableAttempt(c.account, string(preparation.Status))
 					auditCapture.AddGatewayMetadata("key_model_foreground_dispatch_skip", map[string]any{

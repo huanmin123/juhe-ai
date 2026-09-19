@@ -27,12 +27,16 @@ var (
 type GatewaySseWaitHeartbeat struct {
 	mu   sync.Mutex
 	run  *heartbeatRun
-	deps HeartbeatDeps
+	// lastDone 是最近一轮循环的退出通知：Stop 在无运行轮次时等待它，
+	// 保证多次/并发 Stop 返回后该轮 goroutine 均已退出（W3）。
+	lastDone chan struct{}
+	deps     HeartbeatDeps
 }
 
-// heartbeatRun 承载单轮心跳循环的取消柄。
+// heartbeatRun 承载单轮心跳循环的取消柄与退出通知。
 type heartbeatRun struct {
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // Start 对齐 start()：已在运行时保持，否则进入新一轮心跳循环。
@@ -46,11 +50,16 @@ func (h *GatewaySseWaitHeartbeat) Start() {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &heartbeatRun{cancel: cancel}
+	done := make(chan struct{})
+	run := &heartbeatRun{cancel: cancel, done: done}
 	h.run = run
+	h.lastDone = done
 	deps := h.deps
 	h.mu.Unlock()
+	// defer 顺序（LIFO）：先清 run 归属，再 close(done)；Stop 等 done 返回时
+	// h.run 已清理完毕，随后 Start 可正常启动新一轮。
 	go func() {
+		defer close(done)
 		defer func() {
 			h.mu.Lock()
 			if h.run == run {
@@ -62,7 +71,14 @@ func (h *GatewaySseWaitHeartbeat) Start() {
 	}()
 }
 
-// Stop 对齐 stopAndDetach：取消当前心跳循环（幂等）。
+// Stop 对齐 stopAndDetach 的启停触发语义，并补齐 Go 侧同步语义（W3）：
+// 取消当前心跳循环后同步等待循环 goroutine 完全退出才返回。Stop 返回后
+// 不再有任何 Res.Write/Flush/MarkTransportCommitted 发生，主流程可安全
+// 恢复写同一 ResponseWriter；等待期间至多多完成一笔已在途的写。
+// 死锁面：等待不持锁，goroutine 退出只依赖 ctx 取消、请求 Signal 终止、
+// 语义已提交或写失败，不回调调用方。
+// 多次调用安全：无运行轮次时等待最近一轮的 done（已关闭则立即返回）；
+// 并发调用各自等待同一 done。Stop 等待期间 Start 可启动新一轮，互不阻塞。
 func (h *GatewaySseWaitHeartbeat) Stop() {
 	if h == nil {
 		return
@@ -70,9 +86,14 @@ func (h *GatewaySseWaitHeartbeat) Stop() {
 	h.mu.Lock()
 	run := h.run
 	h.run = nil
+	done := h.lastDone
 	h.mu.Unlock()
 	if run != nil {
 		run.cancel()
+		done = run.done
+	}
+	if done != nil {
+		<-done
 	}
 }
 

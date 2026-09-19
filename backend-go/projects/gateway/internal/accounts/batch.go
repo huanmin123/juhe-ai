@@ -94,8 +94,8 @@ func (s *Store) LoadBatchEditContext(ctx context.Context, accountIDs []string, f
 		}
 		fieldSet[field] = true
 	}
-	scoped := access.manageableID()
-	if scoped == "" && !access.canAccessAll() {
+	scoped := access.ManageableID()
+	if scoped == "" && !access.CanAccessAll() {
 		return nil, &batchAccessError{Message: batchAccessDefaultMessage}
 	}
 
@@ -413,8 +413,8 @@ func (s *Store) BatchUpdate(ctx context.Context, input BatchUpdateInput, access 
 	}
 	sortStrings(requestedFields)
 
-	scoped := access.manageableID()
-	if scoped == "" && !access.canAccessAll() {
+	scoped := access.ManageableID()
+	if scoped == "" && !access.CanAccessAll() {
 		return nil, &batchAccessError{Message: batchAccessDefaultMessage}
 	}
 
@@ -1283,6 +1283,9 @@ func (s *Store) prepareBatchAccount(ctx context.Context, q queryer, account *bat
 		setColumn("last_error_message", "账户套餐已过期，已自动停用")
 		setColumn("cooldown_retest_failure_count", 0)
 		setColumn("cooldown_retest_observation_started_at", nil)
+		// 与单账户路径 nextRuntimeState 的 expiredByPackage 臂对齐：观察起点
+		// 清空时代际同步清空，悬挂代际会让 jobs 冷却恢复候选被判 fence 无效。
+		setColumn("cooldown_retest_generation", nil)
 		setColumn("cooldown_retest_last_at", nil)
 		setColumn("cooldown_retest_last_status_code", nil)
 	} else if scheduleChanged {
